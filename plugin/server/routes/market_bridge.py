@@ -11,17 +11,20 @@ from __future__ import annotations
 
 import asyncio
 import base64
+from collections import deque
 import dataclasses
 import hashlib
+import ipaddress
 import json
 import os
 import secrets
+import socket
 import tempfile
 import time
 import tomllib
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Iterable, Literal, get_args
+from typing import Annotated, Any, Callable, Iterable, Literal, get_args
 from urllib.parse import quote, urlparse, urlencode
 
 import httpx
@@ -43,12 +46,22 @@ from plugin.server.application.plugin_cli import PluginCliService
 from plugin.server.application.plugin_cli.paths import PluginCliPathPolicy
 from plugin.server.application.plugins.upgrade_support import (
     ReplacePluginError,
+    await_cancellation_safe,
     plugin_is_running,
     remove_directory,
     replace_plugin,
     start_plugin_after_upgrade,
     stop_plugin_for_upgrade,
 )
+from plugin.server.application.plugins.mutation_guard import plugin_mutation_guard
+from plugin.server.application.plugins.inventory_store import (
+    get_user_installation_package_state_files,
+)
+from plugin.server.application.plugins.package_ownership import (
+    PackageStateConflictError,
+    collect_package_state_files,
+)
+from plugin.server.domain.errors import ServerDomainError
 from plugin.settings import (
     MARKET_API_URL,
     MARKET_WEB_URL,
@@ -71,6 +84,12 @@ _tasks: dict[str, dict[str, Any]] = {}
 _task_workers: dict[str, asyncio.Task[None]] = {}
 _TASK_TTL_SECONDS = 60 * 60
 _TASK_MAX_ENTRIES = 200
+_LOCAL_TASK_RESERVED_ENTRIES = 20
+_INSTALL_CONFIRMATION_TTL_SECONDS = 10 * 60
+_EXTERNAL_SOURCE_PENDING_LIMIT = 8
+_EXTERNAL_SOURCE_RATE_LIMIT = 16
+_EXTERNAL_SOURCE_RATE_WINDOW_SECONDS = 60
+_external_handoff_attempts: dict[str, deque[float]] = {}
 
 # 短期一次性配对码；成功交换后立即消费。
 _ONE_TIME_CODES: dict[str, float] = {}
@@ -97,6 +116,79 @@ _ACCOUNT_SUMMARY_CACHE: dict[str, Any] | None = None
 _DOWNLOAD_MAX_BYTES = 200 * 1024 * 1024  # 200 MB
 _DOWNLOAD_TIMEOUT = 120.0  # 秒
 _ALLOWED_SUFFIXES = frozenset({".neko-plugin", ".neko-bundle"})
+_TRUSTED_GITHUB_RELEASE_HOSTS = frozenset(
+    {
+        "github.com",
+        "release-assets.githubusercontent.com",
+    }
+)
+_PROXY_FAKE_IP_NETWORK = ipaddress.ip_network("198.18.0.0/15")
+
+
+def _is_trusted_proxy_fake_ip(
+    hostname: str,
+    address: ipaddress.IPv4Address | ipaddress.IPv6Address,
+) -> bool:
+    """Allow Clash-style fake IPs only for the exact GitHub release chain."""
+
+    return (
+        hostname in _TRUSTED_GITHUB_RELEASE_HOSTS
+        and isinstance(address, ipaddress.IPv4Address)
+        and address in _PROXY_FAKE_IP_NETWORK
+    )
+
+
+def _validate_market_download_url(url: str) -> str:
+    """Reject local/private download targets before any network request."""
+
+    try:
+        parsed = urlparse(url)
+        port = parsed.port or 443
+    except ValueError as exc:
+        raise ValueError("Market package URL is invalid") from exc
+    if parsed.scheme.lower() != "https":
+        raise ValueError("Market package downloads require HTTPS")
+    if not parsed.hostname or parsed.username or parsed.password:
+        raise ValueError("Market package URL must contain a plain public host")
+    hostname = parsed.hostname.rstrip(".").casefold()
+    if hostname == "localhost" or hostname.endswith(".localhost") or hostname.endswith(".local"):
+        raise ValueError("Market package host must resolve on the public Internet")
+    try:
+        literal_address = ipaddress.ip_address(hostname)
+    except ValueError:
+        literal_address = None
+    if literal_address is not None and not literal_address.is_global:
+        raise ValueError("Market package host must resolve on the public Internet")
+    if hostname not in _TRUSTED_GITHUB_RELEASE_HOSTS:
+        raise ValueError("Market package URL must use a trusted release host")
+
+    try:
+        addresses = {
+            item[4][0].split("%", 1)[0]
+            for item in socket.getaddrinfo(
+                hostname,
+                port,
+                type=socket.SOCK_STREAM,
+            )
+        }
+    except OSError as exc:
+        raise ValueError("Market package host could not be resolved") from exc
+    if not addresses:
+        raise ValueError("Market package host could not be resolved")
+    for raw_address in addresses:
+        try:
+            address = ipaddress.ip_address(raw_address)
+        except ValueError as exc:
+            raise ValueError("Market package host returned an invalid address") from exc
+        if not address.is_global and not _is_trusted_proxy_fake_ip(hostname, address):
+            raise ValueError("Market package host must resolve on the public Internet")
+    return url
+
+
+async def _validate_market_download_request(request: httpx.Request) -> None:
+    """Apply the same SSRF policy to the initial request and every redirect."""
+
+    await asyncio.to_thread(_validate_market_download_url, str(request.url))
 
 
 def _normalize_required_sha256(value: str | None) -> str:
@@ -225,23 +317,75 @@ def _consume_one_time_code(code: str) -> bool:
     return False
 
 
-def _cleanup_tasks() -> None:
+_TERMINAL_TASK_STATUSES = frozenset({"completed", "failed", "canceled"})
+
+
+def _worker_finished(task_id: str) -> bool:
+    worker = _task_workers.get(task_id)
+    return worker is None or worker.done()
+
+
+def _cleanup_tasks(*, reserve_slots: int = 0) -> None:
     now = time.time()
+    attempt_cutoff = now - _EXTERNAL_SOURCE_RATE_WINDOW_SECONDS
+    tracked_external_sources = {
+        str(task.get("request_source_key"))
+        for task in _tasks.values()
+        if task.get("request_origin") == "external"
+        and task.get("request_source_key")
+    }
+    for source_key, attempts in list(_external_handoff_attempts.items()):
+        if source_key not in tracked_external_sources:
+            _external_handoff_attempts.pop(source_key, None)
+            continue
+        while attempts and attempts[0] <= attempt_cutoff:
+            attempts.popleft()
+        if not attempts:
+            _external_handoff_attempts.pop(source_key, None)
+
+    for task in _tasks.values():
+        if task.get("status") != "awaiting_confirmation":
+            continue
+        expires_at = float(task.get("confirmation_expires_at") or 0)
+        if expires_at <= 0 or now < expires_at:
+            continue
+        task.pop("pending_payload", None)
+        task.pop("confirmation_expires_at", None)
+        task.update(
+            {
+                "status": "canceled",
+                "stage": "canceled",
+                "message": "安装确认已过期，请重新发起安装",
+                "error": "安装确认已过期",
+                "error_code": "install_confirmation_expired",
+                "available_actions": ["retry"],
+                "completed_at": now,
+            }
+        )
+
     expired = [
         task_id
         for task_id, task in _tasks.items()
-        if task.get("completed_at") is not None
+        if task.get("status") in _TERMINAL_TASK_STATUSES
+        and task.get("completed_at") is not None
         and now - float(task.get("completed_at") or 0) > _TASK_TTL_SECONDS
+        and _worker_finished(task_id)
     ]
     for task_id in expired:
         _tasks.pop(task_id, None)
         _task_workers.pop(task_id, None)
 
-    if len(_tasks) <= _TASK_MAX_ENTRIES:
+    target_size = max(0, _TASK_MAX_ENTRIES - max(0, reserve_slots))
+    if len(_tasks) <= target_size:
         return
-    overflow = len(_tasks) - _TASK_MAX_ENTRIES
+    overflow = len(_tasks) - target_size
     ordered = sorted(
-        _tasks.items(),
+        (
+            item
+            for item in _tasks.items()
+            if item[1].get("status") in _TERMINAL_TASK_STATUSES
+            and _worker_finished(item[0])
+        ),
         key=lambda item: float(item[1].get("created_at") or 0),
     )
     for task_id, _task in ordered[:overflow]:
@@ -249,10 +393,93 @@ def _cleanup_tasks() -> None:
         _task_workers.pop(task_id, None)
 
 
+def _external_handoff_source_key(*, bridge_token: str) -> str:
+    """Return a non-secret key for the current paired bridge session."""
+
+    digest = hashlib.sha256(bridge_token.encode("utf-8")).hexdigest()
+    return f"bridge:{digest[:16]}"
+
+
+def _enforce_external_handoff_source_limits(*, source_key: str) -> None:
+    active_for_source = sum(
+        1
+        for task in _tasks.values()
+        if task.get("request_origin") == "external"
+        and task.get("request_source_key") == source_key
+        and task.get("status") not in _TERMINAL_TASK_STATUSES
+    )
+    if active_for_source >= _EXTERNAL_SOURCE_PENDING_LIMIT:
+        raise HTTPException(
+            status_code=429,
+            detail={
+                "code": "external_handoff_source_limit_reached",
+                "message": "Too many confirmations are pending from this source.",
+                "available_actions": ["retry_later", "open_plugin_center"],
+            },
+        )
+
+    now = time.time()
+    cutoff = now - _EXTERNAL_SOURCE_RATE_WINDOW_SECONDS
+    attempts = _external_handoff_attempts.setdefault(source_key, deque())
+    while attempts and attempts[0] <= cutoff:
+        attempts.popleft()
+    if len(attempts) >= _EXTERNAL_SOURCE_RATE_LIMIT:
+        raise HTTPException(
+            status_code=429,
+            detail={
+                "code": "external_handoff_rate_limited",
+                "message": "This source is creating install requests too quickly.",
+                "available_actions": ["retry_later", "open_plugin_center"],
+            },
+        )
+    attempts.append(now)
+
+
+async def shutdown_market_task_workers() -> None:
+    """Cancel and await every tracked Market worker during server shutdown."""
+
+    workers = list(_task_workers.items())
+    for _task_id, worker in workers:
+        if not worker.done():
+            worker.cancel()
+    if workers:
+        await asyncio.gather(
+            *(worker for _task_id, worker in workers),
+            return_exceptions=True,
+        )
+    for task_id, worker in workers:
+        if _task_workers.get(task_id) is worker:
+            _task_workers.pop(task_id, None)
+
+
+def _install_request_identity(payload: "MarketInstallRequest") -> tuple[str, str]:
+    """Return the logical-plugin key and a stable fingerprint for idempotency."""
+
+    logical_plugin_id = (
+        payload.expected_plugin_toml_id or payload.plugin_id or ""
+    ).strip().casefold()
+    canonical_fields = payload.model_dump(mode="json")
+    # Confirmation is a Core-owned authority decision.  A remote browser may
+    # still send the legacy flag, but it cannot opt out or create a second
+    # task merely by toggling that untrusted field.
+    canonical_fields.pop("require_confirm", None)
+    canonical_payload = json.dumps(
+        canonical_fields,
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    return logical_plugin_id, hashlib.sha256(canonical_payload).hexdigest()
+
+
 def _plugin_config_roots() -> tuple[Path, ...]:
     policy = PluginCliPathPolicy.from_settings()
     roots: list[Path] = []
-    for root in (policy.builtin_plugins_root, policy.user_plugins_root):
+    for root in (
+        policy.builtin_plugins_root,
+        policy.install_plugins_root,
+        policy.user_plugins_root,
+    ):
         if root not in roots:
             roots.append(root)
     return tuple(roots)
@@ -317,30 +544,54 @@ class MarketInstallRequest(BaseModel):
         default="install",
         description="install=全新安装；upgrade=覆盖旧版本；reinstall=同版本重装",
     )
-    # v2 (Option C): plugin 身份一致性校验 —— Market slug 透传给客户端，
-    # 客户端 unpack 后比对包内 plugin.toml [plugin].id；install 不一致时
-    # 附 warning，upgrade/reinstall 不一致时拒绝并回滚。
-    expected_plugin_toml_id: str | None = Field(
-        default=None,
+    # Market 声明的逻辑 ID 必须在任何正式落盘前与包内 plugin.toml 一致。
+    expected_plugin_toml_id: str = Field(
+        ...,
+        min_length=1,
+        pattern=r"^[A-Za-z0-9_-]+$",
         description=(
-            "Market 上的 plugin.slug；客户端 unpack 后会和包内 plugin.toml "
-            "的 id 字段比对。install 不一致只 warn；upgrade/reinstall "
-            "不一致会拒绝并回滚"
+            "Market 上的 plugin.slug；客户端安装前会和包内 plugin.toml "
+            "的 id 字段比对，任何模式不一致都会拒绝"
         ),
     )
-    on_conflict: str = Field(default="fail", pattern=r"^(rename|fail)$")
-    require_confirm: bool = Field(default=True, description="是否需要用户确认（预留）")
+    on_conflict: str = Field(default="fail", pattern=r"^fail$")
+    require_confirm: bool = Field(
+        default=True,
+        description="旧客户端兼容字段；Core 始终要求由本机插件中心确认",
+    )
 
     @field_validator("package_sha256", mode="before")
     @classmethod
     def _validate_package_sha256(cls, value: object) -> str:
         return _normalize_required_sha256(str(value) if value is not None else None)
 
+    @field_validator("on_conflict", mode="before")
+    @classmethod
+    def _force_safe_conflict_policy(cls, value: object) -> object:
+        # Legacy Market pages sent ``rename``. Accept the old wire value so an
+        # existing client keeps working, but never let a browser authorize a
+        # second executable copy of the same logical plugin.
+        if value in {None, "", "fail", "rename"}:
+            return "fail"
+        return value
+
 
 class MarketInstallResponse(BaseModel):
     task_id: str
-    status: str  # "pending" | "downloading" | "installing" | "completed" | "failed"
+    status: str  # "awaiting_confirmation" | "pending" | ... | "completed" | "failed"
     message: str = ""
+
+
+class MarketPendingConfirmation(BaseModel):
+    task_id: str
+    plugin_id: str
+    version: str = ""
+    mode: Literal["install", "upgrade", "reinstall"] = "install"
+    channel: str = "stable"
+    package_sha256: str
+    package_host: str
+    created_at: float
+    expires_at: float
 
 
 class MarketTaskStatus(BaseModel):
@@ -356,6 +607,9 @@ class MarketTaskStatus(BaseModel):
     # 让前端识别稳定错误码（upgrade_rollback_completed / package_id_change / ...）。
     error: str | None = None
     error_code: str | None = None
+    error_details: dict[str, Any] | None = None
+    available_actions: list[str] = Field(default_factory=list)
+    correlation_id: str | None = None
     created_at: float = 0.0
     completed_at: float | None = None
     install_source_warning: str | None = None
@@ -615,6 +869,7 @@ async def market_status():
 async def market_install(
     payload: MarketInstallRequest,
     token: str = Query(..., description="Bridge token"),
+    origin: Annotated[str | None, Header()] = None,
 ):
     """从 Market 触发插件安装。
 
@@ -645,35 +900,205 @@ async def market_install(
             )
 
     _cleanup_tasks()
+    logical_plugin_key, request_fingerprint = _install_request_identity(payload)
+    if logical_plugin_key:
+        for existing_task in _tasks.values():
+            if existing_task.get("status") not in {
+                "awaiting_confirmation",
+                "pending",
+                "downloading",
+                "verifying",
+                "installing",
+            }:
+                continue
+            if existing_task.get("logical_plugin_key") != logical_plugin_key:
+                continue
+            existing_task_id = str(existing_task["task_id"])
+            if existing_task.get("request_fingerprint") == request_fingerprint:
+                return MarketInstallResponse(
+                    task_id=existing_task_id,
+                    status=str(existing_task.get("status") or "pending"),
+                    message="An existing install task is already handling this request.",
+                )
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "plugin_install_in_progress",
+                    "message": "Another install task is already active for this plugin.",
+                    "task_id": existing_task_id,
+                },
+            )
+
+    _cleanup_tasks(reserve_slots=1)
+    if len(_tasks) >= _TASK_MAX_ENTRIES:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "market_task_capacity_reached",
+                "message": "Too many plugin install tasks are active. Try again later.",
+                "available_actions": ["retry"],
+            },
+        )
+
+    request_origin = (
+        "local"
+        if origin and _is_local_bridge_origin(origin, _main_server_port())
+        else "external"
+    )
+    request_source_key = (
+        "local"
+        if request_origin == "local"
+        else _external_handoff_source_key(bridge_token=token)
+    )
+    external_capacity = max(
+        0,
+        _TASK_MAX_ENTRIES - min(_LOCAL_TASK_RESERVED_ENTRIES, _TASK_MAX_ENTRIES),
+    )
+    active_external_tasks = sum(
+        1
+        for task in _tasks.values()
+        if task.get("request_origin", "external") == "external"
+        and task.get("status") not in _TERMINAL_TASK_STATUSES
+    )
+    if request_origin == "external" and active_external_tasks >= external_capacity:
+        raise HTTPException(
+            status_code=429,
+            detail={
+                "code": "external_handoff_capacity_reached",
+                "message": "Too many external install confirmations are pending.",
+                "available_actions": ["retry_later", "open_plugin_center"],
+            },
+        )
+    if request_origin == "external":
+        _enforce_external_handoff_source_limits(source_key=request_source_key)
+
     task_id = secrets.token_urlsafe(16)
     _tasks[task_id] = {
         "task_id": task_id,
-        "status": "pending",
-        "stage": "pending",
+        "status": "awaiting_confirmation",
+        "stage": "awaiting_confirmation",
         "progress": 0.0,
-        "message": "任务已创建",
+        "message": "请在 N.E.K.O 插件中心确认安装",
         "downloaded_bytes": 0,
         "total_bytes": None,
         "result": None,
         "error": None,
         "error_code": None,
+        "error_details": None,
+        "available_actions": ["open_plugin_center", "cancel"],
+        "correlation_id": task_id,
         "created_at": time.time(),
         "completed_at": None,
         "rollback": None,
         "cancel_requested": False,
+        "logical_plugin_key": logical_plugin_key,
+        "request_fingerprint": request_fingerprint,
+        "request_origin": request_origin,
+        "request_source_key": request_source_key,
+        "confirmation_expires_at": time.time() + _INSTALL_CONFIRMATION_TTL_SECONDS,
+        # Kept only in Core memory until the local plugin manager confirms the
+        # one-shot handoff.  It is intentionally excluded from the response
+        # model and removed before the worker is started or the task canceled.
+        "pending_payload": payload,
     }
-
-    # 异步执行安装
-    _task_workers[task_id] = asyncio.create_task(
-        _execute_install(task_id, payload),
-        name=f"market-install-{task_id}",
-    )
 
     return MarketInstallResponse(
         task_id=task_id,
-        status="pending",
-        message="安装任务已创建，正在下载包...",
+        status="awaiting_confirmation",
+        message="安装请求已交给 N.E.K.O，请在插件中心继续",
     )
+
+
+@router.get(
+    "/pending-confirmations",
+    response_model=list[MarketPendingConfirmation],
+)
+async def market_pending_confirmations(
+    request: Request,
+    token: str = Query(..., description="Bridge token"),
+):
+    """List sanitized Market handoffs waiting for the local plugin manager."""
+
+    _verify_token(token)
+    _require_local_bridge_token_access(request)
+    _cleanup_tasks()
+
+    pending: list[MarketPendingConfirmation] = []
+    for task_id, task in _tasks.items():
+        if task.get("status") != "awaiting_confirmation":
+            continue
+        payload = task.get("pending_payload")
+        if not isinstance(payload, MarketInstallRequest):
+            continue
+        pending.append(
+            MarketPendingConfirmation(
+                task_id=task_id,
+                plugin_id=payload.expected_plugin_toml_id,
+                version=payload.version or "",
+                mode=payload.mode,
+                channel=payload.channel or "stable",
+                package_sha256=payload.package_sha256,
+                package_host=urlparse(payload.package_url).hostname or "",
+                created_at=float(task.get("created_at") or 0),
+                expires_at=float(task.get("confirmation_expires_at") or 0),
+            )
+        )
+    pending.sort(key=lambda item: (item.created_at, item.task_id))
+    return pending
+
+
+@router.post("/tasks/{task_id}/confirm", response_model=MarketTaskStatus)
+async def confirm_market_install_task(
+    task_id: str,
+    request: Request,
+    token: str = Query(..., description="Bridge token"),
+):
+    """Start a Market install only after confirmation from the local UI.
+
+    Remote Market pages can create and observe a handoff task, but the
+    confirmation endpoint reuses the stricter local-origin boundary of
+    ``/bridge-token``.  The browser-provided ``require_confirm`` flag is never
+    an authorization input.
+    """
+
+    _verify_token(token)
+    _require_local_bridge_token_access(request)
+    _cleanup_tasks()
+
+    task = _tasks.get(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="任务不存在")
+
+    status = str(task.get("status") or "")
+    if status == "awaiting_confirmation":
+        payload = task.pop("pending_payload", None)
+        if not isinstance(payload, MarketInstallRequest):
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "install_confirmation_unavailable",
+                    "message": "安装确认信息已失效，请重新发起安装",
+                },
+            )
+        task.update(
+            {
+                "status": "pending",
+                "stage": "pending",
+                "message": "已确认，正在准备安装",
+                "available_actions": ["cancel"],
+            }
+        )
+        task.pop("confirmation_expires_at", None)
+        _task_workers[task_id] = asyncio.create_task(
+            _execute_install(task_id, payload),
+            name=f"market-install-{task_id}",
+        )
+    elif status in {"failed", "canceled"}:
+        raise HTTPException(status_code=409, detail="安装任务已结束")
+
+    # Confirmation is idempotent: repeated local clicks observe the same task
+    # and never create another writer.
+    return MarketTaskStatus(**task)
 
 
 @router.get("/tasks/{task_id}", response_model=MarketTaskStatus)
@@ -710,6 +1135,20 @@ async def cancel_market_install_task(
     task = _tasks.get(task_id)
     if not task:
         raise HTTPException(status_code=404, detail="任务不存在")
+    if task.get("status") == "awaiting_confirmation":
+        task.pop("pending_payload", None)
+        task.pop("confirmation_expires_at", None)
+        task.update(
+            {
+                "status": "canceled",
+                "stage": "canceled",
+                "message": "已取消安装请求",
+                "completed_at": time.time(),
+                "cancel_requested": True,
+                "available_actions": [],
+            }
+        )
+        return MarketTaskStatus(**task)
     if task.get("status") in {"completed", "failed", "canceled"}:
         raise HTTPException(status_code=409, detail="安装任务已结束")
     if task.get("stage") in {"install", "replace", "rollback", "completed"}:
@@ -2513,7 +2952,16 @@ async def _execute_install(task_id: str, payload: MarketInstallRequest) -> None:
     try:
         _raise_if_task_cancel_requested(task)
         if payload.mode == "install":
-            await _do_install(task, payload, log_ctx)
+            existing_entry = _find_existing_user_entry_for_market_install(payload)
+            if existing_entry is None:
+                await _do_install(task, payload, log_ctx)
+            else:
+                await _do_upgrade(
+                    task,
+                    payload,
+                    log_ctx,
+                    existing_entry=existing_entry,
+                )
         elif payload.mode == "upgrade":
             await _do_upgrade(task, payload, log_ctx)
         elif payload.mode == "reinstall":
@@ -2560,9 +3008,23 @@ class _TaskError(Exception):
     code: str
     message: str
     http_status: int | None = None
+    details: dict[str, object] = dataclasses.field(default_factory=dict)
+    available_actions: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         super().__init__(self.code, self.message)
+
+
+class _MarketReplacementError(Exception):
+    def __init__(
+        self,
+        replace_error: ReplacePluginError,
+        *,
+        source_restored: bool,
+    ) -> None:
+        super().__init__(str(replace_error))
+        self.replace_error = replace_error
+        self.source_restored = source_restored
 
 
 class _TaskCancelled(_TaskError):
@@ -2609,6 +3071,9 @@ def _finalize_task_failure(
     task["progress"] = task.get("progress", 0.0)
     task["error"] = err.message
     task["error_code"] = err.code
+    task["error_details"] = dict(err.details)
+    task["available_actions"] = list(err.available_actions)
+    task["correlation_id"] = str(log_ctx.get("task_id") or "") or None
     task["completed_at"] = time.time()
     task["message"] = _human_message_for(err.code) or err.message
     logger.error(
@@ -2661,11 +3126,33 @@ _HUMAN_MESSAGES: dict[str, str] = {
     "download_failed": "下载失败",
     "package_hash_mismatch": "插件包校验失败",
     "install_failed": "安装失败，已清理临时文件",
+    "PLUGIN_REPLACEMENT_COMMITTED_CLEANUP_INCOMPLETE": (
+        "插件已更新，但事务清理未完成；请重启 N.E.K.O 后检查插件状态"
+    ),
 }
 
 
 def _human_message_for(code: str) -> str:
     return _HUMAN_MESSAGES.get(code, "")
+
+
+_DOMAIN_ERROR_ACTIONS: dict[str, tuple[str, ...]] = {
+    "PLUGIN_UPGRADE_CONFIRMATION_REQUIRED": ("review_and_confirm",),
+    "PLUGIN_UPGRADE_PLAN_CHANGED": ("review_changes", "retry"),
+    "PLUGIN_PACKAGE_STATE_CONFLICT": ("review_local_changes", "retry"),
+    "PLUGIN_PACKAGE_IDENTITY_MISMATCH": ("choose_matching_package",),
+    "PLUGIN_INSTALL_ROLLBACK_INCOMPLETE": ("restart_and_recover",),
+}
+
+
+def _task_error_from_domain_error(exc: ServerDomainError) -> _TaskError:
+    return _TaskError(
+        code=exc.code,
+        message=exc.message,
+        http_status=exc.status_code,
+        details=dict(exc.details),
+        available_actions=_DOMAIN_ERROR_ACTIONS.get(exc.code, ("retry",)),
+    )
 
 
 def _set_task_stage(
@@ -2690,6 +3177,60 @@ def _raise_if_task_cancel_requested(task: dict[str, Any]) -> None:
 # ─── install / upgrade flows ─────────────────────────────────────────
 
 
+def _find_existing_user_entry_for_market_install(
+    payload: MarketInstallRequest,
+) -> LockEntry | None:
+    """Find an exact user-root source-switch target for a Market install.
+
+    Market callers historically send ``mode=install`` when the local copy was
+    imported from a downloaded package because only Market lock entries are
+    projected as installed. Treating that request as a fresh install reaches
+    the CLI upgrade guard and produces a generic conflict. An exact logical-id
+    match in the user root is instead an in-place replacement target.
+
+    Built-ins are excluded deliberately: installing the same logical plugin
+    from Market must create a user overlay and leave distribution files intact.
+    """
+
+    expected_plugin_id = (payload.expected_plugin_toml_id or "").strip()
+    if not expected_plugin_id:
+        return None
+    mgr = get_install_source_manager()
+    if mgr is None:
+        return None
+    matches = [
+        entry
+        for entry in mgr.snapshot().entries
+        if not entry.removed
+        and entry.root_id == "user"
+        and entry.plugin_id == expected_plugin_id
+    ]
+    if len(matches) > 1:
+        raise _TaskError(
+            code="multiple_installations",
+            message=(
+                f"multiple user installations claim plugin {expected_plugin_id!r}; "
+                "remove the residual copy before switching to Market"
+            ),
+        )
+    if not matches:
+        return None
+
+    entry = matches[0]
+    path_policy = PluginCliPathPolicy.from_settings()
+    manifest_path = path_policy.install_plugins_root / entry.directory_name / "plugin.toml"
+    actual_plugin_id = _read_plugin_toml_id(manifest_path)
+    if actual_plugin_id != expected_plugin_id:
+        raise _TaskError(
+            code="installed_identity_mismatch",
+            message=(
+                "installed plugin identity no longer matches its source record: "
+                f"expected={expected_plugin_id!r}, actual={actual_plugin_id!r}"
+            ),
+        )
+    return entry
+
+
 def _with_market_operation_status(
     result: dict[str, object],
     *,
@@ -2704,14 +3245,30 @@ def _with_market_operation_status(
         "rollback_status": rollback_status,
     }
     install_result = normalized.get("install")
+    unpack_result = normalized.get("unpack")
+    activation = (
+        unpack_result.get("activation")
+        if isinstance(unpack_result, dict)
+        else None
+    )
+    if isinstance(activation, dict):
+        normalized["activation"] = dict(activation)
     if isinstance(install_result, dict):
         normalized["install"] = {
             **install_result,
             "operation": operation,
             "restarted": restarted,
             "rollback_status": rollback_status,
+            **({"activation": dict(activation)} if isinstance(activation, dict) else {}),
         }
     return normalized
+
+
+def _market_install_success_message(result: dict[str, object]) -> str:
+    activation = result.get("activation")
+    if isinstance(activation, dict) and activation.get("status") == "pending_restart":
+        return "安装成功，重启 N.E.K.O 后切换到新版本"
+    return "安装成功"
 
 
 async def _do_install(
@@ -2782,6 +3339,8 @@ async def _do_install(
                 on_conflict=payload.on_conflict,
                 install_source_override=market_override,
             )
+        except ServerDomainError as exc:
+            raise _task_error_from_domain_error(exc) from exc
         except InstallSourceError as exc:
             if exc.code == "lock_write_failed":
                 raise _TaskError(
@@ -2803,7 +3362,7 @@ async def _do_install(
     )
 
     task["progress"] = 1.0
-    task["message"] = "安装成功"
+    task["message"] = _market_install_success_message(result)
     task["result"] = result
 
     if isinstance(result, dict) and "install_source_warning" in result:
@@ -2816,6 +3375,7 @@ async def _do_upgrade(
     log_ctx: dict[str, Any],
     *,
     record_as_reinstall: bool = False,
+    existing_entry: LockEntry | None = None,
 ) -> None:
     """Replace an installed Market plugin through the shared file transaction.
 
@@ -2836,7 +3396,7 @@ async def _do_upgrade(
             message="install source manager not initialised",
         )
 
-    entry = mgr.find_active_market_entry(expected_plugin_id)
+    entry = existing_entry or mgr.find_active_market_entry(expected_plugin_id)
     if entry is None:
         raise _TaskError(
             code="plugin_not_installed_for_upgrade",
@@ -2846,7 +3406,7 @@ async def _do_upgrade(
     installed_plugin_id = entry.plugin_id
 
     path_policy = PluginCliPathPolicy.from_settings()
-    plugin_dir = (path_policy.user_plugins_root / entry.directory_name).resolve()
+    plugin_dir = (path_policy.install_plugins_root / entry.directory_name).resolve()
     package_path: Path | None = None
     try:
         _set_task_stage(
@@ -2908,6 +3468,14 @@ async def _do_upgrade(
                 ),
             )
         profile_dir = (path_policy.package_profiles_root / package_id).resolve()
+        incoming_package_state_files = (
+            await asyncio.to_thread(collect_package_state_files, package_path)
+        ).get(installed_plugin_id, {})
+        previous_package_state_files = await asyncio.to_thread(
+            get_user_installation_package_state_files,
+            installed_plugin_id,
+            directory_name=entry.directory_name,
+        )
         market_override = _build_market_override(
             payload,
             mode="reinstall" if record_as_reinstall else "upgrade",
@@ -2924,6 +3492,7 @@ async def _do_upgrade(
                 package_path=str(package_path),
                 on_conflict="fail",
                 install_source_override=market_override,
+                activate_installation=False,
             )
 
         async def validate_new() -> None:
@@ -2935,6 +3504,13 @@ async def _do_upgrade(
 
         async def start(plugin_id: str) -> None:
             await start_plugin_after_upgrade(plugin_id, strict=True)
+
+        async def commit_install(result: dict[str, object]) -> dict[str, object]:
+            unpack_result = result.get("unpack")
+            recorder = getattr(_cli_service, "_record_installations_for_result", None)
+            if isinstance(unpack_result, dict) and callable(recorder):
+                await recorder(unpack_result, source="market")
+            return result
 
         def mark_rollback_running() -> None:
             _set_task_stage(
@@ -2964,7 +3540,10 @@ async def _do_upgrade(
         )
         task["rollback"] = {"prepared": True, "restored": False}
         try:
-            replacement = await replace_plugin(
+            replacement = await _replace_market_plugin_transaction(
+                source_manager=mgr,
+                source_entry=entry,
+                source_write_attempted=lambda: source_write_attempted,
                 layout=resolve_plugin_layout(installed_plugin_id, plugin_dir),
                 install_new=install_new,
                 validate_new=validate_new,
@@ -2974,26 +3553,39 @@ async def _do_upgrade(
                 cleanup_backup=_async_remove_dir,
                 additional_targets=(profile_dir,),
                 preserve_targets=(profile_dir,),
+                previous_package_state_files=previous_package_state_files,
+                incoming_package_state_files=incoming_package_state_files,
                 on_rollback_start=mark_rollback_running,
+                commit=commit_install,
             )
-        except ReplacePluginError as exc:
-            source_restored = True
-            restore_source = getattr(mgr, "restore_entry_for_rollback", None)
-            if source_write_attempted and callable(restore_source):
-                try:
-                    await asyncio.to_thread(restore_source, entry)
-                except Exception as restore_exc:
-                    source_restored = False
-                    logger.error(
-                        "market install source rollback failed plugin_id={} err={}",
-                        installed_plugin_id,
-                        restore_exc,
-                    )
+        except _MarketReplacementError as transaction_error:
+            exc = transaction_error.replace_error
+            source_restored = transaction_error.source_restored
+            if exc.committed:
+                task["rollback"] = {
+                    "prepared": True,
+                    "restored": False,
+                    "committed": True,
+                }
+                raise _TaskError(
+                    code="PLUGIN_REPLACEMENT_COMMITTED_CLEANUP_INCOMPLETE",
+                    message=(
+                        "插件更新已经提交，但事务清理未完成；"
+                        "请重启 N.E.K.O 后检查插件状态"
+                    ),
+                ) from exc
             rollback_ok = exc.rollback_status == "completed" and source_restored
-            cause_code = exc.cause.code if isinstance(exc.cause, InstallSourceError) else None
+            cause_code = (
+                exc.cause.code
+                if isinstance(
+                    exc.cause,
+                    (InstallSourceError, PackageStateConflictError, ServerDomainError),
+                )
+                else None
+            )
             cause_message = (
                 str(exc.cause.message)
-                if isinstance(exc.cause, InstallSourceError)
+                if isinstance(exc.cause, (InstallSourceError, ServerDomainError))
                 else str(exc.cause)
             )
             task["rollback"] = {
@@ -3149,6 +3741,72 @@ def _post_install_payload_check(
         )
 
 
+async def _replace_market_plugin_transaction(
+    *,
+    source_manager: Any,
+    source_entry: LockEntry,
+    source_write_attempted: Callable[[], bool],
+    **replace_kwargs: Any,
+) -> Any:
+    """Keep replacement and source rollback in one mutation transaction."""
+
+    async with plugin_mutation_guard():
+        try:
+            return await replace_plugin(**replace_kwargs)
+        except asyncio.CancelledError as cancel_exc:
+            if getattr(cancel_exc, "replacement_committed", False):
+                raise
+            restore_source = getattr(
+                source_manager,
+                "restore_entry_for_rollback",
+                None,
+            )
+
+            async def restore_source_after_cancellation() -> None:
+                if not callable(restore_source):
+                    return
+                try:
+                    await asyncio.to_thread(restore_source, source_entry)
+                except Exception as restore_exc:
+                    logger.error(
+                        "market install source cancellation rollback failed "
+                        "plugin_id={} err={}",
+                        source_entry.plugin_id,
+                        restore_exc,
+                    )
+
+            await await_cancellation_safe(restore_source_after_cancellation())
+            raise
+        except ReplacePluginError as exc:
+            if exc.committed:
+                raise _MarketReplacementError(
+                    exc,
+                    source_restored=True,
+                ) from exc
+            source_restored = True
+            restore_source = getattr(
+                source_manager,
+                "restore_entry_for_rollback",
+                None,
+            )
+            if source_write_attempted() and callable(restore_source):
+                try:
+                    await await_cancellation_safe(
+                        asyncio.to_thread(restore_source, source_entry)
+                    )
+                except Exception as restore_exc:
+                    source_restored = False
+                    logger.error(
+                        "market install source rollback failed plugin_id={} err={}",
+                        source_entry.plugin_id,
+                        restore_exc,
+                    )
+            raise _MarketReplacementError(
+                exc,
+                source_restored=source_restored,
+            ) from exc
+
+
 async def _async_remove_dir(target_dir: Path) -> None:
     """Async best-effort rmtree for backup cleanup."""
 
@@ -3181,6 +3839,8 @@ async def _download_package(url: str, task: dict[str, Any]) -> Path:
             timeout=httpx.Timeout(_DOWNLOAD_TIMEOUT),
             follow_redirects=True,
             max_redirects=5,
+            trust_env=False,
+            event_hooks={"request": [_validate_market_download_request]},
         ) as client:
             async with client.stream("GET", url) as response:
                 response.raise_for_status()

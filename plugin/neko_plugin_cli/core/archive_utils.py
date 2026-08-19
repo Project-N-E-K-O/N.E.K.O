@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import stat
 from pathlib import PurePosixPath
 import zipfile
 
@@ -13,6 +14,21 @@ from plugin.core.python_dependencies import (
 
 from .dependencies import collect_dependency_manifest_python_requirements
 from .normalize import normalize_archive_key, validate_archive_entry_name
+
+MAX_ARCHIVE_ENTRIES = 20_000
+MAX_ARCHIVE_MEMBER_BYTES = 512 * 1024 * 1024
+MAX_ARCHIVE_TOTAL_BYTES = 2 * 1024 * 1024 * 1024
+MAX_ARCHIVE_COMPRESSION_RATIO = 1_000
+_COMPRESSION_RATIO_MIN_BYTES = 1024 * 1024
+
+
+class PackageValidationError(ValueError):
+    """Package validation failure with a stable UI-facing classification."""
+
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+
 
 try:
     import tomllib
@@ -46,8 +62,14 @@ def load_toml_from_bytes(raw: bytes, *, source_name: str, archive_name: str = "<
     try:
         data = tomllib.loads(text)
     except Exception as exc:
-        raise ValueError(
-            f"'{source_name}' in '{archive_name}' contains invalid TOML: {exc}"
+        code = (
+            "PLUGIN_PACKAGE_PLUGIN_MANIFEST_INVALID"
+            if source_name.endswith("/plugin.toml")
+            else "PLUGIN_PACKAGE_MANIFEST_INVALID"
+        )
+        raise PackageValidationError(
+            code,
+            f"'{source_name}' in '{archive_name}' contains invalid TOML: {exc}",
         ) from exc
     if not isinstance(data, dict):
         raise ValueError(
@@ -58,7 +80,31 @@ def load_toml_from_bytes(raw: bytes, *, source_name: str, archive_name: str = "<
 
 
 def read_manifest(archive: zipfile.ZipFile) -> dict[str, object]:
-    data = read_archive_toml(archive, "manifest.toml", required=True)
+    try:
+        data = read_archive_toml(archive, "manifest.toml", required=True)
+    except FileNotFoundError as exc:
+        archive_names = archive.namelist()
+        nested_manifests = sorted(
+            name
+            for name in archive_names
+            if len(PurePosixPath(name).parts) > 1
+            and PurePosixPath(name).name == "manifest.toml"
+            and any(
+                PurePosixPath(other).parts[: len(PurePosixPath(name).parts)]
+                == (*PurePosixPath(name).parts[:-1], "payload")
+                for other in archive_names
+            )
+        )
+        if nested_manifests:
+            raise PackageValidationError(
+                "PLUGIN_PACKAGE_NESTED_ROOT",
+                "manifest.toml is nested below the archive root: "
+                + ", ".join(nested_manifests),
+            ) from exc
+        raise PackageValidationError(
+            "PLUGIN_PACKAGE_MANIFEST_MISSING",
+            "required package manifest.toml is missing from the archive root",
+        ) from exc
     assert data is not None
     return data
 
@@ -79,6 +125,87 @@ def safe_archive_path(name: str) -> PurePosixPath:
     names, component length, traversal, etc.).
     """
     return validate_archive_entry_name(name)
+
+
+def validate_archive_layout(archive: zipfile.ZipFile) -> None:
+    """Reject archives whose layout cannot be extracted consistently.
+
+    ZIP permits duplicate names and paths that only differ by case or Unicode
+    normalization. Those layouts extract differently on Windows, macOS and
+    Linux, so they must be rejected before any destination file is created.
+    Resource budgets also stop truncated/corrupt downloads and decompression
+    bombs from turning a plugin install into a disk or memory exhaustion event.
+    """
+
+    infos = archive.infolist()
+    if len(infos) > MAX_ARCHIVE_ENTRIES:
+        raise ValueError(
+            f"package archive contains {len(infos)} entries, exceeding the "
+            f"{MAX_ARCHIVE_ENTRIES}-entry safety limit"
+        )
+
+    total_size = 0
+    seen_portable: dict[str, str] = {}
+    file_keys: set[str] = set()
+    display_names: dict[str, str] = {}
+
+    for info in infos:
+        path = safe_archive_path(info.filename)
+        portable_key = normalize_archive_key(path.as_posix()).casefold()
+        previous = seen_portable.get(portable_key)
+        if previous is not None:
+            raise ValueError(
+                "package archive contains duplicate cross-platform paths: "
+                f"'{previous}' and '{info.filename}'"
+            )
+        seen_portable[portable_key] = info.filename
+        display_names[portable_key] = info.filename
+
+        unix_mode = (info.external_attr >> 16) & 0xFFFF
+        if stat.S_ISLNK(unix_mode):
+            raise ValueError(
+                f"package archive entry '{info.filename}' is a symbolic link; "
+                "plugin packages must contain regular files and directories only"
+            )
+        if info.flag_bits & 0x1:
+            raise ValueError(
+                f"package archive entry '{info.filename}' is encrypted; "
+                "encrypted plugin packages are not supported"
+            )
+        if info.is_dir():
+            continue
+
+        if info.file_size > MAX_ARCHIVE_MEMBER_BYTES:
+            raise ValueError(
+                f"package archive entry '{info.filename}' expands to {info.file_size} bytes, "
+                f"exceeding the {MAX_ARCHIVE_MEMBER_BYTES}-byte member safety limit"
+            )
+        total_size += info.file_size
+        if total_size > MAX_ARCHIVE_TOTAL_BYTES:
+            raise ValueError(
+                f"package archive expands to more than the {MAX_ARCHIVE_TOTAL_BYTES}-byte "
+                "total safety limit"
+            )
+        if info.file_size >= _COMPRESSION_RATIO_MIN_BYTES:
+            ratio = info.file_size / max(info.compress_size, 1)
+            if ratio > MAX_ARCHIVE_COMPRESSION_RATIO:
+                raise ValueError(
+                    f"package archive entry '{info.filename}' has suspicious compression "
+                    f"ratio {ratio:.1f}:1, exceeding the {MAX_ARCHIVE_COMPRESSION_RATIO}:1 "
+                    "safety limit"
+                )
+        file_keys.add(portable_key)
+
+    for file_key in file_keys:
+        parts = file_key.split("/")
+        for index in range(1, len(parts)):
+            parent_key = "/".join(parts[:index])
+            if parent_key in file_keys:
+                raise ValueError(
+                    "package archive contains a file/directory path collision: "
+                    f"'{display_names[parent_key]}' conflicts with "
+                    f"'{display_names[file_key]}'"
+                )
 
 
 def collect_plugin_folders(archive: zipfile.ZipFile) -> list[str]:
@@ -114,7 +241,8 @@ def collect_profile_names(archive: zipfile.ZipFile) -> list[str]:
 def validate_package_type(package_type: str, plugin_folders: list[str]) -> None:
     package_type = package_type.strip().lower()
     if package_type == "plugin" and len(plugin_folders) != 1:
-        raise ValueError(
+        raise PackageValidationError(
+            "PLUGIN_PACKAGE_TYPE_MISMATCH",
             f"manifest declares package_type='plugin' which requires exactly one plugin "
             f"directory under payload/plugins/, but found {len(plugin_folders)}: "
             f"{', '.join(plugin_folders)}. "
@@ -140,7 +268,8 @@ def validate_plugin_layout(archive: zipfile.ZipFile, plugin_folders: list[str]) 
         if plugin_toml not in file_names:
             missing.append(folder)
     if missing:
-        raise ValueError(
+        raise PackageValidationError(
+            "PLUGIN_PACKAGE_PLUGIN_MANIFEST_MISSING",
             f"the following plugin folder(s) are missing the required 'plugin.toml': "
             f"{', '.join(missing)}. "
             f"Every plugin directory under payload/plugins/ must contain a plugin.toml file."
@@ -159,12 +288,27 @@ def validate_plugin_manifest_types(
         assert manifest is not None
         plugin_table = manifest.get("plugin")
         if not isinstance(plugin_table, dict):
-            raise ValueError(
+            raise PackageValidationError(
+                "PLUGIN_PACKAGE_PLUGIN_MANIFEST_INVALID",
                 f"'{member_name}' 必须包含 [plugin] 表，才能检查或安装该包。 / "
                 f"'{member_name}' must contain a [plugin] table before the package "
                 "can be inspected or installed. / "
                 f"'{member_name}' を検査またはインストールするには "
                 "[plugin] テーブルが必要です。"
+            )
+        manifest_plugin_id = plugin_table.get("id")
+        if not isinstance(manifest_plugin_id, str) or not manifest_plugin_id.strip():
+            raise PackageValidationError(
+                "PLUGIN_PACKAGE_PLUGIN_MANIFEST_INVALID",
+                f"'{member_name}' [plugin].id must be a non-empty string"
+            )
+        manifest_plugin_id = manifest_plugin_id.strip()
+        if manifest_plugin_id != folder:
+            raise PackageValidationError(
+                "PLUGIN_PACKAGE_IDENTITY_MISMATCH",
+                "plugin identity mismatch: "
+                f"payload folder '{folder}' contains manifest id "
+                f"'{manifest_plugin_id}'"
             )
         require_supported_plugin_type(
             plugin_table.get("type", "plugin"),

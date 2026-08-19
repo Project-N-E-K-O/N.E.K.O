@@ -4,12 +4,15 @@ from pathlib import Path
 import zipfile
 
 from .archive_utils import (
+    PackageValidationError,
     collect_plugin_folders,
     collect_profile_names,
     compute_archive_payload_hash,
+    read_archive_toml,
     read_dependency_manifest,
     read_manifest,
     read_metadata,
+    validate_archive_layout,
     validate_dependency_layout,
     validate_plugin_manifest_types,
     validate_package_type,
@@ -30,11 +33,17 @@ class PackageInspector:
     def inspect_package(self, package_path: str | Path) -> PackageInspectResult:
         package_path = Path(package_path).expanduser().resolve()
 
-        with zipfile.ZipFile(package_path) as archive:
-            return self.inspect_archive(
-                archive,
-                package_path=package_path,
-            )
+        try:
+            with zipfile.ZipFile(package_path) as archive:
+                return self.inspect_archive(
+                    archive,
+                    package_path=package_path,
+                )
+        except zipfile.BadZipFile as exc:
+            raise PackageValidationError(
+                "PLUGIN_PACKAGE_INVALID_ARCHIVE",
+                f"package is not a readable ZIP archive: {exc}",
+            ) from exc
 
     def inspect_archive(
         self,
@@ -44,6 +53,7 @@ class PackageInspector:
     ) -> PackageInspectResult:
         """Inspect and validate an already-open package archive."""
 
+        validate_archive_layout(archive)
         manifest = read_manifest(archive)
         metadata = read_metadata(archive)
 
@@ -87,11 +97,19 @@ class PackageInspector:
         result: list[InspectedPackagePlugin] = []
         for plugin_id in sorted(plugin_folders):
             plugin_toml = f"payload/plugins/{plugin_id}/plugin.toml"
+            manifest = read_archive_toml(archive, plugin_toml, required=True)
+            plugin_table = manifest.get("plugin") if isinstance(manifest, dict) else None
+            version = (
+                plugin_table.get("version", "")
+                if isinstance(plugin_table, dict)
+                else ""
+            )
             result.append(
                 InspectedPackagePlugin(
                     plugin_id=plugin_id,
                     archive_path=f"payload/plugins/{plugin_id}",
                     has_plugin_toml=(plugin_toml in file_names),
+                    version=version if isinstance(version, str) else "",
                 )
             )
         return result

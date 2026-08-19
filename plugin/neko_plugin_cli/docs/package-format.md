@@ -78,6 +78,8 @@ The plugin manager backend exposes the same package workflow with explicit respo
 - `POST /plugin-cli/build` returns `built`, `built_count`, `failed`, `failed_count`, and `ok`.
 - Each build result reports `package_path`, `package_type`, `plugin_ids`, `package_size_bytes`, `payload_hash`, and counts.
 - `staged_files` and `profile_files` are filesystem paths from the temporary staging directory. They are only populated when `keep_staging = true`; otherwise their counts are `0`.
+- `POST /plugin-cli/inspect` reports each packaged plugin's ID and manifest version without installing it.
+- `POST /plugin-cli/install-plan` classifies the target as `new`, `managed`, or `unmanaged` and returns the confirmation contract for replacements.
 - `POST /plugin-cli/install` returns `installed_plugins` and `installed_plugin_count`.
 - `POST /plugin-cli/upload-and-install` returns `{ upload, install }`, where `install` uses the same shape as `/plugin-cli/install`.
 
@@ -318,8 +320,9 @@ Minimal validation:
 1. archive must contain `manifest.toml`
 2. archive must contain `payload/plugins/`
 3. each packaged plugin directory must contain `plugin.toml`
-4. `package_type = "plugin"` requires exactly one plugin directory
-5. `package_type = "bundle"` requires at least one plugin directory
+4. each packaged plugin directory name must exactly match `[plugin].id` in its `plugin.toml`
+5. `package_type = "plugin"` requires exactly one plugin directory
+6. `package_type = "bundle"` requires at least one plugin directory
 
 Recommended validation:
 
@@ -352,7 +355,9 @@ Current implementation notes:
 
 - single-plugin builds only accept `package_type = "plugin"`
 - install verifies `metadata.toml` payload hash when metadata exists
-- install conflict handling currently supports `rename` and `fail`
+- executable plugin conflicts fail closed; installation does not create suffixed or renamed executable copies
+- a repeated logical plugin ID is planned as a replacement even when the old and new `version` strings are equal; confirmation is bound to package bytes and the complete target snapshot
+- Market installation additionally requires its declared plugin ID and version to match the packaged `plugin.toml`
 
 Recommended pipeline for a bundle:
 

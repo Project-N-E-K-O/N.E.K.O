@@ -1896,6 +1896,21 @@ class InstallSourceManager:
                     },
                 ) from exc
 
+    def restore_snapshot_for_rollback(self, snapshot: LockFile) -> None:
+        """Restore one exact in-memory snapshot after a failed install commit."""
+
+        with self._lock:
+            old_lock = self._current
+            try:
+                self._current = snapshot
+                self.save()
+            except Exception as exc:
+                self._current = old_lock
+                raise InstallSourceError(
+                    "lock_write_failed",
+                    f"failed to restore install-source snapshot: {exc}",
+                ) from exc
+
     def package_id_for_directory(self, directory_path: Path) -> str:
         """Return the recorded profile key for an installed plugin directory."""
 

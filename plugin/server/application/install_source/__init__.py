@@ -65,11 +65,11 @@ def build_install_source_manager() -> InstallSourceManager:
 
     from plugin.settings import (
         get_builtin_plugin_config_root,
-        get_user_plugin_config_root,
+        get_managed_plugin_installations_root,
     )
 
     builtin_root = get_builtin_plugin_config_root()
-    user_root = get_user_plugin_config_root()
+    user_root = get_managed_plugin_installations_root()
     scanner = PluginDirectoryScanner(builtin_root, user_root)
     lock_path = resolve_lock_path()
     return InstallSourceManager(

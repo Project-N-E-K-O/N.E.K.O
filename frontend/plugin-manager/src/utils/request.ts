@@ -10,7 +10,9 @@ import { i18n } from '@/i18n'
 
 let lastNetworkErrorShownAt = 0
 
-type ErrorDisplayRequestConfig = AxiosRequestConfig & {
+export type ErrorDisplayRequestConfig = AxiosRequestConfig & {
+  /** The caller will present a domain-specific error message. */
+  suppressErrorMessage?: boolean
   /** Suppress only the expected stopped-plugin response for panel probes. */
   suppressPluginNotRunningMessage?: boolean
 }
@@ -108,6 +110,10 @@ function readErrorCode(error: AxiosError): string {
   return ''
 }
 
+export function shouldSuppressErrorMessage(error: AxiosError): boolean {
+  return Boolean((error.config as ErrorDisplayRequestConfig | undefined)?.suppressErrorMessage)
+}
+
 export function shouldSuppressPluginNotRunningMessage(error: AxiosError): boolean {
   const requested = Boolean(
     (error.config as ErrorDisplayRequestConfig | undefined)?.suppressPluginNotRunningMessage,
@@ -151,7 +157,8 @@ service.interceptors.response.use(
     // 对于 404 错误，不输出错误日志（这是正常的，某些资源可能不存在）
     // 对于 401/403 错误，也不输出错误日志
     const status = error.response?.status
-    const suppressErrorMessage = shouldSuppressPluginNotRunningMessage(error)
+    const suppressErrorMessage = shouldSuppressErrorMessage(error)
+      || shouldSuppressPluginNotRunningMessage(error)
     if (!suppressErrorMessage && status !== 404 && status !== 401 && status !== 403) {
       console.error('Response error:', error)
     }

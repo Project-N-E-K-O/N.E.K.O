@@ -2,11 +2,12 @@ from __future__ import annotations
 
 from pathlib import Path
 import re
+import shutil
 import zipfile
 
 from .inspect import PackageInspector
 from .models import InstalledPlugin, InstallResult
-from .archive_utils import read_metadata, safe_archive_path
+from .archive_utils import PackageValidationError, read_metadata, safe_archive_path
 
 _SAFE_PACKAGE_ID_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 
@@ -29,7 +30,15 @@ class PackageInstaller:
         profiles_root_path.mkdir(parents=True, exist_ok=True)
         on_conflict = self.normalize_conflict_strategy(on_conflict)
 
-        with zipfile.ZipFile(package_path) as archive:
+        try:
+            archive = zipfile.ZipFile(package_path)
+        except zipfile.BadZipFile as exc:
+            raise PackageValidationError(
+                "PLUGIN_PACKAGE_INVALID_ARCHIVE",
+                f"package is not a readable ZIP archive: {exc}",
+            ) from exc
+
+        with archive:
             inspected = PackageInspector().inspect_archive(
                 archive,
                 package_path=package_path,
@@ -42,7 +51,8 @@ class PackageInstaller:
                     if isinstance(payload_table, dict)
                     else "<unknown>"
                 )
-                raise ValueError(
+                raise PackageValidationError(
+                    "PLUGIN_PACKAGE_HASH_MISMATCH",
                     "payload hash mismatch: the archive content does not match the hash "
                     "recorded in metadata.toml.\n"
                     f"  expected (metadata.toml): {expected}\n"
@@ -193,7 +203,7 @@ class PackageInstaller:
             return
         target_path.parent.mkdir(parents=True, exist_ok=True)
         with archive.open(info) as src, target_path.open("wb") as dst:
-            dst.write(src.read())
+            shutil.copyfileobj(src, dst, length=1024 * 1024)
 
     def resolve_target_dir(
         self,

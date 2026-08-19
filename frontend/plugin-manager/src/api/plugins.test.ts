@@ -54,4 +54,23 @@ describe('plugin hosted UI API', () => {
       { suppressPluginNotRunningMessage: false },
     )
   })
+
+  it('queries and switches a plugin installation with an inventory generation', async () => {
+    getMock.mockResolvedValue({ candidates: [] })
+    postMock.mockResolvedValue({ success: true })
+    const { getPluginInstallations, switchPluginInstallation } = await import('./plugins')
+
+    await getPluginInstallations('demo plugin')
+    await switchPluginInstallation('demo plugin', 'builtin:demo', 7)
+
+    expect(getMock).toHaveBeenCalledWith(
+      '/plugin/demo%20plugin/installations',
+      { suppressErrorMessage: true },
+    )
+    expect(postMock).toHaveBeenCalledWith(
+      '/plugin/demo%20plugin/active-installation',
+      { selection_id: 'builtin:demo', expected_generation: 7 },
+      { suppressErrorMessage: true },
+    )
+  })
 })

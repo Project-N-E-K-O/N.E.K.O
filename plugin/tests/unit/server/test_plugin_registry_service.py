@@ -1,15 +1,33 @@
 from __future__ import annotations
 
 import copy
+import json
 from pathlib import Path
+import sys
 
 import pytest
 
 from plugin.server.application.plugins import registry_service as module
+from plugin.server.application.plugins.inventory_store import (
+    mark_plugin_deleted,
+    record_user_installation,
+)
+from plugin.server.domain.errors import ServerDomainError
 from plugin.server.infrastructure import runtime_overrides
 
 
 pytestmark = pytest.mark.plugin_unit
+
+
+@pytest.fixture(autouse=True)
+def _isolate_plugin_deletion_state(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv(
+        "NEKO_PLUGIN_INSTALLATIONS_PATH",
+        str(tmp_path / "plugin-installations.json"),
+    )
 
 
 class _AliveHost:
@@ -21,8 +39,9 @@ def _write_plugin_fixture(tmp_path: Path, plugin_id: str) -> Path:
     root = tmp_path / "plugins"
     plugin_dir = root / plugin_id
     plugin_dir.mkdir(parents=True, exist_ok=True)
-    module_name = f"{plugin_id}_entry"
-    (tmp_path / f"{module_name}.py").write_text(
+    (plugin_dir / "__init__.py").write_text("", encoding="utf-8")
+    module_name = "entry"
+    (plugin_dir / f"{module_name}.py").write_text(
         "\n".join(
             [
                 "from plugin.sdk.plugin.decorators import plugin_entry",
@@ -43,7 +62,7 @@ def _write_plugin_fixture(tmp_path: Path, plugin_id: str) -> Path:
                 f"id = '{plugin_id}'",
                 f"name = '{plugin_id}'",
                 "type = 'plugin'",
-                f"entry = '{module_name}:DemoPlugin'",
+                f"entry = 'plugin.plugins.{plugin_id}.{module_name}:DemoPlugin'",
                 "version = '0.1.0'",
                 "",
                 "[plugin_runtime]",
@@ -178,6 +197,294 @@ async def test_refresh_registry_syncs_metadata_and_marks_missing_running_plugin(
         assert [entry["id"] for entry in demo_meta["entries_preview"]] == ["ping"]
         assert running_removed["runtime_source_missing"] is True
         assert "stale_plugin" not in module.state.plugins
+    finally:
+        with module.state.acquire_plugins_write_lock():
+            module.state.plugins.clear()
+            module.state.plugins.update(plugins_backup)
+        with module.state.acquire_plugin_hosts_write_lock():
+            module.state.plugin_hosts.clear()
+            module.state.plugin_hosts.update(hosts_backup)
+        with module.state._snapshot_cache_lock:
+            module.state._snapshot_cache = cache_backup
+
+
+@pytest.mark.asyncio
+async def test_refresh_registry_excludes_deleted_plugin_before_entry_import(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "plugins"
+    plugin_dir = root / "deleted_demo"
+    plugin_dir.mkdir(parents=True)
+    import_marker = tmp_path / "imported.txt"
+    entry_module = tmp_path / "deleted_demo_entry.py"
+    entry_module.write_text(
+        "from pathlib import Path\n"
+        f"Path({str(import_marker)!r}).write_text('imported', encoding='utf-8')\n"
+        "class DemoPlugin:\n"
+        "    pass\n",
+        encoding="utf-8",
+    )
+    (plugin_dir / "plugin.toml").write_text(
+        "[plugin]\n"
+        "id='deleted_demo'\n"
+        "name='Deleted Demo'\n"
+        "type='plugin'\n"
+        "entry='deleted_demo_entry:DemoPlugin'\n"
+        "version='0.1.0'\n"
+        "[plugin_runtime]\n"
+        "enabled=true\n"
+        "auto_start=true\n",
+        encoding="utf-8",
+    )
+    state_path = tmp_path / "plugin-installations.json"
+    mark_plugin_deleted("deleted_demo", path=state_path)
+    plugins_backup = copy.deepcopy(module.state.plugins)
+    cache_backup = copy.deepcopy(module.state._snapshot_cache)
+
+    try:
+        with module.state.acquire_plugins_write_lock():
+            module.state.plugins.clear()
+        monkeypatch.setattr(module, "PLUGIN_CONFIG_ROOTS", (root,))
+
+        result = await module.PluginRegistryService().refresh_registry()
+
+        assert result["success"] is True
+        assert result["added"] == []
+        assert result["scanned_count"] == 0
+        assert import_marker.exists() is False
+        assert (plugin_dir / "plugin.toml").is_file()
+        with module.state.acquire_plugins_read_lock():
+            assert "deleted_demo" not in module.state.plugins
+    finally:
+        with module.state.acquire_plugins_write_lock():
+            module.state.plugins.clear()
+            module.state.plugins.update(plugins_backup)
+        with module.state._snapshot_cache_lock:
+            module.state._snapshot_cache = cache_backup
+
+
+def test_discovery_keeps_builtin_root_identity_when_user_roots_are_blocked(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    builtin_root = tmp_path / "builtin"
+    managed_root = tmp_path / "managed"
+    user_root = tmp_path / "user"
+    _write_ordered_plugin_fixture(builtin_root, "builtin_demo")
+    captured_root_ids: list[str] = []
+
+    def capture_candidates(candidates, *, inventory):
+        del inventory
+        captured_root_ids.extend(candidate.root_id for candidate in candidates)
+        return []
+
+    monkeypatch.setattr(module, "resolve_plugin_candidates", capture_candidates)
+
+    module._discover_registry_snapshot_sync(
+        (builtin_root,),
+        classification_roots=(builtin_root, managed_root, user_root),
+    )
+
+    assert captured_root_ids == ["builtin"]
+
+
+@pytest.mark.asyncio
+async def test_refresh_registry_removes_deleted_mixed_case_plugin_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "plugins"
+    root.mkdir()
+    plugin_id = "DemoPlugin"
+    plugin_dir = tmp_path / "previous-root" / plugin_id
+    plugin_dir.mkdir(parents=True)
+    (plugin_dir / "plugin.toml").write_text(
+        "[plugin]\n"
+        f"id='{plugin_id}'\n"
+        f"name='{plugin_id}'\n"
+        "type='plugin'\n"
+        "entry='demo_plugin_entry:DemoPlugin'\n"
+        "version='0.1.0'\n",
+        encoding="utf-8",
+    )
+    mark_plugin_deleted(plugin_id)
+    plugins_backup = copy.deepcopy(module.state.plugins)
+    cache_backup = copy.deepcopy(module.state._snapshot_cache)
+
+    try:
+        with module.state.acquire_plugins_write_lock():
+            module.state.plugins.clear()
+            module.state.plugins[plugin_id] = {
+                "id": plugin_id,
+                "config_path": str(plugin_dir / "plugin.toml"),
+            }
+        monkeypatch.setattr(module, "PLUGIN_CONFIG_ROOTS", (root,))
+
+        result = await module.PluginRegistryService().refresh_registry()
+
+        assert result["removed"] == [plugin_id]
+        with module.state.acquire_plugins_read_lock():
+            assert plugin_id not in module.state.plugins
+    finally:
+        with module.state.acquire_plugins_write_lock():
+            module.state.plugins.clear()
+            module.state.plugins.update(plugins_backup)
+        with module.state._snapshot_cache_lock:
+            module.state._snapshot_cache = cache_backup
+
+
+@pytest.mark.asyncio
+async def test_explicit_user_installation_is_the_only_imported_same_id_candidate(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    builtin_root = tmp_path / "builtin"
+    user_root = tmp_path / "user"
+    builtin_dir = builtin_root / "demo"
+    user_dir = user_root / "demo"
+    builtin_dir.mkdir(parents=True)
+    user_dir.mkdir(parents=True)
+    builtin_marker = tmp_path / "builtin-imported.txt"
+    user_marker = tmp_path / "user-imported.txt"
+    (builtin_dir / "__init__.py").write_text(
+        "from pathlib import Path\n"
+        f"Path({str(builtin_marker)!r}).write_text('builtin', encoding='utf-8')\n"
+        "class DemoPlugin:\n    pass\n",
+        encoding="utf-8",
+    )
+    (user_dir / "__init__.py").write_text(
+        "from pathlib import Path\n"
+        f"Path({str(user_marker)!r}).write_text('user', encoding='utf-8')\n"
+        "class DemoPlugin:\n    pass\n",
+        encoding="utf-8",
+    )
+    for plugin_dir, entry in (
+        (builtin_dir, "plugin.plugins.demo:DemoPlugin"),
+        (user_dir, "plugin.plugins.demo:DemoPlugin"),
+    ):
+        (plugin_dir / "plugin.toml").write_text(
+            "[plugin]\n"
+            "id='demo'\n"
+            "name='Demo'\n"
+            "type='plugin'\n"
+            f"entry='{entry}'\n"
+            "version='1.0.0'\n"
+            "[plugin_runtime]\n"
+            "enabled=true\n"
+            "auto_start=false\n",
+            encoding="utf-8",
+        )
+    record_user_installation(
+        "demo",
+        directory_name="demo",
+        package_id="demo",
+        source="market",
+        path=tmp_path / "plugin-installations.json",
+    )
+    plugins_backup = copy.deepcopy(module.state.plugins)
+    cache_backup = copy.deepcopy(module.state._snapshot_cache)
+
+    try:
+        with module.state.acquire_plugins_write_lock():
+            module.state.plugins.clear()
+            module.state.plugins["demo"] = {
+                "id": "demo",
+                "name": "Demo",
+                "config_path": str((builtin_dir / "plugin.toml").resolve()),
+                "entry_point": "builtin_demo_entry:DemoPlugin",
+            }
+        monkeypatch.setattr(module, "PLUGIN_CONFIG_ROOTS", (builtin_root, user_root))
+
+        result = await module.PluginRegistryService().refresh_registry()
+
+        assert result["success"] is True
+        assert result["added"] == []
+        assert result["updated"] == ["demo"]
+        assert result["removed"] == []
+        assert result["resolution_warnings"] == []
+        assert user_marker.is_file()
+        assert builtin_marker.exists() is False
+        with module.state.acquire_plugins_read_lock():
+            meta = dict(module.state.plugins["demo"])
+        assert Path(str(meta["config_path"])).parent == user_dir.resolve()
+        assert "demo_1" not in module.state.plugins
+    finally:
+        with module.state.acquire_plugins_write_lock():
+            module.state.plugins.clear()
+            module.state.plugins.update(plugins_backup)
+        with module.state._snapshot_cache_lock:
+            module.state._snapshot_cache = cache_backup
+
+
+@pytest.mark.asyncio
+async def test_running_builtin_blocks_overlay_refresh_without_import_or_suffix(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    builtin_root = tmp_path / "builtin"
+    user_root = tmp_path / "user"
+    builtin_dir = builtin_root / "demo"
+    user_dir = user_root / "demo"
+    builtin_dir.mkdir(parents=True)
+    user_dir.mkdir(parents=True)
+    for plugin_dir, entry in (
+        (builtin_dir, "builtin_running_entry:Plugin"),
+        (user_dir, "user_must_not_import_entry:Plugin"),
+    ):
+        (plugin_dir / "plugin.toml").write_text(
+            "[plugin]\n"
+            "id='demo'\n"
+            "name='Demo'\n"
+            "type='plugin'\n"
+            f"entry='{entry}'\n"
+            "version='1.0.0'\n"
+            "[plugin_runtime]\n"
+            "enabled=true\n"
+            "auto_start=false\n",
+            encoding="utf-8",
+        )
+    record_user_installation(
+        "demo",
+        directory_name="demo",
+        package_id="demo",
+        source="market",
+        path=tmp_path / "plugin-installations.json",
+    )
+    plugins_backup = copy.deepcopy(module.state.plugins)
+    hosts_backup = dict(module.state.plugin_hosts)
+    cache_backup = copy.deepcopy(module.state._snapshot_cache)
+
+    try:
+        with module.state.acquire_plugins_write_lock():
+            module.state.plugins.clear()
+            module.state.plugins["demo"] = {
+                "id": "demo",
+                "name": "Demo",
+                "config_path": str((builtin_dir / "plugin.toml").resolve()),
+                "entry_point": "builtin_running_entry:Plugin",
+            }
+        with module.state.acquire_plugin_hosts_write_lock():
+            module.state.plugin_hosts.clear()
+            module.state.plugin_hosts["demo"] = _AliveHost()
+        monkeypatch.setattr(module, "PLUGIN_CONFIG_ROOTS", (builtin_root, user_root))
+
+        result = await module.PluginRegistryService().refresh_registry()
+
+        assert result["success"] is False
+        assert result["failed"] == [
+            {
+                "plugin_id": "demo",
+                "config_path": "",
+                "error": "running plugin prevents activation switch",
+            }
+        ]
+        with module.state.acquire_plugins_read_lock():
+            meta = dict(module.state.plugins["demo"])
+            assert "demo_1" not in module.state.plugins
+        assert Path(str(meta["config_path"])).parent == builtin_dir.resolve()
+        assert meta.get("runtime_source_missing") is not True
+        assert "user_must_not_import_entry" not in sys.modules
     finally:
         with module.state.acquire_plugins_write_lock():
             module.state.plugins.clear()
@@ -650,7 +957,7 @@ async def test_refresh_plugin_marks_missing_simple_plugin_dependency_failed(
 
 
 @pytest.mark.asyncio
-async def test_refresh_registry_registers_duplicate_declared_plugin_ids_with_runtime_suffix(
+async def test_refresh_registry_blocks_duplicate_declared_plugin_ids_without_suffix(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -702,30 +1009,99 @@ async def test_refresh_registry_registers_duplicate_declared_plugin_ids_with_run
         service = module.PluginRegistryService()
         result = await service.refresh_registry()
         second_result = await service.refresh_registry()
-        refreshed_duplicate = await service.refresh_plugin("demo_1")
 
-        assert result["success"] is True
-        assert result["failed"] == []
-        assert result["added"] == ["demo", "demo_1"]
-        assert second_result["success"] is True
-        assert second_result["failed"] == []
+        assert result["success"] is False
+        assert result["added"] == []
+        assert result["failed"][0]["plugin_id"] == "demo"
+        assert result["failed"][0]["error"] == "multiple_unclaimed_installations"
+        assert second_result["success"] is False
         assert second_result["added"] == []
-        assert second_result["unchanged"] == ["demo", "demo_1"]
-        assert refreshed_duplicate["success"] is True
-        assert refreshed_duplicate["plugin_id"] == "demo_1"
-        assert refreshed_duplicate["status"] == "unchanged"
+        with pytest.raises(ServerDomainError) as exc_info:
+            await service.refresh_plugin("demo")
+        assert exc_info.value.code == "PLUGIN_RESOLUTION_BLOCKED"
+        assert exc_info.value.details["reason"] == "multiple_unclaimed_installations"
 
         with module.state.acquire_plugins_read_lock():
-            first_meta = dict(module.state.plugins["demo"])
-            second_meta = dict(module.state.plugins["demo_1"])
-
-        assert Path(first_meta["config_path"]).parent.name == "demo"
-        assert Path(second_meta["config_path"]).parent.name == "demo_1"
-        assert first_meta["id"] == "demo"
-        assert second_meta["id"] == "demo_1"
+            assert "demo" not in module.state.plugins
+            assert "demo_1" not in module.state.plugins
     finally:
         with module.state.acquire_plugins_write_lock():
             module.state.plugins.clear()
             module.state.plugins.update(plugins_backup)
         with module.state._snapshot_cache_lock:
             module.state._snapshot_cache = cache_backup
+
+
+@pytest.mark.asyncio
+async def test_refresh_registry_quarantines_corrupt_inventory_and_continues(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    root = _write_plugin_fixture(tmp_path, "inventory_recovery_demo")
+    inventory_path = tmp_path / "plugin-installations.json"
+    inventory_path.write_text("{broken", encoding="utf-8")
+    monkeypatch.setattr(module, "PLUGIN_CONFIG_ROOTS", (root,))
+
+    result = await module.PluginRegistryService().refresh_registry()
+
+    assert "inventory_recovery_demo" not in result["added"]
+    assert any(
+        failure.get("plugin_id") == "__inventory__"
+        and failure.get("error") == "plugin_inventory_quarantined"
+        for failure in result["failed"]
+    )
+    assert any(
+        failure.get("plugin_id") == "inventory_recovery_demo"
+        and failure.get("error") == "plugin_inventory_unavailable"
+        for failure in result["failed"]
+    )
+    assert not inventory_path.exists()
+    quarantined = list(tmp_path.glob("plugin-installations.json.corrupt-*"))
+    assert len(quarantined) == 1
+    assert quarantined[0].read_text(encoding="utf-8") == "{broken"
+
+    second_result = await module.PluginRegistryService().refresh_registry()
+    assert "inventory_recovery_demo" not in second_result["added"]
+    assert any(
+        failure.get("plugin_id") == "inventory_recovery_demo"
+        and failure.get("error") == "plugin_inventory_unavailable"
+        for failure in second_result["failed"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_refresh_registry_preserves_future_inventory_schema(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    root = _write_plugin_fixture(tmp_path, "future_inventory_demo")
+    inventory_path = tmp_path / "plugin-installations.json"
+    future_payload = json.dumps(
+        {
+            "schema_version": 3,
+            "generation": 17,
+            "updated_at": None,
+            "installations": [],
+            "activation_claims": {},
+            "future_field": {"must_survive": True},
+        },
+        sort_keys=True,
+    )
+    inventory_path.write_text(future_payload, encoding="utf-8")
+    monkeypatch.setattr(module, "PLUGIN_CONFIG_ROOTS", (root,))
+
+    result = await module.PluginRegistryService().refresh_registry()
+
+    assert "future_inventory_demo" not in result["added"]
+    assert any(
+        failure.get("plugin_id") == "__inventory__"
+        and failure.get("error") == "plugin_inventory_unsupported_schema"
+        for failure in result["failed"]
+    )
+    assert any(
+        failure.get("plugin_id") == "future_inventory_demo"
+        and failure.get("error") == "plugin_inventory_unavailable"
+        for failure in result["failed"]
+    )
+    assert inventory_path.read_text(encoding="utf-8") == future_payload
+    assert not list(tmp_path.glob("plugin-installations.json.corrupt-*"))

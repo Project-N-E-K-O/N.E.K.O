@@ -11,10 +11,24 @@ from plugin.core.plugin_layout import resolve_plugin_layout
 from plugin.neko_plugin_cli.public import build_plugin
 from plugin.server.application.plugin_cli.service import PluginCliService
 from plugin.server.application.plugins import upgrade_support
+from plugin.server.application.plugins import registry_service as registry_service_module
 from plugin.server.application.plugins.upgrade_support import ReplacePluginError, replace_plugin
 from plugin.server.domain.errors import ServerDomainError
 
 pytestmark = pytest.mark.plugin_unit
+
+
+def _configure_registry_roots(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    builtin_root: Path,
+    plugins_root: Path,
+) -> None:
+    monkeypatch.setattr(
+        registry_service_module,
+        "PLUGIN_CONFIG_ROOTS",
+        (builtin_root, plugins_root),
+    )
 
 
 @pytest.mark.asyncio
@@ -221,12 +235,16 @@ def _write_plugin(root: Path, plugin_id: str, version: str) -> Path:
             f'name = "{plugin_id}"\n'
             f'version = "{version}"\n'
             'type = "plugin"\n\n'
+            f'entry = "plugin.plugins.{plugin_id}:DemoPlugin"\n\n'
             f"[{plugin_id}]\n"
             "enabled = true\n"
         ),
         encoding="utf-8",
     )
-    (plugin_dir / "__init__.py").write_text("VALUE = 1\n", encoding="utf-8")
+    (plugin_dir / "__init__.py").write_text(
+        "class DemoPlugin:\n    pass\n",
+        encoding="utf-8",
+    )
     return plugin_dir
 
 
@@ -276,8 +294,14 @@ async def test_service_replaces_with_new_same_or_old_version_without_touching_us
 
     monkeypatch.setattr(plugin_settings, "BUILTIN_PLUGIN_CONFIG_ROOT", tmp_path / "builtin")
     monkeypatch.setattr(plugin_settings, "USER_PLUGIN_CONFIG_ROOT", plugins_root)
+    monkeypatch.setattr(plugin_settings, "MANAGED_PLUGIN_INSTALLATIONS_ROOT", plugins_root)
     monkeypatch.setattr(plugin_settings, "USER_PLUGIN_PACKAGES_ROOT", packages_root)
     monkeypatch.setattr(plugin_settings, "USER_PACKAGE_PROFILES_ROOT", profiles_root)
+    _configure_registry_roots(
+        monkeypatch,
+        builtin_root=tmp_path / "builtin",
+        plugins_root=plugins_root,
+    )
     monkeypatch.setattr(upgrade_support, "plugin_is_running", lambda _plugin_id: _async_false())
 
     service = PluginCliService()
@@ -315,8 +339,14 @@ async def test_service_rejects_changed_target_before_stopping(
 
     monkeypatch.setattr(plugin_settings, "BUILTIN_PLUGIN_CONFIG_ROOT", tmp_path / "builtin")
     monkeypatch.setattr(plugin_settings, "USER_PLUGIN_CONFIG_ROOT", plugins_root)
+    monkeypatch.setattr(plugin_settings, "MANAGED_PLUGIN_INSTALLATIONS_ROOT", plugins_root)
     monkeypatch.setattr(plugin_settings, "USER_PLUGIN_PACKAGES_ROOT", packages_root)
     monkeypatch.setattr(plugin_settings, "USER_PACKAGE_PROFILES_ROOT", profiles_root)
+    _configure_registry_roots(
+        monkeypatch,
+        builtin_root=tmp_path / "builtin",
+        plugins_root=plugins_root,
+    )
 
     service = PluginCliService()
     plan = await service.plan_install(package=str(package_path))
@@ -365,8 +395,14 @@ async def test_service_rejects_unsafe_upgrade_plan_paths_before_backup(
 
     monkeypatch.setattr(plugin_settings, "BUILTIN_PLUGIN_CONFIG_ROOT", tmp_path / "builtin")
     monkeypatch.setattr(plugin_settings, "USER_PLUGIN_CONFIG_ROOT", plugins_root)
+    monkeypatch.setattr(plugin_settings, "MANAGED_PLUGIN_INSTALLATIONS_ROOT", plugins_root)
     monkeypatch.setattr(plugin_settings, "USER_PLUGIN_PACKAGES_ROOT", packages_root)
     monkeypatch.setattr(plugin_settings, "USER_PACKAGE_PROFILES_ROOT", profiles_root)
+    _configure_registry_roots(
+        monkeypatch,
+        builtin_root=tmp_path / "builtin",
+        plugins_root=plugins_root,
+    )
 
     service = PluginCliService()
     plan = await service.plan_install(package=str(package_path))
@@ -420,8 +456,14 @@ async def test_service_backs_up_profile_by_package_id_during_upgrade(
 
     monkeypatch.setattr(plugin_settings, "BUILTIN_PLUGIN_CONFIG_ROOT", tmp_path / "builtin")
     monkeypatch.setattr(plugin_settings, "USER_PLUGIN_CONFIG_ROOT", plugins_root)
+    monkeypatch.setattr(plugin_settings, "MANAGED_PLUGIN_INSTALLATIONS_ROOT", plugins_root)
     monkeypatch.setattr(plugin_settings, "USER_PLUGIN_PACKAGES_ROOT", packages_root)
     monkeypatch.setattr(plugin_settings, "USER_PACKAGE_PROFILES_ROOT", profiles_root)
+    _configure_registry_roots(
+        monkeypatch,
+        builtin_root=tmp_path / "builtin",
+        plugins_root=plugins_root,
+    )
     monkeypatch.setattr(
         service_module,
         "get_install_source_manager",
@@ -473,8 +515,14 @@ async def test_service_uses_custom_profile_root_with_recorded_package_identity(
 
     monkeypatch.setattr(plugin_settings, "BUILTIN_PLUGIN_CONFIG_ROOT", tmp_path / "builtin")
     monkeypatch.setattr(plugin_settings, "USER_PLUGIN_CONFIG_ROOT", plugins_root)
+    monkeypatch.setattr(plugin_settings, "MANAGED_PLUGIN_INSTALLATIONS_ROOT", plugins_root)
     monkeypatch.setattr(plugin_settings, "USER_PLUGIN_PACKAGES_ROOT", packages_root)
     monkeypatch.setattr(plugin_settings, "USER_PACKAGE_PROFILES_ROOT", profiles_root)
+    _configure_registry_roots(
+        monkeypatch,
+        builtin_root=tmp_path / "builtin",
+        plugins_root=plugins_root,
+    )
     monkeypatch.setattr(
         service_module,
         "get_install_source_manager",
@@ -530,8 +578,14 @@ async def test_service_rejects_legacy_package_rename_despite_stale_incoming_prof
 
     monkeypatch.setattr(plugin_settings, "BUILTIN_PLUGIN_CONFIG_ROOT", tmp_path / "builtin")
     monkeypatch.setattr(plugin_settings, "USER_PLUGIN_CONFIG_ROOT", plugins_root)
+    monkeypatch.setattr(plugin_settings, "MANAGED_PLUGIN_INSTALLATIONS_ROOT", plugins_root)
     monkeypatch.setattr(plugin_settings, "USER_PLUGIN_PACKAGES_ROOT", packages_root)
     monkeypatch.setattr(plugin_settings, "USER_PACKAGE_PROFILES_ROOT", profiles_root)
+    _configure_registry_roots(
+        monkeypatch,
+        builtin_root=tmp_path / "builtin",
+        plugins_root=plugins_root,
+    )
     monkeypatch.setattr(
         service_module,
         "get_install_source_manager",
@@ -570,8 +624,14 @@ async def test_service_blocks_package_id_change_before_upgrade(
 
     monkeypatch.setattr(plugin_settings, "BUILTIN_PLUGIN_CONFIG_ROOT", tmp_path / "builtin")
     monkeypatch.setattr(plugin_settings, "USER_PLUGIN_CONFIG_ROOT", plugins_root)
+    monkeypatch.setattr(plugin_settings, "MANAGED_PLUGIN_INSTALLATIONS_ROOT", plugins_root)
     monkeypatch.setattr(plugin_settings, "USER_PLUGIN_PACKAGES_ROOT", packages_root)
     monkeypatch.setattr(plugin_settings, "USER_PACKAGE_PROFILES_ROOT", profiles_root)
+    _configure_registry_roots(
+        monkeypatch,
+        builtin_root=tmp_path / "builtin",
+        plugins_root=plugins_root,
+    )
     monkeypatch.setattr(
         service_module,
         "get_install_source_manager",

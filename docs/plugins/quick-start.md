@@ -25,6 +25,8 @@ plugin/
 
 Find the `plugin/plugins/` directory in your N.E.K.O project. Create a new folder called `hello_world` inside it.
 
+This path is the built-in plugin source root of an N.E.K.O source checkout. Core maintainers may develop shipped plugins here. For a third-party plugin, keep the authoritative working copy in a standalone repository or source directory and build a `.neko-plugin` for installation testing. Do not use an installed application's user-plugin directory as your only source checkout: a manually copied directory is unmanaged, is not automatically activated over a built-in plugin with the same ID, and can be replaced after an explicit import warning and confirmation.
+
 ## Step 2: Create `plugin.toml`
 
 Inside `hello_world/`, create a file called `plugin.toml`. This is the config file that tells N.E.K.O about your plugin.

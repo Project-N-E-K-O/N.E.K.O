@@ -204,6 +204,14 @@ async def _call_local_install(
                 return 1
             logger.info("Install task created: {}", task_id)
 
+            if data.get("status") == "awaiting_confirmation":
+                logger.info("Install task {} is waiting for local confirmation", task_id)
+                _show_notification(
+                    f"请在 N.E.K.O 插件中心确认安装 {plugin_id}",
+                    "N.E.K.O",
+                )
+                return 0
+
             # 轮询等待完成。Bridge download timeout is 120s before unpack
             # work starts, so the protocol handler must wait longer than that.
             deadline = asyncio.get_running_loop().time() + _INSTALL_POLL_TIMEOUT_SECONDS

@@ -71,7 +71,7 @@ name = "智能笔记"
 entry = "plugin.plugins.smart_notes:SmartNotesPlugin"
 ```
 
-这三个字段是**必填**的。`id` 必须符合 `^[A-Za-z0-9_-]+$` 且全局唯一。强烈建议让它与目录名一致：不一致时运行时仍可能加载，但 profile 查找和工具可能假定路径是 `<plugin.id>/plugin.toml`。`entry` 必须是 `module.path:ClassName`，并解析到 `NekoPluginBase` 子类；不能直接把 `PluginRouter` 当作启动类。
+这三个字段是**必填**的。`id` 必须符合 `^[A-Za-z0-9_-]+$` 且全局唯一。对于可安装包，`payload/plugins/` 下的目录名**必须与 `id` 完全一致**；不一致时安装器会在写入插件前拒绝。松散源码目录也应遵守相同规则，因为运行时 profile 和工具使用 `<plugin.id>/plugin.toml`。`entry` 必须是 `module.path:ClassName`，并解析到 `NekoPluginBase` 子类；不能直接把 `PluginRouter` 当作启动类。
 
 普通插件的 `type = "plugin"` 可省略，因为它是默认值。只有 Adapter 包才使用 `type = "adapter"`。已删除的 `extension` 类型和 `[plugin.host]` 表会被拒绝。
 

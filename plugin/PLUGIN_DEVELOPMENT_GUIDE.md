@@ -98,11 +98,39 @@ plugin/sdk/
 plugin/plugins/
 └── my_plugin/
     ├── __init__.py      # 插件代码（入口点）
-    ├── plugin.toml      # 插件配置
-    ├── config.json      # 可选：自定义配置
-    ├── data/            # 可选：运行时数据目录
+    ├── plugin.toml      # 包清单，不是运行时用户配置
+    ├── config.example.toml # 可选：首次运行配置模板
+    ├── resources/       # 可选：随包升级的只读素材
     └── static/          # 可选：Web UI 文件
 ```
+
+运行时状态不要写入上述代码目录。请分别使用 `self.runtime_config_path`、
+`self.data_path()` 和 `self.cache_path()`；无论当前运行内置版还是市场版，
+同一个 `plugin_id` 都会得到同一份用户状态目录。
+
+### 1.7 在哪里开发、在哪里安装
+
+`plugin/plugins/<plugin_id>/` 是 **N.E.K.O 源码 checkout 中的内置插件开发目录**。它适合 Core 维护者修改随主程序发布的插件；不要在已经安装好的应用程序目录中直接修改这份发行副本。
+
+运行时的三类目录职责固定如下：
+
+| 目录 | 内容 | 升级/删除行为 |
+| --- | --- | --- |
+| `plugin/plugins/<plugin_id>/` | 随主程序发行的内置基础代码 | 安装器不覆盖、不物理删除 |
+| `plugin-installations/<plugin_id>/` | 市场或本地导入的受管代码、`vendor`、`resources` | 升级时替换；删除用户版时移除 |
+| `<storage-root>/plugins/<plugin_id>/config\|data\|cache` | 该逻辑插件的用户配置、数据和缓存 | 内置版与受管版共用；删除代码默认保留 |
+
+第三方插件建议使用独立 Git 仓库或独立源码目录作为唯一工作副本，再通过 `neko-plugin build` 生成 `.neko-plugin` 做安装测试。不要把用户插件安装目录当作唯一源码仓库：手工复制到该目录的文件夹会被识别为 `unmanaged` 开发副本，导入同 ID 包时，在明确警告和确认后仍会整体替换其中的源码、`vendor` 和包资源。如果同 ID 的内置插件存在，单纯复制目录并点击刷新也不等于开发副本已经被激活。
+
+开发与打包必须遵守以下身份合同：
+
+- 源码目录名、`payload/plugins/<plugin_id>/` 目录名和 `plugin.toml` 的 `[plugin].id` 保持完全一致；安装包不一致会在落盘前被拒绝。
+- 同一个逻辑 ID 只选择一份代码运行，不会生成 `my_plugin_1` 之类的第二个可执行插件。
+- `version` 是发布和展示信息，不是代码内容指纹。同版本号但内容不同的包仍会触发一次明确的替换确认。
+- 新插件的包内不要放运行时 `config/`、`data/`、`cache/`；只读素材放在 `resources/`，用户状态通过 SDK 写入外部状态目录。为兼容旧包，宿主仍会记录包内同名目录的文件归属：未修改的包文件可随升级替换或在卸载时删除，运行后新增或修改的文件会作为兼容残留保留。这个兼容层不等于通用数据迁移，旧插件应逐步改用 SDK 路径。
+- 当前没有通用的 `pre_upgrade`、`migrate`、`post_upgrade` 数据迁移事务合同。插件的数据格式应保持向后兼容，并在发布说明中明确任何人工迁移要求；不要宣称宿主会自动回滚插件业务数据。
+
+安装、覆盖、回滚和删除用户覆盖版的完整合同见 [`docs/zh-CN/plugins/safe-local-upgrades.md`](../docs/zh-CN/plugins/safe-local-upgrades.md)。
 
 ---
 

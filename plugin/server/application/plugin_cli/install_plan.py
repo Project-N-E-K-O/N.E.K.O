@@ -2,16 +2,24 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import hashlib
+import os
 from pathlib import Path
 import tomllib
-from typing import Literal
+from typing import Literal, Protocol
 import zipfile
 
+from plugin.core.plugin_layout import resolve_plugin_layout
 from plugin.neko_plugin_cli.public import inspect_package
+from plugin.server.infrastructure.path_safety import is_link_or_reparse_point
 
 
 InstallAction = Literal["install", "upgrade", "blocked"]
 PackageType = Literal["plugin", "bundle"]
+InstallTargetPlaceholder = Literal["absent", "empty", "state_only", "conflict"]
+
+
+class _Digest(Protocol):
+    def update(self, data: bytes, /) -> object: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -27,18 +35,62 @@ class PluginInstallPlan:
     reason: str
     legacy_plugin_ids: tuple[str, ...]
     installed_package_id: str = ""
+    target_ownership: Literal["new", "managed", "unmanaged"] = "new"
 
 
-def confirmation_token(*, package_path: Path, target_dir: Path) -> str:
+def confirmation_token(
+    *,
+    package_path: Path,
+    target_dir: Path,
+    snapshot_dir: Path | None = None,
+) -> str:
     digest = hashlib.sha256()
     with package_path.open("rb") as handle:
         for chunk in iter(lambda: handle.read(65536), b""):
             digest.update(chunk)
     digest.update(b"\0")
     digest.update(str(target_dir.resolve()).encode("utf-8"))
-    digest.update(b"\0")
-    digest.update((target_dir / "plugin.toml").read_bytes())
+    _update_digest_with_target_snapshot(digest, snapshot_dir or target_dir)
     return digest.hexdigest()
+
+
+def _update_digest_with_target_snapshot(
+    digest: _Digest,
+    target_dir: Path,
+) -> None:
+    """Bind upgrade confirmation to every byte in the current target.
+
+    The installer must not accept a confirmation captured before a developer
+    edits Python, vendored dependencies, or package assets. Symlinks are
+    recorded as links and are never followed outside the plugin directory.
+    """
+
+    pending = [target_dir]
+    while pending:
+        current = pending.pop()
+        children = sorted(current.iterdir(), key=lambda item: item.name)
+        directories: list[Path] = []
+        for child in children:
+            relative = child.relative_to(target_dir).as_posix().encode("utf-8")
+            digest.update(b"\0path\0")
+            digest.update(relative)
+            if is_link_or_reparse_point(child):
+                digest.update(b"\0link\0")
+                digest.update(os.readlink(child).encode("utf-8"))
+                continue
+            if child.is_dir():
+                digest.update(b"\0dir")
+                directories.append(child)
+                continue
+            if not child.is_file():
+                raise ValueError(
+                    f"unsupported plugin target entry while planning upgrade: {relative!r}"
+                )
+            digest.update(b"\0file\0")
+            with child.open("rb") as handle:
+                for chunk in iter(lambda: handle.read(65536), b""):
+                    digest.update(chunk)
+        pending.extend(reversed(directories))
 
 
 def build_install_plan(*, package_path: Path, plugins_root: Path) -> PluginInstallPlan:
@@ -96,10 +148,20 @@ def build_install_plan(*, package_path: Path, plugins_root: Path) -> PluginInsta
         )
 
     target_dir = plugins_root / directory_name
+    install_target_placeholder: InstallTargetPlaceholder = "conflict"
     matching = installed.get(plugin_id, [])
     if target_dir.exists():
         target_manifest = _read_manifest(target_dir / "plugin.toml")
-        if _plugin_text(target_manifest, "id") != plugin_id:
+        target_manifest_id = _plugin_text(target_manifest, "id")
+        if not target_manifest_id:
+            install_target_placeholder = classify_install_target_placeholder(
+                target_dir,
+                plugin_id=plugin_id,
+            )
+        if target_manifest_id != plugin_id and install_target_placeholder not in {
+            "empty",
+            "state_only",
+        }:
             return _blocked(
                 inspected.package_id,
                 plugin_id,
@@ -115,7 +177,7 @@ def build_install_plan(*, package_path: Path, plugins_root: Path) -> PluginInsta
             reason="multiple_installations",
             directory_name=directory_name,
         )
-    if not target_dir.exists():
+    if not target_dir.exists() or install_target_placeholder in {"empty", "state_only"}:
         return PluginInstallPlan(
             action="install",
             package_type="plugin",
@@ -164,6 +226,48 @@ def _blocked(
         reason=reason,
         legacy_plugin_ids=(),
     )
+
+
+def classify_install_target_placeholder(
+    target_dir: Path,
+    *,
+    plugin_id: str,
+) -> InstallTargetPlaceholder:
+    """Classify a manifest-less user target without reading plugin state.
+
+    The default runtime storage layout deliberately keeps ``config/``,
+    ``data/`` and ``cache/`` under ``<storage-root>/plugins/<logical-id>``.
+    That path is also the user installation target. A built-in plugin can
+    therefore create those state directories before a user overlay exists.
+    They do not claim package ownership and must remain untouched.
+    """
+
+    if not target_dir.exists():
+        return "absent"
+    if is_link_or_reparse_point(target_dir) or not target_dir.is_dir():
+        return "conflict"
+    try:
+        children = tuple(target_dir.iterdir())
+    except OSError:
+        return "conflict"
+    if not children:
+        return "empty"
+
+    layout = resolve_plugin_layout(plugin_id, target_dir)
+    state_root = layout.data_dir.parent
+    if state_root.resolve(strict=False) != target_dir.resolve(strict=False):
+        return "conflict"
+    allowed_state_dirs = {
+        layout.config_path.parent.resolve(strict=False),
+        layout.data_dir.resolve(strict=False),
+        layout.cache_dir.resolve(strict=False),
+    }
+    for child in children:
+        if is_link_or_reparse_point(child) or not child.is_dir():
+            return "conflict"
+        if child.resolve(strict=False) not in allowed_state_dirs:
+            return "conflict"
+    return "state_only"
 
 
 def _bundle_conflicts(plugins: list[object], plugins_root: Path) -> bool:

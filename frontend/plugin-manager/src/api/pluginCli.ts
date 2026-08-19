@@ -67,6 +67,7 @@ export interface PluginCliInspectedPlugin {
   plugin_id: string
   archive_path: string
   has_plugin_toml: boolean
+  version: string
 }
 
 export interface PluginCliInspectResponse {
@@ -116,6 +117,7 @@ export interface PluginCliInstallPlanResponse {
   confirmation_token: string
   reason: string
   legacy_plugin_ids: string[]
+  target_ownership: 'new' | 'managed' | 'unmanaged'
 }
 
 export interface PluginCliInstalledPlugin {
@@ -123,6 +125,12 @@ export interface PluginCliInstalledPlugin {
   target_plugin_id: string
   target_dir: string
   renamed: boolean
+}
+
+export interface PluginCliActivation {
+  status: 'active' | 'pending_restart' | 'blocked'
+  plugin_ids: string[]
+  reason: string
 }
 
 export interface PluginCliInstallResponse {
@@ -142,6 +150,7 @@ export interface PluginCliInstallResponse {
   restarted: boolean
   rollback_status: 'not_needed' | 'completed' | 'incomplete'
   install_source_warning?: string | null
+  activation?: PluginCliActivation | null
 }
 
 export interface PluginCliAnalyzeRequest {
@@ -220,14 +229,18 @@ export function buildPluginCli(payload: PluginCliBuildRequest): Promise<PluginCl
  * 检查包内容
  */
 export function inspectPluginPackage(payload: PluginCliPackageRef): Promise<PluginCliInspectResponse> {
-  return post('/plugin-cli/inspect', payload)
+  return post('/plugin-cli/inspect', payload, {
+    suppressErrorMessage: true,
+  })
 }
 
 /**
  * 校验包的 payload hash
  */
 export function verifyPluginPackage(payload: PluginCliPackageRef): Promise<PluginCliVerifyResponse> {
-  return post('/plugin-cli/verify', payload)
+  return post('/plugin-cli/verify', payload, {
+    suppressErrorMessage: true,
+  })
 }
 
 /**
@@ -236,6 +249,7 @@ export function verifyPluginPackage(payload: PluginCliPackageRef): Promise<Plugi
 export function installPluginPackage(payload: PluginCliInstallRequest): Promise<PluginCliInstallResponse> {
   return post('/plugin-cli/install', payload, {
     timeout: 120_000,
+    suppressErrorMessage: true,
   })
 }
 
@@ -245,6 +259,7 @@ export function installPluginPackage(payload: PluginCliInstallRequest): Promise<
 export function planPluginInstall(payload: PluginCliInstallPlanRequest): Promise<PluginCliInstallPlanResponse> {
   return post('/plugin-cli/install-plan', payload, {
     timeout: 120_000,
+    suppressErrorMessage: true,
   })
 }
 
@@ -277,6 +292,7 @@ export function uploadPluginPackage(file: File): Promise<PluginCliUploadResult> 
   formData.append('file', file)
   return post('/plugin-cli/upload', formData, {
     timeout: 120_000,
+    suppressErrorMessage: true,
   })
 }
 

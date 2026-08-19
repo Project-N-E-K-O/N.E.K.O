@@ -548,6 +548,38 @@ def test_restore_entry_for_rollback_restores_only_prior_market_row(
     assert persisted[other_entry.primary_key] == other_entry
 
 
+def test_restore_snapshot_write_failure_restores_previous_in_memory_state(
+    manager: InstallSourceManager,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    empty_snapshot = manager.snapshot()
+    manager.record_market_install(
+        root_id="user",
+        directory_name="current",
+        plugin_id="current",
+        market_detail={
+            "plugin_market_id": "current",
+            "version": "1.0.0",
+            "package_url": "https://example.com/current.neko-plugin",
+            "channel": "stable",
+            "package_sha256": "d" * 64,
+            "payload_hash": None,
+            "published_at": "2026-08-19T00:00:00.000000Z",
+        },
+    )
+    current_snapshot = manager.snapshot()
+
+    def fail_save() -> None:
+        raise OSError("simulated lock write failure")
+
+    monkeypatch.setattr(manager, "save", fail_save)
+
+    with pytest.raises(InstallSourceError, match="failed to restore install-source snapshot"):
+        manager.restore_snapshot_for_rollback(empty_snapshot)
+
+    assert manager.snapshot() == current_snapshot
+
+
 def test_property_3_missing_sha256_emits_warning(
     manager: InstallSourceManager,
 ) -> None:

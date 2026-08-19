@@ -80,6 +80,7 @@ class PluginCliInstallPlanResponse(BaseModel):
     confirmation_token: str = ""
     reason: str = ""
     legacy_plugin_ids: list[str] = Field(default_factory=list)
+    target_ownership: str = Field(pattern="^(new|managed|unmanaged)$")
 
 
 class PluginCliAnalyzeRequest(BaseModel):
@@ -142,6 +143,7 @@ class PluginCliInspectedPluginResponse(BaseModel):
     plugin_id: str
     archive_path: str
     has_plugin_toml: bool
+    version: str = ""
 
 
 class PluginCliDependencyPluginResponse(BaseModel):
@@ -189,6 +191,12 @@ class PluginCliInstalledPluginResponse(BaseModel):
     renamed: bool
 
 
+class PluginCliActivationResponse(BaseModel):
+    status: str
+    plugin_ids: list[str]
+    reason: str
+
+
 class PluginCliInstallResponse(BaseModel):
     package_path: str
     package_type: str
@@ -206,6 +214,7 @@ class PluginCliInstallResponse(BaseModel):
     restarted: bool = False
     rollback_status: str = "not_needed"
     install_source_warning: str | None = None
+    activation: PluginCliActivationResponse | None = None
 
 
 class PluginCliSharedDependencyResponse(BaseModel):
@@ -375,10 +384,9 @@ async def plugin_cli_upload(
     passed to ``/plugin-cli/install`` or ``/plugin-cli/inspect``.
     """
     try:
-        content = await file.read()
-        return await service.save_uploaded_package(
+        return await service.save_uploaded_file(
             filename=file.filename or "unknown.neko-plugin",
-            content=content,
+            source_file=file.file,
         )
     except ServerDomainError as error:
         raise_http_from_domain(error, logger=logger)
@@ -398,11 +406,11 @@ async def plugin_cli_upload_and_install(
     Combines upload + install into a single request for convenience.
     """
     try:
-        content = await file.read()
         return await service.upload_and_install(
             filename=file.filename or "unknown.neko-plugin",
-            content=content,
+            source_file=file.file,
             on_conflict=on_conflict,
+            activate_installation=True,
         )
     except ServerDomainError as error:
         raise_http_from_domain(error, logger=logger)
@@ -454,8 +462,24 @@ async def plugin_cli_unpack_legacy(
     payload: PluginCliInstallRequest,
     _: str = require_admin,
 ) -> dict[str, object]:
-    """Legacy alias for /plugin-cli/install. Translates response keys."""
-    result = await plugin_cli_install(payload, _)
+    """Legacy developer unpack alias without runtime activation side effects."""
+    try:
+        result = await service.install(
+            package=payload.package,
+            plugins_root=payload.plugins_root,
+            profiles_root=payload.profiles_root,
+            on_conflict=payload.on_conflict,
+            install_source=payload.install_source,
+            confirm_upgrade=payload.confirm_upgrade,
+            confirmation_token=payload.confirmation_token,
+            activate_installation=False,
+        )
+    except ServerDomainError as error:
+        raise_http_from_domain(
+            error,
+            logger=logger,
+            include_details=error.code == "PLUGIN_UPGRADE_ROLLED_BACK",
+        )
     # Translate new keys to legacy keys expected by frontend
     if isinstance(result, dict):
         translated = dict(result)
@@ -473,8 +497,23 @@ async def plugin_cli_upload_and_unpack_legacy(
     on_conflict: str = Query(default="fail", pattern="^fail$"),
     _: str = require_admin,
 ) -> dict[str, object]:
-    """Legacy alias for /plugin-cli/upload-and-install. Translates response keys."""
-    result = await plugin_cli_upload_and_install(file, on_conflict=on_conflict, _=_)
+    """Legacy developer upload/unpack alias without runtime activation."""
+    try:
+        result = await service.upload_and_install(
+            filename=file.filename or "unknown.neko-plugin",
+            source_file=file.file,
+            on_conflict=on_conflict,
+            activate_installation=False,
+            record_install_source=False,
+        )
+    except ServerDomainError as error:
+        raise_http_from_domain(error, logger=logger)
+    except Exception:
+        logger.exception("Unexpected error during plugin package upload-and-unpack")
+        raise HTTPException(
+            status_code=500,
+            detail="Internal server error during upload-and-unpack",
+        )
     # Translate nested install keys
     if isinstance(result, dict) and isinstance(result.get("install"), dict):
         install = dict(result["install"])

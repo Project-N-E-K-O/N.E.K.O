@@ -186,10 +186,10 @@ def _find_project_root(config_path: Path) -> Path:
 
 
 def _prepare_child_plugin_import_roots(logger: Any) -> None:
-    """Mirror registry import roots inside plugin child processes."""
+    """Expose Core itself without exposing shared plugin candidate roots."""
 
     try:
-        from plugin.settings import BUILTIN_PLUGIN_CONFIG_ROOT, PLUGIN_CONFIG_ROOTS
+        from plugin.settings import BUILTIN_PLUGIN_CONFIG_ROOT
     except Exception as exc:
         logger.debug("[Plugin Process] Failed to load plugin config roots: {}", exc)
         return
@@ -199,36 +199,21 @@ def _prepare_child_plugin_import_roots(logger: Any) -> None:
     except Exception:
         builtin_root = BUILTIN_PLUGIN_CONFIG_ROOT
 
-    for plugin_config_root in PLUGIN_CONFIG_ROOTS:
-        try:
-            root = plugin_config_root.resolve()
-        except Exception:
-            root = plugin_config_root
-
-        import_root = root.parent
-        if str(import_root) not in sys.path:
-            sys.path.insert(0, str(import_root))
-            logger.info("[Plugin Process] Added plugin import root to sys.path: {}", import_root)
-
     repo_root = builtin_root.parent.parent
     if str(repo_root) not in sys.path:
         sys.path.insert(0, str(repo_root))
 
 
 def _prepare_child_current_plugin_import_root(config_path: Path, logger: Any) -> None:
-    """按当前 plugin.toml 位置补充导入根，避免设置快照或路径布局差异导致用户插件不可导入。"""
+    """Prepare an isolated namespace for the selected plugin."""
 
     try:
-        import_root = config_path.resolve().parent.parent.parent
+        plugin_root = config_path.resolve().parent.parent
     except Exception as exc:
         logger.debug("[Plugin Process] Failed to resolve current plugin import root: {}", exc)
         return
 
-    value = str(import_root)
-    if value in sys.path:
-        return
-    sys.path.insert(0, value)
-    logger.info("[Plugin Process] Added current plugin import root to sys.path: {}", import_root)
+    _ensure_plugins_namespace(plugin_root, logger)
 
 
 def _prepare_child_plugin_vendor_path(config_path: Path, logger: Any) -> None:
@@ -253,14 +238,13 @@ def _is_target_module_missing(exc: ModuleNotFoundError, module_path: str) -> boo
 
 
 def _ensure_plugins_namespace(plugin_root: Path, logger: Any) -> None:
-    """确保顶层 plugins 命名空间能搜索当前用户插件根目录。"""
+    """Create a namespace without exposing sibling installations."""
 
-    namespace_path = str(plugin_root)
     existing = sys.modules.get("plugins")
     if existing is None:
         module = types.ModuleType("plugins")
         module.__package__ = "plugins"
-        module.__path__ = [namespace_path]
+        module.__path__ = []
         module.__spec__ = importlib.machinery.ModuleSpec("plugins", loader=None, is_package=True)
         if module.__spec__ is not None:
             module.__spec__.submodule_search_locations = module.__path__
@@ -268,18 +252,8 @@ def _ensure_plugins_namespace(plugin_root: Path, logger: Any) -> None:
         logger.info("[Plugin Process] Created plugins namespace for: {}", plugin_root)
         return
 
-    namespace_paths = getattr(existing, "__path__", None)
-    if namespace_paths is None:
+    if getattr(existing, "__path__", None) is None:
         logger.debug("[Plugin Process] Existing 'plugins' module is not a package; path fallback may be required")
-        return
-
-    if namespace_path in list(namespace_paths):
-        return
-    try:
-        namespace_paths.append(namespace_path)
-    except AttributeError:
-        existing.__path__ = [*list(namespace_paths), namespace_path]
-    logger.info("[Plugin Process] Added current plugin root to plugins namespace: {}", plugin_root)
 
 
 def _import_current_plugin_from_config(module_path: str, config_path: Path, logger: Any) -> Any | None:
@@ -309,45 +283,52 @@ def _import_current_plugin_from_config(module_path: str, config_path: Path, logg
         return None
 
     plugin_root = plugin_dir.parent
-    import_root = plugin_root.parent
-    if str(import_root) not in sys.path:
-        sys.path.insert(0, str(import_root))
-        logger.info("[Plugin Process] Added fallback plugin import root to sys.path: {}", import_root)
-
     _ensure_plugins_namespace(plugin_root, logger)
     importlib.invalidate_caches()
 
-    try:
-        return importlib.import_module(module_path)
-    except ModuleNotFoundError as exc:
-        if not _is_target_module_missing(exc, module_path):
+    plugin_module_path = ".".join(parts[:2])
+    existing = sys.modules.get(plugin_module_path)
+    existing_file = getattr(existing, "__file__", None)
+    existing_matches = False
+    if isinstance(existing_file, str) and existing_file:
+        try:
+            Path(existing_file).resolve().relative_to(plugin_dir)
+            existing_matches = True
+        except (OSError, ValueError):
+            pass
+    if existing is not None and not existing_matches:
+        for loaded_name in tuple(sys.modules):
+            if loaded_name == plugin_module_path or loaded_name.startswith(
+                f"{plugin_module_path}."
+            ):
+                sys.modules.pop(loaded_name, None)
+
+    if plugin_module_path not in sys.modules:
+        spec = importlib.util.spec_from_file_location(
+            plugin_module_path,
+            source_file,
+            submodule_search_locations=[str(plugin_dir)],
+        )
+        if spec is None or spec.loader is None:
+            logger.debug("[Plugin Process] Import could not create spec for: {}", source_file)
+            return None
+
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[plugin_module_path] = module
+        try:
+            spec.loader.exec_module(module)
+        except Exception:
+            sys.modules.pop(plugin_module_path, None)
             raise
 
-    # 文件兜底只适用于插件包本身（plugins.<id> ↔ <id>/__init__.py）。更深的子模块路径
-    # （plugins.<id>.<sub>）已由上面的命名空间 import 覆盖；这里不能拿 __init__.py 顶替，
-    # 否则缺失/拼错的子模块会被包初始化静默冒充成功，应让其抛出真正的 ModuleNotFoundError。
-    if len(parts) != 2:
-        return None
-
-    spec = importlib.util.spec_from_file_location(
-        module_path,
-        source_file,
-        submodule_search_locations=[str(plugin_dir)],
-    )
-    if spec is None or spec.loader is None:
-        logger.debug("[Plugin Process] Import fallback could not create spec for: {}", source_file)
-        return None
-
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[module_path] = module
-    try:
-        spec.loader.exec_module(module)
-    except Exception:
-        sys.modules.pop(module_path, None)
-        raise
-
-    logger.info("[Plugin Process] Loaded plugin module from current plugin directory: {}", source_file)
-    return module
+    if len(parts) > 2:
+        try:
+            return importlib.import_module(module_path)
+        except ModuleNotFoundError as exc:
+            if _is_target_module_missing(exc, module_path):
+                return None
+            raise
+    return sys.modules[plugin_module_path]
 
 
 def _import_plugin_module(module_path: str, config_path: Path | None, logger: Any) -> Any:
@@ -356,6 +337,15 @@ def _import_plugin_module(module_path: str, config_path: Path | None, logger: An
     *config_path* 为空时（例如运行时启用扩展却拿不到 plugin.toml 路径），跳过兜底，
     退化为普通 ``import_module`` 行为。
     """
+
+    if config_path is not None and module_path.startswith("plugins."):
+        configured_module = _import_current_plugin_from_config(
+            module_path,
+            config_path,
+            logger,
+        )
+        if configured_module is not None:
+            return configured_module
 
     try:
         return importlib.import_module(module_path)

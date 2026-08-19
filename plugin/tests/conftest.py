@@ -89,6 +89,30 @@ def _isolate_plugin_runtime_root(
 
 
 @pytest.fixture(autouse=True)
+def _isolate_plugin_installation_inventory(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv(
+        "NEKO_PLUGIN_INSTALLATIONS_PATH",
+        str(tmp_path / "plugin-installations.json"),
+    )
+
+
+@pytest.fixture(autouse=True)
+def _isolate_registry_plugin_roots(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Prevent registry tests from scanning the developer's real plugin roots."""
+
+    monkeypatch.setattr(
+        "plugin.server.application.plugins.registry_service.PLUGIN_CONFIG_ROOTS",
+        (tmp_path / "builtin-plugins", tmp_path / "user-plugins"),
+    )
+
+
+@pytest.fixture(autouse=True)
 def _isolate_runtime_overrides(monkeypatch: pytest.MonkeyPatch):
     """Redirect plugin runtime override persistence to an in-memory dict for tests.
 

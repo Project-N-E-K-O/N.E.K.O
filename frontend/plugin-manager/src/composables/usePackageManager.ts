@@ -25,6 +25,7 @@ import {
   type PluginWorkbenchLayoutMode,
 } from '@/composables/usePluginWorkbench'
 import { resolvePluginDisplayText } from '@/utils/pluginDisplay'
+import { resolvePluginPackageErrorMessage } from '@/utils/pluginPackageError'
 import { formatHttpError } from '@/utils/request'
 import { usePluginPackageInstaller } from '@/composables/usePluginPackageInstaller'
 
@@ -710,7 +711,7 @@ export function usePackageManager(options: UsePackageManagerOptions = {}) {
       setResult('inspect', response)
       ElMessage.success('包检查完成')
     } catch (error) {
-      ElMessage.error(`包检查失败：${formatHttpError(error)}`)
+      ElMessage.error(resolvePluginPackageErrorMessage(error, t, 'inspect'))
     } finally {
       inspecting.value = false
     }
@@ -728,7 +729,7 @@ export function usePackageManager(options: UsePackageManagerOptions = {}) {
       setResult('verify', response)
       ElMessage[response.ok ? 'success' : 'warning'](response.ok ? '包校验通过' : '包未通过校验')
     } catch (error) {
-      ElMessage.error(`包校验失败：${formatHttpError(error)}`)
+      ElMessage.error(resolvePluginPackageErrorMessage(error, t, 'verify'))
     } finally {
       verifying.value = false
     }
@@ -745,7 +746,13 @@ export function usePackageManager(options: UsePackageManagerOptions = {}) {
     }
     setResult('install', response)
     await refreshPluginSources()
-    if (response.operation === 'upgrade') {
+    if (response.activation?.status === 'blocked') {
+      ElMessage.error(t('package.install.activationBlocked', {
+        reason: response.activation.reason,
+      }))
+    } else if (response.activation?.status === 'pending_restart') {
+      ElMessage.success(t('package.install.restartRequired'))
+    } else if (response.operation === 'upgrade') {
       const plan = installPlan.value
       ElMessage.success(t('package.install.upgradeSucceeded', {
         plugin: plan?.plugin_id || plan?.directory_name || '',

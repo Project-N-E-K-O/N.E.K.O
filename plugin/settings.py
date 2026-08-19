@@ -92,6 +92,19 @@ def get_user_plugin_config_root() -> Path:
     return Path(get_plugins_directory()).resolve()
 
 
+def get_managed_plugin_installations_root() -> Path:
+    """Return the writable code root for package-managed plugins.
+
+    Mutable plugin state remains under ``<runtime-root>/plugins/<plugin-id>``;
+    this sibling directory contains replaceable package payloads only.
+    """
+
+    custom_path = os.getenv("NEKO_MANAGED_PLUGIN_INSTALLATIONS_ROOT")
+    if custom_path:
+        return Path(custom_path).expanduser().resolve()
+    return (get_user_plugin_config_root().parent / "plugin-installations").resolve()
+
+
 def get_plugin_config_root() -> Path:
     """Deprecated compatibility helper for the legacy single-root API.
 
@@ -112,7 +125,11 @@ def get_plugin_config_root() -> Path:
 def get_plugin_config_roots() -> tuple[Path, ...]:
     """获取插件配置根目录列表：内置优先，用户目录其次。"""
     roots: list[Path] = []
-    for root in (get_builtin_plugin_config_root(), get_user_plugin_config_root()):
+    for root in (
+        get_builtin_plugin_config_root(),
+        get_managed_plugin_installations_root(),
+        get_user_plugin_config_root(),
+    ):
         if root not in roots:
             roots.append(root)
     return tuple(roots)
@@ -148,6 +165,7 @@ def get_user_plugin_packages_root() -> Path:
 
 BUILTIN_PLUGIN_CONFIG_ROOT = get_builtin_plugin_config_root()
 USER_PLUGIN_CONFIG_ROOT = get_user_plugin_config_root()
+MANAGED_PLUGIN_INSTALLATIONS_ROOT = get_managed_plugin_installations_root()
 USER_PACKAGE_PROFILES_ROOT = get_user_package_profiles_root()
 USER_PLUGIN_PACKAGES_ROOT = get_user_plugin_packages_root()
 # Deprecated compatibility alias for older single-root callers.
@@ -677,6 +695,7 @@ __all__ = [
     # 路径配置
     "BUILTIN_PLUGIN_CONFIG_ROOT",
     "USER_PLUGIN_CONFIG_ROOT",
+    "MANAGED_PLUGIN_INSTALLATIONS_ROOT",
     "USER_PACKAGE_PROFILES_ROOT",
     "USER_PLUGIN_PACKAGES_ROOT",
     "PLUGIN_CONFIG_ROOT",
@@ -691,6 +710,7 @@ __all__ = [
     "get_plugin_config_root",
     "get_plugin_config_roots",
     "get_user_plugin_config_root",
+    "get_managed_plugin_installations_root",
     "get_user_package_profiles_root",
     "get_user_plugin_packages_root",
     
@@ -771,6 +791,7 @@ __all__ = [
 PUBLIC_SYSTEM_CONFIG_KEYS = (
     "BUILTIN_PLUGIN_CONFIG_ROOT",
     "USER_PLUGIN_CONFIG_ROOT",
+    "MANAGED_PLUGIN_INSTALLATIONS_ROOT",
     "USER_PACKAGE_PROFILES_ROOT",
     "USER_PLUGIN_PACKAGES_ROOT",
     "PLUGIN_CONFIG_ROOT",

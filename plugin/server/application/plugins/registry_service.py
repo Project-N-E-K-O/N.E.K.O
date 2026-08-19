@@ -29,6 +29,29 @@ from plugin.core.registry import (
 from plugin.core.state import state
 from plugin.logging_config import get_logger
 from plugin.server.domain.errors import ServerDomainError
+from plugin.server.application.plugins.inventory_store import (
+    get_deleted_plugin_ids,
+    get_inventory_resolution,
+    load_inventory_resolution_for_registry,
+    resolve_inventory_path,
+)
+from plugin.server.application.plugins.installation_selection import (
+    inspect_plugin_installations,
+    serialize_plugin_installation_projection,
+)
+from plugin.server.application.plugins.resolver import (
+    PluginCandidate,
+    resolve_plugin_candidates,
+)
+from plugin.server.application.plugins.mutation_guard import (
+    plugin_mutation_guard,
+    plugin_mutation_guard_is_held_by_current_task,
+)
+from plugin.server.application.plugins.upgrade_support import (
+    ReplacementRecoveryResult,
+    await_cancellation_safe,
+    recover_incomplete_plugin_replacements,
+)
 from plugin.settings import PLUGIN_CONFIG_ROOTS
 
 logger = get_logger("server.application.plugins.registry")
@@ -89,9 +112,13 @@ class PluginDiscoveryFailure:
 
 @dataclass(slots=True)
 class PluginDiscoverySnapshot:
-    records: list[PluginDiscoveryRecord]
+    selected_contexts: list[PluginContext]
     failures: list[PluginDiscoveryFailure]
     config_paths: set[Path]
+    candidate_config_paths: set[Path]
+    candidate_ids_by_path: dict[Path, str]
+    selected_config_paths: set[Path]
+    resolution_warnings: list[dict[str, str]]
 
 
 def _get_registered_plugin_snapshot_sync() -> dict[str, dict[str, object]]:
@@ -144,6 +171,22 @@ def _find_plugin_config_path(plugin_id: str, roots: tuple[Path, ...]) -> Path | 
     normalized_plugin_id = plugin_id.strip()
     if not _PLUGIN_ID_PATTERN.fullmatch(normalized_plugin_id):
         return None
+    canonical_plugin_id = normalized_plugin_id.casefold()
+    inventory = get_inventory_resolution()
+    if canonical_plugin_id in inventory.deleted_plugin_ids:
+        return None
+
+    active_user_directory = inventory.active_user_directories.get(canonical_plugin_id)
+    if active_user_directory is not None and len(roots) > 1:
+        active = inventory.active_installations.get(canonical_plugin_id)
+        candidate_roots = roots[1:]
+        if len(roots) >= 3 and active is not None:
+            candidate_roots = roots[1:2] if active.installation_kind == "managed" else roots[2:]
+        for root in candidate_roots:
+            resolved_root = root.resolve()
+            config_file = (resolved_root / active_user_directory / "plugin.toml").resolve()
+            if resolved_root in config_file.parents and config_file.exists():
+                return config_file
 
     for root in roots:
         resolved_root = root.resolve()
@@ -188,11 +231,100 @@ def _find_existing_runtime_plugin_id_by_config_path(
     return None
 
 
+def _candidate_root_id(config_path: Path, roots: tuple[Path, ...]) -> str:
+    try:
+        resolved_path = config_path.resolve()
+    except Exception:
+        resolved_path = config_path
+    for index, root in enumerate(roots):
+        try:
+            resolved_root = root.resolve()
+        except Exception:
+            resolved_root = root
+        if resolved_root in resolved_path.parents:
+            if len(roots) > 1 and index == 0:
+                return "builtin"
+            if len(roots) >= 3 and index == 1:
+                return "managed"
+            return "user"
+    raise ValueError("plugin candidate is outside configured roots")
+
+
+def _resolve_plugin_contexts(
+    contexts: list[PluginContext],
+    *,
+    roots: tuple[Path, ...],
+) -> tuple[list[PluginContext], list[PluginDiscoveryFailure], list[dict[str, str]]]:
+    context_by_path: dict[Path, PluginContext] = {}
+    candidates: list[PluginCandidate] = []
+    failures: list[PluginDiscoveryFailure] = []
+    for ctx in contexts:
+        try:
+            config_path = ctx.toml_path.resolve()
+            root_id = _candidate_root_id(config_path, roots)
+        except Exception as exc:
+            failures.append(
+                PluginDiscoveryFailure(
+                    plugin_id=ctx.pid,
+                    config_path=ctx.toml_path,
+                    error=f"candidate classification failed: {type(exc).__name__}",
+                )
+            )
+            continue
+        context_by_path[config_path] = ctx
+        candidates.append(
+            PluginCandidate(
+                logical_plugin_id=ctx.pid,
+                root_id=root_id,  # type: ignore[arg-type]
+                directory_name=config_path.parent.name,
+                config_path=config_path,
+            )
+        )
+
+    inventory, inventory_issue = load_inventory_resolution_for_registry()
+    if inventory_issue is not None:
+        failures.append(
+            PluginDiscoveryFailure(
+                plugin_id="__inventory__",
+                config_path=resolve_inventory_path(),
+                error=inventory_issue,
+            )
+        )
+
+    selected: list[PluginContext] = []
+    warnings: list[dict[str, str]] = []
+    for resolution in resolve_plugin_candidates(
+        candidates,
+        inventory=inventory,
+    ):
+        if resolution.status == "blocked":
+            failures.append(
+                PluginDiscoveryFailure(
+                    plugin_id=resolution.logical_plugin_id,
+                    config_path=resolution.rejected[0].config_path,
+                    error=resolution.reason,
+                )
+            )
+            continue
+        if resolution.selected is not None:
+            selected.append(context_by_path[resolution.selected.config_path])
+        if resolution.reason in {
+            "builtin_default",
+            "missing_user_installation_fallback_builtin",
+        } and resolution.rejected:
+            warnings.append(
+                {
+                    "plugin_id": resolution.logical_plugin_id,
+                    "reason": resolution.reason,
+                }
+            )
+    return selected, failures, warnings
+
+
 def _collect_plugin_contexts_from_roots_sync(
     roots: tuple[Path, ...],
 ) -> tuple[list[PluginContext], dict[str, PluginContext]]:
-    plugin_contexts: list[PluginContext] = []
-    pid_to_context: dict[str, PluginContext] = {}
+    discovered_contexts: list[PluginContext] = []
     processed_paths: set[Path] = set()
 
     for root in roots:
@@ -218,16 +350,10 @@ def _collect_plugin_contexts_from_roots_sync(
 
             if ctx is None:
                 continue
-            if ctx.pid in pid_to_context:
-                logger.warning(
-                    "duplicate plugin id '{}' ignored while building runtime plan",
-                    ctx.pid,
-                )
-                continue
+            discovered_contexts.append(ctx)
 
-            plugin_contexts.append(ctx)
-            pid_to_context[ctx.pid] = ctx
-
+    plugin_contexts, _, _ = _resolve_plugin_contexts(discovered_contexts, roots=roots)
+    pid_to_context = {ctx.pid: ctx for ctx in plugin_contexts}
     return plugin_contexts, pid_to_context
 
 
@@ -277,11 +403,15 @@ def _build_ordered_plugin_ids_sync(candidate_plugin_ids: set[str] | None = None)
     return ordered
 
 
-def _discover_registry_snapshot_sync(roots: tuple[Path, ...]) -> PluginDiscoverySnapshot:
+def _discover_registry_snapshot_sync(
+    roots: tuple[Path, ...],
+    *,
+    classification_roots: tuple[Path, ...] | None = None,
+) -> PluginDiscoverySnapshot:
     processed_paths: set[Path] = set()
-    records: list[PluginDiscoveryRecord] = []
     failures: list[PluginDiscoveryFailure] = []
     config_paths: set[Path] = set()
+    discovered_contexts: list[PluginContext] = []
 
     for root in roots:
         try:
@@ -331,27 +461,28 @@ def _discover_registry_snapshot_sync(roots: tuple[Path, ...]) -> PluginDiscovery
                 )
                 continue
 
-            try:
-                records.append(_build_discovery_record_from_context(ctx))
-            except Exception as exc:
-                logger.warning(
-                    "plugin discovery payload failed for {}: err_type={}, err={}",
-                    config_path,
-                    type(exc).__name__,
-                    str(exc),
-                )
-                failures.append(
-                    PluginDiscoveryFailure(
-                        plugin_id=ctx.pid or config_path.parent.name or None,
-                        config_path=config_path,
-                        error=str(exc),
-                    )
-                )
+            discovered_contexts.append(ctx)
+
+    selected_contexts, resolution_failures, resolution_warnings = _resolve_plugin_contexts(
+        discovered_contexts,
+        roots=classification_roots or roots,
+    )
+    failures.extend(resolution_failures)
+    candidate_config_paths = {ctx.toml_path.resolve() for ctx in discovered_contexts}
+    candidate_ids_by_path = {
+        ctx.toml_path.resolve(): ctx.pid
+        for ctx in discovered_contexts
+    }
+    selected_config_paths = {ctx.toml_path.resolve() for ctx in selected_contexts}
 
     return PluginDiscoverySnapshot(
-        records=records,
+        selected_contexts=selected_contexts,
         failures=failures,
         config_paths=config_paths,
+        candidate_config_paths=candidate_config_paths,
+        candidate_ids_by_path=candidate_ids_by_path,
+        selected_config_paths=selected_config_paths,
+        resolution_warnings=resolution_warnings,
     )
 
 
@@ -510,27 +641,15 @@ def _build_discovery_record_from_context(ctx: PluginContext) -> PluginDiscoveryR
 
 def _apply_discovery_record_sync(
     record: PluginDiscoveryRecord,
-    *,
-    existing_snapshot: dict[str, dict[str, object]] | None = None,
-    preferred_runtime_plugin_id: str | None = None,
 ) -> tuple[str, dict[str, object]]:
-    target_plugin_id = preferred_runtime_plugin_id
-    if target_plugin_id is None and existing_snapshot is not None:
-        target_plugin_id = _find_existing_runtime_plugin_id_by_config_path(
-            record.config_path,
-            existing_snapshot,
-        )
-    if target_plugin_id is None:
-        target_plugin_id = record.plugin_id
-
     runtime_plugin_id = _resolve_plugin_id_conflict(
-        target_plugin_id,
+        record.plugin_id,
         logger,
         config_path=record.config_path,
         entry_point=record.entry_point,
         plugin_data=record.meta_payload,
         purpose="register",
-        enable_rename=True,
+        enable_rename=False,
     )
     if runtime_plugin_id is None:
         raise ServerDomainError(
@@ -564,6 +683,7 @@ def _apply_discovery_record_sync(
         logger,
         config_path=record.config_path,
         entry_point=record.entry_point,
+        enable_rename=False,
     )
     if resolved_id is None:
         raise ServerDomainError(
@@ -654,28 +774,202 @@ def _get_autostart_plugin_ids_sync() -> list[str]:
 
 
 class PluginRegistryService:
-    async def refresh_registry(self) -> dict[str, object]:
-        return await asyncio.to_thread(self._refresh_registry_sync)
+    @staticmethod
+    async def _recover_incomplete_replacements():
+        from plugin import settings
+        from plugin.server.application.plugins.lifecycle_service import (
+            recover_incomplete_plugin_deletions,
+        )
 
-    async def refresh_plugin(self, plugin_id: str) -> dict[str, object]:
-        return await asyncio.to_thread(self._refresh_plugin_sync, plugin_id)
+        plugin_roots = tuple(
+            dict.fromkeys(
+                (
+                    Path(settings.MANAGED_PLUGIN_INSTALLATIONS_ROOT)
+                    .expanduser()
+                    .resolve(),
+                    Path(settings.USER_PLUGIN_CONFIG_ROOT).expanduser().resolve(),
+                )
+            )
+        )
+        package_profiles_root = Path(
+            settings.USER_PACKAGE_PROFILES_ROOT
+        ).expanduser().resolve()
+        results = []
+        for plugin_root in plugin_roots:
+            for recovery_call, kwargs in (
+                (
+                    recover_incomplete_plugin_replacements,
+                    {
+                        "journal_root": plugin_root
+                        / ".upgrade-backups"
+                        / ".transactions",
+                        "allowed_roots": (plugin_root, package_profiles_root),
+                    },
+                ),
+                (
+                    recover_incomplete_plugin_deletions,
+                    {
+                        "journal_root": plugin_root
+                        / ".delete-backups"
+                        / ".transactions",
+                        "user_root": plugin_root,
+                    },
+                ),
+            ):
+                operation = asyncio.create_task(
+                    asyncio.to_thread(recovery_call, **kwargs)
+                )
+                try:
+                    results.append(await asyncio.shield(operation))
+                except asyncio.CancelledError:
+                    await await_cancellation_safe(operation)
+                    raise
+        first, *remaining = results
+        return type(first)(
+            tuple(
+                operation_id
+                for result in results
+                for operation_id in result.recovered_operation_ids
+            ),
+            tuple(
+                operation_id
+                for result in results
+                for operation_id in result.manual_recovery_operation_ids
+            ),
+            tuple(
+                dict.fromkeys(
+                    plugin_id
+                    for result in results
+                    for plugin_id in result.manual_recovery_plugin_ids
+                )
+            ),
+            first.block_user_plugin_root
+            or any(result.block_user_plugin_root for result in remaining),
+        )
+
+    async def refresh_registry(
+        self,
+        *,
+        _mutation_guarded: bool = False,
+        _recover_incomplete: bool = True,
+    ) -> dict[str, object]:
+        if not _mutation_guarded:
+            nested_mutation = plugin_mutation_guard_is_held_by_current_task()
+            async with plugin_mutation_guard():
+                return await self.refresh_registry(
+                    _mutation_guarded=True,
+                    _recover_incomplete=not nested_mutation,
+                )
+        recovery = (
+            await self._recover_incomplete_replacements()
+            if _recover_incomplete
+            else ReplacementRecoveryResult((), ())
+        )
+        return await self._await_refresh_worker(
+            self._refresh_registry_sync,
+            blocked_recovery_plugin_ids=frozenset(
+                recovery.manual_recovery_plugin_ids
+            ),
+            block_user_plugin_root=recovery.block_user_plugin_root,
+        )
+
+    async def refresh_plugin(
+        self,
+        plugin_id: str,
+        *,
+        _mutation_guarded: bool = False,
+        _recover_incomplete: bool = True,
+    ) -> dict[str, object]:
+        if not _mutation_guarded:
+            nested_mutation = plugin_mutation_guard_is_held_by_current_task()
+            async with plugin_mutation_guard():
+                return await self.refresh_plugin(
+                    plugin_id,
+                    _mutation_guarded=True,
+                    _recover_incomplete=not nested_mutation,
+                )
+        recovery = (
+            await self._recover_incomplete_replacements()
+            if _recover_incomplete
+            else ReplacementRecoveryResult((), ())
+        )
+        return await self._await_refresh_worker(
+            self._refresh_plugin_sync,
+            plugin_id,
+            blocked_recovery_plugin_ids=frozenset(
+                recovery.manual_recovery_plugin_ids
+            ),
+            block_user_plugin_root=recovery.block_user_plugin_root,
+        )
+
+    @staticmethod
+    async def _await_refresh_worker(function, /, *args, **kwargs):
+        operation = asyncio.create_task(asyncio.to_thread(function, *args, **kwargs))
+        try:
+            return await asyncio.shield(operation)
+        except asyncio.CancelledError:
+            await await_cancellation_safe(operation)
+            raise
 
     async def list_autostart_plugin_ids(self) -> list[str]:
         return await asyncio.to_thread(_get_autostart_plugin_ids_sync)
 
+    async def list_plugin_installations(self, plugin_id: str) -> dict[str, object]:
+        try:
+            projection = await self._await_refresh_worker(
+                inspect_plugin_installations,
+                plugin_id,
+            )
+        except Exception as exc:
+            raise ServerDomainError(
+                code="PLUGIN_INSTALLATIONS_UNAVAILABLE",
+                message="plugin installations could not be inspected",
+                status_code=409,
+                details={
+                    "plugin_id": plugin_id,
+                    "reason": type(exc).__name__,
+                },
+            ) from exc
+        return serialize_plugin_installation_projection(projection)
+
     async def order_plugin_ids(self, plugin_ids: list[str]) -> list[str]:
         return await asyncio.to_thread(self._order_plugin_ids_sync, plugin_ids)
 
-    def _refresh_registry_sync(self) -> dict[str, object]:
+    def _refresh_registry_sync(
+        self,
+        only_plugin_id: str | None = None,
+        *,
+        blocked_recovery_plugin_ids: frozenset[str] = frozenset(),
+        block_user_plugin_root: bool = False,
+    ) -> dict[str, object]:
         roots = tuple(PLUGIN_CONFIG_ROOTS)
-        _prepare_plugin_import_roots(roots, logger)
+        scan_roots = roots[:1] if block_user_plugin_root and len(roots) > 1 else roots
+        _prepare_plugin_import_roots(scan_roots, logger)
 
         existing_snapshot = _get_registered_plugin_snapshot_sync()
         running_ids = _list_running_plugin_ids_sync()
         added: list[str] = []
         updated: list[str] = []
         unchanged: list[str] = []
-        snapshot = _discover_registry_snapshot_sync(roots)
+        snapshot = _discover_registry_snapshot_sync(
+            scan_roots,
+            classification_roots=roots,
+        )
+        selected_contexts = [
+            ctx
+            for ctx in snapshot.selected_contexts
+            if (only_plugin_id is None or ctx.pid == only_plugin_id)
+            and ctx.pid.casefold() not in blocked_recovery_plugin_ids
+        ]
+        candidate_config_paths = {
+            path
+            for path, plugin_id in snapshot.candidate_ids_by_path.items()
+            if only_plugin_id is None or plugin_id == only_plugin_id
+        }
+        selected_config_paths = {
+            ctx.toml_path.resolve()
+            for ctx in selected_contexts
+        }
         failed = [
             {
                 "plugin_id": item.plugin_id or "",
@@ -683,9 +977,97 @@ class PluginRegistryService:
                 "error": item.error,
             }
             for item in snapshot.failures
+            if only_plugin_id is None or item.plugin_id == only_plugin_id
         ]
+        failed.extend(
+            {
+                "plugin_id": plugin_id,
+                "config_path": "",
+                "error": "replacement_needs_manual_recovery",
+            }
+            for plugin_id in sorted(blocked_recovery_plugin_ids)
+            if only_plugin_id is None or plugin_id == only_plugin_id.casefold()
+        )
+        if block_user_plugin_root:
+            failed.append(
+                {
+                    "plugin_id": only_plugin_id or "__replacement_recovery__",
+                    "config_path": "",
+                    "error": "user_plugin_root_requires_manual_recovery",
+                }
+            )
+        superseded_ids: set[str] = set()
+        selected_id_by_path = {
+            ctx.toml_path.resolve(): ctx.pid
+            for ctx in selected_contexts
+        }
+        for existing_plugin_id, existing_meta in existing_snapshot.items():
+            existing_config_path = _resolve_meta_config_path(existing_meta)
+            if existing_config_path is None:
+                continue
+            if (
+                existing_config_path in candidate_config_paths
+                and (
+                    existing_config_path not in selected_config_paths
+                    or selected_id_by_path.get(existing_config_path) != existing_plugin_id
+                )
+            ):
+                superseded_ids.add(existing_plugin_id)
+        for selected_config_path, selected_plugin_id in selected_id_by_path.items():
+            existing_config_path = _resolve_meta_config_path(
+                existing_snapshot.get(selected_plugin_id)
+            )
+            if (
+                existing_config_path is not None
+                and existing_config_path != selected_config_path
+            ):
+                superseded_ids.add(selected_plugin_id)
+        superseded_running = sorted(superseded_ids & running_ids)
+        superseded_removed, _ = _remove_stale_plugin_metadata_sync(
+            superseded_ids - running_ids,
+            running_ids=set(),
+        )
+        for plugin_id in superseded_removed:
+            existing_snapshot.pop(plugin_id, None)
+        blocked_activation_ids: set[str] = set()
+        for plugin_id in superseded_running:
+            existing_config_path = _resolve_meta_config_path(existing_snapshot.get(plugin_id))
+            blocked_plugin_id = (
+                selected_id_by_path.get(existing_config_path, plugin_id)
+                if existing_config_path is not None
+                else plugin_id
+            )
+            blocked_activation_ids.add(blocked_plugin_id)
+            failed.append(
+                {
+                    "plugin_id": blocked_plugin_id,
+                    "config_path": "",
+                    "error": "running plugin prevents activation switch",
+                }
+            )
 
-        for record in snapshot.records:
+        records: list[PluginDiscoveryRecord] = []
+        for ctx in selected_contexts:
+            if ctx.pid in blocked_activation_ids:
+                continue
+            try:
+                records.append(_build_discovery_record_from_context(ctx))
+            except Exception as exc:
+                logger.warning(
+                    "plugin discovery payload failed for {}: err_type={}, err={}",
+                    ctx.toml_path,
+                    type(exc).__name__,
+                    str(exc),
+                )
+                failed.append(
+                    {
+                        "plugin_id": ctx.pid or ctx.toml_path.parent.name or "",
+                        "config_path": str(ctx.toml_path),
+                        "error": str(exc),
+                    }
+                )
+
+        for record in records:
             try:
                 previous_runtime_plugin_id = _find_existing_runtime_plugin_id_by_config_path(
                     record.config_path,
@@ -693,13 +1075,11 @@ class PluginRegistryService:
                 )
                 previous_plugin_id = previous_runtime_plugin_id or record.plugin_id
                 previous_managed = _select_managed_fields(existing_snapshot.get(previous_plugin_id, {}))
-                resolved_id, payload = _apply_discovery_record_sync(
-                    record,
-                    existing_snapshot=existing_snapshot,
-                    preferred_runtime_plugin_id=previous_runtime_plugin_id,
-                )
+                resolved_id, payload = _apply_discovery_record_sync(record)
                 current_managed = _select_managed_fields(payload)
-                if resolved_id not in existing_snapshot:
+                if resolved_id in superseded_removed:
+                    updated.append(resolved_id)
+                elif resolved_id not in existing_snapshot:
                     added.append(resolved_id)
                 elif previous_managed == current_managed:
                     unchanged.append(resolved_id)
@@ -729,7 +1109,28 @@ class PluginRegistryService:
                 )
 
         missing_ids = _collect_missing_plugin_ids_sync(existing_snapshot)
+        if only_plugin_id is not None:
+            missing_ids.intersection_update({only_plugin_id})
+        inventory, _inventory_issue = load_inventory_resolution_for_registry()
+        deleted_ids = {plugin_id.casefold() for plugin_id in inventory.deleted_plugin_ids}
+        normalized_only_plugin_id = (
+            only_plugin_id.casefold() if only_plugin_id is not None else None
+        )
+        missing_ids.update(
+            registered_id
+            for registered_id in existing_snapshot
+            if registered_id.casefold() in deleted_ids
+            and (
+                normalized_only_plugin_id is None
+                or registered_id.casefold() == normalized_only_plugin_id
+            )
+        )
         removed, removed_running = _remove_stale_plugin_metadata_sync(missing_ids, running_ids=running_ids)
+        selected_ids = {record.plugin_id for record in records}
+        removed = sorted(
+            (set(removed) | set(superseded_removed)) - selected_ids
+        )
+        removed_running = sorted(set(removed_running) | set(superseded_running))
         return {
             "success": not failed,
             "added": added,
@@ -738,10 +1139,26 @@ class PluginRegistryService:
             "removed_running": removed_running,
             "unchanged": unchanged,
             "failed": failed,
-            "scanned_count": len(snapshot.records) + len(snapshot.failures),
+            "resolution_warnings": [
+                warning
+                for warning in snapshot.resolution_warnings
+                if only_plugin_id is None or warning.get("plugin_id") == only_plugin_id
+            ],
+            "scanned_count": len(records)
+            + sum(
+                1
+                for item in snapshot.failures
+                if only_plugin_id is None or item.plugin_id == only_plugin_id
+            ),
         }
 
-    def _refresh_plugin_sync(self, plugin_id: str) -> dict[str, object]:
+    def _refresh_plugin_sync(
+        self,
+        plugin_id: str,
+        *,
+        blocked_recovery_plugin_ids: frozenset[str] = frozenset(),
+        block_user_plugin_root: bool = False,
+    ) -> dict[str, object]:
         normalized_plugin_id = plugin_id.strip()
         if not _PLUGIN_ID_PATTERN.fullmatch(normalized_plugin_id):
             raise ServerDomainError(
@@ -750,12 +1167,42 @@ class PluginRegistryService:
                 status_code=400,
                 details={"plugin_id": plugin_id},
             )
+        if normalized_plugin_id.casefold() in get_deleted_plugin_ids():
+            raise ServerDomainError(
+                code="PLUGIN_DELETED_BY_USER",
+                message=f"Plugin '{normalized_plugin_id}' was deleted by the user",
+                status_code=404,
+                details={"plugin_id": normalized_plugin_id},
+            )
 
-        roots = tuple(PLUGIN_CONFIG_ROOTS)
-        existing_snapshot = _get_registered_plugin_snapshot_sync()
-        config_path = _resolve_meta_config_path(existing_snapshot.get(normalized_plugin_id))
-        if config_path is None or not config_path.exists():
-            config_path = _find_plugin_config_path(normalized_plugin_id, roots)
+        refresh_result = self._refresh_registry_sync(
+            only_plugin_id=normalized_plugin_id,
+            blocked_recovery_plugin_ids=blocked_recovery_plugin_ids,
+            block_user_plugin_root=block_user_plugin_root,
+        )
+        matching_failure = next(
+            (
+                failure
+                for failure in refresh_result.get("failed", [])
+                if isinstance(failure, dict)
+                and failure.get("plugin_id") == normalized_plugin_id
+            ),
+            None,
+        )
+        if matching_failure is not None:
+            raise ServerDomainError(
+                code="PLUGIN_RESOLUTION_BLOCKED",
+                message=f"Plugin '{normalized_plugin_id}' could not be selected safely",
+                status_code=409,
+                details={
+                    "plugin_id": normalized_plugin_id,
+                    "reason": str(matching_failure.get("error") or "resolution_failed"),
+                },
+            )
+
+        current_snapshot = _get_registered_plugin_snapshot_sync()
+        current_meta = current_snapshot.get(normalized_plugin_id)
+        config_path = _resolve_meta_config_path(current_meta)
         if config_path is None:
             raise ServerDomainError(
                 code="PLUGIN_CONFIG_NOT_FOUND",
@@ -764,36 +1211,15 @@ class PluginRegistryService:
                 details={"plugin_id": normalized_plugin_id},
             )
 
-        _prepare_plugin_import_roots(roots, logger)
-        ctx = _parse_single_plugin_config(config_path, set(), logger)
-        if ctx is None:
-            raise ServerDomainError(
-                code="PLUGIN_DISCOVERY_FAILED",
-                message=f"Plugin '{normalized_plugin_id}' configuration could not be parsed",
-                status_code=400,
-                details={"plugin_id": normalized_plugin_id},
-            )
-
-        record = _build_discovery_record_from_context(ctx)
-        previous_runtime_plugin_id = _find_existing_runtime_plugin_id_by_config_path(
-            config_path,
-            existing_snapshot,
-        )
-        previous_plugin_id = previous_runtime_plugin_id or normalized_plugin_id
-        previous_managed = _select_managed_fields(existing_snapshot.get(previous_plugin_id, {}))
-        resolved_id, payload = _apply_discovery_record_sync(
-            record,
-            existing_snapshot=existing_snapshot,
-            preferred_runtime_plugin_id=previous_runtime_plugin_id,
-        )
-        current_managed = _select_managed_fields(payload)
-        status = "added"
-        if previous_plugin_id in existing_snapshot:
-            status = "unchanged" if previous_managed == current_managed else "updated"
+        status = "unchanged"
+        if normalized_plugin_id in refresh_result.get("added", []):
+            status = "added"
+        elif normalized_plugin_id in refresh_result.get("updated", []):
+            status = "updated"
 
         return {
             "success": True,
-            "plugin_id": resolved_id,
+            "plugin_id": normalized_plugin_id,
             "original_plugin_id": normalized_plugin_id,
             "status": status,
             "config_path": str(config_path),

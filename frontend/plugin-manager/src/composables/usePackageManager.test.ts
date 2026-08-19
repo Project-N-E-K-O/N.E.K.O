@@ -3,8 +3,10 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { usePackageManager } from './usePackageManager'
 import {
+  inspectPluginPackage,
   installPluginPackage,
   planPluginInstall,
+  verifyPluginPackage,
   type PluginCliInstallPlanResponse,
   type PluginCliInstallResponse,
   type PluginCliPluginRef,
@@ -83,6 +85,7 @@ const upgradePlan: PluginCliInstallPlanResponse = {
   confirmation_token: 'a'.repeat(64),
   reason: '',
   legacy_plugin_ids: [],
+  target_ownership: 'managed',
 }
 
 const installResponse: PluginCliInstallResponse = {
@@ -169,6 +172,32 @@ describe('usePackageManager safe installation flow', () => {
     )
   })
 
+  it('never reports success when the installed payload was not activated', async () => {
+    const manager = usePackageManager()
+    manager.installForm.value.package = 'demo.neko-plugin'
+    vi.mocked(planPluginInstall).mockResolvedValue({
+      ...upgradePlan,
+      action: 'install',
+      current_version: '',
+      confirmation_token: '',
+    })
+    vi.mocked(installPluginPackage).mockResolvedValue({
+      ...installResponse,
+      activation: {
+        status: 'blocked',
+        plugin_ids: ['demo_plugin'],
+        reason: 'selected_installation_not_projected',
+      },
+    })
+
+    await manager.handleInstall()
+
+    expect(ElMessage.error).toHaveBeenCalledWith(
+      'package.install.activationBlocked{"reason":"selected_installation_not_projected"}',
+    )
+    expect(ElMessage.success).not.toHaveBeenCalled()
+  })
+
   it('does not install when the user cancels an upgrade', async () => {
     const manager = usePackageManager()
     manager.installForm.value.package = 'demo.neko-plugin'
@@ -222,5 +251,33 @@ describe('usePackageManager safe installation flow', () => {
 
     expect(ElMessage.error).toHaveBeenCalledWith('package.install.rollbackIncomplete')
     expect(ElMessage.error).not.toHaveBeenCalledWith('package.install.rollbackCompleted')
+  })
+})
+
+describe('usePackageManager package inspection errors', () => {
+  it.each([
+    ['inspect', inspectPluginPackage, 'handleInspect', 'package.install.error.inspectFailed'],
+    ['verify', verifyPluginPackage, 'handleVerify', 'package.install.error.verifyFailed'],
+  ] as const)('shows one localized %s error without exposing a local path', async (
+    _name,
+    requestPackage,
+    handler,
+    expectedMessage,
+  ) => {
+    const manager = usePackageManager()
+    manager.packageRef.value.package = 'demo.neko-plugin'
+    vi.mocked(requestPackage).mockRejectedValue({
+      response: {
+        data: {
+          detail: 'unexpected failure at C:\\Users\\name\\private.neko-plugin',
+        },
+      },
+    })
+
+    await manager[handler]()
+
+    expect(ElMessage.error).toHaveBeenCalledTimes(1)
+    expect(ElMessage.error).toHaveBeenCalledWith(expectedMessage)
+    expect(ElMessage.error).not.toHaveBeenCalledWith(expect.stringContaining('C:\\Users'))
   })
 })

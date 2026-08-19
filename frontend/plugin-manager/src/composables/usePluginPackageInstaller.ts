@@ -9,7 +9,7 @@ import {
   type PluginCliInstallPlanResponse,
   type PluginCliInstallResponse,
 } from '@/api/pluginCli'
-import { formatHttpError } from '@/utils/request'
+import { resolvePluginPackageErrorMessage } from '@/utils/pluginPackageError'
 
 export type InstallPackagePathOptions = {
   pluginsRoot?: string
@@ -70,7 +70,9 @@ export function usePluginPackageInstaller() {
       if (plan.action === 'upgrade') {
         try {
           await ElMessageBox.confirm(
-            t('package.install.upgradeBody', {
+            t(plan.target_ownership === 'unmanaged'
+              ? 'package.install.upgradeUnmanagedBody'
+              : 'package.install.upgradeBody', {
               current: plan.current_version || '-',
               target: plan.target_version || '-',
             }),
@@ -93,20 +95,11 @@ export function usePluginPackageInstaller() {
 
       return await installPluginPackage(request)
     } catch (error) {
-      const errorCode = (error as any)?.response?.data?.detail?.code
-        || (error as any)?.response?.data?.code
-      if (errorCode === 'PLUGIN_UPGRADE_ROLLED_BACK') {
-        const rollbackStatus = (error as any)?.response?.data?.detail?.details?.rollback_status
-        ElMessage.error(t(
-          rollbackStatus === 'completed'
-            ? 'package.install.rollbackCompleted'
-            : 'package.install.rollbackIncomplete',
-        ))
-      } else if (!installPlan.value) {
-        ElMessage.error(t('package.install.planFailed'))
-      } else {
-        ElMessage.error(t('package.install.installFailed', { error: formatHttpError(error) }))
-      }
+      ElMessage.error(resolvePluginPackageErrorMessage(
+        error,
+        t,
+        installPlan.value ? 'install' : 'plan',
+      ))
       return null
     } finally {
       installing.value = false

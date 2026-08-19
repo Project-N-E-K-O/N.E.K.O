@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import json
 import math
+import os
 import re
 import shutil
 import time as time_module
+import uuid
 try:
     import tomllib
 except ModuleNotFoundError:  # pragma: no cover - Python < 3.11
@@ -39,7 +42,30 @@ from plugin.logging_config import get_logger
 from plugin.server.domain import IO_RUNTIME_ERRORS, RUNTIME_ERRORS
 from plugin.server.domain.errors import ServerDomainError
 from plugin.server.application.plugins.registry_service import PluginRegistryService
+from plugin.server.application.install_source import get_install_source_manager
+from plugin.server.application.plugins.inventory_store import (
+    capture_inventory_snapshot,
+    get_inventory_resolution,
+    get_user_installation_package_state_files,
+    mark_plugin_deleted,
+    remove_user_installation,
+    restore_inventory_snapshot,
+    select_plugin_installation,
+)
+from plugin.server.application.plugins.installation_selection import (
+    inspect_plugin_installations,
+)
+from plugin.server.application.plugins.package_ownership import sha256_file
+from plugin.server.application.plugins.mutation_guard import plugin_mutation_guard
+from plugin.server.application.plugins.upgrade_support import (
+    await_cancellation_safe,
+    fsync_parent_directory,
+)
 from plugin.server.infrastructure.config_resolver import resolve_plugin_config_from_path
+from plugin.server.infrastructure.path_safety import (
+    ensure_tree_has_no_links_or_reparse_points,
+    is_link_or_reparse_point,
+)
 from plugin.server.infrastructure.runtime_overrides import (
     RuntimeOverridePersistenceError,
     clear_runtime_override,
@@ -309,6 +335,23 @@ def _get_plugin_config_path(plugin_id: str) -> Path | None:
     normalized_plugin_id = plugin_id.strip()
     if not _PLUGIN_ID_PATTERN.fullmatch(normalized_plugin_id):
         return None
+    canonical_plugin_id = normalized_plugin_id.casefold()
+    inventory = get_inventory_resolution()
+    if canonical_plugin_id in inventory.deleted_plugin_ids:
+        return None
+
+    active_user_directory = inventory.active_user_directories.get(canonical_plugin_id)
+    if active_user_directory is not None and len(PLUGIN_CONFIG_ROOTS) > 1:
+        roots = tuple(PLUGIN_CONFIG_ROOTS)
+        active = inventory.active_installations.get(canonical_plugin_id)
+        candidate_roots = roots[1:]
+        if len(roots) >= 3 and active is not None:
+            candidate_roots = roots[1:2] if active.installation_kind == "managed" else roots[2:]
+        for root in candidate_roots:
+            resolved_root = root.resolve()
+            config_file = (resolved_root / active_user_directory / "plugin.toml").resolve()
+            if resolved_root in config_file.parents and config_file.exists():
+                return config_file
 
     for root in PLUGIN_CONFIG_ROOTS:
         resolved_root = root.resolve()
@@ -348,6 +391,38 @@ def _path_within_plugin_roots_sync(path: Path) -> bool:
     return False
 
 
+def _plugin_root_kind_sync(path: Path) -> str | None:
+    """Classify a plugin directory by payload ownership.
+
+    Production roots are ordered built-in, managed payload, then legacy user
+    layout.  A two-root configuration predates the managed payload root and is
+    therefore classified as legacy for compatibility.
+    """
+
+    try:
+        resolved_path = path.resolve()
+    except Exception:
+        resolved_path = path
+    roots = tuple(PLUGIN_CONFIG_ROOTS)
+    for index, root in enumerate(roots):
+        try:
+            resolved_root = root.resolve()
+        except Exception:
+            resolved_root = root
+        if resolved_root in resolved_path.parents:
+            if len(roots) > 1 and index == 0:
+                return "builtin"
+            if len(roots) > 2 and index == 1:
+                return "managed"
+            return "legacy"
+    return None
+
+
+def _is_writable_installation_root(root_kind: str | None) -> bool:
+    # ``user`` is retained for older tests/callers which used the pre-v2 name.
+    return root_kind in {"managed", "legacy", "user"}
+
+
 def _remove_plugin_metadata_sync(plugin_id: str) -> bool:
     removed = False
     with state.acquire_plugins_write_lock():
@@ -362,8 +437,471 @@ def _remove_plugin_metadata_sync(plugin_id: str) -> bool:
 def _delete_plugin_directory_sync(plugin_dir: Path) -> bool:
     if not plugin_dir.exists():
         return False
-    shutil.rmtree(plugin_dir)
+    ensure_tree_has_no_links_or_reparse_points(
+        plugin_dir,
+        field="plugin delete target",
+    )
+    backup_root = plugin_dir.parent / ".delete-backups"
+    backup_dir = backup_root / plugin_dir.name
+    backup_root.mkdir(parents=True, exist_ok=True)
+    if backup_dir.exists():
+        raise FileExistsError(backup_dir)
+    plugin_dir.rename(backup_dir)
+    preserved_state_names = {"config", "data", "cache"}
+    try:
+        state_children = tuple(
+            child
+            for child in backup_dir.iterdir()
+            if child.name.casefold() in preserved_state_names
+            and child.is_dir()
+            and not is_link_or_reparse_point(child)
+        )
+        if state_children:
+            plugin_dir.mkdir(parents=True)
+            for child in state_children:
+                child.rename(plugin_dir / child.name)
+    except BaseException:
+        if plugin_dir.exists():
+            for child in tuple(plugin_dir.iterdir()):
+                child.rename(backup_dir / child.name)
+            plugin_dir.rmdir()
+        backup_dir.rename(plugin_dir)
+        try:
+            backup_root.rmdir()
+        except OSError:
+            pass
+        raise
     return True
+
+
+def _delete_managed_plugin_directory_sync(
+    plugin_dir: Path,
+    package_state_files: dict[str, str] | None,
+) -> bool:
+    """Remove a managed payload while retaining only legacy runtime residue.
+
+    SDK user state lives outside ``plugin-installations`` and is therefore not
+    touched here.  For older plugins which still write beneath their installed
+    ``config/data/cache`` directories, files not owned by the last package (or
+    package-owned files modified locally) remain as a state-only compatibility
+    directory.  Unchanged package-owned files are deleted with the payload.
+    """
+
+    if not plugin_dir.exists():
+        return False
+    ensure_tree_has_no_links_or_reparse_points(
+        plugin_dir,
+        field="managed plugin delete target",
+    )
+    backup_root = plugin_dir.parent / ".delete-backups"
+    backup_dir = backup_root / plugin_dir.name
+    backup_root.mkdir(parents=True, exist_ok=True)
+    if backup_dir.exists():
+        raise FileExistsError(backup_dir)
+    plugin_dir.rename(backup_dir)
+    moved: list[tuple[Path, Path]] = []
+    try:
+        for state_name in ("config", "data", "cache"):
+            state_root = backup_dir / state_name
+            if not state_root.is_dir():
+                continue
+            for source in sorted(
+                (path for path in state_root.rglob("*") if path.is_file()),
+                key=lambda path: path.as_posix(),
+            ):
+                relative = source.relative_to(backup_dir)
+                relative_key = relative.as_posix()
+                package_digest = (
+                    package_state_files.get(relative_key)
+                    if package_state_files is not None
+                    else None
+                )
+                if package_digest is not None and sha256_file(source) == package_digest:
+                    continue
+                target = plugin_dir / relative
+                target.parent.mkdir(parents=True, exist_ok=True)
+                source.rename(target)
+                moved.append((source, target))
+    except BaseException:
+        for source, target in reversed(moved):
+            source.parent.mkdir(parents=True, exist_ok=True)
+            target.rename(source)
+        if plugin_dir.exists():
+            shutil.rmtree(plugin_dir)
+        backup_dir.rename(plugin_dir)
+        try:
+            backup_root.rmdir()
+        except OSError:
+            pass
+        raise
+    return True
+
+
+@dataclass(frozen=True, slots=True)
+class DeleteRecoveryResult:
+    recovered_operation_ids: tuple[str, ...]
+    manual_recovery_operation_ids: tuple[str, ...]
+    manual_recovery_plugin_ids: tuple[str, ...] = ()
+    block_user_plugin_root: bool = False
+
+
+class _DeleteJournal:
+    def __init__(
+        self,
+        *,
+        path: Path,
+        operation_id: str,
+        plugin_id: str,
+        plugin_dir: Path,
+        backup_dir: Path,
+        rollback_snapshot: Path,
+        phase: str,
+    ) -> None:
+        self.path = path
+        self.owner_path = path.with_suffix(".owner")
+        self.state: dict[str, object] = {
+            "schema_version": 1,
+            "operation_id": operation_id,
+            "plugin_id": plugin_id,
+            "phase": phase,
+            "plugin_dir": str(plugin_dir.resolve(strict=False)),
+            "backup_dir": str(backup_dir.resolve(strict=False)),
+            "rollback_snapshot": str(rollback_snapshot.resolve(strict=False)),
+        }
+        try:
+            self._write_owner()
+            self._write()
+        except BaseException:
+            self.path.unlink(missing_ok=True)
+            self.owner_path.unlink(missing_ok=True)
+            raise
+
+    @classmethod
+    def create(
+        cls,
+        *,
+        plugin_id: str,
+        plugin_dir: Path,
+        rollback_snapshot: Path,
+        phase: str = "snapshot_pending",
+    ) -> _DeleteJournal:
+        operation_id = uuid.uuid4().hex
+        backup_root = plugin_dir.parent / ".delete-backups"
+        journal_root = backup_root / ".transactions"
+        journal_root.mkdir(parents=True, exist_ok=True)
+        return cls(
+            path=journal_root / f"{operation_id}.json",
+            operation_id=operation_id,
+            plugin_id=plugin_id,
+            plugin_dir=plugin_dir,
+            backup_dir=backup_root / plugin_dir.name,
+            rollback_snapshot=rollback_snapshot,
+            phase=phase,
+        )
+
+    def set_phase(self, phase: str) -> None:
+        self.state["phase"] = phase
+        self._write()
+
+    def finish(self) -> None:
+        self.path.unlink(missing_ok=True)
+        self.owner_path.unlink(missing_ok=True)
+        try:
+            self.path.parent.rmdir()
+            self.path.parent.parent.rmdir()
+        except OSError:
+            pass
+
+    def ensure_persisted(self) -> None:
+        if not self.owner_path.exists():
+            self._write_owner()
+        if not self.path.exists():
+            self._write()
+
+    def _write(self) -> None:
+        payload = (
+            json.dumps(self.state, ensure_ascii=True, indent=2, sort_keys=True) + "\n"
+        ).encode("utf-8")
+        temporary = self.path.with_name(f".{self.path.name}.{uuid.uuid4().hex}.tmp")
+        try:
+            with temporary.open("xb") as handle:
+                handle.write(payload)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary, self.path)
+            fsync_parent_directory(self.path)
+        finally:
+            temporary.unlink(missing_ok=True)
+
+    def _write_owner(self) -> None:
+        payload = (
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "operation_id": self.state["operation_id"],
+                    "plugin_id": self.state["plugin_id"],
+                    "kind": "deletion",
+                },
+                ensure_ascii=True,
+                sort_keys=True,
+            )
+            + "\n"
+        ).encode("utf-8")
+        with self.owner_path.open("xb") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        fsync_parent_directory(self.owner_path)
+
+
+def _load_delete_owner(journal_path: Path) -> tuple[str, str]:
+    owner = json.loads(journal_path.with_suffix(".owner").read_text(encoding="utf-8"))
+    if not isinstance(owner, dict) or owner.get("schema_version") != 1:
+        raise ValueError("delete journal owner marker is invalid")
+    operation_id = owner.get("operation_id")
+    plugin_id = owner.get("plugin_id")
+    if (
+        owner.get("kind") != "deletion"
+        or operation_id != journal_path.stem
+        or not isinstance(plugin_id, str)
+        or not _PLUGIN_ID_PATTERN.fullmatch(plugin_id)
+    ):
+        raise ValueError("delete journal owner identity is invalid")
+    return operation_id, plugin_id
+
+
+def recover_incomplete_plugin_deletions(
+    *,
+    journal_root: Path,
+    user_root: Path,
+) -> DeleteRecoveryResult:
+    recovered: list[str] = []
+    manual: list[str] = []
+    manual_plugin_ids: list[str] = []
+    block_user_plugin_root = False
+    if not journal_root.is_dir():
+        return DeleteRecoveryResult((), ())
+    resolved_user_root = user_root.resolve(strict=False)
+    for journal_path in sorted(journal_root.glob("*.json")):
+        operation_id = journal_path.stem
+        plugin_id: str | None = None
+        try:
+            operation_id, plugin_id = _load_delete_owner(journal_path)
+            state = json.loads(journal_path.read_text(encoding="utf-8"))
+            if not isinstance(state, dict) or state.get("schema_version") != 1:
+                manual.append(operation_id)
+                manual_plugin_ids.append(plugin_id.casefold())
+                continue
+            if (
+                state.get("operation_id") != operation_id
+                or state.get("plugin_id") != plugin_id
+            ):
+                raise ValueError("delete journal identity does not match owner")
+            plugin_dir = Path(str(state.get("plugin_dir", ""))).resolve(strict=False)
+            backup_dir = Path(str(state.get("backup_dir", ""))).resolve(strict=False)
+            rollback_snapshot = Path(
+                str(state.get("rollback_snapshot", ""))
+            ).resolve(strict=False)
+            backup_root = resolved_user_root / ".delete-backups"
+            if (
+                plugin_dir.parent != resolved_user_root
+                or plugin_dir.name.casefold() != plugin_id.casefold()
+                or backup_dir != backup_root / plugin_dir.name
+                or rollback_snapshot.parent != backup_root
+                or not rollback_snapshot.name.startswith(f"{plugin_dir.name}.rollback.")
+            ):
+                raise ValueError("delete journal paths are invalid")
+            phase = state.get("phase")
+            if phase == "snapshot_pending":
+                backup_exists = backup_dir.exists() or is_link_or_reparse_point(backup_dir)
+                plugin_exists = plugin_dir.exists() or is_link_or_reparse_point(plugin_dir)
+                snapshot_exists = rollback_snapshot.exists() or is_link_or_reparse_point(
+                    rollback_snapshot
+                )
+                if (
+                    backup_exists
+                    or not plugin_exists
+                    or not plugin_dir.is_dir()
+                    or is_link_or_reparse_point(plugin_dir)
+                    or (
+                        snapshot_exists
+                        and (
+                            not rollback_snapshot.is_dir()
+                            or is_link_or_reparse_point(rollback_snapshot)
+                        )
+                    )
+                ):
+                    manual.append(operation_id)
+                    manual_plugin_ids.append(plugin_id.casefold())
+                    continue
+                if snapshot_exists:
+                    shutil.rmtree(rollback_snapshot)
+            elif phase == "precommit":
+                snapshot_ready = (
+                    rollback_snapshot.is_dir()
+                    and not is_link_or_reparse_point(rollback_snapshot)
+                )
+                backup_exists = backup_dir.exists() or is_link_or_reparse_point(backup_dir)
+                plugin_exists = plugin_dir.exists() or is_link_or_reparse_point(plugin_dir)
+                if not snapshot_ready:
+                    manual.append(operation_id)
+                    manual_plugin_ids.append(plugin_id.casefold())
+                    continue
+                if backup_exists:
+                    if (
+                        not backup_dir.is_dir()
+                        or is_link_or_reparse_point(backup_dir)
+                        or (
+                            plugin_exists
+                            and (
+                                not plugin_dir.is_dir()
+                                or is_link_or_reparse_point(plugin_dir)
+                            )
+                        )
+                    ):
+                        manual.append(operation_id)
+                        manual_plugin_ids.append(plugin_id.casefold())
+                        continue
+                    _restore_delete_rollback_snapshot_sync(
+                        plugin_dir,
+                        rollback_snapshot,
+                    )
+                elif plugin_exists:
+                    if not plugin_dir.is_dir() or is_link_or_reparse_point(plugin_dir):
+                        manual.append(operation_id)
+                        manual_plugin_ids.append(plugin_id.casefold())
+                        continue
+                    shutil.rmtree(rollback_snapshot)
+                else:
+                    manual.append(operation_id)
+                    manual_plugin_ids.append(plugin_id.casefold())
+                    continue
+            elif phase == "committed":
+                _finalize_delete_transaction_sync(
+                    plugin_dir,
+                    rollback_snapshot,
+                )
+            else:
+                manual.append(operation_id)
+                manual_plugin_ids.append(plugin_id.casefold())
+                continue
+            journal_path.unlink(missing_ok=True)
+            journal_path.with_suffix(".owner").unlink(missing_ok=True)
+            recovered.append(operation_id)
+        except Exception as exc:
+            logger.error(
+                "delete journal recovery requires manual action "
+                "operation_id={} err_type={}",
+                operation_id,
+                type(exc).__name__,
+            )
+            manual.append(operation_id)
+            if plugin_id is None:
+                block_user_plugin_root = True
+            else:
+                manual_plugin_ids.append(plugin_id.casefold())
+    return DeleteRecoveryResult(
+        tuple(recovered),
+        tuple(dict.fromkeys(manual)),
+        tuple(dict.fromkeys(manual_plugin_ids)),
+        block_user_plugin_root,
+    )
+
+
+def _delete_rollback_snapshot_path(plugin_dir: Path) -> Path:
+    backup_root = plugin_dir.parent / ".delete-backups"
+    return backup_root / f"{plugin_dir.name}.rollback.{uuid.uuid4().hex}"
+
+
+def _capture_delete_rollback_snapshot_sync(
+    plugin_dir: Path,
+    snapshot: Path | None = None,
+) -> Path:
+    ensure_tree_has_no_links_or_reparse_points(
+        plugin_dir,
+        field="plugin delete snapshot",
+    )
+    backup_root = plugin_dir.parent / ".delete-backups"
+    backup_root.mkdir(parents=True, exist_ok=True)
+    snapshot = snapshot or _delete_rollback_snapshot_path(plugin_dir)
+    if snapshot.parent != backup_root:
+        raise ValueError("plugin delete snapshot must stay inside the backup root")
+    try:
+        shutil.copytree(plugin_dir, snapshot, symlinks=True)
+        return snapshot
+    except BaseException:
+        shutil.rmtree(snapshot, ignore_errors=True)
+        raise
+
+
+def _restore_delete_rollback_snapshot_sync(
+    plugin_dir: Path,
+    rollback_snapshot: Path | None,
+    *,
+    delete_started: bool = False,
+) -> None:
+    if rollback_snapshot is None or not rollback_snapshot.is_dir():
+        raise FileNotFoundError("plugin delete rollback snapshot is missing")
+    transaction_backup = plugin_dir.parent / ".delete-backups" / plugin_dir.name
+    if not (transaction_backup.exists() or is_link_or_reparse_point(transaction_backup)):
+        if (
+            not delete_started
+            and plugin_dir.is_dir()
+            and not is_link_or_reparse_point(plugin_dir)
+        ):
+            shutil.rmtree(rollback_snapshot)
+            return
+        if not delete_started:
+            raise FileNotFoundError("plugin delete transaction backup is missing")
+    for path in (plugin_dir, transaction_backup):
+        if path.is_dir() and not is_link_or_reparse_point(path):
+            shutil.rmtree(path)
+        else:
+            path.unlink(missing_ok=True)
+    rollback_snapshot.rename(plugin_dir)
+    try:
+        transaction_backup.parent.rmdir()
+    except OSError:
+        pass
+
+
+def _finalize_delete_transaction_sync(
+    plugin_dir: Path,
+    rollback_snapshot: Path | None,
+) -> None:
+    backup_root = plugin_dir.parent / ".delete-backups"
+    for path in (backup_root / plugin_dir.name, rollback_snapshot):
+        if path is None:
+            continue
+        if path.is_dir() and not is_link_or_reparse_point(path):
+            shutil.rmtree(path)
+        else:
+            path.unlink(missing_ok=True)
+    try:
+        backup_root.rmdir()
+    except OSError:
+        pass
+
+
+def _builtin_plugin_exists_sync(plugin_id: str) -> bool:
+    roots = tuple(PLUGIN_CONFIG_ROOTS)
+    if len(roots) < 2:
+        return False
+    builtin_root = roots[0]
+    if not builtin_root.is_dir():
+        return False
+    canonical_id = plugin_id.casefold()
+    for manifest_path in builtin_root.glob("*/plugin.toml"):
+        try:
+            with manifest_path.open("rb") as handle:
+                raw = tomllib.load(handle)
+        except (OSError, tomllib.TOMLDecodeError):
+            continue
+        plugin_table = raw.get("plugin")
+        manifest_id = plugin_table.get("id") if isinstance(plugin_table, dict) else None
+        if isinstance(manifest_id, str) and manifest_id.strip().casefold() == canonical_id:
+            return True
+    return False
 
 
 def _register_or_replace_host_sync(plugin_id: str, host: PluginHostContract) -> int:
@@ -1223,7 +1761,190 @@ class PluginLifecycleService:
             "message": message,
         }
 
-    async def delete_plugin(self, plugin_id: str) -> dict[str, object]:
+    async def switch_plugin_installation(
+        self,
+        plugin_id: str,
+        *,
+        selection_id: str,
+        expected_generation: int,
+        _mutation_guarded: bool = False,
+    ) -> dict[str, object]:
+        """Switch the selected code installation without moving user state."""
+
+        if not _mutation_guarded:
+            async with plugin_mutation_guard():
+                return await self.switch_plugin_installation(
+                    plugin_id,
+                    selection_id=selection_id,
+                    expected_generation=expected_generation,
+                    _mutation_guarded=True,
+                )
+
+        try:
+            before = await asyncio.to_thread(inspect_plugin_installations, plugin_id)
+        except Exception as exc:
+            raise _to_domain_error(
+                code="PLUGIN_INSTALLATIONS_UNAVAILABLE",
+                message="plugin installations could not be inspected",
+                status_code=409,
+                plugin_id=plugin_id,
+                error_type=type(exc).__name__,
+            ) from exc
+        if before.generation != expected_generation:
+            raise _to_domain_error(
+                code="PLUGIN_INSTALLATION_SELECTION_CHANGED",
+                message="available plugin installations changed; refresh and try again",
+                status_code=409,
+                plugin_id=plugin_id,
+                error_type="InventoryGenerationChanged",
+            )
+        target = next(
+            (candidate for candidate in before.candidates if candidate.selection_id == selection_id),
+            None,
+        )
+        if target is None or not target.selectable:
+            raise _to_domain_error(
+                code="PLUGIN_INSTALLATION_NOT_SELECTABLE",
+                message="requested plugin installation cannot be selected",
+                status_code=409,
+                plugin_id=plugin_id,
+                error_type="InstallationNotSelectable",
+            )
+        if target.active:
+            return {
+                "success": True,
+                "changed": False,
+                "plugin_id": before.plugin_id,
+                "active_selection_id": selection_id,
+                "generation": before.generation,
+                "restarted": False,
+            }
+
+        snapshot = await asyncio.to_thread(capture_inventory_snapshot)
+        was_running = await asyncio.to_thread(_plugin_is_running_sync, plugin_id)
+        inventory_changed = False
+
+        async def _run_sync_mutation(function, /, *args, **kwargs):
+            operation = asyncio.create_task(asyncio.to_thread(function, *args, **kwargs))
+            try:
+                return await asyncio.shield(operation)
+            except asyncio.CancelledError:
+                try:
+                    await await_cancellation_safe(operation)
+                except Exception as operation_exc:
+                    logger.error(
+                        "plugin installation selection mutation failed while "
+                        "cancellation was pending plugin_id={} err_type={}",
+                        plugin_id,
+                        type(operation_exc).__name__,
+                    )
+                raise
+
+        async def _rollback_selection() -> list[str]:
+            errors: list[str] = []
+            try:
+                if inventory_changed and await asyncio.to_thread(_plugin_is_running_sync, plugin_id):
+                    await self.stop_plugin(plugin_id)
+            except Exception as exc:
+                errors.append(f"stop:{type(exc).__name__}")
+            try:
+                if inventory_changed:
+                    await _run_sync_mutation(restore_inventory_snapshot, snapshot)
+            except Exception as exc:
+                errors.append(f"inventory:{type(exc).__name__}")
+            try:
+                if inventory_changed:
+                    await plugin_registry_service.refresh_plugin(
+                        plugin_id,
+                        _mutation_guarded=True,
+                        _recover_incomplete=False,
+                    )
+            except Exception as exc:
+                errors.append(f"registry:{type(exc).__name__}")
+            try:
+                if was_running and not await asyncio.to_thread(_plugin_is_running_sync, plugin_id):
+                    await self.start_plugin(
+                        plugin_id,
+                        refresh_registry=False,
+                        persist_user_intent=False,
+                    )
+            except Exception as exc:
+                errors.append(f"restart:{type(exc).__name__}")
+            return errors
+
+        try:
+            if was_running:
+                await self.stop_plugin(plugin_id)
+            # Once the inventory worker starts, rollback from the exact snapshot
+            # even if cancellation arrives before the worker reports its result.
+            # The process-wide/cross-process guard prevents another mutation from
+            # being overwritten by this operation-local restore.
+            inventory_changed = True
+            inventory_changed = bool(
+                await _run_sync_mutation(
+                    select_plugin_installation,
+                    plugin_id,
+                    installation_key=target.installation_key,
+                    expected_generation=expected_generation,
+                )
+            )
+            await plugin_registry_service.refresh_plugin(
+                plugin_id,
+                _mutation_guarded=True,
+                _recover_incomplete=False,
+            )
+            after = await asyncio.to_thread(inspect_plugin_installations, plugin_id)
+            if after.active_selection_id != selection_id:
+                raise RuntimeError("selected installation was not projected")
+            if was_running:
+                await self.start_plugin(
+                    plugin_id,
+                    refresh_registry=False,
+                    persist_user_intent=False,
+                )
+            return {
+                "success": True,
+                "changed": True,
+                "plugin_id": after.plugin_id,
+                "active_selection_id": after.active_selection_id,
+                "generation": after.generation,
+                "restarted": was_running,
+            }
+        except asyncio.CancelledError:
+            await await_cancellation_safe(asyncio.create_task(_rollback_selection()))
+            raise
+        except Exception as exc:
+            rollback_errors = await await_cancellation_safe(
+                asyncio.create_task(_rollback_selection())
+            )
+            raise ServerDomainError(
+                code=(
+                    "PLUGIN_INSTALLATION_SWITCH_RECOVERY_INCOMPLETE"
+                    if rollback_errors
+                    else "PLUGIN_INSTALLATION_SWITCH_FAILED"
+                ),
+                message="plugin installation switch failed",
+                status_code=500,
+                details={
+                    "plugin_id": plugin_id,
+                    "error_type": type(exc).__name__,
+                    "recovery_errors": rollback_errors,
+                },
+            ) from exc
+
+    async def delete_plugin(
+        self,
+        plugin_id: str,
+        *,
+        _mutation_guarded: bool = False,
+    ) -> dict[str, object]:
+        if not _mutation_guarded:
+            async with plugin_mutation_guard():
+                return await self.delete_plugin(
+                    plugin_id,
+                    _mutation_guarded=True,
+                )
+
         plugin_meta = await asyncio.to_thread(_get_plugin_meta_sync, plugin_id)
         if plugin_meta is None:
             raise _to_domain_error(
@@ -1253,34 +1974,387 @@ class PluginLifecycleService:
                 plugin_id=plugin_id,
                 error_type="ForbiddenDeletePath",
             )
+        root_kind = await asyncio.to_thread(_plugin_root_kind_sync, plugin_dir)
+        if root_kind is None:
+            raise _to_domain_error(
+                code="PLUGIN_DELETE_FORBIDDEN_PATH",
+                message=f"Plugin '{plugin_id}' path is outside managed plugin roots",
+                status_code=403,
+                plugin_id=plugin_id,
+                error_type="ForbiddenDeletePath",
+            )
 
+        writable_installation = _is_writable_installation_root(root_kind)
+        fallback_to_builtin = (
+            writable_installation
+            and await asyncio.to_thread(_builtin_plugin_exists_sync, plugin_id)
+        )
+        package_state_files: dict[str, str] | None = None
+        if root_kind == "managed":
+            package_state_files = await asyncio.to_thread(
+                get_user_installation_package_state_files,
+                plugin_id,
+                directory_name=plugin_dir.name,
+            )
+        source_manager = get_install_source_manager()
+        source_snapshot = source_manager.snapshot() if source_manager is not None else None
+        inventory_snapshot = await asyncio.to_thread(capture_inventory_snapshot)
         is_running = await asyncio.to_thread(_plugin_is_running_sync, plugin_id)
-        if is_running:
-            await self.stop_plugin(plugin_id)
+        runtime_override = await asyncio.to_thread(get_runtime_override, plugin_id)
+        runtime_auto_start = await asyncio.to_thread(
+            get_runtime_auto_start_override,
+            plugin_id,
+        )
+        deleted_from_disk = False
+        rollback_snapshot: Path | None = None
+        delete_journal: _DeleteJournal | None = None
+        committed = False
+        committed_cleanup_errors: list[str] = []
+        delete_started = False
+        fallback_runtime_started = False
+        fallback_runtime_error: str | None = None
+
+        async def run_sync_mutation(function, /, *args, **kwargs):
+            operation = asyncio.create_task(asyncio.to_thread(function, *args, **kwargs))
+            try:
+                return await asyncio.shield(operation)
+            except asyncio.CancelledError:
+                try:
+                    await await_cancellation_safe(operation)
+                except Exception as operation_exc:
+                    logger.error(
+                        "plugin delete mutation failed while cancellation was pending "
+                        "plugin_id={} err_type={}",
+                        plugin_id,
+                        type(operation_exc).__name__,
+                    )
+                raise
+
+        async def recover_delete() -> tuple[bool, bool, list[str]]:
+            inventory_restored = False
+            runtime_restarted = False
+            recovery_errors: list[str] = []
+            if writable_installation:
+                try:
+                    await run_sync_mutation(
+                        _restore_delete_rollback_snapshot_sync,
+                        plugin_dir,
+                        rollback_snapshot,
+                        delete_started=delete_started,
+                    )
+                except BaseException as recovery_exc:
+                    recovery_errors.append(
+                        f"filesystem_restore:{type(recovery_exc).__name__}"
+                    )
+            if source_manager is not None and source_snapshot is not None:
+                try:
+                    await run_sync_mutation(
+                        source_manager.restore_snapshot_for_rollback,
+                        source_snapshot,
+                    )
+                except BaseException as recovery_exc:
+                    recovery_errors.append(
+                        f"source_restore:{type(recovery_exc).__name__}"
+                    )
+            try:
+                await run_sync_mutation(
+                    restore_inventory_snapshot,
+                    inventory_snapshot,
+                )
+                inventory_restored = True
+            except BaseException as recovery_exc:
+                recovery_errors.append(
+                    f"inventory_restore:{type(recovery_exc).__name__}"
+                )
+            try:
+                if runtime_override is None:
+                    await run_sync_mutation(clear_runtime_override, plugin_id)
+                else:
+                    await run_sync_mutation(
+                        set_runtime_override,
+                        plugin_id,
+                        runtime_override,
+                        auto_start=runtime_auto_start,
+                    )
+            except BaseException as recovery_exc:
+                recovery_errors.append(
+                    f"runtime_override_restore:{type(recovery_exc).__name__}"
+                )
+            try:
+                await plugin_registry_service.refresh_registry(
+                    _mutation_guarded=True,
+                )
+            except BaseException as recovery_exc:
+                recovery_errors.append(
+                    f"registry_restore:{type(recovery_exc).__name__}"
+                )
+            if is_running and plugin_dir.exists():
+                try:
+                    await self.start_plugin(plugin_id, refresh_registry=False)
+                    runtime_restarted = True
+                except BaseException as recovery_exc:
+                    recovery_errors.append(
+                        f"runtime_restart:{type(recovery_exc).__name__}"
+                    )
+            if delete_journal is not None and not recovery_errors:
+                try:
+                    await run_sync_mutation(delete_journal.finish)
+                except BaseException as recovery_exc:
+                    recovery_errors.append(
+                        f"journal_cleanup:{type(recovery_exc).__name__}"
+                    )
+            return inventory_restored, runtime_restarted, recovery_errors
 
         try:
-            deleted_from_disk = await asyncio.to_thread(_delete_plugin_directory_sync, plugin_dir)
-            await asyncio.to_thread(_pop_plugin_host_sync, plugin_id)
-            await asyncio.to_thread(_remove_event_handlers_sync, plugin_id)
-            await asyncio.to_thread(_remove_plugin_metadata_sync, plugin_id)
-            await asyncio.to_thread(clear_runtime_override, plugin_id)
+            if is_running:
+                await self.stop_plugin(plugin_id)
+            if writable_installation:
+                rollback_snapshot = _delete_rollback_snapshot_path(plugin_dir)
+                delete_journal = await run_sync_mutation(
+                    _DeleteJournal.create,
+                    plugin_id=plugin_id,
+                    plugin_dir=plugin_dir,
+                    rollback_snapshot=rollback_snapshot,
+                )
+                snapshot_operation = asyncio.create_task(
+                    asyncio.to_thread(
+                        _capture_delete_rollback_snapshot_sync,
+                        plugin_dir,
+                        rollback_snapshot,
+                    )
+                )
+                try:
+                    rollback_snapshot = await asyncio.shield(snapshot_operation)
+                except asyncio.CancelledError:
+                    rollback_snapshot = await await_cancellation_safe(snapshot_operation)
+                    raise
+                await run_sync_mutation(delete_journal.set_phase, "precommit")
+                delete_started = True
+                if root_kind == "managed":
+                    delete_operation = asyncio.create_task(
+                        asyncio.to_thread(
+                            _delete_managed_plugin_directory_sync,
+                            plugin_dir,
+                            package_state_files,
+                        )
+                    )
+                else:
+                    delete_operation = asyncio.create_task(
+                        asyncio.to_thread(_delete_plugin_directory_sync, plugin_dir)
+                    )
+                try:
+                    deleted_from_disk = await asyncio.shield(delete_operation)
+                except asyncio.CancelledError:
+                    try:
+                        deleted_from_disk = await await_cancellation_safe(delete_operation)
+                    except Exception as operation_exc:
+                        logger.error(
+                            "plugin delete worker failed while cancellation was pending "
+                            "plugin_id={} err_type={}",
+                            plugin_id,
+                            type(operation_exc).__name__,
+                        )
+                    raise
+                await run_sync_mutation(delete_journal.set_phase, "commit_started")
+                await run_sync_mutation(remove_user_installation, plugin_id)
+                if source_manager is not None:
+                    await run_sync_mutation(
+                        source_manager.mark_removed,
+                        directory_path=plugin_dir,
+                        reason="user_overlay_removed",
+                    )
+            else:
+                await run_sync_mutation(mark_plugin_deleted, plugin_id)
+            await run_sync_mutation(_pop_plugin_host_sync, plugin_id)
+            await run_sync_mutation(_remove_event_handlers_sync, plugin_id)
+            await run_sync_mutation(_remove_plugin_metadata_sync, plugin_id)
+            await run_sync_mutation(clear_runtime_override, plugin_id)
             await plugin_registry_service.refresh_registry()
-        except ServerDomainError:
-            raise
-        except IO_RUNTIME_ERRORS as exc:
-            logger.error(
-                "delete_plugin failed: plugin_id={}, plugin_dir={}, err_type={}, err={}",
-                plugin_id,
-                str(plugin_dir),
-                type(exc).__name__,
-                str(exc),
+            if is_running and fallback_to_builtin:
+                try:
+                    await self.start_plugin(plugin_id, refresh_registry=False)
+                    fallback_runtime_started = True
+                except Exception as fallback_exc:
+                    fallback_runtime_error = type(fallback_exc).__name__
+                    raise
+            if delete_journal is not None:
+                await run_sync_mutation(delete_journal.set_phase, "committed")
+            committed = True
+            if writable_installation:
+                cleanup_operation = asyncio.create_task(
+                    asyncio.to_thread(
+                        _finalize_delete_transaction_sync,
+                        plugin_dir,
+                        rollback_snapshot,
+                    )
+                )
+                try:
+                    await asyncio.shield(cleanup_operation)
+                except asyncio.CancelledError as cancel_exc:
+                    cleanup_errors: list[str] = []
+                    try:
+                        await await_cancellation_safe(cleanup_operation)
+                    except Exception as cleanup_exc:
+                        cleanup_errors.append(
+                            f"backup_cleanup:{type(cleanup_exc).__name__}"
+                        )
+                    if delete_journal is not None and not cleanup_errors:
+                        try:
+                            await await_cancellation_safe(
+                                asyncio.to_thread(delete_journal.finish)
+                            )
+                        except Exception as journal_exc:
+                            cleanup_errors.append(
+                                f"journal_finish:{type(journal_exc).__name__}"
+                            )
+                            try:
+                                await await_cancellation_safe(
+                                    asyncio.to_thread(delete_journal.ensure_persisted)
+                                )
+                            except Exception as preserve_exc:
+                                cleanup_errors.append(
+                                    f"journal_preserve:{type(preserve_exc).__name__}"
+                                )
+                    if cleanup_errors:
+                        setattr(
+                            cancel_exc,
+                            "cleanup_code",
+                            "PLUGIN_DELETE_COMMITTED_CLEANUP_INCOMPLETE",
+                        )
+                        setattr(cancel_exc, "cleanup_errors", tuple(cleanup_errors))
+                        logger.error(
+                            "plugin delete committed cleanup incomplete code={} "
+                            "plugin_id={} errors={}",
+                            "PLUGIN_DELETE_COMMITTED_CLEANUP_INCOMPLETE",
+                            plugin_id,
+                            ",".join(cleanup_errors),
+                        )
+                    raise
+                except Exception as cleanup_exc:
+                    committed_cleanup_errors.append(
+                        f"backup_cleanup:{type(cleanup_exc).__name__}"
+                    )
+                    logger.warning(
+                        "plugin delete backup cleanup failed plugin_id={} err_type={}",
+                        plugin_id,
+                        type(cleanup_exc).__name__,
+                    )
+                else:
+                    if delete_journal is not None:
+                        try:
+                            await run_sync_mutation(delete_journal.finish)
+                        except Exception as journal_exc:
+                            committed_cleanup_errors.append(
+                                f"journal_finish:{type(journal_exc).__name__}"
+                            )
+            if committed_cleanup_errors:
+                raise ServerDomainError(
+                    code="PLUGIN_DELETE_COMMITTED_CLEANUP_INCOMPLETE",
+                    message=(
+                        f"Plugin '{plugin_id}' was deleted, but transaction cleanup "
+                        "did not finish"
+                    ),
+                    status_code=500,
+                    details={
+                        "plugin_id": plugin_id,
+                        "committed": True,
+                        "cleanup_errors": list(committed_cleanup_errors),
+                    },
+                )
+        except asyncio.CancelledError:
+            if committed:
+                raise
+            inventory_restored, runtime_restarted, recovery_errors = (
+                await await_cancellation_safe(recover_delete())
             )
-            raise _to_domain_error(
+            logger.warning(
+                "delete_plugin canceled after cleanup: plugin_id={}, "
+                "inventory_restored={}, runtime_restarted={}, recovery_errors={}",
+                plugin_id,
+                inventory_restored,
+                runtime_restarted,
+                recovery_errors,
+            )
+            raise
+        except Exception as exc:
+            if committed:
+                if delete_journal is not None:
+                    try:
+                        await await_cancellation_safe(
+                            asyncio.to_thread(delete_journal.ensure_persisted)
+                        )
+                    except Exception as preserve_exc:
+                        committed_cleanup_errors.append(
+                            f"journal_preserve:{type(preserve_exc).__name__}"
+                        )
+                if (
+                    isinstance(exc, ServerDomainError)
+                    and exc.code == "PLUGIN_DELETE_COMMITTED_CLEANUP_INCOMPLETE"
+                    and not any(
+                        item.startswith("journal_preserve:")
+                        for item in committed_cleanup_errors
+                    )
+                ):
+                    raise
+                logger.error(
+                    "plugin delete committed cleanup incomplete code={} "
+                    "plugin_id={} errors={}",
+                    "PLUGIN_DELETE_COMMITTED_CLEANUP_INCOMPLETE",
+                    plugin_id,
+                    ",".join(committed_cleanup_errors),
+                )
+                raise ServerDomainError(
+                    code="PLUGIN_DELETE_COMMITTED_CLEANUP_INCOMPLETE",
+                    message=(
+                        f"Plugin '{plugin_id}' was deleted, but transaction cleanup "
+                        "did not finish"
+                    ),
+                    status_code=500,
+                    details={
+                        "plugin_id": plugin_id,
+                        "committed": True,
+                        "cleanup_errors": list(committed_cleanup_errors),
+                    },
+                ) from exc
+            recovery_operation = asyncio.create_task(recover_delete())
+            try:
+                inventory_restored, runtime_restarted, recovery_errors = (
+                    await asyncio.shield(recovery_operation)
+                )
+            except asyncio.CancelledError:
+                inventory_restored, runtime_restarted, recovery_errors = (
+                    await await_cancellation_safe(recovery_operation)
+                )
+                logger.error(
+                    "delete_plugin failure recovery completed after cancellation: "
+                    "plugin_id={}, original_err_type={}, recovery_errors={}",
+                    plugin_id,
+                    type(exc).__name__,
+                    recovery_errors,
+                )
+                raise
+            logger.error(
+                "delete_plugin failed: plugin_id={}, root_kind={}, err_type={}, "
+                "inventory_restored={}, runtime_restarted={}, recovery_errors={}",
+                plugin_id,
+                root_kind,
+                type(exc).__name__,
+                inventory_restored,
+                runtime_restarted,
+                recovery_errors,
+            )
+            raise ServerDomainError(
                 code="PLUGIN_DELETE_FAILED",
                 message=f"Failed to delete plugin '{plugin_id}'",
                 status_code=500,
-                plugin_id=plugin_id,
-                error_type=type(exc).__name__,
+                details={
+                    "plugin_id": plugin_id,
+                    "error_type": type(exc).__name__,
+                    "inventory_restored": inventory_restored,
+                    "runtime_restarted": runtime_restarted,
+                    "deletion_marker_retained": root_kind == "builtin",
+                    "recovery_errors": recovery_errors,
+                },
             ) from exc
 
         _emit_lifecycle_event(
@@ -1289,6 +2363,18 @@ class PluginLifecycleService:
             data={
                 "plugin_dir": str(plugin_dir),
                 "deleted_from_disk": deleted_from_disk,
+                "builtin_preserved": root_kind == "builtin",
+                "user_data_preserved": True,
+                "deletion_scope": (
+                    "user_overlay" if writable_installation else "logical_plugin"
+                ),
+                "installation_kind": root_kind,
+                "compatibility_state_preserved": (
+                    root_kind == "managed" and plugin_dir.exists()
+                ),
+                "fallback_to_builtin": fallback_to_builtin,
+                "fallback_runtime_started": fallback_runtime_started,
+                "fallback_runtime_error": fallback_runtime_error,
             },
         )
         response: dict[str, object] = {
@@ -1296,6 +2382,18 @@ class PluginLifecycleService:
             "plugin_id": plugin_id,
             "plugin_dir": str(plugin_dir),
             "deleted_from_disk": deleted_from_disk,
+            "builtin_preserved": root_kind == "builtin",
+            "user_data_preserved": True,
+            "deletion_scope": (
+                "user_overlay" if writable_installation else "logical_plugin"
+            ),
+            "installation_kind": root_kind,
+            "compatibility_state_preserved": (
+                root_kind == "managed" and plugin_dir.exists()
+            ),
+            "fallback_to_builtin": fallback_to_builtin,
+            "fallback_runtime_started": fallback_runtime_started,
+            "fallback_runtime_error": fallback_runtime_error,
             "message": "Plugin deleted successfully",
         }
         return response

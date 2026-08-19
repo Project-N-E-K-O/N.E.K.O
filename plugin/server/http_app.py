@@ -177,6 +177,16 @@ async def plugin_server_lifespan(app: FastAPI) -> AsyncIterator[None]:
                 type(exc).__name__,
                 str(exc),
             )
+        try:
+            from plugin.server.routes.market_bridge import shutdown_market_task_workers
+
+            await shutdown_market_task_workers()
+        except Exception as exc:
+            logger.warning(
+                "failed to stop Market install workers: err_type={}, err={}",
+                type(exc).__name__,
+                str(exc),
+            )
         if not _EMBEDDED_BY_AGENT:
             await lifecycle_shutdown()
 

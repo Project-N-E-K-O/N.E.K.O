@@ -44,6 +44,34 @@ def _write_plugin(root: Path, directory_name: str, plugin_id: str) -> Path:
     return plugin_dir
 
 
+def test_path_policy_separates_managed_payloads_from_legacy_user_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from plugin import settings
+
+    builtin_root = tmp_path / "builtin"
+    managed_root = tmp_path / "plugin-installations"
+    legacy_root = tmp_path / "plugins"
+    packages_root = tmp_path / "packages"
+    profiles_root = tmp_path / "profiles"
+    monkeypatch.setattr(settings, "BUILTIN_PLUGIN_CONFIG_ROOT", builtin_root)
+    monkeypatch.setattr(settings, "MANAGED_PLUGIN_INSTALLATIONS_ROOT", managed_root)
+    monkeypatch.setattr(settings, "USER_PLUGIN_CONFIG_ROOT", legacy_root)
+    monkeypatch.setattr(settings, "USER_PLUGIN_PACKAGES_ROOT", packages_root)
+    monkeypatch.setattr(settings, "USER_PACKAGE_PROFILES_ROOT", profiles_root)
+
+    policy = PluginCliPathPolicy.from_settings()
+
+    assert policy.install_plugins_root == managed_root.resolve()
+    assert policy.user_plugins_root == legacy_root.resolve()
+    assert policy.build_source_roots == (
+        ("builtin", builtin_root.resolve()),
+        ("managed", managed_root.resolve()),
+        ("user", legacy_root.resolve()),
+    )
+
+
 def test_list_plugins_scans_builtin_then_user_with_stable_directory_sort(tmp_path: Path) -> None:
     policy = _make_policy(tmp_path)
     _write_plugin(policy.builtin_plugins_root, "z_builtin", "z_builtin")

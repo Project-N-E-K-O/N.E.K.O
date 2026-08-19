@@ -11,8 +11,8 @@
             {{ t('market.recommended') }}
           </el-tag>
           <h3 class="plugin-name">{{ plugin.name }}</h3>
-          <el-tag v-if="installed" size="small" type="success">
-            {{ t('market.installed') }}
+          <el-tag v-if="installed" size="small" :type="marketManaged ? 'success' : 'primary'">
+            {{ installedBadge }}
           </el-tag>
           <!-- v2 (R8): yanked 红色徽章；当前装的版本被作者撤回时显示 -->
           <el-tooltip
@@ -50,7 +50,9 @@
       </div>
 
       <div class="plugin-meta">
-        <el-tag v-if="plugin.version" size="small" type="info">v{{ plugin.version }}</el-tag>
+        <el-tag v-if="plugin.version" size="small" type="info">
+          {{ t('market.marketVersion', { version: plugin.version }) }}
+        </el-tag>
         <span class="plugin-author">
           <el-icon><User /></el-icon>
           {{ plugin.author?.name || t('market.unknownAuthor') }}
@@ -64,14 +66,31 @@
       <div class="plugin-card-actions">
         <!-- v2 (R9.1 / R9.8): 已装且本地版本 < market 最新 → 显示 upgrade 按钮 -->
         <el-button
-          v-if="showUpgrade"
+          v-if="cardAction === 'upgrade' || cardAction === 'switch_upgrade'"
           type="primary"
           size="small"
-          :loading="upgrading"
-          :disabled="upgrading"
-          @click.stop="$emit('upgrade')"
+          :loading="actionBusy"
+          :disabled="actionBusy"
+          @click.stop="runUpdateAction"
         >
-          {{ upgrading ? t('market.upgrading') : t('market.upgradeTo', { version: plugin.version }) }}
+          {{ actionBusy ? t('market.upgrading') : t('market.upgradeTo', { version: plugin.version }) }}
+        </el-button>
+        <el-button
+          v-else-if="cardAction === 'switch_source'"
+          type="primary"
+          size="small"
+          :loading="installing"
+          :disabled="installing"
+          @click.stop="$emit('install')"
+        >
+          {{ installing ? t('market.installing') : t('market.useMarketVersion') }}
+        </el-button>
+        <el-button
+          v-else-if="cardAction === 'local_newer'"
+          size="small"
+          disabled
+        >
+          {{ t('market.localVersionNewer') }}
         </el-button>
         <!-- 已装且无新版可升 → 显示禁用的"已安装"按钮 -->
         <el-button
@@ -118,14 +137,17 @@ import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { User, Download } from '@element-plus/icons-vue'
 import type { MarketPlugin } from '@/api/market'
-import { compareVersion } from '@/utils/version'
+import type { PluginInstallSourceChannel } from '@/types/api'
+import { resolveMarketCardAction } from '@/utils/marketInstallation'
 
 interface Props {
   plugin: MarketPlugin
   installed?: boolean
+  marketManaged?: boolean
   installing?: boolean
   /** v2: 本地已装版本；用于和 plugin.version 比较是否需要升级。 */
   localVersion?: string
+  localSource?: PluginInstallSourceChannel
   /** v2: 当前装的版本被 Market 作者撤回。 */
   yanked?: boolean
   /** v2: yanked 工具提示文案。 */
@@ -136,14 +158,16 @@ interface Props {
 
 const props = withDefaults(defineProps<Props>(), {
   installed: false,
+  marketManaged: false,
   installing: false,
   localVersion: undefined,
+  localSource: 'unknown',
   yanked: false,
   yankReason: '',
   upgrading: false,
 })
 
-defineEmits<{
+const emit = defineEmits<{
   click: []
   install: []
   upgrade: []
@@ -155,12 +179,29 @@ const { t } = useI18n()
  * v2 (R9.1 / R9.8): 升级按钮显示条件 —— 已装、本地有版本号、Market 有版本号、
  * 且 semver 比较显示本地落后。任一条件失败即不显示。
  */
-const showUpgrade = computed(() => {
-  if (!props.installed) return false
-  if (!props.localVersion || !props.plugin.version) return false
-  if (!props.plugin.has_release) return false
-  return compareVersion(props.localVersion, props.plugin.version) < 0
+const cardAction = computed(() => resolveMarketCardAction({
+  localInstalled: props.installed,
+  marketManaged: props.marketManaged,
+  localVersion: props.localVersion,
+  marketVersion: props.plugin.version,
+  hasRelease: props.plugin.has_release,
+}))
+
+const installedBadge = computed(() => {
+  const version = props.localVersion || t('common.unknown')
+  if (props.marketManaged) {
+    return t('market.marketInstalledVersion', { version })
+  }
+  const source = t(`plugins.installSource.channel.${props.localSource}`)
+  return t('market.localInstalledVersion', { version, source })
 })
+
+const actionBusy = computed(() => props.marketManaged ? props.upgrading : props.installing)
+
+function runUpdateAction() {
+  if (props.marketManaged) emit('upgrade')
+  else emit('install')
+}
 
 function formatCount(count: number): string {
   if (count >= 1000) return `${(count / 1000).toFixed(1)}k`

@@ -4,15 +4,18 @@ import asyncio
 from dataclasses import asdict, replace
 import hashlib
 import shutil
+import threading
 import tomllib
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, BinaryIO, Literal
 
 from plugin.core.plugin_layout import resolve_plugin_layout
+from plugin.core.state import state as plugin_state
 from plugin.logging_config import get_logger
 from plugin.neko_plugin_cli.core.install import PackageInstaller
+from plugin.neko_plugin_cli.core.archive_utils import PackageValidationError
 from plugin.neko_plugin_cli.core.models import InstalledPlugin, InstallResult
 from plugin.neko_plugin_cli.public import (
     analyze_bundle_plugins,
@@ -28,13 +31,38 @@ from plugin.server.application.install_source import (
     get_install_source_manager,
 )
 from plugin.server.application.plugin_cli.paths import PluginCliPathPolicy
-from plugin.server.application.plugin_cli.install_plan import PluginInstallPlan, build_install_plan
+from plugin.server.application.plugin_cli.install_plan import (
+    PluginInstallPlan,
+    build_install_plan,
+    classify_install_target_placeholder,
+    confirmation_token as build_confirmation_token,
+)
 from plugin.server.application.plugins import upgrade_support
+from plugin.server.application.plugins.inventory_store import (
+    capture_inventory_snapshot,
+    get_inventory_resolution,
+    get_user_installation_package_state_files,
+    record_managed_installation,
+    record_user_installation,
+    restore_inventory_snapshot,
+)
+from plugin.server.application.plugins.package_ownership import (
+    PackageStateConflictError,
+    collect_package_state_files,
+)
+from plugin.server.application.plugins.mutation_guard import (
+    plugin_mutation_guard as _plugin_mutation_guard,
+)
+from plugin.server.application.plugins.registry_service import PluginRegistryService
 from plugin.server.application.plugin_cli.source_resolver import (
     PluginSourceResolver,
     ResolvedPluginSource,
 )
 from plugin.server.domain.errors import ServerDomainError
+from plugin.server.infrastructure.path_safety import (
+    is_link_or_reparse_point,
+    require_resolved_within,
+)
 from plugin.settings import (
     BUILTIN_PLUGIN_CONFIG_ROOT,
     USER_PACKAGE_PROFILES_ROOT,
@@ -54,6 +82,19 @@ _TARGET_ROOT = USER_PLUGIN_PACKAGES_ROOT
 _ALLOWED_UPLOAD_SUFFIXES = frozenset({".neko-plugin", ".neko-bundle"})
 # Maximum upload size (200 MB)
 _UPLOAD_MAX_BYTES = 200 * 1024 * 1024
+_PLUGIN_INSTALL_PROMOTION_LOCK = threading.Lock()
+
+_PACKAGE_VALIDATION_MESSAGES = {
+    "PLUGIN_PACKAGE_INVALID_ARCHIVE": "The selected file is not a valid plugin package.",
+    "PLUGIN_PACKAGE_MANIFEST_MISSING": "The package manifest.toml is missing.",
+    "PLUGIN_PACKAGE_NESTED_ROOT": "The package contents are nested inside an extra parent folder.",
+    "PLUGIN_PACKAGE_MANIFEST_INVALID": "The package manifest.toml is invalid.",
+    "PLUGIN_PACKAGE_PLUGIN_MANIFEST_MISSING": "A packaged plugin is missing plugin.toml.",
+    "PLUGIN_PACKAGE_PLUGIN_MANIFEST_INVALID": "A packaged plugin.toml is invalid.",
+    "PLUGIN_PACKAGE_IDENTITY_MISMATCH": "The plugin folder and plugin.toml ID do not match.",
+    "PLUGIN_PACKAGE_TYPE_MISMATCH": "The package type does not match its plugin contents.",
+    "PLUGIN_PACKAGE_HASH_MISMATCH": "The package content does not match its recorded verification hash.",
+}
 
 logger = get_logger("server.application.plugin_cli")
 
@@ -77,6 +118,125 @@ def _require_safe_directory_name(value: str, *, field: str) -> str:
     ):
         raise ValueError(f"{field} must be a safe plugin directory name, got {value!r}")
     return directory_name
+
+
+def _merge_staged_payload(
+    source_dir: Path,
+    target_dir: Path,
+) -> tuple[Path, ...]:
+    """Merge staged package files without overwriting preserved plugin state.
+
+    Legacy packages may ship a top-level ``config/``, ``data/`` or ``cache/``
+    directory even though the runtime already created that canonical state
+    directory. Directory-to-directory overlap is safe when every package path
+    is new. Any file or type collision remains fail-closed, and all paths moved
+    before the collision are restored to the staging tree.
+    """
+
+    moved: list[tuple[Path, Path]] = []
+    source_root = source_dir.resolve(strict=False)
+    target_root = target_dir.resolve(strict=False)
+
+    def merge_path(source: Path, target: Path) -> None:
+        if is_link_or_reparse_point(source) or is_link_or_reparse_point(target):
+            relative = target.relative_to(target_dir).as_posix()
+            raise FileExistsError(
+                f"plugin payload contains an unsupported linked path: {relative}"
+            )
+        require_resolved_within(source, source_root, field="staged plugin payload")
+        require_resolved_within(target, target_root, field="plugin install target")
+        if target.exists():
+            if source.is_dir() and target.is_dir():
+                for child in tuple(source.iterdir()):
+                    merge_path(child, target / child.name)
+                return
+            relative = target.relative_to(target_dir).as_posix()
+            raise FileExistsError(
+                f"plugin payload conflicts with preserved state path: {relative}"
+            )
+        source.rename(target)
+        moved.append((source, target))
+
+    try:
+        for child in tuple(source_dir.iterdir()):
+            merge_path(child, target_dir / child.name)
+    except Exception:
+        for source, target in reversed(moved):
+            if target.exists() or is_link_or_reparse_point(target):
+                if is_link_or_reparse_point(target):
+                    raise OSError("plugin rollback target became a linked path")
+                source.parent.mkdir(parents=True, exist_ok=True)
+                target.rename(source)
+        raise
+
+    return tuple(target for _source, target in moved)
+
+
+def _merge_staged_profile_preserving_existing(
+    source_dir: Path,
+    target_dir: Path,
+) -> tuple[Path, ...]:
+    """Adopt a staged profile without replacing preserved user settings.
+
+    A package profile can remain after its plugin payload is removed.  During
+    reinstall, existing files win while package files that do not yet exist are
+    added.  Returning the created paths lets a later metadata failure undo only
+    this operation instead of deleting the pre-existing profile tree.
+    """
+
+    moved: list[tuple[Path, Path]] = []
+    source_root = source_dir.resolve(strict=False)
+    target_root = target_dir.resolve(strict=False)
+
+    def merge_path(source: Path, target: Path) -> None:
+        if is_link_or_reparse_point(source) or is_link_or_reparse_point(target):
+            relative = target.relative_to(target_dir).as_posix()
+            raise FileExistsError(
+                f"plugin profile contains an unsupported linked path: {relative}"
+            )
+        require_resolved_within(source, source_root, field="staged plugin profile")
+        require_resolved_within(target, target_root, field="plugin profile target")
+        if target.exists():
+            if source.is_dir() and target.is_dir():
+                for child in tuple(source.iterdir()):
+                    merge_path(child, target / child.name)
+                return
+            if source.is_file() and target.is_file():
+                # Existing user settings win. The staged copy is discarded
+                # with the staging root after promotion completes.
+                return
+            relative = target.relative_to(target_dir).as_posix()
+            raise FileExistsError(
+                f"plugin profile conflicts with an existing local path: {relative}"
+            )
+        source.rename(target)
+        moved.append((source, target))
+
+    try:
+        for child in tuple(source_dir.iterdir()):
+            merge_path(child, target_dir / child.name)
+    except Exception:
+        for source, target in reversed(moved):
+            if target.exists() or is_link_or_reparse_point(target):
+                if is_link_or_reparse_point(target):
+                    raise OSError("plugin profile rollback target became a linked path")
+                source.parent.mkdir(parents=True, exist_ok=True)
+                target.rename(source)
+        raise
+
+    return tuple(target for _source, target in moved)
+
+
+def _cleanup_operation_created_paths(created_paths: tuple[Path, ...]) -> None:
+    for created_path in sorted(
+        created_paths,
+        key=lambda path: len(path.parts),
+        reverse=True,
+    ):
+        if created_path.is_dir() and not is_link_or_reparse_point(created_path):
+            shutil.rmtree(created_path, ignore_errors=True)
+        else:
+            created_path.unlink(missing_ok=True)
 
 
 class PluginCliService:
@@ -150,7 +310,27 @@ class PluginCliService:
         install_source: Literal["imported"] | None = None,
         confirm_upgrade: bool = False,
         confirmation_token: str | None = None,
+        activate_installation: bool = True,
+        _mutation_guarded: bool = False,
+        _retain_rollback_metadata: bool = False,
     ) -> dict[str, object]:
+        if not _mutation_guarded:
+            async with _plugin_mutation_guard():
+                return await self.install(
+                    package=package,
+                    plugins_root=plugins_root,
+                    profiles_root=profiles_root,
+                    on_conflict=on_conflict,
+                    use_staging=use_staging,
+                    forced_directory_name=forced_directory_name,
+                    install_source=install_source,
+                    confirm_upgrade=confirm_upgrade,
+                    confirmation_token=confirmation_token,
+                    activate_installation=activate_installation,
+                    _mutation_guarded=True,
+                    _retain_rollback_metadata=_retain_rollback_metadata,
+                )
+
         plan_dict = await self.plan_install(
             package=package,
             plugins_root=plugins_root,
@@ -165,20 +345,104 @@ class PluginCliService:
                 details=plan_dict,
             )
         if action == "install":
-            result = await asyncio.to_thread(
-                self._install_sync,
-                package=package,
-                plugins_root=plugins_root,
-                profiles_root=profiles_root,
-                on_conflict=on_conflict,
-                use_staging=use_staging,
-                forced_directory_name=forced_directory_name,
+            source_manager = get_install_source_manager() if install_source else None
+            source_snapshot = source_manager.snapshot() if source_manager else None
+            inventory_snapshot = (
+                await asyncio.to_thread(capture_inventory_snapshot)
+                if activate_installation
+                else None
             )
-            return await self._record_requested_install_source(
-                install_result=result,
-                package=package,
-                source=install_source,
-            )
+            target_dirs: list[Path] = []
+            profile_dirs: list[Path] = []
+            rollback_created_paths: dict[Path, tuple[Path, ...]] = {}
+            try:
+                install_operation = asyncio.create_task(
+                    asyncio.to_thread(
+                        self._install_sync,
+                        package=package,
+                        plugins_root=plugins_root,
+                        profiles_root=profiles_root,
+                        on_conflict=on_conflict,
+                        use_staging=use_staging,
+                        forced_directory_name=forced_directory_name,
+                    )
+                )
+                try:
+                    result = await asyncio.shield(install_operation)
+                except asyncio.CancelledError:
+                    try:
+                        result = await upgrade_support.await_cancellation_safe(
+                            install_operation
+                        )
+                        target_dirs = self._extract_unpack_target_dirs(result)
+                        profile_dirs = self._extract_unpack_profile_dirs(result)
+                        rollback_created_paths = self._extract_rollback_created_paths(
+                            result,
+                            remove=not _retain_rollback_metadata,
+                        )
+                    except Exception as worker_exc:
+                        logger.error(
+                            "plugin install worker failed while cancellation was pending "
+                            "err_type={}",
+                            type(worker_exc).__name__,
+                        )
+                    raise
+                target_dirs = self._extract_unpack_target_dirs(result)
+                profile_dirs = self._extract_unpack_profile_dirs(result)
+                rollback_created_paths = self._extract_rollback_created_paths(
+                    result,
+                    remove=not _retain_rollback_metadata,
+                )
+                response = await self._record_requested_install_source(
+                    install_result=result,
+                    package=package,
+                    source=install_source,
+                    strict_write=True,
+                )
+                if activate_installation:
+                    await self._record_installations_for_result(
+                        response,
+                        source=install_source or "manual",
+                    )
+                if not _retain_rollback_metadata:
+                    response.pop("_rollback_created_paths", None)
+                return response
+            except asyncio.CancelledError as cancel_exc:
+                recovery_errors = await upgrade_support.await_cancellation_safe(
+                    self._rollback_install_state(
+                        source_manager=source_manager,
+                        source_snapshot=source_snapshot,
+                        inventory_snapshot=inventory_snapshot,
+                        saved=None,
+                        unpacked_target_dirs=target_dirs,
+                        unpacked_profile_dirs=profile_dirs,
+                        rollback_created_paths=rollback_created_paths,
+                        delete_saved_package=False,
+                    )
+                )
+                self._annotate_cancelled_rollback(cancel_exc, recovery_errors)
+                raise
+            except Exception as exc:
+                recovery_errors = await self._await_cleanup_before_cancellation(
+                    self._rollback_install_state(
+                        source_manager=source_manager,
+                        source_snapshot=source_snapshot,
+                        inventory_snapshot=inventory_snapshot,
+                        saved=None,
+                        unpacked_target_dirs=target_dirs,
+                        unpacked_profile_dirs=profile_dirs,
+                        rollback_created_paths=rollback_created_paths,
+                        delete_saved_package=False,
+                    )
+                )
+                if recovery_errors:
+                    raise ServerDomainError(
+                        code="PLUGIN_INSTALL_ROLLBACK_INCOMPLETE",
+                        message="plugin install failed and rollback was incomplete",
+                        status_code=500,
+                        details={"recovery_errors": recovery_errors},
+                    ) from exc
+                raise
 
         if not confirm_upgrade or not confirmation_token:
             raise ServerDomainError(
@@ -199,11 +463,11 @@ class PluginCliService:
         target_root = (
             _require_within(
                 Path(plugins_root).expanduser().resolve(),
-                policy.user_plugins_root,
+                policy.install_plugins_root,
                 field="plugins_root",
             )
             if plugins_root
-            else policy.user_plugins_root
+            else policy.install_plugins_root
         )
         directory_name = _require_safe_directory_name(
             str(plan_dict["directory_name"]),
@@ -228,19 +492,60 @@ class PluginCliService:
             field="installed_package_id",
         )
         profile_dir = profiles_root_path / installed_package_id
+        resolved_package_path = self._resolve_package_path(package)
         plan = self._apply_installed_package_identity(
             build_install_plan(
-                package_path=self._resolve_package_path(package),
+                package_path=resolved_package_path,
                 plugins_root=target_root,
             ),
             target_root=target_root,
             profiles_root=profiles_root_path,
         )
+        if (
+            plan.action != "upgrade"
+            or plan.plugin_id != str(plan_dict["plugin_id"])
+            or plan.directory_name != directory_name
+            or plan.package_id != str(plan_dict["package_id"])
+            or plan.confirmation_token != confirmation_token
+        ):
+            raise ServerDomainError(
+                code="PLUGIN_UPGRADE_PLAN_CHANGED",
+                message="installed plugin or package changed after upgrade confirmation",
+                status_code=409,
+                details=asdict(plan),
+            )
+        package_snapshot = await self._snapshot_package_mutation(
+            resolved_package_path
+        )
+        try:
+            source_manager = get_install_source_manager() if install_source else None
+            source_snapshot = source_manager.snapshot() if source_manager else None
+            inventory_snapshot = (
+                await self._await_sync_mutation(capture_inventory_snapshot)
+                if activate_installation
+                else None
+            )
+            incoming_package_state_files = (
+                await self._await_sync_mutation(
+                    collect_package_state_files,
+                    package_snapshot,
+                )
+            ).get(plan.plugin_id, {})
+            previous_package_state_files = await self._await_sync_mutation(
+                get_user_installation_package_state_files,
+                plan.plugin_id,
+                directory_name=directory_name,
+            )
+        except BaseException:
+            await upgrade_support.await_cancellation_safe(
+                asyncio.to_thread(package_snapshot.unlink, missing_ok=True)
+            )
+            raise
 
         async def install_new() -> dict[str, object]:
-            return await asyncio.to_thread(
+            return await self._await_sync_mutation(
                 self._install_sync,
-                package=package,
+                package=str(package_snapshot),
                 plugins_root=plugins_root,
                 profiles_root=profiles_root,
                 on_conflict="fail",
@@ -256,6 +561,38 @@ class PluginCliService:
         async def start(plugin_id: str) -> None:
             await upgrade_support.start_plugin_after_replace(plugin_id, strict=True)
 
+        async def validate_backup(backup_dir: Path) -> None:
+            confirmed_snapshot = await asyncio.to_thread(
+                build_confirmation_token,
+                package_path=package_snapshot,
+                target_dir=target_dir,
+                snapshot_dir=backup_dir,
+            )
+            if confirmed_snapshot != confirmation_token:
+                raise ServerDomainError(
+                    code="PLUGIN_UPGRADE_PLAN_CHANGED",
+                    message="installed plugin changed after upgrade confirmation",
+                    status_code=409,
+                    details={"plugin_id": plan.plugin_id},
+                )
+
+        async def commit_install(
+            install_result: dict[str, object],
+        ) -> dict[str, object]:
+            response = await self._record_requested_install_source(
+                install_result=install_result,
+                package=str(package_snapshot),
+                source=install_source,
+                strict_write=True,
+                package_filename=resolved_package_path.name,
+            )
+            if activate_installation:
+                await self._record_installations_for_result(
+                    response,
+                    source=install_source or "manual",
+                )
+            return response
+
         try:
             result = await upgrade_support.replace_plugin(
                 layout=resolve_plugin_layout(plan.plugin_id, target_dir),
@@ -267,14 +604,108 @@ class PluginCliService:
                 cleanup_backup=upgrade_support.remove_directory,
                 additional_targets=(profile_dir,),
                 preserve_targets=(profile_dir,),
+                previous_package_state_files=previous_package_state_files,
+                incoming_package_state_files=incoming_package_state_files,
+                validate_backup=validate_backup,
+                commit=commit_install,
             )
         except upgrade_support.ReplacePluginError as exc:
+            if exc.committed:
+                raise ServerDomainError(
+                    code="PLUGIN_REPLACEMENT_COMMITTED_CLEANUP_INCOMPLETE",
+                    message=(
+                        "Plugin replacement was committed, but transaction cleanup "
+                        "did not finish"
+                    ),
+                    status_code=500,
+                    details={
+                        "plugin_id": plan.plugin_id,
+                        "stage": exc.stage,
+                        "committed": True,
+                        "rollback_status": exc.rollback_status,
+                        "error_type": type(exc.cause).__name__,
+                    },
+                ) from exc
+
+            async def restore_replacement_metadata() -> bool:
+                metadata_restored = True
+                if source_manager is not None and source_snapshot is not None:
+                    try:
+                        await asyncio.to_thread(
+                            source_manager.restore_snapshot_for_rollback,
+                            source_snapshot,
+                        )
+                    except Exception:
+                        metadata_restored = False
+                if inventory_snapshot is not None:
+                    try:
+                        await asyncio.to_thread(
+                            restore_inventory_snapshot,
+                            inventory_snapshot,
+                        )
+                    except Exception:
+                        metadata_restored = False
+                return metadata_restored
+
+            metadata_rollback_completed = await self._await_cleanup_before_cancellation(
+                restore_replacement_metadata()
+            )
+            cause_code = getattr(exc.cause, "code", None)
+            if isinstance(exc.cause, ServerDomainError):
+                raise ServerDomainError(
+                    code=exc.cause.code,
+                    message=exc.cause.message,
+                    status_code=exc.cause.status_code,
+                    details={
+                        **exc.cause.details,
+                        "rollback_status": exc.rollback_status,
+                        "metadata_rollback_completed": metadata_rollback_completed,
+                    },
+                ) from exc
+            if cause_code == "PLUGIN_UPGRADE_PLAN_CHANGED":
+                raise ServerDomainError(
+                    code="PLUGIN_UPGRADE_PLAN_CHANGED",
+                    message="installed plugin or package changed after upgrade confirmation",
+                    status_code=409,
+                    details={
+                        "plugin_id": plan.plugin_id,
+                        "rollback_status": exc.rollback_status,
+                    },
+                ) from exc
+            state_conflict = isinstance(exc.cause, PackageStateConflictError)
             raise ServerDomainError(
-                code="PLUGIN_UPGRADE_ROLLED_BACK",
-                message="plugin upgrade failed and rollback was attempted",
-                status_code=500,
-                details={"stage": exc.stage, "rollback_status": exc.rollback_status},
+                code=(
+                    "PLUGIN_PACKAGE_STATE_CONFLICT"
+                    if state_conflict
+                    else "PLUGIN_UPGRADE_ROLLED_BACK"
+                ),
+                message=(
+                    "A package-owned data file was modified locally; the previous plugin version was restored."
+                    if state_conflict
+                    else "Package content verification failed; the previous plugin version was restored."
+                    if cause_code == "PLUGIN_PACKAGE_HASH_MISMATCH"
+                    else "Plugin upgrade failed; the previous version was restored."
+                ),
+                status_code=409 if state_conflict else 500,
+                details={
+                    "stage": exc.stage,
+                    "cause_code": cause_code,
+                    **(
+                        {"relative_path": exc.cause.relative_path}
+                        if state_conflict
+                        else {}
+                    ),
+                    "rollback_status": (
+                        exc.rollback_status
+                        if metadata_rollback_completed
+                        else "incomplete"
+                    ),
+                },
             ) from exc
+        finally:
+            await upgrade_support.await_cancellation_safe(
+                asyncio.to_thread(package_snapshot.unlink, missing_ok=True)
+            )
 
         response = {
             **result.install_result,
@@ -284,11 +715,120 @@ class PluginCliService:
             "restarted": result.restarted,
             "rollback_status": result.rollback_status,
         }
-        return await self._record_requested_install_source(
-            install_result=response,
-            package=package,
-            source=install_source,
-        )
+        response.pop("_rollback_created_paths", None)
+        return response
+
+    async def _record_installations_for_result(
+        self,
+        install_result: dict[str, object],
+        *,
+        source: str,
+    ) -> dict[str, object]:
+        plugin_ids: list[str] = []
+        running_plugin_ids: list[str] = []
+        expected_config_paths: dict[str, Path] = {}
+        package_state_files_by_plugin: dict[str, dict[str, str]] = {}
+        package_path = install_result.get("package_path")
+        if isinstance(package_path, str) and package_path:
+            package_state_files_by_plugin = await asyncio.to_thread(
+                collect_package_state_files,
+                package_path,
+            )
+        installed_plugins = install_result.get("installed_plugins")
+        if isinstance(installed_plugins, list):
+            for installed in installed_plugins:
+                if not isinstance(installed, dict):
+                    continue
+                target_dir_raw = installed.get("target_dir")
+                if not isinstance(target_dir_raw, str) or not target_dir_raw:
+                    continue
+                target_dir = Path(target_dir_raw)
+                plugin_id = await asyncio.to_thread(
+                    self._read_installed_plugin_toml_id,
+                    target_dir,
+                )
+                plugin_ids.append(plugin_id)
+                expected_config_paths[plugin_id] = (target_dir / "plugin.toml").resolve()
+                if await upgrade_support.plugin_is_running(plugin_id):
+                    running_plugin_ids.append(plugin_id)
+                installation_recorder = (
+                    record_managed_installation
+                    if self._path_policy().managed_plugins_root is not None
+                    and target_dir.parent.resolve(strict=False)
+                    == self._path_policy().install_plugins_root
+                    else record_user_installation
+                )
+                await self._await_sync_mutation(
+                    installation_recorder,
+                    plugin_id,
+                    directory_name=target_dir.name,
+                    package_id=str(install_result.get("package_id") or ""),
+                    source=source,
+                    package_state_files=package_state_files_by_plugin.get(plugin_id, {}),
+                )
+        activation: dict[str, object]
+        if running_plugin_ids:
+            activation = {
+                "status": "pending_restart",
+                "plugin_ids": sorted(set(plugin_ids)),
+                "reason": "currently_running_version_remains_active_until_restart",
+            }
+        elif plugin_ids:
+            refresh_result = await PluginRegistryService().refresh_registry()
+            matching_failures = [
+                failure
+                for failure in refresh_result.get("failed", [])
+                if isinstance(failure, dict)
+                and failure.get("plugin_id") in plugin_ids
+            ]
+            with plugin_state.acquire_plugins_read_lock():
+                projected_config_paths = {
+                    plugin_id: str(
+                        plugin_state.plugins.get(plugin_id, {}).get("config_path", "")
+                    )
+                    for plugin_id in plugin_ids
+                }
+            projection_missing = any(
+                not projected_config_paths.get(plugin_id)
+                or Path(projected_config_paths[plugin_id]).resolve()
+                != expected_config_paths[plugin_id]
+                for plugin_id in plugin_ids
+            )
+            if matching_failures or projection_missing:
+                activation = {
+                    "status": "blocked",
+                    "plugin_ids": sorted(set(plugin_ids)),
+                    "reason": str(
+                        matching_failures[0].get("error")
+                        if matching_failures
+                        else "selected_installation_not_projected"
+                    ),
+                }
+            else:
+                activation = {
+                    "status": "active",
+                    "plugin_ids": sorted(set(plugin_ids)),
+                    "reason": "user_installation_selected",
+                }
+        else:
+            activation = {
+                "status": "blocked",
+                "plugin_ids": [],
+                "reason": "installed_plugin_identity_missing",
+            }
+        install_result["activation"] = activation
+        if activation["status"] == "blocked":
+            raise ServerDomainError(
+                code="PLUGIN_INSTALLATION_ACTIVATION_BLOCKED",
+                message="installed plugin could not be activated safely",
+                status_code=409,
+                details={
+                    "plugin_ids": list(activation["plugin_ids"]),
+                    "reason": str(activation["reason"]),
+                    "available_actions": ["retry", "inspect_plugin_state"],
+                },
+            )
+        return activation
 
     async def _record_requested_install_source(
         self,
@@ -296,32 +836,147 @@ class PluginCliService:
         install_result: dict[str, object],
         package: str,
         source: Literal["imported"] | None,
+        strict_write: bool = False,
+        package_filename: str | None = None,
     ) -> dict[str, object]:
         if source is None:
             return install_result
 
         try:
             package_path = self._resolve_package_path(package)
-            package_sha256 = await asyncio.to_thread(self._sha256_file, package_path)
+            package_sha256 = await self._await_sync_mutation(
+                self._sha256_file,
+                package_path,
+            )
         except Exception as exc:
             logger.warning(
                 "prepare install source failed: err_type={}, err={}",
                 type(exc).__name__,
                 str(exc),
             )
+            if strict_write:
+                raise ServerDomainError(
+                    code="PLUGIN_INSTALL_SOURCE_PREPARE_FAILED",
+                    message="plugin install source could not be verified",
+                    status_code=500,
+                    details={"error_type": type(exc).__name__},
+                ) from exc
             return {
                 **install_result,
                 "install_source_warning": f"install_source_prepare_failed: {exc}",
             }
         warning = await self._record_install_source_best_effort(
             install_result=install_result,
-            package_filename=package_path.name,
+            package_filename=package_filename or package_path.name,
             package_sha256=package_sha256,
             override=None,
+            strict_write=strict_write,
         )
         if warning is None:
             return install_result
         return {**install_result, "install_source_warning": warning}
+
+    def _snapshot_package_for_operation(self, package_path: Path) -> Path:
+        snapshot_root = self._path_policy().package_artifacts_root / ".operation-snapshots"
+        snapshot_root.mkdir(parents=True, exist_ok=True)
+        snapshot_path = snapshot_root / f"{uuid.uuid4().hex}{package_path.suffix}"
+        try:
+            with package_path.open("rb") as source, snapshot_path.open("xb") as target:
+                shutil.copyfileobj(source, target)
+                target.flush()
+            return snapshot_path.resolve()
+        except BaseException:
+            snapshot_path.unlink(missing_ok=True)
+            raise
+
+    async def _snapshot_package_mutation(self, package_path: Path) -> Path:
+        operation = asyncio.create_task(
+            asyncio.to_thread(self._snapshot_package_for_operation, package_path)
+        )
+        try:
+            return await asyncio.shield(operation)
+        except asyncio.CancelledError:
+            snapshot_path: Path | None = None
+            try:
+                result = await upgrade_support.await_cancellation_safe(operation)
+                if isinstance(result, Path):
+                    snapshot_path = result
+            except Exception as operation_exc:
+                logger.error(
+                    "plugin package snapshot failed while cancellation was pending "
+                    "err_type={}",
+                    type(operation_exc).__name__,
+                )
+            if snapshot_path is not None:
+                await upgrade_support.await_cancellation_safe(
+                    asyncio.to_thread(snapshot_path.unlink, missing_ok=True)
+                )
+            raise
+
+    @staticmethod
+    async def _await_sync_mutation(function, /, *args, **kwargs):
+        operation = asyncio.create_task(asyncio.to_thread(function, *args, **kwargs))
+        try:
+            return await asyncio.shield(operation)
+        except asyncio.CancelledError:
+            try:
+                await upgrade_support.await_cancellation_safe(operation)
+            except Exception as operation_exc:
+                logger.error(
+                    "plugin package mutation failed while cancellation was pending "
+                    "err_type={}",
+                    type(operation_exc).__name__,
+                )
+            raise
+
+    @staticmethod
+    async def _await_cleanup_before_cancellation(operation):
+        cleanup = asyncio.ensure_future(operation)
+        try:
+            return await asyncio.shield(cleanup)
+        except asyncio.CancelledError:
+            await upgrade_support.await_cancellation_safe(cleanup)
+            raise
+
+    @staticmethod
+    def _annotate_cancelled_rollback(
+        cancel_exc: asyncio.CancelledError,
+        recovery_errors: list[str],
+    ) -> None:
+        if not recovery_errors:
+            return
+        setattr(cancel_exc, "rollback_code", "PLUGIN_INSTALL_ROLLBACK_INCOMPLETE")
+        setattr(cancel_exc, "recovery_errors", tuple(recovery_errors))
+        logger.error(
+            "plugin install cancellation rollback incomplete code={} errors={}",
+            "PLUGIN_INSTALL_ROLLBACK_INCOMPLETE",
+            ",".join(recovery_errors),
+        )
+
+    @staticmethod
+    async def _save_package_mutation(function, /, *args, **kwargs) -> dict[str, object]:
+        operation = asyncio.create_task(asyncio.to_thread(function, *args, **kwargs))
+        try:
+            return await asyncio.shield(operation)
+        except asyncio.CancelledError:
+            saved: dict[str, object] | None = None
+            try:
+                result = await upgrade_support.await_cancellation_safe(operation)
+                if isinstance(result, dict):
+                    saved = result
+            except Exception as operation_exc:
+                logger.error(
+                    "plugin package save failed while cancellation was pending "
+                    "err_type={}",
+                    type(operation_exc).__name__,
+                )
+            if saved is not None:
+                saved_path = saved.get("path")
+                if isinstance(saved_path, str) and saved_path:
+                    await upgrade_support.await_cancellation_safe(
+                        asyncio.to_thread(Path(saved_path).unlink, missing_ok=True)
+                    )
+            raise
 
     async def analyze(
         self,
@@ -345,16 +1000,78 @@ class PluginCliService:
         Returns metadata about the saved file including its server-side path,
         which can be passed to ``install`` or ``inspect``.
         """
-        return await asyncio.to_thread(self._save_uploaded_package_sync, filename=filename, content=content)
+        return await self._save_package_mutation(
+            self._save_uploaded_package_sync,
+            filename=filename,
+            content=content,
+        )
+
+    async def save_uploaded_file(
+        self,
+        *,
+        filename: str,
+        source_file: BinaryIO,
+    ) -> dict[str, object]:
+        """Stream an uploaded package into the managed package directory."""
+
+        return await self._save_package_mutation(
+            self._save_uploaded_file_sync,
+            filename=filename,
+            source_file=source_file,
+        )
+
+    async def _materialize_uploaded_package(
+        self,
+        *,
+        filename: str,
+        content: bytes | None,
+        source_file: BinaryIO | None,
+        package_path: str | None,
+    ) -> tuple[dict[str, object], str]:
+        if package_path is not None:
+            saved = await self._save_package_mutation(
+                self._save_package_file_sync,
+                filename=filename,
+                package_path=package_path,
+            )
+        elif source_file is not None:
+            saved = await self.save_uploaded_file(
+                filename=filename,
+                source_file=source_file,
+            )
+        else:
+            saved = await self.save_uploaded_package(
+                filename=filename,
+                content=content or b"",
+            )
+
+        try:
+            actual_sha256 = await self._await_sync_mutation(
+                self._sha256_file,
+                str(saved["path"]),
+            )
+        except (asyncio.CancelledError, Exception):
+            await upgrade_support.await_cancellation_safe(
+                asyncio.to_thread(
+                    Path(str(saved["path"])).unlink,
+                    missing_ok=True,
+                )
+            )
+            raise
+        return saved, actual_sha256
 
     async def upload_and_install(
         self,
         *,
         filename: str,
         content: bytes | None = None,
+        source_file: BinaryIO | None = None,
         package_path: str | None = None,
         on_conflict: str = "fail",
         install_source_override: dict[str, Any] | None = None,
+        activate_installation: bool = True,
+        record_install_source: bool = True,
+        _mutation_guarded: bool = False,
     ) -> dict[str, object]:
         """Upload, unpack, and atomically record the install source (design §3.3).
 
@@ -398,45 +1115,80 @@ class PluginCliService:
           error code.
         """
 
-        if content is None and package_path is None:
-            raise ValueError("upload_and_install requires content or package_path")
-        if content is not None and package_path is not None:
-            raise ValueError("upload_and_install accepts content or package_path, not both")
+        if not _mutation_guarded:
+            async with _plugin_mutation_guard():
+                return await self.upload_and_install(
+                    filename=filename,
+                    content=content,
+                    source_file=source_file,
+                    package_path=package_path,
+                    on_conflict=on_conflict,
+                    install_source_override=install_source_override,
+                    activate_installation=activate_installation,
+                    record_install_source=record_install_source,
+                    _mutation_guarded=True,
+                )
+
+        supplied_inputs = sum(
+            value is not None for value in (content, source_file, package_path)
+        )
+        if supplied_inputs != 1:
+            raise ValueError(
+                "upload_and_install requires exactly one of content, source_file, "
+                "or package_path"
+            )
+        if install_source_override is not None and not record_install_source:
+            raise ValueError(
+                "market uploads must record their install source"
+            )
 
         if install_source_override is None:
-            owns_saved_package = content is not None or package_path is not None
+            owns_saved_package = True
             saved: dict[str, object] | None = None
             unpacked_target_dirs: list[Path] = []
             unpacked_profile_dirs: list[Path] = []
-            if package_path is not None:
-                saved = await asyncio.to_thread(
-                    self._save_package_file_sync,
-                    filename=filename,
-                    package_path=package_path,
-                )
-                actual_sha256 = await asyncio.to_thread(
-                    self._sha256_file,
-                    str(saved["path"]),
-                )
-            else:
-                saved = await self.save_uploaded_package(
-                    filename=filename,
-                    content=content or b"",
-                )
-                actual_sha256 = hashlib.sha256(content or b"").hexdigest().lower()
+            source_manager: InstallSourceManager | None = None
+            source_snapshot = None
+            inventory_snapshot = None
+            rollback_created_paths: dict[Path, tuple[Path, ...]] = {}
+            saved, actual_sha256 = await self._materialize_uploaded_package(
+                filename=filename,
+                content=content,
+                source_file=source_file,
+                package_path=package_path,
+            )
             try:
+                if record_install_source:
+                    source_manager = self._require_install_source_manager()
+                    source_snapshot = source_manager.snapshot()
+                inventory_snapshot = (
+                    await asyncio.to_thread(capture_inventory_snapshot)
+                    if activate_installation
+                    else None
+                )
                 install_result = await self.install(
                     package=str(saved["path"]),
                     on_conflict=on_conflict,
                     use_staging=True,
+                    activate_installation=False,
+                    _retain_rollback_metadata=True,
                 )
                 unpacked_target_dirs = self._extract_unpack_target_dirs(install_result)
                 unpacked_profile_dirs = self._extract_unpack_profile_dirs(install_result)
-                warning = await self._record_install_source_best_effort(
-                    install_result=install_result,
-                    package_filename=str(saved["name"]),
-                    package_sha256=actual_sha256,
-                    override=None,
+                rollback_created_paths = self._extract_rollback_created_paths(
+                    install_result,
+                    remove=True,
+                )
+                warning = (
+                    await self._record_install_source_best_effort(
+                        install_result=install_result,
+                        package_filename=str(saved["name"]),
+                        package_sha256=actual_sha256,
+                        override=None,
+                        strict_write=True,
+                    )
+                    if record_install_source
+                    else None
                 )
                 payload: dict[str, object] = {
                     "upload": saved,
@@ -444,14 +1196,47 @@ class PluginCliService:
                 }
                 if warning is not None:
                     payload["install_source_warning"] = warning
+                if activate_installation:
+                    await self._record_installations_for_result(
+                        install_result,
+                        source="imported",
+                    )
                 return payload
-            except Exception:
-                self._cleanup_after_failure(
-                    saved=saved,
-                    unpacked_target_dirs=unpacked_target_dirs,
-                    unpacked_profile_dirs=unpacked_profile_dirs,
-                    delete_saved_package=owns_saved_package,
+            except asyncio.CancelledError as cancel_exc:
+                recovery_errors = await upgrade_support.await_cancellation_safe(
+                    self._rollback_install_state(
+                        source_manager=source_manager,
+                        source_snapshot=source_snapshot,
+                        inventory_snapshot=inventory_snapshot,
+                        saved=saved,
+                        unpacked_target_dirs=unpacked_target_dirs,
+                        unpacked_profile_dirs=unpacked_profile_dirs,
+                        rollback_created_paths=rollback_created_paths,
+                        delete_saved_package=owns_saved_package,
+                    )
                 )
+                self._annotate_cancelled_rollback(cancel_exc, recovery_errors)
+                raise
+            except Exception as exc:
+                recovery_errors = await self._await_cleanup_before_cancellation(
+                    self._rollback_install_state(
+                        source_manager=source_manager,
+                        source_snapshot=source_snapshot,
+                        inventory_snapshot=inventory_snapshot,
+                        saved=saved,
+                        unpacked_target_dirs=unpacked_target_dirs,
+                        unpacked_profile_dirs=unpacked_profile_dirs,
+                        rollback_created_paths=rollback_created_paths,
+                        delete_saved_package=owns_saved_package,
+                    )
+                )
+                if recovery_errors:
+                    raise ServerDomainError(
+                        code="PLUGIN_INSTALL_ROLLBACK_INCOMPLETE",
+                        message="plugin install failed and rollback was incomplete",
+                        status_code=500,
+                        details={"recovery_errors": recovery_errors},
+                    ) from exc
                 raise
 
         channel = install_source_override.get("channel")
@@ -466,31 +1251,59 @@ class PluginCliService:
         unpacked_target_dirs: list[Path] = []
         unpacked_profile_dirs: list[Path] = []
         owns_saved_package = False
+        source_manager: InstallSourceManager | None = None
+        source_snapshot = None
+        inventory_snapshot = None
+        rollback_created_paths: dict[Path, tuple[Path, ...]] = {}
 
         try:
             # Step 1 — materialise package bytes on disk when needed.
-            if package_path is not None:
-                saved = await asyncio.to_thread(
-                    self._save_package_file_sync,
-                    filename=filename,
-                    package_path=package_path,
-                )
-                actual_sha256 = await asyncio.to_thread(
-                    self._sha256_file,
-                    str(saved["path"]),
-                )
-                owns_saved_package = True
-            else:
-                saved = await self.save_uploaded_package(
-                    filename=filename,
-                    content=content or b"",
-                )
-                owns_saved_package = True
-                actual_sha256 = hashlib.sha256(content or b"").hexdigest().lower()
+            saved, actual_sha256 = await self._materialize_uploaded_package(
+                filename=filename,
+                content=content,
+                source_file=source_file,
+                package_path=package_path,
+            )
+            owns_saved_package = True
 
             # Step 2 — install/unpack into the user plugin root.
             saved_path = str(saved["path"])
             install_mode = install_source_override.get("mode") or "install"
+            market_detail_raw = install_source_override.get("market_detail") or {}
+            market_detail = dict(market_detail_raw)
+            expected_toml_id = market_detail.get("expected_plugin_toml_id")
+            if isinstance(expected_toml_id, str) and expected_toml_id:
+                inspected = await asyncio.to_thread(inspect_package, saved_path)
+                packaged_plugin_ids = [plugin.plugin_id for plugin in inspected.plugins]
+                if packaged_plugin_ids != [expected_toml_id]:
+                    actual_ids = ", ".join(packaged_plugin_ids) or "<none>"
+                    raise ValueError(
+                        "plugin identity mismatch: Market declared "
+                        f"'{expected_toml_id}' but the package contains "
+                        f"plugin id(s) '{actual_ids}'"
+                    )
+                market_version = market_detail.get("version")
+                packaged_version = (
+                    inspected.plugins[0].version if len(inspected.plugins) == 1 else ""
+                )
+                if (
+                    isinstance(market_version, str)
+                    and market_version.strip()
+                    and packaged_version
+                    and packaged_version != market_version.strip()
+                ):
+                    raise ValueError(
+                        "plugin version mismatch: Market declared "
+                        f"'{market_version.strip()}' but plugin.toml contains "
+                        f"'{packaged_version}'"
+                    )
+            source_manager = self._require_install_source_manager()
+            source_snapshot = source_manager.snapshot()
+            inventory_snapshot = (
+                await asyncio.to_thread(capture_inventory_snapshot)
+                if activate_installation
+                else None
+            )
             forced_directory_name = install_source_override.get("directory_name")
             use_staging = install_mode == "install" or isinstance(
                 forced_directory_name,
@@ -507,17 +1320,21 @@ class PluginCliService:
                     if isinstance(forced_directory_name, str)
                     else None
                 ),
+                activate_installation=False,
+                _retain_rollback_metadata=True,
             )
             unpacked_target_dirs = self._extract_unpack_target_dirs(unpack_result)
             unpacked_profile_dirs = self._extract_unpack_profile_dirs(unpack_result)
+            rollback_created_paths = self._extract_rollback_created_paths(
+                unpack_result,
+                remove=True,
+            )
             target_dir, _target_directory_plugin_id = self._extract_unpack_target(
                 unpack_result
             )
             package_plugin_id = self._read_installed_plugin_toml_id(target_dir)
 
             # Step 4 — degrade to imported when market_detail is incomplete.
-            market_detail_raw = install_source_override.get("market_detail") or {}
-            market_detail = dict(market_detail_raw)
             required_keys = ("plugin_market_id", "version", "package_url")
             missing = [k for k in required_keys if not market_detail.get(k)]
             if missing:
@@ -531,6 +1348,11 @@ class PluginCliService:
                     actual_sha256=actual_sha256,
                     package_id=str(unpack_result.get("package_id") or ""),
                 )
+                if activate_installation:
+                    await self._record_installations_for_result(
+                        unpack_result,
+                        source="imported",
+                    )
                 return self._compose_install_result(
                     saved=saved,
                     unpack_result=unpack_result,
@@ -538,33 +1360,8 @@ class PluginCliService:
                     warnings=warnings,
                 )
 
-            # Step 4b — plugin identity consistency check.
-            # When Market tells us "this is plugin X" by passing
-            # ``expected_plugin_toml_id`` (the Market plugin slug),
-            # the unpacked package's plugin.toml [plugin].id is expected
-            # to match. Fresh installs keep the historic soft-warning
-            # behavior because Market may still publish legacy slugs, but
-            # upgrade/reinstall must fail fast: the bridge rollback flow is
-            # keyed to the original plugin id and directory.
-            expected_toml_id = market_detail.get("expected_plugin_toml_id")
-            if (
-                isinstance(expected_toml_id, str)
-                and expected_toml_id
-                and package_plugin_id
-                and expected_toml_id != package_plugin_id
-            ):
-                message = (
-                    f"plugin identity mismatch: Market declared "
-                    f"'{expected_toml_id}' but the package contains "
-                    f"plugin id '{package_plugin_id}'"
-                )
-                if install_mode in ("upgrade", "reinstall"):
-                    raise ValueError(message)
-                warnings.append(
-                    f"{message}; install proceeds but please verify the "
-                    "package source"
-                )
-            # ``expected_plugin_toml_id`` is informational only — drop it
+            # The id was validated against the package before installation.
+            # Drop this routing-only field before persisting source detail.
             # before passing market_detail to ISM so it does not leak into
             # the lock entry's source_detail.
             market_detail.pop("expected_plugin_toml_id", None)
@@ -595,7 +1392,8 @@ class PluginCliService:
                 market_detail["payload_hash"] = unpacked_payload_hash
 
             # Step 6 — record into ISM with the right semantic.
-            mgr = self._require_install_source_manager()
+            assert source_manager is not None
+            mgr = source_manager
             root_id, directory_name = classify_plugin_path(
                 target_dir,
                 builtin_root=mgr.builtin_root,
@@ -647,6 +1445,11 @@ class PluginCliService:
                     }
                 )
 
+            if activate_installation:
+                await self._record_installations_for_result(
+                    unpack_result,
+                    source="market",
+                )
             return self._compose_install_result(
                 saved=saved,
                 unpack_result=unpack_result,
@@ -654,23 +1457,41 @@ class PluginCliService:
                 warnings=warnings,
             )
 
-        except InstallSourceError:
-            # Lock write failed — fs cleanup still runs, but propagate the
-            # structured error so Bridge can map it to ``lock_write_failed``.
-            self._cleanup_after_failure(
-                saved=saved,
-                unpacked_target_dirs=unpacked_target_dirs,
-                unpacked_profile_dirs=unpacked_profile_dirs,
-                delete_saved_package=owns_saved_package,
+        except asyncio.CancelledError as cancel_exc:
+            recovery_errors = await upgrade_support.await_cancellation_safe(
+                self._rollback_install_state(
+                    source_manager=source_manager,
+                    source_snapshot=source_snapshot,
+                    inventory_snapshot=inventory_snapshot,
+                    saved=saved,
+                    unpacked_target_dirs=unpacked_target_dirs,
+                    unpacked_profile_dirs=unpacked_profile_dirs,
+                    rollback_created_paths=rollback_created_paths,
+                    delete_saved_package=owns_saved_package,
+                )
             )
+            self._annotate_cancelled_rollback(cancel_exc, recovery_errors)
             raise
-        except Exception:
-            self._cleanup_after_failure(
-                saved=saved,
-                unpacked_target_dirs=unpacked_target_dirs,
-                unpacked_profile_dirs=unpacked_profile_dirs,
-                delete_saved_package=owns_saved_package,
+        except Exception as exc:
+            recovery_errors = await self._await_cleanup_before_cancellation(
+                self._rollback_install_state(
+                    source_manager=source_manager,
+                    source_snapshot=source_snapshot,
+                    inventory_snapshot=inventory_snapshot,
+                    saved=saved,
+                    unpacked_target_dirs=unpacked_target_dirs,
+                    unpacked_profile_dirs=unpacked_profile_dirs,
+                    rollback_created_paths=rollback_created_paths,
+                    delete_saved_package=owns_saved_package,
+                )
             )
+            if recovery_errors:
+                raise ServerDomainError(
+                    code="PLUGIN_INSTALL_ROLLBACK_INCOMPLETE",
+                    message="plugin install failed and rollback was incomplete",
+                    status_code=500,
+                    details={"recovery_errors": recovery_errors},
+                ) from exc
             raise
 
     @staticmethod
@@ -697,6 +1518,30 @@ class PluginCliService:
             if isinstance(target_dir_raw, str) and target_dir_raw:
                 target_dirs.append(Path(target_dir_raw))
         return target_dirs
+
+    @staticmethod
+    def _extract_rollback_created_paths(
+        install_result: dict[str, object],
+        *,
+        remove: bool,
+    ) -> dict[Path, tuple[Path, ...]]:
+        raw = install_result.get("_rollback_created_paths")
+        if remove:
+            install_result.pop("_rollback_created_paths", None)
+        if not isinstance(raw, dict):
+            return {}
+
+        parsed: dict[Path, tuple[Path, ...]] = {}
+        for target_raw, created_raw in raw.items():
+            if not isinstance(target_raw, str) or not isinstance(created_raw, list):
+                continue
+            created_paths = tuple(
+                Path(path_raw)
+                for path_raw in created_raw
+                if isinstance(path_raw, str) and path_raw
+            )
+            parsed[Path(target_raw)] = created_paths
+        return parsed
 
     @staticmethod
     def _extract_unpack_profile_dirs(unpack_result: dict[str, object]) -> list[Path]:
@@ -793,7 +1638,7 @@ class PluginCliService:
                 package_id=package_id,
             )
 
-        await asyncio.to_thread(_record)
+        await self._await_sync_mutation(_record)
         # Build a minimal install_dict mirroring the imported entry shape
         # (no version / channel for imported channel by design).
         return {
@@ -804,12 +1649,76 @@ class PluginCliService:
             "package_sha256": actual_sha256,
         }
 
+    async def _rollback_install_state(
+        self,
+        *,
+        source_manager: InstallSourceManager | None,
+        source_snapshot: Any,
+        inventory_snapshot: Any,
+        saved: dict[str, object] | None,
+        unpacked_target_dirs: list[Path],
+        unpacked_profile_dirs: list[Path],
+        rollback_created_paths: dict[Path, tuple[Path, ...]],
+        delete_saved_package: bool,
+    ) -> list[str]:
+        """Attempt every rollback step and report stable incomplete reasons."""
+
+        recovery_errors: list[str] = []
+        if source_manager is not None and source_snapshot is not None:
+            try:
+                await asyncio.to_thread(
+                    source_manager.restore_snapshot_for_rollback,
+                    source_snapshot,
+                )
+            except Exception as exc:
+                recovery_errors.append(
+                    f"install_source_restore:{type(exc).__name__}"
+                )
+        if inventory_snapshot is not None:
+            try:
+                await asyncio.to_thread(
+                    restore_inventory_snapshot,
+                    inventory_snapshot,
+                )
+            except Exception as exc:
+                recovery_errors.append(f"inventory_restore:{type(exc).__name__}")
+
+        self._cleanup_after_failure(
+            saved=saved,
+            unpacked_target_dirs=unpacked_target_dirs,
+            unpacked_profile_dirs=unpacked_profile_dirs,
+            rollback_created_paths=rollback_created_paths,
+            delete_saved_package=delete_saved_package,
+        )
+        fully_created_targets = [
+            path for path in unpacked_target_dirs if path not in rollback_created_paths
+        ]
+        if any(path.exists() for path in fully_created_targets):
+            recovery_errors.append("payload_cleanup_incomplete")
+        if any(
+            created_path.exists()
+            for created_paths in rollback_created_paths.values()
+            for created_path in created_paths
+        ):
+            recovery_errors.append("payload_cleanup_incomplete")
+        fully_created_profiles = [
+            path for path in unpacked_profile_dirs if path not in rollback_created_paths
+        ]
+        if any(path.exists() for path in fully_created_profiles):
+            recovery_errors.append("profile_cleanup_incomplete")
+        if delete_saved_package and saved is not None:
+            saved_path = saved.get("path")
+            if isinstance(saved_path, str) and saved_path and Path(saved_path).exists():
+                recovery_errors.append("saved_package_cleanup_incomplete")
+        return recovery_errors
+
     def _cleanup_after_failure(
         self,
         *,
         saved: dict[str, object] | None,
         unpacked_target_dirs: list[Path] | None = None,
         unpacked_profile_dirs: list[Path] | None = None,
+        rollback_created_paths: dict[Path, tuple[Path, ...]] | None = None,
         delete_saved_package: bool = True,
     ) -> None:
         """Best-effort fs cleanup on upload_and_install failure (R3.6).
@@ -821,9 +1730,20 @@ class PluginCliService:
         get logged but don't shadow the real error.
         """
 
+        created_by_target = rollback_created_paths or {}
         for unpacked_target_dir in unpacked_target_dirs or []:
+            if unpacked_target_dir in created_by_target:
+                _cleanup_operation_created_paths(
+                    created_by_target[unpacked_target_dir]
+                )
+                continue
             self._cleanup_failed_unpack(unpacked_target_dir)
         for unpacked_profile_dir in unpacked_profile_dirs or []:
+            if unpacked_profile_dir in created_by_target:
+                _cleanup_operation_created_paths(
+                    created_by_target[unpacked_profile_dir]
+                )
+                continue
             self._cleanup_failed_unpack(unpacked_profile_dir)
         if delete_saved_package and saved is not None:
             saved_path_raw = saved.get("path")
@@ -848,7 +1768,10 @@ class PluginCliService:
         """
 
         try:
-            shutil.rmtree(target_dir, ignore_errors=True)
+            if target_dir.is_dir() and not is_link_or_reparse_point(target_dir):
+                shutil.rmtree(target_dir, ignore_errors=True)
+            else:
+                target_dir.unlink(missing_ok=True)
         except OSError as exc:  # pragma: no cover — ignore_errors=True suppresses
             logger.warning(
                 "upload_and_install: _cleanup_failed_unpack({}) failed: {}",
@@ -1068,11 +1991,11 @@ class PluginCliService:
             target_root = (
                 _require_within(
                     Path(plugins_root).expanduser().resolve(),
-                    policy.user_plugins_root,
+                    policy.install_plugins_root,
                     field="plugins_root",
                 )
                 if plugins_root
-                else policy.user_plugins_root
+                else policy.install_plugins_root
             )
             profiles_root_path = (
                 _require_within(
@@ -1106,6 +2029,13 @@ class PluginCliService:
             return plan
 
         target_dir = target_root / plan.directory_name
+        inventory = get_inventory_resolution()
+        target_ownership: Literal["managed", "unmanaged"] = (
+            "managed"
+            if inventory.active_user_directories.get(plan.plugin_id.casefold())
+            == plan.directory_name
+            else "unmanaged"
+        )
         manager = get_install_source_manager()
         installed_package_id = (
             manager.package_id_for_directory(target_dir) if manager is not None else ""
@@ -1124,8 +2054,13 @@ class PluginCliService:
                 confirmation_token="",
                 reason="package_id_change",
                 installed_package_id=installed_package_id,
+                target_ownership=target_ownership,
             )
-        return replace(plan, installed_package_id=installed_package_id)
+        return replace(
+            plan,
+            installed_package_id=installed_package_id,
+            target_ownership=target_ownership,
+        )
 
     def _install_sync(
         self,
@@ -1138,8 +2073,9 @@ class PluginCliService:
         forced_directory_name: str | None = None,
     ) -> dict[str, object]:
         try:
+            rollback_created_paths: dict[Path, tuple[Path, ...]] = {}
             policy = self._path_policy()
-            install_plugins_root = policy.user_plugins_root
+            install_plugins_root = policy.install_plugins_root
             install_profiles_root = policy.package_profiles_root
             plugins_root_path = (
                 _require_within(Path(plugins_root).expanduser().resolve(), install_plugins_root, field="plugins_root")
@@ -1159,6 +2095,7 @@ class PluginCliService:
                     profiles_root=profiles_root_path,
                     on_conflict=on_conflict,
                     forced_directory_name=forced_directory_name,
+                    rollback_created_paths=rollback_created_paths,
                 )
             elif forced_directory_name is not None:
                 raise ValueError("forced_directory_name requires use_staging=True")
@@ -1169,7 +2106,13 @@ class PluginCliService:
                     profiles_root=profiles_root_path,
                     on_conflict=on_conflict,
                 )
-            return result.model_dump(mode="json")
+            payload = result.model_dump(mode="json")
+            if rollback_created_paths:
+                payload["_rollback_created_paths"] = {
+                    str(target): [str(path) for path in created_paths]
+                    for target, created_paths in rollback_created_paths.items()
+                }
+            return payload
         except Exception as exc:
             raise self._domain_error_from_exception(exc, action="install") from exc
 
@@ -1181,6 +2124,29 @@ class PluginCliService:
         profiles_root: Path,
         on_conflict: str,
         forced_directory_name: str | None = None,
+        rollback_created_paths: dict[Path, tuple[Path, ...]] | None = None,
+    ) -> InstallResult:
+        """Stage concurrently, but serialize final filesystem promotion."""
+
+        with _PLUGIN_INSTALL_PROMOTION_LOCK:
+            return self._install_via_staging_locked_sync(
+                package=package,
+                plugins_root=plugins_root,
+                profiles_root=profiles_root,
+                on_conflict=on_conflict,
+                forced_directory_name=forced_directory_name,
+                rollback_created_paths=rollback_created_paths,
+            )
+
+    def _install_via_staging_locked_sync(
+        self,
+        *,
+        package: Path,
+        plugins_root: Path,
+        profiles_root: Path,
+        on_conflict: str,
+        forced_directory_name: str | None = None,
+        rollback_created_paths: dict[Path, tuple[Path, ...]] | None = None,
     ) -> InstallResult:
         """Extract into a staging tree, then rename into place atomically."""
 
@@ -1196,6 +2162,7 @@ class PluginCliService:
         staging_profiles.mkdir(parents=True, exist_ok=True)
         installer = PackageInstaller()
         promoted_plugins: list[InstalledPlugin] = []
+        merged_payload_paths: dict[Path, tuple[Path, ...]] = {}
         promoted_profile: Path | None = None
 
         try:
@@ -1210,12 +2177,38 @@ class PluginCliService:
                 source_dir = Path(item.target_dir)
                 desired_name = forced_directory_name or item.target_plugin_id
                 desired = plugins_root / desired_name
-                final_dir = installer.resolve_plugin_target_dir(
-                    desired,
-                )
-                if source_dir.resolve() != final_dir.resolve():
-                    final_dir.parent.mkdir(parents=True, exist_ok=True)
-                    source_dir.rename(final_dir)
+                staged_plugin_id = self._read_installed_plugin_toml_id(source_dir)
+                final_dir: Path
+                if desired.exists():
+                    placeholder = classify_install_target_placeholder(
+                        desired,
+                        plugin_id=staged_plugin_id,
+                    )
+                    if placeholder == "empty":
+                        desired.rmdir()
+                    elif placeholder == "state_only":
+                        final_dir = desired.resolve()
+                        merged_payload_paths[final_dir] = _merge_staged_payload(
+                            source_dir,
+                            desired,
+                        )
+                    else:
+                        raise FileExistsError(f"plugin target already exists: {desired.name}")
+                if desired.exists():
+                    final_dir = desired.resolve()
+                else:
+                    final_dir = installer.resolve_plugin_target_dir(desired)
+                    if source_dir.resolve() != final_dir.resolve():
+                        final_dir.parent.mkdir(parents=True, exist_ok=True)
+                        source_dir.rename(final_dir)
+                if not (final_dir / "plugin.toml").is_file():
+                    merged = merged_payload_paths.pop(final_dir, ())
+                    for path in reversed(merged):
+                        if path.is_dir():
+                            shutil.rmtree(path, ignore_errors=True)
+                        else:
+                            path.unlink(missing_ok=True)
+                    raise ValueError(f"promoted plugin is missing plugin.toml: {final_dir}")
                 promoted_plugins.append(
                     InstalledPlugin(
                         source_folder=item.source_folder,
@@ -1224,21 +2217,32 @@ class PluginCliService:
                         renamed=(final_dir.name != item.source_folder),
                     )
                 )
-                if not (final_dir / "plugin.toml").is_file():
-                    raise ValueError(f"promoted plugin is missing plugin.toml: {final_dir}")
 
             if staged.profile_dir is not None:
                 source_profile = Path(staged.profile_dir)
-                desired_profile = installer.resolve_target_dir(
-                    profiles_root / source_profile.name,
-                    on_conflict=on_conflict,
-                )
-                if source_profile.resolve() != desired_profile.resolve():
+                requested_profile = profiles_root / source_profile.name
+                if requested_profile.exists():
+                    if not requested_profile.is_dir() or is_link_or_reparse_point(requested_profile):
+                        raise FileExistsError(
+                            "plugin profile conflicts with an existing local item"
+                        )
+                    desired_profile = requested_profile.resolve()
+                    merged_payload_paths[desired_profile] = (
+                        _merge_staged_profile_preserving_existing(
+                            source_profile,
+                            desired_profile,
+                        )
+                    )
+                else:
+                    desired_profile = installer.resolve_target_dir(
+                        requested_profile,
+                        on_conflict=on_conflict,
+                    )
                     desired_profile.parent.mkdir(parents=True, exist_ok=True)
                     source_profile.rename(desired_profile)
                 promoted_profile = desired_profile
 
-            return InstallResult(
+            result = InstallResult(
                 package_path=staged.package_path,
                 package_type=staged.package_type,
                 package_id=staged.package_id,
@@ -1251,11 +2255,28 @@ class PluginCliService:
                 payload_hash_verified=staged.payload_hash_verified,
                 conflict_strategy=on_conflict,
             )
+            if rollback_created_paths is not None:
+                rollback_created_paths.update(merged_payload_paths)
+            return result
         except Exception:
             for item in promoted_plugins:
-                shutil.rmtree(item.target_dir, ignore_errors=True)
+                target_dir = Path(item.target_dir)
+                merged = merged_payload_paths.get(target_dir, ())
+                if merged:
+                    for path in reversed(merged):
+                        if path.is_dir():
+                            shutil.rmtree(path, ignore_errors=True)
+                        else:
+                            path.unlink(missing_ok=True)
+                else:
+                    shutil.rmtree(target_dir, ignore_errors=True)
             if promoted_profile is not None:
-                shutil.rmtree(promoted_profile, ignore_errors=True)
+                if promoted_profile in merged_payload_paths:
+                    _cleanup_operation_created_paths(
+                        merged_payload_paths[promoted_profile]
+                    )
+                else:
+                    shutil.rmtree(promoted_profile, ignore_errors=True)
             raise
         finally:
             shutil.rmtree(staging_plugins, ignore_errors=True)
@@ -1360,6 +2381,79 @@ class PluginCliService:
                 "modified_at": datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat(),
             }
         except Exception as exc:
+            raise self._domain_error_from_exception(exc, action="upload") from exc
+
+    def _save_uploaded_file_sync(
+        self,
+        *,
+        filename: str,
+        source_file: BinaryIO,
+    ) -> dict[str, object]:
+        """Copy an upload stream with a hard limit and no unbounded read."""
+
+        dest: Path | None = None
+        try:
+            safe_name = Path(filename).name
+            if not safe_name:
+                raise ValueError("Invalid filename")
+            has_valid_suffix = any(
+                safe_name.endswith(suffix) for suffix in _ALLOWED_UPLOAD_SUFFIXES
+            )
+            if not has_valid_suffix:
+                allowed = ", ".join(sorted(_ALLOWED_UPLOAD_SUFFIXES))
+                raise ValueError(f"Unsupported file type. Allowed: {allowed}")
+
+            target_root = self._path_policy().package_artifacts_root
+            target_root.mkdir(parents=True, exist_ok=True)
+            stem = safe_name
+            suffix = ""
+            for allowed_suffix in sorted(
+                _ALLOWED_UPLOAD_SUFFIXES,
+                key=len,
+                reverse=True,
+            ):
+                if stem.endswith(allowed_suffix):
+                    suffix = allowed_suffix
+                    stem = stem[: -len(allowed_suffix)]
+                    break
+
+            dest = target_root / safe_name
+            while True:
+                try:
+                    with dest.open("xb") as output:
+                        total = 0
+                        while True:
+                            chunk = source_file.read(1024 * 1024)
+                            if not chunk:
+                                break
+                            total += len(chunk)
+                            if total > _UPLOAD_MAX_BYTES:
+                                raise ValueError(
+                                    f"File too large: more than {_UPLOAD_MAX_BYTES} bytes "
+                                    f"(max {_UPLOAD_MAX_BYTES // (1024 * 1024)} MB)"
+                                )
+                            output.write(chunk)
+                    break
+                except FileExistsError:
+                    unique = uuid.uuid4().hex[:8]
+                    dest = target_root / f"{stem}_{unique}{suffix}"
+                except Exception:
+                    dest.unlink(missing_ok=True)
+                    raise
+
+            stat = dest.stat()
+            return {
+                "name": dest.name,
+                "path": str(dest.resolve()),
+                "size_bytes": stat.st_size,
+                "modified_at": datetime.fromtimestamp(
+                    stat.st_mtime,
+                    tz=timezone.utc,
+                ).isoformat(),
+            }
+        except Exception as exc:
+            if dest is not None:
+                dest.unlink(missing_ok=True)
             raise self._domain_error_from_exception(exc, action="upload") from exc
 
     def _save_package_file_sync(self, *, filename: str, package_path: str) -> dict[str, object]:
@@ -1490,30 +2584,43 @@ class PluginCliService:
         package_filename: str,
         package_sha256: str,
         override: dict | None,
+        strict_write: bool = False,
     ) -> str | None:
         """Best-effort record the install source in the lock file (design §7.3).
 
         Returns ``None`` on success or a short human-readable warning
         string on failure (to be surfaced as ``install_source_warning``
-        per Req 9.6 / 10.8). This helper intentionally never raises: a
-        broken install-source subsystem must not mask a successful
-        plugin install.
+        per Req 9.6 / 10.8). ``strict_write`` promotes source persistence
+        failures into transaction failures so callers can roll back payload
+        and inventory together.
         """
         try:
             from plugin.server.application.install_source import (
                 get_install_source_manager,
             )
         except Exception as exc:
+            if strict_write:
+                raise
             return f"install_source_import_failed: {exc}"
 
         mgr = get_install_source_manager()
         if mgr is None:
+            if strict_write:
+                raise InstallSourceError(
+                    "install_source_manager_unavailable",
+                    "install source manager is unavailable",
+                )
             return "install_source_manager_unavailable"
         if mgr.is_degraded:
+            if strict_write:
+                raise InstallSourceError(
+                    "install_source_manager_degraded",
+                    str(mgr.degrade_reason or "install source manager is degraded"),
+                )
             return f"install_source_manager_degraded: {mgr.degrade_reason}"
 
         try:
-            await asyncio.to_thread(
+            await self._await_sync_mutation(
                 _record_install_source_for_install_result,
                 mgr,
                 install_result,
@@ -1528,12 +2635,12 @@ class PluginCliService:
                 type(exc).__name__,
                 str(exc),
             )
+            if strict_write:
+                raise
             # Design §13 Fix 12: for BUILTIN_CHANNEL_LOCKED errors,
             # surface a specifically-shaped warning so ops can grep for
             # internal bug triggers.
             try:
-                from plugin.server.application.install_source import InstallSourceError
-
                 if isinstance(exc, InstallSourceError):
                     if exc.code == "BUILTIN_CHANNEL_LOCKED":
                         details = exc.details
@@ -1550,7 +2657,10 @@ class PluginCliService:
     def _domain_error_from_exception(self, exc: Exception, *, action: str) -> ServerDomainError:
         if isinstance(exc, ServerDomainError):
             return exc
-        if isinstance(exc, FileNotFoundError):
+        if isinstance(exc, PackageValidationError):
+            status_code = 400
+            code = exc.code
+        elif isinstance(exc, FileNotFoundError):
             status_code = 404
             code = "PLUGIN_CLI_NOT_FOUND"
         elif isinstance(exc, FileExistsError):
@@ -1569,9 +2679,17 @@ class PluginCliService:
             type(exc).__name__,
             str(exc),
         )
+        message = str(exc)
+        if isinstance(exc, PackageValidationError):
+            message = _PACKAGE_VALIDATION_MESSAGES.get(
+                exc.code,
+                "The selected plugin package is invalid.",
+            )
+        elif isinstance(exc, FileExistsError):
+            message = "Plugin files conflict with an existing local installation."
         return ServerDomainError(
             code=code,
-            message=str(exc),
+            message=message,
             status_code=status_code,
             details={"action": action, "error_type": type(exc).__name__},
         )

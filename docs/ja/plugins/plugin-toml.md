@@ -71,7 +71,7 @@ name = "Smart Notes"
 entry = "plugin.plugins.smart_notes:SmartNotesPlugin"
 ```
 
-この 3 field は **必須** です。`id` は `^[A-Za-z0-9_-]+$` に一致し、一意でなければなりません。directory 名と揃えることを強く推奨します。不一致でも runtime load は可能ですが、profile lookup や tooling は `<plugin.id>/plugin.toml` を仮定する場合があります。`entry` は `module.path:ClassName` 形式で `NekoPluginBase` subclass を指す必要があり、`PluginRouter` は直接起動できません。
+この 3 field は **必須** です。`id` は `^[A-Za-z0-9_-]+$` に一致し、一意でなければなりません。インストール可能な package では、`payload/plugins/` 配下の directory 名が **`id` と完全に一致**する必要があります。不一致は plugin を書き込む前に installer が拒否します。source checkout でも同じ規則に従ってください。profile lookup と tooling は `<plugin.id>/plugin.toml` を使用します。`entry` は `module.path:ClassName` 形式で `NekoPluginBase` subclass を指す必要があり、`PluginRouter` は直接起動できません。
 
 通常の plugin では `type = "plugin"` は default なので省略できます。Adapter package のみ `type = "adapter"` を使います。削除済みの `extension` type と `[plugin.host]` table は拒否されます。
 

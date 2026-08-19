@@ -4,6 +4,7 @@
 from typing import Optional
 
 from fastapi import APIRouter, Query
+from pydantic import BaseModel, Field
 
 from plugin.logging_config import get_logger
 from plugin.server.application.plugins import (
@@ -21,6 +22,11 @@ logger = get_logger("server.routes.plugins")
 query_service = PluginQueryService()
 lifecycle_service = PluginLifecycleService()
 registry_service = PluginRegistryService()
+
+
+class PluginInstallationSwitchRequest(BaseModel):
+    selection_id: str = Field(min_length=1, max_length=255)
+    expected_generation: int = Field(ge=0)
 
 
 @router.get("/plugin/status")
@@ -83,6 +89,30 @@ async def refresh_plugins_endpoint(_: str = require_admin) -> dict[str, object]:
 async def reload_plugin_endpoint(plugin_id: str, _: str = require_admin) -> dict[str, object]:
     try:
         return await lifecycle_service.reload_plugin(plugin_id)
+    except ServerDomainError as error:
+        raise_http_from_domain(error, logger=logger)
+
+
+@router.get("/plugin/{plugin_id}/installations")
+async def list_plugin_installations_endpoint(plugin_id: str) -> dict[str, object]:
+    try:
+        return await registry_service.list_plugin_installations(plugin_id)
+    except ServerDomainError as error:
+        raise_http_from_domain(error, logger=logger)
+
+
+@router.post("/plugin/{plugin_id}/active-installation")
+async def switch_plugin_installation_endpoint(
+    plugin_id: str,
+    request: PluginInstallationSwitchRequest,
+    _: str = require_admin,
+) -> dict[str, object]:
+    try:
+        return await lifecycle_service.switch_plugin_installation(
+            plugin_id,
+            selection_id=request.selection_id,
+            expected_generation=request.expected_generation,
+        )
     except ServerDomainError as error:
         raise_http_from_domain(error, logger=logger)
 

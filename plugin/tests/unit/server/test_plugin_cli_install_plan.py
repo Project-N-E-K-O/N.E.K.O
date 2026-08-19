@@ -57,6 +57,50 @@ def test_plan_marks_new_single_plugin_as_install(tmp_path: Path) -> None:
     assert plan.confirmation_token == ""
 
 
+def test_plan_marks_empty_target_directory_as_install(tmp_path: Path) -> None:
+    package = _single_package(tmp_path, "demo")
+    (tmp_path / "plugins" / "demo").mkdir(parents=True)
+
+    plan = build_install_plan(package_path=package, plugins_root=tmp_path / "plugins")
+
+    assert plan.action == "install"
+    assert plan.plugin_id == "demo"
+    assert plan.reason == ""
+
+
+def test_plan_blocks_nonempty_target_without_plugin_manifest(tmp_path: Path) -> None:
+    package = _single_package(tmp_path, "demo")
+    target = tmp_path / "plugins" / "demo"
+    target.mkdir(parents=True)
+    (target / "unrelated.txt").write_text("keep", encoding="utf-8")
+
+    plan = build_install_plan(package_path=package, plugins_root=tmp_path / "plugins")
+
+    assert plan.action == "blocked"
+    assert plan.reason == "directory_identity_conflict"
+    assert (target / "unrelated.txt").read_text(encoding="utf-8") == "keep"
+
+
+def test_plan_allows_canonical_state_only_target(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(tmp_path))
+    package = _single_package(tmp_path, "demo")
+    target = tmp_path / "plugins" / "demo"
+    (target / "config").mkdir(parents=True)
+    (target / "data").mkdir()
+    (target / "cache").mkdir()
+    (target / "config" / "plugin.toml").write_text("user = true\n", encoding="utf-8")
+    (target / "data" / "value.txt").write_text("preserve\n", encoding="utf-8")
+
+    plan = build_install_plan(package_path=package, plugins_root=tmp_path / "plugins")
+
+    assert plan.action == "install"
+    assert plan.plugin_id == "demo"
+    assert plan.reason == ""
+
+
 def test_plan_marks_matching_existing_plugin_as_upgrade(tmp_path: Path) -> None:
     package = _single_package(tmp_path, "demo", version="2.0.0")
     _write_plugin(tmp_path / "plugins", plugin_id="demo", version="1.0.0")
@@ -115,7 +159,6 @@ def test_confirmation_token_streams_package_instead_of_reading_it_all_at_once(
     package_bytes = b"package-content" * 1024
     package_path.write_bytes(package_bytes)
     target_dir = _write_plugin(tmp_path / "plugins", "demo", "1.0.0")
-    manifest_bytes = (target_dir / "plugin.toml").read_bytes()
     original_read_bytes = Path.read_bytes
 
     def guarded_read_bytes(path: Path) -> bytes:
@@ -129,7 +172,24 @@ def test_confirmation_token_streams_package_instead_of_reading_it_all_at_once(
     expected.update(package_bytes)
     expected.update(b"\0")
     expected.update(str(target_dir.resolve()).encode("utf-8"))
-    expected.update(b"\0")
-    expected.update(manifest_bytes)
+    for relative_name in ("__init__.py", "plugin.toml"):
+        expected.update(b"\0path\0")
+        expected.update(relative_name.encode("utf-8"))
+        expected.update(b"\0file\0")
+        expected.update((target_dir / relative_name).read_bytes())
 
     assert confirmation_token(package_path=package_path, target_dir=target_dir) == expected.hexdigest()
+
+
+def test_confirmation_token_changes_when_working_copy_source_changes(
+    tmp_path: Path,
+) -> None:
+    package_path = tmp_path / "demo.neko-plugin"
+    package_path.write_bytes(b"package-content")
+    target_dir = _write_plugin(tmp_path / "plugins", "demo", "1.0.0")
+
+    before = confirmation_token(package_path=package_path, target_dir=target_dir)
+    (target_dir / "__init__.py").write_text("VALUE = 2\n", encoding="utf-8")
+    after = confirmation_token(package_path=package_path, target_dir=target_dir)
+
+    assert after != before

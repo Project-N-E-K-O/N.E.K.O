@@ -32,7 +32,11 @@ vi.mock('@/i18n', () => ({
   },
 }))
 
-import request, { formatHttpError, stripJsonContentTypeForFormData } from './request'
+import request, {
+  formatHttpError,
+  stripJsonContentTypeForFormData,
+  type ErrorDisplayRequestConfig,
+} from './request'
 
 type ErrorScenario = {
   message: string
@@ -184,6 +188,27 @@ describe('hosted panel error suppression', () => {
     }, {
       suppressPluginNotRunningMessage: true,
     } as AxiosRequestConfig)).rejects.toThrow('Request failed with status code 409')
+
+    expect(consoleError).not.toHaveBeenCalled()
+    expect(requestMocks.errorMessage).not.toHaveBeenCalled()
+    consoleError.mockRestore()
+  })
+
+  it('lets a domain workflow replace the global technical toast with one local message', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+
+    await expect(rejectWith({
+      message: 'Request failed with status code 400',
+      response: {
+        status: 400,
+        data: {
+          detail: "'plugin.toml' in 'C:\\Users\\name\\private.neko-plugin' contains invalid TOML",
+        },
+        headers: { 'x-error-code': 'PLUGIN_PACKAGE_PLUGIN_MANIFEST_INVALID' },
+      },
+    }, {
+      suppressErrorMessage: true,
+    } as ErrorDisplayRequestConfig)).rejects.toThrow('Request failed with status code 400')
 
     expect(consoleError).not.toHaveBeenCalled()
     expect(requestMocks.errorMessage).not.toHaveBeenCalled()

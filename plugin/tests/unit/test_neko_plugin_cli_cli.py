@@ -108,6 +108,86 @@ def test_cli_build_inspect_verify_and_install(tmp_path: Path, capsys: pytest.Cap
     assert "payload_hash_verified=True" in captured.out
 
 
+@pytest.mark.parametrize("protected_root_name", ["managed", "legacy"])
+@pytest.mark.parametrize("root_relation", ["exact", "child", "parent"])
+def test_cli_install_refuses_formal_runtime_plugin_roots(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    protected_root_name: str,
+    root_relation: str,
+) -> None:
+    from plugin import settings
+
+    plugin_dir = _make_plugin_dir(tmp_path / "source")
+    package_path = tmp_path / "cli_demo.neko-plugin"
+    assert neko_plugin_cli.main(["build", str(plugin_dir), "-o", str(package_path)]) == 0
+    managed_root = tmp_path / "runtime" / "plugin-installations"
+    legacy_root = tmp_path / "runtime" / "plugins"
+    monkeypatch.setattr(settings, "MANAGED_PLUGIN_INSTALLATIONS_ROOT", managed_root)
+    monkeypatch.setattr(settings, "USER_PLUGIN_CONFIG_ROOT", legacy_root)
+    protected_root = managed_root if protected_root_name == "managed" else legacy_root
+    requested_root = {
+        "exact": protected_root,
+        "child": protected_root / "developer-child",
+        "parent": protected_root.parent,
+    }[root_relation]
+
+    exit_code = neko_plugin_cli.main(
+        [
+            "install",
+            str(package_path),
+            "--plugins-root",
+            str(requested_root),
+            "--profiles-root",
+            str(tmp_path / "profiles"),
+        ]
+    )
+
+    assert exit_code == 1
+    assert not (requested_root / "cli_demo").exists()
+    captured = capsys.readouterr()
+    assert "Plugin Center" in captured.err
+
+
+@pytest.mark.parametrize("root_relation", ["exact", "child", "parent"])
+def test_cli_install_refuses_formal_runtime_profile_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    root_relation: str,
+) -> None:
+    from plugin import settings
+
+    plugin_dir = _make_plugin_dir(tmp_path / "source")
+    package_path = tmp_path / "cli_demo.neko-plugin"
+    assert neko_plugin_cli.main(["build", str(plugin_dir), "-o", str(package_path)]) == 0
+    runtime_profiles = tmp_path / "runtime" / ".neko-package-profiles"
+    monkeypatch.setattr(settings, "USER_PACKAGE_PROFILES_ROOT", runtime_profiles)
+    developer_plugins = tmp_path / "developer-plugins"
+    requested_profiles_root = {
+        "exact": runtime_profiles,
+        "child": runtime_profiles / "developer-child",
+        "parent": runtime_profiles.parent,
+    }[root_relation]
+
+    exit_code = neko_plugin_cli.main(
+        [
+            "install",
+            str(package_path),
+            "--plugins-root",
+            str(developer_plugins),
+            "--profiles-root",
+            str(requested_profiles_root),
+        ]
+    )
+
+    assert exit_code == 1
+    assert not (developer_plugins / "cli_demo").exists()
+    captured = capsys.readouterr()
+    assert "Plugin Center" in captured.err
+
+
 def test_cli_build_profile_prefers_config_example_over_legacy_manifest_config(tmp_path: Path) -> None:
     plugin_dir = _make_plugin_dir(tmp_path)
     (plugin_dir / "config.example.toml").write_text(

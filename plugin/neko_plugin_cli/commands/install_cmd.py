@@ -1,8 +1,9 @@
-"""neko-plugin install — install a package archive into plugin roots."""
+"""neko-plugin install — extract a package into developer roots."""
 
 from __future__ import annotations
 
 import argparse
+from pathlib import Path
 import sys
 
 from ..core import install_package
@@ -12,11 +13,22 @@ from ._resolve import resolve_package_path
 
 
 def register(subparsers: argparse._SubParsersAction, *, defaults: CliDefaults) -> None:
-    parser = subparsers.add_parser("install", help="Install a package archive")
+    parser = subparsers.add_parser(
+        "install",
+        help="Extract a package into developer roots (runtime installs use Plugin Center)",
+    )
     pkg_arg = parser.add_argument("package", help="Package file path or filename under target/")
     pkg_arg.complete = PACKAGE_FILE_COMPLETER  # type: ignore[attr-defined]
-    parser.add_argument("--plugins-root", default=str(defaults.plugins_root), help="Destination root for extracted plugin directories")
-    parser.add_argument("--profiles-root", default=str(defaults.profiles_root), help="Destination root for extracted package profiles")
+    parser.add_argument(
+        "--plugins-root",
+        default=str(defaults.plugins_root),
+        help="Developer destination for extracted plugin directories",
+    )
+    parser.add_argument(
+        "--profiles-root",
+        default=str(defaults.profiles_root),
+        help="Developer destination for extracted package profiles",
+    )
     parser.add_argument(
         "--on-conflict",
         choices=("fail",),
@@ -28,6 +40,15 @@ def register(subparsers: argparse._SubParsersAction, *, defaults: CliDefaults) -
 
 def handle(args: argparse.Namespace) -> int:
     defaults: CliDefaults = args._defaults
+
+    try:
+        _require_developer_install_roots(
+            plugins_root=Path(args.plugins_root),
+            profiles_root=Path(args.profiles_root),
+        )
+    except ValueError as exc:
+        print(f"[FAIL] {exc}", file=sys.stderr)
+        return 1
 
     try:
         package_path = resolve_package_path(args.package, defaults=defaults)
@@ -62,3 +83,45 @@ def handle(args: argparse.Namespace) -> int:
     if result.profile_dir is not None:
         print(f"  profiles={result.profile_dir}")
     return 0
+
+
+def _require_developer_install_roots(
+    *,
+    plugins_root: Path,
+    profiles_root: Path,
+) -> None:
+    """Keep the low-level CLI out of Plugin Center managed runtime roots."""
+
+    from plugin import settings
+
+    resolved_plugins_root = plugins_root.expanduser().resolve(strict=False)
+    resolved_profiles_root = profiles_root.expanduser().resolve(strict=False)
+    protected_plugin_roots = {
+        Path(settings.MANAGED_PLUGIN_INSTALLATIONS_ROOT)
+        .expanduser()
+        .resolve(strict=False),
+        Path(settings.USER_PLUGIN_CONFIG_ROOT).expanduser().resolve(strict=False),
+    }
+    protected_profiles_root = (
+        Path(settings.USER_PACKAGE_PROFILES_ROOT)
+        .expanduser()
+        .resolve(strict=False)
+    )
+
+    def paths_overlap(left: Path, right: Path) -> bool:
+        return left == right or left in right.parents or right in left.parents
+
+    if any(
+        paths_overlap(resolved_plugins_root, protected_root)
+        for protected_root in protected_plugin_roots
+    ):
+        raise ValueError(
+            "neko-plugin install is a developer extraction command and cannot "
+            "write a Plugin Center runtime root; install the package through "
+            "Plugin Center instead"
+        )
+    if paths_overlap(resolved_profiles_root, protected_profiles_root):
+        raise ValueError(
+            "neko-plugin install cannot write the Plugin Center runtime profile "
+            "root; choose a developer profile directory"
+        )

@@ -429,6 +429,7 @@ import { usePluginWorkbench } from '@/composables/usePluginWorkbench'
 import { useMarketAuth } from '@/composables/useMarketAuth'
 import { METRICS_REFRESH_INTERVAL } from '@/utils/constants'
 import { formatHttpError } from '@/utils/request'
+import { resolvePluginPackageErrorMessage } from '@/utils/pluginPackageError'
 import { resolveLocalizedText } from '@/utils/i18nLabel'
 import { useI18n } from 'vue-i18n'
 import type { PluginMeta } from '@/types/api'
@@ -925,12 +926,22 @@ async function handleImportFileChange(event: Event) {
     const result = await installImportedPackage(upload.path, { installSource: 'imported' })
     if (!result) return
     const count = result.installed_plugin_count ?? 0
-    ElMessage.success(t('plugins.importSuccess', { name: file.name, count }))
+    if (result.activation?.status === 'blocked') {
+      ElMessage.error(t('package.install.activationBlocked', {
+        reason: result.activation.reason,
+      }))
+    } else {
+      ElMessage.success(t(
+        result.activation?.status === 'pending_restart'
+          ? 'plugins.importSuccessRestartRequired'
+          : 'plugins.importSuccess',
+        { name: file.name, count },
+      ))
+    }
     await refreshAfterPluginChange()
   } catch (error: any) {
     console.error('Failed to import plugin package:', error)
-    const detail = formatHttpError(error)
-    ElMessage.error(detail ? t('plugins.importFailed') + ': ' + detail : t('plugins.importFailed'))
+    ElMessage.error(resolvePluginPackageErrorMessage(error, t, 'upload'))
   } finally {
     importing.value = false
   }

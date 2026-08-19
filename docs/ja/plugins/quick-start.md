@@ -15,6 +15,8 @@
 
 repository の `plugin/plugins/` の下に `hello_world/` を作ります。
 
+ここは N.E.K.O の source checkout にある built-in plugin の source root です。Core maintainer は配布 plugin をここで開発できます。third-party plugin は独立 repository または source directory を正本にし、`.neko-plugin` を build して install test を行ってください。インストール済み application の user-plugin directory を唯一の working copy にしないでください。手動コピーは unmanaged であり、同じ ID の built-in plugin より自動で有効になるわけではなく、明示 warning と確認後の import で置換されます。
+
 ```text
 plugin/plugins/hello_world/
 ├── plugin.toml

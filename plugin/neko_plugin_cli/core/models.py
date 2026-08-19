@@ -380,6 +380,7 @@ class InspectedPackagePlugin(_BaseModel):
     plugin_id: PluginIdValue
     archive_path: NonEmptyText
     has_plugin_toml: bool = True
+    version: OptionalText = ""
 
 
 class PackageDependencyPlugin(_BaseModel):

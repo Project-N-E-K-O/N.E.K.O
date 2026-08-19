@@ -177,8 +177,10 @@
             <MarketPluginCard
               :plugin="item"
               :installed="isInstalled(item)"
+              :market-managed="isMarketManaged(item)"
               :installing="installingId === item.id"
               :local-version="getLocalInstalledVersion(item)"
+              :local-source="getLocalInstallSource(item)"
               :yanked="isYanked(item)"
               :upgrading="upgradingId === item.id"
               @click="handlePluginClick(item)"
@@ -282,7 +284,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { ShoppingCart, Close, Link, Setting, Loading } from '@element-plus/icons-vue'
 import MarketPluginCard from '@/components/plugin/MarketPluginCard.vue'
 import LoadingSpinner from '@/components/common/LoadingSpinner.vue'
@@ -310,6 +312,12 @@ import { usePluginStore } from '@/stores/plugin'
 import { useUserPreferenceStore } from '@/stores/userPreference'
 import { narrowMarketChannel } from '@/utils/narrowChannel'
 import { openExternalUrl } from '@/utils/openExternal'
+import { resolvePluginPackageErrorCodeMessage } from '@/utils/pluginPackageError'
+import {
+  extractRepoPluginId,
+  findLocalPluginForMarket,
+  resolveExpectedMarketPluginId,
+} from '@/utils/marketInstallation'
 
 interface Props {
   embedded?: boolean
@@ -354,11 +362,24 @@ interface MarketInstallTask {
   total_bytes?: number | null
   error?: string | null
   error_code?: string | null
+  error_details?: Record<string, unknown> | null
+  available_actions?: string[]
+  correlation_id?: string | null
   cancel_requested?: boolean
   rollback?: {
     running?: boolean
     restored?: boolean
   } | null
+}
+
+interface MarketPendingConfirmation {
+  task_id: string
+  plugin_id: string
+  version: string
+  mode: 'install' | 'upgrade' | 'reinstall'
+  channel: string
+  package_sha256: string
+  package_host: string
 }
 
 const installTaskDialogVisible = ref(false)
@@ -367,6 +388,7 @@ const activeInstallPluginName = ref('')
 const activeInstallMode = ref<'install' | 'upgrade' | 'reinstall'>('install')
 const installTaskCancelling = ref(false)
 const marketInstallBusy = ref(false)
+const pendingConfirmationReviewBusy = ref(false)
 // 超过 INSTALL_OVERTIME_MS 只换文案提示，不再把任务伪造成 failed —— 那会让
 // installTaskDone 转真，把后端仍然接受的取消按钮一起抹掉。
 const installTaskOvertime = ref(false)
@@ -504,6 +526,8 @@ async function cancelInstallTask() {
 
 function resolveInstallTaskErrorMessage(task: MarketInstallTask): string {
   const code = task.error_code || ''
+  const packageMessage = resolvePluginPackageErrorCodeMessage(code, t)
+  if (packageMessage) return packageMessage
   if (code === 'version_already_at_target') return t('market.upgradeAlreadyAtTarget')
   if (code === 'upgrade_target_not_greater') return t('market.upgradeTargetNotGreater')
   if (code === 'plugin_not_installed_for_upgrade') return t('market.pluginNotInstalled')
@@ -534,11 +558,6 @@ const yankCache = new Map<
 >()
 const YANK_TTL_MS = 5 * 60 * 1000
 
-function extractRepoPluginId(githubRepo?: string): string | undefined {
-  const match = githubRepo?.match(/n\.e\.k\.o_plugin_([a-z_][a-z0-9_]*)/i)
-  return match?.[1]
-}
-
 function marketIdentityKeys(plugin: {
   slug?: string
   name?: string
@@ -561,26 +580,20 @@ function marketIdentityKeys(plugin: {
 }
 
 function resolveExpectedTomlId(plugin: Pick<MarketPlugin, 'slug' | 'github_repo'>): string | null {
-  return extractRepoPluginId(plugin.github_repo) || plugin.slug || null
+  return resolveExpectedMarketPluginId(plugin) || null
 }
 
 // ─── 本地插件对比：slug / repo plugin_id / lock 三路配对 ───────────
-const localPluginKeys = computed(() => {
-  const keys = new Set<string>()
-  for (const p of pluginStore.pluginsWithStatus) {
-    const id = String(p.id || '').toLowerCase()
-    const name = String(p.name || '').toLowerCase()
-    if (id) keys.add(id)
-    if (name) keys.add(name)
-  }
-  return keys
-})
+function resolveLocalPlugin(plugin: Pick<MarketPlugin, 'slug' | 'github_repo'>) {
+  return findLocalPluginForMarket(plugin, pluginStore.pluginsWithStatus)
+}
+
+function isMarketManaged(plugin: MarketPlugin): boolean {
+  return marketIdentityKeys(plugin).some((key) => installedByPid.value.has(key))
+}
 
 function isInstalled(plugin: MarketPlugin): boolean {
-  for (const key of marketIdentityKeys(plugin)) {
-    if (installedByPid.value.has(key)) return true
-  }
-  return marketIdentityKeys(plugin).some((key) => localPluginKeys.value.has(key))
+  return isMarketManaged(plugin) || Boolean(resolveLocalPlugin(plugin))
 }
 
 // ─── 工作台：过滤 + 分组 + 布局 ───────────────────────────────────
@@ -721,6 +734,83 @@ async function fetchBridge(
   if (!freshToken) return res
   res = await fetch(bridgeUrl(path, freshToken), init)
   return res
+}
+
+async function confirmLocalMarketInstall(taskId: string): Promise<boolean> {
+  try {
+    const res = await fetchBridge(`/market/tasks/${taskId}/confirm`, { method: 'POST' })
+    if (!res) {
+      ElMessage.warning(t('market.pairRequired'))
+      return false
+    }
+    if (res.ok) return true
+    ElMessage.error(t('market.installFailed'))
+  } catch {
+    ElMessage.error(t('market.installFailed'))
+  }
+  return false
+}
+
+async function reviewPendingMarketConfirmations(): Promise<void> {
+  if (
+    props.active === false ||
+    pendingConfirmationReviewBusy.value ||
+    marketInstallBusy.value
+  ) {
+    return
+  }
+  pendingConfirmationReviewBusy.value = true
+  try {
+    const res = await fetchBridge('/market/pending-confirmations')
+    if (!res?.ok) return
+    const pending = (await res.json()) as MarketPendingConfirmation[]
+    for (const item of pending) {
+      let accepted = false
+      try {
+        await ElMessageBox.confirm(
+          t('market.externalInstallConfirmationBody', {
+            id: item.plugin_id,
+            version: item.version || '-',
+            mode: item.mode,
+            channel: item.channel,
+            host: item.package_host,
+            sha256: item.package_sha256,
+          }),
+          t('market.externalInstallConfirmationTitle'),
+          {
+            confirmButtonText: t('common.confirm'),
+            cancelButtonText: t('common.cancel'),
+            type: 'warning',
+            closeOnClickModal: false,
+          },
+        )
+        accepted = true
+      } catch {
+        // Closing or declining the local dialog rejects this one-shot request.
+      }
+
+      if (!accepted) {
+        await fetchBridge(`/market/tasks/${item.task_id}/cancel`, { method: 'POST' }).catch(
+          () => null,
+        )
+        continue
+      }
+
+      marketInstallBusy.value = true
+      try {
+        if (!(await confirmLocalMarketInstall(item.task_id))) continue
+        await pollInstallTask(item.task_id, item.plugin_id, { mode: item.mode })
+      } finally {
+        marketInstallBusy.value = false
+      }
+    }
+  } finally {
+    pendingConfirmationReviewBusy.value = false
+  }
+}
+
+function handleWindowFocus() {
+  reviewPendingMarketConfirmations().catch(() => {})
 }
 
 let loadSeq = 0
@@ -1075,7 +1165,6 @@ async function handleInstall(plugin: MarketWorkbenchItem) {
     return
   }
   marketInstallBusy.value = true
-  let packageUrl = ''
   try {
     const payload = await resolveInstallPayload(plugin)
     if (!payload) {
@@ -1087,7 +1176,6 @@ async function handleInstall(plugin: MarketWorkbenchItem) {
       return
     }
 
-    packageUrl = payload.package_url
     installingId.value = plugin.id
     const res = await fetchBridge('/market/install', {
       method: 'POST',
@@ -1100,11 +1188,10 @@ async function handleInstall(plugin: MarketWorkbenchItem) {
         version: payload.version,
         channel: payload.channel,
         published_at: payload.published_at,
-        // v2 (Option C): 把 Market slug 作为期望的 plugin.toml id，让 bridge
-        // 在 unpack 后做身份一致性校验；不一致不阻塞，只 warn。
+        // Market slug 必须与包内 plugin.toml id 一致；不一致时 Core 拒绝落盘。
         expected_plugin_toml_id: resolveExpectedTomlId(plugin),
         mode: 'install',
-        on_conflict: 'rename',
+        on_conflict: 'fail',
       }),
     })
     if (!res) {
@@ -1115,6 +1202,7 @@ async function handleInstall(plugin: MarketWorkbenchItem) {
     if (res.ok) {
       const data = await res.json()
       if (data.task_id) {
+        if (!(await confirmLocalMarketInstall(data.task_id))) return
         await pollInstallTask(data.task_id, plugin.name)
       } else {
         ElMessage.success(t('market.installSuccess', { name: plugin.name }))
@@ -1126,8 +1214,7 @@ async function handleInstall(plugin: MarketWorkbenchItem) {
       ElMessage.error(err.detail || t('market.installFailed'))
     }
   } catch {
-    if (packageUrl) openExternalUrl(packageUrl)
-    else ElMessage.error(t('market.installFailed'))
+    ElMessage.error(t('market.installFailed'))
   } finally {
     installingId.value = null
     marketInstallBusy.value = false
@@ -1190,6 +1277,7 @@ async function handleUpgrade(plugin: MarketWorkbenchItem) {
     if (res.ok) {
       const data = await res.json()
       if (data.task_id) {
+        if (!(await confirmLocalMarketInstall(data.task_id))) return
         await pollInstallTask(data.task_id, plugin.name, { mode: 'upgrade' })
       }
     } else if (res.status === 400) {
@@ -1219,11 +1307,17 @@ async function handleUpgrade(plugin: MarketWorkbenchItem) {
  * 用作 MarketPluginCard 的 :local-version prop，让 card 内部走 semver 比较。
  */
 function getLocalInstalledVersion(plugin: MarketWorkbenchItem): string | undefined {
+  const localPlugin = resolveLocalPlugin(plugin)
+  if (localPlugin?.version) return localPlugin.version
   for (const key of marketIdentityKeys(plugin)) {
     const entry = installedByPid.value.get(key)
     if (entry?.installed_version) return entry.installed_version
   }
   return undefined
+}
+
+function getLocalInstallSource(plugin: MarketWorkbenchItem) {
+  return resolveLocalPlugin(plugin)?.install_source?.source || 'unknown'
 }
 
 function isYanked(plugin: MarketWorkbenchItem): boolean {
@@ -1244,13 +1338,16 @@ async function initialize() {
   if (pluginStore.pluginsWithStatus.length === 0) {
     pluginStore.fetchPlugins().catch(() => {})
   }
+  reviewPendingMarketConfirmations().catch(() => {})
 }
 
 onMounted(() => {
+  window.addEventListener('focus', handleWindowFocus)
   if (props.active !== false) initialize()
 })
 
 onBeforeUnmount(() => {
+  window.removeEventListener('focus', handleWindowFocus)
   if (searchDebounceTimer) {
     clearTimeout(searchDebounceTimer)
     searchDebounceTimer = null
@@ -1262,8 +1359,11 @@ onBeforeUnmount(() => {
 watch(
   () => props.active,
   (active) => {
-    if (active && plugins.value.length === 0 && !loading.value) {
-      initialize()
+    if (active) {
+      reviewPendingMarketConfirmations().catch(() => {})
+      if (plugins.value.length === 0 && !loading.value) {
+        initialize()
+      }
     }
   },
 )

@@ -71,7 +71,7 @@ name = "Smart Notes"
 entry = "plugin.plugins.smart_notes:SmartNotesPlugin"
 ```
 
-These three fields are **required**. `id` must match `^[A-Za-z0-9_-]+$` and must be unique. Keeping it equal to the folder name is strongly recommended: a mismatch can still load, but profile lookup and tooling may assume `<plugin.id>/plugin.toml`. `entry` must use `module.path:ClassName` and resolve to a `NekoPluginBase` subclass; a `PluginRouter` cannot be launched directly.
+These three fields are **required**. `id` must match `^[A-Za-z0-9_-]+$` and must be unique. For installable packages, the directory under `payload/plugins/` **must exactly equal** `id`; the installer rejects a mismatch before writing the plugin. Loose source checkouts should follow the same rule because runtime profiles and tooling use `<plugin.id>/plugin.toml`. `entry` must use `module.path:ClassName` and resolve to a `NekoPluginBase` subclass; a `PluginRouter` cannot be launched directly.
 
 For a normal plugin, `type = "plugin"` is optional because it is the default. Use `type = "adapter"` only for an Adapter package. The removed `extension` type and `[plugin.host]` table are rejected.
 

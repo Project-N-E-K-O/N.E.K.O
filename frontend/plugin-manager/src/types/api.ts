@@ -203,6 +203,36 @@ export interface PluginInstallSource {
   source_detail: PluginInstallSourceDetail
 }
 
+export interface PluginInstallationCandidate {
+  selection_id: string
+  kind: 'builtin' | 'managed' | 'legacy'
+  name: string
+  version: string
+  source: PluginInstallSourceChannel
+  installed_at: string | null
+  active: boolean
+  selectable: boolean
+  reason: string | null
+}
+
+export interface PluginInstallationProjection {
+  plugin_id: string
+  generation: number
+  status: 'selected' | 'deleted' | 'blocked'
+  reason: string
+  active_selection_id: string | null
+  candidates: PluginInstallationCandidate[]
+}
+
+export interface PluginInstallationSwitchResult {
+  success: boolean
+  changed: boolean
+  plugin_id: string
+  active_selection_id: string
+  generation: number
+  restarted: boolean
+}
+
 // JSON Schema（简化版），用于描述插件入口参数
 export interface JSONSchemaProperty {
   type?: string

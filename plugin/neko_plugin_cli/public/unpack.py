@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import shutil
 import zipfile
 
 from .models import UnpackedPlugin, UnpackResult
@@ -10,6 +11,7 @@ from .archive_utils import (
     read_manifest,
     read_metadata,
     safe_archive_path,
+    validate_archive_layout,
     validate_package_type,
     validate_plugin_layout,
     validate_plugin_manifest_types,
@@ -40,6 +42,7 @@ class PackageUnpacker:
         on_conflict = self.normalize_conflict_strategy(on_conflict)
 
         with zipfile.ZipFile(package_path) as archive:
+            validate_archive_layout(archive)
             manifest = read_manifest(archive)
             package_type = self.require_string(manifest, "package_type")
             package_id = self.require_string(manifest, "id")
@@ -182,7 +185,7 @@ class PackageUnpacker:
             return
         target_path.parent.mkdir(parents=True, exist_ok=True)
         with archive.open(info) as src, target_path.open("wb") as dst:
-            dst.write(src.read())
+            shutil.copyfileobj(src, dst, length=1024 * 1024)
 
     def resolve_target_dir(self, desired: Path, *, on_conflict: str) -> Path:
         if on_conflict == "fail":

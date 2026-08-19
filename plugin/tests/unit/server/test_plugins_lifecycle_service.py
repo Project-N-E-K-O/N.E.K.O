@@ -13,6 +13,11 @@ from plugin._types.exceptions import PluginLifecycleError
 from plugin.core import registry as registry_module
 from plugin.server.application.plugins import query_service as query_module
 from plugin.server.application.plugins import lifecycle_service as module
+from plugin.server.application.plugins.inventory_store import (
+    get_deleted_plugin_ids,
+    get_inventory_resolution,
+    record_user_installation,
+)
 from plugin.server.domain.errors import ServerDomainError
 from plugin.server.infrastructure import runtime_overrides as runtime_overrides_module
 from plugin.sdk.plugin.decorators import plugin_entry
@@ -73,6 +78,17 @@ class _CaptureLogger:
         self.errors.append(rendered)
 
 
+@pytest.fixture(autouse=True)
+def _isolate_plugin_deletion_state(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv(
+        "NEKO_PLUGIN_INSTALLATIONS_PATH",
+        str(tmp_path / "plugin-installations.json"),
+    )
+
+
 @pytest.mark.plugin_unit
 def test_get_plugin_config_path_returns_existing_file(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     root = tmp_path / "plugins"
@@ -84,6 +100,31 @@ def test_get_plugin_config_path_returns_existing_file(monkeypatch: pytest.Monkey
 
     resolved = module._get_plugin_config_path("demo")
     assert resolved == config_file.resolve()
+
+
+@pytest.mark.plugin_unit
+def test_get_plugin_config_path_prefers_explicit_user_installation(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    builtin_root = tmp_path / "builtin"
+    user_root = tmp_path / "user"
+    for root in (builtin_root, user_root):
+        config_file = root / "demo" / "plugin.toml"
+        config_file.parent.mkdir(parents=True)
+        config_file.write_text("[plugin]\nid='demo'\n", encoding="utf-8")
+    record_user_installation(
+        "demo",
+        directory_name="demo",
+        package_id="demo",
+        source="market",
+        path=tmp_path / "plugin-installations.json",
+    )
+    monkeypatch.setattr(module, "PLUGIN_CONFIG_ROOTS", (builtin_root, user_root))
+
+    assert module._get_plugin_config_path("demo") == (
+        user_root / "demo" / "plugin.toml"
+    ).resolve()
 
 
 @pytest.mark.plugin_unit
@@ -2053,6 +2094,215 @@ async def test_delete_plugin_removes_directory_and_metadata(
 
 @pytest.mark.plugin_unit
 @pytest.mark.asyncio
+async def test_delete_builtin_plugin_preserves_distribution_payload(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    builtin_root = tmp_path / "builtin"
+    user_root = tmp_path / "user"
+    plugin_dir = builtin_root / "builtin_demo"
+    config_path = plugin_dir / "plugin.toml"
+    plugin_dir.mkdir(parents=True)
+    user_root.mkdir(parents=True)
+    config_path.write_text(
+        "[plugin]\nid='builtin_demo'\nentry='tests.fake:Plugin'\n",
+        encoding="utf-8",
+    )
+    plugins_backup = copy.deepcopy(module.state.plugins)
+    hosts_backup = dict(module.state.plugin_hosts)
+    handlers_backup = dict(module.state.event_handlers)
+    cache_backup = copy.deepcopy(module.state._snapshot_cache)
+
+    try:
+        with module.state.acquire_plugins_write_lock():
+            module.state.plugins.clear()
+            module.state.plugins["builtin_demo"] = {
+                "id": "builtin_demo",
+                "name": "Built-in Demo",
+                "type": "plugin",
+                "config_path": str(config_path),
+                "entry_point": "tests.fake:Plugin",
+            }
+        with module.state.acquire_plugin_hosts_write_lock():
+            module.state.plugin_hosts.clear()
+        with module.state.acquire_event_handlers_write_lock():
+            module.state.event_handlers.clear()
+
+        async def _refresh_registry() -> dict[str, object]:
+            return {"success": True}
+
+        monkeypatch.setattr(module, "PLUGIN_CONFIG_ROOTS", (builtin_root, user_root))
+        monkeypatch.setattr(module.plugin_registry_service, "refresh_registry", _refresh_registry)
+        monkeypatch.setattr(module, "emit_lifecycle_event", lambda event: None)
+
+        response = await module.PluginLifecycleService().delete_plugin("builtin_demo")
+
+        assert response["deleted_from_disk"] is False
+        assert response["builtin_preserved"] is True
+        assert response["user_data_preserved"] is True
+        assert plugin_dir.is_dir()
+        state_path = Path(
+            str(tmp_path / "plugin-installations.json")
+        )
+        persisted = state_path.read_text(encoding="utf-8")
+        assert "builtin_demo" in persisted
+        with module.state.acquire_plugins_read_lock():
+            assert "builtin_demo" not in module.state.plugins
+    finally:
+        with module.state.acquire_plugins_write_lock():
+            module.state.plugins.clear()
+            module.state.plugins.update(plugins_backup)
+        with module.state.acquire_plugin_hosts_write_lock():
+            module.state.plugin_hosts.clear()
+            module.state.plugin_hosts.update(hosts_backup)
+        with module.state.acquire_event_handlers_write_lock():
+            module.state.event_handlers.clear()
+            module.state.event_handlers.update(handlers_backup)
+        with module.state._snapshot_cache_lock:
+            module.state._snapshot_cache = cache_backup
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_delete_user_overlay_preserves_state_and_falls_back_to_builtin(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    plugin_id = "overlay_demo"
+    builtin_root = tmp_path / "builtin"
+    user_root = tmp_path / "user"
+    builtin_dir = builtin_root / plugin_id
+    user_dir = user_root / plugin_id
+    builtin_dir.mkdir(parents=True)
+    user_dir.mkdir(parents=True)
+    builtin_manifest = builtin_dir / "plugin.toml"
+    user_manifest = user_dir / "plugin.toml"
+    builtin_manifest.write_text(
+        f"[plugin]\nid='{plugin_id}'\nversion='1.0.0'\nentry='tests.fake:Plugin'\n",
+        encoding="utf-8",
+    )
+    user_manifest.write_text(
+        f"[plugin]\nid='{plugin_id}'\nversion='2.0.0'\nentry='tests.fake:Plugin'\n",
+        encoding="utf-8",
+    )
+    (user_dir / "plugin.py").write_text("VERSION = 2\n", encoding="utf-8")
+    (user_dir / "data").mkdir()
+    user_state = user_dir / "data" / "user.db"
+    user_state.write_bytes(b"persistent-user-state")
+    inventory_path = tmp_path / "plugin-installations.json"
+    monkeypatch.setenv("NEKO_PLUGIN_INSTALLATIONS_PATH", str(inventory_path))
+    record_user_installation(
+        plugin_id,
+        directory_name=plugin_id,
+        package_id=plugin_id,
+        source="market",
+        path=inventory_path,
+    )
+
+    plugins_backup = copy.deepcopy(module.state.plugins)
+    hosts_backup = dict(module.state.plugin_hosts)
+    handlers_backup = dict(module.state.event_handlers)
+    cache_backup = copy.deepcopy(module.state._snapshot_cache)
+    lifecycle_calls: list[str] = []
+    source_calls: list[tuple[Path, str]] = []
+
+    class _StrictSourceManager:
+        def snapshot(self) -> object:
+            return object()
+
+        def mark_removed(
+            self,
+            *,
+            directory_path: Path,
+            reason: str,
+        ) -> None:
+            source_calls.append((directory_path, reason))
+
+        def restore_snapshot_for_rollback(self, _snapshot: object) -> None:
+            return
+
+    try:
+        with module.state.acquire_plugins_write_lock():
+            module.state.plugins.clear()
+            module.state.plugins[plugin_id] = {
+                "id": plugin_id,
+                "config_path": str(user_manifest),
+                "entry_point": "tests.fake:Plugin",
+            }
+        with module.state.acquire_plugin_hosts_write_lock():
+            module.state.plugin_hosts.clear()
+        with module.state.acquire_event_handlers_write_lock():
+            module.state.event_handlers.clear()
+
+        async def _refresh_registry() -> dict[str, object]:
+            return {"success": True}
+
+        async def _stop(_plugin_id: str) -> dict[str, object]:
+            lifecycle_calls.append("stop")
+            return {"success": True}
+
+        async def _start(
+            _plugin_id: str,
+            **_kwargs: object,
+        ) -> dict[str, object]:
+            lifecycle_calls.append("start")
+            return {"success": True}
+
+        monkeypatch.setattr(module, "PLUGIN_CONFIG_ROOTS", (builtin_root, user_root))
+        monkeypatch.setattr(
+            module,
+            "get_install_source_manager",
+            lambda: _StrictSourceManager(),
+        )
+        monkeypatch.setattr(module, "_plugin_is_running_sync", lambda _plugin_id: True)
+        monkeypatch.setattr(
+            module.PluginLifecycleService,
+            "stop_plugin",
+            staticmethod(_stop),
+        )
+        monkeypatch.setattr(
+            module.PluginLifecycleService,
+            "start_plugin",
+            staticmethod(_start),
+        )
+        monkeypatch.setattr(
+            module.plugin_registry_service,
+            "refresh_registry",
+            _refresh_registry,
+        )
+        monkeypatch.setattr(module, "emit_lifecycle_event", lambda event: None)
+
+        response = await module.PluginLifecycleService().delete_plugin(plugin_id)
+
+        assert response["deletion_scope"] == "user_overlay"
+        assert response["fallback_to_builtin"] is True
+        assert response["fallback_runtime_started"] is True
+        assert response["fallback_runtime_error"] is None
+        assert lifecycle_calls == ["stop", "start"]
+        assert source_calls == [(user_dir, "user_overlay_removed")]
+        assert builtin_manifest.is_file()
+        assert not user_manifest.exists()
+        assert not (user_dir / "plugin.py").exists()
+        assert user_state.read_bytes() == b"persistent-user-state"
+        resolution = get_inventory_resolution(path=inventory_path)
+        assert resolution.deleted_plugin_ids == frozenset()
+        assert resolution.active_user_directories == {}
+    finally:
+        with module.state.acquire_plugins_write_lock():
+            module.state.plugins.clear()
+            module.state.plugins.update(plugins_backup)
+        with module.state.acquire_plugin_hosts_write_lock():
+            module.state.plugin_hosts.clear()
+            module.state.plugin_hosts.update(hosts_backup)
+        with module.state.acquire_event_handlers_write_lock():
+            module.state.event_handlers.clear()
+            module.state.event_handlers.update(handlers_backup)
+        with module.state._snapshot_cache_lock:
+            module.state._snapshot_cache = cache_backup
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
 async def test_delete_plugin_stops_running_host_before_removing(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -2122,6 +2372,102 @@ async def test_delete_plugin_stops_running_host_before_removing(
             module.state.event_handlers.update(handlers_backup)
         with module.state._snapshot_cache_lock:
             module.state._snapshot_cache = cache_backup
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_delete_directory_failure_does_not_leave_hidden_plugin(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    plugin_id = "delete_failure_demo"
+    plugin_dir = tmp_path / plugin_id
+    plugin_dir.mkdir()
+    config_path = plugin_dir / "plugin.toml"
+    config_path.write_text(
+        f"[plugin]\nid='{plugin_id}'\nentry='tests.fake:Plugin'\n",
+        encoding="utf-8",
+    )
+    with module.state.acquire_plugins_write_lock():
+        module.state.plugins[plugin_id] = {
+            "id": plugin_id,
+            "config_path": str(config_path),
+            "entry_point": "tests.fake:Plugin",
+        }
+
+    monkeypatch.setattr(module, "PLUGIN_CONFIG_ROOTS", (tmp_path,))
+    monkeypatch.setattr(
+        module,
+        "_delete_plugin_directory_sync",
+        lambda _path: (_ for _ in ()).throw(PermissionError("simulated delete denial")),
+    )
+
+    with pytest.raises(ServerDomainError) as exc_info:
+        await module.PluginLifecycleService().delete_plugin(plugin_id)
+
+    assert exc_info.value.code == "PLUGIN_DELETE_FAILED"
+    assert plugin_dir.is_dir()
+    assert plugin_id not in get_deleted_plugin_ids()
+    with module.state.acquire_plugins_read_lock():
+        assert plugin_id in module.state.plugins
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_delete_marker_failure_restarts_previously_running_plugin(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    plugin_id = "delete_marker_failure_demo"
+    builtin_root = tmp_path / "builtin"
+    user_root = tmp_path / "user"
+    plugin_dir = builtin_root / plugin_id
+    plugin_dir.mkdir(parents=True)
+    user_root.mkdir()
+    config_path = plugin_dir / "plugin.toml"
+    config_path.write_text(
+        f"[plugin]\nid='{plugin_id}'\nentry='tests.fake:Plugin'\n",
+        encoding="utf-8",
+    )
+    with module.state.acquire_plugins_write_lock():
+        module.state.plugins[plugin_id] = {
+            "id": plugin_id,
+            "config_path": str(config_path),
+            "entry_point": "tests.fake:Plugin",
+        }
+
+    running = True
+    calls: list[str] = []
+
+    async def stop(_plugin_id: str) -> dict[str, object]:
+        nonlocal running
+        running = False
+        calls.append("stop")
+        return {"success": True}
+
+    async def start(_plugin_id: str, **_kwargs: object) -> dict[str, object]:
+        nonlocal running
+        running = True
+        calls.append("start")
+        return {"success": True}
+
+    monkeypatch.setattr(module, "PLUGIN_CONFIG_ROOTS", (builtin_root, user_root))
+    monkeypatch.setattr(module, "_plugin_is_running_sync", lambda _plugin_id: True)
+    monkeypatch.setattr(module.PluginLifecycleService, "stop_plugin", staticmethod(stop))
+    monkeypatch.setattr(module.PluginLifecycleService, "start_plugin", staticmethod(start))
+    monkeypatch.setattr(
+        module,
+        "mark_plugin_deleted",
+        lambda _plugin_id: (_ for _ in ()).throw(OSError("simulated marker failure")),
+    )
+
+    with pytest.raises(ServerDomainError) as exc_info:
+        await module.PluginLifecycleService().delete_plugin(plugin_id)
+
+    assert exc_info.value.code == "PLUGIN_DELETE_FAILED"
+    assert calls == ["stop", "start"]
+    assert running is True
+    assert plugin_dir.is_dir()
 
 
 @pytest.mark.plugin_unit

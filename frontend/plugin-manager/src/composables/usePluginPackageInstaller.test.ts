@@ -7,7 +7,7 @@ import {
   type PluginCliInstallPlanResponse,
   type PluginCliInstallResponse,
 } from '@/api/pluginCli'
-import { ElMessageBox } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 
 vi.mock('vue-i18n', () => ({
   useI18n: () => ({
@@ -44,6 +44,7 @@ const replacePlan: PluginCliInstallPlanResponse = {
   confirmation_token: 'a'.repeat(64),
   reason: '',
   legacy_plugin_ids: [],
+  target_ownership: 'managed',
 }
 
 const replaceResponse: PluginCliInstallResponse = {
@@ -94,5 +95,37 @@ describe('usePluginPackageInstaller', () => {
       confirmation_token: 'a'.repeat(64),
     })
     expect(response).toEqual(replaceResponse)
+  })
+
+  it('warns explicitly before replacing an unmanaged developer folder', async () => {
+    vi.mocked(planPluginInstall).mockResolvedValue({
+      ...replacePlan,
+      target_ownership: 'unmanaged',
+    })
+    vi.mocked(ElMessageBox.confirm).mockResolvedValue({ action: 'confirm', value: '' } as any)
+    vi.mocked(installPluginPackage).mockResolvedValue(replaceResponse)
+    const installer = usePluginPackageInstaller()
+
+    await installer.installPackagePath('/packages/demo.neko-plugin')
+
+    expect(ElMessageBox.confirm).toHaveBeenCalledWith(
+      expect.stringContaining('package.install.upgradeUnmanagedBody'),
+      expect.any(String),
+      expect.any(Object),
+    )
+  })
+
+  it('shows one classified message when package inspection is rejected', async () => {
+    vi.mocked(planPluginInstall).mockRejectedValue({
+      response: {
+        data: { detail: 'technical parser detail' },
+        headers: { 'x-error-code': 'PLUGIN_PACKAGE_MANIFEST_MISSING' },
+      },
+    })
+    const installer = usePluginPackageInstaller()
+
+    expect(await installer.installPackagePath('/packages/broken.neko-plugin')).toBeNull()
+    expect(ElMessage.error).toHaveBeenCalledTimes(1)
+    expect(ElMessage.error).toHaveBeenCalledWith('package.install.error.manifestMissing')
   })
 })

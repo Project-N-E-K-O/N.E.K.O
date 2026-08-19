@@ -45,6 +45,65 @@ async def test_plugins_refresh_routes_delegate_to_registry_service(
 
 
 @pytest.mark.asyncio
+async def test_plugin_installation_routes_delegate_generation_bound_selection(
+    plugin_route_test_app: FastAPI,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    switch_calls: list[tuple[str, str, int]] = []
+
+    async def _list_installations(plugin_id: str) -> dict[str, object]:
+        return {
+            "plugin_id": plugin_id,
+            "generation": 7,
+            "status": "selected",
+            "reason": "builtin_default",
+            "active_selection_id": "builtin:demo",
+            "candidates": [],
+        }
+
+    async def _switch_installation(
+        plugin_id: str,
+        *,
+        selection_id: str,
+        expected_generation: int,
+    ) -> dict[str, object]:
+        switch_calls.append((plugin_id, selection_id, expected_generation))
+        return {
+            "success": True,
+            "changed": True,
+            "plugin_id": plugin_id,
+            "active_selection_id": selection_id,
+            "generation": expected_generation + 1,
+            "restarted": False,
+        }
+
+    monkeypatch.setattr(
+        route_module.registry_service,
+        "list_plugin_installations",
+        _list_installations,
+    )
+    monkeypatch.setattr(
+        route_module.lifecycle_service,
+        "switch_plugin_installation",
+        _switch_installation,
+    )
+
+    transport = ASGITransport(app=plugin_route_test_app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        list_response = await client.get("/plugin/demo/installations")
+        switch_response = await client.post(
+            "/plugin/demo/active-installation",
+            json={"selection_id": "managed:demo", "expected_generation": 7},
+        )
+
+    assert list_response.status_code == 200
+    assert list_response.json()["active_selection_id"] == "builtin:demo"
+    assert switch_response.status_code == 200
+    assert switch_response.json()["active_selection_id"] == "managed:demo"
+    assert switch_calls == [("demo", "managed:demo", 7)]
+
+
+@pytest.mark.asyncio
 async def test_delete_plugin_route_delegates_to_lifecycle_service(
     plugin_route_test_app: FastAPI,
     monkeypatch: pytest.MonkeyPatch,

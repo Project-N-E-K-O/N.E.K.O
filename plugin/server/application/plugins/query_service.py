@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 from collections.abc import Mapping
+from pathlib import Path
 
 from plugin.core.state import state
 from plugin.core.status import status_manager
@@ -16,6 +17,11 @@ from plugin.server.application.install_source import (
     get_install_source_manager,
 )
 from plugin.server.application.plugins.ui_query_service import _build_plugin_list_actions_from_meta
+from plugin.server.application.plugins.inventory_store import (
+    ActiveInstallation,
+    PluginInventoryError,
+    get_inventory_resolution,
+)
 from plugin.server.domain import IO_RUNTIME_ERRORS
 from plugin.server.domain.errors import ServerDomainError
 from plugin.utils.time_utils import now_iso
@@ -77,21 +83,23 @@ def _install_source_api_view(entry: LockEntry | None) -> dict[str, object | None
 
 def _install_source_index() -> tuple[
     dict[str, LockEntry],
-    dict[str, LockEntry],
+    dict[tuple[str, str], LockEntry],
 ]:
     mgr = get_install_source_manager()
     if mgr is None:
         return {}, {}
     snapshot = mgr.snapshot()
     by_plugin_id: dict[str, LockEntry] = {}
-    by_directory_name: dict[str, LockEntry] = {}
+    by_location: dict[tuple[str, str], LockEntry] = {}
     for entry in snapshot.entries:
         if entry.removed:
             continue
-        by_directory_name[entry.directory_name] = entry
+        by_location[(entry.root_id, entry.directory_name)] = entry
         if entry.plugin_id:
-            by_plugin_id[entry.plugin_id] = entry
-    return by_plugin_id, by_directory_name
+            previous = by_plugin_id.get(entry.plugin_id)
+            if previous is None or entry.updated_at > previous.updated_at:
+                by_plugin_id[entry.plugin_id] = entry
+    return by_plugin_id, by_location
 
 
 def _attach_install_source(
@@ -99,9 +107,57 @@ def _attach_install_source(
     *,
     plugin_id: str,
     by_plugin_id: Mapping[str, LockEntry],
-    by_directory_name: Mapping[str, LockEntry],
+    by_location: Mapping[tuple[str, str], LockEntry],
+    active_installations: Mapping[str, ActiveInstallation],
 ) -> None:
-    entry = by_plugin_id.get(plugin_id) or by_directory_name.get(plugin_id)
+    config_path_obj = plugin_info.get("config_path")
+    config_path = Path(config_path_obj).resolve(strict=False) if isinstance(config_path_obj, str) else None
+    root_id: str | None = None
+    if config_path is not None:
+        from plugin.settings import (
+            BUILTIN_PLUGIN_CONFIG_ROOT,
+            MANAGED_PLUGIN_INSTALLATIONS_ROOT,
+            USER_PLUGIN_CONFIG_ROOT,
+        )
+
+        builtin_root = BUILTIN_PLUGIN_CONFIG_ROOT.resolve(strict=False)
+        if builtin_root in config_path.parents:
+            plugin_info["install_source"] = {
+                "source": "builtin",
+                "reason": "user_requested",
+                "installed_at": None,
+                "source_detail": None,
+            }
+            return
+        for user_root in (
+            MANAGED_PLUGIN_INSTALLATIONS_ROOT.resolve(strict=False),
+            USER_PLUGIN_CONFIG_ROOT.resolve(strict=False),
+        ):
+            if user_root in config_path.parents:
+                root_id = "user"
+                break
+    directory_name = config_path.parent.name if config_path is not None else plugin_id
+    active_installation = active_installations.get(plugin_id.casefold())
+    if (
+        root_id == "user"
+        and active_installation is not None
+        and active_installation.directory_name == directory_name
+    ):
+        source = active_installation.source
+        if source not in {"manual", "imported", "market"}:
+            source = "manual"
+        plugin_info["install_source"] = {
+            "source": source,
+            "reason": "user_requested",
+            "installed_at": active_installation.installed_at,
+            "source_detail": None,
+        }
+        return
+    entry = (
+        by_location.get((root_id, directory_name))
+        if root_id is not None
+        else None
+    ) or by_plugin_id.get(plugin_id)
     plugin_info["install_source"] = _install_source_api_view(entry)
 
 
@@ -470,7 +526,15 @@ def _build_plugin_list_sync(locale: str | None = None) -> list[dict[str, object]
         except Exception:
             pass
 
-    install_source_by_plugin_id, install_source_by_directory_name = _install_source_index()
+    install_source_by_plugin_id, install_source_by_location = _install_source_index()
+    try:
+        active_installations = get_inventory_resolution().active_installations
+    except PluginInventoryError as exc:
+        logger.warning(
+            "failed to load active plugin installation sources: err_type={}",
+            type(exc).__name__,
+        )
+        active_installations = {}
 
     for plugin_id_obj, plugin_meta_obj in plugins_snapshot.items():
         if not isinstance(plugin_id_obj, str):
@@ -521,7 +585,8 @@ def _build_plugin_list_sync(locale: str | None = None) -> list[dict[str, object]
                 plugin_info,
                 plugin_id=plugin_id,
                 by_plugin_id=install_source_by_plugin_id,
-                by_directory_name=install_source_by_directory_name,
+                by_location=install_source_by_location,
+                active_installations=active_installations,
             )
             result.append(plugin_info)
         except ServerDomainError as exc:

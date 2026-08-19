@@ -104,6 +104,8 @@
               </el-descriptions-item>
             </el-descriptions>
 
+            <PluginInstallationSelector :plugin-id="pluginId" />
+
           </div>
         </el-tab-pane>
 
@@ -150,6 +152,7 @@ import MetricsCard from '@/components/metrics/MetricsCard.vue'
 import PluginConfigEditor from '@/components/plugin/PluginConfigEditor.vue'
 import LogViewer from '@/components/logs/LogViewer.vue'
 import EmptyState from '@/components/common/EmptyState.vue'
+import PluginInstallationSelector from '@/components/plugin/PluginInstallationSelector.vue'
 import HostedSurfaceFrame from '@/components/plugin/HostedSurfaceFrame.vue'
 import { getPluginUiSurfaceInfo } from '@/api/plugins'
 import { resolvePluginDisplayText, type PluginDisplayText } from '@/utils/pluginDisplay'

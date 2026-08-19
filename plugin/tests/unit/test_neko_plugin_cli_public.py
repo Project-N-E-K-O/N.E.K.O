@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 import inspect
 import shutil
+import warnings
 import zipfile
 
 import pytest
@@ -15,6 +16,9 @@ from plugin.neko_plugin_cli.public import (
     unpack_package,
 )
 from plugin.neko_plugin_cli.public.build_rules import BuildRuleSet, should_skip_path
+from plugin.neko_plugin_cli.core import archive_utils
+from plugin.neko_plugin_cli.core.archive_utils import PackageValidationError
+from plugin.neko_plugin_cli.core.normalize import validate_archive_entry_name
 
 pytestmark = pytest.mark.plugin_unit
 
@@ -139,6 +143,26 @@ def _rewrite_package_member(package_path: Path, member_name: str, content: str) 
     with zipfile.ZipFile(package_path, "w", compression=zipfile.ZIP_DEFLATED) as dst:
         for info, data in entries:
             dst.writestr(info, data)
+
+
+def _append_unverified_members(
+    package_path: Path,
+    members: list[tuple[str | zipfile.ZipInfo, bytes]],
+) -> None:
+    entries: list[tuple[zipfile.ZipInfo, bytes]] = []
+    with zipfile.ZipFile(package_path) as src:
+        for info in src.infolist():
+            if info.filename == "metadata.toml":
+                continue
+            entries.append((info, src.read(info)))
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", UserWarning)
+        with zipfile.ZipFile(package_path, "w", compression=zipfile.ZIP_DEFLATED) as dst:
+            for info, data in entries:
+                dst.writestr(info, data)
+            for name_or_info, data in members:
+                dst.writestr(name_or_info, data)
 
 
 def test_public_root_exports_legacy_result_aliases() -> None:
@@ -275,6 +299,7 @@ def test_inspect_package_reports_metadata_and_profiles(tmp_path: Path) -> None:
     assert result.plugin_count == 1
     assert result.profile_names == ["default.toml"]
     assert result.plugins[0].plugin_id == "demo_plugin"
+    assert result.plugins[0].version == "1.2.3"
     assert result.dependencies is not None
     assert result.dependencies.plugins[0].python_requirements == ["httpx>=0.27", "pydantic>=2.0"]
 
@@ -374,13 +399,14 @@ def test_install_package_rejects_payload_hash_mismatch(tmp_path: Path) -> None:
     build_plugin(plugin_dir, package_path)
     _tamper_package(package_path, "payload/profiles/default.toml")
 
-    with pytest.raises(ValueError, match="payload hash mismatch"):
+    with pytest.raises(PackageValidationError, match="payload hash mismatch") as info:
         install_package(
             package_path,
             plugins_root=tmp_path / "plugins",
             profiles_root=tmp_path / "profiles",
             on_conflict="rename",
         )
+    assert info.value.code == "PLUGIN_PACKAGE_HASH_MISMATCH"
 
 
 def test_install_package_rejects_vendor_missing_required_dist_metadata(tmp_path: Path) -> None:
@@ -448,8 +474,183 @@ def test_inspect_package_fails_when_manifest_is_missing(tmp_path: Path) -> None:
     build_plugin(plugin_dir, package_path)
     _rewrite_package_without_member(package_path, "manifest.toml")
 
-    with pytest.raises(FileNotFoundError, match="manifest.toml"):
+    with pytest.raises(PackageValidationError, match="manifest.toml") as info:
         inspect_package(package_path)
+    assert info.value.code == "PLUGIN_PACKAGE_MANIFEST_MISSING"
+
+
+def test_inspect_package_classifies_extra_parent_folder(tmp_path: Path) -> None:
+    package_path = tmp_path / "nested.neko-plugin"
+    with zipfile.ZipFile(package_path, "w") as archive:
+        archive.writestr("demo-1.0.0/manifest.toml", "package_type = 'plugin'\n")
+        archive.writestr("demo-1.0.0/payload/plugins/demo/plugin.toml", "[plugin]\nid = 'demo'\n")
+
+    with pytest.raises(PackageValidationError) as info:
+        inspect_package(package_path)
+
+    assert info.value.code == "PLUGIN_PACKAGE_NESTED_ROOT"
+
+
+@pytest.mark.parametrize(
+    ("members", "expected_error"),
+    [
+        (
+            [("payload/plugins/demo_plugin/runtime.txt", b"duplicate\n")],
+            "duplicate cross-platform paths",
+        ),
+        (
+            [("payload/plugins/demo_plugin/RUNTIME.TXT", b"case collision\n")],
+            "duplicate cross-platform paths",
+        ),
+        (
+            [
+                ("payload/plugins/demo_plugin/caf\u00e9.txt", b"nfc\n"),
+                ("payload/plugins/demo_plugin/cafe\u0301.txt", b"nfd\n"),
+            ],
+            "duplicate cross-platform paths",
+        ),
+        (
+            [
+                ("payload/plugins/demo_plugin/collision", b"file\n"),
+                ("payload/plugins/demo_plugin/collision/child.txt", b"child\n"),
+            ],
+            "file/directory path collision",
+        ),
+    ],
+)
+def test_install_rejects_cross_platform_archive_collisions_before_extraction(
+    tmp_path: Path,
+    members: list[tuple[str | zipfile.ZipInfo, bytes]],
+    expected_error: str,
+) -> None:
+    package_path = tmp_path / "demo_plugin.neko-plugin"
+    build_plugin(_make_plugin_dir(tmp_path), package_path)
+    _append_unverified_members(package_path, members)
+    plugins_root = tmp_path / "installed-plugins"
+
+    with pytest.raises(ValueError, match=expected_error):
+        install_package(
+            package_path,
+            plugins_root=plugins_root,
+            profiles_root=tmp_path / "installed-profiles",
+        )
+
+    assert not plugins_root.exists() or not any(plugins_root.iterdir())
+
+
+def test_install_rejects_archive_symlink_before_extraction(tmp_path: Path) -> None:
+    package_path = tmp_path / "demo_plugin.neko-plugin"
+    build_plugin(_make_plugin_dir(tmp_path), package_path)
+    symlink = zipfile.ZipInfo("payload/plugins/demo_plugin/link")
+    symlink.create_system = 3
+    symlink.external_attr = (0o120777 << 16)
+    _append_unverified_members(package_path, [(symlink, b"outside")])
+    plugins_root = tmp_path / "installed-plugins"
+
+    with pytest.raises(ValueError, match="symbolic link"):
+        install_package(
+            package_path,
+            plugins_root=plugins_root,
+            profiles_root=tmp_path / "installed-profiles",
+        )
+
+    assert not plugins_root.exists() or not any(plugins_root.iterdir())
+
+
+@pytest.mark.parametrize(
+    ("member_name", "expected_error"),
+    [
+        ("payload/plugins/demo_plugin/../../escape.py", "parent traversal"),
+        ("/payload/plugins/demo_plugin/absolute.py", "absolute path"),
+        ("payload/plugins/demo_plugin/CON.txt", "Windows reserved device name"),
+        ("payload/plugins/demo_plugin/trailing. ", "ends with dots or spaces"),
+        (
+            "payload/plugins/demo_plugin/" + ("x" * 256),
+            "cross-platform limit",
+        ),
+    ],
+)
+def test_install_rejects_nonportable_archive_path_before_extraction(
+    tmp_path: Path,
+    member_name: str,
+    expected_error: str,
+) -> None:
+    package_path = tmp_path / "demo_plugin.neko-plugin"
+    build_plugin(_make_plugin_dir(tmp_path), package_path)
+    _append_unverified_members(package_path, [(member_name, b"unsafe\n")])
+    plugins_root = tmp_path / "installed-plugins"
+
+    with pytest.raises(ValueError, match=expected_error):
+        install_package(
+            package_path,
+            plugins_root=plugins_root,
+            profiles_root=tmp_path / "installed-profiles",
+        )
+
+    assert not plugins_root.exists() or not any(plugins_root.iterdir())
+
+
+def test_archive_path_validator_rejects_windows_backslashes() -> None:
+    with pytest.raises(ValueError, match="Windows-style path"):
+        validate_archive_entry_name(r"payload\plugins\demo_plugin\windows.py")
+
+
+def test_inspect_rejects_archive_entry_budget_before_parsing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    package_path = tmp_path / "demo_plugin.neko-plugin"
+    build_plugin(_make_plugin_dir(tmp_path), package_path)
+    monkeypatch.setattr(archive_utils, "MAX_ARCHIVE_ENTRIES", 1)
+
+    with pytest.raises(ValueError, match="entry safety limit"):
+        inspect_package(package_path)
+
+
+def test_install_rejects_uncompressed_size_budget_without_partial_target(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    package_path = tmp_path / "demo_plugin.neko-plugin"
+    build_plugin(_make_plugin_dir(tmp_path), package_path)
+    monkeypatch.setattr(archive_utils, "MAX_ARCHIVE_TOTAL_BYTES", 32)
+    plugins_root = tmp_path / "installed-plugins"
+
+    with pytest.raises(ValueError, match="total safety limit"):
+        install_package(
+            package_path,
+            plugins_root=plugins_root,
+            profiles_root=tmp_path / "installed-profiles",
+        )
+
+    assert not plugins_root.exists() or not any(plugins_root.iterdir())
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        b"<html><body>upstream error</body></html>",
+        b"PK\x03\x04truncated",
+        b"\x1f\x8b\x08\x00compressed-transport-not-decoded",
+    ],
+)
+def test_install_rejects_non_zip_or_truncated_download_without_target(
+    tmp_path: Path,
+    content: bytes,
+) -> None:
+    package_path = tmp_path / "download.neko-plugin"
+    package_path.write_bytes(content)
+    plugins_root = tmp_path / "installed-plugins"
+
+    with pytest.raises(PackageValidationError) as info:
+        install_package(
+            package_path,
+            plugins_root=plugins_root,
+            profiles_root=tmp_path / "installed-profiles",
+        )
+    assert info.value.code == "PLUGIN_PACKAGE_INVALID_ARCHIVE"
+
+    assert not plugins_root.exists() or not any(plugins_root.iterdir())
 
 
 def test_inspect_package_fails_when_plugin_toml_is_missing(tmp_path: Path) -> None:
@@ -458,8 +659,65 @@ def test_inspect_package_fails_when_plugin_toml_is_missing(tmp_path: Path) -> No
     build_plugin(plugin_dir, package_path)
     _rewrite_package_without_member(package_path, "payload/plugins/demo_plugin/plugin.toml")
 
-    with pytest.raises(ValueError, match="plugin.toml"):
+    with pytest.raises(PackageValidationError, match="plugin.toml") as info:
         inspect_package(package_path)
+    assert info.value.code == "PLUGIN_PACKAGE_PLUGIN_MANIFEST_MISSING"
+
+
+def test_inspect_package_classifies_invalid_plugin_toml(tmp_path: Path) -> None:
+    plugin_dir = _make_plugin_dir(tmp_path)
+    package_path = tmp_path / "demo_plugin.neko-plugin"
+    build_plugin(plugin_dir, package_path)
+    _rewrite_package_member(
+        package_path,
+        "payload/plugins/demo_plugin/plugin.toml",
+        "[plugin\nid = 'demo_plugin'\n",
+    )
+
+    with pytest.raises(PackageValidationError) as info:
+        inspect_package(package_path)
+
+    assert info.value.code == "PLUGIN_PACKAGE_PLUGIN_MANIFEST_INVALID"
+
+
+def test_inspect_package_rejects_manifest_id_that_differs_from_payload_folder(
+    tmp_path: Path,
+) -> None:
+    plugin_id = "market_listing_demo"
+    plugin_dir = _make_plugin_dir(tmp_path, plugin_id)
+    package_path = tmp_path / f"{plugin_id}.neko-plugin"
+    build_plugin(plugin_dir, package_path)
+    manifest_member = f"payload/plugins/{plugin_id}/plugin.toml"
+    manifest = (plugin_dir / "plugin.toml").read_text(encoding="utf-8")
+    _rewrite_package_member(
+        package_path,
+        manifest_member,
+        manifest.replace(
+            f'id = "{plugin_id}"',
+            'id = "different_plugin"',
+            1,
+        ),
+    )
+    _rewrite_package_without_member(package_path, "metadata.toml")
+
+    with pytest.raises(
+        PackageValidationError,
+        match=(
+            "plugin identity mismatch: payload folder 'market_listing_demo' "
+            "contains manifest id 'different_plugin'"
+        ),
+    ) as info:
+        inspect_package(package_path)
+    assert info.value.code == "PLUGIN_PACKAGE_IDENTITY_MISMATCH"
+
+    plugins_root = tmp_path / "installed-plugins"
+    with pytest.raises(ValueError, match="plugin identity mismatch"):
+        install_package(
+            package_path,
+            plugins_root=plugins_root,
+            profiles_root=tmp_path / "installed-profiles",
+        )
+    assert not plugins_root.exists() or not any(plugins_root.iterdir())
 
 
 def test_inspect_package_rejects_removed_script_plugin_type(tmp_path: Path) -> None:
