@@ -246,6 +246,60 @@ def test_snapshot_events_boundary_stops_at_session_checkpoint(tmp_path: Path) ->
 
 
 @pytest.mark.plugin_unit
+def test_snapshot_events_boundary_bounds_checkpoint_scan_to_warmup_window(
+    tmp_path: Path,
+) -> None:
+    events_path = tmp_path / "events.jsonl"
+    old_prefix = b"".join(
+        b'{"session_id":"old","seq":%d,"padding":"' % seq
+        + b"x" * 80
+        + b'"}\n'
+        for seq in range(1, 101)
+    )
+    checkpoint_line = b'{"session_id":"sess-a","seq":100}\n'
+    appended_line = b'{"session_id":"sess-a","seq":101}\n'
+    events_path.write_bytes(old_prefix + checkpoint_line + appended_line)
+
+    boundary = snapshot_events_boundary(
+        events_path,
+        session_id="sess-a",
+        last_seq=100,
+        bytes_limit=len(checkpoint_line) + len(appended_line) + 1,
+        events_limit=2,
+    )
+
+    assert boundary.offset == len(old_prefix) + len(checkpoint_line)
+    assert boundary.file_size == events_path.stat().st_size
+    assert boundary.error == ""
+
+
+@pytest.mark.plugin_unit
+def test_snapshot_events_boundary_uses_bounded_fallback_when_checkpoint_is_old(
+    tmp_path: Path,
+) -> None:
+    events_path = tmp_path / "events.jsonl"
+    checkpoint_line = b'{"session_id":"sess-a","seq":1}\n'
+    old_prefix = checkpoint_line + b'{"session_id":"old","seq":1,"padding":"' + b"x" * 512 + b'"}\n'
+    new_lines = (
+        b'{"session_id":"sess-a","seq":2}\n'
+        b'{"session_id":"sess-a","seq":3}\n'
+    )
+    events_path.write_bytes(old_prefix + new_lines)
+
+    boundary = snapshot_events_boundary(
+        events_path,
+        session_id="sess-a",
+        last_seq=1,
+        bytes_limit=len(new_lines) + 1,
+        events_limit=2,
+    )
+
+    assert boundary.offset == len(old_prefix)
+    assert boundary.file_size == events_path.stat().st_size
+    assert boundary.error == ""
+
+
+@pytest.mark.plugin_unit
 @pytest.mark.parametrize("last_seq", [0, -1])
 def test_snapshot_events_boundary_uses_eof_for_nonpositive_checkpoint(
     tmp_path: Path,

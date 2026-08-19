@@ -294,6 +294,24 @@ def test_tail_events_handles_utf8_crlf_and_partial_line(tmp_path: Path) -> None:
     assert resumed.line_buffer == b""
 
 
+@pytest.mark.plugin_unit
+def test_tail_events_detects_nonempty_stream_truncated_before_cursor(
+    tmp_path: Path,
+) -> None:
+    events_path = tmp_path / "events.jsonl"
+    events_path.write_bytes(b'{"session_id":"sess-a","seq":2}\n')
+
+    result = tail_events_jsonl(
+        events_path,
+        offset=events_path.stat().st_size + 128,
+        line_buffer=b"partial",
+    )
+
+    assert result.reset_detected is True
+    assert result.file_size == events_path.stat().st_size
+    assert result.line_buffer == b""
+
+
 @pytest.mark.asyncio
 @pytest.mark.plugin_unit
 async def test_first_bridge_poll_binds_latest_session_and_exposes_ui(tmp_path: Path) -> None:
@@ -2799,6 +2817,136 @@ async def test_preexisting_session_resumes_saved_cursor_after_reattach(
         history = await plugin.galgame_get_history(limit=20, include_events=True)
         assert resumed["events_byte_offset"] > alpha_boundary
         assert resumed["active_session_id"] == "sess-alpha"
+        assert resumed["last_seq"] == 2
+        assert isinstance(history, Ok)
+        assert [event["seq"] for event in history.value["events"]] == [2]
+        assert [line["line_id"] for line in history.value["stable_lines"]] == [
+            "alpha-new"
+        ]
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
+async def test_preexisting_session_rebases_saved_cursor_after_inactive_truncation(
+    tmp_path: Path,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    alpha_dir = _create_game_dir(
+        bridge_root,
+        game_id="demo.alpha",
+        session_payload=_session(
+            game_id="demo.alpha",
+            session_id="sess-alpha",
+            last_seq=1,
+            started_at="2000-01-01T00:00:00Z",
+            state=_session_state(
+                text="alpha old " + "x" * 512,
+                line_id="alpha-old",
+                scene_id="scene-alpha",
+            ),
+        ),
+        events=[
+            _event(
+                seq=1,
+                event_type="line_changed",
+                session_id="sess-alpha",
+                game_id="demo.alpha",
+                ts="2000-01-01T00:00:01Z",
+                payload={
+                    "speaker": "Yukino",
+                    "text": "alpha old " + "x" * 512,
+                    "line_id": "alpha-old",
+                    "scene_id": "scene-alpha",
+                    "route_id": "",
+                },
+            )
+        ],
+    )
+    _create_game_dir(
+        bridge_root,
+        game_id="demo.beta",
+        session_payload=_session(
+            game_id="demo.beta",
+            session_id="sess-beta",
+            last_seq=1,
+            started_at="2000-01-01T00:00:00Z",
+            state=_session_state(
+                text="beta old",
+                line_id="beta-old",
+                scene_id="scene-beta",
+            ),
+        ),
+        events=[
+            _event(
+                seq=1,
+                event_type="line_changed",
+                session_id="sess-beta",
+                game_id="demo.beta",
+                ts="2000-01-01T00:00:01Z",
+                payload={
+                    "speaker": "Yukino",
+                    "text": "beta old",
+                    "line_id": "beta-old",
+                    "scene_id": "scene-beta",
+                    "route_id": "",
+                },
+            )
+        ],
+    )
+
+    plugin = GalgameBridgePlugin(_Ctx(plugin_dir, _make_effective_config(bridge_root)))
+    await plugin.startup()
+    try:
+        await plugin._poll_bridge(force=True)
+        assert isinstance(await plugin.galgame_bind_game(game_id="demo.alpha"), Ok)
+        await plugin._poll_bridge(force=True)
+        saved_offset = plugin._snapshot_state()["events_byte_offset"]
+
+        assert isinstance(await plugin.galgame_bind_game(game_id="demo.beta"), Ok)
+        await plugin._poll_bridge(force=True)
+
+        alpha_new = _event(
+            seq=2,
+            event_type="line_changed",
+            session_id="sess-alpha",
+            game_id="demo.alpha",
+            ts="2026-04-21T08:36:02Z",
+            payload={
+                "speaker": "Yukino",
+                "text": "alpha after rotation",
+                "line_id": "alpha-new",
+                "scene_id": "scene-alpha",
+                "route_id": "",
+            },
+        )
+        events_path = alpha_dir / "events.jsonl"
+        _write_events(events_path, [alpha_new])
+        assert events_path.stat().st_size < saved_offset
+        _write_session(
+            alpha_dir / "session.json",
+            _session(
+                game_id="demo.alpha",
+                session_id="sess-alpha",
+                last_seq=2,
+                started_at="2000-01-01T00:00:00Z",
+                state=_session_state(
+                    text="alpha after rotation",
+                    line_id="alpha-new",
+                    scene_id="scene-alpha",
+                    ts="2026-04-21T08:36:02Z",
+                ),
+            ),
+        )
+
+        assert isinstance(await plugin.galgame_bind_game(game_id="demo.alpha"), Ok)
+        await plugin._poll_bridge(force=True)
+
+        resumed = plugin._snapshot_state()
+        history = await plugin.galgame_get_history(limit=20, include_events=True)
+        assert resumed["events_byte_offset"] == events_path.stat().st_size
+        assert resumed["stream_reset_pending"] is False
         assert resumed["last_seq"] == 2
         assert isinstance(history, Ok)
         assert [event["seq"] for event in history.value["events"]] == [2]

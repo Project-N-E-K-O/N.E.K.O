@@ -4139,6 +4139,20 @@ class GalgamePlugin(
             local["last_seen_data_monotonic"] = float(
                 saved_preexisting_state.get("last_seen_data_monotonic") or 0.0
             )
+            try:
+                current_file_size = await asyncio.to_thread(
+                    lambda: candidate.events_path.stat().st_size
+                )
+            except OSError:
+                current_file_size = None
+            if (
+                current_file_size is not None
+                and int(local["events_byte_offset"]) > current_file_size
+            ):
+                local["events_byte_offset"] = 0
+                local["events_file_size"] = current_file_size
+                local["line_buffer"] = b""
+                local["stream_reset_pending"] = True
         elif not preexisting_session:
             local["latest_snapshot"] = json_copy(session_state_obj)
         elif warmup_needed:
@@ -4164,6 +4178,8 @@ class GalgamePlugin(
                 candidate.events_path,
                 session_id=session_id,
                 last_seq=int(session.get("last_seq") or 0),
+                bytes_limit=self._cfg.warmup_replay_bytes_limit,
+                events_limit=self._cfg.warmup_replay_events_limit,
             )
             if boundary.error:
                 warnings.append(boundary.error)
@@ -4266,6 +4282,11 @@ class GalgamePlugin(
             local["line_buffer"] = b""
             local["events_byte_offset"] = 0
             local["last_seq"] = 0
+            local["stream_reset_pending"] = False
+        elif local["stream_reset_pending"] and tail.events:
+            # A rotated stream may preserve the session and continue seq
+            # numbers.  Rebase at byte zero, then let last_seq discard any
+            # overlap instead of waiting forever for a new seq=1 marker.
             local["stream_reset_pending"] = False
 
         if local["stream_reset_pending"]:

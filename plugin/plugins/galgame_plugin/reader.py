@@ -96,6 +96,8 @@ def snapshot_events_boundary(
     *,
     session_id: str = "",
     last_seq: int | None = None,
+    bytes_limit: int | None = None,
+    events_limit: int | None = None,
 ) -> EventStreamBoundary:
     if not events_path.exists():
         return EventStreamBoundary()
@@ -109,36 +111,56 @@ def snapshot_events_boundary(
 
             checkpoint_seq = max(0, int(last_seq or 0))
             if session_id and checkpoint_seq > 0:
-                matched_offset = 0
-                cursor = 0
-                buffer = b""
-                buffer_start = 0
-                while cursor < file_size:
-                    handle.seek(cursor)
-                    chunk = handle.read(min(64 * 1024, file_size - cursor))
-                    if not chunk:
+                scan_size = file_size
+                if bytes_limit is not None:
+                    scan_size = min(file_size, max(1, int(bytes_limit)))
+                scan_start = file_size - scan_size
+                handle.seek(scan_start)
+                data = handle.read(scan_size)
+                data_start = scan_start
+                if scan_start > 0:
+                    newline_index = data.find(b"\n")
+                    if newline_index < 0:
+                        return EventStreamBoundary(
+                            offset=file_size,
+                            file_size=file_size,
+                        )
+                    data_start += newline_index + 1
+                    data = data[newline_index + 1 :]
+
+                complete_lines: list[tuple[int, int, bytes]] = []
+                line_start = 0
+                while True:
+                    newline_index = data.find(b"\n", line_start)
+                    if newline_index < 0:
                         break
-                    cursor += len(chunk)
-                    data = buffer + chunk
-                    data_start = buffer_start
-                    line_start = 0
-                    while True:
-                        newline_index = data.find(b"\n", line_start)
-                        if newline_index < 0:
-                            break
-                        event, _error = _parse_jsonl_line(data[line_start:newline_index])
-                        if event is not None and str(event.get("session_id") or "") == session_id:
-                            try:
-                                seq = int(event.get("seq") or 0)
-                            except (TypeError, ValueError):
-                                seq = 0
-                            if 0 < seq <= checkpoint_seq:
-                                matched_offset = data_start + newline_index + 1
-                        line_start = newline_index + 1
-                    buffer = data[line_start:]
-                    buffer_start = data_start + line_start
+                    complete_lines.append(
+                        (
+                            data_start + line_start,
+                            data_start + newline_index + 1,
+                            data[line_start:newline_index],
+                        )
+                    )
+                    line_start = newline_index + 1
+                if events_limit is not None:
+                    complete_lines = complete_lines[-max(1, int(events_limit)) :]
+
+                fallback_offset = (
+                    complete_lines[0][0] if complete_lines else file_size
+                )
+                matched_offset = 0
+                for _line_offset, line_end, raw_line in complete_lines:
+                    event, _error = _parse_jsonl_line(raw_line)
+                    if event is None or str(event.get("session_id") or "") != session_id:
+                        continue
+                    try:
+                        seq = int(event.get("seq") or 0)
+                    except (TypeError, ValueError):
+                        seq = 0
+                    if 0 < seq <= checkpoint_seq:
+                        matched_offset = line_end
                 return EventStreamBoundary(
-                    offset=matched_offset,
+                    offset=matched_offset or fallback_offset,
                     file_size=file_size,
                 )
 
@@ -198,8 +220,8 @@ def tail_events_jsonl(
         result.line_buffer = b""
         return result
     if file_size < offset:
-        result.next_offset = offset
-        result.line_buffer = line_buffer
+        result.reset_detected = True
+        result.line_buffer = b""
         return result
 
     try:
