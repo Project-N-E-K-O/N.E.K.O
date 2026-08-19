@@ -997,6 +997,10 @@ def scan_session_candidates(bridge_root: Path) -> tuple[list[str], dict[str, Ses
         available_game_ids.append(game_id)
         session_path = child / "session.json"
         events_path = child / "events.jsonl"
+        try:
+            events_file_size = events_path.stat().st_size
+        except OSError:
+            events_file_size = 0
         session_result = read_session_json(session_path)
         if session_result.error:
             warnings.append(f"{game_id}: {session_result.error}")
@@ -1006,10 +1010,6 @@ def scan_session_candidates(bridge_root: Path) -> tuple[list[str], dict[str, Ses
         if not session.get("game_id"):
             session["game_id"] = game_id
         data_source = infer_session_data_source(session)
-        try:
-            events_file_size = events_path.stat().st_size
-        except OSError:
-            events_file_size = 0
         candidates[game_id] = SessionCandidate(
             game_id=game_id,
             session_path=session_path,

@@ -1379,6 +1379,134 @@ async def test_trusted_memory_to_ocr_handoff_skips_overlap_and_pushes_new_suffix
 
 @pytest.mark.asyncio
 @pytest.mark.plugin_unit
+async def test_load_boundary_clears_handoff_tails_before_trusted_source_transition(
+    tmp_path: Path,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
+    agent = GameLLMAgent(
+        plugin=GalgameBridgePlugin(ctx),
+        logger=_Logger(),
+        llm_gateway=_FakeLLMGateway(),
+        host_adapter=_FakeHostAdapter(),
+    )
+    replayed_text = "legitimate replay after load"
+    memory_line = {
+        **_summary_test_line("memory-scene", 1),
+        "text": replayed_text,
+    }
+    memory_event = _event(
+        seq=1,
+        event_type="line_changed",
+        session_id="memory-session",
+        game_id="demo.alpha",
+        ts=str(memory_line["ts"]),
+        payload={**memory_line, "stability": "stable"},
+    )
+    memory_shared = _shared_state(
+        mode="companion",
+        game_id="demo.alpha",
+        session_id="memory-session",
+        active_data_source=DATA_SOURCE_MEMORY_READER,
+        snapshot=_session_state(
+            text=replayed_text,
+            scene_id="memory-scene",
+            line_id="memory-line-1",
+        ),
+        history_events=[memory_event],
+        history_lines=[memory_line],
+    )
+    memory_shared["active_session_meta"] = {
+        "metadata": {"game_process_name": "demo.exe", "window_title": "Demo"}
+    }
+    await agent.tick(memory_shared)
+    await agent.drain_summary_tasks(timeout=1.0)
+    assert len(ctx.pushed_messages) == 1
+
+    save_context = {
+        "kind": "load",
+        "slot_id": "slot-1",
+        "checkpoint_id": "checkpoint-a",
+    }
+    load_snapshot = _session_state(scene_id="memory-scene")
+    load_snapshot["save_context"] = dict(save_context)
+    load_event = _event(
+        seq=2,
+        event_type="save_loaded",
+        session_id="memory-session",
+        game_id="demo.alpha",
+        ts="2026-04-21T08:35:10Z",
+        payload={
+            "reason": "load",
+            "scene_id": "memory-scene",
+            "route_id": "",
+            "save_context": dict(save_context),
+        },
+    )
+    loaded_shared = _shared_state(
+        mode="companion",
+        game_id="demo.alpha",
+        session_id="memory-session",
+        active_data_source=DATA_SOURCE_MEMORY_READER,
+        snapshot=load_snapshot,
+        last_seq=2,
+        history_events=[memory_event, load_event],
+        history_lines=[memory_line],
+    )
+    loaded_shared["active_session_meta"] = dict(memory_shared["active_session_meta"])
+    await agent.tick(loaded_shared)
+    await agent.drain_summary_tasks(timeout=1.0)
+    assert len(ctx.pushed_messages) == 1
+
+    ocr_line = {
+        **_summary_test_line("ocr-scene", 1),
+        "line_id": "ocr-line-1",
+        "text": replayed_text,
+        "ts": "2026-04-21T08:35:11Z",
+    }
+    ocr_event = _event(
+        seq=1,
+        event_type="line_changed",
+        session_id="ocr-session",
+        game_id="demo.alpha",
+        ts=str(ocr_line["ts"]),
+        payload={**ocr_line, "stability": "stable"},
+    )
+    ocr_snapshot = _session_state(
+        text=replayed_text,
+        scene_id="ocr-scene",
+        line_id="ocr-line-1",
+        ts=str(ocr_line["ts"]),
+    )
+    ocr_snapshot["save_context"] = dict(save_context)
+    ocr_shared = _shared_state(
+        mode="companion",
+        game_id="demo.alpha",
+        session_id="ocr-session",
+        active_data_source=DATA_SOURCE_OCR_READER,
+        ocr_reader_runtime={
+            "effective_process_name": "demo.exe",
+            "effective_window_title": "Demo",
+            "target_hwnd": 100,
+            "target_window_visible": True,
+        },
+        snapshot=ocr_snapshot,
+        history_events=[ocr_event],
+        history_lines=[ocr_line],
+    )
+    await agent.tick(ocr_shared)
+    await agent.drain_summary_tasks(timeout=1.0)
+
+    assert len(ctx.pushed_messages) == 2
+    assert replayed_text in str(ctx.pushed_messages[-1]["content"])
+    assert sum(
+        int(state.get("lines_since_push") or 0)
+        for state in agent._scene_tracker.summary_scene_states.values()
+    ) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
 async def test_trusted_handoff_uses_previous_native_scene_summary_as_seed(
     tmp_path: Path,
 ) -> None:

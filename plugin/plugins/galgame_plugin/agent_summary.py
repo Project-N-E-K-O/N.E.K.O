@@ -2474,6 +2474,16 @@ class AgentSummaryMixin:
             self._last_delivered_summary_scene_id = ""
             self._last_push_ts = 0.0
             self._scene_summary_last_success_at = 0.0
+            boundary_ledger = self._scene_capsule_delivery_ledger.get(boundary_key)
+            if isinstance(boundary_ledger, dict):
+                # A load/rollback starts a new timeline inside the same logical
+                # game boundary.  Old handoff evidence must not suppress a
+                # legitimate replay if the reader source changes immediately.
+                boundary_ledger["stable_tail"] = []
+                boundary_ledger["observed_tail"] = []
+                boundary_ledger["choice_group_tail"] = []
+                boundary_ledger["memory_handoff_overlap_event_keys"] = []
+                boundary_ledger["memory_handoff_scene_aliases"] = {}
         self._scene_capsule_save_boundary_marker = save_boundary_marker
         self._scene_capsule_save_boundary_semantic_marker = save_boundary_semantic_marker
         observation_epoch = self._scene_capsule_observation_epoch

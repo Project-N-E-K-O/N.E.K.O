@@ -2464,6 +2464,85 @@ def test_positive_checkpoint_scan_stops_at_candidate_snapshot(tmp_path: Path) ->
     assert [int(event.get("seq") or 0) for event in tail.events] == [2, 3]
 
 
+@pytest.mark.plugin_unit
+def test_candidate_scan_captures_events_boundary_before_session_snapshot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bridge_root = tmp_path / "bridge"
+    game_id = "demo.candidate-snapshot-race"
+    session_id = "sess-candidate-snapshot-race"
+    initial_event = _event(
+        seq=1,
+        event_type="line_changed",
+        session_id=session_id,
+        game_id=game_id,
+        payload={"text": "candidate snapshot", "line_id": "line-1"},
+        ts="2026-04-21T08:30:01Z",
+    )
+    game_dir = _create_game_dir(
+        bridge_root,
+        game_id=game_id,
+        session_payload=_session(
+            game_id=game_id,
+            session_id=session_id,
+            last_seq=1,
+            started_at="2000-01-01T00:00:00Z",
+            state=_session_state(text="candidate snapshot", line_id="line-1"),
+        ),
+        events=[initial_event],
+    )
+    events_path = game_dir / "events.jsonl"
+    initial_file_size = events_path.stat().st_size
+    original_read_session_json = galgame_service.read_session_json
+
+    def _read_session_after_racing_events(path: Path):
+        result = original_read_session_json(path)
+        for seq in (2, 3):
+            _append_event(
+                events_path,
+                _event(
+                    seq=seq,
+                    event_type="line_changed",
+                    session_id=session_id,
+                    game_id=game_id,
+                    payload={
+                        "text": f"racing event {seq}",
+                        "line_id": f"line-{seq}",
+                    },
+                    ts=f"2026-04-21T08:30:0{seq}Z",
+                ),
+            )
+        return result
+
+    monkeypatch.setattr(
+        galgame_service,
+        "read_session_json",
+        _read_session_after_racing_events,
+    )
+
+    _game_ids, candidates, warnings = galgame_service.scan_session_candidates(
+        bridge_root
+    )
+
+    assert warnings == []
+    candidate = candidates[game_id]
+    assert candidate.events_file_size == initial_file_size
+    boundary = read_events_boundary(
+        candidate.events_path,
+        session_id=session_id,
+        last_seq=1,
+        events_limit=1,
+        snapshot_file_size=candidate.events_file_size,
+    )
+    tail = tail_events_jsonl(
+        candidate.events_path,
+        offset=boundary.offset,
+        line_buffer=b"",
+    )
+    assert [int(event.get("seq") or 0) for event in tail.events] == [2, 3]
+
+
 @pytest.mark.asyncio
 @pytest.mark.plugin_unit
 async def test_startup_session_id_normalization_preserves_preexisting_boundary(
