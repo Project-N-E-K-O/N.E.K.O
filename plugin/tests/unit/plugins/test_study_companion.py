@@ -9418,6 +9418,12 @@ async def test_answer_final_persist_failure_reuses_cache_without_duplicate_effec
         assert current_question["answer_evaluation_cache"]["attempt_id"] == (
             "a-persist-failure"
         )
+        persisted_question = plugin._store.load_state(
+            build_initial_state()
+        ).current_question
+        assert "attempt_evaluation_pending" not in persisted_question
+        assert persisted_question["attempt_evaluated"] is True
+        assert persisted_question["attempt_evaluation_recovery"] is True
         interaction_count = len(plugin._store.list_interactions(limit=20))
         evaluation_count = len(plugin._agent.evaluations)
 
@@ -9562,6 +9568,12 @@ async def test_cancelled_finalized_answer_reuses_cache_without_duplicate_effects
         assert "attempt_evaluation_pending" not in current_question
         assert current_question["attempt_evaluated"] is True
         assert current_question["attempt_evaluation_recovery"] is True
+        persisted_question = plugin._store.load_state(
+            build_initial_state()
+        ).current_question
+        assert "attempt_evaluation_pending" not in persisted_question
+        assert persisted_question["attempt_evaluated"] is True
+        assert persisted_question["attempt_evaluation_recovery"] is True
         evaluation_count = len(plugin._agent.evaluations)
         interaction_count = len(plugin._store.list_interactions(limit=20))
 

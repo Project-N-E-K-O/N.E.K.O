@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import contextlib
+
 from .entry_common import (
     asyncio,
     Err,
@@ -364,6 +366,8 @@ class _TutorAnswerEntriesMixin:
                     state_attempt_id,
                     recover_cached=final_attempt_state_staged,
                 )
+                with contextlib.suppress(Exception):
+                    await self._persist_state()
             raise
         except Exception as exc:
             if reserved_attempt:
@@ -371,6 +375,8 @@ class _TutorAnswerEntriesMixin:
                     state_attempt_id,
                     recover_cached=final_attempt_state_staged,
                 )
+                with contextlib.suppress(Exception):
+                    await self._persist_state()
             return _entry_exception_error(
                 self, exc, operation="study_evaluate_answer"
             )
