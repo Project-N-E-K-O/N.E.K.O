@@ -340,6 +340,47 @@ async def test_cancelled_region_wait_stays_busy_until_renderer_reply():
 
 
 @pytest.mark.unit
+@pytest.mark.asyncio
+async def test_cancelled_region_send_stays_busy_until_renderer_reply():
+    class _BlockingSendSock(_Sock):
+        async def send_text(self, payload: str) -> None:
+            self.sent.append(payload)
+            self.send_event.set()
+            await asyncio.Event().wait()
+
+    sock = _BlockingSendSock()
+    capture_bridge.mark_capture_client("neko", sock, _payload(True))
+    region_task = asyncio.create_task(
+        capture_bridge.request_capture_region(
+            {"session_timeout_ms": 45000},
+            timeout=1.0,
+        )
+    )
+    await sock.send_event.wait()
+
+    region_task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await region_task
+
+    snapshot = capture_bridge._snapshot_for_tests()
+    assert snapshot["interactive_capture_active"] is True
+    assert snapshot["pending_counts"]["neko"] == 1
+
+    import json
+
+    request = json.loads(sock.sent[-1])
+    capture_bridge.resolve_capture_response(
+        "neko",
+        {"request_id": request["request_id"], "success": False, "canceled": True},
+    )
+    for _ in range(3):
+        await asyncio.sleep(0)
+    snapshot = capture_bridge._snapshot_for_tests()
+    assert snapshot["interactive_capture_active"] is False
+    assert snapshot["pending_counts"]["neko"] == 0
+
+
+@pytest.mark.unit
 def test_mark_available_true_then_has_client():
     sock = _Sock()
     capture_bridge.mark_capture_client("neko", sock, _payload(True))

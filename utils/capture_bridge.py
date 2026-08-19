@@ -399,8 +399,26 @@ async def request_capture_region(
                 "copy_to_clipboard": copy_to_clipboard,
                 "session_timeout_ms": session_timeout_ms,
             }
+
+            def retain_busy_until_renderer_stops() -> None:
+                nonlocal release_on_return
+                release_on_return = False
+                _retain_region_busy_until_renderer_stops(
+                    capture_token=capture_token,
+                    lanlan_name=client.lanlan_name,
+                    request_id=request_id,
+                    future=future,
+                    session_timeout_seconds=max(
+                        0.0,
+                        session_timeout_ms / 1000 - (loop.time() - overlay_started_at),
+                    ),
+                )
+
             try:
                 await client.websocket.send_text(_dumps(request_payload))
+            except asyncio.CancelledError:
+                retain_busy_until_renderer_stops()
+                raise
             except Exception as exc:
                 _pending_by_client.get(client.lanlan_name, {}).pop(request_id, None)
                 raise CaptureBridgeError(f"failed to send request: {exc}") from exc
@@ -411,30 +429,10 @@ async def request_capture_region(
                     timeout=timeout,
                 )
             except asyncio.TimeoutError as exc:
-                release_on_return = False
-                _retain_region_busy_until_renderer_stops(
-                    capture_token=capture_token,
-                    lanlan_name=client.lanlan_name,
-                    request_id=request_id,
-                    future=future,
-                    session_timeout_seconds=max(
-                        0.0,
-                        session_timeout_ms / 1000 - (loop.time() - overlay_started_at),
-                    ),
-                )
+                retain_busy_until_renderer_stops()
                 raise CaptureBridgeError("renderer response timeout") from exc
             except asyncio.CancelledError:
-                release_on_return = False
-                _retain_region_busy_until_renderer_stops(
-                    capture_token=capture_token,
-                    lanlan_name=client.lanlan_name,
-                    request_id=request_id,
-                    future=future,
-                    session_timeout_seconds=max(
-                        0.0,
-                        session_timeout_ms / 1000 - (loop.time() - overlay_started_at),
-                    ),
-                )
+                retain_busy_until_renderer_stops()
                 raise
             finally:
                 if release_on_return:

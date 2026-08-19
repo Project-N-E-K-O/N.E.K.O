@@ -408,6 +408,24 @@
       },
     };
 
+    function restoreDocumentCardFromJob(data = {}) {
+      const metadata = data?.document;
+      if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) return;
+      const name = String(metadata.name || '').trim();
+      if (!name) return;
+      const chars = Math.max(0, Number.parseInt(metadata.chars, 10) || 0);
+      const tokens = Math.max(0, Number.parseInt(metadata.tokens, 10) || 0);
+      if (studyDocumentCard) studyDocumentCard.hidden = false;
+      studyDocumentName.textContent = name;
+      studyDocumentMeta.textContent = tf('ui.document.meta', '', {
+        size: '—',
+        encoding: String(metadata.type || ''),
+        chars: chars.toLocaleString(),
+        tokens: tokens.toLocaleString(),
+      });
+      if (studyDocumentTruncated) studyDocumentTruncated.hidden = true;
+    }
+
     function setDocumentBusy(busy) {
       documentBusy = Boolean(busy);
       if (studyDocumentCard) studyDocumentCard.dataset.busy = documentBusy ? 'true' : 'false';
@@ -667,7 +685,10 @@
       try {
         const data = await documentJobs.resume(
           controller.signal,
-          () => setDocumentBusy(true),
+          (job) => {
+            restoreDocumentCardFromJob(job);
+            setDocumentBusy(true);
+          },
         );
         if (!data || controller.signal.aborted) return;
         const failed = data.status !== 'completed' || data.degraded;

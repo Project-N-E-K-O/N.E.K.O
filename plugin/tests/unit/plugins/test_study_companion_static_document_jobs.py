@@ -673,6 +673,69 @@ assert(
 assert(resumed.replies.at(-1) === 'saved completed result', 'saved result was not rendered');
 resumed.controller.dispose();
 
+let resolveRunningResumePoll;
+const runningResume = createEnvironment(async (entryId, _args, signal) => {
+  if (entryId !== 'study_document_analysis_status') {
+    throw new Error(`unexpected running resume entry: ${entryId}`);
+  }
+  if (!resolveRunningResumePoll) {
+    resolveRunningResumePoll = true;
+    return {
+      job_id: 'job-running-resume',
+      status: 'running',
+      stage: 'analyzing',
+      progress: 0.25,
+      document: {
+        name: 'restored-notes.pdf',
+        type: 'application/pdf',
+        chars: 321,
+        tokens: 42,
+        source_retained: false,
+      },
+    };
+  }
+  return new Promise((_resolve, reject) => {
+    signal.addEventListener(
+      'abort',
+      () => reject(new runningResume.window.DOMException('Aborted', 'AbortError')),
+      { once: true },
+    );
+  });
+}, async () => {}, (window) => {
+  window.sessionStorage.setItem(
+    'study_companion.document_analysis_job_id',
+    'job-running-resume',
+  );
+  window.setTimeout = (callback) => {
+    queueMicrotask(callback);
+    return 1;
+  };
+});
+await waitFor(
+  () => runningResume.document.getElementById('studyDocumentCard').dataset.busy === 'true',
+  'running saved job did not restore busy state',
+);
+const runningResumeCard = runningResume.document.getElementById('studyDocumentCard');
+assert(!runningResumeCard.hidden, 'running saved job left the document card hidden');
+assert(
+  runningResume.document.getElementById('studyDocumentName').textContent === 'restored-notes.pdf',
+  'running saved job did not restore the public document name',
+);
+const runningResumeMeta = runningResume.document.getElementById('studyDocumentMeta').textContent;
+assert(
+  runningResumeMeta.includes('321') && runningResumeMeta.includes('42'),
+  `running saved job did not restore public document metadata: ${runningResumeMeta}`,
+);
+assert(
+  !runningResume.document.getElementById('studyDocumentProgress').hidden,
+  'running saved job left progress hidden',
+);
+assert(
+  !runningResume.document.getElementById('studyDocumentCancelBtn').hidden,
+  'running saved job left cancellation inaccessible',
+);
+runningResume.controller.dispose();
+
 const terminalCancelCalls = [];
 let terminalCancelRefreshes = 0;
 let resolveTerminalCancelPoll;
