@@ -502,8 +502,13 @@ export function usePackageManager(options: UsePackageManagerOptions = {}) {
 
   async function refreshPluginSources() {
     pluginsLoading.value = true
+    let warningShown = false
     try {
       const syncResult = await pluginStore.syncRegistryAndFetch({ preserveMessagesOn404: true })
+      if (syncResult.warningMessage) {
+        ElMessage.warning(syncResult.warningMessage)
+        warningShown = true
+      }
       const response = await getPluginCliPlugins({ preserveMessagesOn404: true })
       const refs = response.plugin_refs || []
       localPluginRefs.value = refs
@@ -514,12 +519,9 @@ export function usePackageManager(options: UsePackageManagerOptions = {}) {
       } else {
         setSelectedPluginIds(selectedPluginIds.value.filter((pluginId) => availableIds.has(pluginId)))
       }
-      if (syncResult.warningMessage) {
-        ElMessage.warning(syncResult.warningMessage)
-      }
     } catch (error) {
       console.error('Failed to refresh plugin sources:', error)
-      if (shouldShowRefreshFallback(error)) {
+      if (!warningShown && shouldShowRefreshFallback(error)) {
         ElMessage.warning(t('messages.pluginListRefreshFailed'))
       }
     } finally {

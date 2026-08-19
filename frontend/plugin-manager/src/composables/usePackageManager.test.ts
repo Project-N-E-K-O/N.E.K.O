@@ -196,6 +196,19 @@ describe('usePackageManager safe installation flow', () => {
     expect(ElMessage.warning).toHaveBeenCalledWith('messages.pluginListRefreshFailed')
   })
 
+  it('does not duplicate warnings when registry and plugin source both return 404', async () => {
+    const manager = usePackageManager()
+    syncRegistryAndFetch.mockResolvedValue({
+      warningMessage: 'messages.resourceNotFound',
+    })
+    vi.mocked(getPluginCliPlugins).mockRejectedValue({ response: { status: 404 } })
+
+    await manager.refreshPluginSources()
+
+    expect(ElMessage.warning).toHaveBeenCalledTimes(1)
+    expect(ElMessage.warning).toHaveBeenCalledWith('messages.resourceNotFound')
+  })
+
   it('reports install success before a registry refresh warning', async () => {
     const manager = usePackageManager()
     manager.installForm.value.package = 'demo.neko-plugin'
