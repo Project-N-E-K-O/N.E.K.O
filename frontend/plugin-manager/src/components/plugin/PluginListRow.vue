@@ -77,6 +77,7 @@ import SourceDetailRow from '@/components/plugin/SourceDetailRow.vue'
 import { useMarketVersionsStore } from '@/stores/marketVersions'
 import { hasNewerVersion } from '@/utils/version'
 import { resolvePluginDisplayText } from '@/utils/pluginDisplay'
+import { isOpenUiNavigationAction } from '@/utils/pluginListActions'
 import type { PluginListAction, PluginMeta, PluginInstallSourceDetailMarket } from '@/types/api'
 
 interface Props {
@@ -108,7 +109,7 @@ const displayText = computed(() => resolvePluginDisplayText(props.plugin, locale
 const availableUiAction = computed(() => {
   if (!props.enableUiAction) return null
   return props.plugin.list_actions?.find((action) => {
-    if (action.kind !== 'ui' || action.disabled) return false
+    if (!isOpenUiNavigationAction(action) || action.disabled) return false
     return !action.requires_running || props.plugin.status === 'running'
   }) || null
 })

@@ -73,6 +73,45 @@ describe('PluginActions UI action', () => {
     container.remove()
   })
 
+  it.each(['url', 'route'] as const)(
+    'also shows the detail-header button when open_ui uses kind %s',
+    async (kind) => {
+      const pinia = createPinia()
+      setActivePinia(pinia)
+      const store = usePluginStore()
+      store.plugins = [{
+        id: 'demo',
+        name: 'Demo',
+        description: 'Demo',
+        version: '1.0.0',
+        status: 'running',
+        list_actions: [{ id: 'open_ui', kind, label: 'Open learning UI' }],
+      }]
+      const container = document.createElement('div')
+      document.body.appendChild(container)
+      const app = createApp(PluginActions, { pluginId: 'demo' })
+      app.use(pinia)
+      app.component('el-button', defineComponent({
+        props: { disabled: Boolean },
+        setup(props, { slots }) {
+          return () => h('button', { disabled: props.disabled }, slots.default?.())
+        },
+      }))
+      app.component('el-button-group', defineComponent({
+        setup(_props, { slots }) {
+          return () => h('div', slots.default?.())
+        },
+      }))
+      app.mount(container)
+      await nextTick()
+
+      expect(container.textContent).toContain('Open learning UI')
+
+      app.unmount()
+      container.remove()
+    },
+  )
+
   it('does not show the UI button for non-ui list actions', async () => {
     const pinia = createPinia()
     setActivePinia(pinia)

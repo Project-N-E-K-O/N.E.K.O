@@ -175,7 +175,7 @@ id = "note-exporter"
 title = "Note Exporter"
 entry = "surfaces/note_exporter.tsx"
 context = "study"
-permissions = ["state:read", "action:call"]
+permissions = ["state:read", "action:call", "config:read"]
 
 [[plugin.ui.panel]]
 id = "habit-dashboard"

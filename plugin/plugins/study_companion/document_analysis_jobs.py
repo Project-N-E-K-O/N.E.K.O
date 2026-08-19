@@ -14,6 +14,7 @@ DOCUMENT_JOB_TIMEOUT_SECONDS = 20 * 60.0
 DOCUMENT_JOB_MERGE_RESERVED_SECONDS = 2 * 60.0
 DOCUMENT_JOB_FINALIZE_RESERVED_SECONDS = 30.0
 DOCUMENT_JOB_RESULT_TTL_SECONDS = 30 * 60.0
+DOCUMENT_JOB_COMMITTED_RESULT_KEY = "_document_job_committed_result"
 
 ProgressCallback = Callable[[str, int, int], Awaitable[None]]
 JobRunner = Callable[..., Awaitable[dict[str, Any]]]
@@ -236,6 +237,12 @@ class DocumentAnalysisJobManager:
             payload = job.public_payload()
         if task is not None:
             await asyncio.gather(task, return_exceptions=True)
+            async with self._lock:
+                # A runner may cross an irreversible persistence boundary while
+                # cancellation is in flight and finish with a recoverable result.
+                # Return the post-drain state rather than the stale canceled
+                # snapshot captured before the task was joined.
+                payload = job.public_payload()
         return payload
 
     async def shutdown(self) -> None:
@@ -298,31 +305,56 @@ class DocumentAnalysisJobManager:
                 if total > 0:
                     job.total_chunks = int(total)
 
+        async def store_completed_result(result: dict[str, Any]) -> bool:
+            committed_result = bool(
+                result.pop(DOCUMENT_JOB_COMMITTED_RESULT_KEY, False)
+            )
+            async with self._lock:
+                if job.status != "running" and not (
+                    job.status == "canceled" and committed_result
+                ):
+                    return False
+                job.result = dict(result)
+                job.status = "completed"
+                job.stage = "completed"
+                job.diagnostic = ""
+                job.cancellation_source = ""
+                job.completed_chunks = job.total_chunks
+                job.finished_at = time.monotonic()
+                if on_completed is not None:
+                    try:
+                        on_completed(job.result)
+                    except Exception:
+                        _logger.exception(
+                            "document analysis completion callback failed"
+                        )
+                return True
+
+        runner_task: asyncio.Future[dict[str, Any]] | None = None
         try:
             runner_signature = inspect.signature(runner)
             if len(runner_signature.parameters) >= 2:
                 runner_awaitable = runner(update, budget)
             else:
                 runner_awaitable = runner(update)
+            runner_task = asyncio.ensure_future(runner_awaitable)
             result = await asyncio.wait_for(
-                runner_awaitable,
+                runner_task,
                 timeout=max(0.0, deadline_monotonic - time.monotonic()),
             )
-            async with self._lock:
-                if job.status == "running":
-                    job.result = dict(result)
-                    job.status = "completed"
-                    job.stage = "completed"
-                    job.completed_chunks = job.total_chunks
-                    job.finished_at = time.monotonic()
-                    if on_completed is not None:
-                        try:
-                            on_completed(job.result)
-                        except Exception:
-                            _logger.exception(
-                                "document analysis completion callback failed"
-                            )
+            await store_completed_result(result)
         except asyncio.CancelledError:
+            if (
+                runner_task is not None
+                and runner_task.done()
+                and not runner_task.cancelled()
+            ):
+                try:
+                    late_result = runner_task.result()
+                except Exception:
+                    late_result = None
+                if late_result is not None and await store_completed_result(late_result):
+                    return
             async with self._lock:
                 if job.status == "running":
                     job.status = "canceled"

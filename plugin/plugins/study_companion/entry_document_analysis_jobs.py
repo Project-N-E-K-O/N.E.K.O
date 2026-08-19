@@ -10,7 +10,11 @@ from .document_analysis import (
     DocumentValidationError,
     validate_document,
 )
-from .document_analysis_jobs import DocumentAnalysisJobError, DocumentAnalysisJobManager
+from .document_analysis_jobs import (
+    DOCUMENT_JOB_COMMITTED_RESULT_KEY,
+    DocumentAnalysisJobError,
+    DocumentAnalysisJobManager,
+)
 from .document_chunking import (
     DOCUMENT_DIRECT_MAX_TOKENS,
     DocumentChunkingError,
@@ -376,6 +380,10 @@ class _DocumentAnalysisJobsEntriesMixin:
                     payload.pop("created_at", None)
                     payload["degraded"] = reply.degraded
                     payload["diagnostic"] = reply.diagnostic
+                    # Internal manager signal: finalization has crossed the
+                    # durable history boundary, so a racing user cancellation
+                    # must preserve this completed payload.
+                    payload[DOCUMENT_JOB_COMMITTED_RESULT_KEY] = True
                     return payload
                 finally:
                     for task in tasks:

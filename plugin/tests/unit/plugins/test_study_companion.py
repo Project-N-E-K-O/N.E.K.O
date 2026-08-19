@@ -6814,6 +6814,22 @@ def test_study_companion_note_exporter_uses_backend_export_poll_budget() -> None
     assert "for (let i = 0; i < 40; i += 1)" not in source
 
 
+def test_study_companion_note_exporter_can_read_live_export_config() -> None:
+    import tomllib
+
+    plugin_dir = Path(__file__).resolve().parents[3] / "plugins" / "study_companion"
+    manifest = tomllib.loads(
+        (plugin_dir / "plugin.toml").read_text(encoding="utf-8")
+    )
+    note_exporter = next(
+        panel
+        for panel in manifest["plugin"]["ui"]["panel"]
+        if panel["id"] == "note-exporter"
+    )
+
+    assert "config:read" in note_exporter["permissions"]
+
+
 def test_study_companion_ui_export_failures_are_not_silent_successes() -> None:
     plugin_dir = Path(__file__).resolve().parents[3] / "plugins" / "study_companion"
     hosted_source = (plugin_dir / "surfaces" / "study_panel.tsx").read_text(

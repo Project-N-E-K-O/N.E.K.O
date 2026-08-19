@@ -847,6 +847,67 @@ async def test_document_finalization_completes_after_the_absolute_budget_expires
 
 
 @pytest.mark.asyncio
+async def test_user_cancel_preserves_result_after_document_finalization_starts() -> None:
+    finalization_started = asyncio.Event()
+    release_finalization = asyncio.Event()
+    finalized = 0
+
+    class Agent:
+        async def document_analyze(self, document):
+            return TutorReply(
+                operation=LLM_OPERATION_DOCUMENT_ANALYZE,
+                input_text=document.descriptor,
+                reply="cancel-safe analysis",
+            )
+
+    class Owner:
+        _agent = Agent()
+
+        def __init__(self) -> None:
+            self._document_jobs = DocumentAnalysisJobManager()
+
+        _document_job_manager = StudyCompanionPlugin._document_job_manager
+
+        async def _finalize_tutor_call(self, operation, reply, **kwargs):
+            nonlocal finalized
+            finalization_started.set()
+            await release_finalization.wait()
+            finalized += 1
+            return {
+                "operation": operation,
+                "reply": reply.reply,
+                "summary": reply.reply,
+                "document": kwargs["public_payload"]["document"],
+                "degraded": False,
+                "diagnostic": "",
+            }
+
+    owner = Owner()
+    started = await StudyCompanionPlugin.study_start_document_analysis(
+        owner,
+        document_name="notes.txt",
+        document_type="text/plain",
+        document_text="cancel-safe source",
+        locale="en",
+    )
+    assert isinstance(started, Ok)
+    job_id = started.value["job_id"]
+    await asyncio.wait_for(finalization_started.wait(), timeout=1.0)
+
+    canceling = asyncio.create_task(owner._document_jobs.cancel(job_id))
+    await asyncio.sleep(0)
+    release_finalization.set()
+    canceled_payload = await asyncio.wait_for(canceling, timeout=1.0)
+    status = await owner._document_jobs.status(job_id)
+
+    assert finalized == 1
+    assert canceled_payload["status"] == "completed"
+    assert canceled_payload["reply"] == "cancel-safe analysis"
+    assert status["status"] == "completed"
+    assert status["cancellation_source"] == ""
+
+
+@pytest.mark.asyncio
 async def test_chunked_entry_limits_concurrency_preserves_order_and_finalizes_once(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

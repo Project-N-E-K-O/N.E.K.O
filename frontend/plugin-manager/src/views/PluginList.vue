@@ -432,6 +432,7 @@ import { METRICS_REFRESH_INTERVAL } from '@/utils/constants'
 import { formatHttpError } from '@/utils/request'
 import { resolveLocalizedText } from '@/utils/i18nLabel'
 import { openExternalUrl } from '@/utils/openExternal'
+import { isOpenUiNavigationAction } from '@/utils/pluginListActions'
 import { useI18n } from 'vue-i18n'
 import type { PluginListAction, PluginMeta } from '@/types/api'
 
@@ -723,7 +724,7 @@ function handlePluginPrimaryAction(pluginId: string) {
 async function handlePluginUiAction(plugin: PluginMeta, action: PluginListAction) {
   const resolvedAction = buildActions(plugin).find((candidate) => (
     candidate.source === 'plugin'
-      && candidate.kind === 'ui'
+      && isOpenUiNavigationAction(candidate)
       && candidate.id === action.id
   ))
   if (!resolvedAction || resolvedAction.disabled) return

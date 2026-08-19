@@ -111,9 +111,28 @@ describe.each([
     expect(available.click).not.toHaveBeenCalled()
   })
 
+  it.each(['url', 'route'] as const)(
+    'also exposes URL-backed open_ui actions with kind %s',
+    async (kind) => {
+      const available = await mountEntry(component, makePlugin({
+        id: 'open_ui',
+        kind,
+        target: '/plugin/generic/ui/',
+      }))
+
+      available.container.querySelector('[data-testid="plugin-open-ui"]')?.dispatchEvent(
+        new MouseEvent('click', { bubbles: true }),
+      )
+      await nextTick()
+      expect(available.openUi).toHaveBeenCalledWith(expect.objectContaining({ kind }))
+      expect(available.click).not.toHaveBeenCalled()
+    },
+  )
+
   it.each([
     ['missing', null, 'running'],
-    ['wrong kind', { id: 'docs', kind: 'url' } satisfies PluginListAction, 'running'],
+    ['wrong id', { id: 'docs', kind: 'url' } satisfies PluginListAction, 'running'],
+    ['wrong kind', { id: 'open_ui', kind: 'builtin' } satisfies PluginListAction, 'running'],
     ['disabled', { id: 'open_ui', kind: 'ui', disabled: true } satisfies PluginListAction, 'running'],
     [
       'requires running',
