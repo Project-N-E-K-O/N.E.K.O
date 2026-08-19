@@ -411,7 +411,10 @@ class _GeminiMixin:
         genuinely be cancelled: besides ``close()``, the Gemini proactive
         quarantine in ``_responses.py`` calls this from a fired task.
         """
-        if not self._gemini_context_manager:
+        if (
+            not self._gemini_context_manager
+            and getattr(self, "_gemini_proactive_submit_task", None) is None
+        ):
             return
         await self._own_teardown("_gemini_close_task", self._detach_for_gemini_close)
 
@@ -419,10 +422,21 @@ class _GeminiMixin:
         """Seize the context to exit, synchronously (see ``_own_teardown``)."""
 
         return self._close_gemini_impl(
-            self._gemini_context_manager, self._gemini_session
+            self._gemini_context_manager,
+            self._gemini_session,
+            getattr(self, "_gemini_proactive_submit_task", None),
         )
 
-    async def _close_gemini_impl(self, context, session) -> None:
+    async def _close_gemini_impl(
+        self,
+        context,
+        session,
+        proactive_submit_task=None,
+    ) -> None:
+        await self._cancel_gemini_proactive_submit(
+            session_closing=True,
+            submit_task=proactive_submit_task,
+        )
         if context is None:
             return
         try:

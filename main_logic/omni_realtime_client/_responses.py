@@ -44,6 +44,8 @@ from ._response_arbiter import RealtimeResponseArbiter, ResponseTicket
 _PROACTIVE_INJECT_DELIVERY_TIMEOUT_SECONDS = 30.0
 _GEMINI_PROACTIVE_CANCEL_GRACE_SECONDS = 3.0
 _PROACTIVE_TICKET_CANCEL_OBSERVE_TIMEOUT_SECONDS = 0.5
+_GEMINI_PROACTIVE_SESSION_CLOSE_CANCEL = "Gemini session is closing"
+_GEMINI_PROACTIVE_TASK_UNSET = object()
 
 
 def _proactive_text_instruction(language: str, *, has_vision: bool) -> str:
@@ -342,6 +344,29 @@ class _ResponseMixin:
                 self._external_visual_turns.pop(stable_turn_id, None)
         return ticket
 
+    async def _cancel_gemini_proactive_submit(
+        self,
+        *,
+        session_closing: bool = False,
+        submit_task: Any = _GEMINI_PROACTIVE_TASK_UNSET,
+    ) -> None:
+        """Cancel and join the task parked in Gemini's proactive SDK send."""
+
+        if submit_task is _GEMINI_PROACTIVE_TASK_UNSET:
+            submit_task = getattr(self, "_gemini_proactive_submit_task", None)
+        if submit_task is None:
+            return
+        if submit_task is asyncio.current_task():
+            return
+        if not submit_task.done():
+            if session_closing:
+                submit_task.cancel(_GEMINI_PROACTIVE_SESSION_CLOSE_CANCEL)
+            else:
+                submit_task.cancel()
+            await asyncio.gather(submit_task, return_exceptions=True)
+        if getattr(self, "_gemini_proactive_submit_task", None) is submit_task:
+            self._gemini_proactive_submit_task = None
+
     async def prepare_external_voice_turn(self, *, turn_id: str) -> None:
         """Prepare the active Provider session for one external ASR turn."""
 
@@ -349,21 +374,7 @@ class _ResponseMixin:
         if not stable_turn_id:
             raise ValueError("external voice turn_id must not be empty")
         if self._is_gemini:
-            proactive_submit_task = getattr(
-                self,
-                "_gemini_proactive_submit_task",
-                None,
-            )
-            if (
-                proactive_submit_task is not None
-                and proactive_submit_task is not asyncio.current_task()
-                and not proactive_submit_task.done()
-            ):
-                proactive_submit_task.cancel()
-                await asyncio.gather(
-                    proactive_submit_task,
-                    return_exceptions=True,
-                )
+            await self._cancel_gemini_proactive_submit()
         self._begin_external_visual_turn(stable_turn_id)
         try:
             if not self._is_gemini:
@@ -560,26 +571,34 @@ class _ResponseMixin:
             self._gemini_proactive_submit_task = submit_task
             try:
                 await self._gemini_send_user_turn(gemini_text)
-            except asyncio.CancelledError:
+            except asyncio.CancelledError as exc:
                 outcome = getattr(self, "_gemini_proactive_outcome", None)
                 if outcome is not None and outcome[0] == outcome_token:
-                    # Cancellation can arrive after the SDK accepted the
-                    # unscoped turn but before its await resumes. Suppress the
-                    # abandoned caller's callbacks, retain its token, and
-                    # interrupt/quarantine the generation until a terminal (or
-                    # fail-closed session retirement) makes retry correlation
-                    # safe again.
-                    self._gemini_proactive_outcome = (
-                        outcome_token,
-                        None,
-                        None,
-                    )
-                    self._fire_task(
-                        self._interrupt_and_quarantine_gemini_proactive_outcome(
+                    if (
+                        exc.args
+                        and exc.args[0]
+                        == _GEMINI_PROACTIVE_SESSION_CLOSE_CANCEL
+                    ):
+                        # The owning SDK session is being retired immediately;
+                        # no delayed quarantine may survive this close and later
+                        # seize a replacement connection.
+                        self._settle_gemini_proactive_inject(notify=False)
+                    else:
+                        # Cancellation can arrive after the SDK accepted the
+                        # unscoped turn but before its await resumes. Suppress
+                        # callbacks and quarantine until a terminal (or session
+                        # retirement) makes retry correlation safe again.
+                        self._gemini_proactive_outcome = (
                             outcome_token,
-                            error_msg="Gemini proactive SDK send was cancelled",
+                            None,
+                            None,
                         )
-                    )
+                        self._fire_task(
+                            self._interrupt_and_quarantine_gemini_proactive_outcome(
+                                outcome_token,
+                                error_msg="Gemini proactive SDK send was cancelled",
+                            )
+                        )
                 raise
             except Exception:
                 self._settle_gemini_proactive_inject(notify=False)

@@ -103,46 +103,45 @@ class StreamingMixin:
         async with self.input_cache_lock:
             if not self.pending_input_data:
                 return
-
-            if self.session and self.is_active:
-                # 缓存阶段（_stream_data_now）不知道 session 最终是 voice 还是
-                # text。如果最终启好的是 voice session，缓存里的 text 输入若
-                # 直接 flush 进 _process_stream_data_internal，会触发 4977-4995
-                # 的"硬撕 voice → 重建 text"自动切换路径，把刚 ready 的 voice
-                # session 撕成 CHARACTER_LEFT / "角色离开"——这是用户在切音色
-                # 后开语音、麦启动期打字的典型 race。这里只防御 text → voice
-                # 这一条不对偶的路径；screen / camera 等 vision 输入会在
-                # _process_stream_data_internal 里路由到
-                # OmniRealtimeClient.stream_image（5262-5278），是 voice session
-                # 的合法路径，不能误丢。audio 在 _stream_data_now 缓存阶段已经
-                # 直接 return 不缓存，pending_input_data 不会出现 audio。
-                is_voice_session = isinstance(self.session, OmniRealtimeClient)
-                dropped_text_for_voice = 0
-                for message in self.pending_input_data:
-                    msg_input_type = message.get("input_type")
-                    try:
-                        # 重新调用stream_data处理缓存的数据
-                        # 注意：这里直接处理，不再缓存（因为session_ready已设为True）
-                        if msg_input_type == "audio":
-                            await self._enqueue_audio_stream_data(message)
-                        else:
-                            if is_voice_session and msg_input_type in _TEXT_SESSION_INPUT_TYPES:
-                                self.note_stream_input_ingress(message)
-                                dropped_text_for_voice += 1
-                                continue
-                            await self._process_stream_data_internal(message)
-                    except Exception as e:
-                        logger.error(f"💥 发送缓存的输入数据失败: {e}")
-                        break
-                if dropped_text_for_voice:
-                    logger.info(
-                        "[%s] _flush_pending_input_data: dropped %d cached text "
-                        "message(s) because final session is voice mode",
-                        self.lanlan_name, dropped_text_for_voice,
-                    )
-
-            # 清空缓存
+            # Drain atomically, then process outside this lock. One-shot image
+            # attachments may need _ensure_offline_session_for_text_input(),
+            # whose handoff reacquires input_cache_lock; awaiting that path
+            # while still holding the lock would deadlock.
+            pending_messages = list(self.pending_input_data)
             self.pending_input_data.clear()
+
+        if not self.session or not self.is_active:
+            return
+
+        # 缓存阶段（_stream_data_now）不知道 session 最终是 voice 还是
+        # text。如果最终启好的是 voice session，缓存里的纯 text 输入若
+        # 直接 flush 进 _process_stream_data_internal，会把刚 ready 的 voice
+        # session 撕成 text；继续丢弃纯文本。但 avatar_drop_image/user_image
+        # 是明确的一次性附件，必须保留其既有 offline vision 合同。screen /
+        # camera 也继续走 realtime 合法路径。audio 在缓存阶段不会出现。
+        is_voice_session = isinstance(self.session, OmniRealtimeClient)
+        dropped_text_for_voice = 0
+        for message in pending_messages:
+            msg_input_type = message.get("input_type")
+            try:
+                if msg_input_type == "audio":
+                    await self._enqueue_audio_stream_data(message)
+                else:
+                    if is_voice_session and msg_input_type == "text":
+                        self.note_stream_input_ingress(message)
+                        dropped_text_for_voice += 1
+                        continue
+                    await self._process_stream_data_internal(message)
+            except Exception as e:
+                logger.error(f"💥 发送缓存的输入数据失败: {e}")
+                break
+        if dropped_text_for_voice:
+            logger.info(
+                "[%s] _flush_pending_input_data: dropped %d cached text "
+                "message(s) because final session is voice mode",
+                self.lanlan_name,
+                dropped_text_for_voice,
+            )
     
     def _should_drop_live_vision_stream(self, input_type: str | None) -> bool:
         """Deliberately checked at each stream boundary; callers may enter below stream_data."""

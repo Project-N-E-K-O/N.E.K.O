@@ -2589,8 +2589,18 @@ class _TransportMixin:
         silence_check_task, self._silence_check_task = self._silence_check_task, None
         gemini_context = self._gemini_context_manager
         gemini_close_task = self._gemini_close_task
+        gemini_proactive_submit_task = getattr(
+            self,
+            "_gemini_proactive_submit_task",
+            None,
+        )
         return self._close_impl(
-            generation, ws, silence_check_task, gemini_context, gemini_close_task
+            generation,
+            ws,
+            silence_check_task,
+            gemini_context,
+            gemini_close_task,
+            gemini_proactive_submit_task,
         )
 
     async def _close_impl(
@@ -2600,7 +2610,12 @@ class _TransportMixin:
         silence_check_task,
         gemini_context,
         gemini_close_task,
+        gemini_proactive_submit_task,
     ) -> None:
+        await self._cancel_gemini_proactive_submit(
+            session_closing=True,
+            submit_task=gemini_proactive_submit_task,
+        )
         response_arbiter = getattr(self, "_response_arbiter", None)
         if response_arbiter is not None and self._still_owns_connection(generation):
             # The arbiter is shared across connections, not owned by one. If a

@@ -1130,14 +1130,24 @@ async def test_cached_text_dropped_for_voice_still_records_engagement():
 @pytest.mark.unit
 @pytest.mark.asyncio
 @pytest.mark.parametrize("input_type", ["avatar_drop_image", "user_image"])
-async def test_cached_user_image_dropped_for_voice_still_records_engagement(
+async def test_cached_user_image_hands_ready_voice_session_to_offline_vision(
+    monkeypatch,
     input_type,
 ):
-    """A submitted image remains engagement when voice startup discards it."""
-    mgr = _make_transcript_manager()
-    mgr.session = object.__new__(core_module.OmniRealtimeClient)
+    """An attachment cached during voice startup must retain offline delivery."""
+    mgr = _make_manager()
+    realtime_session = object.__new__(core_module.OmniRealtimeClient)
+    offline_session = object.__new__(core_module.OmniOfflineClient)
+    offline_session.stream_image = AsyncMock()
+    mgr.session = realtime_session
     mgr.is_active = True
+    mgr.session_ready = True
     mgr.input_cache_lock = asyncio.Lock()
+    mgr._starting_session_count = 0
+    mgr._session_start_circuit_open = False
+    mgr.session_start_failure_count = 0
+    mgr.session_start_max_failures = 3
+    mgr._emit_cooldown_turn_end_if_needed = Mock(return_value=False)
     mgr.pending_input_data = [
         {
             "input_type": input_type,
@@ -1147,10 +1157,35 @@ async def test_cached_user_image_dropped_for_voice_still_records_engagement(
     ]
     mgr.last_user_engagement_time = None
 
+    async def _end_session(*, reset_starting_count=True):
+        assert reset_starting_count is False
+        mgr.session = None
+        mgr.is_active = False
+
+    async def _start_session(_websocket, *, new=False, input_mode=None):
+        assert new is False
+        assert input_mode == "text"
+        mgr.session = offline_session
+        mgr.is_active = True
+        mgr.session_ready = True
+
+    mgr.end_session = AsyncMock(side_effect=_end_session)
+    mgr.start_session = AsyncMock(side_effect=_start_session)
+    validate = AsyncMock(return_value="img-b64")
+    monkeypatch.setattr(core_module, "process_screen_data", validate)
+
     await core_module.LLMSessionManager._flush_pending_input_data(mgr)
 
     assert mgr.pending_input_data == []
     assert mgr.last_user_engagement_time == FIXED_TS
+    validate.assert_awaited_once_with("raw-image")
+    offline_session.stream_image.assert_awaited_once_with("img-b64")
+    mgr.end_session.assert_awaited_once_with(reset_starting_count=False)
+    mgr.start_session.assert_awaited_once_with(
+        mgr.websocket,
+        new=False,
+        input_mode="text",
+    )
 
 
 @pytest.mark.unit

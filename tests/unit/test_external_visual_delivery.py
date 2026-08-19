@@ -327,6 +327,46 @@ async def test_new_gemini_turn_cancels_proactive_sdk_send_before_returning():
 
 
 @pytest.mark.asyncio
+async def test_gemini_close_cancels_and_joins_proactive_sdk_send():
+    client = _make_qwen_client()
+    client._is_gemini = True
+    client._ai_recent_activity_time = 0
+    client._user_recent_activity_time = 0
+    client._client_vad_active = False
+    client._client_vad_last_speech_time = 0
+    client.cancel_response = AsyncMock()
+    send_started = asyncio.Event()
+    send_cancelled = asyncio.Event()
+
+    async def send_client_content(*_args, **_kwargs):
+        send_started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            send_cancelled.set()
+            raise
+
+    session = AsyncMock()
+    session.send_client_content.side_effect = send_client_content
+    context = AsyncMock()
+    context.__aexit__ = AsyncMock()
+    client._gemini_session = session
+    client._gemini_context_manager = context
+    client.ws = session
+    proactive_task = asyncio.create_task(client.prompt_ephemeral("主动提醒"))
+    await send_started.wait()
+
+    await client._close_gemini()
+
+    assert send_cancelled.is_set()
+    assert proactive_task.cancelled()
+    assert client._gemini_proactive_submit_task is None
+    assert client._gemini_proactive_outcome is None
+    client.cancel_response.assert_not_awaited()
+    context.__aexit__.assert_awaited_once_with(None, None, None)
+
+
+@pytest.mark.asyncio
 async def test_external_proactive_failure_retires_only_the_failed_snapshot():
     """A terminally empty analysis is not retried forever on the same frame."""
     client = _make_qwen_client()
