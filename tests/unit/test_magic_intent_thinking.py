@@ -15,7 +15,7 @@ from typing import Any
 
 import pytest
 
-from brain.openclaw_adapter import OpenClawAdapter
+import brain.openclaw_adapter as adapter_mod
 
 
 class _FakeConfigManager:
@@ -55,8 +55,6 @@ def test_magic_intent_client_disables_thinking(monkeypatch, model, api_base, exp
     """
     captured: list[Any] = []
 
-    import brain.openclaw_adapter as adapter_mod
-
     monkeypatch.setattr(
         adapter_mod, "get_config_manager", lambda: _FakeConfigManager(model, api_base),
     )
@@ -78,7 +76,7 @@ def test_magic_intent_client_disables_thinking(monkeypatch, model, api_base, exp
 
     monkeypatch.setattr(adapter_mod, "create_chat_llm_async", _capturing_factory)
 
-    adapter = OpenClawAdapter.__new__(OpenClawAdapter)
+    adapter = adapter_mod.OpenClawAdapter.__new__(adapter_mod.OpenClawAdapter)
     result = asyncio.run(adapter._classify_magic_intent_with_llm("帮我停下来"))
 
     assert result == {"is_magic_intent": False, "command": None, "source": "llm"}
