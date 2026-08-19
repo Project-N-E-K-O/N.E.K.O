@@ -225,6 +225,28 @@ def test_snapshot_events_boundary_keeps_incomplete_line_for_tail_reader(
 
 
 @pytest.mark.plugin_unit
+def test_snapshot_events_boundary_keeps_oversized_partial_after_checkpoint(
+    tmp_path: Path,
+) -> None:
+    events_path = tmp_path / "events.jsonl"
+    checkpoint_line = b'{"session_id":"sess-a","seq":1}\n'
+    oversized_partial = b'{"session_id":"sess-a","seq":2,"text":"' + b"x" * 128
+    events_path.write_bytes(checkpoint_line + oversized_partial)
+
+    boundary = snapshot_events_boundary(
+        events_path,
+        session_id="sess-a",
+        last_seq=1,
+        bytes_limit=32,
+        events_limit=2,
+    )
+
+    assert boundary.offset == len(checkpoint_line)
+    assert boundary.file_size == events_path.stat().st_size
+    assert boundary.error == ""
+
+
+@pytest.mark.plugin_unit
 def test_snapshot_events_boundary_stops_at_session_checkpoint(tmp_path: Path) -> None:
     events_path = tmp_path / "events.jsonl"
     checkpoint_line = b'{"session_id":"sess-a","seq":1}\n'
@@ -326,6 +348,27 @@ def test_snapshot_events_boundary_keeps_record_at_exact_window_start(
 
     assert boundary.offset == len(old_prefix)
     assert boundary.file_size == events_path.stat().st_size
+    assert boundary.error == ""
+
+
+@pytest.mark.plugin_unit
+def test_snapshot_events_boundary_preserves_zero_checkpoint_racing_event(
+    tmp_path: Path,
+) -> None:
+    events_path = tmp_path / "events.jsonl"
+    snapshot_line = b'{"session_id":"sess-a","seq":0,"type":"session_started"}\n'
+    racing_line = b'{"session_id":"sess-a","seq":1,"type":"line_observed"}\n'
+    events_path.write_bytes(snapshot_line + racing_line)
+
+    boundary = snapshot_events_boundary(
+        events_path,
+        session_id="sess-a",
+        last_seq=0,
+        snapshot_file_size=len(snapshot_line),
+    )
+
+    assert boundary.offset == len(snapshot_line)
+    assert boundary.file_size == len(snapshot_line) + len(racing_line)
     assert boundary.error == ""
 
 

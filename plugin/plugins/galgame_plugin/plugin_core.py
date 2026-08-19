@@ -4214,6 +4214,7 @@ class GalgamePlugin(
                 last_seq=int(session.get("last_seq") or 0),
                 bytes_limit=self._cfg.warmup_replay_bytes_limit,
                 events_limit=self._cfg.warmup_replay_events_limit,
+                snapshot_file_size=int(candidate.events_file_size or 0),
             )
             if boundary.error:
                 warnings.append(boundary.error)

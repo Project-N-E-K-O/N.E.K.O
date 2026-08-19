@@ -1006,12 +1006,17 @@ def scan_session_candidates(bridge_root: Path) -> tuple[list[str], dict[str, Ses
         if not session.get("game_id"):
             session["game_id"] = game_id
         data_source = infer_session_data_source(session)
+        try:
+            events_file_size = events_path.stat().st_size
+        except OSError:
+            events_file_size = 0
         candidates[game_id] = SessionCandidate(
             game_id=game_id,
             session_path=session_path,
             events_path=events_path,
             session=session,
             data_source=data_source,
+            events_file_size=events_file_size,
         )
 
     return available_game_ids, candidates, warnings

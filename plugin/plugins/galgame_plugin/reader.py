@@ -99,6 +99,7 @@ def snapshot_events_boundary(
     last_seq: int | None = None,
     bytes_limit: int | None = None,
     events_limit: int | None = None,
+    snapshot_file_size: int | None = None,
 ) -> EventStreamBoundary:
     if not events_path.exists():
         return EventStreamBoundary()
@@ -109,6 +110,9 @@ def snapshot_events_boundary(
             file_size = handle.tell()
             if file_size <= 0:
                 return EventStreamBoundary()
+            snapshot_size = file_size
+            if snapshot_file_size is not None:
+                snapshot_size = max(0, min(file_size, int(snapshot_file_size)))
 
             checkpoint_seq = max(0, int(last_seq or 0))
             if session_id and checkpoint_seq > 0:
@@ -127,7 +131,10 @@ def snapshot_events_boundary(
                     newline_index = data.find(b"\n")
                     if newline_index < 0:
                         return EventStreamBoundary(
-                            offset=file_size,
+                            offset=_complete_line_boundary_at_or_before(
+                                handle,
+                                scan_start,
+                            ),
                             file_size=file_size,
                         )
                     data_start += newline_index + 1
@@ -169,7 +176,7 @@ def snapshot_events_boundary(
                     file_size=file_size,
                 )
 
-            cursor = file_size
+            cursor = snapshot_size
             while cursor > 0:
                 chunk_size = min(cursor, 64 * 1024)
                 cursor -= chunk_size
@@ -184,6 +191,19 @@ def snapshot_events_boundary(
             return EventStreamBoundary(offset=0, file_size=file_size)
     except OSError as exc:
         return EventStreamBoundary(error=f"read events.jsonl boundary failed: {exc}")
+
+
+def _complete_line_boundary_at_or_before(handle: Any, offset: int) -> int:
+    cursor = max(0, int(offset))
+    while cursor > 0:
+        chunk_size = min(cursor, 64 * 1024)
+        cursor -= chunk_size
+        handle.seek(cursor)
+        chunk = handle.read(chunk_size)
+        newline_index = chunk.rfind(b"\n")
+        if newline_index >= 0:
+            return cursor + newline_index + 1
+    return 0
 
 
 def read_stream_checkpoint(
