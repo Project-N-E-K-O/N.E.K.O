@@ -57,14 +57,20 @@ def test_api_key_settings(mock_page: Page, running_server: str):
     # The JS shows status in #status div; message may be i18n-translated
     # Wait for the status div to become visible (it's hidden by default)
     expect(mock_page.locator("#status")).to_be_visible(timeout=5000)
+
+    # The immediate post-save refresh receives only the server-side secret
+    # sentinel.  Keep this page's just-entered key as a partial mask instead
+    # of degrading it to the generic all-dot placeholder.
+    expect(mock_page.locator("#apiKeyInput")).to_have_value(
+        "sk-tes******567890", timeout=5000
+    )
     
     # Reload page to verify persistence
     mock_page.reload()
     expect(mock_page.locator("#loading-overlay")).to_be_hidden(timeout=10000)
     
-    # Verify value
-    # 当前页面会把明文 key 掩码显示，真实值挂在 data-real-key 上。
-    expect(mock_page.locator("#apiKeyInput")).to_have_attribute("data-real-key", test_key, timeout=5000)
+    # A full page reload must not receive or retain the plaintext key.
+    expect(mock_page.locator("#apiKeyInput")).to_have_value("••••••••••••", timeout=5000)
     expect(mock_page.locator("#coreApiSelect")).to_have_value("qwen", timeout=5000)
 
 

@@ -40,6 +40,10 @@ const CONNECTIVITY_TESTABLE_TYPES = MODEL_TYPES;
 // 由后端保留原密钥；绝不能当作真实凭据展示或用于连通性测试。
 const MASKED_SECRET_SENTINEL = '__NEKO_SECRET_MASKED__';
 const MASKED_SECRET_DISPLAY = '••••••••••••';
+// POST 成功后的紧随其后的配置重载中，后端会只返回密钥哨兵。此 Map 只在
+// 当前页面、当前次重载期间保存用户刚输入的值，用于继续显示局部遮蔽；绝不
+// 写入 localStorage、不会发送到后端，也不会让后端 GET 回显明文。
+let _secretDisplayCache = null;
 const MIMO_TOKEN_PLAN_PROVIDER_KEY = 'mimo_token_plan';
 const MIMO_TOKEN_PLAN_OPENROUTER_URLS = [
     'https://token-plan-cn.xiaomimimo.com/v1',
@@ -407,6 +411,15 @@ function setMaskedInput(input, realKey) {
         return;
     }
     if (isMaskedSecretValue(realKey)) {
+        const locallyEnteredKey = _secretDisplayCache && _secretDisplayCache.get(input.id);
+        if (locallyEnteredKey && !isMaskedSecretValue(locallyEnteredKey)) {
+            // 保存后读取到的只是哨兵；同一次页面会话内仍可安全地沿用本地的
+            // 局部遮蔽显示，避免从“前后可见”退化为全圆点。
+            delete input.dataset.maskedSecret;
+            input.dataset.realKey = locallyEnteredKey;
+            input.value = maskApiKey(locallyEnteredKey);
+            return;
+        }
         // 只保留“后端已有密钥”这一状态，不把哨兵伪装成真实 key 放进 DOM。
         input.dataset.realKey = '';
         input.dataset.maskedSecret = 'true';
@@ -416,6 +429,22 @@ function setMaskedInput(input, realKey) {
     delete input.dataset.maskedSecret;
     input.dataset.realKey = realKey;
     input.value = maskApiKey(realKey);
+}
+
+/**
+ * 记录本页已输入的真实密钥，以便保存成功后的单次配置重载继续显示局部遮蔽。
+ * 页面刷新或普通配置加载不会调用它，因此刷新后仍只显示通用圆点遮罩。
+ */
+function cacheCurrentSecretDisplays() {
+    const cache = new Map();
+    document.querySelectorAll('input').forEach(input => {
+        if (input.dataset.maskAttached !== 'true' || !input.id) return;
+        const realKey = getRealKey(input);
+        if (realKey && !isMaskedSecretValue(realKey)) {
+            cache.set(input.id, realKey);
+        }
+    });
+    _secretDisplayCache = cache;
 }
 
 function setSecretInputValue(elementId, value) {
@@ -2071,6 +2100,8 @@ async function loadCurrentApiKey() {
         showCurrentApiKey(window.t ? window.t('api.errorGettingCurrentApiKey') : '获取当前API Key时出错', '', false);
     } finally {
         _isLoadingSavedConfig = false;
+        // 缓存仅覆盖保存成功后的这一次重载。页面刷新或后续普通加载仍绝不回显密钥。
+        _secretDisplayCache = null;
     }
 }
 
@@ -2969,6 +3000,10 @@ async function saveApiKey(params) {
         if (response.ok) {
             const result = await response.json();
             if (result.success) {
+                // 后端的 GET 响应不会回传密钥明文。先保留当前页面已有值，供下面
+                // loadCurrentApiKey() 在收到哨兵时显示为“前后部分可见”的遮蔽形式；
+                // 其余密钥继续用这一轮临时缓存维持显示。
+                cacheCurrentSecretDisplays();
                 let statusMessage;
                 if (result.sessions_ended && result.sessions_ended > 0) {
                     statusMessage = window.t ? window.t('api.saveSuccessWithReset', { count: result.sessions_ended }) : `API Key保存成功！已重置 ${result.sessions_ended} 个活跃对话，对话页面将自动刷新。`;
@@ -2976,7 +3011,6 @@ async function saveApiKey(params) {
                     statusMessage = window.t ? window.t('api.saveSuccessReload') : 'API Key保存成功！配置已重新加载，新配置将在下次对话时生效。';
                 }
                 showStatus(statusMessage, 'success');
-                setMaskedInput(document.getElementById('apiKeyInput'), '');
 
                 // 清除本地Voice ID记录
                 await clearVoiceIds();
