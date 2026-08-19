@@ -696,6 +696,40 @@ class AgentSummaryMixin:
             )
         )
 
+    @staticmethod
+    def _scene_capsule_occurrence_order(
+        occurrence: dict[str, Any],
+        *,
+        fallback_index: int = 0,
+    ) -> tuple[int, str, int, int, int, int]:
+        record = occurrence.get("line") or occurrence.get("choice") or {}
+        if not isinstance(record, dict):
+            record = {}
+        ts = str(occurrence.get("ts") or record.get("ts") or "")
+        try:
+            event_index = int(occurrence.get("history_event_index"))
+        except (TypeError, ValueError):
+            event_index = -1
+        try:
+            seq = max(0, int(occurrence.get("seq") or 0))
+        except (TypeError, ValueError):
+            seq = 0
+        try:
+            fallback_occurrence_id = max(
+                0,
+                int(occurrence.get("fallback_occurrence_id") or 0),
+            )
+        except (TypeError, ValueError):
+            fallback_occurrence_id = 0
+        return (
+            int(bool(ts)),
+            ts,
+            event_index,
+            seq,
+            fallback_occurrence_id,
+            fallback_index,
+        )
+
     def _scene_capsule_line_occurrences(
         self,
         shared: dict[str, Any],
@@ -852,6 +886,7 @@ class AgentSummaryMixin:
                     "speaker": str(event_line.get("speaker") or ""),
                     "text": str(event_line.get("text") or ""),
                     "scene_id": str(event_line.get("scene_id") or ""),
+                    "ts": str(event_line.get("ts") or ""),
                 },
                 ensure_ascii=False,
                 sort_keys=True,
@@ -939,6 +974,7 @@ class AgentSummaryMixin:
                             "speaker": str(line.get("speaker") or ""),
                             "text": text,
                             "scene_id": str(line.get("scene_id") or ""),
+                            "ts": str(line.get("ts") or ""),
                         },
                         ensure_ascii=False,
                         sort_keys=True,
@@ -1609,7 +1645,10 @@ class AgentSummaryMixin:
             break
         data_source = self._current_input_source(shared)
         session_id = str(shared.get("active_session_id") or "")
-        boundary_scope_key = f"{data_source}|{session_id}"
+        boundary_scope_key = self._scene_capsule_boundary_key(
+            shared,
+            session_id=session_id,
+        ) or f"{data_source}|{session_id}"
         save_identity = self._scene_capsule_semantic_digest(save_obj)
         fallback_source_keys = {
             f"{data_source}|{session_id}|history_line",
@@ -1690,11 +1729,31 @@ class AgentSummaryMixin:
         ):
             return line_occurrences, choice_occurrences, False
 
+        fallback_floors = dict(boundary_state.get("fallback_floors") or {})
+        for source_key in fallback_source_keys:
+            if source_key in fallback_floors:
+                continue
+            fallback_state = self._scene_capsule_fallback_occurrences.get(source_key)
+            if not isinstance(fallback_state, dict):
+                fallback_floors[source_key] = 0
+                continue
+            fallback_floors[source_key] = max(
+                [
+                    *[
+                        int(item)
+                        for item in list(
+                            fallback_state.get("occurrence_ids") or []
+                        )
+                    ],
+                    int(fallback_state.get("next_id") or 1) - 1,
+                ],
+                default=0,
+            )
+        boundary_state["fallback_floors"] = fallback_floors
         self._scene_timeline_boundaries[boundary_scope_key] = boundary_state
         while len(self._scene_timeline_boundaries) > 32:
             oldest_scope_key = next(iter(self._scene_timeline_boundaries))
             self._scene_timeline_boundaries.pop(oldest_scope_key, None)
-        fallback_floors = dict(boundary_state.get("fallback_floors") or {})
         pre_boundary_event_keys = set(
             str(item)
             for item in list(boundary_state.get("pre_boundary_event_keys") or [])
@@ -2419,6 +2478,21 @@ class AgentSummaryMixin:
                 if str(item.get("event_key") or "")
             )
         )
+        live_event_key_set = set(live_event_keys)
+        # A scene/route transition is an occurrence boundary for capsule
+        # delivery.  Retire retained records outside the current scope so a
+        # later revisit cannot revive dialogue that was already skipped.
+        for event_key in boundary_live_event_key_set - live_event_key_set:
+            event_version = int(
+                event_version_state.setdefault(event_key, observation_epoch)
+            )
+            previous_retired_version = int(
+                self._scene_capsule_retired_event_versions.get(event_key) or 0
+            )
+            self._scene_capsule_retired_event_versions[event_key] = max(
+                previous_retired_version,
+                event_version,
+            )
         ledger["committed_event_keys"] = [
             str(item)
             for item in list(ledger.get("committed_event_keys") or [])
@@ -2633,10 +2707,10 @@ class AgentSummaryMixin:
             candidates.sort(
                 key=lambda item: (
                     int(bool(item[5].get("snapshot_fallback"))),
-                    item[0],
-                    item[1],
-                    item[2],
-                    item[3],
+                    *self._scene_capsule_occurrence_order(
+                        item[5],
+                        fallback_index=item[3],
+                    ),
                 )
             )
         _has_seq, _seq, _ts, _index, target_kind, target = candidates[-1]
@@ -3619,6 +3693,11 @@ class AgentSummaryMixin:
                 if has_previous_line_batch and scheduled_line_count > 0
                 else ""
             )
+            line_occurrences_by_key = {
+                str(occurrence.get("event_key") or ""): occurrence
+                for occurrence in line_occurrences
+                if str(occurrence.get("event_key") or "")
+            }
             line_event_indices = {
                 str(occurrence.get("event_key") or ""): int(
                     occurrence.get("history_event_index")
@@ -3637,6 +3716,24 @@ class AgentSummaryMixin:
             ]
             scheduled_batch_event_index = (
                 max(scheduled_event_indices) if scheduled_event_indices else None
+            )
+            previous_batch_occurrence = line_occurrences_by_key.get(
+                previous_batch_last_key
+            )
+            previous_batch_order = (
+                self._scene_capsule_occurrence_order(previous_batch_occurrence)
+                if previous_batch_occurrence is not None
+                else None
+            )
+            scheduled_batch_orders = [
+                self._scene_capsule_occurrence_order(
+                    line_occurrences_by_key[key]
+                )
+                for key in scheduled_line_keys
+                if key in line_occurrences_by_key
+            ]
+            scheduled_batch_order = (
+                max(scheduled_batch_orders) if scheduled_batch_orders else None
             )
             context = build_summarize_context(
                 scope_shared,
@@ -3660,29 +3757,55 @@ class AgentSummaryMixin:
                     list(context.get("recent_choices") or [])
                 )
             else:
-                context["new_choices"] = [
-                    dict(choice)
-                    for occurrence in choice_occurrences
+                new_choices: list[dict[str, Any]] = []
+                for occurrence in choice_occurrences:
+                    choice = occurrence.get("choice")
+                    if not isinstance(choice, dict):
+                        continue
                     if (
+                        str(choice.get("choice_state") or "").strip().lower()
+                        != "selected"
+                        or (
+                            str(choice.get("scene_id") or ""),
+                            str(choice.get("route_id") or ""),
+                        )
+                        not in allowed_scene_routes
+                    ):
+                        continue
+                    occurrence_order = self._scene_capsule_occurrence_order(
+                        occurrence
+                    )
+                    within_occurrence_bounds = bool(
+                        previous_batch_order is not None
+                        and scheduled_batch_order is not None
+                        and previous_batch_order[0]
+                        and scheduled_batch_order[0]
+                        and occurrence_order[0]
+                        and previous_batch_order
+                        < occurrence_order
+                        <= scheduled_batch_order
+                    )
+                    within_event_bounds = bool(
                         previous_batch_event_index is not None
                         and scheduled_batch_event_index is not None
                         and previous_batch_event_index
                         < int(occurrence.get("history_event_index") or -1)
                         <= scheduled_batch_event_index
-                        or previous_scheduled_seq > 0
+                    )
+                    within_sequence_bounds = bool(
+                        previous_scheduled_seq > 0
                         and previous_scheduled_seq
                         < int(occurrence.get("seq") or 0)
                         <= scheduled_seq
                     )
-                    and isinstance(choice := occurrence.get("choice"), dict)
-                    and str(choice.get("choice_state") or "").strip().lower()
-                    == "selected"
-                    and (
-                        str(choice.get("scene_id") or ""),
-                        str(choice.get("route_id") or ""),
-                    )
-                    in allowed_scene_routes
-                ]
+                    if not (
+                        within_occurrence_bounds
+                        or within_event_bounds
+                        or within_sequence_bounds
+                    ):
+                        continue
+                    new_choices.append(dict(choice))
+                context["new_choices"] = new_choices
             if previous_scene_summary:
                 # Keep the prior LLM archive explicit even in rolling context
                 # mode, where scene_summary_seed intentionally remains local.
