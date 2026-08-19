@@ -26,6 +26,7 @@ from .resolver import ShipResolver, normalize_ship_alias
 from .store import NullCatalogSnapshot
 
 _MAX_GAME_INFO_BYTES = 1024 * 1024
+_MAX_EXPIRY_ATTEMPTS = 3
 _VERSION_TAGS = frozenset({"version", "clientversion", "gameversion"})
 _EXPIRED_SHIP_REFERENCE_TEXT = (
     "Previously submitted World of Warships ship reference context has "
@@ -100,6 +101,7 @@ class BattleShipContextManager:
         self._unresolved_reasons: Counter[str] = Counter()
         self._batch_sequence = 0
         self._submitted_context_targets: dict[str, str | None] = {}
+        self._expiry_attempts: dict[str, int] = {}
         self._retry_failures = 0
         self._retry_after = 0.0
         self._last_error = ""
@@ -639,6 +641,15 @@ class BattleShipContextManager:
     def _expire_submitted_contexts(self, reason: str) -> None:
         pending = sorted(self._submitted_context_targets.items())
         for coalesce_key, target_lanlan in pending:
+            attempts = self._expiry_attempts.get(coalesce_key, 0)
+            if attempts >= _MAX_EXPIRY_ATTEMPTS:
+                self._submitted_context_targets.pop(coalesce_key, None)
+                self._expiry_attempts.pop(coalesce_key, None)
+                self._warn(
+                    "ship reference expiry abandoned after "
+                    f"{attempts} attempts ({coalesce_key})")
+                continue
+            self._expiry_attempts[coalesce_key] = attempts + 1
             try:
                 receipt = self._plugin.push_message(
                     source="neko_wows",
@@ -666,6 +677,7 @@ class BattleShipContextManager:
                     and receipt.get("submitted") is True
                 ):
                     self._submitted_context_targets.pop(coalesce_key, None)
+                    self._expiry_attempts.pop(coalesce_key, None)
             except Exception as exc:
                 self._warn(
                     "ship reference expiry push failed: "

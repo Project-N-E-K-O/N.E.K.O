@@ -12,6 +12,7 @@ from __future__ import annotations
 import base64
 import ctypes
 import sys
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -726,6 +727,70 @@ def test_absent_fields_are_omitted_rather_than_sent_as_null():
     assert "own_hp_ratio" not in telemetry
     assert "nearest_enemy" not in telemetry
     assert telemetry == {"in_battle": True}
+
+
+@pytest.mark.parametrize("status", ["waiting", "stale", "ended"])
+def test_non_live_screenshot_telemetry_is_out_of_battle(status):
+    from plugin.plugins.neko_wows import NekoWowsPlugin
+    from plugin.plugins.neko_wows.domain.contracts import WowsConfig
+    from plugin.plugins.neko_wows.domain.facts import WowsFacts
+    from plugin.plugins.neko_wows.domain.snapshot import WowsSnapshot
+
+    plugin = object.__new__(NekoWowsPlugin)
+    plugin._state_lock = threading.RLock()
+    plugin._running = True
+    plugin.cfg = WowsConfig()
+    plugin._latest = (
+        WowsSnapshot(status=status),
+        WowsFacts(own_hp_ratio=0.42, own_health=21000.0),
+    )
+
+    telemetry = NekoWowsPlugin._telemetry_snapshot(plugin)
+
+    assert telemetry == {"in_battle": False}
+
+
+def test_live_screenshot_telemetry_keeps_the_paired_facts():
+    from plugin.plugins.neko_wows import NekoWowsPlugin
+    from plugin.plugins.neko_wows.domain.contracts import WowsConfig
+    from plugin.plugins.neko_wows.domain.facts import WowsFacts
+    from plugin.plugins.neko_wows.domain.snapshot import STATUS_LIVE, WowsSnapshot
+
+    plugin = object.__new__(NekoWowsPlugin)
+    plugin._state_lock = threading.RLock()
+    plugin._running = True
+    plugin.cfg = WowsConfig()
+    plugin._latest = (
+        WowsSnapshot(status=STATUS_LIVE),
+        WowsFacts(own_hp_ratio=0.42, own_health=21000.0),
+    )
+
+    telemetry = NekoWowsPlugin._telemetry_snapshot(plugin)
+
+    assert telemetry["in_battle"] is True
+    assert telemetry["own_hp_ratio"] == 0.42
+    assert telemetry["own_health"] == 21000
+
+
+def test_disabled_plugin_screenshot_telemetry_is_out_of_battle():
+    from plugin.plugins.neko_wows import NekoWowsPlugin
+    from plugin.plugins.neko_wows.domain.contracts import WowsConfig
+    from plugin.plugins.neko_wows.domain.facts import WowsFacts
+    from plugin.plugins.neko_wows.domain.snapshot import STATUS_LIVE, WowsSnapshot
+
+    plugin = object.__new__(NekoWowsPlugin)
+    plugin._state_lock = threading.RLock()
+    plugin._running = False
+    plugin.cfg = WowsConfig()
+    plugin.cfg.enabled = False
+    plugin._latest = (
+        WowsSnapshot(status=STATUS_LIVE),
+        WowsFacts(own_hp_ratio=0.42, own_health=21000.0),
+    )
+
+    telemetry = NekoWowsPlugin._telemetry_snapshot(plugin)
+
+    assert telemetry == {"in_battle": False}
 
 
 # ===========================================================================

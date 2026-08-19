@@ -73,7 +73,7 @@ from plugin.plugins.neko_wows.presentation.prompt_router import (
 )
 from plugin.plugins.neko_wows.detectors._base import GameEvent
 from plugin.plugins.neko_wows.domain.facts import WowsFacts
-from plugin.plugins.neko_wows.domain.snapshot import STATUS_ENDED
+from plugin.plugins.neko_wows.domain.snapshot import STATUS_ENDED, STATUS_LIVE
 from plugin.plugins.neko_wows.ship_data.context import (
     BattleShipContextManager,
     ContextObservation,
@@ -278,6 +278,25 @@ def test_battle_end_restores_context_when_evaluation_raises():
         NekoWowsPlugin._evaluate(plugin, SimpleNamespace(status=STATUS_ENDED))
 
     assert calls == ["evaluate", "restore", "ship_reset:battle_end"]
+
+
+def test_evaluation_is_skipped_when_the_plugin_is_disabled():
+    calls = []
+    plugin = object.__new__(NekoWowsPlugin)
+    plugin._pipeline_lock = threading.RLock()
+    plugin._state_lock = threading.RLock()
+    plugin._running = True
+    plugin.cfg = WowsConfig()
+    plugin.cfg.enabled = False
+    plugin._evaluate_locked = lambda _snapshot: calls.append("evaluate")
+    plugin.context_injector = SimpleNamespace(
+        restore=lambda *_args, **_kwargs: calls.append("restore"))
+    plugin.ship_context = SimpleNamespace(
+        reset=lambda reason: calls.append(f"ship_reset:{reason}"))
+
+    NekoWowsPlugin._evaluate(plugin, SimpleNamespace(status=STATUS_LIVE))
+
+    assert calls == []
 
 
 def test_activate_transport_opens_running_gate_before_start():

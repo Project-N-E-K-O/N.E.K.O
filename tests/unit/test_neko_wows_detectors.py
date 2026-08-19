@@ -986,6 +986,39 @@ def test_broadside_exposure_requires_a_heading():
     assert "target_broadside_window" not in fired(results)
 
 
+def test_own_broadside_uses_the_most_exposed_close_enemy_not_the_nearest():
+    """Nearest can be bow-on while another close hull sits on the beam."""
+    bow = enemy(ui_id=2, x=0.0, z=2000.0)
+    beam = enemy(ui_id=3, x=5000.0, z=0.0)
+    facts = BUILDER.build(frame(yaw=0.0, ships=(bow, beam)))
+
+    assert facts.nearest_enemy is not None
+    assert facts.nearest_enemy.ship.ui_id == 2
+    assert facts.own_broadside_angle_deg == pytest.approx(90.0, abs=0.5)
+    assert facts.own_broadside_threat is not None
+    assert facts.own_broadside_threat.ship.ui_id == 3
+
+
+def test_own_broadside_warns_for_a_beam_enemy_even_when_nearest_is_bow_on():
+    registry = DetectorRegistry(build_geometry_detectors(CFG))
+    bow = enemy(ui_id=2, x=0.0, z=2000.0)
+    beam = enemy(ui_id=3, x=5000.0, z=0.0)
+    results = feed(registry, [
+        frame(seq=1, at=100.0, yaw=0.0, ships=(bow,)),
+        frame(seq=2, at=101.0, yaw=0.0, ships=(bow,)),
+        frame(seq=3, at=102.0, yaw=0.0, ships=(bow, beam)),
+    ])
+    broadside = [
+        event for result in results for event in result.events
+        if event.event_id == OWN_BROADSIDE_EXPOSED
+    ]
+    assert broadside
+    assert broadside[0].detail["bearing_deg"] == 90
+    assert broadside[0].detail["relative_sector"] == "正右"
+    assert broadside[0].detail["enemy_type"] == "Cruiser"
+    assert broadside[0].detail["broadside_angle_deg"] == 90
+
+
 def test_own_broadside_quotes_bow_relative_sector_as_bearing_deg():
     """Heading south, enemy due west: compass 270 reads as due-left if 0 were
     the bow. Spoken sector is due-right. The compass key must be bearing_deg

@@ -162,6 +162,19 @@ class StreamingMixin:
         self._live_vision_last_frame_at = time.monotonic()
         self._live_vision_frame_b64 = image_b64 if isinstance(image_b64, str) else ""
 
+    def _clear_live_vision_share(self) -> None:
+        """Drop the shared screen/camera slot on genuine session teardown.
+
+        Liveness is otherwise a five-second timestamp window, and the manager
+        is reused. A frame that arrived just before ``end_session`` would
+        still look live to ``/api/system/live-vision`` and to a proactive
+        callback in the next session, even though that session has not
+        received a frame of its own.
+        """
+        self._live_vision_source = ""
+        self._live_vision_last_frame_at = 0.0
+        self._live_vision_frame_b64 = ""
+
     def live_vision_snapshot(self) -> dict:
         """Report whether a screen/camera share is currently feeding this session.
 

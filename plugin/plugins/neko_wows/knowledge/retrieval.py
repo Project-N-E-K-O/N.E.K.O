@@ -194,17 +194,17 @@ class WowsTacticsRepository:
         postings: dict[int, dict[str, int]],
         min_hits: int,
     ) -> list[int]:
-        """Tag matches first, then term matches that clear the hit threshold."""
-        ordered: list[int] = sorted(
-            tag_hits, key=lambda chunk_id: (-tag_hits[chunk_id], chunk_id))
-        seen = set(ordered)
+        """Prefer exact tag matches; fall back to term recall only when none exist."""
+        if tag_hits:
+            ordered = sorted(
+                tag_hits, key=lambda chunk_id: (-tag_hits[chunk_id], chunk_id))
+            return ordered[:MAX_CANDIDATES]
         extras = [
             chunk_id for chunk_id, matched in postings.items()
-            if chunk_id not in seen and len(matched) >= min_hits
+            if len(matched) >= min_hits
         ]
         extras.sort(key=lambda chunk_id: (-len(postings[chunk_id]), chunk_id))
-        ordered.extend(extras)
-        return ordered[:MAX_CANDIDATES]
+        return extras[:MAX_CANDIDATES]
 
 
 def _query_tags(query: TacticQuery) -> list[tuple[str, str]]:

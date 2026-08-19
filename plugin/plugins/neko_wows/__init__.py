@@ -412,9 +412,13 @@ class NekoWowsPlugin(NekoPluginBase):
         """
         with self._state_lock:
             latest = self._latest
-        if latest is None:
+            enabled = bool(self.cfg.enabled)
+            running = bool(self._running)
+        if not enabled or not running or latest is None:
             return {"in_battle": False}
-        _snapshot, facts = latest
+        snapshot, facts = latest
+        if not snapshot.is_live:
+            return {"in_battle": False}
         return facts_to_telemetry(facts)
 
     def _live_vision_active(self) -> bool:
@@ -572,9 +576,21 @@ class NekoWowsPlugin(NekoPluginBase):
 
     @lifecycle(id="config_change")
     async def on_config_change(self, **_):
+        was_enabled = bool(self.cfg.enabled)
         before = self._connection_signature()
         cfg = await self._reload_config()
         after = self._connection_signature()
+        if not cfg.enabled:
+            self._stop_runtime_output()
+            return Ok({
+                "status": "disabled",
+                "dry_run": cfg.dry_run,
+                "channel_mode": cfg.channel_mode,
+                "reconnect_required": bool(self._reconnect_required),
+            })
+        if not was_enabled:
+            self._resume_runtime_output()
+            return await self.reconnect()
         if before != after:
             with self._state_lock:
                 # A conflict-blocked startup is not "running", but it still
@@ -590,6 +606,29 @@ class NekoWowsPlugin(NekoPluginBase):
 
     def _connection_signature(self) -> tuple:
         return tuple(getattr(self.cfg, key) for key in _CONNECTION_KEYS)
+
+    def _stop_runtime_output(self) -> None:
+        """Halt call-outs after `[neko_wows].enabled` turns off mid-session."""
+        with self._state_lock:
+            self._running = False
+            self._latest = None
+            self._previous = None
+        self.transport.stop()
+        self.service.stop()
+        with self._pipeline_lock:
+            self.dispatcher.pause("disabled")
+            self.arbiter.pause()
+            self.context_injector.restore(
+                WOWS_RESTORE_INSTRUCTIONS, dry_run=self.cfg.dry_run)
+            self.ship_context.reset("disabled")
+            self.timeline.record(
+                STAGE_DELIVERY, "disabled", reason="config")
+
+    def _resume_runtime_output(self) -> None:
+        """Undo the pause from `_stop_runtime_output` before reconnecting."""
+        with self._pipeline_lock:
+            self.dispatcher.resume()
+            self.arbiter.resume()
 
     def _record_service(self, status, *, only_on_change: bool = False) -> None:
         signature = (status.mode, status.detail)
@@ -631,6 +670,15 @@ class NekoWowsPlugin(NekoPluginBase):
         status = self.service.supervise()
         self._record_service(status, only_on_change=True)
 
+    def _restart_managed_service(self):
+        """Stop a child we launched so the next start uses current settings.
+
+        `start_if_needed` reuses a healthy process. After the user changes
+        URL, source dir, or game dir, that reuse would keep the old child.
+        """
+        self.service.stop()
+        return self.service.start_if_needed()
+
     # ------------------------------------------------------------------ 主链路
     def _on_frame(self, frame: RawFrame) -> None:
         """Runs on the transport thread, once per raw payload."""
@@ -669,7 +717,7 @@ class NekoWowsPlugin(NekoPluginBase):
     def _evaluate(self, snapshot) -> None:
         with self._pipeline_lock:
             with self._state_lock:
-                if not self._running:
+                if not self._running or not self.cfg.enabled:
                     return
             try:
                 self._evaluate_locked(snapshot)
@@ -1245,7 +1293,7 @@ class NekoWowsPlugin(NekoPluginBase):
     )
     async def reconnect(self, **_):
         self.transport.stop()
-        status = await asyncio.to_thread(self.service.start_if_needed)
+        status = await asyncio.to_thread(self._restart_managed_service)
         with self._pipeline_lock:
             self.gate.reset()
             self.registry.reset()

@@ -349,6 +349,127 @@ def test_config_change_keeps_reconnect_required_after_conflict_blocked_start():
     assert plugin._reconnect_required is True
 
 
+def test_config_change_stops_output_when_the_plugin_is_disabled():
+    calls = []
+    plugin = object.__new__(NekoWowsPlugin)
+    plugin._state_lock = threading.RLock()
+    plugin._pipeline_lock = threading.Lock()
+    plugin._running = True
+    plugin._reconnect_required = False
+    plugin._latest = ("live-frame",)
+    plugin._previous = ("previous-frame",)
+    plugin.cfg = WowsConfig()
+
+    def record(name):
+        calls.append((name, plugin._pipeline_lock.locked()))
+
+    async def reload_config():
+        cfg = WowsConfig()
+        cfg.enabled = False
+        plugin.cfg = cfg
+        return cfg
+
+    plugin._reload_config = reload_config
+    plugin.transport = type("Transport", (), {
+        "stop": lambda _self: record("transport_stop"),
+    })()
+    plugin.service = type("Service", (), {
+        "stop": lambda _self: record("service_stop"),
+    })()
+    plugin.dispatcher = type("Dispatcher", (), {
+        "pause": lambda _self, _reason: record("dispatcher_pause"),
+    })()
+    plugin.arbiter = type("Arbiter", (), {
+        "pause": lambda _self: record("arbiter_pause"),
+    })()
+    plugin.context_injector = type("Injector", (), {
+        "restore": lambda _self, *_a, **_k: record("restore"),
+    })()
+    plugin.ship_context = type("Ctx", (), {
+        "reset": lambda _self, *_a: record("ship_reset"),
+    })()
+    plugin.timeline = type("Timeline", (), {
+        "record": lambda _self, *_a, **_k: record("timeline"),
+    })()
+
+    result = asyncio.run(NekoWowsPlugin.on_config_change(plugin))
+
+    assert plugin._running is False
+    assert plugin._latest is None
+    assert plugin._previous is None
+    assert calls == [
+        ("transport_stop", False),
+        ("service_stop", False),
+        ("dispatcher_pause", True),
+        ("arbiter_pause", True),
+        ("restore", True),
+        ("ship_reset", True),
+        ("timeline", True),
+    ]
+    assert result.unwrap()["status"] == "disabled"
+
+
+def test_config_change_restarts_output_when_the_plugin_is_re_enabled():
+    calls = []
+    plugin = object.__new__(NekoWowsPlugin)
+    plugin._state_lock = threading.RLock()
+    plugin._pipeline_lock = threading.Lock()
+    plugin._running = False
+    plugin._reconnect_required = False
+    plugin._previous = None
+    plugin._blocked_signature = ()
+    plugin.cfg = WowsConfig()
+    plugin.cfg.enabled = False
+
+    def record(name):
+        calls.append((name, plugin._pipeline_lock.locked()))
+
+    async def reload_config():
+        cfg = WowsConfig()
+        cfg.enabled = True
+        plugin.cfg = cfg
+        return cfg
+
+    status = ServiceStatus(mode=MODE_EXTERNAL)
+    plugin._reload_config = reload_config
+    plugin.transport = type("Transport", (), {
+        "stop": lambda _self: record("transport_stop"),
+        "start": lambda _self: record("transport_start"),
+    })()
+    plugin.service = type("Service", (), {
+        "stop": lambda _self: record("service_stop"),
+        "start_if_needed": lambda _self: record("service_start") or status,
+    })()
+    plugin.dispatcher = type("Dispatcher", (), {
+        "pause": lambda _self, _reason: record("dispatcher_pause"),
+        "resume": lambda _self: record("dispatcher_resume"),
+    })()
+    plugin.arbiter = type("Arbiter", (), {
+        "pause": lambda _self: record("arbiter_pause"),
+        "resume": lambda _self: record("arbiter_resume"),
+        "reset_battle": lambda _self, *_a: record("arbiter_reset_battle"),
+    })()
+    plugin.gate = type("Gate", (), {"reset": lambda _self: record("gate_reset")})()
+    plugin.registry = type("Registry", (), {
+        "reset": lambda _self: record("registry_reset"),
+    })()
+    plugin.ship_context = type("Ctx", (), {
+        "reset": lambda _self, *_a: record("ship_reset"),
+    })()
+    plugin._record_service = lambda _status: record("record_service")
+
+    result = asyncio.run(NekoWowsPlugin.on_config_change(plugin))
+
+    assert plugin._running is True
+    assert ("dispatcher_resume", True) in calls
+    assert ("arbiter_resume", True) in calls
+    assert ("service_start", False) in calls
+    assert ("transport_start", False) in calls
+    assert calls.index(("dispatcher_resume", True)) < calls.index(
+        ("transport_start", False))
+    assert result.unwrap()["transport_started"] is True
+
+
 def test_reconnect_resets_pipeline_and_battle_state_before_transport_restart():
     calls = []
     plugin = object.__new__(NekoWowsPlugin)
@@ -378,6 +499,7 @@ def test_reconnect_resets_pipeline_and_battle_state_before_transport_restart():
         "start": lambda _self: record("transport_start"),
     })()
     plugin.service = type("Service", (), {
+        "stop": lambda _self: record("service_stop"),
         "start_if_needed": lambda _self: record("service_start") or status,
     })()
     plugin.gate = ResetProbe("gate_reset")
@@ -390,6 +512,7 @@ def test_reconnect_resets_pipeline_and_battle_state_before_transport_restart():
 
     assert calls == [
         ("transport_stop", (), False),
+        ("service_stop", (), False),
         ("service_start", (), False),
         ("gate_reset", (), True),
         ("registry_reset", (), True),
@@ -406,6 +529,104 @@ def test_reconnect_resets_pipeline_and_battle_state_before_transport_restart():
         "service": status.as_dict(),
         "transport_started": True,
     }
+
+
+def _plugin_for_reconnect(service):
+    plugin = object.__new__(NekoWowsPlugin)
+    plugin._state_lock = threading.RLock()
+    plugin._pipeline_lock = threading.Lock()
+    plugin._running = True
+    plugin._reconnect_required = True
+    plugin._previous = None
+    plugin._blocked_signature = ()
+    plugin.transport = type("Transport", (), {
+        "stop": lambda _self: None,
+        "start": lambda _self: None,
+    })()
+    plugin.service = service
+    plugin.gate = type("Gate", (), {"reset": lambda _self: None})()
+    plugin.registry = type("Registry", (), {"reset": lambda _self: None})()
+    plugin.ship_context = type("Ctx", (), {"reset": lambda _self, *_a: None})()
+    plugin.arbiter = type("Arbiter", (), {"reset_battle": lambda _self, *_a: None})()
+    plugin._record_service = lambda _status: None
+    return plugin
+
+
+def test_reconnect_stops_a_managed_child_so_new_game_dir_takes_effect(
+        monkeypatch, tmp_path):
+    source = prepare_source(tmp_path)
+    original = FakeProcess()
+    replacement = FakeProcess()
+    replacement.pid = 4343
+    launches = []
+
+    def fake_urlopen(url, timeout=None):
+        if original.poll() is None and not launches:
+            return FakeResponse(healthy_payload())
+        if launches:
+            return FakeResponse(healthy_payload(instanceId="inst-b"))
+        raise urllib.error.URLError("refused")
+
+    monkeypatch.setattr(sm.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(
+        sm.subprocess, "Popen",
+        lambda command, **_k: launches.append(command) or replacement)
+    monkeypatch.setattr(sm, "_which_uv", lambda: "uv")
+
+    manager = WowsServiceManager(cfg(
+        service_source_dir=str(source), game_dir="D:/Games/Old"))
+    manager._process = original
+    manager._owned_instance_id = "inst-a"
+    manager.apply_config(cfg(
+        service_source_dir=str(source), game_dir="D:/Games/New"))
+
+    result = asyncio.run(NekoWowsPlugin.reconnect(_plugin_for_reconnect(manager)))
+
+    assert original.terminated is True
+    assert launches, "must relaunch so the new game_dir can take effect"
+    assert "--game-dir" in launches[0] and "D:/Games/New" in launches[0]
+    assert manager._process is replacement
+    assert result.unwrap()["transport_started"] is True
+
+
+def test_reconnect_stops_a_managed_child_before_launching_on_a_new_url(
+        monkeypatch, tmp_path):
+    source = prepare_source(tmp_path)
+    original = FakeProcess()
+    replacement = FakeProcess()
+    replacement.pid = 4343
+    launches = []
+
+    def fake_urlopen(url, timeout=None):
+        if ":18111" in url:
+            if launches:
+                return FakeResponse(healthy_payload(instanceId="inst-b"))
+            raise urllib.error.URLError("refused")
+        if original.poll() is None:
+            return FakeResponse(healthy_payload())
+        raise urllib.error.URLError("refused")
+
+    monkeypatch.setattr(sm.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(
+        sm.subprocess, "Popen",
+        lambda command, **_k: launches.append(command) or replacement)
+    monkeypatch.setattr(sm, "_which_uv", lambda: "uv")
+
+    manager = WowsServiceManager(cfg(service_source_dir=str(source)))
+    manager._process = original
+    manager._owned_instance_id = "inst-a"
+    manager.apply_config(cfg(
+        service_source_dir=str(source),
+        service_url="http://127.0.0.1:18111",
+    ))
+
+    result = asyncio.run(NekoWowsPlugin.reconnect(_plugin_for_reconnect(manager)))
+
+    assert original.terminated is True
+    assert launches, "must launch on the new URL instead of overwriting a live child"
+    assert "--port" in launches[0] and "18111" in launches[0]
+    assert manager._process is replacement
+    assert result.unwrap()["transport_started"] is True
 
 
 def test_auto_start_disabled_is_reported_not_attempted(monkeypatch):

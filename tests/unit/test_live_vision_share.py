@@ -10,6 +10,8 @@ does fail: the character still speaks.
 
 from __future__ import annotations
 
+import asyncio
+from queue import Queue
 from types import SimpleNamespace
 
 import pytest
@@ -288,3 +290,62 @@ def test_an_expired_frame_is_dropped_rather_than_kept_in_memory(monkeypatch):
     StreamingMixin.live_vision_snapshot(mgr)
 
     assert mgr._live_vision_frame_b64 == ""
+
+
+def _ended_manager(*, session=None):
+    from main_logic.core import LLMSessionManager
+
+    mgr = LLMSessionManager.__new__(LLMSessionManager)
+    mgr.lock = asyncio.Lock()
+    mgr.input_cache_lock = asyncio.Lock()
+    mgr.is_active = False
+    mgr.session = session
+    mgr._starting_session_count = 0
+    mgr.session_ready = False
+    mgr.pending_input_data = []
+    mgr.tts_handler_task = None
+    mgr.tts_thread = None
+    mgr.tts_request_queue = Queue()
+    mgr.tts_response_queue = Queue()
+    mgr._audio_stream_epoch = 0
+    mgr._user_session_abandon_epoch = 0
+    mgr._reset_tts_retry_state = lambda: None
+    mgr._clear_audio_stream_queue = lambda reason: None
+    mgr._cancel_audio_stream_worker = lambda reason: None
+
+    async def _teardown_tts_runtime(*_args, **_kwargs):
+        return None
+
+    mgr._teardown_tts_runtime = _teardown_tts_runtime
+    mgr._live_vision_source = "screen"
+    mgr._live_vision_last_frame_at = 499.0
+    mgr._live_vision_frame_b64 = "previous-desktop"
+    return mgr
+
+
+async def test_ending_the_session_forgets_a_fresh_share():
+    """The manager is reused. A timestamp still inside the five-second
+    window would otherwise keep reporting the previous desktop as live."""
+    from main_logic.core import LLMSessionManager
+
+    mgr = _ended_manager()
+
+    await LLMSessionManager.end_session(mgr)
+
+    assert mgr._live_vision_source == ""
+    assert mgr._live_vision_last_frame_at == 0.0
+    assert mgr._live_vision_frame_b64 == ""
+    assert StreamingMixin.live_vision_snapshot(mgr)["active"] is False
+    assert StreamingMixin.live_vision_frame_b64(mgr) == ""
+
+
+async def test_a_stale_end_session_does_not_forget_the_current_share():
+    from main_logic.core import LLMSessionManager
+
+    mgr = _ended_manager(session=object())
+
+    await LLMSessionManager.end_session(mgr, expected_session=object())
+
+    assert mgr._live_vision_source == "screen"
+    assert mgr._live_vision_last_frame_at == 499.0
+    assert mgr._live_vision_frame_b64 == "previous-desktop"

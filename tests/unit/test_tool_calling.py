@@ -127,6 +127,25 @@ async def test_registry_local_handler_envelope_extracts_images():
 
 
 @pytest.mark.asyncio
+async def test_registry_local_handler_keeps_data_dicts_that_contain_output():
+    """``output`` alone is not an envelope marker — same rule as the remote
+    plugin callback. Unwrapping would drop sibling fields the model needs."""
+    from main_logic.tool_calling import ToolCall, ToolDefinition, ToolRegistry
+
+    async def ready_handler(_args):
+        return {"output": "ready", "duration": 12}
+
+    reg = ToolRegistry()
+    reg.register(ToolDefinition(
+        name="ready", description="ready", handler=ready_handler))
+    result = await reg.execute(ToolCall(name="ready", arguments={}, call_id="c1"))
+
+    assert result.is_error is False
+    assert result.output == {"output": "ready", "duration": 12}
+    assert result.images == []
+
+
+@pytest.mark.asyncio
 async def test_registry_unknown_tool_returns_error_not_raise():
     from main_logic.tool_calling import ToolCall, ToolRegistry
 

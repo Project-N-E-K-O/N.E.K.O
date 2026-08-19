@@ -431,6 +431,23 @@ def test_tag_weighting_outranks_a_plain_term_match(store):
     assert "带标签" in hits[0].text
 
 
+def test_term_only_candidates_are_ignored_after_a_tag_hit(store):
+    tool = importer(store)
+    tool.import_text(
+        "plain.md",
+        "# 甲\n\n" + ("巡洋舰应该保持距离。" * 40),
+    )
+    tool.import_text(
+        "tagged.md",
+        "---\nmaps: New Dawn\n---\n\n这张图北边有岛可以卡视野。",
+    )
+    hits = repository(store, tactics_tag_weight=0.1).search(
+        TacticQuery(summary="巡洋舰距离", map_name="New Dawn"), limit=1)
+    assert hits
+    assert "卡视野" in hits[0].text
+    assert all("保持距离" not in hit.text for hit in hits)
+
+
 def test_diagnostics_explain_a_successful_search(store):
     importer(store).import_text(
         "a.md", "---\nmodes: Domination\n---\n\n占领区附近要注意鱼雷。")

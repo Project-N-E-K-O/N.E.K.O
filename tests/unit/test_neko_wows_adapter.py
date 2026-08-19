@@ -432,6 +432,23 @@ def test_flat_inflicted_table_keeps_only_the_local_scalar():
     assert snapshot.damage_inflicted_by_victim == {}
 
 
+def test_flat_inflicted_table_without_local_key_stays_unknown():
+    """A known playerId missing from a teammate-filled table is not team damage."""
+    payload = v1_payload(damage={
+        "inflicted": {
+            "2101": 12_000.0,
+            "9999": 80_000.0,
+        },
+        "received": {},
+        "teamTotal": {},
+    })
+
+    snapshot = WowsSchemaAdapter().parse(payload)
+
+    assert snapshot.damage_inflicted is None
+    assert snapshot.damage_inflicted_by_victim == {}
+
+
 def test_nested_damage_without_local_identity_is_not_guessed():
     payload = v1_payload(
         self=None,

@@ -437,11 +437,19 @@ class ToolRegistry:
                 result_value = tool.handler(call.arguments or {})
                 if asyncio.iscoroutine(result_value) or isinstance(result_value, asyncio.Future):
                     result_value = await result_value
-                # Same ``{output, images}`` envelope as remote plugins, so a
-                # built-in/agent-local tool that returns pictures reaches
-                # ``_route_tool_images`` instead of serializing base64 into
-                # the model-readable text.
-                return tool_result_from_envelope(call, result_value)
+                # ``images`` / ``is_error`` mark the plugin envelope, matching
+                # the remote callback route. A data dict that merely contains
+                # ``output`` stays intact so sibling fields reach the model.
+                if isinstance(result_value, dict) and (
+                    "images" in result_value or "is_error" in result_value
+                ):
+                    return tool_result_from_envelope(call, result_value)
+                return ToolResult(
+                    call_id=call.call_id,
+                    name=call.name,
+                    output=result_value,
+                    is_error=False,
+                )
 
             # Remote tool — delegate to the dispatcher (plugin/agent_server).
             if self._remote_dispatcher is None:

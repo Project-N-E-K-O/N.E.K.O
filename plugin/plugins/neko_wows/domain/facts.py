@@ -98,6 +98,7 @@ class WowsFacts:
     heading_towards_boundary: bool | None = None
 
     own_broadside_angle_deg: float | None = None
+    own_broadside_threat: ThreatBearing | None = None
     exposed_target: ThreatBearing | None = None
     exposed_target_angle_deg: float | None = None
 
@@ -251,6 +252,8 @@ class FactBuilder:
         threats: tuple[ThreatBearing, ...] = ()
         nearest_enemy: ThreatBearing | None = None
         nearest_ally_distance: float | None = None
+        own_broadside = None
+        own_broadside_threat = None
         if own is not None and own.has_position and objects_ok:
             visible_enemy_bearings = self._enemy_bearings(
                 own, visible_enemies, own_heading)
@@ -264,6 +267,8 @@ class FactBuilder:
                 if bearing.distance_m <= self.cfg.threat_scan_range_m
             )
             nearest_ally_distance = self._nearest_ally_distance(own, visible_allies)
+            own_broadside, own_broadside_threat = self._own_broadside(
+                own_heading, visible_enemy_bearings)
 
         bearings = tuple(t.bearing_deg for t in threats)
         spread = _bearing_spread(bearings) if len(bearings) >= 2 else None
@@ -271,10 +276,6 @@ class FactBuilder:
         boundary_distance, heading_out = self._boundary(snapshot, own, own_heading)
         if boundary_distance is not None:
             sourced.append(DOMAIN_MAP_BOUNDS)
-
-        own_broadside = None
-        if own_heading is not None and nearest_enemy is not None:
-            own_broadside = _broadside_angle(own_heading, nearest_enemy.bearing_deg)
 
         exposed, exposed_angle = self._exposed_target(own, threats)
 
@@ -321,6 +322,7 @@ class FactBuilder:
             distance_to_boundary_m=boundary_distance,
             heading_towards_boundary=heading_out,
             own_broadside_angle_deg=own_broadside,
+            own_broadside_threat=own_broadside_threat,
             exposed_target=exposed,
             exposed_target_angle_deg=exposed_angle,
             best_target=self._best_target(threats),
@@ -378,6 +380,25 @@ class FactBuilder:
         if own_heading is not None:
             heading_out = _angle_between(own_heading, nearest_bearing) <= 60.0
         return max(0.0, distance), heading_out
+
+    def _own_broadside(self, own_heading, bearings):
+        """Largest own-hull exposure among enemies inside close range.
+
+        The nearest hull can be bow-on while another close ship sits on the
+        beam; that second bearing is the one a broadside warning must use.
+        """
+        if own_heading is None:
+            return None, None
+        close = self.cfg.enemy_close_range_m
+        best = None
+        best_angle = None
+        for bearing in bearings:
+            if bearing.distance_m > close:
+                continue
+            angle = _broadside_angle(own_heading, bearing.bearing_deg)
+            if best_angle is None or angle > best_angle:
+                best, best_angle = bearing, angle
+        return best_angle, best
 
     def _exposed_target(self, own, threats):
         """The nearest enemy that is currently showing us its side.

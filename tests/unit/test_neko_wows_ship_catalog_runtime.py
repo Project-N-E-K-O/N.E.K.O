@@ -13,7 +13,10 @@ from plugin.plugins.neko_wows.ship_data.models import (
     ShipCounts,
     ShipProfile,
 )
-from plugin.plugins.neko_wows.ship_data.context import BattleShipContextManager
+from plugin.plugins.neko_wows.ship_data.context import (
+    BattleShipContextManager,
+    _MAX_EXPIRY_ATTEMPTS,
+)
 from plugin.plugins.neko_wows.ship_data.renderer import ShipReferenceRenderer
 from plugin.plugins.neko_wows.ship_data.resolver import ShipResolver
 from plugin.plugins.neko_wows.domain.contracts import WowsConfig
@@ -1442,6 +1445,28 @@ def test_reset_continues_other_expiries_and_retries_only_the_failed_key(
     context.reset("reconnect")
 
     assert len(plugin.calls) == 5
+
+
+def test_reset_abandons_expiry_after_the_attempt_limit(context_parts):
+    context, plugin, _, _ = context_parts
+    warnings: list[str] = []
+    context._logger = SimpleNamespace(warning=warnings.append)
+    context.observe(
+        battle_snapshot(yamato_ship(1, 1, RELATION_SELF)),
+        dry_run=False,
+    )
+    plugin.receipt = {"submitted": False}
+
+    for _ in range(_MAX_EXPIRY_ATTEMPTS):
+        context.reset("battle_end")
+
+    assert len(plugin.calls) == 1 + _MAX_EXPIRY_ATTEMPTS
+
+    context.reset("shutdown")
+
+    assert len(plugin.calls) == 1 + _MAX_EXPIRY_ATTEMPTS
+    assert context._submitted_context_targets == {}
+    assert any("abandoned after" in message for message in warnings)
 
 
 def test_reset_releases_frozen_snapshot_and_state(context_parts, snapshot):

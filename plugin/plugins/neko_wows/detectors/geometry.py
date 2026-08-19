@@ -68,11 +68,11 @@ class OwnBroadsideDetector(Detector):
 
     def _is_exposed(self, facts) -> bool:
         angle = facts.own_broadside_angle_deg
-        nearest = facts.nearest_enemy
+        threat = facts.own_broadside_threat
         # Without a heading there is no honest way to talk about hull angling.
-        if angle is None or nearest is None:
+        if angle is None or threat is None:
             return False
-        if nearest.distance_m > self.cfg.enemy_close_range_m:
+        if threat.distance_m > self.cfg.enemy_close_range_m:
             return False
         return angle >= self._limit
 
@@ -84,7 +84,7 @@ class OwnBroadsideDetector(Detector):
         if self._exposed or not self._is_exposed(facts):
             return ()
         angle = facts.own_broadside_angle_deg
-        nearest = facts.nearest_enemy
+        threat = facts.own_broadside_threat
         limit = self._limit
         return (self._event(
             OWN_BROADSIDE_EXPOSED,
@@ -92,9 +92,9 @@ class OwnBroadsideDetector(Detector):
             facts=facts,
             detail={
                 "broadside_angle_deg": round(angle),
-                "enemy_distance_m": round(nearest.distance_m),
-                **nearest.direction_fields(),
-                "enemy_type": nearest.ship.ship_type,
+                "enemy_distance_m": round(threat.distance_m),
+                **threat.direction_fields(),
+                "enemy_type": threat.ship.ship_type,
                 "geometry_only": True,
             },
         ),)

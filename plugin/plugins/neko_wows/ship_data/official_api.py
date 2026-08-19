@@ -150,6 +150,9 @@ class OfficialWowsApiClient:
         self._cache: OrderedDict[
             tuple[str, str, int, str], tuple[float, dict[str, Any]]
         ] = OrderedDict()
+        self._name_index: OrderedDict[
+            tuple[str, str], tuple[float, dict[str, tuple[int, ...]]]
+        ] = OrderedDict()
         self._cache_hits = 0
         self._cache_misses = 0
 
@@ -177,6 +180,7 @@ class OfficialWowsApiClient:
             )
             if after != before:
                 self._cache.clear()
+                self._name_index.clear()
 
     def query_ship(
         self,
@@ -196,7 +200,43 @@ class OfficialWowsApiClient:
         if not wanted:
             return official_error("ship_not_found")
         language = language.casefold()
-        matches: set[int] = set()
+        index, code = self._name_index_for(language)
+        if code:
+            return official_error(code)
+        matches = index.get(wanted, ())
+        if len(matches) != 1:
+            return official_error("ship_not_found")
+        return self.query_ship_id(
+            matches[0], configuration=configuration, language=language)
+
+    def _name_index_for(
+        self, language: str,
+    ) -> tuple[dict[str, tuple[int, ...]], str]:
+        key = (self.region, language)
+        now = float(self._clock())
+        with self._lock:
+            self._purge_expired(now)
+            item = self._name_index.get(key)
+            if item is not None:
+                expires_at, value = item
+                if expires_at > now:
+                    self._name_index.move_to_end(key)
+                    return value, ""
+                self._name_index.pop(key, None)
+        index, code = self._fetch_name_index(language)
+        if code:
+            return {}, code
+        if self.cache_ttl_seconds > 0:
+            expires_at = float(self._clock()) + self.cache_ttl_seconds
+            with self._lock:
+                self._name_index[key] = (expires_at, index)
+                self._name_index.move_to_end(key)
+        return index, ""
+
+    def _fetch_name_index(
+        self, language: str,
+    ) -> tuple[dict[str, tuple[int, ...]], str]:
+        names: dict[str, list[int]] = {}
         page_total: int | None = None
         for page_no in range(1, MAX_SHIP_NAME_PAGES + 1):
             payload, code = self._request(
@@ -209,7 +249,7 @@ class OfficialWowsApiClient:
                 },
             )
             if code:
-                return official_error(code)
+                return {}, code
             raw_page_total = _mapping(payload.get("meta")).get("page_total")
             if (
                 isinstance(raw_page_total, bool)
@@ -217,27 +257,28 @@ class OfficialWowsApiClient:
                 or raw_page_total < 1
                 or raw_page_total > MAX_SHIP_NAME_PAGES
             ):
-                return official_error("invalid_response")
+                return {}, "invalid_response"
             if page_total is None:
                 page_total = raw_page_total
             elif raw_page_total != page_total:
-                return official_error("invalid_response")
+                return {}, "invalid_response"
             for raw in _mapping(payload.get("data")).values():
                 value = _mapping(raw)
-                if _text(value.get("name")).casefold() == wanted:
-                    ship_id = value.get("ship_id")
-                    if (
-                        isinstance(ship_id, int)
-                        and not isinstance(ship_id, bool)
-                        and ship_id > 0
-                    ):
-                        matches.add(ship_id)
+                name = _text(value.get("name")).casefold()
+                ship_id = value.get("ship_id")
+                if (
+                    not name
+                    or isinstance(ship_id, bool)
+                    or not isinstance(ship_id, int)
+                    or ship_id <= 0
+                ):
+                    continue
+                bucket = names.setdefault(name, [])
+                if ship_id not in bucket:
+                    bucket.append(ship_id)
             if page_no == page_total:
                 break
-        if len(matches) != 1:
-            return official_error("ship_not_found")
-        return self.query_ship_id(
-            next(iter(matches)), configuration=configuration, language=language)
+        return {name: tuple(ids) for name, ids in names.items()}, ""
 
     def query_ship_id(
         self,
@@ -648,6 +689,11 @@ class OfficialWowsApiClient:
         expired = [key for key, item in self._cache.items() if item[0] <= now]
         for key in expired:
             self._cache.pop(key, None)
+        expired_names = [
+            key for key, item in self._name_index.items() if item[0] <= now
+        ]
+        for key in expired_names:
+            self._name_index.pop(key, None)
 
     @staticmethod
     def _default_transport(

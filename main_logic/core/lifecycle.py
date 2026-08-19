@@ -2876,6 +2876,7 @@ class LifecycleMixin:
         # duplicate end_session callback can't reset the CURRENT live session's
         # gate or drop its queued cues (Codex P1).
         self._reset_proactive_gate()
+        self._clear_live_vision_share()
 
         # Stale expected_session callbacks have already returned above. Invalidate
         # ASR callbacks before any remaining teardown awaits can yield.

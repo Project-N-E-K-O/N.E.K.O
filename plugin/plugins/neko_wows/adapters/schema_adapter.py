@@ -678,6 +678,9 @@ def _inflicted_damage(
         # Flat `{playerId: amount}` table: our own entry is the answer.
         # Summing the whole table would fold in teammates' damage.
         return _damage_amount(own), {}
+    if player_id is not None:
+        # Identity is known but this frame has no local row yet.
+        return None, {}
     return _sum_table(raw), {}
 
 

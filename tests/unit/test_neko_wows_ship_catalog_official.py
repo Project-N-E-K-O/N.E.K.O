@@ -222,6 +222,49 @@ def test_official_name_lookup_pages_without_unsupported_search_parameter():
         assert query["limit"] == ["100"]
 
 
+def _listing_calls(transport) -> list[str]:
+    found = []
+    for url, *_ in transport.calls:
+        query = parse_qs(urlparse(url).query)
+        if query.get("fields") == ["ship_id,name"]:
+            found.append(url)
+    return found
+
+
+def test_official_name_lookup_reuses_the_paged_index_within_ttl():
+    client, transport = make_client(script=[
+        (200, response({
+            "status": "ok",
+            "meta": {"page_total": 2},
+            "data": {
+                "1": {"ship_id": 1, "name": "Yamato II"},
+            },
+        })),
+        (200, response({
+            "status": "ok",
+            "meta": {"page_total": 2},
+            "data": {
+                str(SHIP_ID): {"ship_id": SHIP_ID, "name": "YAMATO"},
+            },
+        })),
+        (200, response(ship_envelope())),
+        (200, response(profile_envelope())),
+        (200, response(ship_envelope(ship_id=1))),
+        (200, response(profile_envelope(ship_id=1))),
+    ])
+
+    first = client.query_ship("Yamato", language="en")
+    again = client.query_ship("  yamato  ", language="en")
+    other = client.query_ship("Yamato II", language="en")
+
+    assert first["ok"] is True
+    assert again["ok"] is True
+    assert other["ok"] is True
+    assert other["data"]["ship"]["ship_id"] == 1
+    assert len(_listing_calls(transport)) == 2
+    assert len(transport.calls) == 6
+
+
 @pytest.mark.parametrize("invalid_ship_id", [0, -1])
 def test_official_name_lookup_ignores_nonpositive_exact_name_ids(
     invalid_ship_id,
