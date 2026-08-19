@@ -170,6 +170,12 @@ class OmniRealtimeClient(_ToolingMixin, _AudioMixin, _TransportMixin, _ResponseM
         # scalars, the shared audio processor, the Gemini session) belongs to
         # whoever attached last.
         self._connection_generation = 0
+        # ``(generation, reason)`` armed when a local component aborts the
+        # attached transport out from under the receive loop, so the loop can
+        # still request manager recovery for a socket it no longer owns.
+        # Cleared by an ordinary close() (the manager already knows) and by a
+        # replacement attach (a successor never inherits this).
+        self._local_failure_recovery: tuple[int, str] | None = None
 
         # Track current response state
         self._current_response_id = None

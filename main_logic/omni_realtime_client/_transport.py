@@ -39,6 +39,10 @@ from ._shared import (
     uuid,
     websockets,
 )
+from main_logic.provider_failure_signals import (
+    CODES_REQUIRING_MSG_DETAIL,
+    classify_provider_failure_text,
+)
 from ._protocol_capabilities import (
     ID_BEARING_RESPONSE_CONTENT_EVENT_TYPES,
     _response_id_text,
@@ -89,51 +93,31 @@ def _error_classification_text(error: Any) -> str:
     return str(error or "")
 
 
-_PEER_CLOSE_SAFETY_KEYWORDS = (
-    "safety",
-    "content_filter",
-    "content filter",
-    "policy violation",
-    "policy_violation",
-    "blocklist",
-    "prohibited",
-    "prohibited_content",
-    "recitation",
-    "spii",
-    "language",
-    "image_safety",
-    "image_prohibited_content",
-    "image_recitation",
-    "responsibleaipolicyviolation",
-    "responsible ai policy",
-)
+def _peer_close_descriptor(received_code) -> str:
+    """Name a peer close by its code alone, never by its reason text."""
+
+    if received_code is None:
+        return "WebSocket closed without a close code"
+    return f"WebSocket close code {received_code}"
 
 
 def _classify_peer_close(received_code, received_reason) -> tuple[str, dict[str, str] | None]:
     """Map a peer close to existing stable UI codes without exposing its reason."""
 
-    reason_text = str(received_reason or "")
-    reason_lower = reason_text.lower()
-    if "欠费" in reason_text or "standing" in reason_lower:
-        return "API_ARREARS", None
-    if "quota" in reason_lower or "time limit" in reason_lower:
-        return "API_QUOTA_TIME", None
-    if "429" in reason_lower or "too many" in reason_lower:
-        return "API_RATE_LIMIT", None
-    if (
-        "401" in reason_lower
-        or "unauthorized" in reason_lower
-        or "authentication" in reason_lower
-        or "incorrect api key" in reason_lower
-        or "invalid_api_key" in reason_lower
-        or ("invalid" in reason_lower and "key" in reason_lower)
-    ):
-        return "API_KEY_REJECTED", None
-    if any(keyword in reason_lower for keyword in _PEER_CLOSE_SAFETY_KEYWORDS):
-        return "API_POLICY_VIOLATION", None
-    if received_code == 1008:
-        return "API_1008_FALLBACK", {"msg": "WebSocket close code 1008"}
-    return "CHARACTER_DISCONNECTED", None
+    code = classify_provider_failure_text(received_reason)
+    if code is None and received_code == 1008:
+        # The reason said nothing, but the close code alone is a policy
+        # signal on every provider that sends it.
+        code = "API_1008_FALLBACK"
+    if code is None:
+        return "CHARACTER_DISCONNECTED", None
+    if code in CODES_REQUIRING_MSG_DETAIL:
+        # The reason string is peer-controlled and deliberately withheld, but
+        # these codes' i18n strings interpolate {{msg}} — emitting them with
+        # no msg renders the raw placeholder to the user. Substitute the close
+        # code, which is ours to disclose and is what a bug report needs.
+        return code, {"msg": _peer_close_descriptor(received_code)}
+    return code, None
 
 
 class RealtimeImagePayloadTooLargeError(RuntimeError):
@@ -2261,6 +2245,10 @@ class _TransportMixin:
         self._close_task = None
         self._failed_transport_close_task = None
         self._gemini_close_task = None
+        # A predecessor's unclaimed abort is not the replacement's to report.
+        # The generation stamp already refuses it; dropping it here keeps the
+        # latch from outliving the connection it describes.
+        self._local_failure_recovery = None
 
     def _still_owns_connection(self, generation) -> bool:
         """Whether the connection a teardown seized is still the client's.
@@ -2296,11 +2284,33 @@ class _TransportMixin:
         """
 
         if not self._still_owns_connection(generation) or self.ws is not message_ws:
-            logger.info(
-                "Realtime receive loop ended after its transport was already "
-                "closed or replaced; no connection error will be reported"
+            local_failure = self._consume_local_failure_recovery(generation)
+            if local_failure is None:
+                logger.info(
+                    "Realtime receive loop ended after its transport was already "
+                    "closed or replaced; no connection error will be reported"
+                )
+                return False
+            # A local component (the arbiter's fail-close, a fatal send) tore
+            # this transport down and nobody told the manager. Finish the host
+            # cleanup the aborting caller could not do from its own stack, and
+            # route it through the ordinary disconnect recovery. Deliberately
+            # NOT reclassified from the local close result: the primary cause
+            # is the reason the aborting caller already logged, and the CLOSE
+            # 1000 handshake outcome must not be shown as a provider API error.
+            logger.warning(
+                "Realtime transport was aborted locally (%s); requesting "
+                "session recovery",
+                local_failure,
             )
-            return False
+            await self._close_failed_transport(local_failure)
+            if not self._still_owns_connection(generation):
+                return False
+            self._schedule_connection_error(
+                "CHARACTER_DISCONNECTED",
+                generation,
+            )
+            return True
 
         await self._close_failed_transport(reason)
         if not self._still_owns_connection(generation):
@@ -2311,6 +2321,23 @@ class _TransportMixin:
             status_details=status_details,
         )
         return True
+
+    def _consume_local_failure_recovery(self, generation) -> str | None:
+        """Take the pending local-abort reason, if it belongs to ``generation``.
+
+        One-shot on purpose: the receive loop that owned the aborted socket is
+        the only party that may act on it, and a retired loop or a replacement
+        connection must not inherit a predecessor's failure.
+        """
+
+        pending = getattr(self, "_local_failure_recovery", None)
+        if pending is None:
+            return None
+        pending_generation, reason = pending
+        if pending_generation != generation:
+            return None
+        self._local_failure_recovery = None
+        return reason
 
     def _schedule_connection_error(
         self,
@@ -2420,11 +2447,27 @@ class _TransportMixin:
         ws=_ATTACHED_TRANSPORT,
         generation=None,
     ) -> None:
-        """Detach, when needed, and physically close a failed raw WebSocket."""
+        """Detach, when needed, and physically close a failed raw WebSocket.
+
+        The sentinel ``ws`` marks the arbiter's own entry point: it seizes the
+        attached socket itself, where ``_close_failed_transport_impl`` hands
+        over a socket it already seized. Only the former leaves nobody holding
+        the failure — the receive loop is about to wake up on a socket it no
+        longer owns and, without the latch armed here, would exit silently and
+        strand the manager on a live session over a dead transport.
+        """
 
         if generation is None or self._still_owns_connection(generation):
             self._fatal_error_occurred = True
         if ws is _ATTACHED_TRANSPORT:
+            # getattr, because this path is reachable on a client shell built
+            # without __init__ (abort is deliberately the one teardown that
+            # needs nothing but a socket) — and a shell has no receive loop to
+            # claim the latch anyway.
+            self._local_failure_recovery = (
+                getattr(self, "_connection_generation", 0),
+                reason,
+            )
             ws, self.ws = self.ws, None
         if ws is not None:
             try:
@@ -2455,6 +2498,9 @@ class _TransportMixin:
 
         generation = self._connection_generation
         ws, self.ws = self.ws, None
+        # The manager is the one closing, so it already knows this session is
+        # over: an abort latched just before this must not also fire recovery.
+        self._local_failure_recovery = None
         silence_check_task, self._silence_check_task = self._silence_check_task, None
         gemini_context = self._gemini_context_manager
         gemini_close_task = self._gemini_close_task

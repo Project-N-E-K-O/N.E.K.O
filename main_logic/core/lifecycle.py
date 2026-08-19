@@ -27,7 +27,11 @@ from datetime import datetime
 from websockets import exceptions as web_exceptions
 from fastapi import WebSocket, WebSocketDisconnect
 from main_logic.omni_realtime_client import OmniRealtimeClient
-from main_logic.omni_offline_client import OmniOfflineClient, _is_safety_violation_signal
+from main_logic.omni_offline_client import OmniOfflineClient
+from main_logic.provider_failure_signals import (
+    CODES_REQUIRING_MSG_DETAIL,
+    classify_provider_failure_text,
+)
 from main_logic.proactive_delivery import (
     DELIVERY_RETRACTED_KEY,
     SWAP_PRIME_DELIVERY_CLAIM_KEY,
@@ -44,6 +48,7 @@ from ._shared import (
     logger,
     IDLE_SESSION_RESET_THRESHOLD_SECONDS,
     IDLE_SESSION_RESET_CHECK_INTERVAL_SECONDS,
+    SESSION_CLOSE_TIMEOUT_SECONDS,
     FRONTEND_START_SESSION_TIMEOUT_SECONDS,
     _HANDSHAKE_OVERRIDE_UNSET,
     _START_LLM_CONCURRENT_ABORTED,
@@ -278,8 +283,6 @@ class LifecycleMixin:
             return
         
         if message:
-            message_text_lower = message_text.lower()
-
             # Pre-classified structured errors from omni_realtime_client (JSON with "code")
             # Forward them directly so the frontend sees the original code.
             if _parsed and isinstance(_parsed, dict) and _parsed.get('code'):
@@ -288,24 +291,21 @@ class LifecycleMixin:
                 # Forwarding this marker here would show the same toast twice.
                 if _parsed.get('code') != 'CHARACTER_DISCONNECTED':
                     await self.send_status(message_text)
-            elif '欠费' in message_text_lower or 'standing' in message_text_lower:
-                await self.send_status(json.dumps({"code": "API_ARREARS"}))
-            elif 'quota' in message_text_lower or 'time limit' in message_text_lower:
-                await self.send_status(json.dumps({"code": "API_QUOTA_TIME"}))
-            elif '429' in message_text_lower or 'too many' in message_text_lower:
-                await self.send_status(json.dumps({"code": "API_RATE_LIMIT"}))
-            elif ('401' in message_text_lower or 'unauthorized' in message_text_lower
-                    or 'authentication' in message_text_lower
-                    or 'incorrect api key' in message_text_lower
-                    or 'invalid_api_key' in message_text_lower
-                    or ('invalid' in message_text_lower and 'key' in message_text_lower)):
-                await self.send_status(json.dumps({"code": "API_KEY_REJECTED"}))
-            elif _is_safety_violation_signal(message_text_lower):
-                await self.send_status(json.dumps({"code": "API_POLICY_VIOLATION", "details": {"msg": message_text}}))
-            elif '1008' in message_text_lower:
-                await self.send_status(json.dumps({"code": "API_1008_FALLBACK", "details": {"msg": message_text}}))
             else:
-                await self.send_status(json.dumps({"code": "API_UNKNOWN_ERROR", "details": {"msg": message_text}}))
+                # Same criteria, and the same ordering, the realtime close
+                # path reads — from one place, so a keyword added for one
+                # provider never goes missing on the other side. The details
+                # payload stays this side's own: here we are holding a real
+                # upstream diagnostic and echo it, where a peer-controlled
+                # close reason is deliberately withheld.
+                status_code = (
+                    classify_provider_failure_text(message_text)
+                    or "API_UNKNOWN_ERROR"
+                )
+                status_payload = {"code": status_code}
+                if status_code in CODES_REQUIRING_MSG_DETAIL:
+                    status_payload["details"] = {"msg": message_text}
+                await self.send_status(json.dumps(status_payload))
         logger.info("💥 Realtime connection recovery requested.")
         await self.disconnected_by_server(expected_session=expected_session)
     
@@ -2542,10 +2542,9 @@ class LifecycleMixin:
                 )
                 # ── 步骤 2：旧 task 已停，安全关闭旧 session ─────────────────────
                 if old_main_session:
-                    try:
-                        await old_main_session.close()
-                    except Exception as e:
-                        logger.error(f"💥 Final Swap Sequence: Error closing old session: {e}")
+                    await self._close_session_within_budget(
+                        old_main_session, "Final Swap Sequence"
+                    )
 
                 _abort_if_passive_claim_retracted("before promote")
 
@@ -2762,6 +2761,44 @@ class LifecycleMixin:
             self.is_hot_swap_imminent = False  # Always reset this flag
             if self.final_swap_task and self.final_swap_task.done():
                 self.final_swap_task = None
+
+    async def _close_session_within_budget(self, session, label: str) -> None:
+        """Close a retired session without letting a slow peer stall the caller.
+
+        Both callers sit on a teardown path other work is blocked behind, so
+        the wait needs a ceiling of its own. It deliberately does not borrow
+        the transport's: the realtime client bounds its close handshake with
+        the websockets ``close_timeout``, but an offline client, a wedged SDK
+        teardown, or a close that never reaches a socket at all is bounded by
+        nothing. The ceiling sits above ``close_timeout`` on purpose — on the
+        realtime path that bound still fires first, and this one only catches
+        the case where the close is stuck somewhere else entirely.
+
+        Giving up on the wait is not giving up on the close: the realtime
+        ``close()`` seizes its socket synchronously and awaits the teardown
+        through a shield, so a caller that stops waiting leaves the closing
+        running rather than orphaning a live socket.
+
+        ``asyncio.timeout``, NOT ``asyncio.wait_for``: wait_for runs the
+        coroutine in a CHILD task, so ``asyncio.current_task()`` inside
+        ``close()`` would stop being the caller's task. The hot-swap sequence
+        reads exactly that to survive Python 3.11 swallowing an external
+        cancel — its pre-promote ``cancelling() > 0`` checkpoint is what stops
+        a zombie swap from overwriting ``self.session``, and moving close()
+        off the swap task's own stack silently disarms it.
+        """
+
+        try:
+            async with asyncio.timeout(SESSION_CLOSE_TIMEOUT_SECONDS):
+                await session.close()
+        except asyncio.TimeoutError:
+            logger.warning(
+                "⏱️ %s: close exceeded %.1fs; it finishes detached",
+                label,
+                SESSION_CLOSE_TIMEOUT_SECONDS,
+            )
+        except Exception as e:
+            logger.error(f"💥 {label}: Error closing session: {e}")
 
     async def disconnected_by_server(self, *, expected_session=None):
         if expected_session is not None and expected_session is not self.session:
@@ -3008,10 +3045,10 @@ class LifecycleMixin:
         if main_session_ref:
             try:
                 logger.info("End Session: Closing connection...")
-                await main_session_ref.close()
+                await self._close_session_within_budget(
+                    main_session_ref, "End Session"
+                )
                 logger.info("End Session: Qwen connection closed.")
-            except Exception as e:
-                logger.error(f"💥 End Session: Error during cleanup: {e}")
             finally:
                 if self.session is main_session_ref:
                     self.session = None
