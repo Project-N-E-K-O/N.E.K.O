@@ -787,9 +787,13 @@ class QQReplyBufferService:
         self.plugin._emit_log("INFO", f"缓冲{pending.message_count}条消息，走 pipeline 生成总结...")
         try:
             from .pipeline_models import QQReplyRequest
-            combined = "\n".join(f"[{i+1}] {t[:150]}" for i, t in enumerate(texts))
+            # buffered_texts[0] 是 bot 自己的草稿回复（schedule_reply 覆盖），
+            # 不能当成"对方发的消息"塞进总结 prompt——用 buffered_user_texts
+            # 只带真实入站文本。ack/强制总结路径早已这么做了，这里对齐。
+            user_texts = pending.buffered_user_texts or texts
+            combined = "\n".join(f"[{i+1}] {t[:150]}" for i, t in enumerate(user_texts))
             request = QQReplyRequest(
-                message_text=f"[系统] 对方连续发了 {len(texts)} 条消息，请用一两句话自然总结回复：\n{combined}",
+                message_text=f"[系统] 对方连续发了 {len(user_texts)} 条消息，请用一两句话自然总结回复：\n{combined}",
                 sender_id=pending.sender_id or "0",
                 is_group=pending.is_group,
                 group_id=pending.group_id if pending.is_group else None,

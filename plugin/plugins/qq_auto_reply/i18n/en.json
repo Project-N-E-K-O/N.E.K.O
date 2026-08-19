@@ -1,6 +1,6 @@
 {
   "plugin.name": "QQ Integration",
-  "plugin.description": "Connect via NapCat (OneBot reverse WebSocket) or QQ official Open Platform. Supports reply-chain parsing, voice, stickers, pokes, and other multi-modal output.",
+  "plugin.description": "Connect via OneBot v11 (forward/reverse WebSocket, compatible with any OneBot backend such as NapCat / LLOneBot / go-cqhttp / Lagrange) or the QQ official Open Platform. Supports multi-group attention, dynamic reply buffering, file content reading (text / VLM image descriptions), reply-chain parsing, voice, stickers, pokes, and other multi-modal output.",
   "entries.init_config.name": "Initialize QQ config",
   "entries.init_config.description": "Create a new QQ configuration when you first use the plugin, finish onboarding, or don't have a config file yet.",
   "entries.get_dashboard_state.name": "Get dashboard state",

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -8,10 +9,72 @@ import pytest
 
 from plugin.server.application.plugins import query_service as query_module
 from plugin.server.application.plugins import router_query_service as router_module
+from plugin.server.domain.errors import ServerDomainError
 from plugin.sdk.shared.i18n import PluginI18n
 
 
 pytestmark = pytest.mark.plugin_unit
+
+
+@pytest.mark.asyncio
+async def test_list_plugins_reports_registry_lock_timeout_as_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        query_module.state,
+        "get_plugins_snapshot_cached",
+        lambda timeout=2.0: {},
+    )
+
+    @contextmanager
+    def _registry_lock_timeout(timeout=2.0):
+        raise TimeoutError("plugins registry busy")
+        yield
+
+    monkeypatch.setattr(
+        query_module.state,
+        "acquire_plugins_read_lock",
+        _registry_lock_timeout,
+    )
+
+    with pytest.raises(ServerDomainError) as exc_info:
+        await query_module.PluginQueryService().list_plugins()
+
+    assert exc_info.value.code == "PLUGIN_REGISTRY_UNAVAILABLE"
+    assert exc_info.value.status_code == 503
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failing_snapshot", ["hosts", "handlers"])
+async def test_list_plugins_reports_related_snapshot_failure_as_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+    failing_snapshot: str,
+) -> None:
+    monkeypatch.setattr(
+        query_module.state,
+        "get_plugins_snapshot_cached",
+        lambda timeout=2.0: {"sample": {"id": "sample", "name": "Sample"}},
+    )
+
+    def _snapshot_failure(timeout=2.0):
+        raise RuntimeError(f"{failing_snapshot} snapshot busy")
+
+    monkeypatch.setattr(
+        query_module.state,
+        "get_plugin_hosts_snapshot_cached",
+        _snapshot_failure if failing_snapshot == "hosts" else lambda timeout=2.0: {},
+    )
+    monkeypatch.setattr(
+        query_module.state,
+        "get_event_handlers_snapshot_cached",
+        _snapshot_failure if failing_snapshot == "handlers" else lambda timeout=2.0: {},
+    )
+
+    with pytest.raises(ServerDomainError) as exc_info:
+        await query_module.PluginQueryService().list_plugins()
+
+    assert exc_info.value.code == "PLUGIN_REGISTRY_UNAVAILABLE"
+    assert exc_info.value.status_code == 503
 
 
 def test_build_plugin_list_reports_source_missing_status(monkeypatch: pytest.MonkeyPatch) -> None:

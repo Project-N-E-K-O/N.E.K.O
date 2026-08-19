@@ -25,6 +25,10 @@ logger = get_logger("server.application.plugins.query")
 _PLUGIN_CARD_I18N_KEYS = {"plugin.name", "plugin.description", "plugin.short_description"}
 
 
+class _PluginRegistryUnavailableError(RuntimeError):
+    """The registry snapshot could not be read within its lock timeout."""
+
+
 def _normalize_mapping(
     raw: Mapping[object, object],
     *,
@@ -449,16 +453,28 @@ def _build_plugin_list_sync(locale: str | None = None) -> list[dict[str, object]
     try:
         plugins_snapshot = state.get_plugins_snapshot_cached(timeout=2.0)
         if not plugins_snapshot:
-            return result
+            # The cached API intentionally collapses a lock timeout into an
+            # empty mapping. Confirm emptiness under the public read lock so
+            # callers can distinguish a genuinely empty registry from lock
+            # contention instead of auto-disabling user plugins.
+            try:
+                with state.acquire_plugins_read_lock(timeout=2.0):
+                    plugins_snapshot = dict(state.plugins)
+            except TimeoutError as exc:
+                raise _PluginRegistryUnavailableError from exc
+            if not plugins_snapshot:
+                return result
         hosts_snapshot = state.get_plugin_hosts_snapshot_cached(timeout=2.0)
         handlers_snapshot = state.get_event_handlers_snapshot_cached(timeout=2.0)
+    except _PluginRegistryUnavailableError:
+        raise
     except IO_RUNTIME_ERRORS as exc:
         logger.warning(
             "failed to get state snapshots for plugin list: err_type={}, err={}",
             type(exc).__name__,
             str(exc),
         )
-        return result
+        raise _PluginRegistryUnavailableError from exc
 
     running_plugin_ids = set()
     for plugin_id, host_obj in hosts_snapshot.items():
@@ -606,6 +622,12 @@ class PluginQueryService:
                 "plugins": normalized_plugins,
                 "message": "" if normalized_plugins else "no plugins registered",
             }
+        except _PluginRegistryUnavailableError as exc:
+            raise ServerDomainError(
+                code="PLUGIN_REGISTRY_UNAVAILABLE",
+                message="Plugin registry is temporarily unavailable",
+                status_code=503,
+            ) from exc
         except ServerDomainError:
             raise
         except IO_RUNTIME_ERRORS as exc:
