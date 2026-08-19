@@ -5875,7 +5875,7 @@ async def test_untrusted_same_session_retires_pending_capsule(
 
 @pytest.mark.asyncio
 @pytest.mark.plugin_unit
-async def test_game_llm_agent_unknown_session_reset_preserves_summary_but_blocks_actuation(
+async def test_game_llm_agent_unknown_session_reset_clears_summary_and_blocks_actuation(
     tmp_path: Path,
 ) -> None:
     plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
@@ -5897,6 +5897,10 @@ async def test_game_llm_agent_unknown_session_reset_preserves_summary_but_blocks
 
     await agent.tick(shared)
     await agent.tick(shared)
+    agent._scene_memory.append(
+        {"scene_id": "scene-a", "route_id": "", "summary": "old unknown session"}
+    )
+    agent._choice_memory.append({"scene_id": "scene-a", "text": "old choice"})
     assert agent._scene_tracker.current_scene_lines_since_push("scene-a") == 3
 
     changed_shared = _shared_state(
@@ -5909,7 +5913,9 @@ async def test_game_llm_agent_unknown_session_reset_preserves_summary_but_blocks
     status = await agent.query_status(changed_shared)
 
     assert agent._last_session_transition_type == "unknown_session_reset"
-    assert agent._scene_tracker.current_scene_lines_since_push("scene-a") == 3
+    assert agent._scene_memory == []
+    assert agent._choice_memory == []
+    assert agent._scene_tracker.current_scene_lines_since_push("scene-a") == 0
     assert status["session_transition_actuation_blocked"] is True
     assert status["last_session_transition_type"] == "unknown_session_reset"
 

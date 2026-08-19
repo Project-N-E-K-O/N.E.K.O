@@ -182,6 +182,8 @@ class AgentObservationMixin:
                 self._cancel_scene_memory_tasks(
                     reason=f"session_transition:{transition_reason}",
                 )
+                self._reset_scene_summary_repeat_guard()
+                self._scene_tracker.reset(scene_id=str(snapshot.get("scene_id") or ""))
                 self._session_transition_actuation_blocked = True
                 self._summary_debug["last_session_transition"] = {
                     "type": transition_type,
