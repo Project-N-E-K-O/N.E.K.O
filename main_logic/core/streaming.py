@@ -119,7 +119,6 @@ class StreamingMixin:
         # session 撕成 text；继续丢弃纯文本。但 avatar_drop_image/user_image
         # 是明确的一次性附件，必须保留其既有 offline vision 合同。screen /
         # camera 也继续走 realtime 合法路径。audio 在缓存阶段不会出现。
-        is_voice_session = isinstance(self.session, OmniRealtimeClient)
         dropped_text_for_voice = 0
         for message in pending_messages:
             msg_input_type = message.get("input_type")
@@ -127,7 +126,10 @@ class StreamingMixin:
                 if msg_input_type == "audio":
                     await self._enqueue_audio_stream_data(message)
                 else:
-                    if is_voice_session and msg_input_type == "text":
+                    if (
+                        isinstance(self.session, OmniRealtimeClient)
+                        and msg_input_type == "text"
+                    ):
                         self.note_stream_input_ingress(message)
                         dropped_text_for_voice += 1
                         continue

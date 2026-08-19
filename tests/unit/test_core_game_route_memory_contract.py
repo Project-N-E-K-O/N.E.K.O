@@ -1134,7 +1134,7 @@ async def test_cached_user_image_hands_ready_voice_session_to_offline_vision(
     monkeypatch,
     input_type,
 ):
-    """An attachment cached during voice startup must retain offline delivery."""
+    """A cached attachment hands its following text to the offline session."""
     mgr = _make_manager()
     realtime_session = object.__new__(core_module.OmniRealtimeClient)
     offline_session = object.__new__(core_module.OmniOfflineClient)
@@ -1153,7 +1153,12 @@ async def test_cached_user_image_hands_ready_voice_session_to_offline_vision(
             "input_type": input_type,
             "data": "raw-image",
             "_user_input_ingress_time": FIXED_TS,
-        }
+        },
+        {
+            "input_type": "text",
+            "data": "describe this image",
+            "_user_input_ingress_time": FIXED_TS + 1,
+        },
     ]
     mgr.last_user_engagement_time = None
 
@@ -1173,6 +1178,16 @@ async def test_cached_user_image_hands_ready_voice_session_to_offline_vision(
     mgr.start_session = AsyncMock(side_effect=_start_session)
     validate = AsyncMock(return_value="img-b64")
     monkeypatch.setattr(core_module, "process_screen_data", validate)
+    deliver_text = AsyncMock()
+    process_pending = core_module.LLMSessionManager._process_stream_data_internal
+
+    async def _process_pending(message):
+        if message.get("input_type") == "text":
+            await deliver_text(message)
+            return
+        await process_pending(mgr, message)
+
+    mgr._process_stream_data_internal = AsyncMock(side_effect=_process_pending)
 
     await core_module.LLMSessionManager._flush_pending_input_data(mgr)
 
@@ -1180,6 +1195,13 @@ async def test_cached_user_image_hands_ready_voice_session_to_offline_vision(
     assert mgr.last_user_engagement_time == FIXED_TS
     validate.assert_awaited_once_with("raw-image")
     offline_session.stream_image.assert_awaited_once_with("img-b64")
+    deliver_text.assert_awaited_once_with(
+        {
+            "input_type": "text",
+            "data": "describe this image",
+            "_user_input_ingress_time": FIXED_TS + 1,
+        }
+    )
     mgr.end_session.assert_awaited_once_with(reset_starting_count=False)
     mgr.start_session.assert_awaited_once_with(
         mgr.websocket,
