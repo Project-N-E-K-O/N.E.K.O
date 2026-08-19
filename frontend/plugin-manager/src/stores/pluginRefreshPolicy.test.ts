@@ -4,8 +4,17 @@ import { createPinia, setActivePinia } from 'pinia'
 import { usePluginStore } from './plugin'
 import { getPlugins, getPluginStatus, refreshPluginsRegistry, startPlugin } from '@/api/plugins'
 
+const translate = vi.hoisted(() => vi.fn(
+  (key: string, params?: Record<string, unknown>) => `${key}${params ? JSON.stringify(params) : ''}`,
+))
+
 vi.mock('@/i18n', () => ({
   getLocale: () => 'zh-CN',
+  i18n: {
+    global: {
+      t: translate,
+    },
+  },
 }))
 
 vi.mock('@/api/plugins', () => ({
@@ -63,6 +72,25 @@ describe('plugin store registry refresh policy', () => {
     expect(store.pluginListRegistrySynced).toBe(true)
     expect(refreshPluginsRegistry).toHaveBeenCalledTimes(1)
     expect(getPlugins).toHaveBeenCalledTimes(1)
+  })
+
+  it('localizes partial registry refresh warnings', async () => {
+    vi.mocked(refreshPluginsRegistry).mockResolvedValue({
+      ...registryRefreshResult(),
+      success: false,
+      failed: [{ plugin_id: 'broken', config_path: 'broken/plugin.toml', error: 'bad entry' }],
+    })
+    const store = usePluginStore()
+
+    const result = await store.syncRegistryAndFetch()
+
+    expect(translate).toHaveBeenCalledWith('messages.pluginListRefreshPartial', {
+      target: 'broken',
+      error: 'bad entry',
+    })
+    expect(result.warningMessage).toBe(
+      'messages.pluginListRefreshPartial{"target":"broken","error":"bad entry"}',
+    )
   })
 
   it('can defer lifecycle refreshes so batch operations refresh once afterward', async () => {

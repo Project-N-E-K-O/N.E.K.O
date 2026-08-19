@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { usePackageManager } from './usePackageManager'
 import {
+  getPluginCliPlugins,
   installPluginPackage,
   planPluginInstall,
   type PluginCliInstallPlanResponse,
@@ -108,6 +109,11 @@ const installResponse: PluginCliInstallResponse = {
 beforeEach(() => {
   vi.clearAllMocks()
   syncRegistryAndFetch.mockResolvedValue({})
+  vi.mocked(getPluginCliPlugins).mockResolvedValue({
+    count: 1,
+    plugins: [],
+    plugin_refs: [pluginRef],
+  })
 })
 
 describe('usePackageManager external plugin selection', () => {
@@ -170,6 +176,15 @@ describe('usePackageManager safe installation flow', () => {
     expect(installPluginPackage).toHaveBeenCalledWith(
       expect.not.objectContaining({ confirmation_token: expect.anything() }),
     )
+  })
+
+  it('uses i18n when refreshing plugin sources fails', async () => {
+    const manager = usePackageManager()
+    vi.mocked(getPluginCliPlugins).mockRejectedValue(new Error('offline'))
+
+    await manager.refreshPluginSources()
+
+    expect(ElMessage.warning).toHaveBeenCalledWith('messages.pluginListRefreshFailed')
   })
 
   it('reports install success before a registry refresh warning', async () => {

@@ -514,7 +514,7 @@ export function usePackageManager(options: UsePackageManagerOptions = {}) {
       }
     } catch (error) {
       console.error('Failed to refresh plugin sources:', error)
-      ElMessage.warning('插件列表刷新失败，请稍后重试')
+      ElMessage.warning(t('messages.pluginListRefreshFailed'))
     } finally {
       pluginsLoading.value = false
     }

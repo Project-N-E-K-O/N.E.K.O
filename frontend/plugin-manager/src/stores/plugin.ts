@@ -11,7 +11,7 @@ import {
   reloadPlugin,
   refreshPluginsRegistry,
 } from '@/api/plugins'
-import { getLocale } from '@/i18n'
+import { getLocale, i18n } from '@/i18n'
 import type { PluginMeta, PluginStatusData } from '@/types/api'
 import { PluginStatus as StatusEnum } from '@/utils/constants'
 
@@ -129,10 +129,17 @@ export const usePluginStore = defineStore('plugin', () => {
         if (firstFailure) {
           const failureTarget = firstFailure.plugin_id || firstFailure.config_path
           warningMessage = response.failed.length > 1
-            ? `插件列表刷新存在 ${response.failed.length} 项失败，首项为 ${failureTarget}: ${firstFailure.error}`
-            : `插件列表刷新存在失败项: ${failureTarget}: ${firstFailure.error}`
+            ? i18n.global.t('messages.pluginListRefreshPartialMultiple', {
+                count: response.failed.length,
+                target: failureTarget,
+                error: firstFailure.error,
+              })
+            : i18n.global.t('messages.pluginListRefreshPartial', {
+                target: failureTarget,
+                error: firstFailure.error,
+              })
         } else {
-          warningMessage = '插件列表刷新存在失败项'
+          warningMessage = i18n.global.t('messages.pluginListRefreshPartialUnknown')
         }
       }
     } catch (err: any) {
