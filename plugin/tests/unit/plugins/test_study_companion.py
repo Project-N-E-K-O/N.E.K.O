@@ -6577,7 +6577,8 @@ def test_study_companion_hosted_surface_actions_are_bridge_authorized() -> None:
         encoding="utf-8"
     )
     assert re.search(
-        r"@ui\.action\([^)]*\)\s+async def _study_export_notes_entry",
+        r"@ui\.action\([^)]*\)\s+@plugin_entry\([\s\S]*?\)\s+"
+        r"async def study_export_notes",
         export_source,
         re.MULTILINE,
     )
