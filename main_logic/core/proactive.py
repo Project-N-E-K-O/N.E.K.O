@@ -29,7 +29,6 @@ from main_logic.omni_realtime_client import (
 from main_logic.omni_offline_client import OmniOfflineClient
 from utils.llm_client import AIMessage
 from main_logic.session_state import SessionEvent, ProactivePhase
-from main_logic.core.live_frame_permissions import allows_live_frame
 from main_logic.proactive_delivery import (
     CALLBACK_EXPIRES_AT_KEY,
     DELIVERY_RETRACTED_KEY,
@@ -48,6 +47,7 @@ from ._shared import (
     FreshScreenshot,
 )
 from .callback_render import _build_callback_instruction, _select_callbacks_within_token_budget
+from .live_frame_permissions import allows_live_frame
 
 
 class ProactiveMixin:

@@ -23,6 +23,8 @@ import path ``main_logic.core`` is unchanged):
   helpers shared across the package.
 - ``callback_render``: pure rendering helpers for agent-task callbacks and
   voice-swap injection strings.
+- ``live_frame_permissions``: the live-frame share grant (single owner of
+  the per-source token/enabled state).
 - ``notices``: the prominent-notice buffer pool (single owner of the queue
   state).
 - ``manager``: ``LLMSessionManager`` -- ``__init__`` (the single home of
