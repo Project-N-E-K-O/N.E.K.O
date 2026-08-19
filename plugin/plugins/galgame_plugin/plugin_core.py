@@ -4232,6 +4232,9 @@ class GalgamePlugin(
                     offset=saved_offset,
                 )
                 cursor_invalid = current_checkpoint != saved_checkpoint
+                if not cursor_invalid:
+                    attachment_checkpoint = saved_checkpoint
+                    attachment_checkpoint_offset = saved_offset
             if cursor_invalid:
                 for field in (
                     "history_events",

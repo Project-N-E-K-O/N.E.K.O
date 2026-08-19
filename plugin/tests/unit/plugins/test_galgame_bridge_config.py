@@ -45,6 +45,7 @@ from _galgame_test_support import (
 )
 from plugin.plugins.galgame_plugin.reader import (
     EventStreamBoundary,
+    read_stream_checkpoint as read_events_checkpoint,
     snapshot_events_boundary as read_events_boundary,
 )
 
@@ -3476,6 +3477,170 @@ async def test_preexisting_session_resumes_saved_cursor_after_reattach(
         assert [line["line_id"] for line in history.value["stable_lines"]] == [
             "alpha-new"
         ]
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
+async def test_preexisting_reattach_validates_saved_checkpoint_in_tail(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    alpha_dir = _create_game_dir(
+        bridge_root,
+        game_id="demo.alpha",
+        session_payload=_session(
+            game_id="demo.alpha",
+            session_id="sess-alpha",
+            last_seq=1,
+            started_at="2000-01-01T00:00:00Z",
+            state=_session_state(
+                text="alpha cached line",
+                line_id="alpha-old",
+                scene_id="scene-alpha",
+            ),
+        ),
+        events=[
+            _event(
+                seq=1,
+                event_type="line_changed",
+                session_id="sess-alpha",
+                game_id="demo.alpha",
+                ts="2000-01-01T00:00:01Z",
+                payload={
+                    "speaker": "Yukino",
+                    "text": "alpha cached line",
+                    "line_id": "alpha-old",
+                    "scene_id": "scene-alpha",
+                    "route_id": "",
+                },
+            )
+        ],
+    )
+    _create_game_dir(
+        bridge_root,
+        game_id="demo.beta",
+        session_payload=_session(
+            game_id="demo.beta",
+            session_id="sess-beta",
+            last_seq=1,
+            started_at="2000-01-01T00:00:00Z",
+            state=_session_state(
+                text="beta cached line",
+                line_id="beta-old",
+                scene_id="scene-beta",
+            ),
+        ),
+        events=[
+            _event(
+                seq=1,
+                event_type="line_changed",
+                session_id="sess-beta",
+                game_id="demo.beta",
+                ts="2000-01-01T00:00:01Z",
+                payload={
+                    "speaker": "Yukino",
+                    "text": "beta cached line",
+                    "line_id": "beta-old",
+                    "scene_id": "scene-beta",
+                    "route_id": "",
+                },
+            )
+        ],
+    )
+
+    plugin = GalgameBridgePlugin(_Ctx(plugin_dir, _make_effective_config(bridge_root)))
+    await plugin.startup()
+    try:
+        await plugin._poll_bridge(force=True)
+        assert isinstance(await plugin.galgame_bind_game(game_id="demo.alpha"), Ok)
+        await plugin._poll_bridge(force=True)
+        saved_offset = int(plugin._snapshot_state()["events_byte_offset"])
+
+        assert isinstance(await plugin.galgame_bind_game(game_id="demo.beta"), Ok)
+        await plugin._poll_bridge(force=True)
+
+        events_path = alpha_dir / "events.jsonl"
+        replacement = _event(
+            seq=1,
+            event_type="line_changed",
+            session_id="sess-alpha",
+            game_id="demo.alpha",
+            ts="2026-04-21T08:36:01Z",
+            payload={
+                "speaker": "Yukino",
+                "text": "replacement after checkpoint " + ("x" * saved_offset),
+                "line_id": "alpha-replacement",
+                "scene_id": "scene-alpha",
+                "route_id": "",
+            },
+        )
+        rewrote_stream = False
+        alpha_tail_checkpoints: list[str] = []
+        alpha_tail_reset_results: list[bool] = []
+        standalone_checkpoints: list[str] = []
+        real_tail = tail_events_jsonl
+
+        def _rewrite_after_saved_checkpoint(path: Path, *, offset: int) -> str:
+            nonlocal rewrote_stream
+            checkpoint = read_events_checkpoint(path, offset=offset)
+            if path == events_path and offset == saved_offset and not rewrote_stream:
+                standalone_checkpoints.append(checkpoint)
+                rewrote_stream = True
+                _write_events(events_path, [replacement])
+                _write_session(
+                    alpha_dir / "session.json",
+                    _session(
+                        game_id="demo.alpha",
+                        session_id="sess-alpha",
+                        last_seq=1,
+                        started_at="2000-01-01T00:00:00Z",
+                        state=_session_state(
+                            text=str(replacement["payload"]["text"]),
+                            line_id="alpha-replacement",
+                            scene_id="scene-alpha",
+                            ts="2026-04-21T08:36:01Z",
+                        ),
+                    ),
+                )
+                assert events_path.stat().st_size >= saved_offset
+                assert read_events_checkpoint(
+                    events_path,
+                    offset=saved_offset,
+                ) != checkpoint
+            return checkpoint
+
+        def _capture_alpha_tail_checkpoint(path: Path, **kwargs: object):
+            if path == events_path:
+                alpha_tail_checkpoints.append(
+                    str(kwargs.get("expected_checkpoint") or "")
+                )
+            result = real_tail(path, **kwargs)
+            if path == events_path:
+                alpha_tail_reset_results.append(bool(result.reset_detected))
+            return result
+
+        monkeypatch.setattr(
+            "plugin.plugins.galgame_plugin.plugin_core.read_stream_checkpoint",
+            _rewrite_after_saved_checkpoint,
+        )
+        monkeypatch.setattr(
+            "plugin.plugins.galgame_plugin.plugin_core.tail_events_jsonl",
+            _capture_alpha_tail_checkpoint,
+        )
+
+        assert isinstance(await plugin.galgame_bind_game(game_id="demo.alpha"), Ok)
+        await plugin._poll_bridge(force=True)
+        recovered = plugin._snapshot_state()
+        assert rewrote_stream is True
+        assert alpha_tail_checkpoints and alpha_tail_checkpoints[0]
+        assert alpha_tail_checkpoints[0] == standalone_checkpoints[0]
+        assert alpha_tail_reset_results[:2] == [True, False]
+        assert recovered["stream_reset_pending"] is False
+        assert recovered["latest_snapshot"]["line_id"] == "alpha-replacement"
+        assert [event["seq"] for event in recovered["history_events"]] == [1]
     finally:
         await plugin.shutdown()
 

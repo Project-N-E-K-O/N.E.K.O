@@ -83,10 +83,12 @@ class AgentSceneTracker:
                 "scheduled_choice_keys_by_owner": {},
                 "scheduled_choice_occurrences_by_owner": {},
                 "scheduled_context_choice_keys_by_owner": {},
+                "scheduled_occurrence_order_by_owner": {},
                 "lines_since_push": 0,
                 "last_line_seq": 0,
                 "last_line_ts": "",
                 "last_scheduled_seq": 0,
+                "last_delivered_occurrence_order": None,
                 "last_schedule_owner_token": 0,
                 "active_schedule_owner_tokens": set(),
                 "scheduled_in_flight_count": 0,
@@ -212,6 +214,7 @@ class AgentSceneTracker:
         seq: int,
         covered_line_keys: list[str] | set[str] | None = None,
         covered_choice_keys: list[str] | set[str] | None = None,
+        scheduled_occurrence_order: tuple[Any, ...] | None = None,
     ) -> int:
         state = self.state_for_scene(scene_id, route_id=route_id)
         self._summary_schedule_owner_counter += 1
@@ -326,6 +329,19 @@ class AgentSceneTracker:
         scheduled_context_choice_keys_by_owner[owner_token] = (
             covered_choice_key_set
         )
+        scheduled_occurrence_order_by_owner = state.get(
+            "scheduled_occurrence_order_by_owner"
+        )
+        if not isinstance(scheduled_occurrence_order_by_owner, dict):
+            scheduled_occurrence_order_by_owner = {}
+            state["scheduled_occurrence_order_by_owner"] = (
+                scheduled_occurrence_order_by_owner
+            )
+        scheduled_occurrence_order_by_owner[owner_token] = (
+            tuple(scheduled_occurrence_order)
+            if scheduled_occurrence_order is not None
+            else None
+        )
         state["lines_since_push"] = 0
         state["last_scheduled_seq"] = int(seq or 0)
         state["last_schedule_owner_token"] = owner_token
@@ -370,6 +386,14 @@ class AgentSceneTracker:
         )
         if isinstance(scheduled_choice_occurrences_by_owner, dict):
             scheduled_choice_occurrences_by_owner.pop(owner_token, None)
+        scheduled_occurrence_order_by_owner = state.get(
+            "scheduled_occurrence_order_by_owner"
+        )
+        delivered_occurrence_order = (
+            scheduled_occurrence_order_by_owner.pop(owner_token, None)
+            if isinstance(scheduled_occurrence_order_by_owner, dict)
+            else None
+        )
         deferred_schedules = self._pop_deferred_scene_summary_schedules(
             state,
             owner_token=owner_token,
@@ -410,6 +434,17 @@ class AgentSceneTracker:
                 covered_choice_keys=covered_choice_keys,
             ),
         )
+        if isinstance(delivered_occurrence_order, tuple):
+            previous_occurrence_order = state.get(
+                "last_delivered_occurrence_order"
+            )
+            if (
+                not isinstance(previous_occurrence_order, tuple)
+                or previous_occurrence_order < delivered_occurrence_order
+            ):
+                state["last_delivered_occurrence_order"] = (
+                    delivered_occurrence_order
+                )
         if int(state.get("last_schedule_owner_token") or 0) != int(owner_token or 0):
             self.sync_current_scene_summary_mirror(
                 self.summary_scene_id,
@@ -483,6 +518,11 @@ class AgentSceneTracker:
         )
         if isinstance(scheduled_context_choice_keys_by_owner, dict):
             scheduled_context_choice_keys_by_owner.pop(owner_token, None)
+        scheduled_occurrence_order_by_owner = state.get(
+            "scheduled_occurrence_order_by_owner"
+        )
+        if isinstance(scheduled_occurrence_order_by_owner, dict):
+            scheduled_occurrence_order_by_owner.pop(owner_token, None)
         if (
             scheduled_line_keys
             or scheduled_line_occurrences
@@ -576,6 +616,11 @@ class AgentSceneTracker:
         )
         if isinstance(scheduled_context_choice_keys_by_owner, dict):
             scheduled_context_choice_keys_by_owner.pop(owner_token, None)
+        scheduled_occurrence_order_by_owner = state.get(
+            "scheduled_occurrence_order_by_owner"
+        )
+        if isinstance(scheduled_occurrence_order_by_owner, dict):
+            scheduled_occurrence_order_by_owner.pop(owner_token, None)
         pending_line_occurrences = state.get("pending_line_occurrences")
         if isinstance(pending_line_occurrences, dict):
             for key in scheduled_line_keys:

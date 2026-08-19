@@ -9,9 +9,10 @@ class AgentSceneContextMixin:
 
     @staticmethod
     def _normalized_choice_state(choice: dict[str, Any]) -> str:
-        return str(
+        state = str(
             choice.get("choice_state") or choice.get("action") or "selected"
         ).strip().lower()
+        return "visible" if state in {"visible", "shown"} else "selected"
 
     async def _summarize_scene_for_cat(
         self,

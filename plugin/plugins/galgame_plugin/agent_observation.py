@@ -26,14 +26,34 @@ class AgentObservationMixin:
         )
         current_fingerprint = self._session_fingerprint(shared)
 
-        def _trusted_observation_evidence_marker() -> str:
+        def _trusted_gameplay_evidence_marker() -> str:
+            gameplay_event_types = {
+                "line_observed",
+                "line_changed",
+                "choices_shown",
+                "choice_selected",
+            }
             evidence = {
                 "active_game_id": str(shared.get("active_game_id") or ""),
                 "active_session_id": session_id,
                 "active_data_source": str(shared.get("active_data_source") or ""),
-                "last_seq": int(shared.get("last_seq") or 0),
-                "snapshot": snapshot,
-                "history_events": list(shared.get("history_events") or []),
+                "snapshot": {
+                    field: snapshot.get(field)
+                    for field in (
+                        "speaker",
+                        "text",
+                        "line_id",
+                        "scene_id",
+                        "route_id",
+                        "choices",
+                    )
+                },
+                "history_events": [
+                    event
+                    for event in list(shared.get("history_events") or [])
+                    if isinstance(event, dict)
+                    and str(event.get("type") or "") in gameplay_event_types
+                ],
                 "history_lines": list(shared.get("history_lines") or []),
                 "history_observed_lines": list(
                     shared.get("history_observed_lines") or []
@@ -225,7 +245,7 @@ class AgentObservationMixin:
                 self._last_delivered_summary_scene_id = ""
                 self._session_transition_actuation_blocked = True
                 self._summary_debug["unknown_session_reset_evidence_marker"] = (
-                    _trusted_observation_evidence_marker()
+                    _trusted_gameplay_evidence_marker()
                 )
                 self._summary_debug["last_session_transition"] = {
                     "type": transition_type,
@@ -265,7 +285,7 @@ class AgentObservationMixin:
         if (
             self._session_transition_actuation_blocked
             and self._has_trusted_game_observation(shared)
-            and _trusted_observation_evidence_marker()
+            and _trusted_gameplay_evidence_marker()
             != str(
                 self._summary_debug.get("unknown_session_reset_evidence_marker")
                 or ""

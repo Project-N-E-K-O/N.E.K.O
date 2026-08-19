@@ -4404,7 +4404,12 @@ async def test_degraded_scene_summary_does_not_mark_visible_choice_as_selected(
                 "choice_id": "visible-1",
                 "text": "unselected route",
                 "choice_state": "visible",
-            }
+            },
+            {
+                "choice_id": "shown-1",
+                "text": "legacy shown route",
+                "action": "shown",
+            },
         ],
     }
 
@@ -4417,7 +4422,9 @@ async def test_degraded_scene_summary_does_not_mark_visible_choice_as_selected(
 
     summary = str(meta["scene_summary"])
     assert "最近确认的选项：unselected route" not in summary
-    assert "当前可见选项：unselected route" in summary
+    assert "最近确认的选项：legacy shown route" not in summary
+    assert "unselected route" in summary
+    assert "legacy shown route" in summary
 
 
 @pytest.mark.asyncio
@@ -5987,6 +5994,25 @@ async def test_unknown_ocr_reset_requires_new_trusted_evidence_before_resuming(
     await _drain_agent_summary_tasks(agent)
     assert agent._session_transition_actuation_blocked is True
     assert agent._should_actuate(changed) is False
+
+    heartbeat_only = {
+        **changed,
+        "last_seq": 99,
+        "history_events": [
+            _event(
+                seq=99,
+                event_type="heartbeat",
+                session_id="ocr-session-b",
+                game_id="demo.alpha",
+                ts="2026-04-21T08:35:09Z",
+                payload={},
+            )
+        ],
+    }
+    await agent.tick(heartbeat_only)
+    await _drain_agent_summary_tasks(agent)
+    assert agent._session_transition_actuation_blocked is True
+    assert agent._should_actuate(heartbeat_only) is False
 
     third_line = _summary_test_line("scene-a", 3)
     advanced = _shared_state(

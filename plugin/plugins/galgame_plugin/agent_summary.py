@@ -3922,10 +3922,17 @@ class AgentSummaryMixin:
             previous_batch_occurrence = line_occurrences_by_key.get(
                 previous_batch_last_key
             )
+            retained_previous_batch_order = state.get(
+                "last_delivered_occurrence_order"
+            )
             previous_batch_order = (
-                self._scene_capsule_occurrence_order(previous_batch_occurrence)
-                if previous_batch_occurrence is not None
-                else None
+                retained_previous_batch_order
+                if isinstance(retained_previous_batch_order, tuple)
+                else (
+                    self._scene_capsule_occurrence_order(previous_batch_occurrence)
+                    if previous_batch_occurrence is not None
+                    else None
+                )
             )
             scheduled_batch_orders = [
                 self._scene_capsule_occurrence_order(
@@ -4099,6 +4106,7 @@ class AgentSummaryMixin:
                 seq=scheduled_seq,
                 covered_line_keys=covered_line_keys,
                 covered_choice_keys=covered_choice_keys,
+                scheduled_occurrence_order=scheduled_batch_order,
             )
             merged_schedule_restore: list[dict[str, Any]] = []
             for merged_scope_key in merge_scope_keys or []:
@@ -4132,6 +4140,7 @@ class AgentSummaryMixin:
                         seq=0,
                         covered_line_keys=covered_line_keys,
                         covered_choice_keys=covered_choice_keys,
+                        scheduled_occurrence_order=scheduled_batch_order,
                     )
                 )
             metadata = {
