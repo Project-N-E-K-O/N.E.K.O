@@ -503,8 +503,8 @@ export function usePackageManager(options: UsePackageManagerOptions = {}) {
   async function refreshPluginSources() {
     pluginsLoading.value = true
     try {
-      const syncResult = await pluginStore.syncRegistryAndFetch()
-      const response = await getPluginCliPlugins()
+      const syncResult = await pluginStore.syncRegistryAndFetch({ preserveMessagesOn404: true })
+      const response = await getPluginCliPlugins({ preserveMessagesOn404: true })
       const refs = response.plugin_refs || []
       localPluginRefs.value = refs
       localPluginIds.value = refs.length > 0 ? refs.map((ref) => pluginRefKey(ref)) : response.plugins

@@ -20,6 +20,10 @@ type RegistrySyncResult = {
   warningMessage: string | null
 }
 
+type RegistrySyncOptions = {
+  preserveMessagesOn404?: boolean
+}
+
 type PluginMutationOptions = {
   refresh?: boolean
 }
@@ -117,12 +121,14 @@ export const usePluginStore = defineStore('plugin', () => {
     return pendingFetchPlugins
   }
 
-  async function syncRegistryAndFetch(): Promise<RegistrySyncResult> {
+  async function syncRegistryAndFetch(options: RegistrySyncOptions = {}): Promise<RegistrySyncResult> {
     let registryRefreshed = false
     let warningMessage: string | null = null
 
     try {
-      const response = await refreshPluginsRegistry()
+      const response = await refreshPluginsRegistry(
+        options.preserveMessagesOn404 ? { preserveMessagesOn404: true } : undefined,
+      )
       registryRefreshed = true
       if (response.success === false) {
         const firstFailure = response.failed[0]

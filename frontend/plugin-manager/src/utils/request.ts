@@ -13,6 +13,7 @@ let lastNetworkErrorShownAt = 0
 type ErrorDisplayRequestConfig = AxiosRequestConfig & {
   /** Suppress only the expected stopped-plugin response for panel probes. */
   suppressPluginNotRunningMessage?: boolean
+  preserveMessagesOn404?: boolean
 }
 
 type HeaderBag = Record<string, unknown> & {
@@ -181,7 +182,12 @@ service.interceptors.response.use(
         case 404:
           message = formatHttpError(error) || i18n.global.t('messages.resourceNotFound')
           // 404 错误不显示通用错误消息，让调用方自己处理
-          ElMessage.closeAll()
+          const preserveMessagesOn404 = Boolean(
+            (error.config as ErrorDisplayRequestConfig | undefined)?.preserveMessagesOn404,
+          )
+          if (!preserveMessagesOn404) {
+            ElMessage.closeAll()
+          }
           break
         case 500:
           message = formatHttpError(error) || i18n.global.t('messages.internalServerError')
