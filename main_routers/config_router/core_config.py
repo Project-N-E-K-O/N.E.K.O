@@ -81,18 +81,25 @@ def is_core_config_secret_placeholder(value) -> bool:
     if len(stripped) >= 3 and set(stripped) == {'*'}:
         return True
 
-    # Legacy web UI masking kept six characters at each end and replaced the
-    # middle with stars.  Require that exact shape and at least three stars.
-    if len(stripped) < 15:
+    # Display masks keep a visible prefix/suffix and star out the middle.  Both
+    # the current 3+3 shape and the legacy 6+6 shape mean "keep existing".
+    return _is_display_mask_shape(stripped, 3) or _is_display_mask_shape(stripped, 6)
+
+
+def _is_display_mask_shape(stripped: str, edge: int) -> bool:
+    """Whether *stripped* is ``edge`` visible chars + >=3 stars + ``edge`` chars."""
+    if len(stripped) < edge * 2 + 3:
         return False
-    prefix, masked, suffix = stripped[:6], stripped[6:-6], stripped[-6:]
-    if set(masked) != {'*'}:
-        return False
-    # Current masks expose three characters at each end; legacy ones expose six.
+    prefix, masked, suffix = (
+        stripped[:edge],
+        stripped[edge:-edge],
+        stripped[-edge:],
+    )
     return (
         '*' not in prefix
         and '*' not in suffix
         and len(masked) >= 3
+        and set(masked) == {'*'}
     )
 
 

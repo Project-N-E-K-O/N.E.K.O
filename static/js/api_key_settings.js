@@ -389,8 +389,8 @@ function maskApiKey(key) {
 
 /**
  * 判断后端保留哨兵、通用圆点遮罩（含非空残片）或旧版遮罩。旧值只接受
- * 全星号，或 maskApiKey 生成的“前后各 3~6 个非星号字符 + 至少 3 个星号”
- * 完整形状，避免把任意内部含星号的用户输入误判成遮罩。
+ * 全星号，或 maskApiKey 生成的“前后各 3 或 6 个非星号字符 + 至少 3 个星号”
+ * 对称形状，避免把任意内部含星号的用户输入误判成遮罩。
  */
 function isMaskedSecretValue(value) {
     if (typeof value !== 'string') return false;
@@ -399,12 +399,12 @@ function isMaskedSecretValue(value) {
         || normalized === MASKED_SECRET_DISPLAY
         || /^•+$/.test(normalized)
         || /^\*{3,}$/.test(normalized)
-        || /^[^*]{3,6}\*{3,}[^*]{3,6}$/.test(normalized);
+        || /^(?:[^*]{3}\*{3,}[^*]{3}|[^*]{6}\*{3,}[^*]{6})$/.test(normalized);
 }
 
 function getPartialMaskedSecretDisplay(value) {
     const normalized = typeof value === 'string' ? value.trim() : '';
-    return /^[^*]{3,6}\*{3,}[^*]{3,6}$/.test(normalized) ? normalized : '';
+    return /^(?:[^*]{3}\*{3,}[^*]{3}|[^*]{6}\*{3,}[^*]{6})$/.test(normalized) ? normalized : '';
 }
 
 /**
