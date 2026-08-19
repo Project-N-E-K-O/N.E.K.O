@@ -1035,6 +1035,8 @@ export default function StudyPanel(props: PluginSurfaceProps) {
   const documentJobControllerRef = useRef<AbortController | null>(null);
   const contextRefreshControllerRef = useRef<AbortController | null>(null);
   const documentJobIdRef = useRef('');
+  const documentPendingStartTokenRef = useRef('');
+  const documentPendingStartDeadlineRef = useRef(0);
   const documentCancelRequestedRef = useRef(false);
   const documentInputRef = useRef<HTMLInputElement | null>(null);
   const generateButtonRef = useRef<HTMLButtonElement | null>(null);
@@ -1377,6 +1379,8 @@ export default function StudyPanel(props: PluginSurfaceProps) {
 
   function rememberDocumentJobId(jobId: string) {
     documentJobIdRef.current = jobId;
+    documentPendingStartTokenRef.current = '';
+    documentPendingStartDeadlineRef.current = 0;
     try {
       if (jobId) window.sessionStorage.setItem(DOCUMENT_JOB_STORAGE_KEY, jobId);
       else window.sessionStorage.removeItem(DOCUMENT_JOB_STORAGE_KEY);
@@ -1386,14 +1390,21 @@ export default function StudyPanel(props: PluginSurfaceProps) {
   }
 
   function savedDocumentJobId() {
+    const inMemoryPendingJobId = documentPendingStartTokenRef.current
+      ? `${PENDING_DOCUMENT_JOB_PREFIX}${documentPendingStartTokenRef.current}`
+      : '';
     try {
-      return String(window.sessionStorage.getItem(DOCUMENT_JOB_STORAGE_KEY) || '');
+      return String(window.sessionStorage.getItem(DOCUMENT_JOB_STORAGE_KEY) || '')
+        || inMemoryPendingJobId;
     } catch {
-      return '';
+      return inMemoryPendingJobId;
     }
   }
 
   function rememberPendingDocumentJob(startToken: string) {
+    documentPendingStartTokenRef.current = startToken;
+    documentPendingStartDeadlineRef.current = Date.now()
+      + timeoutForEntry('study_start_document_analysis');
     try {
       window.sessionStorage.setItem(
         DOCUMENT_JOB_STORAGE_KEY,
@@ -1517,6 +1528,8 @@ export default function StudyPanel(props: PluginSurfaceProps) {
 
   async function resumeDocumentJob(signal: AbortSignal, pendingStartTokenOverride = '') {
     let recoveryFailures = 0;
+    const pendingStartRecoveryDeadline = documentPendingStartDeadlineRef.current
+      || Date.now() + timeoutForEntry('study_start_document_analysis');
     while (!signal.aborted && mountedRef.current) {
       const savedJobId = savedDocumentJobId() || (pendingStartTokenOverride
         ? `${PENDING_DOCUMENT_JOB_PREFIX}${pendingStartTokenOverride}`
@@ -1582,6 +1595,14 @@ export default function StudyPanel(props: PluginSurfaceProps) {
         continue;
       }
 
+      if (
+        pendingStart
+        && data?.status === 'idle'
+        && Date.now() < pendingStartRecoveryDeadline
+      ) {
+        await waitForDocumentPoll(1_000, signal);
+        continue;
+      }
       if (data?.status === 'idle') {
         rememberDocumentJobId('');
         setDocumentJob(null);
@@ -1726,7 +1747,8 @@ export default function StudyPanel(props: PluginSurfaceProps) {
         analysis_instruction: documentInstruction.trim(),
         locale: String(props.locale || '').trim(),
         start_token: startToken,
-      });
+      }, controller.signal);
+      if (controller.signal.aborted) return;
       if (!mountedRef.current) {
         if (data.job_id) rememberDocumentJobId(String(data.job_id));
         return;

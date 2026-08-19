@@ -636,6 +636,35 @@ def test_study_panel_locale_change_releases_aborted_request_busy_state() -> None
     )
 
 
+def test_hosted_document_start_cancellation_keeps_pending_job_recoverable() -> None:
+    source = _read("study_panel.tsx")
+    analyze_start = source.index("async function analyzeDocument")
+    analyze_end = source.index("async function refresh(", analyze_start)
+    analyze = source[analyze_start:analyze_end]
+    resume_start = source.index("async function resumeDocumentJob")
+    resume_end = source.index("async function cancelKnownDocumentJob", resume_start)
+    resume = source[resume_start:resume_end]
+
+    assert "const documentPendingStartTokenRef = useRef('');" in source
+    assert "documentPendingStartTokenRef.current = startToken;" in source
+    assert "documentPendingStartTokenRef.current" in source[
+        source.index("function savedDocumentJobId"):source.index(
+            "function rememberPendingDocumentJob"
+        )
+    ]
+    assert "}, controller.signal);" in analyze
+    assert "if (controller.signal.aborted) return;" in analyze
+    assert (
+        "const pendingStartRecoveryDeadline = documentPendingStartDeadlineRef.current"
+        in resume
+    )
+    assert "|| Date.now() + timeoutForEntry('study_start_document_analysis');" in resume
+    assert "pendingStart" in resume
+    assert "&& data?.status === 'idle'" in resume
+    assert "Date.now() < pendingStartRecoveryDeadline" in resume
+    assert "await waitForDocumentPoll(1_000, signal);" in resume
+
+
 def test_memory_deck_surface_refetches_items_when_reopened() -> None:
     source = _read("memory_deck_list.tsx")
     loader_start = source.index("async function loadDeckItems")
