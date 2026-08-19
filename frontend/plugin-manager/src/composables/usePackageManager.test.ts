@@ -42,6 +42,8 @@ vi.mock('@/api/pluginCli', () => ({
   verifyPluginPackage: vi.fn(),
 }))
 
+const syncRegistryAndFetch = vi.hoisted(() => vi.fn(async () => ({})))
+
 vi.mock('@/stores/plugin', () => ({
   usePluginStore: () => ({
     pluginsWithStatus: [
@@ -53,7 +55,7 @@ vi.mock('@/stores/plugin', () => ({
         type: 'plugin',
       },
     ],
-    syncRegistryAndFetch: vi.fn(async () => ({})),
+    syncRegistryAndFetch,
   }),
 }))
 
@@ -105,6 +107,7 @@ const installResponse: PluginCliInstallResponse = {
 
 beforeEach(() => {
   vi.clearAllMocks()
+  syncRegistryAndFetch.mockResolvedValue({})
 })
 
 describe('usePackageManager external plugin selection', () => {
@@ -167,6 +170,29 @@ describe('usePackageManager safe installation flow', () => {
     expect(installPluginPackage).toHaveBeenCalledWith(
       expect.not.objectContaining({ confirmation_token: expect.anything() }),
     )
+  })
+
+  it('reports install success before a registry refresh warning', async () => {
+    const manager = usePackageManager()
+    manager.installForm.value.package = 'demo.neko-plugin'
+    vi.mocked(planPluginInstall).mockResolvedValue({
+      ...upgradePlan,
+      action: 'install',
+      current_version: '',
+      target_version: '1.0.0',
+      confirmation_token: '',
+    })
+    vi.mocked(installPluginPackage).mockResolvedValue(installResponse)
+    syncRegistryAndFetch.mockResolvedValue({
+      warningMessage: '插件列表刷新存在失败项: broken_plugin',
+    })
+
+    await manager.handleInstall()
+
+    expect(ElMessage.success).toHaveBeenCalledWith('安装完成，处理了 1 个插件')
+    expect(ElMessage.warning).toHaveBeenCalledWith('插件列表刷新存在失败项: broken_plugin')
+    expect(vi.mocked(ElMessage.success).mock.invocationCallOrder[0]!)
+      .toBeLessThan(vi.mocked(ElMessage.warning).mock.invocationCallOrder[0]!)
   })
 
   it('does not install when the user cancels an upgrade', async () => {

@@ -514,6 +514,7 @@ export function usePackageManager(options: UsePackageManagerOptions = {}) {
       }
     } catch (error) {
       console.error('Failed to refresh plugin sources:', error)
+      ElMessage.warning('插件列表刷新失败，请稍后重试')
     } finally {
       pluginsLoading.value = false
     }
@@ -744,7 +745,6 @@ export function usePackageManager(options: UsePackageManagerOptions = {}) {
       return
     }
     setResult('install', response)
-    await refreshPluginSources()
     if (response.operation === 'upgrade') {
       const plan = installPlan.value
       ElMessage.success(t('package.install.upgradeSucceeded', {
@@ -753,6 +753,7 @@ export function usePackageManager(options: UsePackageManagerOptions = {}) {
     } else {
       ElMessage.success(`安装完成，处理了 ${response.installed_plugin_count} 个插件`)
     }
+    await refreshPluginSources()
   }
 
   async function handleAnalyze() {

@@ -129,10 +129,10 @@ export const usePluginStore = defineStore('plugin', () => {
         if (firstFailure) {
           const failureTarget = firstFailure.plugin_id || firstFailure.config_path
           warningMessage = response.failed.length > 1
-            ? `插件注册表刷新有 ${response.failed.length} 项失败，首项为 ${failureTarget}: ${firstFailure.error}`
-            : `插件注册表刷新失败: ${failureTarget}: ${firstFailure.error}`
+            ? `插件列表刷新存在 ${response.failed.length} 项失败，首项为 ${failureTarget}: ${firstFailure.error}`
+            : `插件列表刷新存在失败项: ${failureTarget}: ${firstFailure.error}`
         } else {
-          warningMessage = '插件注册表刷新未完全成功'
+          warningMessage = '插件列表刷新存在失败项'
         }
       }
     } catch (err: any) {
