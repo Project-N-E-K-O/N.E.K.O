@@ -4209,8 +4209,18 @@ class GalgamePlugin(
                 )
                 cursor_invalid = current_checkpoint != saved_checkpoint
             if cursor_invalid:
+                for field in (
+                    "history_events",
+                    "history_lines",
+                    "history_observed_lines",
+                    "history_choices",
+                    "dedupe_window",
+                ):
+                    local[field] = []
+                local["latest_snapshot"] = {}
                 local["events_byte_offset"] = 0
                 local["events_file_size"] = int(current_file_size or 0)
+                local["last_seq"] = 0
                 local["line_buffer"] = b""
                 local["stream_reset_pending"] = True
         elif not preexisting_session:

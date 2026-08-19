@@ -4621,6 +4621,75 @@ def test_reloading_same_checkpoint_after_event_eviction_refreshes_fence(
 
 
 @pytest.mark.plugin_unit
+def test_reloading_same_checkpoint_after_event_eviction_resets_archive_state(
+    tmp_path: Path,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    agent = GameLLMAgent(
+        plugin=GalgameBridgePlugin(_Ctx(plugin_dir, _make_effective_config(bridge_root))),
+        logger=_Logger(),
+        llm_gateway=_FakeLLMGateway(),
+        host_adapter=_FakeHostAdapter(),
+    )
+    save_context = {"kind": "load", "slot_id": "slot-1"}
+
+    def load_snapshot(seq: int, ts: str) -> dict[str, Any]:
+        return apply_event_to_snapshot(
+            _session_state(scene_id="scene-a", route_id="route-a"),
+            _event(
+                seq=seq,
+                event_type="save_loaded",
+                session_id="sess-a",
+                game_id="demo.alpha",
+                ts=ts,
+                payload={"reason": "load", "save_context": save_context},
+            ),
+        )
+
+    first_snapshot = load_snapshot(1, "2026-04-21T08:35:01Z")
+    first_shared = _shared_state(
+        session_id="sess-a",
+        last_seq=1,
+        snapshot=first_snapshot,
+        history_events=[],
+    )
+    agent._maybe_schedule_scene_capsule(
+        first_shared,
+        snapshot=first_snapshot,
+        line_occurrences=[],
+        all_choice_occurrences=[],
+        allow_delivery=False,
+    )
+    assert agent._scene_tracker.remember_scene_line(
+        "scene-a",
+        "abandoned-line",
+        route_id="route-a",
+        seq=2,
+        ts="2026-04-21T08:35:02Z",
+    )
+
+    second_snapshot = load_snapshot(10, "2026-04-21T08:36:01Z")
+    second_shared = _shared_state(
+        session_id="sess-a",
+        last_seq=10,
+        snapshot=second_snapshot,
+        history_events=[],
+    )
+    agent._maybe_schedule_scene_capsule(
+        second_shared,
+        snapshot=second_snapshot,
+        line_occurrences=[],
+        all_choice_occurrences=[],
+        allow_delivery=False,
+    )
+
+    assert agent._scene_tracker.current_scene_lines_since_push(
+        "scene-a",
+        route_id="route-a",
+    ) == 0
+
+
+@pytest.mark.plugin_unit
 def test_load_boundary_resets_memory_after_input_marker_was_cleared(
     tmp_path: Path,
 ) -> None:

@@ -2414,6 +2414,23 @@ class AgentSummaryMixin:
                 if not save_occurrence["seq"] and not save_occurrence["ts"]:
                     save_occurrence["index"] = event_index
                 break
+            if not save_occurrence:
+                persisted_boundary_obj = snapshot.get("save_boundary")
+                persisted_boundary = (
+                    persisted_boundary_obj
+                    if isinstance(persisted_boundary_obj, dict)
+                    else {}
+                )
+                if (
+                    str(persisted_boundary.get("kind") or "").strip().lower()
+                    == save_kind
+                ):
+                    persisted_occurrence = {
+                        "seq": int(persisted_boundary.get("seq") or 0),
+                        "ts": str(persisted_boundary.get("ts") or ""),
+                    }
+                    if persisted_occurrence["seq"] or persisted_occurrence["ts"]:
+                        save_occurrence = persisted_occurrence
             previous_semantic_marker = str(
                 getattr(self, "_scene_capsule_save_boundary_semantic_marker", "") or ""
             )
