@@ -36,6 +36,7 @@ import request, { formatHttpError, stripJsonContentTypeForFormData } from './req
 
 type ErrorScenario = {
   message: string
+  code?: string
   request?: unknown
   response?: {
     status: number
@@ -239,6 +240,21 @@ describe('hosted panel error suppression', () => {
 
     expect(consoleError).toHaveBeenCalledWith('Response error:', expect.anything())
     expect(requestMocks.errorMessage).toHaveBeenCalledWith('messages.networkError')
+    consoleError.mockRestore()
+  })
+
+  it('does not treat an intentionally canceled request as a disconnect', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+
+    await expect(rejectWith({
+      message: 'canceled',
+      code: 'ERR_CANCELED',
+      request: {},
+    })).rejects.toMatchObject({ code: 'ERR_CANCELED' })
+
+    expect(consoleError).not.toHaveBeenCalled()
+    expect(requestMocks.connectionStore.markDisconnected).not.toHaveBeenCalled()
+    expect(requestMocks.errorMessage).not.toHaveBeenCalled()
     consoleError.mockRestore()
   })
 })

@@ -56,11 +56,6 @@ def test_repo_plugin_build_matches_current_package_type_contract(tmp_path: Path,
     source = load_plugin_source(plugin_dir)
     package_path = tmp_path / f"{plugin_dir.name}.neko-plugin"
 
-    if source.package_type != "plugin":
-        with pytest.raises(ValueError, match="single-plugin build only supports package_type='plugin'"):
-            build_plugin(plugin_dir, package_path)
-        return
-
     if not _has_satisfied_dependency_layout(plugin_dir):
         with pytest.raises(ValueError, match="vendor/|requirements.txt"):
             build_plugin(plugin_dir, package_path)

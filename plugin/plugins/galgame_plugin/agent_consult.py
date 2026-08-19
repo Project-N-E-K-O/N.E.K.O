@@ -228,7 +228,7 @@ class AgentConsultMixin:
         if not profile:
             return
         voice = summarize_character_voice(profile)
-        scene_summary = self._latest_scene_summary_text(snapshot)
+        scene_summary = self._latest_scene_summary_text(snapshot, shared=shared)
         recent_lines = self._latest_recent_line_texts(shared, limit=5)
         prompt = build_consult_prompt(
             reason=decision.reason,

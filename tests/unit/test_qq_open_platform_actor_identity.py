@@ -196,7 +196,7 @@ def test_napcat_stays_global_on_both_axes():
     )
 
     assert (channel, actor_scope, conversation_scope) == (
-        "napcat", "global", "global",
+        "onebot", "global", "global",
     )
 
 

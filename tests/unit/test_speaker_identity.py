@@ -107,7 +107,7 @@ def test_normalize_channel_rejects_everything_unanchored_would_accept(value):
 
 
 def test_normalize_channel_lowercases_and_accepts_the_two_real_values():
-    assert normalize_channel("napcat") == "napcat"
+    assert normalize_channel("napcat") == "onebot"
     assert normalize_channel("OPEN") == "open"
     assert normalize_channel(" Open ") == "open"
 
@@ -150,8 +150,8 @@ def test_wire_channel_pattern_rejects_what_the_internal_one_trims():
         input_history="[]",
         subject={"subject_kind": "participant", "subject_id": "qq:1"},
         speaker_label="x",
-        speaker_channel="napcat",
-    ).speaker_channel == "napcat"
+        speaker_channel="onebot",
+    ).speaker_channel == "onebot"
 
 
 def test_wire_activity_event_id_pattern_is_anchored():

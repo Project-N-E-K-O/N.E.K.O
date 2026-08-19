@@ -18,6 +18,7 @@ from main_logic.tts_client.workers import openai as openai_worker_module
 from main_logic.tts_client.workers import vllm_omni as vllm_worker_module
 from main_routers.characters_router import voice_preview as voice_preview_module
 from main_routers.config_router.connectivity import _test_connectivity_candidates
+from utils.config_manager import ConfigManager
 from utils.openai_tts import (
     OPENAI_TTS_PCM_SAMPLE_RATE,
     OpenAITtsConfigError,
@@ -540,15 +541,43 @@ def test_failed_configured_preset_redispatch_uses_default_voice_route(monkeypatc
     assert provider_key == "qwen"
 
 
-def test_supervised_fallback_uses_default_voice_and_default_credentials(monkeypatch):
+@pytest.mark.parametrize(
+    ("core_api_type", "custom_key", "qwen_key", "qwen_intl_key", "expected_key"),
+    [
+        ("qwen", "", "sk-qwen", "", "sk-qwen"),
+        ("qwen", "sk-custom", "sk-qwen", "", "sk-qwen"),
+        ("qwen", "sk-custom", "", "", ""),
+        ("qwen_intl", "sk-custom", "", "sk-qwen-intl", "sk-qwen-intl"),
+    ],
+)
+def test_supervised_fallback_uses_qwen_credentials_from_real_config(
+    monkeypatch,
+    core_api_type,
+    custom_key,
+    qwen_key,
+    qwen_intl_key,
+    expected_key,
+):
     mgr = LLMSessionManager.__new__(LLMSessionManager)
+    cm = _CustomTtsConfigManager()
+    cm.snapshot.update({
+        "CORE_API_TYPE": core_api_type,
+        "PROVIDER_TYPE": "openai_compatible",
+        "TTS_MODEL": "vendor-tts",
+        "TTS_MODEL_URL": "https://speech.example.com/v1",
+        "TTS_MODEL_API_KEY": custom_key,
+        "ASSIST_API_KEY_QWEN": qwen_key,
+        "ASSIST_API_KEY_QWEN_INTL": qwen_intl_key,
+    })
     config_slots = []
     dispatch_calls = []
+    thread_targets = []
     thread_args = []
 
     class _FakeThread:
         def __init__(self, *, target, args, daemon):
-            _ = target, daemon
+            _ = daemon
+            thread_targets.append(target)
             thread_args.append(args)
 
         def start(self):
@@ -556,33 +585,54 @@ def test_supervised_fallback_uses_default_voice_and_default_credentials(monkeypa
 
     def get_model_api_config(slot):
         config_slots.append(slot)
-        return {"api_key": "sk-default" if slot == "tts_default" else "sk-custom"}
+        return ConfigManager.get_model_api_config(
+            cm,
+            slot,
+            _core_config=cm.get_core_config(),
+        )
 
     def get_worker(**kwargs):
         dispatch_calls.append(kwargs)
-        return (lambda *_args: None), None, "qwen"
+        return tts_client.get_tts_worker(**kwargs)
 
-    mgr._config_manager = SimpleNamespace(
-        get_core_config=lambda: {},
-        get_model_api_config=get_model_api_config,
-    )
-    mgr.core_api_type = "qwen"
+    cm.get_model_api_config = get_model_api_config
+    mgr._config_manager = cm
+    mgr.core_api_type = core_api_type
     mgr.voice_id = "vendor-voice"
     mgr._is_free_preset_voice = False
-    mgr._tts_fallback_uses_default_voice = True
-    mgr._tts_excluded_provider_keys = frozenset({"custom"})
+    mgr._tts_active_provider_key = "custom"
+    mgr._tts_fallback_uses_default_voice = False
+    mgr._tts_excluded_provider_keys = frozenset()
+    old_request_queue = queue.Queue()
+    mgr.tts_request_queue = old_request_queue
+    mgr.current_speech_id = "speech-1"
+    mgr.tts_pending_chunks = []
+    mgr._tts_replay_speech_id = "speech-1"
+    mgr._tts_replay_chunks = []
+    mgr._tts_replay_done = False
+    mgr._tts_replay_audio_emitted = False
+    mgr._tts_done_queued_for_turn = False
+    mgr._tts_done_pending_until_ready = False
+    mgr._last_tts_error_code = "TTS_CONNECTION_FAILED"
+    mgr._tts_retry_notify_count = 2
+    mgr._reset_tts_stream_normalizer = lambda: None
     mgr._build_tts_runtime_key = lambda: ("fallback",)
+    monkeypatch.setattr(tts_client, "get_config_manager", lambda: cm)
     monkeypatch.setattr(tts_runtime_module, "Thread", _FakeThread)
     monkeypatch.setattr(tts_runtime_module._core_facade, "get_tts_worker", get_worker)
 
-    LLMSessionManager._start_tts_thread(mgr, preserve_provider_exclusions=True)
+    assert LLMSessionManager._activate_configured_tts_fallback(mgr, "test") is True
 
     # The replacement sees neither the failed Voice ID nor the custom credential.
     # 替代 worker 只能收到默认路由的空音色和默认凭证，不能复用失败配置。
+    assert old_request_queue.get_nowait() == ("__shutdown__", None)
+    assert mgr._tts_excluded_provider_keys == frozenset({"custom"})
+    assert mgr._tts_fallback_uses_default_voice is True
     assert dispatch_calls[0]["voice_id"] == ""
     assert dispatch_calls[0]["has_custom_voice"] is False
-    assert config_slots == ["tts_default"]
-    assert thread_args[0][2:] == ("sk-default", "")
+    assert config_slots[-1:] == ["tts_default"]
+    assert thread_targets == [tts_client.qwen_realtime_tts_worker]
+    assert thread_args[0][2:] == (expected_key, "")
 
 
 def test_vllm_config_read_failure_stays_owned_until_supervised_fallback(monkeypatch):

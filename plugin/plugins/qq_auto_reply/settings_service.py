@@ -823,9 +823,10 @@ class QQSettingsService:
     #:   ``global``。这个非对称正是设计文档 §2.15.4.3 说「群侧可以救、人侧不
     #:   行」的原因。
     IDENTITY_SCOPE_BY_MODE: dict[str, tuple[str, str, str]] = {
-        "napcat": ("napcat", "global", "global"),
-        # 正向连接仍是 OneBot v11 wire format，speaker 身份语义与反向 napcat 相同
-        "napcat_forward": ("napcat", "global", "global"),
+        # channel 用泛化的 OneBot v11 名称；历史数据以 "napcat" 声明过，服务端幂等
+        "napcat": ("onebot", "global", "global"),
+        # 正向连接仍是 OneBot v11 wire format，speaker 身份语义与反向相同
+        "napcat_forward": ("onebot", "global", "global"),
         "open_platform": ("open", "per_conversation", "global"),
     }
     #: 断言来源。写协议名而不是 "code"：读的人要能一眼看出这条记录的依据是

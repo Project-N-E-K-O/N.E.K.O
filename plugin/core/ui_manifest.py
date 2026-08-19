@@ -10,7 +10,15 @@ from plugin.utils import parse_bool_config
 SURFACE_KINDS = {"panel", "guide", "docs"}
 SURFACE_MODES = {"static", "hosted-tsx", "markdown", "auto"}
 OPEN_IN_VALUES = {"iframe", "new_tab", "same_tab"}
-PERMISSIONS = {"state:read", "config:read", "config:write", "action:call", "logs:read", "runs:read"}
+PERMISSIONS = {
+    "state:read",
+    "config:read",
+    "config:write",
+    "action:call",
+    "document:parse",
+    "logs:read",
+    "runs:read",
+}
 
 
 def default_permissions(kind: str) -> list[str]:

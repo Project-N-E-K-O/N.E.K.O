@@ -119,6 +119,75 @@ async def test_emit_answer_evaluated_respond_cooldown_30s() -> None:
 
 
 @pytest.mark.asyncio
+async def test_answer_respond_cooldown_is_scoped_to_target_lanlan() -> None:
+    ctx = _Ctx()
+    bus = StudyEventBus(plugin_ctx=ctx)
+
+    for target_lanlan in ("lanlan-a", "lanlan-b", "lanlan-a"):
+        await bus.emit(
+            StudyEvent(
+                name="answer_evaluated",
+                payload={
+                    "verdict": "incorrect",
+                    "score": 0.1,
+                    "question_summary": "Q",
+                    "user_answer_summary": "A",
+                    "target_lanlan": target_lanlan,
+                },
+            )
+        )
+
+    assert [item["target_lanlan"] for item in ctx.messages] == [
+        "lanlan-a",
+        "lanlan-b",
+        "lanlan-a",
+    ]
+    assert [item["ai_behavior"] for item in ctx.messages] == [
+        "respond",
+        "respond",
+        "read",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_pending_answer_respond_is_scoped_to_target_lanlan() -> None:
+    first_push_started = asyncio.Event()
+    release_first_push = asyncio.Event()
+
+    class _BlockingCtx(_Ctx):
+        async def push_message(self, **kwargs):
+            self.messages.append(dict(kwargs))
+            if kwargs.get("target_lanlan") == "lanlan-a":
+                first_push_started.set()
+                await release_first_push.wait()
+            return {"ok": True}
+
+    ctx = _BlockingCtx()
+    bus = StudyEventBus(plugin_ctx=ctx)
+
+    def event(target_lanlan: str) -> StudyEvent:
+        return StudyEvent(
+            name="answer_evaluated",
+            payload={
+                "verdict": "incorrect",
+                "score": 0.1,
+                "question_summary": "Q",
+                "user_answer_summary": "A",
+                "target_lanlan": target_lanlan,
+            },
+        )
+
+    first = asyncio.create_task(bus.emit(event("lanlan-a")))
+    await asyncio.wait_for(first_push_started.wait(), timeout=1.0)
+    await bus.emit(event("lanlan-b"))
+    release_first_push.set()
+    await asyncio.wait_for(first, timeout=1.0)
+
+    assert [item["ai_behavior"] for item in ctx.messages] == ["respond", "respond"]
+    assert bus._pending_respond_count_by_target == {}
+
+
+@pytest.mark.asyncio
 async def test_emit_answer_respond_cooldown_starts_after_async_push(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -265,6 +334,7 @@ async def test_emit_review_due_30min_cooldown() -> None:
 
     assert len(ctx.messages) == 1
     assert ctx.messages[0]["ai_behavior"] == "respond"
+    assert ctx.messages[0]["coalesce_key"] == "study:review_due"
 
 
 @pytest.mark.asyncio
@@ -476,6 +546,85 @@ async def test_format_session_summarized_includes_insight() -> None:
     assert "25 min" in text
     assert "75%" in text
     assert "Chain rule is improving." in text
+
+
+@pytest.mark.asyncio
+async def test_review_session_completed_asks_neko_to_congratulate_user() -> None:
+    ctx = _Ctx()
+    bus = StudyEventBus(plugin_ctx=ctx)
+
+    await bus.emit(
+        StudyEvent(
+            name="review_session_completed",
+            payload={"reviewed_count": 3, "deck_name": "Exam Words"},
+        )
+    )
+
+    assert ctx.messages[0]["ai_behavior"] == "respond"
+    assert ctx.messages[0]["visibility"] == ["chat"]
+    assert ctx.messages[0]["coalesce_key"] == "study:review_session_completed"
+    message_text = ctx.messages[0]["parts"][0]["text"]
+    assert "[Review Session Completed]" in message_text
+    assert "Exam Words" in message_text
+    assert "current conversation language" in message_text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("event_name", "payload", "priority", "coalesce_key", "instruction"),
+    [
+        (
+            "pomodoro_focus_completed",
+            {"session_id": "focus-42", "duration_minutes": 25},
+            7,
+            "study:pomodoro:focus-42:focus_completed",
+            "time to take a break",
+        ),
+        (
+            "pomodoro_break_completed",
+            {"session_id": "focus-42", "break_type": "short_break"},
+            6,
+            "study:pomodoro:focus-42:short_break:completed",
+            "time to continue studying",
+        ),
+    ],
+)
+async def test_pomodoro_completion_events_request_natural_character_response(
+    event_name: str,
+    payload: dict[str, object],
+    priority: int,
+    coalesce_key: str,
+    instruction: str,
+) -> None:
+    ctx = _Ctx()
+    bus = StudyEventBus(plugin_ctx=ctx)
+
+    await bus.emit(StudyEvent(name=event_name, payload=payload))
+
+    assert ctx.messages[0]["visibility"] == ["chat"]
+    assert ctx.messages[0]["ai_behavior"] == "respond"
+    assert ctx.messages[0]["priority"] == priority
+    assert ctx.messages[0]["coalesce_key"] == coalesce_key
+    text = ctx.messages[0]["parts"][0]["text"]
+    assert instruction in text
+    assert "current character voice" in text
+    assert "current conversation language" in text
+
+
+@pytest.mark.asyncio
+async def test_emit_passes_target_lanlan_without_adding_it_to_prompt() -> None:
+    ctx = _Ctx()
+    bus = StudyEventBus(plugin_ctx=ctx)
+
+    await bus.emit(
+        StudyEvent(
+            name="pomodoro_focus_completed",
+            payload={"session_id": "focus-42", "target_lanlan": "Active Character"},
+        )
+    )
+
+    assert ctx.messages[0]["target_lanlan"] == "Active Character"
+    assert "Active Character" not in ctx.messages[0]["parts"][0]["text"]
 
 
 @pytest.mark.asyncio
@@ -705,3 +854,107 @@ async def test_schedule_emit_ignores_cancelled_error(
     assert caplog.text == ""
     with contextlib.suppress(asyncio.CancelledError):
         await bus.stop_worker()
+
+
+@pytest.mark.asyncio
+async def test_close_finishes_in_flight_emit_and_drops_queued_events() -> None:
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    class _SlowCtx(_Ctx):
+        async def push_message(self, **kwargs):
+            entered.set()
+            await release.wait()
+            self.messages.append(dict(kwargs))
+            return {"ok": True}
+
+    ctx = _SlowCtx()
+    bus = StudyEventBus(plugin_ctx=ctx)
+    for index in range(3):
+        bus.schedule_emit(
+            StudyEvent(
+                name="session_summarized",
+                payload={"duration_minutes": index, "questions_attempted": 1},
+            )
+        )
+
+    await asyncio.wait_for(entered.wait(), timeout=1.0)
+    close_task = asyncio.create_task(bus.close())
+    await asyncio.sleep(0)
+
+    assert not close_task.done()
+    assert bus._queue.empty()
+    assert bus.scheduled_emit_count == 1
+    assert bus.dropped_emit_count == 2
+
+    release.set()
+    await asyncio.wait_for(close_task, timeout=1.0)
+
+    assert len(ctx.messages) == 1
+    assert bus._worker_task is None
+    assert bus.scheduled_emit_count == 0
+    assert bus.dropped_emit_count == 2
+    await asyncio.wait_for(bus._queue.join(), timeout=1.0)
+
+
+@pytest.mark.asyncio
+async def test_close_waits_for_direct_emit_and_rejects_late_delivery() -> None:
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    class _SlowCtx(_Ctx):
+        async def push_message(self, **kwargs):
+            entered.set()
+            await release.wait()
+            self.messages.append(dict(kwargs))
+            return {"ok": True}
+
+    ctx = _SlowCtx()
+    bus = StudyEventBus(plugin_ctx=ctx)
+    emit_task = asyncio.create_task(
+        bus.emit(
+            StudyEvent(
+                name="review_session_completed",
+                payload={"reviewed_count": 1},
+            )
+        )
+    )
+
+    await asyncio.wait_for(entered.wait(), timeout=1.0)
+    close_task = asyncio.create_task(bus.close())
+    await asyncio.sleep(0)
+
+    assert not close_task.done()
+
+    release.set()
+    await asyncio.wait_for(emit_task, timeout=1.0)
+    await asyncio.wait_for(close_task, timeout=1.0)
+
+    assert len(ctx.messages) == 1
+    with pytest.raises(RuntimeError, match="event bus is closed"):
+        await bus.emit(
+            StudyEvent(
+                name="review_session_completed",
+                payload={"reviewed_count": 2},
+            )
+        )
+    assert bus.schedule_emit(
+        StudyEvent(
+            name="session_summarized",
+            payload={"duration_minutes": 1, "questions_attempted": 1},
+        )
+    ) is None
+    assert len(ctx.messages) == 1
+
+
+@pytest.mark.asyncio
+async def test_close_is_idempotent_without_a_worker() -> None:
+    bus = StudyEventBus(plugin_ctx=_Ctx())
+
+    await bus.close()
+    await bus.close()
+
+    assert bus._worker_task is None
+    assert bus._queue.empty()
+    assert bus.scheduled_emit_count == 0
+    assert bus.dropped_emit_count == 0

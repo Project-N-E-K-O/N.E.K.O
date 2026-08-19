@@ -3143,6 +3143,9 @@ const AvatarPopupMixin = {
 
         ManagerProto.renderScreenSourceList = async function (popup) {
             if (!popup) return false;
+            if (typeof window.renderFloatingScreenSourceList === 'function') {
+                return window.renderFloatingScreenSourceList(popup);
+            }
             const popupId = popup.id;
             const isPopupAvailable = () => {
                 if (!popup || !popup.isConnected) return false;

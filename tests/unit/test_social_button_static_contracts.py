@@ -70,7 +70,7 @@ def test_social_open_request_is_deduped_before_fetching_config():
     helper_end = listener.index("const fetchNativeSyncTicket = async () => {", helper_start)
     electron_helper = listener[helper_start:helper_end]
     assert re.search(
-        r"window\.open\(\s*String\(targetUrl\),\s*"
+        r"window\.open\(\s*resolvedTargetUrl\.toString\(\),\s*"
         r"'neko-social',\s*"
         r"'popup=yes,width=1200,height=800,resizable=yes'\s*\)",
         electron_helper,
@@ -90,6 +90,38 @@ def test_social_open_request_is_deduped_before_fetching_config():
     assert "native session sync ticket fetch failed: HTTP" in listener
     assert "native delegate fetch failed (non-fatal):" in listener
     assert "targetUrl.searchParams.set('cid', cidJson.client_id)" in listener
+    assert "const attachResolvedTheme = (targetUrl) => {" in listener
+    assert "function isResolvedDarkTheme()" in source
+    assert "window.nekoTheme.isDark()" in source
+    assert "targetUrl.searchParams.set('neko_theme', isResolvedDarkTheme() ? 'dark' : 'light')" in listener
+    assert "targetUrl.searchParams.set('neko_source_origin', window.location.origin)" in listener
+    assert "popupRoot.style.colorScheme = popupDark ? 'dark' : 'light'" in listener
+    assert "popupRoot.style.backgroundColor = popupDark ? '#070c13' : '#edf8ff'" in listener
+    assert "function registerSocialThemeTarget(targetWindow, targetUrl)" in source
+    assert "window.addEventListener('neko-theme-changed', (event) => {" in source
+    assert "typeof requestedTheme === 'boolean' ? requestedTheme : isResolvedDarkTheme()" in source
+    assert "target.targetWindow.postMessage({" in source
+    assert "source: 'neko-desktop'" in source
+    assert "type: 'theme-change'" in source
+    assert "state.targets.find((candidate)" in source
+    assert "event.source === candidate.targetWindow && event.origin === candidate.targetOrigin" in source
+    assert "data.source !== 'neko-community' || data.type !== 'theme-ready'" in source
+    assert "postSocialTheme(target, isResolvedDarkTheme())" in source
+    assert "state.targets = [target]" in source
+    assert "state.targets = state.targets.filter" in source
+    assert "function queueSocialThemeSync(target)" in source
+    assert "[0, 100, 300, 1000].forEach" in source
+    assert "attachResolvedTheme(parsedTarget)" in listener
+    assert "currentPopup.location.replace(navigationTarget)" in listener
+    assert "themeTarget = registerSocialThemeTarget(currentPopup, parsedTarget)" in listener
+    assert "if (navigated) queueSocialThemeSync(themeTarget)" in listener
+    assert "if (target.targetWindow.closed)" not in source
+    assert "currentPopup.opener = null" in listener
+    assert "currentPopup.opener = window" not in listener
+    assert "throw new Error('failed to navigate browser community window')" not in listener
+    assert "const resolvedTargetUrl = attachResolvedTheme(" in listener
+    assert "resolvedTargetUrl.toString()" in listener
+    assert "registerSocialThemeTarget(socialWin, resolvedTargetUrl)" in listener
     assert "social_base_url" in listener
     assert "/feed" in listener
     # Feed first; Desktop OAuth only after open when not logged in.
@@ -106,6 +138,10 @@ def test_social_open_request_is_deduped_before_fetching_config():
     protocol_guard = "targetUrl.protocol !== 'http:' && targetUrl.protocol !== 'https:'"
     assert protocol_guard in listener
     assert listener.index(protocol_guard) < listener.index(
+        "await attachNativeSyncTicket(targetUrl)"
+    )
+    assert listener.index(protocol_guard) < listener.index("attachResolvedTheme(targetUrl)")
+    assert listener.index("attachResolvedTheme(targetUrl)") < listener.index(
         "await attachNativeSyncTicket(targetUrl)"
     )
     # A slow delegate must not delay the initial Electron or browser Community navigation.
@@ -160,7 +196,7 @@ def test_social_browser_fallback_preopens_popup_before_async_fetches():
     assert "const navigateBrowserPopup = (targetUrl, options = {}) => {" in listener
     assert listener.count("window.open('about:blank', '_blank')") == 1
     assert "currentPopup.opener = null;" in listener
-    assert "currentPopup.location.replace(targetUrl);" in listener
+    assert "currentPopup.location.replace(navigationTarget);" in listener
     assert "if (navigated && !options.keepReference)" in listener
     assert "const waitForOAuthCompletion = async (timeoutMs, requirePopup) => {" in listener
     assert "if (requirePopup)" in listener

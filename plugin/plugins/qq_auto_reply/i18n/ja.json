@@ -1,6 +1,6 @@
 {
   "plugin.name": "QQ 統合",
-  "plugin.description": "NapCat（OneBot 逆方向 WebSocket）または QQ 公式オープンプラットフォームで接続。返信チェーン解析、音声、スタンプ、つんつん などのマルチモーダル出力に対応。",
+  "plugin.description": "OneBot v11（順方向/逆方向 WebSocket、NapCat / LLOneBot / go-cqhttp / Lagrange など任意の OneBot バックエンドに対応）または QQ 公式オープンプラットフォームで接続。複数グループの注意力競争、動的返信バッファ、ファイル内容の読み取り（テキスト/VLM 画像説明）、返信チェーン解析、音声、スタンプ、つんつん などのマルチモーダル出力に対応。",
   "entries.init_config.name": "QQ 設定を初期化",
   "entries.init_config.description": "QQ プラグインを初めて使うとき、ガイド完了後、または設定ファイルがないときに新しい QQ 設定を作成します。",
   "entries.get_dashboard_state.name": "ダッシュボード状態を取得",

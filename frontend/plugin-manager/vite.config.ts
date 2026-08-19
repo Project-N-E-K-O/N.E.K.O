@@ -26,6 +26,20 @@ export default defineConfig({
       allow: ['..']
     },
     proxy: {
+      // Hosted surfaces open the main model-settings page through the parent
+      // bridge. Keep this exact SPA-external route on the backend in dev.
+      '^/api_key(?:\\?.*)?$': {
+        target: BACKEND_TARGET,
+        changeOrigin: true,
+        secure: false
+      },
+      // Hosted document parsing uses a deliberately narrow API proxy. Do not
+      // expose the entire /api namespace through the plugin-manager dev server.
+      '/api/documents': {
+        target: BACKEND_TARGET,
+        changeOrigin: true,
+        secure: false
+      },
       // 代理所有插件服务器 API 请求
       '/plugin/': {
         target: BACKEND_TARGET,

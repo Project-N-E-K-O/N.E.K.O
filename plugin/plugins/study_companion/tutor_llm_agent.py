@@ -1,11 +1,11 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
+from contextvars import ContextVar
+
 from .tutor_llm_agent_common import (
     Any,
-    Callable,
     asyncio,
-    hashlib,
-    inspect,
     re,
     STUDY_EMPTY_INPUT_DEFAULT,
     STUDY_FALLBACK_EXPLANATION_DEFAULT,
@@ -23,152 +23,65 @@ from .tutor_llm_agent_common import (
     StudyConfig,
     TutorReply,
     utc_now_iso,
-    _config_manager_module,
-    _llm_client_module,
-    _token_tracker_module,
-    _LLM_CALL_TIMEOUT_GRACE_SECONDS,
     _as_str,
     _as_dict,
     diagnostic_code_for_exception,
 )
+from .qwen_native_client import (
+    QwenNativeResult,
+    messages_have_image,
+    new_operation_deadline,
+)
+from .study_model_gateway import (
+    AgentQuotaReservation,
+    StudyModelGateway,
+    StudyModelResult,
+    StudyModelRuntimeSnapshot,
+)
 from .tutor_llm_agent_json_corrector import _JSONCorrector
 
 
-class _LLMClientCache:
-    def __init__(self, *, logger: Any) -> None:
-        self._logger = logger
-        self._cache: dict[tuple[Any, ...], Any] = {}
-        self._locks: dict[tuple[Any, ...], asyncio.Lock] = {}
-
-    def get(self, key: tuple[Any, ...]) -> Any | None:
-        return self._cache.get(key)
-
-    async def get_or_create(
-        self,
-        key: tuple[Any, ...],
-        factory: Callable[[], Any],
-    ) -> Any:
-        llm = self._cache.get(key)
-        if llm is not None:
-            return llm
-        lock = self._locks.setdefault(key, asyncio.Lock())
-        async with lock:
-            llm = self._cache.get(key)
-            if llm is None:
-                llm = factory()
-                if inspect.isawaitable(llm):
-                    llm = await llm
-                self._cache[key] = llm
-        return self._cache[key]
-
-    def close_all(self) -> None:
-        clients = list(self._cache.values())
-        self._cache.clear()
-        self._locks.clear()
-        for llm in clients:
-            self._close_cached_llm(llm)
-
-    async def close_all_async(self) -> None:
-        clients = list(self._cache.values())
-        self._cache.clear()
-        self._locks.clear()
-        for llm in clients:
-            await self._close_cached_llm_async(llm)
-
-    def _close_cached_llm(self, llm: Any) -> None:
-        found_close = False
-        for method_name in ("shutdown", "aclose"):
-            close = getattr(llm, method_name, None)
-            if not callable(close):
-                continue
-            found_close = True
-            try:
-                result = close()
-            except Exception as exc:
-                self._logger.warning(
-                    "study tutor llm close via {} failed: {}", method_name, exc
-                )
-                continue
-            if inspect.isawaitable(result):
-                self._finalize_async_close(result, method_name=method_name)
-            return
-        if not found_close:
-            self._logger.warning(
-                "study tutor llm has no shutdown or aclose method: {}",
-                type(llm).__name__,
-            )
-
-    async def _close_cached_llm_async(self, llm: Any) -> None:
-        found_close = False
-        for method_name in ("shutdown", "aclose"):
-            close = getattr(llm, method_name, None)
-            if not callable(close):
-                continue
-            found_close = True
-            try:
-                result = close()
-                if inspect.isawaitable(result):
-                    await result
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                self._logger.warning(
-                    "study tutor llm async close via {} failed: {}", method_name, exc
-                )
-                continue
-            return
-        if not found_close:
-            self._logger.warning(
-                "study tutor llm has no shutdown or aclose method: {}",
-                type(llm).__name__,
-            )
-
-    def _finalize_async_close(self, close_result: Any, *, method_name: str) -> None:
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            try:
-                asyncio.run(close_result)
-            except Exception as exc:
-                self._logger.warning(
-                    "study tutor llm async close via {} failed without running loop: {}",
-                    method_name,
-                    exc,
-                )
-            return
-        try:
-            task = loop.create_task(close_result)
-        except Exception as exc:
-            self._logger.warning(
-                "study tutor llm async close via {} could not be scheduled: {}",
-                method_name,
-                exc,
-            )
-            return
-        task.add_done_callback(self._consume_close_exception)
-
-    def _consume_close_exception(self, task: asyncio.Task[Any]) -> None:
-        try:
-            exc = task.exception()
-        except (asyncio.CancelledError, asyncio.InvalidStateError):
-            return
-        if exc is not None:
-            self._logger.warning("study tutor llm close task failed: {}", exc)
+_bound_model_runtime: ContextVar[StudyModelRuntimeSnapshot | None] = ContextVar(
+    "study_companion_model_runtime", default=None
+)
 
 
 class TutorLLMAgent:
     def __init__(self, *, logger: Any, config: StudyConfig) -> None:
         self._logger = logger
         self._config = config
-        self._client_cache = _LLMClientCache(logger=logger)
+        self._model_gateway = StudyModelGateway(logger=logger)
+        # Compatibility seam for focused legacy tests and private embedders.
+        self._qwen_client = self._model_gateway.native_client
         self._json_corrector = _JSONCorrector(logger=logger)
 
     def update_config(self, config: StudyConfig) -> None:
-        self._client_cache.close_all()
         self._config = config
 
     async def shutdown(self) -> None:
-        await self._client_cache.close_all_async()
+        return None
+
+    async def resolve_model_runtime(
+        self, model_group: str = "agent"
+    ) -> StudyModelRuntimeSnapshot:
+        return await self._model_gateway.resolve_runtime(model_group)
+
+    async def describe_model_runtimes(self) -> dict[str, dict[str, object]]:
+        return await self._model_gateway.describe_runtimes()
+
+    async def reserve_optional_agent_call(
+        self, operation: str
+    ) -> tuple[bool, AgentQuotaReservation | None]:
+        return await self._model_gateway.reserve_optional_agent_call(operation)
+
+    @contextmanager
+    def bind_model_runtime(self, runtime: StudyModelRuntimeSnapshot):
+        """Keep a long-running operation on one immutable host-model snapshot."""
+        token = _bound_model_runtime.set(runtime)
+        try:
+            yield runtime
+        finally:
+            _bound_model_runtime.reset(token)
 
     def _localize_reply(self, language: str | None, key: str, **values: Any) -> str:
         if key == "empty_input":
@@ -197,10 +110,12 @@ class TutorLLMAgent:
             vision_image_base64 = str(context.get("vision_image_base64") or "")
             if vision_image_base64:
                 messages = self._attach_vision_image(messages, vision_image_base64)
+            deadline = self._new_operation_deadline(operation, messages)
             raw_text = await self._json_corrector.invoke_with_correction(
                 operation=operation,
                 messages=messages,
                 call_model=self._call_model,
+                deadline=deadline,
             )
             parsed = self._json_corrector.parse_json_object(raw_text)
             payload = self._normalize_result(operation, parsed, context)
@@ -378,61 +293,6 @@ class TutorLLMAgent:
         return first_line[:48]
 
     @staticmethod
-    def _model_supports_vision(model: str) -> bool:
-        normalized = str(model or "").strip().lower()
-        if not normalized:
-            return False
-        if normalized.startswith("glm-") and re.search(
-            r"(?:^|[-_.])\d+(?:\.\d+)?v(?:[-_.]|$)",
-            normalized,
-        ):
-            return True
-        return any(
-            marker in normalized
-            for marker in (
-                "gpt-4o",
-                "gpt-4.1",
-                "gpt-4.5",
-                "gpt-5",
-                "vision",
-                "vl",
-                "qwen2.5-vl",
-                "qwen-vl",
-                "gemini",
-                "claude-3",
-                "claude-4",
-            )
-        )
-
-    @staticmethod
-    def _message_has_image_content(message: dict[str, Any]) -> bool:
-        content = message.get("content")
-        if not isinstance(content, list):
-            return False
-        return any(
-            isinstance(block, dict) and block.get("type") == "image_url"
-            for block in content
-        )
-
-    @staticmethod
-    def _strip_image_content(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        result: list[dict[str, Any]] = []
-        for message in messages:
-            content = message.get("content")
-            if not isinstance(content, list):
-                result.append(dict(message))
-                continue
-            text_parts = [
-                str(block.get("text") or "")
-                for block in content
-                if isinstance(block, dict) and block.get("type") == "text"
-            ]
-            next_message = dict(message)
-            next_message["content"] = "\n".join(part for part in text_parts if part)
-            result.append(next_message)
-        return result
-
-    @staticmethod
     def _attach_vision_image(
         messages: list[dict[str, Any]],
         image_base64: str,
@@ -479,96 +339,56 @@ class TutorLLMAgent:
         messages: list[dict[str, Any]],
         *,
         operation: str = LLM_OPERATION_CONCEPT_EXPLAIN,
-        ) -> str:
-        get_config_manager = getattr(_config_manager_module, "get_config_manager", None)
-        create_chat_llm_async = getattr(_llm_client_module, "create_chat_llm_async", None)
-        set_call_type = getattr(_token_tracker_module, "set_call_type", None)
-        missing_runtime_deps = [
-            name
-            for name, dep in (
-                ("utils.config_manager.get_config_manager", get_config_manager),
-                ("utils.llm_client.create_chat_llm_async", create_chat_llm_async),
-                ("utils.token_tracker.set_call_type", set_call_type),
-            )
-            if not callable(dep)
-        ]
-        if missing_runtime_deps:
-            details = ", ".join(missing_runtime_deps)
-            raise SdkError(f"missing runtime dependency: {details}")
+        deadline: float | None = None,
+        quota_reservation: AgentQuotaReservation | None = None,
+    ) -> str:
+        call_kwargs: dict[str, Any] = {
+            "operation": operation,
+            "deadline": deadline,
+        }
+        if quota_reservation is not None:
+            call_kwargs["quota_reservation"] = quota_reservation
+        result = await self._call_model_result(messages, **call_kwargs)
+        return result.text
 
-        config_manager = get_config_manager()
-        has_image = any(
-            self._message_has_image_content(message) for message in messages
+    async def _call_model_result(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        operation: str = LLM_OPERATION_CONCEPT_EXPLAIN,
+        deadline: float | None = None,
+        runtime: StudyModelRuntimeSnapshot | None = None,
+        quota_reservation: AgentQuotaReservation | None = None,
+    ) -> StudyModelResult | QwenNativeResult:
+        effective_deadline = deadline or self._new_operation_deadline(
+            operation, messages
         )
-        if has_image:
-            vision_config = config_manager.get_model_api_config("vision")
-            vision_base_url = str(vision_config.get("base_url") or "").strip()
-            vision_model = str(vision_config.get("model") or "").strip()
-            if vision_base_url and vision_model:
-                api_config = vision_config
-                model_group = "vision"
-            else:
-                api_config = config_manager.get_model_api_config("agent")
-                model_group = "agent"
-        else:
-            api_config = config_manager.get_model_api_config("agent")
-            model_group = "agent"
-        base_url = str(api_config.get("base_url") or "").strip()
-        model = str(api_config.get("model") or "").strip()
-        api_key = str(api_config.get("api_key") or "").strip()
-        if not base_url or not model:
-            raise SdkError(f"missing configured {model_group} model")
-        if (
-            has_image
-            and model_group != "vision"
-            and not self._model_supports_vision(model)
-        ):
-            self._logger.warning(
-                "vision stripped: model {} not in vision allowlist", model
+        # Preserve instance-level replacement used by older integrations without
+        # making the production router depend on a Qwen-specific client.
+        if self._qwen_client is not self._model_gateway.native_client:
+            return await self._qwen_client.call(
+                messages,
+                operation=operation,
+                deadline=effective_deadline,
             )
-            messages = self._strip_image_content(messages)
-        key = (
-            model_group,
+        runtime = runtime or _bound_model_runtime.get()
+        call_kwargs: dict[str, Any] = {
+            "operation": operation,
+            "deadline": effective_deadline,
+            "runtime": runtime,
+        }
+        if quota_reservation is not None:
+            call_kwargs["quota_reservation"] = quota_reservation
+        return await self._model_gateway.call(messages, **call_kwargs)
+
+    def _new_operation_deadline(
+        self, operation: str, messages: list[dict[str, Any]]
+    ) -> float:
+        return new_operation_deadline(
             operation,
-            base_url,
-            model,
-            self._api_key_cache_fingerprint(api_key),
-            api_config.get("provider_type"),
+            has_image=messages_have_image(messages),
+            configured_timeout_seconds=self._config.llm_call_timeout_seconds,
         )
-        timeout_seconds = (
-            float(self._config.llm_call_timeout_seconds)
-            + _LLM_CALL_TIMEOUT_GRACE_SECONDS
-        )
-        llm = await self._client_cache.get_or_create(
-            key,
-            lambda: create_chat_llm_async(
-                model=model,
-                base_url=base_url,
-                api_key=api_key,
-                timeout=timeout_seconds,
-                provider_type=api_config.get("provider_type"),
-            ),
-        )
-        if llm is None:
-            raise SdkError("failed to initialize agent model")
-        set_call_type(model_group)
-        ainvoke = getattr(llm, "ainvoke", None)
-        if callable(ainvoke):
-            response = await asyncio.wait_for(
-                ainvoke(messages), timeout=timeout_seconds
-            )
-        else:
-            response = await asyncio.wait_for(
-                asyncio.to_thread(llm.invoke, messages), timeout=timeout_seconds
-            )
-        return str(getattr(response, "content", "") or response)
-
-    @staticmethod
-    def _api_key_cache_fingerprint(api_key: str) -> tuple[str, str]:
-        if not api_key:
-            return ("empty", "")
-        digest = hashlib.sha256(api_key.encode("utf-8")).hexdigest()
-        return ("sha256", digest)
 
 
 from .tutor_llm_agent_concept_explain import concept_explain
@@ -611,3 +431,15 @@ from .tutor_llm_agent_notebook import expand_note, summarize_to_note
 
 TutorLLMAgent.expand_note = expand_note  # type: ignore[method-assign]
 TutorLLMAgent.summarize_to_note = summarize_to_note  # type: ignore[method-assign]
+
+from .tutor_llm_agent_document import (
+    analyze_document_chunk,
+    build_document_merge_messages,
+    document_analyze,
+    merge_document_chunks,
+)
+
+TutorLLMAgent.document_analyze = document_analyze  # type: ignore[attr-defined]
+TutorLLMAgent.analyze_document_chunk = analyze_document_chunk  # type: ignore[attr-defined]
+TutorLLMAgent.merge_document_chunks = merge_document_chunks  # type: ignore[attr-defined]
+TutorLLMAgent.build_document_merge_messages = staticmethod(build_document_merge_messages)  # type: ignore[attr-defined]

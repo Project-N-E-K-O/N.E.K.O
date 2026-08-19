@@ -89,9 +89,11 @@ async def expand_note(
         },
     ]
     try:
+        deadline = self._new_operation_deadline(LLM_OPERATION_EXPAND_NOTE, messages)
         raw = await self._call_model(
             messages,
             operation=LLM_OPERATION_EXPAND_NOTE,
+            deadline=deadline,
         )
         markdown = _ensure_expanded_note_preserves_original(
             original,
@@ -155,9 +157,13 @@ async def summarize_to_note(
         },
     ]
     try:
+        deadline = self._new_operation_deadline(
+            LLM_OPERATION_SUMMARIZE_TO_NOTE, messages
+        )
         raw = await self._call_model(
             messages,
             operation=LLM_OPERATION_SUMMARIZE_TO_NOTE,
+            deadline=deadline,
         )
         markdown = _ensure_note_summary_structure(str(raw or ""), text, headings=headings)
         title = _extract_markdown_title(markdown) or "Study Note"

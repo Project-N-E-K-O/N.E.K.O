@@ -10,6 +10,7 @@ from plugin.plugins._shared.rapidocr import _runtime as shared_rapidocr_runtime
 from plugin.plugins._shared.rapidocr import rapidocr_support as shared_rapidocr_support
 from plugin.plugins.study_companion.models import OcrSnapshot, StudyConfig, TutorReply
 from plugin.plugins.study_companion.service import (
+    _build_ocr_readiness,
     _available_tesseract_languages,
     build_dependency_status,
     build_explain_payload,
@@ -25,6 +26,28 @@ from plugin.plugins.study_companion.ui_api import (
 )
 
 pytestmark = pytest.mark.unit
+
+
+def test_ocr_readiness_uses_selected_capture_backend(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "plugin.plugins.study_companion.service.importlib.util.find_spec",
+        lambda name: object() if name == "mss" else None,
+    )
+    readiness = _build_ocr_readiness(
+        config=StudyConfig(
+            ocr_enabled=True,
+            ocr_backend_selection="rapidocr",
+            ocr_capture_backend="mss",
+        ),
+        rapidocr={"installed": True},
+        tesseract={"installed": False},
+        dxcam={"installed": False},
+    )
+
+    assert readiness["ready"] is True
+    assert readiness["diagnostic"] == "ready"
 
 
 class _RapidOcrWithKwargs:
@@ -107,6 +130,191 @@ def test_dependency_status_uses_installability_and_tesseract_language_fallbacks(
 
     assert status["missing_installable"] == ["rapidocr", "dxcam"]
     assert languages == {"eng"}
+
+
+def test_dependency_status_preserves_legacy_fields_and_adds_readiness(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "plugin.plugins.study_companion.service._inspect_rapidocr",
+        lambda _config: {"installed": False, "can_install": True, "detail": "missing"},
+    )
+    monkeypatch.setattr(
+        "plugin.plugins.study_companion.service._inspect_tesseract",
+        lambda _config: {
+            "installed": True,
+            "can_install": False,
+            "detail": "installed",
+        },
+    )
+    monkeypatch.setattr(
+        "plugin.plugins.study_companion.service._inspect_dxcam",
+        lambda: {"installed": False, "can_install": True, "detail": "missing"},
+    )
+
+    status = build_dependency_status(StudyConfig())
+
+    assert set(status) == {
+        "rapidocr",
+        "tesseract",
+        "dxcam",
+        "missing_installable",
+        "ocr_readiness",
+    }
+    assert status["missing_installable"] == ["rapidocr", "dxcam"]
+    assert status["ocr_readiness"] == {
+        "enabled": True,
+        "selected_backend": "rapidocr",
+        "selected_backend_ready": False,
+        "capture_ready": False,
+        "ready": False,
+        "diagnostic": "rapidocr_runtime_missing",
+    }
+
+
+@pytest.mark.parametrize(
+    ("config", "rapidocr", "tesseract", "dxcam", "expected"),
+    [
+        (
+            StudyConfig(ocr_backend_selection="rapidocr"),
+            {"installed": True, "detail": "installed"},
+            {"installed": False, "detail": "missing"},
+            {"installed": True, "detail": "installed"},
+            {
+                "enabled": True,
+                "selected_backend": "rapidocr",
+                "selected_backend_ready": True,
+                "capture_ready": True,
+                "ready": True,
+                "diagnostic": "ready",
+            },
+        ),
+        (
+            StudyConfig(ocr_backend_selection="tesseract"),
+            {"installed": False, "detail": "missing"},
+            {"installed": True, "detail": "installed"},
+            {"installed": True, "detail": "installed"},
+            {
+                "enabled": True,
+                "selected_backend": "tesseract",
+                "selected_backend_ready": True,
+                "capture_ready": True,
+                "ready": True,
+                "diagnostic": "ready",
+            },
+        ),
+        (
+            StudyConfig(ocr_enabled=False, ocr_backend_selection="rapidocr"),
+            {"installed": False, "detail": "missing"},
+            {"installed": False, "detail": "missing"},
+            {"installed": False, "detail": "missing"},
+            {
+                "enabled": False,
+                "selected_backend": "rapidocr",
+                "selected_backend_ready": False,
+                "capture_ready": False,
+                "ready": False,
+                "diagnostic": "ocr_disabled",
+            },
+        ),
+        (
+            StudyConfig(ocr_backend_selection="rapidocr"),
+            {"installed": False, "detail": "missing_model_files"},
+            {"installed": True, "detail": "installed"},
+            {"installed": True, "detail": "installed"},
+            {
+                "enabled": True,
+                "selected_backend": "rapidocr",
+                "selected_backend_ready": False,
+                "capture_ready": True,
+                "ready": False,
+                "diagnostic": "rapidocr_models_missing",
+            },
+        ),
+        (
+            StudyConfig(ocr_backend_selection="rapidocr"),
+            {"installed": False, "detail": "broken_runtime"},
+            {"installed": True, "detail": "installed"},
+            {"installed": True, "detail": "installed"},
+            {
+                "enabled": True,
+                "selected_backend": "rapidocr",
+                "selected_backend_ready": False,
+                "capture_ready": True,
+                "ready": False,
+                "diagnostic": "rapidocr_runtime_broken",
+            },
+        ),
+        (
+            StudyConfig(ocr_backend_selection="tesseract"),
+            {"installed": True, "detail": "installed"},
+            {"installed": False, "detail": "missing_languages"},
+            {"installed": True, "detail": "installed"},
+            {
+                "enabled": True,
+                "selected_backend": "tesseract",
+                "selected_backend_ready": False,
+                "capture_ready": True,
+                "ready": False,
+                "diagnostic": "tesseract_languages_missing",
+            },
+        ),
+        (
+            StudyConfig(ocr_backend_selection="tesseract"),
+            {"installed": True, "detail": "installed"},
+            {"installed": True, "detail": "installed"},
+            {"installed": False, "detail": "missing"},
+            {
+                "enabled": True,
+                "selected_backend": "tesseract",
+                "selected_backend_ready": True,
+                "capture_ready": False,
+                "ready": False,
+                "diagnostic": "capture_dependency_missing",
+            },
+        ),
+        (
+            StudyConfig(ocr_backend_selection="unknown"),
+            {"installed": True, "detail": "installed"},
+            {"installed": True, "detail": "installed"},
+            {"installed": True, "detail": "installed"},
+            {
+                "enabled": True,
+                "selected_backend": "unknown",
+                "selected_backend_ready": False,
+                "capture_ready": True,
+                "ready": False,
+                "diagnostic": "unsupported_ocr_backend",
+            },
+        ),
+    ],
+)
+def test_dependency_status_reports_selected_ocr_chain_readiness(
+    monkeypatch: pytest.MonkeyPatch,
+    config: StudyConfig,
+    rapidocr: dict[str, object],
+    tesseract: dict[str, object],
+    dxcam: dict[str, object],
+    expected: dict[str, object],
+) -> None:
+    monkeypatch.setattr(
+        "plugin.plugins.study_companion.service._inspect_rapidocr",
+        lambda _config: rapidocr,
+    )
+    monkeypatch.setattr(
+        "plugin.plugins.study_companion.service._inspect_tesseract",
+        lambda _config: tesseract,
+    )
+    monkeypatch.setattr(
+        "plugin.plugins.study_companion.service._inspect_dxcam", lambda: dxcam
+    )
+
+    status = build_dependency_status(config)
+
+    assert status["ocr_readiness"] == expected
+    assert status["rapidocr"] is rapidocr
+    assert status["tesseract"] is tesseract
+    assert status["dxcam"] is dxcam
 
 
 def test_study_rapidocr_resolve_uses_galgame_runtime_fallback(

@@ -235,9 +235,8 @@ class QQReplyPipelineRunner:
         if url:
             ark_obj["ark"]["kv"].append({"key": "#URL#", "value": url})
 
-        from .qq_open_plat import QQOpenPlatformConnection
-        if not isinstance(self.plugin.qq_client, QQOpenPlatformConnection):
-            # NapCat / OneBot 不支持 Ark 卡片，降级为文本发送
+        if not getattr(self.plugin.qq_client, "supports_ark_cards", False):
+            # OneBot 后端不支持 Ark 卡片，降级为文本发送
             fallback = body_text or title or desc or ""
             if fallback:
                 await self.plugin._deliver_group_reply(

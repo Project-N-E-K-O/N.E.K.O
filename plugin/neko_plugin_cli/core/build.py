@@ -85,13 +85,6 @@ class PluginBuilder:
         keep_staging: bool = False,
     ) -> BuildResult:
         source = load_plugin_source(plugin_dir)
-        if source.package_type != "plugin":
-            raise ValueError(
-                f"single-plugin build only supports package_type='plugin', "
-                f"but '{source.plugin_id}' declares type='{source.package_type}' "
-                f"in its plugin.toml. Use build_bundle() for non-plugin package types, "
-                f"or change [plugin].type to 'plugin' in plugin.toml."
-            )
         paths = BuildPaths.create(package_id=source.plugin_id)
         try:
             payload = self.build_single_payload(source, paths)

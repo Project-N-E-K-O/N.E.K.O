@@ -243,9 +243,18 @@ plugin/plugins/smart_notes/
 │   └── zh-CN.json
 ├── ui/                      ← 交互面板（因为配了 [[plugin.ui.panel]]）
 │   └── panel.tsx
-├── docs/                    ← 使用指南（因为配了 [[plugin.ui.guide]]）
-│   └── guide.md
-└── data/                    ← 运行时数据（自动创建，self.data_path() 指向这里）
+└── docs/                    ← 使用指南（因为配了 [[plugin.ui.guide]]）
+    └── guide.md
+```
+
+上面是插件源码。可写的配置、数据和缓存不放在源码目录，而是在用户数据目录中：
+
+```text
+<用户数据根目录>/plugins/smart_notes/
+├── config/
+│   └── plugin.toml          ← 这个用户实际使用的配置
+├── data/                    ← 运行时数据，self.data_path() 指向这里
+└── cache/                   ← 运行时缓存，self.cache_path() 指向这里
 ```
 
 必需的是 `plugin.toml` 和 `[plugin].entry` 指向的可导入 Python 模块。模块不一定非得是 `__init__.py`，只是这种布局最常见。

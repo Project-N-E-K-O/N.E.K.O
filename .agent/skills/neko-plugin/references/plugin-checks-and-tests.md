@@ -58,10 +58,10 @@ Known blind spots:
 
 ### Dependency management
 
-Use the CLI for plugin runtime dependencies:
+Declare plugin runtime dependencies in plugin-local
+`pyproject.toml [project].dependencies`, then materialize them with:
 
 ```bash
-uv run neko-plugin add <plugin_id> 'httpx>=0.27'
 uv run neko-plugin sync <plugin_id> --clean
 ```
 
@@ -71,8 +71,7 @@ Do not add `requirements.txt`. Python runtime packages belong in plugin-local `p
 
 ```bash
 uv run neko-plugin build <plugin_id>
-uv run neko-plugin inspect <package.neko-plugin>
-uv run neko-plugin verify <package.neko-plugin>
+uv run neko-plugin check -r <plugin_id>
 ```
 
 Notes:
@@ -81,8 +80,8 @@ Notes:
 - `build` has no `--plugins-root` option.
 - single-plugin `build` only supports `[plugin].type = "plugin"`.
 - build validates source dependency layout and payload dependency layout.
-- `inspect` validates package layout, plugin payload layout, dependency layout, package type, and payload hash metadata.
-- `verify` is the focused payload-hash check.
+- `check -r` performs package inspection and payload-hash verification as part
+  of the supported release-readiness flow.
 
 Use `install` only with explicit temporary roots unless the user asked to install:
 
@@ -200,8 +199,8 @@ Plugin-facing by default:
 
 - `uv run neko-plugin check <plugin_id|plugin_path>`
 - `uv run neko-plugin check <plugin_id|plugin_path> --release`
-- `uv run neko-plugin add/sync <plugin_id> ...`
-- `uv run neko-plugin build/inspect/verify ...`
+- `uv run neko-plugin sync <plugin_id> --clean`
+- `uv run neko-plugin build <plugin_id>`
 - plugin-local tests under `plugin/plugins/<plugin_id>/tests`
 - targeted hosted TSX checks for `plugin/plugins/<plugin_id>`
 - targeted `plugin/tests/unit/plugins/test_<plugin_name>*.py`
