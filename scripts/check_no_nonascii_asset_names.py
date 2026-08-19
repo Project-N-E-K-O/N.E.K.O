@@ -291,7 +291,16 @@ def _under_bundled_root(rel_posix: str) -> bool:
 # stops us scanning a file that ships (a hole), while missing something it drops
 # only leaves a false positive. Both fail the test; only the first is dangerous.
 _PLUGIN_SKIP_DIR_NAMES = frozenset(
-    {"__pycache__", ".github", ".pytest_cache", ".mypy_cache", ".venv", ".git"}
+    {
+        "__pycache__",
+        ".github",
+        ".vscode",
+        ".idea",
+        ".pytest_cache",
+        ".mypy_cache",
+        ".venv",
+        ".git",
+    }
 )
 _PLUGIN_SKIP_ROOT_DIR_NAMES = frozenset({"dist", "build"})
 _PLUGIN_SKIP_FILE_NAMES = frozenset({".DS_Store"})
@@ -584,6 +593,7 @@ def _untracked_offenders(repo_root: Path) -> set[str]:
     weights) that no git listing can see.
     """
     offenders: set[str] = set()
+    staged = _plugin_stage_filter(repo_root)
     for root in BUNDLED_ROOTS:
         base = repo_root / root
         if not base.is_dir():
@@ -594,9 +604,9 @@ def _untracked_offenders(repo_root: Path) -> set[str]:
             for name in files:
                 if _is_ascii(name):
                     continue
-                offenders.add(
-                    (current_path / name).relative_to(repo_root).as_posix()
-                )
+                relative = (current_path / name).relative_to(repo_root).as_posix()
+                if staged(relative):
+                    offenders.add(relative)
     return offenders
 
 

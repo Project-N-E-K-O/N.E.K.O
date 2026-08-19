@@ -3073,6 +3073,12 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                 slider.appendChild(knob);
                 toggle.appendChild(input);
                 toggle.appendChild(slider);
+                function syncToggleVisual() {
+                    slider.style.backgroundColor = input.checked
+                        ? '#4f8cff'
+                        : '#9aa0a6';
+                    knob.style.left = input.checked ? '18px' : '2px';
+                }
                 toggle.addEventListener('click', function (event) {
                     event.stopPropagation();
                 });
@@ -3080,12 +3086,10 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                     event.stopPropagation();
                 });
                 input.addEventListener('change', function () {
-                    slider.style.backgroundColor = input.checked
-                        ? '#4f8cff'
-                        : '#9aa0a6';
-                    knob.style.left = input.checked ? '18px' : '2px';
+                    syncToggleVisual();
                     onChange(input.checked);
                 });
+                input.addEventListener('neko:toggle-visual-sync', syncToggleVisual);
                 return {
                     element: toggle,
                     input: input,
@@ -3097,10 +3101,7 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                     },
                     setChecked: function (value) {
                         input.checked = value;
-                        slider.style.backgroundColor = value
-                            ? '#4f8cff'
-                            : '#9aa0a6';
-                        knob.style.left = value ? '18px' : '2px';
+                        syncToggleVisual();
                     }
                 };
             }
@@ -3584,6 +3585,13 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
 
             function scheduleMicActionHoverCollapse() {
                 clearMicActionHoverCollapseTimer();
+                // Screen-source settings contain text input and OS-mediated
+                // interactions (for example IME candidate windows). Leaving
+                // the panel is not an intent to dismiss it; it closes only
+                // when the pointer returns to the owning menu or that menu is
+                // disposed. Other lightweight action panels keep the shared
+                // delayed hover-collapse behavior.
+                if (activeMicActionKey === 'screen') return;
                 micActionHoverCollapseTimer = setTimeout(function () {
                     micActionHoverCollapseTimer = null;
                     if (isMicActionHoverSurfaceActive()) return;
@@ -3595,6 +3603,18 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                     });
                 }, MIC_ACTION_HOVER_COLLAPSE_MS);
             }
+
+            leftColumn.addEventListener('mouseenter', function () {
+                if (activeMicActionKey !== 'screen') return;
+                var panel = getOwnedMicSubwindow();
+                if (!panel || !panel.isConnected) return;
+                closeMicSubwindow();
+                leftColumn.querySelectorAll(
+                    '[data-neko-mic-main-action-row], [data-neko-mic-main-action]'
+                ).forEach(function (surface) {
+                    surface.style.background = 'transparent';
+                });
+            });
 
             function wireMicSubwindowHoverBridge(panel) {
                 if (!panel || panel._nekoMicHoverBridgeWired) return;
@@ -3731,9 +3751,20 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                     closeMicSubwindow();
                 });
 
+                var headerActions = document.createElement('div');
+                Object.assign(headerActions.style, {
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'flex-end',
+                    gap: '7px',
+                    flexShrink: '0'
+                });
+                headerActions.appendChild(closeBtn);
+
                 header.appendChild(titleWrap);
-                header.appendChild(closeBtn);
+                header.appendChild(headerActions);
                 panel.appendChild(header);
+                panel._nekoMicSubwindowHeaderActions = headerActions;
 
                 var body = document.createElement('div');
                 body.className = 'neko-mic-popup-scroll neko-mic-subwindow-body';
@@ -4036,6 +4067,38 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                     null,
                     '360px'
                 );
+                var headerActions = panel._nekoMicSubwindowHeaderActions;
+                if (headerActions
+                    && typeof window.isScreenSourceTitleMatchEnabled === 'function'
+                    && typeof window.setScreenSourceTitleMatchEnabled === 'function') {
+                    var rememberWrap = document.createElement('div');
+                    rememberWrap.className = 'neko-screen-source-remember-control';
+                    Object.assign(rememberWrap.style, {
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '6px',
+                        color: 'var(--neko-popup-text-sub)',
+                        fontSize: '11px',
+                        fontWeight: '500',
+                        whiteSpace: 'nowrap'
+                    });
+                    var rememberText = document.createElement('span');
+                    rememberText.textContent = window.t
+                        ? window.t('app.screenSource.rememberWindow')
+                        : '记住窗口';
+                    var rememberToggle = createVoiceSettingToggle(
+                        window.isScreenSourceTitleMatchEnabled(),
+                        function (enabled) {
+                            window.setScreenSourceTitleMatchEnabled(enabled);
+                        }
+                    );
+                    rememberToggle.input.classList.add('neko-screen-source-title-match-toggle');
+                    rememberToggle.input.setAttribute('aria-label', rememberText.textContent);
+                    rememberToggle.input.title = rememberText.textContent;
+                    rememberWrap.appendChild(rememberText);
+                    rememberWrap.appendChild(rememberToggle.element);
+                    headerActions.insertBefore(rememberWrap, headerActions.firstChild);
+                }
                 var panelBody = panel._nekoMicSubwindowBody || panel;
                 var screenSourceList = document.createElement('div');
                 screenSourceList.id = micPopup.id ? micPopup.id + '-screen-sources' : 'neko-mic-popup-screen-sources';

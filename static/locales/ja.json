@@ -2490,6 +2490,11 @@
             "screens": "画面",
             "screenLabel": "画面 {{index}}",
             "windows": "ウィンドウ",
+            "titleFilterPlaceholder": "ウィンドウ名を絞り込み",
+            "titleFilterAriaLabel": "タイトルでウィンドウを絞り込む",
+            "noWindowMatches": "一致するウィンドウがありません",
+            "rememberWindow": "ウィンドウを記憶",
+            "rememberedWindowUnavailable": "記憶したウィンドウを一意に特定できません。画面ソースを選択し直してください",
             "selected": "{{source}}を選択しました",
             "sourceLost": "画面共有で以前選択したウィンドウが見つかりません。全画面共有に切り替えました",
             "captureFailed": "画面キャプチャを停止しました。システム権限を確認するか、ソースを選択し直してください"

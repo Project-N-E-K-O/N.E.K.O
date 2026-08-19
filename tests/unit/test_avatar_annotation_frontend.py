@@ -34,6 +34,7 @@ from tests.node_harness import run_node_stdin
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 APP_SCREEN_PATH = PROJECT_ROOT / "static" / "app" / "app-screen.js"
 APP_PROACTIVE_PATH = PROJECT_ROOT / "static" / "app" / "app-proactive.js"
+APP_BUTTONS_PATH = PROJECT_ROOT / "static" / "app" / "app-buttons.js"
 
 
 def _node() -> str:
@@ -385,6 +386,868 @@ def test_helper_marks_backend_fallback_as_full_screen():
     assert out["data"].endswith("BACKEND")
 
 
+@pytest.mark.parametrize("mode", ["cached", "native", "stream", "retry"])
+def test_proactive_chat_discards_frames_when_remembered_identity_changes(mode: str):
+    """Every successful async capture route must reject a superseded window frame."""
+    proactive_src = APP_PROACTIVE_PATH.read_text(encoding="utf-8")
+    script = """
+const mode = '__MODE__';
+const results = {};
+let current = true;
+function makeStream(label) {
+  const track = { readyState: 'live', stop() {} };
+  return {
+    label,
+    active: true,
+    getVideoTracks: () => [track],
+    getTracks: () => [track]
+  };
+}
+const cachedStream = makeStream('cached');
+const firstStream = makeStream('first');
+const retryStream = makeStream('retry');
+const S = {
+  selectedScreenSourceId: 'window:old',
+  screenCaptureStream: mode === 'cached' ? cachedStream : null,
+  screenCaptureStreamLastUsed: null
+};
+const window = {
+  prepareRememberedWindowCapture: async () => ({
+    required: true,
+    allowed: true,
+    isCurrent: () => current
+  }),
+  detectScreenshotCaptureType: () => null,
+  captureDesktopSourceWithTimeout: async () => {
+    if (mode === 'native') {
+      current = false;
+      return { success: true, dataUrl: 'data:image/png;base64,OLD' };
+    }
+    return { success: false, error: 'not used' };
+  },
+  maybeClearSourceOnNotFound: () => {},
+  scheduleScreenCaptureIdleCheck: () => {}
+};
+const getDesktopProvider = () => mode === 'native'
+  ? { captureSourceAsDataUrl() {} }
+  : {};
+let acquireCount = 0;
+const acquireOrReuseCachedStream = async () => {
+  acquireCount += 1;
+  if (mode === 'stream') return firstStream;
+  if (mode === 'retry') return acquireCount === 1 ? firstStream : retryStream;
+  return null;
+};
+let frameCount = 0;
+const captureFrameFromStream = async () => {
+  frameCount += 1;
+  if (mode === 'retry' && frameCount === 1) return null;
+  current = false;
+  return { dataUrl: 'data:image/jpeg;base64,OLD' };
+};
+const fetchBackendScreenshot = async () => ({
+  dataUrl: 'data:image/jpeg;base64,BACKEND'
+});
+__RESOLVE__
+__HELPER__
+captureProactiveChatScreenshotWithSource().then((shot) => {
+  results.data = shot && shot.dataUrl;
+  results.via = shot && shot.via;
+  console.log(JSON.stringify(results));
+});
+"""
+    script = (
+        script
+        .replace("__MODE__", mode)
+        .replace("__RESOLVE__", _fn(proactive_src, "resolveCaptureTypeFor"))
+        .replace(
+            "__HELPER__",
+            _fn(proactive_src, "captureProactiveChatScreenshotWithSource"),
+        )
+    )
+
+    out = _run(script)
+
+    assert out.get("data") is None
+    assert out.get("via") is None
+
+
+_SCREENSHOT_ENTRY_TMPL = """
+const results = { calls: [] };
+class MediaStream {}
+const S = {
+  selectedScreenSourceId: __SOURCE_ID__,
+  screenCaptureStream: null,
+  screenCaptureStreamLastUsed: null
+};
+const U = { isMobile: () => false };
+const window = {
+  t: () => 'ok',
+  appCrop: null,
+  fetchBackendInteractiveScreenshot: async () => null,
+  prepareRememberedWindowCapture: async () => __PREPARE__,
+  acquireOrReuseCachedStream: async () => {
+    results.calls.push('coordinate-remembered-window');
+    S.selectedScreenSourceId = 'window:correct';
+    return null;
+  },
+  fetchBackendScreenshot: async () => {
+    results.calls.push('backend-desktop');
+    return { dataUrl: 'data:image/jpeg;base64,BACKEND' };
+  }
+};
+const getDesktopProvider = () => ({});
+const setScreenshotCaptureSessionActive = () => {};
+const captureDesktopRegionDirectly = async () => __DIRECT__;
+const recaptureWithoutNeko = async () => null;
+let _captureScreenshotDataUrlBusy = false;
+__CAPTURE__
+captureScreenshotDataUrl().then((shot) => {
+  results.data = shot && shot.dataUrl;
+  results.selected = S.selectedScreenSourceId;
+  console.log(JSON.stringify(results));
+}).catch((error) => {
+  results.error = error && error.message;
+  results.selected = S.selectedScreenSourceId;
+  console.log(JSON.stringify(results));
+});
+"""
+
+
+def _screenshot_entry_script(*, source_id: str, direct: str, prepare: str) -> str:
+    buttons_src = APP_BUTTONS_PATH.read_text(encoding="utf-8")
+    return (
+        _SCREENSHOT_ENTRY_TMPL
+        .replace("__SOURCE_ID__", source_id)
+        .replace("__DIRECT__", direct)
+        .replace("__PREPARE__", prepare)
+        .replace("__CAPTURE__", _fn(buttons_src, "captureScreenshotDataUrl"))
+    )
+
+
+@pytest.mark.unit
+def test_manual_screenshot_coordinates_remembered_title_before_direct_frame():
+    out = _run(_screenshot_entry_script(
+        source_id="'window:reused'",
+        prepare="(results.calls.push('coordinate-remembered-window'),"
+        " S.selectedScreenSourceId = 'window:correct',"
+        " { required: true, allowed: true })",
+        direct="(results.calls.push(`direct:${S.selectedScreenSourceId}`), {"
+        " dataUrl: 'data:image/png;base64,WRONG', originalDataUrl:"
+        " 'data:image/png;base64,WRONG' })",
+    ))
+
+    assert out == {
+        "calls": ["coordinate-remembered-window", "direct:window:correct"],
+        "data": "data:image/png;base64,WRONG",
+        "selected": "window:correct",
+    }
+
+
+@pytest.mark.unit
+def test_manual_screenshot_does_not_widen_blocked_capture_to_backend_desktop():
+    out = _run(_screenshot_entry_script(
+        source_id="null",
+        direct="null",
+        prepare="(results.calls.push('coordinate-remembered-window'),"
+        " { required: true, allowed: false })",
+    ))
+
+    assert out["calls"] == ["coordinate-remembered-window"]
+    assert out.get("data") is None
+    assert out["selected"] is None
+
+
+_REMEMBERED_SCREENSHOT_RACE_TMPL = """
+const results = { calls: [], toasts: [] };
+class MediaStream {}
+let current = true;
+const S = {
+  selectedScreenSourceId: 'window:old',
+  screenCaptureStream: null,
+  screenCaptureStreamLastUsed: null
+};
+const U = { isMobile: () => false };
+const window = {
+  t: (key) => key,
+  showStatusToast: (message) => results.toasts.push(message),
+  appCrop: null,
+  prepareRememberedWindowCapture: async () => ({
+    required: true,
+    allowed: __ALLOWED__,
+    sourceId: S.selectedScreenSourceId,
+    isCurrent: () => current
+  }),
+  fetchBackendInteractiveScreenshot: async () => {
+    results.calls.push('interactive-desktop');
+    return __INTERACTIVE__;
+  },
+  captureDesktopSourceWithTimeout: async () => {
+    results.calls.push('direct-window');
+    return __DIRECT__;
+  },
+  maybeClearSourceOnNotFound: () => {},
+  acquireOrReuseCachedStream: async () => {
+    results.calls.push('stream');
+    return __STREAM__;
+  },
+  captureFrameFromStream: async () => {
+    results.calls.push('stream-frame');
+    return __FRAME__;
+  },
+  fetchBackendScreenshot: async () => {
+    results.calls.push('backend-desktop');
+    return { dataUrl: 'data:image/jpeg;base64,BACKEND' };
+  },
+  detectScreenshotCaptureType: () => null,
+  scheduleScreenCaptureIdleCheck: () => {}
+};
+const getDesktopProvider = () => __PROVIDER__;
+const setScreenshotCaptureSessionActive = () => {};
+const captureDesktopRegionDirectly = async () => {
+  results.calls.push('region');
+  return __REGION__;
+};
+const recaptureWithoutNeko = async () => null;
+let _captureScreenshotDataUrlBusy = false;
+__CAPTURE__
+const mod = { captureScreenshotDataUrl };
+mod.enqueueCapturedScreenshotResult = async () => {
+  results.calls.push('enqueue');
+};
+const screenshotButton = { disabled: false };
+const isHomeTutorialInteractionLocked = () => false;
+const showHomeTutorialLockedToast = () => {};
+const refreshHomeTutorialLockedElement = () => {};
+__OUTER__
+__RUN__
+"""
+
+
+def _remembered_screenshot_race_script(
+    *,
+    allowed: str = "true",
+    provider: str = "({ captureSourceAsDataUrl() {} })",
+    region: str = "null",
+    interactive: str = "null",
+    direct: str = "null",
+    stream: str = "null",
+    frame: str = "null",
+    run_outer: bool = False,
+) -> str:
+    buttons_src = APP_BUTTONS_PATH.read_text(encoding="utf-8")
+    if run_outer:
+        outer = _fn(buttons_src, "captureScreenshotToPendingList")
+        run = """mod.captureScreenshotToPendingList = captureScreenshotToPendingList;
+mod.captureScreenshotToPendingList().then(() => {
+  console.log(JSON.stringify(results));
+}).catch((error) => {
+  results.error = error && error.message;
+  console.log(JSON.stringify(results));
+});"""
+    else:
+        outer = ""
+        run = """captureScreenshotDataUrl().then((shot) => {
+  results.data = shot && shot.dataUrl;
+  results.unavailable = !!(shot && shot.rememberedWindowUnavailable);
+  console.log(JSON.stringify(results));
+}).catch((error) => {
+  results.error = error && error.message;
+  console.log(JSON.stringify(results));
+});"""
+    return (
+        _REMEMBERED_SCREENSHOT_RACE_TMPL
+        .replace("__ALLOWED__", allowed)
+        .replace("__PROVIDER__", provider)
+        .replace("__REGION__", region)
+        .replace("__INTERACTIVE__", interactive)
+        .replace("__DIRECT__", direct)
+        .replace("__STREAM__", stream)
+        .replace("__FRAME__", frame)
+        .replace("__CAPTURE__", _fn(buttons_src, "captureScreenshotDataUrl"))
+        .replace("__OUTER__", outer)
+        .replace("__RUN__", run)
+    )
+
+
+@pytest.mark.unit
+def test_manual_screenshot_discards_direct_frame_after_remembered_source_change():
+    out = _run(_remembered_screenshot_race_script(
+        direct="(current = false, S.selectedScreenSourceId = 'window:new', {"
+        " success: true, dataUrl: 'data:image/png;base64,OLD' })",
+    ))
+
+    assert out.get("data") is None
+    assert out["unavailable"] is True
+
+
+@pytest.mark.unit
+def test_manual_screenshot_discards_stream_frame_after_remembered_source_change():
+    out = _run(_remembered_screenshot_race_script(
+        provider="({})",
+        stream="({ getTracks: () => [] })",
+        frame="(current = false, S.selectedScreenSourceId = 'window:new', {"
+        " dataUrl: 'data:image/jpeg;base64,OLD', width: 640, height: 360 })",
+    ))
+
+    assert out.get("data") is None
+    assert out["unavailable"] is True
+
+
+@pytest.mark.unit
+def test_manual_screenshot_does_not_stop_shared_stream_when_identity_expires_after_acquire():
+    out = _run(_remembered_screenshot_race_script(
+        provider="({})",
+        stream="(S.screenCaptureStream = new MediaStream(),"
+        " S.screenCaptureStream.getTracks = () => [{"
+        " stop: () => { results.sharedStopped = true; }"
+        " }], current = false, S.screenCaptureStream)",
+    ))
+
+    assert out.get("data") is None
+    assert out["unavailable"] is True
+    assert out.get("sharedStopped") is not True
+
+
+@pytest.mark.unit
+def test_manual_screenshot_discards_desktop_region_after_remembered_source_change():
+    out = _run(_remembered_screenshot_race_script(
+        region="(current = false, S.selectedScreenSourceId = 'window:new', {"
+        " dataUrl: 'data:image/png;base64,OLD',"
+        " originalDataUrl: 'data:image/png;base64,OLD' })",
+    ))
+
+    assert out.get("data") is None
+    assert out["unavailable"] is True
+
+
+@pytest.mark.unit
+def test_manual_screenshot_skips_interactive_desktop_for_remembered_window():
+    out = _run(_remembered_screenshot_race_script(
+        provider="({})",
+        interactive="({ dataUrl: 'data:image/png;base64,DESKTOP' })",
+    ))
+
+    assert "interactive-desktop" not in out["calls"]
+    assert out.get("data") is None
+    assert out["unavailable"] is True
+
+
+@pytest.mark.unit
+def test_manual_screenshot_reports_remembered_rejection_instead_of_cancellation():
+    out = _run(_remembered_screenshot_race_script(
+        allowed="false",
+        provider="({})",
+        run_outer=True,
+    ))
+
+    assert out["calls"] == []
+    assert out["toasts"] == [
+        "app.capturing",
+        "app.screenSource.rememberedWindowUnavailable",
+    ]
+
+
+@pytest.mark.unit
+def test_hide_neko_recapture_does_not_widen_remembered_window_to_backend_desktop():
+    buttons_src = APP_BUTTONS_PATH.read_text(encoding="utf-8")
+    script = """
+const results = { calls: [] };
+class MediaStream {}
+const S = {
+  selectedScreenSourceId: 'window:old',
+  screenCaptureStream: null
+};
+const window = {
+  captureDesktopSourceWithTimeout: async () => {
+    results.calls.push('direct-window');
+    return null;
+  },
+  acquireOrReuseCachedStream: async () => {
+    results.calls.push('stream');
+    return null;
+  },
+  captureFrameFromStream: async () => null,
+  fetchBackendScreenshot: async () => {
+    results.calls.push('backend-desktop');
+    return { dataUrl: 'data:image/jpeg;base64,BACKEND' };
+  },
+  maybeClearSourceOnNotFound: () => {},
+  showStatusToast: () => {},
+  t: (key) => key
+};
+const getDesktopProvider = () => ({ captureSourceAsDataUrl() {} });
+const hideNekoUI = () => null;
+const restoreNekoUI = () => {};
+__RECAPTURE__
+recaptureWithoutNeko({
+  required: true,
+  allowed: true,
+  isCurrent: () => true
+}).then((data) => {
+  results.data = data;
+  console.log(JSON.stringify(results));
+});
+""".replace("__RECAPTURE__", _fn(buttons_src, "recaptureWithoutNeko"))
+
+    out = _run(script)
+
+    assert out.get("data") is None
+    assert "backend-desktop" not in out["calls"]
+
+
+@pytest.mark.unit
+def test_title_remap_restarts_active_native_sender_on_the_new_source():
+    screen_src = _screen_src()
+    script = """
+const results = { captured: [], sent: [] };
+const WebSocket = { OPEN: 1 };
+const C = { MAX_SCREENSHOT_WIDTH: 1280, MAX_SCREENSHOT_HEIGHT: 720 };
+const S = {
+  selectedScreenSourceId: 'window:old',
+  socket: {
+    readyState: 1,
+    send(payload) { results.sent.push(JSON.parse(payload).source_id); }
+  },
+  videoSenderInterval: null
+};
+let nativeCaptureGeneration = 0;
+let activeNativeCaptureSourceId = null;
+let scheduled = null;
+const setTimeout = (callback) => { scheduled = callback; return callback; };
+const clearTimeout = () => {};
+const clearInterval = () => {};
+const provider = {
+  nativeFrameCapture: true,
+  captureSourceAsDataUrl() {}
+};
+const window = {
+  captureDesktopSourceWithTimeout: async (_provider, _method, sourceId) => {
+    results.captured.push(sourceId);
+    return { success: true, dataUrl: 'data:image/jpeg;base64,FRAME' };
+  },
+  showStatusToast: () => {}
+};
+const localStorage = { setItem() {}, removeItem() {} };
+const normalizeScreenSourceTitle = (value) => String(value || '').trim();
+const isScreenSourceTitleMatchEnabled = () => true;
+const readRememberedWindowTitle = () => 'Editor';
+const markScreenSourceSelectionChanged = () => {};
+const pushSelectedSourceToMain = () => {};
+const updateScreenSourceListSelection = () => {};
+const storeRememberedWindowTitle = () => {};
+const clearRememberedWindowTitle = () => {};
+const resolveDesktopCaptureProvider = () => provider;
+const isNativeFrameProvider = (candidate) => !!(
+  candidate && candidate.nativeFrameCapture
+  && typeof candidate.captureSourceAsDataUrl === 'function'
+);
+const stopLiveVisionStreamIfBlocked = async () => false;
+const canSendLiveVisionStreamFrame = () => true;
+const normalizeNativeCaptureDataUrlForStream = async (dataUrl) => dataUrl;
+const buildStreamDataMessage = (_dataUrl, _inputType, sourceId) => ({ source_id: sourceId });
+const safeT = (_key, fallback) => fallback;
+const stopScreenSharing = async () => {};
+const resetScreenSharingControls = () => { results.controlsReset = true; };
+function stopScreening() {
+  nativeCaptureGeneration += 1;
+  activeNativeCaptureSourceId = null;
+  if (S.videoSenderInterval) clearTimeout(S.videoSenderInterval);
+  S.videoSenderInterval = null;
+}
+function clearSelectedScreenSource() {
+  S.selectedScreenSourceId = null;
+  markScreenSourceSelectionChanged();
+}
+__START_NATIVE__
+__RESTART_NATIVE__
+__RELEASE_CAPTURE__
+__IS_CAPTURE_ACTIVE__
+__RESTART_CAPTURE__
+__STOP_REJECTED_CAPTURE__
+__RECONCILE__
+(async () => {
+  await startNativeScreenStreaming(provider, 'window:old', 'screen');
+  reconcileRememberedWindowSource([{ id: 'window:new', name: 'Editor' }]);
+  await Promise.resolve();
+  await Promise.resolve();
+  if (scheduled) await scheduled();
+  results.selectedAfterRemap = S.selectedScreenSourceId;
+  results.capturedAfterRemap = results.captured.slice();
+  reconcileRememberedWindowSource([]);
+  if (scheduled) await scheduled();
+  results.selectedAfterReject = S.selectedScreenSourceId;
+  console.log(JSON.stringify(results));
+})();
+"""
+    script = (
+        script
+        .replace("__START_NATIVE__", _fn(screen_src, "startNativeScreenStreaming"))
+        .replace(
+            "__RESTART_NATIVE__",
+            _fn(screen_src, "restartActiveNativeCaptureForSourceRemap"),
+        )
+        .replace(
+            "__RELEASE_CAPTURE__",
+            _fn(screen_src, "releaseActiveScreenCaptureForSourceChange"),
+        )
+        .replace(
+            "__IS_CAPTURE_ACTIVE__",
+            _fn(screen_src, "isScreenSharingActiveForSourceChange"),
+        )
+        .replace(
+            "__RESTART_CAPTURE__",
+            _fn(screen_src, "restartActiveCaptureForSourceRemap"),
+        )
+        .replace(
+            "__STOP_REJECTED_CAPTURE__",
+            _fn(screen_src, "stopActiveCaptureForRememberedSourceRejection"),
+        )
+        .replace("__RECONCILE__", _fn(screen_src, "reconcileRememberedWindowSource"))
+    )
+
+    out = _run(script)
+
+    assert out["selectedAfterRemap"] == "window:new"
+    assert out["capturedAfterRemap"][:2] == ["window:old", "window:new"]
+    assert "window:old" not in out["capturedAfterRemap"][1:]
+    assert out["selectedAfterReject"] is None
+    assert out["captured"] == out["capturedAfterRemap"]
+
+
+def _run_active_media_stream_reconciliation(
+    sources: list[dict[str, str]],
+    *,
+    play_pending: bool = False,
+) -> dict:
+    screen_src = _screen_src()
+    script = """
+const results = { sent: [], stopped: false, intervalCleared: false };
+const WebSocket = { OPEN: 1 };
+const C = { MAX_SCREENSHOT_WIDTH: 1280, MAX_SCREENSHOT_HEIGHT: 720 };
+let senderTick = null;
+let resolvePlay = null;
+const playPromise = __PLAY_PROMISE__;
+const track = { readyState: 'live', stop() { results.stopped = true; } };
+const stream = {
+  active: true,
+  getVideoTracks: () => [track],
+  getTracks: () => [track]
+};
+const S = {
+  selectedScreenSourceId: 'window:old',
+  screenCaptureStream: stream,
+  screenCaptureStreamLastUsed: null,
+  screenCaptureStreamIdleTimer: null,
+  socket: { readyState: 1, send(payload) { results.sent.push(JSON.parse(payload)); } },
+  videoSenderInterval: null,
+  videoTrack: null,
+  isRecording: true
+};
+let nativeCaptureGeneration = 0;
+let activeNativeCaptureSourceId = null;
+const document = {
+  createElement: () => ({
+    srcObject: null,
+    autoplay: false,
+    muted: false,
+    videoWidth: 100,
+    videoHeight: 100,
+    play: () => playPromise
+  })
+};
+const setInterval = (callback) => { senderTick = callback; return callback; };
+const clearInterval = () => { results.intervalCleared = true; };
+const clearTimeout = () => {};
+const setTimeout = (callback) => callback;
+const localStorage = { setItem() {}, removeItem() {} };
+const window = { showStatusToast: () => {} };
+const normalizeScreenSourceTitle = (value) => String(value || '').trim();
+const isScreenSourceTitleMatchEnabled = () => true;
+const readRememberedWindowTitle = () => 'Editor';
+const markScreenSourceSelectionChanged = () => {};
+const pushSelectedSourceToMain = () => {};
+const updateScreenSourceListSelection = () => {};
+const storeRememberedWindowTitle = () => {};
+const clearRememberedWindowTitle = () => {};
+const resolveDesktopCaptureProvider = () => null;
+const isNativeFrameProvider = () => false;
+const stopLiveVisionStreamIfBlocked = async () => false;
+const captureCanvasFrame = () => ({ dataUrl: 'data:image/jpeg;base64,OLD' });
+const buildStreamDataMessage = (dataUrl) => ({ dataUrl });
+const scheduleScreenCaptureIdleCheck = () => {};
+const safeT = (_key, fallback) => fallback;
+const resetScreenSharingControls = () => { results.controlsReset = true; };
+const stopButton = () => ({ disabled: false });
+const screenButton = () => ({ classList: { contains: () => true } });
+const cancelPendingScreenSharingStart = () => false;
+const startScreenSharing = async () => { results.restarted = true; };
+function stopScreening() {
+  nativeCaptureGeneration += 1;
+  activeNativeCaptureSourceId = null;
+  if (S.videoSenderInterval) clearInterval(S.videoSenderInterval);
+  S.videoSenderInterval = null;
+}
+function clearSelectedScreenSource() {
+  S.selectedScreenSourceId = null;
+  markScreenSourceSelectionChanged();
+}
+__START_STREAM__
+__RESTART_NATIVE__
+__RELEASE_CAPTURE__
+__IS_CAPTURE_ACTIVE__
+__RESTART_CAPTURE__
+__STOP_REJECTED_CAPTURE__
+__RECONCILE__
+(async () => {
+  startScreenVideoStreaming(stream, 'screen');
+  __RECONCILE_SEQUENCE__
+  await Promise.resolve();
+  await Promise.resolve();
+  if (senderTick) await senderTick();
+  results.selected = S.selectedScreenSourceId;
+  console.log(JSON.stringify(results));
+})();
+"""
+    script = (
+        script
+        .replace("__START_STREAM__", _fn(screen_src, "startScreenVideoStreaming"))
+        .replace(
+            "__RESTART_NATIVE__",
+            _fn(screen_src, "restartActiveNativeCaptureForSourceRemap"),
+        )
+        .replace(
+            "__RELEASE_CAPTURE__",
+            _fn(screen_src, "releaseActiveScreenCaptureForSourceChange"),
+        )
+        .replace(
+            "__IS_CAPTURE_ACTIVE__",
+            _fn(screen_src, "isScreenSharingActiveForSourceChange"),
+        )
+        .replace(
+            "__RESTART_CAPTURE__",
+            _fn(screen_src, "restartActiveCaptureForSourceRemap"),
+        )
+        .replace(
+            "__STOP_REJECTED_CAPTURE__",
+            _fn(screen_src, "stopActiveCaptureForRememberedSourceRejection"),
+        )
+        .replace("__RECONCILE__", _fn(screen_src, "reconcileRememberedWindowSource"))
+        .replace("__SOURCES__", json.dumps(sources))
+        .replace(
+            "__PLAY_PROMISE__",
+            (
+                "new Promise((resolve) => { resolvePlay = resolve; })"
+                if play_pending
+                else "Promise.resolve()"
+            ),
+        )
+        .replace(
+            "__RECONCILE_SEQUENCE__",
+            (
+                "reconcileRememberedWindowSource(__SOURCES__); resolvePlay();"
+                if play_pending
+                else (
+                    "await Promise.resolve(); await Promise.resolve(); "
+                    "reconcileRememberedWindowSource(__SOURCES__);"
+                )
+            ).replace("__SOURCES__", json.dumps(sources)),
+        )
+    )
+    return _run(script)
+
+
+@pytest.mark.unit
+def test_title_remap_stops_active_media_stream_before_it_sends_the_old_source():
+    out = _run_active_media_stream_reconciliation([
+        {"id": "window:new", "name": "Editor"},
+    ])
+
+    assert out["selected"] == "window:new"
+    assert out["stopped"] is True
+    assert out["sent"] == []
+
+
+@pytest.mark.unit
+def test_title_remap_invalidates_media_stream_while_video_play_is_pending():
+    out = _run_active_media_stream_reconciliation(
+        [{"id": "window:new", "name": "Editor"}],
+        play_pending=True,
+    )
+
+    assert out["selected"] == "window:new"
+    assert out["stopped"] is True
+    assert out["sent"] == []
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("sources", "expected_status"),
+    [
+        ([], "missing"),
+        (
+            [
+                {"id": "window:new-a", "name": "Editor"},
+                {"id": "window:new-b", "name": "Editor"},
+            ],
+            "ambiguous",
+        ),
+    ],
+)
+def test_rejected_remembered_window_stops_active_media_stream(
+    sources: list[dict[str, str]],
+    expected_status: str,
+):
+    out = _run_active_media_stream_reconciliation(sources)
+
+    assert out["selected"] is None, expected_status
+    assert out["stopped"] is True, expected_status
+    assert out["sent"] == [], expected_status
+
+
+@pytest.mark.unit
+def test_hide_neko_recapture_restores_hidden_ui_when_identity_expires_during_delay():
+    buttons_src = APP_BUTTONS_PATH.read_text(encoding="utf-8")
+    script = """
+const results = { domHidden: false, satellitesHidden: false, satellitesRestored: false };
+let current = true;
+class MediaStream {}
+const S = { selectedScreenSourceId: 'window:old', screenCaptureStream: null };
+const setTimeout = (callback) => { current = false; callback(); };
+const window = {
+  captureDesktopSourceWithTimeout: async () => null,
+  acquireOrReuseCachedStream: async () => null,
+  captureFrameFromStream: async () => null,
+  fetchBackendScreenshot: async () => null,
+  maybeClearSourceOnNotFound: () => {},
+  showStatusToast: () => {},
+  t: (key) => key
+};
+const desktopProvider = {
+  async hideNekoWindows() {
+    results.satellitesHidden = true;
+    return { hiddenIds: [7] };
+  },
+  async restoreNekoWindows(ids) {
+    results.satellitesRestored = ids.length === 1 && ids[0] === 7;
+    results.satellitesHidden = false;
+  }
+};
+const getDesktopProvider = () => desktopProvider;
+const hideNekoUI = () => { results.domHidden = true; return { saved: true }; };
+const restoreNekoUI = () => { results.domHidden = false; };
+__RECAPTURE__
+recaptureWithoutNeko({
+  required: true,
+  allowed: true,
+  isCurrent: () => current
+}).then((data) => {
+  results.data = data;
+  console.log(JSON.stringify(results));
+});
+""".replace("__RECAPTURE__", _fn(buttons_src, "recaptureWithoutNeko"))
+
+    out = _run(script)
+
+    assert out.get("data") is None
+    assert out["domHidden"] is False
+    assert out["satellitesHidden"] is False
+    assert out["satellitesRestored"] is True
+
+
+_PROACTIVE_REMEMBERED_TMPL = """
+const results = { calls: [] };
+const S = {
+  selectedScreenSourceId: __SOURCE_ID__,
+  screenCaptureStream: null,
+  screenCaptureStreamLastUsed: null
+};
+const window = {
+  detectScreenshotCaptureType: () => null,
+  captureDesktopSourceWithTimeout: async (_provider, _method, sourceId) => {
+    results.calls.push(`direct:${sourceId}`);
+    return __NATIVE__;
+  },
+  maybeClearSourceOnNotFound: () => {},
+  prepareRememberedWindowCapture: async () => __PREPARE__
+};
+const getDesktopProvider = () => __PROVIDER__;
+const acquireOrReuseCachedStream = async () => {
+  results.calls.push('coordinate-remembered-window');
+  S.selectedScreenSourceId = 'window:correct';
+  return null;
+};
+const captureFrameFromStream = async () => null;
+const fetchBackendScreenshot = async () => {
+  results.calls.push('backend-desktop');
+  return { dataUrl: 'data:image/jpeg;base64,BACKEND' };
+};
+__RESOLVE__
+__HELPER__
+captureProactiveChatScreenshotWithSource().then((shot) => {
+  results.data = shot && shot.dataUrl;
+  results.via = shot && shot.via;
+  results.selected = S.selectedScreenSourceId;
+  console.log(JSON.stringify(results));
+});
+"""
+
+
+def _proactive_remembered_script(
+    *, source_id: str, provider: str, native: str, prepare: str
+) -> str:
+    proactive_src = APP_PROACTIVE_PATH.read_text(encoding="utf-8")
+    return (
+        _PROACTIVE_REMEMBERED_TMPL
+        .replace("__SOURCE_ID__", source_id)
+        .replace("__PROVIDER__", provider)
+        .replace("__NATIVE__", native)
+        .replace("__PREPARE__", prepare)
+        .replace("__RESOLVE__", _fn(proactive_src, "resolveCaptureTypeFor"))
+        .replace(
+            "__HELPER__",
+            _fn(proactive_src, "captureProactiveChatScreenshotWithSource"),
+        )
+    )
+
+
+@pytest.mark.unit
+def test_proactive_screenshot_coordinates_remembered_title_before_direct_frame():
+    out = _run(_proactive_remembered_script(
+        source_id="'window:reused'",
+        provider="({ captureSourceAsDataUrl() {} })",
+        native="({ success: true, dataUrl: 'data:image/png;base64,WRONG' })",
+        prepare="(results.calls.push('coordinate-remembered-window'),"
+        " S.selectedScreenSourceId = 'window:correct',"
+        " { required: true, allowed: true })",
+    ))
+
+    assert out == {
+        "calls": ["coordinate-remembered-window", "direct:window:correct"],
+        "data": "data:image/png;base64,WRONG",
+        "via": "native",
+        "selected": "window:correct",
+    }
+
+
+@pytest.mark.unit
+def test_proactive_screenshot_does_not_widen_blocked_capture_to_backend_desktop():
+    out = _run(_proactive_remembered_script(
+        source_id="null",
+        provider="({})",
+        native="null",
+        prepare="(results.calls.push('coordinate-remembered-window'),"
+        " { required: true, allowed: false })",
+    ))
+
+    assert out == {
+        "calls": ["coordinate-remembered-window"],
+        "data": None,
+        "via": None,
+        "selected": None,
+    }
+
+
 # The source is cleared mid-capture (what maybeClearSourceOnNotFound does) while
 # a cached stream is left behind -- the one combination where handing the stream
 # to the classifier flips the answer.
@@ -421,6 +1284,7 @@ const results = { sent: [] };
 const window = {
   screen: { width: 1920, height: 1080, isExtended: false },
   appUtils: { isMobile: () => false },
+  prepareRememberedWindowCapture: async () => __PREPARE__,
   detectScreenshotCaptureType: (stream, sourceId) => {
     if (sourceId) return sourceId.indexOf('screen:') === 0 ? 'screen' : null;
     return stream ? 'screen' : null;
@@ -455,7 +1319,15 @@ sendOneProactiveVisionFrame().then(() => {
 """
 
 
-def _frame_script(*, source_id: str, stream: str, native: str = _NATIVE_OK) -> str:
+def _frame_script(
+    *,
+    source_id: str,
+    stream: str,
+    native: str = _NATIVE_OK,
+    remembered_capture: str = (
+        "({ required: false, allowed: true, isCurrent: () => true })"
+    ),
+) -> str:
     screen_src = _screen_src()
     proactive_src = APP_PROACTIVE_PATH.read_text(encoding="utf-8")
     return (
@@ -463,6 +1335,7 @@ def _frame_script(*, source_id: str, stream: str, native: str = _NATIVE_OK) -> s
         .replace("__SOURCE_ID__", source_id)
         .replace("__STREAM__", stream)
         .replace("__NATIVE__", native)
+        .replace("__PREPARE__", remembered_capture)
         .replace("__DETECT__", _fn(screen_src, "detectScreenshotCaptureType"))
         .replace("__BUILD__", _fn(screen_src, "buildStreamDataMessage"))
         .replace("__FRAME__", _fn(proactive_src, "sendOneProactiveVisionFrame"))
@@ -484,6 +1357,59 @@ def test_backend_fallback_frame_carries_avatar_position():
     assert msg["input_type"] == "screen"
     assert msg["data"].endswith("BACKEND")
     assert msg["avatar_position"] is not None
+
+
+@pytest.mark.unit
+def test_speech_time_frame_does_not_widen_remembered_window_to_backend_desktop():
+    out = _run(
+        _frame_script(
+            source_id="'window:9'",
+            stream="null",
+            native=_NATIVE_FAIL,
+            remembered_capture=(
+                "({ required: true, allowed: true, isCurrent: () => true })"
+            ),
+        )
+    )
+
+    assert out["sent"] == []
+
+
+@pytest.mark.unit
+def test_proactive_vision_enable_does_not_accept_backend_for_remembered_window():
+    proactive_src = APP_PROACTIVE_PATH.read_text(encoding="utf-8")
+    script = """
+const results = { backendCalls: 0, streamCalls: 0 };
+const window = {
+  prepareRememberedWindowCapture: async () => ({
+    required: true,
+    allowed: true,
+    isCurrent: () => true,
+  }),
+};
+const fetchBackendScreenshot = async () => {
+  results.backendCalls += 1;
+  return { dataUrl: 'data:image/jpeg;base64,BACKEND' };
+};
+const acquireOrReuseCachedStream = async () => {
+  results.streamCalls += 1;
+  return null;
+};
+__ACQUIRE__
+(async () => {
+  results.acquired = await acquireProactiveVisionStream();
+  console.log(JSON.stringify(results));
+})();
+""".replace(
+        "__ACQUIRE__",
+        _fn(proactive_src, "acquireProactiveVisionStream"),
+    )
+
+    assert _run(script) == {
+        "backendCalls": 0,
+        "streamCalls": 1,
+        "acquired": False,
+    }
 
 
 @pytest.mark.unit

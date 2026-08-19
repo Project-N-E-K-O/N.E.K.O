@@ -2490,6 +2490,11 @@
             "screens": "Telas",
             "screenLabel": "Tela {{index}}",
             "windows": "Windows",
+            "titleFilterPlaceholder": "Filtrar títulos das janelas",
+            "titleFilterAriaLabel": "Filtrar janelas por título",
+            "noWindowMatches": "Nenhuma janela correspondente",
+            "rememberWindow": "Lembrar janela",
+            "rememberedWindowUnavailable": "Não foi possível identificar exclusivamente a janela lembrada. Selecione uma fonte de tela novamente",
             "selected": "Selecionado {{source}}",
             "sourceLost": "O compartilhamento de tela não conseguiu encontrar a janela selecionada anteriormente, mudou para compartilhamento em tela cheia",
             "captureFailed": "A captura de tela foi interrompida. Verifique as permissões do sistema ou selecione a fonte novamente"
