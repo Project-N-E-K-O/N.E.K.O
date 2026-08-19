@@ -25,6 +25,12 @@ _SESSION_TIMEOUT_MS = 45_000
 _MAX_ENCODED_IMAGE_CHARS = 12 * 1024 * 1024
 _MAX_DECODED_IMAGE_BYTES = 10 * 1024 * 1024
 _SUPPORTED_IMAGE_MIME_TYPES = frozenset({"image/jpeg", "image/png"})
+_INTERACTIVE_UNAVAILABLE_ERRORS = frozenset(
+    {
+        "interactive screenshot is only supported on macOS or Windows",
+        "backend is configured as remote (NEKO_ACTIVITY_TRACKER_REMOTE); local interactive screenshot disabled",
+    }
+)
 
 
 class InteractiveCaptureError(RuntimeError):
@@ -178,6 +184,8 @@ class InteractiveScreenshotClient:
             error_code = str(payload.get("error") or f"http_status_{response.status_code}")
             if error_code == "bridge_error":
                 error_code = "no_renderer"
+            elif error_code in _INTERACTIVE_UNAVAILABLE_ERRORS:
+                error_code = "interactive_unavailable"
             raise InteractiveCaptureError(f"interactive_capture: {error_code}")
 
         data_url = payload.get("data")

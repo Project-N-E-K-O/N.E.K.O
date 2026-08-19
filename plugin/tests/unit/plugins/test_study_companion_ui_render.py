@@ -1419,6 +1419,55 @@ def test_study_companion_memory_deck_load_is_shared_and_blocks_early_save() -> N
     assert "initialMemoryDecks = null;" in surface_panels_js
 
 
+def test_study_companion_memory_deck_cache_only_reuses_inflight_load() -> None:
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node is not installed")
+
+    script = r"""
+const fs = require('node:fs');
+global.window = {};
+eval(fs.readFileSync(process.env.SURFACE_PANELS_JS, 'utf8'));
+
+(async () => {
+  let calls = 0;
+  const ctx = {
+    callPlugin: async () => ({
+      decks: [{ id: `deck-${++calls}` }],
+      has_more: false,
+    }),
+  };
+  const firstLoad = window.StudyCompanionSurfacePanels.loadDecks(ctx);
+  const sharedLoad = window.StudyCompanionSurfacePanels.loadDecks(ctx);
+  const [first, shared] = await Promise.all([firstLoad, sharedLoad]);
+  const refreshed = await window.StudyCompanionSurfacePanels.loadDecks(ctx);
+  console.log(JSON.stringify({ calls, first, shared, refreshed }));
+})().catch((error) => {
+  console.error(error);
+  process.exitCode = 1;
+});
+"""
+    result = subprocess.run(
+        [node, "-e", script],
+        check=True,
+        capture_output=True,
+        encoding="utf-8",
+        env={
+            **os.environ,
+            "SURFACE_PANELS_JS": str(STATIC_DIR / "surface-panels.js"),
+        },
+        timeout=10,
+    )
+    payload = json.loads(result.stdout)
+
+    assert payload == {
+        "calls": 2,
+        "first": [{"id": "deck-1"}],
+        "shared": [{"id": "deck-1"}],
+        "refreshed": [{"id": "deck-2"}],
+    }
+
+
 def test_study_companion_fetch_timeout_honors_preaborted_signal_and_cleans_listener() -> None:
     main_js = (STATIC_DIR / "main.js").read_text(encoding="utf-8")
     request_utils_js = (STATIC_DIR / "request-utils.js").read_text(encoding="utf-8")

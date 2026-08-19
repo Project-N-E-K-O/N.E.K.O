@@ -78,7 +78,11 @@ class _OcrEntriesMixin:
             except InteractiveCaptureError as exc:
                 if not any(
                     code in str(exc)
-                    for code in ("no_renderer", "main_server_unavailable")
+                    for code in (
+                        "no_renderer",
+                        "main_server_unavailable",
+                        "interactive_unavailable",
+                    )
                 ):
                     return _entry_exception_error(
                         self,

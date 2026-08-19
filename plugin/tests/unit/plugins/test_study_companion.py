@@ -9499,6 +9499,88 @@ async def test_cancelled_answer_clears_pending_and_allows_retry(
 
 
 @pytest.mark.asyncio
+async def test_cancelled_finalized_answer_reuses_cache_without_duplicate_effects(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(tmp_path / "runtime"))
+    plugin = StudyCompanionPlugin(
+        _Ctx(
+            tmp_path,
+            {
+                "study": {
+                    "language": "en",
+                    "default_mode": MODE_COMPANION,
+                    "auto_open_ui": False,
+                }
+            },
+        )
+    )
+    assert isinstance(await plugin.startup(), Ok)
+    plugin._agent = _FakeTutorAgent()
+    mastery_lookup_started = threading.Event()
+    release_mastery_lookup = threading.Event()
+    mastery_calls = 0
+
+    def _blocking_third_mastery_lookup(_topic: str) -> float:
+        nonlocal mastery_calls
+        mastery_calls += 1
+        if mastery_calls == 3:
+            mastery_lookup_started.set()
+            assert release_mastery_lookup.wait(timeout=5)
+        return 0.5
+
+    monkeypatch.setattr(
+        plugin._knowledge_tracker,
+        "get_mastery",
+        _blocking_third_mastery_lookup,
+    )
+
+    try:
+        async with plugin._lock:
+            plugin._state.current_question = {
+                "question": "What is d(x^2)/dx?",
+                "answer": "2x",
+                "topic": "derivatives",
+                "question_id": "q-cancel-after-finalize",
+                "attempt_id": "a-cancel-after-finalize",
+            }
+
+        evaluation = asyncio.create_task(
+            plugin.study_evaluate_answer(
+                answer="2x",
+                question_id="q-cancel-after-finalize",
+                attempt_id="a-cancel-after-finalize",
+            )
+        )
+        assert await asyncio.to_thread(mastery_lookup_started.wait, 5)
+        evaluation.cancel()
+        release_mastery_lookup.set()
+        with pytest.raises(asyncio.CancelledError):
+            await evaluation
+
+        current_question = plugin._state.current_question
+        assert "attempt_evaluation_pending" not in current_question
+        assert current_question["attempt_evaluated"] is True
+        assert current_question["attempt_evaluation_recovery"] is True
+        evaluation_count = len(plugin._agent.evaluations)
+        interaction_count = len(plugin._store.list_interactions(limit=20))
+
+        retried = await plugin.study_evaluate_answer(
+            answer="2x",
+            question_id="q-cancel-after-finalize",
+            attempt_id="a-cancel-after-finalize",
+        )
+
+        assert isinstance(retried, Ok)
+        assert retried.value["attempt_id"] == "a-cancel-after-finalize"
+        assert len(plugin._agent.evaluations) == evaluation_count
+        assert len(plugin._store.list_interactions(limit=20)) == interaction_count
+    finally:
+        release_mastery_lookup.set()
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_tutor_agent_prompt_and_reply_contract(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

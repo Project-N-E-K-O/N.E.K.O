@@ -623,6 +623,19 @@ def test_study_companion_surfaces_share_ui8_interaction_styles_and_messages() ->
     assert "panel.removeEventListener('keydown', closeOrCancelOnEscape, true)" in study_panel
 
 
+def test_study_panel_locale_change_releases_aborted_request_busy_state() -> None:
+    source = _read("study_panel.tsx")
+    bootstrap = source.index("void resumeDocumentJob(controller.signal)")
+    effect_start = source.rfind("useEffect(() => {", 0, bootstrap)
+    effect_end = source.index("}, [props.locale]);", bootstrap)
+    locale_effect = source[effect_start:effect_end]
+
+    assert "explainControllerRef.current?.abort();" in locale_effect
+    assert locale_effect.index("setBusy(false);") < locale_effect.index(
+        "const controller = beginStudyRequest();"
+    )
+
+
 def test_memory_deck_surface_refetches_items_when_reopened() -> None:
     source = _read("memory_deck_list.tsx")
     loader_start = source.index("async function loadDeckItems")

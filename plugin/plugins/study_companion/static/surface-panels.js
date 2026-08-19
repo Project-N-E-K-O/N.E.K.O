@@ -226,7 +226,9 @@
         throw error;
       });
     }
-    return initialMemoryDecks.finally(() => {
+    const pending = initialMemoryDecks;
+    return pending.finally(() => {
+      if (initialMemoryDecks === pending) initialMemoryDecks = null;
       if (readyTarget) readyTarget.disabled = false;
     });
   }

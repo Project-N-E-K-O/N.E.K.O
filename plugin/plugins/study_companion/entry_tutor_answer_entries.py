@@ -295,6 +295,35 @@ class _TutorAnswerEntriesMixin:
             payload["screen_classification"] = (
                 tutor_context.get("screen_classification") or {}
             )
+            if using_current_question and state_attempt_id:
+                public_eval_cache = {
+                    key: value
+                    for key, value in payload.items()
+                    if key
+                    not in {
+                        "answer",
+                        "accepted_answers",
+                        "key_points",
+                        "rubric",
+                        "solution_steps",
+                        "internal_private_payload",
+                        "current_question_private",
+                    }
+                }
+                async with self._lock:
+                    if (
+                        str(self._state.current_question.get("attempt_id") or "")
+                        == state_attempt_id
+                    ):
+                        self._state.current_question.pop(
+                            "attempt_evaluation_pending", None
+                        )
+                        self._state.current_question["attempt_evaluated"] = True
+                        self._state.current_question["answer_evaluation_cache"] = (
+                            public_eval_cache
+                        )
+                        final_attempt_state_staged = True
+                await self._persist_state()
             topic = str(
                 selected_topic_id
                 or question_payload.get("selected_topic_id")
@@ -328,35 +357,6 @@ class _TutorAnswerEntriesMixin:
                 mastery_after=mastery_after,
                 target_lanlan=target_lanlan,
             )
-            if using_current_question and state_attempt_id:
-                public_eval_cache = {
-                    key: value
-                    for key, value in payload.items()
-                    if key
-                    not in {
-                        "answer",
-                        "accepted_answers",
-                        "key_points",
-                        "rubric",
-                        "solution_steps",
-                        "internal_private_payload",
-                        "current_question_private",
-                    }
-                }
-                async with self._lock:
-                    if (
-                        str(self._state.current_question.get("attempt_id") or "")
-                        == state_attempt_id
-                    ):
-                        self._state.current_question.pop(
-                            "attempt_evaluation_pending", None
-                        )
-                        self._state.current_question["attempt_evaluated"] = True
-                        self._state.current_question["answer_evaluation_cache"] = (
-                            public_eval_cache
-                        )
-                        final_attempt_state_staged = True
-                await self._persist_state()
             return Ok(payload)
         except asyncio.CancelledError:
             if reserved_attempt:

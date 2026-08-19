@@ -2097,6 +2097,7 @@ export default function StudyPanel(props: PluginSurfaceProps) {
 
   useEffect(() => {
     mountedRef.current = true;
+    setBusy(false);
     const controller = beginStudyRequest();
     void resumeDocumentJob(controller.signal).catch((error) => {
       if (controller.signal.aborted) {

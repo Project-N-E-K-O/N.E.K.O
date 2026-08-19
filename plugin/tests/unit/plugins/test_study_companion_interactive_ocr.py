@@ -222,7 +222,10 @@ async def test_ocr_entry_interactive_path_uses_only_the_selected_image(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("error_code", ["no_renderer", "main_server_unavailable"])
+@pytest.mark.parametrize(
+    "error_code",
+    ["no_renderer", "main_server_unavailable", "interactive_unavailable"],
+)
 async def test_ocr_entry_falls_back_to_fullscreen_when_interactive_is_unavailable(
     monkeypatch: pytest.MonkeyPatch,
     error_code: str,
@@ -243,6 +246,31 @@ async def test_ocr_entry_falls_back_to_fullscreen_when_interactive_is_unavailabl
     assert isinstance(result, Ok)
     assert result.value["text"] == "fullscreen"
     assert pipeline.fullscreen_calls == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "router_error",
+    [
+        "interactive screenshot is only supported on macOS or Windows",
+        "backend is configured as remote (NEKO_ACTIVITY_TRACKER_REMOTE); local interactive screenshot disabled",
+    ],
+)
+async def test_interactive_capture_normalizes_unsupported_deployments(
+    router_error: str,
+) -> None:
+    client = InteractiveScreenshotClient(
+        activation_delay_seconds=0,
+        transport=httpx.MockTransport(
+            lambda _request: httpx.Response(
+                501,
+                json={"success": False, "error": router_error},
+            )
+        ),
+    )
+
+    with pytest.raises(InteractiveCaptureError, match="interactive_unavailable"):
+        await client.capture_region()
 
 
 @pytest.mark.asyncio
