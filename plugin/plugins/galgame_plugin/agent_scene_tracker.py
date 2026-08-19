@@ -75,6 +75,7 @@ class AgentSceneTracker:
                 "pending_line_occurrences": {},
                 "scheduled_line_keys_by_owner": {},
                 "scheduled_line_occurrences_by_owner": {},
+                "scheduled_context_line_keys_by_owner": {},
                 "lines_since_push": 0,
                 "last_line_seq": 0,
                 "last_line_ts": "",
@@ -155,6 +156,7 @@ class AgentSceneTracker:
         *,
         route_id: str = "",
         seq: int,
+        covered_line_keys: list[str] | set[str] | None = None,
     ) -> int:
         state = self.state_for_scene(scene_id, route_id=route_id)
         self._summary_schedule_owner_counter += 1
@@ -206,6 +208,17 @@ class AgentSceneTracker:
                 if isinstance(pending, dict):
                     scheduled_occurrences[str(key)] = pending
         scheduled_line_occurrences_by_owner[owner_token] = scheduled_occurrences
+        scheduled_context_line_keys_by_owner = state.get(
+            "scheduled_context_line_keys_by_owner"
+        )
+        if not isinstance(scheduled_context_line_keys_by_owner, dict):
+            scheduled_context_line_keys_by_owner = {}
+            state["scheduled_context_line_keys_by_owner"] = (
+                scheduled_context_line_keys_by_owner
+            )
+        scheduled_context_line_keys_by_owner[owner_token] = {
+            str(key) for key in list(covered_line_keys or []) if str(key)
+        }
         state["lines_since_push"] = 0
         state["last_scheduled_seq"] = int(seq or 0)
         state["last_schedule_owner_token"] = owner_token
@@ -246,6 +259,14 @@ class AgentSceneTracker:
             state,
             owner_token=owner_token,
         )
+        scheduled_context_line_keys_by_owner = state.get(
+            "scheduled_context_line_keys_by_owner"
+        )
+        covered_line_keys = (
+            set(scheduled_context_line_keys_by_owner.pop(owner_token, set()))
+            if isinstance(scheduled_context_line_keys_by_owner, dict)
+            else set()
+        )
         pending_line_occurrences = state.get("pending_line_occurrences")
         if isinstance(pending_line_occurrences, dict):
             for key in scheduled_line_keys:
@@ -258,7 +279,13 @@ class AgentSceneTracker:
                 for key in pending_line_key_order
                 if str(key) not in scheduled_line_key_set
             ]
-        self._restore_scene_summary_batches(state, deferred_schedules)
+        self._restore_scene_summary_batches(
+            state,
+            self._scene_summary_batches_not_covered(
+                deferred_schedules,
+                covered_line_keys=covered_line_keys,
+            ),
+        )
         if int(state.get("last_schedule_owner_token") or 0) != int(owner_token or 0):
             self.sync_current_scene_summary_mirror(
                 self.summary_scene_id,
@@ -308,6 +335,11 @@ class AgentSceneTracker:
             state,
             owner_token=owner_token,
         )
+        scheduled_context_line_keys_by_owner = state.get(
+            "scheduled_context_line_keys_by_owner"
+        )
+        if isinstance(scheduled_context_line_keys_by_owner, dict):
+            scheduled_context_line_keys_by_owner.pop(owner_token, None)
         if scheduled_line_keys or scheduled_line_occurrences or lines_since_push > 0:
             restore_batches.append(
                 {
@@ -373,6 +405,11 @@ class AgentSceneTracker:
             state,
             owner_token=owner_token,
         )
+        scheduled_context_line_keys_by_owner = state.get(
+            "scheduled_context_line_keys_by_owner"
+        )
+        if isinstance(scheduled_context_line_keys_by_owner, dict):
+            scheduled_context_line_keys_by_owner.pop(owner_token, None)
         pending_line_occurrences = state.get("pending_line_occurrences")
         if isinstance(pending_line_occurrences, dict):
             for key in scheduled_line_keys:
@@ -444,6 +481,45 @@ class AgentSceneTracker:
         if not deferred:
             state.pop("deferred_scene_summary_schedules", None)
         return batches
+
+    @staticmethod
+    def _scene_summary_batches_not_covered(
+        batches: list[dict[str, Any]],
+        *,
+        covered_line_keys: set[str],
+    ) -> list[dict[str, Any]]:
+        if not batches or not covered_line_keys:
+            return batches
+        uncovered_batches: list[dict[str, Any]] = []
+        for batch in batches:
+            line_keys = [
+                str(key) for key in list(batch.get("line_keys") or []) if str(key)
+            ]
+            if not line_keys:
+                uncovered_batches.append(batch)
+                continue
+            uncovered_line_keys = [
+                key for key in line_keys if key not in covered_line_keys
+            ]
+            if not uncovered_line_keys:
+                continue
+            occurrence_obj = batch.get("line_occurrences")
+            occurrence_map = (
+                occurrence_obj if isinstance(occurrence_obj, dict) else {}
+            )
+            uncovered_batches.append(
+                {
+                    **batch,
+                    "line_keys": uncovered_line_keys,
+                    "line_occurrences": {
+                        key: occurrence_map[key]
+                        for key in uncovered_line_keys
+                        if key in occurrence_map
+                    },
+                    "lines_since_push": len(uncovered_line_keys),
+                }
+            )
+        return uncovered_batches
 
     @staticmethod
     def _restore_scene_summary_batches(

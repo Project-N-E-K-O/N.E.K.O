@@ -1458,6 +1458,7 @@ class AgentSummaryMixin:
                     separators=(",", ":"),
                 )
                 fallback_choices.append((choice, choice_scene_id, semantic))
+            visible_menu_signature = ""
             if choice_state == "visible" and fallback_choices:
                 visible_menu_signature = json.dumps(
                     {
@@ -1472,8 +1473,6 @@ class AgentSummaryMixin:
                     sort_keys=True,
                     separators=(",", ":"),
                 )
-                if visible_menu_signature in visible_event_menu_signatures:
-                    continue
             fallback_source_key = (
                 f"{data_source}|{session_id}|history_choice:{choice_state}"
             )
@@ -1481,6 +1480,24 @@ class AgentSummaryMixin:
                 source_key=fallback_source_key,
                 signatures=[semantic for _choice, _scene, semantic in fallback_choices],
             )
+            if visible_menu_signature in visible_event_menu_signatures:
+                fallback_state = self._scene_capsule_fallback_occurrences.get(
+                    fallback_source_key
+                )
+                event_occurrence_floor = (
+                    int(fallback_state.get("visible_event_occurrence_floor") or 0)
+                    if isinstance(fallback_state, dict)
+                    else 0
+                )
+                current_occurrence_floor = max(fallback_ids, default=0)
+                if event_occurrence_floor <= 0 and current_occurrence_floor > 0:
+                    assert isinstance(fallback_state, dict)
+                    fallback_state["visible_event_occurrence_floor"] = (
+                        current_occurrence_floor
+                    )
+                    event_occurrence_floor = current_occurrence_floor
+                if current_occurrence_floor <= event_occurrence_floor:
+                    continue
             source_aliases: dict[int, str] = {}
             source_scopes: dict[int, dict[str, str]] = {}
             event_occurrences_by_signature: dict[
@@ -3912,6 +3929,30 @@ class AgentSummaryMixin:
                 }
                 continue
 
+            stable_line_signatures = {
+                json.dumps(
+                    dict(line),
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+                for line in stable_lines
+                if isinstance(line, dict)
+            }
+            covered_line_keys = [
+                str(occurrence.get("event_key") or "")
+                for occurrence in archivable_line_occurrences
+                if str(occurrence.get("event_key") or "")
+                and isinstance(line := occurrence.get("line"), dict)
+                and json.dumps(
+                    dict(line),
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+                in stable_line_signatures
+            ]
+
             last_line_occurrence_key = (
                 str(seen_line_key_order[-1]) if seen_line_key_order else ""
             )
@@ -3935,6 +3976,7 @@ class AgentSummaryMixin:
                 scene_id,
                 route_id=route_id,
                 seq=scheduled_seq,
+                covered_line_keys=covered_line_keys,
             )
             merged_schedule_restore: list[dict[str, Any]] = []
             for merged_scope_key in merge_scope_keys or []:
@@ -3966,6 +4008,7 @@ class AgentSummaryMixin:
                         merged_scene_id,
                         route_id=merged_route_id,
                         seq=0,
+                        covered_line_keys=covered_line_keys,
                     )
                 )
             metadata = {

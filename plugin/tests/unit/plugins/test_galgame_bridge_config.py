@@ -141,6 +141,36 @@ def test_screen_classified_event_updates_snapshot_state() -> None:
 
 
 @pytest.mark.plugin_unit
+def test_preexisting_session_reattachment_state_is_count_bounded(
+    tmp_path: Path,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    plugin = GalgameBridgePlugin(_Ctx(plugin_dir, _make_effective_config(bridge_root)))
+    plugin._startup_existing_session_ids = set()
+
+    for index in range(20):
+        session_id = f"preexisting-{index}"
+        identity = (DATA_SOURCE_BRIDGE_SDK, "demo.alpha", session_id)
+        plugin._startup_existing_session_ids.add(identity)
+        plugin._remember_active_preexisting_session_state(
+            {
+                "active_data_source": DATA_SOURCE_BRIDGE_SDK,
+                "active_game_id": "demo.alpha",
+                "active_session_id": session_id,
+                "history_events": [{"seq": index + 1}],
+                "last_seq": index + 1,
+            }
+        )
+
+    expected = {
+        (DATA_SOURCE_BRIDGE_SDK, "demo.alpha", f"preexisting-{index}")
+        for index in range(4, 20)
+    }
+    assert set(plugin._startup_preexisting_session_states) == expected
+    assert plugin._startup_existing_session_ids == expected
+
+
+@pytest.mark.plugin_unit
 def test_expand_bridge_root_and_read_bom_session(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "Local"))
     expanded = expand_bridge_root("%LOCALAPPDATA%/N.E.K.O/galgame-bridge")

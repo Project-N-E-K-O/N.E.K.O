@@ -5734,7 +5734,7 @@ async def test_conflicting_reader_handoff_waits_for_next_tick(
 
 @pytest.mark.asyncio
 @pytest.mark.plugin_unit
-async def test_unknown_ocr_reset_blocks_one_tick_before_trusted_observation_resumes(
+async def test_unknown_ocr_reset_requires_new_trusted_evidence_before_resuming(
     tmp_path: Path,
 ) -> None:
     plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
@@ -5781,8 +5781,27 @@ async def test_unknown_ocr_reset_blocks_one_tick_before_trusted_observation_resu
 
     await agent.tick(changed)
     await _drain_agent_summary_tasks(agent)
+    assert agent._session_transition_actuation_blocked is True
+    assert agent._should_actuate(changed) is False
+
+    third_line = _summary_test_line("scene-a", 3)
+    advanced = _shared_state(
+        mode="companion",
+        session_id="ocr-session-b",
+        active_data_source=DATA_SOURCE_OCR_READER,
+        snapshot=_session_state(
+            text=str(third_line["text"]),
+            scene_id="scene-a",
+            line_id=str(third_line["line_id"]),
+        ),
+        history_lines=[first_line, second_line, third_line],
+    )
+    await agent.tick(advanced)
+    await _drain_agent_summary_tasks(agent)
     assert agent._session_transition_actuation_blocked is False
-    assert len(ctx.pushed_messages) == 2
+    assert agent._last_session_transition_reason == (
+        "trusted_observation_after_unknown_reset"
+    )
 
 
 @pytest.mark.asyncio

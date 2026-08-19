@@ -6472,3 +6472,211 @@ def test_failed_predecessor_batch_survives_newer_archive_delivery() -> None:
     assert state["pending_line_key_order"] == ["line-1", "line-2"]
     assert list(state["pending_line_occurrences"]) == ["line-1", "line-2"]
     assert state.get("scheduled_line_occurrences_by_owner") == {}
+
+
+@pytest.mark.plugin_unit
+def test_delivered_successor_does_not_restore_covered_predecessor_batch() -> None:
+    tracker = AgentSceneTracker(seen_line_limit=8)
+
+    for index in range(1, 3):
+        key = f"line-{index}"
+        assert tracker.remember_scene_line(
+            "scene-a",
+            key,
+            route_id="route-a",
+            seq=index,
+            ts=f"2026-04-21T08:35:{index:02d}Z",
+            occurrence={
+                "event_key": key,
+                "seq": index,
+                "line": {
+                    "scene_id": "scene-a",
+                    "route_id": "route-a",
+                    "text": f"older pending {index}",
+                },
+            },
+        )
+    older_owner = tracker.mark_scene_summary_scheduled(
+        "scene-a",
+        route_id="route-a",
+        seq=2,
+        covered_line_keys=["line-1", "line-2"],
+    )
+
+    for index in range(3, 5):
+        key = f"line-{index}"
+        assert tracker.remember_scene_line(
+            "scene-a",
+            key,
+            route_id="route-a",
+            seq=index,
+            ts=f"2026-04-21T08:35:{index:02d}Z",
+            occurrence={
+                "event_key": key,
+                "seq": index,
+                "line": {
+                    "scene_id": "scene-a",
+                    "route_id": "route-a",
+                    "text": f"newer pending {index}",
+                },
+            },
+        )
+    newer_owner = tracker.mark_scene_summary_scheduled(
+        "scene-a",
+        route_id="route-a",
+        seq=4,
+        covered_line_keys=["line-1", "line-2", "line-3", "line-4"],
+    )
+
+    tracker.restore_scene_summary_schedule(
+        "scene-a",
+        route_id="route-a",
+        seq=2,
+        lines_since_push=2,
+        owner_token=older_owner,
+    )
+    tracker.mark_scene_summary_delivered(
+        "scene-a",
+        route_id="route-a",
+        seq=4,
+        owner_token=newer_owner,
+    )
+
+    state = tracker.state_for_scene("scene-a", route_id="route-a")
+    assert state["lines_since_push"] == 0
+    assert state["pending_line_key_order"] == []
+    assert state["pending_line_occurrences"] == {}
+
+
+@pytest.mark.plugin_unit
+def test_reason_only_save_loaded_event_activates_load_timeline_fence(
+    tmp_path: Path,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    agent = GameLLMAgent(
+        plugin=GalgameBridgePlugin(_Ctx(plugin_dir, _make_effective_config(bridge_root))),
+        logger=_Logger(),
+        llm_gateway=_FakeLLMGateway(),
+        host_adapter=_FakeHostAdapter(),
+    )
+    old_line_event = _event(
+        seq=1,
+        event_type="line_changed",
+        session_id="sess-a",
+        game_id="demo.alpha",
+        ts="2026-04-21T08:35:01Z",
+        payload={
+            "line_id": "old-line",
+            "scene_id": "scene-a",
+            "route_id": "route-a",
+            "text": "abandoned future",
+            "stability": "stable",
+        },
+    )
+    load_event = _event(
+        seq=2,
+        event_type="save_loaded",
+        session_id="sess-a",
+        game_id="demo.alpha",
+        ts="2026-04-21T08:35:02Z",
+        payload={"reason": "load"},
+    )
+    snapshot = apply_event_to_snapshot(
+        _session_state(scene_id="scene-a", route_id="route-a"),
+        load_event,
+    )
+    shared = _shared_state(
+        session_id="sess-a",
+        last_seq=2,
+        snapshot=snapshot,
+        history_events=[old_line_event, load_event],
+        history_lines=[
+            {
+                "line_id": "old-line",
+                "scene_id": "scene-a",
+                "route_id": "route-a",
+                "text": "abandoned future",
+                "stability": "stable",
+                "ts": "2026-04-21T08:35:01Z",
+            }
+        ],
+    )
+
+    assert snapshot["save_context"]["kind"] == "load"
+    assert snapshot["save_boundary"]["kind"] == "load"
+    line_occurrences = agent._scene_capsule_line_occurrences(
+        shared,
+        snapshot=snapshot,
+    )
+    filtered_lines, _filtered_choices, boundary_active = (
+        agent._scene_timeline_occurrences_after_save_boundary(
+            shared,
+            snapshot=snapshot,
+            line_occurrences=line_occurrences,
+            choice_occurrences=[],
+        )
+    )
+    assert boundary_active is True
+    assert filtered_lines == []
+
+
+@pytest.mark.plugin_unit
+def test_recurring_fallback_only_visible_menu_is_not_shadowed_by_old_event(
+    tmp_path: Path,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    agent = GameLLMAgent(
+        plugin=GalgameBridgePlugin(_Ctx(plugin_dir, _make_effective_config(bridge_root))),
+        logger=_Logger(),
+        llm_gateway=_FakeLLMGateway(),
+        host_adapter=_FakeHostAdapter(),
+    )
+    choices = [
+        {"choice_id": "a", "text": "Go left", "index": 0},
+        {"choice_id": "b", "text": "Go right", "index": 1},
+    ]
+    old_event = _event(
+        seq=1,
+        event_type="choices_shown",
+        session_id="sess-a",
+        game_id="demo.alpha",
+        ts="2026-04-21T08:35:01Z",
+        payload={
+            "scene_id": "scene-a",
+            "route_id": "route-a",
+            "choices": choices,
+        },
+    )
+
+    def _occurrences(snapshot_choices: list[dict[str, object]]) -> list[dict[str, Any]]:
+        snapshot = _session_state(scene_id="scene-a", route_id="route-a")
+        snapshot["choices"] = snapshot_choices
+        snapshot["ts"] = "2026-04-21T08:36:00Z"
+        shared = _shared_state(
+            session_id="sess-a",
+            last_seq=1,
+            snapshot=snapshot,
+            history_events=[old_event],
+        )
+        return agent._scene_capsule_choice_occurrences(shared, snapshot=snapshot)
+
+    first = _occurrences(choices)
+    assert not any(item.get("snapshot_fallback") for item in first)
+    _occurrences([])
+    recurring = _occurrences(choices)
+
+    fallback_occurrences = [
+        item for item in recurring if item.get("snapshot_fallback")
+    ]
+    assert len(fallback_occurrences) == 2
+    assert {
+        str(item.get("choice", {}).get("text") or "")
+        for item in fallback_occurrences
+    } == {"Go left", "Go right"}
+    assert len(
+        [
+            item
+            for item in _occurrences(choices)
+            if item.get("snapshot_fallback")
+        ]
+    ) == 2

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+
 from .agent_shared import *  # noqa: F401,F403
 
 
@@ -23,6 +25,30 @@ class AgentObservationMixin:
             now=now,
         )
         current_fingerprint = self._session_fingerprint(shared)
+
+        def _trusted_observation_evidence_marker() -> str:
+            evidence = {
+                "active_game_id": str(shared.get("active_game_id") or ""),
+                "active_session_id": session_id,
+                "active_data_source": str(shared.get("active_data_source") or ""),
+                "last_seq": int(shared.get("last_seq") or 0),
+                "snapshot": snapshot,
+                "history_events": list(shared.get("history_events") or []),
+                "history_lines": list(shared.get("history_lines") or []),
+                "history_observed_lines": list(
+                    shared.get("history_observed_lines") or []
+                ),
+                "history_choices": list(shared.get("history_choices") or []),
+            }
+            canonical = json.dumps(
+                evidence,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+                default=str,
+            )
+            return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
         previous_game_id = self._normalized_identity_text(
             self._observed_session_fingerprint.get("active_game_id")
         )
@@ -157,6 +183,10 @@ class AgentObservationMixin:
                 self._scene_capsule_marker_event_state.clear()
                 self._reset_scene_summary_repeat_guard()
                 self._session_transition_actuation_blocked = False
+                self._summary_debug.pop(
+                    "unknown_session_reset_evidence_marker",
+                    None,
+                )
             elif transition_type == "real_session_reset":
                 self._cancel_summary_tasks()
                 self._reset_scene_summary_repeat_guard()
@@ -188,6 +218,9 @@ class AgentObservationMixin:
                 self._last_delivered_summary_seq = 0
                 self._last_delivered_summary_scene_id = ""
                 self._session_transition_actuation_blocked = True
+                self._summary_debug["unknown_session_reset_evidence_marker"] = (
+                    _trusted_observation_evidence_marker()
+                )
                 self._summary_debug["last_session_transition"] = {
                     "type": transition_type,
                     "reason": transition_reason,
@@ -199,6 +232,10 @@ class AgentObservationMixin:
                     retire=True,
                 )
                 self._session_transition_actuation_blocked = False
+                self._summary_debug.pop(
+                    "unknown_session_reset_evidence_marker",
+                    None,
+                )
                 self._summary_debug["last_session_transition"] = {
                     "type": transition_type,
                     "reason": transition_reason,
@@ -219,9 +256,23 @@ class AgentObservationMixin:
             self._scene_state = self._build_empty_scene_state()
             if not (resume_safe_session_transition and safe_session_transition):
                 return False
-        if self._session_transition_actuation_blocked and self._has_trusted_game_observation(shared):
+        if (
+            self._session_transition_actuation_blocked
+            and self._has_trusted_game_observation(shared)
+            and _trusted_observation_evidence_marker()
+            != str(
+                self._summary_debug.get("unknown_session_reset_evidence_marker")
+                or ""
+            )
+        ):
             self._session_transition_actuation_blocked = False
-            self._last_session_transition_reason = "trusted_observation_after_unknown_reset"
+            self._summary_debug.pop(
+                "unknown_session_reset_evidence_marker",
+                None,
+            )
+            self._last_session_transition_reason = (
+                "trusted_observation_after_unknown_reset"
+            )
         self._observed_session_fingerprint = current_fingerprint
         if self._is_untrusted_ocr_capture(shared):
             # Trust is deliberately not part of the semantic input marker.

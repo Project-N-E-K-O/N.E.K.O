@@ -177,6 +177,7 @@ from .plugin_constants import (
 
 _BACKGROUND_BRIDGE_POLL_MIN_STALE_SECONDS = 45.0
 _BRIDGE_TICK_INTERVAL_SECONDS = 1.0
+_PREEXISTING_SESSION_STATE_LIMIT = 16
 # Foreground refresh TTL: repeated calls within two seconds return early so
 # bridge_tick, advance monitor, and status payload refreshes stay idempotent.
 _OCR_FOREGROUND_REFRESH_TTL_SECONDS = 2.0
@@ -4020,7 +4021,7 @@ class GalgamePlugin(
         )
         if session_identity not in self._startup_existing_session_ids:
             return
-        cached_state = self._startup_preexisting_session_states.get(
+        cached_state = self._startup_preexisting_session_states.pop(
             session_identity,
             {},
         )
@@ -4051,6 +4052,13 @@ class GalgamePlugin(
                 cached_state.get("stream_checkpoint_offset") or 0
             ),
         }
+        while (
+            len(self._startup_preexisting_session_states)
+            > _PREEXISTING_SESSION_STATE_LIMIT
+        ):
+            oldest_identity = next(iter(self._startup_preexisting_session_states))
+            self._startup_preexisting_session_states.pop(oldest_identity, None)
+            self._startup_existing_session_ids.discard(oldest_identity)
 
     async def _apply_bridge_candidate_session(
         self,
@@ -4111,6 +4119,24 @@ class GalgamePlugin(
             if self._startup_existing_session_ids is None:
                 self._startup_existing_session_ids = set()
             self._startup_existing_session_ids.add(candidate_session_identity)
+            while (
+                len(self._startup_existing_session_ids)
+                > _PREEXISTING_SESSION_STATE_LIMIT
+            ):
+                oldest_identity = next(
+                    (
+                        identity
+                        for identity in self._startup_preexisting_session_states
+                        if identity != candidate_session_identity
+                    ),
+                    next(
+                        identity
+                        for identity in self._startup_existing_session_ids
+                        if identity != candidate_session_identity
+                    ),
+                )
+                self._startup_existing_session_ids.discard(oldest_identity)
+                self._startup_preexisting_session_states.pop(oldest_identity, None)
         saved_preexisting_state = (
             self._startup_preexisting_session_states.get(
                 candidate_session_identity
@@ -4463,7 +4489,7 @@ class GalgamePlugin(
             return
 
         if self._startup_existing_session_ids is None:
-            self._startup_existing_session_ids = {
+            startup_existing_session_ids = [
                 session_identity_key(
                     data_source=candidate.data_source,
                     game_id=candidate.game_id,
@@ -4480,7 +4506,10 @@ class GalgamePlugin(
                     startup_existing_session_ids=None,
                 )
                 == SESSION_ORIGIN_PREEXISTING
-            }
+            ]
+            self._startup_existing_session_ids = set(
+                startup_existing_session_ids[-_PREEXISTING_SESSION_STATE_LIMIT:]
+            )
 
         memory_reader_candidate_available = any(
             candidate.data_source == DATA_SOURCE_MEMORY_READER
