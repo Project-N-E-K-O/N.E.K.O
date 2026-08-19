@@ -5365,6 +5365,10 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   pointer-events: auto;
 }
 
+.avatar-tool-manager-dialog.is-create-view {
+  height: min(780px, calc(100vh - 24px));
+}
+
 .avatar-tool-manager-dialog:not(.is-positioned) {
   left: 50%;
   top: 50%;
@@ -5703,6 +5707,10 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   color: rgba(45, 74, 96, 0.62);
   font-size: 11px;
   font-weight: 500;
+}
+
+.avatar-tool-create-field .avatar-tool-create-audio-error {
+  color: #b42318;
 }
 
 .avatar-tool-create-mode {

@@ -29,6 +29,17 @@ def _png(*, alpha: int = 255, size=(8, 8)) -> bytes:
     return output.getvalue()
 
 
+def _mp3() -> bytes:
+    return (
+        Path(__file__).resolve().parents[2]
+        / "static"
+        / "sounds"
+        / "avatar-tools"
+        / "lollipop"
+        / "bite.mp3"
+    ).read_bytes()
+
+
 def test_create_publishes_ordered_public_dto_but_keeps_meanings_private(tmp_path, monkeypatch):
     monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
     store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
@@ -62,6 +73,55 @@ def test_create_publishes_ordered_public_dto_but_keeps_meanings_private(tmp_path
     }
     assert store.list_items() == [item]
     assert not list(store.root.glob(".*.uploading"))
+
+
+def test_create_publishes_optional_normal_sound_without_exposing_private_meanings(tmp_path, monkeypatch):
+    monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
+    store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
+
+    item = store.create_tool(
+        name="Lollipop",
+        change_mode="press-swap",
+        change_meanings=["takes a bite"],
+        default_image=_png(),
+        change_images=[_png()],
+        normal_sound=_mp3(),
+    )
+
+    directory = store.root / item["id"]
+    assert "/normal.mp3?v=" in item["normalSoundUrl"]
+    assert (directory / "normal.mp3").read_bytes() == _mp3()
+    assert store.read_record(item["id"])["interaction"] == {"normalSound": "normal.mp3"}
+    assert "takes a bite" not in json.dumps(item)
+
+
+@pytest.mark.parametrize("audio, duration_limit, expected_code", [
+    (b"not-an-mp3", 10_000, "audio_decode_failed"),
+    (_mp3(), 10, "audio_too_long"),
+])
+def test_create_rejects_invalid_or_too_long_audio(
+    tmp_path,
+    monkeypatch,
+    audio,
+    duration_limit,
+    expected_code,
+):
+    monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
+    store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
+    store.limits["maxAudioDurationMs"] = duration_limit
+
+    with pytest.raises(AvatarToolStoreError) as raised:
+        store.create_tool(
+            name="bad sound",
+            change_mode="press-swap",
+            change_meanings=["meaning"],
+            default_image=_png(),
+            change_images=[_png()],
+            normal_sound=audio,
+        )
+
+    assert raised.value.code == expected_code
+    assert not store.root.exists() or not list(store.root.iterdir())
 
 
 @pytest.mark.parametrize(
@@ -113,10 +173,12 @@ def test_public_resource_allowlist_rejects_private_and_unsafe_paths(tmp_path):
     directory.mkdir(parents=True)
     (directory / "change-000.png").write_bytes(_png())
     (directory / "change-015.png").write_bytes(_png())
+    (directory / "normal.mp3").write_bytes(_mp3())
     (directory / "record.json").write_text("{}", encoding="utf-8")
 
     assert is_public_avatar_tool_resource_path(root, f"{tool_id}/change-000.png")
     assert is_public_avatar_tool_resource_path(root, f"{tool_id}/change-015.png")
+    assert is_public_avatar_tool_resource_path(root, f"{tool_id}/normal.mp3")
     assert not is_public_avatar_tool_resource_path(root, f"{tool_id}/change-16.png")
     assert not is_public_avatar_tool_resource_path(root, f"{tool_id}/record.json")
     assert not is_public_avatar_tool_resource_path(root, f"{tool_id}/.hidden.png")

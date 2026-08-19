@@ -123,5 +123,7 @@ const LIMITS = {
   maxChangeImages: 16,
   maxImageBytes: 8_388_608,
   maxImagePixels: 16_000_000,
+  maxAudioBytes: 5_242_880,
+  maxAudioDurationMs: 10_000,
   maxTotalBytes: 268_435_456,
 };

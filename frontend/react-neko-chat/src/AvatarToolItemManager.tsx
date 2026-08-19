@@ -59,6 +59,7 @@ const AVATAR_TOOL_MANAGER_VIEWPORT_GUTTER = 12;
 const AVATAR_TOOL_MANAGER_ANCHOR_GAP = 12;
 const AVATAR_TOOL_MANAGER_FALLBACK_WIDTH = 460;
 const AVATAR_TOOL_MANAGER_FALLBACK_HEIGHT = 680;
+const AVATAR_TOOL_CREATE_FALLBACK_HEIGHT = 780;
 const AVATAR_TOOL_MANAGER_FOCUSABLE_SELECTOR = [
   'a[href]',
   'button:not([disabled])',
@@ -276,7 +277,10 @@ function getDialogViewport(): AvatarToolManagerViewport {
   };
 }
 
-function getDesktopCompactDialogSize(viewport: AvatarToolManagerViewport) {
+function getDesktopCompactDialogSize(
+  viewport: AvatarToolManagerViewport,
+  preferredHeight: number = AVATAR_TOOL_MANAGER_FALLBACK_HEIGHT,
+) {
   return {
     width: Math.max(
       1,
@@ -288,16 +292,20 @@ function getDesktopCompactDialogSize(viewport: AvatarToolManagerViewport) {
     height: Math.max(
       1,
       Math.min(
-        AVATAR_TOOL_MANAGER_FALLBACK_HEIGHT,
+        preferredHeight,
         viewport.height - AVATAR_TOOL_MANAGER_VIEWPORT_GUTTER * 2,
       ),
     ),
   };
 }
 
-function getDialogSize(dialogElement: HTMLElement | null, viewport: AvatarToolManagerViewport = getDialogViewport()) {
+function getDialogSize(
+  dialogElement: HTMLElement | null,
+  viewport: AvatarToolManagerViewport = getDialogViewport(),
+  preferredHeight: number = AVATAR_TOOL_MANAGER_FALLBACK_HEIGHT,
+) {
   if (viewport.compactDesktop) {
-    return getDesktopCompactDialogSize(viewport);
+    return getDesktopCompactDialogSize(viewport, preferredHeight);
   }
   return {
     width: dialogElement?.offsetWidth || AVATAR_TOOL_MANAGER_FALLBACK_WIDTH,
@@ -377,6 +385,9 @@ export default function AvatarToolItemManager({
   const [dragSession, setDragSession] = useState<AvatarToolDragSession | null>(null);
   const [dialogPosition, setDialogPosition] = useState<AvatarToolManagerPosition | null>(null);
   const [dialogDragSession, setDialogDragSession] = useState<AvatarToolManagerDialogDragSession | null>(null);
+  const preferredDialogHeight = view === 'create'
+    ? AVATAR_TOOL_CREATE_FALLBACK_HEIGHT
+    : AVATAR_TOOL_MANAGER_FALLBACK_HEIGHT;
   const dialogRef = useRef<HTMLElement | null>(null);
   const closeButtonRef = useRef<HTMLButtonElement | null>(null);
   const prevActiveElementRef = useRef<HTMLElement | null>(null);
@@ -399,9 +410,12 @@ export default function AvatarToolItemManager({
       return;
     }
     const viewport = getDialogViewport();
-    const nextPosition = resolveAnchoredDialogPosition(anchorRect, getDialogSize(dialogRef.current, viewport));
+    const nextPosition = resolveAnchoredDialogPosition(
+      anchorRect,
+      getDialogSize(dialogRef.current, viewport, preferredDialogHeight),
+    );
     setDialogPosition(nextPosition);
-  }, [anchorRect, open]);
+  }, [anchorRect, open, preferredDialogHeight]);
 
   useEffect(() => {
     if (!open || typeof window === 'undefined') return undefined;
@@ -410,7 +424,11 @@ export default function AvatarToolItemManager({
       setDialogPosition((position) => {
         if (!isElectronDesktopEnvironment() && viewport.width <= 640) return null;
         if (!position) return position;
-        return clampDialogPosition(position, getDialogSize(dialogRef.current, viewport), viewport);
+        return clampDialogPosition(
+          position,
+          getDialogSize(dialogRef.current, viewport, preferredDialogHeight),
+          viewport,
+        );
       });
     };
     window.addEventListener('resize', clampCurrentPosition);
@@ -419,7 +437,7 @@ export default function AvatarToolItemManager({
       window.removeEventListener('resize', clampCurrentPosition);
       window.removeEventListener('neko:desktop-compact-layout-change', clampCurrentPosition);
     };
-  }, [open]);
+  }, [open, preferredDialogHeight]);
 
   const isPositioned = dialogPosition !== null;
 
@@ -634,7 +652,7 @@ export default function AvatarToolItemManager({
       setDialogPosition(clampDialogPosition({
         left: session.startLeft + event.clientX - session.startX,
         top: session.startTop + event.clientY - session.startY,
-      }, getDialogSize(dialogRef.current, viewport), viewport));
+      }, getDialogSize(dialogRef.current, viewport, preferredDialogHeight), viewport));
       return {
         ...session,
         active,
@@ -668,7 +686,7 @@ export default function AvatarToolItemManager({
 
   const isDesktopMode = dialogPosition !== null;
   const dialogViewport = getDialogViewport();
-  const dialogSize = getDialogSize(dialogRef.current, dialogViewport);
+  const dialogSize = getDialogSize(dialogRef.current, dialogViewport, preferredDialogHeight);
   const isDesktopCompactDialog = dialogViewport.compactDesktop;
   const dragTool = dragSession ? availableById.get(dragSession.toolId) : null;
   const managerDragging = !!dialogDragSession?.active || !!dragSession?.active;
@@ -694,7 +712,7 @@ export default function AvatarToolItemManager({
 
   const dialogElement = (
     <section
-      className={`avatar-tool-manager-dialog${dialogPosition ? ' is-positioned' : ''}${isDesktopCompactDialog ? ' is-desktop-compact-layout' : ''}${managerDragging ? ' is-dragging' : ''}`}
+      className={`avatar-tool-manager-dialog${view === 'create' ? ' is-create-view' : ''}${dialogPosition ? ' is-positioned' : ''}${isDesktopCompactDialog ? ' is-desktop-compact-layout' : ''}${managerDragging ? ' is-dragging' : ''}`}
       ref={dialogRef}
       style={dialogStyle}
       role="dialog"
@@ -721,9 +739,9 @@ export default function AvatarToolItemManager({
               ? i18n('chat.avatarToolCreateTitle', 'Create custom tool')
               : i18n('chat.avatarToolManagerTitle', 'Manage tools')}
           </h2>
-          <p>{view === 'create'
-            ? i18n('chat.avatarToolCreateSubtitle', 'Set the tool images, image switching, and interaction descriptions.')
-            : i18n('chat.avatarToolManagerSubtitle', 'Choose up to 3 quick tools.')}</p>
+          {view === 'library' ? (
+            <p>{i18n('chat.avatarToolManagerSubtitle', 'Choose up to 3 quick tools.')}</p>
+          ) : null}
         </div>
         <button
           className="avatar-tool-manager-icon-button"

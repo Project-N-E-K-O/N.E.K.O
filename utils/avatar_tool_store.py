@@ -45,6 +45,8 @@ AVATAR_TOOL_LIMITS: dict[str, int] = {
     "maxChangeImages": 16,
     "maxImageBytes": 8 * 1024 * 1024,
     "maxImagePixels": 16_000_000,
+    "maxAudioBytes": 5 * 1024 * 1024,
+    "maxAudioDurationMs": 10_000,
     "maxTotalBytes": 256 * 1024 * 1024,
 }
 
@@ -138,6 +140,51 @@ def _decode_static_png(data: bytes, *, limits: dict[str, int]) -> bytes:
         raise AvatarToolStoreError("image_decode_failed", "PNG could not be decoded") from exc
 
 
+def _validate_mp3(data: bytes, *, limits: dict[str, int]) -> bytes:
+    if not data:
+        raise AvatarToolStoreError("audio_required", "MP3 audio is required")
+    if len(data) > limits["maxAudioBytes"]:
+        raise AvatarToolStoreError("audio_too_large", "MP3 audio is too large", status_code=413)
+
+    try:
+        import av
+    except ImportError as exc:
+        raise AvatarToolStoreError(
+            "audio_validation_unavailable",
+            "MP3 validation is unavailable",
+            status_code=503,
+        ) from exc
+
+    try:
+        with av.open(io.BytesIO(data), mode="r") as container:
+            format_names = set(str(container.format.name or "").lower().split(","))
+            if "mp3" not in format_names:
+                raise AvatarToolStoreError("audio_not_mp3", "Audio must be a real MP3")
+            audio_streams = [stream for stream in container.streams if stream.type == "audio"]
+            if not audio_streams:
+                raise AvatarToolStoreError("audio_stream_missing", "MP3 must contain an audio stream")
+
+            decoded_frames = 0
+            duration_ms = 0.0
+            for frame in container.decode(audio_streams[0]):
+                decoded_frames += 1
+                sample_rate = int(frame.sample_rate or 0)
+                samples = int(frame.samples or 0)
+                if sample_rate > 0 and samples > 0:
+                    duration_ms += samples * 1000 / sample_rate
+                elif frame.duration is not None and frame.time_base is not None:
+                    duration_ms += float(frame.duration * frame.time_base) * 1000
+                if duration_ms > limits["maxAudioDurationMs"]:
+                    raise AvatarToolStoreError("audio_too_long", "MP3 audio is too long", status_code=413)
+            if decoded_frames == 0 or duration_ms <= 0:
+                raise AvatarToolStoreError("audio_decode_failed", "MP3 could not be decoded")
+    except AvatarToolStoreError:
+        raise
+    except Exception as exc:
+        raise AvatarToolStoreError("audio_decode_failed", "MP3 could not be decoded") from exc
+    return data
+
+
 class AvatarToolStore:
     def __init__(self, config_manager: Any):
         self.config_manager = config_manager
@@ -215,12 +262,18 @@ class AvatarToolStore:
                     maximum=self.limits["maxMeaningChars"],
                 ),
             })
-        if not isinstance(interaction, dict) or interaction:
+        if not isinstance(interaction, dict) or set(interaction) not in (set(), {"normalSound"}):
+            raise AvatarToolStoreError("record_invalid", "Avatar tool record is invalid", status_code=404)
+        normal_sound = interaction.get("normalSound")
+        if normal_sound is not None and normal_sound != "normal.mp3":
             raise AvatarToolStoreError("record_invalid", "Avatar tool record is invalid", status_code=404)
         directory = self.root / expected_id
         if directory.is_symlink() or not directory.is_dir():
             raise AvatarToolStoreError("record_invalid", "Avatar tool record is invalid", status_code=404)
-        for filename in ("default.png", *(item["image"] for item in clean_items)):
+        resource_names = ["default.png", *(item["image"] for item in clean_items)]
+        if normal_sound:
+            resource_names.append(normal_sound)
+        for filename in resource_names:
             resource = directory / filename
             if resource.is_symlink() or not resource.is_file():
                 raise AvatarToolStoreError("record_invalid", "Avatar tool resource is invalid", status_code=404)
@@ -230,7 +283,7 @@ class AvatarToolStore:
             "name": name,
             "defaultImage": "default.png",
             "imageChange": {"mode": mode, "items": clean_items},
-            "interaction": {},
+            "interaction": {"normalSound": normal_sound} if normal_sound else {},
         }
 
     def _asset_url(self, tool_id: str, filename: str) -> str:
@@ -240,7 +293,7 @@ class AvatarToolStore:
 
     def _public_item(self, record: dict[str, Any]) -> dict[str, Any]:
         tool_id = record["id"]
-        return {
+        item = {
             "id": tool_id,
             "name": record["name"],
             "changeMode": record["imageChange"]["mode"],
@@ -250,6 +303,10 @@ class AvatarToolStore:
                 for item in record["imageChange"]["items"]
             ],
         }
+        normal_sound = record["interaction"].get("normalSound")
+        if normal_sound:
+            item["normalSoundUrl"] = self._asset_url(tool_id, normal_sound)
+        return item
 
     def list_items(self) -> list[dict[str, Any]]:
         self.ensure()
@@ -282,6 +339,7 @@ class AvatarToolStore:
         change_meanings: list[str],
         default_image: bytes,
         change_images: list[bytes],
+        normal_sound: bytes | None = None,
     ) -> dict[str, Any]:
         clean_name = _validate_text(name, field="name", maximum=self.limits["maxNameChars"])
         if change_mode not in LOCAL_AVATAR_TOOL_CHANGE_MODES:
@@ -305,6 +363,7 @@ class AvatarToolStore:
             _decode_static_png(image, limits=self.limits)
             for image in change_images
         ]
+        normal_mp3 = _validate_mp3(normal_sound, limits=self.limits) if normal_sound is not None else None
 
         with _MUTATION_LOCK:
             self.ensure()
@@ -334,13 +393,15 @@ class AvatarToolStore:
                         for index, meaning in enumerate(clean_meanings)
                     ],
                 },
-                "interaction": {},
+                "interaction": {"normalSound": "normal.mp3"} if normal_mp3 is not None else {},
             }
             try:
                 temporary.mkdir(mode=0o700)
                 (temporary / "default.png").write_bytes(default_png)
                 for index, image in enumerate(change_pngs):
                     (temporary / f"change-{index:03d}.png").write_bytes(image)
+                if normal_mp3 is not None:
+                    (temporary / "normal.mp3").write_bytes(normal_mp3)
                 atomic_write_json(temporary / "record.json", record, ensure_ascii=False, indent=2)
                 created_size = sum(
                     entry.stat().st_size

@@ -11,6 +11,8 @@ export type LocalAvatarToolLimits = {
   maxChangeImages: number;
   maxImageBytes: number;
   maxImagePixels: number;
+  maxAudioBytes: number;
+  maxAudioDurationMs: number;
   maxTotalBytes: number;
 };
 
@@ -20,6 +22,7 @@ export type LocalAvatarToolDto = {
   changeMode: LocalAvatarToolChangeMode;
   defaultUrl: string;
   changeUrls: string[];
+  normalSoundUrl?: string;
 };
 
 export type LocalAvatarToolChangeMode = 'press-swap' | 'click-advance';
@@ -34,6 +37,7 @@ export type CreateLocalAvatarToolInput = {
   changeMode: LocalAvatarToolChangeMode;
   defaultImage: File;
   changeItems: Array<{ image: File; meaning: string }>;
+  normalSound?: File;
 };
 
 function decodeLocalAvatarToolItem(value: unknown): LocalAvatarToolDto | null {
@@ -50,6 +54,7 @@ function decodeLocalAvatarToolItem(value: unknown): LocalAvatarToolDto | null {
     || changeUrls.length > 16
     || changeUrls.some(url => typeof url !== 'string' || !url)
     || (item.changeMode === 'press-swap' && changeUrls.length !== 1)
+    || (item.normalSoundUrl !== undefined && (typeof item.normalSoundUrl !== 'string' || !item.normalSoundUrl))
   ) return null;
   return {
     id: item.id as LocalAvatarToolId,
@@ -57,6 +62,7 @@ function decodeLocalAvatarToolItem(value: unknown): LocalAvatarToolDto | null {
     changeMode: item.changeMode,
     defaultUrl: item.defaultUrl,
     changeUrls: [...changeUrls] as string[],
+    ...(typeof item.normalSoundUrl === 'string' ? { normalSoundUrl: item.normalSoundUrl } : {}),
   };
 }
 
@@ -71,7 +77,17 @@ function assertListResponse(value: unknown): LocalAvatarToolList {
     return item ? [item] : [];
   });
   const source = payload.limits as Record<string, unknown>;
-  const required = ['maxTools', 'maxNameChars', 'maxMeaningChars', 'maxChangeImages', 'maxImageBytes', 'maxImagePixels', 'maxTotalBytes'] as const;
+  const required = [
+    'maxTools',
+    'maxNameChars',
+    'maxMeaningChars',
+    'maxChangeImages',
+    'maxImageBytes',
+    'maxImagePixels',
+    'maxAudioBytes',
+    'maxAudioDurationMs',
+    'maxTotalBytes',
+  ] as const;
   const limits = {} as LocalAvatarToolLimits;
   required.forEach((key) => {
     if (!Number.isSafeInteger(source[key]) || Number(source[key]) <= 0) throw new Error('avatar_tool_limits_invalid');
@@ -107,6 +123,7 @@ async function postLocalAvatarTool(
     form.append('change_images', item.image);
     form.append('change_meanings', item.meaning);
   });
+  if (input.normalSound) form.set('normal_sound', input.normalSound);
   const security = window.nekoLocalMutationSecurity;
   const headers = security?.getMutationHeaders ? await security.getMutationHeaders() : {};
   const response = await fetch('/api/avatar-tools', {
@@ -149,6 +166,11 @@ export function buildLocalAvatarToolDefinition(item: LocalAvatarToolDto): Avatar
     menuOffsetX: 0,
     menuOffsetY: 0,
   }));
+  const normalSound = item.normalSoundUrl ? {
+    id: 'normal-feedback',
+    src: item.normalSoundUrl,
+    volume: 0.9,
+  } : null;
   return {
     definitionVersion: 2,
     id: item.id,
@@ -183,7 +205,7 @@ export function buildLocalAvatarToolDefinition(item: LocalAvatarToolDto): Avatar
         renderedAnchor: { x: 40, y: 40, coordinateSpace: 'final-css-pixel' },
       },
     },
-    sounds: [],
+    sounds: normalSound ? [normalSound] : [],
     effects: [],
     interaction: {
       kind: 'press-release',
@@ -198,6 +220,7 @@ export function buildLocalAvatarToolDefinition(item: LocalAvatarToolDto): Avatar
       },
       touchZone: 'release',
       touchZones: ['ear', 'head', 'face', 'body'],
+      ...(normalSound ? { feedback: { sound: normalSound.id } } : {}),
     },
   };
 }

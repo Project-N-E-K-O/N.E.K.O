@@ -16,6 +16,8 @@ const LIMITS = {
   maxChangeImages: 16,
   maxImageBytes: 8_388_608,
   maxImagePixels: 16_000_000,
+  maxAudioBytes: 5_242_880,
+  maxAudioDurationMs: 10_000,
   maxTotalBytes: 268_435_456,
 };
 
@@ -112,6 +114,25 @@ describe('local avatar tool image change modes', () => {
     expect(handlers.pointerRelease()).toEqual({});
   });
 
+  it('adds one scoped feedback sound only when the DTO contains an MP3 URL', () => {
+    const definition = buildLocalAvatarToolDefinition(dto({
+      normalSoundUrl: `/user_avatar_tools/${TOOL_ID}/normal.mp3?v=1`,
+    }));
+
+    expect(() => validateAvatarToolDefinition(definition)).not.toThrow();
+    expect(definition.sounds).toEqual([{
+      id: 'normal-feedback',
+      src: `/user_avatar_tools/${TOOL_ID}/normal.mp3?v=1`,
+      volume: 0.9,
+    }]);
+    if (definition.interaction.kind !== 'press-release') throw new Error('invalid local profile');
+    expect(definition.interaction.feedback).toEqual({ sound: 'normal-feedback' });
+    expect(createAvatarToolProfileHandlers(definition).commit(context(1, 2))).toMatchObject({
+      sound: 'normal-feedback',
+      commit: { changeIndex: 0 },
+    });
+  });
+
   it('keeps a valid authoritative item when another DTO is malformed', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({
       ok: true,
@@ -156,6 +177,7 @@ describe('local avatar tool image change modes', () => {
         { image: new File(['first'], 'first.png', { type: 'image/png' }), meaning: 'First meaning' },
         { image: new File(['second'], 'second.png', { type: 'image/png' }), meaning: 'Second meaning' },
       ],
+      normalSound: new File(['sound'], 'interaction.mp3', { type: 'audio/mpeg' }),
     });
 
     expect(result?.changeMode).toBe('click-advance');
@@ -165,5 +187,7 @@ describe('local avatar tool image change modes', () => {
     expect(firstForm.get('change_mode')).toBe('click-advance');
     expect(firstForm.getAll('change_images')).toHaveLength(2);
     expect(firstForm.getAll('change_meanings')).toEqual(['First meaning', 'Second meaning']);
+    expect(firstForm.get('normal_sound')).toBeInstanceOf(File);
+    expect((firstForm.get('normal_sound') as File).name).toBe('interaction.mp3');
   });
 });

@@ -12,6 +12,8 @@ const LIMITS = {
   maxChangeImages: 16,
   maxImageBytes: 8_388_608,
   maxImagePixels: 16_000_000,
+  maxAudioBytes: 5_242_880,
+  maxAudioDurationMs: 10_000,
   maxTotalBytes: 268_435_456,
 };
 
@@ -59,6 +61,7 @@ describe('AvatarToolItemManager local creation', () => {
     expect(chatStyles).toMatch(/\.avatar-tool-create-field small\s*\{[\s\S]*?font-size:\s*11px/);
     expect(chatStyles).toMatch(/\.avatar-tool-create-mode-options button\s*\{[\s\S]*?font-size:\s*13px/);
     expect(chatStyles).toMatch(/\.avatar-tool-create-file-control\s*\{[\s\S]*?grid-template-columns:\s*auto minmax\(0, 1fr\)/);
+    expect(chatStyles).toMatch(/\.avatar-tool-manager-dialog\.is-create-view\s*\{[\s\S]*?height:\s*min\(780px, calc\(100vh - 24px\)\)/);
     expect(chatStyles).toMatch(/\.avatar-tool-manager-icon-button::before\s*\{[\s\S]*?mask:\s*url\('\/static\/icons\/close_button\.png'\)/);
   });
 
@@ -111,6 +114,7 @@ describe('AvatarToolItemManager local creation', () => {
     const dialog = screen.getByRole('dialog', { name: 'Manage tools' });
     fireEvent.click(screen.getByRole('button', { name: 'Create tool' }));
     expect(screen.getByRole('dialog', { name: 'Create custom tool' })).toBe(dialog);
+    expect(dialog).toHaveClass('is-create-view');
     expect(document.querySelector('.avatar-tool-create-page img')).toBeNull();
 
     fireEvent.submit(document.querySelector('.avatar-tool-create-page')!);
@@ -140,7 +144,7 @@ describe('AvatarToolItemManager local creation', () => {
     expect(onSave).toHaveBeenCalledWith(['lollipop', 'fist']);
   });
 
-  it('uses the desktop host image picker without changing the existing create payload', async () => {
+  it('uses desktop host pickers and keeps the optional MP3 in the create payload', async () => {
     const onCreate = vi.fn().mockResolvedValue(undefined);
     const pickImage = vi.fn()
       .mockResolvedValueOnce({
@@ -153,7 +157,12 @@ describe('AvatarToolItemManager local creation', () => {
         name: 'pressed.png',
         bytes: new Uint8Array([137, 80, 78, 71]).buffer,
       });
-    window.nekoHost = { pickImage };
+    const pickAudio = vi.fn().mockResolvedValue({
+      cancelled: false,
+      name: 'interaction.mp3',
+      bytes: new Uint8Array([73, 68, 51]).buffer,
+    });
+    window.nekoHost = { pickImage, pickAudio };
 
     render(
       <AvatarToolItemManager
@@ -177,6 +186,9 @@ describe('AvatarToolItemManager local creation', () => {
     await waitFor(() => expect(pickImage).toHaveBeenCalledTimes(1));
     fireEvent.click(fileInputs[1]);
     await waitFor(() => expect(pickImage).toHaveBeenCalledTimes(2));
+    fireEvent.click(fileInputs[2]);
+    await waitFor(() => expect(pickAudio).toHaveBeenCalledTimes(1));
+    expect(screen.getByText(/Played once after each successful interaction\./)).toBeInTheDocument();
     fireEvent.submit(document.querySelector('.avatar-tool-create-page')!);
 
     await waitFor(() => expect(onCreate).toHaveBeenCalledTimes(1));
@@ -188,6 +200,8 @@ describe('AvatarToolItemManager local creation', () => {
     expect(payload.changeItems[0].image).toBeInstanceOf(File);
     expect(payload.changeItems[0].image.name).toBe('pressed.png');
     expect(payload.changeItems[0].meaning).toBe('A friendly interaction');
+    expect(payload.normalSound).toBeInstanceOf(File);
+    expect(payload.normalSound.name).toBe('interaction.mp3');
   });
 
   it('keeps independent drafts for both image modes and places add inside the sequential list', () => {

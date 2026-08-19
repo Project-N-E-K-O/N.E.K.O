@@ -29,7 +29,13 @@ def _error_response(exc: AvatarToolStoreError) -> JSONResponse:
     )
 
 
-async def _read_upload_limited(upload: UploadFile, maximum: int) -> bytes:
+async def _read_upload_limited(
+    upload: UploadFile,
+    maximum: int,
+    *,
+    error_code: str,
+    error_message: str,
+) -> bytes:
     chunks: list[bytes] = []
     total = 0
     while True:
@@ -38,7 +44,7 @@ async def _read_upload_limited(upload: UploadFile, maximum: int) -> bytes:
             break
         total += len(chunk)
         if total > maximum:
-            raise AvatarToolStoreError("image_too_large", "PNG image is too large", status_code=413)
+            raise AvatarToolStoreError(error_code, error_message, status_code=413)
         chunks.append(chunk)
     return b"".join(chunks)
 
@@ -61,12 +67,15 @@ async def create_avatar_tool(
     change_meanings: list[str] = Form(...),
     default_image: UploadFile = File(...),
     change_images: list[UploadFile] = File(...),
+    normal_sound: UploadFile | None = File(None),
 ):
     rejected = _validate_local_mutation_request(request)
     if rejected is not None:
         await default_image.close()
         for upload in change_images:
             await upload.close()
+        if normal_sound is not None:
+            await normal_sound.close()
         return rejected
 
     store = get_avatar_tool_store(get_config_manager())
@@ -78,12 +87,30 @@ async def create_avatar_tool(
                 status_code=413,
             )
         uploaded = await asyncio.gather(
-            _read_upload_limited(default_image, store.limits["maxImageBytes"]),
+            _read_upload_limited(
+                default_image,
+                store.limits["maxImageBytes"],
+                error_code="image_too_large",
+                error_message="PNG image is too large",
+            ),
             *(
-                _read_upload_limited(upload, store.limits["maxImageBytes"])
+                _read_upload_limited(
+                    upload,
+                    store.limits["maxImageBytes"],
+                    error_code="image_too_large",
+                    error_message="PNG image is too large",
+                )
                 for upload in change_images
             ),
         )
+        normal_sound_data = None
+        if normal_sound is not None:
+            normal_sound_data = await _read_upload_limited(
+                normal_sound,
+                store.limits["maxAudioBytes"],
+                error_code="audio_too_large",
+                error_message="MP3 audio is too large",
+            )
         item = await asyncio.to_thread(
             store.create_tool,
             name=name,
@@ -91,6 +118,7 @@ async def create_avatar_tool(
             change_meanings=change_meanings,
             default_image=uploaded[0],
             change_images=list(uploaded[1:]),
+            normal_sound=normal_sound_data,
         )
     except AvatarToolStoreError as exc:
         return _error_response(exc)
@@ -100,5 +128,7 @@ async def create_avatar_tool(
         await default_image.close()
         for upload in change_images:
             await upload.close()
+        if normal_sound is not None:
+            await normal_sound.close()
 
     return JSONResponse(status_code=201, content={"ok": True, "item": item})

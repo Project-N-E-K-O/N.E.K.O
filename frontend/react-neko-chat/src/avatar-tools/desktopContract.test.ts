@@ -58,6 +58,7 @@ describe('desktop avatar tool contract', () => {
         '/user_avatar_tools/local-12345678-1234-4123-8123-123456789abc/change-000.png?v=1',
         '/user_avatar_tools/local-12345678-1234-4123-8123-123456789abc/change-001.png?v=1',
       ],
+      normalSoundUrl: '/user_avatar_tools/local-12345678-1234-4123-8123-123456789abc/normal.mp3?v=1',
     });
 
     const contract = projectDesktopAvatarToolContract(source);
@@ -68,7 +69,13 @@ describe('desktop avatar tool contract', () => {
       kind: 'press-release',
       actionId: 'interact',
       imageChange: { kind: 'click-advance' },
+      feedback: { sound: 'normal-feedback' },
     });
+    expect(contract.definition?.interaction?.sounds).toEqual([{
+      id: 'normal-feedback',
+      src: '/user_avatar_tools/local-12345678-1234-4123-8123-123456789abc/normal.mp3?v=1',
+      volume: 0.9,
+    }]);
     expect(contract.definition?.interaction?.profile).not.toHaveProperty('pointerDown');
     expect(desktopAvatarToolContractSchema.parse(cloneJson(contract))).toEqual(contract);
   });

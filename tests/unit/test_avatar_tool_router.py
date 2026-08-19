@@ -26,6 +26,17 @@ def _png() -> bytes:
     return output.getvalue()
 
 
+def _mp3() -> bytes:
+    return (
+        Path(__file__).resolve().parents[2]
+        / "static"
+        / "sounds"
+        / "avatar-tools"
+        / "lollipop"
+        / "bite.mp3"
+    ).read_bytes()
+
+
 def _client(tmp_path, monkeypatch, *, allow_mutation: bool):
     manager = _ConfigManager(tmp_path / "avatar_tools")
     monkeypatch.setattr(avatar_tool_router, "get_config_manager", lambda: manager)
@@ -50,6 +61,7 @@ def test_post_then_get_returns_authoritative_item_without_meaning(tmp_path, monk
             ("default_image", ("default.png", _png(), "image/png")),
             ("change_images", ("first.png", _png(), "image/png")),
             ("change_images", ("second.png", _png(), "image/png")),
+            ("normal_sound", ("interaction.mp3", _mp3(), "audio/mpeg")),
         ],
     )
     assert response.status_code == 201
@@ -60,8 +72,12 @@ def test_post_then_get_returns_authoritative_item_without_meaning(tmp_path, monk
     assert "a gentle feather touch" not in listing.text
     assert item["changeMode"] == "click-advance"
     assert len(item["changeUrls"]) == 2
+    assert "/normal.mp3?v=" in item["normalSoundUrl"]
     assert listing.json()["limits"]["maxChangeImages"] == 16
+    assert listing.json()["limits"]["maxAudioBytes"] == 5 * 1024 * 1024
+    assert listing.json()["limits"]["maxAudioDurationMs"] == 10_000
     assert (manager.avatar_tools_dir / item["id"] / "record.json").is_file()
+    assert (manager.avatar_tools_dir / item["id"] / "normal.mp3").is_file()
 
 
 def test_post_rejects_request_without_mutation_security(tmp_path, monkeypatch):
