@@ -401,7 +401,8 @@ console.log(JSON.stringify({
         capture_output=True,
         encoding="utf-8",
         env={**os.environ, "OUTCOME_FORMATTERS_JS": str(source_path)},
-        timeout=10,
+        # CI Windows runners occasionally stall node.exe startup well past 10s.
+        timeout=60,
     )
     payload = json.loads(result.stdout)
 
