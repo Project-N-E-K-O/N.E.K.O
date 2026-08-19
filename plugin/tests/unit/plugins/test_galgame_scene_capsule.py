@@ -50,6 +50,26 @@ def test_sequence_less_delivery_key_uses_occurrence_high_water() -> None:
 
 
 @pytest.mark.plugin_unit
+def test_sequenced_delivery_key_uses_source_bound_occurrence_high_water() -> None:
+    first = GameLLMAgent._summary_delivery_key(
+        scene_id="scene-a",
+        route_id="",
+        scheduled_seq=8,
+        last_line_occurrence_key="memory-reader-occurrence",
+    )
+    second = GameLLMAgent._summary_delivery_key(
+        scene_id="scene-a",
+        route_id="",
+        scheduled_seq=8,
+        last_line_occurrence_key="ocr-reader-occurrence",
+    )
+
+    assert first != second
+    assert "memory-reader-occurrence" not in first
+    assert "ocr-reader-occurrence" not in second
+
+
+@pytest.mark.plugin_unit
 def test_scene_tracker_retains_all_pending_scopes_above_soft_limit() -> None:
     tracker = AgentSceneTracker(seen_line_limit=64)
     tracker.sync_current_scene_summary_mirror("scene-a", route_id="current")

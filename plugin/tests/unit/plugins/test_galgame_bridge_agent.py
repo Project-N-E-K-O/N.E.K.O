@@ -4780,7 +4780,9 @@ async def test_game_llm_agent_does_not_duplicate_batched_old_scene_summary(
     assert ctx.pushed_messages == []
     assert len(agent._llm_gateway.summarize_calls) == 1
     status = await agent.query_status(shared)
-    assert status["debug"]["summary"]["last_delivered_summary_key"] == "scene-a:8"
+    assert status["debug"]["summary"]["last_delivered_summary_key"].startswith(
+        "scene-a:8:occ:"
+    )
 
 
 @pytest.mark.asyncio
@@ -5994,6 +5996,7 @@ async def test_unknown_ocr_reset_requires_new_trusted_evidence_before_resuming(
     await _drain_agent_summary_tasks(agent)
     assert agent._session_transition_actuation_blocked is True
     assert agent._should_actuate(changed) is False
+    assert agent._scene_tracker.current_scene_lines_since_push("scene-a") == 0
 
     heartbeat_only = {
         **changed,
@@ -6013,6 +6016,7 @@ async def test_unknown_ocr_reset_requires_new_trusted_evidence_before_resuming(
     await _drain_agent_summary_tasks(agent)
     assert agent._session_transition_actuation_blocked is True
     assert agent._should_actuate(heartbeat_only) is False
+    assert agent._scene_tracker.current_scene_lines_since_push("scene-a") == 0
 
     third_line = _summary_test_line("scene-a", 3)
     advanced = _shared_state(

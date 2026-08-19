@@ -318,6 +318,13 @@ class AgentObservationMixin:
                 "scene_id": str(snapshot.get("scene_id") or ""),
             }
             return False
+        if self._session_transition_actuation_blocked:
+            self._summary_debug["last_skip"] = {
+                "reason": "awaiting_trusted_gameplay_after_unknown_reset",
+                "session_id": session_id,
+                "scene_id": str(snapshot.get("scene_id") or ""),
+            }
+            return False
         if virtual_mouse_runtime_key != self._observed_virtual_mouse_runtime_key:
             if self._observed_virtual_mouse_runtime_key:
                 self._virtual_mouse_stats.clear()

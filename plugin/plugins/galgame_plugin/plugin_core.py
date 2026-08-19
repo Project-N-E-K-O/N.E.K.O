@@ -4399,6 +4399,7 @@ class GalgamePlugin(
                     self._announced_stream_reset_identity = (
                         candidate_session_identity
                     )
+            if not session_changed or resume_preexisting_session:
                 local["latest_snapshot"] = {}
                 for field in (
                     "history_events",

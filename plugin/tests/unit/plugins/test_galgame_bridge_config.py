@@ -3632,6 +3632,14 @@ async def test_preexisting_reattach_validates_saved_checkpoint_in_tail(
         )
 
         assert isinstance(await plugin.galgame_bind_game(game_id="demo.alpha"), Ok)
+        resetting = plugin._snapshot_state()
+        assert resetting["stream_reset_pending"] is True
+        assert resetting["latest_snapshot"] == {}
+        assert resetting["history_events"] == []
+        assert resetting["history_lines"] == []
+        assert resetting["history_observed_lines"] == []
+        assert resetting["history_choices"] == []
+        assert resetting["dedupe_window"] == []
         await plugin._poll_bridge(force=True)
         recovered = plugin._snapshot_state()
         assert rewrote_stream is True

@@ -88,9 +88,14 @@ class AgentSummaryMixin:
             route_component = f":route:{route_digest}"
         scope = f"{normalized_scene_id}{route_component}"
         normalized_seq = int(scheduled_seq or 0)
-        if normalized_seq > 0:
-            return f"{scope}:{normalized_seq}"
         normalized_occurrence_key = str(last_line_occurrence_key or "").strip()
+        if normalized_seq > 0:
+            if normalized_occurrence_key:
+                occurrence_digest = hashlib.sha256(
+                    normalized_occurrence_key.encode("utf-8")
+                ).hexdigest()[:16]
+                return f"{scope}:{normalized_seq}:occ:{occurrence_digest}"
+            return f"{scope}:{normalized_seq}"
         if normalized_occurrence_key:
             occurrence_digest = hashlib.sha256(
                 normalized_occurrence_key.encode("utf-8")
