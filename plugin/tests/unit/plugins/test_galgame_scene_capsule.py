@@ -3797,6 +3797,104 @@ async def test_selected_choice_with_implicit_scope_reaches_memory_archive(
 
 @pytest.mark.asyncio
 @pytest.mark.plugin_unit
+async def test_selected_choice_survives_bounded_history_until_line_archive(
+    tmp_path: Path,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    effective_config = _make_effective_config(
+        bridge_root,
+        galgame={
+            "history_events_limit": 2,
+            "history_lines_limit": 2,
+            "history_choices_limit": 1,
+        },
+    )
+    gateway = _FakeLLMGateway()
+    agent = GameLLMAgent(
+        plugin=GalgameBridgePlugin(_Ctx(plugin_dir, effective_config)),
+        logger=_Logger(),
+        llm_gateway=gateway,
+        host_adapter=_FakeHostAdapter(),
+        config=build_config(effective_config),
+    )
+    selected_event = _event(
+        seq=1,
+        event_type="choice_selected",
+        session_id="sess-a",
+        game_id="demo.alpha",
+        ts="2026-04-21T08:35:01Z",
+        payload={
+            "scene_id": "scene-a",
+            "route_id": "route-a",
+            "choice_id": "choice-a",
+            "choice_text": "follow her",
+            "choice_index": 0,
+        },
+    )
+    choice_only = _shared_state(
+        mode="companion",
+        push_notifications=False,
+        session_id="sess-a",
+        last_seq=1,
+        snapshot=_session_state(scene_id="scene-a", route_id="route-a"),
+        history_events=[selected_event],
+        history_lines=[],
+        history_choices=[
+            {
+                "action": "selected",
+                "choice_id": "choice-a",
+                "text": "follow her",
+                "scene_id": "scene-a",
+                "route_id": "route-a",
+            }
+        ],
+    )
+    await agent.tick(choice_only)
+    await agent.tick(choice_only)
+
+    all_lines: list[dict[str, object]] = []
+    all_line_events: list[dict[str, object]] = []
+    for index in range(1, 9):
+        line = _summary_test_line("scene-a", index)
+        line["route_id"] = "route-a"
+        event = _summary_test_line_event(
+            "scene-a",
+            index,
+            seq=index + 1,
+            session_id="sess-a",
+        )
+        event["payload"]["route_id"] = "route-a"
+        all_lines.append(line)
+        all_line_events.append(event)
+        shared = _shared_state(
+            mode="companion",
+            push_notifications=False,
+            session_id="sess-a",
+            last_seq=index + 1,
+            snapshot=_session_state(
+                text=str(line["text"]),
+                line_id=str(line["line_id"]),
+                scene_id="scene-a",
+                route_id="route-a",
+            ),
+            history_events=all_line_events[-2:],
+            history_lines=all_lines[-2:],
+            history_choices=[],
+        )
+        await agent.tick(shared)
+
+    await agent.drain_summary_tasks(timeout=1.0)
+
+    assert len(gateway.summarize_calls) == 1
+    archived_choice_texts = {
+        str(choice.get("text") or "")
+        for choice in gateway.summarize_calls[0]["recent_choices"]
+    }
+    assert "follow her" in archived_choice_texts
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
 async def test_trusted_handoff_serializes_pending_aliased_archives(
     tmp_path: Path,
 ) -> None:
@@ -6670,6 +6768,60 @@ def test_pending_line_content_survives_retry_and_clears_after_delivery() -> None
     )
 
     assert state.get("pending_line_occurrences") == {}
+
+
+@pytest.mark.plugin_unit
+def test_pending_choice_content_survives_retry_and_clears_after_delivery() -> None:
+    tracker = AgentSceneTracker(seen_line_limit=8)
+    occurrence = {
+        "event_key": "choice-1",
+        "seq": 1,
+        "choice": {
+            "scene_id": "scene-a",
+            "route_id": "route-a",
+            "text": "follow her",
+            "choice_state": "selected",
+        },
+    }
+    assert tracker.remember_scene_choice(
+        "scene-a",
+        "choice-1",
+        route_id="route-a",
+        occurrence=occurrence,
+    )
+    first_owner = tracker.mark_scene_summary_scheduled(
+        "scene-a",
+        route_id="route-a",
+        seq=1,
+        covered_choice_keys=["choice-1"],
+    )
+
+    tracker.restore_scene_summary_schedule(
+        "scene-a",
+        route_id="route-a",
+        seq=1,
+        lines_since_push=0,
+        owner_token=first_owner,
+    )
+
+    state = tracker.state_for_scene("scene-a", route_id="route-a")
+    assert list((state.get("pending_choice_occurrences") or {}).keys()) == [
+        "choice-1"
+    ]
+    second_owner = tracker.mark_scene_summary_scheduled(
+        "scene-a",
+        route_id="route-a",
+        seq=1,
+        covered_choice_keys=["choice-1"],
+    )
+    tracker.mark_scene_summary_delivered(
+        "scene-a",
+        route_id="route-a",
+        seq=1,
+        owner_token=second_owner,
+    )
+
+    assert state.get("pending_choice_occurrences") == {}
 
 
 @pytest.mark.plugin_unit

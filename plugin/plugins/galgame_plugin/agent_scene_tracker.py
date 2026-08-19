@@ -73,9 +73,16 @@ class AgentSceneTracker:
                 "seen_line_key_order": [],
                 "pending_line_key_order": [],
                 "pending_line_occurrences": {},
+                "seen_choice_keys": set(),
+                "seen_choice_key_order": [],
+                "pending_choice_key_order": [],
+                "pending_choice_occurrences": {},
                 "scheduled_line_keys_by_owner": {},
                 "scheduled_line_occurrences_by_owner": {},
                 "scheduled_context_line_keys_by_owner": {},
+                "scheduled_choice_keys_by_owner": {},
+                "scheduled_choice_occurrences_by_owner": {},
+                "scheduled_context_choice_keys_by_owner": {},
                 "lines_since_push": 0,
                 "last_line_seq": 0,
                 "last_line_ts": "",
@@ -150,6 +157,53 @@ class AgentSceneTracker:
         self._trim_scene_states()
         return True
 
+    def remember_scene_choice(
+        self,
+        scene_id: str,
+        key: str,
+        *,
+        route_id: str = "",
+        occurrence: dict[str, Any] | None = None,
+    ) -> bool:
+        if not scene_id or not key or not isinstance(occurrence, dict):
+            return False
+        state = self.state_for_scene(scene_id, route_id=route_id)
+        seen_choice_keys = state.get("seen_choice_keys")
+        if not isinstance(seen_choice_keys, set):
+            seen_choice_keys = set(seen_choice_keys or [])
+            state["seen_choice_keys"] = seen_choice_keys
+        seen_choice_key_order = state.get("seen_choice_key_order")
+        if not isinstance(seen_choice_key_order, list):
+            seen_choice_key_order = [
+                str(item) for item in seen_choice_keys if str(item)
+            ]
+            state["seen_choice_key_order"] = seen_choice_key_order
+        if key in seen_choice_keys:
+            return False
+        seen_choice_keys.add(key)
+        seen_choice_key_order.append(key)
+        self._trim_seen_line_window(seen_choice_keys, seen_choice_key_order)
+        pending_choice_key_order = state.get("pending_choice_key_order")
+        if not isinstance(pending_choice_key_order, list):
+            pending_choice_key_order = [
+                str(item)
+                for item in list(pending_choice_key_order or [])
+                if str(item)
+            ]
+            state["pending_choice_key_order"] = pending_choice_key_order
+        pending_choice_key_order.append(key)
+        pending_choice_occurrences = state.get("pending_choice_occurrences")
+        if not isinstance(pending_choice_occurrences, dict):
+            pending_choice_occurrences = {}
+            state["pending_choice_occurrences"] = pending_choice_occurrences
+        stored_occurrence = dict(occurrence)
+        choice = occurrence.get("choice")
+        if isinstance(choice, dict):
+            stored_occurrence["choice"] = dict(choice)
+        pending_choice_occurrences[key] = stored_occurrence
+        self._trim_scene_states()
+        return True
+
     def mark_scene_summary_scheduled(
         self,
         scene_id: str,
@@ -157,6 +211,7 @@ class AgentSceneTracker:
         route_id: str = "",
         seq: int,
         covered_line_keys: list[str] | set[str] | None = None,
+        covered_choice_keys: list[str] | set[str] | None = None,
     ) -> int:
         state = self.state_for_scene(scene_id, route_id=route_id)
         self._summary_schedule_owner_counter += 1
@@ -219,6 +274,58 @@ class AgentSceneTracker:
         scheduled_context_line_keys_by_owner[owner_token] = {
             str(key) for key in list(covered_line_keys or []) if str(key)
         }
+        covered_choice_key_set = {
+            str(key) for key in list(covered_choice_keys or []) if str(key)
+        }
+        pending_choice_key_order = [
+            str(item)
+            for item in list(state.get("pending_choice_key_order") or [])
+            if str(item)
+        ]
+        state["pending_choice_key_order"] = pending_choice_key_order
+        scheduled_choice_keys = [
+            key for key in pending_choice_key_order if key in covered_choice_key_set
+        ]
+        scheduled_choice_key_set = set(scheduled_choice_keys)
+        state["pending_choice_key_order"] = [
+            key
+            for key in pending_choice_key_order
+            if key not in scheduled_choice_key_set
+        ]
+        scheduled_choice_keys_by_owner = state.get("scheduled_choice_keys_by_owner")
+        if not isinstance(scheduled_choice_keys_by_owner, dict):
+            scheduled_choice_keys_by_owner = {}
+            state["scheduled_choice_keys_by_owner"] = scheduled_choice_keys_by_owner
+        scheduled_choice_keys_by_owner[owner_token] = scheduled_choice_keys
+        pending_choice_occurrences = state.get("pending_choice_occurrences")
+        scheduled_choice_occurrences_by_owner = state.get(
+            "scheduled_choice_occurrences_by_owner"
+        )
+        if not isinstance(scheduled_choice_occurrences_by_owner, dict):
+            scheduled_choice_occurrences_by_owner = {}
+            state["scheduled_choice_occurrences_by_owner"] = (
+                scheduled_choice_occurrences_by_owner
+            )
+        scheduled_choice_occurrences: dict[str, dict[str, Any]] = {}
+        if isinstance(pending_choice_occurrences, dict):
+            for key in scheduled_choice_keys:
+                pending = pending_choice_occurrences.pop(key, None)
+                if isinstance(pending, dict):
+                    scheduled_choice_occurrences[key] = pending
+        scheduled_choice_occurrences_by_owner[owner_token] = (
+            scheduled_choice_occurrences
+        )
+        scheduled_context_choice_keys_by_owner = state.get(
+            "scheduled_context_choice_keys_by_owner"
+        )
+        if not isinstance(scheduled_context_choice_keys_by_owner, dict):
+            scheduled_context_choice_keys_by_owner = {}
+            state["scheduled_context_choice_keys_by_owner"] = (
+                scheduled_context_choice_keys_by_owner
+            )
+        scheduled_context_choice_keys_by_owner[owner_token] = (
+            covered_choice_key_set
+        )
         state["lines_since_push"] = 0
         state["last_scheduled_seq"] = int(seq or 0)
         state["last_schedule_owner_token"] = owner_token
@@ -255,6 +362,14 @@ class AgentSceneTracker:
         )
         if isinstance(scheduled_line_occurrences_by_owner, dict):
             scheduled_line_occurrences_by_owner.pop(owner_token, None)
+        scheduled_choice_keys_by_owner = state.get("scheduled_choice_keys_by_owner")
+        if isinstance(scheduled_choice_keys_by_owner, dict):
+            scheduled_choice_keys_by_owner.pop(owner_token, None)
+        scheduled_choice_occurrences_by_owner = state.get(
+            "scheduled_choice_occurrences_by_owner"
+        )
+        if isinstance(scheduled_choice_occurrences_by_owner, dict):
+            scheduled_choice_occurrences_by_owner.pop(owner_token, None)
         deferred_schedules = self._pop_deferred_scene_summary_schedules(
             state,
             owner_token=owner_token,
@@ -265,6 +380,14 @@ class AgentSceneTracker:
         covered_line_keys = (
             set(scheduled_context_line_keys_by_owner.pop(owner_token, set()))
             if isinstance(scheduled_context_line_keys_by_owner, dict)
+            else set()
+        )
+        scheduled_context_choice_keys_by_owner = state.get(
+            "scheduled_context_choice_keys_by_owner"
+        )
+        covered_choice_keys = (
+            set(scheduled_context_choice_keys_by_owner.pop(owner_token, set()))
+            if isinstance(scheduled_context_choice_keys_by_owner, dict)
             else set()
         )
         pending_line_occurrences = state.get("pending_line_occurrences")
@@ -284,6 +407,7 @@ class AgentSceneTracker:
             self._scene_summary_batches_not_covered(
                 deferred_schedules,
                 covered_line_keys=covered_line_keys,
+                covered_choice_keys=covered_choice_keys,
             ),
         )
         if int(state.get("last_schedule_owner_token") or 0) != int(owner_token or 0):
@@ -331,6 +455,20 @@ class AgentSceneTracker:
             if isinstance(scheduled_line_occurrences_by_owner, dict)
             else {}
         )
+        scheduled_choice_keys_by_owner = state.get("scheduled_choice_keys_by_owner")
+        scheduled_choice_keys = (
+            list(scheduled_choice_keys_by_owner.pop(owner_token, []))
+            if isinstance(scheduled_choice_keys_by_owner, dict)
+            else []
+        )
+        scheduled_choice_occurrences_by_owner = state.get(
+            "scheduled_choice_occurrences_by_owner"
+        )
+        scheduled_choice_occurrences = (
+            dict(scheduled_choice_occurrences_by_owner.pop(owner_token, {}))
+            if isinstance(scheduled_choice_occurrences_by_owner, dict)
+            else {}
+        )
         restore_batches = self._pop_deferred_scene_summary_schedules(
             state,
             owner_token=owner_token,
@@ -340,12 +478,27 @@ class AgentSceneTracker:
         )
         if isinstance(scheduled_context_line_keys_by_owner, dict):
             scheduled_context_line_keys_by_owner.pop(owner_token, None)
-        if scheduled_line_keys or scheduled_line_occurrences or lines_since_push > 0:
+        scheduled_context_choice_keys_by_owner = state.get(
+            "scheduled_context_choice_keys_by_owner"
+        )
+        if isinstance(scheduled_context_choice_keys_by_owner, dict):
+            scheduled_context_choice_keys_by_owner.pop(owner_token, None)
+        if (
+            scheduled_line_keys
+            or scheduled_line_occurrences
+            or scheduled_choice_keys
+            or scheduled_choice_occurrences
+            or lines_since_push > 0
+        ):
             restore_batches.append(
                 {
                     "owner_token": int(owner_token or 0),
                     "line_keys": [str(key) for key in scheduled_line_keys if str(key)],
                     "line_occurrences": scheduled_line_occurrences,
+                    "choice_keys": [
+                        str(key) for key in scheduled_choice_keys if str(key)
+                    ],
+                    "choice_occurrences": scheduled_choice_occurrences,
                     "lines_since_push": int(lines_since_push or 0),
                 }
             )
@@ -401,6 +554,14 @@ class AgentSceneTracker:
         )
         if isinstance(scheduled_line_occurrences_by_owner, dict):
             scheduled_line_occurrences_by_owner.pop(owner_token, None)
+        scheduled_choice_keys_by_owner = state.get("scheduled_choice_keys_by_owner")
+        if isinstance(scheduled_choice_keys_by_owner, dict):
+            scheduled_choice_keys_by_owner.pop(owner_token, None)
+        scheduled_choice_occurrences_by_owner = state.get(
+            "scheduled_choice_occurrences_by_owner"
+        )
+        if isinstance(scheduled_choice_occurrences_by_owner, dict):
+            scheduled_choice_occurrences_by_owner.pop(owner_token, None)
         deferred_schedules = self._pop_deferred_scene_summary_schedules(
             state,
             owner_token=owner_token,
@@ -410,6 +571,11 @@ class AgentSceneTracker:
         )
         if isinstance(scheduled_context_line_keys_by_owner, dict):
             scheduled_context_line_keys_by_owner.pop(owner_token, None)
+        scheduled_context_choice_keys_by_owner = state.get(
+            "scheduled_context_choice_keys_by_owner"
+        )
+        if isinstance(scheduled_context_choice_keys_by_owner, dict):
+            scheduled_context_choice_keys_by_owner.pop(owner_token, None)
         pending_line_occurrences = state.get("pending_line_occurrences")
         if isinstance(pending_line_occurrences, dict):
             for key in scheduled_line_keys:
@@ -487,25 +653,38 @@ class AgentSceneTracker:
         batches: list[dict[str, Any]],
         *,
         covered_line_keys: set[str],
+        covered_choice_keys: set[str],
     ) -> list[dict[str, Any]]:
-        if not batches or not covered_line_keys:
+        if not batches or (not covered_line_keys and not covered_choice_keys):
             return batches
         uncovered_batches: list[dict[str, Any]] = []
         for batch in batches:
             line_keys = [
                 str(key) for key in list(batch.get("line_keys") or []) if str(key)
             ]
-            if not line_keys:
-                uncovered_batches.append(batch)
-                continue
             uncovered_line_keys = [
                 key for key in line_keys if key not in covered_line_keys
             ]
-            if not uncovered_line_keys:
+            choice_keys = [
+                str(key) for key in list(batch.get("choice_keys") or []) if str(key)
+            ]
+            if not line_keys and not choice_keys:
+                uncovered_batches.append(batch)
+                continue
+            uncovered_choice_keys = [
+                key for key in choice_keys if key not in covered_choice_keys
+            ]
+            if not uncovered_line_keys and not uncovered_choice_keys:
                 continue
             occurrence_obj = batch.get("line_occurrences")
             occurrence_map = (
                 occurrence_obj if isinstance(occurrence_obj, dict) else {}
+            )
+            choice_occurrence_obj = batch.get("choice_occurrences")
+            choice_occurrence_map = (
+                choice_occurrence_obj
+                if isinstance(choice_occurrence_obj, dict)
+                else {}
             )
             uncovered_batches.append(
                 {
@@ -515,6 +694,12 @@ class AgentSceneTracker:
                         key: occurrence_map[key]
                         for key in uncovered_line_keys
                         if key in occurrence_map
+                    },
+                    "choice_keys": uncovered_choice_keys,
+                    "choice_occurrences": {
+                        key: choice_occurrence_map[key]
+                        for key in uncovered_choice_keys
+                        if key in choice_occurrence_map
                     },
                     "lines_since_push": len(uncovered_line_keys),
                 }
@@ -537,8 +722,18 @@ class AgentSceneTracker:
         if not isinstance(pending_line_occurrences, dict):
             pending_line_occurrences = {}
             state["pending_line_occurrences"] = pending_line_occurrences
+        pending_choice_key_order = [
+            str(item)
+            for item in list(state.get("pending_choice_key_order") or [])
+            if str(item)
+        ]
+        pending_choice_occurrences = state.get("pending_choice_occurrences")
+        if not isinstance(pending_choice_occurrences, dict):
+            pending_choice_occurrences = {}
+            state["pending_choice_occurrences"] = pending_choice_occurrences
 
         restored_line_keys: list[str] = []
+        restored_choice_keys: list[str] = []
         restored_line_count = 0
         for batch in sorted(
             batches,
@@ -555,10 +750,28 @@ class AgentSceneTracker:
                 occurrence = occurrence_map.get(key)
                 if isinstance(occurrence, dict):
                     pending_line_occurrences[key] = occurrence
+            choice_occurrences = batch.get("choice_occurrences")
+            choice_occurrence_map = (
+                choice_occurrences if isinstance(choice_occurrences, dict) else {}
+            )
+            for key_obj in list(batch.get("choice_keys") or []):
+                key = str(key_obj or "")
+                if not key or key in restored_choice_keys:
+                    continue
+                restored_choice_keys.append(key)
+                occurrence = choice_occurrence_map.get(key)
+                if isinstance(occurrence, dict):
+                    pending_choice_occurrences[key] = occurrence
 
         restored_line_key_set = set(restored_line_keys)
         state["pending_line_key_order"] = restored_line_keys + [
             key for key in pending_line_key_order if key not in restored_line_key_set
+        ]
+        restored_choice_key_set = set(restored_choice_keys)
+        state["pending_choice_key_order"] = restored_choice_keys + [
+            key
+            for key in pending_choice_key_order
+            if key not in restored_choice_key_set
         ]
         state["lines_since_push"] = (
             int(state.get("lines_since_push") or 0) + restored_line_count

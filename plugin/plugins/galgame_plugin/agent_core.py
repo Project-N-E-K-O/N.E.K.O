@@ -100,6 +100,8 @@ class GameLLMAgent(
 
     _SUMMARY_SEEN_LINE_KEYS_LIMIT = 512
 
+    _SCENE_CAPSULE_SOURCE_ALIAS_LIMIT = 64
+
     _KEY_POINT_LABELS = {
         "plot": "剧情推进",
         "emotion": "人物情绪",

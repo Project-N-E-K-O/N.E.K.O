@@ -243,7 +243,32 @@ def test_snapshot_events_boundary_keeps_oversized_partial_after_checkpoint(
 
     assert boundary.offset == len(checkpoint_line)
     assert boundary.file_size == events_path.stat().st_size
+    assert boundary.last_seq == 1
+    assert boundary.checkpoint
     assert boundary.error == ""
+
+
+@pytest.mark.plugin_unit
+def test_snapshot_events_boundary_pairs_captured_offset_with_seq_high_water(
+    tmp_path: Path,
+) -> None:
+    events_path = tmp_path / "events.jsonl"
+    first_line = b'{"session_id":"sess-a","seq":1,"type":"line_changed"}\n'
+    checkpoint_ahead_line = (
+        b'{"session_id":"sess-a","seq":2,"type":"line_changed"}\n'
+    )
+    events_path.write_bytes(first_line + checkpoint_ahead_line)
+
+    boundary = snapshot_events_boundary(
+        events_path,
+        session_id="sess-a",
+        last_seq=2,
+        snapshot_file_size=len(first_line),
+    )
+
+    assert boundary.offset == len(first_line)
+    assert boundary.last_seq == 1
+    assert boundary.checkpoint
 
 
 @pytest.mark.plugin_unit

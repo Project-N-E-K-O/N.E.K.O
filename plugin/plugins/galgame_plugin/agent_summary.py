@@ -7,6 +7,21 @@ from .agent_prompt import _context_line_count
 
 
 class AgentSummaryMixin:
+    def _remember_scene_capsule_source_alias(
+        self,
+        source_identity: str,
+        boundary_key: str,
+    ) -> None:
+        normalized_source_identity = str(source_identity or "").strip()
+        normalized_boundary_key = str(boundary_key or "").strip()
+        if not normalized_source_identity or not normalized_boundary_key:
+            return
+        aliases = self._scene_capsule_source_aliases
+        aliases.pop(normalized_source_identity, None)
+        aliases[normalized_source_identity] = normalized_boundary_key
+        while len(aliases) > self._SCENE_CAPSULE_SOURCE_ALIAS_LIMIT:
+            aliases.pop(next(iter(aliases)), None)
+
     @property
     def _summary_seen_line_keys(self) -> set[str]:
         return self._scene_tracker.summary_seen_line_keys
@@ -347,8 +362,9 @@ class AgentSummaryMixin:
             ),
         )
         if previous_boundary:
-            self._scene_capsule_source_aliases[current_source_identity] = (
-                previous_boundary
+            self._remember_scene_capsule_source_alias(
+                current_source_identity,
+                previous_boundary,
             )
 
     @staticmethod
@@ -2504,7 +2520,7 @@ class AgentSummaryMixin:
         self._scene_capsule_save_boundary_marker = save_boundary_marker
         self._scene_capsule_save_boundary_semantic_marker = save_boundary_semantic_marker
         observation_epoch = self._scene_capsule_observation_epoch
-        self._scene_capsule_source_aliases[source_identity] = boundary_key
+        self._remember_scene_capsule_source_alias(source_identity, boundary_key)
         ledger = self._scene_capsule_delivery_ledger.setdefault(
             boundary_key,
             {
@@ -3527,6 +3543,23 @@ class AgentSummaryMixin:
                         line_route_id,
                     )
                 )
+        for occurrence in choice_occurrences:
+            choice = occurrence.get("choice")
+            if not isinstance(choice, dict):
+                continue
+            if self._normalized_choice_state(choice) != "selected":
+                continue
+            choice_scene_id = str(choice.get("scene_id") or "").strip()
+            choice_route_id = str(choice.get("route_id") or "")
+            choice_key = str(occurrence.get("event_key") or "")
+            if not choice_scene_id or not choice_key:
+                continue
+            self._scene_tracker.remember_scene_choice(
+                choice_scene_id,
+                choice_key,
+                route_id=choice_route_id,
+                occurrence=occurrence,
+            )
         self._scene_tracker.summary_last_processed_event_seq = max_processed_seq
 
         ready_scene_scope_keys = set(changed_scene_scope_keys)
@@ -3640,6 +3673,25 @@ class AgentSummaryMixin:
                 archivable_line_occurrences_by_key[event_key] = occurrence
         archivable_line_occurrences = list(
             archivable_line_occurrences_by_key.values()
+        )
+        archivable_choice_occurrences_by_key: dict[str, dict[str, Any]] = {}
+        for summary_state in self._scene_tracker.summary_scene_states.values():
+            pending_choice_occurrences = summary_state.get(
+                "pending_choice_occurrences"
+            )
+            if not isinstance(pending_choice_occurrences, dict):
+                continue
+            for pending_key, pending_occurrence in pending_choice_occurrences.items():
+                if isinstance(pending_occurrence, dict) and str(pending_key):
+                    archivable_choice_occurrences_by_key[str(pending_key)] = (
+                        pending_occurrence
+                    )
+        for occurrence in choice_occurrences:
+            event_key = str(occurrence.get("event_key") or "")
+            if event_key:
+                archivable_choice_occurrences_by_key[event_key] = occurrence
+        archivable_choice_occurrences = list(
+            archivable_choice_occurrences_by_key.values()
         )
 
         scheduled: list[dict[str, Any]] = []
@@ -3792,11 +3844,11 @@ class AgentSummaryMixin:
                 )
                 scope_history_choices.append(choice_record)
                 scope_choice_identities.add(identity)
-            for occurrence in choice_occurrences:
+            for occurrence in archivable_choice_occurrences:
                 choice = occurrence.get("choice")
                 if not isinstance(choice, dict):
                     continue
-                if str(choice.get("choice_state") or "").strip().lower() != "selected":
+                if self._normalized_choice_state(choice) != "selected":
                     continue
                 if (
                     str(choice.get("scene_id") or ""),
@@ -3902,19 +3954,26 @@ class AgentSummaryMixin:
                 )
                 in allowed_scene_routes
             ]
+            scheduled_choice_occurrences: list[dict[str, Any]] = []
             if not has_previous_line_batch:
-                context["new_choices"] = json_copy(
-                    list(context.get("recent_choices") or [])
-                )
+                scheduled_choice_occurrences = [
+                    occurrence
+                    for occurrence in archivable_choice_occurrences
+                    if isinstance(choice := occurrence.get("choice"), dict)
+                    and self._normalized_choice_state(choice) == "selected"
+                    and (
+                        str(choice.get("scene_id") or ""),
+                        str(choice.get("route_id") or ""),
+                    )
+                    in allowed_scene_routes
+                ]
             else:
-                new_choices: list[dict[str, Any]] = []
-                for occurrence in choice_occurrences:
+                for occurrence in archivable_choice_occurrences:
                     choice = occurrence.get("choice")
                     if not isinstance(choice, dict):
                         continue
                     if (
-                        str(choice.get("choice_state") or "").strip().lower()
-                        != "selected"
+                        self._normalized_choice_state(choice) != "selected"
                         or (
                             str(choice.get("scene_id") or ""),
                             str(choice.get("route_id") or ""),
@@ -3954,8 +4013,17 @@ class AgentSummaryMixin:
                         or within_sequence_bounds
                     ):
                         continue
-                    new_choices.append(dict(choice))
-                context["new_choices"] = new_choices
+                    scheduled_choice_occurrences.append(occurrence)
+            context["new_choices"] = [
+                dict(choice)
+                for occurrence in scheduled_choice_occurrences
+                if isinstance(choice := occurrence.get("choice"), dict)
+            ]
+            covered_choice_keys = [
+                str(occurrence.get("event_key") or "")
+                for occurrence in scheduled_choice_occurrences
+                if str(occurrence.get("event_key") or "")
+            ]
             if previous_scene_summary:
                 # Keep the prior LLM archive explicit even in rolling context
                 # mode, where scene_summary_seed intentionally remains local.
@@ -4030,6 +4098,7 @@ class AgentSummaryMixin:
                 route_id=route_id,
                 seq=scheduled_seq,
                 covered_line_keys=covered_line_keys,
+                covered_choice_keys=covered_choice_keys,
             )
             merged_schedule_restore: list[dict[str, Any]] = []
             for merged_scope_key in merge_scope_keys or []:
@@ -4062,6 +4131,7 @@ class AgentSummaryMixin:
                         route_id=merged_route_id,
                         seq=0,
                         covered_line_keys=covered_line_keys,
+                        covered_choice_keys=covered_choice_keys,
                     )
                 )
             metadata = {

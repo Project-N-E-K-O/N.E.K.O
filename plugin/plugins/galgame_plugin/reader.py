@@ -32,6 +32,8 @@ class TailReadResult:
 class EventStreamBoundary:
     offset: int = 0
     file_size: int = 0
+    last_seq: int = 0
+    checkpoint: str = ""
     error: str = ""
 
 
@@ -111,6 +113,57 @@ def snapshot_events_boundary(
             file_size = handle.tell()
             if file_size <= 0:
                 return EventStreamBoundary()
+
+            def _boundary_at(
+                offset: int,
+                *,
+                boundary_last_seq: int = 0,
+            ) -> EventStreamBoundary:
+                normalized_offset = max(0, min(file_size, int(offset)))
+                checkpoint = ""
+                if normalized_offset > 0:
+                    checkpoint_start = max(0, normalized_offset - 256)
+                    handle.seek(checkpoint_start)
+                    sample = handle.read(normalized_offset - checkpoint_start)
+                    if len(sample) == normalized_offset - checkpoint_start:
+                        checkpoint = hashlib.sha256(sample).hexdigest()
+                return EventStreamBoundary(
+                    offset=normalized_offset,
+                    file_size=file_size,
+                    last_seq=max(0, int(boundary_last_seq or 0)),
+                    checkpoint=checkpoint,
+                )
+
+            def _checkpoint_seq_at_boundary(offset: int) -> int:
+                normalized_offset = max(0, min(file_size, int(offset)))
+                if normalized_offset <= 0:
+                    return 0
+                handle.seek(normalized_offset - 1)
+                if handle.read(1) != b"\n":
+                    return 0
+                record_end = normalized_offset - 1
+                cursor = record_end
+                record_start = 0
+                while cursor > 0:
+                    chunk_size = min(cursor, 64 * 1024)
+                    cursor -= chunk_size
+                    handle.seek(cursor)
+                    chunk = handle.read(chunk_size)
+                    newline_index = chunk.rfind(b"\n")
+                    if newline_index >= 0:
+                        record_start = cursor + newline_index + 1
+                        break
+                handle.seek(record_start)
+                raw_line = handle.read(record_end - record_start)
+                event, _error = _parse_jsonl_line(raw_line)
+                if event is None or str(event.get("session_id") or "") != session_id:
+                    return 0
+                try:
+                    seq = int(event.get("seq") or 0)
+                except (TypeError, ValueError):
+                    return 0
+                return seq if 0 < seq <= checkpoint_seq else 0
+
             snapshot_size = file_size
             if snapshot_file_size is not None:
                 snapshot_size = max(0, min(file_size, int(snapshot_file_size)))
@@ -131,12 +184,15 @@ def snapshot_events_boundary(
                 if scan_start > 0 and not starts_on_record_boundary:
                     newline_index = data.find(b"\n")
                     if newline_index < 0:
-                        return EventStreamBoundary(
-                            offset=_complete_line_boundary_at_or_before(
-                                handle,
-                                scan_start,
+                        fallback_offset = _complete_line_boundary_at_or_before(
+                            handle,
+                            scan_start,
+                        )
+                        return _boundary_at(
+                            fallback_offset,
+                            boundary_last_seq=_checkpoint_seq_at_boundary(
+                                fallback_offset
                             ),
-                            file_size=file_size,
                         )
                     data_start += newline_index + 1
                     data = data[newline_index + 1 :]
@@ -164,6 +220,7 @@ def snapshot_events_boundary(
                 # suffix after the writer appends its terminating newline.
                 fallback_offset = complete_lines[0][0] if complete_lines else data_start
                 matched_offset = 0
+                matched_seq = 0
                 for _line_offset, line_end, raw_line in complete_lines:
                     event, _error = _parse_jsonl_line(raw_line)
                     if event is None or str(event.get("session_id") or "") != session_id:
@@ -174,9 +231,10 @@ def snapshot_events_boundary(
                         seq = 0
                     if 0 < seq <= checkpoint_seq:
                         matched_offset = line_end
-                return EventStreamBoundary(
-                    offset=matched_offset or fallback_offset,
-                    file_size=file_size,
+                        matched_seq = max(matched_seq, seq)
+                return _boundary_at(
+                    matched_offset or fallback_offset,
+                    boundary_last_seq=matched_seq if matched_offset else 0,
                 )
 
             cursor = snapshot_size
@@ -187,11 +245,8 @@ def snapshot_events_boundary(
                 chunk = handle.read(chunk_size)
                 newline_index = chunk.rfind(b"\n")
                 if newline_index >= 0:
-                    return EventStreamBoundary(
-                        offset=cursor + newline_index + 1,
-                        file_size=file_size,
-                    )
-            return EventStreamBoundary(offset=0, file_size=file_size)
+                    return _boundary_at(cursor + newline_index + 1)
+            return _boundary_at(0)
     except OSError as exc:
         return EventStreamBoundary(error=f"read events.jsonl boundary failed: {exc}")
 

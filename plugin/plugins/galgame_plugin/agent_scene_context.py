@@ -7,6 +7,12 @@ from .context_builder import _SUMMARY_MAX_CHARS, _bounded_summary_text
 class AgentSceneContextMixin:
     _SCENE_DELTA_CHOICE_LIMIT = 50
 
+    @staticmethod
+    def _normalized_choice_state(choice: dict[str, Any]) -> str:
+        return str(
+            choice.get("choice_state") or choice.get("action") or "selected"
+        ).strip().lower()
+
     async def _summarize_scene_for_cat(
         self,
         shared: dict[str, Any],
@@ -93,18 +99,12 @@ class AgentSceneContextMixin:
             selected_new_choices = [
                 choice
                 for choice in new_choices
-                if str(
-                    choice.get("choice_state") or choice.get("action") or ""
-                )
-                .strip()
-                .lower()
-                == "selected"
+                if self._normalized_choice_state(choice) == "selected"
             ]
             visible_new_choices = [
                 choice
                 for choice in new_choices
-                if str(choice.get("choice_state") or "").strip().lower()
-                == "visible"
+                if self._normalized_choice_state(choice) == "visible"
             ]
             local_progress_summary = self._build_scene_context_fallback(
                 scene_id=scene_id,
@@ -286,7 +286,7 @@ class AgentSceneContextMixin:
             )
             if not rendered:
                 continue
-            state = str(choice.get("choice_state") or "selected").strip().lower()
+            state = cls._normalized_choice_state(choice)
             if state == "visible":
                 visible_choices.append(rendered)
             else:
@@ -402,8 +402,7 @@ class AgentSceneContextMixin:
         selected_choice_preview = [
             cls._format_choice_text(choice)
             for choice in new_choices
-            if str(choice.get("choice_state") or "selected").strip().lower()
-            != "visible"
+            if cls._normalized_choice_state(choice) != "visible"
         ][-3:]
         selected_choice_preview = [
             choice for choice in selected_choice_preview if choice
@@ -411,7 +410,7 @@ class AgentSceneContextMixin:
         visible_choice_preview = [
             cls._format_choice_text(choice)
             for choice in new_choices
-            if str(choice.get("choice_state") or "").strip().lower() == "visible"
+            if cls._normalized_choice_state(choice) == "visible"
         ][-3:]
         visible_choice_preview = [
             choice for choice in visible_choice_preview if choice

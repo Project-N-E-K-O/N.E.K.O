@@ -2416,6 +2416,167 @@ async def test_preexisting_boundary_keeps_event_appended_after_candidate_snapsho
         await plugin.shutdown()
 
 
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
+async def test_preexisting_boundary_uses_seq_high_water_from_captured_bytes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    plugin = GalgameBridgePlugin(_Ctx(plugin_dir, _make_effective_config(bridge_root)))
+    await plugin.startup()
+    try:
+        await plugin._poll_bridge(force=True)
+        game_id = "demo.checkpoint-ahead"
+        session_id = "sess-checkpoint-ahead"
+        old_line = _event(
+            seq=1,
+            event_type="line_changed",
+            session_id=session_id,
+            game_id=game_id,
+            payload={"text": "old line", "line_id": "line-old", "scene_id": "scene-a"},
+            ts="2000-01-01T00:00:01Z",
+        )
+        new_line = _event(
+            seq=2,
+            event_type="line_changed",
+            session_id=session_id,
+            game_id=game_id,
+            payload={"text": "checkpoint ahead line", "line_id": "line-new", "scene_id": "scene-a"},
+            ts="2026-04-21T08:30:02Z",
+        )
+        game_dir = _create_game_dir(
+            bridge_root,
+            game_id=game_id,
+            session_payload=_session(
+                game_id=game_id,
+                session_id=session_id,
+                last_seq=2,
+                started_at="2000-01-01T00:00:00Z",
+                state=_session_state(
+                    text="checkpoint ahead line",
+                    line_id="line-new",
+                    scene_id="scene-a",
+                ),
+            ),
+            events=[old_line],
+        )
+        events_path = game_dir / "events.jsonl"
+        captured_size = events_path.stat().st_size
+        _append_event(events_path, new_line)
+
+        def _captured_boundary(path: Path, **kwargs: object) -> EventStreamBoundary:
+            return read_events_boundary(
+                path,
+                **{**kwargs, "snapshot_file_size": captured_size},
+            )
+
+        monkeypatch.setattr(
+            "plugin.plugins.galgame_plugin.plugin_core.snapshot_events_boundary",
+            _captured_boundary,
+        )
+
+        await plugin._poll_bridge(force=True)
+
+        mounted = plugin._snapshot_state()
+        assert mounted["last_seq"] == 2
+        assert mounted["latest_snapshot"]["line_id"] == "line-new"
+        assert [event["seq"] for event in mounted["history_events"]] == [2]
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
+async def test_first_attachment_validates_boundary_checkpoint_before_tailing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    plugin = GalgameBridgePlugin(_Ctx(plugin_dir, _make_effective_config(bridge_root)))
+    await plugin.startup()
+    try:
+        await plugin._poll_bridge(force=True)
+        game_id = "demo.attachment-rewrite"
+        session_id = "sess-attachment-rewrite"
+        old_line = _event(
+            seq=1,
+            event_type="line_changed",
+            session_id=session_id,
+            game_id=game_id,
+            payload={"text": "old attachment line", "line_id": "line-old", "scene_id": "scene-a"},
+            ts="2000-01-01T00:00:01Z",
+        )
+        game_dir = _create_game_dir(
+            bridge_root,
+            game_id=game_id,
+            session_payload=_session(
+                game_id=game_id,
+                session_id=session_id,
+                last_seq=1,
+                started_at="2000-01-01T00:00:00Z",
+                state=_session_state(text="old attachment line", line_id="line-old"),
+            ),
+            events=[old_line],
+        )
+        events_path = game_dir / "events.jsonl"
+        old_size = events_path.stat().st_size
+        replacement = _event(
+            seq=1,
+            event_type="line_changed",
+            session_id=session_id,
+            game_id=game_id,
+            payload={
+                "text": "replacement " + ("x" * old_size),
+                "line_id": "line-replacement",
+                "scene_id": "scene-a",
+            },
+            ts="2026-04-21T08:31:01Z",
+        )
+        real_tail = tail_events_jsonl
+        tail_calls = 0
+
+        def _rewrite_before_first_tail(path: Path, **kwargs: object):
+            nonlocal tail_calls
+            tail_calls += 1
+            if tail_calls == 1:
+                _write_events(events_path, [replacement])
+                _write_session(
+                    game_dir / "session.json",
+                    _session(
+                        game_id=game_id,
+                        session_id=session_id,
+                        last_seq=1,
+                        started_at="2000-01-01T00:00:00Z",
+                        state=_session_state(
+                            text=str(replacement["payload"]["text"]),
+                            line_id="line-replacement",
+                            scene_id="scene-a",
+                        ),
+                    ),
+                )
+                assert events_path.stat().st_size >= old_size
+            return real_tail(path, **kwargs)
+
+        monkeypatch.setattr(
+            "plugin.plugins.galgame_plugin.plugin_core.tail_events_jsonl",
+            _rewrite_before_first_tail,
+        )
+
+        await plugin._poll_bridge(force=True)
+        resetting = plugin._snapshot_state()
+        assert resetting["stream_reset_pending"] is True
+        assert resetting["history_events"] == []
+
+        await plugin._poll_bridge(force=True)
+        recovered = plugin._snapshot_state()
+        assert recovered["stream_reset_pending"] is False
+        assert recovered["latest_snapshot"]["line_id"] == "line-replacement"
+        assert [event["seq"] for event in recovered["history_events"]] == [1]
+    finally:
+        await plugin.shutdown()
+
+
 @pytest.mark.plugin_unit
 def test_positive_checkpoint_scan_stops_at_candidate_snapshot(tmp_path: Path) -> None:
     events_path = tmp_path / "events.jsonl"
@@ -2896,6 +3057,55 @@ async def test_truncation_sets_stream_reset_pending(
 
     await plugin._poll_bridge(force=True)
     assert plugin._snapshot_state()["active_session_meta"]["stream_generation"] == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
+async def test_empty_partial_stream_reset_rearms_same_session_generation(
+    tmp_path: Path,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    game_id = "demo.partial-reset"
+    session_id = "sess-partial-reset"
+    game_dir = _create_game_dir(
+        bridge_root,
+        game_id=game_id,
+        session_payload=_session(
+            game_id=game_id,
+            session_id=session_id,
+            last_seq=0,
+            started_at="2000-01-01T00:00:00Z",
+            state=_session_state(text="", line_id=""),
+        ),
+        events=[],
+    )
+    events_path = game_dir / "events.jsonl"
+    first_partial = b'{"session_id":"sess-partial-reset","seq":1'
+    events_path.write_bytes(first_partial)
+    plugin = GalgameBridgePlugin(_Ctx(plugin_dir, _make_effective_config(bridge_root)))
+    await plugin.startup()
+    try:
+        await plugin._poll_bridge(force=True)
+        assert plugin._snapshot_state()["events_byte_offset"] == len(first_partial)
+
+        events_path.write_bytes(b"")
+        await plugin._poll_bridge(force=True)
+        assert plugin._snapshot_state()["active_session_meta"]["stream_generation"] == 1
+        await plugin._poll_bridge(force=True)
+        assert plugin._snapshot_state()["stream_reset_pending"] is False
+
+        second_partial = b'{"session_id":"sess-partial-reset","seq":1,"type"'
+        events_path.write_bytes(second_partial)
+        await plugin._poll_bridge(force=True)
+        assert plugin._snapshot_state()["events_byte_offset"] == len(second_partial)
+
+        events_path.write_bytes(b"")
+        await plugin._poll_bridge(force=True)
+        resetting_again = plugin._snapshot_state()
+        assert resetting_again["stream_reset_pending"] is True
+        assert resetting_again["active_session_meta"]["stream_generation"] == 2
+    finally:
+        await plugin.shutdown()
 
 
 @pytest.mark.asyncio

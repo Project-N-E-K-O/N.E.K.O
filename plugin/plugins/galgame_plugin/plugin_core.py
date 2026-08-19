@@ -4081,6 +4081,8 @@ class GalgamePlugin(
 
         session = candidate.session
         session_id = str(session.get("session_id") or "")
+        attachment_checkpoint = ""
+        attachment_checkpoint_offset = 0
         session_state = session.get("state")
         session_state_obj = session_state if isinstance(session_state, dict) else {}
         candidate_session_identity = session_identity_key(
@@ -4294,7 +4296,9 @@ class GalgamePlugin(
                 return
             local["events_byte_offset"] = boundary.offset
             local["events_file_size"] = boundary.file_size
-            local["last_seq"] = int(session.get("last_seq") or 0)
+            local["last_seq"] = int(boundary.last_seq or 0)
+            attachment_checkpoint = str(boundary.checkpoint or "")
+            attachment_checkpoint_offset = int(boundary.offset or 0)
             local["stream_reset_pending"] = False
             local["warmup_session_id"] = session_id
 
@@ -4353,6 +4357,11 @@ class GalgamePlugin(
         read_buffer = b"" if local["stream_reset_pending"] else bytes(local["line_buffer"])
         expected_checkpoint = ""
         if (
+            attachment_checkpoint
+            and attachment_checkpoint_offset == read_offset
+        ):
+            expected_checkpoint = attachment_checkpoint
+        elif (
             not session_changed
             and self._active_stream_checkpoint_identity == candidate_session_identity
             and self._active_stream_checkpoint_offset == read_offset
@@ -4373,6 +4382,7 @@ class GalgamePlugin(
                 local["line_buffer"] = b""
                 local["events_byte_offset"] = 0
                 local["events_file_size"] = 0
+                self._announced_stream_reset_identity = None
                 return
             local["stream_reset_pending"] = True
             if not session_changed:
