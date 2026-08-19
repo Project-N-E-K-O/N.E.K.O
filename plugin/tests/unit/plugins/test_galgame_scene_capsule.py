@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from _galgame_bridge_support import *
 from plugin.plugins.galgame_plugin.agent_scene_tracker import AgentSceneTracker
+from plugin.plugins.galgame_plugin.service import apply_event_to_snapshot
 
 
 def _capsule_shared(
@@ -4303,6 +4304,133 @@ def test_reloading_same_checkpoint_occurrence_resets_cumulative_memory(tmp_path:
 
 
 @pytest.mark.plugin_unit
+def test_reloading_same_checkpoint_after_event_eviction_refreshes_fence(
+    tmp_path: Path,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    agent = GameLLMAgent(
+        plugin=GalgameBridgePlugin(_Ctx(plugin_dir, _make_effective_config(bridge_root))),
+        logger=_Logger(),
+        llm_gateway=_FakeLLMGateway(),
+        host_adapter=_FakeHostAdapter(),
+    )
+    save_context = {"kind": "load", "slot_id": "slot-1"}
+
+    def load_event(seq: int, ts: str) -> dict[str, Any]:
+        return _event(
+            seq=seq,
+            event_type="save_loaded",
+            session_id="sess-a",
+            game_id="demo.alpha",
+            ts=ts,
+            payload={"reason": "load", "save_context": save_context},
+        )
+
+    first_snapshot = apply_event_to_snapshot(
+        _session_state(scene_id="scene-a", route_id="route-a"),
+        load_event(1, "2026-04-21T08:35:01Z"),
+    )
+    first_line = {
+        "line_id": "first-line",
+        "text": "first restored timeline",
+        "scene_id": "scene-a",
+        "route_id": "route-a",
+        "stability": "stable",
+    }
+    first_shared = _shared_state(
+        session_id="sess-a",
+        last_seq=2,
+        snapshot=first_snapshot,
+        history_events=[],
+        history_lines=[first_line],
+    )
+    first_occurrences = agent._scene_capsule_line_occurrences(
+        first_shared,
+        snapshot=first_snapshot,
+    )
+    filtered, _choices, active = agent._scene_timeline_occurrences_after_save_boundary(
+        first_shared,
+        snapshot=first_snapshot,
+        line_occurrences=first_occurrences,
+        choice_occurrences=[],
+    )
+    assert active is True
+    assert filtered == []
+
+    abandoned_line = {
+        "line_id": "abandoned-line",
+        "text": "abandoned future",
+        "scene_id": "scene-a",
+        "route_id": "route-a",
+        "stability": "stable",
+    }
+    before_second_load = _shared_state(
+        session_id="sess-a",
+        last_seq=3,
+        snapshot=first_snapshot,
+        history_events=[],
+        history_lines=[first_line, abandoned_line],
+    )
+    before_second_filtered, _choices, active = (
+        agent._scene_timeline_occurrences_after_save_boundary(
+            before_second_load,
+            snapshot=first_snapshot,
+            line_occurrences=agent._scene_capsule_line_occurrences(
+                before_second_load,
+                snapshot=first_snapshot,
+            ),
+            choice_occurrences=[],
+        )
+    )
+    assert active is True
+    assert [item["line"]["text"] for item in before_second_filtered] == [
+        "abandoned future"
+    ]
+
+    second_snapshot = apply_event_to_snapshot(
+        first_snapshot,
+        load_event(10, "2026-04-21T08:36:01Z"),
+    )
+    second_snapshot = apply_event_to_snapshot(
+        second_snapshot,
+        _event(
+            seq=11,
+            event_type="line_changed",
+            session_id="sess-a",
+            game_id="demo.alpha",
+            ts="2026-04-21T08:36:02Z",
+            payload={
+                "line_id": "restored-line",
+                "text": "restored timeline",
+                "scene_id": "scene-a",
+                "route_id": "route-a",
+                "stability": "stable",
+            },
+        ),
+    )
+    assert second_snapshot["save_boundary"]["seq"] == 10
+    second_shared = _shared_state(
+        session_id="sess-a",
+        last_seq=11,
+        snapshot=second_snapshot,
+        history_events=[],
+        history_lines=[first_line, abandoned_line],
+    )
+    filtered, _choices, active = agent._scene_timeline_occurrences_after_save_boundary(
+        second_shared,
+        snapshot=second_snapshot,
+        line_occurrences=agent._scene_capsule_line_occurrences(
+            second_shared,
+            snapshot=second_snapshot,
+        ),
+        choice_occurrences=[],
+    )
+
+    assert active is True
+    assert filtered == []
+
+
+@pytest.mark.plugin_unit
 def test_load_boundary_resets_memory_after_input_marker_was_cleared(
     tmp_path: Path,
 ) -> None:
@@ -6243,8 +6371,8 @@ def test_pending_line_order_survives_seen_line_window_trim() -> None:
 
 
 @pytest.mark.plugin_unit
-def test_superseded_archive_owner_drops_pending_line_occurrences() -> None:
-    tracker = AgentSceneTracker(seen_line_limit=8)
+def test_failed_predecessor_batch_survives_newer_archive_delivery() -> None:
+    tracker = AgentSceneTracker(seen_line_limit=2)
 
     for index in range(1, 3):
         key = f"line-{index}"
@@ -6307,6 +6435,7 @@ def test_superseded_archive_owner_drops_pending_line_occurrences() -> None:
     state = tracker.state_for_scene("scene-a", route_id="route-a")
     assert state["lines_since_push"] == 0
     assert state.get("pending_line_occurrences") == {}
+    assert state["seen_line_key_order"] == ["line-3", "line-4"]
     assert state.get("scheduled_line_occurrences_by_owner") == {
         newer_owner: {
             "line-3": {
@@ -6331,3 +6460,15 @@ def test_superseded_archive_owner_drops_pending_line_occurrences() -> None:
             },
         }
     }
+
+    tracker.mark_scene_summary_delivered(
+        "scene-a",
+        route_id="route-a",
+        seq=4,
+        owner_token=newer_owner,
+    )
+
+    assert state["lines_since_push"] == 2
+    assert state["pending_line_key_order"] == ["line-1", "line-2"]
+    assert list(state["pending_line_occurrences"]) == ["line-1", "line-2"]
+    assert state.get("scheduled_line_occurrences_by_owner") == {}

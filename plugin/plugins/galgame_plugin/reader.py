@@ -157,9 +157,11 @@ def snapshot_events_boundary(
                 if events_limit is not None:
                     complete_lines = complete_lines[-max(1, int(events_limit)) :]
 
-                fallback_offset = (
-                    complete_lines[0][0] if complete_lines else file_size
-                )
+                # Keep an in-progress record behind the tail cursor.  This is
+                # also required when the scan starts at byte zero: advancing
+                # to EOF would make the next tail read begin in the record's
+                # suffix after the writer appends its terminating newline.
+                fallback_offset = complete_lines[0][0] if complete_lines else data_start
                 matched_offset = 0
                 for _line_offset, line_end, raw_line in complete_lines:
                     event, _error = _parse_jsonl_line(raw_line)

@@ -2249,6 +2249,15 @@ def apply_event_to_snapshot(snapshot: dict[str, Any], event: dict[str, Any]) -> 
         next_snapshot["line_id"] = str(payload_obj.get("line_id") or "")
         next_snapshot["route_id"] = str(payload_obj.get("route_id") or next_snapshot.get("route_id") or "")
         next_snapshot["save_context"] = sanitize_save_context(payload_obj.get("save_context"))
+        next_snapshot["save_boundary"] = {
+            "kind": str(
+                next_snapshot["save_context"].get("kind")
+                or payload_obj.get("reason")
+                or ""
+            ).strip().lower(),
+            "seq": max(0, int(event.get("seq") or 0)),
+            "ts": event_ts,
+        }
         next_snapshot["choices"] = []
         next_snapshot["is_menu_open"] = False
         next_snapshot["ts"] = event_ts

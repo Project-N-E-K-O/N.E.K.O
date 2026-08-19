@@ -5901,6 +5901,9 @@ async def test_game_llm_agent_unknown_session_reset_clears_summary_and_blocks_ac
         {"scene_id": "scene-a", "route_id": "", "summary": "old unknown session"}
     )
     agent._choice_memory.append({"scene_id": "scene-a", "text": "old choice"})
+    agent._last_delivered_summary_key = "scene-a:3"
+    agent._last_delivered_summary_seq = 3
+    agent._last_delivered_summary_scene_id = "scene-a"
     assert agent._scene_tracker.current_scene_lines_since_push("scene-a") == 3
 
     changed_shared = _shared_state(
@@ -5916,6 +5919,9 @@ async def test_game_llm_agent_unknown_session_reset_clears_summary_and_blocks_ac
     assert agent._scene_memory == []
     assert agent._choice_memory == []
     assert agent._scene_tracker.current_scene_lines_since_push("scene-a") == 0
+    assert agent._last_delivered_summary_key == ""
+    assert agent._last_delivered_summary_seq == 0
+    assert agent._last_delivered_summary_scene_id == ""
     assert status["session_transition_actuation_blocked"] is True
     assert status["last_session_transition_type"] == "unknown_session_reset"
 
@@ -7205,6 +7211,75 @@ async def test_revisited_scene_preserves_committed_archive_seed(
     ]
     assert len(revisited) == 1
     assert revisited[0]["summary"] == "committed cumulative archive"
+    assert revisited[0]["memory_kind"] == "archive"
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
+async def test_revisited_scene_refreshes_local_transition_seed(
+    tmp_path: Path,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    agent = GameLLMAgent(
+        plugin=GalgameBridgePlugin(_Ctx(plugin_dir, _make_effective_config(bridge_root))),
+        logger=_Logger(),
+        llm_gateway=_FakeLLMGateway(),
+        host_adapter=_FakeHostAdapter(),
+    )
+    origin_shared = _shared_state(
+        mode="companion",
+        push_notifications=False,
+        snapshot=_session_state(scene_id="scene-origin"),
+    )
+    await agent.tick(origin_shared)
+    await agent.tick(origin_shared)
+    first_line = _summary_test_line("scene-a", 1)
+    first_shared = _shared_state(
+        mode="companion",
+        push_notifications=False,
+        snapshot=_session_state(
+            scene_id="scene-a",
+            line_id=str(first_line["line_id"]),
+            text=str(first_line["text"]),
+        ),
+        history_lines=[first_line],
+    )
+    await agent.tick(first_shared)
+    first_summary = next(
+        str(item.get("summary") or "")
+        for item in agent._scene_memory
+        if item.get("scene_id") == "scene-a"
+    )
+
+    await agent.tick(
+        _shared_state(
+            mode="companion",
+            push_notifications=False,
+            snapshot=_session_state(scene_id="scene-b"),
+        )
+    )
+    second_line = _summary_test_line("scene-a", 2)
+    second_line["text"] = "revisited scene new dialogue"
+    await agent.tick(
+        _shared_state(
+            mode="companion",
+            push_notifications=False,
+            snapshot=_session_state(
+                scene_id="scene-a",
+                line_id=str(second_line["line_id"]),
+                text=str(second_line["text"]),
+            ),
+            history_lines=[first_line, second_line],
+        )
+    )
+
+    revisited = [
+        item for item in agent._scene_memory if item.get("scene_id") == "scene-a"
+    ]
+    assert len(revisited) == 1
+    assert revisited[0]["memory_kind"] == "local"
+    assert revisited[0]["summary"] != first_summary
+    assert "revisited scene new dialogue" in revisited[0]["summary"]
 
 
 @pytest.mark.asyncio

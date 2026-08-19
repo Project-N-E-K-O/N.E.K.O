@@ -247,6 +247,25 @@ def test_snapshot_events_boundary_keeps_oversized_partial_after_checkpoint(
 
 
 @pytest.mark.plugin_unit
+def test_snapshot_events_boundary_keeps_initial_partial_after_checkpoint(
+    tmp_path: Path,
+) -> None:
+    events_path = tmp_path / "events.jsonl"
+    initial_partial = b'{"session_id":"sess-a","seq":1,"type":"line_changed"'
+    events_path.write_bytes(initial_partial)
+
+    boundary = snapshot_events_boundary(
+        events_path,
+        session_id="sess-a",
+        last_seq=1,
+    )
+
+    assert boundary.offset == 0
+    assert boundary.file_size == len(initial_partial)
+    assert boundary.error == ""
+
+
+@pytest.mark.plugin_unit
 def test_snapshot_events_boundary_stops_at_session_checkpoint(tmp_path: Path) -> None:
     events_path = tmp_path / "events.jsonl"
     checkpoint_line = b'{"session_id":"sess-a","seq":1}\n'

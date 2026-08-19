@@ -1655,6 +1655,20 @@ class AgentSummaryMixin:
             session_id=session_id,
         ) or f"{data_source}|{session_id}"
         save_identity = self._scene_capsule_semantic_digest(save_obj)
+        save_boundary_obj = snapshot.get("save_boundary")
+        save_boundary = (
+            save_boundary_obj if isinstance(save_boundary_obj, dict) else {}
+        )
+        persisted_boundary_marker = ""
+        if str(save_boundary.get("kind") or "").strip().lower() == save_kind:
+            persisted_occurrence = {
+                "seq": int(save_boundary.get("seq") or 0),
+                "ts": str(save_boundary.get("ts") or ""),
+            }
+            if persisted_occurrence["seq"] or persisted_occurrence["ts"]:
+                persisted_boundary_marker = self._scene_capsule_semantic_digest(
+                    {"kind": save_kind, "occurrence": persisted_occurrence}
+                )
         fallback_source_keys = {
             f"{data_source}|{session_id}|history_line",
             f"{data_source}|{session_id}|history_choice:selected",
@@ -1731,13 +1745,18 @@ class AgentSummaryMixin:
             not isinstance(boundary_state, dict)
             or str(boundary_state.get("kind") or "") != save_kind
             or str(boundary_state.get("save_identity") or "") != save_identity
+            or (
+                bool(persisted_boundary_marker)
+                and str(boundary_state.get("marker") or "")
+                != persisted_boundary_marker
+            )
         ):
             # The load event may already have left the bounded event window
             # before the agent's first observation.  Ordering is unknowable in
             # that case, so fence every currently retained occurrence and let
             # only subsequently allocated identities cross the boundary.
             boundary_state = {
-                "marker": f"late:{save_identity}",
+                "marker": persisted_boundary_marker or f"late:{save_identity}",
                 "kind": save_kind,
                 "save_identity": save_identity,
                 "seq": 0,
@@ -2902,6 +2921,7 @@ class AgentSummaryMixin:
                 **item,
                 "summary": summary,
                 "ts": self._utc_now_iso(),
+                "memory_kind": "archive",
             }
             self._scene_memory.pop(index)
             self._append_bounded(self._scene_memory, updated, limit=32)
@@ -2913,7 +2933,34 @@ class AgentSummaryMixin:
                 "route_id": route_id,
                 "summary": summary,
                 "ts": self._utc_now_iso(),
+                "memory_kind": "archive",
             },
+            limit=32,
+        )
+
+    def _upsert_local_scene_memory(self, memory: dict[str, Any]) -> None:
+        scene_id = str(memory.get("scene_id") or "")
+        route_id = str(memory.get("route_id") or "")
+        summary = str(memory.get("summary") or "").strip()
+        if not scene_id or not summary:
+            return
+        for index in range(len(self._scene_memory) - 1, -1, -1):
+            item = self._scene_memory[index]
+            if not isinstance(item, dict):
+                continue
+            if str(item.get("scene_id") or "") != scene_id:
+                continue
+            if str(item.get("route_id") or "") != route_id:
+                continue
+            # A cumulative archive is authoritative.  Only refresh the
+            # lightweight scene-transition seed from an earlier visit.
+            if str(item.get("memory_kind") or "") != "local":
+                return
+            self._scene_memory.pop(index)
+            break
+        self._append_bounded(
+            self._scene_memory,
+            {**dict(memory), "memory_kind": "local"},
             limit=32,
         )
 
