@@ -602,6 +602,8 @@ export default {
     pluginListRefreshPartial: 'Plugin list refresh has a failed item: {target}: {error}',
     pluginListRefreshPartialMultiple: 'Plugin list refresh has {count} failed items. First: {target}: {error}',
     pluginListRefreshPartialUnknown: 'Plugin list refresh has failed items.',
+    pluginListRefreshForbidden: 'You do not have permission to refresh the plugin registry. Only the plugin list was reloaded.',
+    pluginListRefreshUnauthenticated: 'The current session is not authenticated. Only the plugin list was reloaded.',
     confirmDelete: 'Confirm delete?',
     confirmStop: 'Confirm stop plugin?',
     confirmStart: 'Confirm start plugin?',

@@ -148,8 +148,8 @@ export const usePluginStore = defineStore('plugin', () => {
         throw err
       }
       warningMessage = status === 403
-        ? '当前账号无权限刷新插件注册表，已仅重新拉取插件列表'
-        : '当前会话未认证，已仅重新拉取插件列表'
+        ? i18n.global.t('messages.pluginListRefreshForbidden')
+        : i18n.global.t('messages.pluginListRefreshUnauthenticated')
     }
 
     await fetchPlugins(true)

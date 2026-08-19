@@ -602,6 +602,8 @@ export default {
     pluginListRefreshPartial: '플러그인 목록 새로 고침에 실패한 항목이 있습니다: {target}: {error}',
     pluginListRefreshPartialMultiple: '플러그인 목록 새로 고침에서 {count}개 항목이 실패했습니다. 첫 항목: {target}: {error}',
     pluginListRefreshPartialUnknown: '플러그인 목록 새로 고침에 실패한 항목이 있습니다.',
+    pluginListRefreshForbidden: '현재 계정에는 플러그인 레지스트리를 새로 고칠 권한이 없습니다. 플러그인 목록만 다시 불러왔습니다.',
+    pluginListRefreshUnauthenticated: '현재 세션이 인증되지 않았습니다. 플러그인 목록만 다시 불러왔습니다.',
     confirmDelete: '삭제하시겠습니까?',
     confirmStop: '플러그인을 정지하시겠습니까?',
     confirmStart: '플러그인을 시작하시겠습니까?',

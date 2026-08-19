@@ -602,6 +602,8 @@ export default {
     pluginListRefreshPartial: 'プラグイン一覧の更新で失敗した項目があります: {target}: {error}',
     pluginListRefreshPartialMultiple: 'プラグイン一覧の更新で {count} 件失敗しました。最初の項目: {target}: {error}',
     pluginListRefreshPartialUnknown: 'プラグイン一覧の更新で失敗した項目があります。',
+    pluginListRefreshForbidden: '現在のアカウントにはプラグインレジストリを更新する権限がありません。プラグイン一覧のみ再取得しました。',
+    pluginListRefreshUnauthenticated: '現在のセッションは認証されていません。プラグイン一覧のみ再取得しました。',
     confirmDelete: '削除しますか？',
     confirmStop: 'プラグインを停止しますか？',
     confirmStart: 'プラグインを起動しますか？',

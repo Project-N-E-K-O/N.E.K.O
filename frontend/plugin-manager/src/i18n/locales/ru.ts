@@ -602,6 +602,8 @@ export default {
     pluginListRefreshPartial: 'При обновлении списка плагинов произошла ошибка: {target}: {error}',
     pluginListRefreshPartialMultiple: 'При обновлении списка плагинов произошли ошибки ({count}). Первая: {target}: {error}',
     pluginListRefreshPartialUnknown: 'При обновлении списка плагинов произошли ошибки.',
+    pluginListRefreshForbidden: 'У текущего аккаунта нет прав на обновление реестра плагинов. Обновлён только список плагинов.',
+    pluginListRefreshUnauthenticated: 'Текущая сессия не авторизована. Обновлён только список плагинов.',
     confirmDelete: 'Подтвердить удаление?',
     confirmStop: 'Остановить плагин?',
     confirmStart: 'Запустить плагин?',

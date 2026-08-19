@@ -602,6 +602,8 @@ export default {
     pluginListRefreshPartial: '插件列表刷新存在失败项：{target}：{error}',
     pluginListRefreshPartialMultiple: '插件列表刷新存在 {count} 项失败，首项为 {target}：{error}',
     pluginListRefreshPartialUnknown: '插件列表刷新存在失败项',
+    pluginListRefreshForbidden: '当前账号无权限刷新插件注册表，已仅重新拉取插件列表',
+    pluginListRefreshUnauthenticated: '当前会话未认证，已仅重新拉取插件列表',
     confirmDelete: '确认删除？',
     confirmStop: '确认停止插件？',
     confirmStart: '确认启动插件？',

@@ -602,6 +602,8 @@ export default {
     pluginListRefreshPartial: '外掛列表重新整理存在失敗項目：{target}：{error}',
     pluginListRefreshPartialMultiple: '外掛列表重新整理有 {count} 項失敗，第一項為 {target}：{error}',
     pluginListRefreshPartialUnknown: '外掛列表重新整理存在失敗項目',
+    pluginListRefreshForbidden: '目前帳號沒有權限重新整理外掛註冊表，僅重新取得外掛列表',
+    pluginListRefreshUnauthenticated: '目前工作階段未驗證，僅重新取得外掛列表',
     confirmDelete: '確認刪除？',
     confirmStop: '確認停止外掛？',
     confirmStart: '確認啟動外掛？',

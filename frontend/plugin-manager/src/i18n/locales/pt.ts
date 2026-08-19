@@ -602,6 +602,8 @@ export default {
     pluginListRefreshPartial: 'A atualização da lista de plugins tem um item com falha: {target}: {error}',
     pluginListRefreshPartialMultiple: 'A atualização da lista de plugins tem {count} itens com falha. Primeiro: {target}: {error}',
     pluginListRefreshPartialUnknown: 'A atualização da lista de plugins tem itens com falha.',
+    pluginListRefreshForbidden: 'A conta atual não tem permissão para atualizar o registro de plugins. Apenas a lista de plugins foi recarregada.',
+    pluginListRefreshUnauthenticated: 'A sessão atual não está autenticada. Apenas a lista de plugins foi recarregada.',
     confirmDelete: 'Confirmar exclusão?',
     confirmStop: 'Confirmar parar plugin?',
     confirmStart: 'Confirmar iniciar plugin?',

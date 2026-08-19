@@ -93,6 +93,16 @@ describe('plugin store registry refresh policy', () => {
     )
   })
 
+  it('localizes unauthorized registry refresh warnings', async () => {
+    vi.mocked(refreshPluginsRegistry).mockRejectedValue({ response: { status: 403 } })
+    const store = usePluginStore()
+
+    const result = await store.syncRegistryAndFetch()
+
+    expect(translate).toHaveBeenCalledWith('messages.pluginListRefreshForbidden')
+    expect(result.warningMessage).toBe('messages.pluginListRefreshForbidden')
+  })
+
   it('can defer lifecycle refreshes so batch operations refresh once afterward', async () => {
     const store = usePluginStore()
 
