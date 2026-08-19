@@ -69,8 +69,8 @@ def test_api_key_settings(mock_page: Page, running_server: str):
     mock_page.reload()
     expect(mock_page.locator("#loading-overlay")).to_be_hidden(timeout=10000)
     
-    # A full page reload keeps the server-provided partial mask, never plaintext.
-    expect(mock_page.locator("#apiKeyInput")).to_have_value("sk-tes******567890", timeout=5000)
+    # A full page reload must not receive or retain the plaintext key.
+    expect(mock_page.locator("#apiKeyInput")).to_have_value("••••••••••••", timeout=5000)
     expect(mock_page.locator("#coreApiSelect")).to_have_value("qwen", timeout=5000)
 
 
