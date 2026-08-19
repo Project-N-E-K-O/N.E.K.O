@@ -627,7 +627,7 @@ def test_study_companion_surfaces_share_ui8_interaction_styles_and_messages() ->
 
 def test_study_panel_locale_change_releases_aborted_request_busy_state() -> None:
     source = _read("study_panel.tsx")
-    bootstrap = source.index("void resumeDocumentJob(controller.signal)")
+    bootstrap = source.index("void resumeDocumentJob(documentController.signal)")
     effect_start = source.rfind("useEffect(() => {", 0, bootstrap)
     effect_end = source.index("}, [props.locale]);", bootstrap)
     locale_effect = source[effect_start:effect_end]
@@ -665,6 +665,18 @@ def test_hosted_document_start_cancellation_keeps_pending_job_recoverable() -> N
     assert "&& data?.status === 'idle'" in resume
     assert "Date.now() < pendingStartRecoveryDeadline" in resume
     assert "await waitForDocumentPoll(1_000, signal);" in resume
+
+
+def test_hosted_document_recovery_polling_uses_its_own_controller() -> None:
+    source = _read("study_panel.tsx")
+    bootstrap = source.index("void resumeDocumentJob")
+    effect_start = source.rfind("useEffect(() => {", 0, bootstrap)
+    effect_end = source.index("}, [props.locale]);", bootstrap)
+    locale_effect = source[effect_start:effect_end]
+
+    assert "const documentController = documentPollingController();" in locale_effect
+    assert "void resumeDocumentJob(documentController.signal)" in locale_effect
+    assert "resumeDocumentJob(controller.signal)" not in locale_effect
 
 
 def test_hosted_document_recovery_restores_safe_card_metadata() -> None:

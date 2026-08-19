@@ -214,7 +214,8 @@ def test_hosted_document_job_recovery_is_independent_of_status_initialization() 
     init_end = hosted.index("}, [props.locale]);", init_start)
     initialization = hosted[init_start:init_end]
 
-    assert "void resumeDocumentJob(controller.signal).catch" in initialization
+    assert "const documentController = documentPollingController();" in initialization
+    assert "void resumeDocumentJob(documentController.signal).catch" in initialization
     assert ".then(() => resumeDocumentJob(controller.signal))" not in initialization
     assert initialization.index("resumeDocumentJob") < initialization.index("refresh(controller.signal)")
     status_initialization = initialization[initialization.index("refresh(controller.signal)") :]

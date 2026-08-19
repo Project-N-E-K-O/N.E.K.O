@@ -2161,8 +2161,9 @@ export default function StudyPanel(props: PluginSurfaceProps) {
     mountedRef.current = true;
     setBusy(false);
     const controller = beginStudyRequest();
-    void resumeDocumentJob(controller.signal).catch((error) => {
-      if (controller.signal.aborted) {
+    const documentController = documentPollingController();
+    void resumeDocumentJob(documentController.signal).catch((error) => {
+      if (documentController.signal.aborted) {
         return;
       }
       setReply(formatPluginError(error));
