@@ -39,14 +39,13 @@ class _CommunicationPomodoroEventsMixin:
     def _resolve_pomodoro_target_lanlan(
         self, kwargs: dict[str, Any] | None = None
     ) -> str | None:
-        shared_resolver = getattr(self, "_resolve_study_target_lanlan", None)
-        if callable(shared_resolver) and hasattr(self, "ctx"):
-            return shared_resolver(kwargs)
         context = kwargs.get("_ctx") if isinstance(kwargs, dict) else None
         if isinstance(context, dict):
             target = str(context.get("lanlan_name") or "").strip()
-            if target:
-                return target
+            return target or None
+        shared_resolver = getattr(self, "_resolve_study_target_lanlan", None)
+        if callable(shared_resolver) and hasattr(self, "ctx"):
+            return shared_resolver(kwargs)
         target = str(
             getattr(getattr(self, "ctx", None), "_current_lanlan", "") or ""
         ).strip()

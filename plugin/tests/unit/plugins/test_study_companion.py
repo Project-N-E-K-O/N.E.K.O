@@ -9232,6 +9232,69 @@ async def test_degraded_answer_clears_pending_without_updating_learning_state(
 
 
 @pytest.mark.asyncio
+async def test_answer_final_persist_failure_rolls_back_attempt_guard_and_allows_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(tmp_path / "runtime"))
+    plugin = StudyCompanionPlugin(
+        _Ctx(
+            tmp_path,
+            {
+                "study": {
+                    "language": "en",
+                    "default_mode": MODE_COMPANION,
+                    "auto_open_ui": False,
+                }
+            },
+        )
+    )
+    assert isinstance(await plugin.startup(), Ok)
+    plugin._agent = _FakeTutorAgent()
+    original_persist_state = plugin._persist_state
+    persist_calls = 0
+
+    async def _fail_second_persist() -> None:
+        nonlocal persist_calls
+        persist_calls += 1
+        if persist_calls == 2:
+            raise RuntimeError("final attempt persistence failed")
+        await original_persist_state()
+
+    monkeypatch.setattr(plugin, "_persist_state", _fail_second_persist)
+
+    try:
+        async with plugin._lock:
+            plugin._state.current_question = {
+                "question": "What is d(x^2)/dx?",
+                "answer": "2x",
+                "topic": "derivatives",
+                "question_id": "q-persist-failure",
+                "attempt_id": "a-persist-failure",
+            }
+
+        failed = await plugin.study_evaluate_answer(
+            answer="2x",
+            question_id="q-persist-failure",
+            attempt_id="a-persist-failure",
+        )
+
+        assert isinstance(failed, Err)
+        current_question = plugin._state.current_question
+        assert "attempt_evaluation_pending" not in current_question
+        assert "attempt_evaluated" not in current_question
+        assert "answer_evaluation_cache" not in current_question
+
+        retried = await plugin.study_evaluate_answer(
+            answer="2x",
+            question_id="q-persist-failure",
+            attempt_id="a-persist-failure",
+        )
+        assert isinstance(retried, Ok)
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_cancelled_answer_clears_pending_and_allows_retry(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

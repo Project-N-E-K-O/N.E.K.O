@@ -249,6 +249,7 @@ def test_target_role_prefers_entry_context_then_current_role() -> None:
         plugin._resolve_pomodoro_target_lanlan({"_ctx": {"lanlan_name": "entry-yui"}})
         == "entry-yui"
     )
+    assert plugin._resolve_pomodoro_target_lanlan({"_ctx": {}}) is None
     assert plugin._resolve_pomodoro_target_lanlan({}) == "fallback"
     plugin.ctx._current_lanlan = ""
     assert plugin._resolve_pomodoro_target_lanlan({}) is None
