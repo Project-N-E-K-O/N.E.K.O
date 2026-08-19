@@ -1945,9 +1945,9 @@ class ProactiveMixin:
         kept (not just the tail): a stream failure usually means the session is
         closing, so the retry lands on a new session that has none of the
         earlier images — re-streaming everything is correct (Codex P2).
-        A payload proven permanently too large after recompression is the sole
-        exception: that exact image is dropped so it cannot wedge callback text
-        delivery in an endless retry loop.
+        A payload proven permanently too large after recompression, or an image
+        whose external analysis terminally produced no description, is dropped
+        so it cannot wedge callback text delivery in an endless retry loop.
         """
         si = getattr(session, "stream_image", None)
         if si is None:
@@ -2019,6 +2019,16 @@ class ProactiveMixin:
                             raise RealtimeImagePayloadTooLargeError(
                                 "callback image exceeds the external visual payload limit"
                             )
+                        if rejection_reason == "analysis_empty":
+                            images.remove(b64)
+                            if not images:
+                                cb.pop("media_images", None)
+                            logger.warning(
+                                "[%s] dropping proactive image whose external "
+                                "analysis produced no description",
+                                self.lanlan_name,
+                            )
+                            continue
                         raise RuntimeError("callback image was not accepted")
                     if delivery_mode == "external_description":
                         if not isinstance(description, str) or not description.strip():

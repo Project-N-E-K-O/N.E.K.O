@@ -485,6 +485,11 @@ class OmniRealtimeClient(_ToolingMixin, _AudioMixin, _TransportMixin, _ResponseM
         self._proactive_inject_awaiting_outcome = False
         self._proactive_inject_outcome_token: Optional[str] = None
         self._gemini_proactive_outcome: Optional[tuple] = None
+        # The task currently parked inside Gemini's proactive SDK send. A new
+        # independent-ASR turn cancels and joins it before opening its own turn,
+        # closing the post-activity-check race where the stale inject could land
+        # while user speech was already being captured.
+        self._gemini_proactive_submit_task: Optional[asyncio.Task] = None
 
     def _create_audio_processor(self) -> AudioProcessor:
         """Create session-owned audio state, including native RNNoise state."""

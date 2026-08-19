@@ -1442,6 +1442,47 @@ async def test_voice_mode_drops_permanently_oversized_image_and_delivers_text():
     assert mgr.pending_agent_callbacks == []
 
 
+async def test_voice_mode_drops_terminally_unanalyzable_image_and_delivers_text():
+    from main_logic.omni_realtime_client import ImageStageResult
+
+    sess = _make_voice_sess()
+
+    async def _stream_image(
+        _image_b64,
+        *,
+        bypass_rate_limit=False,
+        cache_latest=True,
+        on_rejected=None,
+    ):
+        assert bypass_rate_limit is True
+        assert cache_latest is False
+        assert on_rejected is not None
+        return ImageStageResult(
+            accepted=False,
+            mode="external_description",
+            rejection_reason="analysis_empty",
+        )
+
+    sess.stream_image = _stream_image
+    mgr = _make_mgr(session=sess)
+    cb = {
+        "_callback_delivery_id": "id-empty-analysis",
+        "status": "completed",
+        "summary": "deliver text despite unusable media",
+        "media_images": ["unanalyzable-image"],
+    }
+    mgr.pending_agent_callbacks = [cb]
+    mgr._schedule_proactive_retry = MagicMock()
+
+    delivered = await core_module.LLMSessionManager.trigger_agent_callbacks(mgr)
+
+    assert delivered is True
+    assert "media_images" not in cb
+    assert sess.inject_calls == 1
+    assert mgr.pending_agent_callbacks == []
+    mgr._schedule_proactive_retry.assert_not_called()
+
+
 async def test_standard_step_callback_image_description_shares_inject_ticket():
     sess = _make_voice_sess()
     sess._supports_native_image = False

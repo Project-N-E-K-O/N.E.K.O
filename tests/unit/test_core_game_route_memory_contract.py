@@ -779,11 +779,8 @@ async def test_voice_session_hands_one_shot_user_images_to_offline_vision(
 
     mgr.end_session = AsyncMock(side_effect=_end_session)
     mgr.start_session = AsyncMock(side_effect=_start_session)
-    monkeypatch.setattr(
-        core_module,
-        "process_screen_data",
-        AsyncMock(return_value="img-b64"),
-    )
+    validate = AsyncMock(return_value="img-b64")
+    monkeypatch.setattr(core_module, "process_screen_data", validate)
 
     await core_module.LLMSessionManager._process_stream_data_internal(
         mgr,
@@ -795,6 +792,7 @@ async def test_voice_session_hands_one_shot_user_images_to_offline_vision(
     )
 
     realtime_session.stream_image.assert_not_awaited()
+    validate.assert_awaited_once_with("raw-image")
     offline_session.stream_image.assert_awaited_once_with("img-b64")
     mgr.end_session.assert_awaited_once_with(reset_starting_count=False)
     mgr.start_session.assert_awaited_once_with(
@@ -802,6 +800,38 @@ async def test_voice_session_hands_one_shot_user_images_to_offline_vision(
         new=False,
         input_mode="text",
     )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("input_type", ["avatar_drop_image", "user_image"])
+async def test_invalid_one_shot_image_does_not_destroy_voice_session(
+    monkeypatch,
+    input_type,
+):
+    mgr = _make_manager()
+    realtime_session = object.__new__(core_module.OmniRealtimeClient)
+    realtime_session.ws = object()
+    mgr.session = realtime_session
+    mgr.is_active = True
+    mgr._starting_session_count = 0
+    mgr._session_start_circuit_open = False
+    mgr._emit_cooldown_turn_end_if_needed = Mock(return_value=False)
+    mgr.end_session = AsyncMock()
+    mgr.start_session = AsyncMock()
+    validate = AsyncMock(return_value=None)
+    monkeypatch.setattr(core_module, "process_screen_data", validate)
+
+    await core_module.LLMSessionManager._process_stream_data_internal(
+        mgr,
+        {"input_type": input_type, "data": "invalid-image"},
+    )
+
+    validate.assert_awaited_once_with("invalid-image")
+    mgr.end_session.assert_not_awaited()
+    mgr.start_session.assert_not_awaited()
+    assert mgr.session is realtime_session
+    assert mgr.is_active is True
 
 
 @pytest.mark.unit

@@ -348,6 +348,22 @@ class _ResponseMixin:
         stable_turn_id = str(turn_id or "").strip()
         if not stable_turn_id:
             raise ValueError("external voice turn_id must not be empty")
+        if self._is_gemini:
+            proactive_submit_task = getattr(
+                self,
+                "_gemini_proactive_submit_task",
+                None,
+            )
+            if (
+                proactive_submit_task is not None
+                and proactive_submit_task is not asyncio.current_task()
+                and not proactive_submit_task.done()
+            ):
+                proactive_submit_task.cancel()
+                await asyncio.gather(
+                    proactive_submit_task,
+                    return_exceptions=True,
+                )
         self._begin_external_visual_turn(stable_turn_id)
         try:
             if not self._is_gemini:
@@ -528,6 +544,20 @@ class _ResponseMixin:
                 )
                 self._proactive_inject_outcome_token = outcome_token
                 self._proactive_inject_awaiting_outcome = True
+            submit_task = asyncio.current_task()
+            existing_submit_task = getattr(
+                self,
+                "_gemini_proactive_submit_task",
+                None,
+            )
+            if (
+                existing_submit_task is not None
+                and existing_submit_task is not submit_task
+                and not existing_submit_task.done()
+            ):
+                self._settle_gemini_proactive_inject(notify=False)
+                raise RuntimeError("another Gemini proactive SDK send is pending")
+            self._gemini_proactive_submit_task = submit_task
             try:
                 await self._gemini_send_user_turn(gemini_text)
             except asyncio.CancelledError:
@@ -554,6 +584,12 @@ class _ResponseMixin:
             except Exception:
                 self._settle_gemini_proactive_inject(notify=False)
                 raise
+            finally:
+                if (
+                    getattr(self, "_gemini_proactive_submit_task", None)
+                    is submit_task
+                ):
+                    self._gemini_proactive_submit_task = None
             if on_rejected is not None or on_completed is not None:
                 self._fire_task(
                     self._expire_gemini_proactive_outcome(outcome_token, 60.0)

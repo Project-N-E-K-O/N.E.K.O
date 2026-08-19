@@ -327,6 +327,27 @@ class StreamingMixin:
                 return
         
         try:
+            validated_one_shot_image_b64 = None
+            if input_type in {"avatar_drop_image", "user_image"}:
+                if self._should_drop_magic_command_image(message.get("request_id")):
+                    return
+                # Validate one-shot attachments before the destructive realtime
+                # -> offline handoff. A malformed/oversized attachment must not
+                # tear down an otherwise healthy voice session only to be
+                # rejected a few lines later.
+                try:
+                    validated_one_shot_image_b64 = (
+                        await _core_facade.process_screen_data(data)
+                    )
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e:
+                    logger.error(f"💥 Stream: Error processing image data: {e}")
+                    return
+                if not validated_one_shot_image_b64:
+                    logger.error("💥 Stream: 图像数据验证失败")
+                    return
+
             if input_type in _TEXT_SESSION_INPUT_TYPES:
                 if not await self._ensure_offline_session_for_text_input(input_type):
                     return
@@ -569,7 +590,11 @@ class StreamingMixin:
                         else None
                     )
                     # 使用统一的图像工具处理数据（只验证，不缩放）
-                    image_b64 = await _core_facade.process_screen_data(data)
+                    image_b64 = (
+                        validated_one_shot_image_b64
+                        if input_type in {"avatar_drop_image", "user_image"}
+                        else await _core_facade.process_screen_data(data)
+                    )
 
                     if image_b64:
                         image_accepted = False

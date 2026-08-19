@@ -186,6 +186,30 @@ async def test_external_callback_bypass_analyzes_once_without_raw_provider_event
 
 
 @pytest.mark.asyncio
+async def test_external_callback_empty_analysis_is_terminal_rejection():
+    client = _make_qwen_client()
+    client.set_visual_delivery_mode(VisualDeliveryMode.EXTERNAL_DESCRIPTION)
+    client._analyze_image_with_vision_model = AsyncMock(return_value="")
+
+    result = await client.stream_image(
+        DUMMY_IMAGE_B64,
+        source="callback",
+        request_id="callback-empty-analysis",
+        bypass_rate_limit=True,
+        cache_latest=False,
+    )
+
+    assert result == ImageStageResult(
+        accepted=False,
+        mode="external_description",
+        generation=0,
+        rejection_reason="analysis_empty",
+    )
+    client.ws.send.assert_not_awaited()
+    await client.close()
+
+
+@pytest.mark.asyncio
 async def test_external_proactive_snapshot_queues_description_without_raw_event():
     client = _make_qwen_client()
     client.set_visual_delivery_mode(VisualDeliveryMode.EXTERNAL_DESCRIPTION)
@@ -262,6 +286,43 @@ async def test_external_proactive_visual_await_yields_to_independent_asr_turn():
     assert delivered is False
     client.inject_text_and_request_response.assert_not_awaited()
     assert client._proactive_image_consumed is False
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_new_gemini_turn_cancels_proactive_sdk_send_before_returning():
+    """Independent ASR preempts a proactive inject parked inside SDK send."""
+    client = _make_qwen_client()
+    client._is_gemini = True
+    client._gemini_session = AsyncMock()
+    client._ai_recent_activity_time = 0
+    client._user_recent_activity_time = 0
+    client._client_vad_active = False
+    client._client_vad_last_speech_time = 0
+    client.handle_interruption = AsyncMock()
+    client.cancel_response = AsyncMock()
+    send_started = asyncio.Event()
+    send_cancelled = asyncio.Event()
+
+    async def send_client_content(*_args, **_kwargs):
+        send_started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            send_cancelled.set()
+            raise
+
+    client._gemini_session.send_client_content.side_effect = send_client_content
+    proactive_task = asyncio.create_task(client.prompt_ephemeral("主动提醒"))
+    await send_started.wait()
+
+    await client.prepare_external_voice_turn(turn_id="user-turn")
+
+    assert send_cancelled.is_set()
+    assert proactive_task.cancelled()
+    assert client._gemini_proactive_submit_task is None
+    client._settle_gemini_proactive_inject(notify=False)
+    client.abandon_external_voice_turn("user-turn")
     await client.close()
 
 
