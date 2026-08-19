@@ -63,6 +63,7 @@ class _Job:
     cancellation_source: str = ""
     result: dict[str, Any] = field(default_factory=dict)
     finished_at: float = 0.0
+    consumed: bool = False
     task: asyncio.Task[None] | None = None
 
     def public_payload(self) -> dict[str, Any]:
@@ -146,7 +147,13 @@ class DocumentAnalysisJobManager:
             job.task = asyncio.create_task(self._run(job, runner, on_completed))
             return job.public_payload()
 
-    async def status(self, job_id: str, *, owner_id: str = "") -> dict[str, Any]:
+    async def status(
+        self,
+        job_id: str,
+        *,
+        owner_id: str = "",
+        acknowledge: bool = False,
+    ) -> dict[str, Any]:
         async with self._lock:
             self._reap_locked()
             job = self._jobs.get(str(job_id or "").strip())
@@ -155,6 +162,8 @@ class DocumentAnalysisJobManager:
                     "document analysis job was not found",
                     diagnostic="document_job_not_found",
                 )
+            if acknowledge and job.status != "running":
+                job.consumed = True
             return job.public_payload()
 
     async def active(
@@ -190,6 +199,8 @@ class DocumentAnalysisJobManager:
                     candidate.status != "running"
                     and candidate.owner_id == normalized_owner_id
                 ):
+                    if candidate.consumed:
+                        return _idle_payload()
                     return candidate.public_payload()
             return _idle_payload()
 

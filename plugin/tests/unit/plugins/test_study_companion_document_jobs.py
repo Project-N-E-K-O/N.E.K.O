@@ -427,6 +427,15 @@ async def test_active_recovers_owner_most_recent_retained_terminal_job() -> None
     assert recovered["status"] == "completed"
     assert recovered["reply"] == "completed summary"
     assert other_owner["status"] == "idle"
+
+    acknowledged = await manager.status(
+        second["job_id"], owner_id="alice", acknowledge=True
+    )
+    assert acknowledged["job_id"] == second["job_id"]
+    assert (await manager.active(owner_id="alice"))["status"] == "idle"
+    assert (
+        await manager.status(second["job_id"], owner_id="alice")
+    )["status"] == "completed"
     await manager.shutdown()
 
 
@@ -761,6 +770,7 @@ async def test_start_direct_mode_finalizes_once_without_returning_source(
     )
     assert isinstance(result, Ok)
     assert result.value["document"]["truncated"] is True
+    assert source not in repr(result.value)
     job_id = result.value["job_id"]
     for _ in range(20):
         status = await owner._document_jobs.status(job_id)

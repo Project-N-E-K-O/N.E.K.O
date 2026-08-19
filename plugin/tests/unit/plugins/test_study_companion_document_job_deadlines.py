@@ -196,6 +196,8 @@ def test_hosted_document_job_recovery_survives_opaque_storage_and_transient_fail
     assert "await waitForDocumentPoll(retryDelayMs, signal);" in resume
     assert "continue;" in resume
     assert "savedJobNotFound = true;" in resume
+    assert "async function acknowledgeDocumentJob" in hosted
+    assert "{ job_id: jobId, acknowledge: true }" in hosted
 
     poll_start = hosted.index("async function pollDocumentJob")
     poll_end = hosted.index("async function resumeDocumentJob", poll_start)
@@ -284,7 +286,10 @@ function environment(savedId, callPlugin) {
   const calls = [];
   const controller = window.StudyDocumentController.create({
     pluginId: 'study_companion',
-    callPlugin: async (...args) => { calls.push(args[0]); return callPlugin(...args); },
+    callPlugin: async (...args) => {
+      calls.push({ entry: args[0], args: args[1] || {} });
+      return callPlugin(...args);
+    },
     i18n: { t: (key, fallback = key) => fallback, tf: (key, fallback = key) => fallback },
     ui: {
       setStatus() {}, setReply() {}, setPasteError() {}, scrollReplyIntoView() {},
@@ -301,8 +306,9 @@ const valid = environment('job-valid', async (entry) => {
   }
   throw new Error(`unexpected ${entry}`);
 });
-await waitFor(() => valid.calls.length === 1 && valid.window.sessionStorage.getItem(key) === null);
-assert(valid.calls[0] === 'study_document_analysis_status', 'saved job was not queried');
+await waitFor(() => valid.calls.length >= 2 && valid.window.sessionStorage.getItem(key) === null);
+assert(valid.calls[0].entry === 'study_document_analysis_status', 'saved job was not queried');
+assert(valid.calls[1].args.acknowledge === true, 'completed saved job was not acknowledged');
 assert(valid.window.sessionStorage.getItem(key) === null, 'completed job id was retained');
 valid.controller.dispose();
 
@@ -314,7 +320,7 @@ const stale = environment('job-stale', async (entry) => {
   throw new Error(`unexpected ${entry}`);
 });
 await waitFor(() => stale.calls.length === 2 && stale.window.sessionStorage.getItem(key) === null);
-assert(stale.calls[1] === 'study_active_document_analysis', 'stale id did not use active lookup');
+assert(stale.calls[1].entry === 'study_active_document_analysis', 'stale id did not use active lookup');
 assert(stale.window.sessionStorage.getItem(key) === null, 'stale job id was retained');
 stale.controller.dispose();
 process.exit(0);

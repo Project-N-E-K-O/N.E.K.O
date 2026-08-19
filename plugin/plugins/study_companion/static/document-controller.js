@@ -49,6 +49,7 @@
     const documentJobStorageKey = 'study_companion.document_analysis_job_id';
     const pendingDocumentJobId = '__pending__';
     const pendingDocumentJobPrefix = `${pendingDocumentJobId}:`;
+    const pendingStartRecoveryTimeoutMs = 30000;
 
     function createDocumentStartToken() {
       if (typeof window.crypto?.randomUUID === 'function') return window.crypto.randomUUID();
@@ -127,9 +128,15 @@
         'context_limit_exceeded', 'vision_not_supported', 'agent_quota_exceeded',
         'invalid_endpoint', 'invalid_request', 'unsafe_model_output', 'llm_call_failed',
       ]);
-      const analysisAliases = { model_unavailable: 'model_not_supported' };
+      const analysisAliases = {
+        model_unavailable: 'model_not_supported',
+        document_analysis_window_exhausted: 'timeout',
+        document_chunk_window_exhausted: 'timeout',
+        document_merge_window_exhausted: 'timeout',
+        document_finalize_timeout: 'timeout',
+      };
       const analysisCode = analysisAliases[code] || code;
-      return t(`ui.error.document_${analysisErrors.has(code) ? `analysis_${analysisCode}` : validation[code] || code.replace(/^document_/, '') || 'analysis_failed'}`);
+      return t(`ui.error.document_${analysisErrors.has(analysisCode) ? `analysis_${analysisCode}` : validation[code] || code.replace(/^document_/, '') || 'analysis_failed'}`);
     }
 
     const documentJobs = {
@@ -177,6 +184,20 @@
           || data.diagnostic === 'document_canceled'
           || data.diagnostic === 'document_job_not_found';
       },
+      async acknowledge(data = {}, signal) {
+        const jobId = String(data.job_id || this.currentId || '');
+        if (!jobId || !this.isTerminal(data)) return;
+        try {
+          await callPlugin(
+            'study_document_analysis_status',
+            { job_id: jobId, acknowledge: true },
+            signal,
+          );
+          this.remember('');
+        } catch (_error) {
+          this.remember(jobId);
+        }
+      },
       render(data = {}) {
         this.currentId = data.job_id || this.currentId;
         const completed = Number(data.completed_chunks) || 0;
@@ -222,7 +243,6 @@
           this.render(data);
           update(data);
           if (this.isTerminal(data)) {
-            this.remember('');
             return data;
           }
           delay = 2000;
@@ -255,7 +275,7 @@
               cancellation_source: 'user',
             }, signal);
             if (this.cancellationConfirmed(data)) {
-              this.remember('');
+              await this.acknowledge(data, signal);
               return data;
             }
             this.cancelRequested = false;
@@ -270,7 +290,6 @@
         update(data);
         const jobId = data.job_id;
         if (!jobId || this.isTerminal(data)) {
-          this.remember('');
           return data;
         }
         return this.poll(jobId, signal, update);
@@ -295,7 +314,7 @@
             return;
           }
           documentRequestController?.abort();
-          this.remember('');
+          await this.acknowledge(data);
           studyDocumentState.textContent = formatDocumentDiagnostic(data.diagnostic || 'document_canceled');
         } catch (error) {
           this.cancelRequested = false;
@@ -305,6 +324,7 @@
       },
       async resume(signal, update) {
         let recoveryFailures = 0;
+        const pendingStartRecoveryDeadline = Date.now() + pendingStartRecoveryTimeoutMs;
         while (!signal.aborted) {
           const savedId = this.savedId();
           if (!savedId) return null;
@@ -360,6 +380,14 @@
             await new Promise((resolve) => setTimeout(resolve, delay));
             continue;
           }
+          if (
+            isPendingStart
+            && data?.status === 'idle'
+            && Date.now() < pendingStartRecoveryDeadline
+          ) {
+            await new Promise((resolve) => setTimeout(resolve, 1000));
+            continue;
+          }
           if (data?.status === 'idle') {
             this.remember('');
             return null;
@@ -375,7 +403,6 @@
           this.render(data || {});
           update(data || {});
           if (this.isTerminal(data || {})) {
-            this.remember('');
             return data;
           }
           if (this.cancelRequested) {
@@ -385,7 +412,7 @@
                 cancellation_source: 'user',
               }, signal);
               if (this.cancellationConfirmed(canceled)) {
-                this.remember('');
+                await this.acknowledge(canceled, signal);
                 return canceled;
               }
               this.cancelRequested = false;
@@ -629,13 +656,13 @@
       const files = directFiles.length ? directFiles : itemFiles;
       if (!files.length || files.every((file) => String(file.type || '').startsWith('image/'))) return;
       event.preventDefault();
-      Promise.resolve(acceptDocumentFiles(files)).catch(reportDocumentImportError);
+      Promise.resolve().then(() => acceptDocumentFiles(files)).catch(reportDocumentImportError);
     }
 
     function handleDocumentDrop(event) {
       event.preventDefault();
       studyDocumentDropZone.dataset.dragging = 'false';
-      Promise.resolve(acceptDocumentFiles(event.dataTransfer?.files)).catch(reportDocumentImportError);
+      Promise.resolve().then(() => acceptDocumentFiles(event.dataTransfer?.files)).catch(reportDocumentImportError);
     }
 
     async function analyzeDocument() {
@@ -668,6 +695,7 @@
         setReply(failed ? formatDocumentDiagnostic(data.diagnostic) : completedReply);
         studyDocumentState.textContent = failed ? formatDocumentDiagnostic(data.diagnostic) : t('ui.status.document_complete');
         await refreshAfterAnalysisComplete();
+        await documentJobs.acknowledge(data, controller.signal);
       } catch (error) {
         if (controller.signal.aborted) return;
         setStatus(t('ui.status.error', 'Error'));
@@ -702,6 +730,7 @@
         setReply(failed ? formatDocumentDiagnostic(data.diagnostic) : completedReply);
         studyDocumentState.textContent = failed ? formatDocumentDiagnostic(data.diagnostic) : t('ui.status.document_complete');
         if (!failed) await refreshAfterAnalysisComplete();
+        await documentJobs.acknowledge(data, controller.signal);
       } catch (error) {
         if (!controller.signal.aborted) setReply(formatPluginError(error));
       } finally {
@@ -723,7 +752,7 @@
       listen(studyInput, 'paste', handleDocumentPaste);
       listen(studyDocumentImportBtn, 'click', () => studyDocumentInput.click());
       listen(studyDocumentInput, 'change', () => {
-        Promise.resolve(acceptDocumentFiles(studyDocumentInput.files)).catch(reportDocumentImportError);
+        Promise.resolve().then(() => acceptDocumentFiles(studyDocumentInput.files)).catch(reportDocumentImportError);
       });
       listen(studyDocumentRemoveBtn, 'click', removeImportedDocument);
       listen(studyDocumentCancelBtn, 'click', () => documentJobs.cancel());

@@ -965,7 +965,7 @@ def test_study_companion_pages_forward_current_locale_to_plugin_entries() -> Non
 
     assert "locale: PluginSurfaceProps['locale']" in hosted_source
     assert "{ ...args, locale: String(locale || '').trim() }" in hosted_source
-    assert hosted_source.count("props.locale,") == 12
+    assert hosted_source.count("props.locale,") == 13
     assert "}, [props.locale]);" in hosted_source
     assert "typeof window.I18n.lang === 'function'" in static_source
     assert "createRun(entryId, { ...args, locale }, deadline, signal)" in static_source

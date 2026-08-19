@@ -1184,6 +1184,16 @@ export default function StudyPanel(props: PluginSurfaceProps) {
   }
 
   function formatTutorDiagnostic(diagnostic?: string, documentOperation = false) {
+    const phaseDeadlineDiagnostics = new Set([
+      'document_analysis_window_exhausted',
+      'document_chunk_window_exhausted',
+      'document_merge_window_exhausted',
+      'document_finalize_timeout',
+    ]);
+    const diagnosticCode = String(diagnostic || '').trim();
+    const normalizedDiagnostic = phaseDeadlineDiagnostics.has(diagnosticCode)
+      ? 'timeout'
+      : diagnosticCode;
     const messages: Record<string, [string, string]> = {
       timeout: documentOperation
         ? ['ui.document.error.timeout', 'Document analysis timed out. Please retry shortly.']
@@ -1237,7 +1247,7 @@ export default function StudyPanel(props: PluginSurfaceProps) {
       document_merge_budget_exceeded: ['ui.error.document_merge_budget_exceeded', 'The section analyses are too long to merge safely.'],
       document_canceled: ['ui.error.document_canceled', 'Document analysis canceled.'],
     };
-    const [key, fallback] = messages[String(diagnostic || '').trim()]
+    const [key, fallback] = messages[normalizedDiagnostic]
       || ['ui.error.llm_call_failed', 'The model service request failed. Please retry.'];
     return t(key, fallback);
   }
@@ -1495,6 +1505,22 @@ export default function StudyPanel(props: PluginSurfaceProps) {
     }
   }
 
+  async function acknowledgeDocumentJob(jobId: string, signal?: AbortSignal) {
+    if (!jobId) return;
+    try {
+      await callStudyPlugin<DocumentJobPayload>(
+        props.api,
+        'study_document_analysis_status',
+        props.locale,
+        { job_id: jobId, acknowledge: true },
+        signal,
+      );
+      rememberDocumentJobId('');
+    } catch {
+      rememberDocumentJobId(jobId);
+    }
+  }
+
   async function pollDocumentJob(jobId: string, controller: AbortController) {
     let pollDelayMs = 1000;
     let consecutiveFailures = 0;
@@ -1531,17 +1557,17 @@ export default function StudyPanel(props: PluginSurfaceProps) {
         setDocumentJob(nextJob);
         if (['completed', 'succeeded'].includes(nextJob.status)) {
           terminal = true;
-          rememberDocumentJobId('');
           setReply(data.degraded
             ? formatTutorDiagnostic(data.diagnostic, true)
             : formatDocumentCompletion(data));
+          await acknowledgeDocumentJob(jobId, controller.signal);
           await refreshAfterDocumentCompletion(controller.signal);
           return;
         }
         if (['failed', 'canceled', 'timeout'].includes(nextJob.status)) {
           terminal = true;
-          rememberDocumentJobId('');
           setReply(formatTutorDiagnostic(data.diagnostic || (nextJob.status === 'canceled' ? 'document_canceled' : nextJob.status), true));
+          await acknowledgeDocumentJob(jobId, controller.signal);
           return;
         }
         pollDelayMs = 2000;
@@ -1660,16 +1686,16 @@ export default function StudyPanel(props: PluginSurfaceProps) {
       const nextJob = normalizeDocumentJob(data || {}, jobId);
       setDocumentJob(nextJob);
       if (['completed', 'succeeded'].includes(nextJob.status)) {
-        rememberDocumentJobId('');
         setReply(data?.degraded
           ? formatTutorDiagnostic(data.diagnostic, true)
           : formatDocumentCompletion(data || {}));
+        await acknowledgeDocumentJob(jobId, signal);
         setDocumentJob(null);
         return;
       }
       if (['failed', 'canceled', 'timeout'].includes(nextJob.status)) {
-        rememberDocumentJobId('');
         setReply(formatTutorDiagnostic(data?.diagnostic || nextJob.status, true));
+        await acknowledgeDocumentJob(jobId, signal);
         setDocumentJob(null);
         return;
       }
@@ -1705,11 +1731,11 @@ export default function StudyPanel(props: PluginSurfaceProps) {
       if (!cancellationConfirmed) {
         throw new Error(data.diagnostic || 'document cancellation was not confirmed');
       }
-      rememberDocumentJobId('');
       if (mountedRef.current) {
         setReply(formatTutorDiagnostic(data.diagnostic || 'document_canceled', true));
         setDocumentJob(null);
       }
+      await acknowledgeDocumentJob(jobId, parentSignal);
       if (documentJobControllerRef.current?.signal === parentSignal) {
         documentJobControllerRef.current = null;
       }

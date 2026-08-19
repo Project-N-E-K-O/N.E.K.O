@@ -32,8 +32,29 @@ def test_static_document_diagnostics_map_invalid_endpoint_and_request() -> None:
 
     assert "'invalid_endpoint'" in formatter
     assert "'invalid_request'" in formatter
-    assert "analysisErrors.has(code)" in formatter
+    assert "analysisErrors.has(analysisCode)" in formatter
     assert "`analysis_${analysisCode}`" in formatter
+
+
+def test_document_phase_deadlines_use_existing_timeout_messages() -> None:
+    hosted = (_PLUGIN_DIR / "surfaces" / "study_panel.tsx").read_text(
+        encoding="utf-8"
+    )
+    static = (_PLUGIN_DIR / "static" / "document-controller.js").read_text(
+        encoding="utf-8"
+    )
+    phase_diagnostics = {
+        "document_analysis_window_exhausted",
+        "document_chunk_window_exhausted",
+        "document_merge_window_exhausted",
+        "document_finalize_timeout",
+    }
+
+    for diagnostic in phase_diagnostics:
+        assert diagnostic in hosted
+        assert diagnostic in static
+    assert "const normalizedDiagnostic" in hosted
+    assert "analysisErrors.has(analysisCode)" in static
 
 
 def test_document_surfaces_warn_when_completed_output_is_truncated() -> None:

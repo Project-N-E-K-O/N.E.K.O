@@ -484,17 +484,23 @@ class _DocumentAnalysisJobsEntriesMixin:
         ),
         input_schema={
             "type": "object",
-            "properties": {"job_id": {"type": "string", "maxLength": 128}},
+            "properties": {
+                "job_id": {"type": "string", "maxLength": 128},
+                "acknowledge": {"type": "boolean", "default": False},
+            },
             "required": ["job_id"],
         },
         timeout=_STATUS_ENTRY_TIMEOUT_SECONDS,
     )
-    async def study_document_analysis_status(self, job_id: str, **kwargs):
+    async def study_document_analysis_status(
+        self, job_id: str, acknowledge: bool = False, **kwargs
+    ):
         try:
             return Ok(
                 await self._document_job_manager().status(
                     job_id,
                     owner_id=_document_job_owner(self, kwargs),
+                    acknowledge=bool(acknowledge),
                 )
             )
         except DocumentAnalysisJobError as exc:

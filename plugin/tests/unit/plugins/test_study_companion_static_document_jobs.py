@@ -59,7 +59,9 @@ def test_static_document_review_contracts_cover_parsed_types_and_recovery_races(
     assert '"application/vnd.openxmlformats-officedocument.wordprocessingml.document"' in entry
     assert "const analysisErrors = new Set([" in controller
     assert "model_unavailable: 'model_not_supported'" in controller
-    assert "analysisErrors.has(code)" in controller
+    assert "analysisErrors.has(analysisCode)" in controller
+    assert "pendingStartRecoveryDeadline" in controller
+    assert "Date.now() < pendingStartRecoveryDeadline" in controller
     resume_start = controller.index("async function resumeDocumentAnalysis")
     resume_end = controller.index("function handlePageHide", resume_start)
     resume = controller[resume_start:resume_end]
@@ -189,7 +191,7 @@ controller.dispose();
 if (removed !== removedAfterFirstDispose) throw new Error('dispose removed listeners twice');
 if (aborts !== abortsAfterFirstDispose) throw new Error('dispose aborted work twice');
 if (removedAfterFirstDispose === 0) throw new Error('dispose did not remove listeners');
-if (abortsAfterFirstDispose !== 2) throw new Error(`dispose abort count: ${abortsAfterFirstDispose}`);
+if (abortsAfterFirstDispose !== 1) throw new Error(`dispose abort count: ${abortsAfterFirstDispose}`);
 """
     completed = subprocess.run(
         ["node", "--input-type=module", "-e", script],
@@ -359,6 +361,42 @@ for (const invalidCase of [
   environment.controller.dispose();
 }
 
+for (const importKind of ['paste', 'drop', 'input']) {
+  const environment = createEnvironment();
+  const files = [
+    fileFromBytes(bytesForText('first'), 'first.txt'),
+    fileFromBytes(bytesForText('second'), 'second.txt'),
+  ];
+  let dispatchError;
+  try {
+    if (importKind === 'paste') {
+      const event = new environment.window.Event('paste', { bubbles: true, cancelable: true });
+      Object.defineProperty(event, 'clipboardData', { value: { files, items: [] } });
+      environment.document.getElementById('studyInput').dispatchEvent(event);
+    } else if (importKind === 'drop') {
+      const event = new environment.window.Event('drop', { bubbles: true, cancelable: true });
+      Object.defineProperty(event, 'dataTransfer', { value: { files } });
+      environment.document.getElementById('studyDocumentDropZone').dispatchEvent(event);
+    } else {
+      const input = environment.document.getElementById('studyDocumentInput');
+      Object.defineProperty(input, 'files', { value: files, configurable: true });
+      input.dispatchEvent(new environment.window.Event('change', { bubbles: true }));
+    }
+  } catch (error) {
+    dispatchError = error;
+  }
+  assert(!dispatchError, `${importKind} leaked a synchronous validation error`);
+  await waitFor(
+    () => environment.pasteErrors.length === 1,
+    `${importKind} did not report the multiple-file validation error`,
+  );
+  assert(
+    environment.pasteErrors[0] === 'ui.error.document_multiple',
+    `${importKind} reported ${environment.pasteErrors[0]}`,
+  );
+  environment.controller.dispose();
+}
+
 const analysisCalls = [];
 let analysisRefreshes = 0;
 const analysis = createEnvironment(async (entryId, args, signal) => {
@@ -470,8 +508,11 @@ const transient = createEnvironment(async (entryId, args, signal) => {
   }
   if (entryId === 'study_document_analysis_status') {
     const attempt = transientCalls.filter(
-      (call) => call.entryId === 'study_document_analysis_status',
+      (call) => call.entryId === 'study_document_analysis_status' && call.args.acknowledge !== true,
     ).length;
+    if (args.acknowledge === true) {
+      return { job_id: 'job-transient', status: 'completed', reply: 'recovered analysis' };
+    }
     if (attempt <= 3) throw new Error(`transient poll ${attempt}`);
     if (attempt === 4) {
       return new Promise((resolve) => {
@@ -518,7 +559,9 @@ assert(
   'poll recovery started a duplicate document job',
 );
 assert(
-  transientCalls.filter((call) => call.entryId === 'study_document_analysis_status').length === 5,
+  transientCalls.filter(
+    (call) => call.entryId === 'study_document_analysis_status' && call.args.acknowledge !== true,
+  ).length === 5,
   'poll recovery did not preserve the original job',
 );
 assert(
@@ -529,9 +572,12 @@ assert(transient.replies.at(-1) === 'recovered analysis', 'recovered result was 
 transient.controller.dispose();
 
 const extendedRecoveryCalls = [];
-const extendedRecovery = createEnvironment(async (entryId) => {
+const extendedRecovery = createEnvironment(async (entryId, args) => {
   extendedRecoveryCalls.push(entryId);
   if (entryId === 'study_start_document_analysis') throw new Error('start offline');
+  if (entryId === 'study_document_analysis_status' && args.acknowledge === true) {
+    return { job_id: 'job-extended', status: 'completed', reply: 'extended recovery result' };
+  }
   if (entryId === 'study_active_document_analysis') {
     const attempt = extendedRecoveryCalls.filter(
       (calledEntryId) => calledEntryId === 'study_active_document_analysis',
@@ -572,6 +618,47 @@ assert(
   'completed extended recovery retained the pending marker',
 );
 extendedRecovery.controller.dispose();
+
+const pendingIdleCalls = [];
+const pendingIdle = createEnvironment(async (entryId, args) => {
+  pendingIdleCalls.push({ entryId, args });
+  if (entryId === 'study_document_analysis_status' && args.acknowledge === true) {
+    return { job_id: 'job-after-idle', status: 'completed', reply: 'late start recovered' };
+  }
+  if (entryId !== 'study_active_document_analysis') {
+    throw new Error(`unexpected pending-idle entry: ${entryId}`);
+  }
+  const activeCalls = pendingIdleCalls.filter(
+    (call) => call.entryId === 'study_active_document_analysis',
+  );
+  if (activeCalls.length === 1) return { status: 'idle' };
+  return { job_id: 'job-after-idle', status: 'completed', reply: 'late start recovered' };
+}, async () => {}, (window) => {
+  window.sessionStorage.setItem(
+    'study_companion.document_analysis_job_id',
+    '__pending__:late-start-token',
+  );
+  window.setTimeout = (callback) => {
+    queueMicrotask(callback);
+    return 1;
+  };
+});
+await waitFor(
+  () => pendingIdle.replies.at(-1) === 'late start recovered',
+  'legacy pending-start recovery stopped after the first idle response',
+);
+const pendingIdleActiveCalls = pendingIdleCalls.filter(
+  (call) => call.entryId === 'study_active_document_analysis',
+);
+assert(pendingIdleActiveCalls.length === 2, 'pending-start idle response was not retried');
+assert(
+  pendingIdleActiveCalls.every((call) => (
+    call.args.pending_start === true
+    && call.args.start_token === 'late-start-token'
+  )),
+  'pending-start retry lost its correlation token',
+);
+pendingIdle.controller.dispose();
 
 const ambiguousCalls = [];
 let resolveAmbiguousActive;
@@ -646,8 +733,11 @@ let resumeRefreshes = 0;
 const resumed = createEnvironment(async (entryId, args, signal) => {
   resumeCalls.push({ entryId, args, signal });
   if (entryId === 'study_document_analysis_status') {
+    if (args.acknowledge === true) {
+      return { job_id: 'job-saved', status: 'completed', reply: 'saved completed result' };
+    }
     const attempt = resumeCalls.filter(
-      (call) => call.entryId === 'study_document_analysis_status',
+      (call) => call.entryId === 'study_document_analysis_status' && call.args.acknowledge !== true,
     ).length;
     if (attempt === 1) throw new Error('saved status transport failed');
     return { job_id: 'job-saved', status: 'completed', reply: 'saved completed result' };
@@ -663,8 +753,14 @@ const resumed = createEnvironment(async (entryId, args, signal) => {
   };
 });
 await waitFor(() => resumeRefreshes === 1, 'saved job did not recover after transport failure');
+await waitFor(
+  () => resumeCalls.some((call) => call.args.acknowledge === true),
+  'completed saved job was not acknowledged',
+);
 assert(
-  resumeCalls.filter((call) => call.entryId === 'study_document_analysis_status').length === 2,
+  resumeCalls.filter(
+    (call) => call.entryId === 'study_document_analysis_status' && call.args.acknowledge !== true,
+  ).length === 2,
   'saved job status was not retried directly',
 );
 assert(
