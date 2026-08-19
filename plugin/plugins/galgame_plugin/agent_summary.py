@@ -2315,6 +2315,10 @@ class AgentSummaryMixin:
         previous_save_boundary_marker = str(
             getattr(self, "_scene_capsule_save_boundary_marker", "") or ""
         )
+        save_boundary_changed = bool(
+            save_boundary_marker
+            and save_boundary_marker != previous_save_boundary_marker
+        )
         if not previous_input_marker:
             if self._scene_capsule_observation_epoch > 0:
                 event_version_state.clear()
@@ -2322,8 +2326,7 @@ class AgentSummaryMixin:
             self._scene_capsule_input_marker = input_marker
         elif (
             input_marker != previous_input_marker
-            or save_boundary_marker
-            and save_boundary_marker != previous_save_boundary_marker
+            or save_boundary_changed
         ):
             self._scene_capsule_observation_epoch += 1
             self._scene_capsule_input_marker = input_marker
@@ -2331,33 +2334,30 @@ class AgentSummaryMixin:
                 reason="scene_capsule_input_changed",
                 retire=True,
             )
-            if (
-                save_boundary_marker
-                and save_boundary_marker != previous_save_boundary_marker
-            ):
-                event_version_state.clear()
-                self._cancel_scene_memory_tasks(
-                    reason="scene_memory_timeline_boundary",
-                )
-                self._scene_tracker.reset(scene_id=scene_id)
-                self._scene_tracker.sync_current_scene_summary_mirror(
-                    scene_id,
-                    route_id=route_id,
-                )
-                self._scene_summary_repeat_deliveries.clear()
-                self._scene_summary_latest_scene_content.clear()
-                self._scene_summary_latest_memory_order_by_scene.clear()
-                self._scene_summary_schedule_order_counter = 0
-                self._scene_summary_latest_observed_order = 0
-                self._scene_summary_latest_submitted_order = 0
-                self._pending_merge_primary = ""
-                self._pending_merge_scene_ids = None
-                self._pending_cross_scene_primary = ""
-                self._last_delivered_summary_key = ""
-                self._last_delivered_summary_seq = 0
-                self._last_delivered_summary_scene_id = ""
-                self._last_push_ts = 0.0
-                self._scene_summary_last_success_at = 0.0
+        if save_boundary_changed:
+            event_version_state.clear()
+            self._cancel_scene_memory_tasks(
+                reason="scene_memory_timeline_boundary",
+            )
+            self._scene_tracker.reset(scene_id=scene_id)
+            self._scene_tracker.sync_current_scene_summary_mirror(
+                scene_id,
+                route_id=route_id,
+            )
+            self._scene_summary_repeat_deliveries.clear()
+            self._scene_summary_latest_scene_content.clear()
+            self._scene_summary_latest_memory_order_by_scene.clear()
+            self._scene_summary_schedule_order_counter = 0
+            self._scene_summary_latest_observed_order = 0
+            self._scene_summary_latest_submitted_order = 0
+            self._pending_merge_primary = ""
+            self._pending_merge_scene_ids = None
+            self._pending_cross_scene_primary = ""
+            self._last_delivered_summary_key = ""
+            self._last_delivered_summary_seq = 0
+            self._last_delivered_summary_scene_id = ""
+            self._last_push_ts = 0.0
+            self._scene_summary_last_success_at = 0.0
         self._scene_capsule_save_boundary_marker = save_boundary_marker
         self._scene_capsule_save_boundary_semantic_marker = save_boundary_semantic_marker
         observation_epoch = self._scene_capsule_observation_epoch

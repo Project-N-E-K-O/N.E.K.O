@@ -4302,6 +4302,84 @@ def test_reloading_same_checkpoint_occurrence_resets_cumulative_memory(tmp_path:
     assert agent._scene_memory[-1]["summary"] == "new timeline"
 
 
+@pytest.mark.plugin_unit
+def test_load_boundary_resets_memory_after_input_marker_was_cleared(
+    tmp_path: Path,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    plugin = GalgameBridgePlugin(_Ctx(plugin_dir, _make_effective_config(bridge_root)))
+    agent = GameLLMAgent(
+        plugin=plugin,
+        logger=_Logger(),
+        llm_gateway=_FakeLLMGateway(),
+        host_adapter=_FakeHostAdapter(),
+    )
+    plugin._game_agent = agent
+    baseline_snapshot = _session_state(scene_id="scene-a", route_id="route-a")
+    baseline_shared = _shared_state(
+        session_id="sess-a",
+        last_seq=1,
+        snapshot=baseline_snapshot,
+    )
+    agent._maybe_schedule_scene_capsule(
+        baseline_shared,
+        snapshot=baseline_snapshot,
+        line_occurrences=[],
+        all_choice_occurrences=[],
+        allow_delivery=False,
+    )
+    agent._scene_memory.append(
+        {
+            "scene_id": "scene-a",
+            "route_id": "route-a",
+            "summary": "abandoned future",
+        }
+    )
+    plugin._story_so_far = "abandoned future"
+
+    # Both an untrusted OCR observation and a read-only scene change retire the
+    # previous capsule by advancing the epoch and clearing only this marker.
+    agent._scene_capsule_observation_epoch += 1
+    agent._scene_capsule_input_marker = ""
+    load_snapshot = _session_state(scene_id="scene-a", route_id="route-a")
+    load_snapshot["save_context"] = {
+        "kind": "load",
+        "slot_id": "slot-1",
+        "checkpoint_id": "checkpoint-a",
+    }
+    load_event = _event(
+        seq=2,
+        event_type="save_loaded",
+        session_id="sess-a",
+        game_id="demo.alpha",
+        ts="2026-04-21T08:36:01Z",
+        payload={
+            "reason": "load",
+            "scene_id": "scene-a",
+            "route_id": "route-a",
+            "save_context": dict(load_snapshot["save_context"]),
+        },
+    )
+    load_shared = _shared_state(
+        session_id="sess-a",
+        last_seq=2,
+        snapshot=load_snapshot,
+        history_events=[load_event],
+    )
+
+    agent._maybe_schedule_scene_capsule(
+        load_shared,
+        snapshot=load_snapshot,
+        line_occurrences=[],
+        all_choice_occurrences=[],
+        allow_delivery=False,
+    )
+    plugin._refresh_story_so_far_from_scene_summaries()
+
+    assert agent._scene_memory == []
+    assert plugin._story_so_far == ""
+
+
 @pytest.mark.asyncio
 @pytest.mark.plugin_unit
 async def test_current_snapshot_menu_outranks_older_sequenced_line(
