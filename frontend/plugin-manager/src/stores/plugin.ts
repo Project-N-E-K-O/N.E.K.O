@@ -80,7 +80,7 @@ export const usePluginStore = defineStore('plugin', () => {
   })
 
   // 操作
-  async function fetchPlugins(force = false) {
+  async function fetchPlugins(force = false, options: RegistrySyncOptions = {}) {
     // 防止请求堆积
     if (!force && pendingFetchPlugins) {
       return pendingFetchPlugins
@@ -101,7 +101,10 @@ export const usePluginStore = defineStore('plugin', () => {
     const seq = ++fetchPluginsSeq
     pendingFetchPlugins = (async () => {
       try {
-        const response = await getPlugins(getLocale())
+        const response = await getPlugins(
+          getLocale(),
+          options.preserveMessagesOn404 ? { preserveMessagesOn404: true } : undefined,
+        )
         // 忽略过期响应，防止旧数据覆盖新数据
         if (seq !== fetchPluginsSeq) return
         plugins.value = response.plugins || []
@@ -134,31 +137,37 @@ export const usePluginStore = defineStore('plugin', () => {
         const firstFailure = response.failed[0]
         if (firstFailure) {
           const failureTarget = firstFailure.plugin_id || firstFailure.config_path
-          warningMessage = response.failed.length > 1
-            ? i18n.global.t('messages.pluginListRefreshPartialMultiple', {
-                count: response.failed.length,
-                target: failureTarget,
-                error: firstFailure.error,
-              })
-            : i18n.global.t('messages.pluginListRefreshPartial', {
-                target: failureTarget,
-                error: firstFailure.error,
-              })
+          if (!failureTarget) {
+            warningMessage = i18n.global.t('messages.pluginListRefreshPartialUnknown')
+          } else {
+            warningMessage = response.failed.length > 1
+              ? i18n.global.t('messages.pluginListRefreshPartialMultiple', {
+                  count: response.failed.length,
+                  target: failureTarget,
+                  error: firstFailure.error,
+                })
+              : i18n.global.t('messages.pluginListRefreshPartial', {
+                  target: failureTarget,
+                  error: firstFailure.error,
+                })
+          }
         } else {
           warningMessage = i18n.global.t('messages.pluginListRefreshPartialUnknown')
         }
       }
     } catch (err: any) {
       const status = err?.response?.status
-      if (status !== 401 && status !== 403) {
+      if (status !== 401 && status !== 403 && status !== 404) {
         throw err
       }
       warningMessage = status === 403
         ? i18n.global.t('messages.pluginListRefreshForbidden')
-        : i18n.global.t('messages.pluginListRefreshUnauthenticated')
+        : status === 404
+          ? i18n.global.t('messages.resourceNotFound')
+          : i18n.global.t('messages.pluginListRefreshUnauthenticated')
     }
 
-    await fetchPlugins(true)
+    await fetchPlugins(true, options)
     pluginListRegistrySynced.value = true
     return {
       registryRefreshed,

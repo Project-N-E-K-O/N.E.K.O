@@ -74,6 +74,16 @@ describe('plugin store registry refresh policy', () => {
     expect(getPlugins).toHaveBeenCalledTimes(1)
   })
 
+  it('localizes unauthenticated registry refresh warnings', async () => {
+    vi.mocked(refreshPluginsRegistry).mockRejectedValue({ response: { status: 401 } })
+    const store = usePluginStore()
+
+    const result = await store.syncRegistryAndFetch()
+
+    expect(translate).toHaveBeenCalledWith('messages.pluginListRefreshUnauthenticated')
+    expect(result.warningMessage).toBe('messages.pluginListRefreshUnauthenticated')
+  })
+
   it('localizes partial registry refresh warnings', async () => {
     vi.mocked(refreshPluginsRegistry).mockResolvedValue({
       ...registryRefreshResult(),
@@ -101,6 +111,54 @@ describe('plugin store registry refresh policy', () => {
 
     expect(translate).toHaveBeenCalledWith('messages.pluginListRefreshForbidden')
     expect(result.warningMessage).toBe('messages.pluginListRefreshForbidden')
+  })
+
+  it('uses the unknown warning when a failure has no target', async () => {
+    vi.mocked(refreshPluginsRegistry).mockResolvedValue({
+      ...registryRefreshResult(),
+      success: false,
+      failed: [{ plugin_id: '', config_path: '', error: 'bad entry' }],
+    })
+    const store = usePluginStore()
+
+    const result = await store.syncRegistryAndFetch()
+
+    expect(translate).toHaveBeenCalledWith('messages.pluginListRefreshPartialUnknown')
+    expect(result.warningMessage).toBe('messages.pluginListRefreshPartialUnknown')
+  })
+
+  it('uses the multiple-failure warning and config path target', async () => {
+    vi.mocked(refreshPluginsRegistry).mockResolvedValue({
+      ...registryRefreshResult(),
+      success: false,
+      failed: [
+        { plugin_id: '', config_path: 'first/plugin.toml', error: 'first error' },
+        { plugin_id: 'second', config_path: 'second/plugin.toml', error: 'second error' },
+      ],
+    })
+    const store = usePluginStore()
+
+    const result = await store.syncRegistryAndFetch()
+
+    expect(translate).toHaveBeenCalledWith('messages.pluginListRefreshPartialMultiple', {
+      count: 2,
+      target: 'first/plugin.toml',
+      error: 'first error',
+    })
+    expect(result.warningMessage).toBe(
+      'messages.pluginListRefreshPartialMultiple{"count":2,"target":"first/plugin.toml","error":"first error"}',
+    )
+  })
+
+  it('continues fetching the plugin list after a registry 404', async () => {
+    vi.mocked(refreshPluginsRegistry).mockRejectedValue({ response: { status: 404 } })
+    const store = usePluginStore()
+
+    const result = await store.syncRegistryAndFetch({ preserveMessagesOn404: true })
+
+    expect(translate).toHaveBeenCalledWith('messages.resourceNotFound')
+    expect(result.warningMessage).toBe('messages.resourceNotFound')
+    expect(getPlugins).toHaveBeenCalledWith('zh-CN', { preserveMessagesOn404: true })
   })
 
   it('can defer lifecycle refreshes so batch operations refresh once afterward', async () => {

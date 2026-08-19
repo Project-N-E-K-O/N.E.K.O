@@ -17,8 +17,14 @@ import type {
 /**
  * 获取插件列表
  */
-export function getPlugins(locale?: string): Promise<{ plugins: PluginMeta[]; message: string }> {
-  return get('/plugins', locale ? { params: { locale } } : undefined)
+export function getPlugins(
+  locale?: string,
+  config?: AxiosRequestConfig & { preserveMessagesOn404?: boolean },
+): Promise<{ plugins: PluginMeta[]; message: string }> {
+  return get('/plugins', {
+    ...(locale ? { params: { locale } } : {}),
+    ...(config || {}),
+  })
 }
 
 /**
