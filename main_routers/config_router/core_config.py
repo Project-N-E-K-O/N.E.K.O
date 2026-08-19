@@ -86,11 +86,13 @@ def is_core_config_secret_placeholder(value) -> bool:
     if len(stripped) < 15:
         return False
     prefix, masked, suffix = stripped[:6], stripped[6:-6], stripped[-6:]
+    if set(masked) != {'*'}:
+        return False
+    # Current masks expose three characters at each end; legacy ones expose six.
     return (
         '*' not in prefix
         and '*' not in suffix
         and len(masked) >= 3
-        and set(masked) == {'*'}
     )
 
 
@@ -104,17 +106,21 @@ def redact_core_config_secret(value, *, preserve_free_access: bool = False) -> s
 
 
 def mask_core_config_secret_for_display(value) -> str:
-    """Return a safe, non-reversible partial display for a stored secret."""
+    """Return a safe, non-reversible partial display for a stored secret.
+
+    Only the first and last three characters are exposed, and only when the
+    secret is long enough that those fragments cannot disclose it in full.
+    """
     if value is None or value == '' or value == 'free-access':
         return ''
     value = str(value)
-    # A six-character prefix/suffix would disclose a short credential in full.
-    if len(value) < 15:
+    # A three-character prefix/suffix would disclose a short credential in full.
+    if len(value) < 9:
         return '••••••••••••'
-    prefix, suffix = value[:6], value[-6:]
+    prefix, suffix = value[:3], value[-3:]
     if '*' in prefix or '*' in suffix:
         return '••••••••••••'
-    return f'{prefix}{"*" * (len(value) - 12)}{suffix}'
+    return f'{prefix}{"*" * (len(value) - 6)}{suffix}'
 
 
 def apply_core_config_secret_update(target: dict, source: dict, field: str) -> bool:

@@ -41,8 +41,8 @@ const CONNECTIVITY_TESTABLE_TYPES = MODEL_TYPES;
 const MASKED_SECRET_SENTINEL = '__NEKO_SECRET_MASKED__';
 const MASKED_SECRET_DISPLAY = '••••••••••••';
 // POST 成功后的紧随其后的配置重载中，后端会只返回密钥哨兵。此 Map 只在
-// 当前页面、当前次重载期间保存用户刚输入的值，用于继续显示局部遮蔽；绝不
-// 写入 localStorage、不会发送到后端，也不会让后端 GET 回显明文。
+// 当前页面、当前次重载期间保存用户刚输入密钥的“局部遮罩值”（非明文），用于继续
+// 显示局部遮蔽；绝不写入 localStorage、不会发送到后端，也不会让后端 GET 回显明文。
 let _secretDisplayCache = null;
 const MIMO_TOKEN_PLAN_PROVIDER_KEY = 'mimo_token_plan';
 const MIMO_TOKEN_PLAN_OPENROUTER_URLS = [
@@ -379,14 +379,17 @@ function rememberResolvedProviderUrl(scope, providerKey, resolvedUrl) {
 function maskApiKey(key) {
     if (!key || typeof key !== 'string') return key;
     if (isMaskedSecretValue(key)) return MASKED_SECRET_DISPLAY;
-    if (key.length < 14) return key;
-    const midLen = key.length - 12;
-    return key.slice(0, 6) + '*'.repeat(midLen) + key.slice(-6);
+    // 与后端 mask_core_config_secret_for_display 对齐：短密钥直接全圆点，避免完整暴露。
+    if (key.length < 9) return MASKED_SECRET_DISPLAY;
+    const prefix = key.slice(0, 3);
+    const suffix = key.slice(-3);
+    if (prefix.includes('*') || suffix.includes('*')) return MASKED_SECRET_DISPLAY;
+    return prefix + '*'.repeat(key.length - 6) + suffix;
 }
 
 /**
  * 判断后端保留哨兵、通用圆点遮罩（含非空残片）或旧版遮罩。旧值只接受
- * 全星号，或 maskApiKey 生成的“6 字符前缀 + 至少 3 个星号 + 6 字符后缀”
+ * 全星号，或 maskApiKey 生成的“前后各 3~6 个非星号字符 + 至少 3 个星号”
  * 完整形状，避免把任意内部含星号的用户输入误判成遮罩。
  */
 function isMaskedSecretValue(value) {
@@ -396,12 +399,12 @@ function isMaskedSecretValue(value) {
         || normalized === MASKED_SECRET_DISPLAY
         || /^•+$/.test(normalized)
         || /^\*{3,}$/.test(normalized)
-        || /^[^*]{6}\*{3,}[^*]{6}$/.test(normalized);
+        || /^[^*]{3,6}\*{3,}[^*]{3,6}$/.test(normalized);
 }
 
 function getPartialMaskedSecretDisplay(value) {
     const normalized = typeof value === 'string' ? value.trim() : '';
-    return /^[^*]{6}\*{3,}[^*]{6}$/.test(normalized) ? normalized : '';
+    return /^[^*]{3,6}\*{3,}[^*]{3,6}$/.test(normalized) ? normalized : '';
 }
 
 /**
@@ -417,14 +420,14 @@ function setMaskedInput(input, realKey, displayMask = '') {
         return;
     }
     if (isMaskedSecretValue(realKey)) {
-        const locallyEnteredKey = _secretDisplayCache && _secretDisplayCache.get(input.id);
-        if (locallyEnteredKey && !isMaskedSecretValue(locallyEnteredKey)) {
-            // 保存后读取到的只是哨兵；同一次页面会话内仍可安全地沿用本地的
-            // 局部遮蔽显示，避免从“前后可见”退化为全圆点。
-            delete input.dataset.maskedSecret;
-            delete input.dataset.maskedDisplay;
-            input.dataset.realKey = locallyEnteredKey;
-            input.value = maskApiKey(locallyEnteredKey);
+        const cachedMask = _secretDisplayCache && _secretDisplayCache.get(input.id);
+        if (cachedMask && getPartialMaskedSecretDisplay(cachedMask)) {
+            // 保存后读取到的只是哨兵；同一次页面会话内沿用本地缓存的“遮罩值”
+            // （非明文）继续显示局部遮蔽，避免从“前后可见”退化为全圆点。
+            input.dataset.realKey = '';
+            input.dataset.maskedSecret = 'true';
+            input.dataset.maskedDisplay = cachedMask;
+            input.value = cachedMask;
             return;
         }
         // 只保留“后端已有密钥”这一状态，不把哨兵伪装成真实 key 放进 DOM。
@@ -441,8 +444,8 @@ function setMaskedInput(input, realKey, displayMask = '') {
 }
 
 /**
- * 记录本页已输入的真实密钥，以便保存成功后的单次配置重载继续显示局部遮蔽。
- * 页面重新打开时，核心 Key 使用后端返回的安全局部掩码；其它字段仍不回显明文。
+ * 记录本页已输入密钥的“局部遮罩值”（非明文），以便保存成功后的单次配置重载
+ * 继续显示局部遮蔽。绝不缓存明文：遮罩值不可逆，DOM / 内存里都不保留真实 key。
  */
 function cacheCurrentSecretDisplays() {
     const cache = new Map();
@@ -450,7 +453,7 @@ function cacheCurrentSecretDisplays() {
         if (input.dataset.maskAttached !== 'true' || !input.id) return;
         const realKey = getRealKey(input);
         if (realKey && !isMaskedSecretValue(realKey)) {
-            cache.set(input.id, realKey);
+            cache.set(input.id, maskApiKey(realKey));
         }
     });
     _secretDisplayCache = cache;
