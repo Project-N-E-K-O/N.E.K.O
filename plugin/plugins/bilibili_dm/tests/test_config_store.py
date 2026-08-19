@@ -222,6 +222,11 @@ def test_comment_retry_blocks_later_messages_in_the_same_thread():
 
     client.complete_comment_notification("comment:old")
 
+    assert "comment:new" in client._notification_retries
+    assert (
+        client._notification_retries["comment:new"]["message"]["notification_identity"]
+        == "comment:new"
+    )
     assert client.defer_comment_notification_behind_retry(newer) is False
 
 
