@@ -51,6 +51,11 @@ export type PackageResultRecord = {
   summaryWarnings: string[]
 }
 
+function shouldShowRefreshFallback(error: unknown): boolean {
+  const status = (error as { response?: { status?: unknown } } | null)?.response?.status
+  return status === 401 || status === 403 || status === 404
+}
+
 export function usePackageManager(options: UsePackageManagerOptions = {}) {
   const pluginStore = usePluginStore()
   // PR #1480 review-fix 1.31 (Phase 7): summary labels and the createdAt
@@ -514,7 +519,9 @@ export function usePackageManager(options: UsePackageManagerOptions = {}) {
       }
     } catch (error) {
       console.error('Failed to refresh plugin sources:', error)
-      ElMessage.warning(t('messages.pluginListRefreshFailed'))
+      if (shouldShowRefreshFallback(error)) {
+        ElMessage.warning(t('messages.pluginListRefreshFailed'))
+      }
     } finally {
       pluginsLoading.value = false
     }

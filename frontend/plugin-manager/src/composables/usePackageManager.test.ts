@@ -178,9 +178,18 @@ describe('usePackageManager safe installation flow', () => {
     )
   })
 
-  it('uses i18n when refreshing plugin sources fails', async () => {
+  it('does not duplicate interceptor errors when refreshing plugin sources fails', async () => {
     const manager = usePackageManager()
     vi.mocked(getPluginCliPlugins).mockRejectedValue(new Error('offline'))
+
+    await manager.refreshPluginSources()
+
+    expect(ElMessage.warning).not.toHaveBeenCalled()
+  })
+
+  it('uses a fallback warning for refresh status errors hidden by the interceptor', async () => {
+    const manager = usePackageManager()
+    vi.mocked(getPluginCliPlugins).mockRejectedValue({ response: { status: 404 } })
 
     await manager.refreshPluginSources()
 
