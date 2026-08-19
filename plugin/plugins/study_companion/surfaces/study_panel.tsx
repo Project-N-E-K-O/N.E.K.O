@@ -1434,14 +1434,16 @@ export default function StudyPanel(props: PluginSurfaceProps) {
   }
 
   function savedDocumentJobId() {
+    const inMemoryJobId = String(documentJobIdRef.current || '');
     const inMemoryPendingJobId = documentPendingStartTokenRef.current
       ? `${PENDING_DOCUMENT_JOB_PREFIX}${documentPendingStartTokenRef.current}`
       : '';
     try {
-      return String(window.sessionStorage.getItem(DOCUMENT_JOB_STORAGE_KEY) || '')
+      return inMemoryJobId
+        || String(window.sessionStorage.getItem(DOCUMENT_JOB_STORAGE_KEY) || '')
         || inMemoryPendingJobId;
     } catch {
-      return inMemoryPendingJobId;
+      return inMemoryJobId || inMemoryPendingJobId;
     }
   }
 

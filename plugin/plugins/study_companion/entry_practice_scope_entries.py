@@ -64,14 +64,20 @@ class _PracticeScopeEntriesMixin:
             .lower()
             .replace("-", "_")
         )
-        return self._store.list_topics(
-            _MAX_PRACTICE_SCOPE_TOPICS,
+        topics = self._store.list_topics(
+            _MAX_PRACTICE_SCOPE_TOPICS + 1,
             subject or None,
             stage or None,
             chapter=str(requested_scope.get("chapter") or "").strip() or None,
             unit=str(requested_scope.get("unit") or "").strip() or None,
             course_family=course_family or None,
         )
+        if len(topics) > _MAX_PRACTICE_SCOPE_TOPICS:
+            raise PracticeScopeError(
+                "practice scope matches too many topics",
+                code="PRACTICE_SCOPE_TOO_LARGE",
+            )
+        return topics
 
     def _canonical_practice_scope(
         self, requested_scope: Mapping[str, object], *, revision: int

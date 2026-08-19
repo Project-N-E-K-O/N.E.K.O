@@ -216,6 +216,37 @@ async def test_scope_with_no_matching_topics_is_rejected_without_revision_change
 
 
 @pytest.mark.asyncio
+async def test_oversized_scope_is_rejected_instead_of_silently_truncated(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plugin = await _start_plugin(tmp_path, monkeypatch)
+    requested_limits: list[int] = []
+
+    def oversized_topics(limit=100, *_args, **_kwargs):
+        requested_limits.append(int(limit))
+        return [{"id": f"topic-{index}"} for index in range(limit)]
+
+    monkeypatch.setattr(plugin._store, "list_topics", oversized_topics)
+    try:
+        result = await plugin.study_set_practice_scope(
+            scope={
+                "schema_version": 1,
+                "mode": "explicit_scope",
+                "stage": "junior_high",
+                "subject": "math",
+            }
+        )
+
+        assert isinstance(result, Err)
+        assert result.error.code == "PRACTICE_SCOPE_TOO_LARGE"
+        assert requested_limits == [5001]
+        assert plugin._state.practice_scope_revision == 0
+        assert plugin._state.active_practice_scope == {}
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_scope_query_matches_noncanonical_machine_keys(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

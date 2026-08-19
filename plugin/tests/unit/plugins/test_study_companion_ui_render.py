@@ -1479,3 +1479,15 @@ def test_study_companion_fetch_timeout_honors_preaborted_signal_and_cleans_liste
     assert "if (signal?.aborted) relayAbort();" in request_utils_js
     assert "signal?.addEventListener('abort', relayAbort);" in request_utils_js
     assert "signal?.removeEventListener('abort', relayAbort);" in request_utils_js
+
+
+def test_static_pomodoro_honors_disabled_custom_duration() -> None:
+    source = (STATIC_DIR / "surface-panels.js").read_text(encoding="utf-8")
+    start = source.index("function renderPomodoro")
+    end = source.index("function renderHabit", start)
+    pomodoro = source[start:end]
+
+    assert "status.config?.allow_custom_duration !== false" in pomodoro
+    assert "durationInput.disabled = isRunning || !allowCustomDuration;" in pomodoro
+    assert "allowCustomDuration ? { focus_minutes:" in pomodoro
+    assert "} : {})" in pomodoro

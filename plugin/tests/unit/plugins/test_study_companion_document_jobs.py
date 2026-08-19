@@ -17,6 +17,7 @@ from plugin.plugins.study_companion.document_analysis import (
     ValidatedDocument,
 )
 from plugin.plugins.study_companion import document_analysis as document_module
+from plugin.plugins.study_companion import document_analysis_jobs as document_jobs_module
 from plugin.plugins.study_companion import entry_document_analysis_jobs as document_entries_module
 from plugin.plugins.study_companion.document_analysis import (
     DocumentValidationError,
@@ -781,6 +782,68 @@ async def test_start_direct_mode_finalizes_once_without_returning_source(
     assert status["document"]["truncated"] is True
     assert calls == [LLM_OPERATION_DOCUMENT_ANALYZE]
     assert source not in repr(status)
+
+
+@pytest.mark.asyncio
+async def test_document_finalization_completes_after_the_absolute_budget_expires(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(document_jobs_module, "DOCUMENT_JOB_TIMEOUT_SECONDS", 0.2)
+    monkeypatch.setattr(
+        document_jobs_module, "DOCUMENT_JOB_FINALIZE_RESERVED_SECONDS", 0.15
+    )
+    finalization_started = asyncio.Event()
+    finalization_completed = asyncio.Event()
+
+    class Agent:
+        async def document_analyze(self, document):
+            return TutorReply(
+                operation=LLM_OPERATION_DOCUMENT_ANALYZE,
+                input_text=document.descriptor,
+                reply="preserved analysis",
+            )
+
+    class Owner:
+        _agent = Agent()
+
+        def __init__(self) -> None:
+            self._document_jobs = DocumentAnalysisJobManager()
+
+        _document_job_manager = StudyCompanionPlugin._document_job_manager
+
+        async def _finalize_tutor_call(self, operation, reply, **kwargs):
+            finalization_started.set()
+            await asyncio.sleep(0.25)
+            finalization_completed.set()
+            return {
+                "operation": operation,
+                "reply": reply.reply,
+                "summary": reply.reply,
+                "document": kwargs["public_payload"]["document"],
+                "degraded": False,
+                "diagnostic": "",
+            }
+
+    owner = Owner()
+    started = await StudyCompanionPlugin.study_start_document_analysis(
+        owner,
+        document_name="notes.txt",
+        document_type="text/plain",
+        document_text="deadline-safe source",
+        locale="en",
+    )
+    assert isinstance(started, Ok)
+    await asyncio.wait_for(finalization_started.wait(), timeout=1.0)
+
+    for _ in range(100):
+        status = await owner._document_jobs.status(started.value["job_id"])
+        if status["status"] != "running":
+            break
+        await asyncio.sleep(0.01)
+
+    assert finalization_completed.is_set()
+    assert status["status"] == "completed"
+    assert status["reply"] == "preserved analysis"
 
 
 @pytest.mark.asyncio

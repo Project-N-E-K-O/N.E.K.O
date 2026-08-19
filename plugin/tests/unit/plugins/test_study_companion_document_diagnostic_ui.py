@@ -43,18 +43,25 @@ def test_document_phase_deadlines_use_existing_timeout_messages() -> None:
     static = (_PLUGIN_DIR / "static" / "document-controller.js").read_text(
         encoding="utf-8"
     )
-    phase_diagnostics = {
+    phase_diagnostics = (
         "document_analysis_window_exhausted",
         "document_chunk_window_exhausted",
         "document_merge_window_exhausted",
         "document_finalize_timeout",
-    }
+    )
+
+    hosted_start = hosted.index("const phaseDeadlineDiagnostics")
+    hosted_end = hosted.index("const messages", hosted_start)
+    hosted_normalization = hosted[hosted_start:hosted_end]
+    static_start = static.index("const analysisAliases")
+    static_end = static.index("const analysisCode", static_start)
+    static_normalization = static[static_start:static_end]
 
     for diagnostic in phase_diagnostics:
-        assert diagnostic in hosted
-        assert diagnostic in static
-    assert "const normalizedDiagnostic" in hosted
-    assert "analysisErrors.has(analysisCode)" in static
+        assert f"'{diagnostic}'" in hosted_normalization
+        assert f"{diagnostic}: 'timeout'" in static_normalization
+    assert "phaseDeadlineDiagnostics.has(diagnosticCode)" in hosted_normalization
+    assert "? 'timeout'" in hosted_normalization
 
 
 def test_document_surfaces_warn_when_completed_output_is_truncated() -> None:

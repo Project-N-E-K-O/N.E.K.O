@@ -344,33 +344,34 @@ class _DocumentAnalysisJobsEntriesMixin:
                         error = SdkError("document finalization window exhausted")
                         error.diagnostic = "document_finalize_timeout"
                         raise error
-                    try:
-                        payload = await asyncio.wait_for(
-                            self._finalize_tutor_call(
-                                LLM_OPERATION_DOCUMENT_ANALYZE,
-                                reply,
-                                history_kind=LLM_OPERATION_DOCUMENT_ANALYZE,
-                                metadata={
-                                    "degraded": reply.degraded,
-                                    "diagnostic": reply.diagnostic,
-                                    "document": metadata,
-                                    "locale": job_document.locale,
-                                    "source_retained": False,
-                                    "truncated_chunk_count": truncated_chunk_count,
-                                    "total_chunks": total_chunks,
-                                    "merge_output_truncated": merge_output_truncated,
-                                },
-                                public_payload={
-                                    "summary": reply.reply,
-                                    "document": metadata,
-                                },
-                            ),
-                            timeout=finalize_remaining,
+                    finalize_task = asyncio.create_task(
+                        self._finalize_tutor_call(
+                            LLM_OPERATION_DOCUMENT_ANALYZE,
+                            reply,
+                            history_kind=LLM_OPERATION_DOCUMENT_ANALYZE,
+                            metadata={
+                                "degraded": reply.degraded,
+                                "diagnostic": reply.diagnostic,
+                                "document": metadata,
+                                "locale": job_document.locale,
+                                "source_retained": False,
+                                "truncated_chunk_count": truncated_chunk_count,
+                                "total_chunks": total_chunks,
+                                "merge_output_truncated": merge_output_truncated,
+                            },
+                            public_payload={
+                                "summary": reply.reply,
+                                "document": metadata,
+                            },
                         )
-                    except asyncio.TimeoutError as exc:
-                        error = SdkError("document finalization window exhausted")
-                        error.diagnostic = "document_finalize_timeout"
-                        raise error from exc
+                    )
+                    try:
+                        payload = await asyncio.shield(finalize_task)
+                    except asyncio.CancelledError:
+                        # Finalization owns the persistence boundary. Once it starts,
+                        # drain it and return the recoverable result instead of
+                        # reporting a timeout after history may already be committed.
+                        payload = await finalize_task
                     payload.pop("input_text", None)
                     payload.pop("created_at", None)
                     payload["degraded"] = reply.degraded

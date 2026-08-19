@@ -198,6 +198,14 @@ def test_hosted_document_job_recovery_survives_opaque_storage_and_transient_fail
     assert "savedJobNotFound = true;" in resume
     assert "async function acknowledgeDocumentJob" in hosted
     assert "{ job_id: jobId, acknowledge: true }" in hosted
+    assert resume.count("await acknowledgeDocumentJob(jobId, signal);") == 2
+
+    saved_start = hosted.index("function savedDocumentJobId")
+    saved_end = hosted.index("function rememberPendingDocumentJob", saved_start)
+    saved = hosted[saved_start:saved_end]
+    assert "const inMemoryJobId = String(documentJobIdRef.current || '');" in saved
+    assert "return inMemoryJobId" in saved
+    assert "return inMemoryJobId || inMemoryPendingJobId;" in saved
 
     poll_start = hosted.index("async function pollDocumentJob")
     poll_end = hosted.index("async function resumeDocumentJob", poll_start)
@@ -206,6 +214,22 @@ def test_hosted_document_job_recovery_survives_opaque_storage_and_transient_fail
     assert "setReply(formatPluginError(error));" in poll
     assert "Math.min(" in poll
     assert "continue;" in poll
+
+
+def test_document_finalization_drains_after_the_job_deadline_starts_canceling() -> None:
+    plugin_dir = Path(__file__).resolve().parents[3] / "plugins" / "study_companion"
+    source = (plugin_dir / "entry_document_analysis_jobs.py").read_text(
+        encoding="utf-8"
+    )
+    start = source.index("finalize_remaining =")
+    end = source.index('payload.pop("input_text", None)', start)
+    finalization = source[start:end]
+
+    assert "finalize_task = asyncio.create_task(" in finalization
+    assert "payload = await asyncio.shield(finalize_task)" in finalization
+    assert "except asyncio.CancelledError:" in finalization
+    assert "payload = await finalize_task" in finalization
+    assert "timeout=finalize_remaining" not in finalization
 
 
 def test_hosted_document_job_recovery_is_independent_of_status_initialization() -> None:

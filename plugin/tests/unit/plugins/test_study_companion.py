@@ -1248,6 +1248,8 @@ async def test_study_settings_entry_persists_and_updates_runtime(
 async def test_study_doc_export_settings_payload_preserves_missing_fields_and_syncs_dynamic_entry(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    from plugin.core.registry import _extract_entries_preview
+
     monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(tmp_path / "runtime"))
     expected_disabled = {
         "enabled": False,
@@ -1255,6 +1257,13 @@ async def test_study_doc_export_settings_payload_preserves_missing_fields_and_sy
         "default_style": "compact",
         "xmind_enabled": False,
     }
+    preview_ids = {
+        entry["id"]
+        for entry in _extract_entries_preview(
+            "study_companion", StudyCompanionPlugin, conf={}, pdata={}
+        )
+    }
+    assert "study_export_notes" in preview_ids
     ctx = _Ctx(
         tmp_path,
         {
@@ -1270,7 +1279,12 @@ async def test_study_doc_export_settings_payload_preserves_missing_fields_and_sy
         loaded = await plugin.study_get_settings_config()
         assert isinstance(loaded, Ok)
         assert loaded.value["config"]["doc_export"] == expected_disabled
-        assert "study_export_notes" not in plugin.collect_entries()
+        disabled_entries = plugin.collect_entries()
+        assert "study_export_notes" in disabled_entries
+        disabled_export = await disabled_entries["study_export_notes"].handler(
+            fmt="markdown", preview_only=True
+        )
+        assert isinstance(disabled_export, Err)
 
         without_doc_export = await plugin.study_update_settings_config(
             config={"study": {"default_mode": MODE_INTERACTIVE}}
@@ -1290,8 +1304,13 @@ async def test_study_doc_export_settings_payload_preserves_missing_fields_and_sy
         enabled_schema = enabled_entries["study_export_notes"].meta.input_schema[
             "properties"
         ]
-        assert enabled_schema["fmt"]["enum"] == ["markdown", "pdf", "docx"]
-        assert enabled_schema["style"]["default"] == "compact"
+        assert enabled_schema["fmt"]["enum"] == [
+            "markdown",
+            "pdf",
+            "docx",
+            "xmind",
+        ]
+        assert "default" not in enabled_schema["style"]
         hot_enabled_export = await enabled_entries["study_export_notes"].handler(
             fmt="markdown", preview_only=True, title="Hot Enabled Notes"
         )
@@ -1306,7 +1325,12 @@ async def test_study_doc_export_settings_payload_preserves_missing_fields_and_sy
         xmind_schema = plugin.collect_entries()[
             "study_export_notes"
         ].meta.input_schema["properties"]
-        assert xmind_schema["fmt"]["enum"] == ["markdown", "pdf", "docx"]
+        assert xmind_schema["fmt"]["enum"] == [
+            "markdown",
+            "pdf",
+            "docx",
+            "xmind",
+        ]
 
         disabled = await plugin.study_update_settings_config(
             config={"doc_export": {"enabled": False}}
@@ -1315,7 +1339,12 @@ async def test_study_doc_export_settings_payload_preserves_missing_fields_and_sy
         assert isinstance(disabled, Ok)
         assert disabled.value["config"]["doc_export"] == expected_final
         assert plugin._cfg.doc_export.to_dict() == expected_final
-        assert "study_export_notes" not in plugin.collect_entries()
+        final_entries = plugin.collect_entries()
+        assert "study_export_notes" in final_entries
+        disabled_again = await final_entries["study_export_notes"].handler(
+            fmt="markdown", preview_only=True
+        )
+        assert isinstance(disabled_again, Err)
         assert (
             plugin._store.load_config(StudyConfig()).doc_export.to_dict()
             == expected_final
@@ -1358,7 +1387,7 @@ async def test_study_doc_export_settings_update_rolls_back_config_and_dynamic_en
         assert isinstance(result, Err)
         assert persisted_runtime_values == [True, False]
         assert plugin._cfg.doc_export.enabled is False
-        assert "study_export_notes" not in plugin.collect_entries()
+        assert "study_export_notes" in plugin.collect_entries()
         assert plugin._store.load_config(StudyConfig()).doc_export.enabled is False
     finally:
         await plugin.shutdown()
@@ -6776,6 +6805,8 @@ def test_study_companion_note_exporter_uses_backend_export_poll_budget() -> None
     assert "return timeoutSeconds * 1000 + POLL_TIMEOUT_BUFFER_MS;" in source
     assert "pollTimeoutMs = getEntryTimeoutMs(exportEntry)" in source
     assert "{ timeoutMs: pollTimeoutMs }" in source
+    assert "exportConfig?.enabled !== true" in source
+    assert "value !== 'xmind' || xmindEnabled" in source
     assert "fetch('/runs'" not in source
     assert "fetch(`/runs/" not in source
     assert "for (let attempt = 0; attempt < 40; attempt += 1)" not in source
@@ -10708,7 +10739,11 @@ async def test_study_plugin_starts_and_collects_entries(
     assert "study_ocr_snapshot" in entries
     assert "study_set_mode" in entries
     assert "study_detect_mode_intent" in entries
-    assert "study_export_notes" not in entries
+    assert "study_export_notes" in entries
+    disabled_export = await entries["study_export_notes"].handler(
+        fmt="markdown", preview_only=True
+    )
+    assert isinstance(disabled_export, Err)
     assert "study_knowledge_map" in entries
     assert "study_knowledge_guidance" in entries
     assert "study_memory_card_upsert" in entries
@@ -11846,9 +11881,9 @@ async def test_study_plugin_doc_export_dynamic_entry_and_knowledge_settings(
         assert "study_export_notes" in entries
         properties = entries["study_export_notes"].meta.input_schema["properties"]
         export_formats = properties["fmt"]["enum"]
-        assert export_formats == ["markdown", "pdf", "docx"]
+        assert export_formats == ["markdown", "pdf", "docx", "xmind"]
         assert "range" not in properties
-        assert properties["style"]["default"] == "compact"
+        assert "default" not in properties["style"]
         assert properties["time_range"]["default"] == "recent"
         assert properties["recent_limit"]["default"] == 30
         assert properties["topic_ids"]["default"] == []

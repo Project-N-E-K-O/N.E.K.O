@@ -370,7 +370,7 @@
       refreshing = true;
       try {
         status = await ctx.callPlugin('study_pomodoro_status');
-        if (!durationInitialized) {
+        if (!durationInitialized || status.config?.allow_custom_duration === false) {
           const configuredMinutes = Number(status.config?.focus_minutes);
           focusMinutes = String(Number.isFinite(configuredMinutes) && configuredMinutes >= 1 && configuredMinutes <= 120 ? Math.round(configuredMinutes) : 25);
           durationInitialized = true;
@@ -406,7 +406,11 @@
       const isPaused = stateKey === 'paused';
       const isBreak = stateKey === 'short_break' || stateKey === 'long_break';
       const isRunning = isFocusing || isPaused || isBreak;
-      const selectedMinutes = Math.min(120, Math.max(1, Math.round(Number(focusMinutes) || 25)));
+      const allowCustomDuration = status.config?.allow_custom_duration !== false;
+      const configuredFocusMinutes = Math.min(120, Math.max(1, Math.round(Number(status.config?.focus_minutes) || 25)));
+      const selectedMinutes = allowCustomDuration
+        ? Math.min(120, Math.max(1, Math.round(Number(focusMinutes) || 25)))
+        : configuredFocusMinutes;
       const modeMinutes = modeKey === 'short_break'
         ? Number(status.config?.short_break_minutes || 5)
         : modeKey === 'long_break'
@@ -418,8 +422,8 @@
       const children = [];
       if (errorText) children.push(pre(errorText));
 
-      const durationInput = input(focusMinutes, { type: 'number', min: 1, max: 120, step: 1, inputmode: 'numeric' });
-      durationInput.disabled = isRunning;
+      const durationInput = input(String(selectedMinutes), { type: 'number', min: 1, max: 120, step: 1, inputmode: 'numeric' });
+      durationInput.disabled = isRunning || !allowCustomDuration;
       durationInput.addEventListener('input', () => {
         focusMinutes = durationInput.value;
         if (!isRunning) {
@@ -482,7 +486,7 @@
       }
 
       children.push(actions([
-        action(t(ctx, 'ui.button.start', 'Start'), 'study_pomodoro_start', 'start', !isRunning, !isRunning, false, () => ({ focus_minutes: Math.min(120, Math.max(1, Math.round(Number(focusMinutes) || 25))) })),
+        action(t(ctx, 'ui.button.start', 'Start'), 'study_pomodoro_start', 'start', !isRunning, !isRunning, false, () => (allowCustomDuration ? { focus_minutes: Math.min(120, Math.max(1, Math.round(Number(focusMinutes) || 25))) } : {})),
         action(t(ctx, 'ui.button.pause', 'Pause'), 'study_pomodoro_pause', 'pause', isFocusing, isFocusing),
         action(t(ctx, 'ui.button.resume', 'Resume'), 'study_pomodoro_resume', 'resume', isPaused, isPaused),
         action(t(ctx, 'ui.button.stop', 'Stop'), 'study_pomodoro_stop', 'stop', isRunning, false, true),
