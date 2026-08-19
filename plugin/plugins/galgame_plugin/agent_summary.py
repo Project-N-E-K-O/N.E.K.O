@@ -3745,16 +3745,20 @@ class AgentSummaryMixin:
                 )
                 in allowed_scene_routes
             ]
-            scope_shared["history_observed_lines"] = [
-                dict(line)
-                for line in list(shared.get("history_observed_lines") or [])
-                if isinstance(line, dict)
-                and (
-                    str(line.get("scene_id") or ""),
-                    str(line.get("route_id") or ""),
-                )
-                in allowed_scene_routes
-            ]
+            scope_shared["history_observed_lines"] = (
+                []
+                if timeline_boundary_active
+                else [
+                    dict(line)
+                    for line in list(shared.get("history_observed_lines") or [])
+                    if isinstance(line, dict)
+                    and (
+                        str(line.get("scene_id") or ""),
+                        str(line.get("route_id") or ""),
+                    )
+                    in allowed_scene_routes
+                ]
+            )
             scope_history_choices: list[dict[str, Any]] = []
             scope_choice_identities: set[tuple[str, str, str]] = set()
             raw_history_choices = (
@@ -3998,10 +4002,17 @@ class AgentSummaryMixin:
             last_line_occurrence_key = (
                 str(seen_line_key_order[-1]) if seen_line_key_order else ""
             )
+            scheduled_batch_has_sequence_less_line = any(
+                int(line_occurrences_by_key[key].get("seq") or 0) <= 0
+                for key in scheduled_line_keys
+                if key in line_occurrences_by_key
+            )
             delivery_key = self._summary_delivery_key(
                 scene_id=scene_id,
                 route_id=route_id,
-                scheduled_seq=scheduled_seq,
+                scheduled_seq=(
+                    0 if scheduled_batch_has_sequence_less_line else scheduled_seq
+                ),
                 last_line_seq=scheduled_seq,
                 stable_line_count=stable_line_count,
                 last_line_occurrence_key=last_line_occurrence_key,

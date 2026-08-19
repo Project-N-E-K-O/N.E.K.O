@@ -1189,6 +1189,41 @@ async def test_same_session_stream_reset_retires_high_seq_pending_capsule(
 
 @pytest.mark.asyncio
 @pytest.mark.plugin_unit
+async def test_confirmed_stream_generation_replays_identical_first_line(
+    tmp_path: Path,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
+    agent = GameLLMAgent(
+        plugin=GalgameBridgePlugin(ctx),
+        logger=_Logger(),
+        llm_gateway=_FakeLLMGateway(),
+        host_adapter=_FakeHostAdapter(),
+    )
+    line = _summary_test_line("scene-a", 1)
+    event = _summary_test_line_event("scene-a", 1, seq=1)
+    first = _capsule_shared(events=[event], lines=[line])
+    first["active_data_source"] = "bridge_sdk"
+    first["active_session_meta"] = {"stream_generation": 0}
+
+    await agent.tick(first)
+    await agent.drain_summary_tasks(timeout=1.0)
+    assert len(ctx.pushed_messages) == 1
+
+    replacement = _capsule_shared(events=[event], lines=[line])
+    replacement["active_data_source"] = "bridge_sdk"
+    replacement["active_session_meta"] = {"stream_generation": 1}
+    await agent.tick(replacement)
+    await agent.tick(replacement)
+    await agent.drain_summary_tasks(timeout=1.0)
+
+    assert agent._last_session_transition_type == "real_session_reset"
+    assert agent._last_session_transition_reason == "confirmed_stream_generation_changed"
+    assert len(ctx.pushed_messages) == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
 async def test_tentative_ocr_never_enters_capsule(tmp_path: Path) -> None:
     plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
     ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
@@ -5969,6 +6004,72 @@ async def test_incremental_archive_includes_new_fallback_only_choice(
 
 @pytest.mark.asyncio
 @pytest.mark.plugin_unit
+async def test_fallback_line_after_sequenced_archive_uses_occurrence_delivery_key(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    agent = GameLLMAgent(
+        plugin=GalgameBridgePlugin(_Ctx(plugin_dir, _make_effective_config(bridge_root))),
+        logger=_Logger(),
+        llm_gateway=_FakeLLMGateway(),
+        host_adapter=_FakeHostAdapter(),
+    )
+    events = [
+        _summary_test_line_event("scene-a", index, seq=index)
+        for index in range(1, 17)
+    ]
+    lines = [_summary_test_line("scene-a", index) for index in range(1, 17)]
+    first = _capsule_shared(events=events, lines=lines)
+    first_snapshot = first["latest_snapshot"]
+    assert isinstance(first_snapshot, dict)
+    captured: list[dict[str, Any]] = []
+    monkeypatch.setattr(agent, "_maybe_schedule_scene_capsule", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        agent,
+        "_schedule_scene_summary_task",
+        lambda **kwargs: captured.append(kwargs),
+    )
+
+    await agent._maybe_push_periodic_scene_summary(first, snapshot=first_snapshot)
+
+    assert len(captured) == 1
+    first_schedule = captured[0]
+    first_key = str(first_schedule["metadata"]["summary_delivery_key"])
+    agent._last_delivered_summary_key = first_key
+    agent._scene_tracker.mark_scene_summary_delivered(
+        "scene-a",
+        seq=16,
+        owner_token=int(first_schedule["scheduled_owner_token"]),
+    )
+
+    fallback_line = {
+        "line_id": "fallback-line",
+        "speaker": "Yukino",
+        "text": "sequence-less restored dialogue",
+        "scene_id": "scene-a",
+        "route_id": "",
+        "stability": "stable",
+        "ts": "2026-04-21T08:36:00Z",
+    }
+    second = _capsule_shared(events=events, lines=[*lines, fallback_line])
+    second_snapshot = second["latest_snapshot"]
+    assert isinstance(second_snapshot, dict)
+    agent._scene_summary_push_line_interval = 1
+
+    await agent._maybe_push_periodic_scene_summary(second, snapshot=second_snapshot)
+
+    assert len(captured) == 2
+    second_key = str(captured[1]["metadata"]["summary_delivery_key"])
+    assert second_key != first_key
+    assert ":occ:" in second_key
+    assert [
+        line["text"] for line in captured[1]["context"]["new_stable_lines"]
+    ] == ["sequence-less restored dialogue"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
 async def test_mixed_capsule_candidates_use_occurrence_chronology(
     tmp_path: Path,
 ) -> None:
@@ -6877,6 +6978,91 @@ def test_reason_only_save_loaded_event_activates_load_timeline_fence(
     )
     assert boundary_active is True
     assert filtered_lines == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
+async def test_load_boundary_excludes_tentative_observed_history_from_archive(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    agent = GameLLMAgent(
+        plugin=GalgameBridgePlugin(_Ctx(plugin_dir, _make_effective_config(bridge_root))),
+        logger=_Logger(),
+        llm_gateway=_FakeLLMGateway(),
+        host_adapter=_FakeHostAdapter(),
+    )
+    abandoned_text = "ABANDONED_TENTATIVE_OCR"
+    observed = _event(
+        seq=1,
+        event_type="line_observed",
+        session_id="sess-a",
+        game_id="demo.alpha",
+        ts="2026-04-21T08:35:01Z",
+        payload={
+            "line_id": "observed-old",
+            "scene_id": "scene-a",
+            "route_id": "route-a",
+            "text": abandoned_text,
+            "stability": "tentative",
+        },
+    )
+    load_event = _event(
+        seq=2,
+        event_type="save_loaded",
+        session_id="sess-a",
+        game_id="demo.alpha",
+        ts="2026-04-21T08:35:02Z",
+        payload={"reason": "load"},
+    )
+    post_events = [
+        _summary_test_line_event("scene-a", index, seq=index + 2)
+        for index in range(1, 17)
+    ]
+    post_lines = [
+        {
+            **_summary_test_line("scene-a", index),
+            "route_id": "route-a",
+        }
+        for index in range(1, 17)
+    ]
+    post_events = [
+        {
+            **event,
+            "payload": {**dict(event["payload"]), "route_id": "route-a"},
+        }
+        for event in post_events
+    ]
+    snapshot = apply_event_to_snapshot(
+        _session_state(scene_id="scene-a", route_id="route-a"),
+        load_event,
+    )
+    for event in post_events:
+        snapshot = apply_event_to_snapshot(snapshot, event)
+    shared = _shared_state(
+        mode="companion",
+        session_id="sess-a",
+        last_seq=18,
+        snapshot=snapshot,
+        history_events=[observed, load_event, *post_events],
+        history_lines=post_lines,
+        history_observed_lines=[observed["payload"]],
+    )
+    captured: list[dict[str, Any]] = []
+    monkeypatch.setattr(agent, "_maybe_schedule_scene_capsule", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        agent,
+        "_schedule_scene_summary_task",
+        lambda **kwargs: captured.append(kwargs),
+    )
+
+    await agent._maybe_push_periodic_scene_summary(shared, snapshot=snapshot)
+
+    assert len(captured) == 1
+    assert abandoned_text not in json.dumps(
+        captured[0]["context"], ensure_ascii=False, sort_keys=True
+    )
 
 
 @pytest.mark.plugin_unit

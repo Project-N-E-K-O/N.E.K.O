@@ -4145,10 +4145,22 @@ class GalgamePlugin(
             else None
         )
         resume_preexisting_session = isinstance(saved_preexisting_state, dict)
+        previous_session_meta = local.get("active_session_meta")
+        previous_session_meta_obj = (
+            previous_session_meta if isinstance(previous_session_meta, dict) else {}
+        )
+        previous_stream_generation = (
+            max(0, int(previous_session_meta_obj.get("stream_generation") or 0))
+            if not session_changed
+            else 0
+        )
 
         local["active_game_id"] = candidate.game_id
         local["active_session_id"] = session_id
         local["active_session_meta"] = build_active_session_meta(candidate)
+        local["active_session_meta"]["stream_generation"] = (
+            previous_stream_generation
+        )
         local["active_data_source"] = candidate.data_source
         if resume_preexisting_session:
             assert saved_preexisting_state is not None
@@ -4360,6 +4372,9 @@ class GalgamePlugin(
             )
 
         if confirm_reset:
+            local["active_session_meta"]["stream_generation"] = (
+                previous_stream_generation + 1
+            )
             local["history_events"] = []
             local["history_lines"] = []
             local["history_observed_lines"] = []

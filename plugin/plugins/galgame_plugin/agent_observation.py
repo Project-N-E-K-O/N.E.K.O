@@ -65,10 +65,16 @@ class AgentObservationMixin:
         data_source_changed = bool(previous_data_source and current_data_source) and (
             previous_data_source != current_data_source
         )
+        stream_generation_changed = self._normalized_numeric_identity(
+            self._observed_session_fingerprint.get("stream_generation")
+        ) != self._normalized_numeric_identity(
+            current_fingerprint.get("stream_generation")
+        )
         if (
             session_id != self._observed_session_id
             or game_identity_changed
             or data_source_changed
+            or stream_generation_changed
         ):
             transition_type, transition_reason, transition_fields = self._classify_session_transition(
                 self._observed_session_fingerprint,

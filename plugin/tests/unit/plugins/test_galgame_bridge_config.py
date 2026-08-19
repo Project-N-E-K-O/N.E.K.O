@@ -2801,6 +2801,47 @@ async def test_truncation_sets_stream_reset_pending(tmp_path: Path) -> None:
     assert isinstance(status, Ok)
     assert status.value["stream_reset_pending"] is True
 
+    replacement = _event(
+        seq=1,
+        event_type="line_changed",
+        session_id=session_id,
+        game_id=game_id,
+        payload={
+            "speaker": "雪乃",
+            "text": "旧台词",
+            "line_id": "line-1",
+            "scene_id": "scene-a",
+            "route_id": "",
+        },
+        ts="2026-04-21T08:31:01Z",
+    )
+    _write_events(game_dir / "events.jsonl", [replacement])
+    _write_session(
+        game_dir / "session.json",
+        _session(
+            game_id=game_id,
+            session_id=session_id,
+            last_seq=1,
+            state=_session_state(
+                speaker="雪乃",
+                text="旧台词",
+                line_id="line-1",
+                scene_id="scene-a",
+                ts="2026-04-21T08:31:01Z",
+            ),
+        ),
+    )
+
+    await plugin._poll_bridge(force=True)
+
+    recovered = plugin._snapshot_state()
+    assert recovered["stream_reset_pending"] is False
+    assert recovered["active_session_meta"]["stream_generation"] == 1
+    assert [event["seq"] for event in recovered["history_events"]] == [1]
+
+    await plugin._poll_bridge(force=True)
+    assert plugin._snapshot_state()["active_session_meta"]["stream_generation"] == 1
+
 
 @pytest.mark.asyncio
 @pytest.mark.plugin_unit

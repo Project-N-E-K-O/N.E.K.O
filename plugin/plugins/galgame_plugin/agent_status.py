@@ -429,6 +429,12 @@ class AgentStatusMixin:
             "meta_data_source": str(meta_obj.get("data_source") or ""),
             "meta_game_id": str(meta_obj.get("game_id") or ""),
             "meta_session_id": str(meta_obj.get("session_id") or ""),
+            "stream_generation": max(
+                0,
+                self._normalized_numeric_identity(
+                    meta_obj.get("stream_generation")
+                ),
+            ),
             "process_name": str(
                 metadata_obj.get("game_process_name")
                 or runtime_obj.get("effective_process_name")
@@ -508,7 +514,18 @@ class AgentStatusMixin:
             ),
             "ocr_detail": str(current.get("ocr_detail") or ""),
             "ocr_context_state": str(current.get("ocr_context_state") or ""),
+            "previous_stream_generation": self._normalized_numeric_identity(
+                previous.get("stream_generation")
+            ),
+            "current_stream_generation": self._normalized_numeric_identity(
+                current.get("stream_generation")
+            ),
         }
+        if (
+            fields["previous_stream_generation"]
+            != fields["current_stream_generation"]
+        ):
+            return "real_session_reset", "confirmed_stream_generation_changed", fields
         if (
             fields["previous_session_id"] == fields["current_session_id"]
             and fields["previous_game_id"] == fields["current_game_id"]
