@@ -422,6 +422,68 @@ async def test_choices_shown_event_submits_complete_menu_atomically(tmp_path: Pa
     assert len(ctx.pushed_messages) == 1
 
 
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
+async def test_choices_shown_event_bounds_rendered_menu_items(tmp_path: Path) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    effective_config = _make_effective_config(
+        bridge_root,
+        galgame={"history_choices_limit": 3},
+    )
+    ctx = _Ctx(plugin_dir, effective_config)
+    agent = GameLLMAgent(
+        plugin=GalgameBridgePlugin(ctx),
+        logger=_Logger(),
+        llm_gateway=_FakeLLMGateway(),
+        host_adapter=_FakeHostAdapter(),
+        config=build_config(effective_config),
+    )
+    choices = [
+        {"choice_id": "choice-a", "text": "查看地图", "index": 0},
+        {"choice_id": "choice-b", "text": "整理行囊", "index": 1},
+        {"choice_id": "choice-c", "text": "前往车站", "index": 2},
+        {"choice_id": "choice-d", "text": "拜访神社", "index": 3},
+        {"choice_id": "choice-e", "text": "留在家中", "index": 4},
+    ]
+    event = _event(
+        seq=1,
+        event_type="choices_shown",
+        session_id="sess-a",
+        game_id="demo.alpha",
+        ts="2026-04-21T08:35:01Z",
+        payload={
+            "scene_id": "scene-a",
+            "route_id": "",
+            "choices": choices,
+        },
+    )
+    shared = _shared_state(
+        mode="companion",
+        session_id="sess-a",
+        last_seq=1,
+        snapshot=_session_state(
+            scene_id="scene-a",
+            choices=choices,
+            is_menu_open=True,
+        ),
+        history_events=[event],
+    )
+
+    await agent.tick(shared)
+    await agent.drain_summary_tasks(timeout=1.0)
+
+    assert len(ctx.pushed_messages) == 1
+    pushed = ctx.pushed_messages[0]
+    assert pushed["metadata"]["new_choice_count"] == 3
+    response_target = str(pushed["content"]).split("本次回应对象：", 1)[-1]
+    assert all(choice["text"] in response_target for choice in choices[-3:])
+    assert all(choice["text"] not in response_target for choice in choices[:2])
+
+    await agent.tick(shared)
+    await agent.drain_summary_tasks(timeout=1.0)
+    assert len(ctx.pushed_messages) == 1
+
+
 @pytest.mark.plugin_unit
 def test_choice_selected_event_normalizes_canonical_payload_fields(tmp_path: Path) -> None:
     plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)

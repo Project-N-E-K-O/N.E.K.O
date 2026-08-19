@@ -116,10 +116,10 @@ def snapshot_events_boundary(
 
             checkpoint_seq = max(0, int(last_seq or 0))
             if session_id and checkpoint_seq > 0:
-                scan_size = file_size
+                scan_size = snapshot_size
                 if bytes_limit is not None:
-                    scan_size = min(file_size, max(1, int(bytes_limit)))
-                scan_start = file_size - scan_size
+                    scan_size = min(snapshot_size, max(1, int(bytes_limit)))
+                scan_start = snapshot_size - scan_size
                 starts_on_record_boundary = False
                 if scan_start > 0:
                     handle.seek(scan_start - 1)

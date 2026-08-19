@@ -4214,7 +4214,22 @@ class GalgamePlugin(
                 local["line_buffer"] = b""
                 local["stream_reset_pending"] = True
         elif not preexisting_session:
-            local["latest_snapshot"] = json_copy(session_state_obj)
+            refreshed_snapshot = json_copy(session_state_obj)
+            current_snapshot = local.get("latest_snapshot")
+            current_save_boundary = (
+                current_snapshot.get("save_boundary")
+                if not session_changed and isinstance(current_snapshot, dict)
+                else None
+            )
+            if (
+                isinstance(current_save_boundary, dict)
+                and current_save_boundary
+                and not refreshed_snapshot.get("save_boundary")
+            ):
+                refreshed_snapshot["save_boundary"] = json_copy(
+                    current_save_boundary
+                )
+            local["latest_snapshot"] = refreshed_snapshot
         elif warmup_needed:
             local["latest_snapshot"] = {}
         if self._context_snapshot_needs_reload(

@@ -1170,6 +1170,104 @@ async def test_save_loaded_and_repeated_line_do_not_duplicate_stable_history(tmp
 
 @pytest.mark.asyncio
 @pytest.mark.plugin_unit
+async def test_current_session_poll_preserves_internal_save_boundary(
+    tmp_path: Path,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    game_id = "demo.load-boundary"
+    session_id = "sess-load-boundary"
+    plugin = GalgameBridgePlugin(
+        _Ctx(plugin_dir, _make_effective_config(bridge_root))
+    )
+    await plugin.startup()
+    try:
+        session_started_at = time.strftime(
+            "%Y-%m-%dT%H:%M:%SZ",
+            time.gmtime(plugin._plugin_run_started_at + 1.0),
+        )
+        source_state = _session_state(
+            scene_id="scene-a",
+            route_id="route-a",
+            ts="2026-04-21T08:31:02Z",
+        )
+        source_state["save_context"] = {
+            "kind": "load",
+            "slot_id": "slot-a",
+            "display_name": "Slot A",
+        }
+        game_dir = _create_game_dir(
+            bridge_root,
+            game_id=game_id,
+            session_payload=_session(
+                game_id=game_id,
+                session_id=session_id,
+                last_seq=1,
+                started_at=session_started_at,
+                state=source_state,
+            ),
+            events=[
+                _event(
+                    seq=1,
+                    event_type="session_started",
+                    session_id=session_id,
+                    game_id=game_id,
+                    payload={
+                        "scene_id": "scene-a",
+                        "route_id": "route-a",
+                        "save_context": {"kind": "unknown"},
+                    },
+                    ts="2026-04-21T08:31:01Z",
+                ),
+            ],
+        )
+
+        await plugin._poll_bridge(force=True)
+        _append_event(
+            game_dir / "events.jsonl",
+            _event(
+                seq=2,
+                event_type="save_loaded",
+                session_id=session_id,
+                game_id=game_id,
+                payload={
+                    "reason": "load",
+                    "scene_id": "scene-a",
+                    "route_id": "route-a",
+                    "save_context": source_state["save_context"],
+                },
+                ts="2026-04-21T08:31:02Z",
+            ),
+        )
+        _write_session(
+            game_dir / "session.json",
+            _session(
+                game_id=game_id,
+                session_id=session_id,
+                last_seq=2,
+                started_at=session_started_at,
+                state=source_state,
+            ),
+        )
+        await plugin._poll_bridge(force=True)
+        first_boundary = plugin._snapshot_state()["latest_snapshot"][
+            "save_boundary"
+        ]
+        assert first_boundary == {
+            "kind": "load",
+            "seq": 2,
+            "ts": "2026-04-21T08:31:02Z",
+        }
+
+        await plugin._poll_bridge(force=True)
+        assert plugin._snapshot_state()["latest_snapshot"][
+            "save_boundary"
+        ] == first_boundary
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
 async def test_bridge_fixture_manual_load_round_exposes_bridge_sdk_status_snapshot_and_history(
     tmp_path: Path,
 ) -> None:
@@ -2316,6 +2414,54 @@ async def test_preexisting_boundary_keeps_event_appended_after_candidate_snapsho
         ]
     finally:
         await plugin.shutdown()
+
+
+@pytest.mark.plugin_unit
+def test_positive_checkpoint_scan_stops_at_candidate_snapshot(tmp_path: Path) -> None:
+    events_path = tmp_path / "events.jsonl"
+    game_id = "demo.positive-checkpoint"
+    session_id = "sess-positive-checkpoint"
+    _append_event(
+        events_path,
+        _event(
+            seq=1,
+            event_type="line_changed",
+            session_id=session_id,
+            game_id=game_id,
+            payload={"text": "candidate snapshot", "line_id": "line-1"},
+            ts="2026-04-21T08:30:01Z",
+        ),
+    )
+    snapshot_file_size = events_path.stat().st_size
+    for seq in (2, 3):
+        _append_event(
+            events_path,
+            _event(
+                seq=seq,
+                event_type="line_changed",
+                session_id=session_id,
+                game_id=game_id,
+                payload={"text": f"racing event {seq}", "line_id": f"line-{seq}"},
+                ts=f"2026-04-21T08:30:0{seq}Z",
+            ),
+        )
+
+    boundary = read_events_boundary(
+        events_path,
+        session_id=session_id,
+        last_seq=1,
+        events_limit=1,
+        snapshot_file_size=snapshot_file_size,
+    )
+
+    assert boundary.offset == snapshot_file_size
+    assert boundary.file_size == events_path.stat().st_size
+    tail = tail_events_jsonl(
+        events_path,
+        offset=boundary.offset,
+        line_buffer=b"",
+    )
+    assert [int(event.get("seq") or 0) for event in tail.events] == [2, 3]
 
 
 @pytest.mark.asyncio

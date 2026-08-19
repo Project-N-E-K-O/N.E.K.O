@@ -2809,10 +2809,22 @@ class AgentSummaryMixin:
                 if target_group_key
                 and str(item.get("event_group_key") or "") == target_group_key
             ] or [dict(target.get("choice") or {})]
+        choice_limit = max(
+            1,
+            int(
+                getattr(
+                    self._context_config,
+                    "history_choices_limit",
+                    self._SCENE_DELTA_CHOICE_LIMIT,
+                )
+                or self._SCENE_DELTA_CHOICE_LIMIT
+            ),
+        )
         content = self._format_scene_delta_for_cat(
             new_stable_lines=new_stable_lines,
             new_choices=new_choices,
             continuity_lines=continuity_lines,
+            choice_limit=choice_limit,
         )
         if not content:
             return
@@ -2883,7 +2895,10 @@ class AgentSummaryMixin:
                 stable_tail=normalized_tail,
                 choice_group_tail=choice_group_tail,
                 target_line_count=len(new_stable_lines),
-                target_choice_count=len(new_choices),
+                target_choice_count=min(
+                    len(new_choices),
+                    choice_limit,
+                ),
             )
         )
         self._track_scene_capsule_task(

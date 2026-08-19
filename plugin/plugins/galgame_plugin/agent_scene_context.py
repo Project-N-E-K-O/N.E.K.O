@@ -5,6 +5,8 @@ from .context_builder import _SUMMARY_MAX_CHARS, _bounded_summary_text
 
 
 class AgentSceneContextMixin:
+    _SCENE_DELTA_CHOICE_LIMIT = 50
+
     async def _summarize_scene_for_cat(
         self,
         shared: dict[str, Any],
@@ -179,6 +181,7 @@ class AgentSceneContextMixin:
         new_stable_lines: list[dict[str, Any]],
         new_choices: list[dict[str, Any]],
         continuity_lines: list[dict[str, Any]] | None = None,
+        choice_limit: int | None = None,
     ) -> str:
         """Build a bounded, deterministic capsule for the cat-facing queue.
 
@@ -202,12 +205,20 @@ class AgentSceneContextMixin:
             return confirmed
 
         stable_delta = _confirmed_lines(new_stable_lines)
+        normalized_choice_limit = max(
+            1,
+            int(
+                cls._SCENE_DELTA_CHOICE_LIMIT
+                if choice_limit is None
+                else choice_limit
+            ),
+        )
         choices_delta = [
             item
             for item in list(new_choices or [])
             if isinstance(item, dict)
             and str(item.get("text") or item.get("label") or "").strip()
-        ]
+        ][-normalized_choice_limit:]
         if not stable_delta and not choices_delta:
             return ""
 
