@@ -1313,7 +1313,7 @@ function _stepNekoIdleCat1Walk(button, timestamp) {
 function _startNekoIdleCat1Walk(button, target) {
     const state = _getNekoIdleCat1Journey(button);
     if (!state) return;
-    if (_isNekoIdleCat1EdgePeekActive(button)) {
+    if (_isNekoIdleCat1MovementAnchored(button)) {
         _cancelNekoIdleCat1Journey(button, { resetArt: false, preserveObservers: true });
         return;
     }
@@ -1354,7 +1354,7 @@ function _scheduleNekoIdleCat1WalkStart(button, target) {
     const state = _getNekoIdleCat1Journey(button);
     if (!state || state.paused) return;
     if (_isNekoIdleCat1IndependentActionActive(button)) return;
-    if (_isNekoIdleCat1EdgePeekActive(button)) {
+    if (_isNekoIdleCat1MovementAnchored(button)) {
         _cancelNekoIdleCat1Journey(button, { resetArt: false, preserveObservers: true });
         return;
     }
@@ -1409,7 +1409,7 @@ function _scheduleNekoIdleCat1WalkStart(button, target) {
 
 function _prepareNekoIdleCat1PairMoveStart(button, state) {
     if (!button || !state || state.paused || state.pairMovePlan || state.pairMoveFrame) return;
-    if (_isNekoIdleCat1EdgePeekActive(button)) return;
+    if (_isNekoIdleCat1MovementAnchored(button)) return;
     if (_isNekoIdleCat1IndependentActionActive(button)) return;
     const profile = state.profile || _NEKO_IDLE_RETURN_SUBACTION_CAT1_CHAT_FOLLOW;
     if (state.substate !== profile.idleSubstate || !state.actionSettled) return;
@@ -1424,7 +1424,7 @@ function _prepareNekoIdleCat1PairMoveStart(button, state) {
 
 function _canScheduleNekoIdleCat1PairMove(button, state) {
     if (!button || !state || state.paused || state.pairMovePlan || state.pairMoveFrame) return false;
-    if (_isNekoIdleCat1EdgePeekActive(button)) return false;
+    if (_isNekoIdleCat1MovementAnchored(button)) return false;
     if (_isNekoIdleCat1IndependentActionActive(button)) return false;
     const profile = state.profile || _NEKO_IDLE_RETURN_SUBACTION_CAT1_CHAT_FOLLOW;
     if (state.substate !== profile.idleSubstate || !state.actionSettled) return false;
@@ -1537,7 +1537,7 @@ function _startNekoIdleCat1PairMove(button) {
     if (!isCatMindRun) return false;
     const state = _getNekoIdleCat1Journey(button);
     _prepareNekoIdleCat1PairMoveStart(button, state);
-    if (_isNekoIdleCat1EdgePeekActive(button)) {
+    if (_isNekoIdleCat1MovementAnchored(button)) {
         _cancelNekoIdleCat1Journey(button, { resetArt: false, preserveObservers: true });
         return false;
     }
@@ -1602,17 +1602,20 @@ function _refreshNekoIdleCat1Observer(button) {
     if (!state.containerObserver) {
         const container = _getNekoIdleReturnContainerFromButton(button);
         if (container) {
-            state.containerObserver = new MutationObserver(() => {
+            state.containerObserver = new MutationObserver((mutations) => {
                 const currentState = button.__nekoIdleReturnSubactionState || button.__nekoIdleCat1Journey;
                 if (!currentState || currentState.paused) return;
-                if (currentState.substate === currentState.profile.walkingSubstate) return;
+                const transferredAnchorChanged = mutations.some((mutation) =>
+                    mutation && mutation.type === 'attributes' &&
+                    mutation.attributeName === 'data-neko-live2d-peek-anchor');
+                if (currentState.substate === currentState.profile.walkingSubstate && !transferredAnchorChanged) return;
                 const observerDragging = container.getAttribute('data-dragging');
                 if (observerDragging && observerDragging !== 'false') return;
                 _scheduleNekoIdleCat1JourneySync(button);
             });
             state.containerObserver.observe(container, {
                 attributes: true,
-                attributeFilter: ['style', 'data-dragging']
+                attributeFilter: ['style', 'data-dragging', 'data-neko-live2d-peek-anchor']
             });
         }
     }
@@ -1621,7 +1624,7 @@ function _refreshNekoIdleCat1Observer(button) {
 function _syncNekoIdleCat1Journey(button, tier) {
     if (!button) return;
     if (_isNekoIdleCat1PlaygroundEntryOrDropActive(button)) return;
-    if (_isNekoIdleCat1EdgePeekActive(button)) {
+    if (_isNekoIdleCat1MovementAnchored(button)) {
         _cancelNekoIdleCat1Journey(button, { resetArt: false, preserveObservers: true });
         return;
     }
@@ -1772,8 +1775,10 @@ function _syncNekoIdleCat1Journey(button, tier) {
 
 function _scheduleNekoIdleCat1JourneySync(button) {
     if (_isNekoIdleCat1PlaygroundEntryOrDropActive(button)) return;
-    if (_isNekoIdleCat1EdgePeekActive(button)) {
-        _reclampNekoIdleCat1EdgePeekToViewport(button);
+    if (_isNekoIdleCat1MovementAnchored(button)) {
+        if (_isNekoIdleCat1EdgePeekActive(button)) {
+            _reclampNekoIdleCat1EdgePeekToViewport(button);
+        }
         _cancelNekoIdleCat1Journey(button, { resetArt: false, preserveObservers: true });
         return;
     }
@@ -2139,6 +2144,14 @@ function _ensureNekoIdleReturnPresentationBridge() {
         if (detail.reason === 'return-ball-drag-end') {
             _finishNekoIdleReturnDragActionForContainer(detail.container);
             if (_isNekoIdleCat1EdgePeekActive(detail.container)) {
+                const dragMoved = [
+                    detail.movedDistancePx,
+                    detail.displacementPx,
+                    detail.pathDistancePx
+                ].some((distance) => Number(distance) > 0);
+                if (detail.dragCancelled !== true && dragMoved) {
+                    _dispatchNekoIdleCat1EdgePeekAfterDragObservation(detail.container);
+                }
                 _cancelNekoIdleCat1JourneyForContainer(detail.container, {
                     resetArt: false,
                     preserveObservers: true
@@ -2153,6 +2166,7 @@ function _ensureNekoIdleReturnPresentationBridge() {
         }
         if (detail.reason === 'return-ball-drag-cancel') {
             _finishNekoIdleReturnDragActionForContainer(detail.container, { restoreArt: false });
+            _scheduleNekoIdleCat1JourneySyncForContainer(detail.container);
             return;
         }
         if (detail.reason === 'return-ball-drag-start') {

@@ -183,7 +183,18 @@ def _install_voice_popover_harness(
         source.type = 'button';
         source.textContent = 'test-screen';
         container.appendChild(source);
+        const filter = document.createElement('input');
+        filter.type = 'search';
+        filter.className = 'screen-source-title-filter';
+        container.appendChild(filter);
         return true;
+    };
+    let rememberWindowEnabled = true;
+    window.__rememberWindowSetCalls = [];
+    window.isScreenSourceTitleMatchEnabled = () => rememberWindowEnabled;
+    window.setScreenSourceTitleMatchEnabled = (enabled) => {
+        rememberWindowEnabled = enabled;
+        window.__rememberWindowSetCalls.push(enabled);
     };
 
     let micPermissionGranted = false;
@@ -221,6 +232,7 @@ def _install_voice_popover_harness(
             }
         },
         pendingScreenSources: () => screenSourceResolvers.length,
+        rememberWindowEnabled: () => rememberWindowEnabled,
         failMicVolumeVisualization() {
             failMicVolumeVisualization = true;
         },
@@ -604,6 +616,115 @@ def test_voice_device_and_screen_actions_share_one_owned_subwindow(
         "sidePanel": True,
     }
     assert result["panelsAfterClose"] == 0
+
+
+@pytest.mark.frontend
+def test_screen_source_subwindow_header_has_remember_window_toggle(
+    page: Page,
+) -> None:
+    _install_voice_popover_harness(page, deferred_permission=False)
+
+    result = page.evaluate(
+        """async () => {
+            const test = window.__voicePopoverTest;
+            await window.renderFloatingMicList(test.popup());
+            test.action('screen').click();
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            const panel = test.panel('screen');
+            const control = panel.querySelector(
+                '.neko-screen-source-remember-control'
+            );
+            const input = control.querySelector(
+                '.neko-screen-source-title-match-toggle'
+            );
+            const closeButton = panel.querySelector('button[aria-label="Close"]');
+            const initiallyChecked = input.checked;
+            input.click();
+            return {
+                controlText: control.textContent,
+                initiallyChecked,
+                checkedAfterClick: input.checked,
+                ariaLabel: input.getAttribute('aria-label'),
+                controlBeforeClose: Boolean(
+                    control.compareDocumentPosition(closeButton)
+                        & Node.DOCUMENT_POSITION_FOLLOWING
+                ),
+                setterCalls: window.__rememberWindowSetCalls,
+                enabledAfterClick: test.rememberWindowEnabled(),
+            };
+        }"""
+    )
+
+    assert result == {
+        "controlText": "app.screenSource.rememberWindow",
+        "initiallyChecked": True,
+        "checkedAfterClick": False,
+        "ariaLabel": "app.screenSource.rememberWindow",
+        "controlBeforeClose": True,
+        "setterCalls": [False],
+        "enabledAfterClick": False,
+    }
+
+
+@pytest.mark.frontend
+def test_screen_source_subwindow_ignores_leave_and_closes_on_parent_return(
+    page: Page,
+) -> None:
+    _install_voice_popover_harness(page, deferred_permission=False)
+    page.evaluate(
+        """async () => {
+            const test = window.__voicePopoverTest;
+            await window.renderFloatingMicList(test.popup());
+            test.action('screen').click();
+            await new Promise((resolve) => setTimeout(resolve, 0));
+        }"""
+    )
+
+    filter_input = page.locator(
+        '.neko-mic-subwindow[data-neko-mic-action-key="screen"] '
+        '.screen-source-title-filter'
+    )
+    filter_input.focus()
+    page.locator(
+        '.neko-mic-subwindow[data-neko-mic-action-key="screen"]'
+    ).hover()
+    page.locator("#outside-target").hover()
+    page.wait_for_timeout(360)
+    assert page.evaluate("window.__voicePopoverTest.panels()") == 1
+
+    page.evaluate(
+        """() => {
+            document.querySelector('.screen-source-title-filter').blur();
+            window.dispatchEvent(new Event('blur'));
+        }"""
+    )
+    page.wait_for_timeout(360)
+    assert page.evaluate("window.__voicePopoverTest.panels()") == 1
+
+    page.locator('[data-neko-mic-main-action="screen"]').hover()
+    page.wait_for_function("window.__voicePopoverTest.panels() === 0")
+
+
+@pytest.mark.frontend
+def test_screen_source_subwindow_closes_when_parent_popup_hides(
+    page: Page,
+) -> None:
+    _install_voice_popover_harness(page, deferred_permission=False)
+    result = page.evaluate(
+        """async () => {
+            const test = window.__voicePopoverTest;
+            const popup = test.popup();
+            await window.renderFloatingMicList(popup);
+            test.action('screen').click();
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            const beforeHide = test.panels();
+            popup.style.display = 'none';
+            await Promise.resolve();
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            return { beforeHide, afterHide: test.panels() };
+        }"""
+    )
+    assert result == {"beforeHide": 1, "afterHide": 0}
 
 
 @pytest.mark.frontend

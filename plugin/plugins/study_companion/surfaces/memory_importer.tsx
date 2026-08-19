@@ -1,6 +1,6 @@
 import { useEffect, useState } from '@neko/plugin-ui';
 import type { PluginSurfaceProps } from '@neko/plugin-ui';
-import { callPlugin, errorMessage, text } from './memory_shared';
+import { callPlugin, errorMessage, listAllMemoryDecks, text } from './memory_shared';
 import { deckTypeLabel, ensureBrandCSS, exportFormatLabel } from './study_surface_utils';
 
 type MemoryDeck = {
@@ -20,9 +20,8 @@ export default function MemoryImporter(props: PluginSurfaceProps) {
   useEffect(() => {
     ensureBrandCSS();
     const controller = new AbortController();
-    callPlugin<{ decks?: MemoryDeck[] }>(props.api, 'study_memory_list_decks', { limit: 100 }, controller.signal)
-      .then((payload) => {
-        const nextDecks = Array.isArray(payload.decks) ? payload.decks : [];
+    listAllMemoryDecks<MemoryDeck>(props.api, controller.signal)
+      .then((nextDecks) => {
         setDecks(nextDecks);
         setDeckId(nextDecks[0]?.id || '');
       })

@@ -259,6 +259,7 @@ export function callPluginHostedSurfaceAction(pluginId: string, actionId: string
   id: string
   locale?: string
   timeoutMs?: number
+  signal?: AbortSignal
   /** True only when the request originates from a user action in the hosted iframe. */
   userInitiated?: boolean
 }): Promise<{
@@ -276,6 +277,7 @@ export function callPluginHostedSurfaceAction(pluginId: string, actionId: string
   const requestConfig = {
     suppressPluginNotRunningMessage: !surface?.userInitiated,
     ...(timeoutMs ? { timeout: timeoutMs } : {}),
+    ...(surface?.signal ? { signal: surface.signal } : {}),
   }
   return post(`/plugin/${safeId}/hosted-ui/action/${safeActionId}`, {
     args: args || {},
@@ -284,6 +286,33 @@ export function callPluginHostedSurfaceAction(pluginId: string, actionId: string
     locale: surface?.locale,
     timeout_ms: timeoutMs,
   }, requestConfig)
+}
+
+export type ParsedHostedDocument = {
+  name: string
+  sourceType: 'pdf' | 'docx'
+  mime: string
+  originalSize: number
+  chars: number
+  encoding: string
+  truncated: boolean
+  content: string
+  meta?: Record<string, any>
+}
+
+/** Upload one document for transient text extraction. The original file is not persisted. */
+export function parseHostedDocument(file: File, options?: {
+  timeoutMs?: number
+  signal?: AbortSignal
+}): Promise<{ ok: boolean; document: ParsedHostedDocument }> {
+  const form = new FormData()
+  form.append('file', file, file.name)
+  const requestedTimeoutMs = Number(options?.timeoutMs)
+  const timeoutMs = Number.isFinite(requestedTimeoutMs) && requestedTimeoutMs > 0 ? requestedTimeoutMs : undefined
+  return post('/api/documents/parse', form, {
+    ...(timeoutMs ? { timeout: timeoutMs } : {}),
+    ...(options?.signal ? { signal: options.signal } : {}),
+  })
 }
 
 /**

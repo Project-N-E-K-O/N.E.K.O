@@ -253,6 +253,10 @@ class TtsRuntimeMixin:
     def resolve_tts_api_key(provider_key: str | None, api_key_override: str | None, tts_config: dict) -> str:
         if provider_key == 'vllm_omni':
             return api_key_override or ''
+        if provider_key == 'qwen' and api_key_override is not None:
+            # Qwen fallback owns its credential explicitly. An empty override
+            # must stay empty instead of leaking the failed custom provider key.
+            return api_key_override
         return api_key_override or tts_config.get('api_key', '')
 
     @staticmethod

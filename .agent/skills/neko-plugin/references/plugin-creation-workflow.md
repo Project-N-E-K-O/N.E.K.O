@@ -93,28 +93,22 @@ Create standard plugins through the CLI in the project uv environment. Do not ha
 For a normal plugin:
 
 ```bash
-uv run neko-plugin init <plugin_id> --type plugin --name "<Plugin Name>" --no-interactive
+uv run neko-plugin init <plugin_id> --type plugin --name "<Plugin Name>"
 ```
 
 For an adapter:
 
 ```bash
-uv run neko-plugin init <plugin_id> --type adapter --name "<Plugin Name>" --no-interactive
+uv run neko-plugin init <plugin_id> --type adapter --name "<Plugin Name>"
 ```
 
-Extension scaffolding needs host plugin details; use the interactive CLI path or ask the required host questions before proceeding:
-
-```bash
-uv run neko-plugin init <plugin_id> --type extension --name "<Plugin Name>"
-```
-
-The CLI owns the initial tree under `plugin/plugins/<plugin_id>/`. Expect at least `plugin.toml` and the entry module, and normally `__init__.py`, `pyproject.toml`, `README.md`, `tests/test_smoke.py`, `.gitignore`, and `.vscode/`. Add capability directories such as `ui/`, `static/`, `docs/`, `i18n/`, or `vendor/` only when the plugin actually needs them.
+By default, the CLI creates the plugin directly under `plugin/plugins/<plugin_id>/`. That directory is both the editable source and the plugin's own Git working tree; do not create another source copy, a symlink, or an imported package for development. The GitHub repository name remains `n.e.k.o_plugin_<plugin_id>`. The tree includes Git, standard Market workflows, `plugin.toml`, `__init__.py`, `pyproject.toml`, `README.md`, tests, `.gitignore`, `.vscode/`, and `ruff.toml`. Add capability directories such as `ui/`, `static/`, `docs/`, `i18n/`, or `vendor/` only when the plugin actually needs them.
 
 After CLI scaffolding:
 
 1. Read the generated tree, `plugin.toml`, and entry class.
 2. Check Identity Lock and Plugin Workspace Tree against the generated files.
-3. Write `DESIGN.md` into `plugin/plugins/<plugin_id>/`.
+3. Write `DESIGN.md` into the generated repository.
 4. Convert or keep runtime-triggered entries as `async def`.
 5. Move expensive startup, network calls, and side effects out of module import time and into lifecycle/entry handlers.
 6. Modify only inside the generated workspace.

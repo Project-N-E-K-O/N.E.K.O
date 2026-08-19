@@ -29,7 +29,7 @@ describe('pluginCli API', () => {
     await installPluginPackage(request)
 
     expect(post).toHaveBeenCalledWith('/plugin-cli/install', request, {
-      timeout: 120_000,
+      timeout: 300_000,
     })
   })
 
@@ -42,7 +42,7 @@ describe('pluginCli API', () => {
     await planPluginInstall(request)
 
     expect(post).toHaveBeenCalledWith('/plugin-cli/install-plan', request, {
-      timeout: 120_000,
+      timeout: 300_000,
     })
   })
 })

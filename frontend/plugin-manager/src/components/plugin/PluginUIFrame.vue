@@ -54,7 +54,7 @@ const emit = defineEmits<{
   (e: 'load'): void
   (e: 'error', error: string): void
   (e: 'message', data: any): void
-  (e: 'openSurface', payload: { pluginId?: string; surfaceId: string; kind?: string }): void
+  (e: 'openSurface', payload: { pluginId?: string; surfaceId: string; kind?: string; activationRevision?: number }): void
 }>()
 
 const { t } = useI18n()
@@ -169,10 +169,16 @@ function handleMessage(event: MessageEvent) {
     if (surfaceId) {
       const pluginId = typeof payload.pluginId === 'string' ? payload.pluginId.trim() : ''
       const kind = typeof payload.kind === 'string' ? payload.kind.trim() : ''
+      const activationRevision = typeof payload.activationRevision === 'number'
+        && Number.isSafeInteger(payload.activationRevision)
+        && payload.activationRevision >= 0
+        ? payload.activationRevision
+        : undefined
       emit('openSurface', {
         pluginId: pluginId || undefined,
         surfaceId,
         kind: kind || undefined,
+        ...(activationRevision === undefined ? {} : { activationRevision }),
       })
     }
   }

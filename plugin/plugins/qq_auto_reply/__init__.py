@@ -230,7 +230,7 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
             emit_log=self._emit_log,
             image_describer=self._describe_reply_image,
             voice_transcriber=self._transcribe_voice,
-            # napcat_forward = 正向 WS 客户端（主动拨出到 NapCat 的 WS 服务器）；
+            # napcat_forward = 正向 WS 客户端（主动拨出到 OneBot 实现方的 WS 服务器）；
             # 其余（含默认）走反向 WS 服务器。
             direction="forward" if mode == "napcat_forward" else "reverse",
         )

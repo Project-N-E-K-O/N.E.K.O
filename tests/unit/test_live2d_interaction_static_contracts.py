@@ -124,7 +124,7 @@ def test_physical_crop_host_has_single_live2d_drag_coordinate_owner():
     ):
         assert drag_end.index(cleanup) < drag_end.index(host_guard)
     assert drag_end.index(host_guard) < drag_end.index(
-        "await this._settleLive2DDragTerminal(model);"
+        "await this._settleLive2DDragTerminal(model, settlementOptions);"
     )
     assert host_guard in drag_move
     host_guard_index = drag_move.index(host_guard)

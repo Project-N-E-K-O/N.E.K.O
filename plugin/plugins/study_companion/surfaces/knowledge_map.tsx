@@ -1,12 +1,19 @@
 import { useEffect, useRef, useState } from '@neko/plugin-ui';
 import type { PluginSurfaceProps } from '@neko/plugin-ui';
 
-import { callPlugin, ensureBrandCSS } from './study_surface_utils';
+import {
+  callPlugin,
+  ensureBrandCSS,
+  postStudySurfaceMessage,
+  STUDY_SURFACE_MESSAGE_TYPES,
+} from './study_surface_utils';
 
 type KnowledgeNode = {
   id: string;
   label: string;
+  stage?: string;
   subject?: string;
+  course_family?: string;
   chapter?: string;
   unit?: string;
   mastery?: number;
@@ -14,6 +21,20 @@ type KnowledgeNode = {
   weak?: boolean;
   question_types?: string[];
   typical_misconceptions?: string[];
+};
+
+type PracticeScope = {
+  schema_version?: number;
+  mode?: 'explicit_scope' | 'explicit_topic';
+  stage?: string;
+  subject?: string;
+  course_family?: string;
+  chapter?: string;
+  unit?: string;
+  topic_id?: string;
+  scope_key?: string;
+  scope_revision?: number;
+  display_path?: string[];
 };
 
 type KnowledgeEdge = {
@@ -64,7 +85,22 @@ function nodeSubject(node?: Partial<KnowledgeNode>) {
 function subjectLabel(props: PluginSurfaceProps, subject: string) {
   const normalized = String(subject || '').trim();
   if (!normalized) return text(props, 'ui.knowledge.subject_uncategorized', 'Uncategorized subject');
-  return text(props, `ui.knowledge.subject.${normalized}`, normalized.replaceAll('_', ' '));
+  return text(props, `ui.knowledge.subject.${normalized}`, normalized.replace(/_/g, ' '));
+}
+
+function stageLabel(props: PluginSurfaceProps, stage: string) {
+  const normalized = String(stage || '').trim();
+  if (!normalized) return text(props, 'ui.knowledge.stage_uncategorized', 'Uncategorized stage');
+  return text(props, `ui.knowledge.stage.${normalized}`, normalized.replace(/_/g, ' '));
+}
+
+function valueLabel(value: string) {
+  return String(value || '').trim().replace(/_/g, ' ');
+}
+
+function uniqueValues(nodes: KnowledgeNode[], field: keyof KnowledgeNode) {
+  return Array.from(new Set(nodes.map((node) => String(node[field] || '').trim()).filter(Boolean)))
+    .sort((left, right) => left.localeCompare(right));
 }
 
 function relationLabel(props: PluginSurfaceProps, relation?: string) {
@@ -209,12 +245,26 @@ export default function KnowledgeMap(props: PluginSurfaceProps) {
   const [nodes, setNodes] = useState<KnowledgeNode[]>([]);
   const [edges, setEdges] = useState<KnowledgeEdge[]>([]);
   const [selectedNode, setSelectedNode] = useState<KnowledgeNode | null>(null);
+  const [selectedStage, setSelectedStage] = useState('all');
   const [selectedSubject, setSelectedSubject] = useState('all');
+  const [selectedChapter, setSelectedChapter] = useState('all');
+  const [selectedUnit, setSelectedUnit] = useState('all');
+  const [canonicalScope, setCanonicalScope] = useState<PracticeScope | null>(null);
+  const [scopeRecoveryFailed, setScopeRecoveryFailed] = useState(false);
+  const [scopeBusy, setScopeBusy] = useState(false);
   const [summary, setSummary] = useState<Record<string, number>>({});
   const [error, setError] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const dialogRef = useRef<HTMLDivElement | null>(null);
   const closeButtonRef = useRef<HTMLButtonElement | null>(null);
+  const nodeTriggerRef = useRef<HTMLButtonElement | null>(null);
+
+  function closeNodeDetail() {
+    setSelectedNode(null);
+    window.setTimeout(() => {
+      if (nodeTriggerRef.current?.isConnected) nodeTriggerRef.current?.focus();
+    }, 0);
+  }
 
   useEffect(() => {
     ensureBrandCSS();
@@ -234,6 +284,20 @@ export default function KnowledgeMap(props: PluginSurfaceProps) {
       })
       .catch((err) => mounted && setError(err instanceof Error ? err.message : String(err)))
       .finally(() => mounted && setIsLoading(false));
+    callPlugin(props.api, 'study_get_practice_scope')
+      .then((scopePayload: any) => {
+        if (!mounted) return;
+        const nextScope = scopePayload?.scope && typeof scopePayload.scope === 'object'
+          ? scopePayload.scope as PracticeScope
+          : null;
+        setCanonicalScope(nextScope?.display_path?.length ? nextScope : null);
+        setScopeRecoveryFailed(false);
+      })
+      .catch(() => {
+        if (!mounted) return;
+        setCanonicalScope(null);
+        setScopeRecoveryFailed(true);
+      });
     return () => {
       mounted = false;
     };
@@ -246,7 +310,7 @@ export default function KnowledgeMap(props: PluginSurfaceProps) {
       if (event.key === 'Escape') {
         event.preventDefault();
         event.stopPropagation();
-        setSelectedNode(null);
+        closeNodeDetail();
         return;
       }
       if (event.key === 'Tab') {
@@ -268,6 +332,88 @@ export default function KnowledgeMap(props: PluginSurfaceProps) {
     return () => document.removeEventListener('keydown', closeNodeDialog);
   }, [selectedNode]);
 
+  async function activatePracticeScope(mode: 'explicit_scope' | 'explicit_topic') {
+    if (scopeBusy) return;
+    const topicNode = mode === 'explicit_topic' ? selectedNode : null;
+    const requestedStage = topicNode
+      ? String(topicNode.stage || '').trim()
+      : selectedStage;
+    const requestedModule = topicNode
+      ? (requestedStage === 'college'
+        ? String(topicNode.course_family || '').trim()
+        : String(topicNode.subject || '').trim())
+      : selectedSubject;
+    if (!requestedStage || requestedStage === 'all' || !requestedModule || requestedModule === 'all') return;
+    const scopeNode = topicNode || nodes.find((node) => {
+      if (String(node.stage || '').trim() !== requestedStage) return false;
+      const module = requestedStage === 'college'
+        ? String(node.course_family || '').trim()
+        : String(node.subject || '').trim();
+      return module === requestedModule;
+    });
+    if (!scopeNode || (mode === 'explicit_topic' && !topicNode)) return;
+    const scope: Record<string, string | number> = {
+      schema_version: 1,
+      mode,
+      stage: requestedStage,
+      subject: String(scopeNode.subject || '').trim(),
+    };
+    if (requestedStage === 'college') scope.course_family = requestedModule;
+    const requestedChapter = topicNode
+      ? String(topicNode.chapter || '').trim()
+      : (selectedChapter === 'all' ? '' : selectedChapter);
+    const requestedUnit = topicNode
+      ? String(topicNode.unit || '').trim()
+      : (selectedUnit === 'all' ? '' : selectedUnit);
+    if (requestedChapter) scope.chapter = requestedChapter;
+    if (requestedUnit) scope.unit = requestedUnit;
+    if (topicNode) scope.topic_id = topicNode.id;
+
+    setScopeBusy(true);
+    try {
+      const payload = await callPlugin(props.api, 'study_set_practice_scope', { scope }) as {
+        scope?: PracticeScope;
+        scope_revision?: number;
+      };
+      const nextScope = payload?.scope && typeof payload.scope === 'object' ? payload.scope : {};
+      setCanonicalScope(nextScope);
+      setScopeRecoveryFailed(false);
+      setError('');
+      const rawRevision = payload?.scope_revision ?? nextScope.scope_revision ?? 0;
+      const activationRevision = typeof rawRevision === 'number'
+        && Number.isSafeInteger(rawRevision)
+        && rawRevision >= 0
+        ? rawRevision
+        : 0;
+      postStudySurfaceMessage({
+        type: STUDY_SURFACE_MESSAGE_TYPES.openSurface,
+        payload: {
+          surfaceId: 'study-panel',
+          activationRevision,
+        },
+      }, props.host?.origin);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setScopeBusy(false);
+    }
+  }
+
+  async function clearPracticeScope() {
+    if (scopeBusy) return;
+    setScopeBusy(true);
+    try {
+      await callPlugin(props.api, 'study_clear_practice_scope');
+      setCanonicalScope(null);
+      setScopeRecoveryFailed(false);
+      setError('');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setScopeBusy(false);
+    }
+  }
+
   const subjectCounts = new Map<string, number>();
   nodes.forEach((node) => {
     const subject = nodeSubject(node);
@@ -281,12 +427,51 @@ export default function KnowledgeMap(props: PluginSurfaceProps) {
   if (subjectCounts.has('')) {
     subjects.push('');
   }
-  const activeSubject = selectedSubject !== 'all' && subjectCounts.has(selectedSubject)
+  const stages = uniqueValues(nodes, 'stage');
+  const activeStage = selectedStage !== 'all' && stages.includes(selectedStage)
+    ? selectedStage
+    : 'all';
+  const stageNodes = activeStage === 'all'
+    ? nodes
+    : nodes.filter((node) => String(node.stage || '').trim() === activeStage);
+  const moduleField: keyof KnowledgeNode = activeStage === 'college' ? 'course_family' : 'subject';
+  const modules = uniqueValues(stageNodes, moduleField);
+  const moduleCounts = new Map<string, number>();
+  stageNodes.forEach((node) => {
+    const module = String(node[moduleField] || '').trim();
+    if (module) moduleCounts.set(module, (moduleCounts.get(module) || 0) + 1);
+  });
+  const selectableModules = activeStage === 'college'
+    ? modules
+    : subjects.filter((subject) => subject !== 'all' && moduleCounts.has(subject));
+  const activeSubject = selectedSubject !== 'all' && moduleCounts.has(selectedSubject)
     ? selectedSubject
     : 'all';
-  const visibleNodes = activeSubject === 'all'
-    ? nodes
-    : nodes.filter((node) => nodeSubject(node) === activeSubject);
+  const moduleNodes = activeSubject === 'all'
+    ? stageNodes
+    : stageNodes.filter((node) => String(node[moduleField] || '').trim() === activeSubject);
+  const chapters = uniqueValues(moduleNodes, 'chapter');
+  const chapterCounts = new Map(chapters.map((chapter) => [
+    chapter,
+    moduleNodes.filter((node) => String(node.chapter || '').trim() === chapter).length,
+  ]));
+  const activeChapter = selectedChapter !== 'all' && chapters.includes(selectedChapter)
+    ? selectedChapter
+    : 'all';
+  const chapterNodes = activeChapter === 'all'
+    ? moduleNodes
+    : moduleNodes.filter((node) => String(node.chapter || '').trim() === activeChapter);
+  const units = uniqueValues(chapterNodes, 'unit');
+  const unitCounts = new Map(units.map((unit) => [
+    unit,
+    chapterNodes.filter((node) => String(node.unit || '').trim() === unit).length,
+  ]));
+  const activeUnit = selectedUnit !== 'all' && units.includes(selectedUnit)
+    ? selectedUnit
+    : 'all';
+  const visibleNodes = activeUnit === 'all'
+    ? chapterNodes
+    : chapterNodes.filter((node) => String(node.unit || '').trim() === activeUnit);
   const visibleIds = new Set(visibleNodes.map((node) => String(node.id || '')));
   const visibleEdges = edges.filter((edge) => (
     visibleIds.has(String(edge.from || '')) && visibleIds.has(String(edge.to || ''))
@@ -295,8 +480,10 @@ export default function KnowledgeMap(props: PluginSurfaceProps) {
     ? selectedNode
     : null;
   const activeSubjectLabel = activeSubject === 'all'
-    ? text(props, 'ui.knowledge.subject_all', 'All subjects')
-    : subjectLabel(props, activeSubject);
+    ? text(props, 'ui.knowledge.module_all', 'All course modules')
+    : activeStage === 'college'
+      ? valueLabel(activeSubject)
+      : subjectLabel(props, activeSubject);
   const loadingSubjectText = text(props, 'ui.knowledge.loading_subject', 'Loading {subject} knowledge map...')
     .replace('{subject}', activeSubjectLabel);
   const emptyDetailItem = text(props, 'ui.knowledge.node_detail.empty', 'Keep studying this topic to unlock more graph context.');
@@ -324,27 +511,43 @@ export default function KnowledgeMap(props: PluginSurfaceProps) {
           <strong>{visibleNodes.filter((node) => nodeMasteryLevel(node) === 'weak').length} / {summary.weak_topic_count || 0}</strong>
         </div>
         <div>
-          <span>{text(props, 'ui.knowledge.subject_label', 'Subject')}</span>
+          <span>{text(props, 'ui.knowledge.module_label', 'Course module')}</span>
           <strong>{activeSubjectLabel}</strong>
         </div>
       </section>
-      <section className="knowledge-stage-selector knowledge-subject-selector">
-        <span>{text(props, 'ui.knowledge.subject_label', 'Subject')}</span>
+      {canonicalScope?.display_path?.length || scopeRecoveryFailed ? (
+        <section className="study-panel__state" aria-live="polite">
+          {canonicalScope?.display_path?.length ? <div>
+            <span>{text(props, 'ui.practice.scope_label', 'Practice scope')}</span>
+            <strong>{canonicalScope.display_path.join(' / ')}</strong>
+          </div> : null}
+          <button type="button" disabled={scopeBusy} onClick={() => void clearPracticeScope()}>
+            {text(props, 'ui.button.clear_practice_scope', 'Clear scope')}
+          </button>
+        </section>
+      ) : null}
+      <section className="knowledge-stage-selector">
+        <span>{text(props, 'ui.knowledge.stage_label', 'Learning stage')}</span>
         <div className="knowledge-stage-selector__actions">
-          {subjects.map((subject) => {
-            const label = subject === 'all'
-              ? text(props, 'ui.knowledge.subject_all', 'All subjects')
-              : subjectLabel(props, subject);
-            const count = subject === 'all' ? nodes.length : (subjectCounts.get(subject) || 0);
+          {['all', ...stages].map((stage) => {
+            const label = stage === 'all'
+              ? text(props, 'ui.knowledge.scope_all', 'All stages')
+              : stageLabel(props, stage);
+            const count = stage === 'all'
+              ? nodes.length
+              : nodes.filter((node) => String(node.stage || '').trim() === stage).length;
             return (
               <button
-                key={subject || 'uncategorized'}
+                key={stage || 'uncategorized'}
                 type="button"
                 className="knowledge-stage-option"
-                data-subject={subject || 'uncategorized'}
-                aria-pressed={subject === activeSubject ? 'true' : 'false'}
+                data-stage={stage || 'uncategorized'}
+                aria-pressed={stage === activeStage ? 'true' : 'false'}
                 onClick={() => {
-                  setSelectedSubject(subject === 'all' ? 'all' : subject);
+                  setSelectedStage(stage);
+                  setSelectedSubject('all');
+                  setSelectedChapter('all');
+                  setSelectedUnit('all');
                   setSelectedNode(null);
                 }}
               >
@@ -354,6 +557,102 @@ export default function KnowledgeMap(props: PluginSurfaceProps) {
           })}
         </div>
       </section>
+      {activeStage !== 'all' ? (
+        <section className="knowledge-stage-selector knowledge-subject-selector">
+          <span>{text(props, 'ui.knowledge.module_label', 'Course module')}</span>
+          <div className="knowledge-stage-selector__actions">
+            {selectableModules.map((module) => {
+              const label = activeStage === 'college' ? valueLabel(module) : subjectLabel(props, module);
+              const count = moduleCounts.get(module) || 0;
+              return (
+                <button
+                  key={module}
+                  type="button"
+                  className="knowledge-stage-option"
+                  data-module={module}
+                  aria-pressed={module === activeSubject ? 'true' : 'false'}
+                  onClick={() => {
+                    setSelectedSubject(module);
+                    setSelectedChapter('all');
+                    setSelectedUnit('all');
+                    setSelectedNode(null);
+                  }}
+                >
+                  {`${label} ${count}`}
+                </button>
+              );
+            })}
+          </div>
+        </section>
+      ) : null}
+      {activeSubject !== 'all' ? (
+        <section className="knowledge-stage-selector knowledge-chapter-selector">
+          <span>{text(props, 'ui.knowledge.chapter_label', 'Chapter')}</span>
+          <div className="knowledge-stage-selector__actions">
+            <button
+              type="button"
+              className="knowledge-stage-option"
+              aria-pressed={activeChapter === 'all' ? 'true' : 'false'}
+              onClick={() => {
+                setSelectedChapter('all');
+                setSelectedUnit('all');
+                setSelectedNode(null);
+              }}
+            >
+              {text(props, 'ui.knowledge.chapter_all', 'All chapters')}
+            </button>
+            {chapters.map((chapter) => (
+              <button
+                key={chapter}
+                type="button"
+                className="knowledge-stage-option"
+                data-chapter={chapter}
+                aria-pressed={chapter === activeChapter ? 'true' : 'false'}
+                onClick={() => {
+                  setSelectedChapter(chapter);
+                  setSelectedUnit('all');
+                  setSelectedNode(null);
+                }}
+              >
+                {`${chapter} ${chapterCounts.get(chapter) || 0}`}
+              </button>
+            ))}
+          </div>
+        </section>
+      ) : null}
+      {activeChapter !== 'all' ? (
+        <section className="knowledge-stage-selector knowledge-unit-selector">
+          <span>{text(props, 'ui.knowledge.unit_label', 'Unit')}</span>
+          <div className="knowledge-stage-selector__actions">
+            <button
+              type="button"
+              className="knowledge-stage-option"
+              aria-pressed={activeUnit === 'all' ? 'true' : 'false'}
+              onClick={() => {
+                setSelectedUnit('all');
+                setSelectedNode(null);
+              }}
+            >
+              {text(props, 'ui.knowledge.unit_all', 'All units')}
+            </button>
+            {units.map((unit) => (
+              <button
+                key={unit}
+                type="button"
+                className="knowledge-stage-option"
+                data-unit={unit}
+                aria-pressed={unit === activeUnit ? 'true' : 'false'}
+                onClick={() => {
+                  setSelectedUnit(unit);
+                  setSelectedNode(null);
+                }}
+              >
+                {`${unit} ${unitCounts.get(unit) || 0}`}
+              </button>
+            ))}
+          </div>
+        </section>
+      ) : null}
       {isLoading ? (
         <pre>{loadingSubjectText}</pre>
       ) : null}
@@ -368,7 +667,10 @@ export default function KnowledgeMap(props: PluginSurfaceProps) {
               className="knowledge-node"
               data-mastery={nodeMasteryLevel(node)}
               aria-pressed={currentNode?.id === node.id ? 'true' : 'false'}
-              onClick={() => setSelectedNode(node)}
+              onClick={(event: any) => {
+                nodeTriggerRef.current = event.currentTarget;
+                setSelectedNode(node);
+              }}
             >
               {node.label}
               {masteryText}
@@ -426,13 +728,13 @@ export default function KnowledgeMap(props: PluginSurfaceProps) {
           aria-modal="true"
           aria-label={nodeLabel(currentNode)}
           onClick={(event: any) => {
-            if (event.target === event.currentTarget) setSelectedNode(null);
+            if (event.target === event.currentTarget) closeNodeDetail();
           }}
         >
           <div className="knowledge-node-detail-dialog__panel">
             <header className="knowledge-node-detail-dialog__header">
               <strong>{nodeLabel(currentNode)}</strong>
-              <button ref={closeButtonRef} type="button" className="button button-secondary knowledge-node-detail-dialog__close" onClick={() => setSelectedNode(null)}>
+              <button ref={closeButtonRef} type="button" className="button button-secondary knowledge-node-detail-dialog__close" onClick={closeNodeDetail}>
                 {text(props, 'ui.button.close', 'Close')}
               </button>
             </header>
@@ -486,6 +788,24 @@ export default function KnowledgeMap(props: PluginSurfaceProps) {
                   {!(currentNode.typical_misconceptions || []).length ? <li>{emptyDetailItem}</li> : null}
                 </ul>
               </section>
+              <div className="study-panel__actions">
+                <button
+                  type="button"
+                  disabled={scopeBusy}
+                  onClick={() => void activatePracticeScope('explicit_topic')}
+                >
+                  {scopeBusy
+                    ? text(props, 'ui.practice.scope_setting', 'Setting practice scope...')
+                    : text(props, 'ui.knowledge.practice_topic', 'Practice this topic')}
+                </button>
+                <button
+                  type="button"
+                  disabled={scopeBusy || activeStage === 'all' || activeSubject === 'all'}
+                  onClick={() => void activatePracticeScope('explicit_scope')}
+                >
+                  {text(props, 'ui.knowledge.practice_current_scope', 'Start practice in current scope')}
+                </button>
+              </div>
             </article>
           </div>
         </div>

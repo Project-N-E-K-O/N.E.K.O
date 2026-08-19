@@ -392,12 +392,14 @@ async def test_game_llm_agent_scene_summary_counts_condensed_stable_lines(
             "scheduled_from_event_seq": 0,
             "last_line_seq": 0,
         },
-        update_scene_memory=False,
         scheduled_line_count=8,
     )
     await _drain_agent_summary_tasks(agent)
 
-    assert ctx.pushed_messages[-1]["metadata"]["kind"] == "scene_summary"
-    assert ctx.pushed_messages[-1]["metadata"]["trigger"] == "line_count"
-    assert ctx.pushed_messages[-1]["metadata"]["stable_line_count"] == 8
-    assert ctx.pushed_messages[-1]["metadata"]["summary_delivery_key"] == "scene-a:0:8"
+    assert ctx.pushed_messages == []
+    assert agent._last_delivered_summary_key == "scene-a:0:8"
+    assert agent._summary_debug["last_task_finished"]["stable_line_count"] == 8
+    assert any(
+        item.get("scene_id") == "scene-a" and item.get("summary")
+        for item in agent._scene_memory
+    )

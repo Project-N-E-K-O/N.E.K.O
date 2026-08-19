@@ -207,6 +207,10 @@ class QQOpenPlatformConnection(QQConnectionBase):
     def receives_all_messages(self) -> bool:
         return False  # 开放平台仅接收 @bot 消息
 
+    @property
+    def supports_ark_cards(self) -> bool:
+        return True  # 开放平台原生支持 Ark 富卡片
+
     async def get_login_info(self) -> dict[str, Any]:
         return {"user_id": self._self_id, "nickname": self._self_nickname}
 

@@ -330,6 +330,7 @@ class AgentPromptMixin:
             return content
         if kind not in {
             "scene_context",
+            "scene_delta",
             "scene_summary",
             "choice_reason",
             "cat_consultation",

@@ -57,20 +57,27 @@ def test_api_key_settings(mock_page: Page, running_server: str):
     # The JS shows status in #status div; message may be i18n-translated
     # Wait for the status div to become visible (it's hidden by default)
     expect(mock_page.locator("#status")).to_be_visible(timeout=5000)
-    
+
+    # The immediate post-save refresh receives only the server-side secret
+    # sentinel.  Keep this page's just-entered key as a partial mask instead
+    # of degrading it to the generic all-dot placeholder.
+    expect(mock_page.locator("#apiKeyInput")).to_have_value(
+        "sk-************890", timeout=5000
+    )
+
     # Reload page to verify persistence
     mock_page.reload()
     expect(mock_page.locator("#loading-overlay")).to_be_hidden(timeout=10000)
-    
-    # Verify value
-    # 当前页面会把明文 key 掩码显示，真实值挂在 data-real-key 上。
-    expect(mock_page.locator("#apiKeyInput")).to_have_attribute("data-real-key", test_key, timeout=5000)
+
+    # A full page reload keeps the server-provided partial mask, never plaintext.
+    expect(mock_page.locator("#apiKeyInput")).to_have_value("sk-************890", timeout=5000)
     expect(mock_page.locator("#coreApiSelect")).to_have_value("qwen", timeout=5000)
 
 
 @pytest.mark.frontend
 def test_custom_model_headers_own_their_capsule_shape(mock_page: Page, running_server: str):
     """Collapsed custom-model headers must not borrow rounded corners from a wrapper."""
+    mock_page.set_viewport_size({"width": 1280, "height": 1200})
     mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
     mock_page.goto(f"{running_server}/api_key")
 
@@ -105,7 +112,15 @@ def test_custom_model_headers_own_their_capsule_shape(mock_page: Page, running_s
         "headerWidth": styles["headerWidth"],
     }
 
-    mock_page.evaluate("toggleModelConfig('conversation')")
+    transition_overflow = mock_page.evaluate("""
+        () => {
+            toggleModelConfig('conversation');
+            return getComputedStyle(
+                document.getElementById('conversation-model-content')
+            ).overflow;
+        }
+    """)
+    assert transition_overflow == "hidden"
     mock_page.wait_for_timeout(350)
 
     expanded_styles = mock_page.evaluate("""
@@ -117,6 +132,7 @@ def test_custom_model_headers_own_their_capsule_shape(mock_page: Page, running_s
                 borderWidth: style.borderTopWidth,
                 borderRadius: style.borderTopLeftRadius,
                 marginTop: style.marginTop,
+                overflow: style.overflow,
             };
         }
     """)
@@ -125,7 +141,65 @@ def test_custom_model_headers_own_their_capsule_shape(mock_page: Page, running_s
         "borderWidth": "3px",
         "borderRadius": "24px",
         "marginTop": "8px",
+        "overflow": "hidden",
     }
+
+    mock_page.wait_for_selector(
+        "#conversationModelProvider-menu "
+        ".api-provider-dropdown-option[data-value='qwen']",
+        state="attached",
+        timeout=10000,
+    )
+    mock_page.evaluate("""
+        () => {
+            document.getElementById('custom-api-options').style.display = 'block';
+            document.getElementById('custom-api-container').style.display = 'grid';
+            document.getElementById('conversation-model-content')
+                .closest('.model-config-container').style.display = 'block';
+        }
+    """)
+    provider_trigger = mock_page.locator("#conversationModelProvider-dropdown-trigger")
+    provider_menu = mock_page.locator("#conversationModelProvider-menu")
+    provider_trigger.click()
+    expect(provider_menu).to_be_visible()
+
+    dropdown_geometry = mock_page.evaluate("""
+        () => {
+            const content = document.getElementById('conversation-model-content');
+            const menu = document.getElementById('conversationModelProvider-menu');
+            const contentRect = content.getBoundingClientRect();
+            const menuRect = menu.getBoundingClientRect();
+            const probeXs = [
+                menuRect.left + (menuRect.width / 2),
+                menuRect.right - 4,
+            ];
+            const exposedHeight = menuRect.bottom - contentRect.bottom;
+            const probeY = contentRect.bottom + (Math.min(4, exposedHeight) / 2);
+            const hits = exposedHeight > 0
+                ? probeXs.map((probeX) => document.elementFromPoint(probeX, probeY))
+                : [];
+
+            return {
+                contentBottom: contentRect.bottom,
+                menuBottom: menuRect.bottom,
+                contentOverflow: getComputedStyle(content).overflow,
+                menuExtendsPastContent: exposedHeight > 0,
+                exposedMenuCenterIsVisible: !!(hits[0] && menu.contains(hits[0])),
+                exposedMenuRightEdgeIsVisible: !!(hits[1] && menu.contains(hits[1])),
+            };
+        }
+    """)
+
+    assert dropdown_geometry["contentOverflow"] == "visible"
+    assert dropdown_geometry["menuExtendsPastContent"] is True
+    assert dropdown_geometry["exposedMenuCenterIsVisible"] is True
+    assert dropdown_geometry["exposedMenuRightEdgeIsVisible"] is True
+
+    provider_trigger.click()
+    expect(provider_menu).to_be_hidden()
+    expect(mock_page.locator("#conversation-model-content")).to_have_css(
+        "overflow", "hidden"
+    )
 
 
 @pytest.mark.frontend

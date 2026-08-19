@@ -3,16 +3,16 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title data-i18n="page.title">B站私信监听</title>
-    <link rel="stylesheet" href="./style.css?v=1.1.12">
+    <title data-i18n="page.title">B站集成</title>
+    <link rel="stylesheet" href="./style.css?v=1.2.0">
 </head>
 <body>
     <main class="app-container">
         <header class="hero">
             <div>
                 <p class="eyebrow">N.E.K.O · BILIBILI</p>
-                <h1 data-i18n="page.title">B站私信监听</h1>
-                <p class="subtitle">在本机保存登录 Cookie，控制私信监听与自动回复。</p>
+                <h1 data-i18n="page.title">B站集成</h1>
+                <p class="subtitle">在本机保存登录 Cookie，控制私信、评论回复和 @ 通知的自动回复。</p>
             </div>
             <button id="btn-refresh" class="button secondary" type="button">刷新状态</button>
         </header>
@@ -107,6 +107,21 @@
                     <span>单轮回复超时（秒）</span>
                     <input id="cfg-turn-timeout" type="number" min="5" max="600" step="1" value="60">
                 </label>
+                <label class="field">
+                    <span data-i18n="config.comment_notifications_label">评论回复与 @ 通知</span>
+                    <select id="cfg-comment-notifications">
+                        <option value="true" data-i18n="config.enabled">启用</option>
+                        <option value="false" data-i18n="config.disabled">停用</option>
+                    </select>
+                </label>
+                <label class="field">
+                    <span data-i18n="config.notification_poll_interval_label">通知轮询间隔（秒）</span>
+                    <input id="cfg-notification-poll-interval" type="number" min="5" max="300" step="1" value="20">
+                </label>
+                <label class="field">
+                    <span data-i18n="config.notification_max_items_label">每轮处理通知数</span>
+                    <input id="cfg-notification-max-items" type="number" min="1" max="50" step="1" value="20">
+                </label>
             </div>
 
             <div class="actions split">
@@ -123,7 +138,7 @@
                 </div>
                 <span id="trusted-count" class="pill">0 人</span>
             </div>
-            <p class="hint">默认 allow_list 模式下，只有这里配置的用户会获得自动回复。</p>
+            <p class="hint">默认“仅白名单”模式下，只有这里配置的用户能触发私信、评论回复和 @ 通知的自动回复。</p>
             <div class="user-form">
                 <input id="user-uid" type="text" inputmode="numeric" placeholder="B站 UID">
                 <input id="user-nickname" type="text" placeholder="昵称（可选）">
@@ -139,7 +154,7 @@
     </main>
 
     <div id="toast" class="toast" role="status"></div>
-    <script src="./i18n.js?v=1.1.12"></script>
-    <script src="./script.js?v=1.1.12"></script>
+    <script src="./i18n.js?v=1.2.0"></script>
+    <script src="./script.js?v=1.2.0"></script>
 </body>
 </html>

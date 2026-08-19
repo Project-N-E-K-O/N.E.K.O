@@ -63,6 +63,7 @@ from tests.fake_clock import patch_module_clock
 from plugin.core.ui_manifest import normalize_plugin_ui_manifest
 from plugin.plugins import study_companion as study_companion_module
 from plugin.plugins.study_companion import StudyCompanionPlugin
+from plugin.plugins.study_companion._event_bus import StudyEvent
 from plugin.plugins.study_companion.awareness_buffer import ActivityBuffer
 from plugin.plugins.study_companion.llm_prompts import (
     _compact_prompt_value,
@@ -314,17 +315,17 @@ async def test_awareness_disabled_does_not_start_loop_on_startup(
 
 
 @pytest.mark.asyncio
-async def test_study_plugin_startup_auto_opens_panel_page(
+async def test_study_plugin_startup_ignores_legacy_auto_open_ui(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     opened: list[str] = []
     monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(tmp_path / "runtime"))
-    monkeypatch.setenv("NEKO_USER_PLUGIN_SERVER_PORT", "49888")
-    monkeypatch.delenv("NEKO_STUDY_COMPANION_PANEL_URL", raising=False)
-    monkeypatch.delenv("NEKO_PLUGIN_MANAGER_URL", raising=False)
-    monkeypatch.delenv("NEKO_PLUGIN_MANAGER_BASE_URL", raising=False)
-    monkeypatch.delenv("NEKO_PLUGIN_MANAGER_PORT", raising=False)
-    monkeypatch.setattr(study_companion_module, "_open_url_in_browser", opened.append)
+    monkeypatch.setattr(
+        study_companion_module,
+        "_open_url_in_browser",
+        opened.append,
+        raising=False,
+    )
     ctx = _Ctx(
         tmp_path,
         {
@@ -338,9 +339,7 @@ async def test_study_plugin_startup_auto_opens_panel_page(
 
     try:
         assert isinstance(result, Ok)
-        assert opened == [
-            "http://127.0.0.1:49888/plugin/study_companion/ui/"
-        ]
+        assert opened == []
         assert plugin.get_list_actions()[0]["target"] == (
             "/plugin/study_companion/ui/"
         )
@@ -349,40 +348,10 @@ async def test_study_plugin_startup_auto_opens_panel_page(
 
 
 @pytest.mark.asyncio
-async def test_study_plugin_startup_auto_open_can_be_disabled_by_config(
+async def test_study_open_ui_entry_and_list_action_remain_available(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    opened: list[str] = []
     monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(tmp_path / "runtime"))
-    monkeypatch.setenv("NEKO_USER_PLUGIN_SERVER_PORT", "49888")
-    monkeypatch.delenv("NEKO_STUDY_COMPANION_DISABLE_AUTO_OPEN_UI", raising=False)
-    monkeypatch.setattr(study_companion_module, "_open_url_in_browser", opened.append)
-    ctx = _Ctx(
-        tmp_path,
-        {
-            "study": {"language": "en", "auto_open_ui": False},
-            "study_companion": {"communication": {"enabled": False}},
-        },
-    )
-    plugin = StudyCompanionPlugin(ctx)
-
-    result = await plugin.startup()
-
-    try:
-        assert isinstance(result, Ok)
-        assert opened == []
-    finally:
-        await plugin.shutdown()
-
-
-@pytest.mark.asyncio
-async def test_study_plugin_startup_auto_open_uses_configured_panel_url(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    opened: list[str] = []
-    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(tmp_path / "runtime"))
-    monkeypatch.setenv("NEKO_STUDY_COMPANION_PANEL_URL", "http://127.0.0.1:48916/ui")
-    monkeypatch.setattr(study_companion_module, "_open_url_in_browser", opened.append)
     ctx = _Ctx(
         tmp_path,
         {
@@ -396,140 +365,23 @@ async def test_study_plugin_startup_auto_open_uses_configured_panel_url(
 
     try:
         assert isinstance(result, Ok)
-        assert opened == [
-            "http://127.0.0.1:48916/plugin/study_companion/ui/"
+        monkeypatch.setattr(plugin, "get_static_ui_config", lambda: {"enabled": True})
+        open_result = await plugin.study_open_ui()
+        assert isinstance(open_result, Ok)
+        assert open_result.value == {
+            "available": True,
+            "path": "/plugin/study_companion/ui/",
+            "message_key": "ui.open.available",
+        }
+        assert plugin.get_list_actions() == [
+            {
+                "id": "open_ui",
+                "kind": "ui",
+                "target": "/plugin/study_companion/ui/",
+                "open_in": "new_tab",
+            }
         ]
     finally:
-        await plugin.shutdown()
-
-
-@pytest.mark.asyncio
-async def test_study_plugin_startup_auto_open_can_be_disabled_by_env(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    opened: list[str] = []
-    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(tmp_path / "runtime"))
-    monkeypatch.setenv("NEKO_STUDY_COMPANION_DISABLE_AUTO_OPEN_UI", "true")
-    monkeypatch.setattr(study_companion_module, "_open_url_in_browser", opened.append)
-    ctx = _Ctx(
-        tmp_path,
-        {
-            "study": {"language": "en", "auto_open_ui": True},
-            "study_companion": {"communication": {"enabled": False}},
-        },
-    )
-    plugin = StudyCompanionPlugin(ctx)
-
-    result = await plugin.startup()
-
-    try:
-        assert isinstance(result, Ok)
-        assert opened == []
-    finally:
-        await plugin.shutdown()
-
-
-@pytest.mark.asyncio
-async def test_study_plugin_startup_auto_open_falls_back_for_invalid_manager_port(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    opened: list[str] = []
-    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(tmp_path / "runtime"))
-    monkeypatch.delenv("NEKO_STUDY_COMPANION_PANEL_URL", raising=False)
-    monkeypatch.delenv("NEKO_PLUGIN_MANAGER_URL", raising=False)
-    monkeypatch.delenv("NEKO_PLUGIN_MANAGER_BASE_URL", raising=False)
-    monkeypatch.setenv("NEKO_USER_PLUGIN_SERVER_PORT", "70000")
-    monkeypatch.setenv("NEKO_PLUGIN_MANAGER_PORT", "5173")
-    monkeypatch.setattr(study_companion_module, "_open_url_in_browser", opened.append)
-    ctx = _Ctx(
-        tmp_path,
-        {
-            "study": {"language": "en", "auto_open_ui": True},
-            "study_companion": {"communication": {"enabled": False}},
-        },
-    )
-    plugin = StudyCompanionPlugin(ctx)
-
-    result = await plugin.startup()
-
-    try:
-        assert isinstance(result, Ok)
-        assert opened == [
-            "http://127.0.0.1:48916/plugin/study_companion/ui/"
-        ]
-    finally:
-        await plugin.shutdown()
-
-
-@pytest.mark.asyncio
-async def test_study_plugin_auto_open_failure_does_not_block_startup(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    def _fail_open(_url: str) -> None:
-        raise RuntimeError("browser unavailable")
-
-    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(tmp_path / "runtime"))
-    monkeypatch.setattr(study_companion_module, "_open_url_in_browser", _fail_open)
-    ctx = _Ctx(
-        tmp_path,
-        {
-            "study": {"language": "en", "auto_open_ui": True},
-            "study_companion": {"communication": {"enabled": False}},
-        },
-    )
-    plugin = StudyCompanionPlugin(ctx)
-    plugin.logger = ctx.logger
-
-    result = await plugin.startup()
-
-    try:
-        assert isinstance(result, Ok)
-        assert any(
-            warning[0][0] == "study auto-open UI failed: {}"
-            for warning in ctx.logger.warnings
-        )
-    finally:
-        await plugin.shutdown()
-
-
-@pytest.mark.asyncio
-async def test_study_plugin_auto_open_timeout_does_not_block_startup(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    unblock = threading.Event()
-    opened: list[str] = []
-
-    def _hang_open(url: str) -> None:
-        opened.append(url)
-        unblock.wait(timeout=1.0)
-
-    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(tmp_path / "runtime"))
-    monkeypatch.setattr(study_companion_module, "_open_url_in_browser", _hang_open)
-    monkeypatch.setattr(
-        study_companion_module,
-        "_AUTO_OPEN_UI_TASK_TIMEOUT_SECONDS",
-        0.01,
-    )
-    ctx = _Ctx(
-        tmp_path,
-        {
-            "study": {"language": "en", "auto_open_ui": True},
-            "study_companion": {"communication": {"enabled": False}},
-        },
-    )
-    plugin = StudyCompanionPlugin(ctx)
-    plugin.logger = ctx.logger
-
-    try:
-        result = await plugin.startup()
-
-        assert isinstance(result, Ok)
-        assert any(
-            warning[0][0] == "study auto-open UI failed: {}"
-            for warning in ctx.logger.warnings
-        )
-    finally:
-        unblock.set()
         await plugin.shutdown()
 
 
@@ -852,6 +704,9 @@ class _FakeStudyOcrPipeline:
 class _FakeTutorAgent:
     def __init__(self) -> None:
         self.inputs: list[tuple[str, dict[str, object], str]] = []
+        self.semantic_routing_result: str | Exception | None = None
+        self.semantic_routing_calls: list[tuple[list[dict[str, object]], str]] = []
+        self.semantic_routing_deadlines: list[float] = []
         self.evaluations: list[tuple[str, str, str, dict[str, object], str]] = []
         self.summaries: list[
             tuple[list[dict[str, object]], dict[str, object], str]
@@ -859,6 +714,42 @@ class _FakeTutorAgent:
 
     def update_config(self, config: StudyConfig) -> None:
         self._config = config
+
+    async def _call_model(
+        self,
+        messages: list[dict[str, object]],
+        *,
+        operation: str = "concept_explain",
+        deadline: float | None = None,
+    ) -> str:
+        self.semantic_routing_calls.append((messages, operation))
+        if deadline is not None:
+            self.semantic_routing_deadlines.append(deadline)
+        if isinstance(self.semantic_routing_result, Exception):
+            raise self.semantic_routing_result
+        if self.semantic_routing_result is None:
+            raise RuntimeError("semantic routing unavailable")
+        return self.semantic_routing_result
+
+    def _new_operation_deadline(
+        self, operation: str, messages: list[dict[str, object]]
+    ) -> float:
+        return time.monotonic() + 30.0
+
+    def _attach_vision_image(
+        self, messages: list[dict[str, object]], image: str
+    ) -> list[dict[str, object]]:
+        self.semantic_routing_calls.append((messages, f"image:{image}"))
+        attached = [dict(message) for message in messages]
+        for message in reversed(attached):
+            if message.get("role") != "user":
+                continue
+            message["content"] = [
+                {"type": "text", "text": str(message.get("content") or "")},
+                {"type": "image_url", "image_url": {"url": image, "detail": "auto"}},
+            ]
+            break
+        return attached
 
     async def concept_explain(
         self,
@@ -997,14 +888,14 @@ def test_study_store_round_trip_and_export(tmp_path: Path) -> None:
             context={"index": index},
         )
 
-    assert store.load_config(StudyConfig()).language == "en"
+    assert store.load_config(StudyConfig(language="zh-TW")).language == "zh-TW"
     assert store.load_state(build_initial_state()).last_ocr_text == "photosynthesis"
     assert [item["input_text"] for item in store.list_interactions(limit=10)] == [
         "e",
         "c",
     ]
     exported = store.export_json()
-    assert exported["config"]["language"] == "en"
+    assert "language" not in exported["config"]
     assert exported["sessions"][0]["id"] == "session-1"
     assert [
         item["question"]["question"] for item in store.list_qa_records(limit=2)
@@ -1017,6 +908,278 @@ def test_study_store_round_trip_and_export(tmp_path: Path) -> None:
     assert exported["review_log"][0]["topic_id"] == "photosynthesis_topic"
     assert exported["knowledge_evidence"][0]["item_id"] == candidate["id"]
     store.close()
+
+
+def test_study_store_ignores_legacy_persisted_language(tmp_path: Path) -> None:
+    store = StudyStore(tmp_path / "study.db", tmp_path / "seed.json", _Logger())
+    store.open()
+    try:
+        store.set_raw("config", {"language": "en", "history_limit": 7})
+
+        loaded = store.load_config(StudyConfig(language="zh-CN", history_limit=50))
+
+        assert loaded.language == "zh-CN"
+        assert loaded.history_limit == 7
+    finally:
+        store.close()
+
+
+@pytest.mark.asyncio
+async def test_study_status_uses_plugin_page_locale_without_persisting_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(tmp_path / "runtime"))
+    plugin = StudyCompanionPlugin(
+        _Ctx(
+            tmp_path,
+            {
+                "study": {
+                    "language": "en",
+                    "default_mode": MODE_COMPANION,
+                    "auto_open_ui": False,
+                }
+            },
+        )
+    )
+    assert isinstance(await plugin.startup(), Ok)
+
+    try:
+        result = await plugin.study_status(locale="zh-TW")
+
+        assert isinstance(result, Ok)
+        assert result.value["config"]["language"] == "en"
+        assert plugin._cfg.language == "en"
+        assert plugin._agent is not None
+        assert plugin._agent._config is plugin._cfg
+        assert "language" not in (plugin._store.get_raw("config") or {})
+    finally:
+        await plugin.shutdown()
+
+
+def test_study_companion_pages_forward_current_locale_to_plugin_entries() -> None:
+    plugin_dir = Path(__file__).resolve().parents[3] / "plugins" / "study_companion"
+    hosted_source = (plugin_dir / "surfaces" / "study_panel.tsx").read_text(
+        encoding="utf-8"
+    )
+    static_source = (plugin_dir / "static" / "main.js").read_text(encoding="utf-8")
+
+    assert "locale: PluginSurfaceProps['locale']" in hosted_source
+    assert "{ ...args, locale: String(locale || '').trim() }" in hosted_source
+    assert hosted_source.count("props.locale,") == 13
+    assert "}, [props.locale]);" in hosted_source
+    assert "typeof window.I18n.lang === 'function'" in static_source
+    assert "createRun(entryId, { ...args, locale }, deadline, signal)" in static_source
+
+
+def test_reviewed_entry_context_contracts_remain_session_local() -> None:
+    plugin_dir = Path(__file__).resolve().parents[3] / "plugins" / "study_companion"
+    status = (plugin_dir / "entry_status_entries.py").read_text(encoding="utf-8")
+    explain = (plugin_dir / "entry_tutor_explain_entries.py").read_text(encoding="utf-8")
+    events = (plugin_dir / "entry_communication_tutor_events.py").read_text(encoding="utf-8")
+    answer = " ".join(
+        (plugin_dir / "entry_tutor_answer_entries.py")
+        .read_text(encoding="utf-8")
+        .split()
+    )
+    questions = (plugin_dir / "entry_tutor_question_entries.py").read_text(encoding="utf-8")
+
+    assert "self._cfg.language = page_locale" not in status
+    assert "target_lanlan = self._resolve_study_target_lanlan" in explain
+    assert 'payload["target_lanlan"] = normalized_target' in events
+    assert "supplied_question_id and state_question_id" in answer
+    assert "supplied_attempt_id and state_attempt_id" in answer
+    assert "scope.subject or None" in questions
+    assert "scope.stage or None" in questions
+    assert "course_family=scope.course_family or None" in questions
+    assert 'code="PRACTICE_SCOPE_INVALIDATED"' in questions
+
+
+def test_scoped_question_candidates_are_filtered_before_limits() -> None:
+    eligible = {"inside-topic"}
+
+    class _ScopedStore:
+        def __init__(self) -> None:
+            self.requested_topic_ids: list[set[str] | None] = []
+
+        def list_topics(self, *_args, **_kwargs):
+            return [{"id": "inside-topic", "name": "Inside"}]
+
+        def list_latest_mastery_for_topics(self, _topic_ids):
+            return []
+
+        def list_wrong_questions(self, *, topic_ids=None, **_kwargs):
+            requested = set(topic_ids) if topic_ids is not None else None
+            self.requested_topic_ids.append(requested)
+            return [{"id": "wrong-inside", "topic_id": "inside-topic"}]
+
+        def get_topic(self, topic_id):
+            return {"id": topic_id, "name": "Inside"}
+
+    class _ScopedTracker:
+        def __init__(self) -> None:
+            self.store = _ScopedStore()
+            self.preview_options: dict[str, Any] = {}
+
+        def preview_next_question_params(self, topic_id, **kwargs):
+            self.preview_options = dict(kwargs)
+            return {
+                "target_topic_id": topic_id,
+                "due_reviews": [{"topic_id": "inside-topic"}],
+                "weak_topics": [{"topic_id": "inside-topic", "mastery": 0.2}],
+            }
+
+    plugin = StudyCompanionPlugin.__new__(StudyCompanionPlugin)
+    tracker = _ScopedTracker()
+    plugin._knowledge_tracker = tracker
+
+    params = plugin._scoped_question_params(
+        SimpleNamespace(
+            eligible_topic_ids=list(eligible),
+            subject="math",
+            stage="high_school",
+            chapter="",
+            unit="",
+            course_family="",
+            topic_id="",
+            mode="explicit_scope",
+        )
+    )
+
+    assert tracker.store.requested_topic_ids == [eligible]
+    assert tracker.preview_options["candidate_topic_ids"] == eligible
+    assert tracker.preview_options["candidate_limit"] == 5000
+    assert tracker.preview_options["candidate_topics_by_id"] == {
+        "inside-topic": {"id": "inside-topic", "name": "Inside"}
+    }
+    assert params["retry_wrong_questions"][0]["topic_id"] == "inside-topic"
+    assert params["due_reviews"][0]["topic_id"] == "inside-topic"
+    assert params["weak_topics"][0]["topic_id"] == "inside-topic"
+
+
+def test_explicit_topic_question_selection_loads_topic_by_id_before_scope_cap() -> None:
+    topic = {
+        "id": "late-topic",
+        "name": "Late topic",
+        "stage": "high_school",
+        "subject": "math",
+        "course_family": "",
+        "chapter": "Algebra",
+        "unit": "Functions",
+    }
+
+    class _ScopedStore:
+        def list_topics(self, *_args, **_kwargs):
+            return []
+
+        def get_topic(self, topic_id):
+            return dict(topic) if topic_id == "late-topic" else None
+
+        def list_latest_mastery_for_topics(self, _topic_ids):
+            return []
+
+        def list_wrong_questions(self, **_kwargs):
+            return []
+
+    class _ScopedTracker:
+        def __init__(self) -> None:
+            self.store = _ScopedStore()
+            self.preview_options: dict[str, Any] = {}
+
+        def preview_next_question_params(self, topic_id, **kwargs):
+            self.preview_options = dict(kwargs)
+            return {"target_topic_id": topic_id, "target_topic": dict(topic)}
+
+    scope_fields = {
+        "mode": "explicit_topic",
+        "stage": "high_school",
+        "subject": "math",
+        "course_family": "",
+        "chapter": "Algebra",
+        "unit": "Functions",
+        "topic_id": "late-topic",
+    }
+    scope = SimpleNamespace(
+        **scope_fields,
+        eligible_topic_ids=["late-topic"],
+        to_public_dict=lambda: dict(scope_fields),
+    )
+    plugin = StudyCompanionPlugin.__new__(StudyCompanionPlugin)
+    tracker = _ScopedTracker()
+    plugin._knowledge_tracker = tracker
+
+    params = plugin._scoped_question_params(scope)
+
+    assert params["target_topic_id"] == "late-topic"
+    assert tracker.preview_options["candidate_topics_by_id"] == {
+        "late-topic": topic
+    }
+
+
+def test_focused_scoped_preview_keeps_candidate_queries_scoped() -> None:
+    eligible = {"inside-topic"}
+
+    class _ScopedStore:
+        def list_topics(self, *_args, **_kwargs):
+            return [{"id": "inside-topic", "name": "Inside"}]
+
+        def list_latest_mastery_for_topics(self, _topic_ids):
+            return []
+
+        def list_wrong_questions(self, **_kwargs):
+            return []
+
+        def get_topic(self, topic_id):
+            return {"id": topic_id, "name": "Inside"}
+
+    class _ScopedTracker:
+        def __init__(self) -> None:
+            self.store = _ScopedStore()
+            self.preview_options: list[dict[str, Any]] = []
+
+        def preview_next_question_params(self, topic_id, **kwargs):
+            self.preview_options.append(dict(kwargs))
+            return {
+                "target_topic_id": topic_id,
+                "target_topic": {"id": topic_id, "name": "Inside"},
+                "retry_wrong_question": {},
+                "due_reviews": [
+                    {
+                        "topic_id": "inside-topic",
+                        "topic": {"id": "inside-topic", "name": "Inside"},
+                    }
+                ],
+                "weak_topics": [],
+                "candidate_evidence": [],
+                "suggested_difficulty": 2,
+            }
+
+    scope = SimpleNamespace(
+        eligible_topic_ids=list(eligible),
+        subject="math",
+        stage="high_school",
+        chapter="",
+        unit="",
+        course_family="",
+        topic_id="",
+        mode="explicit_scope",
+        scope_key="scope-key",
+        scope_revision=1,
+        to_public_dict=lambda: {"scope_key": "scope-key"},
+    )
+    plugin = StudyCompanionPlugin.__new__(StudyCompanionPlugin)
+    tracker = _ScopedTracker()
+    plugin._knowledge_tracker = tracker
+    plugin._resolve_active_practice_scope = lambda: scope  # type: ignore[method-assign]
+
+    context = plugin._build_targeted_question_context()
+
+    assert context["selected_topic_id"] == "inside-topic"
+    assert len(tracker.preview_options) == 2
+    assert tracker.preview_options[1]["candidate_topic_ids"] == eligible
+    assert tracker.preview_options[1]["candidate_limit"] == 5000
+    assert tracker.preview_options[1]["candidate_topics_by_id"] == {
+        "inside-topic": {"id": "inside-topic", "name": "Inside"}
+    }
 
 
 @pytest.mark.asyncio
@@ -1077,6 +1240,155 @@ async def test_study_settings_entry_persists_and_updates_runtime(
         assert plugin._agent._config is plugin._cfg
         assert plugin._ocr_pipeline is not None
         assert plugin._ocr_pipeline._config is plugin._cfg
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_study_doc_export_settings_payload_preserves_missing_fields_and_syncs_dynamic_entry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from plugin.core.registry import _extract_entries_preview
+
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(tmp_path / "runtime"))
+    expected_disabled = {
+        "enabled": False,
+        "pdf_backend": "reportlab",
+        "default_style": "compact",
+        "xmind_enabled": False,
+    }
+    preview_ids = {
+        entry["id"]
+        for entry in _extract_entries_preview(
+            "study_companion", StudyCompanionPlugin, conf={}, pdata={}
+        )
+    }
+    assert "study_export_notes" in preview_ids
+    ctx = _Ctx(
+        tmp_path,
+        {
+            "study": {"language": "en", "auto_open_ui": False},
+            "doc_export": expected_disabled,
+        },
+    )
+    plugin = StudyCompanionPlugin(ctx)
+    startup = await plugin.startup()
+    assert isinstance(startup, Ok)
+
+    try:
+        loaded = await plugin.study_get_settings_config()
+        assert isinstance(loaded, Ok)
+        assert loaded.value["config"]["doc_export"] == expected_disabled
+        disabled_entries = plugin.collect_entries()
+        assert "study_export_notes" in disabled_entries
+        disabled_export = await disabled_entries["study_export_notes"].handler(
+            fmt="markdown", preview_only=True
+        )
+        assert isinstance(disabled_export, Err)
+
+        without_doc_export = await plugin.study_update_settings_config(
+            config={"study": {"default_mode": MODE_INTERACTIVE}}
+        )
+        assert isinstance(without_doc_export, Ok)
+        assert without_doc_export.value["config"]["doc_export"] == expected_disabled
+
+        enabled = await plugin.study_update_settings_config(
+            config={"doc_export": {"enabled": True}}
+        )
+        expected_enabled = {**expected_disabled, "enabled": True}
+        assert isinstance(enabled, Ok)
+        assert enabled.value["config"]["doc_export"] == expected_enabled
+        assert plugin._cfg.doc_export.to_dict() == expected_enabled
+        enabled_entries = plugin.collect_entries()
+        assert "study_export_notes" in enabled_entries
+        enabled_schema = enabled_entries["study_export_notes"].meta.input_schema[
+            "properties"
+        ]
+        assert enabled_schema["fmt"]["enum"] == [
+            "markdown",
+            "pdf",
+            "docx",
+            "xmind",
+        ]
+        assert "default" not in enabled_schema["style"]
+        hot_enabled_export = await enabled_entries["study_export_notes"].handler(
+            fmt="markdown", preview_only=True, title="Hot Enabled Notes"
+        )
+        assert isinstance(hot_enabled_export, Ok)
+        assert hot_enabled_export.value["format"] == "markdown"
+
+        with_xmind = await plugin.study_update_settings_config(
+            config={"doc_export": {"xmind_enabled": True}}
+        )
+        assert isinstance(with_xmind, Ok)
+        assert with_xmind.value["config"]["doc_export"] == expected_enabled
+        xmind_schema = plugin.collect_entries()[
+            "study_export_notes"
+        ].meta.input_schema["properties"]
+        assert xmind_schema["fmt"]["enum"] == [
+            "markdown",
+            "pdf",
+            "docx",
+            "xmind",
+        ]
+
+        disabled = await plugin.study_update_settings_config(
+            config={"doc_export": {"enabled": False}}
+        )
+        expected_final = {**expected_enabled, "enabled": False}
+        assert isinstance(disabled, Ok)
+        assert disabled.value["config"]["doc_export"] == expected_final
+        assert plugin._cfg.doc_export.to_dict() == expected_final
+        final_entries = plugin.collect_entries()
+        assert "study_export_notes" in final_entries
+        disabled_again = await final_entries["study_export_notes"].handler(
+            fmt="markdown", preview_only=True
+        )
+        assert isinstance(disabled_again, Err)
+        assert (
+            plugin._store.load_config(StudyConfig()).doc_export.to_dict()
+            == expected_final
+        )
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_study_doc_export_settings_update_rolls_back_config_and_dynamic_entry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(tmp_path / "runtime"))
+    ctx = _Ctx(
+        tmp_path,
+        {
+            "study": {"language": "en", "auto_open_ui": False},
+            "doc_export": {"enabled": False, "xmind_enabled": False},
+        },
+    )
+    plugin = StudyCompanionPlugin(ctx)
+    startup = await plugin.startup()
+    assert isinstance(startup, Ok)
+    original_persist_state = plugin._persist_state
+    persisted_runtime_values: list[bool] = []
+
+    async def _fail_first_persist() -> None:
+        persisted_runtime_values.append(plugin._cfg.doc_export.enabled)
+        if len(persisted_runtime_values) == 1:
+            raise RuntimeError("settings persistence failed")
+        await original_persist_state()
+
+    monkeypatch.setattr(plugin, "_persist_state", _fail_first_persist)
+
+    try:
+        result = await plugin.study_update_settings_config(
+            config={"doc_export": {"enabled": True}}
+        )
+
+        assert isinstance(result, Err)
+        assert persisted_runtime_values == [True, False]
+        assert plugin._cfg.doc_export.enabled is False
+        assert "study_export_notes" in plugin.collect_entries()
+        assert plugin._store.load_config(StudyConfig()).doc_export.enabled is False
     finally:
         await plugin.shutdown()
 
@@ -2598,6 +2910,45 @@ def test_study_store_append_interaction_trims_on_interval(tmp_path: Path) -> Non
         store.close()
 
 
+def test_study_store_append_interaction_rolls_back_failed_trim(tmp_path: Path) -> None:
+    store = StudyStore(tmp_path / "study.db", tmp_path / "seed.json", _Logger())
+    store.open()
+    try:
+        store.append_interaction(
+            kind="concept_explain",
+            input_text="first",
+            output_text="kept",
+            history_limit=50,
+        )
+        conn = store._require_conn()
+        conn.execute(
+            """
+            CREATE TRIGGER fail_interaction_trim
+            BEFORE DELETE ON interactions
+            BEGIN
+                SELECT RAISE(FAIL, 'trim failed');
+            END
+            """
+        )
+        conn.commit()
+        store._interaction_count = store._INTERACTION_TRIM_INTERVAL - 1
+
+        with pytest.raises(Exception, match="trim failed"):
+            store.append_interaction(
+                kind="concept_explain",
+                input_text="second",
+                output_text="must roll back",
+                history_limit=1,
+            )
+
+        conn.execute("DROP TRIGGER fail_interaction_trim")
+        conn.commit()
+        history = store.list_interactions(10)
+        assert [item["input_text"] for item in history] == ["first"]
+    finally:
+        store.close()
+
+
 def test_study_store_open_resets_interaction_trim_counter(tmp_path: Path) -> None:
     store = StudyStore(tmp_path / "study.db", tmp_path / "seed.json", _Logger())
     store.open()
@@ -2817,6 +3168,8 @@ def test_study_config_and_state_legacy_mode_migration(tmp_path: Path) -> None:
     assert legacy.mode == MODE_COMPANION
     assert legacy.default_mode == MODE_COMPANION
 
+    assert StudyConfig().auto_open_ui is False
+    assert build_config({}).auto_open_ui is False
     auto_open = build_config({"study": {"auto_open_ui": True}})
     assert auto_open.auto_open_ui is True
     assert build_config({"auto_open_ui": True}).auto_open_ui is True
@@ -3037,14 +3390,16 @@ def test_study_prompt_builder_compacts_large_context_and_rejects_unknown_operati
     context = {
         "text": "x" * 20000,
         "language": "en",
-        "items": [{"body": "y" * 2000} for _ in range(30)],
-        **{f"k{i}": i for i in range(90)},
+        "history": [{"output_text": "y" * 2000} for _ in range(30)],
+        "recent_learning_events": [
+            {"summary": "z" * 2000} for _ in range(30)
+        ],
     }
 
     messages = build_operation_messages("question_generate", context)
 
     assert messages[1]["content"].count("_prompt_truncated") == 1
-    assert len(messages[1]["content"]) <= 9500
+    assert len(messages[1]["content"]) <= 12000
     with pytest.raises(ValueError):
         build_operation_messages("unsupported", {})
 
@@ -5062,6 +5417,7 @@ def test_study_companion_i18n_bundles_are_present() -> None:
         assert "entries.set_knowledge_contribution_opt_in.name" in bundle
         assert "entries.export_notes.name" in bundle
         assert "ui.profile.stage.cross_stage" in bundle
+        assert "qwen" not in bundle["ui.error.llm_model_not_supported"].casefold()
 
     en_bundle = json.loads(
         (plugin_dir / "i18n" / "en.json").read_text(encoding="utf-8")
@@ -5292,7 +5648,11 @@ const staticDir = process.env.STUDY_COMPANION_STATIC_DIR;
 const i18nDir = process.env.STUDY_COMPANION_I18N_DIR;
 const html = fs.readFileSync(path.join(staticDir, 'index.html'), 'utf8');
 const mainJs = fs.readFileSync(path.join(staticDir, 'main.js'), 'utf8');
+const requestUtilsJs = fs.readFileSync(path.join(staticDir, 'request-utils.js'), 'utf8');
+const documentControllerJs = fs.readFileSync(path.join(staticDir, 'document-controller.js'), 'utf8');
+const outcomeFormattersJs = fs.readFileSync(path.join(staticDir, 'outcome-formatters.js'), 'utf8');
 const surfacePanelsJs = fs.readFileSync(path.join(staticDir, 'surface-panels.js'), 'utf8');
+const knowledgeMapJs = fs.readFileSync(path.join(staticDir, 'knowledge-map.js'), 'utf8');
 const i18nJs = fs.readFileSync(path.join(staticDir, 'i18n.js'), 'utf8');
 const enBundle = JSON.parse(fs.readFileSync(path.join(i18nDir, 'en.json'), 'utf8'));
 
@@ -5361,7 +5721,10 @@ window.fetch = async (rawUrl, options = {}) => {
 
 window.eval(i18nJs);
 window.eval(surfacePanelsJs);
-window.eval(mainJs);
+window.eval(documentControllerJs);
+window.eval(outcomeFormattersJs);
+window.eval(requestUtilsJs);
+window.eval(`${knowledgeMapJs}\n${mainJs}`);
 
 async function waitFor(predicate, label) {
   const deadline = Date.now() + 3000;
@@ -5459,6 +5822,10 @@ const staticDir = process.env.STUDY_COMPANION_STATIC_DIR;
 const i18nDir = process.env.STUDY_COMPANION_I18N_DIR;
 const html = fs.readFileSync(path.join(staticDir, 'index.html'), 'utf8');
 const mainJs = fs.readFileSync(path.join(staticDir, 'main.js'), 'utf8');
+const requestUtilsJs = fs.readFileSync(path.join(staticDir, 'request-utils.js'), 'utf8');
+const documentControllerJs = fs.readFileSync(path.join(staticDir, 'document-controller.js'), 'utf8');
+const outcomeFormattersJs = fs.readFileSync(path.join(staticDir, 'outcome-formatters.js'), 'utf8');
+const knowledgeMapJs = fs.readFileSync(path.join(staticDir, 'knowledge-map.js'), 'utf8');
 const i18nJs = fs.readFileSync(path.join(staticDir, 'i18n.js'), 'utf8');
 const zhBundle = JSON.parse(fs.readFileSync(path.join(i18nDir, 'zh-CN.json'), 'utf8'));
 
@@ -5511,7 +5878,10 @@ window.fetch = async (rawUrl, options = {}) => {
 };
 
 window.eval(i18nJs);
-window.eval(mainJs);
+window.eval(documentControllerJs);
+window.eval(outcomeFormattersJs);
+window.eval(requestUtilsJs);
+window.eval(`${knowledgeMapJs}\n${mainJs}`);
 
 async function waitFor(predicate, label) {
   const deadline = Date.now() + 3000;
@@ -5687,7 +6057,11 @@ const staticDir = process.env.STUDY_COMPANION_STATIC_DIR;
 const i18nDir = process.env.STUDY_COMPANION_I18N_DIR;
 const html = fs.readFileSync(path.join(staticDir, 'index.html'), 'utf8');
 const mainJs = fs.readFileSync(path.join(staticDir, 'main.js'), 'utf8');
+const requestUtilsJs = fs.readFileSync(path.join(staticDir, 'request-utils.js'), 'utf8');
+const documentControllerJs = fs.readFileSync(path.join(staticDir, 'document-controller.js'), 'utf8');
+const outcomeFormattersJs = fs.readFileSync(path.join(staticDir, 'outcome-formatters.js'), 'utf8');
 const surfacePanelsJs = fs.readFileSync(path.join(staticDir, 'surface-panels.js'), 'utf8');
+const knowledgeMapJs = fs.readFileSync(path.join(staticDir, 'knowledge-map.js'), 'utf8');
 const i18nJs = fs.readFileSync(path.join(staticDir, 'i18n.js'), 'utf8');
 const enBundle = JSON.parse(fs.readFileSync(path.join(i18nDir, 'en.json'), 'utf8'));
 
@@ -5713,6 +6087,7 @@ let configPayload = {
     study: { default_mode: 'interactive', language: 'en', history_limit: 50, auto_open_ui: false },
     ocr_reader: { enabled: false, backend_selection: 'rapidocr', languages: 'eng' },
     llm: { llm_call_timeout_seconds: 45, llm_vision_enabled: false, llm_vision_max_image_px: 1024 },
+    doc_export: { enabled: false, pdf_backend: 'reportlab', default_style: 'compact', xmind_enabled: false },
   },
 };
 let statusPayload = {
@@ -5772,7 +6147,10 @@ window.fetch = async (rawUrl, options = {}) => {
 
 window.eval(i18nJs);
 window.eval(surfacePanelsJs);
-window.eval(mainJs);
+window.eval(documentControllerJs);
+window.eval(outcomeFormattersJs);
+window.eval(requestUtilsJs);
+window.eval(`${knowledgeMapJs}\n${mainJs}`);
 
 async function waitFor(predicate, label) {
   const deadline = Date.now() + 3000;
@@ -5862,11 +6240,19 @@ if (document.getElementById('settingsLlmTimeout').value !== '45') {
 if (document.getElementById('settingsLlmVisionEnabled').checked !== false) {
   throw new Error('LLM vision checkbox did not load from config');
 }
+const settingsDocExportEnabled = document.getElementById('settingsDocExportEnabled');
+if (!settingsDocExportEnabled) {
+  throw new Error('note export settings control is missing');
+}
+if (settingsDocExportEnabled.checked !== false) {
+  throw new Error('note export enabled checkbox did not load from config');
+}
 document.getElementById('settingsDefaultMode').value = 'teaching';
 document.getElementById('settingsOcrEnabled').checked = true;
 document.getElementById('settingsOcrLanguages').value = 'chi_sim+eng';
 document.getElementById('settingsLlmTimeout').value = '90';
 document.getElementById('settingsLlmVisionEnabled').checked = true;
+settingsDocExportEnabled.checked = true;
 document.getElementById('settingsSaveBtn').click();
 await waitFor(
   () => runEntries.some((entry) => entry.entry_id === 'study_update_settings_config'),
@@ -5881,6 +6267,10 @@ if (
   || savedConfig.llm.llm_call_timeout_seconds !== 90
   || savedConfig.llm.llm_vision_enabled !== true
   || savedConfig.llm.llm_vision_max_image_px !== 1024
+  || savedConfig.doc_export.enabled !== true
+  || savedConfig.doc_export.pdf_backend !== 'reportlab'
+  || savedConfig.doc_export.default_style !== 'compact'
+  || savedConfig.doc_export.xmind_enabled !== false
   || savedConfig.plugin.id !== 'study_companion'
 ) {
   throw new Error(`settings save payload mismatch: ${JSON.stringify(savedConfig)}`);
@@ -5889,6 +6279,9 @@ await waitFor(
   () => document.getElementById('settingsConfigStatus').textContent.includes('Saved'),
   'settings saved status',
 );
+if (!parentMessages.some((message) => message?.type === 'neko-plugin-context-invalidated')) {
+  throw new Error(`settings save did not invalidate hosted context: ${JSON.stringify(parentMessages)}`);
+}
 
 const memoryTab = document.getElementById('tab-memory');
 memoryTab.click();
@@ -5970,11 +6363,36 @@ await waitFor(
 
 document.querySelector('[data-feature-action="export"]').click();
 assertSurfaceDrawer('note-exporter');
+await waitFor(
+  () => !document.querySelector('#surfaceDrawerBody [data-surface-action="export-preview"]')?.disabled,
+  'export drawer availability',
+);
 document.querySelector('#surfaceDrawerBody [data-surface-action="export-preview"]').click();
 await waitFor(
   () => runEntries.some((entry) => entry.entry_id === 'study_export_notes' && entry.args.fmt),
   'export drawer preview',
 );
+
+const exportCallCountBeforeDisable = runEntries.filter((entry) => entry.entry_id === 'study_export_notes').length;
+settingsDocExportEnabled.checked = false;
+document.getElementById('settingsDataSaveBtn').click();
+await waitFor(
+  () => runEntries.filter((entry) => entry.entry_id === 'study_update_settings_config').length === 2,
+  'note export disabled from data settings',
+);
+const disabledConfig = runEntries.filter((entry) => entry.entry_id === 'study_update_settings_config')[1].args.config;
+if (disabledConfig.doc_export.enabled !== false) {
+  throw new Error(`note export disable payload mismatch: ${JSON.stringify(disabledConfig.doc_export)}`);
+}
+await waitFor(
+  () => document.querySelector('#surfaceDrawerBody [data-surface-action="export-preview"]')?.disabled === true,
+  'open export drawer disabled after settings save',
+);
+document.querySelector('#surfaceDrawerBody [data-surface-action="export-preview"]').click();
+await new Promise((resolve) => window.setTimeout(resolve, 0));
+if (runEntries.filter((entry) => entry.entry_id === 'study_export_notes').length !== exportCallCountBeforeDisable) {
+  throw new Error('disabled export drawer must not call study_export_notes');
+}
 
 const statusRunCountBeforeMessage = runEntries.filter((entry) => entry.entry_id === 'study_status').length;
 window.dispatchEvent(new window.MessageEvent('message', {
@@ -6015,20 +6433,95 @@ if (consoleErrors.length) {
     assert completed.returncode == 0, completed.stderr or completed.stdout
 
 
+def test_study_companion_static_export_panel_blocks_disabled_entry() -> None:
+    if shutil.which("node") is None:
+        pytest.skip("node is not installed")
+
+    plugin_dir = Path(__file__).resolve().parents[3] / "plugins" / "study_companion"
+    frontend_dir = Path(__file__).resolve().parents[4] / "frontend" / "plugin-manager"
+    if not (frontend_dir / "node_modules" / "happy-dom").is_dir():
+        pytest.skip(
+            "frontend/plugin-manager node_modules with happy-dom is not installed"
+        )
+
+    script = r"""
+import { Window } from 'happy-dom';
+import fs from 'node:fs';
+import path from 'node:path';
+
+const staticDir = process.env.STUDY_COMPANION_STATIC_DIR;
+const source = fs.readFileSync(path.join(staticDir, 'surface-panels.js'), 'utf8');
+const window = new Window({ url: 'http://testserver/plugin/study_companion/ui/' });
+const { document } = window;
+const calls = [];
+
+window.eval(source);
+const root = window.StudyCompanionSurfacePanels.render('note-exporter', {
+  t: (_key, fallback) => fallback,
+  label: () => 'Export',
+  callPlugin: async (entryId, args = {}) => {
+    calls.push({ entryId, args });
+    if (entryId === 'study_get_settings_config') {
+      return { config: { doc_export: { enabled: false, xmind_enabled: false } } };
+    }
+    throw new Error(`unexpected entry call: ${entryId}`);
+  },
+});
+document.body.appendChild(root);
+
+for (let attempt = 0; attempt < 20; attempt += 1) {
+  if (calls.some((call) => call.entryId === 'study_get_settings_config')) break;
+  await new Promise((resolve) => window.setTimeout(resolve, 0));
+}
+await new Promise((resolve) => window.setTimeout(resolve, 0));
+
+const previewButton = root.querySelector('[data-surface-action="export-preview"]');
+const exportButton = root.querySelector('[data-surface-action="export-download"]');
+if (!previewButton?.disabled || !exportButton?.disabled) {
+  throw new Error('disabled export must keep preview and download unavailable');
+}
+previewButton.click();
+exportButton.click();
+await new Promise((resolve) => window.setTimeout(resolve, 0));
+
+if (calls.some((call) => call.entryId === 'study_export_notes')) {
+  throw new Error('disabled export must not call study_export_notes');
+}
+if (!root.textContent.includes('Export is disabled by doc_export.enabled')) {
+  throw new Error(`disabled export status missing: ${root.textContent}`);
+}
+"""
+    env = {
+        **os.environ,
+        "STUDY_COMPANION_STATIC_DIR": str(plugin_dir / "static"),
+    }
+    completed = subprocess.run(
+        ["node", "--input-type=module", "-e", script],
+        cwd=frontend_dir,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=15,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr or completed.stdout
+
+
 def test_study_companion_hosted_panel_uses_long_running_entry_poll_budget() -> None:
     plugin_dir = Path(__file__).resolve().parents[3] / "plugins" / "study_companion"
     source = (plugin_dir / "surfaces" / "study_panel.tsx").read_text(encoding="utf-8")
 
     assert "ENTRY_TIMEOUT_MS" in source
     assert "study_set_mode: 15000" in source
-    assert "study_explain_text: 310000" in source
-    assert "study_generate_question: 310000" in source
-    assert "study_evaluate_answer: 310000" in source
+    assert "study_explain_text: 120000" in source
+    assert "study_generate_question: 75000" in source
+    assert "study_generate_targeted_question: 60000" in source
+    assert "study_evaluate_answer: 75000" in source
+    assert "study_summarize_session: 90000" in source
     assert "callPlugin as callHostedPlugin" in source
-    assert (
-        "return callHostedPlugin<T>(api, entryId, args, { signal, timeoutMs: timeoutForEntry(entryId) });"
-        in source
-    )
+    assert "{ ...args, locale: String(locale || '').trim() }" in source
+    assert "{ signal, timeoutMs: timeoutForEntry(entryId) }" in source
+    assert "{ timeoutMs: STUDY_DOCUMENT_PARSE_TIMEOUT_MS, signal: controller.signal }" in source
     assert "fetch('/runs'" not in source
     assert "fetch(`/runs/" not in source
     assert "for (let i = 0; i < 40; i += 1)" not in source
@@ -6084,7 +6577,8 @@ def test_study_companion_hosted_surface_actions_are_bridge_authorized() -> None:
         encoding="utf-8"
     )
     assert re.search(
-        r"@ui\.action\([^)]*\)\s+async def _study_export_notes_entry",
+        r"@ui\.action\([^)]*\)\s+@plugin_entry\([\s\S]*?\)\s+"
+        r"async def study_export_notes",
         export_source,
         re.MULTILINE,
     )
@@ -6130,7 +6624,8 @@ def test_study_companion_hosted_panel_supports_image_paste_contract() -> None:
     assert "study-panel__paste-error" in source
     assert "beginPasteSignal" in source
     assert "signal.aborted" in source
-    assert "onPaste={handleTextPaste}" in source
+    assert "onPaste={handleStudyPaste}" in source
+    assert "await handleTextPaste(event);" in source
     assert "onPaste={handleAnswerPaste}" in source
     assert "const [pastePending, setPastePending] = useState(false);" in source
     assert "pastePendingRef.current = value;" in source
@@ -6240,27 +6735,30 @@ def test_study_companion_explain_timeouts_cover_vision_solving() -> None:
         plugin_config = tomllib.load(handle)
     llm_timeout = float(plugin_config["llm"]["llm_call_timeout_seconds"])
 
-    assert "study_explain_text: 310000" in static_source
-    assert "study_generate_question: 310000" in static_source
-    assert "study_evaluate_answer: 310000" in static_source
-    assert "study_explain_text: 310000" in hosted_source
-    assert "study_generate_question: 310000" in hosted_source
-    assert "study_evaluate_answer: 310000" in hosted_source
-    assert "timeout=310.0" in explain_source
-    assert "timeout=310.0" in question_source
-    assert "timeout=310.0" in answer_source
-    assert submit_meta.timeout == 310.0
-    assert meta.timeout == 310.0
-    assert question_meta.timeout == 310.0
-    assert answer_meta.timeout == 310.0
-    assert "llm_call_timeout_seconds = 300" in plugin_toml
+    assert "study_explain_text: 120000" in static_source
+    assert "study_generate_question: 75000" in static_source
+    assert "study_evaluate_answer: 75000" in static_source
+    assert "study_explain_text: 120000" in hosted_source
+    assert "study_generate_question: 75000" in hosted_source
+    assert "study_evaluate_answer: 75000" in hosted_source
+    assert "timeout=105.0" in explain_source
+    assert "timeout=70.0" in question_source
+    assert "timeout=70.0" in answer_source
+    assert submit_meta.timeout == 105.0
+    assert meta.timeout == 105.0
+    assert question_meta.timeout == 70.0
+    assert answer_meta.timeout == 70.0
+    assert 120.0 > submit_meta.timeout
+    assert 120.0 > meta.timeout
+    assert "llm_call_timeout_seconds = 120" in plugin_toml
     for entry_timeout in (
         submit_meta.timeout,
         meta.timeout,
         question_meta.timeout,
         answer_meta.timeout,
     ):
-        assert entry_timeout > llm_timeout + 0.5
+        assert entry_timeout > 60.0
+    assert llm_timeout == 120.0
 
 
 def test_study_companion_static_knowledge_map_groups_by_base_library_hierarchy() -> None:
@@ -6284,7 +6782,7 @@ def test_study_companion_static_knowledge_map_groups_by_base_library_hierarchy()
     assert "knowledgeMapSubject = ''" in source
     assert "ui.knowledge.subject_label" in source
     assert "ui.knowledge.subject_all" in source
-    assert "visibleKnowledgeNodes(nodes, activeStage, activeSubject)" in source
+    assert "visibleKnowledgeScopeNodes(nodes, activeStage, activeSubject)" in source
     assert "visibleKnowledgeEdges(edges, shownNodes, activeStage)" in source
     assert "knowledge-chapter-group" in source
     assert "knowledge-unit-group" in source
@@ -6308,10 +6806,28 @@ def test_study_companion_note_exporter_uses_backend_export_poll_budget() -> None
     assert "return timeoutSeconds * 1000 + POLL_TIMEOUT_BUFFER_MS;" in source
     assert "pollTimeoutMs = getEntryTimeoutMs(exportEntry)" in source
     assert "{ timeoutMs: pollTimeoutMs }" in source
+    assert "exportConfig?.enabled !== true" in source
+    assert "value !== 'xmind' || xmindEnabled" in source
     assert "fetch('/runs'" not in source
     assert "fetch(`/runs/" not in source
     assert "for (let attempt = 0; attempt < 40; attempt += 1)" not in source
     assert "for (let i = 0; i < 40; i += 1)" not in source
+
+
+def test_study_companion_note_exporter_can_read_live_export_config() -> None:
+    import tomllib
+
+    plugin_dir = Path(__file__).resolve().parents[3] / "plugins" / "study_companion"
+    manifest = tomllib.loads(
+        (plugin_dir / "plugin.toml").read_text(encoding="utf-8")
+    )
+    note_exporter = next(
+        panel
+        for panel in manifest["plugin"]["ui"]["panel"]
+        if panel["id"] == "note-exporter"
+    )
+
+    assert "config:read" in note_exporter["permissions"]
 
 
 def test_study_companion_ui_export_failures_are_not_silent_successes() -> None:
@@ -6389,6 +6905,10 @@ const html = `<!doctype html><html><head><title>Study Companion</title></head><b
 
 const i18nJs = fs.readFileSync(process.env.STUDY_COMPANION_I18N_JS, 'utf8');
 const mainJs = fs.readFileSync(process.env.STUDY_COMPANION_STATIC_JS, 'utf8');
+const requestUtilsJs = fs.readFileSync(process.env.STUDY_COMPANION_REQUEST_UTILS_JS, 'utf8');
+const documentControllerJs = fs.readFileSync(process.env.STUDY_COMPANION_DOCUMENT_CONTROLLER_JS, 'utf8');
+const outcomeFormattersJs = fs.readFileSync(process.env.STUDY_COMPANION_OUTCOME_FORMATTERS_JS, 'utf8');
+const knowledgeMapJs = fs.readFileSync(process.env.STUDY_COMPANION_KNOWLEDGE_MAP_JS, 'utf8');
 const enBundle = JSON.parse(fs.readFileSync(path.join(process.env.STUDY_COMPANION_I18N_DIR, 'en.json'), 'utf8'));
 
 const window = new Window({ url: 'http://testserver/plugin/study_companion/ui/?locale=en' });
@@ -6449,7 +6969,10 @@ window.fetch = async (rawUrl, options = {}) => {
 };
 
 window.eval(i18nJs);
-window.eval(mainJs);
+window.eval(documentControllerJs);
+window.eval(outcomeFormattersJs);
+window.eval(requestUtilsJs);
+window.eval(`${knowledgeMapJs}\n${mainJs}`);
 
 async function waitFor(predicate, label) {
   const deadline = Date.now() + 3000;
@@ -6479,6 +7002,18 @@ if (document.querySelector('[data-mode="interactive"]').getAttribute('aria-press
     env = {
         **os.environ,
         "STUDY_COMPANION_STATIC_JS": str(plugin_dir / "static" / "main.js"),
+        "STUDY_COMPANION_REQUEST_UTILS_JS": str(
+            plugin_dir / "static" / "request-utils.js"
+        ),
+        "STUDY_COMPANION_DOCUMENT_CONTROLLER_JS": str(
+            plugin_dir / "static" / "document-controller.js"
+        ),
+        "STUDY_COMPANION_OUTCOME_FORMATTERS_JS": str(
+            plugin_dir / "static" / "outcome-formatters.js"
+        ),
+        "STUDY_COMPANION_KNOWLEDGE_MAP_JS": str(
+            plugin_dir / "static" / "knowledge-map.js"
+        ),
         "STUDY_COMPANION_I18N_JS": str(plugin_dir / "static" / "i18n.js"),
         "STUDY_COMPANION_I18N_DIR": str(plugin_dir / "i18n"),
     }
@@ -6611,10 +7146,23 @@ eval(source);
 
 
 def test_study_companion_i18n_scan_dom_localizes_alt_attributes() -> None:
+    plugin_dir = Path(__file__).resolve().parents[3] / "plugins" / "study_companion"
+    locales = ["zh-CN", "en", "ja", "ko", "ru", "zh-TW", "es", "pt"]
+    bundles = {
+        locale: json.loads(
+            (plugin_dir / "i18n" / f"{locale}.json").read_text(encoding="utf-8")
+        )
+        for locale in locales
+    }
+    en_keys = set(bundles["en"])
+    assert "ui.coach.sprite_alt" not in en_keys
+    for locale, bundle in bundles.items():
+        assert set(bundle) == en_keys, f"{locale} locale keys differ from en"
+        assert "ui.coach.sprite_alt" not in bundle
+
     if shutil.which("node") is None:
         pytest.skip("node is not installed")
 
-    plugin_dir = Path(__file__).resolve().parents[3] / "plugins" / "study_companion"
     script = r"""
 const fs = require('node:fs');
 const source = fs.readFileSync(process.env.STUDY_COMPANION_I18N_JS, 'utf8');
@@ -6639,8 +7187,8 @@ function element(attrs) {
 }
 
 const image = element({
-  'data-i18n-alt': 'ui.coach.sprite_alt',
-  alt: 'Neko study companion',
+  'data-i18n-alt': 'test.fixture.image_alt',
+  alt: 'Fixture image',
 });
 const root = {
   querySelectorAll(selector) {
@@ -6649,11 +7197,11 @@ const root = {
 };
 
 window.I18n._bundle = {
-  'ui.coach.sprite_alt': 'Localized companion alt',
+  'test.fixture.image_alt': 'Localized fixture alt',
 };
 window.I18n.scanDOM(root);
 
-if (image.getAttribute('alt') !== 'Localized companion alt') {
+if (image.getAttribute('alt') !== 'Localized fixture alt') {
   throw new Error(`unexpected alt: ${image.getAttribute('alt')}`);
 }
 """
@@ -7604,6 +8152,128 @@ async def test_targeted_question_context_generate_and_attempt_guard(
 
 
 @pytest.mark.asyncio
+async def test_targeted_question_rejects_scope_changed_during_generation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class _BlockingQuestionAgent(_FakeTutorAgent):
+        def __init__(self) -> None:
+            super().__init__()
+            self.started = asyncio.Event()
+            self.release = asyncio.Event()
+
+        async def question_generate(
+            self,
+            text: str,
+            *,
+            mode: str = MODE_COMPANION,
+            context: dict[str, object] | None = None,
+        ) -> TutorReply:
+            self.inputs.append((text, dict(context or {}), mode))
+            self.started.set()
+            await self.release.wait()
+            return TutorReply(
+                operation="question_generate",
+                input_text=text,
+                reply="stale practice question",
+                payload={
+                    "question": "What is d(x^2)/dx?",
+                    "answer": "2x",
+                    "topic": "derivatives",
+                },
+                created_at="2026-08-19T00:00:00Z",
+            )
+
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(tmp_path / "runtime"))
+    plugin = StudyCompanionPlugin(
+        _Ctx(tmp_path, {"study": {"language": "en", "auto_open_ui": False}})
+    )
+    assert isinstance(await plugin.startup(), Ok)
+    agent = _BlockingQuestionAgent()
+    plugin._agent = agent
+    release_finalize = asyncio.Event()
+
+    try:
+        plugin._store.ensure_topic(topic_id="derivatives", name="Derivatives")
+        targeted_context = plugin._store_targeted_context(
+            {
+                "selected_topic_id": "derivatives",
+                "selected_topic_name": "Derivatives",
+                "selection_reason": "weak_topic",
+                "question_params": {},
+                "scope_key": "",
+                "scope_revision": 0,
+                "practice_scope": {},
+                "scope_topic_count": 0,
+            }
+        )
+        generation = asyncio.create_task(
+            plugin.study_generate_targeted_question(
+                selection_context_id=targeted_context["selection_context_id"]
+            )
+        )
+        await agent.started.wait()
+        async with plugin._lock:
+            plugin._state.practice_scope_revision = 1
+        agent.release.set()
+
+        result = await generation
+
+        assert isinstance(result, Err)
+        assert result.error.code == "SELECTION_SCOPE_CHANGED"
+        assert plugin._state.current_question == {}
+        assert plugin._store.list_interactions(limit=20) == []
+
+        async with plugin._lock:
+            plugin._state.practice_scope_revision = 0
+        commit_race_context = plugin._store_targeted_context(
+            {
+                "selected_topic_id": "derivatives",
+                "selected_topic_name": "Derivatives",
+                "selection_reason": "weak_topic",
+                "question_params": {},
+                "scope_key": "",
+                "scope_revision": 0,
+                "practice_scope": {},
+                "scope_topic_count": 0,
+            }
+        )
+        original_finalize_tutor_call = plugin._finalize_tutor_call
+        finalize_started = asyncio.Event()
+
+        async def _pause_before_finalize(*args, **kwargs):
+            finalize_started.set()
+            await release_finalize.wait()
+            return await original_finalize_tutor_call(*args, **kwargs)
+
+        monkeypatch.setattr(plugin, "_finalize_tutor_call", _pause_before_finalize)
+        commit_race_generation = asyncio.create_task(
+            plugin.study_generate_targeted_question(
+                selection_context_id=commit_race_context["selection_context_id"]
+            )
+        )
+        await finalize_started.wait()
+        scope_change = asyncio.create_task(plugin.study_clear_practice_scope())
+        try:
+            await asyncio.wait_for(asyncio.shield(scope_change), timeout=0.2)
+            scope_changed_while_finalize_paused = True
+        except TimeoutError:
+            scope_changed_while_finalize_paused = False
+        release_finalize.set()
+
+        commit_race_result = await commit_race_generation
+        scope_change_result = await scope_change
+
+        assert scope_changed_while_finalize_paused is False
+        assert isinstance(commit_race_result, Ok)
+        assert isinstance(scope_change_result, Ok)
+        assert len(plugin._store.list_interactions(limit=20)) == 1
+    finally:
+        agent.release.set()
+        release_finalize.set()
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_study_explain_text_continues_when_mode_switch_is_locked(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -7770,7 +8440,9 @@ async def test_learning_context_includes_knowledge_graph_guidance_for_explain(
         guidance = context["knowledge_guidance"]
         assert guidance["topic"]["id"] == "extrema"
         assert guidance["learning_path"][0]["from"] == "derivative"
-        assert guidance["diagnosis_questions"][0]["kind"] == "prerequisite_probe"
+        assert guidance["diagnosis_questions"] == []
+        assert context["study_response_mode"] == "general_explanation"
+        assert context["study_semantic_status"] == "available"
     finally:
         await plugin.shutdown()
 
@@ -7879,6 +8551,18 @@ async def test_study_explain_text_passes_knowledge_guidance_to_tutor_agent(
     result = await plugin.startup()
     assert isinstance(result, Ok)
     fake_agent = _FakeTutorAgent()
+    fake_agent.semantic_routing_result = json.dumps(
+        {
+            "subject": "math",
+            "content_type": "calculus_concept",
+            "intent": "explanation",
+            "response_mode": "general_explanation",
+            "entity": "stationary and extreme points",
+            "retrieval_concepts": ["驻点", "极值点", "导数为零"],
+            "confidence": 0.98,
+        },
+        ensure_ascii=False,
+    )
     plugin._agent = fake_agent
 
     try:
@@ -7890,9 +8574,359 @@ async def test_study_explain_text_passes_knowledge_guidance_to_tutor_agent(
         context = fake_agent.inputs[-1][1]
         guidance = context["knowledge_guidance"]  # type: ignore[index]
         assert guidance["topic"]["id"] == "college_stationary_points"  # type: ignore[index]
-        assert guidance["diagnosis_questions"]  # type: ignore[index]
+        assert guidance["diagnosis_questions"] == []  # type: ignore[index]
+        assert context["study_response_mode"] == "general_explanation"
         assert explained.value["knowledge_guidance"]["topic"]["id"] == "college_stationary_points"
-        assert explained.value["diagnosis_questions"]
+        assert explained.value["diagnosis_questions"] == []
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_study_explain_text_semantically_routes_literary_work_to_chinese_graph(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
+    ctx = _Ctx(
+        tmp_path,
+        {
+            "study": {"language": "zh-CN", "default_mode": MODE_COMPANION, "auto_open_ui": False},
+            "ocr_reader": {"enabled": True},
+            "rapidocr": {"lang_type": "ch"},
+        },
+    )
+    plugin = StudyCompanionPlugin(ctx)
+    result = await plugin.startup()
+    assert isinstance(result, Ok)
+    fake_agent = _FakeTutorAgent()
+    fake_agent.semantic_routing_result = json.dumps(
+        {
+            "subject": "chinese",
+            "content_type": "literary_work",
+            "intent": "interpretation",
+            "response_mode": "general_discussion",
+            "entity": "《活着》",
+            "retrieval_concepts": [
+                "文学类文本阅读",
+                "小说主题",
+                "人物形象",
+                "情节与叙事",
+            ],
+            "confidence": 0.95,
+        },
+        ensure_ascii=False,
+    )
+    plugin._agent = fake_agent
+
+    try:
+        explained = await plugin.study_explain_text("谈谈你对活着这本书的理解")
+
+        assert isinstance(explained, Ok)
+        assert [operation for _messages, operation in fake_agent.semantic_routing_calls] == [
+            "knowledge_semantic_route"
+        ]
+        context = fake_agent.inputs[-1][1]
+        guidance = context["knowledge_guidance"]  # type: ignore[index]
+        assert guidance["topic"]["id"] == "chinese_senior_literary_text"  # type: ignore[index]
+        assert guidance["topic"]["subject"] == "chinese"  # type: ignore[index]
+        assert all(
+            item.get("subject") == "chinese"
+            for item in guidance["relevant_subgraph"]["nodes"]  # type: ignore[index]
+        )
+        assert explained.value["knowledge_guidance_applied"] is True
+        assert explained.value["knowledge_guidance_status"] == "applied"
+        assert explained.value["knowledge_guidance_subject"] == "chinese"
+        assert explained.value["study_semantic_status"] == "available"
+        assert explained.value["study_response_mode"] == "general_discussion"
+        assert explained.value["study_semantic_content_type"] == "literary_work"
+        assert explained.value["study_semantic_intent"] == "interpretation"
+        assert context["study_response_mode"] == "general_discussion"
+        assert guidance["model_context"]["procedure"] == []  # type: ignore[index]
+        assert guidance["model_context"]["practice_suggestions"] == []  # type: ignore[index]
+        assert explained.value["knowledge_guidance_focus_topic"] == {
+            "id": "chinese_senior_literary_text",
+            "label": "文学类文本阅读",
+        }
+        assert all(
+            topic["id"] != "reading_comprehension_math"
+            for topic in explained.value["knowledge_guidance_related_topics"]
+        )
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_semantic_route_failure_keeps_explanation_without_graph_injection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
+    ctx = _Ctx(
+        tmp_path,
+        {
+            "study": {"language": "zh-CN", "default_mode": MODE_COMPANION, "auto_open_ui": False},
+            "ocr_reader": {"enabled": True},
+            "rapidocr": {"lang_type": "ch"},
+        },
+    )
+    plugin = StudyCompanionPlugin(ctx)
+    result = await plugin.startup()
+    assert isinstance(result, Ok)
+    fake_agent = _FakeTutorAgent()
+    fake_agent.semantic_routing_result = RuntimeError("route failed")
+    plugin._agent = fake_agent
+
+    try:
+        explained = await plugin.study_explain_text("谈谈一部作品的主题")
+
+        assert isinstance(explained, Ok)
+        assert fake_agent.inputs[-1][0] == "谈谈一部作品的主题"
+        assert "knowledge_guidance" not in fake_agent.inputs[-1][1]
+        assert explained.value["knowledge_guidance_applied"] is False
+        assert explained.value["knowledge_guidance_status"] == "routing_unavailable"
+        assert explained.value["knowledge_guidance_subject"] == "unknown"
+        assert explained.value["study_response_mode"] == "unknown"
+        assert explained.value["study_semantic_reason"] == "call_failed"
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_semantic_route_reserves_last_agent_credit_for_primary_explanation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
+    ctx = _Ctx(
+        tmp_path,
+        {
+            "study": {"language": "zh-CN", "default_mode": MODE_COMPANION, "auto_open_ui": False},
+            "ocr_reader": {"enabled": True},
+            "rapidocr": {"lang_type": "ch"},
+        },
+    )
+    plugin = StudyCompanionPlugin(ctx)
+    result = await plugin.startup()
+    assert isinstance(result, Ok)
+    fake_agent = _FakeTutorAgent()
+    reservation = object()
+
+    async def reserve_optional_agent_call(_operation: str):
+        return False, reservation
+
+    fake_agent.reserve_optional_agent_call = reserve_optional_agent_call  # type: ignore[attr-defined]
+    plugin._agent = fake_agent
+
+    try:
+        explained = await plugin.study_explain_text("谈谈一部文学作品的主题")
+
+        assert isinstance(explained, Ok)
+        assert fake_agent.semantic_routing_calls == []
+        assert fake_agent.inputs[-1][1]["_agent_quota_reservation"] is reservation
+        assert explained.value["study_semantic_reason"] == "primary_quota_reserved"
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_semantic_route_timeout_is_short_and_does_not_block_explanation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
+    ctx = _Ctx(
+        tmp_path,
+        {
+            "study": {"language": "zh-CN", "default_mode": MODE_COMPANION, "auto_open_ui": False},
+            "ocr_reader": {"enabled": True},
+            "rapidocr": {"lang_type": "ch"},
+        },
+    )
+    plugin = StudyCompanionPlugin(ctx)
+    result = await plugin.startup()
+    assert isinstance(result, Ok)
+    fake_agent = _FakeTutorAgent()
+    monkeypatch.setattr(
+        "plugin.plugins.study_companion.entry_tutor_context_support._SEMANTIC_ROUTE_TIMEOUT_SECONDS",
+        0.01,
+    )
+
+    async def _timeout_route(
+        messages: list[dict[str, object]],
+        *,
+        operation: str = "concept_explain",
+        deadline: float | None = None,
+    ) -> str:
+        fake_agent.semantic_routing_calls.append((messages, operation))
+        if deadline is not None:
+            fake_agent.semantic_routing_deadlines.append(deadline)
+        await asyncio.sleep(1)
+        return "{}"
+
+    fake_agent._call_model = _timeout_route  # type: ignore[method-assign]
+    plugin._agent = fake_agent
+
+    try:
+        started = time.monotonic()
+        explained = await plugin.study_explain_text("谈谈一部文学作品的主题")
+
+        assert isinstance(explained, Ok)
+        assert fake_agent.inputs[-1][0] == "谈谈一部文学作品的主题"
+        assert explained.value["knowledge_guidance_status"] == "routing_unavailable"
+        assert time.monotonic() - started < 0.5
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_concept_guidance_explicit_topic_skips_semantic_model_call(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
+    ctx = _Ctx(
+        tmp_path,
+        {
+            "study": {"language": "zh-CN", "default_mode": MODE_COMPANION, "auto_open_ui": False},
+            "ocr_reader": {"enabled": True},
+            "rapidocr": {"lang_type": "ch"},
+        },
+    )
+    plugin = StudyCompanionPlugin(ctx)
+    result = await plugin.startup()
+    assert isinstance(result, Ok)
+    fake_agent = _FakeTutorAgent()
+    plugin._agent = fake_agent
+
+    try:
+        context = await plugin._build_learning_context(
+            "concept_explain",
+            input_text="为什么导数为零不一定是极值点",
+            extra={"selected_topic_id": "college_stationary_points"},
+        )
+
+        assert fake_agent.semantic_routing_calls == []
+        assert context["knowledge_guidance_status"] == "applied"
+        assert context["knowledge_guidance_source"] == "selected_topic"
+        assert context["study_response_mode"] == "general_explanation"
+        assert context["study_semantic_status"] == "available"
+        assert context["knowledge_guidance_focus_topic"]["id"] == (
+            "college_stationary_points"
+        )
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_low_confidence_semantics_cannot_inject_cross_subject_guidance(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
+    ctx = _Ctx(
+        tmp_path,
+        {
+            "study": {"language": "zh-CN", "default_mode": MODE_COMPANION, "auto_open_ui": False},
+            "ocr_reader": {"enabled": True},
+            "rapidocr": {"lang_type": "ch"},
+        },
+    )
+    plugin = StudyCompanionPlugin(ctx)
+    result = await plugin.startup()
+    assert isinstance(result, Ok)
+    fake_agent = _FakeTutorAgent()
+    fake_agent.semantic_routing_result = json.dumps(
+        {
+            "subject": "math",
+            "content_type": "reading",
+            "intent": "interpretation",
+            "response_mode": "problem_solving",
+            "entity": "",
+            "retrieval_concepts": ["数学阅读理解题"],
+            "confidence": 0.3,
+        },
+        ensure_ascii=False,
+    )
+    plugin._agent = fake_agent
+
+    try:
+        explained = await plugin.study_explain_text("谈谈你的理解")
+
+        assert isinstance(explained, Ok)
+        assert "knowledge_guidance" not in fake_agent.inputs[-1][1]
+        assert explained.value["knowledge_guidance_status"] == "low_confidence"
+        assert explained.value["knowledge_guidance_applied"] is False
+        assert explained.value["study_response_mode"] == "unknown"
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_semantic_route_for_image_keeps_image_context(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
+    ctx = _Ctx(
+        tmp_path,
+        {
+            "study": {
+                "language": "zh-CN",
+                "default_mode": MODE_COMPANION,
+                "auto_open_ui": False,
+                "llm_vision_enabled": True,
+            },
+            "ocr_reader": {"enabled": True},
+            "rapidocr": {"lang_type": "ch"},
+        },
+    )
+    plugin = StudyCompanionPlugin(ctx)
+    result = await plugin.startup()
+    assert isinstance(result, Ok)
+    fake_agent = _FakeTutorAgent()
+    fake_agent.semantic_routing_result = json.dumps(
+        {
+            "subject": "chinese",
+            "content_type": "literary_text",
+            "intent": "analysis",
+            "response_mode": "general_explanation",
+            "entity": "image text",
+            "retrieval_concepts": ["文学类文本阅读"],
+            "confidence": 0.9,
+        },
+        ensure_ascii=False,
+    )
+    plugin._agent = fake_agent
+
+    try:
+        context = await plugin._build_learning_context(
+            "concept_explain",
+            input_text="分析图片中的文学选段",
+            extra={
+                "source_text": "分析图片中的文学选段",
+                "vision_image_base64": "data:image/png;base64,c2FmZQ==",
+            },
+        )
+
+        operations = [operation for _messages, operation in fake_agent.semantic_routing_calls]
+        assert operations == ["image:data:image/png;base64,c2FmZQ==", "knowledge_semantic_route"]
+        route_messages = fake_agent.semantic_routing_calls[-1][0]
+        content = route_messages[-1]["content"]
+        assert isinstance(content, list)
+        assert content[-1] == {
+            "type": "image_url",
+            "image_url": {
+                "url": "data:image/png;base64,c2FmZQ==",
+                "detail": "auto",
+            },
+        }
+        remaining_seconds = (
+            fake_agent.semantic_routing_deadlines[-1] - time.monotonic()
+        )
+        assert remaining_seconds > 0
+        assert remaining_seconds <= 12.0 + 1e-6
+        assert context["knowledge_guidance_subject"] == "chinese"
     finally:
         await plugin.shutdown()
 
@@ -7966,26 +9000,7 @@ async def test_study_evaluate_answer_custom_question_does_not_reuse_old_topic(
                     "error_type": "organelle_function",
                     "feedback": "The nucleus stores genetic material.",
                     "next_action": "Review nucleus function.",
-                },
-                created_at="2026-05-11T00:00:00Z",
-            )
-
-        async def knowledge_track(
-            self,
-            *,
-            mode: str = MODE_COMPANION,
-            context: dict[str, object] | None = None,
-        ) -> TutorReply:
-            return TutorReply(
-                operation="knowledge_track",
-                input_text=str((context or {}).get("input_text") or ""),
-                reply="cell nucleus",
-                payload={
-                    "topic": "cell_nucleus",
-                    "mastery_delta": -0.1,
-                    "confidence": 0.8,
-                    "weak_points": ["organelle_function"],
-                    "next_steps": ["Review nucleus function"],
+                    "related_topics": ["cell_nucleus"],
                 },
                 created_at="2026-05-11T00:00:00Z",
             )
@@ -8104,6 +9119,7 @@ async def test_study_evaluate_answer_persists_knowledge_tracking(
     result = await plugin.startup()
     assert isinstance(result, Ok)
     plugin._agent = _TrackingTutorAgent()
+    plugin._knowledge_guidance_topics_cache = {"all:5000": [{"id": "stale"}]}
 
     try:
         async with plugin._lock:
@@ -8140,7 +9156,487 @@ async def test_study_evaluate_answer_persists_knowledge_tracking(
         assert "anonymous_knowledge_stats_summary" in status.value
         assert status.value["weak_topics"]
         assert status.value["mastery_overview"]
+        assert plugin._knowledge_guidance_topics_cache == {}
     finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_failed_document_job_shutdown_does_not_stop_remaining_cleanup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
+
+    class _FailingDocumentJobs:
+        async def shutdown(self) -> None:
+            raise RuntimeError("document jobs shutdown failed")
+
+    ctx = _Ctx(
+        tmp_path,
+        {
+            "study": {"language": "en", "auto_open_ui": False},
+            "study_companion": {"communication": {"enabled": True}},
+        },
+    )
+    plugin = StudyCompanionPlugin(ctx)
+    started = await plugin.startup()
+    assert isinstance(started, Ok)
+    bus = plugin._event_bus
+    assert bus is not None
+    plugin.logger = ctx.logger
+    plugin._document_jobs = _FailingDocumentJobs()
+
+    shutdown_result = await plugin.shutdown()
+
+    assert isinstance(shutdown_result, Ok)
+    assert bus._worker_task is None
+    assert any(
+        "study shutdown document jobs cleanup failed" in str(args[0])
+        for args, _kwargs in ctx.logger.warnings
+    )
+
+
+@pytest.mark.asyncio
+async def test_failed_document_job_shutdown_does_not_stop_startup_cleanup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
+
+    class _FailingDocumentJobs:
+        async def shutdown(self) -> None:
+            raise RuntimeError("document jobs shutdown failed")
+
+    ctx = _Ctx(
+        tmp_path,
+        {
+            "study": {"language": "en", "auto_open_ui": False},
+            "study_companion": {"communication": {"enabled": True}},
+        },
+    )
+    plugin = StudyCompanionPlugin(ctx)
+    started = await plugin.startup()
+    assert isinstance(started, Ok)
+    bus = plugin._event_bus
+    assert bus is not None
+    plugin.logger = ctx.logger
+    plugin._document_jobs = _FailingDocumentJobs()
+
+    await plugin._cleanup_after_failed_startup()
+
+    assert plugin._event_bus is None
+    assert bus._worker_task is None
+    assert any(
+        "study startup cleanup document jobs failed" in str(args[0])
+        for args, _kwargs in ctx.logger.warnings
+    )
+
+
+@pytest.mark.asyncio
+async def test_degraded_tutor_calls_do_not_pollute_learning_history(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class _TimeoutTutorAgent(_FakeTutorAgent):
+        @staticmethod
+        def _timeout_reply(operation: str, input_text: str) -> TutorReply:
+            return TutorReply(
+                operation=operation,
+                input_text=input_text,
+                reply="The Qwen request timed out.",
+                payload={
+                    "question": "fallback question",
+                    "answer": "fallback answer",
+                    "summary": "fallback summary",
+                },
+                degraded=True,
+                diagnostic="timeout",
+                created_at="2026-05-11T00:00:00Z",
+            )
+
+        async def concept_explain(
+            self,
+            text: str,
+            *,
+            mode: str = MODE_COMPANION,
+            context: dict[str, object] | None = None,
+        ) -> TutorReply:
+            return self._timeout_reply("concept_explain", text)
+
+        async def question_generate(
+            self,
+            text: str,
+            *,
+            mode: str = MODE_COMPANION,
+            context: dict[str, object] | None = None,
+        ) -> TutorReply:
+            return self._timeout_reply("question_generate", text)
+
+        async def summarize_session(
+            self,
+            history: list[dict[str, object]],
+            *,
+            mode: str = MODE_COMPANION,
+            context: dict[str, object] | None = None,
+        ) -> TutorReply:
+            return self._timeout_reply("summarize_session", "session")
+
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(tmp_path / "runtime"))
+    plugin = StudyCompanionPlugin(
+        _Ctx(
+            tmp_path,
+            {
+                "study": {
+                    "language": "en",
+                    "default_mode": MODE_COMPANION,
+                    "auto_open_ui": False,
+                }
+            },
+        )
+    )
+    assert isinstance(await plugin.startup(), Ok)
+    plugin._agent = _TimeoutTutorAgent()
+    summarized_events: list[dict[str, object]] = []
+
+    async def _record_summary_event(payload: dict[str, object]) -> None:
+        summarized_events.append(dict(payload))
+
+    monkeypatch.setattr(plugin, "_emit_session_summarized_event", _record_summary_event)
+
+    try:
+        explained = await plugin.study_explain_text(text="derivative")
+        generated = await plugin.study_generate_question(text="derivative")
+        summarized = await plugin.study_summarize_session()
+
+        assert all(isinstance(result, Ok) for result in (explained, generated, summarized))
+        assert all(result.value["degraded"] is True for result in (explained, generated, summarized))
+        assert all(result.value["diagnostic"] == "timeout" for result in (explained, generated, summarized))
+        assert plugin._state.current_question == {}
+        assert plugin._state.last_session_summary == ""
+        assert plugin._state.recent_learning_events == []
+        assert plugin._state.session_summary_seed == {}
+        assert plugin._store.list_interactions(limit=20) == []
+        assert summarized_events == []
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_degraded_answer_clears_pending_without_updating_learning_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class _TimeoutTutorAgent(_FakeTutorAgent):
+        async def answer_evaluate(
+            self,
+            *,
+            question: str = "",
+            answer: str = "",
+            expected_answer: str = "",
+            mode: str = MODE_COMPANION,
+            context: dict[str, object] | None = None,
+        ) -> TutorReply:
+            return TutorReply(
+                operation="answer_evaluate",
+                input_text=answer,
+                reply="The Qwen request timed out.",
+                payload={
+                    "verdict": "wrong",
+                    "score": 0,
+                    "error_type": "timeout_fallback",
+                    "feedback": "fallback feedback",
+                    "next_action": "retry",
+                    "related_topics": ["derivatives"],
+                },
+                degraded=True,
+                diagnostic="timeout",
+                created_at="2026-05-11T00:00:00Z",
+            )
+
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(tmp_path / "runtime"))
+    plugin = StudyCompanionPlugin(
+        _Ctx(
+            tmp_path,
+            {
+                "study": {
+                    "language": "en",
+                    "default_mode": MODE_COMPANION,
+                    "auto_open_ui": False,
+                }
+            },
+        )
+    )
+    assert isinstance(await plugin.startup(), Ok)
+    plugin._agent = _TimeoutTutorAgent()
+    emitted_events: list[dict[str, object]] = []
+
+    async def _record_answer_event(**payload: object) -> None:
+        emitted_events.append(dict(payload))
+
+    monkeypatch.setattr(plugin, "_emit_answer_evaluated_event", _record_answer_event)
+
+    try:
+        plugin._store.ensure_topic(topic_id="derivatives", name="Derivatives")
+        async with plugin._lock:
+            plugin._state.current_question = {
+                "question": "What is d(x^2)/dx?",
+                "answer": "2x",
+                "topic": "derivatives",
+                "question_id": "q-timeout",
+                "attempt_id": "a-timeout",
+            }
+
+        evaluated = await plugin.study_evaluate_answer(
+            answer="x",
+            question_id="q-timeout",
+            attempt_id="a-timeout",
+        )
+
+        assert isinstance(evaluated, Ok)
+        assert evaluated.value["degraded"] is True
+        assert evaluated.value["diagnostic"] == "timeout"
+        current_question = plugin._state.current_question
+        assert "attempt_evaluation_pending" not in current_question
+        assert "attempt_evaluated" not in current_question
+        assert "answer_evaluation_cache" not in current_question
+        assert plugin._state.last_answer_evaluation == {}
+        assert plugin._state.recent_learning_events == []
+        assert plugin._state.session_summary_seed == {}
+        assert plugin._store.list_interactions(limit=20) == []
+        assert plugin._store.get_latest_mastery("derivatives") is None
+        assert plugin._store.get_fsrs_card("derivatives") is None
+        assert plugin._store.list_wrong_questions(topic_id="derivatives") == []
+        assert emitted_events == []
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_answer_final_persist_failure_reuses_cache_without_duplicate_effects(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(tmp_path / "runtime"))
+    plugin = StudyCompanionPlugin(
+        _Ctx(
+            tmp_path,
+            {
+                "study": {
+                    "language": "en",
+                    "default_mode": MODE_COMPANION,
+                    "auto_open_ui": False,
+                }
+            },
+        )
+    )
+    assert isinstance(await plugin.startup(), Ok)
+    plugin._agent = _FakeTutorAgent()
+    original_persist_state = plugin._persist_state
+    persist_calls = 0
+
+    async def _fail_second_persist() -> None:
+        nonlocal persist_calls
+        persist_calls += 1
+        if persist_calls == 2:
+            raise RuntimeError("final attempt persistence failed")
+        await original_persist_state()
+
+    monkeypatch.setattr(plugin, "_persist_state", _fail_second_persist)
+
+    try:
+        async with plugin._lock:
+            plugin._state.current_question = {
+                "question": "What is d(x^2)/dx?",
+                "answer": "2x",
+                "topic": "derivatives",
+                "question_id": "q-persist-failure",
+                "attempt_id": "a-persist-failure",
+            }
+
+        failed = await plugin.study_evaluate_answer(
+            answer="2x",
+            question_id="q-persist-failure",
+            attempt_id="a-persist-failure",
+        )
+
+        assert isinstance(failed, Err)
+        current_question = plugin._state.current_question
+        assert "attempt_evaluation_pending" not in current_question
+        assert current_question["attempt_evaluated"] is True
+        assert current_question["answer_evaluation_cache"]["attempt_id"] == (
+            "a-persist-failure"
+        )
+        persisted_question = plugin._store.load_state(
+            build_initial_state()
+        ).current_question
+        assert "attempt_evaluation_pending" not in persisted_question
+        assert persisted_question["attempt_evaluated"] is True
+        assert persisted_question["attempt_evaluation_recovery"] is True
+        interaction_count = len(plugin._store.list_interactions(limit=20))
+        evaluation_count = len(plugin._agent.evaluations)
+
+        retried = await plugin.study_evaluate_answer(
+            answer="2x",
+            question_id="q-persist-failure",
+            attempt_id="a-persist-failure",
+        )
+        assert isinstance(retried, Ok)
+        assert retried.value["attempt_id"] == "a-persist-failure"
+        assert len(plugin._agent.evaluations) == evaluation_count
+        assert len(plugin._store.list_interactions(limit=20)) == interaction_count
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_answer_clears_pending_and_allows_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class _BlockingTutorAgent(_FakeTutorAgent):
+        def __init__(self) -> None:
+            self.started = asyncio.Event()
+
+        async def answer_evaluate(self, **_kwargs) -> TutorReply:
+            self.started.set()
+            await asyncio.Event().wait()
+            raise AssertionError("unreachable")
+
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(tmp_path / "runtime"))
+    plugin = StudyCompanionPlugin(
+        _Ctx(
+            tmp_path,
+            {
+                "study": {
+                    "language": "en",
+                    "default_mode": MODE_COMPANION,
+                    "auto_open_ui": False,
+                }
+            },
+        )
+    )
+    assert isinstance(await plugin.startup(), Ok)
+    blocking_agent = _BlockingTutorAgent()
+    plugin._agent = blocking_agent
+
+    try:
+        async with plugin._lock:
+            plugin._state.current_question = {
+                "question": "What is d(x^2)/dx?",
+                "answer": "2x",
+                "topic": "derivatives",
+                "question_id": "q-canceled",
+                "attempt_id": "a-canceled",
+            }
+
+        evaluation = asyncio.create_task(
+            plugin.study_evaluate_answer(
+                answer="x",
+                question_id="q-canceled",
+                attempt_id="a-canceled",
+            )
+        )
+        await blocking_agent.started.wait()
+        evaluation.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await evaluation
+
+        assert "attempt_evaluation_pending" not in plugin._state.current_question
+        plugin._agent = _FakeTutorAgent()
+        retried = await plugin.study_evaluate_answer(
+            answer="2x",
+            question_id="q-canceled",
+            attempt_id="a-canceled",
+        )
+        assert isinstance(retried, Ok)
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_finalized_answer_reuses_cache_without_duplicate_effects(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(tmp_path / "runtime"))
+    plugin = StudyCompanionPlugin(
+        _Ctx(
+            tmp_path,
+            {
+                "study": {
+                    "language": "en",
+                    "default_mode": MODE_COMPANION,
+                    "auto_open_ui": False,
+                }
+            },
+        )
+    )
+    assert isinstance(await plugin.startup(), Ok)
+    plugin._agent = _FakeTutorAgent()
+    mastery_lookup_started = threading.Event()
+    release_mastery_lookup = threading.Event()
+    mastery_calls = 0
+
+    def _blocking_third_mastery_lookup(_topic: str) -> float:
+        nonlocal mastery_calls
+        mastery_calls += 1
+        if mastery_calls == 3:
+            mastery_lookup_started.set()
+            assert release_mastery_lookup.wait(timeout=5)
+        return 0.5
+
+    monkeypatch.setattr(
+        plugin._knowledge_tracker,
+        "get_mastery",
+        _blocking_third_mastery_lookup,
+    )
+
+    try:
+        async with plugin._lock:
+            plugin._state.current_question = {
+                "question": "What is d(x^2)/dx?",
+                "answer": "2x",
+                "topic": "derivatives",
+                "question_id": "q-cancel-after-finalize",
+                "attempt_id": "a-cancel-after-finalize",
+            }
+
+        evaluation = asyncio.create_task(
+            plugin.study_evaluate_answer(
+                answer="2x",
+                question_id="q-cancel-after-finalize",
+                attempt_id="a-cancel-after-finalize",
+            )
+        )
+        assert await asyncio.to_thread(mastery_lookup_started.wait, 5)
+        evaluation.cancel()
+        release_mastery_lookup.set()
+        with pytest.raises(asyncio.CancelledError):
+            await evaluation
+
+        current_question = plugin._state.current_question
+        assert "attempt_evaluation_pending" not in current_question
+        assert current_question["attempt_evaluated"] is True
+        assert current_question["attempt_evaluation_recovery"] is True
+        persisted_question = plugin._store.load_state(
+            build_initial_state()
+        ).current_question
+        assert "attempt_evaluation_pending" not in persisted_question
+        assert persisted_question["attempt_evaluated"] is True
+        assert persisted_question["attempt_evaluation_recovery"] is True
+        evaluation_count = len(plugin._agent.evaluations)
+        interaction_count = len(plugin._store.list_interactions(limit=20))
+
+        retried = await plugin.study_evaluate_answer(
+            answer="2x",
+            question_id="q-cancel-after-finalize",
+            attempt_id="a-cancel-after-finalize",
+        )
+
+        assert isinstance(retried, Ok)
+        assert retried.value["attempt_id"] == "a-cancel-after-finalize"
+        assert len(plugin._agent.evaluations) == evaluation_count
+        assert len(plugin._store.list_interactions(limit=20)) == interaction_count
+    finally:
+        release_mastery_lookup.set()
         await plugin.shutdown()
 
 
@@ -8205,10 +9701,13 @@ async def test_tutor_agent_prompt_and_reply_contract(
 
     agent = TutorLLMAgent(logger=_Logger(), config=StudyConfig(language="en"))
 
-    async def _fake_call_model(_messages):
-        return "A derivative is the slope at one point."
+    async def _fake_call_model_result(_messages, **_kwargs):
+        return SimpleNamespace(
+            text="A derivative is the slope at one point.",
+            output_limit_reached=False,
+        )
 
-    monkeypatch.setattr(agent, "_call_model", _fake_call_model)
+    monkeypatch.setattr(agent, "_call_model_result", _fake_call_model_result)
     reply = await agent.concept_explain("derivative", mode=MODE_INTERACTIVE)
 
     assert reply.operation == "concept_explain"
@@ -8225,10 +9724,13 @@ async def test_tutor_agent_teaching_prefix_is_applied_once(
         MODE_TEACHING, language="en", outcome="changed"
     )
 
-    async def _fake_call_model(_messages):
-        return f"{teaching_prefix}\n\nA derivative is the slope at one point."
+    async def _fake_call_model_result(_messages, **_kwargs):
+        return SimpleNamespace(
+            text=f"{teaching_prefix}\n\nA derivative is the slope at one point.",
+            output_limit_reached=False,
+        )
 
-    monkeypatch.setattr(agent, "_call_model", _fake_call_model)
+    monkeypatch.setattr(agent, "_call_model_result", _fake_call_model_result)
     reply = await agent.concept_explain("derivative", mode=MODE_TEACHING)
 
     assert reply.operation == "concept_explain"
@@ -8244,10 +9746,10 @@ async def test_tutor_agent_handles_empty_and_model_failures() -> None:
     assert empty.degraded is True
     assert empty.diagnostic == "empty_input"
 
-    async def _broken_call_model(_messages):
+    async def _broken_call_model_result(_messages, **_kwargs):
         raise RuntimeError("llm unavailable")
 
-    agent._call_model = _broken_call_model  # type: ignore[method-assign]
+    agent._call_model_result = _broken_call_model_result  # type: ignore[method-assign]
     fallback = await agent.concept_explain("photosynthesis converts light")
 
     assert fallback.degraded is True
@@ -8259,7 +9761,7 @@ async def test_tutor_agent_handles_empty_and_model_failures() -> None:
     assert zh_empty.diagnostic == "empty_input"
     assert "请先提供文本" in zh_empty.reply
 
-    zh_agent._call_model = _broken_call_model  # type: ignore[method-assign]
+    zh_agent._call_model_result = _broken_call_model_result  # type: ignore[method-assign]
     zh_fallback = await zh_agent.concept_explain("光合作用")
     assert zh_fallback.diagnostic == "llm_call_failed"
     assert "关键文本：光合作用" in zh_fallback.reply
@@ -8268,7 +9770,7 @@ async def test_tutor_agent_handles_empty_and_model_failures() -> None:
     ja_empty = await ja_agent.concept_explain(" ")
     assert "テキスト" in ja_empty.reply
 
-    ja_agent._call_model = _broken_call_model  # type: ignore[method-assign]
+    ja_agent._call_model_result = _broken_call_model_result  # type: ignore[method-assign]
     ja_fallback = await ja_agent.concept_explain("微分")
     assert ja_fallback.diagnostic == "llm_call_failed"
     assert "重要なテキスト：微分" in ja_fallback.reply
@@ -8394,8 +9896,11 @@ async def test_tutor_agent_structured_operations_normal_path(
 ) -> None:
     agent = TutorLLMAgent(logger=_Logger(), config=StudyConfig(language="en"))
 
-    async def _fake_call_model(_messages, *, operation: str = "concept_explain"):
+    async def _fake_call_model(
+        _messages, *, operation: str = "concept_explain", deadline: float | None = None
+    ):
         assert operation == operation_name
+        assert deadline is not None
         return json.dumps(response_json)
 
     monkeypatch.setattr(agent, "_call_model", _fake_call_model)
@@ -8467,10 +9972,11 @@ async def test_tutor_agent_structured_operations_degrade_with_generic_diagnostic
 async def test_tutor_agent_llm_cache_distinguishes_rotated_api_keys(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from utils import config_manager, llm_client, token_tracker
+    from plugin.plugins.study_companion import study_model_gateway
+    from utils import config_manager
 
     config_groups: list[str] = []
-    call_types: list[str] = []
+    generic_calls: list[dict[str, object]] = []
 
     class _ConfigManager:
         def __init__(self) -> None:
@@ -8479,30 +9985,35 @@ async def test_tutor_agent_llm_cache_distinguishes_rotated_api_keys(
         def get_model_api_config(self, group: str):
             config_groups.append(group)
             return {
-                "base_url": "https://llm.example.test/v1",
-                "model": "study-model",
+                "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+                "model": "qwen-plus",
                 "api_key": self.api_key,
             }
 
-    class _FakeLLM:
-        def __init__(self, api_key: str) -> None:
-            self.api_key = api_key
+        async def aconsume_agent_daily_quota(self, **_kwargs):
+            return True, {}
+
+    class _GenericClient:
+        def __init__(self, key: str) -> None:
+            self.key = key
 
         async def ainvoke(self, _messages):
-            return SimpleNamespace(content=f"reply from {self.api_key}")
+            return SimpleNamespace(
+                content=f"reply from {self.key}",
+                response_metadata={"finish_reason": "stop"},
+            )
+
+        async def aclose(self) -> None:
+            return None
+
+    async def _generic_factory(**kwargs):
+        generic_calls.append(dict(kwargs))
+        return _GenericClient(str(kwargs["api_key"]))
 
     cfg_mgr = _ConfigManager()
-    created_keys: list[str] = []
-    create_kwargs: list[dict[str, object]] = []
-
-    def _create_chat_llm(*, api_key: str, **kwargs):
-        created_keys.append(api_key)
-        create_kwargs.append(dict(kwargs))
-        return _FakeLLM(api_key)
 
     monkeypatch.setattr(config_manager, "get_config_manager", lambda: cfg_mgr)
-    monkeypatch.setattr(llm_client, "create_chat_llm", _create_chat_llm)
-    monkeypatch.setattr(token_tracker, "set_call_type", call_types.append)
+    monkeypatch.setattr(study_model_gateway, "create_chat_llm_async", _generic_factory)
 
     agent = TutorLLMAgent(logger=_Logger(), config=StudyConfig(language="en"))
     first = await agent._call_model([{"role": "user", "content": "one"}])
@@ -8512,13 +10023,12 @@ async def test_tutor_agent_llm_cache_distinguishes_rotated_api_keys(
     assert first == "reply from old-key"
     assert second == "reply from new-key"
     assert config_groups == ["agent", "agent"]
-    assert call_types == ["agent", "agent"]
-    assert created_keys == ["old-key", "new-key"]
-    assert create_kwargs
-    assert all("temperature" not in item for item in create_kwargs)
-    assert all("max_completion_tokens" not in item for item in create_kwargs)
-    assert "old-key" not in repr(agent._client_cache._cache)
-    assert "new-key" not in repr(agent._client_cache._cache)
+    assert [call["api_key"] for call in generic_calls] == ["old-key", "new-key"]
+    assert all(call["model"] == "qwen-plus" for call in generic_calls)
+    assert all(call["max_completion_tokens"] == 3072 for call in generic_calls)
+    assert all(call["timeout"] > 0 for call in generic_calls)
+    assert all("temperature" not in call for call in generic_calls)
+    assert not hasattr(agent, "_client_cache")
 
 
 @pytest.mark.asyncio
@@ -8601,6 +10111,12 @@ async def test_study_pomodoro_stop_offloads_timer_operation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class _Timer:
+        def status(self) -> dict[str, object]:
+            return {
+                "state": "focusing",
+                "current_focus_session": {"id": "focus-1", "status": "running"},
+            }
+
         def stop(self) -> dict[str, object]:
             return {
                 "state": "cancelled",
@@ -8632,8 +10148,73 @@ async def test_study_pomodoro_stop_offloads_timer_operation(
 
     assert isinstance(status, Ok)
     assert status.value["state"] == "cancelled"
-    assert to_thread_calls == ["stop"]
+    assert to_thread_calls == ["status", "stop"]
     assert supervision.focus_end_count == 1
+
+
+@pytest.mark.asyncio
+async def test_study_pomodoro_stop_emits_focus_completion_after_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _Timer:
+        def status(self) -> dict[str, object]:
+            return {
+                "state": "focusing",
+                "current_focus_session": {"id": "focus-deadline"},
+            }
+
+        def stop(self) -> dict[str, object]:
+            return {
+                "state": "short_break",
+                "current_focus_session": {
+                    "id": "focus-deadline",
+                    "status": "completed",
+                },
+            }
+
+    class _Supervision:
+        def __init__(self) -> None:
+            self.focus_end_count = 0
+
+        def on_focus_end(self) -> None:
+            self.focus_end_count += 1
+
+    class _EventBus:
+        def __init__(self) -> None:
+            self.events: list[StudyEvent] = []
+
+        async def emit(self, event: StudyEvent) -> None:
+            self.events.append(event)
+
+    async def _to_thread(func, /, *args, **kwargs):
+        return func(*args, **kwargs)
+
+    monkeypatch.setattr(study_companion_module.asyncio, "to_thread", _to_thread)
+    plugin = StudyCompanionPlugin.__new__(StudyCompanionPlugin)
+    supervision = _Supervision()
+    event_bus = _EventBus()
+    plugin._habit_store = object()
+    plugin._checkin_manager = object()
+    plugin._pomodoro_timer = _Timer()
+    plugin._supervision = supervision
+    plugin._event_bus = event_bus
+    plugin._pomodoro_session_id = "focus-deadline"
+    plugin._pomodoro_target_lanlan = "lanlan-at-start"
+
+    result = await plugin.study_pomodoro_stop()
+
+    assert isinstance(result, Ok)
+    assert result.value["state"] == "short_break"
+    assert supervision.focus_end_count == 1
+    assert len(event_bus.events) == 1
+    assert event_bus.events[0].name == "pomodoro_focus_completed"
+    assert event_bus.events[0].payload == {
+        "session_id": "focus-deadline",
+        "break_type": "short_break",
+        "target_lanlan": "lanlan-at-start",
+    }
+    assert plugin._pomodoro_session_id == "focus-deadline"
+    assert plugin._pomodoro_target_lanlan == "lanlan-at-start"
 
 
 @pytest.mark.asyncio
@@ -8729,14 +10310,22 @@ async def test_study_pomodoro_start_offloads_blocking_operations(
     plugin._checkin_manager = object()
     plugin._pomodoro_timer = _Timer()
     plugin._supervision = supervision
+    plugin.ctx = SimpleNamespace(_current_lanlan="fallback-character")
 
-    status = await plugin.study_pomodoro_start(goal_id="goal-1", focus_minutes=30)
+    status = await plugin.study_pomodoro_start(
+        goal_id="goal-1",
+        focus_minutes=30,
+        _ctx={"lanlan_name": "yui-at-start"},
+    )
+    plugin.ctx._current_lanlan = "another-character"
 
     assert isinstance(status, Ok)
     assert status.value["state"] == "focusing"
     assert to_thread_calls == ["status", "start", "get_goal"]
     assert supervision.goal == {"id": "goal-1", "title": "read"}
     assert supervision.planned_minutes == 30.0
+    assert plugin._pomodoro_session_id == "focus-2"
+    assert plugin._pomodoro_target_lanlan == "yui-at-start"
 
 
 @pytest.mark.asyncio
@@ -8934,6 +10523,214 @@ async def test_study_supervision_toggle_parses_string_false() -> None:
     assert supervision.calls == [False]
 
 
+class _MemoryCardItemTypeStore:
+    def __init__(self) -> None:
+        self.item_types: list[str] = []
+
+    def get_or_create_default_deck(self, *, deck_type: str):
+        assert deck_type == "custom"
+        return {"id": "default-deck"}
+
+    def upsert_item(self, *, item_type: str, **_kwargs):
+        self.item_types.append(item_type)
+        return {
+            "created": True,
+            "item": {"id": f"item-{item_type}", "item_type": item_type},
+        }
+
+    def compat_card_payload(self, item):
+        return {"item": item}
+
+
+@pytest.mark.asyncio
+async def test_memory_card_upsert_item_type_schema_and_default() -> None:
+    schema = StudyCompanionPlugin.study_memory_card_upsert.__neko_event_meta__.input_schema
+    assert schema["properties"]["item_type"] == {
+        "type": "string",
+        "enum": ["word", "sentence", "paragraph", "cloze", "custom"],
+        "default": "custom",
+    }
+    plugin = StudyCompanionPlugin.__new__(StudyCompanionPlugin)
+    store = _MemoryCardItemTypeStore()
+    plugin._memory_deck_store = store
+
+    result = await plugin.study_memory_card_upsert(front="Prompt", back="Answer")
+
+    assert isinstance(result, Ok)
+    assert store.item_types == ["custom"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "item_type", ["word", "sentence", "paragraph", "cloze", "custom"]
+)
+async def test_memory_card_upsert_accepts_supported_item_types(item_type: str) -> None:
+    plugin = StudyCompanionPlugin.__new__(StudyCompanionPlugin)
+    store = _MemoryCardItemTypeStore()
+    plugin._memory_deck_store = store
+
+    result = await plugin.study_memory_card_upsert(
+        front="Prompt", back="Answer", item_type=item_type
+    )
+
+    assert isinstance(result, Ok)
+    assert store.item_types == [item_type]
+
+
+@pytest.mark.asyncio
+async def test_memory_card_upsert_rejects_unsupported_item_type() -> None:
+    plugin = StudyCompanionPlugin.__new__(StudyCompanionPlugin)
+    store = _MemoryCardItemTypeStore()
+    plugin._memory_deck_store = store
+
+    result = await plugin.study_memory_card_upsert(
+        front="Prompt", back="Answer", item_type="formula"
+    )
+
+    assert isinstance(result, Err)
+    assert "unsupported memory item type" in str(result.error)
+    assert store.item_types == []
+
+
+class _LegacyTopicReviewStore:
+    def __init__(self) -> None:
+        self.review_calls: list[dict[str, str]] = []
+
+    def get_item(self, _item_id: str):
+        return None
+
+    def get_or_create_default_deck(self, *, deck_type: str):
+        assert deck_type == "custom"
+        return {"id": "default-deck"}
+
+    def review_item(self, *, item_id: str, rating: str, deck_id: str = ""):
+        self.review_calls.append(
+            {"item_id": item_id, "rating": rating, "deck_id": deck_id}
+        )
+        return {
+            "item": {"id": "default-item", "deck_id": deck_id},
+            "rating": 3,
+            "schedule": {"scheduled_days": 1.0},
+        }
+
+    def compat_card_payload(self, item):
+        return {"item_id": item["id"], "deck_id": item["deck_id"]}
+
+
+@pytest.mark.asyncio
+async def test_legacy_topic_review_limits_metadata_lookup_to_default_deck() -> None:
+    plugin = StudyCompanionPlugin.__new__(StudyCompanionPlugin)
+    store = _LegacyTopicReviewStore()
+    plugin.ctx = SimpleNamespace(_current_lanlan="")
+    plugin._memory_deck_store = store
+    plugin._count_total_due_reviews = lambda: 0
+
+    async def ignore_review_event(_payload, **_kwargs) -> None:
+        return None
+
+    plugin._emit_memory_review_answer_event = ignore_review_event
+
+    reviewed = await plugin.study_memory_card_review(
+        topic_id="shared-topic", rating="good"
+    )
+
+    assert isinstance(reviewed, Ok)
+    assert store.review_calls == [
+        {
+            "item_id": "shared-topic",
+            "rating": "good",
+            "deck_id": "default-deck",
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_memory_deck_item_listing_exposes_stable_pagination(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
+    ctx = _Ctx(tmp_path, {"study": {"language": "en", "auto_open_ui": False}})
+    plugin = StudyCompanionPlugin(ctx)
+    result = await plugin.startup()
+    try:
+        assert isinstance(result, Ok)
+        deck = plugin._memory_deck_store.create_deck(
+            name="Paged Deck", deck_type="word"
+        )
+        created_ids = {
+            plugin._memory_deck_store.add_word(
+                deck_id=deck["id"],
+                word=f"word-{index}",
+                meaning=f"meaning-{index}",
+            )["item"]["id"]
+            for index in range(3)
+        }
+
+        first = await plugin.study_memory_list_deck_items(
+            deck_id=deck["id"], limit=2, offset=0
+        )
+        assert isinstance(first, Ok)
+        assert len(first.value["items"]) == 2
+        assert first.value["has_more"] is True
+        assert first.value["next_offset"] == 2
+
+        second = await plugin.study_memory_list_deck_items(
+            deck_id=deck["id"], limit=2, offset=first.value["next_offset"]
+        )
+        assert isinstance(second, Ok)
+        assert len(second.value["items"]) == 1
+        assert second.value["has_more"] is False
+        assert second.value["next_offset"] is None
+        returned_ids = {
+            item["id"] for item in [*first.value["items"], *second.value["items"]]
+        }
+        assert returned_ids == created_ids
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_memory_deck_listing_exposes_continuation_metadata(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
+    ctx = _Ctx(tmp_path, {"study": {"language": "en", "auto_open_ui": False}})
+    plugin = StudyCompanionPlugin(ctx)
+    result = await plugin.startup()
+    try:
+        assert isinstance(result, Ok)
+        created_ids = {
+            plugin._memory_deck_store.create_deck(
+                name=f"Paged Deck {index}", deck_type="custom"
+            )["id"]
+            for index in range(3)
+        }
+
+        first = await plugin.study_memory_list_decks(limit=2, offset=0)
+        assert isinstance(first, Ok)
+        assert len(first.value["decks"]) == 2
+        assert first.value["has_more"] is True
+        assert first.value["next_offset"] == 2
+
+        second = await plugin.study_memory_list_decks(
+            limit=2, offset=first.value["next_offset"]
+        )
+        assert isinstance(second, Ok)
+        assert len(second.value["decks"]) == 1
+        assert second.value["has_more"] is False
+        assert second.value["next_offset"] is None
+        returned_ids = {
+            deck["id"] for deck in [*first.value["decks"], *second.value["decks"]]
+        }
+        assert returned_ids == created_ids
+    finally:
+        await plugin.shutdown()
+
+
 @pytest.mark.asyncio
 async def test_study_plugin_starts_and_collects_entries(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -8959,13 +10756,18 @@ async def test_study_plugin_starts_and_collects_entries(
     assert "study_ocr_snapshot" in entries
     assert "study_set_mode" in entries
     assert "study_detect_mode_intent" in entries
-    assert "study_export_notes" not in entries
+    assert "study_export_notes" in entries
+    disabled_export = await entries["study_export_notes"].handler(
+        fmt="markdown", preview_only=True
+    )
+    assert isinstance(disabled_export, Err)
     assert "study_knowledge_map" in entries
     assert "study_knowledge_guidance" in entries
     assert "study_memory_card_upsert" in entries
     assert "study_memory_deck" in entries
     assert "study_memory_card_review" in entries
     assert "study_memory_create_deck" in entries
+    assert "study_memory_list_deck_items" in entries
     assert "study_memory_import_words" in entries
     assert "study_memory_import_passage" in entries
     assert "study_memory_due_reviews" in entries
@@ -8976,6 +10778,35 @@ async def test_study_plugin_starts_and_collects_entries(
         fmt="markdown", preview_only=True, title="Default Notes"
     )
     assert isinstance(disabled_export, Err)
+    selected_deck = await plugin.study_memory_create_deck(
+        name="Selected Deck", deck_type="custom", source="ui"
+    )
+    assert isinstance(selected_deck, Ok)
+    selected_card = await plugin.study_memory_card_upsert(
+        deck_id=selected_deck.value["id"],
+        front="Selected prompt",
+        back="Selected answer",
+        source="ui",
+    )
+    assert isinstance(selected_card, Ok)
+    assert selected_card.value["deck"]["id"] == selected_deck.value["id"]
+    selected_items = await plugin.study_memory_list_deck_items(
+        deck_id=selected_deck.value["id"]
+    )
+    assert isinstance(selected_items, Ok)
+    assert selected_items.value["deck"]["name"] == "Selected Deck"
+    assert [item["prompt"] for item in selected_items.value["items"]] == [
+        "Selected prompt"
+    ]
+    selected_review = await plugin.study_memory_card_review(
+        topic_id=selected_card.value["card"]["item_id"], rating="good"
+    )
+    assert isinstance(selected_review, Ok)
+    decks_after_selected_review = await plugin.study_memory_list_decks()
+    assert isinstance(decks_after_selected_review, Ok)
+    assert [deck["name"] for deck in decks_after_selected_review.value["decks"]] == [
+        "Selected Deck"
+    ]
     memory_card = await plugin.study_memory_card_upsert(
         topic_id="phase7_plugin_memory",
         front="What does the study memory deck store?",
@@ -9158,7 +10989,11 @@ async def test_communication_disabled_skips_eventbus(
         status = await plugin.study_neko_communication_status()
         assert isinstance(status, Ok)
         assert status.value == {
+            "configured_enabled": False,
+            "solution_narration_enabled": True,
             "available": False,
+            "command_subscription_active": False,
+            "command_worker_active": False,
             "events_emitted": 0,
             "events_blocked": 0,
         }
@@ -9436,12 +11271,186 @@ async def test_memory_review_emits_answer_evaluated(
         )["item"]
 
         reviewed = await plugin.study_memory_review_item(
-            item_id=item["id"], rating="good", correct=True
+            item_id=item["id"],
+            rating="good",
+            correct=True,
+            _ctx={"lanlan_name": "active-character"},
         )
 
         assert isinstance(reviewed, Ok)
         await _drain_scheduled_events()
         assert any("[Answer Evaluated]" in text for text in _study_push_texts(ctx))
+        assert any(
+            message.get("target_lanlan") == "active-character"
+            and "[Answer Evaluated]"
+            in str(((message.get("parts") or [{}])[0]).get("text") or "")
+            for message in ctx.pushed_messages
+        )
+        assert any(
+            "[Review Session Completed]" in text for text in _study_push_texts(ctx)
+        )
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_memory_review_does_not_emit_completion_while_due_cards_remain(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
+    ctx = _Ctx(tmp_path, {"study": {"language": "en", "auto_open_ui": False}})
+    plugin = StudyCompanionPlugin(ctx)
+    result = await plugin.startup()
+    try:
+        assert isinstance(result, Ok)
+        deck = plugin._memory_deck_store.create_deck(name="Two Cards", deck_type="word")
+        first = plugin._memory_deck_store.add_word(
+            deck_id=deck["id"], word="one", meaning="1"
+        )["item"]
+        plugin._memory_deck_store.add_word(
+            deck_id=deck["id"], word="two", meaning="2"
+        )
+
+        reviewed = await plugin.study_memory_review_item(
+            item_id=first["id"], rating="good", correct=True
+        )
+
+        assert isinstance(reviewed, Ok)
+        await _drain_scheduled_events()
+        assert not any(
+            "[Review Session Completed]" in text for text in _study_push_texts(ctx)
+        )
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_memory_review_does_not_complete_while_knowledge_review_is_due(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
+    ctx = _Ctx(tmp_path, {"study": {"language": "en", "auto_open_ui": False}})
+    plugin = StudyCompanionPlugin(ctx)
+    result = await plugin.startup()
+    try:
+        assert isinstance(result, Ok)
+        deck = plugin._memory_deck_store.create_deck(
+            name="Mixed Reviews", deck_type="word"
+        )
+        item = plugin._memory_deck_store.add_word(
+            deck_id=deck["id"], word="one", meaning="1"
+        )["item"]
+        plugin._store.ensure_topic(topic_id="topic-due", name="Topic Due")
+        topic_card = plugin._knowledge_tracker.fsrs.new_knowledge_card(
+            "topic-due"
+        ).to_dict()
+        plugin._store.upsert_fsrs_card(
+            topic_id="topic-due", card=topic_card, last_rating=0
+        )
+
+        reviewed = await plugin.study_memory_review_item(
+            item_id=item["id"], rating="good", correct=True
+        )
+
+        assert isinstance(reviewed, Ok)
+        await _drain_scheduled_events()
+        assert not any(
+            "[Review Session Completed]" in text for text in _study_push_texts(ctx)
+        )
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_knowledge_card_review_emits_completion_for_total_queue_transition(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
+    ctx = _Ctx(tmp_path, {"study": {"language": "en", "auto_open_ui": False}})
+    plugin = StudyCompanionPlugin(ctx)
+    result = await plugin.startup()
+    completed: list[dict[str, object]] = []
+
+    async def _capture_completion(**kwargs) -> bool:
+        completed.append(dict(kwargs))
+        return True
+
+    try:
+        assert isinstance(result, Ok)
+        plugin._emit_review_session_completed_event = (  # type: ignore[method-assign]
+            _capture_completion
+        )
+        plugin._store.ensure_topic(topic_id="derivatives", name="Derivatives")
+        topic_card = plugin._knowledge_tracker.fsrs.new_knowledge_card(
+            "derivatives"
+        ).to_dict()
+        plugin._store.upsert_fsrs_card(
+            topic_id="derivatives", card=topic_card, last_rating=0
+        )
+
+        reviewed = await plugin.study_memory_card_review(
+            topic_id="derivatives",
+            rating="good",
+            _ctx={"lanlan_name": "active-character"},
+        )
+
+        assert isinstance(reviewed, Ok)
+        assert completed == [
+            {
+                "reviewed_count": 1,
+                "deck_name": "Derivatives",
+                "target_lanlan": "active-character",
+            }
+        ]
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_concurrent_final_reviews_emit_one_completion(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
+    ctx = _Ctx(tmp_path, {"study": {"language": "en", "auto_open_ui": False}})
+    plugin = StudyCompanionPlugin(ctx)
+    result = await plugin.startup()
+    completed: list[dict[str, object]] = []
+
+    async def _capture_completion(**kwargs) -> bool:
+        completed.append(dict(kwargs))
+        return True
+
+    try:
+        assert isinstance(result, Ok)
+        plugin._emit_review_session_completed_event = (  # type: ignore[method-assign]
+            _capture_completion
+        )
+        deck = plugin._memory_deck_store.create_deck(
+            name="Concurrent Reviews", deck_type="word"
+        )
+        first = plugin._memory_deck_store.add_word(
+            deck_id=deck["id"], word="one", meaning="1"
+        )["item"]
+        second = plugin._memory_deck_store.add_word(
+            deck_id=deck["id"], word="two", meaning="2"
+        )["item"]
+
+        reviews = await asyncio.gather(
+            plugin.study_memory_review_item(item_id=first["id"], rating="good"),
+            plugin.study_memory_review_item(item_id=second["id"], rating="good"),
+        )
+
+        assert all(isinstance(review, Ok) for review in reviews)
+        assert len(completed) == 1
+        assert completed[0]["deck_name"] == "Concurrent Reviews"
     finally:
         await plugin.shutdown()
 
@@ -9468,7 +11477,7 @@ async def test_memory_review_event_failure_does_not_fail_review(
             meaning="give up",
         )["item"]
 
-        async def _fail_emit(_payload: dict[str, object]) -> None:
+        async def _fail_emit(_payload: dict[str, object], **_kwargs) -> None:
             raise RuntimeError("event enrichment failed")
 
         plugin._emit_memory_review_answer_event = _fail_emit  # type: ignore[method-assign]
@@ -9621,6 +11630,71 @@ async def test_recitation_emits_answer_evaluated(
         assert any("[Answer Evaluated]" in text for text in _study_push_texts(ctx))
     finally:
         await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_recitation_emits_completion_for_total_queue_transition(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
+    ctx = _Ctx(tmp_path, {"study": {"language": "en", "auto_open_ui": False}})
+    plugin = StudyCompanionPlugin(ctx)
+    result = await plugin.startup()
+    completed: list[dict[str, object]] = []
+
+    async def _capture_completion(**kwargs) -> bool:
+        completed.append(dict(kwargs))
+        return True
+
+    try:
+        assert isinstance(result, Ok)
+        plugin.ctx._current_lanlan = "fallback-character"
+        plugin._emit_review_session_completed_event = (  # type: ignore[method-assign]
+            _capture_completion
+        )
+        deck = plugin._memory_deck_store.create_deck(
+            name="Recitation", deck_type="passage"
+        )
+        imported = plugin._memory_deck_store.import_passage(
+            deck_id=deck["id"], title="One Line", text="Only sentence."
+        )
+
+        recited = await plugin.study_memory_recitation_attempt(
+            item_id=imported["items"][0]["id"],
+            user_input_text="Only sentence.",
+        )
+
+        assert isinstance(recited, Ok)
+        assert completed == [
+            {
+                "reviewed_count": 1,
+                "deck_name": "Recitation",
+                "target_lanlan": "fallback-character",
+            }
+        ]
+    finally:
+        await plugin.shutdown()
+
+
+def test_study_target_lanlan_resolution_prefers_entry_context() -> None:
+    plugin = StudyCompanionPlugin.__new__(StudyCompanionPlugin)
+    plugin.ctx = SimpleNamespace(_current_lanlan="fallback-character")
+
+    assert plugin._resolve_study_target_lanlan(
+        {"_ctx": {"lanlan_name": "entry-character"}}
+    ) == "entry-character"
+    assert plugin._resolve_study_target_lanlan({"_ctx": {}}) is None
+    assert plugin._resolve_study_target_lanlan({}) == "fallback-character"
+    plugin.ctx._current_lanlan = ""
+    assert plugin._resolve_study_target_lanlan({}) is None
+
+
+def test_study_target_lanlan_resolution_without_runtime_context_returns_none() -> None:
+    plugin = StudyCompanionPlugin.__new__(StudyCompanionPlugin)
+
+    assert plugin._resolve_study_target_lanlan({}) is None
 
 
 @pytest.mark.asyncio
@@ -9824,9 +11898,9 @@ async def test_study_plugin_doc_export_dynamic_entry_and_knowledge_settings(
         assert "study_export_notes" in entries
         properties = entries["study_export_notes"].meta.input_schema["properties"]
         export_formats = properties["fmt"]["enum"]
-        assert export_formats == ["markdown", "pdf", "docx"]
+        assert export_formats == ["markdown", "pdf", "docx", "xmind"]
         assert "range" not in properties
-        assert properties["style"]["default"] == "compact"
+        assert "default" not in properties["style"]
         assert properties["time_range"]["default"] == "recent"
         assert properties["recent_limit"]["default"] == 30
         assert properties["topic_ids"]["default"] == []
@@ -10003,3 +12077,281 @@ async def test_study_plugin_startup_failure_cleans_partial_resources(
     assert plugin._store._conn is None
     assert plugin.get_static_ui_config() is None
     assert plugin.get_list_actions() == []
+
+
+@pytest.mark.asyncio
+async def test_evaluate_current_question_rejects_forged_client_topic_before_llm(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
+    ctx = _Ctx(
+        tmp_path,
+        {
+            "study": {
+                "language": "en",
+                "default_mode": MODE_COMPANION,
+                "auto_open_ui": False,
+            },
+            "ocr_reader": {"enabled": True},
+            "rapidocr": {"lang_type": "ch"},
+        },
+    )
+    plugin = StudyCompanionPlugin(ctx)
+    started = await plugin.startup()
+    assert isinstance(started, Ok)
+    fake_agent = _FakeTutorAgent()
+    plugin._agent = fake_agent
+
+    try:
+        async with plugin._lock:
+            plugin._state.current_question = {
+                "question": "What is the absolute value of -4?",
+                "answer": "4",
+                "question_id": "question-trusted-topic",
+                "attempt_id": "attempt-trusted-topic",
+                "topic": "absolute_value",
+                "selected_topic_id": "absolute_value",
+                "scope_key": "scope-old",
+                "scope_revision": 1,
+            }
+
+        evaluated = await plugin.study_evaluate_answer(
+            answer="4",
+            question_id="question-trusted-topic",
+            attempt_id="attempt-trusted-topic",
+            selected_topic_id="number_axis",
+        )
+
+        assert isinstance(evaluated, Err)
+        assert evaluated.error.code == "QUESTION_MISMATCH"
+        assert fake_agent.evaluations == []
+        async with plugin._lock:
+            current_question = dict(plugin._state.current_question)
+        assert not current_question.get("attempt_evaluation_pending")
+        assert not current_question.get("attempt_evaluated")
+        assert current_question["selected_topic_id"] == "absolute_value"
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_evaluate_current_question_rejects_forged_text_and_expected_answer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
+    ctx = _Ctx(
+        tmp_path,
+        {
+            "study": {"language": "en", "auto_open_ui": False},
+            "study_companion": {"communication": {"enabled": False}},
+        },
+    )
+    plugin = StudyCompanionPlugin(ctx)
+    started = await plugin.startup()
+    assert isinstance(started, Ok)
+    fake_agent = _FakeTutorAgent()
+    plugin._agent = fake_agent
+    try:
+        async with plugin._lock:
+            plugin._state.current_question = {
+                "question": "Trusted question",
+                "answer": "trusted answer",
+                "question_id": "trusted-q",
+                "attempt_id": "trusted-a",
+                "selected_topic_id": "absolute_value",
+            }
+
+        forged_text = await plugin.study_evaluate_answer(
+            answer="attacker",
+            question="Different question",
+            question_id="trusted-q",
+            attempt_id="trusted-a",
+            selected_topic_id="number_axis",
+        )
+        legacy_supplied = await plugin.study_evaluate_answer(
+            answer="attacker",
+            question="Different question",
+            selected_topic_id="number_axis",
+        )
+        forged_expected = await plugin.study_evaluate_answer(
+            answer="attacker answer",
+            expected_answer="attacker answer",
+            question_id="trusted-q",
+            attempt_id="trusted-a",
+            selected_topic_id="absolute_value",
+        )
+
+        assert isinstance(forged_text, Err)
+        assert forged_text.error.code == "QUESTION_MISMATCH"
+        assert isinstance(forged_expected, Err)
+        assert forged_expected.error.code == "QUESTION_MISMATCH"
+        assert isinstance(legacy_supplied, Ok)
+        assert len(fake_agent.evaluations) == 1
+        assert fake_agent.evaluations[0][3]["question_payload"].get("scope_key") is None
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_evaluate_old_question_uses_its_private_topic_and_scope_after_scope_switch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
+    ctx = _Ctx(
+        tmp_path,
+        {
+            "study": {
+                "language": "en",
+                "default_mode": MODE_COMPANION,
+                "auto_open_ui": False,
+            },
+            "ocr_reader": {"enabled": True},
+            "rapidocr": {"lang_type": "ch"},
+        },
+    )
+    plugin = StudyCompanionPlugin(ctx)
+    started = await plugin.startup()
+    assert isinstance(started, Ok)
+    fake_agent = _FakeTutorAgent()
+    plugin._agent = fake_agent
+
+    try:
+        async with plugin._lock:
+            plugin._state.current_question = {
+                "question": "What is the absolute value of -4?",
+                "answer": "4",
+                "question_id": "question-old-scope",
+                "attempt_id": "attempt-old-scope",
+                "topic": "absolute_value",
+                "selected_topic_id": "absolute_value",
+                "scope_key": "scope-old",
+                "scope_revision": 1,
+            }
+            plugin._state.active_practice_scope = {
+                "schema_version": 1,
+                "mode": "explicit_topic",
+                "stage": "junior_high",
+                "subject": "math",
+                "chapter": "Real numbers",
+                "unit": "Foundations",
+                "topic_id": "number_axis",
+                "scope_key": "scope-new",
+                "scope_revision": 2,
+                "display_path": [
+                    "junior_high",
+                    "math",
+                    "Real numbers",
+                    "Foundations",
+                    "number_axis",
+                ],
+            }
+            plugin._state.practice_scope_revision = 2
+
+        evaluated = await plugin.study_evaluate_answer(
+            answer="4",
+            question_id="question-old-scope",
+            attempt_id="attempt-old-scope",
+            selected_topic_id="absolute_value",
+        )
+
+        assert isinstance(evaluated, Ok)
+        assert evaluated.value["selected_topic_id"] == "absolute_value"
+        assert len(fake_agent.evaluations) == 1
+        evaluation_context = fake_agent.evaluations[0][3]
+        assert evaluation_context["selected_topic_id"] == "absolute_value"
+        assert evaluation_context["question_payload"]["selected_topic_id"] == (
+            "absolute_value"
+        )
+        assert evaluation_context["question_payload"]["scope_key"] == "scope-old"
+        assert evaluation_context["question_payload"]["scope_revision"] == 1
+        assert evaluation_context["current_question"]["scope_key"] == "scope-old"
+        assert evaluation_context["current_question"]["scope_revision"] == 1
+        assert plugin._state.active_practice_scope["scope_key"] == "scope-new"
+        assert plugin._state.practice_scope_revision == 2
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_single_topic_correct_answer_returns_completion_without_leaving_scope(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class _CorrectAgent(_FakeTutorAgent):
+        async def answer_evaluate(self, **kwargs) -> TutorReply:
+            context = dict(kwargs.get("context") or {})
+            self.evaluations.append(
+                (
+                    str(kwargs.get("question") or ""),
+                    str(kwargs.get("answer") or ""),
+                    str(kwargs.get("expected_answer") or ""),
+                    context,
+                    str(kwargs.get("mode") or ""),
+                )
+            )
+            return TutorReply(
+                operation="answer_evaluate",
+                input_text=str(kwargs.get("answer") or ""),
+                reply="correct",
+                payload={
+                    "verdict": "correct",
+                    "score": 100,
+                    "topic": "number_axis",
+                    "feedback": "Correct",
+                },
+                created_at="2026-08-13T00:00:00Z",
+            )
+
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(tmp_path / "runtime"))
+    plugin = StudyCompanionPlugin(
+        _Ctx(tmp_path, {"study": {"language": "en", "auto_open_ui": False}})
+    )
+    assert isinstance(await plugin.startup(), Ok)
+    plugin._agent = _CorrectAgent()
+    try:
+        async with plugin._lock:
+            plugin._state.current_question = {
+                "question": "What is |-4|?",
+                "answer": "4",
+                "question_id": "single-topic-q",
+                "attempt_id": "single-topic-a",
+                "selected_topic_id": "absolute_value",
+                "topic": "absolute_value",
+                "scope_key": "single-topic-scope",
+                "scope_revision": 1,
+                "scope_topic_count": 1,
+            }
+
+        result = await plugin.study_evaluate_answer(
+            answer="4",
+            question_id="single-topic-q",
+            attempt_id="single-topic-a",
+            selected_topic_id="absolute_value",
+        )
+
+        assert isinstance(result, Ok)
+        assert result.value["topic"] == "absolute_value"
+        assert result.value["selected_topic_id"] == "absolute_value"
+        assert result.value["scope_key"] == "single-topic-scope"
+        assert result.value["practice_scope_status"] == "completed"
+        assert result.value["can_continue_review"] is True
+    finally:
+        await plugin.shutdown()
+
+
+def test_practice_scope_completion_is_rendered_without_automatic_generation() -> None:
+    plugin_dir = Path(__file__).resolve().parents[3] / "plugins" / "study_companion"
+    static_source = "\n".join(
+        (plugin_dir / "static" / name).read_text(encoding="utf-8")
+        for name in ("main.js", "knowledge-map.js")
+    )
+    hosted_source = (plugin_dir / "surfaces" / "study_panel.tsx").read_text(
+        encoding="utf-8"
+    )
+
+    for source in (static_source, hosted_source):
+        assert "practice_scope_status === 'completed'" in source
+        assert "ui.practice.scope_completed" in source
+        assert "ui.button.continue_practice_review" in source
