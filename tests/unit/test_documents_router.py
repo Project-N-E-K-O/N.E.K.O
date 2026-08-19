@@ -190,7 +190,7 @@ def test_documents_parse_returns_public_code_for_multipart_shape_errors():
     response = _client(documents_router).post(
         "/api/documents/parse",
         data={"unexpected": "field"},
-        files={"file": ("notes.pdf", _blank_pdf_bytes(), "application/pdf")},
+        files={"unexpected_file": ("notes.pdf", b"not parsed", "application/pdf")},
     )
 
     assert response.status_code == 400

@@ -13,6 +13,7 @@ from .entry_common import (
     LLM_OPERATION_QUESTION_GENERATE,
     LLM_OPERATION_SUMMARIZE_SESSION,
     StudyEvent,
+    SdkError,
     TutorReply,
     utc_now_iso,
     build_tutor_payload,
@@ -683,6 +684,25 @@ class _TutorContextSupportMixin:
         payload = dict(reply.payload or {})
         summary = str(reply.reply or "").strip()
         async with _plugin_lock(self._lock):
+            if (
+                operation == LLM_OPERATION_QUESTION_GENERATE
+                and isinstance(extra, dict)
+                and extra.get("targeted_question")
+            ):
+                active_revision = int(
+                    getattr(self._state, "practice_scope_revision", 0) or 0
+                )
+                active_scope = self._resolve_active_practice_scope()
+                active_scope_key = active_scope.scope_key if active_scope else ""
+                if (
+                    int(extra.get("scope_revision") or 0) != active_revision
+                    or str(extra.get("scope_key") or "").strip()
+                    != active_scope_key
+                ):
+                    raise SdkError(
+                        "practice scope changed during question generation",
+                        code="SELECTION_SCOPE_CHANGED",
+                    )
             event = {
                 "operation": operation,
                 "kind": operation,

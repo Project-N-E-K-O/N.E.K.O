@@ -515,6 +515,23 @@ class _TutorQuestionEntriesMixin:
         reply = await self._agent.question_generate(
             source_text, mode=active_mode, context=tutor_context
         )
+        if targeted_context:
+            async with self._lock:
+                active_revision = int(
+                    getattr(self._state, "practice_scope_revision", 0) or 0
+                )
+                active_scope = self._resolve_active_practice_scope()
+                active_scope_key = active_scope.scope_key if active_scope else ""
+            if (
+                int(targeted_context.get("scope_revision") or 0)
+                != active_revision
+                or str(targeted_context.get("scope_key") or "").strip()
+                != active_scope_key
+            ):
+                raise SdkError(
+                    "practice scope changed during question generation",
+                    code="SELECTION_SCOPE_CHANGED",
+                )
         public_payload = None
         if targeted_context:
             private_payload = _question_private_payload(

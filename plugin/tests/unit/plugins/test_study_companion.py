@@ -8093,6 +8093,115 @@ async def test_targeted_question_context_generate_and_attempt_guard(
 
 
 @pytest.mark.asyncio
+async def test_targeted_question_rejects_scope_changed_during_generation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class _BlockingQuestionAgent(_FakeTutorAgent):
+        def __init__(self) -> None:
+            super().__init__()
+            self.started = asyncio.Event()
+            self.release = asyncio.Event()
+
+        async def question_generate(
+            self,
+            text: str,
+            *,
+            mode: str = MODE_COMPANION,
+            context: dict[str, object] | None = None,
+        ) -> TutorReply:
+            self.inputs.append((text, dict(context or {}), mode))
+            self.started.set()
+            await self.release.wait()
+            return TutorReply(
+                operation="question_generate",
+                input_text=text,
+                reply="stale practice question",
+                payload={
+                    "question": "What is d(x^2)/dx?",
+                    "answer": "2x",
+                    "topic": "derivatives",
+                },
+                created_at="2026-08-19T00:00:00Z",
+            )
+
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(tmp_path / "runtime"))
+    plugin = StudyCompanionPlugin(
+        _Ctx(tmp_path, {"study": {"language": "en", "auto_open_ui": False}})
+    )
+    assert isinstance(await plugin.startup(), Ok)
+    agent = _BlockingQuestionAgent()
+    plugin._agent = agent
+
+    try:
+        plugin._store.ensure_topic(topic_id="derivatives", name="Derivatives")
+        targeted_context = plugin._store_targeted_context(
+            {
+                "selected_topic_id": "derivatives",
+                "selected_topic_name": "Derivatives",
+                "selection_reason": "weak_topic",
+                "question_params": {},
+                "scope_key": "",
+                "scope_revision": 0,
+                "practice_scope": {},
+                "scope_topic_count": 0,
+            }
+        )
+        generation = asyncio.create_task(
+            plugin.study_generate_targeted_question(
+                selection_context_id=targeted_context["selection_context_id"]
+            )
+        )
+        await agent.started.wait()
+        async with plugin._lock:
+            plugin._state.practice_scope_revision = 1
+        agent.release.set()
+
+        result = await generation
+
+        assert isinstance(result, Err)
+        assert result.error.code == "SELECTION_SCOPE_CHANGED"
+        assert plugin._state.current_question == {}
+        assert plugin._store.list_interactions(limit=20) == []
+
+        async with plugin._lock:
+            plugin._state.practice_scope_revision = 1
+        commit_race_context = plugin._store_targeted_context(
+            {
+                "selected_topic_id": "derivatives",
+                "selected_topic_name": "Derivatives",
+                "selection_reason": "weak_topic",
+                "question_params": {},
+                "scope_key": "",
+                "scope_revision": 1,
+                "practice_scope": {},
+                "scope_topic_count": 0,
+            }
+        )
+        original_record_tutor_result = plugin._record_tutor_result
+
+        async def _change_scope_before_record(*args, **kwargs) -> None:
+            async with plugin._lock:
+                plugin._state.practice_scope_revision = 2
+            await original_record_tutor_result(*args, **kwargs)
+
+        monkeypatch.setattr(
+            plugin, "_record_tutor_result", _change_scope_before_record
+        )
+
+        commit_race_result = await plugin.study_generate_targeted_question(
+            selection_context_id=commit_race_context["selection_context_id"]
+        )
+
+        assert isinstance(commit_race_result, Err)
+        assert commit_race_result.error.code == "SELECTION_SCOPE_CHANGED"
+        assert plugin._state.current_question == {}
+        assert plugin._state.recent_learning_events == []
+    finally:
+        agent.release.set()
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_study_explain_text_continues_when_mode_switch_is_locked(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -9232,7 +9341,7 @@ async def test_degraded_answer_clears_pending_without_updating_learning_state(
 
 
 @pytest.mark.asyncio
-async def test_answer_final_persist_failure_rolls_back_attempt_guard_and_allows_retry(
+async def test_answer_final_persist_failure_reuses_cache_without_duplicate_effects(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(tmp_path / "runtime"))
@@ -9281,8 +9390,12 @@ async def test_answer_final_persist_failure_rolls_back_attempt_guard_and_allows_
         assert isinstance(failed, Err)
         current_question = plugin._state.current_question
         assert "attempt_evaluation_pending" not in current_question
-        assert "attempt_evaluated" not in current_question
-        assert "answer_evaluation_cache" not in current_question
+        assert current_question["attempt_evaluated"] is True
+        assert current_question["answer_evaluation_cache"]["attempt_id"] == (
+            "a-persist-failure"
+        )
+        interaction_count = len(plugin._store.list_interactions(limit=20))
+        evaluation_count = len(plugin._agent.evaluations)
 
         retried = await plugin.study_evaluate_answer(
             answer="2x",
@@ -9290,6 +9403,9 @@ async def test_answer_final_persist_failure_rolls_back_attempt_guard_and_allows_
             attempt_id="a-persist-failure",
         )
         assert isinstance(retried, Ok)
+        assert retried.value["attempt_id"] == "a-persist-failure"
+        assert len(plugin._agent.evaluations) == evaluation_count
+        assert len(plugin._store.list_interactions(limit=20)) == interaction_count
     finally:
         await plugin.shutdown()
 

@@ -17,16 +17,22 @@ from .models import public_current_question_payload
 
 class _TutorAnswerEntriesMixin:
     async def _clear_attempt_evaluation_reservation(
-        self, attempt_id: str, *, rollback_evaluated: bool = False
+        self, attempt_id: str, *, recover_cached: bool = False
     ) -> None:
         if not attempt_id:
             return
         async with self._lock:
             if str(self._state.current_question.get("attempt_id") or "") == attempt_id:
                 self._state.current_question.pop("attempt_evaluation_pending", None)
-                if rollback_evaluated:
-                    self._state.current_question.pop("attempt_evaluated", None)
-                    self._state.current_question.pop("answer_evaluation_cache", None)
+                if (
+                    recover_cached
+                    and self._state.current_question.get("attempt_evaluated")
+                    and isinstance(
+                        self._state.current_question.get("answer_evaluation_cache"),
+                        dict,
+                    )
+                ):
+                    self._state.current_question["attempt_evaluation_recovery"] = True
 
     @ui.action()
     @plugin_entry(
@@ -110,6 +116,11 @@ class _TutorAnswerEntriesMixin:
                     )
                 )
             if current_question.get("attempt_evaluated"):
+                cached_evaluation = current_question.get("answer_evaluation_cache")
+                if current_question.get("attempt_evaluation_recovery") and isinstance(
+                    cached_evaluation, dict
+                ):
+                    return Ok(dict(cached_evaluation))
                 return Err(
                     SdkError(
                         "attempt has already been evaluated",
@@ -351,14 +362,14 @@ class _TutorAnswerEntriesMixin:
             if reserved_attempt:
                 await self._clear_attempt_evaluation_reservation(
                     state_attempt_id,
-                    rollback_evaluated=final_attempt_state_staged,
+                    recover_cached=final_attempt_state_staged,
                 )
             raise
         except Exception as exc:
             if reserved_attempt:
                 await self._clear_attempt_evaluation_reservation(
                     state_attempt_id,
-                    rollback_evaluated=final_attempt_state_staged,
+                    recover_cached=final_attempt_state_staged,
                 )
             return _entry_exception_error(
                 self, exc, operation="study_evaluate_answer"
