@@ -883,28 +883,31 @@ async def test_user_cancel_preserves_result_after_document_finalization_starts()
             }
 
     owner = Owner()
-    started = await StudyCompanionPlugin.study_start_document_analysis(
-        owner,
-        document_name="notes.txt",
-        document_type="text/plain",
-        document_text="cancel-safe source",
-        locale="en",
-    )
-    assert isinstance(started, Ok)
-    job_id = started.value["job_id"]
-    await asyncio.wait_for(finalization_started.wait(), timeout=1.0)
+    try:
+        started = await StudyCompanionPlugin.study_start_document_analysis(
+            owner,
+            document_name="notes.txt",
+            document_type="text/plain",
+            document_text="cancel-safe source",
+            locale="en",
+        )
+        assert isinstance(started, Ok)
+        job_id = started.value["job_id"]
+        await asyncio.wait_for(finalization_started.wait(), timeout=1.0)
 
-    canceling = asyncio.create_task(owner._document_jobs.cancel(job_id))
-    await asyncio.sleep(0)
-    release_finalization.set()
-    canceled_payload = await asyncio.wait_for(canceling, timeout=1.0)
-    status = await owner._document_jobs.status(job_id)
+        canceling = asyncio.create_task(owner._document_jobs.cancel(job_id))
+        await asyncio.sleep(0)
+        release_finalization.set()
+        canceled_payload = await asyncio.wait_for(canceling, timeout=1.0)
+        status = await owner._document_jobs.status(job_id)
 
-    assert finalized == 1
-    assert canceled_payload["status"] == "completed"
-    assert canceled_payload["reply"] == "cancel-safe analysis"
-    assert status["status"] == "completed"
-    assert status["cancellation_source"] == ""
+        assert finalized == 1
+        assert canceled_payload["status"] == "completed"
+        assert canceled_payload["reply"] == "cancel-safe analysis"
+        assert status["status"] == "completed"
+        assert status["cancellation_source"] == ""
+    finally:
+        await owner._document_jobs.shutdown()
 
 
 @pytest.mark.asyncio
