@@ -2829,8 +2829,14 @@ async def test_preexisting_session_resumes_saved_cursor_after_reattach(
 
 @pytest.mark.asyncio
 @pytest.mark.plugin_unit
+@pytest.mark.parametrize(
+    "replacement_padding",
+    [0, 1024],
+    ids=["shrunk", "regrown-past-cursor"],
+)
 async def test_preexisting_session_rebases_saved_cursor_after_inactive_truncation(
     tmp_path: Path,
+    replacement_padding: int,
 ) -> None:
     plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
     alpha_dir = _create_game_dir(
@@ -2919,11 +2925,15 @@ async def test_preexisting_session_rebases_saved_cursor_after_inactive_truncatio
                 "line_id": "alpha-new",
                 "scene_id": "scene-alpha",
                 "route_id": "",
+                "padding": "y" * replacement_padding,
             },
         )
         events_path = alpha_dir / "events.jsonl"
         _write_events(events_path, [alpha_new])
-        assert events_path.stat().st_size < saved_offset
+        if replacement_padding:
+            assert events_path.stat().st_size >= saved_offset
+        else:
+            assert events_path.stat().st_size < saved_offset
         _write_session(
             alpha_dir / "session.json",
             _session(

@@ -108,7 +108,12 @@ from .dependency_status import (
 )
 from plugin.plugins._shared.rapidocr.rapidocr_support import inspect_rapidocr_installation
 from .dxcam_support import inspect_dxcam_installation
-from .reader import snapshot_events_boundary, tail_events_jsonl, warmup_replay_events
+from .reader import (
+    read_stream_checkpoint,
+    snapshot_events_boundary,
+    tail_events_jsonl,
+    warmup_replay_events,
+)
 from .session_lifecycle import (
     SESSION_ORIGIN_PREEXISTING,
     classify_session_origin,
@@ -4015,6 +4020,10 @@ class GalgamePlugin(
         )
         if session_identity not in self._startup_existing_session_ids:
             return
+        cached_state = self._startup_preexisting_session_states.get(
+            session_identity,
+            {},
+        )
         self._startup_preexisting_session_states[session_identity] = {
             "history_events": json_copy(local.get("history_events") or []),
             "history_lines": json_copy(local.get("history_lines") or []),
@@ -4034,6 +4043,12 @@ class GalgamePlugin(
             ),
             "last_seen_data_monotonic": float(
                 local.get("last_seen_data_monotonic") or 0.0
+            ),
+            "stream_checkpoint": str(
+                cached_state.get("stream_checkpoint") or ""
+            ),
+            "stream_checkpoint_offset": int(
+                cached_state.get("stream_checkpoint_offset") or 0
             ),
         }
 
@@ -4139,18 +4154,37 @@ class GalgamePlugin(
             local["last_seen_data_monotonic"] = float(
                 saved_preexisting_state.get("last_seen_data_monotonic") or 0.0
             )
+            saved_offset = int(local["events_byte_offset"])
+            saved_checkpoint = str(
+                saved_preexisting_state.get("stream_checkpoint") or ""
+            )
+            checkpoint_offset = int(
+                saved_preexisting_state.get("stream_checkpoint_offset") or 0
+            )
             try:
                 current_file_size = await asyncio.to_thread(
                     lambda: candidate.events_path.stat().st_size
                 )
             except OSError:
                 current_file_size = None
-            if (
+            cursor_invalid = (
                 current_file_size is not None
-                and int(local["events_byte_offset"]) > current_file_size
+                and saved_offset > current_file_size
+            )
+            if (
+                not cursor_invalid
+                and saved_checkpoint
+                and checkpoint_offset == saved_offset
             ):
+                current_checkpoint = await asyncio.to_thread(
+                    read_stream_checkpoint,
+                    candidate.events_path,
+                    offset=saved_offset,
+                )
+                cursor_invalid = current_checkpoint != saved_checkpoint
+            if cursor_invalid:
                 local["events_byte_offset"] = 0
-                local["events_file_size"] = current_file_size
+                local["events_file_size"] = int(current_file_size or 0)
                 local["line_buffer"] = b""
                 local["stream_reset_pending"] = True
         elif not preexisting_session:
@@ -4326,6 +4360,23 @@ class GalgamePlugin(
         local["events_byte_offset"] = tail.next_offset
         local["events_file_size"] = tail.file_size
         local["line_buffer"] = tail.line_buffer
+        if preexisting_session and tail.next_offset > 0:
+            checkpoint_state = self._startup_preexisting_session_states.setdefault(
+                candidate_session_identity,
+                {},
+            )
+            checkpoint_offset = int(
+                checkpoint_state.get("stream_checkpoint_offset") or 0
+            )
+            if checkpoint_offset != tail.next_offset:
+                stream_checkpoint = await asyncio.to_thread(
+                    read_stream_checkpoint,
+                    candidate.events_path,
+                    offset=tail.next_offset,
+                )
+                if stream_checkpoint:
+                    checkpoint_state["stream_checkpoint"] = stream_checkpoint
+                    checkpoint_state["stream_checkpoint_offset"] = tail.next_offset
 
     def _clear_bridge_candidate_session(
         self,

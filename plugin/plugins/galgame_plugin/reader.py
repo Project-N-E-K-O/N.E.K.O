@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -115,10 +116,14 @@ def snapshot_events_boundary(
                 if bytes_limit is not None:
                     scan_size = min(file_size, max(1, int(bytes_limit)))
                 scan_start = file_size - scan_size
+                starts_on_record_boundary = False
+                if scan_start > 0:
+                    handle.seek(scan_start - 1)
+                    starts_on_record_boundary = handle.read(1) == b"\n"
                 handle.seek(scan_start)
                 data = handle.read(scan_size)
                 data_start = scan_start
-                if scan_start > 0:
+                if scan_start > 0 and not starts_on_record_boundary:
                     newline_index = data.find(b"\n")
                     if newline_index < 0:
                         return EventStreamBoundary(
@@ -179,6 +184,30 @@ def snapshot_events_boundary(
             return EventStreamBoundary(offset=0, file_size=file_size)
     except OSError as exc:
         return EventStreamBoundary(error=f"read events.jsonl boundary failed: {exc}")
+
+
+def read_stream_checkpoint(
+    events_path: Path,
+    *,
+    offset: int,
+    bytes_limit: int = 256,
+) -> str:
+    normalized_offset = max(0, int(offset))
+    if normalized_offset <= 0 or not events_path.exists():
+        return ""
+    try:
+        with events_path.open("rb") as handle:
+            handle.seek(0, os.SEEK_END)
+            if normalized_offset > handle.tell():
+                return ""
+            start = max(0, normalized_offset - max(1, int(bytes_limit)))
+            handle.seek(start)
+            sample = handle.read(normalized_offset - start)
+    except OSError:
+        return ""
+    if len(sample) != normalized_offset - start:
+        return ""
+    return hashlib.sha256(sample).hexdigest()
 
 
 def _parse_jsonl_line(raw_line: bytes) -> tuple[dict[str, Any] | None, str]:
