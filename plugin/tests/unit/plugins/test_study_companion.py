@@ -11539,6 +11539,7 @@ def test_study_target_lanlan_resolution_prefers_entry_context() -> None:
     assert plugin._resolve_study_target_lanlan(
         {"_ctx": {"lanlan_name": "entry-character"}}
     ) == "entry-character"
+    assert plugin._resolve_study_target_lanlan({"_ctx": {}}) is None
     assert plugin._resolve_study_target_lanlan({}) == "fallback-character"
     plugin.ctx._current_lanlan = ""
     assert plugin._resolve_study_target_lanlan({}) is None

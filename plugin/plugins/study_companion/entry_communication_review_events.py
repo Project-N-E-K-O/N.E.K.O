@@ -44,12 +44,12 @@ class _CommunicationReviewEventsMixin:
     def _resolve_study_target_lanlan(
         self, kwargs: dict[str, Any] | None = None
     ) -> str | None:
-        if isinstance(kwargs, dict):
+        if isinstance(kwargs, dict) and "_ctx" in kwargs:
             ctx_payload = kwargs.get("_ctx")
             if isinstance(ctx_payload, dict):
                 lanlan_name = str(ctx_payload.get("lanlan_name") or "").strip()
-                if lanlan_name:
-                    return lanlan_name
+                return lanlan_name or None
+            return None
         ctx = getattr(self, "ctx", None)
         lanlan_name = str(getattr(ctx, "_current_lanlan", "") or "").strip()
         return lanlan_name or None
