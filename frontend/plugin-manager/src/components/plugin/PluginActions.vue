@@ -50,6 +50,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { usePluginStore } from '@/stores/plugin'
 import { resolveLocalizedText } from '@/utils/i18nLabel'
 import { openExternalUrl } from '@/utils/openExternal'
+import { isOpenUiNavigationAction } from '@/utils/pluginListActions'
 import { formatHttpError } from '@/utils/request'
 
 interface Props {
@@ -69,7 +70,7 @@ const currentPlugin = computed(() => {
 
 const status = computed(() => currentPlugin.value?.status || 'stopped')
 const uiAction = computed(() => {
-  return currentPlugin.value?.list_actions?.find((action) => action.kind === 'ui') || null
+  return currentPlugin.value?.list_actions?.find(isOpenUiNavigationAction) || null
 })
 const uiDisabled = computed(() => {
   if (!uiAction.value) return true
@@ -140,6 +141,10 @@ async function handleOpenUi() {
   // _blank 走 openExternalUrl：Electron host 下会经 electronShell 转发给
   // 系统浏览器，避免落到嵌入 webview 里没有关闭按钮把用户困住。
   if (target) {
+    if (action.kind === 'route') {
+      await router.push(target)
+      return
+    }
     if (openInNewTab) {
       openExternalUrl(target)
     } else {

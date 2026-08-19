@@ -260,6 +260,7 @@
               :show-source-detail="showSourceDetail"
               :variant="section.variant"
               @item-click="handlePluginPrimaryAction"
+              @item-open-ui="handlePluginUiAction"
               @item-contextmenu="handlePluginContextMenu"
               @toggle-selection="togglePluginSelection"
             />
@@ -430,8 +431,10 @@ import { useMarketAuth } from '@/composables/useMarketAuth'
 import { METRICS_REFRESH_INTERVAL } from '@/utils/constants'
 import { formatHttpError } from '@/utils/request'
 import { resolveLocalizedText } from '@/utils/i18nLabel'
+import { openExternalUrl } from '@/utils/openExternal'
+import { isOpenUiNavigationAction } from '@/utils/pluginListActions'
 import { useI18n } from 'vue-i18n'
-import type { PluginMeta } from '@/types/api'
+import type { PluginListAction, PluginMeta } from '@/types/api'
 
 const route = useRoute()
 const router = useRouter()
@@ -716,6 +719,47 @@ function handlePluginPrimaryAction(pluginId: string) {
     return
   }
   handlePluginClick(pluginId)
+}
+
+async function handlePluginUiAction(plugin: PluginMeta, action: PluginListAction) {
+  const resolvedAction = buildActions(plugin).find((candidate) => (
+    candidate.source === 'plugin'
+      && isOpenUiNavigationAction(candidate)
+      && candidate.id === action.id
+  ))
+  if (!resolvedAction || resolvedAction.disabled) return
+
+  if (shouldUseHoldConfirm(resolvedAction)) {
+    openDangerDialog(resolvedAction, plugin)
+    return
+  }
+
+  const target = action.target?.trim() || ''
+  if (target) {
+    await executeAction(resolvedAction, plugin)
+    return
+  }
+
+  const confirmMessage = resolveLocalizedText(action.confirm_message, locale.value, '')
+  if (confirmMessage) {
+    try {
+      await ElMessageBox.confirm(confirmMessage, t('common.confirm'), {
+        type: action.danger ? 'warning' : 'info',
+      })
+    } catch {
+      return
+    }
+  }
+
+  const fallback = {
+    path: `/plugins/${encodeURIComponent(plugin.id)}`,
+    query: { tab: 'ui' },
+  }
+  if (action.open_in === 'same_tab') {
+    await router.push(fallback)
+  } else {
+    openExternalUrl(router.resolve(fallback).href)
+  }
 }
 
 function toggleMultiSelectMode() {

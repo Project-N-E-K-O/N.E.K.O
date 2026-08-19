@@ -104,6 +104,25 @@ def test_memory_deck_crud_review_recitation_and_cascade(tmp_path: Path) -> None:
         store.close()
 
 
+def test_memory_deck_listing_supports_stable_offsets(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    try:
+        memory = MemoryDeckStore(store)
+        created_ids = {
+            memory.create_deck(name=f"Deck {index}", deck_type="custom")["id"]
+            for index in range(3)
+        }
+
+        first_page = memory.list_decks(limit=2, offset=0)
+        second_page = memory.list_decks(limit=2, offset=2)
+
+        assert len(first_page) == 2
+        assert len(second_page) == 1
+        assert {deck["id"] for deck in [*first_page, *second_page]} == created_ids
+    finally:
+        store.close()
+
+
 def test_memory_word_import_skips_bad_rows_and_dedupes_by_word(tmp_path: Path) -> None:
     store = _store(tmp_path)
     try:

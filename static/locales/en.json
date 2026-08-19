@@ -2490,6 +2490,11 @@
             "screens": "Screens",
             "screenLabel": "Screen {{index}}",
             "windows": "Windows",
+            "titleFilterPlaceholder": "Filter window titles",
+            "titleFilterAriaLabel": "Filter windows by title",
+            "noWindowMatches": "No matching windows",
+            "rememberWindow": "Remember window",
+            "rememberedWindowUnavailable": "The remembered window could not be identified uniquely. Select a screen source again",
             "selected": "Selected {{source}}",
             "sourceLost": "Screen sharing could not find previously selected window, switched to fullscreen sharing",
             "captureFailed": "Screen capture stopped. Check system permissions or select the source again"

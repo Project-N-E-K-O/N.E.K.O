@@ -2490,6 +2490,11 @@
             "screens": "화면",
             "screenLabel": "화면 {{index}}",
             "windows": "윈도우",
+            "titleFilterPlaceholder": "창 제목 필터",
+            "titleFilterAriaLabel": "제목으로 창 필터링",
+            "noWindowMatches": "일치하는 창이 없습니다",
+            "rememberWindow": "창 기억",
+            "rememberedWindowUnavailable": "기억한 창을 고유하게 찾을 수 없습니다. 화면 소스를 다시 선택해 주세요",
             "selected": "{{source}} 선택됨",
             "sourceLost": "화면 공유에서 이전에 선택한 창을 찾을 수 없어 전체 화면 공유로 전환되었습니다",
             "captureFailed": "화면 캡처가 중지되었습니다. 시스템 권한을 확인하거나 소스를 다시 선택해 주세요"

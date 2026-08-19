@@ -43,7 +43,10 @@ def test_live2d_widget_mode_edge_peek_is_widget_mode_gated_and_uses_six_anchors(
     assert "function isLive2DPeekEnabled()" in source
     assert "isLive2DPeekDesktopRuntime()" in source
     assert "window.nekoWidgetMode.isEnabled()" in source
-    assert "function getLive2DPeekEdgeContact(manager, model, viewport = null)" in edge_peek_source
+    assert (
+        "function getLive2DPeekEdgeContact(manager, model, viewport = null, options = null)"
+        in edge_peek_source
+    )
     assert "getLive2DModelGeometryBounds(manager, model)" in edge_peek_source
     assert "manager.getModelDrawableScreenRects({ padding: 0 }, model)" in edge_peek_source
     assert "nearLeft" in edge_peek_source
@@ -52,7 +55,7 @@ def test_live2d_widget_mode_edge_peek_is_widget_mode_gated_and_uses_six_anchors(
     assert "nearBottom" in edge_peek_source
     assert "verticalEdge ? `${verticalEdge}-${side}` : side" in edge_peek_source
     assert "'top-left', 'top-right', 'bottom-left', 'bottom-right'" in edge_peek_source
-    assert "this._tryApplyLive2DPeek(model, settledContact)" in source
+    assert "this._tryApplyLive2DPeek(model, settledContact, { isCurrentSettlement })" in source
 
 
 def test_live2d_widget_mode_edge_peek_hides_controls_without_locking_live2d():
@@ -280,22 +283,30 @@ def test_live2d_widget_mode_edge_peek_does_not_persist_peek_position():
     assert "peekY" in edge_peek_source
     assert "hiddenX" in edge_peek_source
     assert "hiddenY" in edge_peek_source
-    assert "await this._settleLive2DDragTerminal(model);" in drag_source
-    assert "await this._savePositionAfterInteraction();" in terminal_source
+    assert "await this._settleLive2DDragTerminal(model, settlementOptions);" in drag_source
+    assert "await this._savePositionAfterInteraction({ isCurrentSettlement });" in terminal_source
     assert "const edgeContact = isLive2DPeekEnabled()" in terminal_source
     assert "settleLive2DBaseAtEdgeContact(model, edgeContact)" in terminal_source
     edge_terminal_source = terminal_source.split(
         "if (edgeContact && settleLive2DBaseAtEdgeContact(model, edgeContact))", 1
-    )[1].split("const snapped = await this._checkAndPerformSnap(model);", 1)[0]
-    assert "await this._savePositionAfterInteraction();" in edge_terminal_source
+    )[1].split(
+        "const snapped = await this._checkAndPerformSnap(model, { isCurrentSettlement });",
+        1,
+    )[0]
     assert (
-        "await this._tryApplyLive2DPeek(model, settledContact);"
+        "await this._savePositionAfterInteraction({ isCurrentSettlement });"
         in edge_terminal_source
     )
     assert (
-        edge_terminal_source.index("await this._savePositionAfterInteraction();")
+        "await this._tryApplyLive2DPeek(model, settledContact, { isCurrentSettlement });"
+        in edge_terminal_source
+    )
+    assert (
+        edge_terminal_source.index(
+            "await this._savePositionAfterInteraction({ isCurrentSettlement });"
+        )
         < edge_terminal_source.index(
-            "await this._tryApplyLive2DPeek(model, settledContact);"
+            "await this._tryApplyLive2DPeek(model, settledContact, { isCurrentSettlement });"
         )
     )
 

@@ -37,16 +37,23 @@ function getEntryTimeoutMs(entry: any) {
 }
 
 function getAllowedFormats(props: PluginSurfaceProps): ExportFormat[] {
+  const exportConfig = props.config?.value?.doc_export;
+  if (exportConfig?.enabled !== true) {
+    return [];
+  }
   const entry = getExportEntry(props);
   if (!entry) {
     return [];
   }
+  const xmindEnabled = Boolean(exportConfig?.xmind_enabled);
   const schemaEnum = entry.input_schema?.properties?.fmt?.enum;
   if (Array.isArray(schemaEnum)) {
     const knownFormats = EXPORT_FORMAT_OPTIONS.map((option) => option.value);
-    return schemaEnum.filter((value: unknown): value is ExportFormat => knownFormats.includes(value as ExportFormat));
+    return schemaEnum.filter(
+      (value: unknown): value is ExportFormat => knownFormats.includes(value as ExportFormat)
+        && (value !== 'xmind' || xmindEnabled),
+    );
   }
-  const xmindEnabled = Boolean(props.config?.value?.doc_export?.xmind_enabled);
   return EXPORT_FORMAT_OPTIONS
     .filter((option) => option.value !== 'xmind' || xmindEnabled)
     .map((option) => option.value);

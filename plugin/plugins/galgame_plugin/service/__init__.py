@@ -668,6 +668,9 @@ def build_config(raw_config: dict[str, Any]) -> GalgameConfig:
         scene_change_cooldown_seconds=_coerce_float(
             galgame_obj.get("scene_change_cooldown_seconds"), 15.0, minimum=0.0
         ),
+        scene_summary_repeat_guard_enabled=_coerce_bool(
+            galgame_obj.get("scene_summary_repeat_guard_enabled"), True
+        ),
         scene_push_half_threshold=max(1, int(galgame_obj.get("scene_push_half_threshold") or 4)),
         scene_push_time_fallback_seconds=_coerce_float(
             galgame_obj.get("scene_push_time_fallback_seconds"), 120.0, minimum=10.0
@@ -994,6 +997,10 @@ def scan_session_candidates(bridge_root: Path) -> tuple[list[str], dict[str, Ses
         available_game_ids.append(game_id)
         session_path = child / "session.json"
         events_path = child / "events.jsonl"
+        try:
+            events_file_size = events_path.stat().st_size
+        except OSError:
+            events_file_size = 0
         session_result = read_session_json(session_path)
         if session_result.error:
             warnings.append(f"{game_id}: {session_result.error}")
@@ -1009,6 +1016,7 @@ def scan_session_candidates(bridge_root: Path) -> tuple[list[str], dict[str, Ses
             events_path=events_path,
             session=session,
             data_source=data_source,
+            events_file_size=events_file_size,
         )
 
     return available_game_ids, candidates, warnings
@@ -2240,7 +2248,16 @@ def apply_event_to_snapshot(snapshot: dict[str, Any], event: dict[str, Any]) -> 
         next_snapshot["scene_id"] = str(payload_obj.get("scene_id") or next_snapshot.get("scene_id") or "")
         next_snapshot["line_id"] = str(payload_obj.get("line_id") or "")
         next_snapshot["route_id"] = str(payload_obj.get("route_id") or next_snapshot.get("route_id") or "")
-        next_snapshot["save_context"] = sanitize_save_context(payload_obj.get("save_context"))
+        save_context = sanitize_save_context(payload_obj.get("save_context"))
+        reason = str(payload_obj.get("reason") or "").strip().lower()
+        if save_context.get("kind") == "unknown" and reason in {"load", "rollback"}:
+            save_context["kind"] = reason
+        next_snapshot["save_context"] = save_context
+        next_snapshot["save_boundary"] = {
+            "kind": str(save_context.get("kind") or "").strip().lower(),
+            "seq": max(0, int(event.get("seq") or 0)),
+            "ts": event_ts,
+        }
         next_snapshot["choices"] = []
         next_snapshot["is_menu_open"] = False
         next_snapshot["ts"] = event_ts

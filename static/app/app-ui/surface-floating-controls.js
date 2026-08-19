@@ -270,6 +270,95 @@
             }, SOCIAL_OPEN_RELEASE_DELAY_MS);
         }
 
+        function isResolvedDarkTheme() {
+            return window.nekoTheme && typeof window.nekoTheme.isDark === 'function'
+                ? window.nekoTheme.isDark()
+                : document.documentElement.getAttribute('data-theme') === 'dark';
+        }
+
+        function getSocialThemeBridgeState() {
+            if (!window.__nekoSocialThemeBridgeState || typeof window.__nekoSocialThemeBridgeState !== 'object') {
+                window.__nekoSocialThemeBridgeState = { targets: [] };
+            }
+            if (!Array.isArray(window.__nekoSocialThemeBridgeState.targets)) {
+                window.__nekoSocialThemeBridgeState.targets = [];
+            }
+            return window.__nekoSocialThemeBridgeState;
+        }
+
+        function registerSocialThemeTarget(targetWindow, targetUrl) {
+            if (!targetWindow) return null;
+            try {
+                const parsed = new URL(String(targetUrl), window.location.href);
+                if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return null;
+                const state = getSocialThemeBridgeState();
+                const existing = state.targets.find((target) => target.targetWindow === targetWindow);
+                if (existing) {
+                    existing.targetOrigin = parsed.origin;
+                    return existing;
+                } else {
+                    const target = { targetWindow, targetOrigin: parsed.origin };
+                    state.targets = [target];
+                    return target;
+                }
+            } catch (_) {
+                return null;
+            }
+        }
+
+        function postSocialTheme(target, darkMode) {
+            target.targetWindow.postMessage({
+                source: 'neko-desktop',
+                type: 'theme-change',
+                theme: darkMode ? 'dark' : 'light'
+            }, target.targetOrigin);
+        }
+
+        function publishSocialTheme(darkMode) {
+            const state = getSocialThemeBridgeState();
+            state.targets = state.targets.filter((target) => {
+                try {
+                    postSocialTheme(target, darkMode);
+                    return true;
+                } catch (_) {
+                    return false;
+                }
+            });
+        }
+
+        function queueSocialThemeSync(target) {
+            if (!target) return;
+            [0, 100, 300, 1000].forEach((delayMs) => {
+                setTimeout(() => {
+                    try {
+                        postSocialTheme(target, isResolvedDarkTheme());
+                    } catch (_) { /* target may still be navigating or already closed */ }
+                }, delayMs);
+            });
+        }
+
+        if (!window.__nekoSocialThemeBridgeInstalled) {
+            window.__nekoSocialThemeBridgeInstalled = true;
+            window.addEventListener('neko-theme-changed', (event) => {
+                const requestedTheme = event.detail && event.detail.darkMode;
+                publishSocialTheme(
+                    typeof requestedTheme === 'boolean' ? requestedTheme : isResolvedDarkTheme()
+                );
+            });
+            window.addEventListener('message', (event) => {
+                const state = getSocialThemeBridgeState();
+                const target = state.targets.find((candidate) => (
+                    event.source === candidate.targetWindow && event.origin === candidate.targetOrigin
+                ));
+                if (!target) return;
+                const data = event.data;
+                if (!data || data.source !== 'neko-community' || data.type !== 'theme-ready') return;
+                try {
+                    postSocialTheme(target, isResolvedDarkTheme());
+                } catch (_) { /* requesting community window may have closed */ }
+            });
+        }
+
         // 喵宇宙（社交平台）按钮：占用原 screen 槽位。
         // 从 /api/system/social/config 拿云端 base URL，从 /api/system/client-id 拿 device 身份。
         // Electron：window.open → setWindowOpenHandler 识别 social feed，以带 OS chrome 的内置
@@ -301,20 +390,33 @@
                     return false;
                 }
                 const currentPopup = popupRef;
+                let navigationTarget = targetUrl;
+                let themeTarget = null;
+                try {
+                    const parsedTarget = new URL(String(targetUrl), window.location.href);
+                    if (parsedTarget.searchParams.get('neko_source_origin') === window.location.origin) {
+                        attachResolvedTheme(parsedTarget);
+                        navigationTarget = parsedTarget.toString();
+                        themeTarget = registerSocialThemeTarget(currentPopup, parsedTarget);
+                    }
+                } catch (_) { /* non-community navigation */ }
+                // The external page receives theme-only messages but never a reference
+                // that could navigate or otherwise control the local N.E.K.O page.
                 try { currentPopup.opener = null; } catch (_) { /* ignore */ }
                 let navigated = true;
                 try {
-                    currentPopup.location.replace(targetUrl);
+                    currentPopup.location.replace(navigationTarget);
                 } catch (_) {
                     // Once OAuth has moved the popup cross-origin, Location methods may
                     // be inaccessible even though assigning a new URL is still allowed.
                     try {
-                        currentPopup.location = targetUrl;
+                        currentPopup.location = navigationTarget;
                     } catch (_) {
                         navigated = false;
                     }
                 }
                 try { currentPopup.focus && currentPopup.focus(); } catch (_) { /* ignore */ }
+                if (navigated) queueSocialThemeSync(themeTarget);
                 if (navigated && !options.keepReference) {
                     popupRef = null;
                 }
@@ -360,16 +462,27 @@
                 // frameName=neko-social：NEKO-PC setWindowOpenHandler 靠名字识别社区窗，
                 // 强制 frame/thickFrame + 原生最小/最大/关（尤其 Windows 右上角）。
                 // features 为兜底提示；最终以主进程 overrideBrowserWindowOptions 为准。
+                const resolvedTargetUrl = attachResolvedTheme(
+                    new URL(String(targetUrl), window.location.href)
+                );
                 const socialWin = window.open(
-                    String(targetUrl),
+                    resolvedTargetUrl.toString(),
                     'neko-social',
                     'popup=yes,width=1200,height=800,resizable=yes'
                 );
                 if (!socialWin) {
                     return false;
                 }
+                registerSocialThemeTarget(socialWin, resolvedTargetUrl);
                 try { socialWin.focus && socialWin.focus(); } catch (_) { /* ignore */ }
                 return true;
+            };
+            const attachResolvedTheme = (targetUrl) => {
+                targetUrl.searchParams.set('neko_theme', isResolvedDarkTheme() ? 'dark' : 'light');
+                if (window.location.protocol === 'http:' || window.location.protocol === 'https:') {
+                    targetUrl.searchParams.set('neko_source_origin', window.location.origin);
+                }
+                return targetUrl;
             };
             const fetchNativeSyncTicket = async () => {
                 const controller = new AbortController();
@@ -483,6 +596,12 @@
                         }
                         return;
                     }
+                    try {
+                        const popupRoot = popupRef.document.documentElement;
+                        const popupDark = isResolvedDarkTheme();
+                        popupRoot.style.colorScheme = popupDark ? 'dark' : 'light';
+                        popupRoot.style.backgroundColor = popupDark ? '#070c13' : '#edf8ff';
+                    } catch (_) { /* about:blank may already be leaving this origin */ }
                 }
                 const cfgRes = await fetch('/api/system/social/config');
                 if (!cfgRes.ok) {
@@ -516,6 +635,9 @@
                 if (targetUrl.protocol !== 'http:' && targetUrl.protocol !== 'https:') {
                     throw new Error('unsupported social URL protocol');
                 }
+                // 把本体已经解析后的明暗状态交给社区首帧，避免暗色模式打开时短暂闪白。
+                // 只传 dark/light，不改变社区独立保存的主题偏好。
+                attachResolvedTheme(targetUrl);
                 // 只有从本体按钮打开的页面才能拿到一次性同步票据。票据放 fragment，
                 // 不进入社区服务器 access log / Referer；社区页读取后会立即从地址栏移除。
                 await attachNativeSyncTicket(targetUrl);
@@ -628,7 +750,17 @@
                                         console.warn('[social] failed to refresh Electron community window after OAuth');
                                     }
                                 } else if (popupRef) {
-                                    navigateBrowserPopup(refreshedTargetUrl.toString());
+                                    if (!navigateBrowserPopup(refreshedTargetUrl.toString())) {
+                                        console.warn('[social] failed to navigate browser community window after OAuth');
+                                        closePopup();
+                                        if (typeof window.showStatusToast === 'function') {
+                                            window.showStatusToast(
+                                                (window.t && window.t('app.socialOpenFailed', { error: 'community navigation failed' }))
+                                                    || '社交窗口打开失败：community navigation failed',
+                                                4000
+                                            );
+                                        }
+                                    }
                                 }
                             }
                         } else {

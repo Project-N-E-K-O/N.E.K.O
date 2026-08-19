@@ -173,6 +173,20 @@ def test_ignores_gitignored_build_output(tmp_path: Path) -> None:
 
 
 @pytest.mark.unit
+def test_include_untracked_respects_plugin_staging_filter(tmp_path: Path) -> None:
+    """The on-disk walk must ignore plugin files that staging will drop."""
+    module = _load_script_module()
+    plugin_dir = tmp_path / "plugin" / "plugins" / "demo"
+    for relative in (".vscode", ".idea", "assets"):
+        (plugin_dir / relative).mkdir(parents=True, exist_ok=True)
+        (plugin_dir / relative / CJK_NAME).write_bytes(b"x")
+
+    offenders = module._untracked_offenders(tmp_path)
+
+    assert offenders == {f"plugin/plugins/demo/assets/{CJK_NAME}"}
+
+
+@pytest.mark.unit
 def test_collects_offender_inside_unpacked_archives(tmp_path: Path) -> None:
     """Members of assets/*.tar.gz and pngtuber-packs/*.zip count as bundled.
 
@@ -601,6 +615,7 @@ def _assert_stage_filter_parity(
         "__pycache__/mod.pyc",
         ".github/workflows/ci.yml",
         ".vscode/settings.json",
+        ".idea/workspace.xml",
         ".mypy_cache/module.json",
         "cache/blob.json",
         "cache/nested/blob.json",
@@ -670,12 +685,21 @@ def test_excluded_plugin_paths_are_not_reported(tmp_path: Path) -> None:
     (plugin_dir / f"{CJK_NAME}.db").write_bytes(b"x")
     (plugin_dir / "__pycache__").mkdir()
     (plugin_dir / "__pycache__" / f"{CJK_NAME}.pyc").write_bytes(b"x")
+    (plugin_dir / ".idea").mkdir()
+    (plugin_dir / ".idea" / f"{CJK_NAME}.xml").write_bytes(b"x")
     shipped = plugin_dir / "assets"
     shipped.mkdir()
     (shipped / f"{CJK_NAME}.png").write_bytes(b"x")
 
     offenders, _ = module.collect_offenders(tmp_path)
     assert offenders == {f"plugin/plugins/demo/assets/{CJK_NAME}.png"}
+
+    offenders_from_disk, _ = module.collect_offenders(
+        tmp_path, include_untracked=True
+    )
+    assert offenders_from_disk == {
+        f"plugin/plugins/demo/assets/{CJK_NAME}.png"
+    }
 
 
 @pytest.mark.unit

@@ -71,35 +71,28 @@ class QuotaMixin:
         except Exception as e:
             logger.debug("配额耗尽通知回调失败: %s", e)
 
-    def consume_agent_daily_quota(self, source: str = "", units: int = 1) -> tuple[bool, dict]:
-        """Consume the Agent model daily quota (only effective when the actual Agent model is free-agent-model). The quota is not enforced locally alone; local counting just reduces useless requests and saves network bandwidth.
+    def reserve_agent_daily_quota(
+        self,
+        source: str = "",
+        units: int = 1,
+        minimum_units: int = 1,
+    ) -> tuple[int, dict]:
+        """Atomically reserve up to ``units`` while preserving a required minimum.
 
-        Returns:
-            (ok, info)
-            info:
-              - limited: bool
-              - date: YYYY-MM-DD
-              - used: int
-              - limit: int | None
-              - remaining: int | None
-              - source: str
+        When the preferred amount is unavailable but ``minimum_units`` still fits,
+        only the minimum is consumed. This lets optional model work reserve the
+        required primary call without a check-then-consume race.
         """
-        # Late-bound: class-level shared state (single owner) lives on the
-        # assembled ConfigManager; resolve it through the package facade.
+        requested_units = max(1, int(units or 1))
+        required_units = max(0, min(requested_units, int(minimum_units or 0)))
+
         from utils.config_manager import ConfigManager
 
-        if units <= 0:
-            units = 1
-
-        # 只对真正的免费 Agent 模型(free-agent-model)本地计数：用户换用自费/自定义 agent
-        # model 后不该再被这条免费试用配额挡。判定收口在 is_agent_free()。analyzer/deduper
-        # 这类判定器走的是 summary/emotion 模型而非 agent model，已不再调用本函数。
         is_metered = self.is_agent_free()
         today = date.today().isoformat()
         limit = int(self._free_agent_daily_limit)
-
         if not is_metered:
-            return True, {
+            return requested_units, {
                 "limited": False,
                 "date": today,
                 "used": 0,
@@ -110,7 +103,6 @@ class QuotaMixin:
 
         self.ensure_config_directory()
         quota_path = self._get_agent_quota_path()
-
         with ConfigManager._agent_quota_lock:
             data = {"date": today, "used": 0}
             try:
@@ -126,27 +118,27 @@ class QuotaMixin:
                 data = {"date": today, "used": 0}
 
             used = int(data.get("used", 0))
-            if used + units > limit:
-                # 配额耗尽：节流通知前端弹提示（最多每 10 秒一次）。回调非阻塞，
-                # 在临界区里只做一次跨线程 schedule，不展开网络 IO。
+            available = max(0, limit - used)
+            if available >= requested_units:
+                reserved = requested_units
+            elif required_units and available >= required_units:
+                reserved = required_units
+            else:
+                reserved = 0
+            if reserved == 0 and required_units:
                 self._maybe_notify_quota_exceeded(used, limit)
-                return False, {
-                    "limited": True,
-                    "date": today,
-                    "used": used,
-                    "limit": limit,
-                    "remaining": max(0, limit - used),
-                    "source": source or "",
-                }
-
-            used += units
-            data = {"date": today, "used": used}
-            try:
-                atomic_write_json(quota_path, data, ensure_ascii=False, indent=2)
-            except Exception as e:
-                logger.warning("保存 Agent 配额计数失败: %s", e)
-
-            return True, {
+            if reserved:
+                used += reserved
+                try:
+                    atomic_write_json(
+                        quota_path,
+                        {"date": today, "used": used},
+                        ensure_ascii=False,
+                        indent=2,
+                    )
+                except Exception as e:
+                    logger.warning("保存 Agent 配额计数失败: %s", e)
+            return reserved, {
                 "limited": True,
                 "date": today,
                 "used": used,
@@ -154,6 +146,42 @@ class QuotaMixin:
                 "remaining": max(0, limit - used),
                 "source": source or "",
             }
+
+    def consume_agent_daily_quota(self, source: str = "", units: int = 1) -> tuple[bool, dict]:
+        """Consume the Agent model daily quota (only effective when the actual Agent model is free-agent-model). The quota is not enforced locally alone; local counting just reduces useless requests and saves network bandwidth.
+
+        Returns:
+            (ok, info)
+            info:
+              - limited: bool
+              - date: YYYY-MM-DD
+              - used: int
+              - limit: int | None
+              - remaining: int | None
+              - source: str
+        """
+        if units <= 0:
+            units = 1
+        reserved, info = self.reserve_agent_daily_quota(
+            source=source,
+            units=units,
+            minimum_units=units,
+        )
+        return reserved == units, info
+
+    async def areserve_agent_daily_quota(
+        self,
+        source: str = "",
+        units: int = 1,
+        minimum_units: int = 1,
+    ) -> tuple[int, dict]:
+        """Async wrapper of ``reserve_agent_daily_quota``."""
+        return await asyncio.to_thread(
+            self.reserve_agent_daily_quota,
+            source,
+            units,
+            minimum_units,
+        )
 
     async def aconsume_agent_daily_quota(self, source: str = "", units: int = 1) -> tuple[bool, dict]:
         """Async wrapper of ``consume_agent_daily_quota``.

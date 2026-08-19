@@ -7,10 +7,7 @@ from dataclasses import replace
 from datetime import datetime
 import json
 import math
-import os
 from pathlib import Path
-import subprocess
-import sys
 import threading
 from types import SimpleNamespace
 import time
@@ -142,58 +139,6 @@ def _register_install_routes() -> None:
     )
 
 
-_USER_PLUGIN_SERVER_DEFAULT_PORT = 48916
-_LOCALHOST = "127.0.0.1"
-
-
-def _static_plugin_ui_url(*, plugin_id: str, port: str) -> str:
-    safe_plugin_id = quote(plugin_id, safe="")
-    return f"http://127.0.0.1:{port}/plugin/{safe_plugin_id}/ui/"
-
-
-def _coerce_local_port(value: object, *, default: int) -> str:
-    raw = str(value or default).strip()
-    try:
-        port_num = int(raw)
-    except ValueError:
-        port_num = default
-    if not (1 <= port_num <= 65535):
-        port_num = default
-    return str(port_num)
-
-
-def _plugin_manager_base_url() -> str:
-    configured_url = str(
-        os.getenv("NEKO_STUDY_COMPANION_PANEL_URL")
-        or os.getenv("NEKO_PLUGIN_MANAGER_URL")
-        or os.getenv("NEKO_PLUGIN_MANAGER_BASE_URL")
-        or ""
-    ).strip()
-    if configured_url:
-        return configured_url.rstrip("/")
-
-    backend_port = _coerce_local_port(
-        os.getenv("NEKO_USER_PLUGIN_SERVER_PORT", str(_USER_PLUGIN_SERVER_DEFAULT_PORT)),
-        default=_USER_PLUGIN_SERVER_DEFAULT_PORT,
-    )
-    return f"http://{_LOCALHOST}:{backend_port}"
-
-
-def _plugin_manager_study_panel_url(*, plugin_id: str) -> str:
-    safe_plugin_id = quote(plugin_id, safe="")
-    base_url = _plugin_manager_base_url()
-    if base_url.endswith("/ui/plugins"):
-        base_url = base_url[: -len("/ui/plugins")]
-    elif base_url.endswith("/ui"):
-        base_url = base_url[: -len("/ui")]
-    return f"{base_url}/plugin/{safe_plugin_id}/ui/"
-
-
-def _auto_open_ui_disabled_by_env() -> bool:
-    value = str(os.getenv("NEKO_STUDY_COMPANION_DISABLE_AUTO_OPEN_UI") or "").strip().lower()
-    return value in {"1", "true", "yes", "on"}
-
-
 try:
     _register_install_routes()
 except Exception:  # noqa: BLE001 - route registration should not block package import.
@@ -206,20 +151,10 @@ except Exception:  # noqa: BLE001 - route registration should not block package 
 
 
 _REVIEW_DUE_INTERVAL_SECONDS = 1800.0
-_AUTO_OPEN_UI_BROWSER_TIMEOUT_SECONDS = 3.0
-_AUTO_OPEN_UI_TASK_TIMEOUT_SECONDS = 3.5
-
-
-def _open_url_in_browser(url: str) -> None:
-    if sys.platform == "win32":
-        os.startfile(url)
-    elif sys.platform == "darwin":
-        subprocess.run(["open", url], check=True, timeout=_AUTO_OPEN_UI_BROWSER_TIMEOUT_SECONDS)
-    else:
-        subprocess.run(["xdg-open", url], check=True, timeout=_AUTO_OPEN_UI_BROWSER_TIMEOUT_SECONDS)
 
 
 from .entry_tutor_context_support import _TutorContextSupportMixin
+from .entry_communication_pomodoro_events import _CommunicationPomodoroEventsMixin
 from .entry_communication_review_events import _CommunicationReviewEventsMixin
 from .entry_communication_tutor_events import _CommunicationTutorEventsMixin
 from .entry_export_support import _ExportSupportMixin
@@ -233,11 +168,13 @@ from .entry_goal_entries import _GoalEntriesMixin
 from .entry_checkin_entries import _CheckinEntriesMixin
 from .entry_supervision_entries import _SupervisionEntriesMixin
 from .entry_knowledge_entries import _KnowledgeEntriesMixin
+from .entry_practice_scope_entries import _PracticeScopeEntriesMixin
 from .entry_mode_entries import _ModeEntriesMixin
 from .entry_tutor_explain_entries import _TutorExplainEntriesMixin
 from .entry_tutor_question_entries import _TutorQuestionEntriesMixin
 from .entry_tutor_answer_entries import _TutorAnswerEntriesMixin
 from .entry_tutor_summary_entries import _TutorSummaryEntriesMixin
+from .entry_document_analysis_jobs import _DocumentAnalysisJobsEntriesMixin
 from .entry_ocr_entries import _OcrEntriesMixin
 from .entry_neko_commands import (
     _INTERRUPT_COMMANDS,
@@ -255,6 +192,7 @@ from .entry_notebook import _NotebookEntriesMixin
 # Keep the support mixin before tutor entry mixins unless those helpers move.
 class StudyCompanionPlugin(
     _TutorContextSupportMixin,
+    _CommunicationPomodoroEventsMixin,
     _CommunicationReviewEventsMixin,
     _CommunicationTutorEventsMixin,
     _ExportSupportMixin,
@@ -268,11 +206,13 @@ class StudyCompanionPlugin(
     _CheckinEntriesMixin,
     _SupervisionEntriesMixin,
     _KnowledgeEntriesMixin,
+    _PracticeScopeEntriesMixin,
     _ModeEntriesMixin,
     _TutorExplainEntriesMixin,
     _TutorQuestionEntriesMixin,
     _TutorAnswerEntriesMixin,
     _TutorSummaryEntriesMixin,
+    _DocumentAnalysisJobsEntriesMixin,
     _OcrEntriesMixin,
     _NotebookEntriesMixin,
     _NekoCommandsMixin,
@@ -283,6 +223,7 @@ class StudyCompanionPlugin(
         self.file_logger = self.enable_file_logging(log_level="INFO")
         self.logger = self.file_logger
         self._lock = asyncio.Lock()
+        self._communication_settings_lock = asyncio.Lock()
         self._targeted_context_lock = threading.Lock()
         self._install_in_progress = False
         self._rapidocr_models_in_progress = False
@@ -313,6 +254,11 @@ class StudyCompanionPlugin(
         self._habit_store: StudyHabitStore | None = None
         self._checkin_manager: CheckinManager | None = None
         self._pomodoro_timer: PomodoroTimer | None = None
+        self._pomodoro_lock = asyncio.Lock()
+        self._pomodoro_wakeup = asyncio.Event()
+        self._pomodoro_watcher_task: asyncio.Task[None] | None = None
+        self._pomodoro_session_id = ""
+        self._pomodoro_target_lanlan: str | None = None
         self._supervision: SupervisionController | None = None
         self._memory_habit_bridge: MemoryHabitBridge | None = None
         self._event_bus: StudyEventBus | None = None
@@ -418,7 +364,6 @@ class StudyCompanionPlugin(
                     }
                 ]
             )
-            await self._auto_open_ui_if_enabled()
             self._sync_doc_export_entry()
             await self._persist_state()
             self._start_review_due_task()
@@ -439,26 +384,23 @@ class StudyCompanionPlugin(
                 self._state.last_error = "startup_failed"
             return Err(SdkError("failed to start study_companion"))
 
-    async def _auto_open_ui_if_enabled(self) -> None:
-        if not bool(self._cfg.auto_open_ui):
-            return
-        if _auto_open_ui_disabled_by_env():
-            return
-        url = _plugin_manager_study_panel_url(plugin_id=self.plugin_id)
-        try:
-            await asyncio.wait_for(
-                asyncio.to_thread(_open_url_in_browser, url),
-                timeout=_AUTO_OPEN_UI_TASK_TIMEOUT_SECONDS,
-            )
-        except Exception as exc:
-            self.logger.warning("study auto-open UI failed: {}", exc)
-
     async def _cleanup_after_failed_startup(self) -> None:
+        document_jobs = getattr(self, "_document_jobs", None)
+        if document_jobs is not None:
+            try:
+                await document_jobs.shutdown()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                self.logger.warning(
+                    "study startup cleanup document jobs failed: {}", exc
+                )
         self.stop_awareness_loop()
         await self._await_awareness_stop()
         await self._unsubscribe_neko_commands()
         await self._cancel_command_worker()
         await self._cancel_review_due_task()
+        await self._cancel_pomodoro_watcher()
         event_bus = self._event_bus
         agent = self._agent
         ocr_pipeline = self._ocr_pipeline
@@ -510,11 +452,22 @@ class StudyCompanionPlugin(
 
     @lifecycle(id="shutdown")
     async def shutdown(self, **_):
+        document_jobs = getattr(self, "_document_jobs", None)
+        if document_jobs is not None:
+            try:
+                await document_jobs.shutdown()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                self.logger.warning(
+                    "study shutdown document jobs cleanup failed: {}", exc
+                )
         self.stop_awareness_loop()
         await self._await_awareness_stop()
         await self._unsubscribe_neko_commands()
         await self._cancel_command_worker()
         await self._cancel_review_due_task()
+        await self._cancel_pomodoro_watcher()
         event_bus = self._event_bus
         self._event_bus = None
         if event_bus is not None:

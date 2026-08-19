@@ -902,7 +902,11 @@ class OpenClawAdapter:
                 temperature=0,
                 max_completion_tokens=OPENCLAW_MAGIC_INTENT_MAX_TOKENS,
                 max_retries=0,
-                extra_body=None,
+                # ⚠️ 不传 extra_body（≠ extra_body=None）：让工厂按模型名解析出各家的
+                # 「关思考」方言。这条腿是用户路径上的 10s 窗口，思考型模型（GLM、Kimi、
+                # Doubao、官方 DeepSeek V4 这些默认开思考的）几乎必然打满 10s 再回落规则
+                # 层，白烧一次派单的等待。分类本身是二选一的判断，也用不上思考。
+                # extra_body=None 会**跳过**工厂解析、保留模型原生行为，正好是反的。
                 timeout=10,  # quick magic-intent classification on the user path
                 provider_type=(cfg or {}).get("provider_type"),
             )

@@ -257,6 +257,11 @@ function applyDashboard(payload) {
   document.getElementById('cfg-max-concurrent').value = settings.max_concurrent_messages || 3;
   document.getElementById('cfg-connect-timeout').value = settings.ai_connect_timeout_seconds || 10;
   document.getElementById('cfg-turn-timeout').value = settings.ai_turn_timeout_seconds || 60;
+  document.getElementById('cfg-comment-notifications').value = String(
+    settings.enable_comment_notifications !== false
+  );
+  document.getElementById('cfg-notification-poll-interval').value = settings.notification_poll_interval_seconds || 20;
+  document.getElementById('cfg-notification-max-items').value = settings.notification_max_items || 20;
   renderUsers(dashboard.trusted_users || []);
 }
 
@@ -279,6 +284,9 @@ async function saveSettings(successMessage = '配置已保存到本机插件数�
     max_concurrent_messages: Number(document.getElementById('cfg-max-concurrent').value || 3),
     ai_connect_timeout_seconds: Number(document.getElementById('cfg-connect-timeout').value || 10),
     ai_turn_timeout_seconds: Number(document.getElementById('cfg-turn-timeout').value || 60),
+    enable_comment_notifications: document.getElementById('cfg-comment-notifications').value === 'true',
+    notification_poll_interval_seconds: Number(document.getElementById('cfg-notification-poll-interval').value || 20),
+    notification_max_items: Number(document.getElementById('cfg-notification-max-items').value || 20),
   };
   optionalSecret(payload, 'sesdata', 'cfg-sesdata');
   optionalSecret(payload, 'bili_jct', 'cfg-bili-jct');
@@ -314,7 +322,7 @@ async function toggleListening(start) {
   try {
     applyDashboard(await callPlugin(start ? 'start_listening' : 'stop_listening', {}));
     await refreshDashboard(true);
-    showToast(start ? 'B站私信监听已启动' : 'B站私信监听已停止');
+    showToast(start ? 'B站集成监听已启动' : 'B站集成监听已停止');
   } catch (error) {
     showToast(error.message || '操作失败', true);
   } finally {

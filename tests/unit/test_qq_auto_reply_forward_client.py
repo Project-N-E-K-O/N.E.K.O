@@ -239,7 +239,7 @@ def test_forward_process_incoming_to_receive_private():
         msg = await client.receive_message(timeout=1.0)
         assert msg is not None
         assert msg["message_type"] == "private"
-        assert msg["channel"] == "napcat"
+        assert msg["channel"] == "onebot"
         assert msg["user_id"] == "222"
         assert msg["user_nickname"] == "Xiaoming"
         assert msg["content"] == "hello there"
