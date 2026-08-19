@@ -168,6 +168,7 @@ class StorageRootsMixin:
         self.mmd_dir = self.app_docs_dir / "mmd"
         self.mmd_animation_dir = self.mmd_dir / "animation"  # VMD动画文件目录
         self.pngtuber_dir = self.app_docs_dir / "pngtuber"
+        self.avatar_tools_dir = self.app_docs_dir / "avatar_tools"
         self.workshop_dir = self.app_docs_dir / "workshop"
         self._steam_workshop_path = None
         self._user_workshop_folder_persisted = False
@@ -770,6 +771,17 @@ class StorageRootsMixin:
             return True
         except Exception as e:
             print(f"Warning: Failed to create pngtuber directory: {e}", file=sys.stderr)
+            return False
+
+    def ensure_avatar_tools_directory(self):
+        """Ensure the private local avatar-tool store exists."""
+        try:
+            if not self._ensure_app_docs_directory():
+                return False
+            self.avatar_tools_dir.mkdir(parents=True, exist_ok=True)
+            return True
+        except Exception as e:
+            print(f"Warning: Failed to create avatar tools directory: {e}", file=sys.stderr)
             return False
         
     def ensure_chara_directory(self):

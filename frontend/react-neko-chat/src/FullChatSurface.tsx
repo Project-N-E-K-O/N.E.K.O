@@ -29,6 +29,7 @@ import AvatarToolVisuals from './avatar-tools/presentation';
 import { useAvatarToolRuntime } from './avatar-tools/runtime';
 import {
   AVAILABLE_FULL_AVATAR_TOOLS,
+  getAvatarToolItemLabel,
   persistActiveAvatarToolIds,
   readPersistedActiveAvatarToolIds,
   resolveAvatarToolMenuIconVisual,
@@ -390,7 +391,7 @@ type ToolIconItem = AvatarToolItem;
 const toolIconItems = AVAILABLE_FULL_AVATAR_TOOLS;
 
 function getToolItemLabel(item: ToolIconItem): string {
-  return i18n(item.labelKey, item.labelFallback);
+  return getAvatarToolItemLabel(item);
 }
 
 function clamp(value: number, min: number, max: number): number {

@@ -1232,6 +1232,7 @@
             })
         })
     });
+    var LOCAL_AVATAR_TOOL_ID_PATTERN = /^local-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
     // The backend sends the final ack only after prompt_ephemeral has completed
     // the visible assistant turn. Keep separate fail-safes for no reply signal
     // and a started turn whose end event is lost, then allow a short grace period
@@ -1599,6 +1600,15 @@
         var toolId = String(payload.tool_id || payload.toolId || '').trim().toLowerCase();
         var actionId = String(payload.action_id || payload.actionId || '').trim().toLowerCase();
         var toolContract = AVATAR_INTERACTION_CONTRACT.tools[toolId];
+        var localTool = LOCAL_AVATAR_TOOL_ID_PATTERN.test(toolId);
+        if (!toolContract && localTool) {
+            toolContract = {
+                actions: { interact: ['normal', 'rapid'] },
+                acceptsTouchZone: true,
+                booleanField: { input: 'specialTriggered', output: 'special_triggered' },
+                roundChoice: false
+            };
+        }
         if (!toolContract) {
             console.warn('[AvatarInteraction] ignored unsupported tool:', toolId);
             return null;
@@ -1629,6 +1639,22 @@
             target: 'avatar',
             timestamp: timestamp
         };
+
+        if (localTool) {
+            var allowedLocalFields = [
+                'action', 'interaction_id', 'interactionId', 'tool_id', 'toolId',
+                'action_id', 'actionId', 'target', 'pointer', 'timestamp',
+                'text_context', 'textContext', 'intensity', 'touch_zone', 'touchZone',
+                'change_index', 'changeIndex',
+                'special_triggered', 'specialTriggered'
+            ];
+            if (Object.keys(payload).some(function (field) {
+                return allowedLocalFields.indexOf(field) === -1;
+            })) {
+                console.warn('[AvatarInteraction] ignored undeclared local tool facts');
+                return null;
+            }
+        }
 
         if (payload.pointer && typeof payload.pointer === 'object') {
             var rawClientX = getAvatarInteractionPayloadValue(
@@ -1716,6 +1742,17 @@
         }
         normalized.intensity = intensity;
 
+        if (localTool) {
+            var rawChangeIndex = getAvatarInteractionPayloadValue(
+                payload, 'change_index', 'changeIndex', null
+            );
+            if (!Number.isSafeInteger(rawChangeIndex) || rawChangeIndex < 0) {
+                console.warn('[AvatarInteraction] ignored invalid local change index');
+                return null;
+            }
+            normalized.change_index = rawChangeIndex;
+        }
+
         var textContext = sanitizeAvatarInteractionTextContext(getAvatarInteractionPayloadValue(
             payload, 'text_context', 'textContext', ''
         ));
@@ -1735,8 +1772,8 @@
                     console.warn('[AvatarInteraction] ignored invalid boolean field:', booleanField.output);
                     return null;
                 }
-                if (parsedBoolean) {
-                    normalized[booleanField.output] = true;
+                if (parsedBoolean || localTool) {
+                    normalized[booleanField.output] = parsedBoolean;
                 }
             }
         }

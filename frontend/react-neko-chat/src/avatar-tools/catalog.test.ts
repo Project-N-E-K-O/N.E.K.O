@@ -41,10 +41,10 @@ describe('avatar tool definitions', () => {
     );
     AVATAR_TOOL_DEFINITIONS.forEach((definition) => {
       const tool = AVAILABLE_COMPACT_AVATAR_TOOLS.find(candidate => candidate.id === definition.id);
+      expect(definition.label.kind).toBe('i18n');
       expect(tool).toMatchObject({
         id: definition.id,
-        labelKey: definition.label.key,
-        labelFallback: definition.label.fallback,
+        label: definition.label,
         iconImagePath: definition.visual.variants.primary.iconImagePath,
         pointerImagePath: definition.visual.variants.primary.pointerImagePath,
         pointerHotspotX: definition.visual.hotspotX,

@@ -1,13 +1,17 @@
 import type {
   AvatarToolVariantId as CatalogAvatarToolVariantId,
   AvatarToolId,
-  AvatarToolDefinition,
-  AvatarToolManagerIconVisual,
 } from './avatar-tools/catalog';
 import {
-  AVATAR_TOOL_DEFINITIONS,
+  LOCAL_AVATAR_TOOL_ID_PATTERN,
   withAvatarToolAssetVersion,
 } from './avatar-tools/catalog';
+import {
+  BUILT_IN_AVATAR_TOOL_REGISTRY,
+  type AvatarToolItem,
+  type AvatarToolRegistrySnapshot,
+} from './avatar-tools/registry';
+import { i18n } from './i18n';
 
 export { withAvatarToolAssetVersion };
 
@@ -15,113 +19,43 @@ export type { AvatarToolId } from './avatar-tools/catalog';
 
 export type AvatarToolVariantId = CatalogAvatarToolVariantId;
 
-export type AvatarToolItem = {
-  id: AvatarToolId;
-  labelKey: string;
-  labelFallback: string;
-  iconImagePath: string;
-  iconImagePathAlt?: string;
-  iconImagePathAlt2?: string;
-  menuIconScale?: number;
-  menuIconOffsetX?: number;
-  menuIconOffsetY?: number;
-  menuIconOffsetXAlt?: number;
-  menuIconOffsetYAlt?: number;
-  menuIconOffsetXAlt2?: number;
-  menuIconOffsetYAlt2?: number;
-  managerIconVisual?: AvatarToolManagerIconVisual;
-  pointerImagePath: string;
-  pointerImagePathAlt?: string;
-  pointerImagePathAlt2?: string;
-  pointerHotspotX?: number;
-  pointerHotspotY?: number;
-  pointerNaturalWidth?: number;
-  pointerNaturalHeight?: number;
-  pointerDisplayWidth?: number;
-  pointerDisplayHeight?: number;
-};
+export type { AvatarToolItem } from './avatar-tools/registry';
 
 export const ACTIVE_AVATAR_TOOLS_STORAGE_KEY = 'neko.reactChatWindow.activeAvatarTools';
 export const MAX_ACTIVE_AVATAR_TOOLS = 3;
 export const DEFAULT_ACTIVE_AVATAR_TOOL_IDS: AvatarToolId[] = ['lollipop', 'fist', 'hammer'];
 
-function projectAvatarToolDefinitionToItem(definition: AvatarToolDefinition): AvatarToolItem {
-  const { primary, secondary, tertiary } = definition.visual.variants;
-  // Icons fall straight back to primary, while a tertiary pointer falls back
-  // through secondary in resolveAvatarToolImagePaths; compare against those
-  // respective fallback sources so the projected optional paths stay lossless.
-  const secondaryIcon = secondary.iconImagePath !== primary.iconImagePath
-    ? secondary.iconImagePath
-    : undefined;
-  const tertiaryIcon = tertiary.iconImagePath !== primary.iconImagePath
-    ? tertiary.iconImagePath
-    : undefined;
-  const secondaryPointer = secondary.pointerImagePath !== primary.pointerImagePath
-    ? secondary.pointerImagePath
-    : undefined;
-  const tertiaryPointer = tertiary.pointerImagePath !== secondary.pointerImagePath
-    ? tertiary.pointerImagePath
-    : undefined;
-  const secondaryOffsetX = secondary.menuOffsetX !== primary.menuOffsetX
-    ? secondary.menuOffsetX
-    : undefined;
-  const secondaryOffsetY = secondary.menuOffsetY !== primary.menuOffsetY
-    ? secondary.menuOffsetY
-    : undefined;
-  const tertiaryOffsetX = tertiary.menuOffsetX !== secondary.menuOffsetX
-    ? tertiary.menuOffsetX
-    : undefined;
-  const tertiaryOffsetY = tertiary.menuOffsetY !== secondary.menuOffsetY
-    ? tertiary.menuOffsetY
-    : undefined;
-
-  return {
-    id: definition.id,
-    labelKey: definition.label.key,
-    labelFallback: definition.label.fallback,
-    iconImagePath: primary.iconImagePath,
-    ...(secondaryIcon ? { iconImagePathAlt: secondaryIcon } : {}),
-    ...(tertiaryIcon ? { iconImagePathAlt2: tertiaryIcon } : {}),
-    pointerImagePath: primary.pointerImagePath,
-    ...(secondaryPointer ? { pointerImagePathAlt: secondaryPointer } : {}),
-    ...(tertiaryPointer ? { pointerImagePathAlt2: tertiaryPointer } : {}),
-    ...(definition.visual.menuScale !== 1 ? { menuIconScale: definition.visual.menuScale } : {}),
-    ...(primary.menuOffsetX !== 0 ? { menuIconOffsetX: primary.menuOffsetX } : {}),
-    ...(primary.menuOffsetY !== 0 ? { menuIconOffsetY: primary.menuOffsetY } : {}),
-    ...(secondaryOffsetX !== undefined ? { menuIconOffsetXAlt: secondaryOffsetX } : {}),
-    ...(secondaryOffsetY !== undefined ? { menuIconOffsetYAlt: secondaryOffsetY } : {}),
-    ...(tertiaryOffsetX !== undefined ? { menuIconOffsetXAlt2: tertiaryOffsetX } : {}),
-    ...(tertiaryOffsetY !== undefined ? { menuIconOffsetYAlt2: tertiaryOffsetY } : {}),
-    ...(definition.visual.managerIcon ? { managerIconVisual: definition.visual.managerIcon } : {}),
-    pointerHotspotX: definition.visual.hotspotX,
-    pointerHotspotY: definition.visual.hotspotY,
-    pointerNaturalWidth: definition.visual.naturalWidth,
-    pointerNaturalHeight: definition.visual.naturalHeight,
-    pointerDisplayWidth: definition.visual.pointer.displayWidth,
-    pointerDisplayHeight: definition.visual.pointer.displayHeight,
-  };
+export function getAvatarToolItemLabel(item: AvatarToolItem): string {
+  return item.label.kind === 'literal'
+    ? item.label.value
+    : i18n(item.label.key, item.label.fallback);
 }
 
-const REGISTERED_AVATAR_TOOLS: AvatarToolItem[] =
-  AVATAR_TOOL_DEFINITIONS.map(projectAvatarToolDefinitionToItem);
+const REGISTERED_AVATAR_TOOLS: ReadonlyArray<AvatarToolItem> = BUILT_IN_AVATAR_TOOL_REGISTRY.items;
 
-export const AVAILABLE_COMPACT_AVATAR_TOOLS: AvatarToolItem[] = REGISTERED_AVATAR_TOOLS;
-export const AVAILABLE_FULL_AVATAR_TOOLS: AvatarToolItem[] = REGISTERED_AVATAR_TOOLS;
+export const AVAILABLE_COMPACT_AVATAR_TOOLS: ReadonlyArray<AvatarToolItem> = REGISTERED_AVATAR_TOOLS;
+export const AVAILABLE_FULL_AVATAR_TOOLS: ReadonlyArray<AvatarToolItem> = REGISTERED_AVATAR_TOOLS;
 
 const AVAILABLE_AVATAR_TOOL_IDS = new Set<AvatarToolId>(REGISTERED_AVATAR_TOOLS.map(item => item.id));
 
 export function isAvatarToolId(value: unknown): value is AvatarToolId {
-  return typeof value === 'string' && AVAILABLE_AVATAR_TOOL_IDS.has(value as AvatarToolId);
+  return typeof value === 'string' && (
+    AVAILABLE_AVATAR_TOOL_IDS.has(value as AvatarToolId)
+    || LOCAL_AVATAR_TOOL_ID_PATTERN.test(value)
+  );
 }
 
-export function sanitizeAvatarToolIds(value: unknown): AvatarToolId[] {
+export function sanitizeAvatarToolIds(
+  value: unknown,
+  validIds: ReadonlySet<AvatarToolId> = BUILT_IN_AVATAR_TOOL_REGISTRY.validIds,
+): AvatarToolId[] {
   if (!Array.isArray(value)) {
     return [...DEFAULT_ACTIVE_AVATAR_TOOL_IDS];
   }
 
   const next: AvatarToolId[] = [];
   value.forEach((candidate) => {
-    if (!isAvatarToolId(candidate)) return;
+    if (!isAvatarToolId(candidate) || !validIds.has(candidate)) return;
     if (next.includes(candidate)) return;
     if (next.length >= MAX_ACTIVE_AVATAR_TOOLS) return;
     next.push(candidate);
@@ -139,18 +73,28 @@ export function readPersistedActiveAvatarToolIds(): AvatarToolId[] {
     if (rawValue === null || typeof rawValue === 'undefined') {
       return [...DEFAULT_ACTIVE_AVATAR_TOOL_IDS];
     }
-    return sanitizeAvatarToolIds(JSON.parse(rawValue));
+    const parsed = JSON.parse(rawValue);
+    if (!Array.isArray(parsed)) return [...DEFAULT_ACTIVE_AVATAR_TOOL_IDS];
+    const next: AvatarToolId[] = [];
+    parsed.forEach((candidate) => {
+      if (!isAvatarToolId(candidate) || next.includes(candidate) || next.length >= MAX_ACTIVE_AVATAR_TOOLS) return;
+      next.push(candidate);
+    });
+    return next;
   } catch {
     return [...DEFAULT_ACTIVE_AVATAR_TOOL_IDS];
   }
 }
 
-export function persistActiveAvatarToolIds(ids: AvatarToolId[]) {
+export function persistActiveAvatarToolIds(
+  ids: AvatarToolId[],
+  registry: AvatarToolRegistrySnapshot = BUILT_IN_AVATAR_TOOL_REGISTRY,
+) {
   if (typeof window === 'undefined') return;
   try {
     window.localStorage?.setItem(
       ACTIVE_AVATAR_TOOLS_STORAGE_KEY,
-      JSON.stringify(sanitizeAvatarToolIds(ids)),
+      JSON.stringify(sanitizeAvatarToolIds(ids, registry.validIds)),
     );
   } catch {
     // Keep in-memory state when localStorage is unavailable.

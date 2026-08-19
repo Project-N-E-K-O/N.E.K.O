@@ -18,6 +18,7 @@ import FullChatSurface from './FullChatSurface';
 import NekoTooltipLayer from './NekoTooltipLayer';
 import AvatarToolVisuals from './avatar-tools/presentation';
 import { useAvatarToolRuntime } from './avatar-tools/runtime';
+import { useLocalAvatarToolCatalog } from './avatar-tools/useLocalAvatarToolCatalog';
 import {
   COMPACT_TOOL_WHEEL_DETENT_SOUND_SRCS,
   COMPACT_TOOL_WHEEL_REBOUND_SOUND_SRC,
@@ -60,8 +61,8 @@ import {
   type ChoicePromptSource,
 } from './message-schema';
 import {
-  AVAILABLE_COMPACT_AVATAR_TOOLS,
   DEFAULT_ACTIVE_AVATAR_TOOL_IDS,
+  getAvatarToolItemLabel,
   persistActiveAvatarToolIds,
   readPersistedActiveAvatarToolIds,
   sanitizeAvatarToolIds,
@@ -785,10 +786,8 @@ function getCompactMessagePreview(messages: ChatMessage[]): CompactMessagePrevie
 
 type ToolIconItem = AvatarToolItem;
 
-const toolIconItems = AVAILABLE_COMPACT_AVATAR_TOOLS;
-
 function getToolItemLabel(item: ToolIconItem): string {
-  return i18n(item.labelKey, item.labelFallback);
+  return getAvatarToolItemLabel(item);
 }
 
 const compactToolWheelControlWheelTargetSelector = [
@@ -879,6 +878,7 @@ function CompactChatApp({
   title = i18n('chat.title', 'N.E.K.O Chat'),
   iconSrc = '/static/icons/chat_icon.png',
   messages = defaultMessages,
+  userName = '',
   assistantName = '',
   inputPlaceholder = i18n('chat.textInputPlaceholder', 'Type a message...'),
   sendButtonLabel = i18n('chat.send', 'Send'),
@@ -943,6 +943,8 @@ function CompactChatApp({
   _avatarToolDeactivationKey,
 }: ChatWindowProps) {
   useCompactToolWheelAudioPreload();
+  const localAvatarToolCatalog = useLocalAvatarToolCatalog();
+  const toolIconItems = localAvatarToolCatalog.registry.items;
 
   const [draft, setDraft] = useState('');
   const [catDraft, setCatDraft] = useState('');
@@ -1123,6 +1125,7 @@ function CompactChatApp({
     getToolLabel: getToolItemLabel,
     avatarName: assistantName,
     onDeactivate: () => setToolMenuOpen(false),
+    registry: localAvatarToolCatalog.registry,
   });
   const activeAvatarToolId = avatarToolRuntime.activeToolId;
   const activeToolItem = avatarToolRuntime.activeTool;
@@ -1131,14 +1134,30 @@ function CompactChatApp({
   const handleAvatarQuickbarToolClick = avatarToolRuntime.selectTool;
 
   const handleAvatarToolManagerSave = useCallback((toolIds: AvatarToolId[]) => {
-    const nextToolIds = sanitizeAvatarToolIds(toolIds);
+    const nextToolIds = sanitizeAvatarToolIds(toolIds, localAvatarToolCatalog.registry.validIds);
     setActiveAvatarToolIds(nextToolIds);
-    persistActiveAvatarToolIds(nextToolIds);
+    persistActiveAvatarToolIds(nextToolIds, localAvatarToolCatalog.registry);
     setAvatarToolManagerOpen(false);
     if (activeAvatarToolId && !nextToolIds.includes(activeAvatarToolId)) {
       clearActiveAvatarToolSelection();
     }
-  }, [activeAvatarToolId, clearActiveAvatarToolSelection]);
+  }, [activeAvatarToolId, clearActiveAvatarToolSelection, localAvatarToolCatalog.registry]);
+
+  useEffect(() => {
+    if (!localAvatarToolCatalog.authoritativeLoaded) return;
+    setActiveAvatarToolIds((current) => {
+      const next = sanitizeAvatarToolIds(current, localAvatarToolCatalog.registry.validIds);
+      persistActiveAvatarToolIds(next, localAvatarToolCatalog.registry);
+      return next.length === current.length && next.every((toolId, index) => toolId === current[index])
+        ? current
+        : next;
+    });
+  }, [localAvatarToolCatalog.authoritativeLoaded, localAvatarToolCatalog.registry]);
+
+  useEffect(() => {
+    if (!avatarToolManagerOpen) return;
+    localAvatarToolCatalog.refresh().catch(() => undefined);
+  }, [avatarToolManagerOpen, localAvatarToolCatalog.refresh]);
 
   useEffect(() => {
     if (!activeAvatarToolId) return;
@@ -6016,6 +6035,11 @@ function CompactChatApp({
         anchorRect={avatarToolManagerAnchorRect}
         onSave={handleAvatarToolManagerSave}
         onCancel={() => setAvatarToolManagerOpen(false)}
+        createLimits={localAvatarToolCatalog.limits}
+        userName={userName}
+        assistantName={assistantName}
+        onCreate={localAvatarToolCatalog.create}
+        catalogRefreshFailed={localAvatarToolCatalog.refreshFailed}
       />
       <AvatarToolVisuals model={avatarToolRuntime.visualModel} />
       <section

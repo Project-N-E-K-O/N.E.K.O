@@ -7,6 +7,7 @@ import {
 } from './desktopContract';
 import { desktopAvatarToolContractSchema } from './desktopContract';
 import { AVATAR_TOOL_DEFINITIONS } from './catalog';
+import { buildLocalAvatarToolDefinition } from './localTools';
 
 function cloneJson<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
@@ -31,6 +32,9 @@ function collectContractAssetPaths(contract: ReturnType<typeof buildDesktopAvata
     Object.values(definition.visual.variants).forEach((variant) => {
       paths.push(variant.iconImagePath, variant.pointerImagePath);
     });
+    definition.visual.frames?.forEach((frame) => {
+      paths.push(frame.iconImagePath, frame.pointerImagePath);
+    });
   }
   definition.interaction?.sounds.forEach(sound => paths.push(sound.src));
   definition.interaction?.effects.forEach((effect) => {
@@ -44,6 +48,31 @@ afterEach(() => {
 });
 
 describe('desktop avatar tool contract', () => {
+  it('projects ordered local frames and the selected image-change rule as strict v2', () => {
+    const source = buildLocalAvatarToolDefinition({
+      id: 'local-12345678-1234-4123-8123-123456789abc',
+      name: 'Feather',
+      changeMode: 'click-advance',
+      defaultUrl: '/user_avatar_tools/local-12345678-1234-4123-8123-123456789abc/default.png?v=1',
+      changeUrls: [
+        '/user_avatar_tools/local-12345678-1234-4123-8123-123456789abc/change-000.png?v=1',
+        '/user_avatar_tools/local-12345678-1234-4123-8123-123456789abc/change-001.png?v=1',
+      ],
+    });
+
+    const contract = projectDesktopAvatarToolContract(source);
+
+    expect(contract.definition?.definitionVersion).toBe(2);
+    expect(contract.definition?.visual?.frames).toHaveLength(3);
+    expect(contract.definition?.interaction?.profile).toMatchObject({
+      kind: 'press-release',
+      actionId: 'interact',
+      imageChange: { kind: 'click-advance' },
+    });
+    expect(contract.definition?.interaction?.profile).not.toHaveProperty('pointerDown');
+    expect(desktopAvatarToolContractSchema.parse(cloneJson(contract))).toEqual(contract);
+  });
+
   it('projects inactive and all four active definitions with strict JSON round trips', () => {
     const inactive = buildDesktopAvatarToolContract(null);
     expect(Object.keys(inactive).sort()).toEqual(['definition', 'runtimePolicy', 'wireVersion']);

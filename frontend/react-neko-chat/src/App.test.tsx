@@ -5816,7 +5816,7 @@ describe('App', () => {
       const dialog = screen.getByRole('dialog', { name: 'Manage tools' });
       expect(dialog).toHaveClass('is-positioned');
       expect(dialog).toHaveStyle({
-        '--avatar-tool-manager-left': '366px',
+        '--avatar-tool-manager-left': '286px',
         '--avatar-tool-manager-top': '12px',
       });
       expect(dialog.querySelectorAll('.avatar-tool-manager-slot')).toHaveLength(3);
@@ -5847,7 +5847,7 @@ describe('App', () => {
       await waitFor(() => {
         expect(dialog).toHaveClass('is-dragging');
         expect(dialog).toHaveStyle({
-          '--avatar-tool-manager-left': '396px',
+          '--avatar-tool-manager-left': '316px',
           '--avatar-tool-manager-top': '42px',
         });
       });
@@ -5955,10 +5955,10 @@ describe('App', () => {
       expect(dialog).toHaveClass('is-desktop-compact-layout');
       expect(dialog).toHaveAttribute('data-compact-geometry-item', 'avatarToolManager');
       expect(dialog).toHaveStyle({
-        '--avatar-tool-manager-left': '-24px',
+        '--avatar-tool-manager-left': '-104px',
         '--avatar-tool-manager-top': '-473px',
-        '--avatar-tool-manager-width': '380px',
-        '--avatar-tool-manager-height': '600px',
+        '--avatar-tool-manager-width': '460px',
+        '--avatar-tool-manager-height': '680px',
       });
 
       desktopWindow.__nekoDesktopCompactLayout = {

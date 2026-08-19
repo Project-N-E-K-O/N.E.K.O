@@ -1,6 +1,7 @@
 import type { MouseEvent as ReactMouseEvent } from 'react';
 import { i18n } from './i18n';
 import {
+  getAvatarToolItemLabel,
   type AvatarToolId,
   type AvatarToolItem,
   type AvatarToolVariantId,
@@ -11,7 +12,7 @@ import {
 type AvatarToolQuickbarProps = {
   activeToolIds: AvatarToolId[];
   activeAvatarToolId: string | null;
-  availableTools: AvatarToolItem[];
+  availableTools: ReadonlyArray<AvatarToolItem>;
   disabled?: boolean;
   getToolVariant: (toolId: AvatarToolId) => AvatarToolVariantId;
   onToolClick: (tool: AvatarToolItem, event: ReactMouseEvent<HTMLButtonElement>) => void;
@@ -19,7 +20,7 @@ type AvatarToolQuickbarProps = {
 };
 
 function getToolLabel(tool: AvatarToolItem): string {
-  return i18n(tool.labelKey, tool.labelFallback);
+  return getAvatarToolItemLabel(tool);
 }
 
 export default function AvatarToolQuickbar({

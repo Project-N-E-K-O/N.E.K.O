@@ -92,9 +92,48 @@ function createPressReleaseHandlers(
   definition: AvatarToolDefinition,
   profile: Extract<AvatarToolInteractionProfile, { kind: 'press-release' }>,
 ): AvatarToolRuleHandlers {
+  if (profile.imageChange) {
+    return {
+      pointerDown: () => profile.imageChange.kind === 'press-swap'
+        ? { imageFrameIndex: 1, pressFeedback: 'until-pointer-release' }
+        : {},
+      commit: (context: AvatarToolRuleContext): AvatarToolCommand => {
+        if (!context.hit || !profile.touchZones.includes(context.hit.touchZone)) return {};
+        const intensity = context.recordBurst(profile.burst.key, profile.burst.windowMs)
+          >= profile.burst.rapidThreshold
+          ? profile.burst.rapidIntensity
+          : profile.burst.normalIntensity;
+        const nextFrameIndex = profile.imageChange.kind === 'press-swap'
+          ? 1
+          : Math.min(context.imageFrameIndex + 1, context.imageFrameCount - 1);
+        const chanceHit = profile.chance ? context.random() < profile.chance.probability : null;
+        return {
+          ...(profile.imageChange.kind === 'click-advance'
+            ? { imageFrameIndex: nextFrameIndex }
+            : {}),
+          commit: createCommit(definition, context, {
+            actionId: profile.actionId,
+            intensity,
+            touchZone: context.hit.touchZone,
+            changeIndex: nextFrameIndex - 1,
+            ...(profile.chance ? { [profile.chance.field]: chanceHit } : {}),
+          }),
+          ...(chanceHit ? {
+            ...(profile.chance?.sound ?? profile.feedback?.sound
+              ? { sound: profile.chance?.sound ?? profile.feedback?.sound }
+              : {}),
+            effect: profile.chance?.effect,
+          } : profile.feedback ? { sound: profile.feedback.sound } : {}),
+        };
+      },
+      pointerRelease: () => profile.imageChange.kind === 'press-swap'
+        ? { imageFrameIndex: 0 }
+        : {},
+    };
+  }
   return {
     pointerDown: () => ({
-      ...profile.pointerDown,
+      ...profile.pointerDown!,
       pressFeedback: 'until-pointer-release',
     }),
     commit: (context: AvatarToolRuleContext): AvatarToolCommand => {
@@ -103,21 +142,23 @@ function createPressReleaseHandlers(
         >= profile.burst.rapidThreshold
         ? profile.burst.rapidIntensity
         : profile.burst.normalIntensity;
-      const chanceHit = context.random() < profile.chance.probability;
+      const chanceHit = profile.chance ? context.random() < profile.chance.probability : null;
       return {
         commit: createCommit(definition, context, {
           actionId: profile.actionId,
           intensity,
           touchZone: context.hit.touchZone,
-          [profile.chance.field]: chanceHit,
+          ...(profile.chance ? { [profile.chance.field]: chanceHit } : {}),
         }),
         ...(chanceHit ? {
-          sound: profile.chance.sound,
-          effect: profile.chance.effect,
-        } : {}),
+          ...(profile.chance?.sound ?? profile.feedback?.sound
+            ? { sound: profile.chance?.sound ?? profile.feedback?.sound }
+            : {}),
+          effect: profile.chance?.effect,
+        } : profile.feedback ? { sound: profile.feedback.sound } : {}),
       };
     },
-    pointerRelease: () => ({ ...profile.pointerRelease }),
+    pointerRelease: () => ({ ...profile.pointerRelease! }),
   };
 }
 

@@ -46,6 +46,11 @@ from config.prompts.prompts_avatar_interaction import (
     _sanitize_avatar_interaction_text_context,
 )
 from utils.config_manager import get_config_manager
+from utils.avatar_tool_store import (
+    AvatarToolStoreError,
+    get_avatar_tool_store,
+    is_local_avatar_tool_id,
+)
 from utils.language_utils import normalize_language_code, get_global_language_full
 from uuid import uuid4
 from ._shared import (
@@ -128,6 +133,47 @@ class GreetingMixin:
             await self.send_avatar_interaction_ack(raw_interaction_id, False, "invalid_payload")
             return {"accepted": False, "reason": "invalid_payload"}
 
+        local_record = None
+        local_prompt_record = None
+        if is_local_avatar_tool_id(raw["tool_id"]):
+            try:
+                local_record = await asyncio.to_thread(
+                    get_avatar_tool_store(self._config_manager).read_record,
+                    raw["tool_id"],
+                )
+            except (AvatarToolStoreError, OSError):
+                logger.debug(
+                    "[%s] handle_avatar_interaction: missing or invalid local tool=%s",
+                    self.lanlan_name,
+                    raw["tool_id"],
+                )
+                await self.send_avatar_interaction_ack(
+                    raw_interaction_id, False, "invalid_payload"
+                )
+                return {"accepted": False, "reason": "invalid_payload"}
+            if "special_triggered" in raw:
+                await self.send_avatar_interaction_ack(
+                    raw_interaction_id, False, "invalid_payload"
+                )
+                return {"accepted": False, "reason": "invalid_payload"}
+            change_items = local_record.get("imageChange", {}).get("items")
+            change_index = raw.get("change_index")
+            if (
+                not isinstance(change_items, list)
+                or isinstance(change_index, bool)
+                or not isinstance(change_index, int)
+                or change_index < 0
+                or change_index >= len(change_items)
+            ):
+                await self.send_avatar_interaction_ack(
+                    raw_interaction_id, False, "invalid_payload"
+                )
+                return {"accepted": False, "reason": "invalid_payload"}
+            local_prompt_record = {
+                "name": local_record["name"],
+                "meaning": change_items[change_index]["meaning"],
+            }
+
         interaction_id = raw["interaction_id"]
         now_ms = int(time.time() * 1000)
         ingress_reserved = (
@@ -184,11 +230,13 @@ class GreetingMixin:
             self.lanlan_name,
             self.master_name,
             raw,
+            local_prompt_record,
         )
         memory_meta = _build_avatar_interaction_memory_meta(
             getattr(self, "user_language", None),
             raw,
             self.master_name,
+            local_prompt_record,
         )
         memory_note = memory_meta["memory_note"]
         delivered = False

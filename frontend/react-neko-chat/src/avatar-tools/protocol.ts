@@ -1,8 +1,10 @@
 import { z } from 'zod';
 import {
   AVATAR_TOOL_DEFINITION_IDS,
+  LOCAL_AVATAR_TOOL_ID_PATTERN,
   AVATAR_TOOL_REGISTRY,
   AVATAR_TOOL_ROUND_RESULTS,
+  AVATAR_TOOL_TOUCH_ZONES,
   AVATAR_TOOL_VARIANT_IDS,
   resolveAvatarToolRoundResult,
   withAvatarToolAssetVersion,
@@ -34,8 +36,8 @@ const ROUND_CHOICE_TOOL_IDS = new Set<AvatarToolId>(
     .map(({ definition }) => definition.id),
 );
 
-function isRoundChoiceToolId(toolId: AvatarToolId | null | undefined): boolean {
-  return !!toolId && ROUND_CHOICE_TOOL_IDS.has(toolId);
+function isRoundChoiceToolId(toolId: string | null | undefined): boolean {
+  return !!toolId && ROUND_CHOICE_TOOL_IDS.has(toolId as AvatarToolId);
 }
 
 type ProgressiveStageFacts<
@@ -123,6 +125,7 @@ type InteractionFactsFor<Profile extends AvatarToolInteractionProfile> =
       }
         & TouchZoneFactsFor<Profile>
         & ChanceFactFor<Profile>
+        & (Profile extends { imageChange: unknown } ? { changeIndex: number } : Record<never, never>)
       : never;
 
 type AvatarInteractionPayloadBase = {
@@ -148,7 +151,15 @@ export type AvatarInteractionPayload =
     ? Definition extends RegistryDefinition
       ? PayloadForDefinition<Definition>
       : never
-    : never;
+    : never
+  | (AvatarInteractionPayloadBase & {
+    toolId: `local-${string}`;
+    actionId: 'interact';
+    intensity: 'normal' | 'rapid';
+    touchZone: 'ear' | 'head' | 'face' | 'body';
+    changeIndex: number;
+    specialTriggered?: boolean;
+  });
 
 type AvatarInteractionContractFacts = {
   actions: ReadonlyArray<{
@@ -157,6 +168,7 @@ type AvatarInteractionContractFacts = {
   }>;
   touchZones: ReadonlyArray<string>;
   chanceField: string | null;
+  requiresChangeIndex: boolean;
 };
 
 const avatarInteractionPayloadBaseShape = {
@@ -191,6 +203,7 @@ function deriveAvatarInteractionContractFacts(
       })),
       touchZones: [],
       chanceField: null,
+      requiresChangeIndex: false,
     };
   }
   if (profile.kind === 'press-release') {
@@ -200,7 +213,8 @@ function deriveAvatarInteractionContractFacts(
         intensities: [profile.burst.normalIntensity, profile.burst.rapidIntensity],
       }],
       touchZones: profile.touchZones,
-      chanceField: profile.chance.field,
+      chanceField: profile.chance?.field ?? null,
+      requiresChangeIndex: !!profile.imageChange,
     };
   }
   if (profile.kind === 'round-choice') {
@@ -218,6 +232,7 @@ function deriveAvatarInteractionContractFacts(
     }],
     touchZones: profile.touchZones,
     chanceField: profile.chance.field,
+    requiresChangeIndex: false,
   };
 }
 
@@ -263,6 +278,9 @@ function createAvatarInteractionPayloadSchema(definition: AvatarToolDefinition) 
   if (facts.chanceField) {
     conditionalShape[facts.chanceField] = z.boolean().optional();
   }
+  if (facts.requiresChangeIndex) {
+    conditionalShape.changeIndex = z.number().int().nonnegative().safe();
+  }
   return z.object({
     ...avatarInteractionPayloadBaseShape,
     ...toolSpecificShape,
@@ -300,11 +318,21 @@ AVATAR_TOOL_REGISTRY.forEach(({ definition }) => {
 });
 
 const toolIdProbeSchema = z.object({ toolId: z.string() }).passthrough();
+const localAvatarInteractionPayloadSchema = z.object({
+  ...avatarInteractionPayloadBaseShape,
+  toolId: z.string().regex(LOCAL_AVATAR_TOOL_ID_PATTERN),
+  actionId: z.literal('interact'),
+  intensity: z.enum(['normal', 'rapid']),
+  touchZone: z.enum(AVATAR_TOOL_TOUCH_ZONES),
+  changeIndex: z.number().int().nonnegative().safe(),
+  specialTriggered: z.boolean().optional(),
+}).strict();
 function isAvatarInteractionPayload(value: unknown): value is AvatarInteractionPayload {
   const probe = toolIdProbeSchema.safeParse(value);
   if (!probe.success) return false;
   const contract = avatarInteractionPayloadSchemaByToolId.get(probe.data.toolId);
-  return contract?.safeParse(value).success === true;
+  if (contract) return contract.safeParse(value).success === true;
+  return localAvatarInteractionPayloadSchema.safeParse(value).success;
 }
 
 export const avatarInteractionPayloadSchema = z.custom<AvatarInteractionPayload>(
@@ -315,7 +343,10 @@ export const avatarInteractionPayloadSchema = z.custom<AvatarInteractionPayload>
 
 // Shared page/desktop state protocol ----------------------------------------
 
-const avatarToolIdSchema = z.enum(AVATAR_TOOL_DEFINITION_IDS);
+const avatarToolIdSchema = z.union([
+  z.enum(AVATAR_TOOL_DEFINITION_IDS),
+  z.string().regex(LOCAL_AVATAR_TOOL_ID_PATTERN),
+]);
 const avatarToolVariantIdSchema = z.enum(AVATAR_TOOL_VARIANT_IDS);
 const avatarToolImageKindSchema = z.enum(['pointer', 'icon']);
 
@@ -446,20 +477,27 @@ export function createAvatarInteractionId(): string {
   return `avatar-int-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
-export function buildAvatarInteractionPayload(commit: AvatarToolInteractionCommit): AvatarInteractionPayload {
+export function buildAvatarInteractionPayload(
+  commit: AvatarToolInteractionCommit,
+  definition?: AvatarToolDefinition,
+): AvatarInteractionPayload {
   const {
     clientX,
     clientY,
     timestamp,
     ...facts
   } = commit;
-  return avatarInteractionPayloadSchema.parse({
+  const payload = {
     ...facts,
     interactionId: createAvatarInteractionId(),
     target: 'avatar' as const,
     pointer: { clientX, clientY },
     timestamp: timestamp ?? Date.now(),
-  });
+  };
+  return (definition
+    ? createAvatarInteractionPayloadSchema(definition)
+    : avatarInteractionPayloadSchema
+  ).parse(payload) as AvatarInteractionPayload;
 }
 
 function buildAvatarToolDescriptor(activeTool: AvatarToolDescriptorSource | null, label?: string) {
@@ -487,16 +525,18 @@ export function buildAvatarToolSelectionStatePayload({
   avatarRangeVariant,
   outsideRangeVariant,
   roundChoiceResultLabels,
+  definition,
 }: {
   activeTool: AvatarToolDescriptorSource | null;
   avatarRangeVariant?: AvatarToolVariantId;
   outsideRangeVariant?: AvatarToolVariantId;
   roundChoiceResultLabels?: AvatarToolStatePayload['roundChoiceResultLabels'];
+  definition?: AvatarToolDefinition | null;
 }): AvatarToolStatePayload {
   return {
     active: !!activeTool,
     toolId: activeTool?.id ?? null,
-    desktopContract: buildDesktopAvatarToolContract(activeTool?.id ?? null),
+    desktopContract: buildDesktopAvatarToolContract(activeTool?.id ?? null, definition),
     ...(activeTool ? {
       avatarRangeVariant: avatarRangeVariant ?? 'primary',
       outsideRangeVariant: outsideRangeVariant ?? 'primary',

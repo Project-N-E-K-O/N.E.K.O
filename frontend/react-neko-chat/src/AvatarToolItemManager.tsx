@@ -10,8 +10,12 @@ import {
 } from 'react';
 import { createPortal } from 'react-dom';
 import { i18n } from './i18n';
+import AvatarToolCreatePage from './AvatarToolCreatePage';
+import type { CreateLocalAvatarToolInput, LocalAvatarToolLimits } from './avatar-tools/localTools';
 import {
   MAX_ACTIVE_AVATAR_TOOLS,
+  getAvatarToolItemLabel,
+  isAvatarToolId,
   type AvatarToolId,
   type AvatarToolItem,
   sanitizeAvatarToolIds,
@@ -39,17 +43,22 @@ type AvatarToolDragSession = AvatarToolDragSource & {
 type AvatarToolItemManagerProps = {
   open: boolean;
   activeToolIds: AvatarToolId[];
-  availableTools: AvatarToolItem[];
+  availableTools: ReadonlyArray<AvatarToolItem>;
   anchorRect?: AvatarToolManagerAnchorRect | null;
   onSave: (toolIds: AvatarToolId[]) => void;
   onCancel: () => void;
+  createLimits?: LocalAvatarToolLimits | null;
+  userName?: string;
+  assistantName?: string;
+  onCreate?: (input: CreateLocalAvatarToolInput) => Promise<void>;
+  catalogRefreshFailed?: boolean;
 };
 
 const AVATAR_TOOL_DRAG_THRESHOLD = 7;
 const AVATAR_TOOL_MANAGER_VIEWPORT_GUTTER = 12;
 const AVATAR_TOOL_MANAGER_ANCHOR_GAP = 12;
-const AVATAR_TOOL_MANAGER_FALLBACK_WIDTH = 380;
-const AVATAR_TOOL_MANAGER_FALLBACK_HEIGHT = 600;
+const AVATAR_TOOL_MANAGER_FALLBACK_WIDTH = 460;
+const AVATAR_TOOL_MANAGER_FALLBACK_HEIGHT = 680;
 const AVATAR_TOOL_MANAGER_FOCUSABLE_SELECTOR = [
   'a[href]',
   'button:not([disabled])',
@@ -106,7 +115,7 @@ type AvatarToolManagerDialogDragSession = {
 };
 
 function getToolLabel(tool: AvatarToolItem): string {
-  return i18n(tool.labelKey, tool.labelFallback);
+  return getAvatarToolItemLabel(tool);
 }
 
 function getToolImageStyle(tool: AvatarToolItem): CSSProperties | undefined {
@@ -119,12 +128,22 @@ function getToolImageStyle(tool: AvatarToolItem): CSSProperties | undefined {
 }
 
 function createSlots(toolIds: AvatarToolId[]): AvatarToolSlotValue[] {
-  const sanitized = sanitizeAvatarToolIds(toolIds);
-  return Array.from({ length: MAX_ACTIVE_AVATAR_TOOLS }, (_, index) => sanitized[index] ?? null);
+  const retained: AvatarToolId[] = [];
+  toolIds.forEach((toolId) => {
+    if (!isAvatarToolId(toolId) || retained.includes(toolId) || retained.length >= MAX_ACTIVE_AVATAR_TOOLS) return;
+    retained.push(toolId);
+  });
+  return Array.from({ length: MAX_ACTIVE_AVATAR_TOOLS }, (_, index) => retained[index] ?? null);
 }
 
-function compactSlots(slots: AvatarToolSlotValue[]): AvatarToolId[] {
-  return sanitizeAvatarToolIds(slots.filter((toolId): toolId is AvatarToolId => !!toolId));
+function compactSlots(
+  slots: AvatarToolSlotValue[],
+  validIds: ReadonlySet<AvatarToolId>,
+): AvatarToolId[] {
+  return sanitizeAvatarToolIds(
+    slots.filter((toolId): toolId is AvatarToolId => !!toolId),
+    validIds,
+  );
 }
 
 function getDropSlotIndexFromElement(element: Element | null): number | null {
@@ -171,11 +190,12 @@ function moveSlotTool(
   slots: AvatarToolSlotValue[],
   sourceIndex: number,
   targetIndex: number,
+  validIds: ReadonlySet<AvatarToolId>,
 ): AvatarToolSlotValue[] {
   if (sourceIndex === targetIndex) return slots;
   const movingToolId = slots[sourceIndex];
   if (!movingToolId) return slots;
-  const ids = compactSlots(slots).filter(toolId => toolId !== movingToolId);
+  const ids = compactSlots(slots, validIds).filter(toolId => toolId !== movingToolId);
   ids.splice(Math.min(targetIndex, ids.length), 0, movingToolId);
   return createSlots(ids);
 }
@@ -341,8 +361,18 @@ export default function AvatarToolItemManager({
   anchorRect = null,
   onSave,
   onCancel,
+  createLimits = null,
+  userName = '',
+  assistantName = '',
+  onCreate,
+  catalogRefreshFailed = false,
 }: AvatarToolItemManagerProps) {
+  const validToolIds = useMemo(
+    () => new Set<AvatarToolId>(availableTools.map(tool => tool.id)),
+    [availableTools],
+  );
   const [draftSlots, setDraftSlots] = useState<AvatarToolSlotValue[]>(() => createSlots(activeToolIds));
+  const [view, setView] = useState<'library' | 'create'>('library');
   const [notice, setNotice] = useState('');
   const [dragSession, setDragSession] = useState<AvatarToolDragSession | null>(null);
   const [dialogPosition, setDialogPosition] = useState<AvatarToolManagerPosition | null>(null);
@@ -355,6 +385,7 @@ export default function AvatarToolItemManager({
   useEffect(() => {
     if (!open) return;
     setDraftSlots(createSlots(activeToolIds));
+    setView('library');
     setNotice('');
     setDragSession(null);
     setDialogDragSession(null);
@@ -465,7 +496,7 @@ export default function AvatarToolItemManager({
   const availableById = useMemo(() => (
     new Map(availableTools.map(tool => [tool.id, tool]))
   ), [availableTools]);
-  const equippedIds = compactSlots(draftSlots);
+  const equippedIds = compactSlots(draftSlots, validToolIds);
   const equippedIdSet = new Set(equippedIds);
   const draftFull = equippedIds.length >= MAX_ACTIVE_AVATAR_TOOLS;
   const dialogTitleId = 'avatar-tool-manager-title';
@@ -521,7 +552,7 @@ export default function AvatarToolItemManager({
       if (targetSlotIndex !== null) {
         setDraftSlots((slots) => {
           if (session.kind === 'slot' && typeof session.slotIndex === 'number') {
-            return moveSlotTool(slots, session.slotIndex, targetSlotIndex);
+            return moveSlotTool(slots, session.slotIndex, targetSlotIndex, validToolIds);
           }
           return placeLibraryToolInSlot(slots, session.toolId, targetSlotIndex);
         });
@@ -569,7 +600,7 @@ export default function AvatarToolItemManager({
   };
 
   const handleSave = () => {
-    onSave(compactSlots(draftSlots));
+    onSave(compactSlots(draftSlots, validToolIds));
   };
 
   const startDialogDrag = (event: ReactPointerEvent<HTMLElement>) => {
@@ -685,8 +716,14 @@ export default function AvatarToolItemManager({
         onPointerCancel={cancelDialogDrag}
       >
         <div>
-          <h2 id={dialogTitleId}>{i18n('chat.avatarToolManagerTitle', 'Manage tools')}</h2>
-          <p>{i18n('chat.avatarToolManagerSubtitle', 'Choose up to 3 quick tools.')}</p>
+          <h2 id={dialogTitleId}>
+            {view === 'create'
+              ? i18n('chat.avatarToolCreateTitle', 'Create custom tool')
+              : i18n('chat.avatarToolManagerTitle', 'Manage tools')}
+          </h2>
+          <p>{view === 'create'
+            ? i18n('chat.avatarToolCreateSubtitle', 'Set the tool images, image switching, and interaction descriptions.')
+            : i18n('chat.avatarToolManagerSubtitle', 'Choose up to 3 quick tools.')}</p>
         </div>
         <button
           className="avatar-tool-manager-icon-button"
@@ -700,6 +737,21 @@ export default function AvatarToolItemManager({
         </button>
       </header>
 
+      {view === 'create' && onCreate ? (
+        <div className="avatar-tool-manager-body avatar-tool-manager-create-body">
+          <AvatarToolCreatePage
+            limits={createLimits}
+            userName={userName}
+            assistantName={assistantName}
+            onCancel={() => setView('library')}
+            onCreate={async (input) => {
+              await onCreate(input);
+              setView('library');
+            }}
+          />
+        </div>
+      ) : (
+        <>
       <div className="avatar-tool-manager-body">
         <section className="avatar-tool-manager-section" aria-label={i18n('chat.avatarToolCurrentTools', 'Current tools')}>
           <h3>{i18n('chat.avatarToolCurrentTools', 'Current tools')}</h3>
@@ -789,6 +841,19 @@ export default function AvatarToolItemManager({
                   </button>
                 );
               })}
+              {onCreate ? (
+                <button
+                  className="avatar-tool-manager-library-card avatar-tool-manager-create-card"
+                  type="button"
+                  data-avatar-tool-create
+                  onClick={() => setView('create')}
+                >
+                  <span className="avatar-tool-manager-create-plus" aria-hidden="true">+</span>
+                  <span className="avatar-tool-manager-library-label">
+                    {i18n('chat.avatarToolCreateNew', 'Create tool')}
+                  </span>
+                </button>
+              ) : null}
             </div>
           ) : (
             <p className="avatar-tool-manager-empty-library">
@@ -804,6 +869,12 @@ export default function AvatarToolItemManager({
         </p>
       ) : null}
 
+      {catalogRefreshFailed ? (
+        <p className="avatar-tool-manager-notice" role="alert">
+          {i18n('chat.avatarToolRefreshError', 'Could not refresh local tools. The previous list is still available.')}
+        </p>
+      ) : null}
+
       <footer className="avatar-tool-manager-actions">
         <button className="avatar-tool-manager-action secondary" type="button" onClick={onCancel}>
           {i18n('chat.avatarToolCancel', 'Cancel')}
@@ -812,6 +883,8 @@ export default function AvatarToolItemManager({
           {i18n('chat.avatarToolSave', 'Save changes')}
         </button>
       </footer>
+        </>
+      )}
 
       {dragSession?.active && dragTool ? (
         <div

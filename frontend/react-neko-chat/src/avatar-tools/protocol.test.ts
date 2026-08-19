@@ -45,7 +45,7 @@ function declaredFacts(profile: AvatarToolInteractionProfile) {
         intensities: [profile.burst.normalIntensity, profile.burst.rapidIntensity],
       }],
       touchZones: profile.touchZones,
-      chanceField: profile.chance.field,
+      chanceField: profile.chance?.field ?? null,
       chanceIntensity: null,
     };
   }

@@ -54,8 +54,11 @@ describe('message-schema', () => {
     expect(props).toEqual({});
   });
 
-  it('accepts only a real non-empty assistant name for localized tool results', () => {
-    expect(parseChatWindowProps({ assistantName: ' Yui ' }).assistantName).toBe('Yui');
+  it('accepts only real non-empty participant names for localized tool results', () => {
+    const names = parseChatWindowProps({ userName: ' Ming ', assistantName: ' Yui ' });
+    expect(names.userName).toBe('Ming');
+    expect(names.assistantName).toBe('Yui');
+    expect(() => parseChatWindowProps({ userName: '   ' })).toThrow();
     expect(() => parseChatWindowProps({ assistantName: '   ' })).toThrow();
   });
 

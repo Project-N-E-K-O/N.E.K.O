@@ -18,6 +18,7 @@
 import asyncio
 import os
 import secrets
+from pathlib import Path
 from urllib.parse import parse_qsl
 
 import httpx
@@ -61,6 +62,18 @@ class CustomStaticFiles(StaticFiles):
         return response
 
 
+class AvatarToolStaticFiles(CustomStaticFiles):
+    """Expose generated media only; private records never enter HTTP space."""
+
+    async def get_response(self, path, scope):
+        from starlette.exceptions import HTTPException as StarletteHTTPException
+        from utils.avatar_tool_store import is_public_avatar_tool_resource_path
+
+        if not is_public_avatar_tool_resource_path(Path(self.directory), path):
+            raise StarletteHTTPException(status_code=404)
+        return await super().get_response(path, scope)
+
+
 # 确定 static 目录位置（使用 _get_app_root）
 static_dir = os.path.join(_get_app_root(), "static")
 
@@ -72,6 +85,7 @@ if _IS_MAIN_PROCESS:
     _config_manager.ensure_vrm_directory()
     _config_manager.ensure_mmd_directory()
     _config_manager.ensure_pngtuber_directory()
+    _config_manager.ensure_avatar_tools_directory()
     _config_manager.ensure_chara_directory()
 
     # CFA (反勒索防护) 感知挂载：
@@ -157,6 +171,15 @@ if _IS_MAIN_PROCESS:
         )
         logger.info(f"已挂载PNGTuber目录: {user_pngtuber_path}")
 
+    user_avatar_tools_path = str(_config_manager.avatar_tools_dir)
+    if os.path.exists(user_avatar_tools_path):
+        app.mount(
+            "/user_avatar_tools",
+            AvatarToolStaticFiles(directory=user_avatar_tools_path),
+            name="user_avatar_tools",
+        )
+        logger.info("已挂载本地Avatar Tool资源目录: %s", user_avatar_tools_path)
+
     # 挂载项目目录下的static/mmd（作为备用）
     project_mmd_path = os.path.join(static_dir, "mmd")
     if os.path.exists(project_mmd_path) and os.path.isdir(project_mmd_path):
@@ -174,6 +197,7 @@ if _IS_MAIN_PROCESS:
 # 显式从各子模块导入 router，避免与包级模块导出产生同名遮蔽。
 from main_routers.agent_router import router as agent_router  # noqa
 from main_routers.avatar_drop_router import router as avatar_drop_router  # noqa
+from main_routers.avatar_tool_router import router as avatar_tool_router  # noqa
 from main_routers.card_assist_router import router as card_assist_router  # noqa
 from main_routers.capture_router import router as capture_router  # noqa
 from main_routers.characters_router import router as characters_router  # noqa
@@ -499,6 +523,7 @@ app.include_router(storage_location_router)
 app.include_router(websocket_router)
 app.include_router(agent_router)
 app.include_router(avatar_drop_router)
+app.include_router(avatar_tool_router)
 app.include_router(system_router)
 app.include_router(tool_router)
 app.include_router(music_router)
