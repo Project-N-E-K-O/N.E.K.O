@@ -22,6 +22,7 @@ def test_static_document_analysis_uses_cancellable_long_job_contract() -> None:
     assert 'id="studyDocumentProgressBar"' in html
     assert 'data-i18n="ui.document.cancel_analysis"' in html
     assert "study_start_document_analysis" in controller
+    assert "document_truncated: Boolean(importedDocument.truncated)" in controller
     assert "study_document_analysis_status" in controller
     assert "study_cancel_document_analysis" in controller
     assert "let delay = 1000" in controller
@@ -690,6 +691,7 @@ const runningResume = createEnvironment(async (entryId, _args, signal) => {
         type: 'application/pdf',
         chars: 321,
         tokens: 42,
+        truncated: true,
         source_retained: false,
       },
     };
@@ -725,6 +727,10 @@ const runningResumeMeta = runningResume.document.getElementById('studyDocumentMe
 assert(
   runningResumeMeta.includes('321') && runningResumeMeta.includes('42'),
   `running saved job did not restore public document metadata: ${runningResumeMeta}`,
+);
+assert(
+  !runningResume.document.getElementById('studyDocumentTruncated').hidden,
+  'running saved truncated job hid the truncation warning',
 );
 assert(
   !runningResume.document.getElementById('studyDocumentProgress').hidden,

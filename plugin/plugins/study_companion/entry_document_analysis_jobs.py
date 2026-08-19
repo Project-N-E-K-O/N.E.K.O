@@ -136,6 +136,7 @@ class _DocumentAnalysisJobsEntriesMixin:
                     "writeOnly": True,
                     "x-sensitive": True,
                 },
+                "document_truncated": {"type": "boolean", "default": False},
                 "analysis_instruction": {
                     "type": "string",
                     "maxLength": 1000,
@@ -173,6 +174,7 @@ class _DocumentAnalysisJobsEntriesMixin:
         document_name: str,
         document_type: str,
         document_text: str,
+        document_truncated: bool = False,
         analysis_instruction: str = "",
         analysis_kind: str = "auto",
         locale: str = "zh-CN",
@@ -203,6 +205,8 @@ class _DocumentAnalysisJobsEntriesMixin:
                 )
             )
             total_chunks = 1 if analysis_mode == "direct" else len(chunks)
+            document_metadata = document.public_metadata()
+            document_metadata["truncated"] = bool(document_truncated)
             resolve_runtime = getattr(self._agent, "resolve_model_runtime", None)
             model_runtime = (
                 await resolve_runtime("agent") if callable(resolve_runtime) else None
@@ -323,7 +327,7 @@ class _DocumentAnalysisJobsEntriesMixin:
                                 f"sha256:{job_document.sha256[:12]}"
                             ),
                             reply=merge_result.text,
-                            payload={"document": job_document.public_metadata()},
+                            payload={"document": dict(document_metadata)},
                             diagnostic=diagnostic,
                             created_at=utc_now_iso(),
                         )
@@ -332,7 +336,7 @@ class _DocumentAnalysisJobsEntriesMixin:
                         merge_output_truncated = False
                     else:
                         merge_output_truncated = merge_result.output_limit_reached
-                    metadata = job_document.public_metadata()
+                    metadata = dict(document_metadata)
                     metadata["chunks"] = total_chunks
                     metadata["analysis_mode"] = analysis_mode
                     finalize_remaining = budget.deadline_monotonic - time.monotonic()
@@ -446,7 +450,7 @@ class _DocumentAnalysisJobsEntriesMixin:
                     owner_id=job_owner,
                     start_token=start_token,
                     analysis_mode=analysis_mode,
-                    document=document.public_metadata(),
+                    document=document_metadata,
                     total_chunks=total_chunks,
                     runner=runner,
                     on_completed=on_completed,

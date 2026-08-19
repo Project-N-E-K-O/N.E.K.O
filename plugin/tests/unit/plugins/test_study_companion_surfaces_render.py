@@ -612,7 +612,9 @@ def test_study_companion_surfaces_share_ui8_interaction_styles_and_messages() ->
     assert 'className="pomodoro-ring__time"' in pomodoro
     assert 'data-action="start"' in pomodoro
     assert 'disabled={!isFocusing}' in pomodoro
-    assert "focus_minutes: normalizedFocusMinutes()" in pomodoro
+    assert "const allowCustomDuration = status.config?.allow_custom_duration !== false;" in pomodoro
+    assert "disabled={isRunning || !allowCustomDuration}" in pomodoro
+    assert "allowCustomDuration ? { focus_minutes: normalizedFocusMinutes() } : {}" in pomodoro
     assert 'className="pomodoro-duration"' in pomodoro
     assert 'className="pomodoro-ring__value"' in pomodoro
     assert "strokeDashoffset={progressOffset}" in pomodoro
@@ -663,6 +665,22 @@ def test_hosted_document_start_cancellation_keeps_pending_job_recoverable() -> N
     assert "&& data?.status === 'idle'" in resume
     assert "Date.now() < pendingStartRecoveryDeadline" in resume
     assert "await waitForDocumentPoll(1_000, signal);" in resume
+
+
+def test_hosted_document_recovery_restores_safe_card_metadata() -> None:
+    source = _read("study_panel.tsx")
+    resume_start = source.index("async function resumeDocumentJob")
+    resume_end = source.index("async function cancelKnownDocumentJob", resume_start)
+    resume = source[resume_start:resume_end]
+    analyze_start = source.index("async function analyzeDocument")
+    analyze_end = source.index("async function refresh(", analyze_start)
+    analyze = source[analyze_start:analyze_end]
+
+    assert "document?: DocumentJobMetadata;" in source
+    assert "function restoredStudyDocument" in source
+    assert "truncated: metadata?.truncated === true" in source
+    assert "setStudyDocument((current) => current || restoredDocument);" in resume
+    assert "document_truncated: currentDocument.truncated" in analyze
 
 
 def test_memory_deck_surface_refetches_items_when_reopened() -> None:

@@ -423,7 +423,9 @@
         chars: chars.toLocaleString(),
         tokens: tokens.toLocaleString(),
       });
-      if (studyDocumentTruncated) studyDocumentTruncated.hidden = true;
+      if (studyDocumentTruncated) {
+        studyDocumentTruncated.hidden = metadata.truncated !== true;
+      }
     }
 
     function setDocumentBusy(busy) {
@@ -652,6 +654,7 @@
           document_name: importedDocument.name,
           document_type: importedDocument.type,
           document_text: documentSource,
+          document_truncated: Boolean(importedDocument.truncated),
           analysis_kind: documentKind,
           analysis_instruction: studyDocumentInstruction?.value.trim() || '',
           locale: window.I18n?.lang?.() || document.documentElement.lang || '',

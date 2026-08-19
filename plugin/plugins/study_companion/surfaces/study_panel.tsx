@@ -100,6 +100,14 @@ type DocumentJobState = {
   progress: number;
 };
 
+type DocumentJobMetadata = {
+  name?: string;
+  type?: string;
+  chars?: number;
+  tokens?: number;
+  truncated?: boolean;
+};
+
 type DocumentJobPayload = {
   job_id?: string;
   status?: string;
@@ -113,6 +121,7 @@ type DocumentJobPayload = {
   summary?: string;
   degraded?: boolean;
   diagnostic?: string;
+  document?: DocumentJobMetadata;
 };
 
 const DOCUMENT_JOB_STORAGE_KEY = 'study_companion.document_analysis_job_id';
@@ -1365,6 +1374,31 @@ export default function StudyPanel(props: PluginSurfaceProps) {
     };
   }
 
+  function restoredStudyDocument(metadata?: DocumentJobMetadata): StudyDocument | null {
+    const name = String(metadata?.name || '').trim();
+    const analysisType = String(metadata?.type || '') as StudyDocument['analysisType'];
+    const sourceTypeByAnalysisType: Partial<Record<StudyDocument['analysisType'], StudyDocument['sourceType']>> = {
+      'text/plain': 'txt',
+      'text/markdown': 'markdown',
+      'application/pdf': 'pdf',
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document': 'docx',
+    };
+    const sourceType = sourceTypeByAnalysisType[analysisType];
+    if (!name || !sourceType) return null;
+    return {
+      name,
+      sourceType,
+      analysisType,
+      originalSize: 0,
+      encoding: 'recovered',
+      chars: Math.max(0, Math.floor(Number(metadata?.chars) || 0)),
+      estimatedTokens: Math.max(0, Math.floor(Number(metadata?.tokens) || 0)),
+      truncated: metadata?.truncated === true,
+      meta: { source_retained: false },
+      modified: false,
+    };
+  }
+
   function formatDocumentCompletion(payload: DocumentJobPayload) {
     const result = payload.reply || payload.summary || '';
     if (payload.diagnostic !== 'output_truncated') return result;
@@ -1595,6 +1629,11 @@ export default function StudyPanel(props: PluginSurfaceProps) {
         continue;
       }
 
+      const restoredDocument = restoredStudyDocument(data?.document);
+      if (restoredDocument) {
+        setStudyDocument((current) => current || restoredDocument);
+      }
+
       if (
         pendingStart
         && data?.status === 'idle'
@@ -1743,6 +1782,7 @@ export default function StudyPanel(props: PluginSurfaceProps) {
         document_name: currentDocument.name,
         document_type: currentDocument.analysisType,
         document_text: documentSource,
+        document_truncated: currentDocument.truncated,
         analysis_kind: documentKind,
         analysis_instruction: documentInstruction.trim(),
         locale: String(props.locale || '').trim(),

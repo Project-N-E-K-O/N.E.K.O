@@ -756,9 +756,11 @@ async def test_start_direct_mode_finalizes_once_without_returning_source(
         document_name="notes.txt",
         document_type="text/plain",
         document_text=source,
+        document_truncated=True,
         locale="en",
     )
     assert isinstance(result, Ok)
+    assert result.value["document"]["truncated"] is True
     job_id = result.value["job_id"]
     for _ in range(20):
         status = await owner._document_jobs.status(job_id)
@@ -766,6 +768,7 @@ async def test_start_direct_mode_finalizes_once_without_returning_source(
             break
         await asyncio.sleep(0)
     assert status["status"] == "completed"
+    assert status["document"]["truncated"] is True
     assert calls == [LLM_OPERATION_DOCUMENT_ANALYZE]
     assert source not in repr(status)
 
