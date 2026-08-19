@@ -262,8 +262,53 @@ class AgentObservationMixin:
                     retire=True,
                 )
                 return False
+            summary_shared = shared
+            save_context = snapshot.get("save_context")
+            save_obj = save_context if isinstance(save_context, dict) else {}
+            if str(save_obj.get("kind") or "").strip().lower() in {
+                "load",
+                "rollback",
+            }:
+                line_occurrences = self._scene_capsule_line_occurrences(
+                    shared,
+                    snapshot=snapshot,
+                )
+                choice_occurrences = self._scene_capsule_choice_occurrences(
+                    shared,
+                    snapshot=snapshot,
+                )
+                (
+                    filtered_line_occurrences,
+                    filtered_choice_occurrences,
+                    timeline_boundary_active,
+                ) = self._scene_timeline_occurrences_after_save_boundary(
+                    shared,
+                    snapshot=snapshot,
+                    line_occurrences=line_occurrences,
+                    choice_occurrences=choice_occurrences,
+                )
+                if timeline_boundary_active:
+                    summary_shared = dict(shared)
+                    summary_shared["history_lines"] = [
+                        dict(line)
+                        for occurrence in filtered_line_occurrences
+                        if isinstance(line := occurrence.get("line"), dict)
+                    ]
+                    # Observed lines do not carry the occurrence identity needed to
+                    # prove that they are post-boundary. Drop them conservatively.
+                    summary_shared["history_observed_lines"] = []
+                    summary_shared["history_choices"] = [
+                        {
+                            **dict(choice),
+                            "action": "selected",
+                        }
+                        for occurrence in filtered_choice_occurrences
+                        if isinstance(choice := occurrence.get("choice"), dict)
+                        and str(choice.get("choice_state") or "").strip().lower()
+                        == "selected"
+                    ]
             context = build_summarize_context(
-                shared,
+                summary_shared,
                 scene_id=current_scene_id,
                 config=self._context_config,
             )

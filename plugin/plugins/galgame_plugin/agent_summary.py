@@ -1562,11 +1562,16 @@ class AgentSummaryMixin:
                         choices=[choice],
                     )
                 )
+                group_occurrence = (
+                    group_signature
+                    if choice_state == "visible"
+                    else f"{group_signature}|occurrence:{occurrence_id}"
+                )
                 group_key = self._scene_capsule_event_key(
                     data_source,
                     session_id,
                     f"history_choice:{choice_state}:group",
-                    group_signature,
+                    group_occurrence,
                 )
                 occurrences.append(
                     {

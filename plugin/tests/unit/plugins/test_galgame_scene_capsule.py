@@ -5817,3 +5817,148 @@ async def test_scene_transition_retires_skipped_prior_scene_line(
     await agent.drain_summary_tasks(timeout=1.0)
 
     assert ctx.pushed_messages == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
+async def test_local_scene_memory_excludes_preload_history_on_scene_transition(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    agent = GameLLMAgent(
+        plugin=GalgameBridgePlugin(_Ctx(plugin_dir, _make_effective_config(bridge_root))),
+        logger=_Logger(),
+        llm_gateway=_FakeLLMGateway(),
+        host_adapter=_FakeHostAdapter(),
+    )
+    save_context = {
+        "kind": "load",
+        "slot_id": "slot-1",
+        "checkpoint_id": "checkpoint-a",
+    }
+    abandoned_line = _summary_test_line("scene-a", 1)
+    abandoned_line["text"] = "abandoned future dialogue"
+    restored_line = _summary_test_line("scene-a", 2)
+    restored_line["text"] = "restored timeline dialogue"
+    old_line_event = _summary_test_line_event("scene-a", 1, seq=1)
+    old_payload = old_line_event.get("payload")
+    assert isinstance(old_payload, dict)
+    old_payload["text"] = str(abandoned_line["text"])
+    load_event = _event(
+        seq=2,
+        event_type="save_loaded",
+        session_id="sess-a",
+        game_id="demo.alpha",
+        ts="2026-04-21T08:35:02Z",
+        payload={
+            "reason": "load",
+            "scene_id": "scene-a",
+            "route_id": "route-a",
+            "save_context": save_context,
+        },
+    )
+    transition_event = _event(
+        seq=3,
+        event_type="scene_changed",
+        session_id="sess-a",
+        game_id="demo.alpha",
+        ts="2026-04-21T08:35:03Z",
+        payload={
+            "scene_id": "scene-a",
+            "previous_scene_id": "scene-b",
+            "route_id": "route-a",
+        },
+    )
+    restored_line_event = _summary_test_line_event("scene-a", 2, seq=4)
+    restored_payload = restored_line_event.get("payload")
+    assert isinstance(restored_payload, dict)
+    restored_payload["text"] = str(restored_line["text"])
+    snapshot = _session_state(
+        scene_id="scene-a",
+        route_id="route-a",
+        text=str(restored_line["text"]),
+        line_id=str(restored_line["line_id"]),
+        ts=str(restored_line["ts"]),
+    )
+    snapshot["save_context"] = save_context
+    shared = _shared_state(
+        session_id="sess-a",
+        last_seq=4,
+        snapshot=snapshot,
+        history_events=[
+            old_line_event,
+            load_event,
+            transition_event,
+            restored_line_event,
+        ],
+        history_lines=[abandoned_line, restored_line],
+    )
+    agent._observed_session_id = "sess-a"
+    agent._observed_session_fingerprint = agent._session_fingerprint(shared)
+    agent._observed_scene_id = "scene-b"
+    agent._observed_route_id = "route-a"
+
+    async def _noop_async(*args: Any, **kwargs: Any) -> None:
+        del args, kwargs
+
+    monkeypatch.setattr(agent, "_maybe_push_periodic_scene_summary", _noop_async)
+    monkeypatch.setattr(agent, "_maybe_consult_cat", _noop_async)
+
+    await agent._observe(shared)
+
+    scene_summary = next(
+        str(item.get("summary") or "")
+        for item in agent._scene_memory
+        if str(item.get("scene_id") or "") == "scene-a"
+        and str(item.get("route_id") or "") == "route-a"
+    )
+    assert "abandoned future dialogue" not in scene_summary
+    assert "restored timeline dialogue" in scene_summary
+
+
+@pytest.mark.plugin_unit
+def test_repeated_fallback_selected_choices_have_distinct_group_keys(
+    tmp_path: Path,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    agent = GameLLMAgent(
+        plugin=GalgameBridgePlugin(_Ctx(plugin_dir, _make_effective_config(bridge_root))),
+        logger=_Logger(),
+        llm_gateway=_FakeLLMGateway(),
+        host_adapter=_FakeHostAdapter(),
+    )
+    repeated_choices = [
+        {
+            "choice_id": "choice-a",
+            "text": "take the same route",
+            "action": "selected",
+            "scene_id": "scene-a",
+            "route_id": "route-a",
+            "ts": ts,
+        }
+        for ts in (
+            "2026-04-21T08:35:01Z",
+            "2026-04-21T08:35:02Z",
+        )
+    ]
+    shared = _shared_state(
+        session_id="sess-a",
+        snapshot=_session_state(scene_id="scene-a", route_id="route-a"),
+        history_choices=repeated_choices,
+    )
+
+    occurrences = agent._scene_capsule_choice_occurrences(
+        shared,
+        snapshot=dict(shared["latest_snapshot"]),
+    )
+    selected_occurrences = [
+        item
+        for item in occurrences
+        if str((item.get("choice") or {}).get("choice_state") or "") == "selected"
+    ]
+
+    assert len(selected_occurrences) == 2
+    assert len(
+        {str(item.get("event_group_key") or "") for item in selected_occurrences}
+    ) == 2
