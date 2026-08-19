@@ -71,6 +71,8 @@ class AgentSceneTracker:
                 "scope_key": scope_key,
                 "seen_line_keys": set(),
                 "seen_line_key_order": [],
+                "pending_line_occurrences": {},
+                "scheduled_line_keys_by_owner": {},
                 "lines_since_push": 0,
                 "last_line_seq": 0,
                 "last_line_ts": "",
@@ -93,6 +95,7 @@ class AgentSceneTracker:
         seq: int,
         ts: str,
         now_monotonic: float = 0.0,
+        occurrence: dict[str, Any] | None = None,
     ) -> bool:
         if not scene_id or not key:
             return False
@@ -112,6 +115,16 @@ class AgentSceneTracker:
         seen_line_keys.add(key)
         seen_line_key_order.append(key)
         self._trim_seen_line_window(seen_line_keys, seen_line_key_order)
+        if isinstance(occurrence, dict):
+            pending_line_occurrences = state.get("pending_line_occurrences")
+            if not isinstance(pending_line_occurrences, dict):
+                pending_line_occurrences = {}
+                state["pending_line_occurrences"] = pending_line_occurrences
+            stored_occurrence = dict(occurrence)
+            line = occurrence.get("line")
+            if isinstance(line, dict):
+                stored_occurrence["line"] = dict(line)
+            pending_line_occurrences[key] = stored_occurrence
         lines_since_push = int(state.get("lines_since_push") or 0)
         if lines_since_push <= 0:
             state["pending_since_monotonic"] = float(now_monotonic or 0.0)
@@ -137,6 +150,21 @@ class AgentSceneTracker:
         owner_token = self._summary_schedule_owner_counter
         active_owner_tokens = self._active_scene_summary_schedule_owners(state)
         active_owner_tokens.add(owner_token)
+        scheduled_line_count = int(state.get("lines_since_push") or 0)
+        seen_line_key_order = [
+            str(item)
+            for item in list(state.get("seen_line_key_order") or [])
+            if str(item)
+        ]
+        scheduled_line_keys_by_owner = state.get("scheduled_line_keys_by_owner")
+        if not isinstance(scheduled_line_keys_by_owner, dict):
+            scheduled_line_keys_by_owner = {}
+            state["scheduled_line_keys_by_owner"] = scheduled_line_keys_by_owner
+        scheduled_line_keys_by_owner[owner_token] = list(
+            seen_line_key_order[-scheduled_line_count:]
+            if scheduled_line_count > 0
+            else []
+        )
         state["lines_since_push"] = 0
         state["last_scheduled_seq"] = int(seq or 0)
         state["last_schedule_owner_token"] = owner_token
@@ -162,6 +190,16 @@ class AgentSceneTracker:
             return
         if not self._release_scene_summary_schedule(state, owner_token=owner_token):
             return
+        scheduled_line_keys_by_owner = state.get("scheduled_line_keys_by_owner")
+        scheduled_line_keys = (
+            list(scheduled_line_keys_by_owner.pop(owner_token, []))
+            if isinstance(scheduled_line_keys_by_owner, dict)
+            else []
+        )
+        pending_line_occurrences = state.get("pending_line_occurrences")
+        if isinstance(pending_line_occurrences, dict):
+            for key in scheduled_line_keys:
+                pending_line_occurrences.pop(str(key), None)
         if int(state.get("last_schedule_owner_token") or 0) != int(owner_token or 0):
             self.sync_current_scene_summary_mirror(
                 self.summary_scene_id,
@@ -193,6 +231,9 @@ class AgentSceneTracker:
             return
         if not self._release_scene_summary_schedule(state, owner_token=owner_token):
             return
+        scheduled_line_keys_by_owner = state.get("scheduled_line_keys_by_owner")
+        if isinstance(scheduled_line_keys_by_owner, dict):
+            scheduled_line_keys_by_owner.pop(owner_token, None)
         if int(state.get("last_schedule_owner_token") or 0) != int(owner_token or 0):
             self.sync_current_scene_summary_mirror(
                 self.summary_scene_id,
@@ -224,6 +265,16 @@ class AgentSceneTracker:
             return
         if not self._release_scene_summary_schedule(state, owner_token=owner_token):
             return
+        scheduled_line_keys_by_owner = state.get("scheduled_line_keys_by_owner")
+        scheduled_line_keys = (
+            list(scheduled_line_keys_by_owner.pop(owner_token, []))
+            if isinstance(scheduled_line_keys_by_owner, dict)
+            else []
+        )
+        pending_line_occurrences = state.get("pending_line_occurrences")
+        if isinstance(pending_line_occurrences, dict):
+            for key in scheduled_line_keys:
+                pending_line_occurrences.pop(str(key), None)
         if int(state.get("last_schedule_owner_token") or 0) == int(owner_token or 0):
             state["last_scheduled_seq"] = 0
         if int(state.get("lines_since_push") or 0) <= 0:

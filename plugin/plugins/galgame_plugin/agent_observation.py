@@ -248,6 +248,7 @@ class AgentObservationMixin:
             current_scene_id != self._observed_scene_id
             or current_route_id != self._observed_route_id
         )
+        pending_local_scene_memory: dict[str, Any] | None = None
         if scene_changed:
             if not allow_agent_side_effects:
                 # Read-only calls must not archive or schedule, but the newly
@@ -263,6 +264,7 @@ class AgentObservationMixin:
                 )
                 return False
             summary_shared = shared
+            timeline_boundary_active = False
             save_context = snapshot.get("save_context")
             save_obj = save_context if isinstance(save_context, dict) else {}
             if str(save_obj.get("kind") or "").strip().lower() in {
@@ -326,16 +328,23 @@ class AgentObservationMixin:
                 for item in self._scene_memory
             )
             if not existing_scene_memory:
-                self._append_bounded(
-                    self._scene_memory,
-                    {
-                        "scene_id": current_scene_id,
-                        "route_id": current_route_id,
-                        "summary": summary,
-                        "ts": str(snapshot.get("ts") or ""),
-                    },
-                    limit=32,
-                )
+                local_scene_memory = {
+                    "scene_id": current_scene_id,
+                    "route_id": current_route_id,
+                    "summary": summary,
+                    "ts": str(snapshot.get("ts") or ""),
+                }
+                if timeline_boundary_active:
+                    # A periodic summary resets scene memory when it observes
+                    # the load boundary. Preserve the filtered local summary
+                    # until that reset has completed.
+                    pending_local_scene_memory = local_scene_memory
+                else:
+                    self._append_bounded(
+                        self._scene_memory,
+                        local_scene_memory,
+                        limit=32,
+                    )
             self._observed_scene_id = current_scene_id
             self._observed_route_id = current_route_id
             self._scene_tracker.reset_summary(scene_id=current_scene_id)
@@ -350,6 +359,18 @@ class AgentObservationMixin:
                     boundary=context_boundary,
                 )
             await self._maybe_push_periodic_scene_summary(shared, snapshot=snapshot)
+            if pending_local_scene_memory is not None and not any(
+                isinstance(item, dict)
+                and str(item.get("scene_id") or "") == current_scene_id
+                and str(item.get("route_id") or "") == current_route_id
+                and str(item.get("summary") or "").strip()
+                for item in self._scene_memory
+            ):
+                self._append_bounded(
+                    self._scene_memory,
+                    pending_local_scene_memory,
+                    limit=32,
+                )
             # host-play-mode plan, steps 8 + 10: fire-and-forget consultation.
             # Re-enqueues the consult prompt through _push_agent_message so the
             # cat receives it via the normal channel; replies arrive via the

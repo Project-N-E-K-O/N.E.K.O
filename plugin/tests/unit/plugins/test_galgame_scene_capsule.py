@@ -5883,6 +5883,8 @@ async def test_local_scene_memory_excludes_preload_history_on_scene_transition(
     )
     snapshot["save_context"] = save_context
     shared = _shared_state(
+        mode="companion",
+        push_notifications=False,
         session_id="sess-a",
         last_seq=4,
         snapshot=snapshot,
@@ -5902,7 +5904,6 @@ async def test_local_scene_memory_excludes_preload_history_on_scene_transition(
     async def _noop_async(*args: Any, **kwargs: Any) -> None:
         del args, kwargs
 
-    monkeypatch.setattr(agent, "_maybe_push_periodic_scene_summary", _noop_async)
     monkeypatch.setattr(agent, "_maybe_consult_cat", _noop_async)
 
     await agent._observe(shared)
@@ -5962,3 +5963,222 @@ def test_repeated_fallback_selected_choices_have_distinct_group_keys(
     assert len(
         {str(item.get("event_group_key") or "") for item in selected_occurrences}
     ) == 2
+
+
+@pytest.mark.plugin_unit
+def test_late_load_observation_establishes_conservative_history_fence(
+    tmp_path: Path,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    agent = GameLLMAgent(
+        plugin=GalgameBridgePlugin(_Ctx(plugin_dir, _make_effective_config(bridge_root))),
+        logger=_Logger(),
+        llm_gateway=_FakeLLMGateway(),
+        host_adapter=_FakeHostAdapter(),
+    )
+    snapshot = _session_state(scene_id="scene-a", route_id="route-a")
+    snapshot["save_context"] = {
+        "kind": "load",
+        "slot_id": "slot-1",
+        "checkpoint_id": "checkpoint-a",
+    }
+    retained_line = {
+        **_summary_test_line("scene-a", 1),
+        "route_id": "route-a",
+        "text": "retained abandoned dialogue",
+    }
+    retained_choice = {
+        "choice_id": "old-choice",
+        "text": "retained abandoned choice",
+        "action": "selected",
+        "scene_id": "scene-a",
+        "route_id": "route-a",
+        "ts": "2026-04-21T08:35:01Z",
+    }
+    first_shared = _shared_state(
+        session_id="sess-a",
+        snapshot=snapshot,
+        history_events=[],
+        history_lines=[retained_line],
+        history_choices=[retained_choice],
+    )
+    first_lines = agent._scene_capsule_line_occurrences(
+        first_shared,
+        snapshot=snapshot,
+    )
+    first_choices = agent._scene_capsule_choice_occurrences(
+        first_shared,
+        snapshot=snapshot,
+    )
+
+    filtered_lines, filtered_choices, boundary_active = (
+        agent._scene_timeline_occurrences_after_save_boundary(
+            first_shared,
+            snapshot=snapshot,
+            line_occurrences=first_lines,
+            choice_occurrences=first_choices,
+        )
+    )
+
+    assert boundary_active is True
+    assert filtered_lines == []
+    assert filtered_choices == []
+
+    restored_line = {
+        **_summary_test_line("scene-a", 2),
+        "route_id": "route-a",
+        "text": "new restored dialogue",
+    }
+    restored_choice = {
+        "choice_id": "new-choice",
+        "text": "new restored choice",
+        "action": "selected",
+        "scene_id": "scene-a",
+        "route_id": "route-a",
+        "ts": "2026-04-21T08:35:02Z",
+    }
+    second_shared = _shared_state(
+        session_id="sess-a",
+        snapshot=snapshot,
+        history_events=[],
+        history_lines=[retained_line, restored_line],
+        history_choices=[retained_choice, restored_choice],
+    )
+    second_lines = agent._scene_capsule_line_occurrences(
+        second_shared,
+        snapshot=snapshot,
+    )
+    second_choices = agent._scene_capsule_choice_occurrences(
+        second_shared,
+        snapshot=snapshot,
+    )
+
+    filtered_lines, filtered_choices, boundary_active = (
+        agent._scene_timeline_occurrences_after_save_boundary(
+            second_shared,
+            snapshot=snapshot,
+            line_occurrences=second_lines,
+            choice_occurrences=second_choices,
+        )
+    )
+
+    assert boundary_active is True
+    assert [item["line"]["text"] for item in filtered_lines] == [
+        "new restored dialogue"
+    ]
+    assert [item["choice"]["text"] for item in filtered_choices] == [
+        "new restored choice"
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
+async def test_archive_retains_pending_lines_beyond_live_history_window(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    agent = GameLLMAgent(
+        plugin=GalgameBridgePlugin(_Ctx(plugin_dir, _make_effective_config(bridge_root))),
+        logger=_Logger(),
+        llm_gateway=_FakeLLMGateway(),
+        host_adapter=_FakeHostAdapter(),
+    )
+    captured: list[dict[str, Any]] = []
+    monkeypatch.setattr(agent, "_maybe_schedule_scene_capsule", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        agent,
+        "_schedule_scene_summary_task",
+        lambda **kwargs: captured.append(kwargs),
+    )
+    expected_texts: list[str] = []
+
+    for index in range(1, 9):
+        line = {
+            **_summary_test_line("scene-a", index),
+            "route_id": "route-a",
+        }
+        event = _summary_test_line_event("scene-a", index, seq=index)
+        payload = event.get("payload")
+        assert isinstance(payload, dict)
+        payload["route_id"] = "route-a"
+        expected_texts.append(str(line["text"]))
+        snapshot = _session_state(
+            scene_id="scene-a",
+            route_id="route-a",
+            text=str(line["text"]),
+            line_id=str(line["line_id"]),
+            ts=str(line["ts"]),
+        )
+        shared = _shared_state(
+            mode="companion",
+            push_notifications=False,
+            session_id="sess-a",
+            last_seq=index,
+            snapshot=snapshot,
+            history_events=[event],
+            history_lines=[line],
+        )
+
+        await agent._maybe_push_periodic_scene_summary(
+            shared,
+            snapshot=snapshot,
+        )
+
+    assert len(captured) == 1
+    assert [
+        str(line.get("text") or "")
+        for line in captured[0]["context"]["new_stable_lines"]
+    ] == expected_texts
+
+
+@pytest.mark.plugin_unit
+def test_pending_line_content_survives_retry_and_clears_after_delivery() -> None:
+    tracker = AgentSceneTracker(seen_line_limit=8)
+    occurrence = {
+        "event_key": "line-1",
+        "seq": 1,
+        "line": {
+            "scene_id": "scene-a",
+            "route_id": "route-a",
+            "text": "pending dialogue",
+            "ts": "2026-04-21T08:35:01Z",
+        },
+    }
+    assert tracker.remember_scene_line(
+        "scene-a",
+        "line-1",
+        route_id="route-a",
+        seq=1,
+        ts="2026-04-21T08:35:01Z",
+        occurrence=occurrence,
+    )
+    first_owner = tracker.mark_scene_summary_scheduled(
+        "scene-a",
+        route_id="route-a",
+        seq=1,
+    )
+
+    tracker.restore_scene_summary_schedule(
+        "scene-a",
+        route_id="route-a",
+        seq=1,
+        lines_since_push=1,
+        owner_token=first_owner,
+    )
+
+    state = tracker.state_for_scene("scene-a", route_id="route-a")
+    assert list((state.get("pending_line_occurrences") or {}).keys()) == ["line-1"]
+    second_owner = tracker.mark_scene_summary_scheduled(
+        "scene-a",
+        route_id="route-a",
+        seq=1,
+    )
+    tracker.mark_scene_summary_delivered(
+        "scene-a",
+        route_id="route-a",
+        seq=1,
+        owner_token=second_owner,
+    )
+
+    assert state.get("pending_line_occurrences") == {}

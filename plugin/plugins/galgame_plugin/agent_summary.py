@@ -1732,7 +1732,23 @@ class AgentSummaryMixin:
             or str(boundary_state.get("kind") or "") != save_kind
             or str(boundary_state.get("save_identity") or "") != save_identity
         ):
-            return line_occurrences, choice_occurrences, False
+            # The load event may already have left the bounded event window
+            # before the agent's first observation.  Ordering is unknowable in
+            # that case, so fence every currently retained occurrence and let
+            # only subsequently allocated identities cross the boundary.
+            boundary_state = {
+                "marker": f"late:{save_identity}",
+                "kind": save_kind,
+                "save_identity": save_identity,
+                "seq": 0,
+                "ts": "",
+                "fallback_floors": {},
+                "pre_boundary_event_keys": {
+                    str(item.get("event_key") or "")
+                    for item in [*line_occurrences, *choice_occurrences]
+                    if str(item.get("event_key") or "")
+                },
+            }
 
         fallback_floors = dict(boundary_state.get("fallback_floors") or {})
         for source_key in fallback_source_keys:
@@ -3397,6 +3413,7 @@ class AgentSummaryMixin:
                 seq=seq,
                 ts=str(line.get("ts") or ""),
                 now_monotonic=now_ts,
+                occurrence=occurrence,
             ):
                 changed_scene_scope_keys.add(
                     self._scene_tracker.summary_scope_key(
@@ -3501,6 +3518,24 @@ class AgentSummaryMixin:
                 len(self._scene_tracker.summary_scene_states),
             )
 
+        archivable_line_occurrences_by_key: dict[str, dict[str, Any]] = {}
+        for summary_state in self._scene_tracker.summary_scene_states.values():
+            pending_line_occurrences = summary_state.get("pending_line_occurrences")
+            if not isinstance(pending_line_occurrences, dict):
+                continue
+            for pending_key, pending_occurrence in pending_line_occurrences.items():
+                if isinstance(pending_occurrence, dict) and str(pending_key):
+                    archivable_line_occurrences_by_key[str(pending_key)] = (
+                        pending_occurrence
+                    )
+        for occurrence in line_occurrences:
+            event_key = str(occurrence.get("event_key") or "")
+            if event_key:
+                archivable_line_occurrences_by_key[event_key] = occurrence
+        archivable_line_occurrences = list(
+            archivable_line_occurrences_by_key.values()
+        )
+
         scheduled: list[dict[str, Any]] = []
         for scene_scope_key in sorted(ready_scene_scope_keys):
             state = self._scene_tracker.summary_scene_states.get(scene_scope_key)
@@ -3596,7 +3631,7 @@ class AgentSummaryMixin:
             }
             scope_shared["history_lines"] = [
                 dict(line)
-                for occurrence in line_occurrences
+                for occurrence in archivable_line_occurrences
                 if isinstance(line := occurrence.get("line"), dict)
                 and (
                     str(line.get("scene_id") or ""),
@@ -3700,14 +3735,14 @@ class AgentSummaryMixin:
             )
             line_occurrences_by_key = {
                 str(occurrence.get("event_key") or ""): occurrence
-                for occurrence in line_occurrences
+                for occurrence in archivable_line_occurrences
                 if str(occurrence.get("event_key") or "")
             }
             line_event_indices = {
                 str(occurrence.get("event_key") or ""): int(
                     occurrence.get("history_event_index")
                 )
-                for occurrence in line_occurrences
+                for occurrence in archivable_line_occurrences
                 if str(occurrence.get("event_key") or "")
                 and occurrence.get("history_event_index") is not None
             }
@@ -3748,7 +3783,7 @@ class AgentSummaryMixin:
             )
             context["new_stable_lines"] = [
                 dict(line)
-                for occurrence in line_occurrences
+                for occurrence in archivable_line_occurrences
                 if str(occurrence.get("event_key") or "") in scheduled_line_keys
                 and isinstance(line := occurrence.get("line"), dict)
                 and (
