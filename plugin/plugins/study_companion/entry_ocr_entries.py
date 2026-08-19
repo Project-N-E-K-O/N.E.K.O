@@ -76,19 +76,25 @@ class _OcrEntriesMixin:
                     lanlan_name=_ocr_request_lanlan(kwargs)
                 )
             except InteractiveCaptureError as exc:
-                return _entry_exception_error(
-                    self,
-                    exc,
-                    operation="study_ocr_snapshot",
+                if not any(
+                    code in str(exc)
+                    for code in ("no_renderer", "main_server_unavailable")
+                ):
+                    return _entry_exception_error(
+                        self,
+                        exc,
+                        operation="study_ocr_snapshot",
+                    )
+                snapshot = await asyncio.to_thread(self._ocr_pipeline.capture_snapshot)
+            else:
+                if capture.canceled:
+                    return Ok(build_ocr_payload(OcrSnapshot(status="canceled")))
+                if capture.image is None:
+                    return Err(SdkError("interactive_capture: missing_image_data"))
+                snapshot = await asyncio.to_thread(
+                    self._ocr_pipeline.snapshot_from_image,
+                    capture.image,
                 )
-            if capture.canceled:
-                return Ok(build_ocr_payload(OcrSnapshot(status="canceled")))
-            if capture.image is None:
-                return Err(SdkError("interactive_capture: missing_image_data"))
-            snapshot = await asyncio.to_thread(
-                self._ocr_pipeline.snapshot_from_image,
-                capture.image,
-            )
         else:
             snapshot = await asyncio.to_thread(self._ocr_pipeline.capture_snapshot)
         payload = build_ocr_payload(snapshot)

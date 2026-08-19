@@ -222,6 +222,30 @@ async def test_ocr_entry_interactive_path_uses_only_the_selected_image(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("error_code", ["no_renderer", "main_server_unavailable"])
+async def test_ocr_entry_falls_back_to_fullscreen_when_interactive_is_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+    error_code: str,
+) -> None:
+    pipeline = _Pipeline()
+    harness = _entry_harness(pipeline)
+
+    async def _capture(*, lanlan_name=None):
+        raise InteractiveCaptureError(f"interactive_capture: {error_code}")
+
+    monkeypatch.setattr(entry_ocr_entries, "capture_interactive_region", _capture)
+
+    result = await _OcrEntriesMixin.study_ocr_snapshot(
+        harness,
+        capture_mode="interactive",
+    )
+
+    assert isinstance(result, Ok)
+    assert result.value["text"] == "fullscreen"
+    assert pipeline.fullscreen_calls == 1
+
+
+@pytest.mark.asyncio
 async def test_ocr_entry_routes_interactive_capture_to_requesting_lanlan(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -5619,6 +5619,7 @@ const staticDir = process.env.STUDY_COMPANION_STATIC_DIR;
 const i18nDir = process.env.STUDY_COMPANION_I18N_DIR;
 const html = fs.readFileSync(path.join(staticDir, 'index.html'), 'utf8');
 const mainJs = fs.readFileSync(path.join(staticDir, 'main.js'), 'utf8');
+const requestUtilsJs = fs.readFileSync(path.join(staticDir, 'request-utils.js'), 'utf8');
 const documentControllerJs = fs.readFileSync(path.join(staticDir, 'document-controller.js'), 'utf8');
 const outcomeFormattersJs = fs.readFileSync(path.join(staticDir, 'outcome-formatters.js'), 'utf8');
 const surfacePanelsJs = fs.readFileSync(path.join(staticDir, 'surface-panels.js'), 'utf8');
@@ -5693,6 +5694,7 @@ window.eval(i18nJs);
 window.eval(surfacePanelsJs);
 window.eval(documentControllerJs);
 window.eval(outcomeFormattersJs);
+window.eval(requestUtilsJs);
 window.eval(`${knowledgeMapJs}\n${mainJs}`);
 
 async function waitFor(predicate, label) {
@@ -5791,6 +5793,7 @@ const staticDir = process.env.STUDY_COMPANION_STATIC_DIR;
 const i18nDir = process.env.STUDY_COMPANION_I18N_DIR;
 const html = fs.readFileSync(path.join(staticDir, 'index.html'), 'utf8');
 const mainJs = fs.readFileSync(path.join(staticDir, 'main.js'), 'utf8');
+const requestUtilsJs = fs.readFileSync(path.join(staticDir, 'request-utils.js'), 'utf8');
 const documentControllerJs = fs.readFileSync(path.join(staticDir, 'document-controller.js'), 'utf8');
 const outcomeFormattersJs = fs.readFileSync(path.join(staticDir, 'outcome-formatters.js'), 'utf8');
 const knowledgeMapJs = fs.readFileSync(path.join(staticDir, 'knowledge-map.js'), 'utf8');
@@ -5848,6 +5851,7 @@ window.fetch = async (rawUrl, options = {}) => {
 window.eval(i18nJs);
 window.eval(documentControllerJs);
 window.eval(outcomeFormattersJs);
+window.eval(requestUtilsJs);
 window.eval(`${knowledgeMapJs}\n${mainJs}`);
 
 async function waitFor(predicate, label) {
@@ -6024,6 +6028,7 @@ const staticDir = process.env.STUDY_COMPANION_STATIC_DIR;
 const i18nDir = process.env.STUDY_COMPANION_I18N_DIR;
 const html = fs.readFileSync(path.join(staticDir, 'index.html'), 'utf8');
 const mainJs = fs.readFileSync(path.join(staticDir, 'main.js'), 'utf8');
+const requestUtilsJs = fs.readFileSync(path.join(staticDir, 'request-utils.js'), 'utf8');
 const documentControllerJs = fs.readFileSync(path.join(staticDir, 'document-controller.js'), 'utf8');
 const outcomeFormattersJs = fs.readFileSync(path.join(staticDir, 'outcome-formatters.js'), 'utf8');
 const surfacePanelsJs = fs.readFileSync(path.join(staticDir, 'surface-panels.js'), 'utf8');
@@ -6115,6 +6120,7 @@ window.eval(i18nJs);
 window.eval(surfacePanelsJs);
 window.eval(documentControllerJs);
 window.eval(outcomeFormattersJs);
+window.eval(requestUtilsJs);
 window.eval(`${knowledgeMapJs}\n${mainJs}`);
 
 async function waitFor(predicate, label) {
@@ -6851,6 +6857,7 @@ const html = `<!doctype html><html><head><title>Study Companion</title></head><b
 
 const i18nJs = fs.readFileSync(process.env.STUDY_COMPANION_I18N_JS, 'utf8');
 const mainJs = fs.readFileSync(process.env.STUDY_COMPANION_STATIC_JS, 'utf8');
+const requestUtilsJs = fs.readFileSync(process.env.STUDY_COMPANION_REQUEST_UTILS_JS, 'utf8');
 const documentControllerJs = fs.readFileSync(process.env.STUDY_COMPANION_DOCUMENT_CONTROLLER_JS, 'utf8');
 const outcomeFormattersJs = fs.readFileSync(process.env.STUDY_COMPANION_OUTCOME_FORMATTERS_JS, 'utf8');
 const knowledgeMapJs = fs.readFileSync(process.env.STUDY_COMPANION_KNOWLEDGE_MAP_JS, 'utf8');
@@ -6916,6 +6923,7 @@ window.fetch = async (rawUrl, options = {}) => {
 window.eval(i18nJs);
 window.eval(documentControllerJs);
 window.eval(outcomeFormattersJs);
+window.eval(requestUtilsJs);
 window.eval(`${knowledgeMapJs}\n${mainJs}`);
 
 async function waitFor(predicate, label) {
@@ -6946,6 +6954,9 @@ if (document.querySelector('[data-mode="interactive"]').getAttribute('aria-press
     env = {
         **os.environ,
         "STUDY_COMPANION_STATIC_JS": str(plugin_dir / "static" / "main.js"),
+        "STUDY_COMPANION_REQUEST_UTILS_JS": str(
+            plugin_dir / "static" / "request-utils.js"
+        ),
         "STUDY_COMPANION_DOCUMENT_CONTROLLER_JS": str(
             plugin_dir / "static" / "document-controller.js"
         ),

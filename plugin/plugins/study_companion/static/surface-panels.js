@@ -217,6 +217,20 @@
     return decks;
   }
 
+  let initialMemoryDecks = null;
+
+  function loadDecks(ctx, readyTarget) {
+    if (!initialMemoryDecks) {
+      initialMemoryDecks = listAllMemoryDecks(ctx).catch((error) => {
+        initialMemoryDecks = null;
+        throw error;
+      });
+    }
+    return initialMemoryDecks.finally(() => {
+      if (readyTarget) readyTarget.disabled = false;
+    });
+  }
+
   function valid(root, token, allowDetached = false) {
     return token === panelToken && (allowDetached || root.isConnected);
   }
@@ -994,6 +1008,7 @@
   window.StudyCompanionSurfacePanels = {
     render,
     listAllMemoryDecks,
+    loadDecks,
     close() {
       panelToken += 1;
     },

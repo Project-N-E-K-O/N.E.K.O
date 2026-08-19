@@ -1210,7 +1210,7 @@ function renderMemoryDeckOptions() {
 }
 
 async function loadDeckOptions() {
-  memoryDecks = await window.StudyCompanionSurfacePanels.listAllMemoryDecks({ callPlugin });
+  memoryDecks = await window.StudyCompanionSurfacePanels.loadDecks({ callPlugin }, memoryAddBtn);
   renderMemoryDeckOptions();
   quickCardController?.decorateDeckOptions();
 }
@@ -1663,28 +1663,14 @@ function timeoutForEntry(entryId) {
   return ENTRY_TIMEOUT_MS[entryId] || RUN_TIMEOUT_MS;
 }
 
-function isAbortError(error) {
-  return error instanceof DOMException && error.name === 'AbortError';
-}
-
 async function fetchWithTimeout(url, init = {}, timeoutMs = RUN_TIMEOUT_MS, signal) {
-  if (timeoutMs <= 0) {
-    throw new Error(t('ui.error.plugin_call_timeout', 'Plugin call timed out'));
-  }
-  const controller = new AbortController();
-  signal?.addEventListener('abort', () => controller.abort(), { once: true });
-  const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    return await fetch(url, { ...init, signal: controller.signal });
-  } catch (error) {
-    if (isAbortError(error)) {
-      if (signal?.aborted) throw new Error('plugin_call_aborted');
-      throw new Error(t('ui.error.plugin_call_timeout', 'Plugin call timed out'));
-    }
-    throw error;
-  } finally {
-    window.clearTimeout(timeout);
-  }
+  return window.StudyRequestUtils.fetchWithTimeout({
+    url,
+    init,
+    timeoutMs,
+    signal,
+    translate: t,
+  });
 }
 
 function setSettingsConfigStatus(key, fallback, target = settingsConfigStatus) {

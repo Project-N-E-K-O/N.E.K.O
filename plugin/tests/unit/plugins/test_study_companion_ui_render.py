@@ -270,7 +270,7 @@ def test_memory_card_first_save_prompts_for_deck_and_supports_skip() -> None:
     assert 'id="memoryDeckSkipBtn"' in index_html
     load_call = (
         "memoryDecks = await window.StudyCompanionSurfacePanels."
-        "listAllMemoryDecks({ callPlugin });"
+        "loadDecks({ callPlugin }, memoryAddBtn);"
     )
     assert load_call in main_js
     assert "async function loadDeckOptions()" in main_js
@@ -556,6 +556,7 @@ def test_study_companion_static_ui_browser_smoke_desktop_reduced_motion() -> Non
         "knowledge-map.js": ("text/javascript", (STATIC_DIR / "knowledge-map.js").read_text(encoding="utf-8")),
             "outcome-formatters.js": ("text/javascript", (STATIC_DIR / "outcome-formatters.js").read_text(encoding="utf-8")),
             "model-runtime.js": ("text/javascript", (STATIC_DIR / "model-runtime.js").read_text(encoding="utf-8")),
+            "request-utils.js": ("text/javascript", (STATIC_DIR / "request-utils.js").read_text(encoding="utf-8")),
         "document-controller.js": ("text/javascript", (STATIC_DIR / "document-controller.js").read_text(encoding="utf-8")),
         "dependency-controller.js": ("text/javascript", (STATIC_DIR / "dependency-controller.js").read_text(encoding="utf-8")),
         "quick-card-controller.js": ("text/javascript", (STATIC_DIR / "quick-card-controller.js").read_text(encoding="utf-8")),
@@ -1400,3 +1401,32 @@ def test_study_companion_brand_contract_rejects_legacy_neutral_theme() -> None:
         "#3da5d9",
     ):
         assert legacy_color not in combined.lower(), legacy_color
+
+
+def test_study_companion_memory_deck_load_is_shared_and_blocks_early_save() -> None:
+    main_js = (STATIC_DIR / "main.js").read_text(encoding="utf-8")
+    index_html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+    surface_panels_js = (STATIC_DIR / "surface-panels.js").read_text(encoding="utf-8")
+    load_start = main_js.index("async function loadDeckOptions()")
+    load_end = main_js.index("\nfunction finishMemoryDeckDialog", load_start)
+    load_source = main_js[load_start:load_end]
+
+    assert "function loadDecks(ctx, readyTarget)" in surface_panels_js
+    assert "if (!initialMemoryDecks)" in surface_panels_js
+    assert "loadDecks({ callPlugin }, memoryAddBtn)" in load_source
+    assert re.search(r'<button id="memoryAddBtn"[^>]*\bdisabled\b', index_html)
+    assert "readyTarget.disabled = false;" in surface_panels_js
+    assert "initialMemoryDecks = null;" in surface_panels_js
+
+
+def test_study_companion_fetch_timeout_honors_preaborted_signal_and_cleans_listener() -> None:
+    main_js = (STATIC_DIR / "main.js").read_text(encoding="utf-8")
+    request_utils_js = (STATIC_DIR / "request-utils.js").read_text(encoding="utf-8")
+    fetch_start = main_js.index("async function fetchWithTimeout(")
+    fetch_end = main_js.index("\nfunction setSettingsConfigStatus", fetch_start)
+    fetch_source = main_js[fetch_start:fetch_end]
+
+    assert "StudyRequestUtils.fetchWithTimeout" in fetch_source
+    assert "if (signal?.aborted) relayAbort();" in request_utils_js
+    assert "signal?.addEventListener('abort', relayAbort);" in request_utils_js
+    assert "signal?.removeEventListener('abort', relayAbort);" in request_utils_js
