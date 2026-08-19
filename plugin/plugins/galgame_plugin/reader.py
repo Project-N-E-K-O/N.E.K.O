@@ -116,8 +116,6 @@ def snapshot_events_boundary(
                 snapshot_size = max(0, min(file_size, int(snapshot_file_size)))
 
             checkpoint_seq = max(0, int(last_seq or 0))
-            if session_id and checkpoint_seq <= 0:
-                return EventStreamBoundary(offset=0, file_size=file_size)
             if session_id and checkpoint_seq > 0:
                 scan_size = snapshot_size
                 if bytes_limit is not None:

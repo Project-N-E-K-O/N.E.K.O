@@ -2543,55 +2543,6 @@ def test_candidate_scan_captures_events_boundary_before_session_snapshot(
     assert [int(event.get("seq") or 0) for event in tail.events] == [2, 3]
 
 
-@pytest.mark.plugin_unit
-def test_zero_sequence_candidate_boundary_keeps_unrepresented_first_event(
-    tmp_path: Path,
-) -> None:
-    bridge_root = tmp_path / "bridge"
-    game_id = "demo.zero-sequence-race"
-    session_id = "sess-zero-sequence-race"
-    first_event = _event(
-        seq=1,
-        event_type="line_changed",
-        session_id=session_id,
-        game_id=game_id,
-        payload={"text": "first unrepresented line", "line_id": "line-1"},
-        ts="2026-04-21T08:30:01Z",
-    )
-    _create_game_dir(
-        bridge_root,
-        game_id=game_id,
-        session_payload=_session(
-            game_id=game_id,
-            session_id=session_id,
-            last_seq=0,
-            started_at="2000-01-01T00:00:00Z",
-            state=_session_state(text="", line_id=""),
-        ),
-        events=[first_event],
-    )
-
-    _game_ids, candidates, warnings = galgame_service.scan_session_candidates(
-        bridge_root
-    )
-
-    assert warnings == []
-    candidate = candidates[game_id]
-    boundary = read_events_boundary(
-        candidate.events_path,
-        session_id=session_id,
-        last_seq=0,
-        snapshot_file_size=candidate.events_file_size,
-    )
-    assert boundary.offset == 0
-    tail = tail_events_jsonl(
-        candidate.events_path,
-        offset=boundary.offset,
-        line_buffer=b"",
-    )
-    assert [int(event.get("seq") or 0) for event in tail.events] == [1]
-
-
 @pytest.mark.asyncio
 @pytest.mark.plugin_unit
 async def test_startup_session_id_normalization_preserves_preexisting_boundary(

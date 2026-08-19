@@ -4368,6 +4368,60 @@ async def test_degraded_scene_summary_uses_complete_scheduled_batch(
 
 @pytest.mark.asyncio
 @pytest.mark.plugin_unit
+async def test_degraded_scene_summary_does_not_mark_visible_choice_as_selected(
+    tmp_path: Path,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    gateway = _FakeLLMGateway(
+        summarize_payload={
+            "degraded": True,
+            "summary": "",
+            "key_points": [],
+            "diagnostic": "timeout",
+        }
+    )
+    agent = GameLLMAgent(
+        plugin=GalgameBridgePlugin(
+            _Ctx(plugin_dir, _make_effective_config(bridge_root))
+        ),
+        logger=_Logger(),
+        llm_gateway=gateway,
+        host_adapter=_FakeHostAdapter(),
+    )
+    line = _summary_test_line("scene-a", 1)
+    snapshot = _session_state(
+        text=str(line["text"]),
+        scene_id="scene-a",
+        line_id=str(line["line_id"]),
+    )
+    context = {
+        "current_snapshot": snapshot,
+        "stable_lines": [line],
+        "new_stable_lines": [line],
+        "recent_choices": [],
+        "new_choices": [
+            {
+                "choice_id": "visible-1",
+                "text": "unselected route",
+                "choice_state": "visible",
+            }
+        ],
+    }
+
+    _, meta = await agent._summarize_scene_context_for_cat(
+        context,
+        scene_id="scene-a",
+        route_id="",
+        snapshot=snapshot,
+    )
+
+    summary = str(meta["scene_summary"])
+    assert "最近确认的选项：unselected route" not in summary
+    assert "当前可见选项：unselected route" in summary
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
 async def test_merge_fallback_archives_each_scene_scope_independently(
     tmp_path: Path,
 ) -> None:

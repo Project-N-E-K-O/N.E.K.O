@@ -90,6 +90,22 @@ class AgentSceneContextMixin:
                 for choice in list(context.get("new_choices") or [])
                 if isinstance(choice, dict)
             ]
+            selected_new_choices = [
+                choice
+                for choice in new_choices
+                if str(
+                    choice.get("choice_state") or choice.get("action") or ""
+                )
+                .strip()
+                .lower()
+                == "selected"
+            ]
+            visible_new_choices = [
+                choice
+                for choice in new_choices
+                if str(choice.get("choice_state") or "").strip().lower()
+                == "visible"
+            ]
             local_progress_summary = self._build_scene_context_fallback(
                 scene_id=scene_id,
                 route_id=route_id,
@@ -99,10 +115,11 @@ class AgentSceneContextMixin:
                     else list(context.get("stable_lines") or [])
                 ),
                 selected_choices=(
-                    new_choices
+                    selected_new_choices
                     if new_choices
                     else list(context.get("recent_choices") or [])
                 ),
+                visible_choices=visible_new_choices,
                 snapshot=snapshot,
                 key_points=key_points or [],
                 line_limit=None if new_stable_lines else 6,
@@ -419,6 +436,7 @@ class AgentSceneContextMixin:
         lines: list[dict[str, Any]],
         selected_choices: list[dict[str, Any]],
         snapshot: dict[str, Any],
+        visible_choices: list[dict[str, Any]] | None = None,
         key_points: list[dict[str, Any]] | None = None,
         line_limit: int | None = 6,
     ) -> str:
@@ -461,6 +479,15 @@ class AgentSceneContextMixin:
             ]
             if choices:
                 parts.append("最近确认的选项：" + "；".join(choices))
+        if visible_choices:
+            choices = [
+                str(choice.get("text") or "").strip()
+                for choice in visible_choices[-3:]
+                if isinstance(choice, dict)
+                and str(choice.get("text") or "").strip()
+            ]
+            if choices:
+                parts.append("当前可见选项：" + "；".join(choices))
         return " ".join(parts)
 
     def _latest_scene_summary_text(
