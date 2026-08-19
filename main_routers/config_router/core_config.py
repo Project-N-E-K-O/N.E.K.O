@@ -80,6 +80,10 @@ def is_core_config_secret_placeholder(value) -> bool:
         return True
     if len(stripped) >= 3 and set(stripped) == {'*'}:
         return True
+    # The all-dot display (short or un-disclosable secrets) must round-trip as
+    # "keep existing" too, never be persisted as a literal bullet credential.
+    if stripped and set(stripped) == {'•'}:
+        return True
 
     # Display masks keep a visible prefix/suffix and star out the middle.  Both
     # the current 3+3 shape and the legacy 6+6 shape mean "keep existing".
