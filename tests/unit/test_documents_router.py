@@ -232,7 +232,18 @@ def test_plugin_server_redirects_model_settings_to_main_server(monkeypatch):
         route for route in app.routes if getattr(route, "path", "") == "/api_key"
     )
 
-    response = asyncio.run(route.endpoint())
+    request = Request(
+        {
+            "type": "http",
+            "method": "GET",
+            "scheme": "http",
+            "path": "/api_key",
+            "query_string": b"",
+            "headers": [(b"host", b"127.0.0.1:48916")],
+            "server": ("127.0.0.1", 48916),
+        }
+    )
+    response = asyncio.run(route.endpoint(request))
 
     assert response.status_code == 307
     assert response.headers["location"] == "http://127.0.0.1:49123/api_key"
