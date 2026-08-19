@@ -6185,6 +6185,64 @@ def test_pending_line_content_survives_retry_and_clears_after_delivery() -> None
 
 
 @pytest.mark.plugin_unit
+def test_pending_line_order_survives_seen_line_window_trim() -> None:
+    tracker = AgentSceneTracker(seen_line_limit=2)
+
+    for index in range(1, 4):
+        key = f"line-{index}"
+        assert tracker.remember_scene_line(
+            "scene-a",
+            key,
+            route_id="route-a",
+            seq=index,
+            ts=f"2026-04-21T08:35:{index:02d}Z",
+            occurrence={
+                "event_key": key,
+                "seq": index,
+                "line": {
+                    "scene_id": "scene-a",
+                    "route_id": "route-a",
+                    "text": f"pending dialogue {index}",
+                    "ts": f"2026-04-21T08:35:{index:02d}Z",
+                },
+            },
+        )
+
+    state = tracker.state_for_scene("scene-a", route_id="route-a")
+    assert state["seen_line_key_order"] == ["line-2", "line-3"]
+    owner = tracker.mark_scene_summary_scheduled(
+        "scene-a",
+        route_id="route-a",
+        seq=3,
+    )
+
+    assert state["scheduled_line_keys_by_owner"][owner] == [
+        "line-1",
+        "line-2",
+        "line-3",
+    ]
+    assert list(state["scheduled_line_occurrences_by_owner"][owner]) == [
+        "line-1",
+        "line-2",
+        "line-3",
+    ]
+    assert state["pending_line_key_order"] == []
+    assert state["pending_line_occurrences"] == {}
+
+    tracker.mark_scene_summary_delivered(
+        "scene-a",
+        route_id="route-a",
+        seq=3,
+        owner_token=owner,
+    )
+
+    assert state["scheduled_line_keys_by_owner"] == {}
+    assert state["scheduled_line_occurrences_by_owner"] == {}
+    assert state["pending_line_key_order"] == []
+    assert state["pending_line_occurrences"] == {}
+
+
+@pytest.mark.plugin_unit
 def test_superseded_archive_owner_drops_pending_line_occurrences() -> None:
     tracker = AgentSceneTracker(seen_line_limit=8)
 

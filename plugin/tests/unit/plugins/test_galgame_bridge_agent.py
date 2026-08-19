@@ -5526,8 +5526,8 @@ async def test_ocr_session_transition_tolerates_bad_numeric_identity(
     runtime = {
         "effective_process_name": "game.exe",
         "effective_window_title": "Demo Game",
-        "pid": "0x4242",
-        "target_hwnd": "unknown",
+        "pid": float("inf"),
+        "target_hwnd": "9" * 5000,
         "target_window_visible": True,
         "locked_target": {"pid": "also-unknown", "hwnd": "0x100"},
     }
@@ -5545,7 +5545,7 @@ async def test_ocr_session_transition_tolerates_bad_numeric_identity(
         history_lines=[first_line],
     )
     first["active_session_meta"] = {
-        "metadata": {"game_pid": "unknown"},
+        "metadata": {"game_pid": "9" * 5000},
     }
 
     await agent.tick(first)

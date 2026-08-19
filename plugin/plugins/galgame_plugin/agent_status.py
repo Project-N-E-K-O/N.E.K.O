@@ -401,10 +401,15 @@ class AgentStatusMixin:
             if text[0] in {"-", "+"}:
                 sign = -1 if text[0] == "-" else 1
                 text = text[1:]
-            return sign * int(text) if text.isdecimal() else 0
+            if not text.isdecimal():
+                return 0
+            try:
+                return sign * int(text)
+            except (OverflowError, ValueError):
+                return 0
         try:
             return int(value)
-        except (TypeError, ValueError):
+        except (OverflowError, TypeError, ValueError):
             return 0
 
     def _session_fingerprint(self, shared: dict[str, Any]) -> dict[str, Any]:
