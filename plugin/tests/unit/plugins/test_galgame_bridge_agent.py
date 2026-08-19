@@ -4314,6 +4314,60 @@ async def test_degraded_scene_summary_bounds_oversized_local_progress(
 
 @pytest.mark.asyncio
 @pytest.mark.plugin_unit
+async def test_degraded_scene_summary_uses_complete_scheduled_batch(
+    tmp_path: Path,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    gateway = _FakeLLMGateway(
+        summarize_payload={
+            "degraded": True,
+            "summary": "",
+            "key_points": [],
+            "diagnostic": "timeout",
+        }
+    )
+    agent = GameLLMAgent(
+        plugin=GalgameBridgePlugin(
+            _Ctx(plugin_dir, _make_effective_config(bridge_root))
+        ),
+        logger=_Logger(),
+        llm_gateway=gateway,
+        host_adapter=_FakeHostAdapter(),
+    )
+    scheduled_lines = [
+        {
+            **_summary_test_line("scene-a", index),
+            "text": f"scheduled batch line {index} " + ("x" * 60),
+        }
+        for index in range(1, 9)
+    ]
+    snapshot = _session_state(
+        text=str(scheduled_lines[-1]["text"]),
+        scene_id="scene-a",
+        line_id=str(scheduled_lines[-1]["line_id"]),
+    )
+    context = {
+        "current_snapshot": snapshot,
+        "stable_lines": scheduled_lines[-4:],
+        "new_stable_lines": scheduled_lines,
+        "recent_choices": [],
+        "new_choices": [],
+    }
+
+    _, meta = await agent._summarize_scene_context_for_cat(
+        context,
+        scene_id="scene-a",
+        route_id="",
+        snapshot=snapshot,
+    )
+
+    summary = str(meta["scene_summary"])
+    for index in range(1, 9):
+        assert f"scheduled batch line {index} " in summary
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
 async def test_merge_fallback_archives_each_scene_scope_independently(
     tmp_path: Path,
 ) -> None:

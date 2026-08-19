@@ -23,6 +23,7 @@ class TailReadResult:
     next_offset: int = 0
     file_size: int = 0
     line_buffer: bytes = b""
+    checkpoint: str = ""
     reset_detected: bool = False
     errors: list[str] = field(default_factory=list)
 
@@ -115,6 +116,8 @@ def snapshot_events_boundary(
                 snapshot_size = max(0, min(file_size, int(snapshot_file_size)))
 
             checkpoint_seq = max(0, int(last_seq or 0))
+            if session_id and checkpoint_seq <= 0:
+                return EventStreamBoundary(offset=0, file_size=file_size)
             if session_id and checkpoint_seq > 0:
                 scan_size = snapshot_size
                 if bytes_limit is not None:
@@ -252,6 +255,7 @@ def tail_events_jsonl(
     *,
     offset: int,
     line_buffer: bytes,
+    expected_checkpoint: str = "",
 ) -> TailReadResult:
     result = TailReadResult(next_offset=max(0, offset))
     if not events_path.exists():
@@ -277,9 +281,25 @@ def tail_events_jsonl(
 
     try:
         with events_path.open("rb") as handle:
+            if offset > 0 and expected_checkpoint:
+                start = max(0, offset - 256)
+                handle.seek(start)
+                sample = handle.read(offset - start)
+                if (
+                    len(sample) != offset - start
+                    or hashlib.sha256(sample).hexdigest() != expected_checkpoint
+                ):
+                    result.reset_detected = True
+                    result.line_buffer = b""
+                    return result
             handle.seek(offset)
             chunk = handle.read()
             result.next_offset = handle.tell()
+            checkpoint_start = max(0, result.next_offset - 256)
+            handle.seek(checkpoint_start)
+            checkpoint_sample = handle.read(result.next_offset - checkpoint_start)
+            if len(checkpoint_sample) == result.next_offset - checkpoint_start:
+                result.checkpoint = hashlib.sha256(checkpoint_sample).hexdigest()
     except OSError as exc:
         result.errors.append(f"read events.jsonl failed: {exc}")
         return result

@@ -2543,6 +2543,55 @@ def test_candidate_scan_captures_events_boundary_before_session_snapshot(
     assert [int(event.get("seq") or 0) for event in tail.events] == [2, 3]
 
 
+@pytest.mark.plugin_unit
+def test_zero_sequence_candidate_boundary_keeps_unrepresented_first_event(
+    tmp_path: Path,
+) -> None:
+    bridge_root = tmp_path / "bridge"
+    game_id = "demo.zero-sequence-race"
+    session_id = "sess-zero-sequence-race"
+    first_event = _event(
+        seq=1,
+        event_type="line_changed",
+        session_id=session_id,
+        game_id=game_id,
+        payload={"text": "first unrepresented line", "line_id": "line-1"},
+        ts="2026-04-21T08:30:01Z",
+    )
+    _create_game_dir(
+        bridge_root,
+        game_id=game_id,
+        session_payload=_session(
+            game_id=game_id,
+            session_id=session_id,
+            last_seq=0,
+            started_at="2000-01-01T00:00:00Z",
+            state=_session_state(text="", line_id=""),
+        ),
+        events=[first_event],
+    )
+
+    _game_ids, candidates, warnings = galgame_service.scan_session_candidates(
+        bridge_root
+    )
+
+    assert warnings == []
+    candidate = candidates[game_id]
+    boundary = read_events_boundary(
+        candidate.events_path,
+        session_id=session_id,
+        last_seq=0,
+        snapshot_file_size=candidate.events_file_size,
+    )
+    assert boundary.offset == 0
+    tail = tail_events_jsonl(
+        candidate.events_path,
+        offset=boundary.offset,
+        line_buffer=b"",
+    )
+    assert [int(event.get("seq") or 0) for event in tail.events] == [1]
+
+
 @pytest.mark.asyncio
 @pytest.mark.plugin_unit
 async def test_startup_session_id_normalization_preserves_preexisting_boundary(
@@ -2890,6 +2939,97 @@ async def test_truncation_sets_stream_reset_pending(
 
     await plugin._poll_bridge(force=True)
     assert plugin._snapshot_state()["active_session_meta"]["stream_generation"] == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
+async def test_same_session_rewrite_detected_after_file_size_catches_up(
+    tmp_path: Path,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    game_id = "demo.rewritten"
+    session_id = "sess-rewritten"
+    game_dir = _create_game_dir(
+        bridge_root,
+        game_id=game_id,
+        session_payload=_session(
+            game_id=game_id,
+            session_id=session_id,
+            last_seq=1,
+            state=_session_state(text="startup line", line_id="line-1"),
+        ),
+        events=[
+            _event(
+                seq=1,
+                event_type="line_changed",
+                session_id=session_id,
+                game_id=game_id,
+                payload={"text": "startup line", "line_id": "line-1"},
+                ts="2026-04-21T08:30:01Z",
+            )
+        ],
+    )
+    plugin = GalgameBridgePlugin(_Ctx(plugin_dir, _make_effective_config(bridge_root)))
+    await plugin.startup()
+    await plugin._poll_bridge(force=True)
+    active_event = _event(
+        seq=2,
+        event_type="line_changed",
+        session_id=session_id,
+        game_id=game_id,
+        payload={"text": "active line", "line_id": "line-2"},
+        ts="2026-04-21T08:30:02Z",
+    )
+    _append_event(game_dir / "events.jsonl", active_event)
+    _write_session(
+        game_dir / "session.json",
+        _session(
+            game_id=game_id,
+            session_id=session_id,
+            last_seq=2,
+            state=_session_state(text="active line", line_id="line-2"),
+        ),
+    )
+    await plugin._poll_bridge(force=True)
+    old_offset = int(plugin._snapshot_state()["events_byte_offset"])
+
+    replacement = _event(
+        seq=1,
+        event_type="line_changed",
+        session_id=session_id,
+        game_id=game_id,
+        payload={
+            "text": "replacement line " + ("x" * old_offset),
+            "line_id": "replacement-1",
+        },
+        ts="2026-04-21T08:31:01Z",
+    )
+    _write_events(game_dir / "events.jsonl", [replacement])
+    assert (game_dir / "events.jsonl").stat().st_size >= old_offset
+    _write_session(
+        game_dir / "session.json",
+        _session(
+            game_id=game_id,
+            session_id=session_id,
+            last_seq=1,
+            state=_session_state(
+                text=str(replacement["payload"]["text"]),
+                line_id="replacement-1",
+            ),
+        ),
+    )
+
+    await plugin._poll_bridge(force=True)
+    resetting = plugin._snapshot_state()
+    assert resetting["stream_reset_pending"] is True
+    assert resetting["latest_snapshot"] == {}
+    assert resetting["history_events"] == []
+
+    await plugin._poll_bridge(force=True)
+    recovered = plugin._snapshot_state()
+    assert recovered["stream_reset_pending"] is False
+    assert recovered["active_session_meta"]["stream_generation"] == 1
+    assert [event["seq"] for event in recovered["history_events"]] == [1]
 
 
 @pytest.mark.asyncio

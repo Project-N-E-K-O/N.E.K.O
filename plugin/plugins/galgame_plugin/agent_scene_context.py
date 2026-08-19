@@ -80,13 +80,32 @@ class AgentSceneContextMixin:
                     "summary_diagnostic": str(exc),
                 }
         if not summary:
+            new_stable_lines = [
+                dict(line)
+                for line in list(context.get("new_stable_lines") or [])
+                if isinstance(line, dict)
+            ]
+            new_choices = [
+                dict(choice)
+                for choice in list(context.get("new_choices") or [])
+                if isinstance(choice, dict)
+            ]
             local_progress_summary = self._build_scene_context_fallback(
                 scene_id=scene_id,
                 route_id=route_id,
-                lines=list(context.get("stable_lines") or []),
-                selected_choices=list(context.get("recent_choices") or []),
+                lines=(
+                    new_stable_lines
+                    if new_stable_lines
+                    else list(context.get("stable_lines") or [])
+                ),
+                selected_choices=(
+                    new_choices
+                    if new_choices
+                    else list(context.get("recent_choices") or [])
+                ),
                 snapshot=snapshot,
                 key_points=key_points or [],
+                line_limit=None if new_stable_lines else 6,
             )
             previous_scene_summary = str(
                 context.get("previous_scene_summary") or ""
@@ -401,9 +420,11 @@ class AgentSceneContextMixin:
         selected_choices: list[dict[str, Any]],
         snapshot: dict[str, Any],
         key_points: list[dict[str, Any]] | None = None,
+        line_limit: int | None = 6,
     ) -> str:
         recent_parts: list[str] = []
-        for line in lines[-6:]:
+        selected_lines = lines if line_limit is None else lines[-max(1, line_limit) :]
+        for line in selected_lines:
             if not isinstance(line, dict):
                 continue
             text = str(line.get("text") or "").strip()

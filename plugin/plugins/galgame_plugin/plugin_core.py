@@ -329,6 +329,9 @@ class GalgamePlugin(
             tuple[str, str, str],
             dict[str, Any],
         ] = {}
+        self._active_stream_checkpoint_identity: tuple[str, str, str] | None = None
+        self._active_stream_checkpoint_offset = 0
+        self._active_stream_checkpoint = ""
         self._poll_bridge_locks: dict[int, asyncio.Lock] = {}
         self._poll_bridge_thread_lock = threading.Lock()
         self._bridge_poll_task_lock = threading.RLock()
@@ -3175,6 +3178,9 @@ class GalgamePlugin(
         self._plugin_run_started_at = time.time()
         self._startup_existing_session_ids = None
         self._startup_preexisting_session_states.clear()
+        self._active_stream_checkpoint_identity = None
+        self._active_stream_checkpoint_offset = 0
+        self._active_stream_checkpoint = ""
         try:
             await self._load_config()
         except Exception as exc:
@@ -4341,11 +4347,19 @@ class GalgamePlugin(
 
         read_offset = 0 if local["stream_reset_pending"] else int(local["events_byte_offset"])
         read_buffer = b"" if local["stream_reset_pending"] else bytes(local["line_buffer"])
+        expected_checkpoint = ""
+        if (
+            not session_changed
+            and self._active_stream_checkpoint_identity == candidate_session_identity
+            and self._active_stream_checkpoint_offset == read_offset
+        ):
+            expected_checkpoint = self._active_stream_checkpoint
         tail = await asyncio.to_thread(
             tail_events_jsonl,
             candidate.events_path,
             offset=read_offset,
             line_buffer=read_buffer,
+            expected_checkpoint=expected_checkpoint,
         )
         warnings.extend(tail.errors)
 
@@ -4370,6 +4384,9 @@ class GalgamePlugin(
             local["line_buffer"] = b""
             local["events_byte_offset"] = 0
             local["events_file_size"] = tail.file_size
+            self._active_stream_checkpoint_identity = candidate_session_identity
+            self._active_stream_checkpoint_offset = 0
+            self._active_stream_checkpoint = ""
             return
 
         confirm_reset = False
@@ -4438,6 +4455,9 @@ class GalgamePlugin(
         local["events_byte_offset"] = tail.next_offset
         local["events_file_size"] = tail.file_size
         local["line_buffer"] = tail.line_buffer
+        self._active_stream_checkpoint_identity = candidate_session_identity
+        self._active_stream_checkpoint_offset = tail.next_offset
+        self._active_stream_checkpoint = tail.checkpoint
         if preexisting_session and tail.next_offset > 0:
             checkpoint_state = self._startup_preexisting_session_states.setdefault(
                 candidate_session_identity,
