@@ -332,6 +332,7 @@ class GalgamePlugin(
         self._active_stream_checkpoint_identity: tuple[str, str, str] | None = None
         self._active_stream_checkpoint_offset = 0
         self._active_stream_checkpoint = ""
+        self._announced_stream_reset_identity: tuple[str, str, str] | None = None
         self._poll_bridge_locks: dict[int, asyncio.Lock] = {}
         self._poll_bridge_thread_lock = threading.Lock()
         self._bridge_poll_task_lock = threading.RLock()
@@ -3181,6 +3182,7 @@ class GalgamePlugin(
         self._active_stream_checkpoint_identity = None
         self._active_stream_checkpoint_offset = 0
         self._active_stream_checkpoint = ""
+        self._announced_stream_reset_identity = None
         try:
             await self._load_config()
         except Exception as exc:
@@ -4097,6 +4099,8 @@ class GalgamePlugin(
             "line_id": str(session_state_obj.get("line_id") or ""),
         }
         session_changed = candidate_session_identity != active_session_identity
+        if session_changed:
+            self._announced_stream_reset_identity = None
         previous_session_id = str(local.get("active_session_id") or "")
         if session_changed and previous_session_id:
             self._remember_active_preexisting_session_state(local)
@@ -4372,6 +4376,16 @@ class GalgamePlugin(
                 return
             local["stream_reset_pending"] = True
             if not session_changed:
+                if (
+                    self._announced_stream_reset_identity
+                    != candidate_session_identity
+                ):
+                    local["active_session_meta"]["stream_generation"] = (
+                        previous_stream_generation + 1
+                    )
+                    self._announced_stream_reset_identity = (
+                        candidate_session_identity
+                    )
                 local["latest_snapshot"] = {}
                 for field in (
                     "history_events",
@@ -4400,9 +4414,11 @@ class GalgamePlugin(
             )
 
         if confirm_reset:
-            local["active_session_meta"]["stream_generation"] = (
-                previous_stream_generation + 1
-            )
+            if self._announced_stream_reset_identity != candidate_session_identity:
+                local["active_session_meta"]["stream_generation"] = (
+                    previous_stream_generation + 1
+                )
+            self._announced_stream_reset_identity = None
             local["history_events"] = []
             local["history_lines"] = []
             local["history_observed_lines"] = []
@@ -4417,6 +4433,7 @@ class GalgamePlugin(
             # numbers.  Rebase at byte zero, then let last_seq discard any
             # overlap instead of waiting forever for a new seq=1 marker.
             local["stream_reset_pending"] = False
+            self._announced_stream_reset_identity = None
 
         if local["stream_reset_pending"]:
             return

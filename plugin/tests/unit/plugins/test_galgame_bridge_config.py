@@ -2891,6 +2891,7 @@ async def test_truncation_sets_stream_reset_pending(
     assert isinstance(status, Ok)
     assert status.value["stream_reset_pending"] is True
     resetting = plugin._snapshot_state()
+    assert resetting["active_session_meta"]["stream_generation"] == 1
     assert resetting["latest_snapshot"] == {}
     assert resetting["history_events"] == []
     assert resetting["history_lines"] == []
@@ -2898,6 +2899,11 @@ async def test_truncation_sets_stream_reset_pending(
     assert resetting["history_choices"] == []
     assert resetting["dedupe_window"] == []
     assert resetting["events_byte_offset"] == 0
+
+    await plugin._poll_bridge(force=True)
+    still_resetting = plugin._snapshot_state()
+    assert still_resetting["stream_reset_pending"] is True
+    assert still_resetting["active_session_meta"]["stream_generation"] == 1
 
     replacement = _event(
         seq=1,
@@ -3022,6 +3028,7 @@ async def test_same_session_rewrite_detected_after_file_size_catches_up(
     await plugin._poll_bridge(force=True)
     resetting = plugin._snapshot_state()
     assert resetting["stream_reset_pending"] is True
+    assert resetting["active_session_meta"]["stream_generation"] == 1
     assert resetting["latest_snapshot"] == {}
     assert resetting["history_events"] == []
 
