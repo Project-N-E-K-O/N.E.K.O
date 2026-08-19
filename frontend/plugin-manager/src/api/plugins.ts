@@ -21,6 +21,15 @@ export function getPlugins(
   locale?: string,
   config?: AxiosRequestConfig & { preserveMessagesOn404?: boolean },
 ): Promise<{ plugins: PluginMeta[]; message: string }> {
+  if (typeof URLSearchParams !== 'undefined' && config?.params instanceof URLSearchParams) {
+    const params = new URLSearchParams(config.params)
+    if (locale) params.set('locale', locale)
+    return get('/plugins', {
+      ...(config || {}),
+      params,
+    })
+  }
+
   const params = {
     ...(config?.params || {}),
     ...(locale ? { locale } : {}),
