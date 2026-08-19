@@ -7063,6 +7063,10 @@ async def test_load_boundary_excludes_tentative_observed_history_from_archive(
     assert abandoned_text not in json.dumps(
         captured[0]["context"], ensure_ascii=False, sort_keys=True
     )
+    assert any(
+        line.get("text") == "scene-a dialogue line 16."
+        for line in captured[0]["context"]["new_stable_lines"]
+    )
 
 
 @pytest.mark.plugin_unit
