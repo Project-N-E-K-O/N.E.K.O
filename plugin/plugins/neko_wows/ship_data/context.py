@@ -27,6 +27,10 @@ from .store import NullCatalogSnapshot
 
 _MAX_GAME_INFO_BYTES = 1024 * 1024
 _VERSION_TAGS = frozenset({"version", "clientversion", "gameversion"})
+_EXPIRED_SHIP_REFERENCE_TEXT = (
+    "Previously submitted World of Warships ship reference context has "
+    "expired and must not be used for any current or future battle."
+)
 
 
 @dataclass(frozen=True)
@@ -95,6 +99,7 @@ class BattleShipContextManager:
         self._render_failures: set[int] = set()
         self._unresolved_reasons: Counter[str] = Counter()
         self._batch_sequence = 0
+        self._submitted_context_targets: dict[str, str | None] = {}
         self._retry_failures = 0
         self._retry_after = 0.0
         self._last_error = ""
@@ -529,6 +534,8 @@ class BattleShipContextManager:
         identity = self._identity or ("", None)
         battle_key = hashlib.sha256(
             repr(identity).encode("utf-8", "replace")).hexdigest()[:16]
+        coalesce_key = f"wows_ship_reference:{battle_key}:{batch_id}"
+        target_lanlan = self._current_target_lanlan()
         meta = self._frozen_meta
         try:
             receipt = self._plugin.push_message(
@@ -537,8 +544,7 @@ class BattleShipContextManager:
                 ai_behavior="read",
                 parts=[{"type": "text", "text": text}],
                 priority=0,
-                coalesce_key=(
-                    f"wows_ship_reference:{battle_key}:{batch_id}"),
+                coalesce_key=coalesce_key,
                 metadata={
                     "plugin": "neko_wows",
                     "kind": "ship_reference",
@@ -549,13 +555,55 @@ class BattleShipContextManager:
                     "ship_ids": list(ship_ids),
                     "count_update_ship_ids": list(update_ship_ids),
                 },
+                target_lanlan=target_lanlan or None,
             )
         except Exception as exc:
             self._warn(f"ship reference push failed: {type(exc).__name__}")
             return False, "host_push_failed"
         if isinstance(receipt, Mapping) and receipt.get("submitted") is True:
+            self._submitted_context_targets[coalesce_key] = (
+                target_lanlan or None
+            )
             return True, ""
         return False, "submission_declined"
+
+    def _current_target_lanlan(self) -> str:
+        roots: list[Any] = []
+        for attribute in ("_host_ctx", "ctx"):
+            try:
+                root = getattr(self._plugin, attribute, None)
+            except Exception:
+                continue
+            if root is not None:
+                roots.append(root)
+
+        seen: set[int] = set()
+        for root in roots:
+            current = root
+            for _ in range(8):
+                identity = id(current)
+                if identity in seen:
+                    break
+                seen.add(identity)
+                try:
+                    value = getattr(current, "_current_lanlan", None)
+                    if isinstance(value, str):
+                        target = value.strip()
+                    elif value is None:
+                        target = ""
+                    else:
+                        target = str(value).strip()
+                except Exception:
+                    target = ""
+                if target:
+                    return target
+                try:
+                    current = getattr(current, "_host_ctx", None)
+                except Exception:
+                    break
+                if current is None:
+                    break
+        return ""
 
     def _observation(
         self,
@@ -588,7 +636,44 @@ class BattleShipContextManager:
                 pending.append(ship_id)
         return tuple(sorted(pending))
 
+    def _expire_submitted_contexts(self, reason: str) -> None:
+        pending = sorted(self._submitted_context_targets.items())
+        for coalesce_key, target_lanlan in pending:
+            try:
+                receipt = self._plugin.push_message(
+                    source="neko_wows",
+                    visibility=[],
+                    ai_behavior="read",
+                    parts=[{
+                        "type": "text",
+                        "text": _EXPIRED_SHIP_REFERENCE_TEXT,
+                    }],
+                    priority=0,
+                    coalesce_key=coalesce_key,
+                    metadata={
+                        "plugin": "neko_wows",
+                        "kind": "ship_reference",
+                        "delivery_intent": "passive_context",
+                        "context_expired": True,
+                        "cleanup_reason": reason,
+                        "ship_ids": [],
+                        "count_update_ship_ids": [],
+                    },
+                    target_lanlan=target_lanlan,
+                )
+                if (
+                    isinstance(receipt, Mapping)
+                    and receipt.get("submitted") is True
+                ):
+                    self._submitted_context_targets.pop(coalesce_key, None)
+            except Exception as exc:
+                self._warn(
+                    "ship reference expiry push failed: "
+                    f"{type(exc).__name__}"
+                )
+
     def _reset_locked(self, reason: str) -> None:
+        self._expire_submitted_contexts(reason)
         catalog = self._catalog
         self._catalog = None
         if catalog is not None:

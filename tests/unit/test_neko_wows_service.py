@@ -349,6 +349,65 @@ def test_config_change_keeps_reconnect_required_after_conflict_blocked_start():
     assert plugin._reconnect_required is True
 
 
+def test_reconnect_resets_pipeline_and_battle_state_before_transport_restart():
+    calls = []
+    plugin = object.__new__(NekoWowsPlugin)
+    plugin._state_lock = threading.RLock()
+    plugin._pipeline_lock = threading.Lock()
+    plugin._running = False
+    plugin._reconnect_required = True
+    plugin._previous = ("old-frame",)
+    plugin._blocked_signature = (("old", ("battle",)),)
+
+    def record(name, *args):
+        calls.append((name, args, plugin._pipeline_lock.locked()))
+
+    class ResetProbe:
+        def __init__(self, name):
+            self.name = name
+
+        def reset(self, *args):
+            record(self.name, *args)
+
+        def reset_battle(self, *args):
+            record(self.name, *args)
+
+    status = ServiceStatus(mode=MODE_EXTERNAL)
+    plugin.transport = type("Transport", (), {
+        "stop": lambda _self: record("transport_stop"),
+        "start": lambda _self: record("transport_start"),
+    })()
+    plugin.service = type("Service", (), {
+        "start_if_needed": lambda _self: record("service_start") or status,
+    })()
+    plugin.gate = ResetProbe("gate_reset")
+    plugin.registry = ResetProbe("registry_reset")
+    plugin.ship_context = ResetProbe("ship_context_reset")
+    plugin.arbiter = ResetProbe("arbiter_reset_battle")
+    plugin._record_service = lambda _status: record("record_service")
+
+    result = asyncio.run(NekoWowsPlugin.reconnect(plugin))
+
+    assert calls == [
+        ("transport_stop", (), False),
+        ("service_start", (), False),
+        ("gate_reset", (), True),
+        ("registry_reset", (), True),
+        ("ship_context_reset", ("reconnect",), True),
+        ("arbiter_reset_battle", (None,), True),
+        ("transport_start", (), False),
+        ("record_service", (), False),
+    ]
+    assert plugin._blocked_signature == ()
+    assert plugin._previous is None
+    assert plugin._running is True
+    assert plugin._reconnect_required is False
+    assert result.unwrap() == {
+        "service": status.as_dict(),
+        "transport_started": True,
+    }
+
+
 def test_auto_start_disabled_is_reported_not_attempted(monkeypatch):
     patch_urlopen(monkeypatch, error=urllib.error.URLError("refused"))
     monkeypatch.setattr(

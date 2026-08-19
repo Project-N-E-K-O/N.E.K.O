@@ -553,12 +553,13 @@ class NekoWowsPlugin(NekoPluginBase):
             self._running = False
         self.transport.stop()
         status = self.service.stop()
-        self.context_injector.restore(
-            WOWS_RESTORE_INSTRUCTIONS, dry_run=self.cfg.dry_run)
-        self.ship_context.reset("shutdown")
-        # Frames of the user's screen do not outlive the plugin.
-        self.shots.clear()
-        self.knowledge.close()
+        with self._pipeline_lock:
+            self.context_injector.restore(
+                WOWS_RESTORE_INSTRUCTIONS, dry_run=self.cfg.dry_run)
+            self.ship_context.reset("shutdown")
+            # Frames of the user's screen do not outlive the plugin.
+            self.shots.clear()
+            self.knowledge.close()
         self.logger.info("neko_wows shutdown")
         return Ok({"status": "shutdown", "service": status.as_dict()})
 
@@ -608,10 +609,16 @@ class NekoWowsPlugin(NekoPluginBase):
                 self._running = False
                 self._reconnect_required = True
             return False
-        self.transport.start()
         with self._state_lock:
             self._running = True
             self._reconnect_required = False
+        try:
+            self.transport.start()
+        except Exception:
+            with self._state_lock:
+                self._running = False
+                self._reconnect_required = True
+            raise
         return True
 
     def _supervise_service(self) -> None:
@@ -661,6 +668,9 @@ class NekoWowsPlugin(NekoPluginBase):
 
     def _evaluate(self, snapshot) -> None:
         with self._pipeline_lock:
+            with self._state_lock:
+                if not self._running:
+                    return
             try:
                 self._evaluate_locked(snapshot)
             finally:
@@ -1240,6 +1250,7 @@ class NekoWowsPlugin(NekoPluginBase):
             self.gate.reset()
             self.registry.reset()
             self.ship_context.reset("reconnect")
+            self.arbiter.reset_battle(None)
             self._blocked_signature = ()
             with self._state_lock:
                 self._previous = None

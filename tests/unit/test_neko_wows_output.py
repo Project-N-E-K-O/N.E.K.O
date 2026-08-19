@@ -242,6 +242,8 @@ def test_battle_end_restores_context_after_the_frame_is_evaluated():
     calls = []
     plugin = object.__new__(NekoWowsPlugin)
     plugin._pipeline_lock = threading.RLock()
+    plugin._state_lock = threading.RLock()
+    plugin._running = True
     plugin.cfg = WowsConfig()
     plugin._evaluate_locked = lambda _snapshot: calls.append("evaluate")
     plugin.context_injector = SimpleNamespace(
@@ -258,6 +260,8 @@ def test_battle_end_restores_context_when_evaluation_raises():
     calls = []
     plugin = object.__new__(NekoWowsPlugin)
     plugin._pipeline_lock = threading.RLock()
+    plugin._state_lock = threading.RLock()
+    plugin._running = True
     plugin.cfg = WowsConfig()
 
     def fail_evaluation(_snapshot):
@@ -274,6 +278,186 @@ def test_battle_end_restores_context_when_evaluation_raises():
         NekoWowsPlugin._evaluate(plugin, SimpleNamespace(status=STATUS_ENDED))
 
     assert calls == ["evaluate", "restore", "ship_reset:battle_end"]
+
+
+def test_activate_transport_opens_running_gate_before_start():
+    observed_state = []
+    plugin = object.__new__(NekoWowsPlugin)
+    plugin._state_lock = threading.RLock()
+    plugin._running = False
+    plugin._reconnect_required = True
+
+    def start():
+        with plugin._state_lock:
+            observed_state.append(
+                (plugin._running, plugin._reconnect_required))
+        return False
+
+    plugin.transport = SimpleNamespace(start=start)
+    status = SimpleNamespace(transport_allowed=True)
+
+    assert NekoWowsPlugin._activate_transport(plugin, status) is True
+    assert observed_state == [(True, False)]
+    assert plugin._running is True
+    assert plugin._reconnect_required is False
+
+
+def test_activate_transport_rolls_back_running_state_when_start_raises():
+    plugin = object.__new__(NekoWowsPlugin)
+    plugin._state_lock = threading.RLock()
+    plugin._running = False
+    plugin._reconnect_required = False
+
+    def fail_start():
+        raise RuntimeError("transport start failed")
+
+    plugin.transport = SimpleNamespace(start=fail_start)
+    status = SimpleNamespace(transport_allowed=True)
+
+    with pytest.raises(RuntimeError, match="transport start failed"):
+        NekoWowsPlugin._activate_transport(plugin, status)
+
+    assert plugin._running is False
+    assert plugin._reconnect_required is True
+
+
+def test_shutdown_stops_workers_outside_pipeline_lock_and_cleans_up_inside_it():
+    calls = []
+    plugin = object.__new__(NekoWowsPlugin)
+    plugin._state_lock = threading.RLock()
+    plugin._pipeline_lock = threading.Lock()
+    plugin._running = True
+    plugin.cfg = WowsConfig()
+
+    def record(name):
+        calls.append((name, plugin._pipeline_lock.locked()))
+
+    def stop_transport():
+        with plugin._state_lock:
+            assert plugin._running is False
+        record("transport_stop")
+
+    status = SimpleNamespace(as_dict=lambda: {"mode": "stopped"})
+    plugin.transport = SimpleNamespace(stop=stop_transport)
+    plugin.service = SimpleNamespace(
+        stop=lambda: record("service_stop") or status)
+    plugin.context_injector = SimpleNamespace(
+        restore=lambda *_args, **_kwargs: record("restore"))
+    plugin.ship_context = SimpleNamespace(
+        reset=lambda _reason: record("ship_reset"))
+    plugin.shots = SimpleNamespace(clear=lambda: record("shots_clear"))
+    plugin.knowledge = SimpleNamespace(close=lambda: record("knowledge_close"))
+    plugin.logger = SimpleNamespace(info=lambda _message: None)
+
+    NekoWowsPlugin.shutdown(plugin)
+
+    assert calls == [
+        ("transport_stop", False),
+        ("service_stop", False),
+        ("restore", True),
+        ("ship_reset", True),
+        ("shots_clear", True),
+        ("knowledge_close", True),
+    ]
+
+
+def test_queued_evaluation_is_skipped_after_running_is_cleared():
+    class ObservedRLock:
+        def __init__(self, attempts):
+            self._lock = threading.RLock()
+            self._local = threading.local()
+            self._attempts = attempts
+
+        def __enter__(self):
+            event = self._attempts.get(threading.current_thread().name)
+            if event is not None:
+                event.set()
+            self._lock.acquire()
+            self._local.held = True
+            return self
+
+        def __exit__(self, *_args):
+            self._local.held = False
+            self._lock.release()
+
+        def held_by_current_thread(self):
+            return bool(getattr(self._local, "held", False))
+
+    calls = []
+    errors = []
+    evaluator_attempted = threading.Event()
+    shutdown_attempted = threading.Event()
+    transport_stopped = threading.Event()
+    pipeline_lock = ObservedRLock({
+        "queued-evaluator": evaluator_attempted,
+        "shutdown-worker": shutdown_attempted,
+    })
+    plugin = object.__new__(NekoWowsPlugin)
+    plugin._pipeline_lock = pipeline_lock
+    plugin._state_lock = threading.RLock()
+    plugin._running = True
+    plugin.cfg = WowsConfig()
+
+    def record(name):
+        calls.append((name, pipeline_lock.held_by_current_thread()))
+
+    def stop_transport():
+        with plugin._state_lock:
+            assert plugin._running is False
+        record("transport_stop")
+        transport_stopped.set()
+
+    status = SimpleNamespace(as_dict=lambda: {"mode": "stopped"})
+    plugin.transport = SimpleNamespace(stop=stop_transport)
+    plugin.service = SimpleNamespace(
+        stop=lambda: record("service_stop") or status)
+    plugin._evaluate_locked = lambda _snapshot: record("evaluate")
+    plugin.context_injector = SimpleNamespace(
+        restore=lambda *_args, **_kwargs: record("restore"))
+    plugin.ship_context = SimpleNamespace(
+        reset=lambda _reason: record("ship_reset"))
+    plugin.shots = SimpleNamespace(clear=lambda: record("shots_clear"))
+    plugin.knowledge = SimpleNamespace(close=lambda: record("knowledge_close"))
+    plugin.logger = SimpleNamespace(info=lambda _message: None)
+    snapshot = SimpleNamespace(status=STATUS_ENDED)
+
+    def evaluate_after_lock():
+        try:
+            NekoWowsPlugin._evaluate(plugin, snapshot)
+        except BaseException as exc:  # pragma: no cover - asserted below
+            errors.append(exc)
+
+    def shutdown_after_lock():
+        try:
+            NekoWowsPlugin.shutdown(plugin)
+        except BaseException as exc:  # pragma: no cover - asserted below
+            errors.append(exc)
+
+    evaluator = threading.Thread(
+        target=evaluate_after_lock, name="queued-evaluator")
+    shutdown_worker = threading.Thread(
+        target=shutdown_after_lock, name="shutdown-worker")
+    with plugin._pipeline_lock:
+        evaluator.start()
+        assert evaluator_attempted.wait(timeout=5)
+        shutdown_worker.start()
+        assert transport_stopped.wait(timeout=5)
+        assert shutdown_attempted.wait(timeout=5)
+
+    evaluator.join(timeout=5)
+    shutdown_worker.join(timeout=5)
+
+    assert not evaluator.is_alive()
+    assert not shutdown_worker.is_alive()
+    assert errors == []
+    assert calls == [
+        ("transport_stop", False),
+        ("service_stop", False),
+        ("restore", True),
+        ("ship_reset", True),
+        ("shots_clear", True),
+        ("knowledge_close", True),
+    ]
 
 
 class _Timeline:

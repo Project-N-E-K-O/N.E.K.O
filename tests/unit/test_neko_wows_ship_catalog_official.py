@@ -187,6 +187,80 @@ def test_apply_config_strips_region_like_the_constructor():
     assert client._validate("top", "zh-cn") == ""
 
 
+def test_official_name_lookup_pages_without_unsupported_search_parameter():
+    client, transport = make_client(script=[
+        (200, response({
+            "status": "ok",
+            "meta": {"page_total": 2},
+            "data": {
+                "1": {"ship_id": 1, "name": "Yamato II"},
+            },
+        })),
+        (200, response({
+            "status": "ok",
+            "meta": {"page_total": 2},
+            "data": {
+                str(SHIP_ID): {"ship_id": SHIP_ID, "name": "YAMATO"},
+            },
+        })),
+        (200, response(ship_envelope())),
+        (200, response(profile_envelope())),
+    ])
+
+    result = client.query_ship("  yamato  ", language="en")
+
+    assert result["ok"] is True
+    listing_queries = [
+        parse_qs(urlparse(call[0]).query)
+        for call in transport.calls[:2]
+    ]
+    assert [query["page_no"] for query in listing_queries] == [["1"], ["2"]]
+    for query in listing_queries:
+        assert "search" not in query
+        assert query["language"] == ["en"]
+        assert query["fields"] == ["ship_id,name"]
+        assert query["limit"] == ["100"]
+
+
+@pytest.mark.parametrize("invalid_ship_id", [0, -1])
+def test_official_name_lookup_ignores_nonpositive_exact_name_ids(
+    invalid_ship_id,
+):
+    client, _transport = make_client(script=[
+        (200, response({
+            "status": "ok",
+            "meta": {"page_total": 1},
+            "data": {
+                "invalid": {"ship_id": invalid_ship_id, "name": "Yamato"},
+                str(SHIP_ID): {"ship_id": SHIP_ID, "name": "Yamato"},
+            },
+        })),
+        (200, response(ship_envelope())),
+        (200, response(profile_envelope())),
+    ])
+
+    result = client.query_ship("Yamato", language="en")
+
+    assert result["ok"] is True
+    assert result["data"]["ship"]["ship_id"] == SHIP_ID
+
+
+@pytest.mark.parametrize("page_total", [None, True, "2", 2.0, 0, -1, 10 ** 9])
+def test_official_name_lookup_rejects_untrusted_page_total_without_more_requests(
+    page_total,
+):
+    client, transport = make_client(script=[(200, response({
+        "status": "ok",
+        "meta": {"page_total": page_total},
+        "data": {},
+    }))])
+
+    result = client.query_ship("Yamato", language="en")
+
+    assert result["code"] == "invalid_response"
+    assert len(transport.calls) == 1
+
+
 @pytest.mark.parametrize(("status", "code"), [
     (401, "unauthorized"),
     (403, "unauthorized"),

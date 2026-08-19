@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from types import SimpleNamespace
 
 import pytest
 
@@ -1295,6 +1296,152 @@ def test_context_packs_complete_blocks_into_unique_soft_limited_batches(
         [999],
         [4276041424],
     ]
+
+
+def test_reset_expires_submitted_context_once_with_the_same_key(context_parts):
+    context, plugin, _, _ = context_parts
+    context.observe(
+        battle_snapshot(yamato_ship(1, 1, RELATION_SELF)),
+        dry_run=False,
+    )
+    submitted = plugin.calls[0]
+
+    context.reset("battle_end")
+
+    assert len(plugin.calls) == 2
+    expired = plugin.calls[1]
+    assert expired["coalesce_key"] == submitted["coalesce_key"]
+    assert expired["visibility"] == []
+    assert expired["ai_behavior"] == "read"
+    assert expired["priority"] == 0
+    assert expired["metadata"]["plugin"] == "neko_wows"
+    assert expired["metadata"]["kind"] == "ship_reference"
+    assert expired["metadata"]["delivery_intent"] == "passive_context"
+    assert expired["metadata"]["context_expired"] is True
+    assert expired["metadata"]["cleanup_reason"] == "battle_end"
+    assert expired["metadata"]["ship_ids"] == []
+    assert expired["metadata"]["count_update_ship_ids"] == []
+    expired_text = expired["parts"][0]["text"].casefold()
+    assert "expired" in expired_text
+    assert "must not be used" in expired_text
+
+    context.reset("shutdown")
+
+    assert len(plugin.calls) == 2
+
+
+def test_reset_expires_context_in_the_original_target_session(context_parts):
+    context, plugin, _, _ = context_parts
+    host_ctx = SimpleNamespace(_current_lanlan="alpha")
+    plugin._host_ctx = host_ctx
+    plugin.ctx = SimpleNamespace(_host_ctx=host_ctx)
+    context.observe(
+        battle_snapshot(yamato_ship(1, 1, RELATION_SELF)),
+        dry_run=False,
+    )
+
+    host_ctx._current_lanlan = "beta"
+    context.reset("battle_end")
+
+    assert [
+        call.get("target_lanlan") for call in plugin.calls
+    ] == ["alpha", "alpha"]
+
+
+@pytest.mark.parametrize("failure_mode", ("declined", "non_mapping", "exception"))
+def test_reset_retries_expiry_until_host_confirms_submission(
+    context_parts,
+    failure_mode,
+):
+    context, plugin, _, _ = context_parts
+    context.observe(
+        battle_snapshot(yamato_ship(1, 1, RELATION_SELF)),
+        dry_run=False,
+    )
+    submitted_key = plugin.calls[0]["coalesce_key"]
+    if failure_mode == "declined":
+        plugin.receipt = {"submitted": False}
+    elif failure_mode == "non_mapping":
+        plugin.receipt = None
+    else:
+        plugin.error = RuntimeError("host unavailable")
+
+    context.reset("battle_end")
+
+    assert len(plugin.calls) == 2
+    assert plugin.calls[1]["coalesce_key"] == submitted_key
+
+    plugin.error = None
+    plugin.receipt = {"submitted": True}
+    context.reset("shutdown")
+
+    assert len(plugin.calls) == 3
+    assert plugin.calls[2]["coalesce_key"] == submitted_key
+    assert plugin.calls[2]["metadata"]["cleanup_reason"] == "shutdown"
+
+    context.reset("reconnect")
+
+    assert len(plugin.calls) == 3
+
+
+@pytest.mark.parametrize("failure_mode", ("declined", "exception"))
+def test_reset_continues_other_expiries_and_retries_only_the_failed_key(
+    snapshot,
+    failure_mode,
+):
+    class ScriptedPlugin:
+        def __init__(self, outcomes) -> None:
+            self.outcomes = list(outcomes)
+            self.calls: list[dict] = []
+
+        def push_message(self, **kwargs):
+            self.calls.append(kwargs)
+            outcome = self.outcomes.pop(0)
+            if isinstance(outcome, Exception):
+                raise outcome
+            return outcome
+
+    failed_expiry = (
+        {"submitted": False}
+        if failure_mode == "declined"
+        else RuntimeError("host unavailable")
+    )
+    plugin = ScriptedPlugin([
+        {"submitted": True},
+        {"submitted": True},
+        failed_expiry,
+        {"submitted": True},
+        {"submitted": True},
+    ])
+    context = BattleShipContextManager(
+        plugin,
+        MutableStore(snapshot),
+        WowsConfig(ship_catalog_enabled=True, dry_run=False),
+    )
+    first = battle_snapshot(yamato_ship(1, 1, RELATION_SELF))
+    with_count_update = battle_snapshot(
+        yamato_ship(1, 1, RELATION_SELF),
+        yamato_ship(2, 2, RELATION_ENEMY),
+    )
+
+    context.observe(first, dry_run=False)
+    context.observe(with_count_update, dry_run=False)
+    submitted_keys = [call["coalesce_key"] for call in plugin.calls]
+    assert len(set(submitted_keys)) == 2
+
+    context.reset("battle_end")
+
+    assert len(plugin.calls) == 4
+    assert [call["coalesce_key"] for call in plugin.calls[2:]] == submitted_keys
+
+    context.reset("shutdown")
+
+    assert len(plugin.calls) == 5
+    assert plugin.calls[4]["coalesce_key"] == submitted_keys[0]
+
+    context.reset("reconnect")
+
+    assert len(plugin.calls) == 5
 
 
 def test_reset_releases_frozen_snapshot_and_state(context_parts, snapshot):

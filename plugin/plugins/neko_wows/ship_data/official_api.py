@@ -25,6 +25,7 @@ from .module_selection import (
 SOURCE_NAME = "official_wargaming_api"
 MAX_RESPONSE_BYTES = 2 * 1024 * 1024
 DEFAULT_CACHE_SIZE = 128
+MAX_SHIP_NAME_PAGES = 100
 
 REGION_ORIGINS = {
     "na": "https://api.worldofwarships.com",
@@ -194,23 +195,49 @@ class OfficialWowsApiClient:
         wanted = _text(ship).casefold()
         if not wanted:
             return official_error("ship_not_found")
-        payload, code = self._request(
-            "/wows/encyclopedia/ships/",
-            {"language": language.casefold(), "search": _text(ship)},
-        )
-        if code:
-            return official_error(code)
-        matches = []
-        for raw in _mapping(payload.get("data")).values():
-            value = _mapping(raw)
-            if _text(value.get("name")).casefold() == wanted:
-                ship_id = value.get("ship_id")
-                if isinstance(ship_id, int) and not isinstance(ship_id, bool):
-                    matches.append(ship_id)
-        if len(set(matches)) != 1:
+        language = language.casefold()
+        matches: set[int] = set()
+        page_total: int | None = None
+        for page_no in range(1, MAX_SHIP_NAME_PAGES + 1):
+            payload, code = self._request(
+                "/wows/encyclopedia/ships/",
+                {
+                    "language": language,
+                    "fields": "ship_id,name",
+                    "limit": 100,
+                    "page_no": page_no,
+                },
+            )
+            if code:
+                return official_error(code)
+            raw_page_total = _mapping(payload.get("meta")).get("page_total")
+            if (
+                isinstance(raw_page_total, bool)
+                or not isinstance(raw_page_total, int)
+                or raw_page_total < 1
+                or raw_page_total > MAX_SHIP_NAME_PAGES
+            ):
+                return official_error("invalid_response")
+            if page_total is None:
+                page_total = raw_page_total
+            elif raw_page_total != page_total:
+                return official_error("invalid_response")
+            for raw in _mapping(payload.get("data")).values():
+                value = _mapping(raw)
+                if _text(value.get("name")).casefold() == wanted:
+                    ship_id = value.get("ship_id")
+                    if (
+                        isinstance(ship_id, int)
+                        and not isinstance(ship_id, bool)
+                        and ship_id > 0
+                    ):
+                        matches.add(ship_id)
+            if page_no == page_total:
+                break
+        if len(matches) != 1:
             return official_error("ship_not_found")
         return self.query_ship_id(
-            matches[0], configuration=configuration, language=language)
+            next(iter(matches)), configuration=configuration, language=language)
 
     def query_ship_id(
         self,
