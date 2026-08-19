@@ -4357,7 +4357,18 @@ class GalgamePlugin(
                 local["events_file_size"] = 0
                 return
             local["stream_reset_pending"] = True
+            if not session_changed:
+                local["latest_snapshot"] = {}
+                for field in (
+                    "history_events",
+                    "history_lines",
+                    "history_observed_lines",
+                    "history_choices",
+                    "dedupe_window",
+                ):
+                    local[field] = []
             local["line_buffer"] = b""
+            local["events_byte_offset"] = 0
             local["events_file_size"] = tail.file_size
             return
 

@@ -2740,7 +2740,11 @@ async def test_boundary_retry_discards_stale_checkpoint_before_processing_new_ta
 
 @pytest.mark.asyncio
 @pytest.mark.plugin_unit
-async def test_truncation_sets_stream_reset_pending(tmp_path: Path) -> None:
+@pytest.mark.parametrize("replacement_prefix", [b"", b'{"seq":1'])
+async def test_truncation_sets_stream_reset_pending(
+    tmp_path: Path,
+    replacement_prefix: bytes,
+) -> None:
     plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
     game_id = "demo.alpha"
     session_id = "sess-a"
@@ -2795,11 +2799,56 @@ async def test_truncation_sets_stream_reset_pending(tmp_path: Path) -> None:
     ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
     plugin = GalgameBridgePlugin(ctx)
     await plugin.startup()
-    (game_dir / "events.jsonl").write_bytes(b"")
+    await plugin._poll_bridge(force=True)
+    active_line = _event(
+        seq=3,
+        event_type="line_changed",
+        session_id=session_id,
+        game_id=game_id,
+        payload={
+            "speaker": "雪乃",
+            "text": "活跃流台词",
+            "line_id": "line-active",
+            "scene_id": "scene-a",
+            "route_id": "",
+        },
+        ts="2026-04-21T08:30:03Z",
+    )
+    _append_event(game_dir / "events.jsonl", active_line)
+    _write_session(
+        game_dir / "session.json",
+        _session(
+            game_id=game_id,
+            session_id=session_id,
+            last_seq=3,
+            state=_session_state(
+                speaker="雪乃",
+                text="活跃流台词",
+                line_id="line-active",
+                scene_id="scene-a",
+                ts="2026-04-21T08:30:03Z",
+            ),
+        ),
+    )
+    await plugin._poll_bridge(force=True)
+    before_reset = plugin._snapshot_state()
+    assert before_reset["latest_snapshot"]
+    assert before_reset["history_events"]
+    assert before_reset["history_lines"]
+
+    (game_dir / "events.jsonl").write_bytes(replacement_prefix)
     await plugin._poll_bridge(force=True)
     status = await plugin.galgame_get_status()
     assert isinstance(status, Ok)
     assert status.value["stream_reset_pending"] is True
+    resetting = plugin._snapshot_state()
+    assert resetting["latest_snapshot"] == {}
+    assert resetting["history_events"] == []
+    assert resetting["history_lines"] == []
+    assert resetting["history_observed_lines"] == []
+    assert resetting["history_choices"] == []
+    assert resetting["dedupe_window"] == []
+    assert resetting["events_byte_offset"] == 0
 
     replacement = _event(
         seq=1,
