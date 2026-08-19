@@ -119,7 +119,6 @@ class AgentLifecycleMixin:
         self._last_consult_seen_line_count: int = 0
         self._cat_opinions: list[dict[str, Any]] = []
         self._push_seq_counter: int = 0
-        self._cross_scene_memory_dirty: bool = False
         self._push_composer = PushComposer(logger=self._logger)
         self._last_session_transition_type = ""
         self._last_session_transition_reason = ""

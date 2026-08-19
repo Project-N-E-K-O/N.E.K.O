@@ -77,6 +77,8 @@ export interface PluginUiSurface {
   context?: string
   permissions?: string[]
   available?: boolean
+  /** Host-generated static/index.html surface retained for legacy UI compatibility. */
+  legacy_static_compat?: boolean
 }
 
 export interface PluginUiWarning {

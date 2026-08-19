@@ -9,6 +9,7 @@
  * - 红点显示 = max(未读, 可领?1:0)；挂在圆形 social 按钮上（非 wrapper，避免错位）
  * - NOTIFY_INCOMING         → 简短 toast 提示（"📩 新消息"）
  * - QUOTA_CHANGED           → 不直接画 UI（snapshot 数据留给后续 quota panel 用）
+ * - FORGE_CREDIT_CHANGED    → 转发给 forge-drop-overlay 的蓝色券数角标
  * - CONN_STATE              → 不画 UI（log 一行调试）
  *
  * DROP_ANIMATION（🪙 / emoji 飘落）已退役：掉券 UX 统一走 CREDIT_DROP →
@@ -115,6 +116,16 @@
     window.nekoSocial.onLikeDailyClaimable((data) => {
       cachedClaimable = !!(data && data.claimable);
       paintBadge();
+    });
+  }
+
+  if (typeof window.nekoSocial.onForgeCreditChanged === 'function') {
+    window.nekoSocial.onForgeCreditChanged((data) => {
+      try {
+        window.dispatchEvent(new window.CustomEvent('neko-forge-credit-state', {
+          detail: data || {},
+        }));
+      } catch (_) {}
     });
   }
 

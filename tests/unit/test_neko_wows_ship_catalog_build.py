@@ -718,7 +718,6 @@ def test_oversized_primary_render_keeps_existing_manifest_bytes(
         source_wowsinfo,
         "PRIMARY_TEXT_PART_MAX_BYTES",
         64,
-        raising=False,
     )
 
     with pytest.raises(SourceValidationError, match="rendered primary profile"):
@@ -727,6 +726,20 @@ def test_oversized_primary_render_keeps_existing_manifest_bytes(
             source_commit="f" * 40, source_channel="live", minimum_ship_count=1)
 
     assert (output_dir / "active.json").read_bytes() == before
+
+
+def test_empty_terminal_modules_raise_source_validation_error(
+    tmp_path,
+    source_payloads,
+    monkeypatch,
+):
+    monkeypatch.setattr(source_wowsinfo, "select_terminal_modules", lambda *a, **k: ())
+    wowsinfo_path, lang_path = write_sources(tmp_path / "source", source_payloads)
+
+    with pytest.raises(SourceValidationError, match="no terminal"):
+        build_catalog(
+            wowsinfo_path, lang_path, tmp_path / "catalog",
+            source_commit="f" * 40, source_channel="live", minimum_ship_count=1)
 
 
 def test_build_cli_accepts_local_sources_without_network(tmp_path, source_payloads):

@@ -292,7 +292,10 @@
             floatingButtons.style.setProperty('display', 'flex', 'important');
             floatingButtons.style.setProperty('visibility', 'visible', 'important');
             floatingButtons.style.setProperty('opacity', '1', 'important');
-            floatingButtons.style.setProperty('pointer-events', 'auto', 'important');
+            // Keep the normal toolbar clickable without pinning its cascade priority.
+            // During a model drag, avatar-ui-drag.js must still be able to override
+            // this with body.neko-model-dragging { pointer-events: none !important; }.
+            floatingButtons.style.setProperty('pointer-events', 'auto');
         }
 
         const lockIcon = document.getElementById('live2d-lock-icon');

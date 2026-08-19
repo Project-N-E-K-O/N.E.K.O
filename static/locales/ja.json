@@ -2201,6 +2201,14 @@
         "voiceNotSet": "ボイスが指定されていません",
         "voiceSetting": "ボイス設定",
         "personalitySetting": "性格設定",
+        "languagePreference": "言語の好み",
+        "languagePreferenceDescription": "この設定は強制ではありません。キャラクター設定や現在の会話で使われる言語によって、実際の応答言語が変わることがあります。",
+        "languagePreferenceSaved": "言語の好みを更新しました",
+        "languagePreferencePartiallySaved": "言語の好みは保存されましたが、現在のセッションとの同期は完了していません",
+        "languagePreferenceSuperseded": "別のウィンドウでより新しい言語の好みが保存されました。表示を更新しました",
+        "languagePreferenceUnverified": "言語の好みは保存されましたが、最新かどうかを今は確認できませんでした",
+        "languagePreferenceSaveFailed": "言語の好みを保存できませんでした",
+        "languagePreferenceLoadFailed": "言語の好みを読み込めませんでした",
         "personalityUseDefault": "キャラクターカードのデフォルト性格に従う",
         "personalitySelect": "性格を選択",
         "personalityClear": "デフォルトに戻す",
@@ -2901,6 +2909,7 @@
             "fullscreenTracking": "フルスクリーン追跡",
             "localTracking": "ローカル追跡",
             "lockedHoverFade": "ロック時ホバー透過",
+            "forgeDropEffects": "チケット獲得演出・効果音",
             "textGuardMaxLength": "返信長さ上限",
             "unlimited": "無制限",
             "characters": "文字",
@@ -3990,6 +3999,7 @@
         "twitter": "Twitter/X",
         "reddit": "Reddit",
         "netease": "网易雲音楽",
+        "qqmusic": "QQミュージック",
         "saveConfig": "設定を保存",
         "encryptStorage": "ローカルファイルに安全に暗号化保存",
         "localMonitoring": "ローカルステータス監視",
@@ -4028,7 +4038,8 @@
             "weibo": "<b>対象：</b> <code>m.weibo.cn</code> にアクセスして Cookie を取得してください。",
             "twitter": "<b>対象：</b> <code>x.com</code> にアクセスして Cookie を取得してください。",
             "reddit": "<b>対象：</b> <code>reddit.com</code> にアクセスして Cookie を取得してください。",
-            "netease": "<b>対象：</b> <code>music.163.com</code> にアクセスして Cookie を取得してください。"
+            "netease": "<b>対象：</b> <code>music.163.com</code> にアクセスして Cookie を取得してください。",
+            "qqmusic": "<b>対象：</b> <code>y.qq.com</code> にアクセスして Cookie を取得してください。"
         },
         "guide": {
             "title": "初心者向け共通ガイド",
@@ -4143,6 +4154,14 @@
             "MUSIC_U": {
                 "label": "MUSIC_U",
                 "desc": "コアIDクレデンシャル (必須)"
+            },
+            "qqmusicUin": {
+                "label": "uin",
+                "desc": "QQアカウント識別子（通常は o に数字が続きます）"
+            },
+            "qqmusicKey": {
+                "label": "qqmusic_key",
+                "desc": "QQ Music のログイン認証情報（必須）"
             },
             "NMTID": {
                 "label": "NMTID",

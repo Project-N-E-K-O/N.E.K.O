@@ -41,7 +41,9 @@
     "uv_extreme": "🧴 Extreme UV — sunscreen is a must",
     "uv_high": "🕶️ High UV — sunscreen recommended",
     "wind_strong": "💨 Strong winds — be careful outdoors",
-    "rain_forecast": "📅 Rain expected on: {dates}"
+    "rain_forecast": "📅 Rain expected on: {dates}",
+    "bring_umbrella": "Bring an umbrella",
+    "bring_sunscreen": "Apply sunscreen"
   },
   "clothing": {
     "heavy": "Heavy",
@@ -50,7 +52,7 @@
   },
   "summary": {
     "weather": "{city}: {weather}, {temp}°C (feels like {feels}°C), humidity {humidity}%",
-    "vpn_hint": " (Proxy detected — IP shows {ip_city}, auto-switched to system timezone location)",
+    "timezone_mismatch": " (IP location and device timezone differ; location may be approximate)",
     "travel_prefix": "Travel advice for {city}: ",
     "hourly_temp_range": "Next {count}h temperature {low}~{high}°C",
     "hourly_rain_times": "Rain expected at: {times}",
@@ -61,21 +63,38 @@
     "city_not_found": "City not found — please check the city name",
     "geocode_timeout": "City lookup timed out — please try again or specify a city name",
     "geocode_failed": "City lookup failed — please check your network",
+    "poi_search_failed": "Nearby place search failed — please try again later",
+    "location_ambiguous": "That location name is ambiguous — please add a city, region, or country",
+    "location_confirmation_required": "The available location is not precise enough — please specify a city, district, address, or verified saved place",
     "fetch_failed": "Failed to fetch weather data ({city})",
     "forecast_timeout": "Weather data request timed out — please try again",
     "unknown_weather": "Unknown ({code})"
+  },
+  "location": {
+    "assumption": "The location is ambiguous. This result uses '{selected}'. Other candidates: {alternatives}. If that is not the place you meant, retry with a city, region, or country.",
+    "no_alternatives": "no other candidates",
+    "unavailable": "No usable location could be determined, so this location query was not run. {detail}"
   },
   "trip": {
     "distance": "Distance",
     "recommended": "Recommended",
     "no_destination": "Please specify a destination",
-    "invalid_mode": "Invalid trip mode '{mode}'. Allowed: {valid}"
+    "invalid_mode": "Invalid trip mode '{mode}'. Allowed: {valid}",
+    "mode_transit": "🚇 Transit", "mode_walking": "🚶 Walking", "mode_bicycling": "🚲 Cycling", "mode_driving": "🚗 Driving",
+    "near_walk": "🚶 Very close; walking is recommended", "rain_transit": "🚇 Rain expected; use transit", "good_bike": "🚲 Moderate distance and good weather; cycling is suitable", "transit_advice": "🚇 Transit is recommended", "step_take": "Take {line}", "step_walk": "Walk {distance}", "route_unavailable": "No route could be retrieved right now. Please try again shortly."
   },
   "nearby": {
     "no_query": "Please enter a search keyword (e.g. restaurant, cafe, park)",
+    "list_separator": ", ",
+    "clarify_location": "{detail}. Please provide a search center, for example 'parks near Jilin City', or use a verified saved place.",
     "no_results": "No '{query}' found near {location}",
+    "ambiguous_summary": "Searched all {candidate_count} candidate locations for '{location}' and found {count} results.",
+    "searched_terms_summary": "Search terms: {terms}.",
+    "group_summary": "- {location}: {detail}",
+    "ambiguity_suggestion": "Results are grouped by candidate location; add a city, region, or country for better accuracy.",
     "summary": "Found {count} '{query}' near {location}: {top}",
-    "rain_tip": "🌂 It's raining — consider indoor options"
+    "rain_tip": "🌂 It's raining — consider indoor options",
+    "provider_unavailable": "The map service is temporarily unavailable or timed out. Please try again shortly."
   },
   "tz_city": {
     "Asia/Shanghai": "Shanghai",
@@ -106,11 +125,49 @@
   "recipe": {
     "no_query": "Please enter a dish name or ingredient",
     "not_found": "No recipes found for \"{query}\"",
-    "random_fail": "Failed to get a random recipe, please try again later"
+    "random_fail": "Failed to get a random recipe, please try again later",
+    "provider_unavailable": "The recipe service is temporarily unavailable. Please try again later.",
+    "found": "Found {count} recipes: {names}",
+    "random_summary": "🎲 Random pick: {recipe}",
+    "entry_search_name": "Search recipes", "entry_search_description": "Search by the requested dish name or ingredient without replacing a dish with a generic ingredient.", "entry_random_name": "Random recipe", "entry_random_description": "Recommend a random recipe with nearby restaurants as an alternative.", "ingredients": "Ingredients", "instructions": "Instructions", "today_try": "🎲 Try today: {recipe}", "action_food": "food_recommend cuisine={query} — find similar restaurants nearby", "action_market": "search_nearby request=nearby supermarket for ingredients place_intent=shopping preference_hints=[supermarket] — find a supermarket"
   },
   "air_quality": {
-    "fetch_failed": "Failed to get air quality data for {city}"
+    "fetch_failed": "Failed to get air quality data for {city}",
+    "summary": "Air quality in {city}: {level} (AQI {aqi})",
+    "pm25_suffix": ", PM2.5 {value} μg/m³",
+    "level": {
+      "good": "Good", "fair": "Fair", "moderate": "Moderate", "poor": "Poor",
+      "very_poor": "Very poor", "extremely_poor": "Extremely poor"
+    },
+    "advice": {
+      "mask": "Consider wearing a mask",
+      "reduce_outdoors": "Reduce outdoor activity",
+      "outdoors_ok": "Outdoor activity is generally suitable",
+      "pm25_high": "PM2.5 is high ({value} μg/m³)",
+      "uv": "UV is strong; use sun protection"
+    }
   },
+  "locations": {
+    "label_required": "Location label cannot be empty",
+    "city_required": "City cannot be empty",
+    "confirm_add": "Confirm adding “{label} ({city})”?",
+    "confirm_remove": "Confirm removing saved location “{label}”?",
+    "confirm_default": "Confirm setting “{label}” as the default location?",
+    "confirm": "Confirm",
+    "cancel": "Cancel",
+    "duplicate": "Location label already exists: {label}",
+    "not_found": "Location not found: {label}",
+    "save_failed": "Save failed. Check whether plugin storage is enabled.",
+    "removed": "Removed location: {label}",
+    "default_set": "Default location set: {label}"
+  },
+  "unit": {
+    "unsupported": "Unsupported unit: {unit}",
+    "invalid_value": "Invalid value",
+    "same": "{value} {source} = {value} {target} (same unit)",
+    "unsupported_pair": "Unsupported conversion: {source} → {target}"
+  },
+  "date": {"target_required": "Please specify a target date", "invalid": "Could not parse date “{value}”; use YYYY-MM-DD or a holiday name", "future": "{days} days until {event} ({date})", "today": "🎉 {event} is today!", "past": "{event} was {days} days ago ({date})", "weeks": "About {weeks} weeks | {weekday}", "invalid_start": "Could not parse start date “{value}”", "invalid_end": "Could not parse end date “{value}”", "between": "{start} → {end}: {days} days", "years": "{value} years", "months": "{value} months", "days": "{value} days", "holiday_alternatives": "{event} (assuming {country}; alternatives: {alternatives})", "weekdays": ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]},
   "currency": {
     "no_currencies": "Please specify source and target currencies",
     "convert_failed": "Currency conversion failed: {from} → {to}"
@@ -131,12 +188,20 @@
   "panel.stats.locale": "Locale",
   "panel.stats.store": "Storage",
   "panel.fields.defaultCity": "Default city",
-  "panel.fields.defaultCityHelp": "Leave empty to prefer saved default location, IP lookup, or system timezone.",
+  "panel.fields.defaultCityHelp": "Leave empty to prefer a saved default location or IP lookup.",
   "panel.fields.timezone": "Timezone",
   "panel.fields.forecastDays": "Forecast days",
   "panel.fields.forecastDaysHelp": "Supports 1 to 7 days.",
   "panel.fields.locale": "Language",
   "panel.fields.forceLocale": "Force selected language",
+  "panel.fields.cacheTtl": "Cache lifetime (seconds)",
+  "panel.fields.enableGeoip": "Allow automatic IP location",
+  "config.confirm_update": "Confirm saving these LifeKit configuration changes?",
+  "config.no_valid": "No valid configuration fields to update", "config.forecast_range": "Forecast days must be between 1 and 7", "config.cache_nonnegative": "Cache lifetime cannot be negative", "config.locale_supported": "Locale must be one of: {values}", "config.invalid_value": "Invalid configuration value: {detail}", "config.update_failed": "Configuration update failed: {detail}",
+  "config.secret_ui_only": "Map API keys can only be updated in the LifeKit settings panel and never enter chat context.",
+  "panel.configured": "Configured",
+  "panel.notConfigured": "Not configured",
+  "panel.keepSecret": "Leave blank to keep the current key",
   "panel.fields.label": "Label",
   "panel.fields.city": "City",
   "panel.fields.address": "Address",
@@ -196,7 +261,7 @@
   "quickstart.badges.locations": "Locations",
   "quickstart.badges.tools": "Tool entries",
   "quickstart.cards.configure.title": "Configure defaults first",
-  "quickstart.cards.configure.body": "Set the default city, timezone, forecast days, and language. When default city is empty, LifeKit prefers saved locations, IP lookup, or system timezone.",
+  "quickstart.cards.configure.body": "Set the default city, timezone, forecast days, and language. When default city is empty, LifeKit prefers saved locations or IP lookup.",
   "quickstart.cards.locations.title": "Save common places",
   "quickstart.cards.locations.body": "Save Home, Office, School, and other common places. Weather and travel tools prefer the default location.",
   "quickstart.cards.tools.title": "Use tools for daily tasks",
@@ -257,5 +322,28 @@
   "quickstart.next.guide": "Guide",
   "quickstart.next.entries": "Tool entries",
   "quickstart.next.entriesValue": "Weather, travel, places, food, dates, currency, unit conversion",
-  "quickstart.warning.network": "Weather, location, route, food, and recipe features call external services. If requests fail, check network, proxy, and map API keys first."
+  "quickstart.warning.network": "Weather, location, route, food, and recipe features call external services. If requests fail, check network, proxy, and map API keys first.",
+  "entries.getWeather.name": "Get weather",
+  "entries.getWeather.description": "Get current weather and daily forecasts for a city, saved location, or automatic location.",
+  "entries.hourlyForecast.name": "Hourly forecast",
+  "entries.hourlyForecast.description": "Get hourly temperature, precipitation, and wind forecasts for up to 168 hours.",
+  "entries.travelAdvice.name": "Travel advice",
+  "entries.travelAdvice.description": "Give clothing, umbrella, sunscreen, and travel advice based on weather.",
+  "entries.tripAdvice.name": "Plan a trip",
+  "entries.tripAdvice.description": "Plan routes between cities or saved locations and combine them with weather advice.",
+  "entries.searchNearby.name": "Search nearby",
+  "entries.searchNearby.description": "Search near a road, landmark, current position, or city. Preserve the user's wording in request; use typed intent and explicit preference hints, and do not invent provider search terms.",
+  "entries.foodRecommend.name": "Recommend food",
+  "entries.foodRecommend.description": "Recommend nearby food from location, weather, cuisine, and dining occasion.",
+  "entries.airQuality.name": "Air quality",
+  "entries.airQuality.description": "Query current air quality, PM2.5, PM10, UV, and related advice for a city or saved location.",
+  "entries.currencyConvert.name": "Convert currency",
+  "entries.currencyConvert.description": "Convert major currencies using European Central Bank reference rates.",
+  "entries.countdown.name": "Countdown",
+  "entries.countdown.description": "Count days to a date, month-day, or supported holiday name.",
+  "entries.daysBetween.name": "Days between dates",
+  "entries.daysBetween.description": "Calculate the number of days between two dates.",
+  "entries.unitConvert.name": "Convert units",
+  "entries.unitConvert.description": "Convert common length, weight, temperature, volume, area, and speed units.",
+  "runtime": {"weather_details": "Feels like {feels}°C | humidity {humidity}% | wind {wind} km/h", "hourly_title": "Hourly forecast", "more_hours": "hours", "currency_rate_suffix": " (rate {rate}, {date})", "currency_rate_card": "Rate: 1 {from_currency} = {rate} {to_currency} ({date})", "food_title": "{query} recommendations", "food_scene": "🎯 {scene} occasion", "food_rain": "🌧️ Warm food suits a rainy day", "food_hot": "🌡️ {temp}°C is hot; try something cool", "food_cold": "🌡️ {temp}°C is cold; try something warm", "travel_title": "Travel advice"}
 }

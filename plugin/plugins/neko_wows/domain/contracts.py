@@ -63,6 +63,7 @@ CATEGORY_THREAT = "wows_threat"
 CATEGORY_GEOMETRY = "wows_geometry"
 CATEGORY_TARGETING = "wows_targeting"
 CATEGORY_PROGRESS = "wows_progress"
+CATEGORY_PRAISE = "wows_praise"
 ALL_CATEGORIES = (
     CATEGORY_LIFECYCLE,
     CATEGORY_SUMMARY,
@@ -72,6 +73,7 @@ ALL_CATEGORIES = (
     CATEGORY_GEOMETRY,
     CATEGORY_TARGETING,
     CATEGORY_PROGRESS,
+    CATEGORY_PRAISE,
 )
 
 
@@ -121,7 +123,7 @@ class WowsConfig:
     observability_max_events: int = 120
 
     low_health_ratios: tuple[float, ...] = (0.35, 0.15)
-    rapid_damage_ratio: float = 0.12
+    rapid_damage_ratio: float = 0.23
     rapid_damage_window_seconds: float = 3.0
     enemy_close_range_m: float = 8000.0
     threat_scan_range_m: float = 12000.0
@@ -136,6 +138,8 @@ class WowsConfig:
     high_damage_absolute_threshold: float = 20_000.0
     high_damage_ratio_threshold: float = 0.25
     devastating_strike_ratio_threshold: float = 0.50
+    enemy_sunk_min_absolute_threshold: float = 3_000.0
+    enemy_sunk_min_ratio_threshold: float = 0.05
     outnumbered_margin: int = 2
 
     # --- offline ship catalog and explicit official lookup ---
@@ -255,7 +259,7 @@ class WowsConfig:
             if cleaned:
                 cfg.low_health_ratios = tuple(cleaned)
 
-        cfg.rapid_damage_ratio = number("rapid_damage_ratio", 0.12, 0.01, 0.9)
+        cfg.rapid_damage_ratio = number("rapid_damage_ratio", 0.23, 0.01, 0.9)
         cfg.rapid_damage_window_seconds = number(
             "rapid_damage_window_seconds", 3.0, 0.2, 60.0)
         cfg.enemy_close_range_m = number("enemy_close_range_m", 8000.0, 500.0, 50000.0)
@@ -278,6 +282,10 @@ class WowsConfig:
             "high_damage_ratio_threshold", 0.25, 0.01, 1.0)
         cfg.devastating_strike_ratio_threshold = number(
             "devastating_strike_ratio_threshold", 0.50, 0.01, 1.0)
+        cfg.enemy_sunk_min_absolute_threshold = number(
+            "enemy_sunk_min_absolute_threshold", 3_000.0, 100.0, 1_000_000.0)
+        cfg.enemy_sunk_min_ratio_threshold = number(
+            "enemy_sunk_min_ratio_threshold", 0.05, 0.0, 1.0)
         cfg.outnumbered_margin = int(number("outnumbered_margin", 2, 1, 12))
 
         cfg.ship_catalog_enabled = flag("ship_catalog_enabled", True)

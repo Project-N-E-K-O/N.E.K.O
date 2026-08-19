@@ -27,10 +27,9 @@ async def resolve_group_recall_subjects(
 ) -> tuple[list[dict[str, str]], bool]:
     """One place for the group read path's subject list.
 
-    Shared by the per-turn fallback recall, the recall_memory tool
-    handler AND the scoped bootstrap context: the three paths must
-    authorize exactly the same scopes, or a provider switch would
-    silently change what a group turn can read.
+    Shared by the recall_memory tool handler AND the scoped bootstrap
+    context: both paths must authorize exactly the same scopes, or what
+    a group turn may read would depend on which one ran.
     Returns ``(subjects, used_member_subject)``.
 
     形状：[群] + [当前发言人] + [本轮上下文里最近说过话的另外
@@ -71,8 +70,8 @@ def resolve_participant_recall_subjects(
 ) -> list[dict[str, str]]:
     """One place for the private participant read path's subject list.
 
-    与 resolve_group_recall_subjects 同一角色：tool handler、回落召回、
-    bootstrap 核心记忆段三条读路径必须授权完全一致的域。返回 ``[]`` 表示
+    与 resolve_group_recall_subjects 同一角色：tool handler 与 bootstrap
+    核心记忆段两条读路径必须授权完全一致的域。返回 ``[]`` 表示
     fail-closed（sender 缺失 / 开关已关）——bridge 对空列表直接空结果，
     **绝不**允许调用方把它换成 None（None = legacy 私聊主人语料）。
     同步函数：不需要像群版那样读 backlog 扩容。"""
@@ -304,7 +303,7 @@ class QQMemoryToolService:
             if not subjects:
                 return no_result, {}
         # 私聊 admin（use_memory_context 已按政策解析）：subjects=None 走
-        # legacy 私聊主人语料，与回落路径一致。
+        # legacy 私聊主人语料。
 
         try:
             result = await self.plugin.memory_bridge.query_relevant_memory(

@@ -1,0 +1,17 @@
+{
+  "plugin.name": "Pedidos anônimos do NetEase Music",
+  "plugin.description": "Pesquisa no NetEase Music anonimamente e toca o primeiro resultado, com um aviso gentil em caso de dúvida",
+  "plugin.short_description": "Pesquisa e reproduz anonimamente uma correspondência exata do NetEase Music",
+  "entry.play.name": "Reproduzir uma música do NetEase Music",
+  "entry.play.description": "Use somente quando o usuário pedir explicitamente para tocar uma música específica do NetEase Music. Formate query como “título artista” e preserve indicações de versão, ao vivo ou cover. Não use para letras, informações sobre músicas, recomendações gerais, playlists, pausar, parar, pular ou próxima faixa.",
+  "entry.play.param.query": "Termo de busca, de preferência “título artista”, com no máximo 100 caracteres",
+  "messages.no_results": "Nenhuma música correspondente foi encontrada no NetEase Music. Tente um título ou artista mais específico.",
+  "messages.unavailable": "Esta música não possui uma fonte pública para reprodução anônima. Talvez seja necessário entrar na conta ou ter uma assinatura.",
+  "messages.submitted": "A ação de reprodução foi enviada.",
+  "messages.fallback": "Não tenho certeza se esta é a versão que você queria, mas vou tocar o primeiro resultado da busca.",
+  "errors.missing_target": "Não foi possível determinar a sessão de reprodução atual, então o pedido foi cancelado.",
+  "errors.search_failed": "A pesquisa do NetEase Music está temporariamente indisponível. Tente novamente mais tarde.",
+  "errors.media_failed": "Não foi possível validar a fonte do NetEase Music, portanto a reprodução não foi enviada.",
+  "errors.delivery_failed": "Não foi possível enviar a ação, e a reprodução não começou.",
+  "errors.message_delivery_failed": "Não foi possível entregar a mensagem de resultado."
+}

@@ -259,3 +259,50 @@ def test_manifest_registers_panel_without_credential_defaults():
     assert manifest["plugin"]["ui"]["enabled"] is True
     assert manifest["plugin"]["ui"]["panel"][0]["entry"] == "static/index.html"
     assert "bilibili_dm" not in manifest
+
+
+def test_static_ui_assets_are_versioned_and_not_cached():
+    plugin_source = (Path(__file__).parents[1] / "__init__.py").read_text(
+        encoding="utf-8"
+    )
+    page = (Path(__file__).parents[1] / "static" / "index.html").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'cache_control="no-cache, no-store, must-revalidate"' in plugin_source
+    assert 'UI_ASSET_VERSION = "1.1.12"' in plugin_source
+    assert 'style.css?v=1.1.12' in page
+    assert 'i18n.js?v=1.1.12' in page
+    assert 'script.js?v=1.1.12' in page
+
+
+def test_qr_login_panel_can_be_cancelled_and_auto_closes_after_success():
+    plugin_source = (Path(__file__).parents[1] / "__init__.py").read_text(
+        encoding="utf-8"
+    )
+    page = (Path(__file__).parents[1] / "static" / "index.html").read_text(
+        encoding="utf-8"
+    )
+    script = (Path(__file__).parents[1] / "static" / "script.js").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'id="btn-qr-cancel"' in page
+    assert "cancel_qr_login" in plugin_source
+    assert "sessionId: null" in script
+    assert "qrClientId" in script
+    assert "request_generation: generation" in script
+    assert "await callPlugin('cancel_qr_login', { session_id: sessionId })" in script
+    assert "await callPlugin('poll_qr_login', { session_id: qrLogin.sessionId })" in script
+    assert "closeTimer: null" in script
+    assert "if (qrLogin.closeTimer) clearTimeout(qrLogin.closeTimer);" in script
+    assert "qrLogin.closeTimer = setTimeout" in script
+    assert "const completionGeneration = qrLogin.generation;" in script
+    assert "const closeAt = Date.now() + 2000;" in script
+    assert "if (completionGeneration !== qrLogin.generation) return;" in script
+    assert "Math.max(0, closeAt - Date.now())" in script
+    assert script.index("qrLogin.closeTimer = setTimeout") < script.index(
+        "await refreshDashboard(true)"
+    )
+    assert "data.status === 'no_session' || data.status === 'cancelled'" in script
+    assert "扫码登录已结束，请重新获取二维码" in script

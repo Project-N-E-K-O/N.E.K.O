@@ -85,11 +85,19 @@ def test_the_panel_modules_it_imports_all_exist():
         assert any(path.is_file() for path in candidates), specifier
 
 
-def test_all_six_pages_are_wired_into_the_panel():
+def test_all_seven_pages_are_wired_into_the_panel():
     panel = (PLUGIN_DIR / "ui" / "panel.tsx").read_text(encoding="utf-8")
-    for page_id in ("overview", "timeline", "documents", "prompts",
+    for page_id in ("guide", "overview", "timeline", "documents", "prompts",
                     "preferences", "diagnostics"):
         assert f'id: "{page_id}"' in panel, page_id
+
+
+def test_guide_page_is_text_only():
+    source = (PLUGIN_DIR / "ui" / "guide.tsx").read_text(encoding="utf-8")
+    assert "ActionButton" not in source
+    assert "actionId" not in source
+    assert "api.call" not in source
+    assert "props.api" not in source
 
 
 def test_panel_refreshes_once_per_manual_click_and_also_polls_automatically():
@@ -136,6 +144,8 @@ def test_quiet_window_countdown_is_visible_without_opening_the_timeline():
         PLUGIN_DIR / "ui" / "preferences.tsx").read_text(encoding="utf-8")
 
     assert "quietRemainingSeconds" in overview
+    assert "typeof runtimeNow === \"number\"" in overview
+    assert "runtime_now || 0" not in overview
     assert "state.arbiter" in overview
     assert 't("overview.output.quietWindow"' in overview
     assert "quietRemainingSeconds" in preferences
@@ -234,6 +244,10 @@ def test_the_manifest_section_parses_into_the_config(manifest):
     assert cfg.high_damage_absolute_threshold == 20_000.0
     assert cfg.high_damage_ratio_threshold == 0.25
     assert cfg.devastating_strike_ratio_threshold == 0.50
+    assert cfg.enemy_sunk_min_absolute_threshold == 3_000.0
+    assert cfg.enemy_sunk_min_ratio_threshold == 0.05
+    assert cfg.rapid_damage_ratio == 0.23
+    assert WowsConfig().rapid_damage_ratio == 0.23
 
 
 def test_ship_catalog_config_defaults_are_offline_safe():
@@ -333,12 +347,16 @@ def test_damage_burst_thresholds_are_clamped():
         "high_damage_absolute_threshold": 10**9,
         "high_damage_ratio_threshold": -1,
         "devastating_strike_ratio_threshold": 4,
+        "enemy_sunk_min_absolute_threshold": 1,
+        "enemy_sunk_min_ratio_threshold": 4,
     })
 
     assert cfg.damage_burst_window_seconds == 0.2
     assert cfg.high_damage_absolute_threshold == 1_000_000.0
     assert cfg.high_damage_ratio_threshold == 0.01
     assert cfg.devastating_strike_ratio_threshold == 1.0
+    assert cfg.enemy_sunk_min_absolute_threshold == 100.0
+    assert cfg.enemy_sunk_min_ratio_threshold == 1.0
 
 
 def test_the_manifest_declares_every_key_the_config_reads(manifest):

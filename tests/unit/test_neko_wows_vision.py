@@ -495,6 +495,64 @@ def test_second_look_inside_the_window_is_rate_limited(service):
     assert "images" not in out
 
 
+class _Logger:
+    def __init__(self):
+        self.messages: list[tuple[str, str]] = []
+
+    def info(self, message: str) -> None:
+        self.messages.append(("info", message))
+
+    def warning(self, message: str) -> None:
+        self.messages.append(("warning", message))
+
+
+def test_a_successful_look_is_logged(service):
+    log = _Logger()
+    service._logger = log
+    out = service.look()
+    infos = [message for level, message in log.messages if level == "info"]
+    assert out["output"]["ok"] is True
+    assert any(
+        "screenshot look ok" in message and out["output"]["shot_id"] in message
+        for message in infos
+    )
+    assert any(SOURCE_FULLSCREEN in message for message in infos)
+
+
+def test_a_rate_limited_look_is_logged(service):
+    log = _Logger()
+    service._logger = log
+    service.look()
+    log.messages.clear()
+    service.look()
+    assert any(
+        level == "info" and "cooldown" in message
+        for level, message in log.messages
+    )
+
+
+def test_a_failed_look_is_logged_as_warning(service):
+    log = _Logger()
+    service._logger = log
+    service.state["jpeg"] = None
+    service.look()
+    assert any(
+        level == "warning" and REASON_CAPTURE_FAILED in message
+        for level, message in log.messages
+    )
+
+
+def test_a_disabled_look_is_logged(tmp_path):
+    log = _Logger()
+    svc = ScreenshotService(
+        WowsConfig(), ShotStore(tmp_path, retain=5), lambda: {}, logger=log)
+    svc.look()
+    assert any(
+        level == "info" and REASON_DISABLED in message
+        for level, message in log.messages
+    )
+
+
 def test_rate_limited_result_still_carries_telemetry(service):
     """She should be able to answer from the numbers rather than stall."""
     service.look()
@@ -638,6 +696,29 @@ def test_facts_are_flattened_and_rounded():
     }
 
 
+def test_facts_telemetry_includes_bow_relative_sector():
+    from plugin.plugins.neko_wows.domain.facts import ThreatBearing, WowsFacts
+    from plugin.plugins.neko_wows.domain.snapshot import Ship
+
+    facts = WowsFacts(
+        nearest_enemy=ThreatBearing(
+            ship=Ship(name="Yamato"),
+            distance_m=4000.0,
+            bearing_deg=225.0,
+            relative_bearing_deg=45.0,
+            relative_sector="右前方",
+        ),
+    )
+    telemetry = facts_to_telemetry(facts)
+    assert telemetry["nearest_enemy"] == {
+        "name": "Yamato",
+        "distance_m": 4000,
+        "bearing_deg": 225,
+        "relative_bearing_deg": 45,
+        "relative_sector": "右前方",
+    }
+
+
 def test_absent_fields_are_omitted_rather_than_sent_as_null():
     from plugin.plugins.neko_wows.domain.facts import WowsFacts
 
@@ -675,6 +756,8 @@ def test_vision_surfaces_do_not_call_uncertain_counts_alive():
         assert "存活数" not in text
         assert "未确认沉没" in text
         assert "点亮" in text
+        assert "先看小地图" not in text
+        assert "主事件" in text
 
 
 def test_look_takes_no_arguments():
@@ -743,6 +826,42 @@ async def test_look_tool_returns_the_callback_envelope(tmp_path, monkeypatch):
     assert "output" in out and "images" in out
     assert out["is_error"] is False
     assert out["images"][0]["mime"] == "image/jpeg"
+
+
+@pytest.mark.asyncio
+async def test_look_tool_records_a_timeline_entry(tmp_path, monkeypatch):
+    from plugin.plugins.neko_wows import NekoWowsPlugin
+    from plugin.plugins.neko_wows.adapters.runtime_timeline import (
+        STAGE_SCREENSHOT,
+        RuntimeTimeline,
+    )
+    from plugin.plugins.neko_wows.vision.store import ShotStore
+
+    monkeypatch.setattr(tool_module, "find_game_window", lambda _dir: None)
+    monkeypatch.setattr(tool_module, "capture_jpeg", lambda _win: b"frame")
+
+    cfg = WowsConfig()
+    cfg.screenshot_enabled = True
+    plugin = object.__new__(NekoWowsPlugin)
+    plugin.cfg = cfg
+    plugin.timeline = RuntimeTimeline()
+    plugin._latest = None
+    plugin.shots = ShotStore(tmp_path, retain=5)
+    plugin.screenshots = ScreenshotService(
+        cfg,
+        plugin.shots,
+        lambda: {"in_battle": False},
+        on_result=plugin._on_screenshot_result,
+    )
+
+    out = await NekoWowsPlugin.wows_look_at_battle(plugin)
+    rows = plugin.timeline.recent()
+
+    assert out["output"]["ok"] is True
+    assert rows[0]["stage"] == STAGE_SCREENSHOT
+    assert rows[0]["outcome"] == "captured"
+    assert rows[0]["detail"]["action"] == "look"
+    assert rows[0]["detail"]["shot_id"] == out["output"]["shot_id"]
 
 
 @pytest.mark.asyncio

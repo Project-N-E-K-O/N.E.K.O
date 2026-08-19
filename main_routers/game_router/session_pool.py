@@ -53,6 +53,20 @@ from utils.language_utils import get_global_language, normalize_language_code
 _game_sessions: Dict[str, dict] = {}
 
 
+def _with_prompt_locale(char_info: dict, prompt_locale: str | None) -> dict:
+    """Override one request's template locale without mutating SessionManager."""
+    if not prompt_locale:
+        return char_info
+    normalized_full = normalize_language_code(prompt_locale, format="full")
+    normalized_short = normalize_language_code(prompt_locale, format="short")
+    if not normalized_full or not normalized_short:
+        return char_info
+    resolved = dict(char_info)
+    resolved["user_language_full"] = normalized_full
+    resolved["user_language"] = normalized_short
+    return resolved
+
+
 # 超时清理：30 分钟无活动自动销毁
 _SESSION_TIMEOUT_SECONDS = 30 * 60
 
@@ -151,6 +165,7 @@ async def _get_or_create_session(
     lanlan_name: str = "",
     *,
     postgame_snapshot: Optional[dict] = None,
+    prompt_locale: str | None = None,
 ) -> dict:
     """Get or create a game session.
 
@@ -182,7 +197,7 @@ async def _get_or_create_session(
         entry['last_activity'] = time.time()
         return entry
 
-    char_info = _get_character_info(lanlan_name)
+    char_info = _with_prompt_locale(_get_character_info(lanlan_name), prompt_locale)
     canonical_lanlan = str(char_info.get("lanlan_name") or lanlan_name or "").strip()
     canonical_key = _game_session_key(canonical_lanlan, game_type, session_id)
 
@@ -216,7 +231,7 @@ async def _get_or_create_session(
     #    会再命中的缓存会话。
     # 走到这里说明确定要新建会话（常规游戏事件在上面 canonical_key 命中处就返回
     # 了），多读一次角色配置的代价可以忽略。
-    char_info = _get_character_info(lanlan_name)
+    char_info = _with_prompt_locale(_get_character_info(lanlan_name), prompt_locale)
     canonical_lanlan = str(char_info.get("lanlan_name") or lanlan_name or "").strip()
     refreshed_key = _game_session_key(canonical_lanlan, game_type, session_id)
     if refreshed_key != canonical_key:
@@ -394,6 +409,7 @@ async def _refresh_game_session_instructions(
     lanlan_name: str = "",
     *,
     postgame_snapshot: Optional[dict] = None,
+    prompt_locale: str | None = None,
 ) -> None:
     session = entry.get("session") if isinstance(entry, dict) else None
     update = getattr(session, "update_session", None)
@@ -401,7 +417,7 @@ async def _refresh_game_session_instructions(
         return
 
     lanlan_name = str(lanlan_name or entry.get("lanlan_name") or "").strip()
-    char_info = _get_character_info(lanlan_name)
+    char_info = _with_prompt_locale(_get_character_info(lanlan_name), prompt_locale)
     entry["user_language"] = char_info.get("user_language")
     entry["user_language_full"] = char_info.get("user_language_full")
     if postgame_snapshot is not None:

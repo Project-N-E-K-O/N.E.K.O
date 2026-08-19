@@ -322,6 +322,7 @@ def _build_static_compat_surface(plugin_id: str, plugin_meta: Mapping[str, objec
         open_in="iframe",
         permissions=["state:read"],
         available=True,
+        legacy_static_compat=True,
     ).model_dump(exclude_none=True)
 
 
@@ -336,9 +337,19 @@ def _build_surfaces_sync(
     for surface in surfaces:
         surface_warnings = surface.pop("_warnings", None)
         warnings.extend(normalize_warnings(surface_warnings))
-    seen = {(str(surface.get("kind")), str(surface.get("id"))) for surface in surfaces}
     static_surface = _build_static_compat_surface(plugin_id, plugin_meta)
-    if static_surface is not None and ("panel", "main") not in seen:
+    # An unavailable or ``auto`` main panel cannot replace static/index.html:
+    # the former has no usable entry and the latter has no frontend renderer.
+    # Keep the compatibility surface in those cases so legacy UI remains
+    # reachable and generated Open Panel actions have a valid target.
+    has_renderable_main = any(
+        surface.get("kind") == "panel"
+        and surface.get("id") == "main"
+        and surface.get("mode") != "auto"
+        and surface.get("available") is not False
+        for surface in surfaces
+    )
+    if static_surface is not None and not has_renderable_main:
         surfaces.insert(0, static_surface)
     return surfaces, warnings
 
@@ -1176,7 +1187,15 @@ def _add_surface_route_actions(
     plugin_meta: Mapping[str, object],
 ) -> None:
     surfaces, _warnings = _build_surfaces_sync(plugin_id, plugin_meta)
-    has_panel = any(surface.get("kind") == "panel" and surface.get("available") is not False for surface in surfaces)
+    # ``auto`` is accepted as a manifest placeholder, but the frontend has no
+    # renderer for it yet. Do not expose an Open Panel action that would only
+    # route the user back to Basic Info.
+    has_panel = any(
+        surface.get("kind") == "panel"
+        and surface.get("mode") != "auto"
+        and surface.get("available") is not False
+        for surface in surfaces
+    )
     has_guide = any(surface.get("kind") in {"guide", "docs"} and surface.get("available") is not False for surface in surfaces)
     safe_id = plugin_id.replace("/", "%2F")
     if has_panel and "open_panel" not in seen_ids:

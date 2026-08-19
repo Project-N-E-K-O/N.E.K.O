@@ -42,6 +42,8 @@ def test_reusable_release_workflow_publishes_package_digest_evidence() -> None:
     assert "NEKO_REPOSITORY: ${{ inputs.neko-repository }}" in workflow
     assert "check -r --market-release" in workflow
     assert "market-evidence.json" in workflow
+    assert '"ref_type": os.environ["GITHUB_REF_TYPE"]' in workflow
+    assert '"ref_name": os.environ["GITHUB_REF_NAME"]' in workflow
     assert "softprops/action-gh-release" in workflow
     assert "fail_on_unmatched_files: true" in workflow
     assert '[[ ! "$PLUGIN_ID" =~ ^[a-z][a-z0-9_]*$ ]]' in workflow

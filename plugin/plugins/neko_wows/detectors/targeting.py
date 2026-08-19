@@ -67,9 +67,11 @@ class PriorityTargetDetector(Detector):
             detail={
                 "ship_name": best.ship.spoken_name,
                 "ship_type": best.ship.ship_type,
+                "player_id": best.ship.player_id,
+                "ui_id": best.ship.ui_id,
                 "tier": best.ship.tier,
                 "distance_m": round(best.distance_m),
-                "bearing_deg": round(best.bearing_deg),
+                **best.direction_fields(),
                 "hp_ratio": round(best.ship.hp_ratio, 3) if best.ship.hp_ratio else None,
                 # A suggestion built from distance and health only.
                 "kind": "candidate",
@@ -117,9 +119,11 @@ class LowHpTargetDetector(Detector):
             detail={
                 "ship_name": target.ship.spoken_name,
                 "ship_type": target.ship.ship_type,
+                "player_id": target.ship.player_id,
+                "ui_id": target.ship.ui_id,
                 "hp_ratio": round(target.ship.hp_ratio, 3),
                 "distance_m": round(target.distance_m),
-                "bearing_deg": round(target.bearing_deg),
+                **target.direction_fields(),
             },
         ),)
 

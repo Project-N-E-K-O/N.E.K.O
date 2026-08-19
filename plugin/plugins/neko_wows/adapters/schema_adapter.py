@@ -46,6 +46,7 @@ from ..domain.snapshot import (
     SelfShip,
     Ship,
     WowsSnapshot,
+    resolve_alive,
 )
 
 SUPPORTED_API_MAJOR = 1
@@ -62,6 +63,12 @@ LEGACY_STALE_SECONDS = 2.0
 # does, so a stale frame must not invalidate them.
 META_DOMAINS = (DOMAIN_ROSTER, DOMAIN_MAP_BOUNDS)
 
+# Wire spellings that differ from the name the plugin uses internally. The
+# service publishes the whole map domain as `map`; only its bounds are consumed
+# here, which is why the local name is narrower. Reading just the local name left
+# the domain permanently `unknown` and silently disarmed the boundary call-outs.
+WIRE_DOMAIN_ALIASES = {"map": DOMAIN_MAP_BOUNDS}
+
 
 class UnsupportedApiVersion(Exception):
     """Raised for an envelope whose major version we cannot interpret."""
@@ -75,6 +82,23 @@ def _number(value: Any) -> float | None:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
     return float(value)
+
+
+def _read_alive(value: Any) -> bool | None:
+    """Read the wire alive flag, which some client builds report as 1/0.
+
+    The in-game `isAlive()` returns an integer on the build the collector runs
+    under, so requiring a real boolean here made every living hull `unknown` --
+    the same value as "not reported", which is what the confirmed-visible counts
+    and the sink comparison both key off. Anything that is not a finite number
+    stays `None`, because guessing "afloat" is the one reading that must never be
+    invented. Callers combine this with HP via `resolve_alive`.
+    """
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)) and math.isfinite(value):
+        return value != 0
+    return None
 
 
 def _bw_to_m(value: Any) -> float | None:
@@ -156,6 +180,15 @@ class WowsSchemaAdapter:
         instance_id = str(payload.get("instanceId") or "")
         battle_id = _text(payload.get("battleId"))
         self._remember_battle(instance_id, battle_id)
+        body = self._body(payload)
+        own_ship = body.get("self_ship")
+        if (
+            availability.get(DOMAIN_DAMAGE) == AVAIL_AVAILABLE
+            and (own_ship is None or own_ship.player_id is None)
+        ):
+            # The damage table is keyed by attacker playerId. Until our own id
+            # exists, a cumulative total cannot be attributed safely.
+            availability[DOMAIN_DAMAGE] = AVAIL_UNKNOWN
         return WowsSnapshot(
             service_id=str(payload.get("serviceId") or ""),
             api_version=api_version,
@@ -175,7 +208,7 @@ class WowsSchemaAdapter:
             capabilities=capabilities,
             availability=availability,
             extensions=dict(payload.get("extensions") or {}),
-            **self._body(payload),
+            **body,
             received_at=now,
             transport=transport,
             epoch=epoch,
@@ -215,6 +248,12 @@ class WowsSchemaAdapter:
         capabilities = {domain: True for domain in CORE_DOMAINS}
         capabilities.update({domain: False for domain in FUTURE_DOMAINS})
         availability = self._derive_availability(body, status)
+        own_ship = body.get("self_ship")
+        if (
+            availability.get(DOMAIN_DAMAGE) == AVAIL_AVAILABLE
+            and (own_ship is None or own_ship.player_id is None)
+        ):
+            availability[DOMAIN_DAMAGE] = AVAIL_UNKNOWN
 
         return WowsSnapshot(
             service_id="",
@@ -288,29 +327,22 @@ class WowsSchemaAdapter:
 
     @staticmethod
     def _read_capabilities(raw: Any) -> dict[str, bool]:
-        capabilities: dict[str, bool] = {}
-        if isinstance(raw, Mapping):
-            for name, entry in raw.items():
-                if not isinstance(name, str):
-                    continue
-                if isinstance(entry, Mapping):
-                    capabilities[name] = bool(entry.get("supported"))
-                else:
-                    capabilities[name] = bool(entry)
-        for domain in CORE_DOMAINS:
-            capabilities.setdefault(domain, False)
-        for domain in FUTURE_DOMAINS:
+        def supported(entry: Any) -> bool:
+            if isinstance(entry, Mapping):
+                return bool(entry.get("supported"))
+            return bool(entry)
+
+        capabilities = _read_domain_table(raw, keep=lambda _entry: True,
+                                         coerce=supported)
+        for domain in (*CORE_DOMAINS, *FUTURE_DOMAINS):
             capabilities.setdefault(domain, False)
         return capabilities
 
     @staticmethod
     def _read_availability(raw: Any) -> dict[str, str]:
         allowed = (AVAIL_AVAILABLE, AVAIL_UNKNOWN, AVAIL_STALE, AVAIL_UNSUPPORTED)
-        availability: dict[str, str] = {}
-        if isinstance(raw, Mapping):
-            for name, value in raw.items():
-                if isinstance(name, str) and value in allowed:
-                    availability[name] = value
+        availability = _read_domain_table(
+            raw, keep=lambda value: value in allowed, coerce=str)
         for domain in CORE_DOMAINS:
             availability.setdefault(domain, AVAIL_UNKNOWN)
         for domain in FUTURE_DOMAINS:
@@ -418,10 +450,8 @@ class WowsSchemaAdapter:
                     entry.get("tier") if entry.get("tier") is not None
                     else meta.get("shipTier")
                 )
-                alive = (
-                    entry.get("alive") if isinstance(entry.get("alive"), bool)
-                    else None
-                )
+                alive = resolve_alive(
+                    _read_alive(entry.get("alive")), health, hp_ratio)
                 ship_type = _text(entry.get("type")) or _text(meta.get("shipType"))
                 name = _text(entry.get("name")) or _text(meta.get("shipName"))
                 player_name = (
@@ -565,6 +595,26 @@ class WowsSchemaAdapter:
         except (TypeError, ValueError):
             material = repr(sorted(payload.items(), key=lambda kv: kv[0]))
         return hashlib.sha1(material.encode("utf-8")).hexdigest()
+
+
+def _read_domain_table(raw: Any, *, keep, coerce) -> dict:
+    """Read a per-domain envelope table, resolving wire spellings to local names.
+
+    An entry already using the local name wins over one that had to be
+    translated, so a service that sends both cannot be read ambiguously.
+    """
+    if not isinstance(raw, Mapping):
+        return {}
+    table = {}
+    for wire, local in WIRE_DOMAIN_ALIASES.items():
+        if wire in raw and keep(raw[wire]):
+            table[local] = coerce(raw[wire])
+    for name, value in raw.items():
+        if not isinstance(name, str) or name in WIRE_DOMAIN_ALIASES:
+            continue
+        if keep(value):
+            table[name] = coerce(value)
+    return table
 
 
 def _sum_table(raw: Any) -> float | None:

@@ -2415,18 +2415,11 @@
         return btoa(binary);
     }
 
-    function getCurrentUiLanguage() {
-        const candidates = [
-            window.i18n && window.i18n.language,
-            window.i18next && window.i18next.language,
-            document.documentElement && document.documentElement.lang
-        ];
-        for (const candidate of candidates) {
-            if (typeof candidate === 'string' && candidate.trim()) {
-                return candidate.trim();
-            }
-        }
-        return null;
+    function getExternalImportRenderLanguage() {
+        const language = (window.i18next && window.i18next.language)
+            || (window.i18n && window.i18n.language)
+            || '';
+        return typeof language === 'string' ? language.trim() : '';
     }
 
     async function buildExternalImportPayload(targetCharacter) {
@@ -2447,12 +2440,12 @@
             if (zipFiles[0].size > 8 * 1024 * 1024) {
                 throw new Error(translate('memory.externalImportTooLarge', 'The selected archive is too large.'));
             }
-            return {
+            const payload = {
                 character_name: targetCharacter,
                 source_format: format ? format.value : 'auto',
-                language: getCurrentUiLanguage(),
                 archive_b64: bytesToBase64(await zipFiles[0].arrayBuffer())
             };
+            return payload;
         }
         const files = [];
         let total = 0;
@@ -2469,12 +2462,12 @@
                 content: await file.text()
             });
         }
-        return {
+        const payload = {
             character_name: targetCharacter,
             source_format: format ? format.value : 'auto',
-            language: getCurrentUiLanguage(),
             files: files
         };
+        return payload;
     }
 
     function broadcastExternalMemoryEdited(characterName) {
@@ -2635,6 +2628,15 @@
             }
             // 前端超时略大于后端 commit 转发窗口（memory_router timeout=240s），
             // 覆盖 persona 融合的整段耗时。
+            // The UI locale is only a render fallback. Read it at commit time so a
+            // language switch made while reviewing the preview is not stale, and
+            // keep it separate from the durable per-character preference.
+            const renderLanguage = getExternalImportRenderLanguage();
+            if (renderLanguage) {
+                payload.render_language = renderLanguage;
+            } else {
+                delete payload.render_language;
+            }
             const commitResponse = await fetchExternalMemoryWithTimeout('/api/memory/external_import/commit', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },

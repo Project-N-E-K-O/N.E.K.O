@@ -9,7 +9,6 @@ import pytest
 from _galgame_character_data import CHARACTER_DATA_DIR
 from plugin.plugins.galgame_plugin import GalgamePlugin
 from plugin.plugins.galgame_plugin.character_profile import CharacterProfileManager
-from plugin.plugins.galgame_plugin.game_llm_agent import GameLLMAgent
 from plugin.plugins.galgame_plugin.state import build_initial_state
 from plugin.plugins.galgame_plugin.models import (
     ADVANCE_SPEED_MEDIUM,
@@ -19,7 +18,6 @@ from plugin.plugins.galgame_plugin.models import (
     STORE_CHARACTER_PROFILE_VERSION,
     STORE_CHARACTER_PROFILES,
     STORE_CHARACTER_RUNTIME_STATE,
-    STORE_CROSS_SCENE_MEMORY,
 )
 
 
@@ -295,7 +293,7 @@ async def test_character_list_preserves_restored_fixed_mode_before_detection(
     assert (STORE_CHARACTER_FIXED_NAME, "") not in writes
 
 
-def test_commit_state_persists_strategy_memory_fields() -> None:
+def test_commit_state_ignores_legacy_memory_and_persists_character_runtime() -> None:
     plugin, writes = _plugin_with_persist_writes()
     payload = plugin._snapshot_state(include_private_context=True)
     payload["cross_scene_memory"] = {
@@ -310,85 +308,11 @@ def test_commit_state_persists_strategy_memory_fields() -> None:
 
     plugin._commit_state(payload)
 
-    assert (STORE_CROSS_SCENE_MEMORY, payload["cross_scene_memory"]) in writes
+    assert all(key != "cross_scene_memory" for key, _value in writes)
     assert (
         STORE_CHARACTER_RUNTIME_STATE,
         payload["character_runtime_state"],
     ) in writes
-
-
-def test_scene_change_cross_scene_memory_update_persists_immediately() -> None:
-    plugin, writes = _plugin_with_persist_writes()
-    plugin._state.character_runtime_state = {
-        "Yukino": {
-            "arc_stage": "route guard",
-            "current_emotion": "focused",
-        }
-    }
-    agent = SimpleNamespace(
-        _plugin=plugin,
-        _scene_memory=[{"summary": "Yukino protects the secret route."}],
-        _push_seq_counter=17,
-        _cross_scene_memory_dirty=False,
-        logger=plugin.logger,
-    )
-
-    GameLLMAgent._maybe_update_cross_scene_memory(
-        agent,
-        {},
-        scene_id="scene-b",
-        route_id="route-a",
-    )
-
-    persisted = [
-        value for key, value in writes if key == STORE_CROSS_SCENE_MEMORY
-    ]
-    assert persisted
-    assert persisted[-1] == plugin._state.cross_scene_memory
-    assert persisted[-1]["characters"]["Yukino"]["last_key_event"] == (
-        "Yukino protects the secret route."
-    )
-    assert plugin._cached_snapshot is None
-    assert agent._cross_scene_memory_dirty is True
-
-
-def test_scene_change_cross_scene_memory_persist_failure_is_best_effort() -> None:
-    plugin = _plugin_with_character_profiles()
-    plugin._state.character_runtime_state = {
-        "Yukino": {
-            "arc_stage": "route guard",
-            "current_emotion": "focused",
-        }
-    }
-
-    def _raise_persist(*_args, **_kwargs):
-        raise RuntimeError("persist failed")
-
-    warnings: list[tuple[tuple[object, ...], dict[str, object]]] = []
-    plugin._persist = SimpleNamespace(persist_config_override=_raise_persist)
-    agent = SimpleNamespace(
-        _plugin=plugin,
-        _scene_memory=[{"summary": "Yukino protects the secret route."}],
-        _push_seq_counter=17,
-        _cross_scene_memory_dirty=False,
-        _logger=SimpleNamespace(
-            warning=lambda *args, **kwargs: warnings.append((args, kwargs))
-        ),
-    )
-
-    GameLLMAgent._maybe_update_cross_scene_memory(
-        agent,
-        {},
-        scene_id="scene-b",
-        route_id="route-a",
-    )
-
-    assert plugin._state.cross_scene_memory["characters"]["Yukino"][
-        "last_key_event"
-    ] == "Yukino protects the secret route."
-    assert warnings
-    assert warnings[-1][1]["exc_info"] is True
-    assert agent._cross_scene_memory_dirty is True
 
 
 def test_activate_character_profiles_rebuilds_runtime_for_new_game() -> None:

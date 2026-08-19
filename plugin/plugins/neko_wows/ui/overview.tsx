@@ -48,9 +48,11 @@ export function OverviewSection(props: {
   const counters = state.counters || {}
   const arbiter = state.arbiter || {}
   const hasSnapshot = snapshot.seq !== undefined
+  const runtimeNow = state.runtime_now
   const quietRemainingSeconds =
-    arbiter.quiet_until && arbiter.quiet_until > (state.runtime_now || 0)
-      ? Math.ceil(arbiter.quiet_until - (state.runtime_now || 0))
+    typeof runtimeNow === "number" && arbiter.quiet_until
+      && arbiter.quiet_until > runtimeNow
+      ? Math.ceil(arbiter.quiet_until - runtimeNow)
       : 0
   const findAction = (id: string) =>
     (props.actions || []).find((action) => action.id === id)

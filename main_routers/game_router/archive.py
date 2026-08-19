@@ -54,7 +54,11 @@ from config.prompts.prompts_minigame_route import (
     get_game_archive_memory_text_labels,
 )
 from ..shared_state import get_session_manager
-from utils.language_utils import get_global_language_full, normalize_language_code
+from utils.language_utils import (
+    get_global_language_full,
+    is_supported_language_code,
+    normalize_language_code,
+)
 
 
 def _route_game_started_elapsed_ms(state: dict, *, prefer_exit_elapsed: bool = False) -> float | None:
@@ -198,7 +202,8 @@ def _current_route_prompt_language_with_source(state: dict) -> tuple[str, str]:
             logger.debug("赛后归档实时语言解析失败，使用路由状态语言", exc_info=True)
     language = str(state.get("user_language") or "").strip()
     if language:
-        return normalize_language_code(language, format="full") or language, "route"
+        source = str(state.get("user_language_source") or "route").strip()
+        return normalize_language_code(language, format="full") or language, source
     return get_global_language_full(), "global"
 
 
@@ -208,7 +213,7 @@ def _current_route_prompt_language(state: dict) -> str:
 
 
 def _archive_memory_language(archive: dict) -> str | None:
-    if archive.get("user_language_source") == "global":
+    if archive.get("user_language_source") in {"global", "render"}:
         return None
     language = str(archive.get("user_language") or "").strip()
     if language:
@@ -690,6 +695,13 @@ async def _submit_game_archive_to_memory(archive: dict) -> dict:
         memory_language = _archive_memory_language(archive)
         if memory_language:
             payload["language"] = memory_language
+        elif archive.get("user_language_source") == "render":
+            render_language = str(archive.get("user_language") or "").strip()
+            if is_supported_language_code(render_language):
+                payload["render_language"] = normalize_language_code(
+                    render_language,
+                    format="full",
+                )
         response = await client.post(
             f"http://127.0.0.1:{MEMORY_SERVER_PORT}/cache/{lanlan_name}",
             json=payload,

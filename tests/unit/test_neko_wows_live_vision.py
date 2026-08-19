@@ -221,6 +221,15 @@ def test_the_live_context_carries_the_reading_guide_it_inherited():
     assert "小地图" in text
     assert "鱼雷航迹" in text
     assert "以随附文本中的遥测为准" in text
+    assert "【必看】小地图" not in text
+    assert "主事件" in text
+
+
+def test_live_hint_does_not_tell_her_to_narrate_the_minimap_first():
+    hint = LIVE_VISION_SPEAK_HINT
+    assert "先扫一眼小地图" not in hint
+    assert "主事件" in hint
+    assert "不要调截图工具" in hint
 
 
 def _candidate() -> AdviceCandidate:
@@ -303,6 +312,36 @@ def test_the_switch_off_never_asks():
         screenshot_enabled=False, live_vision_active=True, live_vision_enabled=False)
 
     assert request.metadata["attach_live_frame"] is False
+
+
+def test_lifecycle_call_out_still_asks_for_the_live_frame():
+    """Start/end may look at the screen; they must not skip the attached frame."""
+    from plugin.plugins.neko_wows.domain.catalog import BATTLE_STARTED
+
+    candidate = AdviceCandidate(
+        event_id=BATTLE_STARTED,
+        lane=LANE_NORMAL,
+        priority=60,
+        severity=40,
+        at=100.0,
+        seq=1,
+        battle_id="battle-1",
+        summary="开局",
+        detail={"map_name": "North"},
+    )
+    request = WowsPromptRouter(WowsConfig()).build(
+        candidate,
+        PromptProfile(
+            channel_mode="dual",
+            dry_run=True,
+            screenshot_enabled=False,
+            live_vision_enabled=True,
+            live_vision_active=True,
+        ),
+    )
+    assert request.metadata["attach_live_frame"] is True
+    assert LIVE_VISION_SPEAK_HINT.strip() in request.text
+    assert VISION_LOOK_BEFORE_SPEAK.strip() not in request.text
 
 
 # -------------------------------------------------------- the vision tool

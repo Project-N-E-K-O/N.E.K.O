@@ -105,6 +105,8 @@ jobs:
           evidence = {
               "schema_version": 1,
               "mode": "release",
+              "ref_type": os.environ["GITHUB_REF_TYPE"],
+              "ref_name": os.environ["GITHUB_REF_NAME"],
               "plugin_id": os.environ["PLUGIN_ID"],
               "version": os.environ["GITHUB_REF_NAME"].removeprefix("v"),
               "source_commit": os.environ["GITHUB_SHA"],

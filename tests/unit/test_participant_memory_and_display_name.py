@@ -3107,55 +3107,6 @@ async def test_bootstrap_section_participant_post_fetch_revocation():
 
 
 @pytest.mark.asyncio
-async def test_fallback_recall_participant_subjects_and_recheck():
-    """回落召回（不支持 tool call 的线路）：participant 轮 subjects=
-    [participant]；读后开关撤销时整段丢弃。admin 私聊仍 subjects=None。"""  # noqa: DOCSTRING_CJK
-    from plugin.plugins.qq_auto_reply.reply_context_node import (
-        QQReplyContextNode,
-    )
-
-    plugin = _read_path_plugin()
-    node = QQReplyContextNode(plugin)
-
-    text = await node._build_recalled_memory_text(
-        her_name="Neko", message="猫", should_use_memory_context=True,
-        attachments=None, is_group=False, group_id=None,
-        sender_id="1001", participant_memory=True,
-    )
-    assert "召回内容" in text
-    assert plugin.memory_bridge.query_relevant_memory.await_args.kwargs[
-        "subjects"
-    ] == [{"subject_kind": "participant", "subject_id": "qq:1001"}]
-
-    # admin 私聊：subjects=None（legacy 契约不动）
-    plugin.memory_bridge.query_relevant_memory.reset_mock()
-    await node._build_recalled_memory_text(
-        her_name="Neko", message="猫", should_use_memory_context=True,
-        attachments=None, is_group=False, group_id=None,
-        sender_id="9", participant_memory=False,
-    )
-    assert plugin.memory_bridge.query_relevant_memory.await_args.kwargs[
-        "subjects"
-    ] is None
-
-    # 读后撤销
-    async def _revoke(*args, **kwargs):
-        plugin._qq_settings["private_participant_memory_enabled"] = False
-        return SimpleNamespace(
-            text="泄漏", hit_count=1, elapsed_ms=1.0,
-            rendered_count=1, raw_results=[],
-        )
-
-    plugin.memory_bridge.query_relevant_memory = AsyncMock(side_effect=_revoke)
-    text = await node._build_recalled_memory_text(
-        her_name="Neko", message="猫", should_use_memory_context=True,
-        attachments=None, is_group=False, group_id=None,
-        sender_id="1001", participant_memory=True,
-    )
-    assert text == ""
-
-
-@pytest.mark.asyncio
 async def test_participant_mentions_bind_to_delivery_and_fail_closed():
     """mention 计数（防重复 suppression 的输入）：participant 轮按对方
     subject 记；合成轮/空 sender/开关关闭/会话停写时一概不记。"""  # noqa: DOCSTRING_CJK

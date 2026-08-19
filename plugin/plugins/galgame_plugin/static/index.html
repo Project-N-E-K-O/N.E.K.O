@@ -392,6 +392,13 @@
                 <p id="ocrProfileRuntimeHint" class="panel-subcopy" data-i18n="ui.capture_profile.runtime_wait">等待 OCR 目标进程信息。</p>
                 <div class="capture-profile-grid">
                   <label class="field">
+                    <span data-i18n="ui.capture_profile.match_source.builtin_preset">&#x6E38;&#x620F;&#x9884;&#x8BBE;</span>
+                    <select id="ocrProfileGamePresetSelect">
+                      <option value="auto" data-i18n="ui.install.rapidocr.lang.auto_detect">&#x81EA;&#x52A8;&#x68C0;&#x6D4B;</option>
+                      <option value="senren_banka">&#x5343;&#x604B;&#xFF0A;&#x4E07;&#x82B1;</option>
+                    </select>
+                  </label>
+                  <label class="field">
                     <span data-i18n="ui.capture_profile.process_name">进程名</span>
                     <input id="ocrProfileProcessInput" type="text" placeholder="例如 game.exe" data-i18n-placeholder="ui.capture_profile.process_placeholder">
                   </label>

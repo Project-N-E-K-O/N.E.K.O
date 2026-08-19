@@ -7,12 +7,16 @@ Only the final wording is left to the model.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any, Sequence
 
 from ..domain.catalog import (
     AMMO_RECHECK_HINT,
+    BATTLE_ENDED,
+    BATTLE_STARTED,
     DEVASTATING_STRIKE,
+    ENEMY_SUNK,
     EventSpec,
     HIGH_DAMAGE,
     MULTI_DIRECTION_THREAT,
@@ -26,22 +30,25 @@ from ..domain.catalog import (
 from ..domain.facts import WowsFacts
 from ..detectors._base import GameEvent
 
-# Always attached: consumable active-state and relative sectors are not in
-# live telemetry, and ship-catalog Radar text must not become a call-out.
-_GLOBAL_CLAIM_LIMITS: tuple[str, ...] = (
-    "消耗品实时状态（雷达、水听、烟幕、损伤控制等是否开启或持续）当前不可用，不要提及；"
-    "不要把小地图上敌舰被点亮说成对方开了雷达。",
-    "没有给出相对方位字段时，不要说左前方、正前方、右前方。",
-)
-
 # Constraints attached per event so the prompt cannot drift into claims the
 # telemetry does not support. Keyed by event id.
+#
+# Only what is specific to this event belongs here. Rules that hold for the whole
+# battle -- consumable state, relative sectors, how to read the count fields --
+# are injected once with the scene instead. Repeating them on every call-out made
+# them the bulk of the message, and the model started reciting them as content.
 _CLAIM_LIMITS: dict[str, tuple[str, ...]] = {
     HIGH_DAMAGE: (
-        "只能说同一目标在短时间内承受了较高伤害；不能说成一发、单轮齐射、特定弹种或击杀。",
+        "只能说同一目标刚挨了较高伤害；不要报窗口秒数或「几秒里打了多少」，不能说成一发、单轮齐射、特定弹种或击杀。",
     ),
     DEVASTATING_STRIKE: (
-        "只能说达到毁灭打击级别；不能说成一发或单轮齐射，不能声称游戏已授予毁灭打击成就、勋带或奖章，也不能虚构武器来源。",
+        "用一两句夸奖这次打出了毁灭打击级别；不要念成「几秒里打了多少伤害」这种读表，也不要报具体伤害数字。",
+        "不能说成一发或单轮齐射，不能声称游戏已授予毁灭打击成就、勋带或奖章，也不能虚构武器来源。",
+    ),
+    ENEMY_SUNK: (
+        "这是夸奖事件：用一两句高兴或佩服的话祝贺击沉，不要改成战术警告或复盘。",
+        "若同时附带伤害事件，先祝贺击沉，伤害只作点缀。",
+        "可以说这艘敌舰已经沉了；不要声称游戏发了勋带或成就。",
     ),
     RAPID_DAMAGE: (
         "只能说“掉血很快 / 正在快速受伤”，不能说“被集火”或推断攻击者数量。",
@@ -64,8 +71,35 @@ _CLAIM_LIMITS: dict[str, tuple[str, ...]] = {
     ),
     POST_BATTLE_SUMMARY: (
         "击杀归属、占点与鱼雷数据当前不可用，不要提及具体击杀数。",
+        "有伤害数字就可以用自己的语气点评一下，没有就别编战果。",
+        "不要描述小地图、点亮数、方位或还在视野里的船。",
+        "不要沿用上一次发言。",
+    ),
+    BATTLE_STARTED: (
+        "用陪玩语气打招呼，可以起哄、打气，地图和自己的船能带就带；不要念成“战斗开始，在某图玩某船”。",
+        "不要描述小地图、点亮数、方位、距离或还在视野里的船。",
+        "不要沿用上一次发言。",
+    ),
+    BATTLE_ENDED: (
+        "用陪玩语气收束，可以松口气或调侃，不必只报“对局结束”。",
+        "不要描述小地图、点亮数、方位、距离或还在视野里的船。",
+        "不要沿用上一次发言。",
     ),
 }
+
+
+def _cooldown_identity(detail: Mapping[str, Any]) -> str | None:
+    """Stable per-target suffix so two ships do not share one cooldown slot."""
+    for key in ("victim_id", "player_id", "ui_id", "target_id"):
+        value = detail.get(key)
+        if isinstance(value, bool) or not isinstance(value, (int, str)):
+            continue
+        if isinstance(value, int) and value < 0:
+            continue
+        text = str(value).strip()
+        if text:
+            return text
+    return None
 
 
 @dataclass(frozen=True)
@@ -96,6 +130,13 @@ class AdviceCandidate:
     def is_expired(self, now: float) -> bool:
         return self.expires_at > 0.0 and now >= self.expires_at
 
+    @property
+    def cooldown_key(self) -> str:
+        identity = _cooldown_identity(self.detail)
+        if identity is None:
+            return self.event_id
+        return f"{self.event_id}:{identity}"
+
     # Fixed ordering: priority, then severity, then age, then id. The event id
     # tiebreak is what makes the whole chain reproducible in a replay.
     @property
@@ -125,7 +166,9 @@ class WowsTacticPolicy:
             if not self.cfg.category_enabled(spec.coalesce_key):
                 continue
             ttl = spec.ttl_seconds or self.cfg.ttl_for(spec.lane)
-            per_event = _CLAIM_LIMITS.get(event.event_id, ())
+            context = (
+                self._shared_context(facts) if spec.include_frame_context else {}
+            )
             candidates.append(AdviceCandidate(
                 event_id=event.event_id,
                 lane=spec.lane,
@@ -136,8 +179,8 @@ class WowsTacticPolicy:
                 battle_id=event.battle_id,
                 summary=spec.summary,
                 detail=dict(event.detail),
-                context=self._shared_context(facts),
-                claim_limits=_GLOBAL_CLAIM_LIMITS + per_event,
+                context=context,
+                claim_limits=_CLAIM_LIMITS.get(event.event_id, ()),
                 expires_at=event.at + ttl,
             ))
         candidates.sort(key=lambda c: c.rank)
@@ -161,7 +204,6 @@ class WowsTacticPolicy:
                 else None
             ),
             "nearest_enemy_m": round(nearest.distance_m) if nearest else None,
-            "damage_inflicted": round(facts.damage_inflicted) if facts.damage_inflicted else None,
             "sourced_domains": list(facts.sourced_domains),
         }
 

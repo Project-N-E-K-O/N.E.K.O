@@ -13,10 +13,6 @@ class QQReplyPipelineRunner:
         self.plugin = plugin
 
     async def run(self, request: QQReplyRequest) -> QQReplyOutcome:
-        # 群聊消息计数器（用于表情包间隔控制）
-        if request.is_group:
-            gid = str(request.group_id or "")
-            self.plugin._sticker_since[gid] = (self.plugin._sticker_since.get(gid) or 0) + 1
         decision = self._run_decision(request)
         decision_trace = QQPipelineStageTrace(
             stage="decision",

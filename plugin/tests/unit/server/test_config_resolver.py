@@ -26,7 +26,12 @@ def test_resolve_plugin_config_returns_base_effective_profiles_and_warnings(
     config_path = Path("/tmp/demo/plugin.toml")
     base_config = {"plugin": {"id": "demo", "name": "", "entry": "demo:Plugin"}}
 
-    monkeypatch.setattr(module, "get_plugin_config_path", lambda plugin_id: config_path)
+    monkeypatch.setattr(module, "get_plugin_manifest_path", lambda plugin_id: config_path)
+    monkeypatch.setattr(
+        module,
+        "ensure_plugin_runtime_config",
+        lambda plugin_id, *, manifest_path: config_path,
+    )
     monkeypatch.setattr(module, "load_toml_from_file", lambda path: base_config)
     monkeypatch.setattr(
         module,
@@ -97,7 +102,12 @@ def test_resolve_plugin_config_can_skip_effective_merge_and_schema_validation(
     config_path = Path("/tmp/demo/plugin.toml")
     base_config = {"plugin": {"id": "demo", "name": "Demo", "entry": "demo:Plugin"}}
 
-    monkeypatch.setattr(module, "get_plugin_config_path", lambda plugin_id: config_path)
+    monkeypatch.setattr(module, "get_plugin_manifest_path", lambda plugin_id: config_path)
+    monkeypatch.setattr(
+        module,
+        "ensure_plugin_runtime_config",
+        lambda plugin_id, *, manifest_path: config_path,
+    )
     monkeypatch.setattr(module, "load_toml_from_file", lambda path: base_config)
     monkeypatch.setattr(
         module,
@@ -140,12 +150,25 @@ def test_resolve_plugin_config_can_skip_effective_merge_and_schema_validation(
 
 
 @pytest.mark.plugin_unit
-def test_resolve_plugin_config_from_path_reuses_preloaded_base_config(
+def test_resolve_plugin_config_from_path_reuses_preloaded_manifest_config(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     config_path = Path("/tmp/demo/plugin.toml")
-    base_config = {"plugin": {"id": "demo", "name": "Demo", "entry": "demo:Plugin"}}
-    captured: dict[str, object] = {}
+    runtime_path = Path("/tmp/runtime/demo/plugin.toml")
+    manifest_config = {"plugin": {"id": "demo", "name": "Demo", "entry": "demo:Plugin"}}
+    runtime_config = {"runtime": {"enabled": False}}
+    captured: list[Path] = []
+
+    def _ensure_plugin_runtime_config(plugin_id: str, *, manifest_path: Path) -> Path:
+        assert plugin_id == "demo"
+        assert manifest_path == config_path.resolve(strict=False)
+        return runtime_path
+
+    monkeypatch.setattr(
+        module,
+        "ensure_plugin_runtime_config",
+        _ensure_plugin_runtime_config,
+    )
 
     monkeypatch.setattr(
         module,
@@ -168,9 +191,9 @@ def test_resolve_plugin_config_from_path_reuses_preloaded_base_config(
         lambda config_data, plugin_id: [],
     )
 
-    def _load_toml(_path: Path) -> dict[str, object]:
-        captured["loaded"] = True
-        return {"bad": True}
+    def _load_toml(path: Path) -> dict[str, object]:
+        captured.append(path)
+        return runtime_config
 
     monkeypatch.setattr(module, "load_toml_from_file", _load_toml)
 
@@ -182,12 +205,15 @@ def test_resolve_plugin_config_from_path_reuses_preloaded_base_config(
     payload = module.resolve_plugin_config_from_path(
         "demo",
         config_path=config_path,
-        base_config=base_config,
+        base_config=manifest_config,
     )
 
-    assert "loaded" not in captured
-    assert payload["base_config"] == base_config
-    assert payload["effective_config"] == {"plugin": {"id": "demo"}, "runtime": {"enabled": True}}
+    assert captured == [runtime_path]
+    assert payload["base_config"] == runtime_config
+    assert payload["effective_config"] == {
+        "plugin": {"id": "demo", "name": "Demo", "entry": "demo:Plugin"},
+        "runtime": {"enabled": True},
+    }
     _assert_warning_shape(payload["warnings"])
 
 
@@ -198,7 +224,12 @@ def test_resolve_plugin_config_warnings_keep_schema_before_semantic(
     config_path = Path("/tmp/demo/plugin.toml")
     base_config = {"plugin": {"id": "demo", "name": "", "entry": "demo:Plugin"}}
 
-    monkeypatch.setattr(module, "get_plugin_config_path", lambda plugin_id: config_path)
+    monkeypatch.setattr(module, "get_plugin_manifest_path", lambda plugin_id: config_path)
+    monkeypatch.setattr(
+        module,
+        "ensure_plugin_runtime_config",
+        lambda plugin_id, *, manifest_path: config_path,
+    )
     monkeypatch.setattr(module, "load_toml_from_file", lambda path: base_config)
     monkeypatch.setattr(
         module,

@@ -45,7 +45,10 @@ class MyPlugin(NekoPluginBase):
 |----------|------|-------------|
 | `self.ctx` | `PluginContext` | The runtime context (injected by host) |
 | `self.plugin_id` | `str` | This plugin's unique identifier |
-| `self.config_dir` | `Path` | Directory containing `plugin.toml` |
+| `self.plugin_dir` | `Path` | Installed plugin directory containing code, manifest, and static assets |
+| `self.config_dir` | `Path` | Compatibility alias for `self.plugin_dir` |
+| `self.storage_dir` | `Path` | User storage root assigned to this plugin |
+| `self.runtime_config_path` | `Path` | External runtime configuration file |
 | `self.metadata` | `dict` | Plugin metadata from `plugin.toml` |
 | `self.bus` | `SdkBusContext` | Read/watch facade over host state; it has no publish/emit API |
 | `self.plugins` | `Plugins` | Cross-plugin call helper |
@@ -98,7 +101,17 @@ The v1 fields (`message_type`, `content`, `delivery`, `reply`, and the other leg
 Get a path under the plugin's `data/` directory.
 
 ```python
-db_path = self.data_path("cache.db")  # → <plugin_dir>/data/cache.db
+db_path = self.data_path("records.db")
+# → <storage-root>/plugins/<plugin_id>/data/records.db
+```
+
+#### `cache_path(*parts) -> Path`
+
+Get a path under the plugin's disposable cache directory.
+
+```python
+preview_path = self.cache_path("preview.png")
+# → <storage-root>/plugins/<plugin_id>/cache/preview.png
 ```
 
 #### `register_dynamic_entry(entry_id, handler, ...) -> bool`

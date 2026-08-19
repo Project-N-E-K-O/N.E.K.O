@@ -21,7 +21,7 @@ import type { ArbiterState, Translate, WowsConfigView } from "./types"
 export function PreferencesSection(props: {
   config: WowsConfigView
   arbiter: ArbiterState
-  runtimeNow: number
+  runtimeNow?: number
   categories: string[]
   lanes: string[]
   busy: boolean
@@ -41,7 +41,8 @@ export function PreferencesSection(props: {
     config.user_chat_quiet_window_seconds ?? 10
   )
   const quietRemainingSeconds =
-    arbiter.quiet_until && arbiter.quiet_until > props.runtimeNow
+    typeof props.runtimeNow === "number" && arbiter.quiet_until
+      && arbiter.quiet_until > props.runtimeNow
       ? Math.ceil(arbiter.quiet_until - props.runtimeNow)
       : 0
 

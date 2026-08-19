@@ -1585,7 +1585,7 @@ def _chat_clause_without_quoted_prohibitions(clause: str) -> str:
 # ⚠️ 只认**封闭**的疑问标记：句末语气词、极性词、以及情态动词的 A-not-A 重叠式。
 # 不认裸问号——`重写整个卡?` 在基线上就是命令，一刀切会改既有行为。
 # ⚠️ 跨模块取**同一张表**而不是抄一份：见下面 A-not-A 那段注释。
-from main_logic.music_requests import _zh_a_not_a_forms  # noqa: E402
+from main_logic.text_patterns import zh_a_not_a_forms  # noqa: E402
 
 _CHAT_QUESTION_CLAUSE_RE = re.compile(
     r"(?:[吗嗎呢]\s*[？?]?\s*$"
@@ -1602,7 +1602,7 @@ _CHAT_QUESTION_CLAUSE_RE = re.compile(
     # 所以这次直接同源。main_routers → main_logic 是既有依赖方向。
     # ⚠️ 生成出来的分支也要挡 `所`：`所有没有填的内容` 里的 `有没有` 只是子串，
     # 手写分支上那道 `(?<!所)` 必须跟着生成的一起走，否则同一个坑换个入口再来一次。
-    + r"|(?<!所)(?:" + "|".join(_zh_a_not_a_forms()) + r")"
+    + r"|(?<!所)(?:" + "|".join(zh_a_not_a_forms()) + r")"
     + r"|是不是|好不好|行不行|对不对|對不對"
     # ⚠️ wh 疑问头。第五十七轮加这道守卫时只收了极性/情态那一族，
     # 于是 `为什么要重写整个卡的所有内容` 照样走进整卡补全并 autosave。

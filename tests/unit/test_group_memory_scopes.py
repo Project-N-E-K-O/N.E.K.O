@@ -551,163 +551,6 @@ async def test_qq_private_bootstrap_keeps_legacy_behavior():
 
 
 @pytest.mark.asyncio
-async def test_qq_group_recall_passes_group_and_member_subjects():
-    """Fallback recall channel (routes that silently drop ``tools``, i.e.
-    the free proxy): the pre-generation synchronous recall must authorize
-    exactly the group (+ participant) scopes. Tool-capable routes recall
-    via the recall_memory tool instead — the two channels share the
-    subject resolver, covered in test_group_memory_recall_tool.py."""
-    from plugin.plugins.qq_auto_reply.memory_bridge import (
-        QQMemoryBridge,
-        QQMemoryQueryResult,
-    )
-    from plugin.plugins.qq_auto_reply.reply_context_node import QQReplyContextNode
-
-    bridge = MagicMock()
-    bridge.speaker_account_id.side_effect = (
-        lambda sid: f"qq:{str(sid or '').strip()}"
-    )
-    bridge.group_subject.side_effect = QQMemoryBridge.group_subject
-    bridge.group_participant_subject.side_effect = (
-        QQMemoryBridge.group_participant_subject
-    )
-    bridge.query_relevant_memory = AsyncMock(
-        return_value=QQMemoryQueryResult(text="群规是不剧透", hit_count=1),
-    )
-    plugin = SimpleNamespace(
-        memory_bridge=bridge,
-        logger=MagicMock(),
-        _qq_settings={
-            "group_memory_enabled": True,
-            "group_member_memory_enabled": True,
-        },
-        _should_skip_direct_llm_fallback_for_images=lambda **kwargs: False,
-    )
-
-    rendered = await QQReplyContextNode(plugin)._build_recalled_memory_text(
-        her_name="Neko",
-        message="群规是什么？",
-        should_use_memory_context=True,
-        attachments=None,
-        is_group=True,
-        group_id="7788",
-        sender_id="2046",
-    )
-
-    assert "群规是不剧透" in rendered
-    kwargs = bridge.query_relevant_memory.await_args.kwargs
-    assert [s2["subject_kind"] for s2 in kwargs["subjects"]] == [
-        "group_chat", "group_participant",
-    ]
-
-    # Member memory OFF gates the READ too: existing participant memory
-    # must not be recalled into a group reply once the switch is off
-    # (otherwise "stop using member memory" only stopped writing).
-    plugin._qq_settings["group_member_memory_enabled"] = False
-    bridge.query_relevant_memory.reset_mock()
-    await QQReplyContextNode(plugin)._build_recalled_memory_text(
-        her_name="Neko",
-        message="群规是什么？",
-        should_use_memory_context=True,
-        attachments=None,
-        is_group=True,
-        group_id="7788",
-        sender_id="2046",
-    )
-    kwargs = bridge.query_relevant_memory.await_args.kwargs
-    assert [s2["subject_kind"] for s2 in kwargs["subjects"]] == ["group_chat"]
-
-    # sender_id is normalized the same way the write side normalizes it —
-    # a padded id must not land in a different participant bucket.
-    plugin._qq_settings["group_member_memory_enabled"] = True
-    bridge.query_relevant_memory.reset_mock()
-    await QQReplyContextNode(plugin)._build_recalled_memory_text(
-        her_name="Neko",
-        message="群规是什么？",
-        should_use_memory_context=True,
-        attachments=None,
-        is_group=True,
-        group_id="7788",
-        sender_id="  2046  ",
-    )
-    kwargs = bridge.query_relevant_memory.await_args.kwargs
-    assert kwargs["subjects"][1]["subject_id"] == "qq:7788:2046"
-
-    # Member opt-out DURING the recall await: the result mixes group and
-    # participant text and cannot be split afterwards — drop it whole.
-    async def _recall_then_revoke(*args, **kwargs):
-        plugin._qq_settings["group_member_memory_enabled"] = False
-        return QQMemoryQueryResult(text="成员私密偏好", hit_count=1)
-
-    plugin._qq_settings["group_member_memory_enabled"] = True
-    bridge.query_relevant_memory = AsyncMock(side_effect=_recall_then_revoke)
-    assert await QQReplyContextNode(plugin)._build_recalled_memory_text(
-        her_name="Neko",
-        message="群规是什么？",
-        should_use_memory_context=True,
-        attachments=None,
-        is_group=True,
-        group_id="7788",
-        sender_id="2046",
-    ) == ""
-    bridge.query_relevant_memory.assert_awaited_once_with(
-        "Neko",
-        "群规是什么？",
-        subjects=[
-            QQMemoryBridge.group_subject("7788"),
-            QQMemoryBridge.group_participant_subject("7788", "2046"),
-        ],
-    )
-
-
-@pytest.mark.asyncio
-async def test_qq_group_recall_omits_phantom_member_for_empty_sender():
-    """Fallback recall channel: an empty sender must not fabricate a
-    phantom participant subject (the tool channel shares the resolver)."""
-    from plugin.plugins.qq_auto_reply.memory_bridge import (
-        QQMemoryBridge,
-        QQMemoryQueryResult,
-    )
-    from plugin.plugins.qq_auto_reply.reply_context_node import QQReplyContextNode
-
-    bridge = MagicMock()
-    bridge.speaker_account_id.side_effect = (
-        lambda sid: f"qq:{str(sid or '').strip()}"
-    )
-    bridge.group_subject.side_effect = QQMemoryBridge.group_subject
-    bridge.group_participant_subject.side_effect = (
-        QQMemoryBridge.group_participant_subject
-    )
-    bridge.query_relevant_memory = AsyncMock(return_value=QQMemoryQueryResult())
-    plugin = SimpleNamespace(
-        memory_bridge=bridge,
-        logger=MagicMock(),
-        _qq_settings={
-            "group_memory_enabled": True,
-            "group_member_memory_enabled": True,
-        },
-        _should_skip_direct_llm_fallback_for_images=lambda **kwargs: False,
-    )
-
-    await QQReplyContextNode(plugin)._build_recalled_memory_text(
-        her_name="Neko",
-        message="群规是什么？",
-        should_use_memory_context=True,
-        attachments=None,
-        is_group=True,
-        group_id="7788",
-        sender_id="",
-    )
-
-    bridge.query_relevant_memory.assert_awaited_once_with(
-        "Neko",
-        "群规是什么？",
-        subjects=[QQMemoryBridge.group_subject("7788")],
-    )
-    bridge.group_participant_subject.assert_not_called()
-
-
-@pytest.mark.asyncio
 async def test_qq_recall_with_empty_subjects_never_falls_back_to_private():
     from plugin.plugins.qq_auto_reply.memory_bridge import QQMemoryBridge
 
@@ -6114,89 +5957,14 @@ def test_generation_strips_scoped_sections_when_group_revoked():
     ) == prompt
 
 
-@pytest.mark.asyncio
-async def test_recall_reports_participant_usage_to_caller():
-    """Fallback recall channel: the recall reports whether it actually
-    queried the participant subject, and build() ORs that into the
-    context flag — binding the flag to a nonempty bootstrap section would
-    miss the empty-bootstrap + participant-hit combination. (On the tool
-    channel the equivalent record is the handler's runtime consent
-    entry, covered in test_group_memory_recall_tool.py.)"""
-    import inspect
-
-    from plugin.plugins.qq_auto_reply.memory_bridge import QQMemoryQueryResult
-    from plugin.plugins.qq_auto_reply.reply_context_node import (
-        QQReplyContextNode,
-    )
-
-    bridge = MagicMock()
-    bridge.speaker_account_id.side_effect = (
-        lambda sid: f"qq:{str(sid or '').strip()}"
-    )
-    bridge.group_subject.side_effect = (
-        lambda gid: {"subject_kind": "group_chat", "subject_id": f"qq:{gid}"}
-    )
-    bridge.group_participant_subject.side_effect = (
-        lambda gid, uid: {"subject_kind": "group_participant"}
-    )
-    bridge.query_relevant_memory = AsyncMock(
-        return_value=QQMemoryQueryResult(text="成员偏好", hit_count=1),
-    )
-    plugin = SimpleNamespace(
-        memory_bridge=bridge,
-        logger=MagicMock(),
-        _qq_settings={
-            "group_memory_enabled": True,
-            "group_member_memory_enabled": True,
-        },
-        _should_skip_direct_llm_fallback_for_images=lambda **kwargs: False,
-    )
-    node = QQReplyContextNode(plugin)
-    flag: list = []
-    assert await node._build_recalled_memory_text(
-        used_member_subject_out=flag,
-        her_name="Neko", message="问题",
-        should_use_memory_context=True, attachments=None,
-        is_group=True, group_id="7788", sender_id="2046",
-    ) != ""
-    assert flag == [True]
-
-    # No sender: participant subject absent, nothing reported.
-    flag.clear()
-    await node._build_recalled_memory_text(
-        used_member_subject_out=flag,
-        her_name="Neko", message="问题",
-        should_use_memory_context=True, attachments=None,
-        is_group=True, group_id="7788", sender_id="",
-    )
-    assert flag == []
-
-    # Wiring, behaviourally: an empty scoped bootstrap plus a participant
-    # recall hit must still set context.used_member_subject — a source
-    # substring assert would match the surrounding comments and break on
-    # any rename/reflow.
-    import ast
-    import textwrap
-
-    tree = ast.parse(
-        textwrap.dedent(inspect.getsource(QQReplyContextNode.build))
-    )
-    assert any(
-        isinstance(node, ast.BoolOp)
-        and isinstance(node.op, ast.And)
-        and {getattr(v, "id", "") for v in node.values}
-        >= {"recall_used_member", "recalled_memory_text"}
-        for node in ast.walk(tree)
-    )
-
-
 def test_sanitizer_drops_recall_when_member_revoked_without_bootstrap():
-    """Fallback recall channel: participant authorization must be tracked
-    from the recall itself — an empty scoped bootstrap (no core-memory
-    section) with a participant recall hit still has to lose that recall
-    when member memory is revoked before generation. (The tool channel
-    has no pre-composed recall section; its dual is the in-handler
-    entry/post-fetch gate pair.)"""
+    """Participant authorization is tracked from the recall itself, not
+    from the bootstrap section: an empty scoped bootstrap (no core-memory
+    section) whose recall hit the participant scope still has to lose
+    that recall when member memory is revoked before generation. The
+    recall text reaching here comes from the tool handler's back-fill
+    (execute_recall sets recalled_memory_text + used_member_subject when
+    it really read scoped content); the direct-fallback reply carries it."""
     from plugin.plugins.qq_auto_reply.reply_generation_service import (
         QQReplyGenerationService,
     )
@@ -6231,10 +5999,9 @@ def test_sanitizer_drops_recall_when_member_revoked_without_bootstrap():
 async def test_generation_recheck_wiring_drops_scoped_prompt():
     """Wiring guard for the generation-time recheck: the stripped prompt
     and the emptied recall must actually reach _apply_turn_memory_context
-    (a correct helper nobody calls is dead code). The recalled-text leg
-    only exists on the fallback recall channel — tool-channel turns carry
-    an empty recalled_memory_text and rely on the runtime consent record
-    instead."""
+    (a correct helper nobody calls is dead code). Turns whose model never
+    called the tool carry an empty recalled_memory_text and rely on the
+    runtime consent record instead."""
     from plugin.plugins.qq_auto_reply.reply_generation_service import (
         QQReplyGenerationService,
     )
@@ -7316,16 +7083,12 @@ def test_double_off_stamp_preserves_first_epoch_cutoff():
 @pytest.mark.asyncio
 async def test_scoped_reads_recheck_live_policy_before_fetch():
     """A group request can capture use_memory_context=True and then await
-    (login fetch, first memory call) while the admin opts the group out:
-    both scoped read points must recheck the live setting immediately
-    before fetching — persistence is already re-gated at prime time, reads
-    must not inject scoped context into a reply after opt-out. The recall
-    leg here is the fallback channel; the tool channel's read-point
-    rechecks live inside the handler (entry + post-fetch), covered in
-    test_group_memory_recall_tool.py."""
-    from plugin.plugins.qq_auto_reply.reply_context_node import (
-        QQReplyContextNode,
-    )
+    (login fetch, bootstrap fetch) while the admin opts the group out: the
+    scoped read point must recheck the live setting immediately before
+    fetching — persistence is already re-gated at prime time, reads must
+    not inject scoped context into a reply after opt-out. The recall leg's
+    dual lives inside the tool handler (entry + post-fetch rechecks),
+    covered in test_group_memory_recall_tool.py."""
     from plugin.plugins.qq_auto_reply.session_instruction_service import (
         QQSessionInstructionService,
     )
@@ -7343,14 +7106,6 @@ async def test_scoped_reads_recheck_live_policy_before_fetch():
         i18n=_default_i18n(),
         _should_skip_direct_llm_fallback_for_images=lambda **kwargs: False,
     )
-    node = QQReplyContextNode.__new__(QQReplyContextNode)
-    node.plugin = plugin
-    assert await node._build_recalled_memory_text(
-        her_name="Neko", message="hello",
-        should_use_memory_context=True, attachments=None,
-        is_group=True, group_id="7788", sender_id="1",
-    ) == ""
-    bridge.query_relevant_memory.assert_not_awaited()
 
     instruction = QQSessionInstructionService.__new__(QQSessionInstructionService)
     instruction.plugin = plugin
@@ -7370,29 +7125,13 @@ async def test_scoped_reads_recheck_live_policy_before_fetch():
 
     # Post-await recheck: the opt-out can land while the fetch itself is on
     # the wire — data already read back must be dropped, not injected.
-    from plugin.plugins.qq_auto_reply.memory_bridge import QQMemoryQueryResult
-
     plugin._qq_settings["group_memory_enabled"] = True
-
-    async def _recall_and_flip(*args, **kwargs):
-        plugin._qq_settings["group_memory_enabled"] = False
-        return QQMemoryQueryResult(text="群规是不剧透", hit_count=1)
-
-    bridge.query_relevant_memory = AsyncMock(side_effect=_recall_and_flip)
     bridge.group_subject.side_effect = (
         lambda gid: {"subject_kind": "group_chat", "subject_id": f"qq:{gid}"}
     )
     bridge.group_participant_subject.side_effect = (
         lambda gid, sid: {"subject_kind": "group_participant"}
     )
-    assert await node._build_recalled_memory_text(
-        her_name="Neko", message="hello",
-        should_use_memory_context=True, attachments=None,
-        is_group=True, group_id="7788", sender_id="1",
-    ) == ""
-    bridge.query_relevant_memory.assert_awaited_once()
-
-    plugin._qq_settings["group_memory_enabled"] = True
 
     async def _bootstrap_and_flip(*args, **kwargs):
         plugin._qq_settings["group_memory_enabled"] = False

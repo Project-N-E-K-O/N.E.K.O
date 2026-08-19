@@ -1030,6 +1030,9 @@
     }
 
     function pickAcceptLanguage() {
+        // GalGame option copy is part of the visible UI, so its template locale
+        // follows the interface instead of the active character's conversation
+        // language preference.
         try {
             if (typeof window.getCurrentLocale === 'function') {
                 var loc = window.getCurrentLocale();

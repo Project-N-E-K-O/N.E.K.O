@@ -14,7 +14,13 @@ from plugin.sdk.shared.constants import EVENT_META_ATTR, NEKO_PLUGIN_META_ATTR, 
 from plugin.sdk.shared.core.base import DEFAULT_PLUGIN_VERSION as _DEFAULT_PLUGIN_VERSION
 from plugin.sdk.shared.core.base import NekoPluginBase as _SharedNekoPluginBase
 from plugin.sdk.shared.core.base import PluginMeta as _SharedPluginMeta
-from plugin.sdk.shared.core.base_runtime import resolve_plugin_data_dir
+from plugin.sdk.shared.core.base_runtime import (
+    resolve_plugin_cache_dir,
+    resolve_plugin_data_dir,
+    resolve_plugin_dir,
+    resolve_plugin_runtime_config_path,
+    resolve_plugin_storage_dir,
+)
 from plugin.sdk.shared.core.events import EventHandler, EventMeta
 from plugin.sdk.shared.core.types import PushMessageResult
 from plugin.sdk.shared.i18n import PluginI18n, load_plugin_i18n_from_meta
@@ -107,12 +113,31 @@ class NekoPluginBase(_SharedNekoPluginBase):
         return str(getattr(self.ctx, "plugin_id", "plugin"))
 
     @property
+    def plugin_dir(self) -> Path:
+        """Return the installed plugin payload directory."""
+        return resolve_plugin_dir(self.ctx)
+
+    @property
     def config_dir(self) -> Path:
-        config_path = getattr(self.ctx, "config_path", None)
-        return Path(config_path).parent if config_path is not None else Path.cwd()
+        """Compatibility alias for :attr:`plugin_dir`."""
+        return self.plugin_dir
+
+    @property
+    def storage_dir(self) -> Path:
+        """Return the user storage directory assigned to this plugin."""
+        return resolve_plugin_storage_dir(self.ctx)
+
+    @property
+    def runtime_config_path(self) -> Path:
+        """Return the plugin's persistent runtime configuration path."""
+        return resolve_plugin_runtime_config_path(self.ctx)
 
     def data_path(self, *parts: str) -> Path:
         base = resolve_plugin_data_dir(self.ctx)
+        return base.joinpath(*parts) if parts else base
+
+    def cache_path(self, *parts: str) -> Path:
+        base = resolve_plugin_cache_dir(self.ctx)
         return base.joinpath(*parts) if parts else base
 
     @property

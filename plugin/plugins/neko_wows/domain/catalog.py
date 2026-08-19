@@ -33,6 +33,10 @@ class EventSpec:
     required: tuple[str, ...] = ()
     optional: tuple[str, ...] = ()
     ttl_seconds: float | None = None
+    # Frame-level 当前战况 (spot counts, nearest enemy). Lifecycle call-outs
+    # are about the match starting or ending, not the minimap, so they omit it.
+    include_frame_context: bool = True
+    attach_group: str = ""
 
 
 # --- lifecycle -----------------------------------------------------------
@@ -62,10 +66,15 @@ LOW_HP_TARGET = "low_hp_target"
 DAMAGE_MILESTONE = "damage_milestone"
 HIGH_DAMAGE = "high_damage"
 DEVASTATING_STRIKE = "devastating_strike"
+ENEMY_SUNK = "enemy_sunk"
 AMMO_RECHECK_HINT = "ammo_recheck_hint"
 
 # --- situation -----------------------------------------------------------
 SITUATION_ADVICE = "situation_advice"
+
+# Damage-burst praise events may attach across the default priority window
+# so a sink call-out can share a turn with high damage / devastating strike.
+ATTACH_GROUP_STRIKE = "wows_strike"
 
 
 _SPECS: tuple[EventSpec, ...] = (
@@ -79,6 +88,7 @@ _SPECS: tuple[EventSpec, ...] = (
         cooldown_seconds=60.0,
         coalesce_key="wows_lifecycle",
         once_per_battle=True,
+        include_frame_context=False,
     ),
     EventSpec(
         event_id=BATTLE_ENDED,
@@ -88,6 +98,7 @@ _SPECS: tuple[EventSpec, ...] = (
         cooldown_seconds=60.0,
         coalesce_key="wows_lifecycle",
         once_per_battle=True,
+        include_frame_context=False,
     ),
     EventSpec(
         event_id=POST_BATTLE_SUMMARY,
@@ -98,6 +109,7 @@ _SPECS: tuple[EventSpec, ...] = (
         coalesce_key="wows_summary",
         once_per_battle=True,
         optional=(DOMAIN_DAMAGE, DOMAIN_ROSTER),
+        include_frame_context=False,
     ),
 
     EventSpec(
@@ -236,18 +248,33 @@ _SPECS: tuple[EventSpec, ...] = (
         coalesce_key="wows_progress",
         required=(DOMAIN_SELF, DOMAIN_DAMAGE),
         optional=(DOMAIN_OBJECTS,),
-        ttl_seconds=12.0,
+        ttl_seconds=24.0,
+        attach_group=ATTACH_GROUP_STRIKE,
     ),
     EventSpec(
         event_id=DEVASTATING_STRIKE,
-        lane=LANE_NORMAL,
-        priority=68,
+        lane=LANE_URGENT,
+        priority=80,
         summary="毁灭打击级别",
         cooldown_seconds=10.0,
         coalesce_key="wows_progress",
+        preempt=True,
         required=(DOMAIN_SELF, DOMAIN_DAMAGE),
         optional=(DOMAIN_OBJECTS,),
         ttl_seconds=12.0,
+        attach_group=ATTACH_GROUP_STRIKE,
+    ),
+    EventSpec(
+        event_id=ENEMY_SUNK,
+        lane=LANE_NORMAL,
+        priority=69,
+        summary="击沉敌舰",
+        cooldown_seconds=8.0,
+        coalesce_key="wows_praise",
+        required=(DOMAIN_SELF, DOMAIN_DAMAGE),
+        optional=(DOMAIN_OBJECTS,),
+        ttl_seconds=12.0,
+        attach_group=ATTACH_GROUP_STRIKE,
     ),
     EventSpec(
         event_id=AMMO_RECHECK_HINT,

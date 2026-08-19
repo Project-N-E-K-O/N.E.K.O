@@ -192,6 +192,7 @@ from .channels.openfang import (  # noqa: F401
 from .channels.user_plugin import (  # noqa: F401
     _plugin_terminal_status,
     _resolve_delivery_mode,
+    _resolve_plugin_result_contract,
     _lookup_llm_result_fields,
     _is_reply_suppressed,
 )

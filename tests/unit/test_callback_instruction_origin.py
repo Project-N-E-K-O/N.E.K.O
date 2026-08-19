@@ -1,21 +1,20 @@
 """Unit tests for _build_callback_instruction's (origin × passive) routing.
 
-The host derives ``origin`` from upstream ``event_type``:
+The host derives ``origin`` from upstream ``event_type`` plus the validated
+user-plugin result-kind contract:
 - ``event_type == "task_result"`` (agent_server._emit_task_result):
-  real task completion → ``origin="task_result"`` → TASK_* templates
-  ("任务已完成，请汇报" semantics).
+  real task completion → ``origin="task_result"`` → TASK_* reporting templates.
 - ``event_type == "proactive_message"`` (proactive_bridge from
-  plugin push_message): event stream → ``origin="event"`` → EVENT_*
-  templates ("新消息，请回应" semantics; **no** "任务"/"汇报" wording).
+  plugin push_message): event stream → ``origin="event"`` → neutral EVENT_*
+  response templates without task-completion wording.
 
-Plugin authors cannot influence ``origin``; it is a structural fact of
-which SDK method they called (``finish()`` vs ``push_message()``) and
-which host path the event flowed through.
+Plugin authors cannot set ``origin`` directly. A successful user-plugin entry
+may only downgrade its task result to neutral event wording.
 
 These tests pin both the active/passive split and the cross-axis
 guarantees:
-- TASK ACTIVE renders status_phrase + action_phrase ("已完成 / 汇报").
-- EVENT ACTIVE renders neutral wording with no "任务"/"汇报".
+- TASK ACTIVE renders status and reporting phrases.
+- EVENT ACTIVE renders neutral wording without task-reporting phrases.
 - Missing origin silently falls back to "event" (pre-migration compat).
 - Explicitly unknown origin values fall back to "event" + warn (signals
   a typo or a producer using an unsupported value, worth surfacing).
@@ -28,6 +27,37 @@ wrappers, so the origin routing must be re-asserted there.
 from __future__ import annotations
 
 import logging
+
+from tests.fake_clock import patch_module_clock
+
+
+def test_host_only_downgrades_successful_user_plugin_task_results():
+    from app.main_server.character_runtime import _resolve_callback_origin
+
+    event = {"success": True, "result_kind": "event"}
+    assert _resolve_callback_origin("task_result", event, "user_plugin") == "event"
+    assert _resolve_callback_origin("task_result", event, "computer_use") == "task_result"
+    assert _resolve_callback_origin(
+        "task_result", {"success": False, "result_kind": "event"}, "user_plugin"
+    ) == "task_result"
+    assert _resolve_callback_origin(
+        "proactive_message", {"result_kind": "task_result"}, "plugin:demo"
+    ) == "event"
+
+
+def test_host_stamps_expiry_only_for_neutral_events(monkeypatch):
+    from app.main_server import character_runtime
+
+    patch_module_clock(monkeypatch, character_runtime, monotonic=lambda: 100.0)
+    assert character_runtime._resolve_callback_expiry(
+        {"expires_in_s": 12}, "event"
+    ) == 112.0
+    assert character_runtime._resolve_callback_expiry(
+        {"expires_in_s": 12}, "task_result"
+    ) is None
+    assert character_runtime._resolve_callback_expiry(
+        {"expires_in_s": float("inf")}, "event"
+    ) is None
 
 
 def _build(callbacks, *, passive: bool = False):

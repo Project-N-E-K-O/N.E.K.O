@@ -32,6 +32,10 @@ _CLASS_ALIASES = {
     "潛艇": "Submarine",
 }
 
+# Tech-tree / preserved hulls outrank special clones of the same localized name.
+_PLAYABLE_GROUPS = frozenset({"", "upgradeable", "preserved"})
+_PREFERRED_SPECIAL_GROUPS = frozenset({"ultimate"})
+
 
 def normalize_ship_alias(value: Any) -> str:
     """Return the exact catalog lookup key used by both builder and runtime."""
@@ -54,8 +58,30 @@ def _ship_index_head_alias(value: Any) -> str:
     return normalize_ship_alias(head)
 
 
+def _availability_rank(ship: CatalogShip) -> int:
+    group = ship.availability_group or ""
+    if group in _PLAYABLE_GROUPS:
+        return 2
+    if group in _PREFERRED_SPECIAL_GROUPS:
+        return 1
+    return 0
+
+
+def _prefer_playable_hull(
+    candidates: tuple[CatalogShip, ...],
+) -> tuple[CatalogShip, ...]:
+    """Keep a unique playable clone when remaining hulls share a ship class."""
+    if len(candidates) < 2:
+        return candidates
+    if len({ship.ship_class for ship in candidates}) != 1:
+        return candidates
+    best_rank = max(_availability_rank(ship) for ship in candidates)
+    return tuple(
+        ship for ship in candidates if _availability_rank(ship) == best_rank)
+
+
 class ShipResolver:
-    """Resolve only exact aliases, using tier/class solely for disambiguation."""
+    """Resolve exact aliases; tier, class, then playable availability disambiguate."""
 
     def __init__(self, snapshot: Any) -> None:
         self.snapshot = snapshot
@@ -96,6 +122,8 @@ class ShipResolver:
                 ship for ship in candidates if ship.ship_class == canonical_class)
         if not candidates:
             return ShipResolution(query, normalized, "alias_not_found", meta=meta)
+        if len(candidates) > 1:
+            candidates = _prefer_playable_hull(candidates)
         if len(candidates) != 1:
             return ShipResolution(query, normalized, "ambiguous_alias", meta=meta)
 

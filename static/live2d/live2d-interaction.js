@@ -1225,6 +1225,10 @@ function captureLive2DPeekRestoreAnchor() {
 
 async function restoreLive2DPeekAnchor(anchor) {
     if (!anchor || anchor.kind !== 'live2d-edge-peek') return false;
+    // 贴边探身已关闭（如猫形态期间用户关掉 Widget 模式）时不得再把模型挪回旧边缘位置：
+    // _tryApplyLive2DPeek 会在对齐边缘后才检查 isLive2DPeekEnabled 并返回 false，
+    // 若在这里不拦，模型会被留在陈旧边缘坐标上。
+    if (!isLive2DPeekEnabled()) return false;
     const manager = window.live2dManager;
     const model = manager && manager.currentModel && !manager.currentModel.destroyed
         ? manager.currentModel

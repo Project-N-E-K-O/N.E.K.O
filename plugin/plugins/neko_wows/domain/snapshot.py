@@ -109,6 +109,47 @@ def spoken_ship_name(ship: "Ship") -> str | None:
     return player or name
 
 
+def alive_from_health(
+    health: float | None = None,
+    hp_ratio: float | None = None,
+) -> bool | None:
+    """True/False from a HP reading; `None` if no reading exists."""
+    if health is not None:
+        return health > 0
+    if hp_ratio is not None:
+        return hp_ratio > 0
+    return None
+
+
+def resolve_alive(
+    flag: bool | None,
+    health: float | None = None,
+    hp_ratio: float | None = None,
+) -> bool | None:
+    """Combine an `isAlive` flag with HP. Death from either source wins.
+
+    The TTaro/dataHub health bar can read 0 a tick before 3D `isAlive()` flips,
+    and a positive HP reading is enough to prove a hull is still afloat when
+    the flag was omitted.
+    """
+    health_signal = alive_from_health(health, hp_ratio)
+    if health_signal is False or flag is False:
+        return False
+    if flag is True or health_signal is True:
+        return True
+    return None
+
+
+def combine_alive_signals(*signals: bool | None) -> bool | None:
+    """Death wins across independent sources; unknown stays unknown."""
+    known = tuple(signal for signal in signals if signal is not None)
+    if not known:
+        return None
+    if any(signal is False for signal in known):
+        return False
+    return True
+
+
 @dataclass(frozen=True)
 class Ship:
     """One ship on the minimap, ally or enemy, visible or last-known."""
@@ -146,6 +187,15 @@ class Ship:
     @property
     def spoken_name(self) -> str | None:
         return spoken_ship_name(self)
+
+    @property
+    def is_confirmed_alive(self) -> bool:
+        """Lit-and-afloat for team counts: explicit alive, not contradicted by HP."""
+        return resolve_alive(self.alive, self.health, self.hp_ratio) is True
+
+    @property
+    def is_known_dead(self) -> bool:
+        return resolve_alive(self.alive, self.health, self.hp_ratio) is False
 
 
 @dataclass(frozen=True)
@@ -273,13 +323,13 @@ class WowsSnapshot:
     def enemies(self, *, visible_only: bool = True) -> tuple[Ship, ...]:
         return tuple(
             s for s in self.ships
-            if s.is_enemy and s.alive is not False and (s.visible or not visible_only)
+            if s.is_enemy and not s.is_known_dead and (s.visible or not visible_only)
         )
 
     def allies(self, *, visible_only: bool = True) -> tuple[Ship, ...]:
         return tuple(
             s for s in self.ships
-            if s.is_ally and s.alive is not False and (s.visible or not visible_only)
+            if s.is_ally and not s.is_known_dead and (s.visible or not visible_only)
         )
 
     def own_side(self, *, visible_only: bool = True) -> tuple[Ship, ...]:
@@ -291,6 +341,6 @@ class WowsSnapshot:
         return tuple(
             s for s in self.ships
             if (s.is_ally or s.relation == RELATION_SELF)
-            and s.alive is not False
+            and not s.is_known_dead
             and (s.visible or not visible_only)
         )

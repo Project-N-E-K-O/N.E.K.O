@@ -60,6 +60,7 @@ import threading
 import time
 import uuid
 from collections import deque
+from dataclasses import asdict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Callable
 from urllib.parse import parse_qs, urlparse
@@ -68,23 +69,38 @@ from urllib.parse import parse_qs, urlparse
 _UNSET = object()
 _ACTION_HEADER = "X-Neko-Warthunder-Action"
 
-from dataclasses import asdict
-
-from wt_events import AwardTracker, KillTracker, NoticeTracker
-from wt_geo import analyze_situation
-from wt_processor import TelemetryProcessor
-from wt_recorder import SessionRecorder
-from wt_proximity import ProximityTracker, resolve_proximity_thresholds
-from wt_telemetry import DEFAULT_PORT as WT_PORT
-from wt_telemetry import (
-    ConnectionState,
-    Indicators,
-    MapInfo,
-    Telemetry,
-    VehicleState,
-    WarThunderClient,
-    detect_domain,
-)
+if __package__:
+    from .wt_events import AwardTracker, KillTracker, NoticeTracker
+    from .wt_geo import analyze_situation
+    from .wt_processor import TelemetryProcessor
+    from .wt_proximity import ProximityTracker, resolve_proximity_thresholds
+    from .wt_recorder import SessionRecorder
+    from .wt_telemetry import DEFAULT_PORT as WT_PORT
+    from .wt_telemetry import (
+        ConnectionState,
+        Indicators,
+        MapInfo,
+        Telemetry,
+        VehicleState,
+        WarThunderClient,
+        detect_domain,
+    )
+else:
+    from wt_events import AwardTracker, KillTracker, NoticeTracker
+    from wt_geo import analyze_situation
+    from wt_processor import TelemetryProcessor
+    from wt_proximity import ProximityTracker, resolve_proximity_thresholds
+    from wt_recorder import SessionRecorder
+    from wt_telemetry import DEFAULT_PORT as WT_PORT
+    from wt_telemetry import (
+        ConnectionState,
+        Indicators,
+        MapInfo,
+        Telemetry,
+        VehicleState,
+        WarThunderClient,
+        detect_domain,
+    )
 
 _CONTENT_TYPE_BY_EXT = {"jpg": "image/jpeg", "png": "image/png"}
 DEFAULT_BIND_HOST = "127.0.0.1"

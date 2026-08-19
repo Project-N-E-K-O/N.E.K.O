@@ -6,15 +6,20 @@ import pytest
 
 from plugin.plugins.neko_wows.detectors._base import GameEvent
 from plugin.plugins.neko_wows.domain.catalog import (
+    BATTLE_ENDED,
+    BATTLE_STARTED,
     DAMAGE_MILESTONE,
     DEVASTATING_STRIKE,
+    ENEMY_SUNK,
     HIGH_DAMAGE,
     LOW_HEALTH,
+    POST_BATTLE_SUMMARY,
 )
 from plugin.plugins.neko_wows.domain.contracts import (
     CHANNEL_DUAL,
     CHANNEL_SINGLE,
     LANE_NORMAL,
+    LANE_URGENT,
     WowsConfig,
 )
 from plugin.plugins.neko_wows.domain.facts import WowsFacts
@@ -30,6 +35,7 @@ from plugin.plugins.neko_wows.presentation.instructions import (
     PromptBundle,
     PromptRejected,
     bundle_from_revision,
+    context_instructions,
     instructions_for,
     validate_sections,
 )
@@ -255,6 +261,7 @@ def test_damage_event_claim_limits_do_not_invent_awards_or_salvos():
     devastating = candidate(DEVASTATING_STRIKE)
 
     assert any("单轮齐射" in line for line in high.claim_limits)
+    assert any("几秒" in line for line in high.claim_limits)
     assert any(
         "勋带" in line or "成就" in line
         for line in devastating.claim_limits
@@ -263,19 +270,250 @@ def test_damage_event_claim_limits_do_not_invent_awards_or_salvos():
         "一发" in line and "单轮齐射" in line
         for line in devastating.claim_limits
     )
-    assert devastating.lane == LANE_NORMAL
+    assert any("几秒" in line for line in devastating.claim_limits)
+    assert any("伤害数字" in line for line in devastating.claim_limits)
+    assert devastating.lane == LANE_URGENT
 
 
-_FORBIDDEN_CONSUMABLE_STATE = (
-    "消耗品实时状态（雷达、水听、烟幕、损伤控制等是否开启或持续）当前不可用，不要提及；"
-    "不要把小地图上敌舰被点亮说成对方开了雷达。"
+def _strike_event(event_id, **detail):
+    payload = {
+        "target_name": "Zao",
+        "target_id": 3002,
+        "victim_id": 3002,
+        "window_damage": 36_111,
+        "window_seconds": 5.0,
+        "target_max_health": 88_999,
+        "damage_ratio": 0.406,
+        "classification": "telemetry_estimate",
+        "target_sunk": True,
+    }
+    payload.update(detail)
+    return GameEvent(
+        event_id=event_id,
+        severity=80,
+        at=100.0,
+        seq=1,
+        battle_id="b-1",
+        detail=payload,
+    )
+
+
+def _strike_facts():
+    return WowsFacts(
+        seq=1,
+        at=100.0,
+        battle_id="b-1",
+        own_hp_ratio=0.9,
+        damage_inflicted=70_222.0,
+        confirmed_visible_allies=2,
+        confirmed_visible_enemies=1,
+        team_counts_confirmed=True,
+        visible_enemies=1,
+    )
+
+
+def test_devastating_claim_limits_forbid_reading_the_damage_clock():
+    devastating = candidate(DEVASTATING_STRIKE)
+    joined = "\n".join(devastating.claim_limits)
+    assert "几秒里" in joined or "几秒" in joined
+    assert "伤害数字" in joined
+
+
+def test_devastating_callout_does_not_invite_a_five_second_damage_reading():
+    """window_seconds and competing totals made her recite 'dealt xx in 5 seconds'.
+
+    First-salvo AP devastating strike still quoted 3w8/7w — those were max HP
+    or battle total sitting next to the hit. Leave the celebration, hide the meter.
+    """
+    built = WowsTacticPolicy(CFG).expand(
+        [_strike_event(DEVASTATING_STRIKE)], _strike_facts())[0]
+    request = WowsPromptRouter(CFG).build(
+        built, PromptProfile(channel_mode=CHANNEL_DUAL, dry_run=True))
+
+    assert "Zao" in request.text
+    assert "毁灭打击" in request.text
+    for token in (
+        "window_seconds",
+        "window_damage",
+        "target_max_health",
+        "damage_ratio",
+        "telemetry_estimate",
+        "36111",
+        "88999",
+        "70222",
+        "5.0",
+    ):
+        assert token not in request.text, token
+
+
+def test_strike_context_omits_battle_total_damage():
+    built = WowsTacticPolicy(CFG).expand(
+        [_strike_event(DEVASTATING_STRIKE)], _strike_facts())[0]
+    assert "damage_inflicted" not in built.context
+    assert 70_222 not in built.context.values()
+
+
+def test_high_damage_callout_keeps_the_hit_but_not_the_five_second_window():
+    built = WowsTacticPolicy(CFG).expand(
+        [_strike_event(HIGH_DAMAGE, window_damage=32_000, target_sunk=False)],
+        _strike_facts(),
+    )[0]
+    request = WowsPromptRouter(CFG).build(
+        built, PromptProfile(channel_mode=CHANNEL_DUAL, dry_run=True))
+
+    assert "32000" in request.text
+    assert "window_seconds" not in request.text
+    assert "5.0" not in request.text
+    assert "88999" not in request.text
+    assert "70222" not in request.text
+
+
+def _every_scene_block():
+    return [
+        context_instructions(screenshot_enabled=False),
+        context_instructions(screenshot_enabled=True),
+        context_instructions(screenshot_enabled=False, live_vision_active=True),
+    ]
+
+
+def test_the_scene_block_forbids_inventing_consumable_state():
+    """The standing rules belong to the battle, not to every single call-out."""
+    for scene in _every_scene_block():
+        assert "消耗品实时状态" in scene
+        assert "雷达" in scene
+
+
+def test_the_scene_block_explains_the_count_fields_once():
+    for scene in _every_scene_block():
+        assert "allies_not_confirmed_sunk" in scene
+        assert "confirmed_visible_allies" in scene
+        assert "bearing_deg" in scene
+        assert "relative_sector" in scene
+
+
+_GLOSSARY_PHRASES = (
+    "confirmed_visible_allies",
+    "allies_not_confirmed_sunk",
+    "人数劣势",
+    "bearing_deg",
+    "relative_sector",
 )
 
 
-def test_every_callout_forbids_inventing_consumable_state():
-    for event_id in (LOW_HEALTH, HIGH_DAMAGE, DEVASTATING_STRIKE):
-        built = candidate(event_id)
-        assert _FORBIDDEN_CONSUMABLE_STATE in built.claim_limits
+def test_a_callout_does_not_reprint_the_field_glossary():
+    """The glossary outweighed the event and got recited as if it were news.
+
+    A lifecycle call-out carries no counts at all, so any count vocabulary in
+    the text is something the model can only misread as content.
+    """
+    event = GameEvent(
+        event_id=BATTLE_STARTED, severity=40, at=100.0, seq=1, battle_id="b-1",
+        detail={"map_name": "North", "own_ship": "Yamato"})
+    built = WowsTacticPolicy(CFG).expand([event], _facts_with_spotting_noise())[0]
+
+    request = WowsPromptRouter(CFG).build(
+        built, PromptProfile(channel_mode=CHANNEL_DUAL, dry_run=True))
+
+    for phrase in _GLOSSARY_PHRASES:
+        assert phrase not in request.text, phrase
+
+
+def test_the_event_leads_the_callout():
+    request = WowsPromptRouter(CFG).build(
+        candidate(), PromptProfile(channel_mode=CHANNEL_DUAL, dry_run=True))
+
+    assert request.text.startswith("主事件：")
+    assert request.text.index("主事件：") < request.text.index(BASE_INSTRUCTIONS)
+
+
+def test_the_event_outweighs_the_boilerplate_in_a_callout():
+    """What she is asked to say must not be a footnote to what she may not say."""
+    event = GameEvent(
+        event_id=BATTLE_STARTED, severity=40, at=100.0, seq=1, battle_id="b-1",
+        detail={"map_name": "North", "own_ship": "Yamato"})
+    built = WowsTacticPolicy(CFG).expand([event], _facts_with_spotting_noise())[0]
+
+    request = WowsPromptRouter(CFG).build(
+        built, PromptProfile(channel_mode=CHANNEL_DUAL, dry_run=True))
+
+    assert len(request.text) < 700
+
+
+def test_enemy_sunk_claim_limits_ask_for_praise_without_kill_credit():
+    sink = candidate(ENEMY_SUNK)
+    joined = "\n".join(sink.claim_limits)
+    assert sink.lane == LANE_NORMAL
+    assert any("夸奖" in line for line in sink.claim_limits)
+    assert any("勋带" in line or "成就" in line for line in sink.claim_limits)
+    assert any("附带伤害" in line for line in sink.claim_limits)
+    assert sum(1 for line in sink.claim_limits if "附带伤害" in line) == 1
+    assert sum(1 for line in sink.claim_limits if "夸奖" in line) == 1
+    # Naming the missing credit made her recite 击杀分 / 没有归属.
+    assert "人头" not in joined
+    assert "归属" not in joined
+    assert "击杀归属" not in joined
+    assert "击杀数" not in joined
+    assert "击杀分" not in joined
+    assert "kill_credit" not in joined
+
+
+def test_target_id_is_not_spoken_in_the_prompt():
+    event = GameEvent(
+        event_id=ENEMY_SUNK,
+        severity=90,
+        at=100.0,
+        seq=1,
+        battle_id="b-1",
+        detail={
+            "target_name": "Zao",
+            "target_id": 3002,
+            "window_damage": 20_000,
+            "kill_credit": False,
+        },
+    )
+    facts = WowsFacts(seq=1, at=100.0, battle_id="b-1")
+    built = WowsTacticPolicy(CFG).expand([event], facts)[0]
+    request = WowsPromptRouter(CFG).build(
+        built, PromptProfile(channel_mode=CHANNEL_DUAL, dry_run=True))
+    assert "Zao" in request.text
+    assert "3002" not in request.text
+    assert "target_id" not in request.text
+    assert "kill_credit" not in request.text
+
+
+def test_devastating_with_sink_does_not_speak_kill_credit():
+    """A devastating strike often arrives with a sink; kill_credit:false was spoken as 'kill credit'."""
+    sink = GameEvent(
+        event_id=ENEMY_SUNK,
+        severity=90,
+        at=100.0,
+        seq=1,
+        battle_id="b-1",
+        detail={
+            "target_name": "Zao",
+            "target_id": 3002,
+            "window_damage": 20_000,
+            "kill_credit": False,
+            "target_sunk": True,
+        },
+    )
+    facts = _strike_facts()
+    policy = WowsTacticPolicy(CFG)
+    strike = policy.expand([_strike_event(DEVASTATING_STRIKE)], facts)[0]
+    praise = policy.expand([sink], facts)[0]
+    request = WowsPromptRouter(CFG).build(
+        (strike, praise),
+        PromptProfile(channel_mode=CHANNEL_DUAL, dry_run=True),
+    )
+    assert "Zao" in request.text
+    assert "毁灭打击" in request.text
+    assert "kill_credit" not in request.text
+    assert "人头" not in request.text
+    assert "归属" not in request.text
+    assert "击杀归属" not in request.text
+    assert "击杀数" not in request.text
+    assert "击杀分" not in request.text
+
 
 
 def test_shared_context_carries_confirmed_visible_team_counts():
@@ -296,6 +534,82 @@ def test_shared_context_carries_confirmed_visible_team_counts():
     assert built.context["confirmed_visible_allies"] == 2
     assert built.context["confirmed_visible_enemies"] == 1
     assert built.context["team_counts_confirmed"] is True
+
+
+def _facts_with_spotting_noise():
+    return WowsFacts(
+        seq=1,
+        at=100.0,
+        battle_id="b-1",
+        own_hp_ratio=1.0,
+        confirmed_visible_allies=12,
+        confirmed_visible_enemies=0,
+        team_counts_confirmed=True,
+        visible_enemies=0,
+    )
+
+
+def test_lifecycle_callouts_do_not_carry_frame_spotting_context():
+    """Start/end must not feed current-situation numbers the model can recap instead of the event."""
+    facts = _facts_with_spotting_noise()
+    for event_id in (BATTLE_STARTED, BATTLE_ENDED, POST_BATTLE_SUMMARY):
+        event = GameEvent(
+            event_id=event_id, severity=40, at=100.0, seq=1, battle_id="b-1",
+            detail={"map_name": "North"})
+        built = WowsTacticPolicy(CFG).expand([event], facts)[0]
+        assert built.context == {}, event_id
+        assert "confirmed_visible_allies" not in built.context
+        assert "nearest_enemy_m" not in built.context
+
+
+def test_lifecycle_claim_limits_forbid_spotting_talk_and_repeating_the_last_line():
+    event = GameEvent(
+        event_id=BATTLE_STARTED, severity=40, at=100.0, seq=1, battle_id="b-1",
+        detail={"map_name": "North"})
+    built = WowsTacticPolicy(CFG).expand([event], _facts_with_spotting_noise())[0]
+    joined = "\n".join(built.claim_limits)
+    assert "小地图" in joined or "点亮" in joined
+    assert "方位" in joined
+    assert "上一次" in joined
+    assert "只说对局开始" not in joined
+    assert "陪玩" in joined
+
+
+def test_lifecycle_end_claim_limits_allow_companion_wrap_up():
+    event = GameEvent(
+        event_id=BATTLE_ENDED, severity=45, at=100.0, seq=1, battle_id="b-1",
+        detail={"map_name": "North"})
+    built = WowsTacticPolicy(CFG).expand([event], _facts_with_spotting_noise())[0]
+    joined = "\n".join(built.claim_limits)
+    assert "只说对局结束" not in joined
+    assert "陪玩" in joined
+    assert "小地图" in joined or "点亮" in joined
+    assert "上一次" in joined
+
+
+def test_lifecycle_prompt_omits_current_situation_block():
+    event = GameEvent(
+        event_id=BATTLE_STARTED, severity=40, at=100.0, seq=1, battle_id="b-1",
+        detail={"map_name": "North", "own_ship": "Yamato"})
+    candidate = WowsTacticPolicy(CFG).expand(
+        [event], _facts_with_spotting_noise())[0]
+    request = WowsPromptRouter(CFG).build(
+        candidate, PromptProfile(channel_mode=CHANNEL_DUAL, dry_run=True))
+    assert "当前战况：" not in request.text
+    assert '"confirmed_visible_allies"' not in request.text
+    assert '"visible_enemies"' not in request.text
+    assert "battle_started" in request.text
+    assert "Yamato" in request.text
+
+
+def test_base_instructions_keep_the_event_in_front_of_the_background():
+    assert "主事件" in BASE_INSTRUCTIONS
+    assert "背景" in BASE_INSTRUCTIONS
+
+
+def test_base_instructions_no_longer_carry_the_field_glossary():
+    for phrase in _GLOSSARY_PHRASES:
+        assert phrase not in BASE_INSTRUCTIONS, phrase
 
 
 # --- preview -------------------------------------------------------------

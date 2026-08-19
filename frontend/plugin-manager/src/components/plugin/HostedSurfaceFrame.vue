@@ -81,6 +81,9 @@ const emit = defineEmits<{
 const { locale, t } = useI18n()
 const iframeRef = ref<HTMLIFrameElement | null>(null)
 const iframeKey = ref(0)
+const staticSurfaceReady = ref(false)
+const pendingStaticSurfaceMessages: unknown[] = []
+const maxPendingStaticSurfaceMessages = 100
 const hostedDocument = ref('')
 const loading = ref(false)
 const error = ref('')
@@ -366,13 +369,39 @@ function buildMarkdownDocument(source: string, title: string) {
 }
 
 function handleLoad() {
+  if (props.surface.mode === 'static') {
+    staticSurfaceReady.value = true
+    flushStaticSurfaceMessages()
+  }
   emit('load')
 }
 
 function handleError() {
   loading.value = false
+  staticSurfaceReady.value = false
   error.value = t('plugins.ui.loadError')
   emit('error', t('plugins.ui.loadError'))
+}
+
+function flushStaticSurfaceMessages() {
+  const target = iframeRef.value?.contentWindow
+  if (!target || !staticSurfaceReady.value) return
+  for (const message of pendingStaticSurfaceMessages.splice(0)) {
+    target.postMessage(message, trustedIframeOrigin.value)
+  }
+}
+
+function sendSurfaceMessage(message: unknown) {
+  if (props.surface.mode !== 'static') return
+  const target = iframeRef.value?.contentWindow
+  if (target && staticSurfaceReady.value) {
+    target.postMessage(message, trustedIframeOrigin.value)
+    return
+  }
+  if (pendingStaticSurfaceMessages.length >= maxPendingStaticSurfaceMessages) {
+    pendingStaticSurfaceMessages.shift()
+  }
+  pendingStaticSurfaceMessages.push(message)
 }
 
 async function loadHostedTsx() {
@@ -561,11 +590,26 @@ onUnmounted(() => {
 })
 
 watch(
-  () => [props.pluginId, props.surface.kind, props.surface.id, props.surface.mode, props.surface.entry, props.surface.available, locale.value],
+  // Static iframe messages must be queued again only when its document is
+  // actually replaced. Locale changes leave a static iframe in place.
+  () => [props.pluginId, props.surface.mode, surfaceUrl.value],
   () => {
+    staticSurfaceReady.value = false
+    pendingStaticSurfaceMessages.length = 0
+  },
+)
+
+watch(
+  () => [props.pluginId, props.surface.kind, props.surface.id, props.surface.mode, props.surface.entry, props.surface.available, surfaceUrl.value, locale.value],
+  () => {
+    if (props.surface.mode === 'static') return
     loadHostedTsx()
   },
 )
+
+defineExpose({
+  sendSurfaceMessage,
+})
 </script>
 
 <style scoped>

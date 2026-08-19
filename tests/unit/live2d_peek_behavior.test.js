@@ -930,6 +930,41 @@ test('Widget Mode disabled event restores active edge peek to its base position'
     assert.equal(harness.bodyClasses.has('neko-live2d-peek'), false);
 });
 
+test('restoreAnchor leaves the model untouched while Widget Mode is disabled', async () => {
+    const harness = createHarness({ widgetModeEnabled: false });
+    const manager = new harness.Live2DManager();
+    const model = createRotatingModel({ x: 0, y: 0, scaleX: 1 });
+    manager.currentModel = model;
+    manager.getHeadScreenAnchor = () => model.transformPoint(150, 110);
+    manager.getBodyScreenRectInfo = () => {
+        const waist = model.transformPoint(150, 330);
+        return { rect: { centerX: waist.x, bottom: waist.y } };
+    };
+    harness.window.live2dManager = manager;
+
+    // 猫形态期间用户关掉 Widget 模式后，return 仍残留探身锚点。restore 必须在
+    // 触碰模型坐标之前先拒绝，否则 _tryApplyLive2DPeek 会在对齐边缘后才因
+    // isLive2DPeekEnabled() 失败，把模型留在陈旧边缘位置。
+    const anchor = {
+        kind: 'live2d-edge-peek',
+        edge: 'left',
+        side: 'left',
+        edgeAnchorRatio: 0.5,
+        facing: 'inward'
+    };
+    model.x = 350;
+    model.y = 100;
+    const beforeX = model.x;
+    const beforeY = model.y;
+
+    const restored = await harness.window.nekoLive2DPeek.restoreAnchor(anchor);
+
+    assert.equal(restored, false);
+    assert.equal(manager.isLive2DPeekActive(), false);
+    assert.equal(model.x, beforeX);
+    assert.equal(model.y, beforeY);
+});
+
 test('top and bottom edges alone do not trigger edge peek', async () => {
     const topHarness = createHarness();
     const topManager = new topHarness.Live2DManager();

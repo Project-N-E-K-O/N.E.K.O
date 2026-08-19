@@ -1,0 +1,17 @@
+{
+  "plugin.name": "網易雲匿名點歌",
+  "plugin.description": "匿名搜尋網易雲單曲並播放搜尋第一項，不確定時向使用者給出委婉提示",
+  "plugin.short_description": "匿名搜尋並播放明確相符的網易雲歌曲",
+  "entry.play.name": "播放網易雲歌曲",
+  "entry.play.description": "僅在使用者明確要求播放或點播某首網易雲歌曲時呼叫。將 query 整理為「歌名 歌手」，保留現場版、翻唱等版本限定。不要用於歌詞或歌曲知識查詢、泛推薦、歌單、暫停、停止、切歌或下一首。",
+  "entry.play.param.query": "歌曲搜尋詞，優先使用「歌名 歌手」形式，最多 100 個字元",
+  "messages.no_results": "找不到相符的網易雲歌曲，請改用更具體的歌名或歌手。",
+  "messages.unavailable": "這首歌目前沒有可匿名播放的公開音源，可能需要登入或會員權限。",
+  "messages.submitted": "播放動作已提交。",
+  "messages.fallback": "我不太確定這是不是你想聽的版本，先依搜尋結果幫你播放第一首喔。",
+  "errors.missing_target": "無法確定目前播放工作階段，已取消點歌。",
+  "errors.search_failed": "網易雲搜尋暫時無法使用，請稍後再試。",
+  "errors.media_failed": "網易雲音源驗證失敗，未提交播放。",
+  "errors.delivery_failed": "播放動作提交失敗，未開始播放。",
+  "errors.message_delivery_failed": "結果訊息提交失敗。"
+}

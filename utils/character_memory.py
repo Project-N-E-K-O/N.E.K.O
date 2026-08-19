@@ -62,6 +62,12 @@ LEGACY_CHARACTER_MEMORY_EXTRA_ENTRIES = (
 MESSAGE_NAME_FIELDS = ("speaker", "author", "name", "character")
 
 
+# Language-sidecar and character identity operations share characters.json.
+# Reuse one transaction lock for those cooperating mutation paths so their
+# load -> mutate -> save snapshots cannot overtake each other.
+character_config_mutation_lock = asyncio.Lock()
+
+
 def iter_character_memory_roots(config_manager) -> list[Path]:
     """Return all runtime root directories holding character memory (deduped, insertion order kept).
 

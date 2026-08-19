@@ -92,15 +92,22 @@
           {{ t('market.noVersionAvailable') }}
         </el-button>
         <!-- 未装且 Market 有发布版本 → 正常 install -->
-        <el-button
+        <span
           v-else
-          type="primary"
-          size="small"
-          :loading="installing"
-          @click.stop="$emit('install')"
+          class="plugin-card-action-button"
+          :class="{ 'plugin-card-action-button--disabled': installing }"
+          @click.stop
         >
-          {{ installing ? t('market.installing') : t('market.install') }}
-        </el-button>
+          <el-button
+            type="primary"
+            size="small"
+            :loading="installing"
+            :disabled="installing"
+            @click.stop="$emit('install')"
+          >
+            {{ installing ? t('market.installing') : t('market.install') }}
+          </el-button>
+        </span>
       </div>
     </div>
   </el-card>
@@ -270,6 +277,14 @@ function formatCount(count: number): string {
   justify-content: flex-end;
   padding-top: 12px;
   margin-top: auto;
+}
+
+.plugin-card-action-button--disabled {
+  cursor: not-allowed;
+}
+
+.plugin-card-action-button--disabled :deep(.el-button) {
+  cursor: not-allowed;
 }
 
 .type-tag {

@@ -163,7 +163,7 @@ class OfficialWowsApiClient:
             self.application_id = str(
                 getattr(cfg, "official_api_application_id", "") or "").strip()
             self.region = str(
-                getattr(cfg, "official_api_region", "asia") or "").casefold()
+                getattr(cfg, "official_api_region", "asia") or "").strip().casefold()
             self.timeout_seconds = max(0.1, min(
                 30.0, float(getattr(cfg, "official_api_timeout_seconds", 5.0))))
             self.cache_ttl_seconds = max(
@@ -635,10 +635,11 @@ class OfficialWowsApiClient:
         try:
             response = urlopen(request, timeout=timeout)
         except HTTPError as exc:
-            body = exc.read(max_bytes + 1)
-            if len(body) > max_bytes:
-                raise _ResponseTooLarge from None
-            return int(exc.code), body
+            with exc:
+                body = exc.read(max_bytes + 1)
+                if len(body) > max_bytes:
+                    raise _ResponseTooLarge from None
+                return int(exc.code), body
         with response:
             length = response.headers.get("Content-Length")
             if length and length.isdigit() and int(length) > max_bytes:

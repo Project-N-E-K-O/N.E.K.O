@@ -416,8 +416,8 @@ class WowsServiceManager:
             self._set_detail("no usable Python interpreter for the service")
             return self.note_crash()
 
+        handle = self._open_log()
         try:
-            handle = self._open_log()
             process = subprocess.Popen(
                 command,
                 cwd=str(source_dir),
@@ -427,6 +427,11 @@ class WowsServiceManager:
                 creationflags=_no_window_flags(),
             )
         except OSError as exc:
+            if handle is not None:
+                try:
+                    handle.close()
+                except OSError:
+                    pass
             self._log("error", f"failed to launch telemetry service: {exc}")
             self._set_detail(f"launch failed: {exc}")
             return self.note_crash()

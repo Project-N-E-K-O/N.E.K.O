@@ -80,14 +80,10 @@ def _disable_study_auto_open_browser(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
-def _isolate_galgame_runtime_root(
-    request: pytest.FixtureRequest,
+def _isolate_plugin_runtime_root(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    path = Path(str(request.node.fspath))
-    if "galgame" not in str(path):
-        return
     monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(tmp_path / "runtime_data"))
     monkeypatch.delenv("NEKO_STORAGE_ANCHOR_ROOT", raising=False)
 

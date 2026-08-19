@@ -21,6 +21,10 @@
   -moz-osx-font-smoothing: grayscale;
 }
 
+:root[data-neko-chat-font-preset="system"] {
+  --neko-chat-content-font: var(--neko-ui-font);
+}
+
 * {
   box-sizing: border-box;
 }

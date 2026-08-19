@@ -95,6 +95,7 @@ export interface PluginCliInstallRequest {
   plugins_root?: string
   profiles_root?: string
   on_conflict?: PluginCliConflictStrategy
+  install_source?: 'imported'
   confirm_upgrade?: boolean
   confirmation_token?: string
 }
@@ -140,6 +141,7 @@ export interface PluginCliInstallResponse {
   operation: 'install' | 'upgrade'
   restarted: boolean
   rollback_status: 'not_needed' | 'completed' | 'incomplete'
+  install_source_warning?: string | null
 }
 
 export interface PluginCliAnalyzeRequest {
@@ -232,14 +234,18 @@ export function verifyPluginPackage(payload: PluginCliPackageRef): Promise<Plugi
  * 安装插件包或整合包
  */
 export function installPluginPackage(payload: PluginCliInstallRequest): Promise<PluginCliInstallResponse> {
-  return post('/plugin-cli/install', payload)
+  return post('/plugin-cli/install', payload, {
+    timeout: 120_000,
+  })
 }
 
 /**
  * 检查本地包将执行首次安装、原位升级，还是因冲突被阻止
  */
 export function planPluginInstall(payload: PluginCliInstallPlanRequest): Promise<PluginCliInstallPlanResponse> {
-  return post('/plugin-cli/install-plan', payload)
+  return post('/plugin-cli/install-plan', payload, {
+    timeout: 120_000,
+  })
 }
 
 /**

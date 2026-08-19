@@ -2201,6 +2201,14 @@
         "voiceNotSet": "No Voice Specified",
         "voiceSetting": "Voice Settings",
         "personalitySetting": "Personality Settings",
+        "languagePreference": "Language Preference",
+        "languagePreferenceDescription": "This preference is not enforced. Character settings and the language used in the current conversation may still influence the actual response.",
+        "languagePreferenceSaved": "Language preference updated",
+        "languagePreferencePartiallySaved": "Language preference saved, but the current session was not fully synchronized",
+        "languagePreferenceSuperseded": "Another window saved a newer language preference; refreshed for you",
+        "languagePreferenceUnverified": "Language preference saved, but it could not be confirmed as the latest right now",
+        "languagePreferenceSaveFailed": "Failed to save language preference",
+        "languagePreferenceLoadFailed": "Failed to load language preference",
         "personalityUseDefault": "Follow the character card default personality",
         "personalitySelect": "Choose Personality",
         "personalityClear": "Restore Default",
@@ -2901,6 +2909,7 @@
             "fullscreenTracking": "Fullscreen Tracking",
             "localTracking": "Local Tracking",
             "lockedHoverFade": "Locked Hover Fade",
+            "forgeDropEffects": "Ticket Drop Effects",
             "textGuardMaxLength": "Response Length Limit",
             "unlimited": "Unlimited",
             "characters": "chars",
@@ -3990,6 +3999,7 @@
         "twitter": "Twitter/X",
         "reddit": "Reddit",
         "netease": "NetEase Cloud Music",
+        "qqmusic": "QQ Music",
         "saveConfig": "Save Configuration",
         "encryptStorage": "Securely encrypt and store to local file",
         "localMonitoring": "Local Status Monitoring",
@@ -4028,7 +4038,8 @@
             "weibo": "<b>Target:</b> Go to <code>m.weibo.cn</code> to fetch these cookies.",
             "twitter": "<b>Target:</b> Go to <code>x.com</code> to fetch these cookies.",
             "reddit": "<b>Target:</b> Go to <code>reddit.com</code> to fetch these cookies.",
-            "netease": "<b>Target:</b> Go to <code>music.163.com</code> to fetch these cookies."
+            "netease": "<b>Target:</b> Go to <code>music.163.com</code> to fetch these cookies.",
+            "qqmusic": "<b>Target:</b> Go to <code>y.qq.com</code> to fetch these cookies."
         },
         "guide": {
             "title": "Universal Guide for Beginners",
@@ -4143,6 +4154,14 @@
             "MUSIC_U": {
                 "label": "MUSIC_U",
                 "desc": "Core identity credential (Required)"
+            },
+            "qqmusicUin": {
+                "label": "uin",
+                "desc": "QQ account identifier (usually starts with o followed by digits)"
+            },
+            "qqmusicKey": {
+                "label": "qqmusic_key",
+                "desc": "QQ Music login credential (Required)"
             },
             "NMTID": {
                 "label": "NMTID",

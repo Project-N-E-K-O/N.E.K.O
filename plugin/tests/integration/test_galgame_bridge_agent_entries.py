@@ -254,6 +254,7 @@ async def _make_active_plugin(tmp_path: Path) -> tuple[GalgameBridgePlugin, _Ctx
     plugin = GalgameBridgePlugin(ctx)
     result = await plugin.startup()
     assert isinstance(result, Ok)
+    await plugin._poll_bridge(force=True)
     local = plugin._snapshot_state()
     local["active_game_id"] = "demo.alpha"
     local["active_session_id"] = "sess-a"

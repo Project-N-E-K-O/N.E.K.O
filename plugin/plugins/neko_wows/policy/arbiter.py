@@ -18,6 +18,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Any, Sequence
 
+from ..domain.catalog import ENEMY_SUNK
 from ..domain.contracts import (
     ALL_LANES,
     INTRUSION_ALLOW_INTERRUPT,
@@ -41,6 +42,25 @@ REASON_ATTACHED = "attached"
 
 ATTACH_PRIORITY_WINDOW = 15
 MAX_DECISION_EVENTS = 4
+
+
+def _coalesce_identity(candidate: AdviceCandidate) -> tuple[str, str | int] | None:
+    """Collapse siblings that share a category and, when present, a target.
+
+    Broadcast categories still group the panel switch, but two progress bursts
+    on different ships must both be allowed to reach attach. Spoken hull names
+    collide (two Zaos), so a numeric target_id wins when the detector stamped one.
+    """
+    key = candidate.coalesce_key
+    if not key:
+        return None
+    target_id = candidate.detail.get("target_id")
+    if isinstance(target_id, int) and not isinstance(target_id, bool):
+        return (key, target_id)
+    target = candidate.detail.get("target_name")
+    if isinstance(target, str) and target:
+        return (key, target)
+    return (key, "")
 
 # Dispatcher outcomes that consumed the candidate. Anything else leaves
 # `once_per_battle` unspent and the lane gap untouched.
@@ -143,6 +163,9 @@ class Arbiter:
         self._fired_once.clear()
         self._cooldowns.clear()
         self._failure_cooldowns.clear()
+        self._quiet_until = 0.0
+        for lane in self._lanes.values():
+            lane.last_output_at = 0.0
 
     def clear_shadow_state(self) -> None:
         """Drop cooldowns accumulated while dry-run was suppressing output.
@@ -202,6 +225,7 @@ class Arbiter:
         steps.extend(collapsed)
         active_preemptor: AdviceCandidate | None = None
         for candidate in incoming:
+            blocked = self._blocked_reason(candidate, now)
             if (
                 active_preemptor is not None
                 and candidate.priority
@@ -215,17 +239,34 @@ class Arbiter:
                 ))
                 continue
 
-            key = candidate.coalesce_key
-            if key:
-                superseded = [c for c in self._queue if c.coalesce_key == key]
-                if superseded:
-                    self._queue = [c for c in self._queue if c.coalesce_key != key]
-                    for old in superseded:
+            identity = _coalesce_identity(candidate)
+            if identity:
+                siblings = [
+                    queued
+                    for queued in self._queue
+                    if _coalesce_identity(queued) == identity
+                ]
+                if siblings:
+                    best_queued = min(siblings, key=self._coalesce_rank)
+                    if self._coalesce_rank(candidate) > self._coalesce_rank(best_queued):
+                        steps.append(DecisionStep(
+                            candidate.event_id,
+                            candidate.lane,
+                            REASON_COALESCED,
+                            f"queued sibling kept {best_queued.event_id}",
+                        ))
+                        continue
+                    self._queue = [
+                        queued
+                        for queued in self._queue
+                        if _coalesce_identity(queued) != identity
+                    ]
+                    for old in siblings:
                         steps.append(DecisionStep(
                             old.event_id, old.lane, REASON_COALESCED,
-                            f"replaced by newer {candidate.event_id}"))
+                            f"replaced by stronger {candidate.event_id}"))
 
-            if candidate.spec.preempt:
+            if candidate.spec.preempt and blocked is None:
                 if (
                     active_preemptor is None
                     or candidate.rank < active_preemptor.rank
@@ -255,10 +296,11 @@ class Arbiter:
         batch from overwriting the stronger item that preceded it.
         """
         indexed = tuple(enumerate(candidates))
-        groups: dict[str, list[tuple[int, AdviceCandidate]]] = {}
+        groups: dict[tuple[str, str | int], list[tuple[int, AdviceCandidate]]] = {}
         for index, candidate in indexed:
-            if candidate.coalesce_key:
-                groups.setdefault(candidate.coalesce_key, []).append(
+            identity = _coalesce_identity(candidate)
+            if identity:
+                groups.setdefault(identity, []).append(
                     (index, candidate))
 
         discarded: set[int] = set()
@@ -269,10 +311,7 @@ class Arbiter:
             winner_index, winner = min(
                 siblings,
                 key=lambda entry: (
-                    -entry[1].priority,
-                    -entry[1].severity,
-                    -entry[1].at,
-                    entry[1].event_id,
+                    *Arbiter._coalesce_rank(entry[1]),
                     entry[0],
                 ),
             )
@@ -290,6 +329,15 @@ class Arbiter:
         retained = tuple(
             candidate for index, candidate in indexed if index not in discarded)
         return retained, steps
+
+    @staticmethod
+    def _coalesce_rank(candidate: AdviceCandidate) -> tuple[int, int, float, str]:
+        return (
+            -candidate.priority,
+            -candidate.severity,
+            -candidate.at,
+            candidate.event_id,
+        )
 
     def decide(
         self,
@@ -325,8 +373,18 @@ class Arbiter:
                         continue
                     if sibling.rank < candidate.rank:
                         continue
-                    if sibling.priority < candidate.priority - ATTACH_PRIORITY_WINDOW:
-                        break
+                    in_window = (
+                        sibling.priority
+                        >= candidate.priority - ATTACH_PRIORITY_WINDOW
+                    )
+                    same_group = bool(
+                        candidate.spec.attach_group
+                        and sibling.spec.attach_group
+                        == candidate.spec.attach_group
+                        and ENEMY_SUNK in (candidate.event_id, sibling.event_id)
+                    )
+                    if not in_window and not same_group:
+                        continue
                     if len(attached) >= MAX_DECISION_EVENTS - 1:
                         break
                     sibling_blocked = self._blocked_reason(sibling, now)
@@ -376,11 +434,11 @@ class Arbiter:
         for item in candidates:
             spec = item.spec
             if outcome_reason in COOLDOWN_REASONS:
-                self._cooldowns[item.event_id] = now + spec.cooldown_seconds
+                self._cooldowns[item.cooldown_key] = now + spec.cooldown_seconds
             if outcome_reason == "failed":
-                self._failure_cooldowns.add(item.event_id)
+                self._failure_cooldowns.add(item.cooldown_key)
             elif committed:
-                self._failure_cooldowns.discard(item.event_id)
+                self._failure_cooldowns.discard(item.cooldown_key)
 
             if not committed:
                 continue
@@ -404,7 +462,7 @@ class Arbiter:
         if spec.once_per_battle and candidate.event_id in self._fired_once:
             return REASON_ONCE_PER_BATTLE, "already said once this battle"
 
-        until = self._cooldowns.get(candidate.event_id, 0.0)
+        until = self._cooldowns.get(candidate.cooldown_key, 0.0)
         if now < until:
             return REASON_COOLDOWN, f"{until - now:.1f}s remaining"
 

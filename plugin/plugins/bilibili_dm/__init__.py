@@ -27,10 +27,14 @@ from plugin.sdk.plugin import (
 from .bili_client import BiliDMClient
 from .config_store import BiliDMConfigStore
 from .permission import PermissionManager
+from .qr_login import BiliDMQrLogin
+
+
+UI_ASSET_VERSION = "1.1.12"
 
 
 def build_open_ui_payload(*, plugin_id: str, available: bool) -> dict[str, Any]:
-    path = f"/plugin/{plugin_id}/ui/" if available else ""
+    path = f"/plugin/{plugin_id}/ui/?v={UI_ASSET_VERSION}" if available else ""
     default_message = "UI 已注册" if available else "UI 未注册"
     return {
         "available": available,
@@ -88,6 +92,10 @@ class BiliDMPlugin(NekoPluginBase):
 
         # 配置缓存
         self._cfg: dict = {}
+        self._qr_login = BiliDMQrLogin(
+            credential_saver=self._save_qr_credentials,
+        )
+        self._qr_start_generations: dict[str, int] = {}
 
     @staticmethod
     def _mask_value(value: str) -> str:
@@ -130,6 +138,18 @@ class BiliDMPlugin(NekoPluginBase):
             ac_time_value=str(self._settings.get("ac_time_value") or ""),
             logger=self.logger,
         )
+
+    async def _save_qr_credentials(self, credentials: dict[str, str]) -> bool:
+        """Persist a QR-login result without exposing cookie values to the UI."""
+        if self._running:
+            return False
+        next_settings = dict(self._settings)
+        next_settings.update(credentials)
+        self._settings = await self.config_store.save(next_settings)
+        self._apply_runtime_settings()
+        self._create_bili_client()
+        self.logger.info("B站私信扫码登录凭据已保存")
+        return True
 
     async def _load_business_config(
         self, legacy: dict[str, Any] | None = None
@@ -279,14 +299,17 @@ class BiliDMPlugin(NekoPluginBase):
                 "B站 Cookie（SESSDATA 和 bili_jct）未完整配置，请在插件前端面板中填写"
             )
 
-        self.register_static_ui("static")
+        self.register_static_ui(
+            "static",
+            cache_control="no-cache, no-store, must-revalidate",
+        )
         self.set_list_actions(
             [
                 {
                     "id": "open_ui",
                     "label": self.i18n.t("ui.actions.open", default="打开 UI"),
                     "kind": "ui",
-                    "target": f"/plugin/{self.plugin_id}/ui/",
+                    "target": f"/plugin/{self.plugin_id}/ui/?v={UI_ASSET_VERSION}",
                     "open_in": "new_tab",
                 }
             ]
@@ -313,6 +336,9 @@ class BiliDMPlugin(NekoPluginBase):
             "actions": [
                 {"id": "get_dashboard_state", "entry_id": "get_dashboard_state"},
                 {"id": "save_settings", "entry_id": "save_settings"},
+                {"id": "start_qr_login", "entry_id": "start_qr_login"},
+                {"id": "poll_qr_login", "entry_id": "poll_qr_login"},
+                {"id": "cancel_qr_login", "entry_id": "cancel_qr_login"},
                 {"id": "clear_credentials", "entry_id": "clear_credentials"},
                 {"id": "start_listening", "entry_id": "start_listening"},
                 {"id": "stop_listening", "entry_id": "stop_listening"},
@@ -336,6 +362,88 @@ class BiliDMPlugin(NekoPluginBase):
     )
     async def get_dashboard_state(self, **_):
         return Ok(self._build_dashboard_state())
+
+    @ui.action(
+        id="start_qr_login",
+        label=tr("actions.qr_login.label", default="扫码获取配置"),
+        refresh_context=True,
+    )
+    @plugin_entry(
+        id="start_qr_login",
+        name=tr("entries.qr_login.name", default="获取 B站登录二维码"),
+        description=tr("entries.qr_login.description", default="生成 B站扫码登录二维码，并自动保存登录配置"),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "client_id": {"type": "string", "minLength": 1, "maxLength": 128},
+                "request_generation": {"type": "integer", "minimum": 1},
+            },
+            "required": ["client_id", "request_generation"],
+            "additionalProperties": False,
+        },
+    )
+    async def start_qr_login(self, client_id: str, request_generation: int, **_):
+        async with self._lifecycle_lock:
+            if self._running:
+                return Err(SdkError("LISTENING_ACTIVE: 请先停止监听，再更新登录凭据"))
+            latest = self._qr_start_generations.get(client_id, 0)
+            if request_generation <= latest:
+                return Ok({"status": "stale_request", "message": "扫码请求已被更新请求替代"})
+            self._qr_start_generations[client_id] = request_generation
+            try:
+                return Ok(await self._qr_login.start())
+            except Exception as exc:
+                self.logger.warning(f"获取 B站登录二维码失败: {type(exc).__name__}")
+                return Err(SdkError(f"QR_LOGIN_START_FAILED: 获取二维码失败: {exc}"))
+
+    @ui.action(
+        id="poll_qr_login",
+        label=tr("actions.qr_login_poll.label", default="检查扫码状态"),
+        refresh_context=True,
+    )
+    @plugin_entry(
+        id="poll_qr_login",
+        name=tr("entries.qr_login_poll.name", default="检查 B站扫码状态"),
+        description=tr("entries.qr_login_poll.description", default="检查 B站二维码登录状态并自动保存配置"),
+        input_schema={
+            "type": "object",
+            "properties": {"session_id": {"type": "string", "minLength": 1}},
+            "required": ["session_id"],
+            "additionalProperties": False,
+        },
+    )
+    async def poll_qr_login(self, session_id: str, **_):
+        async with self._lifecycle_lock:
+            if self._running:
+                self._qr_login.clear()
+                return Err(SdkError("LISTENING_ACTIVE: 请先停止监听，再更新登录凭据"))
+            try:
+                return Ok(await self._qr_login.poll_session(session_id))
+            except Exception as exc:
+                self.logger.warning(f"检查 B站扫码状态失败: {type(exc).__name__}")
+                return Err(SdkError(f"QR_LOGIN_POLL_FAILED: 检查扫码状态失败: {exc}"))
+
+    @ui.action(
+        id="cancel_qr_login",
+        label=tr("actions.qr_login_cancel.label", default="取消扫码登录"),
+        refresh_context=True,
+    )
+    @plugin_entry(
+        id="cancel_qr_login",
+        name=tr("entries.qr_login_cancel.name", default="取消 B站扫码登录"),
+        description=tr("entries.qr_login_cancel.description", default="清理当前 B站二维码登录会话"),
+        input_schema={
+            "type": "object",
+            "properties": {"session_id": {"type": "string", "minLength": 1}},
+            "required": ["session_id"],
+            "additionalProperties": False,
+        },
+    )
+    async def cancel_qr_login(self, session_id: str, **_):
+        async with self._lifecycle_lock:
+            if not self._qr_login.clear(session_id=session_id):
+                return Ok({"status": "stale_session", "message": "扫码会话已更新"})
+            return Ok({"status": "cancelled", "message": "已取消扫码登录"})
 
     @ui.action(
         id="save_settings",
@@ -391,6 +499,9 @@ class BiliDMPlugin(NekoPluginBase):
     ):
         if self._running:
             return Err(SdkError("LISTENING_ACTIVE: 请先停止监听，再修改配置"))
+        qr_login = getattr(self, "_qr_login", None)
+        if qr_login is not None:
+            qr_login.clear()
 
         updates = {
             "sesdata": sesdata,
@@ -441,6 +552,9 @@ class BiliDMPlugin(NekoPluginBase):
 
     async def _clear_credentials_locked(self):
         await self._stop_runtime()
+        qr_login = getattr(self, "_qr_login", None)
+        if qr_login is not None:
+            qr_login.clear()
         next_settings = dict(self._settings)
         for field in self.config_store.CREDENTIAL_FIELDS:
             next_settings[field] = ""

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import ctypes
-import sys
+import ctypes.wintypes
 from typing import Any
 
 from ..ocr_runtime_types import (
@@ -56,14 +56,13 @@ class PrintWindowCaptureBackend:
             window_rect=capture_rect,
             profile=profile,
             backend_kind=self.kind,
-            backend_detail="selected_legacy_fallback",
+            backend_detail="selected",
         )
 
     @staticmethod
     def _capture_full_window(hwnd: int, rect: tuple[int, int, int, int]) -> Any:
         import win32gui
         import win32ui
-        import win32con
         from PIL import Image
 
         width = int(rect[2] - rect[0])
@@ -84,15 +83,29 @@ class PrintWindowCaptureBackend:
             bmp.CreateCompatibleBitmap(hdc_mem, width, height)
             previous_bitmap = mem_dc.SelectObject(bmp)
 
-            # Try PrintWindow with PW_RENDERFULLCONTENT (3) for better game capture
-            # Only available on Windows 8.1+ (version 6.3+)
-            PW_RENDERFULLCONTENT = 3
-            success = False
-            ver = sys.getwindowsversion()
-            if ver.major > 6 or (ver.major == 6 and ver.minor >= 3):
-                success = ctypes.windll.user32.PrintWindow(hwnd, mem_dc.GetSafeHdc(), PW_RENDERFULLCONTENT)
+            # Keep background capture window-scoped. Falling back to BitBlt
+            # would read visible desktop pixels and could OCR an occluding app.
+            PW_RENDERFULLCONTENT = 0x00000002
+            print_window = ctypes.windll.user32.PrintWindow
+            print_window.argtypes = [
+                ctypes.wintypes.HWND,
+                ctypes.wintypes.HDC,
+                ctypes.wintypes.UINT,
+            ]
+            print_window.restype = ctypes.wintypes.BOOL
+            success = print_window(
+                hwnd,
+                mem_dc.GetSafeHdc(),
+                PW_RENDERFULLCONTENT,
+            )
             if not success:
-                mem_dc.BitBlt((0, 0), (width, height), hdc_mem, (0, 0), win32con.SRCCOPY)
+                success = print_window(
+                    hwnd,
+                    mem_dc.GetSafeHdc(),
+                    0,
+                )
+            if not success:
+                raise RuntimeError("printwindow: printwindow_failed_for_capture")
 
             bmp_info = bmp.GetInfo()
             bmp_str = bmp.GetBitmapBits(True)

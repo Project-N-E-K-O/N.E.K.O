@@ -608,6 +608,7 @@ function openCatgirlPanel(card, originEl) {
     cardImage.className = 'catgirl-panel-card-image';
     const imgPlaceholder = document.createElement('span');
     imgPlaceholder.className = 'card-avatar-placeholder';
+    imgPlaceholder.dataset.i18n = 'steam.noCardImage';
     const translatedNoCardImage = window.t && window.t('steam.noCardImage');
     imgPlaceholder.textContent = translatedNoCardImage && translatedNoCardImage !== 'steam.noCardImage'
         ? translatedNoCardImage
@@ -619,10 +620,12 @@ function openCatgirlPanel(card, originEl) {
     const modelSettingsAction = document.createElement('button');
     modelSettingsAction.type = 'button';
     modelSettingsAction.className = 'catgirl-panel-card-action';
+    modelSettingsAction.dataset.i18n = 'character.cardFaceModelSettings';
     modelSettingsAction.textContent = window.t ? window.t('character.cardFaceModelSettings') : '模型设置';
     const editCardFaceAction = document.createElement('button');
     editCardFaceAction.type = 'button';
     editCardFaceAction.className = 'catgirl-panel-card-action';
+    editCardFaceAction.dataset.i18n = 'character.editCardFace';
     editCardFaceAction.textContent = window.t ? window.t('character.editCardFace') : '编辑卡面';
     cardActionOverlay.appendChild(modelSettingsAction);
     cardActionOverlay.appendChild(editCardFaceAction);
@@ -633,7 +636,8 @@ function openCatgirlPanel(card, originEl) {
         const cardFaceUrl = `/api/characters/catgirl/${encodeURIComponent(name)}/card-face`;
         const img = document.createElement('img');
         img.className = 'card-face-img';
-        img.alt = '角色卡面';
+        img.alt = window.t ? window.t('steam.characterCardCover') : '角色卡面';
+        img.dataset.i18nAlt = 'steam.characterCardCover';
         img.onload = () => {
             imgPlaceholder.style.display = 'none';
             cardImage.insertBefore(img, imgPlaceholder);
@@ -722,9 +726,10 @@ function openCatgirlPanel(card, originEl) {
         const exportBtn = document.createElement('button');
         exportBtn.type = 'button';
         exportBtn.className = 'card-panel-action-btn export-btn';
+        exportBtn.dataset.i18nTitle = 'character.exportCardOnly';
         exportBtn.title = window.t ? window.t('character.exportCardOnly') : '导出角色卡';
         exportBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>'
-            + '<span>' + (window.t ? window.t('character.exportCardOnly') : '导出') + '</span>';
+            + '<span data-i18n="character.exportCardOnly">' + (window.t ? window.t('character.exportCardOnly') : '导出') + '</span>';
         exportBtn.onclick = function (e) {
             e.stopPropagation();
             exportCharacterCard(name);
@@ -736,11 +741,14 @@ function openCatgirlPanel(card, originEl) {
         const deleteBtn = document.createElement('button');
         deleteBtn.type = 'button';
         deleteBtn.className = 'card-panel-action-btn delete-btn' + (isCurrentChara ? ' disabled' : '');
+        deleteBtn.dataset.i18nTitle = isCurrentChara
+            ? 'character.cannotDeleteCurrentCard'
+            : 'character.deleteCard';
         deleteBtn.title = isCurrentChara
             ? (window.t ? window.t('character.cannotDeleteCurrentCard') : '当前正在使用的角色卡无法删除，请先切换到其他角色卡')
             : (window.t ? window.t('character.deleteCard') : '删除角色卡');
         deleteBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>'
-            + '<span>' + (window.t ? window.t('character.deleteCard') : '删除') + '</span>';
+            + '<span data-i18n="character.deleteCard">' + (window.t ? window.t('character.deleteCard') : '删除') + '</span>';
         deleteBtn.onclick = async function (e) {
             e.stopPropagation();
             // 不再用打开面板时快照的 isCurrentChara 拦截——workshopDeleteCatgirl 内部会用权威当前角色名做判断，
@@ -783,7 +791,10 @@ function openCatgirlPanel(card, originEl) {
     settingsIcon.className = 'panel-tab-icon';
     settingsIcon.alt = '';
     settingsTab.appendChild(settingsIcon);
-    settingsTab.appendChild(document.createTextNode(window.t ? window.t('character.settings') : '设定'));
+    const settingsTabLabel = document.createElement('span');
+    settingsTabLabel.dataset.i18n = 'character.settings';
+    settingsTabLabel.textContent = window.t ? window.t('character.settings') : '设定';
+    settingsTab.appendChild(settingsTabLabel);
     tabsContainer.appendChild(settingsTab);
 
     if (!isNew) {
@@ -807,9 +818,12 @@ function openCatgirlPanel(card, originEl) {
     const closeBtn = document.createElement('button');
     closeBtn.type = 'button';
     closeBtn.className = 'panel-close-btn';
+    closeBtn.dataset.i18nTitle = 'common.close';
+    closeBtn.dataset.i18nAria = 'common.close';
     closeBtn.title = window.t ? window.t('common.close') : '关闭';
     const closeBtnImg = document.createElement('img');
     closeBtnImg.src = '/static/icons/close_button.png';
+    closeBtnImg.dataset.i18nAlt = 'common.close';
     closeBtnImg.alt = window.t ? window.t('common.close') : '关闭';
     closeBtnImg.draggable = false;
     closeBtn.appendChild(closeBtnImg);
@@ -1069,9 +1083,10 @@ function buildCreatedCatgirlPanelActions(name) {
     const exportBtn = document.createElement('button');
     exportBtn.type = 'button';
     exportBtn.className = 'card-panel-action-btn export-btn';
+    exportBtn.dataset.i18nTitle = 'character.exportCardOnly';
     exportBtn.title = window.t ? window.t('character.exportCardOnly') : '导出角色卡';
     exportBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>'
-        + '<span>' + (window.t ? window.t('character.exportCardOnly') : '导出') + '</span>';
+        + '<span data-i18n="character.exportCardOnly">' + (window.t ? window.t('character.exportCardOnly') : '导出') + '</span>';
     exportBtn.onclick = function (e) {
         e.stopPropagation();
         exportCharacterCard(name);
@@ -1083,11 +1098,14 @@ function buildCreatedCatgirlPanelActions(name) {
     const deleteBtn = document.createElement('button');
     deleteBtn.type = 'button';
     deleteBtn.className = 'card-panel-action-btn delete-btn' + (isCurrentChara ? ' disabled' : '');
+    deleteBtn.dataset.i18nTitle = isCurrentChara
+        ? 'character.cannotDeleteCurrentCard'
+        : 'character.deleteCard';
     deleteBtn.title = isCurrentChara
         ? (window.t ? window.t('character.cannotDeleteCurrentCard') : '当前正在使用的角色卡无法删除，请先切换到其他角色卡')
         : (window.t ? window.t('character.deleteCard') : '删除角色卡');
     deleteBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>'
-        + '<span>' + (window.t ? window.t('character.deleteCard') : '删除') + '</span>';
+        + '<span data-i18n="character.deleteCard">' + (window.t ? window.t('character.deleteCard') : '删除') + '</span>';
     deleteBtn.onclick = async function (e) {
         e.stopPropagation();
         const deleted = await workshopDeleteCatgirl(name);
@@ -1121,6 +1139,9 @@ async function rollbackAutoCreatedCatgirl(form, targetName = '') {
                 continue;
             }
             deletedNames.push(tempName);
+            if (typeof window.clearConversationLanguagePreference === 'function') {
+                window.clearConversationLanguagePreference(tempName);
+            }
             if (window._cardFaceNames) window._cardFaceNames.delete(tempName);
             if (window._cardMetas) delete window._cardMetas[tempName];
         }
@@ -1173,6 +1194,18 @@ async function closeCatgirlPanel() {
     if (currentForm && currentForm._voiceSelectCleanup) {
         currentForm._voiceSelectCleanup();
         delete currentForm._voiceSelectCleanup;
+    }
+    if (currentForm && currentForm._languageSelectCleanup) {
+        currentForm._languageSelectCleanup();
+        delete currentForm._languageSelectCleanup;
+    }
+    if (currentForm && currentForm._localeChangeHandler) {
+        window.removeEventListener('localechange', currentForm._localeChangeHandler);
+        delete currentForm._localeChangeHandler;
+    }
+    if (currentForm && currentForm._conversationLanguageUpdateHandler) {
+        window.removeEventListener('neko:conversation-language-changed', currentForm._conversationLanguageUpdateHandler);
+        delete currentForm._conversationLanguageUpdateHandler;
     }
     if (currentForm && currentForm._characterPersonalityUpdateHandler) {
         window.removeEventListener('neko:character-personality-updated', currentForm._characterPersonalityUpdateHandler);

@@ -46,6 +46,7 @@ from .adapters.runtime_timeline import (
     STAGE_DOCUMENTS,
     STAGE_FRAME,
     STAGE_PROMPTS,
+    STAGE_SCREENSHOT,
     STAGE_SERVICE,
     STAGE_SHIP_CATALOG,
     RuntimeTimeline,
@@ -99,7 +100,13 @@ from .policy.arbiter import (
     Arbiter,
     REASON_ATTACHED,
     REASON_CHOSEN,
+    REASON_COOLDOWN,
     REASON_EXPIRED,
+    REASON_LANE_GAP,
+    REASON_ONCE_PER_BATTLE,
+    REASON_PAUSED,
+    REASON_PREEMPTED,
+    REASON_QUIET_WINDOW,
 )
 from .policy.tactic_policy import AdviceCandidate, WowsTacticPolicy
 from .ship_data.context import BattleShipContextManager, ContextObservation
@@ -128,6 +135,20 @@ STORE_OFFICIAL_API_SETTINGS = "official_api_settings"
 STORE_CONNECTION_SETTINGS = "connection_settings"
 STORE_SCREENSHOT_SETTINGS = "screenshot_settings"
 STORE_LIVE_VISION_ENABLED = "live_vision_enabled"
+
+_ARBITER_TERMINAL_OUTCOMES = frozenset({
+    REASON_CHOSEN,
+    REASON_ATTACHED,
+    REASON_EXPIRED,
+})
+_ARBITER_WAITING_OUTCOMES = frozenset({
+    REASON_LANE_GAP,
+    REASON_COOLDOWN,
+    REASON_QUIET_WINDOW,
+    REASON_ONCE_PER_BATTLE,
+    REASON_PREEMPTED,
+    REASON_PAUSED,
+})
 
 # Config keys that describe *where* the data comes from. Changing any of them
 # needs an explicit reconnect: silently tearing down a live link mid-battle would
@@ -218,6 +239,7 @@ class NekoWowsPlugin(NekoPluginBase):
             self._telemetry_snapshot,
             logger=self.logger,
             live_frame_provider=self._live_frame,
+            on_result=self._on_screenshot_result,
         )
 
         # A plain sqlite3 store rather than the SDK's async `self.db`: retrieval
@@ -241,6 +263,7 @@ class NekoWowsPlugin(NekoPluginBase):
         self._last_candidate = None
         self._service_signature: tuple[str, str] | None = None
         self._blocked_signature: tuple[tuple[str, tuple[str, ...]], ...] = ()
+        self._arbiter_wait_log: set[tuple[str, str]] = set()
 
     # ------------------------------------------------------------------ 配置
     def _build_registry(self) -> DetectorRegistry:
@@ -418,6 +441,33 @@ class NekoWowsPlugin(NekoPluginBase):
         if not self.live_vision.is_sharing_screen():
             return None
         return self.live_vision.fetch_frame()
+
+    def _on_screenshot_result(self, action: str, output: dict[str, Any]) -> None:
+        """Log-adjacent audit trail: whether the model actually got a frame."""
+        ok = bool(output.get("ok"))
+        if ok:
+            outcome = "recalled" if action == "recall" else "captured"
+        else:
+            outcome = str(output.get("reason") or "failed")
+        snapshot = None
+        latest = getattr(self, "_latest", None)
+        if latest:
+            snapshot = latest[0]
+        self.timeline.record(
+            STAGE_SCREENSHOT,
+            outcome,
+            seq=getattr(snapshot, "seq", None),
+            battle_id=getattr(snapshot, "battle_id", None),
+            reason=str(output.get("shot_id") or output.get("reason") or action),
+            detail={
+                "action": action,
+                "source": output.get("source"),
+                "window_title": output.get("window_title"),
+                "shot_id": output.get("shot_id"),
+                "size_bytes": output.get("size_bytes"),
+                "retry_after_seconds": output.get("retry_after_seconds"),
+            },
+        )
 
     @staticmethod
     def _detection_signature(cfg: WowsConfig) -> tuple:
@@ -640,6 +690,7 @@ class NekoWowsPlugin(NekoPluginBase):
             self.arbiter.reset_battle(snapshot.battle_id)
             self._blocked_signature = ()
             self._last_logged_detect_events = ()
+            self._arbiter_wait_log = set()
             self.timeline.record(
                 STAGE_DETECT, "reset", seq=snapshot.seq,
                 battle_id=snapshot.battle_id,
@@ -718,14 +769,15 @@ class NekoWowsPlugin(NekoPluginBase):
 
         candidates = self.policy.expand(result.events, facts)
         decision = self.arbiter.decide(candidates, facts.at)
+        wait_log = getattr(self, "_arbiter_wait_log", None)
+        if wait_log is None:
+            wait_log = set()
+            self._arbiter_wait_log = wait_log
         for step in decision.chain:
-            if (
-                (not result.events or repeat_pending)
-                and step.outcome not in (
-                    REASON_CHOSEN,
-                    REASON_ATTACHED,
-                    REASON_EXPIRED,
-                )
+            if not self._should_log_arbiter_step(
+                step,
+                has_new_events=bool(result.events) and not repeat_pending,
+                wait_log=wait_log,
             ):
                 continue
             self.timeline.record(
@@ -775,6 +827,21 @@ class NekoWowsPlugin(NekoPluginBase):
                 "preview": request.text if cfg.dry_run else "",
             },
         )
+
+    @staticmethod
+    def _should_log_arbiter_step(step, *, has_new_events: bool, wait_log: set) -> bool:
+        """Keep waiting reasons visible without flooding the ring at frame rate."""
+        key = (step.event_id, step.outcome)
+        if step.outcome in _ARBITER_TERMINAL_OUTCOMES:
+            wait_log.difference_update(
+                item for item in tuple(wait_log) if item[0] == step.event_id)
+            return True
+        if step.outcome in _ARBITER_WAITING_OUTCOMES:
+            if key in wait_log:
+                return False
+            wait_log.add(key)
+            return True
+        return has_new_events
 
     def _commit_callout_outcome(self, candidate, now: float, outcome) -> bool:
         """Commit one output bundle and acknowledge detector-owned latches."""
@@ -1834,9 +1901,9 @@ class NekoWowsPlugin(NekoPluginBase):
         name="wows_look_at_battle",
         description=(
             "截取当前战舰世界画面看一眼战局。主动截屏开启时，每次发言前都要先调"
-            "用本工具；读图时先看小地图再看主画面。"
-            "返回画面解读加上遥测（血量、未确认沉没上限、当前点亮数、"
-            "最近敌舰方位距离）。"
+            "用本工具。看完后先说主事件；画面只补烟、鱼雷航迹、着火图标这类遥测"
+            "没有的东西，不要把小地图解说或点亮数当成这条要说的话。"
+            "返回画面和遥测（血量、未确认沉没上限、当前点亮数）。"
             "有最短间隔，冷却中或失败时不要卡住，按已有事实开口；别连着调。"
         ),
         parameters={"type": "object", "properties": {}},

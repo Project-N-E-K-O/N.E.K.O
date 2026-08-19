@@ -146,12 +146,13 @@ def _build_callback_instruction(
     EventBus → callback boundary:
       - ``"task_result"`` — real task completion (agent_server._emit_task_result),
         e.g. Computer Use / Browser Use / plugin entry / MCP tool result.
-      - ``"event"`` — plugin push_message stream (proactive_bridge),
-        e.g. danmaku / gift / external notification.
+      - ``"event"`` — plugin push_message stream (proactive_bridge), or a
+        successful user-plugin entry result explicitly downgraded via the
+        host-validated ``result_kind="event"`` contract.
 
-    Plugin authors cannot set ``origin``; it is derived structurally from
-    which SDK method they called (``finish()`` vs ``push_message()``) by
-    way of the event_type the upstream producer emitted.
+    Plugin authors cannot set ``origin`` directly. The host derives it from
+    event_type and, only for successful user-plugin results, the validated
+    result-kind contract.
 
     Two axes (origin × passive) pick one of four outer templates:
 

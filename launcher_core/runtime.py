@@ -315,6 +315,15 @@ def _install_logging_brace_compat() -> None:
     logging._neko_brace_compat_installed = True
 
 
+def _patch_http_user_agents() -> None:
+    """全局 patch HTTP 客户端的默认 User-Agent，防止 CF 拦截自定义 API。"""
+    try:
+        from utils.http_client import patch_requests_default_user_agent
+        patch_requests_default_user_agent()
+    except Exception as exc:
+        print(f"[Launcher] Warning: failed to patch HTTP User-Agent: {exc}", flush=True)
+
+
 def _initialize_launcher_context() -> None:
     """Populate per-launch ids and env only during explicit launcher startup."""
     global LAUNCH_ID, INSTANCE_ID
@@ -348,6 +357,8 @@ def _bootstrap_launcher_runtime(project_dir: str) -> None:
     _configure_multiprocessing_executable(project_dir)
     _install_logging_brace_compat()
     _initialize_launcher_context()
+    # 全局 patch requests 库的默认 User-Agent，防止 CF 拦截
+    _patch_http_user_agents()
 
 
 def _show_error_dialog(message: str):

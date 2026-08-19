@@ -123,8 +123,10 @@ class ChatOpenAI:
         client_kw: dict[str, Any] = dict(base_url=base_url, api_key=_api_key, max_retries=max_retries)
         if _timeout is not None:
             client_kw["timeout"] = _timeout
-        if default_headers:
-            client_kw["default_headers"] = default_headers
+        # 注入 neko/<版本号> User-Agent 覆盖 SDK 自带 UA（AsyncOpenAI/Python x.y.z），
+        # 防止自定义 API 端点的 Cloudflare "Manage AI bots" 规则拦截。
+        from utils.http_client import ensure_user_agent
+        client_kw["default_headers"] = ensure_user_agent(default_headers)
         from openai import AsyncOpenAI, DefaultAsyncHttpxClient, DefaultHttpxClient, OpenAI
 
         ssl_context = _get_default_ssl_context()

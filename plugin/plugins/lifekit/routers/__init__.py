@@ -1,16 +1,16 @@
 """Life Kit plugin routers."""
 
+from .air_quality import AirQualityRouter
+from .countdown import CountdownRouter
+from .currency import CurrencyRouter
 from .current import CurrentWeatherRouter
-from .travel import TravelAdviceRouter
+from .food import FoodRecommendRouter
 from .hourly import HourlyForecastRouter
 from .locations import LocationsRouter
-from .trip import TripRouter
 from .nearby import NearbyRouter
-from .food import FoodRecommendRouter
 from .recipe import RecipeRouter
-from .air_quality import AirQualityRouter
-from .currency import CurrencyRouter
-from .countdown import CountdownRouter
+from .travel import TravelAdviceRouter
+from .trip import TripRouter
 from .unit_convert import UnitConvertRouter
 
 __all__ = [

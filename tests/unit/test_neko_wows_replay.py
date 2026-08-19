@@ -54,6 +54,7 @@ from plugin.plugins.neko_wows.domain.snapshot import (
 )
 from plugin.plugins.neko_wows.policy.arbiter import Arbiter
 from plugin.plugins.neko_wows.policy.tactic_policy import WowsTacticPolicy
+from plugin.plugins.neko_wows.presentation.instructions import BASE_INSTRUCTIONS
 from plugin.plugins.neko_wows.presentation.prompt_router import (
     PromptProfile,
     WowsPromptRouter,
@@ -323,13 +324,22 @@ def test_the_replay_fixture_covers_the_battle_lifecycle(replay):
 
 def test_the_replay_fixture_carries_no_real_player_data(replay):
     """A shared fixture must not smuggle in someone's account name."""
+    allowed_names = {"PlayerOne", "PlayerTwo", "FoeOne", "FoeTwo"}
     text = json.dumps(replay, ensure_ascii=False)
-    for name in ("PlayerOne", "PlayerTwo", "FoeOne", "FoeTwo"):
+    for name in allowed_names:
         assert name in text
     # Synthetic ids only, in a range the game does not issue.
     for frame in replay["frames"]:
         for ship in frame["objects"]:
             assert 1000 <= ship["playerId"] <= 9999
+            player_name = ship.get("playerName")
+            if player_name is not None:
+                assert player_name in allowed_names, player_name
+        for entry in frame.get("roster") or []:
+            roster_name = entry.get("name")
+            if roster_name is not None:
+                assert roster_name in allowed_names, roster_name
+            assert 1000 <= entry["playerId"] <= 9999
 
 
 # --- end to end ----------------------------------------------------------
@@ -681,8 +691,10 @@ def test_delivered_prompts_forbid_unsupported_claims(replay, pipeline):
     assert respond_calls
     for call in respond_calls:
         text = call["parts"][0]["text"]
-        assert "只使用给出的事实" in text
+        assert BASE_INSTRUCTIONS in text
         assert "击杀" in text  # named explicitly as off limits
+        # The event is what she is answering; the rules only qualify it.
+        assert text.index("主事件：") < text.index(BASE_INSTRUCTIONS)
 
 
 def test_rendered_facts_contain_no_unsupported_domain_data(replay, pipeline):
