@@ -8131,6 +8131,7 @@ async def test_targeted_question_rejects_scope_changed_during_generation(
     assert isinstance(await plugin.startup(), Ok)
     agent = _BlockingQuestionAgent()
     plugin._agent = agent
+    release_finalize = asyncio.Event()
 
     try:
         plugin._store.ensure_topic(topic_id="derivatives", name="Derivatives")
@@ -8164,7 +8165,7 @@ async def test_targeted_question_rejects_scope_changed_during_generation(
         assert plugin._store.list_interactions(limit=20) == []
 
         async with plugin._lock:
-            plugin._state.practice_scope_revision = 1
+            plugin._state.practice_scope_revision = 0
         commit_race_context = plugin._store_targeted_context(
             {
                 "selected_topic_id": "derivatives",
@@ -8172,32 +8173,44 @@ async def test_targeted_question_rejects_scope_changed_during_generation(
                 "selection_reason": "weak_topic",
                 "question_params": {},
                 "scope_key": "",
-                "scope_revision": 1,
+                "scope_revision": 0,
                 "practice_scope": {},
                 "scope_topic_count": 0,
             }
         )
-        original_record_tutor_result = plugin._record_tutor_result
+        original_finalize_tutor_call = plugin._finalize_tutor_call
+        finalize_started = asyncio.Event()
 
-        async def _change_scope_before_record(*args, **kwargs) -> None:
-            async with plugin._lock:
-                plugin._state.practice_scope_revision = 2
-            await original_record_tutor_result(*args, **kwargs)
+        async def _pause_before_finalize(*args, **kwargs):
+            finalize_started.set()
+            await release_finalize.wait()
+            return await original_finalize_tutor_call(*args, **kwargs)
 
-        monkeypatch.setattr(
-            plugin, "_record_tutor_result", _change_scope_before_record
+        monkeypatch.setattr(plugin, "_finalize_tutor_call", _pause_before_finalize)
+        commit_race_generation = asyncio.create_task(
+            plugin.study_generate_targeted_question(
+                selection_context_id=commit_race_context["selection_context_id"]
+            )
         )
+        await finalize_started.wait()
+        scope_change = asyncio.create_task(plugin.study_clear_practice_scope())
+        try:
+            await asyncio.wait_for(asyncio.shield(scope_change), timeout=0.2)
+            scope_changed_while_finalize_paused = True
+        except TimeoutError:
+            scope_changed_while_finalize_paused = False
+        release_finalize.set()
 
-        commit_race_result = await plugin.study_generate_targeted_question(
-            selection_context_id=commit_race_context["selection_context_id"]
-        )
+        commit_race_result = await commit_race_generation
+        scope_change_result = await scope_change
 
-        assert isinstance(commit_race_result, Err)
-        assert commit_race_result.error.code == "SELECTION_SCOPE_CHANGED"
-        assert plugin._state.current_question == {}
-        assert plugin._state.recent_learning_events == []
+        assert scope_changed_while_finalize_paused is False
+        assert isinstance(commit_race_result, Ok)
+        assert isinstance(scope_change_result, Ok)
+        assert len(plugin._store.list_interactions(limit=20)) == 1
     finally:
         agent.release.set()
+        release_finalize.set()
         await plugin.shutdown()
 
 

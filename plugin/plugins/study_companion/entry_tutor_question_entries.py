@@ -571,20 +571,47 @@ class _TutorQuestionEntriesMixin:
         metadata_payload = (
             public_payload if public_payload is not None else dict(reply.payload or {})
         )
-        payload = await self._finalize_tutor_call(
-            LLM_OPERATION_QUESTION_GENERATE,
-            reply,
-            history_kind=LLM_OPERATION_QUESTION_GENERATE,
-            metadata={
-                "degraded": reply.degraded,
-                "diagnostic": reply.diagnostic,
-                "payload": metadata_payload,
-                "screen_classification": tutor_context.get("screen_classification")
-                or {},
-            },
-            extra_context=tutor_context,
-            public_payload=public_payload,
-        )
+        finalize_metadata = {
+            "degraded": reply.degraded,
+            "diagnostic": reply.diagnostic,
+            "payload": metadata_payload,
+            "screen_classification": tutor_context.get("screen_classification") or {},
+        }
+        if targeted_context:
+            async with self._practice_scope_write_lock():
+                async with self._lock:
+                    active_revision = int(
+                        getattr(self._state, "practice_scope_revision", 0) or 0
+                    )
+                    active_scope = self._resolve_active_practice_scope()
+                    active_scope_key = active_scope.scope_key if active_scope else ""
+                if (
+                    int(targeted_context.get("scope_revision") or 0)
+                    != active_revision
+                    or str(targeted_context.get("scope_key") or "").strip()
+                    != active_scope_key
+                ):
+                    raise SdkError(
+                        "practice scope changed during question generation",
+                        code="SELECTION_SCOPE_CHANGED",
+                    )
+                payload = await self._finalize_tutor_call(
+                    LLM_OPERATION_QUESTION_GENERATE,
+                    reply,
+                    history_kind=LLM_OPERATION_QUESTION_GENERATE,
+                    metadata=finalize_metadata,
+                    extra_context=tutor_context,
+                    public_payload=public_payload,
+                )
+        else:
+            payload = await self._finalize_tutor_call(
+                LLM_OPERATION_QUESTION_GENERATE,
+                reply,
+                history_kind=LLM_OPERATION_QUESTION_GENERATE,
+                metadata=finalize_metadata,
+                extra_context=tutor_context,
+                public_payload=public_payload,
+            )
         payload["screen_classification"] = tutor_context.get("screen_classification") or {}
         return payload
 
