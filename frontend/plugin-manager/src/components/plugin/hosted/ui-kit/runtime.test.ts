@@ -156,6 +156,25 @@ describe('hosted ui runtime', () => {
     vi.useRealTimers()
   })
 
+  it('cancels the matching host request when api.call is aborted', async () => {
+    const messages: any[] = []
+    Object.defineProperty(window, 'parent', {
+      value: { postMessage: (message: any) => messages.push(message) },
+      configurable: true,
+    })
+    const controller = new AbortController()
+    const promise = ui.api.call('study_generate_question', {}, { signal: controller.signal })
+    const requestId = messages[0]?.requestId
+
+    controller.abort()
+
+    await expect(promise).rejects.toMatchObject({ name: 'AbortError' })
+    expect(messages).toContainEqual({
+      type: 'neko-hosted-surface-cancel',
+      requestId,
+    })
+  })
+
   it('cancels the matching host request when parseDocument is aborted', async () => {
     vi.useFakeTimers()
     const messages: any[] = []

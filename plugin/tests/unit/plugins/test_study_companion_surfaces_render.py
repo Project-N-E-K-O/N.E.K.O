@@ -547,6 +547,19 @@ def test_study_companion_registered_surfaces_are_brand_renderable() -> None:
         assert "ui.surface." in source, surface_id
 
 
+def test_study_companion_hosted_calls_forward_abort_signal_to_sdk() -> None:
+    surface_utils = _read("study_surface_utils.ts")
+    hosted_sdk = (PLUGIN_DIR.parents[1] / "sdk" / "hosted-ui" / "index.d.ts").read_text(
+        encoding="utf-8"
+    )
+
+    assert "api.call(entryId, args, { timeoutMs, signal })" in surface_utils
+    assert (
+        "options?: { timeoutMs?: number; signal?: AbortSignal; userInitiated?: boolean }"
+        in hosted_sdk
+    )
+
+
 def test_study_companion_surfaces_share_ui8_interaction_styles_and_messages() -> None:
     surface_utils = _read("study_surface_utils.ts")
     word_review = _read("word_review.tsx")
