@@ -14,6 +14,7 @@ from fastapi.testclient import TestClient
 from main_routers.system_router import live_vision as live_vision_module
 
 ENDPOINT = "/api/system/live-vision"
+PERMISSION_ENDPOINT = "/api/system/live-vision/attachment-permission"
 
 pytestmark = pytest.mark.unit
 
@@ -176,3 +177,99 @@ def test_the_route_is_not_reachable_from_another_machine(monkeypatch):
         {"lanlan": _Manager("lanlan", _sharing())}, monkeypatch, host="10.0.0.7")
 
     assert client.get(ENDPOINT).status_code == 403
+
+
+@pytest.fixture(autouse=True)
+def _isolated_live_frame_permissions():
+    try:
+        from main_logic.core.live_frame_permissions import (
+            clear_live_frame_permissions,
+        )
+    except ImportError:
+        yield
+        return
+    clear_live_frame_permissions()
+    yield
+    clear_live_frame_permissions()
+
+
+def test_a_local_permission_update_is_installed_before_it_is_acknowledged(
+    monkeypatch,
+):
+    client = _client({}, monkeypatch)
+
+    response = client.post(
+        PERMISSION_ENDPOINT,
+        json={
+            "source_name": "neko_wows",
+            "token": "generation-two",
+            "enabled": False,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "ok": True,
+        "source_name": "neko_wows",
+        "token": "generation-two",
+        "enabled": False,
+    }
+    from main_logic.core.live_frame_permissions import allows_live_frame
+
+    assert allows_live_frame("neko_wows", "generation-two") is False
+
+
+def test_authorizing_a_generation_allows_that_token_only(monkeypatch):
+    from main_logic.core.live_frame_permissions import allows_live_frame
+
+    client = _client({}, monkeypatch)
+    response = client.post(
+        PERMISSION_ENDPOINT,
+        json={
+            "source_name": "neko_wows",
+            "token": "generation-one",
+            "enabled": True,
+        },
+    )
+
+    assert response.status_code == 200
+    assert allows_live_frame("neko_wows", "generation-one") is True
+    assert allows_live_frame("neko_wows", "generation-two") is False
+
+
+def test_replacing_the_generation_revokes_the_previous_token(monkeypatch):
+    from main_logic.core.live_frame_permissions import allows_live_frame
+
+    client = _client({}, monkeypatch)
+    client.post(
+        PERMISSION_ENDPOINT,
+        json={
+            "source_name": "neko_wows",
+            "token": "generation-one",
+            "enabled": True,
+        },
+    )
+    client.post(
+        PERMISSION_ENDPOINT,
+        json={
+            "source_name": "neko_wows",
+            "token": "generation-two",
+            "enabled": False,
+        },
+    )
+
+    assert allows_live_frame("neko_wows", "generation-one") is False
+    assert allows_live_frame("neko_wows", "generation-two") is False
+
+
+def test_the_permission_route_is_not_reachable_from_another_machine(monkeypatch):
+    client = _client({}, monkeypatch, host="10.0.0.7")
+
+    assert client.post(
+        PERMISSION_ENDPOINT,
+        json={
+            "source_name": "neko_wows",
+            "token": "generation-two",
+            "enabled": False,
+        },
+    ).status_code == 403

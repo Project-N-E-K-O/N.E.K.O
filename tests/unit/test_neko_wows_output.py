@@ -17,6 +17,7 @@ from plugin.plugins.neko_wows.adapters.neko_dispatcher import (
     REASON_EXPIRED,
     REASON_FAILED,
     REASON_PAUSED,
+    resolve_target_lanlan,
 )
 from plugin.plugins.neko_wows.adapters.runtime_timeline import (
     STAGE_ARBITER,
@@ -199,6 +200,22 @@ def test_context_injection_is_read_only_not_a_turn():
     assert len(plugin.calls) == 1
 
 
+def test_context_injection_routes_to_the_active_character_session():
+    plugin = FakePlugin()
+    plugin.ctx = SimpleNamespace(_current_lanlan="alpha")
+    injector = ContextInjector(plugin)
+    assert injector.push("场景说明", dry_run=False) is True
+    assert plugin.calls[0]["target_lanlan"] == "alpha"
+
+
+def test_configured_target_lanlan_wins_over_the_active_session():
+    plugin = FakePlugin()
+    plugin.cfg = WowsConfig()
+    plugin.cfg.target_lanlan = "beta"
+    plugin.ctx = SimpleNamespace(_current_lanlan="alpha")
+    assert resolve_target_lanlan(plugin) == "beta"
+
+
 def test_context_injection_replaces_when_scene_text_changes():
     """Screenshot toggle mid-battle must refresh the scene block, not keep the old one."""
     plugin = FakePlugin()
@@ -294,7 +311,7 @@ def test_evaluation_is_skipped_when_the_plugin_is_disabled():
     plugin.ship_context = SimpleNamespace(
         reset=lambda reason: calls.append(f"ship_reset:{reason}"))
 
-    NekoWowsPlugin._evaluate(plugin, SimpleNamespace(status=STATUS_LIVE))
+    NekoWowsPlugin._evaluate(plugin, SimpleNamespace(status=STATUS_ENDED))
 
     assert calls == []
 
@@ -581,6 +598,40 @@ def test_ship_catalog_observation_runs_after_scene_and_before_response():
     NekoWowsPlugin._evaluate_locked(plugin, snapshot)
 
     assert calls == ["scene", "ship", "respond"]
+
+
+def test_callout_profile_routes_to_the_active_character_session():
+    plugin, snapshot, _calls = _catalog_order_target()
+    host_ctx = SimpleNamespace(_current_lanlan="alpha")
+    plugin._host_ctx = host_ctx
+    plugin.ctx = SimpleNamespace(_host_ctx=host_ctx)
+    captured = {}
+
+    def build(_candidates, profile, _excerpts=()):
+        captured["target_lanlan"] = profile.target_lanlan
+        return SimpleNamespace(text="respond", event_id="battle_started")
+
+    plugin.router = SimpleNamespace(build=build)
+
+    NekoWowsPlugin._evaluate_locked(plugin, snapshot)
+
+    assert captured["target_lanlan"] == "alpha"
+
+
+def test_callout_profile_stamps_the_live_frame_permission_generation():
+    plugin, snapshot, _calls = _catalog_order_target()
+    plugin._live_frame_permission_token = "generation-one"
+    captured = {}
+
+    def build(_candidates, profile, _excerpts=()):
+        captured["token"] = profile.live_frame_permission_token
+        return SimpleNamespace(text="respond", event_id="battle_started")
+
+    plugin.router = SimpleNamespace(build=build)
+
+    NekoWowsPlugin._evaluate_locked(plugin, snapshot)
+
+    assert captured["token"] == "generation-one"
 
 
 def test_committed_bundle_acknowledges_every_detector_event():

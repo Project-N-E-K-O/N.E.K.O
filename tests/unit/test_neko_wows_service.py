@@ -46,6 +46,23 @@ class FakeResponse:
         return False
 
 
+class GarbageResponse:
+    def read(self):
+        return b"<html>not json</html>"
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+def healthz_http_error(code=404, msg="Not Found"):
+    return urllib.error.HTTPError(
+        "http://127.0.0.1:8111/healthz", code, msg, {}, None,
+    )
+
+
 def patch_urlopen(monkeypatch, payload=None, error=None):
     def fake_urlopen(url, timeout=None):
         if error is not None:
@@ -179,22 +196,24 @@ def test_an_unreachable_port_is_not_an_error_state(monkeypatch):
     assert health.usable is False
 
 
+def test_an_http_error_from_healthz_is_a_reachable_conflict(monkeypatch):
+    """A 404 still proves the address is occupied; do not treat it as empty."""
+    patch_urlopen(monkeypatch, error=healthz_http_error())
+    health = probe_health("http://127.0.0.1:8111", 1.0)
+    assert health.reachable is True
+    assert health.ours is False
+    assert health.usable is False
+    assert health.conflict_cause == sm.CONFLICT_CAUSE_PORT
+
+
 def test_garbage_response_does_not_raise(monkeypatch):
-    def fake_urlopen(url, timeout=None):
-        class Broken:
-            def read(self):
-                return b"<html>not json</html>"
-
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *exc):
-                return False
-
-        return Broken()
-
-    monkeypatch.setattr(sm.urllib.request, "urlopen", fake_urlopen)
-    assert probe_health("http://127.0.0.1:8111", 1.0).usable is False
+    monkeypatch.setattr(
+        sm.urllib.request, "urlopen", lambda *a, **k: GarbageResponse())
+    health = probe_health("http://127.0.0.1:8111", 1.0)
+    assert health.reachable is True
+    assert health.ours is False
+    assert health.usable is False
+    assert health.conflict_cause == sm.CONFLICT_CAUSE_PORT
 
 
 # --- start_if_needed ----------------------------------------------------
@@ -227,6 +246,34 @@ def test_a_foreign_service_blocks_both_launch_and_shutdown(monkeypatch):
     # And stopping must be a no-op: we own nothing here.
     stopped = manager.stop()
     assert "nothing to stop" in stopped.detail
+
+
+def test_an_http_error_from_healthz_blocks_launch_and_transport(monkeypatch):
+    patch_urlopen(monkeypatch, error=healthz_http_error())
+    monkeypatch.setattr(
+        sm.subprocess, "Popen",
+        lambda *a, **k: pytest.fail("must not launch onto a busy port"))
+
+    manager = WowsServiceManager(cfg(service_source_dir="D:/8111_for_wows"))
+    status = manager.start_if_needed()
+    assert status.mode == MODE_CONFLICT
+    assert status.transport_allowed is False
+    assert "unidentified service" in status.detail
+    assert "not stopping anything" in status.detail
+
+
+def test_malformed_healthz_json_blocks_launch_and_transport(monkeypatch):
+    monkeypatch.setattr(
+        sm.urllib.request, "urlopen", lambda *a, **k: GarbageResponse())
+    monkeypatch.setattr(
+        sm.subprocess, "Popen",
+        lambda *a, **k: pytest.fail("must not launch onto a busy port"))
+
+    manager = WowsServiceManager(cfg(service_source_dir="D:/8111_for_wows"))
+    status = manager.start_if_needed()
+    assert status.mode == MODE_CONFLICT
+    assert status.transport_allowed is False
+    assert "unidentified service" in status.detail
 
 
 def test_identity_mismatch_detail_does_not_claim_the_port_is_busy(monkeypatch):
@@ -349,8 +396,58 @@ def test_config_change_keeps_reconnect_required_after_conflict_blocked_start():
     assert plugin._reconnect_required is True
 
 
+def test_config_change_requires_reconnect_when_websocket_preference_changes():
+    """_run() creates the WebSocket task once; a live session cannot flip it."""
+    plugin = object.__new__(NekoWowsPlugin)
+    plugin._state_lock = threading.RLock()
+    plugin._running = True
+    plugin._reconnect_required = False
+    plugin.cfg = WowsConfig()
+    assert plugin.cfg.transport_prefer_ws is True
+
+    async def reload_config():
+        cfg = WowsConfig()
+        cfg.transport_prefer_ws = False
+        plugin.cfg = cfg
+        return cfg
+
+    plugin._reload_config = reload_config
+
+    result = asyncio.run(NekoWowsPlugin.on_config_change(plugin))
+
+    assert result.is_ok()
+    assert result.unwrap()["reconnect_required"] is True
+    assert plugin._reconnect_required is True
+
+
+def test_config_change_requires_reconnect_when_http_timeout_changes():
+    """_run() binds ClientTimeout when the transport session is created."""
+    plugin = object.__new__(NekoWowsPlugin)
+    plugin._state_lock = threading.RLock()
+    plugin._running = True
+    plugin._reconnect_required = False
+    plugin.cfg = WowsConfig()
+    assert plugin.cfg.http_timeout_seconds == 1.5
+
+    async def reload_config():
+        cfg = WowsConfig()
+        cfg.http_timeout_seconds = 2.5
+        plugin.cfg = cfg
+        return cfg
+
+    plugin._reload_config = reload_config
+
+    result = asyncio.run(NekoWowsPlugin.on_config_change(plugin))
+
+    assert result.is_ok()
+    assert result.unwrap()["reconnect_required"] is True
+    assert plugin._reconnect_required is True
+
+
 def test_config_change_stops_output_when_the_plugin_is_disabled():
     calls = []
+    stop_threads = {}
+    event_loop_thread = threading.get_ident()
     plugin = object.__new__(NekoWowsPlugin)
     plugin._state_lock = threading.RLock()
     plugin._pipeline_lock = threading.Lock()
@@ -362,6 +459,8 @@ def test_config_change_stops_output_when_the_plugin_is_disabled():
 
     def record(name):
         calls.append((name, plugin._pipeline_lock.locked()))
+        if name in {"transport_stop", "service_stop"}:
+            stop_threads[name] = threading.get_ident()
 
     async def reload_config():
         cfg = WowsConfig()
@@ -406,6 +505,9 @@ def test_config_change_stops_output_when_the_plugin_is_disabled():
         ("ship_reset", True),
         ("timeline", True),
     ]
+    assert set(stop_threads) == {"transport_stop", "service_stop"}
+    assert all(thread_id != event_loop_thread
+               for thread_id in stop_threads.values())
     assert result.unwrap()["status"] == "disabled"
 
 

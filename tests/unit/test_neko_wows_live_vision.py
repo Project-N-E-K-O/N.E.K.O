@@ -294,6 +294,23 @@ def test_the_flag_rides_the_metadata_the_host_already_reads():
     assert request.push_kwargs()["metadata"]["attach_live_frame"] is True
 
 
+def test_the_permission_generation_rides_with_the_attachment_request():
+    assert "live_frame_permission_token" in PromptProfile.__dataclass_fields__
+    request = WowsPromptRouter(WowsConfig()).build(
+        _candidate(),
+        PromptProfile(
+            channel_mode="dual",
+            dry_run=True,
+            screenshot_enabled=False,
+            live_vision_enabled=True,
+            live_vision_active=True,
+            live_frame_permission_token="generation-one",
+        ),
+    )
+
+    assert request.metadata["live_frame_permission_token"] == "generation-one"
+
+
 def test_the_ask_survives_a_probe_that_has_not_caught_up_yet():
     """The switch is on but the probe is cold or 2s behind, as it is for every
     call-out in the seconds after sharing starts. Gating the ask on that cache

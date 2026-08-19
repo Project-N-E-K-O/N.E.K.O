@@ -34,6 +34,7 @@ from plugin.plugins.neko_wows.domain.contracts import (
 )
 from plugin.plugins.neko_wows import (
     STORE_CONNECTION_SETTINGS,
+    STORE_LIVE_VISION_ENABLED,
     STORE_OFFICIAL_API_SETTINGS,
     STORE_SCREENSHOT_SETTINGS,
 )
@@ -487,6 +488,10 @@ class _GuardedDependency:
 
     def apply_config(self, cfg):
         self._record("apply_config", cfg)
+
+    def clear(self):
+        self._record("clear")
+        return 3
 
     def pause(self, *args):
         self._record("pause", *args)
@@ -976,6 +981,174 @@ def test_disabling_screenshots_clears_frames_and_persists_off():
     assert result.unwrap()["cleared_shots"] == 3
     assert target.cfg.screenshot_enabled is False
     assert target.store.calls[0][1]["enabled"] is False
+
+
+def test_enabling_live_frame_reuse_authorizes_the_current_generation():
+    async def scenario():
+        target = _action_target(guarded=False)
+        target.cfg.live_vision_enabled = False
+        target._live_frame_permission_token = "generation-one"
+        calls: list[dict[str, object]] = []
+
+        async def set_live_frame_permission_async(**kwargs):
+            calls.append(kwargs)
+            return {
+                "ok": True,
+                "source_name": "neko_wows",
+                "token": kwargs["token"],
+                "enabled": kwargs["enabled"],
+            }
+
+        target._host_ctx = type("Host", (), {
+            "set_live_frame_permission_async": staticmethod(
+                set_live_frame_permission_async),
+        })()
+
+        result = await target.set_live_vision_enabled(True)
+
+        assert result.is_ok()
+        assert target.cfg.live_vision_enabled is True
+        assert calls == [{
+            "token": "generation-one",
+            "enabled": True,
+            "timeout": 3.0,
+        }]
+        assert target.store.calls == [(STORE_LIVE_VISION_ENABLED, True)]
+
+    asyncio.run(scenario())
+
+
+def test_startup_reload_authorizes_live_frame_reuse_when_enabled():
+    async def scenario():
+        target = _ReloadTarget(current=True, configured=False)
+        target._live_frame_permission_token = "generation-one"
+        calls: list[dict[str, object]] = []
+
+        async def set_live_frame_permission_async(**kwargs):
+            calls.append(kwargs)
+            return {
+                "ok": True,
+                "token": kwargs["token"],
+                "enabled": kwargs["enabled"],
+            }
+
+        target._host_ctx = type("Host", (), {
+            "set_live_frame_permission_async": staticmethod(
+                set_live_frame_permission_async),
+        })()
+
+        await NekoWowsPlugin._reload_config(target, force_dry_run=True)
+
+        assert calls == [{
+            "token": "generation-one",
+            "enabled": True,
+            "timeout": 3.0,
+        }]
+
+    asyncio.run(scenario())
+
+
+def test_disabling_live_frame_reuse_waits_for_host_revocation_ack():
+    async def scenario():
+        target = _action_target(guarded=False)
+        target.cfg.live_vision_enabled = True
+        target._live_frame_permission_token = "generation-one"
+        entered = asyncio.Event()
+        release = asyncio.Event()
+        calls: list[dict[str, object]] = []
+
+        async def set_live_frame_permission_async(**kwargs):
+            calls.append(kwargs)
+            entered.set()
+            await release.wait()
+            return {
+                "ok": True,
+                "source_name": "neko_wows",
+                "token": kwargs["token"],
+                "enabled": kwargs["enabled"],
+            }
+
+        target._host_ctx = type("Host", (), {
+            "set_live_frame_permission_async": staticmethod(
+                set_live_frame_permission_async),
+        })()
+
+        action = asyncio.create_task(target.set_live_vision_enabled(False))
+        await asyncio.sleep(0)
+
+        assert entered.is_set()
+        assert action.done() is False
+        assert target.cfg.live_vision_enabled is False
+        assert target._live_frame_permission_token != "generation-one"
+
+        release.set()
+        result = await action
+
+        assert result.is_ok()
+        assert calls == [{
+            "token": target._live_frame_permission_token,
+            "enabled": False,
+            "timeout": 3.0,
+        }]
+        assert target.store.calls == [(STORE_LIVE_VISION_ENABLED, False)]
+
+    asyncio.run(scenario())
+
+
+def test_enabling_live_frame_reuse_reports_host_failure():
+    async def scenario():
+        target = _action_target(guarded=False)
+        target.cfg.live_vision_enabled = False
+        target._live_frame_permission_token = "generation-one"
+
+        async def set_live_frame_permission_async(**_kwargs):
+            raise RuntimeError("live frame permission update unavailable")
+
+        target._host_ctx = type("Host", (), {
+            "set_live_frame_permission_async": staticmethod(
+                set_live_frame_permission_async),
+        })()
+
+        result = await target.set_live_vision_enabled(True)
+
+        assert result.is_err()
+        assert "unavailable" in str(result.error)
+        assert target.cfg.live_vision_enabled is False
+        assert target._live_frame_permission_token == "generation-one"
+        assert target.store.calls == [
+            (STORE_LIVE_VISION_ENABLED, True),
+            (STORE_LIVE_VISION_ENABLED, False),
+        ]
+
+    asyncio.run(scenario())
+
+
+def test_disabling_live_frame_reuse_reports_host_failure():
+    async def scenario():
+        target = _action_target(guarded=False)
+        target.cfg.live_vision_enabled = True
+        target._live_frame_permission_token = "generation-one"
+
+        async def set_live_frame_permission_async(**_kwargs):
+            raise RuntimeError("live frame permission update rejected")
+
+        target._host_ctx = type("Host", (), {
+            "set_live_frame_permission_async": staticmethod(
+                set_live_frame_permission_async),
+        })()
+
+        result = await target.set_live_vision_enabled(False)
+
+        assert result.is_err()
+        assert "rejected" in str(result.error)
+        assert target.cfg.live_vision_enabled is True
+        assert target._live_frame_permission_token == "generation-one"
+        assert target.store.calls == [
+            (STORE_LIVE_VISION_ENABLED, False),
+            (STORE_LIVE_VISION_ENABLED, True),
+        ]
+
+    asyncio.run(scenario())
 
 
 def test_stored_connection_and_screenshot_settings_override_toml_defaults():

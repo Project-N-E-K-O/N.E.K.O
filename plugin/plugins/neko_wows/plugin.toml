@@ -63,6 +63,9 @@ service_health_timeout_seconds = 1.5
 
 # 传输：优先 WebSocket，失败时 REST 轮询兜底并后台重连。
 transport_prefer_ws = true
+# 多角色同时在线时必须具名，否则宿主会丢掉主动播报。留空则用当前会话
+# 角色，再回退到「当前猫娘」。
+target_lanlan = ""
 rest_poll_interval_seconds = 0.5
 ws_reconnect_min_seconds = 1.0
 ws_reconnect_max_seconds = 15.0

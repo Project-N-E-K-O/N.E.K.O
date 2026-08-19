@@ -88,3 +88,44 @@ class LiveVisionQueryService:
             result["frame_b64"] = frame
             result["frame_mime"] = str(payload.get("frame_mime") or "image/jpeg")
         return result
+
+    async def set_live_frame_permission(
+        self,
+        *,
+        source_name: object = "",
+        token: object = "",
+        enabled: object = False,
+        timeout: object = None,
+    ) -> dict[str, object]:
+        normalized_timeout = _coerce_timeout(timeout)
+        url = f"{_main_server_base_url()}/api/system/live-vision/attachment-permission"
+        try:
+            async with httpx.AsyncClient(
+                timeout=normalized_timeout, proxy=None, trust_env=False
+            ) as client:
+                response = await client.post(
+                    url,
+                    json={
+                        "source_name": str(source_name or ""),
+                        "token": str(token or ""),
+                        "enabled": bool(enabled),
+                    },
+                )
+                response.raise_for_status()
+                payload = response.json()
+        except (httpx.HTTPError, ValueError, OSError, RuntimeError) as exc:
+            logger.debug(
+                "live frame permission update unavailable: err_type={}, err={}",
+                type(exc).__name__,
+                str(exc),
+            )
+            raise RuntimeError("live frame permission update unavailable") from exc
+
+        if not isinstance(payload, dict) or not payload.get("ok"):
+            raise RuntimeError("live frame permission update rejected")
+        return {
+            "ok": True,
+            "source_name": str(payload.get("source_name") or source_name or ""),
+            "token": str(payload.get("token") or token or ""),
+            "enabled": bool(payload.get("enabled")),
+        }

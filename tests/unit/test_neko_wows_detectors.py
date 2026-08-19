@@ -27,6 +27,7 @@ from plugin.plugins.neko_wows.domain.catalog import (
     OUTNUMBERED,
     OWN_BROADSIDE_EXPOSED,
     OWN_SHIP_SUNK,
+    TARGET_BROADSIDE_WINDOW,
     POST_BATTLE_SUMMARY,
     PRIORITY_TARGET,
     RAPID_DAMAGE,
@@ -747,6 +748,27 @@ def test_rapid_damage_ignores_a_twenty_two_percent_drop():
     assert RAPID_DAMAGE not in fired(results)
 
 
+def test_rapid_damage_ignores_a_drop_older_than_the_window():
+    """detect() used to read `_history[0]` before observe() pruned it."""
+    registry = DetectorRegistry(build_survival_detectors(CFG))
+    results = feed(registry, [
+        frame(seq=1, at=100.0, hp_ratio=1.0),
+        frame(seq=2, at=104.0, hp_ratio=0.70),
+    ])
+    assert RAPID_DAMAGE not in fired(results)
+
+
+def test_rapid_damage_does_not_use_an_expired_sample_inside_a_longer_trace():
+    """100%→70% across 5s is outside the window; the in-window 90%→70% is not."""
+    registry = DetectorRegistry(build_survival_detectors(CFG))
+    results = feed(registry, [
+        frame(seq=1, at=100.0, hp_ratio=1.0),
+        frame(seq=2, at=103.0, hp_ratio=0.90),
+        frame(seq=3, at=105.0, hp_ratio=0.70),
+    ])
+    assert RAPID_DAMAGE not in fired(results)
+
+
 def test_rapid_damage_is_never_described_as_focused_fire():
     registry = DetectorRegistry(build_survival_detectors(CFG))
     results = feed(registry, [
@@ -983,7 +1005,38 @@ def test_broadside_exposure_requires_a_heading():
         frame(seq=3, at=102.0, yaw=math.pi / 2, ships=(headless,)),
         frame(seq=4, at=103.0, yaw=math.pi / 2, ships=(headless,)),
     ])
-    assert "target_broadside_window" not in fired(results)
+    assert TARGET_BROADSIDE_WINDOW not in fired(results)
+
+
+def test_target_broadside_uses_player_id_when_ui_id_is_missing():
+    registry = DetectorRegistry(build_geometry_detectors(CFG))
+    bow = replace(enemy(ui_id=5, yaw=math.pi / 2), ui_id=None)
+    beam = replace(enemy(ui_id=5, yaw=0.0), ui_id=None)
+    results = feed(registry, [
+        frame(seq=1, at=100.0, ships=(bow,)),
+        frame(seq=2, at=101.0, ships=(beam,)),
+    ])
+    windows = [
+        event for result in results for event in result.events
+        if event.event_id == TARGET_BROADSIDE_WINDOW
+    ]
+    assert len(windows) == 1
+    assert windows[0].detail["player_id"] == 3005
+    assert windows[0].detail["ui_id"] is None
+
+
+def test_target_broadside_keeps_identity_aliases_across_field_flicker():
+    registry = DetectorRegistry(build_geometry_detectors(CFG))
+    both = enemy(ui_id=5, yaw=0.0)
+    player_only = replace(both, ui_id=None)
+    ui_only = replace(both, player_id=None)
+    results = feed(registry, [
+        frame(seq=1, at=100.0, ships=(player_only,)),
+        frame(seq=2, at=101.0, ships=(player_only,)),
+        frame(seq=3, at=102.0, ships=(both,)),
+        frame(seq=4, at=103.0, ships=(ui_only,)),
+    ])
+    assert TARGET_BROADSIDE_WINDOW not in fired(results)
 
 
 def test_own_broadside_uses_the_most_exposed_close_enemy_not_the_nearest():

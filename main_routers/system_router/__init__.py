@@ -171,6 +171,7 @@ from .live_vision import (  # noqa: F401
     _candidate_managers,
     _pick_sharing_manager,
     get_live_vision_state,
+    set_live_frame_attachment_permission,
 )
 from .activity_signal import (  # noqa: F401
     _ACTIVITY_SIGNAL_THROTTLE,

@@ -29,6 +29,7 @@ from main_logic.omni_realtime_client import (
 from main_logic.omni_offline_client import OmniOfflineClient
 from utils.llm_client import AIMessage
 from main_logic.session_state import SessionEvent, ProactivePhase
+from main_logic.core.live_frame_permissions import allows_live_frame
 from main_logic.proactive_delivery import (
     CALLBACK_EXPIRES_AT_KEY,
     DELIVERY_RETRACTED_KEY,
@@ -2027,6 +2028,14 @@ class ProactiveMixin:
         are rejected: that is the user's room, not their desktop.
         """
         if not isinstance(cb, dict) or not cb.get("attach_live_frame"):
+            return ""
+        metadata = cb.get("metadata")
+        token = ""
+        if isinstance(metadata, dict):
+            raw_token = metadata.get("live_frame_permission_token")
+            if raw_token:
+                token = str(raw_token)
+        if token and not allows_live_frame(str(cb.get("source_name") or ""), token):
             return ""
         state = self.live_vision_snapshot()
         if not state["active"] or state["source"] != "screen":

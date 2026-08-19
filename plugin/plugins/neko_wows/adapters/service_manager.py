@@ -155,17 +155,30 @@ def _explicit_port(url: str) -> int | None:
         return None
 
 
+def _foreign_health(error: str) -> ServiceHealth:
+    """Something answered, but it is not a usable 8111_for_wows identity."""
+    return ServiceHealth(reachable=True, ours=False, error=error)
+
+
 def probe_health(base_url: str, timeout: float) -> ServiceHealth:
     """Ask `/healthz` who it is. Never raises."""
     url = base_url.rstrip("/") + "/healthz"
     try:
         with urllib.request.urlopen(url, timeout=timeout) as response:
-            payload = json.loads(response.read().decode("utf-8"))
-    except (urllib.error.URLError, OSError, ValueError, json.JSONDecodeError) as exc:
+            raw = response.read()
+    except urllib.error.HTTPError as exc:
+        # An HTTP status, even 404, proves the address is occupied.
+        return _foreign_health(type(exc).__name__)
+    except (urllib.error.URLError, OSError, ValueError) as exc:
         return ServiceHealth(reachable=False, error=type(exc).__name__)
 
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+    except (ValueError, json.JSONDecodeError) as exc:
+        return _foreign_health(type(exc).__name__)
+
     if not isinstance(payload, dict):
-        return ServiceHealth(reachable=True, ours=False, error="unexpected payload")
+        return _foreign_health("unexpected payload")
 
     service_id = str(payload.get("serviceId") or "")
     version = str(payload.get("apiVersion") or "")

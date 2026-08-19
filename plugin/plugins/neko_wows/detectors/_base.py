@@ -23,6 +23,16 @@ from ..domain.facts import WowsFacts
 from ..domain.snapshot import WowsSnapshot
 
 
+def ship_identity_keys(ship) -> tuple[tuple[str, int], ...]:
+    """Collect player_id and ui_id keys so identity flips do not re-announce."""
+    keys: list[tuple[str, int]] = []
+    if isinstance(ship.player_id, int) and not isinstance(ship.player_id, bool):
+        keys.append(("player", ship.player_id))
+    if isinstance(ship.ui_id, int) and not isinstance(ship.ui_id, bool):
+        keys.append(("ui", ship.ui_id))
+    return tuple(keys)
+
+
 @dataclass(frozen=True)
 class GameEvent:
     """One thing worth saying, with the facts that justify it."""
@@ -282,4 +292,5 @@ __all__ = [
     "DetectorRegistry",
     "FeedResult",
     "GameEvent",
+    "ship_identity_keys",
 ]

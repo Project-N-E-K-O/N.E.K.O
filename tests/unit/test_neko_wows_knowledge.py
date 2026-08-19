@@ -442,8 +442,8 @@ def test_term_only_candidates_are_ignored_after_a_tag_hit(store):
         "---\nmaps: New Dawn\n---\n\n这张图北边有岛可以卡视野。",
     )
     hits = repository(store, tactics_tag_weight=0.1).search(
-        TacticQuery(summary="巡洋舰距离", map_name="New Dawn"), limit=1)
-    assert hits
+        TacticQuery(summary="巡洋舰距离", map_name="New Dawn"), limit=5)
+    assert len(hits) == 1
     assert "卡视野" in hits[0].text
     assert all("保持距离" not in hit.text for hit in hits)
 

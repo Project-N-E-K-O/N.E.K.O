@@ -15,7 +15,7 @@ from ..domain.catalog import (
     TARGET_BROADSIDE_WINDOW,
 )
 from ..domain.snapshot import DOMAIN_MAP_BOUNDS, DOMAIN_OBJECTS, DOMAIN_SELF
-from ._base import Detector, DetectorContext, GameEvent
+from ._base import Detector, DetectorContext, GameEvent, ship_identity_keys
 
 
 class BoundaryRiskDetector(Detector):
@@ -106,7 +106,7 @@ class TargetBroadsideDetector(Detector):
     required = (DOMAIN_SELF, DOMAIN_OBJECTS)
 
     def reset(self) -> None:
-        self._current_target: int | None = None
+        self._current_target: set[tuple[str, int]] = set()
 
     def _exposed_target(self, facts):
         target = facts.exposed_target
@@ -119,12 +119,19 @@ class TargetBroadsideDetector(Detector):
 
     def observe(self, snapshot, facts) -> None:
         target = self._exposed_target(facts)
-        self._current_target = target.ship.ui_id if target is not None else None
+        keys = set(ship_identity_keys(target.ship)) if target is not None else set()
+        if keys and self._current_target.intersection(keys):
+            self._current_target.update(keys)
+        else:
+            self._current_target = keys
 
     def detect(self, previous, current, context: DetectorContext) -> Sequence[GameEvent]:
         _snapshot, facts = current
         target = self._exposed_target(facts)
-        if target is None or target.ship.ui_id == self._current_target:
+        if target is None:
+            return ()
+        keys = set(ship_identity_keys(target.ship))
+        if not keys or self._current_target.intersection(keys):
             return ()
         angle = facts.exposed_target_angle_deg
         return (self._event(

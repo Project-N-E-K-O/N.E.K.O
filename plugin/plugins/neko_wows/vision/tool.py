@@ -15,6 +15,7 @@ number would then compete with the true one sitting right beside it.
 from __future__ import annotations
 
 import base64
+import threading
 import time
 from typing import Any, Callable
 
@@ -68,6 +69,7 @@ class ScreenshotService:
         self._live_frame = live_frame_provider
         self._on_result = on_result
         self._last_capture_at: float | None = None
+        self._operation_lock = threading.RLock()
 
     def apply_config(self, cfg) -> None:
         self.cfg = cfg
@@ -75,6 +77,10 @@ class ScreenshotService:
 
     # ------------------------------------------------------------------
     def look(self) -> dict[str, Any]:
+        with self._operation_lock:
+            return self._look()
+
+    def _look(self) -> dict[str, Any]:
         if not self.cfg.screenshot_enabled:
             result = _failure(REASON_DISABLED)
         else:
@@ -122,6 +128,10 @@ class ScreenshotService:
     def recall(self, shot_id: Any) -> dict[str, Any]:
         """Re-inject an earlier frame. Not rate limited: it captures nothing
         new, and the cost of re-reading a file already on disk is nil."""
+        with self._operation_lock:
+            return self._recall(shot_id)
+
+    def _recall(self, shot_id: Any) -> dict[str, Any]:
         if not self.cfg.screenshot_enabled:
             result = _failure(REASON_DISABLED)
         else:
@@ -143,6 +153,11 @@ class ScreenshotService:
                 )
         self._report("recall", result)
         return result
+
+    def clear(self) -> int:
+        """Delete retained frames after any active capture or recall finishes."""
+        with self._operation_lock:
+            return self._store.clear()
 
     def status(self) -> dict[str, Any]:
         """Panel view of the screenshot subsystem."""

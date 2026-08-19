@@ -24,7 +24,7 @@ from ..domain.snapshot import (
     DOMAIN_ROSTER,
     DOMAIN_SELF,
 )
-from ._base import Detector, DetectorContext, GameEvent
+from ._base import Detector, DetectorContext, GameEvent, ship_identity_keys
 
 # Shell types whose value depends strongly on what is being shot at.
 _AP = "AP"
@@ -46,7 +46,7 @@ class PriorityTargetDetector(Detector):
 
     def observe(self, snapshot, facts) -> None:
         best = facts.best_target
-        keys = set(_ship_identity_keys(best.ship)) if best is not None else set()
+        keys = set(ship_identity_keys(best.ship)) if best is not None else set()
         if keys and self._current.intersection(keys):
             self._current.update(keys)
         else:
@@ -57,7 +57,7 @@ class PriorityTargetDetector(Detector):
         best = facts.best_target
         if best is None:
             return ()
-        keys = set(_ship_identity_keys(best.ship))
+        keys = set(ship_identity_keys(best.ship))
         if not keys or self._current.intersection(keys):
             return ()
         return (self._event(
@@ -79,16 +79,6 @@ class PriorityTargetDetector(Detector):
         ),)
 
 
-def _ship_identity_keys(ship) -> tuple[tuple[str, int], ...]:
-    """Collect player_id and ui_id keys so identity flips do not re-announce."""
-    keys: list[tuple[str, int]] = []
-    if isinstance(ship.player_id, int) and not isinstance(ship.player_id, bool):
-        keys.append(("player", ship.player_id))
-    if isinstance(ship.ui_id, int) and not isinstance(ship.ui_id, bool):
-        keys.append(("ui", ship.ui_id))
-    return tuple(keys)
-
-
 class LowHpTargetDetector(Detector):
     name = "low_hp_target"
     events = (LOW_HP_TARGET,)
@@ -104,7 +94,7 @@ class LowHpTargetDetector(Detector):
             return ()
         if target.ship.hp_ratio > self.cfg.low_hp_target_ratio:
             return ()
-        keys = _ship_identity_keys(target.ship)
+        keys = ship_identity_keys(target.ship)
         if not keys:
             return ()
         if self._announced.intersection(keys):

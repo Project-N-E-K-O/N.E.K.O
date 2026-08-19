@@ -28,6 +28,7 @@ gated on ``verify_local_access`` and the frame itself is opt-in.
 from fastapi import Depends, Request
 from fastapi.responses import Response
 
+from main_logic.core.live_frame_permissions import set_live_frame_permission
 from main_routers.cookies_login_router import verify_local_access
 
 from ..shared_state import get_session_manager
@@ -118,3 +119,26 @@ async def get_live_vision_state(
             payload["frame_mime"] = "image/jpeg"
 
     return payload
+
+
+@router.post(
+    "/system/live-vision/attachment-permission",
+    dependencies=[Depends(verify_local_access)],
+)
+async def set_live_frame_attachment_permission(
+    request: Request,
+    response: Response,
+):
+    """Install a plugin's live-frame generation before acknowledging it."""
+    _set_no_store_headers(response)
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+    return set_live_frame_permission(
+        str(payload.get("source_name") or ""),
+        str(payload.get("token") or ""),
+        enabled=bool(payload.get("enabled")),
+    )

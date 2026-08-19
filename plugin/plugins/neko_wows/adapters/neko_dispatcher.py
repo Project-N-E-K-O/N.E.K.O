@@ -11,6 +11,7 @@ guarantees checkable in one place:
 
 from __future__ import annotations
 
+import os
 import threading
 import time
 from collections.abc import Mapping
@@ -23,6 +24,81 @@ REASON_DRY_RUN = "dry_run"
 REASON_EXPIRED = "expired"
 REASON_PAUSED = "paused"
 REASON_FAILED = "failed"
+
+_TARGET_LANLAN_ENV = (
+    "NEKO_WOWS_TARGET_LANLAN",
+    "NEKO_TARGET_LANLAN",
+    "NEKO_LANLAN_NAME",
+    "NEKO_HER_NAME",
+)
+
+
+def _clean_target_lanlan(value: Any) -> str:
+    if value is None:
+        return ""
+    return str(value).strip()[:80]
+
+
+def _walk_current_lanlan(root: Any) -> str:
+    current = root
+    seen: set[int] = set()
+    for _ in range(8):
+        if current is None:
+            return ""
+        identity = id(current)
+        if identity in seen:
+            return ""
+        seen.add(identity)
+        try:
+            value = getattr(current, "_current_lanlan", None)
+        except Exception:
+            value = None
+        target = _clean_target_lanlan(value)
+        if target:
+            return target
+        try:
+            current = getattr(current, "_host_ctx", None)
+        except Exception:
+            return ""
+    return ""
+
+
+def resolve_target_lanlan(plugin: Any) -> str:
+    """Pick the character session a host push must name.
+
+    An empty target is fine with one connected WebSocket (the host falls
+    back), but with two or more the message is dropped. Prefer an explicit
+    config, then the active role on the plugin context, then the selected
+    catgirl in character settings.
+    """
+    cfg = getattr(plugin, "cfg", None)
+    target = _clean_target_lanlan(getattr(cfg, "target_lanlan", ""))
+    if target:
+        return target
+
+    for attribute in ("_host_ctx", "ctx"):
+        try:
+            root = getattr(plugin, attribute, None)
+        except Exception:
+            continue
+        target = _walk_current_lanlan(root)
+        if target:
+            return target
+
+    for env_name in _TARGET_LANLAN_ENV:
+        target = _clean_target_lanlan(os.getenv(env_name, ""))
+        if target:
+            return target
+
+    try:
+        from utils.config_manager import get_config_manager
+
+        character_data = get_config_manager().get_character_data()
+    except Exception:
+        return ""
+    if isinstance(character_data, tuple) and len(character_data) >= 2:
+        return _clean_target_lanlan(character_data[1])
+    return ""
 
 
 class NekoDispatcher:
@@ -228,6 +304,7 @@ class ContextInjector:
                 priority=0,
                 coalesce_key="wows_context",
                 metadata={"plugin": "neko_wows", "kind": "context"},
+                target_lanlan=resolve_target_lanlan(self._plugin) or None,
             )
         except Exception as exc:
             self.host_calls += 1

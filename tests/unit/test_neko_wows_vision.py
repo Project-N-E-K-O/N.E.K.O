@@ -9,6 +9,7 @@ and shipped to the model provider".
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import ctypes
 import sys
@@ -780,7 +781,7 @@ def test_disabled_plugin_screenshot_telemetry_is_out_of_battle():
 
     plugin = object.__new__(NekoWowsPlugin)
     plugin._state_lock = threading.RLock()
-    plugin._running = False
+    plugin._running = True
     plugin.cfg = WowsConfig()
     plugin.cfg.enabled = False
     plugin._latest = (
@@ -948,3 +949,99 @@ async def test_recall_tool_reaches_the_store(tmp_path, monkeypatch):
     out = await NekoWowsPlugin.wows_recall_screenshot(plugin, shot_id=shot_id)
 
     assert base64.b64decode(out["images"][0]["data_b64"]) == b"frame"
+
+
+def _screenshot_action_plugin(tmp_path):
+    from plugin.plugins.neko_wows import NekoWowsPlugin
+
+    cfg = WowsConfig()
+    cfg.screenshot_enabled = True
+    plugin = object.__new__(NekoWowsPlugin)
+    plugin._preference_lock = asyncio.Lock()
+    plugin._pipeline_lock = threading.RLock()
+    plugin.cfg = cfg
+    plugin.shots = ShotStore(tmp_path, retain=5)
+    plugin.screenshots = ScreenshotService(cfg, plugin.shots, lambda: {})
+
+    async def _persist(_key, _value):
+        return None
+
+    plugin._persist = _persist
+    return plugin
+
+
+async def _wait_for_screenshot_revocation(plugin):
+    while plugin.cfg.screenshot_enabled:
+        await asyncio.sleep(0)
+
+
+@pytest.mark.asyncio
+async def test_disabling_screenshots_waits_for_active_capture(tmp_path, monkeypatch):
+    from plugin.plugins.neko_wows import NekoWowsPlugin
+
+    capture_started = threading.Event()
+    release_capture = threading.Event()
+
+    def _blocking_capture(_window):
+        capture_started.set()
+        assert release_capture.wait(timeout=5.0)
+        return b"frame"
+
+    monkeypatch.setattr(tool_module, "find_game_window", lambda _dir: None)
+    monkeypatch.setattr(tool_module, "capture_jpeg", _blocking_capture)
+    plugin = _screenshot_action_plugin(tmp_path)
+
+    capture_task = asyncio.create_task(
+        NekoWowsPlugin.wows_look_at_battle(plugin))
+    assert await asyncio.to_thread(capture_started.wait, 1.0)
+    disable_task = asyncio.create_task(
+        NekoWowsPlugin.set_screenshot_enabled(plugin, False))
+    await asyncio.wait_for(_wait_for_screenshot_revocation(plugin), 1.0)
+
+    try:
+        assert not disable_task.done()
+    finally:
+        release_capture.set()
+        capture_result, disable_result = await asyncio.gather(
+            capture_task, disable_task)
+
+    assert capture_result["output"]["ok"] is True
+    assert disable_result.unwrap()["cleared_shots"] == 1
+    assert list(tmp_path.glob("*.jpg")) == []
+
+
+@pytest.mark.asyncio
+async def test_disabling_screenshots_waits_for_active_recall(tmp_path):
+    from plugin.plugins.neko_wows import NekoWowsPlugin
+
+    recall_started = threading.Event()
+    release_recall = threading.Event()
+    plugin = _screenshot_action_plugin(tmp_path)
+    record = plugin.shots.save(b"frame")
+    assert record is not None
+    load = plugin.shots.load
+
+    def _blocking_load(shot_id):
+        jpeg = load(shot_id)
+        recall_started.set()
+        assert release_recall.wait(timeout=5.0)
+        return jpeg
+
+    plugin.shots.load = _blocking_load
+    recall_task = asyncio.create_task(
+        NekoWowsPlugin.wows_recall_screenshot(plugin, shot_id=record.shot_id))
+    assert await asyncio.to_thread(recall_started.wait, 1.0)
+    disable_task = asyncio.create_task(
+        NekoWowsPlugin.set_screenshot_enabled(plugin, False))
+    await asyncio.wait_for(_wait_for_screenshot_revocation(plugin), 1.0)
+
+    try:
+        assert not disable_task.done()
+    finally:
+        release_recall.set()
+        recall_result, disable_result = await asyncio.gather(
+            recall_task, disable_task)
+
+    assert base64.b64decode(recall_result["images"][0]["data_b64"]) == b"frame"
+    assert disable_result.unwrap()["cleared_shots"] == 1
+    assert list(tmp_path.glob("*.jpg")) == []

@@ -22,6 +22,7 @@ from __future__ import annotations
 import asyncio
 import threading
 import time
+import uuid
 from typing import Any
 
 from plugin.sdk.plugin import (
@@ -38,7 +39,11 @@ from plugin.sdk.plugin import (
     unwrap_or,
 )
 
-from .adapters.neko_dispatcher import ContextInjector, NekoDispatcher
+from .adapters.neko_dispatcher import (
+    ContextInjector,
+    NekoDispatcher,
+    resolve_target_lanlan,
+)
 from .adapters.runtime_timeline import (
     STAGE_ARBITER,
     STAGE_DELIVERY,
@@ -150,14 +155,16 @@ _ARBITER_WAITING_OUTCOMES = frozenset({
     REASON_PAUSED,
 })
 
-# Config keys that describe *where* the data comes from. Changing any of them
-# needs an explicit reconnect: silently tearing down a live link mid-battle would
-# lose the detector baselines the user is currently relying on.
+# Config keys that cannot take effect on a live transport without a restart.
+# Changing any of them needs an explicit reconnect: silently tearing down a live
+# link mid-battle would lose the detector baselines the user is currently relying on.
 _CONNECTION_KEYS = (
     "service_url",
     "service_source_dir",
     "game_dir",
     "service_auto_start",
+    "transport_prefer_ws",
+    "http_timeout_seconds",
 )
 
 OFFICIAL_SHIP_TOOL_SCHEMA = {
@@ -264,6 +271,7 @@ class NekoWowsPlugin(NekoPluginBase):
         self._service_signature: tuple[str, str] | None = None
         self._blocked_signature: tuple[tuple[str, tuple[str, ...]], ...] = ()
         self._arbiter_wait_log: set[tuple[str, str]] = set()
+        self._live_frame_permission_token = uuid.uuid4().hex
 
     # ------------------------------------------------------------------ 配置
     def _build_registry(self) -> DetectorRegistry:
@@ -299,6 +307,16 @@ class NekoWowsPlugin(NekoPluginBase):
                     cfg.screenshot_enabled = bool(self.cfg.screenshot_enabled)
                     cfg.live_vision_enabled = bool(self.cfg.live_vision_enabled)
                 self._apply_config(cfg)
+            try:
+                await NekoWowsPlugin._publish_live_frame_permission(
+                    self, enabled=bool(cfg.live_vision_enabled))
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                # Startup and TOML reload must not die because the host is
+                # briefly unreachable; call-outs with this generation fail
+                # closed until a later toggle or reload succeeds.
+                pass
             return cfg
 
     async def _apply_stored_preferences(self, cfg: WowsConfig) -> None:
@@ -368,6 +386,29 @@ class NekoWowsPlugin(NekoPluginBase):
         live_vision = await self._stored(STORE_LIVE_VISION_ENABLED)
         if isinstance(live_vision, bool):
             cfg.live_vision_enabled = live_vision
+
+    async def _publish_live_frame_permission(
+        self, *, enabled: bool, timeout: float = 3.0,
+    ) -> None:
+        host = getattr(self, "_host_ctx", None)
+        setter = getattr(host, "set_live_frame_permission_async", None)
+        if not callable(setter):
+            return
+        token = str(getattr(self, "_live_frame_permission_token", "") or "")
+        if not token:
+            token = uuid.uuid4().hex
+            self._live_frame_permission_token = token
+        try:
+            await setter(token=token, enabled=bool(enabled), timeout=timeout)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger = getattr(self, "logger", None)
+            if logger is not None:
+                logger.warning(
+                    f"live frame permission update failed: {type(exc).__name__}: {exc}"
+                )
+            raise
 
     async def _stored(self, key: str):
         try:
@@ -581,7 +622,7 @@ class NekoWowsPlugin(NekoPluginBase):
         cfg = await self._reload_config()
         after = self._connection_signature()
         if not cfg.enabled:
-            self._stop_runtime_output()
+            await self._stop_runtime_output()
             return Ok({
                 "status": "disabled",
                 "dry_run": cfg.dry_run,
@@ -607,14 +648,14 @@ class NekoWowsPlugin(NekoPluginBase):
     def _connection_signature(self) -> tuple:
         return tuple(getattr(self.cfg, key) for key in _CONNECTION_KEYS)
 
-    def _stop_runtime_output(self) -> None:
+    async def _stop_runtime_output(self) -> None:
         """Halt call-outs after `[neko_wows].enabled` turns off mid-session."""
         with self._state_lock:
             self._running = False
             self._latest = None
             self._previous = None
-        self.transport.stop()
-        self.service.stop()
+        await asyncio.to_thread(self.transport.stop)
+        await asyncio.to_thread(self.service.stop)
         with self._pipeline_lock:
             self.dispatcher.pause("disabled")
             self.arbiter.pause()
@@ -856,6 +897,9 @@ class NekoWowsPlugin(NekoPluginBase):
             screenshot_enabled=bool(cfg.screenshot_enabled),
             live_vision_enabled=bool(cfg.live_vision_enabled),
             live_vision_active=self._live_vision_active(),
+            live_frame_permission_token=str(
+                getattr(self, "_live_frame_permission_token", "") or ""),
+            target_lanlan=resolve_target_lanlan(self),
         )
         excerpts = self._reference_for(chosen, snapshot)
         request = self.router.build(bundled, profile, excerpts)
@@ -1407,13 +1451,12 @@ class NekoWowsPlugin(NekoPluginBase):
             with self._pipeline_lock:
                 self.cfg.screenshot_enabled = enabled
                 self.screenshots.apply_config(self.cfg)
-                if not enabled:
-                    # Turning it off deletes the frames too: leaving screenshots
-                    # of the user's desktop on disk after they revoked permission
-                    # would be the wrong reading of "off".
-                    removed = self.shots.clear()
-                else:
-                    removed = 0
+            if not enabled:
+                # Wait outside the host event loop for any capture/recall that
+                # already passed its permission check, then delete every frame.
+                removed = await asyncio.to_thread(self.screenshots.clear)
+            else:
+                removed = 0
             return Ok({
                 "screenshot_enabled": enabled,
                 "cleared_shots": removed,
@@ -1436,11 +1479,30 @@ class NekoWowsPlugin(NekoPluginBase):
     async def set_live_vision_enabled(self, value: bool = True, **_):
         enabled = bool(value)
         async with self._preference_lock:
+            previous_enabled = bool(self.cfg.live_vision_enabled)
+            previous_token = str(
+                getattr(self, "_live_frame_permission_token", "") or "")
             error = await self._persist(STORE_LIVE_VISION_ENABLED, enabled)
             if error is not None:
                 return Err(error)
             with self._pipeline_lock:
                 self.cfg.live_vision_enabled = enabled
+                if not enabled:
+                    self._live_frame_permission_token = uuid.uuid4().hex
+            try:
+                await self._publish_live_frame_permission(enabled=enabled)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                with self._pipeline_lock:
+                    self.cfg.live_vision_enabled = previous_enabled
+                    self._live_frame_permission_token = previous_token
+                await self._persist(
+                    STORE_LIVE_VISION_ENABLED, previous_enabled)
+                return Err(SdkError(
+                    f"live frame permission update failed: "
+                    f"{type(exc).__name__}: {exc}"
+                ))
             return Ok({"live_vision_enabled": enabled})
 
     @ui.action(id="set_screenshot_settings", label="截屏参数", tone="primary",

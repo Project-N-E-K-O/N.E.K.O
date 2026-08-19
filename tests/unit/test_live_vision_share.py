@@ -138,6 +138,68 @@ async def test_nothing_is_attached_when_the_host_holds_no_frame():
     assert session.sent == []
 
 
+def _token_cb(token="generation-one"):
+    return {
+        "attach_live_frame": True,
+        "source_name": "neko_wows",
+        "metadata": {"live_frame_permission_token": token},
+    }
+
+
+@pytest.fixture(autouse=True)
+def _isolated_live_frame_permissions():
+    try:
+        from main_logic.core.live_frame_permissions import (
+            clear_live_frame_permissions,
+        )
+    except ImportError:
+        yield
+        return
+    clear_live_frame_permissions()
+    yield
+    clear_live_frame_permissions()
+
+
+async def test_a_token_bearing_callback_is_denied_until_the_host_authorizes_it():
+    """Token-bearing requests fail closed when their generation is unknown."""
+    session = _FakeRealtime()
+    mgr = _mgr(session, snapshot=_sharing())
+
+    assert await _attach(mgr, _token_cb(), session) is False
+    assert session.sent == []
+
+
+async def test_an_authorized_generation_is_attached():
+    from main_logic.core.live_frame_permissions import set_live_frame_permission
+
+    set_live_frame_permission("neko_wows", "generation-one", enabled=True)
+    session = _FakeRealtime()
+    mgr = _mgr(session, snapshot=_sharing())
+
+    assert await _attach(mgr, _token_cb(), session) is True
+    assert session.sent[0]["b64"] == "cached-frame"
+
+
+async def test_a_queued_frame_is_not_attached_after_reuse_is_revoked():
+    """The panel switch cannot un-queue a callback the host already accepted.
+
+    Delivery must re-check the generation that was live when the cue was
+    built; replacing it with a disabled generation is how turning the
+    switch off retracts a frozen attach_live_frame request.
+    """
+    from main_logic.core.live_frame_permissions import set_live_frame_permission
+
+    set_live_frame_permission("neko_wows", "generation-one", enabled=True)
+    session = _FakeRealtime()
+    mgr = _mgr(session, snapshot=_sharing())
+    queued = _token_cb("generation-one")
+
+    set_live_frame_permission("neko_wows", "generation-two", enabled=False)
+
+    assert await _attach(mgr, queued, session) is False
+    assert session.sent == []
+
+
 async def test_the_delivered_frame_is_the_share_not_the_ambient_cache():
     """An avatar drop, a pasted image or another plugin's picture all land in
     the session's ``_latest_image_b64``. Delivering that as "your screen" would
@@ -198,6 +260,47 @@ def test_text_path_collects_the_live_frame_before_media_images():
     images = mgr._collect_text_proactive_images(cbs)
 
     assert images == ["shared-screen", "plugin-shot"]
+
+
+def test_text_path_denies_an_unknown_generation_but_keeps_plugin_media():
+    session = SimpleNamespace(
+        _supports_native_image=False,
+        vision_model="vision-model",
+    )
+    mgr = _mgr(session, snapshot=_sharing(), frame="shared-screen")
+    cbs = [{**_token_cb(), "media_images": ["plugin-shot"]}]
+
+    assert mgr._collect_text_proactive_images(cbs) == ["plugin-shot"]
+
+
+def test_text_path_attaches_an_authorized_generation_before_plugin_media():
+    from main_logic.core.live_frame_permissions import set_live_frame_permission
+
+    set_live_frame_permission("neko_wows", "generation-one", enabled=True)
+    session = SimpleNamespace(
+        _supports_native_image=False,
+        vision_model="vision-model",
+    )
+    mgr = _mgr(session, snapshot=_sharing(), frame="shared-screen")
+    cbs = [{**_token_cb(), "media_images": ["plugin-shot"]}]
+
+    assert mgr._collect_text_proactive_images(cbs) == [
+        "shared-screen", "plugin-shot"]
+
+
+def test_text_path_drops_the_share_after_reuse_is_revoked():
+    from main_logic.core.live_frame_permissions import set_live_frame_permission
+
+    set_live_frame_permission("neko_wows", "generation-one", enabled=True)
+    session = SimpleNamespace(
+        _supports_native_image=False,
+        vision_model="vision-model",
+    )
+    mgr = _mgr(session, snapshot=_sharing(), frame="shared-screen")
+    cbs = [{**_token_cb(), "media_images": ["plugin-shot"]}]
+    set_live_frame_permission("neko_wows", "generation-two", enabled=False)
+
+    assert mgr._collect_text_proactive_images(cbs) == ["plugin-shot"]
 
 
 # ------------------------------------------------------------- the liveness

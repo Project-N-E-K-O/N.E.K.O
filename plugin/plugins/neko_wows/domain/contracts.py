@@ -107,6 +107,9 @@ class WowsConfig:
     service_health_timeout_seconds: float = 1.5
 
     transport_prefer_ws: bool = True
+    # Empty: use the active session, then the selected catgirl. Named value
+    # wins so multi-character setups can pin call-outs to one role.
+    target_lanlan: str = ""
     rest_poll_interval_seconds: float = 0.5
     ws_reconnect_min_seconds: float = 1.0
     ws_reconnect_max_seconds: float = 15.0
@@ -229,6 +232,7 @@ class WowsConfig:
             "service_health_timeout_seconds", 1.5, 0.2, 30.0)
 
         cfg.transport_prefer_ws = flag("transport_prefer_ws", True)
+        cfg.target_lanlan = text("target_lanlan", "")[:80]
         cfg.rest_poll_interval_seconds = number(
             "rest_poll_interval_seconds", 0.5, 0.05, 10.0)
         cfg.ws_reconnect_min_seconds = number("ws_reconnect_min_seconds", 1.0, 0.1, 60.0)

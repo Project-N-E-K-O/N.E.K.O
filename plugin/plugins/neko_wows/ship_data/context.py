@@ -12,6 +12,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
+from ..adapters.neko_dispatcher import resolve_target_lanlan
 from ..domain.snapshot import (
     RELATION_ALLY,
     RELATION_ENEMY,
@@ -570,42 +571,7 @@ class BattleShipContextManager:
         return False, "submission_declined"
 
     def _current_target_lanlan(self) -> str:
-        roots: list[Any] = []
-        for attribute in ("_host_ctx", "ctx"):
-            try:
-                root = getattr(self._plugin, attribute, None)
-            except Exception:
-                continue
-            if root is not None:
-                roots.append(root)
-
-        seen: set[int] = set()
-        for root in roots:
-            current = root
-            for _ in range(8):
-                identity = id(current)
-                if identity in seen:
-                    break
-                seen.add(identity)
-                try:
-                    value = getattr(current, "_current_lanlan", None)
-                    if isinstance(value, str):
-                        target = value.strip()
-                    elif value is None:
-                        target = ""
-                    else:
-                        target = str(value).strip()
-                except Exception:
-                    target = ""
-                if target:
-                    return target
-                try:
-                    current = getattr(current, "_host_ctx", None)
-                except Exception:
-                    break
-                if current is None:
-                    break
-        return ""
+        return resolve_target_lanlan(self._plugin)
 
     def _observation(
         self,

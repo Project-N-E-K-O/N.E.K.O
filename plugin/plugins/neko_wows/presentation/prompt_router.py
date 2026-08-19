@@ -78,6 +78,9 @@ class PromptProfile:
     # can do for the *wording* -- the text has to be written before delivery.
     # It only picks a sentence; it never decides whether a frame is attached.
     live_vision_active: bool = False
+    # Host generation for this attachment request. Delivery re-checks it so
+    # turning the panel switch off can retract a cue the host already queued.
+    live_frame_permission_token: str = ""
 
 
 class WowsPromptRouter:
@@ -179,6 +182,7 @@ class WowsPromptRouter:
                 # the seconds after sharing starts, and the first one after a
                 # cold start, when that cache is still empty.
                 "attach_live_frame": bool(profile.live_vision_enabled),
+                "live_frame_permission_token": profile.live_frame_permission_token,
                 # Stamped so the timeline can attribute every call-out to the
                 # exact prompt revision that produced it.
                 "prompt_revision": bundle.revision_id,

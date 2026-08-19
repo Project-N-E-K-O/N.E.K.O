@@ -199,14 +199,22 @@ class RapidDamageDetector(Detector):
         if facts.own_hp_ratio is None:
             return
         self._history.append((facts.at, facts.own_hp_ratio))
-        cutoff = facts.at - self.cfg.rapid_damage_window_seconds
+        self._prune_history(facts.at)
+
+    def _prune_history(self, at: float) -> None:
+        cutoff = at - self.cfg.rapid_damage_window_seconds
         while self._history and self._history[0][0] < cutoff:
             self._history.popleft()
 
     def detect(self, previous, current, context: DetectorContext) -> Sequence[GameEvent]:
         _snapshot, facts = current
         ratio = facts.own_hp_ratio
-        if ratio is None or not self._history:
+        if ratio is None:
+            return ()
+        # feed() compares before observe() records this frame, so stale
+        # samples must be dropped against the current timestamp first.
+        self._prune_history(facts.at)
+        if not self._history:
             return ()
         window_start_ratio = self._history[0][1]
         drop = window_start_ratio - ratio
