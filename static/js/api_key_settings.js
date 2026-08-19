@@ -399,14 +399,20 @@ function isMaskedSecretValue(value) {
         || /^[^*]{6}\*{3,}[^*]{6}$/.test(normalized);
 }
 
+function getPartialMaskedSecretDisplay(value) {
+    const normalized = typeof value === 'string' ? value.trim() : '';
+    return /^[^*]{6}\*{3,}[^*]{6}$/.test(normalized) ? normalized : '';
+}
+
 /**
  * 将真实 key 写入 input 的 dataset，输入框显示遮蔽值。
  */
-function setMaskedInput(input, realKey) {
+function setMaskedInput(input, realKey, displayMask = '') {
     if (!input) return;
     if (!realKey) {
         input.dataset.realKey = '';
         delete input.dataset.maskedSecret;
+        delete input.dataset.maskedDisplay;
         input.value = '';
         return;
     }
@@ -416,6 +422,7 @@ function setMaskedInput(input, realKey) {
             // 保存后读取到的只是哨兵；同一次页面会话内仍可安全地沿用本地的
             // 局部遮蔽显示，避免从“前后可见”退化为全圆点。
             delete input.dataset.maskedSecret;
+            delete input.dataset.maskedDisplay;
             input.dataset.realKey = locallyEnteredKey;
             input.value = maskApiKey(locallyEnteredKey);
             return;
@@ -423,17 +430,19 @@ function setMaskedInput(input, realKey) {
         // 只保留“后端已有密钥”这一状态，不把哨兵伪装成真实 key 放进 DOM。
         input.dataset.realKey = '';
         input.dataset.maskedSecret = 'true';
-        input.value = MASKED_SECRET_DISPLAY;
+        input.dataset.maskedDisplay = getPartialMaskedSecretDisplay(displayMask) || MASKED_SECRET_DISPLAY;
+        input.value = input.dataset.maskedDisplay;
         return;
     }
     delete input.dataset.maskedSecret;
+    delete input.dataset.maskedDisplay;
     input.dataset.realKey = realKey;
     input.value = maskApiKey(realKey);
 }
 
 /**
  * 记录本页已输入的真实密钥，以便保存成功后的单次配置重载继续显示局部遮蔽。
- * 页面刷新或普通配置加载不会调用它，因此刷新后仍只显示通用圆点遮罩。
+ * 页面重新打开时，核心 Key 使用后端返回的安全局部掩码；其它字段仍不回显明文。
  */
 function cacheCurrentSecretDisplays() {
     const cache = new Map();
@@ -489,8 +498,8 @@ function attachMaskBehavior(input) {
     input.dataset.maskAttached = 'true';
     input.addEventListener('focus', () => {
         if (input.dataset.maskedSecret === 'true') {
-            // 无明文可显示。选中通用掩码，让直接键入自然替换它。
-            input.value = MASKED_SECRET_DISPLAY;
+            // 无明文可显示；若后端提供了局部掩码，则保持该掩码。
+            input.value = input.dataset.maskedDisplay || MASKED_SECRET_DISPLAY;
             input.select();
             return;
         }
@@ -501,20 +510,22 @@ function attachMaskBehavior(input) {
         if (input.dataset.maskedSecret !== 'true') return;
         // 用户开始编辑时才丢弃“保留旧值”状态；单纯聚焦/失焦不会清空密钥。
         delete input.dataset.maskedSecret;
+        delete input.dataset.maskedDisplay;
         input.dataset.realKey = '';
         input.value = '';
     });
     input.addEventListener('input', () => {
-        if (input.dataset.maskedSecret === 'true' && input.value !== MASKED_SECRET_DISPLAY) {
+        if (input.dataset.maskedSecret === 'true' && input.value !== (input.dataset.maskedDisplay || MASKED_SECRET_DISPLAY)) {
             // 兼容脚本赋值后派发 input（以及不支持 beforeinput 的浏览器）。
             delete input.dataset.maskedSecret;
+            delete input.dataset.maskedDisplay;
             input.dataset.realKey = '';
         }
     });
     input.addEventListener('blur', () => {
         if (input.dataset.maskedSecret === 'true') {
             input.dataset.realKey = '';
-            input.value = MASKED_SECRET_DISPLAY;
+            input.value = input.dataset.maskedDisplay || MASKED_SECRET_DISPLAY;
             return;
         }
         // 用户可能编辑了 value，同步回 realKey
@@ -523,7 +534,8 @@ function attachMaskBehavior(input) {
             if (isMaskedSecretValue(current)) {
                 input.dataset.realKey = '';
                 input.dataset.maskedSecret = 'true';
-                input.value = MASKED_SECRET_DISPLAY;
+                input.dataset.maskedDisplay = getPartialMaskedSecretDisplay(current) || MASKED_SECRET_DISPLAY;
+                input.value = input.dataset.maskedDisplay;
                 return;
             }
             input.dataset.realKey = current;
@@ -531,6 +543,7 @@ function attachMaskBehavior(input) {
         } else {
             input.dataset.realKey = '';
             delete input.dataset.maskedSecret;
+            delete input.dataset.maskedDisplay;
         }
     });
 }
@@ -1875,7 +1888,7 @@ async function loadCurrentApiKey() {
                     apiKeyInput.value = window.t ? window.t('api.freeVersionNoApiKey') : '免费版无需API Key';
                 } else if (data.api_key) {
                     // 有API Key时设置
-                    setMaskedInput(apiKeyInput, data.api_key);
+                    setMaskedInput(apiKeyInput, data.api_key, data.api_key_display);
                     attachMaskBehavior(apiKeyInput);
                 }
                 // autoFillCoreApiKey 将在 coreApiSelect.value 设置后调用
@@ -1969,7 +1982,11 @@ async function loadCurrentApiKey() {
                 const assistKeyFromData = assistDataField ? (data[assistDataField] || '') : '';
                 if (assistApiKeyInput) {
                     if (assistKeyFromData) {
-                        setMaskedInput(assistApiKeyInput, assistKeyFromData);
+                        setMaskedInput(
+                            assistApiKeyInput,
+                            assistKeyFromData,
+                            data.assist_api_key_display
+                        );
                         attachMaskBehavior(assistApiKeyInput);
                     } else {
                         // 后端无辅助Key时，尝试从管理簿读取（兼容旧数据迁移）
@@ -5215,7 +5232,10 @@ async function initializePage() {
             updateAssistApiKeyInputAvailability();
 
             updateAssistApiRecommendation();
-            autoFillCoreApiKey(true);
+            // loadCurrentApiKey() has already applied the saved core key.  Do
+            // not force a management-book overwrite during initial rendering;
+            // provider-change handlers below still use force=true.
+            autoFillCoreApiKey();
             // 不再调用 autoFillAssistApiKey(true)，因为 loadCurrentApiKey()
             // 已从后端数据直接设置辅助API Key，此处再次从管理簿读取会覆盖正确值
             // （同服务商时管理簿存的是核心Key，受限服务商时管理簿DOM不存在）

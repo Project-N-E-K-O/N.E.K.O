@@ -123,6 +123,12 @@ def test_get_redacts_every_core_config_secret(
     assert response['success'] is True
     assert response['effectiveCoreApi'] == 'qwen'
     assert response['supportsIndependentAsr'] is True
+    assert response['api_key_display'] == core_config_router.mask_core_config_secret_for_display(
+        stored['coreApiKey']
+    )
+    assert response['assist_api_key_display'] == core_config_router.mask_core_config_secret_for_display(
+        stored['assistApiKeyOpenai']
+    )
     response_secret_fields = (
         'api_key',
         *_ASSIST_API_KEY_FIELDS,

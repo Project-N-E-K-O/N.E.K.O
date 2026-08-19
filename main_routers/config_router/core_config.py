@@ -103,6 +103,20 @@ def redact_core_config_secret(value, *, preserve_free_access: bool = False) -> s
     return CORE_CONFIG_SECRET_SENTINEL
 
 
+def mask_core_config_secret_for_display(value) -> str:
+    """Return a safe, non-reversible partial display for a stored secret."""
+    if value is None or value == '' or value == 'free-access':
+        return ''
+    value = str(value)
+    # A six-character prefix/suffix would disclose a short credential in full.
+    if len(value) < 15:
+        return '••••••••••••'
+    prefix, suffix = value[:6], value[-6:]
+    if '*' in prefix or '*' in suffix:
+        return '••••••••••••'
+    return f'{prefix}{"*" * (len(value) - 12)}{suffix}'
+
+
 def apply_core_config_secret_update(target: dict, source: dict, field: str) -> bool:
     """Apply a submitted secret unless it is a keep-existing placeholder.
 
@@ -240,6 +254,32 @@ async def get_core_config_api():
             response['api_key'],
             preserve_free_access=True,
         )
+        # Keep the POST contract as a sentinel while offering a separate,
+        # non-reversible value for settings-page display.
+        response['api_key_display'] = mask_core_config_secret_for_display(api_key)
+        # The assist input needs only its currently selected provider's mask.
+        # Resolve through the canonical registry instead of exposing a display
+        # fragment for every Key Book entry.
+        response['assist_api_key_display'] = ''
+        try:
+            from utils.api_config_loader import get_config
+
+            provider_config = await asyncio.to_thread(get_config)
+            api_key_registry = (
+                provider_config.get('api_key_registry', {})
+                if isinstance(provider_config, dict)
+                else {}
+            )
+            assist_key_field = get_core_config_provider_api_key_field(
+                _assist_api_provider,
+                api_key_registry,
+            )
+            if assist_key_field:
+                response['assist_api_key_display'] = mask_core_config_secret_for_display(
+                    response.get(assist_key_field, '')
+                )
+        except Exception:
+            logger.warning('Unable to build assist API key display mask', exc_info=True)
         for field in (
             *CORE_CONFIG_ASSIST_API_KEY_FIELDS,
             'mcpToken',
