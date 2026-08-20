@@ -49,6 +49,11 @@ from .nlp.value_resolver import resolve_adjust_target
 
 _EMBEDDED_BY_AGENT = os.getenv("NEKO_PLUGIN_HOSTED_BY_AGENT", "").strip().lower() == "true"
 
+# 设备缓存 schema 版本：value_list 从纯值列表升级为带 description/comment 的
+# dict 列表（v2）。读缓存时校验版本，不匹配则视为失效重新拉取，避免旧缓存缺
+# 枚举描述导致中文模式命令失效。
+_DEVICES_CACHE_SCHEMA = 2
+
 @neko_plugin
 class MijiaPlugin(NekoPluginBase):
     """米家智能家居插件"""
@@ -238,14 +243,16 @@ class MijiaPlugin(NekoPluginBase):
     # ========== 设备匹配与命令解析 ==========
 
     async def _load_devices_cache(self) -> list[dict]:
-        """加载设备缓存，不存在时自动拉取"""
+        """加载设备缓存，不存在或版本不匹配时自动拉取"""
         cache_path = self.data_path("devices_cache.json")
         if cache_path.exists() and self.api:
             try:
                 cached = await read_json_async(cache_path)
                 cache_user_id = cached.get('user_id')
                 current_user_id = self.api.credential.user_id if self.api.credential else None
-                if not current_user_id or cache_user_id == current_user_id:
+                if cached.get("schema_version") != _DEVICES_CACHE_SCHEMA:
+                    self.logger.info("设备缓存 schema 版本不匹配，自动刷新")
+                elif not current_user_id or cache_user_id == current_user_id:
                     devices = cached.get('devices', [])
                     if devices:
                         self.logger.info(f"设备缓存有效: {len(devices)} 个设备")
@@ -636,7 +643,9 @@ class MijiaPlugin(NekoPluginBase):
                 cache_user_id = cached.get('user_id')
                 current_user_id = self.api.credential.user_id if self.api.credential else None
                 # 归属匹配才返回缓存；不匹配时跳过缓存，继续走网络请求
-                if cache_home_id == home_id and (not current_user_id or cache_user_id == current_user_id):
+                if cached.get("schema_version") != _DEVICES_CACHE_SCHEMA:
+                    self.logger.info("设备缓存 schema 版本不匹配，跳过缓存")
+                elif cache_home_id == home_id and (not current_user_id or cache_user_id == current_user_id):
                     devices = cached.get('devices', [])
                     self.logger.info(f"从缓存读取设备列表: {len(devices)} 个设备")
                     lines = [f"📱 共有 {len(devices)} 个设备（缓存）:"]
@@ -743,7 +752,7 @@ class MijiaPlugin(NekoPluginBase):
                 user_id = self.api.credential.user_id if self.api and self.api.credential else None
                 await atomic_write_json_async(
                     cache_path,
-                    {"devices": result, "home_id": home_id, "user_id": user_id},
+                    {"schema_version": _DEVICES_CACHE_SCHEMA, "devices": result, "home_id": home_id, "user_id": user_id},
                     ensure_ascii=False,
                     indent=2
                 )
@@ -790,7 +799,9 @@ class MijiaPlugin(NekoPluginBase):
                 cache_user_id = cached.get('user_id')
                 current_user_id = self.api.credential.user_id if self.api.credential else None
                 # 归属匹配才返回缓存；不匹配时跳过，继续走网络请求
-                if not current_user_id or cache_user_id == current_user_id:
+                if cached.get("schema_version") != _DEVICES_CACHE_SCHEMA:
+                    self.logger.info("设备缓存 schema 版本不匹配，跳过缓存")
+                elif not current_user_id or cache_user_id == current_user_id:
                     devices = cached.get('devices', [])
                     self.logger.info(f"AI 从缓存读取设备列表: {len(devices)} 个设备")
                     lines = [f"📱 共有 {len(devices)} 个设备:"]
@@ -991,14 +1002,14 @@ class MijiaPlugin(NekoPluginBase):
         # 意图路由（nlp/ 纯规则引擎）：开关/查询/动作/属性分支短路
         devices = await self._load_devices_cache()
         result = await route(command, devices)
-        # 房间映射惰性获取：仅当匹配确实需要（not_found/ambiguous 且设备缓存
-        # 缺房间名）时才调 get_homes，避免精确匹配等命令被拖慢
+        # 房间映射惰性获取：仅当匹配确实需要（not_found/ambiguous 且存在缺
+        # room_name 的设备——可能是目标设备）时才调 get_homes，避免精确匹配拖慢
         if (
             result.branch in ("switch", "control", "action")
             and result.match is not None
             and result.match.status in ("not_found", "ambiguous")
             and devices
-            and not any(d.get("room_name") for d in devices)
+            and any(not d.get("room_name") for d in devices)
         ):
             room_map, device_room_map = await self._build_room_maps()
             result = await route(
@@ -1214,7 +1225,7 @@ class MijiaPlugin(NekoPluginBase):
                             # "未唤醒"（读到的可能是云端缓存旧值）→ 返回未确认，不报假成功
                             if post is not None and post == target and (cur is None or cur != target):
                                 return Ok({"success": True, "message": f"✅ 已{action_text}'{display_name}'", "device": display_name, "action": action_text, "value": target})
-                            return Ok({"success": True, "confirmed": False, "message": f"已向'{display_name}'发送开机指令，无法确认是否已唤醒", "device": display_name, "action": action_text, "value": target})
+                            return Err(SdkError(f"已向'{display_name}'发送开机指令，但无法确认是否已唤醒"))
                     except TokenExpiredError:
                         return Err(SdkError("凭据已过期，请重新登录"))
                     except Exception:
@@ -1229,14 +1240,10 @@ class MijiaPlugin(NekoPluginBase):
                     switch_props.append(p)
         # 二进制开关指令只应发给 bool 型属性：无条件过滤掉名字含 "on" 的非布尔
         # 属性（"TV Input Control"/position/ventilation/illumination 等），
-        # 否则 True/False 会被发给 enum/int/string 属性并触发控制失败
+        # 否则 True/False 会被发给 enum/int/string 属性并触发控制失败。
+        # 兜底不再接受"任意可写 bool"——仅保留名称明确标识电源的属性，
+        # 避免把 Mute/儿童锁等无关布尔属性误当电源开关。
         switch_props = [p for p in switch_props if p.get("type") == "bool"]
-        # fallback: 找第一个可写 bool 属性
-        if not switch_props:
-            for p in props:
-                if p.get("access") in ["write", "read_write", "notify_read_write"] and p.get("type") == "bool":
-                    switch_props.append(p)
-                    break
 
         if not switch_props:
             return Err(SdkError(f"'{display_name}'没有可控制的开关"))
@@ -1298,6 +1305,8 @@ class MijiaPlugin(NekoPluginBase):
                         [{"did": did, "siid": siid, "piid": piid}]
                     )
                     actual = chk[0].get("value") if chk else None
+                except TokenExpiredError:
+                    return Err(SdkError("凭据已过期，请重新登录"))
                 except Exception:
                     actual = None
                 if actual is not None and bool(actual) == bool(value):
@@ -1396,8 +1405,13 @@ class MijiaPlugin(NekoPluginBase):
                 self.logger.info(f"枚举转换: '{value}' → {resolved}")
                 value = resolved
             else:
+                # 标签回退顺序：description → comment → value
                 available_modes = [
-                    f"{item.get('description')}(={item.get('value')})" if isinstance(item, dict) else str(item)
+                    (
+                        f"{item.get('description') or item.get('comment') or item.get('value')}"
+                        f"(={item.get('value')})"
+                        if isinstance(item, dict) else str(item)
+                    )
                     for item in prop.get("value_list", [])
                 ]
                 return Err(SdkError(
@@ -1734,12 +1748,12 @@ class MijiaPlugin(NekoPluginBase):
         # 统一设备匹配（支持区域+设备名、别名、模糊匹配）
         cached_devices = await self._load_devices_cache()
         match_result = match_devices(name, cached_devices)
-        # 房间映射惰性获取：仅当匹配需要（not_found/ambiguous 且缓存缺房间名）时
-        # 才调 get_homes，避免精确匹配被拖慢
+        # 房间映射惰性获取：仅当匹配需要（not_found/ambiguous 且存在缺 room_name
+        # 的设备）时才调 get_homes，避免精确匹配被拖慢
         if (
             match_result.status in ("not_found", "ambiguous")
             and cached_devices
-            and not any(d.get("room_name") for d in cached_devices)
+            and any(not d.get("room_name") for d in cached_devices)
         ):
             room_map, device_room_map = await self._build_room_maps()
             match_result = match_devices(

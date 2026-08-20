@@ -108,11 +108,12 @@ def match_devices(
         if rn:
             room_map[rn.lower()] = rn
 
-    # 降级：设备无房间数据时，用 API 房间名做拆分，并把 DID→房间映射注入设备数据
-    if not room_map and api_room_map:
+    # 用 API 房间映射补充：无论本地 room_map 是否为空，都为缺房间名的设备注入
+    # DID→房间映射（覆盖"部分设备缺 room_name"的情况，不只是全空才降级）
+    if api_room_map:
         for rn_original in api_room_map.values():
             rn_lower = rn_original.lower().strip()
-            if rn_lower:
+            if rn_lower and rn_lower not in room_map:
                 room_map[rn_lower] = rn_original
         if device_room_map:
             for d in devices:
