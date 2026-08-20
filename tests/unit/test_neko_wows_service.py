@@ -574,6 +574,8 @@ def test_config_change_restarts_output_when_the_plugin_is_re_enabled():
 
 def test_reconnect_resets_pipeline_and_battle_state_before_transport_restart():
     calls = []
+    event_loop_thread = threading.get_ident()
+    transport_stop_threads = []
     plugin = object.__new__(NekoWowsPlugin)
     plugin._state_lock = threading.RLock()
     plugin._pipeline_lock = threading.Lock()
@@ -583,6 +585,8 @@ def test_reconnect_resets_pipeline_and_battle_state_before_transport_restart():
     plugin._blocked_signature = (("old", ("battle",)),)
 
     def record(name, *args):
+        if name == "transport_stop":
+            transport_stop_threads.append(threading.get_ident())
         calls.append((name, args, plugin._pipeline_lock.locked()))
 
     class ResetProbe:
@@ -627,6 +631,7 @@ def test_reconnect_resets_pipeline_and_battle_state_before_transport_restart():
     assert plugin._previous is None
     assert plugin._running is True
     assert plugin._reconnect_required is False
+    assert transport_stop_threads[0] != event_loop_thread
     assert result.unwrap() == {
         "service": status.as_dict(),
         "transport_started": True,

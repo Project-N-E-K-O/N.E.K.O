@@ -1340,7 +1340,7 @@ class NekoWowsPlugin(NekoPluginBase):
         description="按当前配置重新探测并连接遥测服务。改过 URL/端口/目录后需要执行一次。",
     )
     async def reconnect(self, **_):
-        self.transport.stop()
+        await asyncio.to_thread(self.transport.stop)
         status = await asyncio.to_thread(self._restart_managed_service)
         with self._pipeline_lock:
             self.gate.reset()
