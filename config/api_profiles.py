@@ -36,6 +36,7 @@ DEFAULT_CORE_CONFIG = {
     "assistApiKeyMimoTokenPlan": "",
     "assistApiKeyElevenlabs": "",
     "assistApiKeyClaude": "",
+    "assistApiKeyOrcarouter": "",
     "assistApiKeyGrok": "",
     "assistApiKeyDoubao": "",
     "assistApiKeyDoubaoTts": "",
@@ -208,6 +209,17 @@ DEFAULT_ASSIST_API_PROFILES = {
         'VISION_MODEL': "openai/gpt-4.1",
         'AGENT_MODEL': "openai/gpt-4.1",
     },
+    'orcarouter': {
+        # OrcaRouter：Anthropic 兼容网关的 OpenAI 兼容端点（/v1/chat/completions），
+        # 模型 id 带 anthropic/ 前缀。纯 OpenAI 兼容通道，无需 provider_type 特判。
+        'OPENROUTER_URL': "https://api.orcarouter.ai/v1",
+        'CONVERSATION_MODEL': "anthropic/claude-sonnet-5",
+        'SUMMARY_MODEL': "anthropic/claude-haiku-4.5",
+        'CORRECTION_MODEL': "anthropic/claude-haiku-4.5",
+        'EMOTION_MODEL': "anthropic/claude-haiku-4.5",
+        'VISION_MODEL': "anthropic/claude-sonnet-5",
+        'AGENT_MODEL': "anthropic/claude-sonnet-5",
+    },
     'grok': {
         'OPENROUTER_URL': "https://api.x.ai/v1",
         'CONVERSATION_MODEL': "grok-4-1-fast-non-reasoning",
@@ -258,6 +270,7 @@ DEFAULT_ASSIST_API_KEY_FIELDS = {
     'elevenlabs': 'ASSIST_API_KEY_ELEVENLABS',
     'claude': 'ASSIST_API_KEY_CLAUDE',
     'openrouter': 'ASSIST_API_KEY_OPENROUTER',
+    'orcarouter': 'ASSIST_API_KEY_ORCAROUTER',
     'grok': 'ASSIST_API_KEY_GROK',
     'doubao': 'ASSIST_API_KEY_DOUBAO',
 }
