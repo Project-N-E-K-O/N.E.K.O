@@ -1173,7 +1173,18 @@ class MijiaPlugin(NekoPluginBase):
                     try:
                         ok = await self.api.control_device(did, selector["siid"], selector["piid"], target)
                         if ok:
-                            return Ok({"success": True, "message": f"✅ 已{action_text}'{display_name}'", "device": display_name, "action": action_text, "value": target})
+                            # 写入成功 ≠ 真机唤醒：回读确认输入源值实际变更为 target
+                            # 才算开机；否则继续回落尝试布尔电源属性（与开关属性同款校验）
+                            try:
+                                chk = await self.api.get_device_properties(
+                                    [{"did": did, "siid": selector["siid"], "piid": selector["piid"]}]
+                                )
+                                actual = chk[0].get("value") if chk else None
+                            except Exception:
+                                actual = None
+                            if actual is not None and actual == target:
+                                return Ok({"success": True, "message": f"✅ 已{action_text}'{display_name}'", "device": display_name, "action": action_text, "value": target})
+                            self.logger.info("输入源写入未确认生效，回落布尔电源属性")
                     except TokenExpiredError:
                         return Err(SdkError("凭据已过期，请重新登录"))
                     except Exception:
