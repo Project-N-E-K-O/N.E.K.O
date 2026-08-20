@@ -16,6 +16,19 @@ from plugin.neko_plugin_cli.paths import CliDefaults
 pytestmark = pytest.mark.plugin_unit
 
 
+@pytest.fixture(autouse=True)
+def _isolate_github_actions_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep the release checks from reading the CI job's own repo and ref.
+
+    On a pull-request run ``GITHUB_REF_NAME`` is ``<pr>/merge`` and
+    ``GITHUB_REPOSITORY`` is this repository, so a market-release check that
+    falls back to the environment reports a tag/version mismatch against the
+    fixture plugin. Tests that exercise those variables set them explicitly.
+    """
+    for name in ("GITHUB_REPOSITORY", "GITHUB_REF_NAME", "GITHUB_REF"):
+        monkeypatch.delenv(name, raising=False)
+
+
 def _git(repo: Path, *args: str) -> str:
     completed = subprocess.run(
         ["git", *args],
