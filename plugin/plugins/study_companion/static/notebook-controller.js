@@ -50,6 +50,7 @@
     let query = '';
     let searchTimer = 0;
     let notesRequest = 0;
+    let noteDetailRequest = 0;
     let busyCount = 0;
 
     const root = el('div', 'study-panel surface-shell notebook-panel');
@@ -322,6 +323,7 @@
     }
 
     async function loadNotes() {
+      noteDetailRequest += 1;
       const requestId = notesRequest += 1;
       const payload = await ctx.callPlugin('study_note_list', noteListArgs());
       if (!isValid() || requestId !== notesRequest) return;
@@ -341,8 +343,9 @@
     }
 
     async function selectNote(noteId) {
+      const requestId = noteDetailRequest += 1;
       const payload = await ctx.callPlugin('study_note_get', { note_id: noteId });
-      if (!isValid()) return;
+      if (!isValid() || requestId !== noteDetailRequest) return;
       selectedNote = payload.note || null;
       drawList();
       drawEditor();

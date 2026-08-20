@@ -6950,6 +6950,84 @@ if (!exportCall || JSON.stringify(exportCall.args.note_ids) !== JSON.stringify([
     assert completed.returncode == 0, completed.stderr or completed.stdout
 
 
+def test_study_companion_notebook_ignores_stale_note_detail_responses() -> None:
+    if shutil.which("node") is None:
+        pytest.skip("node is not installed")
+    plugin_dir = Path(__file__).resolve().parents[3] / "plugins" / "study_companion"
+    frontend_dir = Path(__file__).resolve().parents[4] / "frontend" / "plugin-manager"
+    if not (frontend_dir / "node_modules" / "happy-dom").is_dir():
+        pytest.skip("frontend/plugin-manager node_modules with happy-dom is not installed")
+
+    script = r"""
+import { Window } from 'happy-dom';
+import fs from 'node:fs';
+import path from 'node:path';
+
+const staticDir = process.env.STUDY_COMPANION_STATIC_DIR;
+const notebookJs = fs.readFileSync(path.join(staticDir, 'notebook-controller.js'), 'utf8');
+const window = new Window({ url: 'http://testserver/plugin/study_companion/ui/' });
+const { document } = window;
+const notes = [
+  { id: 'note-1', title: 'First', snippet: 'First summary', content: 'First body', updated_at: '2026-08-20T00:00:00Z' },
+  { id: 'note-2', title: 'Second', snippet: 'Second summary', content: 'Second body', updated_at: '2026-08-20T00:00:00Z' },
+];
+const detailResolvers = new Map();
+async function callPlugin(entryId, args = {}) {
+  if (entryId === 'study_notebook_list') return { notebooks: [] };
+  if (entryId === 'study_note_list') return { notes };
+  if (entryId === 'study_note_get') {
+    return await new Promise((resolve) => detailResolvers.set(args.note_id, resolve));
+  }
+  throw new Error(`Unexpected entry: ${entryId}`);
+}
+const ctx = {
+  t: (_key, fallback) => fallback,
+  tf: (_key, fallback, values) => fallback.replace(/\{([^}]+)\}/g, (_, name) => values[name] ?? ''),
+  label: (surfaceId) => surfaceId,
+  callPlugin,
+  openSurface: () => undefined,
+};
+window.eval(notebookJs);
+const notebook = window.StudyCompanionNotebook.render('notebook-panel', ctx);
+document.body.appendChild(notebook);
+await new Promise((resolve) => setTimeout(resolve, 0));
+await new Promise((resolve) => setTimeout(resolve, 0));
+
+const noteButtons = notebook.querySelectorAll('.notebook-note-row__open');
+noteButtons[0].click();
+noteButtons[1].click();
+detailResolvers.get('note-2')({ note: notes[1] });
+await new Promise((resolve) => setTimeout(resolve, 0));
+detailResolvers.get('note-1')({ note: notes[0] });
+await new Promise((resolve) => setTimeout(resolve, 0));
+if (notebook.querySelector('.notebook-editor input')?.value !== 'Second') {
+  throw new Error('an older detail response replaced the latest note selection');
+}
+
+noteButtons[0].click();
+const refreshButton = [...notebook.querySelectorAll('.notebook-toolbar__actions button')]
+  .find((button) => button.textContent === 'Refresh');
+refreshButton.click();
+await new Promise((resolve) => setTimeout(resolve, 0));
+await new Promise((resolve) => setTimeout(resolve, 0));
+detailResolvers.get('note-1')({ note: notes[0] });
+await new Promise((resolve) => setTimeout(resolve, 0));
+if (notebook.querySelector('.notebook-editor input')?.value !== 'Second') {
+  throw new Error('a detail response survived a note-list refresh');
+}
+"""
+    completed = subprocess.run(
+        ["node", "--input-type=module", "-e", script],
+        cwd=frontend_dir,
+        env={**os.environ, "STUDY_COMPANION_STATIC_DIR": str(plugin_dir / "static")},
+        capture_output=True,
+        text=True,
+        timeout=15,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr or completed.stdout
+
+
 def test_study_companion_note_exporter_is_not_exposed_as_manager_panel() -> None:
     import tomllib
 
