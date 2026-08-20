@@ -498,7 +498,9 @@ async def test_completed_timed_out_embedding_is_cleared_before_model_close(
         async def release(self) -> None:
             model.embedding_release.set()
             assert await asyncio.to_thread(model.embedding_finished.wait, 1.0)
-            await asyncio.sleep(0)
+            task = session.embedding_task
+            assert task is not None
+            await asyncio.wait_for(asyncio.shield(task), timeout=1.0)
             await original_lease.release()
 
     session.lease = ReleaseAfterInference()  # type: ignore[assignment]
