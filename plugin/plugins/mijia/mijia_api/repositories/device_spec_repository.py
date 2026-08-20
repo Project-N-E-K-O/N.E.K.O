@@ -435,10 +435,11 @@ class DeviceSpecRepositoryImpl(IDeviceSpecRepository):
                     # 列表格式: [min, max, step]
                     value_range = range_data
 
-            # 枚举值列表
+            # 枚举值列表：保留完整 dict（含 description/comment），供中文模式名映射。
+            # 拍平成纯 int 会丢失描述，导致 _resolve_enum_value 无法把中文模式转成数值。
             value_list = None
             if "value-list" in prop_data:
-                value_list = [item.get("value") for item in prop_data["value-list"]]
+                value_list = [dict(item) for item in prop_data["value-list"]]
 
             # 单位
             unit = prop_data.get("unit")

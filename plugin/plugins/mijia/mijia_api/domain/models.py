@@ -173,9 +173,15 @@ class DeviceProperty(BaseModel):
                 if step > 0 and (value - self.value_range[0]) % step != 0:
                     return False
 
-        # 枚举检查
-        if self.value_list and value not in self.value_list:
-            return False
+        # 枚举检查（value_list 项可能是 dict {value, description} 或纯值）
+        if self.value_list:
+            first = self.value_list[0]
+            if isinstance(first, dict):
+                allowed = {item.get("value") for item in self.value_list}
+            else:
+                allowed = set(self.value_list)
+            if value not in allowed:
+                return False
 
         return True
 

@@ -180,7 +180,8 @@ class AsyncDeviceSpecRepositoryImpl(IDeviceSpecRepository):
 
             value_list = None
             if "value-list" in prop_data:
-                value_list = [item.get("value") for item in prop_data["value-list"]]
+                # 保留完整 dict（含 description），供中文模式名映射（与同步版一致）
+                value_list = [dict(item) for item in prop_data["value-list"]]
 
             unit = prop_data.get("unit")
 
