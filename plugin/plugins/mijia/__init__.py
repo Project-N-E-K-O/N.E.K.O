@@ -94,7 +94,7 @@ class MijiaPlugin(NekoPluginBase):
                     if not current_user_id or cache_user_id == current_user_id:
                         devices = cached.get("devices", [])
                     else:
-                        self.logger.debug(f"设备缓存归属不匹配(u={cache_user_id}→{current_user_id})，跳过")
+                        self.logger.debug("设备缓存归属不匹配，跳过")
 
                 # 获取场景列表（从缓存，需归属校验防止跨用户泄露）
                 scenes_cache_path = self.data_path("scenes_cache.json")
@@ -108,7 +108,7 @@ class MijiaPlugin(NekoPluginBase):
                     if not current_user_id or cache_user_id == current_user_id:
                         scenes = cached.get("scenes", [])
                     else:
-                        self.logger.debug(f"场景缓存归属不匹配(u={cache_user_id}→{current_user_id})，跳过")
+                        self.logger.debug("场景缓存归属不匹配，跳过")
             except Exception as e:
                 self.logger.warning(f"获取UI状态失败: {e}")
 
@@ -648,13 +648,18 @@ class MijiaPlugin(NekoPluginBase):
         cache_home_id = cached.get('home_id') if cached is not None else None
         cache_user_id = cached.get('user_id') if cached is not None else None
 
-        # 旧缓存里的设备别名（按 DID）：仅在缓存归属严格匹配当前用户时提取，
-        # 否则跨账号共享 DID 会把上一账号的自定义别名泄露并持久化到本账号
+        # 旧缓存里的设备别名与完整设备数据（按 DID）：仅在缓存归属严格匹配当前
+        # 用户时提取，否则跨账号共享 DID 会把上一账号的自定义别名/元数据泄露并
+        # 持久化到本账号
         old_aliases: dict[str, str] = {}
+        old_devices: dict[str, dict] = {}
         if cached is not None and (not current_user_id or cache_user_id == current_user_id):
             for d in cached.get("devices", []) or []:
                 did = d.get("did")
-                if did and d.get("alias"):
+                if not did:
+                    continue
+                old_devices[did] = d
+                if d.get("alias"):
                     old_aliases[did] = d["alias"]
 
         # schema 不匹配：归属校验通过则保留旧 home_id，刷新仍用同一家庭，避免切错
@@ -674,10 +679,7 @@ class MijiaPlugin(NekoPluginBase):
                     lines.append(f"  {status} {d.get('name')} (型号: {d.get('model')})")
                 message = "\n".join(lines)
                 return Ok({"success": True, "message": message, "devices": devices, "from_cache": True, "count": len(devices)})
-            self.logger.warning(
-                f"缓存归属不匹配(user_id: {cache_user_id}→{current_user_id}, "
-                f"home_id: {cache_home_id}→{home_id})，跳过缓存"
-            )
+            self.logger.warning("缓存归属不匹配，跳过缓存")
 
         if not self.api:
             return Err(SdkError("未登录"))
@@ -762,6 +764,14 @@ class MijiaPlugin(NekoPluginBase):
                         raise  # 让外层统一返回"凭据已过期"，不能静默写半残缓存
                     except Exception as e:
                         self.logger.debug(f"获取设备 {d.name}({d.model}) 规格失败: {e}")
+                        # 规格获取失败：回填旧缓存里的 properties/actions，避免不完整
+                        # 缓存以 schema v2 永久生效（下次读取因版本匹配而不再刷新）
+                        old = old_devices.get(d.did)
+                        if old:
+                            if old.get("properties"):
+                                device_info["properties"] = old["properties"]
+                            if old.get("actions"):
+                                device_info["actions"] = old["actions"]
                 
                 result.append(device_info)
 
@@ -833,9 +843,7 @@ class MijiaPlugin(NekoPluginBase):
                         lines.append(f"  {status} {d.get('name')} (型号: {d.get('model')})")
                     message = "\n".join(lines)
                     return Ok({"success": True, "message": message, "devices": devices, "from_cache": True, "count": len(devices)})
-                self.logger.warning(
-                    f"缓存归属不匹配(user_id: {cache_user_id}→{current_user_id})，跳过缓存"
-                )
+                self.logger.warning("缓存归属不匹配，跳过缓存")
 
         # 缓存不存在或刷新，调用 list_devices
         return await self.list_devices(refresh=refresh)
@@ -877,10 +885,7 @@ class MijiaPlugin(NekoPluginBase):
                         lines.append(f"  • {s.get('name')} (ID: {s.get('id')})")
                     message = "\n".join(lines)
                     return Ok({"success": True, "message": message, "scenes": scenes, "from_cache": True, "count": len(scenes)})
-                self.logger.warning(
-                    f"场景缓存归属不匹配(user_id: {cache_user_id}→{current_user_id}, "
-                    f"home_id: {cache_home_id}→{home_id})，跳过缓存"
-                )
+                self.logger.warning("场景缓存归属不匹配，跳过缓存")
 
         if not self.api:
             return Err(SdkError("未登录"))
@@ -1168,44 +1173,8 @@ class MijiaPlugin(NekoPluginBase):
                 return a
         return None
 
-    @staticmethod
-    def _find_input_selector_prop(props: list[dict]) -> Optional[dict]:
-        """查找输入源选择属性（TV/投影类设备：uint/int + value_list + 名字含 input/source/channel）。
-
-        这类设备云端没有可写的 power 属性，设输入源会唤醒电视（实测 xiaomi.tv.rmh1）。
-        """
-        for p in props:
-            if p.get("access") not in ["write", "read_write", "notify_read_write"]:
-                continue
-            pname = (p.get("name") or "").lower()
-            if not any(k in pname for k in ["input", "source", "channel"]):
-                continue
-            ptype = (p.get("type") or "").lower()
-            if ptype not in ("uint", "uint8", "uint16", "uint32", "int", "int8", "int16", "int32"):
-                continue
-            if p.get("value_list"):
-                return p
-        return None
-
-    @staticmethod
-    def _has_bool_power_prop(props: list[dict]) -> bool:
-        """是否存在真正的 bool 型电源属性（名称含 power/switch/开关/电源）。
-
-        不含裸 "on"（is-on 是 speaker-mode 状态，非电源）；用于判断输入源唤醒
-        是否让位于真正的电源属性。
-        """
-        for p in props:
-            if p.get("type") != "bool":
-                continue
-            if p.get("access") not in ["write", "read_write", "notify_read_write"]:
-                continue
-            pname = (p.get("name") or "").lower()
-            if any(k in pname for k in ["开关", "电源", "power", "switch"]):
-                return True
-        return False
-
     async def _execute_switch(self, props: list[dict], actions: list[dict], did: str, display_name: str, value: Any, command: str) -> Any:
-        """执行二元开关控制（电源动作 → 输入源唤醒 → 开关属性，含多控开关方位词匹配）"""
+        """执行二元开关控制（电源动作 → 开关属性，含多控开关方位词匹配）"""
         action_text = "打开" if value else "关闭"
 
         # 1) 电源动作优先；网关不支持动作时（如 /miotspec/action 返回 -6）回落属性通道。
@@ -1224,60 +1193,7 @@ class MijiaPlugin(NekoPluginBase):
             except Exception as e:
                 self.logger.info(f"电源动作不可用，回落属性控制: {e}")
 
-        # 2) 打开命令：输入源选择属性唤醒（仅当设备没有真正的 bool 电源属性时——
-        # 电视等设备无 power 属性，靠写输入源唤醒；若同时有电源属性，优先走属性通道，
-        # 避免被输入源路径抢先而跳过真正的电源属性）
-        if value is True and not self._has_bool_power_prop(props):
-            selector = self._find_input_selector_prop(props)
-            if selector:
-                # value_list 可能是 dict 列表 [{value,...}] 或纯值列表 [1,2,3]（标准解析器扁平化）
-                raw_values = selector.get("value_list") or []
-                values = [
-                    item.get("value") if isinstance(item, dict) else item
-                    for item in raw_values
-                    if item is not None
-                ]
-                cur = None
-                try:
-                    res = await self.api.get_device_properties(
-                        [{"did": did, "siid": selector["siid"], "piid": selector["piid"]}]
-                    )
-                    cur = res[0].get("value") if res else None
-                except TokenExpiredError:
-                    return Err(SdkError("凭据已过期，请重新登录"))
-                except Exception:
-                    cur = None
-                # 电视在线时写回当前输入源；离线/读失败时写 HDMI 1（4），
-                # 不在列表则用列表第一个值
-                target = cur if cur in values else (4 if 4 in values else (values[0] if values else None))
-                if target is not None:
-                    try:
-                        ok = await self.api.control_device(did, selector["siid"], selector["piid"], target)
-                        if ok:
-                            post = None
-                            try:
-                                chk = await self.api.get_device_properties(
-                                    [{"did": did, "siid": selector["siid"], "piid": selector["piid"]}]
-                                )
-                                post = chk[0].get("value") if chk else None
-                            except Exception:
-                                post = None
-                            # 只有观察到"值实际从可读的旧值变更到 target"才确认唤醒。
-                            # 写前读不到值（cur 为 None）时无法用输入源回读确认真实电源
-                            # 状态 → 不报开机成功（返回未确认），避免云端缓存回显造成假成功
-                            if post is not None and post == target and cur is not None and cur != target:
-                                return Ok({"success": True, "message": f"✅ 已{action_text}'{display_name}'", "device": display_name, "action": action_text, "value": target})
-                            return Err(SdkError(self.i18n.t(
-                                "switch.wake_unconfirmed",
-                                default="已向'{name}'发送开机指令，但无法确认是否已唤醒",
-                                name=display_name,
-                            )))
-                    except TokenExpiredError:
-                        return Err(SdkError("凭据已过期，请重新登录"))
-                    except Exception:
-                        pass  # 写入失败，继续回落
-
-        # 3) 收集所有可写的开关属性
+        # 2) 收集所有可写的开关属性
         switch_props = []
         for p in props:
             pname = p.get("name", "").lower()

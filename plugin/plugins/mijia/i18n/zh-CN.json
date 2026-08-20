@@ -177,7 +177,6 @@
   "error.status_load_failed": "状态加载失败：",
   "error.unknown": "未知错误",
   "switch.action_rejected": "对'{name}'执行'{action}'操作失败（动作被拒绝）",
-  "switch.wake_unconfirmed": "已向'{name}'发送开机指令，但无法确认是否已唤醒",
   "switch.no_response": "{action}'{name}'失败：设备未响应电源控制（{name} 可能不支持云端开关）"
 
 }

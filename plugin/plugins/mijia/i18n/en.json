@@ -177,7 +177,6 @@
   "error.status_load_failed": "Status load failed: ",
   "error.unknown": "Unknown error",
   "switch.action_rejected": "Failed to {action} '{name}' (action rejected)",
-  "switch.wake_unconfirmed": "Sent power-on command to '{name}', but could not confirm it woke up",
   "switch.no_response": "{action} '{name}' failed: device did not respond to power control (may not support cloud switch)"
 
 }

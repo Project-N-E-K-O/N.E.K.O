@@ -177,7 +177,6 @@
   "error.status_load_failed": "Falha ao carregar o estado: ",
   "error.unknown": "Erro desconhecido",
   "switch.action_rejected": "Falha ao executar '{action}' em '{name}' (ação rejeitada)",
-  "switch.wake_unconfirmed": "Comando de ligar enviado para '{name}', mas não foi possível confirmar se despertou",
   "switch.no_response": "{action} '{name}' falhou: o dispositivo não respondeu ao controle de energia (pode não suportar interruptor em nuvem)"
 
 }

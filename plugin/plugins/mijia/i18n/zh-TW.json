@@ -177,7 +177,6 @@
   "error.status_load_failed": "狀態載入失敗：",
   "error.unknown": "未知錯誤",
   "switch.action_rejected": "對'{name}'執行'{action}'操作失敗（動作被拒絕）",
-  "switch.wake_unconfirmed": "已向'{name}'發送開機指令，但無法確認是否已喚醒",
   "switch.no_response": "{action}'{name}'失敗：裝置未回應電源控制（{name} 可能不支援雲端開關）"
 
 }

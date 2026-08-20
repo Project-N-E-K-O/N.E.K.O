@@ -177,7 +177,6 @@
   "error.status_load_failed": "状態の読み込みに失敗しました：",
   "error.unknown": "不明なエラー",
   "switch.action_rejected": "「{name}」の「{action}」操作に失敗しました（拒否されました）",
-  "switch.wake_unconfirmed": "「{name}」に電源投入コマンドを送信しましたが、起動を確認できませんでした",
   "switch.no_response": "「{name}」の{action}に失敗：電源制御に応答しません（クラウドスイッチ非対応の可能性）"
 
 }
