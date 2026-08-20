@@ -35,8 +35,11 @@ import re
 import json
 from contextlib import suppress
 from pathlib import Path
+from typing import Literal
+from urllib.parse import quote
 
 from fastapi import APIRouter, Request
+from pydantic import BaseModel, Field
 from utils.character_name import validate_character_name
 from utils.character_memory import (
     character_memory_exists,
@@ -72,6 +75,177 @@ router = APIRouter(prefix="/api/memory", tags=["memory"])
 VALID_RECENT_FILENAME_PATTERN = re.compile(r'^recent_.+\.json$')
 PATH_ERROR_INVALID_REQUEST = "INVALID_REQUEST"
 PATH_ERROR_NOT_FOUND = "NOT_FOUND"
+REPETITION_INSIGHT_LANGUAGES = frozenset(
+    {"en", "es", "pt", "ru", "ja", "ko", "zh-CN", "zh-TW"}
+)
+
+
+class RepetitionInsightsRequest(BaseModel):
+    character_name: str
+    language: str
+    assistant_message_limit: int = Field(default=100, ge=3, le=100)
+    # Kept only for compatibility with older clients. Message-scoped reports
+    # no longer use this value.
+    effect_days: Literal[7, 30, 90] = 30
+
+
+class RepetitionEffectsResetRequest(BaseModel):
+    character_name: str
+
+
+def _empty_repetition_effects(days: int) -> dict:
+    return {
+        "schema_version": "anti-repeat-effects/v1",
+        "source_available": False,
+        "started_at": 0.0,
+        "period_days": days,
+        "totals": {
+            "soft_hint_injected": 0,
+            "detected": 0,
+            "regen_triggered": 0,
+            "regen_guard_passed": 0,
+            "blocked_delivery": 0,
+            "break_reminder_suppressed": 0,
+            "abandoned_user_interaction": 0,
+            "unattributed": 0,
+        },
+        "reason_counts": {
+            "bm25": 0,
+            "literal_similarity": 0,
+            "unanswered_repeat": 0,
+        },
+        "bm25": {
+            "pair_count": 0,
+            "average_before": 0.0,
+            "average_after": 0.0,
+            "reduction_ratio": 0.0,
+        },
+        "patterns": [],
+    }
+
+
+def _empty_message_scoped_repetition_effects(limit: int) -> dict:
+    effects = _empty_repetition_effects(30)
+    effects.pop("period_days", None)
+    effects.update(
+        {
+            "scope_type": "assistant_messages",
+            "assistant_message_limit": limit,
+            "linked_message_count": 0,
+        }
+    )
+    return effects
+
+
+def _is_safe_containment_phrase(language: str, phrase: str) -> bool:
+    compact = re.sub(r"\s+", "", phrase)
+    if language in {"ja", "ko", "zh-CN", "zh-TW"}:
+        return len(compact) >= 4
+    return len(phrase) >= 4 and len(phrase.split()) >= 2
+
+
+def _is_runtime_detector_signature(language: str, phrase: str, reasons: object) -> bool:
+    if not isinstance(reasons, dict) or not any(
+        int(reasons.get(reason, 0)) > 0 for reason in ("bm25", "unanswered_repeat")
+    ):
+        return False
+    compact = re.sub(r"\s+", "", phrase)
+    if language in {"ja", "ko", "zh-CN", "zh-TW"}:
+        return len(compact) in {2, 3}
+    return len(phrase) >= 2 and len(phrase.split()) == 1
+
+
+def _repetition_association_language(language: str) -> str:
+    """Use one comparison key for legacy Simplified Chinese effect records."""
+    return "zh-CN" if language in {"zh", "zh-CN"} else language
+
+
+def _phrases_contain_each_other(language: str, left: str, right: str) -> bool:
+    left_tokens = left.split()
+    right_tokens = right.split()
+    use_token_boundaries = language in {"en", "es", "pt", "ru"} or (
+        language == "ko" and len(left_tokens) > 1 and len(right_tokens) > 1
+    )
+    if not use_token_boundaries:
+        return left in right or right in left
+
+    shorter, longer = sorted((left_tokens, right_tokens), key=len)
+    width = len(shorter)
+    return any(
+        longer[start : start + width] == shorter
+        for start in range(len(longer) - width + 1)
+    )
+
+
+def _associate_repetition_effects(
+    candidates: list,
+    patterns: list,
+) -> list[dict]:
+    associations: list[dict] = []
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            continue
+        language = candidate.get("language")
+        candidate_phrase = candidate.get("normalized_phrase")
+        if not isinstance(language, str) or not isinstance(candidate_phrase, str):
+            continue
+        association_language = _repetition_association_language(language)
+        for pattern in patterns:
+            if not isinstance(pattern, dict):
+                continue
+            pattern_language = pattern.get("language")
+            if (
+                not isinstance(pattern_language, str)
+                or _repetition_association_language(pattern_language)
+                != association_language
+            ):
+                continue
+            effect_phrase = pattern.get("normalized_phrase")
+            if not isinstance(effect_phrase, str):
+                continue
+            association_type = None
+            if effect_phrase == candidate_phrase:
+                association_type = "exact"
+            elif (
+                _is_safe_containment_phrase(language, candidate_phrase)
+                and (
+                    _is_safe_containment_phrase(language, effect_phrase)
+                    or _is_runtime_detector_signature(
+                        language,
+                        effect_phrase,
+                        pattern.get("reasons"),
+                    )
+                )
+                and _phrases_contain_each_other(
+                    association_language,
+                    candidate_phrase,
+                    effect_phrase,
+                )
+            ):
+                association_type = "contained"
+            if association_type is None:
+                continue
+            associations.append(
+                {
+                    "normalized_phrase": candidate_phrase,
+                    "language": language,
+                    "effect_normalized_phrase": effect_phrase,
+                    "association_type": association_type,
+                    "detected_count": int(pattern.get("detected_count", 0)),
+                    "regen_triggered_count": int(
+                        pattern.get("regen_triggered_count", 0)
+                    ),
+                    "regen_guard_passed_count": int(
+                        pattern.get("regen_guard_passed_count", 0)
+                    ),
+                    "blocked_count": int(pattern.get("blocked_count", 0)),
+                    "residual_occurrence_count": int(
+                        candidate.get("occurrence_count", 0)
+                    ),
+                    "residual_message_count": int(candidate.get("message_count", 0)),
+                }
+            )
+    return associations
 
 
 async def _await_browser_save_transaction(coro):
@@ -337,6 +511,167 @@ def safe_memory_path(memory_dir: Path, filename: str) -> tuple[Path | None, str]
 
 logger = get_module_logger(__name__, "Main")
 
+
+@router.post('/repetition_insights')
+async def repetition_insights(request: RepetitionInsightsRequest):
+    """Run an explicit, local-only review of persisted assistant text."""
+    validation = validate_character_name(request.character_name, allow_dots=True)
+    if not validation.ok and validation.code != "reserved_route_name":
+        return JSONResponse(
+            {"success": False, "error": "invalid character name"},
+            status_code=422,
+        )
+    character_name = validation.normalized
+    if request.language not in REPETITION_INSIGHT_LANGUAGES:
+        return JSONResponse(
+            {"success": False, "error": "unsupported analysis language"},
+            status_code=422,
+        )
+
+    try:
+        from config import MEMORY_SERVER_PORT
+        from utils.config_manager import get_config_manager
+        from utils.internal_http_client import get_internal_http_client
+
+        config_manager = get_config_manager()
+        characters = await config_manager.aload_characters()
+        configured_characters = (
+            characters.get("猫娘", {}) if isinstance(characters, dict) else {}
+        )
+        if (
+            character_name not in configured_characters
+            and not character_memory_exists(config_manager, character_name)
+        ):
+            return JSONResponse(
+                {"success": False, "error": "character not found"},
+                status_code=404,
+            )
+
+        response = await get_internal_http_client().post(
+            "http://127.0.0.1:"
+            f"{MEMORY_SERVER_PORT}/internal/memory/"
+            f"{quote(character_name, safe='')}/repetition_insights",
+            json={
+                "language": request.language,
+                "assistant_message_limit": request.assistant_message_limit,
+            },
+            timeout=30.0,
+        )
+        if response.status_code != 200:
+            status_code = response.status_code
+            if status_code not in {404, 422, 503}:
+                status_code = 503
+            return JSONResponse(
+                {"success": False, "error": "local memory analysis unavailable"},
+                status_code=status_code,
+            )
+        payload = response.json()
+        if not isinstance(payload, dict):
+            raise ValueError("invalid local memory analysis response")
+        response_ids = payload.pop("_anti_repeat_response_ids", None)
+        message_scoped = isinstance(response_ids, list)
+        effects = (
+            _empty_message_scoped_repetition_effects(
+                request.assistant_message_limit
+            )
+            if message_scoped
+            else _empty_repetition_effects(request.effect_days)
+        )
+        try:
+            from memory.anti_repeat_effects import get_anti_repeat_effect_store
+
+            effect_store = get_anti_repeat_effect_store()
+            if message_scoped:
+                queried_effects = await asyncio.to_thread(
+                    effect_store.query_effects_for_responses,
+                    character_name,
+                    response_ids,
+                    request.assistant_message_limit,
+                )
+            else:
+                queried_effects = await asyncio.to_thread(
+                    effect_store.query_effects,
+                    character_name,
+                    request.effect_days,
+                )
+            if isinstance(queried_effects, dict):
+                effects = queried_effects
+            else:
+                effects["query_failed"] = True
+        except Exception as exc:
+            effects["query_failed"] = True
+            logger.warning(
+                "Local anti-repeat effects unavailable for %s: %s",
+                character_name,
+                type(exc).__name__,
+            )
+        candidates = payload.get("candidates")
+        patterns = effects.get("patterns")
+        payload["effectiveness"] = effects
+        payload["associations"] = _associate_repetition_effects(
+            candidates if isinstance(candidates, list) else [],
+            patterns if isinstance(patterns, list) else [],
+        )
+        return payload
+    except Exception as exc:
+        logger.warning(
+            "Local repetition analysis unavailable for %s: %s",
+            character_name,
+            type(exc).__name__,
+        )
+        return JSONResponse(
+            {"success": False, "error": "local memory analysis unavailable"},
+            status_code=503,
+        )
+
+
+@router.post('/repetition_effects/reset')
+async def reset_repetition_effects(request: RepetitionEffectsResetRequest):
+    """Clear only local anti-repeat aggregates for one existing character."""
+    validation = validate_character_name(request.character_name, allow_dots=True)
+    if not validation.ok and validation.code != "reserved_route_name":
+        return JSONResponse(
+            {"success": False, "error": "invalid character name"},
+            status_code=422,
+        )
+    character_name = validation.normalized
+    try:
+        from memory.anti_repeat_effects import get_anti_repeat_effect_store
+        from utils.config_manager import get_config_manager
+
+        config_manager = get_config_manager()
+        characters = await config_manager.aload_characters()
+        configured_characters = (
+            characters.get("猫娘", {}) if isinstance(characters, dict) else {}
+        )
+        if (
+            character_name not in configured_characters
+            and not character_memory_exists(config_manager, character_name)
+        ):
+            return JSONResponse(
+                {"success": False, "error": "character not found"},
+                status_code=404,
+            )
+        await asyncio.to_thread(
+            get_anti_repeat_effect_store().clear_effects,
+            character_name,
+        )
+        logger.info("Cleared anti-repeat effects for character=%s", character_name)
+        return {
+            "success": True,
+            "character_name": character_name,
+            "cleared": True,
+        }
+    except Exception as exc:
+        logger.warning(
+            "Could not clear anti-repeat effects for %s: %s",
+            character_name,
+            type(exc).__name__,
+        )
+        return JSONResponse(
+            {"success": False, "error": "local anti-repeat effects unavailable"},
+            status_code=503,
+        )
 
 def _recent_browser_fingerprint(content: str) -> str:
     """Return the optimistic-concurrency token for one browser snapshot."""

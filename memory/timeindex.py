@@ -21,9 +21,12 @@ from utils.config_manager import get_config_manager
 from utils.logger_config import get_module_logger
 from collections.abc import AsyncIterator, Generator, Iterator
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass, field
 from datetime import datetime
 import asyncio
+import json
 import os
+import re
 import unicodedata
 
 logger = get_module_logger(__name__, "Memory")
@@ -40,6 +43,125 @@ FACT_NEAR_DUP_ARBITRATE_OVERLAP = 0.25
 # （那边超时 60s），而投递发生在**已经提交完** fact 之后的请求路径上——为一
 # 次无关的后台仲裁把请求拖住一分钟不值得。等不到就放掉：这是尽力而为的旁路。
 FACT_NEAR_DUP_ENQUEUE_TIMEOUT_SECONDS = 5.0
+
+
+@dataclass(frozen=True)
+class LatestAssistantTexts:
+    """Bounded text-only assistant history returned by a read-only query."""
+
+    messages: list[str]
+    source_available: bool
+    skipped_row_count: int = 0
+    response_ids: list[str] = field(default_factory=list)
+
+
+_ANTI_REPEAT_RESPONSE_ID_KEY = "anti_repeat_response_id"
+_ANTI_REPEAT_VISIBLE_TEXT_LENGTH_KEY = "anti_repeat_visible_text_length"
+
+_LEGACY_PROACTIVE_ACTION_NOTE_PATTERNS = tuple(
+    re.compile(pattern)
+    for pattern in (
+        r'\[给[^\r\n]+放了《[^\r\n]+》— [^\r\n]+\]',
+        r'\[給[^\r\n]+放了《[^\r\n]+》— [^\r\n]+\]',
+        r'\[Played for [^\r\n]+: "[^\r\n]+" by [^\r\n]+\]',
+        r"\[[^\r\n]+に再生した曲：『[^\r\n]+』— [^\r\n]+\]",
+        r"\[[^\r\n]+에게 재생한 곡: 《[^\r\n]+》 — [^\r\n]+\]",
+        r"\[Для [^\r\n]+: «[^\r\n]+» — [^\r\n]+\]",
+        r'\[Reprodujo para [^\r\n]+: "[^\r\n]+" de [^\r\n]+\]',
+        r'\[Tocou para [^\r\n]+: "[^\r\n]+" de [^\r\n]+\]',
+        r"\[给[^\r\n]+分享了表情包：《[^\r\n]+》（来自 [^\r\n]+）\]",
+        r"\[給[^\r\n]+分享了梗圖：《[^\r\n]+》（來自 [^\r\n]+）\]",
+        r'\[Sent [^\r\n]+ a meme: "[^\r\n]+" \(from [^\r\n]+\)\]',
+        r"\[[^\r\n]+に送ったスタンプ：『[^\r\n]+』（[^\r\n]+ より）\]",
+        r"\[[^\r\n]+에게 보낸 짤: 《[^\r\n]+》 \([^\r\n]+ 출처\)\]",
+        r"\[Отправлено для [^\r\n]+: «[^\r\n]+» \(из [^\r\n]+\)\]",
+        r'\[Envió a [^\r\n]+ un meme: "[^\r\n]+" \(de [^\r\n]+\)\]',
+        r'\[Enviou a [^\r\n]+ um meme: "[^\r\n]+" \(de [^\r\n]+\)\]',
+        r"\[给[^\r\n]+分享了《[^\r\n]+》（来自 [^\r\n]+）\]",
+        r"\[給[^\r\n]+分享了《[^\r\n]+》（來自 [^\r\n]+）\]",
+        r'\[Shared with [^\r\n]+: "[^\r\n]+" \(from [^\r\n]+\)\]',
+        r"\[[^\r\n]+にシェアした内容：『[^\r\n]+』（[^\r\n]+ より）\]",
+        r"\[[^\r\n]+에게 공유한 내용: 《[^\r\n]+》 \([^\r\n]+ 출처\)\]",
+        r"\[Поделено для [^\r\n]+: «[^\r\n]+» \(из [^\r\n]+\)\]",
+        r'\[Compartió con [^\r\n]+: "[^\r\n]+" \(de [^\r\n]+\)\]',
+        r'\[Compartilhou com [^\r\n]+: "[^\r\n]+" \(de [^\r\n]+\)\]',
+    )
+)
+
+
+def _strip_legacy_proactive_action_note(content: str) -> str:
+    """Remove one recognized history-only note from a legacy assistant record."""
+    trimmed = content.rstrip()
+    visible, separator, final_line = trimmed.rpartition("\n")
+    note = final_line.strip() if separator else trimmed
+    if any(pattern.fullmatch(note) for pattern in _LEGACY_PROACTIVE_ACTION_NOTE_PATTERNS):
+        return visible.rstrip() if separator else ""
+    return content
+
+
+def _assistant_record_from_stored_message(
+    message_raw: object,
+) -> tuple[str, str | None] | None:
+    """Return assistant text plus its optional local anti-repeat response ID."""
+    if isinstance(message_raw, (bytes, bytearray)):
+        try:
+            message_raw = message_raw.decode("utf-8")
+        except UnicodeDecodeError:
+            return None
+    if isinstance(message_raw, str):
+        try:
+            message_raw = json.loads(message_raw)
+        except json.JSONDecodeError:
+            return None
+    if not isinstance(message_raw, dict) or message_raw.get("type") != "ai":
+        return None
+    data = message_raw.get("data")
+    if not isinstance(data, dict):
+        return None
+
+    response_id = None
+    visible_text_length = None
+    additional_kwargs = data.get("additional_kwargs")
+    if isinstance(additional_kwargs, dict):
+        raw_response_id = additional_kwargs.get(_ANTI_REPEAT_RESPONSE_ID_KEY)
+        if isinstance(raw_response_id, str):
+            normalized_response_id = raw_response_id.strip()
+            if 0 < len(normalized_response_id) <= 128:
+                response_id = normalized_response_id
+        raw_visible_length = additional_kwargs.get(
+            _ANTI_REPEAT_VISIBLE_TEXT_LENGTH_KEY
+        )
+        if isinstance(raw_visible_length, str) and raw_visible_length.isdigit():
+            visible_text_length = int(raw_visible_length)
+
+    content = data.get("content")
+    if isinstance(content, str):
+        if visible_text_length is not None:
+            if visible_text_length > len(content):
+                return None
+            content = content[:visible_text_length]
+        else:
+            content = _strip_legacy_proactive_action_note(content)
+        text_content = content.strip()
+        return (text_content, response_id) if text_content else None
+    if not isinstance(content, list):
+        return None
+
+    text_parts: list[str] = []
+    for block in content:
+        if not isinstance(block, dict) or block.get("type") != "text":
+            continue
+        text_value = block.get("text")
+        if isinstance(text_value, str) and text_value.strip():
+            text_parts.append(text_value.strip())
+    joined = "\n".join(text_parts).strip()
+    return (joined, response_id) if joined else None
+
+
+def _assistant_text_from_stored_message(message_raw: object) -> str | None:
+    """Return assistant text from one LangChain history cell, if present."""
+    record = _assistant_record_from_stored_message(message_raw)
+    return record[0] if record is not None else None
 
 
 def _next_readonly_batch(
@@ -595,6 +717,120 @@ class TimeIndexedMemory:
     async def aretrieve_original_by_timeframe(self, lanlan_name, start_time, end_time, limit_rows: int | None = None):
         return await asyncio.to_thread(
             self.retrieve_original_by_timeframe, lanlan_name, start_time, end_time, limit_rows
+        )
+
+    def retrieve_latest_assistant_texts(
+        self,
+        lanlan_name: str,
+        limit: int,
+        *,
+        batch_size: int = 256,
+    ) -> LatestAssistantTexts:
+        """Read the latest text-bearing assistant messages without writing.
+
+        SQLite rows are scanned newest-first so a bounded UI request does not
+        materialize the whole history. The returned messages are reversed back
+        into chronological order before analysis.
+        """
+        if limit < 1:
+            raise ValueError("limit must be greater than zero")
+        if batch_size < 1:
+            raise ValueError("batch_size must be greater than zero")
+        try:
+            if not self._ensure_engine_exists(lanlan_name, readonly=True):
+                return LatestAssistantTexts([], False)
+        except MaintenanceModeError:
+            return LatestAssistantTexts([], False)
+
+        table_name = self._validate_table_name(TIME_ORIGINAL_TABLE_NAME)
+        try:
+            with self.engines[lanlan_name].connect() as conn:
+                columns = conn.execute(
+                    text(f"PRAGMA table_info({table_name})")
+                ).fetchall()
+        except Exception as exc:
+            logger.warning(
+                "[TimeIndexedMemory] latest assistant schema read failed for %s: %s",
+                lanlan_name,
+                type(exc).__name__,
+            )
+            raise RuntimeError("latest assistant history read failed") from exc
+        has_timestamp = any(str(row[1]).lower() == "timestamp" for row in columns)
+
+        cursor: tuple[object, int] | None = None
+        records: list[tuple[str, str | None]] = []
+        skipped_row_count = 0
+
+        while len(records) < limit:
+            timestamp_expression = "timestamp" if has_timestamp else "NULL"
+            sql = (
+                f"SELECT {timestamp_expression}, rowid, message FROM {table_name} "
+                "WHERE 1=1"
+            )
+            params: dict[str, object] = {"page_size": batch_size}
+            if cursor is not None:
+                cursor_timestamp, cursor_rowid = cursor
+                if not has_timestamp:
+                    sql += " AND rowid < :cursor_rowid"
+                elif cursor_timestamp is None:
+                    sql += " AND timestamp IS NULL AND rowid < :cursor_rowid"
+                else:
+                    sql += (
+                        " AND (timestamp IS NULL OR timestamp < :cursor_timestamp "
+                        "OR (timestamp = :cursor_timestamp AND rowid < :cursor_rowid))"
+                    )
+                    params["cursor_timestamp"] = cursor_timestamp
+                params["cursor_rowid"] = cursor_rowid
+            if has_timestamp:
+                sql += " ORDER BY timestamp DESC NULLS LAST, rowid DESC LIMIT :page_size"
+            else:
+                sql += " ORDER BY rowid DESC LIMIT :page_size"
+
+            try:
+                with self.engines[lanlan_name].connect() as conn:
+                    rows = conn.execute(text(sql), params).fetchall()
+            except Exception as exc:
+                logger.warning(
+                    "[TimeIndexedMemory] latest assistant history read failed for %s: %s",
+                    lanlan_name,
+                    type(exc).__name__,
+                )
+                raise RuntimeError("latest assistant history read failed") from exc
+
+            if not rows:
+                break
+            for row in rows:
+                assistant_record = _assistant_record_from_stored_message(row[2])
+                if assistant_record is None:
+                    skipped_row_count += 1
+                    continue
+                records.append(assistant_record)
+                if len(records) >= limit:
+                    break
+            cursor = (rows[-1][0], int(rows[-1][1]))
+            if len(rows) < batch_size:
+                break
+
+        records.reverse()
+        return LatestAssistantTexts(
+            [message for message, _response_id in records],
+            True,
+            skipped_row_count,
+            [response_id for _message, response_id in records if response_id],
+        )
+
+    async def aretrieve_latest_assistant_texts(
+        self,
+        lanlan_name: str,
+        limit: int,
+        *,
+        batch_size: int = 256,
+    ) -> LatestAssistantTexts:
+        return await asyncio.to_thread(
+            self.retrieve_latest_assistant_texts,
+            lanlan_name,
+            limit,
+            batch_size=batch_size,
         )
 
     def _fetch_original_timeframe_page(

@@ -62,9 +62,15 @@
     let memoryRoleHoverCloseTimer = 0;
     let memoryRolePanelInitialized = false;
     let memoryRoleListRequestId = 0;
-    const MEMORY_AUXILIARY_PANEL_NAMES = ['settings', 'guide', 'import'];
+    const MEMORY_AUXILIARY_PANEL_NAMES = ['settings', 'guide', 'import', 'insights'];
     let activeMemoryAuxiliaryPanel = '';
     let memoryAuxiliaryPanelOpener = null;
+    let repetitionInsightsReport = null;
+    let repetitionInsightsBusy = false;
+    let repetitionInsightsRequestId = 0;
+    let repetitionInsightsStatus = null;
+    let repetitionInsightsLanguageTouched = false;
+    const repetitionInsightsIgnored = new Set();
     let memoryExportLogsBusy = false;
     let memoryExportLogsStatusTimer = 0;
     const MEMORY_EXPORT_LOGS_SUCCESS_MS = 2600;
@@ -919,6 +925,707 @@
         return document.getElementById('memory-' + name + '-panel');
     }
 
+    function repetitionInsightLanguageFromLocale() {
+        const raw = String(
+            (window.i18n && window.i18n.language)
+            || document.documentElement.lang
+            || 'en'
+        ).replace('_', '-').toLowerCase();
+        if (raw === 'zh-tw' || raw === 'zh-hant') return 'zh-TW';
+        if (raw === 'zh' || raw === 'zh-cn' || raw === 'zh-hans') return 'zh-CN';
+        const base = raw.split('-')[0];
+        return ['en', 'es', 'pt', 'ru', 'ja', 'ko'].includes(base) ? base : 'en';
+    }
+
+    function repetitionInsightCandidateKey(candidate) {
+        return String(candidate.language || '') + '\u0000' + String(candidate.normalized_phrase || '');
+    }
+
+    function repetitionInsightAssociations(candidate) {
+        if (!repetitionInsightsReport || !Array.isArray(repetitionInsightsReport.associations)) {
+            return [];
+        }
+        const key = repetitionInsightCandidateKey(candidate);
+        return repetitionInsightsReport.associations.filter(function (association) {
+            return repetitionInsightCandidateKey(association) === key;
+        });
+    }
+
+    function setRepetitionInsightsStatus(key, fallback, kind, options) {
+        repetitionInsightsStatus = key
+            ? { key: key, fallback: fallback, kind: kind || '', options: options || {} }
+            : null;
+        refreshRepetitionInsightsStatus();
+    }
+
+    function refreshRepetitionInsightsStatus() {
+        const status = document.getElementById('memory-insights-status');
+        if (!status) return;
+        status.textContent = repetitionInsightsStatus
+            ? translate(
+                repetitionInsightsStatus.key,
+                repetitionInsightsStatus.fallback,
+                repetitionInsightsStatus.options
+            )
+            : '';
+        status.className = 'memory-insights-status'
+            + (repetitionInsightsStatus && repetitionInsightsStatus.kind
+                ? ' is-' + repetitionInsightsStatus.kind
+                : '');
+    }
+
+    function repetitionInsightCharacterEntries() {
+        return Array.from(document.querySelectorAll('#memory-file-list .cat-btn[data-filename]'))
+            .map(function (button) {
+                return {
+                    name: String(button.dataset.catname || '').trim(),
+                    filename: String(button.dataset.filename || '').trim()
+                };
+            })
+            .filter(function (entry) { return entry.name && entry.filename; });
+    }
+
+    function syncRepetitionInsightsCharacterSelect() {
+        const select = document.getElementById('memory-insights-character-select');
+        if (!select) return;
+        const entries = repetitionInsightCharacterEntries();
+        if (currentCatName && !entries.some(function (entry) { return entry.name === currentCatName; })) {
+            entries.unshift({ name: currentCatName, filename: '' });
+        }
+        const noCharacterLabel = translate(
+            'memory.repetitionInsightsNoCharacter',
+            'No character selected'
+        );
+        const signature = JSON.stringify({ entries: entries, noCharacterLabel: noCharacterLabel });
+        if (select.dataset.entries !== signature) {
+            select.textContent = '';
+            if (!currentCatName) {
+                const placeholder = document.createElement('option');
+                placeholder.value = '';
+                placeholder.textContent = noCharacterLabel;
+                placeholder.disabled = true;
+                select.appendChild(placeholder);
+            }
+            entries.forEach(function (entry) {
+                const option = document.createElement('option');
+                option.value = entry.name;
+                option.dataset.filename = entry.filename;
+                option.textContent = entry.name;
+                select.appendChild(option);
+            });
+            select.dataset.entries = signature;
+        }
+        select.value = currentCatName || '';
+        select.disabled = repetitionInsightsBusy || !!window._memoryImportInProgress || !entries.length;
+    }
+
+    function syncRepetitionInsightsControls() {
+        const character = document.getElementById('memory-insights-character');
+        if (character) {
+            character.textContent = currentCatName || translate(
+                'memory.repetitionInsightsNoCharacter',
+                'No character selected'
+            );
+            character.title = currentCatName || '';
+        }
+        syncRepetitionInsightsCharacterSelect();
+        const analyze = document.getElementById('memory-insights-analyze');
+        const clear = document.getElementById('memory-insights-clear');
+        const exportButton = document.getElementById('memory-insights-export');
+        const resetEffects = document.getElementById('memory-insights-reset-effects');
+        const filterIds = [
+            'memory-insights-query',
+            'memory-insights-coverage-filter',
+            'memory-insights-effect-filter'
+        ];
+        const scopeIds = [
+            'memory-insights-language',
+            'memory-insights-limit'
+        ];
+        if (analyze) analyze.disabled = repetitionInsightsBusy || !currentCatName;
+        if (clear) clear.disabled = repetitionInsightsBusy || !repetitionInsightsReport;
+        if (exportButton) exportButton.disabled = repetitionInsightsBusy || !repetitionInsightsReport;
+        if (resetEffects) {
+            resetEffects.disabled = repetitionInsightsBusy || !currentCatName;
+        }
+        filterIds.forEach(function (id) {
+            const control = document.getElementById(id);
+            if (control) control.disabled = repetitionInsightsBusy || !repetitionInsightsReport;
+        });
+        scopeIds.forEach(function (id) {
+            const control = document.getElementById(id);
+            if (control) control.disabled = repetitionInsightsBusy;
+        });
+    }
+
+    function setRepetitionInsightsBusy(busy) {
+        repetitionInsightsBusy = !!busy;
+        syncRepetitionInsightsControls();
+    }
+
+    function appendRepetitionInsightsEmptyState(container, key, fallback) {
+        const empty = document.createElement('p');
+        empty.className = 'memory-insights-description';
+        empty.textContent = translate(key, fallback);
+        container.appendChild(empty);
+    }
+
+    function exportableRepetitionInsightCandidates() {
+        if (!repetitionInsightsReport || !Array.isArray(repetitionInsightsReport.candidates)) {
+            return [];
+        }
+        return repetitionInsightsReport.candidates.filter(function (candidate) {
+            return candidate
+                && candidate.status === 'pending'
+                && !repetitionInsightsIgnored.has(repetitionInsightCandidateKey(candidate));
+        });
+    }
+
+    function visibleRepetitionInsightCandidates() {
+        const queryControl = document.getElementById('memory-insights-query');
+        const coverageControl = document.getElementById('memory-insights-coverage-filter');
+        const effectControl = document.getElementById('memory-insights-effect-filter');
+        const query = String(queryControl ? queryControl.value : '').trim().toLocaleLowerCase();
+        const coverage = coverageControl ? coverageControl.value : 'all';
+        const effectStatus = effectControl ? effectControl.value : 'all';
+        return exportableRepetitionInsightCandidates().filter(function (candidate) {
+            const rules = Array.isArray(candidate.covered_by_rule_ids)
+                ? candidate.covered_by_rule_ids.filter(Boolean)
+                : [];
+            if (coverage === 'covered' && !rules.length) return false;
+            if (coverage === 'uncovered' && rules.length) return false;
+            const processed = repetitionInsightAssociations(candidate).length > 0;
+            if (effectStatus === 'processed' && !processed) return false;
+            if (effectStatus === 'residual' && processed) return false;
+            if (!query) return true;
+            return [candidate.phrase, candidate.normalized_phrase].concat(rules)
+                .some(function (value) {
+                    return String(value || '').toLocaleLowerCase().includes(query);
+                });
+        });
+    }
+
+    function appendRepetitionEffectMetric(container, value, key, fallback, options) {
+        const settings = options || {};
+        const metric = document.createElement('div');
+        metric.className = 'memory-insights-effect-metric';
+        if (settings.highlight) metric.classList.add('is-highlight');
+        if (settings.warning) metric.classList.add('is-warning');
+        const number = document.createElement('strong');
+        number.textContent = settings.displayValue === undefined
+            ? String(Number(value || 0))
+            : String(settings.displayValue);
+        const label = document.createElement('span');
+        label.textContent = translate(key, fallback, settings.translationOptions || {});
+        metric.append(number, label);
+        container.appendChild(metric);
+        return metric;
+    }
+
+    function renderRepetitionInsightsEffectiveness() {
+        const container = document.getElementById('memory-insights-effectiveness');
+        if (!container) return;
+        container.textContent = '';
+        if (!repetitionInsightsReport) return;
+        const effects = repetitionInsightsReport.effectiveness || {};
+        const parameters = repetitionInsightsReport.parameters || {};
+        const scopeLimit = Number(
+            effects.assistant_message_limit
+            || parameters.assistant_message_limit
+            || 0
+        );
+        const title = document.createElement('h4');
+        title.className = 'memory-insights-section-title';
+        title.textContent = translate(
+            'memory.repetitionInsightsEffectivenessTitle',
+            'Anti-repeat handling in the latest {{count}} replies',
+            { count: scopeLimit }
+        );
+        container.appendChild(title);
+        if (effects.query_failed === true) {
+            appendRepetitionInsightsEmptyState(
+                container,
+                'memory.repetitionInsightsEffectsUnavailable',
+                'Anti-repeat records could not be read. Try checking again.'
+            );
+            return;
+        }
+        if (effects.source_available === false) {
+            appendRepetitionInsightsEmptyState(
+                container,
+                'memory.repetitionInsightsNoEffects',
+                'No linked anti-repeat records are available for these replies.'
+            );
+            return;
+        }
+        const totals = effects.totals || {};
+        const reportSummary = repetitionInsightsReport.summary || {};
+        const bm25 = effects.bm25 || {};
+        const comparableRewrites = Number(bm25.pair_count || 0);
+        const reductionPercent = comparableRewrites > 0
+            ? Math.round(Number(bm25.reduction_ratio || 0) * 100)
+            : null;
+        const repetitionIncreased = reductionPercent !== null && reductionPercent < 0;
+        const summary = document.createElement('div');
+        summary.className = 'memory-insights-effect-summary';
+        appendRepetitionEffectMetric(
+            summary,
+            reportSummary.candidate_count,
+            'memory.repetitionInsightsRemaining',
+            'Repeated expressions still found in final replies'
+        );
+        appendRepetitionEffectMetric(
+            summary,
+            totals.detected,
+            'memory.repetitionInsightsDetected',
+            'Repeated drafts detected'
+        );
+        appendRepetitionEffectMetric(
+            summary,
+            totals.regen_guard_passed,
+            'memory.repetitionInsightsPassed',
+            'Rewrites that passed the checks'
+        );
+        if (reductionPercent !== null) {
+            appendRepetitionEffectMetric(
+                summary,
+                0,
+                repetitionIncreased
+                    ? 'memory.repetitionInsightsIncrease'
+                    : 'memory.repetitionInsightsReduction',
+                repetitionIncreased
+                    ? 'Average repetition increase across {{count}} comparable rewrites'
+                    : 'Average repetition reduction across {{count}} comparable rewrites',
+                {
+                    displayValue: Math.abs(reductionPercent) + '%',
+                    highlight: true,
+                    warning: repetitionIncreased,
+                    translationOptions: { count: comparableRewrites }
+                }
+            );
+        }
+        container.appendChild(summary);
+    }
+
+    function renderRepetitionInsightsResults() {
+        const results = document.getElementById('memory-insights-results');
+        const visibleCount = document.getElementById('memory-insights-visible-count');
+        if (!results) return;
+        results.textContent = '';
+        if (visibleCount) visibleCount.textContent = '';
+        renderRepetitionInsightsEffectiveness();
+        if (!repetitionInsightsReport) return;
+
+        const summary = repetitionInsightsReport.summary || {};
+        if (summary.source_available === false) {
+            appendRepetitionInsightsEmptyState(
+                results,
+                'memory.repetitionInsightsNoSource',
+                'No persisted assistant history is available for this character.'
+            );
+            return;
+        }
+        if (Number(summary.assistant_message_count || 0) < 3) {
+            appendRepetitionInsightsEmptyState(
+                results,
+                'memory.repetitionInsightsInsufficient',
+                'At least three persisted assistant messages are required.'
+            );
+            return;
+        }
+
+        const visibleCandidates = visibleRepetitionInsightCandidates();
+        const exportableCandidates = exportableRepetitionInsightCandidates();
+        if (visibleCount) {
+            visibleCount.textContent = translate(
+                'memory.repetitionInsightsVisibleCount',
+                'Showing {{visible}} of {{total}} final residual fragments',
+                {
+                    visible: visibleCandidates.length,
+                    total: exportableCandidates.length
+                }
+            );
+        }
+        if (!visibleCandidates.length) {
+            const query = document.getElementById('memory-insights-query');
+            const coverage = document.getElementById('memory-insights-coverage-filter');
+            const effect = document.getElementById('memory-insights-effect-filter');
+            const hasActiveFilter = Boolean(query && query.value.trim())
+                || Boolean(coverage && coverage.value !== 'all')
+                || Boolean(effect && effect.value !== 'all');
+            appendRepetitionInsightsEmptyState(
+                results,
+                hasActiveFilter
+                    ? 'memory.repetitionInsightsNoFilterMatches'
+                    : repetitionInsightsIgnored.size
+                    ? 'memory.repetitionInsightsAllIgnored'
+                    : 'memory.repetitionInsightsNoCandidates',
+                hasActiveFilter
+                    ? 'No final residual fragments match the current filters.'
+                    : repetitionInsightsIgnored.size
+                    ? 'All candidates in this result have been ignored.'
+                    : 'No repeated-expression candidates were found.'
+            );
+            return;
+        }
+
+        visibleCandidates.forEach(function (candidate) {
+            const card = document.createElement('article');
+            card.className = 'memory-insights-card';
+            const phrase = document.createElement('h4');
+            const phraseText = String(candidate.phrase || '');
+            phrase.textContent = phraseText;
+
+            const header = document.createElement('div');
+            header.className = 'memory-insights-card-header';
+            const badges = document.createElement('div');
+            badges.className = 'memory-insights-card-badges';
+
+            const meta = document.createElement('div');
+            meta.className = 'memory-insights-card-meta';
+            const occurrences = document.createElement('span');
+            occurrences.className = 'memory-insights-card-meta-item is-occurrences';
+            occurrences.textContent = translate(
+                'memory.repetitionInsightsOccurrences',
+                '{{count}} occurrences',
+                { count: Number(candidate.occurrence_count || 0) }
+            );
+            const messages = document.createElement('span');
+            messages.className = 'memory-insights-card-meta-item is-messages';
+            messages.textContent = translate(
+                'memory.repetitionInsightsMessages',
+                '{{count}} messages',
+                { count: Number(candidate.message_count || 0) }
+            );
+            const associations = repetitionInsightAssociations(candidate);
+            header.append(phrase, badges);
+            meta.append(occurrences, messages);
+
+            const coveredBy = Array.isArray(candidate.covered_by_rule_ids)
+                ? candidate.covered_by_rule_ids.filter(Boolean)
+                : [];
+            const rules = document.createElement('div');
+            rules.className = 'memory-insights-card-rules';
+            if (coveredBy.length) {
+                rules.textContent = translate(
+                    'memory.repetitionInsightsCoveredBy',
+                    'Covered by rules: {{rules}}',
+                    { rules: coveredBy.join(', ') }
+                );
+            }
+
+            let effectSummary = null;
+            if (associations.length) {
+                const totals = associations.reduce(function (accumulator, association) {
+                    accumulator.detected += Number(association.detected_count || 0);
+                    accumulator.regenerated += Number(association.regen_triggered_count || 0);
+                    accumulator.passed += Number(association.regen_guard_passed_count || 0);
+                    accumulator.blocked += Number(association.blocked_count || 0);
+                    return accumulator;
+                }, { detected: 0, regenerated: 0, passed: 0, blocked: 0 });
+                effectSummary = document.createElement('div');
+                effectSummary.className = 'memory-insights-card-effect';
+                const detectedMarker = '__NEKO_DETECTED__';
+                const passedMarker = '__NEKO_PASSED__';
+                const localizedEffect = translate(
+                    'memory.repetitionInsightsResidualEffect',
+                    'Past handling: detected {{detected}} · rewrites passed {{passed}}',
+                    Object.assign({}, totals, {
+                        detected: detectedMarker,
+                        passed: passedMarker
+                    })
+                );
+                localizedEffect.split(/(__NEKO_DETECTED__|__NEKO_PASSED__)/).forEach(function (part) {
+                    if (!part) return;
+                    if (part === detectedMarker || part === passedMarker) {
+                        const value = document.createElement('strong');
+                        value.className = part === detectedMarker
+                            ? 'memory-insights-card-effect-value is-detected'
+                            : 'memory-insights-card-effect-value is-passed';
+                        value.textContent = String(
+                            part === detectedMarker ? totals.detected : totals.passed
+                        );
+                        effectSummary.appendChild(value);
+                        return;
+                    }
+                    effectSummary.appendChild(document.createTextNode(part));
+                });
+            }
+
+            const ignore = document.createElement('button');
+            ignore.type = 'button';
+            ignore.className = 'memory-insights-card-ignore';
+            ignore.textContent = translate(
+                'memory.repetitionInsightsIgnore',
+                'Hide from this result'
+            );
+            ignore.addEventListener('click', function () {
+                repetitionInsightsIgnored.add(repetitionInsightCandidateKey(candidate));
+                renderRepetitionInsightsResults();
+            });
+            badges.appendChild(ignore);
+            const footer = document.createElement('div');
+            footer.className = 'memory-insights-card-footer';
+            footer.hidden = coveredBy.length === 0;
+            footer.appendChild(rules);
+
+            card.appendChild(header);
+            card.appendChild(meta);
+            if (effectSummary) card.appendChild(effectSummary);
+            card.appendChild(footer);
+            results.appendChild(card);
+        });
+    }
+
+    function resetRepetitionInsightsState() {
+        repetitionInsightsRequestId++;
+        repetitionInsightsReport = null;
+        repetitionInsightsIgnored.clear();
+        repetitionInsightsStatus = null;
+        const query = document.getElementById('memory-insights-query');
+        const coverage = document.getElementById('memory-insights-coverage-filter');
+        const effect = document.getElementById('memory-insights-effect-filter');
+        if (query) query.value = '';
+        if (coverage) coverage.value = 'all';
+        if (effect) effect.value = 'all';
+        setRepetitionInsightsBusy(false);
+        refreshRepetitionInsightsStatus();
+        renderRepetitionInsightsResults();
+        syncRepetitionInsightsControls();
+    }
+
+    function refreshRepetitionInsightsAfterRangeChange() {
+        if (repetitionInsightsReport) {
+            analyzeRepetitionInsights();
+            return;
+        }
+        resetRepetitionInsightsState();
+    }
+
+    async function analyzeRepetitionInsights() {
+        if (!currentCatName || repetitionInsightsBusy) return;
+        const languageSelect = document.getElementById('memory-insights-language');
+        const limitSelect = document.getElementById('memory-insights-limit');
+        if (!languageSelect || !limitSelect) return;
+
+        const targetCharacter = currentCatName;
+        const requestId = ++repetitionInsightsRequestId;
+        setRepetitionInsightsBusy(true);
+        setRepetitionInsightsStatus(
+            'memory.repetitionInsightsLoading',
+            'Analyzing persisted assistant messages locally...'
+        );
+        try {
+            const response = await fetch('/api/memory/repetition_insights', {
+                method: 'POST',
+                cache: 'no-store',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    character_name: targetCharacter,
+                    language: languageSelect.value,
+                    assistant_message_limit: Number(limitSelect.value)
+                })
+            });
+            const report = await response.json();
+            if (requestId !== repetitionInsightsRequestId || currentCatName !== targetCharacter) return;
+            if (!response.ok || !report || !Array.isArray(report.candidates)) {
+                throw new Error('local analysis unavailable');
+            }
+            repetitionInsightsReport = report;
+            repetitionInsightsIgnored.clear();
+            renderRepetitionInsightsResults();
+            const summary = report.summary || {};
+            if (summary.source_available === false) {
+                setRepetitionInsightsStatus(
+                    'memory.repetitionInsightsNoSource',
+                    'No persisted assistant history is available for this character.'
+                );
+            } else if (Number(summary.assistant_message_count || 0) < 3) {
+                setRepetitionInsightsStatus(
+                    'memory.repetitionInsightsInsufficient',
+                    'At least three persisted assistant messages are required.'
+                );
+            } else {
+                const candidatesTruncated = summary.candidates_truncated === true;
+                setRepetitionInsightsStatus(
+                    candidatesTruncated
+                        ? 'memory.repetitionInsightsFoundTruncated'
+                        : 'memory.repetitionInsightsFound',
+                    candidatesTruncated
+                        ? 'Found {{count}} repeated fragments; showing the top {{shown}}.'
+                        : 'Found {{count}} repeated fragments.',
+                    '',
+                    {
+                        count: Number(summary.candidate_count || 0),
+                        shown: Number(summary.returned_candidate_count || report.candidates.length)
+                    }
+                );
+            }
+        } catch (error) {
+            if (requestId !== repetitionInsightsRequestId) return;
+            setRepetitionInsightsStatus(
+                'memory.repetitionInsightsError',
+                'Local analysis is unavailable. Please try again.',
+                'error'
+            );
+        } finally {
+            if (requestId === repetitionInsightsRequestId) setRepetitionInsightsBusy(false);
+        }
+    }
+
+    async function resetRepetitionEffectRecords() {
+        if (!currentCatName || repetitionInsightsBusy) return;
+        if (!window.confirm(translate(
+            'memory.repetitionInsightsResetConfirm',
+            'Clear this character\'s local anti-repeat effect statistics? Saved chat history and repetition candidates will not be deleted.'
+        ))) return;
+        const targetCharacter = currentCatName;
+        const requestId = ++repetitionInsightsRequestId;
+        setRepetitionInsightsBusy(true);
+        try {
+            const response = await fetch('/api/memory/repetition_effects/reset', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ character_name: targetCharacter })
+            });
+            const result = await response.json();
+            if (requestId !== repetitionInsightsRequestId || currentCatName !== targetCharacter) return;
+            if (!response.ok || !result || result.success !== true) {
+                throw new Error('effect reset unavailable');
+            }
+            if (repetitionInsightsReport) {
+                repetitionInsightsReport.effectiveness = {
+                    source_available: false,
+                    scope_type: 'assistant_messages',
+                    assistant_message_limit: Number(
+                        document.getElementById('memory-insights-limit')?.value || 100
+                    ),
+                    linked_message_count: 0,
+                    totals: {},
+                    reason_counts: {},
+                    bm25: {},
+                    patterns: []
+                };
+                repetitionInsightsReport.associations = [];
+            }
+            renderRepetitionInsightsResults();
+            setRepetitionInsightsStatus(
+                'memory.repetitionInsightsResetDone',
+                'Runtime anti-repeat effect statistics were cleared. Saved replies were not changed.',
+                'success'
+            );
+        } catch (error) {
+            if (requestId !== repetitionInsightsRequestId) return;
+            setRepetitionInsightsStatus(
+                'memory.repetitionInsightsResetError',
+                'Could not clear runtime anti-repeat effect statistics. Please try again.',
+                'error'
+            );
+        } finally {
+            if (requestId === repetitionInsightsRequestId) setRepetitionInsightsBusy(false);
+        }
+    }
+
+    function sortRepetitionInsightsJson(value) {
+        if (Array.isArray(value)) return value.map(sortRepetitionInsightsJson);
+        if (!value || typeof value !== 'object') return value;
+        return Object.keys(value).sort().reduce(function (sorted, key) {
+            sorted[key] = sortRepetitionInsightsJson(value[key]);
+            return sorted;
+        }, {});
+    }
+
+    function exportRepetitionInsights() {
+        const candidates = exportableRepetitionInsightCandidates();
+        if (!repetitionInsightsReport || !candidates.length) {
+            setRepetitionInsightsStatus(
+                'memory.repetitionInsightsExportEmpty',
+                'There are no candidates to export.'
+            );
+            return;
+        }
+        if (!window.confirm(translate(
+            'memory.repetitionInsightsExportWarning',
+            'This optional feedback file may contain private wording. Exporting it will not change future replies. Review it before sharing.'
+        ))) return;
+
+        const summary = Object.assign({}, repetitionInsightsReport.summary || {}, {
+            exported_candidate_count: candidates.length
+        });
+        const artifact = {
+            artifact_type: repetitionInsightsReport.artifact_type,
+            candidates: candidates,
+            character_name: repetitionInsightsReport.character_name,
+            language: repetitionInsightsReport.language,
+            parameters: repetitionInsightsReport.parameters,
+            schema_version: repetitionInsightsReport.schema_version,
+            summary: summary
+        };
+        const serialized = JSON.stringify(sortRepetitionInsightsJson(artifact), null, 2) + '\n';
+        const blob = new Blob([serialized], { type: 'application/json;charset=utf-8' });
+        const url = URL.createObjectURL(blob);
+        const safeCharacter = String(currentCatName || 'character')
+            .normalize('NFKC')
+            .replace(/[<>:"/\\|?*\u0000-\u001f]/g, '-')
+            .replace(/\s+/g, '-')
+            .slice(0, 48) || 'character';
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = 'natural-expression-candidates-'
+            + safeCharacter + '-' + String(repetitionInsightsReport.language || 'unknown') + '.json';
+        link.hidden = true;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        window.setTimeout(function () { URL.revokeObjectURL(url); }, 0);
+        setRepetitionInsightsStatus(
+            'memory.repetitionInsightsExported',
+            'Candidates exported. Future replies were not changed.',
+            'success'
+        );
+    }
+
+    function initRepetitionInsights() {
+        const character = document.getElementById('memory-insights-character-select');
+        const language = document.getElementById('memory-insights-language');
+        const limit = document.getElementById('memory-insights-limit');
+        const analyze = document.getElementById('memory-insights-analyze');
+        const clear = document.getElementById('memory-insights-clear');
+        const exportButton = document.getElementById('memory-insights-export');
+        const resetEffects = document.getElementById('memory-insights-reset-effects');
+        const query = document.getElementById('memory-insights-query');
+        const coverage = document.getElementById('memory-insights-coverage-filter');
+        const effectFilter = document.getElementById('memory-insights-effect-filter');
+        if (!character || !language || !limit || !analyze || !clear
+            || !exportButton || !resetEffects || !query || !coverage || !effectFilter) return;
+        character.addEventListener('change', function () {
+            const option = character.options[character.selectedIndex];
+            const filename = option ? String(option.dataset.filename || '') : '';
+            const button = filename ? findMemoryRoleButton(filename) : null;
+            const listItem = button ? button.closest('li') : null;
+            if (!button || !listItem || character.value === currentCatName) {
+                syncRepetitionInsightsControls();
+                return;
+            }
+            requestMemoryFileSelection(filename, listItem, character.value);
+            syncRepetitionInsightsControls();
+        });
+        language.value = repetitionInsightLanguageFromLocale();
+        language.addEventListener('change', function () {
+            repetitionInsightsLanguageTouched = true;
+            resetRepetitionInsightsState();
+        });
+        limit.addEventListener('change', refreshRepetitionInsightsAfterRangeChange);
+        analyze.addEventListener('click', analyzeRepetitionInsights);
+        clear.addEventListener('click', resetRepetitionInsightsState);
+        exportButton.addEventListener('click', exportRepetitionInsights);
+        resetEffects.addEventListener('click', resetRepetitionEffectRecords);
+        query.addEventListener('input', renderRepetitionInsightsResults);
+        coverage.addEventListener('change', renderRepetitionInsightsResults);
+        effectFilter.addEventListener('change', renderRepetitionInsightsResults);
+        syncRepetitionInsightsControls();
+    }
+
     function getMemoryAuxiliaryTrigger(name) {
         return document.getElementById('memory-' + name + '-trigger');
     }
@@ -997,6 +1704,7 @@
         activeMemoryAuxiliaryPanel = name;
         memoryAuxiliaryPanelOpener = opener || trigger;
         document.body.classList.add('memory-aux-panel-open');
+        if (name === 'insights') syncRepetitionInsightsControls();
         panel.focus({ preventScroll: true });
     }
 
@@ -1860,6 +2568,7 @@
         currentCatName = '';
         chatData = [];
         memoryFileRequestId++;
+        resetRepetitionInsightsState();
 
         const list = document.getElementById('memory-file-list');
         if (list) {
@@ -2344,6 +3053,8 @@
             }
         } catch (e) {
             ul.innerHTML = `<li style="color:#e74c3c; padding: 8px;">${window.t ? window.t('memory.loadFailed') : '加载失败'}</li>`;
+        } finally {
+            syncRepetitionInsightsCharacterSelect();
         }
     }
 
@@ -3305,7 +4016,13 @@
         currentMemoryFile = filename;
         currentMemoryFingerprint = null;
         currentMemoryIdentityToken = null;
+        const previousCatName = currentCatName;
         currentCatName = catName || (li ? li.getAttribute('data-catname') : '');
+        if (previousCatName !== currentCatName) {
+            resetRepetitionInsightsState();
+        } else {
+            syncRepetitionInsightsControls();
+        }
         setMemoryDirty(false);
         dismissSaveStatus(true);
         updateExternalImportButton();
@@ -3726,6 +4443,7 @@
         initMemoryLayoutMode();
         initMemoryRolePanel();
         initMemoryUnsavedSwitchDialog();
+        initRepetitionInsights();
         initMemoryAuxiliaryPanels();
         const chatEditor = document.getElementById('memory-chat-edit');
         if (chatEditor) {
@@ -3744,6 +4462,7 @@
                     const response = await fetch('/api/characters/current_catgirl');
                     const current = await response.json();
                     currentCatName = current.current_catgirl || '';
+                    syncRepetitionInsightsControls();
                 } catch (error) {
                     console.warn('[MemoryBrowser] Failed to resolve external-memory target:', error);
                 }
@@ -3786,6 +4505,13 @@
                 syncTutorialResetCascader();
                 syncExternalMemoryFormatDropdown();
                 syncMemoryRoleTriggerLabel();
+                if (!repetitionInsightsLanguageTouched && !repetitionInsightsReport) {
+                    const insightsLanguage = document.getElementById('memory-insights-language');
+                    if (insightsLanguage) insightsLanguage.value = repetitionInsightLanguageFromLocale();
+                }
+                refreshRepetitionInsightsStatus();
+                renderRepetitionInsightsResults();
+                syncRepetitionInsightsControls();
             });
         }
         window.addEventListener('localechange', function () {
@@ -3794,6 +4520,13 @@
             syncExternalMemoryFormatDropdown();
             syncMemoryRoleTriggerLabel();
             syncMemoryRoleSourceCopies();
+            if (!repetitionInsightsLanguageTouched && !repetitionInsightsReport) {
+                const insightsLanguage = document.getElementById('memory-insights-language');
+                if (insightsLanguage) insightsLanguage.value = repetitionInsightLanguageFromLocale();
+            }
+            refreshRepetitionInsightsStatus();
+            renderRepetitionInsightsResults();
+            syncRepetitionInsightsControls();
         });
 
         const externalFiles = document.getElementById('external-memory-files');

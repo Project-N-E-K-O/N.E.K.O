@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import json
 import shutil
+import sys
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
@@ -39,6 +40,14 @@ from utils.recent_file import (
     snapshot_recent_deletions,
     write_recent_payload_unlocked,
 )
+
+
+def _evict_cached_anti_repeat_effects(*character_names: str) -> None:
+    """Notify the optional runtime store without importing the memory package."""
+    effects_module = sys.modules.get("memory.anti_repeat_effects")
+    evict = getattr(effects_module, "evict_cached_anti_repeat_effects", None)
+    if callable(evict):
+        evict(*character_names)
 
 
 LEGACY_CHARACTER_MEMORY_FILE_MAP = {
@@ -338,6 +347,7 @@ def rename_character_memory_storage(
     generation_snapshot: dict[str, tuple[int, int]] = {}
     pending_snapshot: dict[Path, list[Any]] = {}
     try:
+        _evict_cached_anti_repeat_effects(old_name, new_name)
         # 目标角色名可能曾被改走；复用该名字前必须切断旧跳转，否则新角色会写进旧目标。
         (
             _,
@@ -557,6 +567,7 @@ def delete_character_memory_storage(
     )
     pending_snapshot: dict[Path, list[Any]] = {}
     try:
+        _evict_cached_anti_repeat_effects(character_name)
         pending_snapshot = {
             path: deepcopy(get_recent_pending_unlocked(path))
             for path in recent_candidates

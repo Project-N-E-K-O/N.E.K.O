@@ -117,9 +117,7 @@ def test_bilibili_following_wins_duplicate_from_video_radar(monkeypatch):
 
 
 def test_phase1_passes_when_all_source_candidates_are_empty():
-    decision = sr_parsing._decide_phase1_channels(
-        [], None, has_unfinished_thread=False
-    )
+    decision = sr_parsing._decide_phase1_channels([], None, has_unfinished_thread=False)
 
     assert decision.result is not None
     assert decision.result.body["reason_code"] == "PASS_MODEL_PASS"
@@ -272,7 +270,9 @@ def test_strip_proactive_screen_tag_leak_is_case_insensitive():
 def test_strip_proactive_screen_tag_leak_recovers_combined_legal_tag():
     # [Screen][CHAT] 组合：剥掉泄漏标签后采用紧随其后的真实来源标签，
     # 避免 [CHAT] 字面作为正文漏给 TTS。
-    cleaned, tag = sr_parsing._strip_proactive_screen_tag_leak("[Screen][WEB]\n看这个链接")
+    cleaned, tag = sr_parsing._strip_proactive_screen_tag_leak(
+        "[Screen][WEB]\n看这个链接"
+    )
 
     assert cleaned == "看这个链接"
     assert tag == "WEB"
@@ -308,10 +308,22 @@ def test_strip_proactive_screen_tag_leak_removes_known_prefix_leaks():
         ("/屏幕观察这个窗口有点怪", "这个窗口有点怪", "CHAT"),
         ("chat/你好", "你好", "CHAT"),
         ("music/听这个", "听这个", "MUSIC"),
-        ("聊天中/那咱们找小鱼干星的时候，能顺路去摸猫爪星云吗？", "那咱们找小鱼干星的时候，能顺路去摸猫爪星云吗？", "CHAT"),
-        ("聊天中\n那咱们找小鱼干星的时候，能顺路去摸猫爪星云吗？", "那咱们找小鱼干星的时候，能顺路去摸猫爪星云吗？", "CHAT"),
+        (
+            "聊天中/那咱们找小鱼干星的时候，能顺路去摸猫爪星云吗？",
+            "那咱们找小鱼干星的时候，能顺路去摸猫爪星云吗？",
+            "CHAT",
+        ),
+        (
+            "聊天中\n那咱们找小鱼干星的时候，能顺路去摸猫爪星云吗？",
+            "那咱们找小鱼干星的时候，能顺路去摸猫爪星云吗？",
+            "CHAT",
+        ),
         ("屏幕/这个窗口有点怪", "这个窗口有点怪", "CHAT"),
-        ("屏幕 / 这个空文件是要写和项目相关的内容吗？", "这个空文件是要写和项目相关的内容吗？", "CHAT"),
+        (
+            "屏幕 / 这个空文件是要写和项目相关的内容吗？",
+            "这个空文件是要写和项目相关的内容吗？",
+            "CHAT",
+        ),
         ("屏幕观察/这个窗口有点怪", "这个窗口有点怪", "CHAT"),
     ]
 
@@ -374,12 +386,51 @@ def test_recent_proactive_similarity_blocks_at_90_percent():
     assert score >= 0.90
 
 
+def test_recent_proactive_similarity_exposes_best_match_evidence():
+    lanlan = "测试娘-repeat-evidence"
+    snapshot = sr._proactive_chat_history.get(lanlan)
+    sr._proactive_chat_history[lanlan] = deque(
+        [
+            (sr.time.time(), "今晚也要记得喝水呀。", "chat"),
+            (sr.time.time(), "最近别太累啦，记得喝口水休息一下。", "chat"),
+        ],
+        maxlen=10,
+    )
+    old_threshold = sr._PROACTIVE_SIMILARITY_THRESHOLD
+    sr._PROACTIVE_SIMILARITY_THRESHOLD = 0.90
+    try:
+        match = sr._find_similar_recent_proactive_chat(
+            lanlan,
+            "最近别太累啦，记得喝口水休息一下!",
+        )
+        compatibility = sr._is_similar_to_recent_proactive_chat(
+            lanlan,
+            "最近别太累啦，记得喝口水休息一下!",
+        )
+    finally:
+        sr._PROACTIVE_SIMILARITY_THRESHOLD = old_threshold
+        if snapshot is None:
+            sr._proactive_chat_history.pop(lanlan, None)
+        else:
+            sr._proactive_chat_history[lanlan] = snapshot
+
+    assert match.is_duplicate is True
+    assert match.best_score >= 0.90
+    assert match.matched_text == "最近别太累啦，记得喝口水休息一下。"
+    assert "最近别太累啦，记得喝口水休息一下" in match.common_fragment
+    assert compatibility == (match.is_duplicate, match.best_score)
+
+
 def test_format_sections_omit_music_tag_without_playable_track():
     # 没有可播曲目时（Phase 1 链接去重清空 / 无 track），上游不会构造 music_section，
     # has_music=False。output-format 必须不暴露 [MUSIC] 选项——从模型视角等同"用户
     # 没碰过音乐分享"，杜绝模型在无歌可投时仍押 [MUSIC]（发了 [MUSIC] 转译不出）。
     _src, fmt = get_proactive_format_sections(
-        has_screen=False, has_web=True, has_music=False, has_meme=False, lang="zh",
+        has_screen=False,
+        has_web=True,
+        has_music=False,
+        has_meme=False,
+        lang="zh",
     )
     assert "[MUSIC]" not in fmt
     assert "[MEME]" not in fmt
@@ -390,7 +441,11 @@ def test_format_sections_expose_music_tag_with_playable_track():
     # 有可播曲目（selected_music_link 非空 → music_section 非空 → has_music=True）时，
     # output-format 才列出 [MUSIC] 选项。
     _src, fmt = get_proactive_format_sections(
-        has_screen=False, has_web=False, has_music=True, has_meme=False, lang="zh",
+        has_screen=False,
+        has_web=False,
+        has_music=True,
+        has_meme=False,
+        lang="zh",
     )
     assert "[MUSIC]" in fmt
     assert "[WEB]" not in fmt
@@ -400,7 +455,11 @@ def test_format_sections_expose_music_tag_with_playable_track():
 def test_format_sections_no_side_effect_tags_is_tagless():
     # 完全没有副作用素材时走 _of_none：纯文本无 tag，更不会出现 [MUSIC]。
     _src, fmt = get_proactive_format_sections(
-        has_screen=True, has_web=False, has_music=False, has_meme=False, lang="zh",
+        has_screen=True,
+        has_web=False,
+        has_music=False,
+        has_meme=False,
+        lang="zh",
     )
     assert "[MUSIC]" not in fmt
     assert "[WEB]" not in fmt
@@ -416,7 +475,9 @@ def test_recent_proactive_similarity_ignores_expired_history():
         maxlen=10,
     )
     try:
-        is_duplicate, score = sr._is_similar_to_recent_proactive_chat(lanlan, "同一句话")
+        is_duplicate, score = sr._is_similar_to_recent_proactive_chat(
+            lanlan, "同一句话"
+        )
     finally:
         if snapshot is None:
             sr._proactive_chat_history.pop(lanlan, None)

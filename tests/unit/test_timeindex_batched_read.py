@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import gc
 import importlib.util
+import json
 import sys
 import threading
 import tracemalloc
@@ -92,27 +93,31 @@ def timeindex_module():
                 sys.modules[name] = old_module
 
 
-def _create_manager(timeindex_module, tmp_path, rows, *, indexed=True):
+def _create_manager(
+    timeindex_module,
+    tmp_path,
+    rows,
+    *,
+    indexed=True,
+    include_timestamp=True,
+):
     engine = create_engine(f"sqlite:///{tmp_path / 'time-index.db'}")
     with engine.begin() as conn:
+        timestamp_column = ", timestamp DATETIME" if include_timestamp else ""
         conn.execute(
             text(
                 f"CREATE TABLE {_TABLE} ("
-                "session_id TEXT, message TEXT, timestamp DATETIME)"
+                f"session_id TEXT, message TEXT{timestamp_column})"
             )
         )
-        if indexed:
+        if indexed and include_timestamp:
             conn.execute(
                 text(f"CREATE INDEX idx_{_TABLE}_timestamp ON {_TABLE}(timestamp)")
             )
         if rows:
-            conn.execute(
-                text(
-                    f"INSERT INTO {_TABLE}(session_id, message, timestamp) "
-                    "VALUES (:session_id, :message, :timestamp)"
-                ),
-                rows,
-            )
+            columns = "session_id, message, timestamp" if include_timestamp else "session_id, message"
+            values = ":session_id, :message, :timestamp" if include_timestamp else ":session_id, :message"
+            conn.execute(text(f"INSERT INTO {_TABLE}({columns}) VALUES ({values})"), rows)
 
     manager = timeindex_module.TimeIndexedMemory.__new__(
         timeindex_module.TimeIndexedMemory
@@ -128,6 +133,252 @@ def _create_manager(timeindex_module, tmp_path, rows, *, indexed=True):
 
 def _flatten(batches):
     return [row for batch in batches for row in batch]
+
+
+def _stored_message(role, content):
+    return json.dumps(
+        {"type": role, "data": {"content": content}},
+        ensure_ascii=False,
+    )
+
+
+def test_latest_assistant_texts_are_bounded_filtered_and_chronological(
+    timeindex_module,
+    tmp_path,
+):
+    timestamp = "2026-01-01 00:00:00.000000"
+    rows = [
+        {
+            "session_id": "1",
+            "message": _stored_message("human", "user secret"),
+            "timestamp": timestamp,
+        },
+        {
+            "session_id": "2",
+            "message": _stored_message("ai", "oldest answer"),
+            "timestamp": timestamp,
+        },
+        {"session_id": "3", "message": "not-json", "timestamp": timestamp},
+        {
+            "session_id": "4",
+            "message": _stored_message(
+                "ai",
+                [
+                    {"type": "image", "url": "private"},
+                    {"type": "text", "text": "middle answer"},
+                ],
+            ),
+            "timestamp": timestamp,
+        },
+        {
+            "session_id": "5",
+            "message": _stored_message("system", "system secret"),
+            "timestamp": timestamp,
+        },
+        {
+            "session_id": "6",
+            "message": _stored_message("ai", "latest answer"),
+            "timestamp": timestamp,
+        },
+    ]
+    manager, engine = _create_manager(timeindex_module, tmp_path, rows)
+    try:
+        result = manager.retrieve_latest_assistant_texts("cat", 2, batch_size=2)
+    finally:
+        engine.dispose()
+
+    assert result.source_available is True
+    assert result.messages == ["middle answer", "latest answer"]
+    assert result.skipped_row_count == 1
+
+
+def test_latest_assistant_texts_include_null_timestamps_across_pages(
+    timeindex_module,
+    tmp_path,
+):
+    rows = [
+        {
+            "session_id": "new",
+            "message": _stored_message("ai", "newest answer"),
+            "timestamp": "2026-01-02 00:00:00.000000",
+        },
+        {
+            "session_id": "old",
+            "message": _stored_message("ai", "older answer"),
+            "timestamp": "2026-01-01 00:00:00.000000",
+        },
+        {
+            "session_id": "legacy-a",
+            "message": _stored_message("ai", "legacy answer a"),
+            "timestamp": None,
+        },
+        {
+            "session_id": "legacy-b",
+            "message": _stored_message("ai", "legacy answer b"),
+            "timestamp": None,
+        },
+    ]
+    manager, engine = _create_manager(timeindex_module, tmp_path, rows)
+    try:
+        result = manager.retrieve_latest_assistant_texts("cat", 4, batch_size=1)
+    finally:
+        engine.dispose()
+
+    assert result.source_available is True
+    assert result.messages == [
+        "legacy answer a",
+        "legacy answer b",
+        "older answer",
+        "newest answer",
+    ]
+
+
+def test_latest_assistant_texts_support_legacy_schema_without_timestamp(
+    timeindex_module,
+    tmp_path,
+):
+    rows = [
+        {"session_id": "1", "message": _stored_message("ai", "old")},
+        {"session_id": "2", "message": _stored_message("human", "skip")},
+        {"session_id": "3", "message": _stored_message("ai", "new")},
+    ]
+    manager, engine = _create_manager(
+        timeindex_module,
+        tmp_path,
+        rows,
+        indexed=False,
+        include_timestamp=False,
+    )
+    try:
+        result = manager.retrieve_latest_assistant_texts("cat", 2, batch_size=1)
+    finally:
+        engine.dispose()
+
+    assert result.messages == ["old", "new"]
+    assert result.source_available is True
+
+
+def test_latest_assistant_texts_exclude_history_only_action_note(
+    timeindex_module,
+    tmp_path,
+):
+    visible = "给你放首歌～"
+    stored = json.dumps(
+        {
+            "type": "ai",
+            "data": {
+                "content": f"{visible}\n[给小明放了《稻香》— 周杰伦]",
+                "additional_kwargs": {
+                    "anti_repeat_visible_text_length": str(len(visible))
+                },
+            },
+        },
+        ensure_ascii=False,
+    )
+    rows = [{"session_id": "1", "message": stored, "timestamp": None}]
+    manager, engine = _create_manager(timeindex_module, tmp_path, rows)
+    try:
+        result = manager.retrieve_latest_assistant_texts("cat", 1)
+    finally:
+        engine.dispose()
+
+    assert result.messages == [visible]
+
+
+def test_latest_assistant_texts_exclude_legacy_history_only_action_notes(
+    timeindex_module,
+    tmp_path,
+):
+    rows = [
+        {
+            "session_id": "1",
+            "message": _stored_message(
+                "ai", 'Visible reply\n[Played for Alice: "Song" by Artist]'
+            ),
+            "timestamp": "2026-01-01 00:00:00.000000",
+        },
+        {
+            "session_id": "2",
+            "message": _stored_message(
+                "ai", "另一条回复\n[给小明分享了《文章》（来自 网站）]"
+            ),
+            "timestamp": "2026-01-02 00:00:00.000000",
+        },
+    ]
+    manager, engine = _create_manager(timeindex_module, tmp_path, rows)
+    try:
+        result = manager.retrieve_latest_assistant_texts("cat", 2)
+    finally:
+        engine.dispose()
+
+    assert result.messages == ["Visible reply", "另一条回复"]
+
+
+@pytest.mark.parametrize(
+    ("content", "expected_messages"),
+    [
+        ('[Played for Alice: "Song" by Artist]', []),
+        (
+            'Visible reply\n[Played for Alice: "Song" by Artist]\n',
+            ["Visible reply"],
+        ),
+    ],
+)
+def test_latest_assistant_texts_exclude_legacy_action_note_boundaries(
+    timeindex_module,
+    tmp_path,
+    content,
+    expected_messages,
+):
+    rows = [
+        {
+            "session_id": "1",
+            "message": _stored_message("ai", content),
+            "timestamp": None,
+        }
+    ]
+    manager, engine = _create_manager(timeindex_module, tmp_path, rows)
+    try:
+        result = manager.retrieve_latest_assistant_texts("cat", 1)
+    finally:
+        engine.dispose()
+
+    assert result.messages == expected_messages
+
+
+def test_latest_assistant_texts_preserve_non_template_bracketed_tail(
+    timeindex_module,
+    tmp_path,
+):
+    content = 'Visible reply\n[Played for effect, not metadata]'
+    rows = [
+        {
+            "session_id": "1",
+            "message": _stored_message("ai", content),
+            "timestamp": None,
+        }
+    ]
+    manager, engine = _create_manager(timeindex_module, tmp_path, rows)
+    try:
+        result = manager.retrieve_latest_assistant_texts("cat", 1)
+    finally:
+        engine.dispose()
+
+    assert result.messages == [content]
+
+
+def test_latest_assistant_texts_missing_source_does_not_create_engine(
+    timeindex_module,
+):
+    manager = timeindex_module.TimeIndexedMemory.__new__(
+        timeindex_module.TimeIndexedMemory
+    )
+    manager.engines = {}
+    manager._ensure_engine_exists = lambda _name, readonly=False: False
+
+    result = manager.retrieve_latest_assistant_texts("missing", 100)
+
+    assert result == timeindex_module.LatestAssistantTexts([], False, 0)
 
 
 def test_batches_preserve_order_limit_and_legacy_list_api(timeindex_module, tmp_path):

@@ -3,12 +3,37 @@
 from __future__ import annotations
 
 import json
+import os
 import re
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
 from scripts import natural_expression_candidate_miner as miner
+from utils import natural_expression_candidates as candidate_core
+
+
+def test_compatibility_script_runs_directly_without_pythonpath(tmp_path: Path):
+    script = (
+        Path(__file__).parents[2] / "scripts" / "natural_expression_candidate_miner.py"
+    )
+    environment = os.environ.copy()
+    environment.pop("PYTHONPATH", None)
+
+    result = subprocess.run(
+        [sys.executable, str(script), "--help"],
+        cwd=tmp_path,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "usage: natural_expression_candidate_miner.py" in result.stdout
+    assert "--input INPUT" in result.stdout
 
 
 def _config(**overrides) -> miner.MiningConfig:
@@ -234,9 +259,42 @@ def test_korean_single_token_is_not_double_counted_across_strategies():
     assert below_threshold["candidates"] == []
 
 
+def test_korean_word_candidates_stop_at_the_occurrence_cap(monkeypatch):
+    generated = 0
+    original_word_candidates = candidate_core._word_candidates
+
+    def counted_word_candidates(*args, **kwargs):
+        nonlocal generated
+        for candidate in original_word_candidates(*args, **kwargs):
+            generated += 1
+            yield candidate
+
+    monkeypatch.setattr(candidate_core, "_word_candidates", counted_word_candidates)
+    message = candidate_core.SourceMessage(
+        "ko",
+        " ".join(["조용한"] * 20),
+        1,
+    )
+
+    with pytest.raises(
+        candidate_core.CandidateMinerError,
+        match="assistant history exceeds local analysis limit",
+    ):
+        candidate_core.build_report(
+            [message],
+            input_record_count=1,
+            config=_config(),
+            rules_by_language={},
+            max_occurrences=3,
+        )
+
+    assert generated == 4
+
+
 def test_code_urls_and_template_noise_are_protected():
     text = (
         "`hidden phrase` https://example.test/hidden-phrase\n"
+        "intranet.example/private-path\n"
         "```text\nhidden phrase\n```\n"
         "{{hidden phrase}} <HIDDEN_PHRASE>\n"
         "visible phrase"
@@ -253,6 +311,24 @@ def test_code_urls_and_template_noise_are_protected():
     normalized = {candidate["normalized_phrase"] for candidate in report["candidates"]}
     assert "visible phrase" in normalized
     assert "hidden phrase" not in normalized
+    assert all("intranet" not in phrase for phrase in normalized)
+    assert all("example" not in phrase for phrase in normalized)
+
+
+def test_indented_markdown_code_is_protected():
+    text = "visible phrase\n\n    secret_key = value"
+    messages = [miner.SourceMessage("en", text, index) for index in range(1, 4)]
+
+    report = miner.build_report(
+        messages,
+        input_record_count=3,
+        config=_config(),
+        rules_by_language={},
+    )
+
+    normalized = {candidate["normalized_phrase"] for candidate in report["candidates"]}
+    assert "visible phrase" in normalized
+    assert all("secret_key" not in phrase for phrase in normalized)
 
 
 def test_threshold_filters_below_minimum_occurrence_count():
@@ -331,6 +407,47 @@ def test_partially_covered_candidate_is_annotated_but_not_excluded():
     candidate = _candidate(report, "smiled warmly")
     assert candidate["covered_by_rule_ids"] == ["EN_004"]
     assert candidate["occurrence_count"] == 4
+
+
+def test_coverage_work_is_cached_across_candidates(monkeypatch):
+    text = "quiet lantern silver morning"
+    messages = [miner.SourceMessage("en", text, index) for index in range(1, 4)]
+    rules = {"en": [{"id": "EN_CACHE", "find": r"\bquiet lantern\b"}]}
+    original_compile = candidate_core.re.compile
+    original_protected_spans = candidate_core._runtime_protected_spans
+    calls = {"compile": 0, "finditer": 0, "protected": 0}
+
+    class CountingPattern:
+        def __init__(self, pattern):
+            self.pattern = pattern
+
+        def finditer(self, text):
+            calls["finditer"] += 1
+            return self.pattern.finditer(text)
+
+    def counting_compile(pattern, flags=0):
+        calls["compile"] += 1
+        return CountingPattern(original_compile(pattern, flags))
+
+    def counting_protected_spans(text):
+        calls["protected"] += 1
+        return original_protected_spans(text)
+
+    monkeypatch.setattr(candidate_core.re, "compile", counting_compile)
+    monkeypatch.setattr(
+        candidate_core, "_runtime_protected_spans", counting_protected_spans
+    )
+
+    report = miner.build_report(
+        messages,
+        input_record_count=3,
+        config=_config(word_ngram_min=2, word_ngram_max=2),
+        rules_by_language=rules,
+    )
+
+    assert len(report["candidates"]) == 3
+    # Candidate extraction scans each source message; coverage adds one shared scan.
+    assert calls == {"compile": 1, "finditer": 1, "protected": 4}
 
 
 def test_word_coverage_uses_original_sentence_delimiters():
@@ -594,3 +711,134 @@ def test_cli_default_stdout_does_not_print_candidate_text(tmp_path: Path, capsys
     assert return_code == 0
     assert "private synthetic phrase" not in captured.out
     assert "private synthetic phrase" in output_path.read_text(encoding="utf-8")
+
+
+def test_user_review_requires_three_distinct_assistant_messages():
+    one_message = [
+        candidate_core.SourceMessage(
+            "en",
+            "quiet lantern. quiet lantern. quiet lantern",
+            1,
+        )
+    ]
+
+    one_message_report = candidate_core.build_user_review_report(
+        one_message,
+        rules_by_language={},
+    )
+    assert one_message_report["candidates"] == []
+
+    three_messages = [
+        candidate_core.SourceMessage("en", "quiet lantern", source_line)
+        for source_line in range(1, 4)
+    ]
+    report = candidate_core.build_user_review_report(
+        three_messages,
+        rules_by_language={},
+    )
+    candidate = _candidate(report, "quiet lantern")
+
+    assert report["artifact_type"] == "user_review_candidates"
+    assert report["parameters"]["message_count_threshold"] == 3
+    assert report["summary"] == {
+        "assistant_message_count": 3,
+        "candidate_count": 1,
+        "returned_candidate_count": 1,
+        "candidates_truncated": False,
+    }
+    assert candidate["occurrence_count"] == 3
+    assert candidate["message_count"] == 3
+    assert candidate["status"] == "pending"
+    assert set(candidate) == {
+        "covered_by_rule_ids",
+        "language",
+        "message_count",
+        "normalized_phrase",
+        "occurrence_count",
+        "phrase",
+        "status",
+    }
+
+
+def test_maintainer_report_keeps_occurrence_only_compatibility():
+    messages = [
+        candidate_core.SourceMessage(
+            "en",
+            "quiet lantern. quiet lantern. quiet lantern",
+            1,
+        )
+    ]
+
+    report = candidate_core.build_report(
+        messages,
+        input_record_count=1,
+        config=_config(),
+        rules_by_language={},
+    )
+
+    assert _candidate(report, "quiet lantern")["message_count"] == 1
+
+
+def test_report_can_bound_retained_occurrences():
+    messages = [candidate_core.SourceMessage("zh-CN", "安静灯笼安静灯笼", 1)]
+
+    with pytest.raises(
+        candidate_core.CandidateMinerError,
+        match="assistant history exceeds local analysis limit",
+    ):
+        candidate_core.build_report(
+            messages,
+            input_record_count=1,
+            config=_config(),
+            rules_by_language={},
+            max_occurrences=2,
+        )
+
+
+def test_user_review_rejects_oversized_history_before_mining(monkeypatch):
+    monkeypatch.setattr(candidate_core, "USER_REVIEW_MAX_INPUT_CHARACTERS", 8)
+    messages = [candidate_core.SourceMessage("en", "quiet lantern", 1)]
+
+    with pytest.raises(
+        candidate_core.CandidateMinerError,
+        match="assistant history exceeds local analysis limit",
+    ):
+        candidate_core.build_user_review_report(messages, rules_by_language={})
+
+
+def test_user_review_caps_candidates_before_returning_them_to_the_browser(monkeypatch):
+    candidates = [
+        {
+            "normalized_phrase": f"candidate {index}",
+            "status": "pending",
+        }
+        for index in range(3)
+    ]
+    monkeypatch.setattr(candidate_core, "USER_REVIEW_MAX_CANDIDATES", 2)
+    monkeypatch.setattr(
+        candidate_core,
+        "build_report",
+        lambda *args, **kwargs: {
+            "candidates": candidates,
+            "parameters": {},
+        },
+    )
+
+    report = candidate_core.build_user_review_report([], rules_by_language={})
+
+    assert report["candidates"] == candidates[:2]
+    assert report["summary"] == {
+        "assistant_message_count": 0,
+        "candidate_count": 3,
+        "returned_candidate_count": 2,
+        "candidates_truncated": True,
+    }
+    assert report["parameters"]["candidate_output_limit"] == 2
+
+
+def test_user_review_rejects_invalid_distinct_message_threshold():
+    with pytest.raises(
+        candidate_core.CandidateMinerError,
+        match="message_count_threshold must be at least 1",
+    ):
+        candidate_core.build_user_review_report([], message_count_threshold=0)
