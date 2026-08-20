@@ -606,10 +606,12 @@ function createImagePasteHandler(options) {
             continue;
           }
           setImagePreview(kind, image);
+          if (kind === 'study') ocrN = '';
           setPasteError(errorTarget, '');
         } else if (item.type === 'text/plain') {
           item.getAsString((pastedText) => {
             if (!controller.signal.aborted) {
+              if (kind === 'study') ocrN = '';
               insertPastedText(textarea, pastedText);
             }
           });
@@ -1030,7 +1032,7 @@ function updateStudySummaries(data = {}) {
     ? tf('ui.settings.ocr.ready_summary', '{ready}/{total} OCR dependencies ready', { ready: readyCount, total: dependencyCount })
     : t('ui.settings.ocr.no_status', 'Dependency status is not loaded yet.'));
   setText('settingsDependencySummary', dependencyCount
-    ? tf('ui.settings.dependencies.ready_summary', '{ready}/{total} runtime dependencies available', { ready: readyCount, total: dependencyCount })
+    ? tf('ui.settings.dependencies.ready_summary', '{ready}/{total} dependencies ready', { ready: readyCount, total: dependencyCount })
     : t('ui.settings.dependencies.no_status', 'Refresh status to inspect OCR backends.'));
   window.StudyDependencyController?.render(deps);
   setText('settingsKnowledgeSummary', topicCount
@@ -1971,7 +1973,6 @@ async function runOcr(options = {}) {
   }
   const s = data.status || 'unknown';
   const n = data.capture_mode_used === 'fullscreen' && ['ok', 'empty'].includes(s) ? interactiveOcrFallbackMessage(data.interactive_fallback_reason) : '';
-  data.notice = data.text ? n : '';
   if (data.text) {
     studyInput.value = data.text;
     ocrN = n;
@@ -2024,7 +2025,7 @@ async function explainText(options = {}) {
       )
       : '',
   ].filter(Boolean).join('\n\n'));
-  await refreshStatus({ updateReply: false }).catch((error) => { if (!n) throw error; });
+  await refreshStatus({ updateReply: false }).catch((error) => { if (!n) throw error; setStatus(t('ui.status.reply_ready', 'Reply ready')); });
 }
 
 async function generateQuestion() {
@@ -2219,7 +2220,7 @@ function bindButton(button, handler) {
       await handler();
     } catch (error) {
       setStatus(t('ui.status.error', 'Error'));
-      setReply([error?.n, formatPluginError(error)].filter(Boolean).join('\n\n'));
+      setReply([error?.n,formatPluginError(error)].filter(Boolean).join('\n\n'));
     } finally {
       button.disabled = false;
     }
@@ -2231,7 +2232,7 @@ async function handleNekoCoachAction(action) {
   if (normalized === 'explain-current') {
     const ocrData = await runOcr({ clearWhenEmpty: true });
     if (String(ocrData?.text || '').trim() || studyInputImageValue) {
-      await explainText({ notice: ocrData?.notice });
+      await explainText({ notice: ocrN });
     }
     return;
   }
@@ -2314,7 +2315,6 @@ async function bootstrap() {
   }
   if (studyInput) {
     studyInput.addEventListener('input', () => { ocrN = ''; });
-    studyInput.addEventListener('paste', () => { ocrN = ''; });
     studyInput.addEventListener('paste', createImagePasteHandler({
       textarea: studyInput,
       kind: 'study',
