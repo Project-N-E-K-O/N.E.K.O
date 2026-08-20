@@ -5563,7 +5563,7 @@ def test_study_companion_ui_refactor_static_and_hosted_contracts() -> None:
     assert "@media (prefers-reduced-motion: reduce)" in style_css
     assert "clip-path: inset(50%);" in style_css
 
-    assert "const modeSwitch = document.getElementById('modeSwitch');" in main_js
+    assert "const modeSwitch = $id('modeSwitch');" in main_js
     assert "function updateModeIndicator()" in main_js
     assert "modeSwitch.dataset.active = currentMode" in main_js
     assert "modeSwitch.offsetParent === null" in main_js

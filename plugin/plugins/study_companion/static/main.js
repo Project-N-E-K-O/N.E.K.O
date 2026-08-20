@@ -8,7 +8,6 @@ const TARGET_DATA_URL_LENGTH = 1000000;
 const DEFAULT_VISION_MAX_IMAGE_PX = 768;
 const SUPPORTED_PASTE_IMAGE_TYPES = new Set(['image/png', 'image/jpeg']);
 const DEPENDENCY_KEYS = Object.freeze(['rapidocr', 'tesseract', 'dxcam']);
-// ui.settings.dependencies.ready_summary
 const LEARNING_PROFILE_STORAGE_KEY = 'study_companion.learning_profile.v1';
 const LEARNING_STAGE_OPTIONS = ['primary', 'junior_high', 'senior_high', 'college', 'cross_stage', 'postgraduate', 'custom'];
 const KNOWLEDGE_SUBJECT_OPTIONS = ['math', 'english', 'chinese', 'physics', 'chemistry', 'biology', 'history', 'geography', 'politics', 'computer_science', 'economics'];
@@ -98,8 +97,8 @@ const memoryDeckSkipBtn = $id('memoryDeckSkipBtn');
 const memoryRefreshBtn = $id('memoryRefreshBtn');
 const memoryAddBtn = $id('memoryAddBtn');
 const memoryDueCard = $id('memoryDueCard');
-const modeSwitch = document.getElementById('modeSwitch');
-const modeSelect = document.getElementById('modeSelect');
+const modeSwitch = $id('modeSwitch');
+const modeSelect = $id('modeSelect');
 const summaryMode = $id('summaryMode');
 const summaryDuration = $id('summaryDuration');
 const summaryGoal = $id('summaryGoal');
@@ -132,7 +131,7 @@ const surfaceOpenButtons = Array.from(document.querySelectorAll('[data-open-surf
 const featureActionButtons = Array.from(document.querySelectorAll('[data-feature-action]'));
 const surfaceDrawer = $id('surfaceDrawer');
 const surfaceDrawerTitle = $id('surfaceDrawerTitle');
-const surfaceDrawerBody = document.getElementById('surfaceDrawerBody');
+const surfaceDrawerBody = $id('surfaceDrawerBody');
 const surfaceDrawerCloseBtn = $id('surfaceDrawerCloseBtn');
 const settingsConfigForm = $id('settingsConfigForm');
 const settingsSaveBtn = $id('settingsSaveBtn');
@@ -149,11 +148,11 @@ const settingsLlmTimeout = $id('settingsLlmTimeout');
 const settingsLlmVisionEnabled = $id('settingsLlmVisionEnabled');
 const settingsModelRefreshBtn = $id('settingsModelRefreshBtn');
 const settingsModelRuntimeCards = Array.from(document.querySelectorAll('[data-model-runtime]'));
-const settingsCommunicationEnabled = document.getElementById('settingsCommunicationEnabled');
-const settingsSolutionNarrationEnabled = document.getElementById('settingsSolutionNarrationEnabled');
-const settingsGeneralNarrationEnabled = document.getElementById('settingsGeneralNarrationEnabled');
+const settingsCommunicationEnabled = $id('settingsCommunicationEnabled');
+const settingsSolutionNarrationEnabled = $id('settingsSolutionNarrationEnabled');
+const settingsGeneralNarrationEnabled = $id('settingsGeneralNarrationEnabled');
 const settingsCommunicationRequiresEnabled = $id('settingsCommunicationRequiresEnabled');
-const settingsCommunicationRuntime = document.getElementById('settingsCommunicationRuntime');
+const settingsCommunicationRuntime = $id('settingsCommunicationRuntime');
 const modeButtons = Array.from(document.querySelectorAll('[data-mode]'));
 const memoryReviewButtons = Array.from(document.querySelectorAll('[data-memory-rating]'));
 const MODE_SHORTCUTS=Object.freeze({1:'companion',2:'interactive',3:'teaching'});
@@ -1031,7 +1030,7 @@ function updateStudySummaries(data = {}) {
     ? tf('ui.settings.ocr.ready_summary', '{ready}/{total} OCR dependencies ready', { ready: readyCount, total: dependencyCount })
     : t('ui.settings.ocr.no_status', 'Dependency status is not loaded yet.'));
   setText('settingsDependencySummary', dependencyCount
-    ? tf('ui.settings.dependencies.component_summary', '{ready}/{total} components installed', { ready: readyCount, total: dependencyCount })
+    ? tf('ui.settings.dependencies.ready_summary', '{ready}/{total} runtime dependencies available', { ready: readyCount, total: dependencyCount })
     : t('ui.settings.dependencies.no_status', 'Refresh status to inspect OCR backends.'));
   window.StudyDependencyController?.render(deps);
   setText('settingsKnowledgeSummary', topicCount
@@ -1973,7 +1972,8 @@ async function runOcr(options = {}) {
   }
   const s = data.status || 'unknown';
   const n = data.capture_mode_used === 'fullscreen' && ['ok', 'empty'].includes(s) ? interactiveOcrFallbackMessage(data.interactive_fallback_reason) : '';
-  data.notice = ocrN = n;
+  data.notice = n;
+  ocrN = data.text ? n : '';
   if (data.text) {
     studyInput.value = data.text;
   } else if (options.clearWhenEmpty && studyInput) {
@@ -2313,6 +2313,7 @@ async function bootstrap() {
     });
   }
   if (studyInput) {
+    studyInput.addEventListener('input', () => { ocrN = ''; });
     studyInput.addEventListener('paste', createImagePasteHandler({
       textarea: studyInput,
       kind: 'study',

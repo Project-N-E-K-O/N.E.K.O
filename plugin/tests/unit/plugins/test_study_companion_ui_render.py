@@ -447,7 +447,7 @@ def test_study_companion_static_ui8_visual_accessibility_and_csp_contract() -> N
     assert ".finally(() => {" in main_js
     assert "SECURITY: renderMathInText MUST HTML-escape all non-math text." in main_js
     assert "window.location.origin" in main_js
-    assert "const modeSelect = document.getElementById('modeSelect');" in main_js
+    assert "const modeSelect = $id('modeSelect');" in main_js
     assert "function handleModeShortcut(event)" in main_js
     assert "modeSelect.addEventListener('change'" in main_js
     assert "document.addEventListener('keydown', handleModeShortcut);" in main_js
@@ -1239,7 +1239,7 @@ def test_study_companion_feature_dock_opens_knowledge_map_in_centered_dialog() -
 
     assert "const surfaceOpenButtons = Array.from(document.querySelectorAll('[data-open-surface]'));" in main_js
     assert "const featureActionButtons = Array.from(document.querySelectorAll('[data-feature-action]'));" in main_js
-    assert "const surfaceDrawerBody = document.getElementById('surfaceDrawerBody');" in main_js
+    assert "const surfaceDrawerBody = $id('surfaceDrawerBody');" in main_js
     assert "renderSurfaceDrawerBody(surfaceId)" in main_js
     assert "surfaceDrawerBody.replaceChildren" in main_js
     assert "StudyCompanionSurfacePanels" in main_js

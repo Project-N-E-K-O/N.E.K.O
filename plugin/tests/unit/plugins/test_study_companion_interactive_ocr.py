@@ -442,13 +442,15 @@ def test_ocr_entry_and_static_ui_expose_interactive_timeout_contract() -> None:
     assert "ocrN = '';" in run_ocr
     assert "const s = data.status || 'unknown';" in run_ocr
     assert "['ok', 'empty'].includes(s)" in run_ocr
-    assert "data.notice = ocrN = n;" in run_ocr
+    assert "data.notice = n;" in run_ocr
+    assert "ocrN = data.text ? n : '';" in run_ocr
     assert "if (!n) throw error;" in run_ocr
     assert run_ocr.index("await refreshStatus({ updateReply: false }).catch") < run_ocr.index(
         "setStatus(n || tf('ui.status.ocr_result'"
     )
     assert "{ status: s }" in run_ocr
     assert "const n = (options.notice || ocrN).trim();" in explain_text
+    assert "studyInput.addEventListener('input', () => { ocrN = ''; });" in main_js
     assert "setReply(n ? `${n}\\n\\n${pending}` : pending);" in explain_text
     assert "error.n = n;" in explain_text
     assert "[error?.n, formatPluginError(error)].filter(Boolean).join('\\n\\n')" in bind_button
