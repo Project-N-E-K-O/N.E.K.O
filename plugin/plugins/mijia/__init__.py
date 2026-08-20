@@ -702,6 +702,7 @@ class MijiaPlugin(NekoPluginBase):
             result = []
             room_filled = 0
             room_empty = 0
+            spec_failed = False
             for d in devices:
                 room_name = ""
                 if d.room_id:
@@ -748,14 +749,23 @@ class MijiaPlugin(NekoPluginBase):
                                     prop["service_desc"] = p.service_description
                                 properties.append(prop)
                             
-                            # 缓存操作信息（包含 siid, aiid）
+                            # 缓存操作信息（包含 siid, aiid 与参数元数据，动作调用时据此构造 in）
                             actions = []
                             for a in spec.actions:
                                 action = {
                                     "siid": a.siid,
                                     "aiid": a.aiid,
-                                    "name": a.name
+                                    "name": a.name,
                                 }
+                                if a.parameters:
+                                    action["parameters"] = [
+                                        {
+                                            "name": p.name,
+                                            "type": p.type.value if hasattr(p.type, 'value') else str(p.type),
+                                            "required": p.required,
+                                        }
+                                        for p in a.parameters
+                                    ]
                                 actions.append(action)
                             
                             device_info["properties"] = properties
@@ -764,8 +774,9 @@ class MijiaPlugin(NekoPluginBase):
                         raise  # 让外层统一返回"凭据已过期"，不能静默写半残缓存
                     except Exception as e:
                         self.logger.debug(f"获取设备 {d.name}({d.model}) 规格失败: {e}")
-                        # 规格获取失败：回填旧缓存里的 properties/actions，避免不完整
-                        # 缓存以 schema v2 永久生效（下次读取因版本匹配而不再刷新）
+                        spec_failed = True
+                        # 规格获取失败：回填旧缓存里的 properties/actions 作为临时兜底，
+                        # 但标记刷新不完整，避免把旧格式（扁平 value_list）以 v2 固化
                         old = old_devices.get(d.did)
                         if old:
                             if old.get("properties"):
@@ -780,9 +791,15 @@ class MijiaPlugin(NekoPluginBase):
             # 保存到缓存（使用异步写入避免阻塞）
             try:
                 user_id = self.api.credential.user_id if self.api and self.api.credential else None
+                # 刷新不完整（有设备规格获取失败）时保留旧版本号而非升级到 v2，
+                # 使下次读取仍判定为"版本不匹配"并重试；否则会把旧格式（扁平
+                # value_list）的兜底属性以 v2 固化，导致中文模式命令永久失效
+                schema_to_write = _DEVICES_CACHE_SCHEMA
+                if spec_failed:
+                    schema_to_write = cached.get("schema_version") if cached is not None else None
                 await atomic_write_json_async(
                     cache_path,
-                    {"schema_version": _DEVICES_CACHE_SCHEMA, "devices": result, "home_id": home_id, "user_id": user_id},
+                    {"schema_version": schema_to_write, "devices": result, "home_id": home_id, "user_id": user_id},
                     ensure_ascii=False,
                     indent=2
                 )
