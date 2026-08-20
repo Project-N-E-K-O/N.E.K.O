@@ -81,6 +81,10 @@ class PromptProfile:
     # Host generation for this attachment request. Delivery re-checks it so
     # turning the panel switch off can retract a cue the host already queued.
     live_frame_permission_token: str = ""
+    # Passive/read context is not committed before an unsolicited response.
+    # Carry the standing scene in the response callback too, so a battle that
+    # starts before the user's next turn still has its telemetry/vision rules.
+    scene_context: str = ""
 
 
 class WowsPromptRouter:
@@ -126,6 +130,9 @@ class WowsPromptRouter:
             sections.append("表述限制：\n" + "\n".join(
                 f"- {limit}" for limit in claim_limits))
 
+        scene_context = str(profile.scene_context or "").strip()
+        if scene_context:
+            sections.append(scene_context)
         sections.append(bundle.instructions_for(primary.lane, profile.channel_mode))
         # Only ever one of the two. Telling her to call the screenshot tool on a
         # turn that already carries the shared frame would buy the same picture

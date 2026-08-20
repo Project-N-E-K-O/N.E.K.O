@@ -17,6 +17,7 @@ Flow: plugin ─(ZMQ ingest)→ message_plane ─(PUB)→ **this bridge** ─(PU
 from __future__ import annotations
 
 import json
+import math
 import os
 import threading
 import time
@@ -43,6 +44,18 @@ def _resolve_delivery_mode(visibility: list[str], ai_behavior: str) -> str:
     if ai_behavior == "read":
         return "passive"
     return "silent"
+
+
+def _positive_finite_float(value: Any) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    try:
+        normalized = float(value)
+    except (OverflowError, TypeError, ValueError):
+        return None
+    if not math.isfinite(normalized) or normalized <= 0.0:
+        return None
+    return normalized
 
 
 def _aggregate_text_parts(parts: list[dict[str, Any]]) -> str:
@@ -205,6 +218,7 @@ class ProactiveBridge:
         plugin_id = payload.get("plugin_id", "")
         timestamp = payload.get("time", "")
         metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
+        expires_in_s = _positive_finite_float(metadata.get("expires_in_s"))
 
         # v2 fields are guaranteed by the SDK adapter's translate step,
         # but accept legacy shapes too for safety.
@@ -327,6 +341,8 @@ class ProactiveBridge:
                 "priority": priority,
                 "coalesce_key": coalesce_key,
             }
+            if expires_in_s is not None:
+                proactive_event["expires_in_s"] = expires_in_s
             # When ai_behavior=blind we still want the HUD agent_notification
             # to fire (handled by main_server's existing branch).  Setting
             # delivery_mode="silent" tells the proactive_message handler to

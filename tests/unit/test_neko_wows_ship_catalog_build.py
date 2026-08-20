@@ -793,6 +793,35 @@ def test_build_cli_requires_source_channel_for_local_files(
     assert "--source-channel" in capsys.readouterr().err
 
 
+@pytest.mark.parametrize(
+    "extra_args",
+    [
+        ["--source-commit", "f" * 40],
+        ["--source-channel", "live"],
+    ],
+)
+def test_build_cli_rejects_explicit_provenance_with_revision(
+    tmp_path,
+    monkeypatch,
+    extra_args,
+):
+    cli = load_build_cli()
+    monkeypatch.setattr(
+        cli,
+        "download_pinned_sources",
+        lambda *_args, **_kwargs: pytest.fail("validation must precede download"),
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        cli.main([
+            "--revision", "a" * 40,
+            "--output-dir", str(tmp_path / "catalog"),
+            *extra_args,
+        ])
+
+    assert exc_info.value.code == 2
+
+
 def test_pinned_download_uses_only_fixed_repository_paths(tmp_path, source_payloads):
     cli = load_build_cli()
     wowsinfo, lang = source_payloads

@@ -272,6 +272,7 @@ class NekoWowsPlugin(NekoPluginBase):
         self._blocked_signature: tuple[tuple[str, tuple[str, ...]], ...] = ()
         self._arbiter_wait_log: set[tuple[str, str]] = set()
         self._live_frame_permission_token = uuid.uuid4().hex
+        self._live_frame_permission_ready = False
 
     # ------------------------------------------------------------------ 配置
     def _build_registry(self) -> DetectorRegistry:
@@ -390,6 +391,7 @@ class NekoWowsPlugin(NekoPluginBase):
     async def _publish_live_frame_permission(
         self, *, enabled: bool, timeout: float = 3.0,
     ) -> None:
+        self._live_frame_permission_ready = False
         host = getattr(self, "_host_ctx", None)
         setter = getattr(host, "set_live_frame_permission_async", None)
         if not callable(setter):
@@ -400,6 +402,7 @@ class NekoWowsPlugin(NekoPluginBase):
             self._live_frame_permission_token = token
         try:
             await setter(token=token, enabled=bool(enabled), timeout=timeout)
+            self._live_frame_permission_ready = bool(enabled)
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -464,16 +467,20 @@ class NekoWowsPlugin(NekoPluginBase):
             return {"in_battle": False}
         return facts_to_telemetry(facts)
 
-    def _live_vision_active(self) -> bool:
+    def _live_vision_active(self, *, role: str | None = None) -> bool:
         """Whether this call-out can count on the host attaching the screen.
 
         The panel switch is checked first so that turning it off costs nothing:
         no probe, no refresh thread, and the pipeline behaves exactly as it did
         before this feature existed.
         """
-        if not self.cfg.live_vision_enabled:
+        if (
+            not self.cfg.live_vision_enabled
+            or not getattr(self, "_live_frame_permission_ready", False)
+        ):
             return False
-        return self.live_vision.is_active()
+        target = resolve_target_lanlan(self) if role is None else str(role or "")
+        return self.live_vision.is_active(role=target)
 
     def _live_frame(self) -> bytes | None:
         """The shared frame for the screenshot tool, when one is available.
@@ -485,9 +492,10 @@ class NekoWowsPlugin(NekoPluginBase):
         """
         if not self.cfg.live_vision_enabled:
             return None
-        if not self.live_vision.is_sharing_screen():
+        role = resolve_target_lanlan(self)
+        if not self.live_vision.is_sharing_screen(role=role):
             return None
-        return self.live_vision.fetch_frame()
+        return self.live_vision.fetch_frame(role=role)
 
     def _on_screenshot_result(self, action: str, output: dict[str, Any]) -> None:
         """Log-adjacent audit trail: whether the model actually got a frame."""
@@ -597,9 +605,30 @@ class NekoWowsPlugin(NekoPluginBase):
         })
 
     @lifecycle(id="shutdown")
-    def shutdown(self, **_):
+    async def shutdown(self, **_):
         with self._state_lock:
             self._running = False
+        self._live_frame_permission_token = uuid.uuid4().hex
+        self._live_frame_permission_ready = False
+
+        permission_error: Exception | None = None
+        try:
+            await self._publish_live_frame_permission(enabled=False)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            permission_error = exc
+
+        status = await asyncio.to_thread(self._shutdown_resources)
+        self.logger.info("neko_wows shutdown")
+        if permission_error is not None:
+            return Err(SdkError(
+                "live frame permission revocation failed during shutdown: "
+                f"{type(permission_error).__name__}: {permission_error}"
+            ))
+        return Ok({"status": "shutdown", "service": status.as_dict()})
+
+    def _shutdown_resources(self):
         self.transport.stop()
         status = self.service.stop()
         with self._pipeline_lock:
@@ -609,8 +638,7 @@ class NekoWowsPlugin(NekoPluginBase):
             # Frames of the user's screen do not outlive the plugin.
             self.shots.clear()
             self.knowledge.close()
-        self.logger.info("neko_wows shutdown")
-        return Ok({"status": "shutdown", "service": status.as_dict()})
+        return status
 
     @message(id="chat_quiet_window", source="chat")
     def on_chat_message(self, **_):
@@ -784,6 +812,12 @@ class NekoWowsPlugin(NekoPluginBase):
         cfg = self.cfg
         facts = self.facts.build(snapshot)
         current = (snapshot, facts)
+        target_lanlan = resolve_target_lanlan(self)
+        live_vision_active = self._live_vision_active(role=target_lanlan)
+        scene_context = context_instructions(
+            screenshot_enabled=bool(cfg.screenshot_enabled),
+            live_vision_active=live_vision_active,
+        )
 
         with self._state_lock:
             previous = self._previous
@@ -807,9 +841,7 @@ class NekoWowsPlugin(NekoPluginBase):
 
         if snapshot.is_live:
             self.context_injector.push(
-                context_instructions(
-                    screenshot_enabled=bool(cfg.screenshot_enabled),
-                    live_vision_active=self._live_vision_active()),
+                scene_context,
                 dry_run=cfg.dry_run,
             )
             try:
@@ -904,11 +936,15 @@ class NekoWowsPlugin(NekoPluginBase):
             dry_run=cfg.dry_run,
             bundle=bundle,
             screenshot_enabled=bool(cfg.screenshot_enabled),
-            live_vision_enabled=bool(cfg.live_vision_enabled),
-            live_vision_active=self._live_vision_active(),
+            live_vision_enabled=bool(
+                cfg.live_vision_enabled
+                and getattr(self, "_live_frame_permission_ready", False)
+            ),
+            live_vision_active=live_vision_active,
             live_frame_permission_token=str(
                 getattr(self, "_live_frame_permission_token", "") or ""),
-            target_lanlan=resolve_target_lanlan(self),
+            target_lanlan=target_lanlan,
+            scene_context=scene_context,
         )
         excerpts = self._reference_for(chosen, snapshot)
         request = self.router.build(bundled, profile, excerpts)
@@ -976,7 +1012,10 @@ class NekoWowsPlugin(NekoPluginBase):
             summary=candidate.summary,
             event_id=candidate.event_id,
             map_name=snapshot.map_name,
-            ship_name=snapshot.own_ship_name,
+            ship_name=(
+                getattr(snapshot, "own_ship_spoken_name", "")
+                or snapshot.own_ship_name
+            ),
             ship_class=snapshot.own_ship_type,
             game_mode=snapshot.game_mode or snapshot.battle_type,
             topics=(candidate.summary,),
@@ -1108,7 +1147,8 @@ class NekoWowsPlugin(NekoPluginBase):
             return {"enabled": False, "active": False, "usable": False,
                     "in_use": False, "polled": False, "source": "",
                     "age_seconds": None, "native_vision": False, "role": ""}
-        payload = dict(self.live_vision.status())
+        payload = dict(self.live_vision.status(
+            role=resolve_target_lanlan(self)))
         payload["enabled"] = True
         # What the pipeline would actually do right now, so the panel can say
         # "sharing, but she still needs the screenshot tool" rather than making
@@ -1197,6 +1237,10 @@ class NekoWowsPlugin(NekoPluginBase):
             if not was_dry_run and next_dry_run:
                 self.context_injector.restore(
                     WOWS_RESTORE_INSTRUCTIONS, dry_run=True)
+                # Diagnostics counters describe the current delivery mode.
+                # Keeping live-mode calls here would falsely report a dry-run
+                # boundary violation as soon as preview is enabled.
+                self.dispatcher.reset_counters()
             self.cfg.dry_run = next_dry_run
             if was_dry_run and not next_dry_run:
                 # Shadow cooldowns were accumulated against output nobody heard,
@@ -1528,11 +1572,20 @@ class NekoWowsPlugin(NekoPluginBase):
                 with self._pipeline_lock:
                     self.cfg.live_vision_enabled = previous_enabled
                     self._live_frame_permission_token = previous_token
-                await self._persist(
+                rollback_error = await self._persist(
                     STORE_LIVE_VISION_ENABLED, previous_enabled)
+                rollback_detail = ""
+                if rollback_error is not None:
+                    rollback_detail = (
+                        f"; preference rollback failed: {rollback_error}"
+                    )
+                    self.logger.warning(
+                        "live vision preference rollback failed: "
+                        f"{rollback_error}"
+                    )
                 return Err(SdkError(
                     f"live frame permission update failed: "
-                    f"{type(exc).__name__}: {exc}"
+                    f"{type(exc).__name__}: {exc}{rollback_detail}"
                 ))
             return Ok({"live_vision_enabled": enabled})
 
@@ -1796,8 +1849,15 @@ class NekoWowsPlugin(NekoPluginBase):
                 dry_run=True,
                 bundle=bundle,
                 screenshot_enabled=bool(self.cfg.screenshot_enabled),
-                live_vision_enabled=bool(self.cfg.live_vision_enabled),
+                live_vision_enabled=bool(
+                    self.cfg.live_vision_enabled
+                    and getattr(self, "_live_frame_permission_ready", False)
+                ),
                 live_vision_active=self._live_vision_active(),
+                scene_context=context_instructions(
+                    screenshot_enabled=bool(self.cfg.screenshot_enabled),
+                    live_vision_active=self._live_vision_active(),
+                ),
             ),
             (),
         )

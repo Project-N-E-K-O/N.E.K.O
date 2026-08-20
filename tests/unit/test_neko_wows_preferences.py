@@ -130,6 +130,25 @@ def test_hot_reload_preserves_the_explicit_session_dry_run_choice():
     assert cfg.dry_run is False
 
 
+def test_entering_preview_resets_live_delivery_counters():
+    reset_calls = []
+    target = object.__new__(NekoWowsPlugin)
+    target._pipeline_lock = threading.RLock()
+    target.cfg = WowsConfig(dry_run=False)
+    target.context_injector = type("Context", (), {
+        "restore": lambda _self, *_args, **_kwargs: True,
+    })()
+    target.dispatcher = type("Dispatcher", (), {
+        "reset_counters": lambda _self: reset_calls.append("reset"),
+    })()
+
+    result = asyncio.run(NekoWowsPlugin.set_dry_run(target, True))
+
+    assert result.is_ok()
+    assert target.cfg.dry_run is True
+    assert reset_calls == ["reset"]
+
+
 def test_startup_config_reload_uses_configured_screenshot_enabled():
     target = _ReloadTarget(
         current=False,
@@ -1086,6 +1105,31 @@ def test_startup_reload_authorizes_live_frame_reuse_when_enabled():
     asyncio.run(scenario())
 
 
+def test_failed_live_frame_registration_clears_runtime_readiness():
+    async def scenario():
+        target = _ReloadTarget(current=True, configured=False)
+        target._live_frame_permission_token = "generation-one"
+        target._live_frame_permission_ready = True
+
+        async def set_live_frame_permission_async(**_kwargs):
+            raise RuntimeError("host unavailable")
+
+        target._host_ctx = type("Host", (), {
+            "set_live_frame_permission_async": staticmethod(
+                set_live_frame_permission_async),
+        })()
+
+        with pytest.raises(RuntimeError, match="host unavailable"):
+            await NekoWowsPlugin._publish_live_frame_permission(
+                target,
+                enabled=True,
+            )
+
+        assert target._live_frame_permission_ready is False
+
+    asyncio.run(scenario())
+
+
 def test_disabling_live_frame_reuse_waits_for_host_revocation_ack():
     async def scenario():
         target = _action_target(guarded=False)
@@ -1157,6 +1201,48 @@ def test_enabling_live_frame_reuse_reports_host_failure():
             (STORE_LIVE_VISION_ENABLED, True),
             (STORE_LIVE_VISION_ENABLED, False),
         ]
+
+    asyncio.run(scenario())
+
+
+def test_live_frame_host_failure_reports_persistence_rollback_failure():
+    async def scenario():
+        class _RollbackFailingStore:
+            def __init__(self):
+                self.calls = []
+
+            async def set(self, key, value):
+                self.calls.append((key, value))
+                if len(self.calls) == 1:
+                    return Ok(None)
+                return Err(SdkError("rollback disk failure"))
+
+        warnings = []
+        target = _action_target(
+            guarded=False,
+            store=_RollbackFailingStore(),
+        )
+        target.cfg.live_vision_enabled = False
+        target._live_frame_permission_token = "generation-one"
+        target.logger = type("Logger", (), {
+            "warning": lambda _self, message: warnings.append(message),
+        })()
+
+        async def set_live_frame_permission_async(**_kwargs):
+            raise RuntimeError("host unavailable")
+
+        target._host_ctx = type("Host", (), {
+            "set_live_frame_permission_async": staticmethod(
+                set_live_frame_permission_async),
+        })()
+
+        result = await target.set_live_vision_enabled(True)
+
+        assert result.is_err()
+        assert "preference rollback failed" in str(result.error)
+        assert any("preference rollback failed" in item for item in warnings)
+        assert target.cfg.live_vision_enabled is False
+        assert target._live_frame_permission_token == "generation-one"
 
     asyncio.run(scenario())
 

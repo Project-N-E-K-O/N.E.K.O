@@ -153,7 +153,7 @@ class NekoDispatcher:
             }
 
     def reset_counters(self) -> None:
-        """Called when switching out of dry-run so the counters mean one mode."""
+        """Called when delivery mode changes so counters describe one mode."""
         with self._lock:
             self.host_calls = 0
             self.delivered = 0
@@ -180,8 +180,14 @@ class NekoDispatcher:
                 self.suppressed += 1
                 return self._result(request, False, REASON_DRY_RUN, now)
 
+        expires_in_s = (
+            max(0.0, request.expires_at - now)
+            if request.expires_at
+            else None
+        )
         try:
-            receipt = self._plugin.push_message(**request.push_kwargs())
+            receipt = self._plugin.push_message(**request.push_kwargs(
+                expires_in_s=expires_in_s))
         except Exception as exc:
             self._log("warning", f"push_message failed for {request.event_id}: {exc}")
             with self._lock:
@@ -255,26 +261,26 @@ class ContextInjector:
         self._plugin = plugin
         self.logger = logger
         self._lock = threading.RLock()
-        self._injected = False
-        # Last accepted scene text. A mid-battle screenshot toggle changes the
-        # block; push must replace rather than leave the stale version active.
-        self._text: str | None = None
+        # Last accepted scene text per character. Both text and target form the
+        # injection identity: equal instructions sent to another manager are
+        # still a distinct standing context that must later be restored.
+        self._texts_by_target: dict[str, str] = {}
         self.host_calls = 0
 
     @property
     def injected(self) -> bool:
         with self._lock:
-            return self._injected
+            return bool(self._texts_by_target)
 
     def push(self, text: str, *, dry_run: bool) -> bool:
         with self._lock:
             if dry_run:
                 return False
-            if self._injected and self._text == text:
+            target = resolve_target_lanlan(self._plugin)
+            if self._texts_by_target.get(target) == text:
                 return False
-            if self._send(text):
-                self._injected = True
-                self._text = text
+            if self._send(text, target=target):
+                self._texts_by_target[target] = text
                 return True
             return False
 
@@ -284,15 +290,17 @@ class ContextInjector:
         # old scene instructions in the host.
         del dry_run
         with self._lock:
-            if not self._injected:
+            targets = tuple(self._texts_by_target)
+            if not targets:
                 return False
-            if self._send(text):
-                self._injected = False
-                self._text = None
-                return True
-            return False
+            restored = 0
+            for target in targets:
+                if self._send(text, target=target):
+                    self._texts_by_target.pop(target, None)
+                    restored += 1
+            return restored == len(targets)
 
-    def _send(self, text: str) -> bool:
+    def _send(self, text: str, *, target: str) -> bool:
         try:
             receipt = self._plugin.push_message(
                 source="neko_wows",
@@ -304,7 +312,7 @@ class ContextInjector:
                 priority=0,
                 coalesce_key="wows_context",
                 metadata={"plugin": "neko_wows", "kind": "context"},
-                target_lanlan=resolve_target_lanlan(self._plugin) or None,
+                target_lanlan=target or None,
             )
         except Exception as exc:
             self.host_calls += 1

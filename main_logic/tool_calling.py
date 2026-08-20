@@ -274,13 +274,12 @@ def parse_tool_images(body: Dict[str, Any]) -> Tuple[List[ToolImage], List[str]]
 
     images: List[ToolImage] = []
     warnings: List[str] = []
-    for index, entry in enumerate(raw):
-        if len(images) >= _MAX_TOOL_IMAGES:
-            warnings.append(
-                f"a tool may return at most {_MAX_TOOL_IMAGES} image(s); "
-                f"{len(raw) - _MAX_TOOL_IMAGES} dropped"
-            )
-            break
+    if len(raw) > _MAX_TOOL_IMAGES:
+        warnings.append(
+            f"a tool may return at most {_MAX_TOOL_IMAGES} image(s); "
+            f"{len(raw) - _MAX_TOOL_IMAGES} dropped"
+        )
+    for index, entry in enumerate(raw[:_MAX_TOOL_IMAGES]):
         if not isinstance(entry, dict):
             warnings.append(f"image #{index} is not an object; dropped")
             continue

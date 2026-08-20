@@ -264,7 +264,7 @@ export function DocumentsSection(props: {
 
 function ratio(value?: number, total?: number): number {
   if (!total || !value) return 0
-  return Math.min(1, value / total)
+  return Math.min(100, (value / total) * 100)
 }
 
 function formatBytes(value: number | undefined, t: Translate): string {

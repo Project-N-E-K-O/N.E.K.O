@@ -129,6 +129,11 @@ def test_traditional_locale_does_not_show_simplified_backend_reasons():
     assert 'startsWith("zh-hans")' in source
 
 
+def test_document_progress_ratios_use_the_hosted_percentage_scale():
+    source = (PLUGIN_DIR / "ui" / "documents.tsx").read_text(encoding="utf-8")
+    assert "Math.min(100, (value / total) * 100)" in source
+
+
 def test_preference_inputs_follow_refreshed_props_and_quiet_deadline():
     source = (PLUGIN_DIR / "ui" / "preferences.tsx").read_text(encoding="utf-8")
     assert "useEffect" in source
@@ -253,7 +258,8 @@ def test_the_manifest_section_parses_into_the_config(manifest):
 def test_ship_catalog_config_defaults_are_offline_safe():
     cfg = WowsConfig()
 
-    assert cfg.ship_catalog_enabled is True
+    assert cfg.ship_catalog_enabled is False
+    assert WowsConfig.from_mapping({}).ship_catalog_enabled is False
     assert cfg.ship_catalog_version_policy == "warn"
     assert cfg.ship_catalog_language == "zh-CN"
     assert cfg.ship_catalog_context_batch_chars == 12_000
@@ -326,6 +332,17 @@ def test_out_of_range_values_are_clamped_not_trusted():
     assert cfg.urgent_ttl_seconds <= 120.0
     assert cfg.safety_failure_limit >= 1
     assert cfg.channel_mode == "dual"
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+def test_non_finite_config_numbers_fall_back_to_defaults(value):
+    cfg = WowsConfig.from_mapping({
+        "urgent_ttl_seconds": value,
+        "low_health_ratios": [0.5, value, 0.2],
+    })
+
+    assert cfg.urgent_ttl_seconds == 12.0
+    assert cfg.low_health_ratios == (0.5, 0.2)
 
 
 def test_reconnect_window_bounds_stay_ordered():

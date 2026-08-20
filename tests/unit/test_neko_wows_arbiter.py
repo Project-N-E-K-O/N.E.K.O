@@ -140,6 +140,23 @@ def test_terminal_summary_reserves_a_slot_behind_higher_priority_events():
     assert decision.queued == 1
 
 
+def test_terminal_events_bypass_the_attachment_window_of_an_older_urgent_cue():
+    arbiter = Arbiter(CFG)
+    arbiter.submit([candidate(RAPID_DAMAGE, priority=85, at=100.0)], 100.0)
+
+    decision = arbiter.decide([
+        candidate(BATTLE_ENDED, priority=65, at=101.0),
+        candidate(POST_BATTLE_SUMMARY, priority=50, at=101.0),
+    ], 101.0)
+
+    assert tuple(item.event_id for item in decision.candidates) == (
+        RAPID_DAMAGE,
+        BATTLE_ENDED,
+        POST_BATTLE_SUMMARY,
+    )
+    assert decision.queued == 0
+
+
 def test_decide_bundles_an_eligible_event_from_a_recent_queue_round():
     arbiter = Arbiter(CFG)
     arbiter.submit([candidate(BOUNDARY_RISK, at=100.0)], 100.0)
@@ -654,6 +671,25 @@ def test_a_failed_delivery_still_takes_the_cooldown():
     again = arbiter.decide([candidate(LOW_HEALTH, at=101.0)], 101.0)
     assert again.chosen is None
     assert REASON_COOLDOWN in outcomes(again, LOW_HEALTH)
+
+
+def test_a_cooled_candidate_cannot_coalesce_away_an_eligible_sibling():
+    arbiter = Arbiter(CFG)
+    failed = arbiter.decide([candidate(LOW_HEALTH, at=100.0)], 100.0)
+    arbiter.commit(failed.chosen, 100.0, outcome_reason="failed")
+
+    held = arbiter.decide([candidate(LOW_HEALTH, at=101.0)], 101.0)
+    assert held.chosen is None
+    assert held.queued == 1
+
+    decision = arbiter.decide([
+        candidate(LOW_HEALTH, at=102.0),
+        candidate(RAPID_DAMAGE, at=102.0),
+    ], 102.0)
+
+    assert decision.chosen is not None
+    assert decision.chosen.event_id == RAPID_DAMAGE
+    assert REASON_COOLDOWN in outcomes(decision, LOW_HEALTH)
 
 
 def test_a_failed_delivery_does_not_advance_the_lane_gap():

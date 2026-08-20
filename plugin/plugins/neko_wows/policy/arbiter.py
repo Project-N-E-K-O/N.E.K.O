@@ -228,7 +228,7 @@ class Arbiter:
                 continue
             eligible.append(candidate)
 
-        incoming, collapsed = self._collapse_incoming(eligible)
+        incoming, collapsed = self._collapse_incoming(eligible, now)
         steps.extend(collapsed)
         active_preemptor: AdviceCandidate | None = None
         for candidate in incoming:
@@ -254,13 +254,34 @@ class Arbiter:
                     if _coalesce_identity(queued) == identity
                 ]
                 if siblings:
-                    best_queued = min(siblings, key=self._coalesce_rank)
-                    if self._coalesce_rank(candidate) > self._coalesce_rank(best_queued):
+                    group = [
+                        (candidate, blocked),
+                        *(
+                            (sibling, self._blocked_reason(sibling, now))
+                            for sibling in siblings
+                        ),
+                    ]
+                    winner, winner_blocked = min(
+                        group,
+                        key=lambda entry: (
+                            entry[1] is not None,
+                            *self._coalesce_rank(entry[0]),
+                        ),
+                    )
+                    if winner is not candidate:
+                        outcome, detail = (
+                            blocked
+                            if blocked is not None and winner_blocked is None
+                            else (
+                                REASON_COALESCED,
+                                f"queued sibling kept {winner.event_id}",
+                            )
+                        )
                         steps.append(DecisionStep(
                             candidate.event_id,
                             candidate.lane,
-                            REASON_COALESCED,
-                            f"queued sibling kept {best_queued.event_id}",
+                            outcome,
+                            detail,
                         ))
                         continue
                     self._queue = [
@@ -269,9 +290,17 @@ class Arbiter:
                         if _coalesce_identity(queued) != identity
                     ]
                     for old in siblings:
+                        old_blocked = self._blocked_reason(old, now)
+                        outcome, detail = (
+                            old_blocked
+                            if old_blocked is not None and blocked is None
+                            else (
+                                REASON_COALESCED,
+                                f"replaced by stronger {candidate.event_id}",
+                            )
+                        )
                         steps.append(DecisionStep(
-                            old.event_id, old.lane, REASON_COALESCED,
-                            f"replaced by stronger {candidate.event_id}"))
+                            old.event_id, old.lane, outcome, detail))
 
             if candidate.spec.preempt and blocked is None:
                 if (
@@ -292,9 +321,10 @@ class Arbiter:
             steps.append(DecisionStep(candidate.event_id, candidate.lane, REASON_QUEUED))
         return steps
 
-    @staticmethod
     def _collapse_incoming(
+        self,
         candidates: Sequence[AdviceCandidate],
+        now: float,
     ) -> tuple[tuple[AdviceCandidate, ...], list[DecisionStep]]:
         """Keep the strongest sibling inside one arbitration round.
 
@@ -315,22 +345,35 @@ class Arbiter:
         for siblings in groups.values():
             if len(siblings) < 2:
                 continue
-            winner_index, winner = min(
-                siblings,
+            ranked_siblings = [
+                (index, candidate, self._blocked_reason(candidate, now))
+                for index, candidate in siblings
+            ]
+            winner_index, winner, winner_blocked = min(
+                ranked_siblings,
                 key=lambda entry: (
-                    *Arbiter._coalesce_rank(entry[1]),
+                    entry[2] is not None,
+                    *self._coalesce_rank(entry[1]),
                     entry[0],
                 ),
             )
-            for index, candidate in siblings:
+            for index, candidate, blocked in ranked_siblings:
                 if index == winner_index:
                     continue
                 discarded.add(index)
+                outcome, detail = (
+                    blocked
+                    if blocked is not None and winner_blocked is None
+                    else (
+                        REASON_COALESCED,
+                        f"same-round sibling kept {winner.event_id}",
+                    )
+                )
                 steps.append(DecisionStep(
                     candidate.event_id,
                     candidate.lane,
-                    REASON_COALESCED,
-                    f"same-round sibling kept {winner.event_id}",
+                    outcome,
+                    detail,
                 ))
 
         retained = tuple(
@@ -386,20 +429,11 @@ class Arbiter:
                 }
                 required_terminal_ids: set[str] = set()
                 if TERMINAL_EVENT_IDS.issubset(terminal_candidates):
-                    terminal_cue = terminal_candidates[BATTLE_ENDED]
-                    cue_in_window = (
-                        terminal_cue is candidate
-                        or (
-                            terminal_cue.rank >= candidate.rank
-                            and terminal_cue.priority
-                            >= candidate.priority - ATTACH_PRIORITY_WINDOW
-                        )
-                    )
                     terminal_unblocked = all(
                         self._blocked_reason(item, now) is None
                         for item in terminal_candidates.values()
                     )
-                    if cue_in_window and terminal_unblocked:
+                    if terminal_unblocked:
                         required_terminal_ids = set(TERMINAL_EVENT_IDS)
                         required_terminal_ids.discard(candidate.event_id)
 

@@ -14,6 +14,7 @@ from plugin.plugins.neko_wows.adapters.schema_adapter import (
     UnexpectedServiceIdentity,
     UnsupportedApiVersion,
     WowsSchemaAdapter,
+    _number,
 )
 from plugin.plugins.neko_wows.detectors._base import DetectorRegistry
 from plugin.plugins.neko_wows.detectors.damage import build_damage_detectors
@@ -132,6 +133,14 @@ def v1_payload(*, seq=1, instance_id="inst-a", battle_id="b-1",
 
 
 # --- v1 parsing ----------------------------------------------------------
+
+@pytest.mark.parametrize(
+    "value",
+    [float("nan"), float("inf"), float("-inf"), 10**400],
+)
+def test_non_finite_telemetry_numbers_are_rejected(value):
+    assert _number(value) is None
+
 
 def test_v1_envelope_is_read_verbatim():
     snapshot = WowsSchemaAdapter().parse(v1_payload(seq=7))
@@ -1027,6 +1036,20 @@ def test_legacy_availability_is_inferred_from_present_fields():
         assert snapshot.is_available(domain), domain
 
 
+def test_legacy_zero_damage_is_still_available():
+    snapshot = WowsSchemaAdapter().parse(
+        flat_body(damage={
+            "inflicted": {"2000": 0.0},
+            "received": {},
+            "teamTotal": {},
+        }),
+        received_at=100.0,
+    )
+
+    assert snapshot.damage_inflicted == 0.0
+    assert snapshot.availability_of(DOMAIN_DAMAGE) == AVAIL_AVAILABLE
+
+
 def test_legacy_absent_domain_is_unknown_not_false():
     snapshot = WowsSchemaAdapter().parse(
         flat_body(self=None, objects=[], ballistics={"available": False}),
@@ -1043,6 +1066,29 @@ def test_legacy_seq_only_advances_when_content_changes_while_status_is_stable():
     moved = adapter.parse(flat_body(ts=13.0), received_at=100.2)
     assert repeat.seq == first.seq
     assert moved.seq == first.seq + 1
+
+
+def test_legacy_seq_advances_when_only_the_roster_changes():
+    adapter = WowsSchemaAdapter()
+    first_payload = flat_body()
+    second_payload = flat_body()
+    second_payload["roster"] = [
+        *second_payload["roster"],
+        {
+            "playerId": 3000,
+            "teamId": 1,
+            "relation": 2,
+            "name": "Foe",
+            "shipName": "Shimakaze",
+            "shipType": "Destroyer",
+            "shipTier": 10,
+        },
+    ]
+
+    first = adapter.parse(first_payload, received_at=100.0)
+    changed = adapter.parse(second_payload, received_at=100.1)
+
+    assert changed.seq == first.seq + 1
 
 
 def test_legacy_battle_id_is_stable_then_changes_between_battles():
@@ -1196,6 +1242,58 @@ def test_cursor_counts_are_reported_for_the_panel():
     assert stats["dropped"][DROP_DUPLICATE_SEQ] == 1
 
 
+@pytest.mark.asyncio
+async def test_silent_open_websocket_falls_back_to_rest(monkeypatch):
+    transport = _transport(lambda: 1000.0)
+    transport.cfg.ws_reconnect_min_seconds = 0.0
+    transport.cfg.ws_reconnect_max_seconds = 0.0
+    stop_flag = threading.Event()
+    modes = []
+    switch_mode = transport._switch_mode
+
+    def _track_mode(mode):
+        switch_mode(mode)
+        modes.append(mode)
+        if mode == MODE_REST:
+            stop_flag.set()
+
+    class _SilentWebSocket:
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            await asyncio.Event().wait()
+
+        async def receive(self):
+            await asyncio.Event().wait()
+
+    class _Connection:
+        async def __aenter__(self):
+            return _SilentWebSocket()
+
+        async def __aexit__(self, *_exc):
+            return None
+
+    class _Session:
+        def ws_connect(self, _url, *, heartbeat):
+            assert heartbeat == 20.0
+            return _Connection()
+
+    monkeypatch.setattr(
+        transport_module,
+        "WS_FRAME_TIMEOUT_SECONDS",
+        0.01,
+        raising=False,
+    )
+    monkeypatch.setattr(transport, "_switch_mode", _track_mode)
+
+    await asyncio.wait_for(transport._ws_loop(_Session(), stop_flag), 0.2)
+
+    assert modes == [transport_module.MODE_WS, MODE_REST]
+    assert transport._stats.ws_failures == 1
+    assert transport._stats.last_error == "ws: telemetry timeout"
+
+
 # --- stall detection -----------------------------------------------------
 
 def _transport(clock):
@@ -1226,6 +1324,36 @@ def test_a_successful_poll_clears_the_failure_run():
         transport._stall_is_due()
     transport._rest_failures_in_a_row = 0
     assert transport._stall_is_due() is False
+
+
+@pytest.mark.asyncio
+async def test_a_non_object_rest_body_counts_as_a_poll_failure():
+    transport = _transport(lambda: 1000.0)
+    stop_flag = threading.Event()
+
+    class _Response:
+        status = 200
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_exc):
+            return None
+
+        async def json(self, *, content_type=None):
+            assert content_type is None
+            stop_flag.set()
+            return []
+
+    class _Session:
+        def get(self, _url):
+            return _Response()
+
+    await transport._rest_loop(_Session(), stop_flag)
+
+    assert transport._stats.rest_failures == 1
+    assert transport._stats.rest_polls == 0
+    assert transport._rest_failures_in_a_row == 1
 
 
 def test_stop_swallows_a_closed_event_loop():

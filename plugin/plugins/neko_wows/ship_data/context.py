@@ -93,6 +93,12 @@ class BattleShipContextManager:
         # checks consult this map, but ``_seen_objects`` stays one entry per hull
         # so ``observed_objects`` does not inflate.
         self._object_aliases: dict[tuple[Any, ...], tuple[Any, ...]] = {}
+        # Primary object key -> (resolved ship type, last counted relation).
+        # Relation metadata may arrive after the hull identity, so "seen" is
+        # not enough to keep per-side counts correct across partial frames.
+        self._object_classifications: dict[
+            tuple[Any, ...], tuple[int, int | None]
+        ] = {}
         self._resolutions: dict[int, ShipResolution] = {}
         self._counts: dict[int, ShipCounts] = {}
         self._submitted: set[int] = set()
@@ -352,8 +358,10 @@ class BattleShipContextManager:
             if self._object_is_seen(object_keys):
                 # Register any newly observed alias (e.g. stub that only has
                 # player_id after a ui_id flicker) without recounting the hull.
-                self._remember_object_keys(object_keys)
+                primary = self._remember_object_keys(object_keys)
                 self._clear_unresolved_reasons(object_keys)
+                self._reclassify_seen_object(
+                    primary, ship, own_player_id, events)
                 continue
             resolution = resolver.resolve(
                 ship.name, tier=ship.tier, ship_type=ship.ship_type)
@@ -367,21 +375,72 @@ class BattleShipContextManager:
                 }))
                 continue
             self._clear_unresolved_reasons(object_keys)
-            self._remember_object_keys(object_keys)
+            primary = self._remember_object_keys(object_keys)
             ship_id = resolution.ship.ship_id
             self._resolutions.setdefault(ship_id, resolution)
-            counts = self._counts.get(ship_id, ShipCounts())
-            relation = ship.relation
-            if own_player_id is not None and ship.player_id == own_player_id:
-                relation = RELATION_SELF
-            if relation == RELATION_SELF:
-                counts = replace(counts, self_count=counts.self_count + 1)
-            elif relation == RELATION_ALLY:
-                counts = replace(counts, ally_count=counts.ally_count + 1)
-            elif relation == RELATION_ENEMY:
-                counts = replace(counts, enemy_count=counts.enemy_count + 1)
-            self._counts[ship_id] = counts
+            relation = self._effective_relation(ship, own_player_id)
+            self._object_classifications[primary] = (ship_id, relation)
+            self._adjust_count(ship_id, relation, 1)
             events.append(ShipCatalogEvent("resolved", {"ship_id": ship_id}))
+
+    @staticmethod
+    def _effective_relation(ship: Ship, own_player_id: int | None) -> int | None:
+        if (
+            isinstance(own_player_id, int)
+            and not isinstance(own_player_id, bool)
+            and ship.player_id == own_player_id
+        ):
+            return RELATION_SELF
+        relation = ship.relation
+        if isinstance(relation, bool) or relation not in {
+            RELATION_SELF, RELATION_ALLY, RELATION_ENEMY,
+        }:
+            return None
+        return relation
+
+    def _reclassify_seen_object(
+        self,
+        primary: tuple[Any, ...],
+        ship: Ship,
+        own_player_id: int | None,
+        events: list[ShipCatalogEvent],
+    ) -> None:
+        previous = self._object_classifications.get(primary)
+        if previous is None:
+            return
+        ship_id, old_relation = previous
+        relation = self._effective_relation(ship, own_player_id)
+        # Missing metadata is a less-specific observation, and self identity is
+        # authoritative once known. Neither should downgrade an earlier count.
+        if relation is None or (
+            old_relation == RELATION_SELF and relation != RELATION_SELF
+        ):
+            return
+        if relation == old_relation:
+            return
+        self._adjust_count(ship_id, old_relation, -1)
+        self._adjust_count(ship_id, relation, 1)
+        self._object_classifications[primary] = (ship_id, relation)
+        events.append(ShipCatalogEvent("reclassified", {
+            "ship_id": ship_id,
+            "from_relation": old_relation,
+            "to_relation": relation,
+        }))
+
+    def _adjust_count(
+        self, ship_id: int, relation: int | None, delta: int,
+    ) -> None:
+        counts = self._counts.get(ship_id, ShipCounts())
+        if relation == RELATION_SELF:
+            counts = replace(
+                counts, self_count=max(0, counts.self_count + delta))
+        elif relation == RELATION_ALLY:
+            counts = replace(
+                counts, ally_count=max(0, counts.ally_count + delta))
+        elif relation == RELATION_ENEMY:
+            counts = replace(
+                counts, enemy_count=max(0, counts.enemy_count + delta))
+        self._counts[ship_id] = counts
 
     def _object_is_seen(self, object_keys: list[tuple[Any, ...]]) -> bool:
         for key in object_keys:
@@ -666,6 +725,7 @@ class BattleShipContextManager:
         self._version_status = "unknown"
         self._seen_objects.clear()
         self._object_aliases.clear()
+        self._object_classifications.clear()
         self._resolutions.clear()
         self._counts.clear()
         self._submitted.clear()

@@ -121,6 +121,21 @@ def test_a_roleless_query_finds_whoever_is_sharing(monkeypatch):
     assert body["active"] is True
 
 
+def test_a_roleless_query_prefers_screen_over_an_earlier_camera(monkeypatch):
+    client = _client(
+        {
+            "camera": _Manager("camera", _sharing(source="camera")),
+            "screen": _Manager("screen", _sharing(source="screen")),
+        },
+        monkeypatch,
+    )
+
+    body = client.get(ENDPOINT).json()
+
+    assert body["role"] == "screen"
+    assert body["source"] == "screen"
+
+
 def test_naming_a_role_pins_the_answer_to_it(monkeypatch):
     client = _client(
         {

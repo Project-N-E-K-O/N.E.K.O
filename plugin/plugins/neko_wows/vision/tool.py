@@ -15,6 +15,7 @@ number would then compete with the true one sitting right beside it.
 from __future__ import annotations
 
 import base64
+from copy import deepcopy
 import threading
 import time
 from typing import Any, Callable
@@ -100,10 +101,11 @@ class ScreenshotService:
                     result = _failure(
                         REASON_CAPTURE_FAILED, telemetry=self._safe_telemetry())
                 else:
-                    record = self._store.save(jpeg)
+                    telemetry = self._safe_telemetry()
+                    record = self._store.save(jpeg, telemetry)
                     if record is None:
                         result = _failure(
-                            REASON_STORE_FAILED, telemetry=self._safe_telemetry())
+                            REASON_STORE_FAILED, telemetry=telemetry)
                     else:
                         self._last_capture_at = self._clock()
                         result = _success(
@@ -114,7 +116,7 @@ class ScreenshotService:
                                 "source": source,
                                 "window_title": window.title if window else "",
                                 "size_bytes": record.size_bytes,
-                                "telemetry": self._safe_telemetry(),
+                                "telemetry": telemetry,
                                 "recall_hint": (
                                     f"画面只在这一轮可见。之后想再看这张，用 "
                                     f"wows_recall_screenshot 传 shot_id={record.shot_id}。"
@@ -135,8 +137,9 @@ class ScreenshotService:
         if not self.cfg.screenshot_enabled:
             result = _failure(REASON_DISABLED)
         else:
+            record = self._store.get_record(shot_id)
             jpeg = self._store.load(shot_id)
-            if jpeg is None:
+            if record is None or jpeg is None:
                 result = _failure(
                     REASON_SHOT_EXPIRED,
                     available=[r.shot_id for r in self._store.recent(5)],
@@ -147,7 +150,7 @@ class ScreenshotService:
                         "ok": True,
                         "shot_id": shot_id,
                         "recalled": True,
-                        "telemetry": self._safe_telemetry(),
+                        "telemetry": deepcopy(record.telemetry),
                     },
                     jpeg=jpeg,
                 )

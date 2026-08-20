@@ -57,3 +57,22 @@ async def test_set_live_frame_permission_async_sends_authenticated_plugin_reques
         "wrap_result": True,
         "error_log_template": None,
     }]
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_set_live_frame_permission_async_rejects_non_boolean_enabled(
+    tmp_path: Path,
+) -> None:
+    ctx = PluginContext(
+        plugin_id="neko_wows",
+        config_path=tmp_path / "neko_wows" / "plugin.toml",
+        logger=_Logger(),  # type: ignore[arg-type]
+        status_queue=None,
+    )
+
+    with pytest.raises(TypeError, match="enabled"):
+        await ctx.set_live_frame_permission_async(
+            token="generation-two",
+            enabled="false",  # type: ignore[arg-type]
+        )

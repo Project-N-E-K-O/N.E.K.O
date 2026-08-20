@@ -364,7 +364,8 @@ class FactBuilder:
         distances = [
             _distance(own.x, own.z, ally.x, ally.z)
             for ally in allies
-            if ally.has_position and ally.player_id != own.player_id
+            if ally.has_position
+            and (own.player_id is None or ally.player_id != own.player_id)
         ]
         return min(distances) if distances else None
 

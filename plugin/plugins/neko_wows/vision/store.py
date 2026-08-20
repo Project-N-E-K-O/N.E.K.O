@@ -16,14 +16,17 @@ filesystem.
 
 from __future__ import annotations
 
+from copy import deepcopy
 import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 # Handles the plugin mints itself. Anything not matching is rejected before a
 # table lookup, so a probing argument never even reaches the dict.
 _HANDLE_PATTERN = re.compile(r"^shot_\d+$")
+_STORED_SHOT_PATTERN = re.compile(r"^shot_\d+\.jpg$")
 
 
 @dataclass(frozen=True)
@@ -32,6 +35,7 @@ class ShotRecord:
     path: Path
     captured_at: float
     size_bytes: int
+    telemetry: dict[str, Any]
 
     def as_dict(self) -> dict:
         return {
@@ -51,13 +55,18 @@ class ShotStore:
         self._records: dict[str, ShotRecord] = {}
         self._order: list[str] = []
         self._counter = 0
+        self._purge_orphans()
 
     def apply_retain(self, retain: int) -> None:
         self._retain = max(1, int(retain))
         self._evict()
 
     # ------------------------------------------------------------------
-    def save(self, jpeg: bytes) -> ShotRecord | None:
+    def save(
+        self,
+        jpeg: bytes,
+        telemetry: dict[str, Any] | None = None,
+    ) -> ShotRecord | None:
         try:
             self._dir.mkdir(parents=True, exist_ok=True)
         except Exception as exc:
@@ -78,6 +87,7 @@ class ShotStore:
             path=path,
             captured_at=time.time(),
             size_bytes=len(jpeg),
+            telemetry=deepcopy(telemetry) if isinstance(telemetry, dict) else {},
         )
         self._records[shot_id] = record
         self._order.append(shot_id)
@@ -98,6 +108,11 @@ class ShotStore:
             self._log("warning", f"screenshot read failed for {shot_id}: {exc}")
             return None
 
+    def get_record(self, shot_id) -> ShotRecord | None:
+        if not isinstance(shot_id, str) or not _HANDLE_PATTERN.fullmatch(shot_id):
+            return None
+        return self._records.get(shot_id)
+
     def recent(self, limit: int = 20) -> list[ShotRecord]:
         ids = self._order[-max(0, int(limit)):] if limit else []
         return [self._records[i] for i in reversed(ids) if i in self._records]
@@ -112,6 +127,26 @@ class ShotStore:
         return removed
 
     # ------------------------------------------------------------------
+    def _purge_orphans(self) -> None:
+        try:
+            entries = list(self._dir.iterdir())
+        except FileNotFoundError:
+            return
+        except Exception as exc:
+            self._log("warning", f"screenshot dir scan failed: {exc}")
+            return
+
+        for path in entries:
+            if not _STORED_SHOT_PATTERN.fullmatch(path.name):
+                continue
+            try:
+                path.unlink(missing_ok=True)
+            except Exception as exc:
+                self._log(
+                    "warning",
+                    f"orphaned screenshot delete failed for {path.name}: {exc}",
+                )
+
     def _evict(self) -> None:
         while len(self._order) > self._retain:
             oldest = self._order.pop(0)

@@ -271,7 +271,7 @@ def replay():
 @pytest.fixture
 def pipeline():
     # Replay harness stays on dry-run so event-chain tests do not hit the host.
-    return Pipeline(WowsConfig(dry_run=True))
+    return Pipeline(WowsConfig(dry_run=True, ship_catalog_enabled=True))
 
 
 def run(pipeline: Pipeline, frames, *, epoch=1):

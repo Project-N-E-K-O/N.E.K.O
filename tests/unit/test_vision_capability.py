@@ -21,6 +21,8 @@ from utils.vision_capability import model_supports_vision
     "some-vision-model",
     "qwen2.5-vl-72b-instruct",
     "qwen-vl-max",
+    "InternVL2",
+    "OpenGVLab/InternVL2_5-8B",
     "gemini-2.0-flash",
     "claude-3-5-sonnet",
     "claude-4-opus",

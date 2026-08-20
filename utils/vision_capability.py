@@ -45,6 +45,7 @@ _VISION_NAME_MARKERS = (
     "vision",
     "qwen2.5-vl",
     "qwen-vl",
+    "internvl",
     "gemini",
     "claude-3",
     "claude-4",

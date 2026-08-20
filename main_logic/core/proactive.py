@@ -39,6 +39,7 @@ from main_logic.proactive_delivery import (
 )
 from config import ANTI_REPEAT_EXEMPT_SOURCE_TAGS
 from utils.language_utils import normalize_language_code, get_global_language_full
+from utils.vision_capability import model_supports_vision
 from uuid import uuid4
 from ._shared import (
     _VOICE_PROACTIVE_ACK_GRACE_S,
@@ -2035,7 +2036,9 @@ class ProactiveMixin:
             raw_token = metadata.get("live_frame_permission_token")
             if raw_token:
                 token = str(raw_token)
-        if token and not allows_live_frame(str(cb.get("source_name") or ""), token):
+        if not token or not allows_live_frame(
+            str(cb.get("source_name") or ""), token
+        ):
             return ""
         state = self.live_vision_snapshot()
         if not state["active"] or state["source"] != "screen":
@@ -2068,6 +2071,7 @@ class ProactiveMixin:
                     can_vision = bool(
                         getattr(session, "_supports_native_image", False)
                         or getattr(session, "vision_model", None)
+                        or model_supports_vision(getattr(session, "model", None))
                     )
                     if can_vision:
                         images.append(frame)

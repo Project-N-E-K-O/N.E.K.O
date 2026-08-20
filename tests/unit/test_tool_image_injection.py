@@ -282,3 +282,50 @@ async def test_release_targets_the_list_it_injected_into():
 
     assert history == [{"role": "user", "content": "untouched"}]
     assert _image_messages(scratch) == []
+
+
+@pytest.mark.asyncio
+async def test_each_visible_tool_stream_gets_its_own_image_slot_scope():
+    class _ScopeProbeClient(_Client):
+        def __init__(self):
+            super().__init__()
+            self.scopes = []
+
+        async def _astream_with_tools(self, _messages, **overrides):
+            self.scopes.append(overrides.get("_tool_image_slots"))
+            if False:
+                yield None
+
+    client = _ScopeProbeClient()
+    async for _chunk in client._astream_visible_with_tools([]):
+        pass
+    async for _chunk in client._astream_visible_with_tools([]):
+        pass
+
+    assert isinstance(client.scopes[0], list)
+    assert isinstance(client.scopes[1], list)
+    assert client.scopes[0] is not client.scopes[1]
+
+
+def test_releasing_one_stream_scope_leaves_a_sibling_image_available():
+    client = _Client()
+    first_messages: list = []
+    second_messages: list = []
+    first_slots: list = []
+    second_slots: list = []
+    client._append_tool_result_images(
+        first_messages,
+        _image_result(name="first", images=[ToolImage(data_b64="FIRST")]),
+        slots=first_slots,
+    )
+    client._append_tool_result_images(
+        second_messages,
+        _image_result(name="second", images=[ToolImage(data_b64="SECOND")]),
+        slots=second_slots,
+    )
+
+    client._release_tool_image_slots(first_slots)
+
+    assert _image_messages(first_messages) == []
+    assert len(_image_messages(second_messages)) == 1
+    assert "SECOND" in str(second_messages)

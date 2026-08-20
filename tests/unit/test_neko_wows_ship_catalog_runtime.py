@@ -654,7 +654,7 @@ def battle_snapshot(
     *ships: Ship,
     identity: tuple[str, str] = ("instance-1", "battle-1"),
     game_version: str = "15.6.0.0.12830008",
-    own_player_id: int = 1,
+    own_player_id: int | None = 1,
 ) -> WowsSnapshot:
     return WowsSnapshot(
         instance_id=identity[0],
@@ -736,6 +736,41 @@ def test_remembered_stub_with_only_player_id_does_not_double_count(context_parts
     assert again.updated_ship_ids == ()
     assert "敌军1" in plugin.calls[0]["parts"][0]["text"]
     assert "敌军2" not in plugin.calls[-1]["parts"][0]["text"]
+
+
+def test_late_relation_reclassifies_a_seen_ship_and_updates_counts(context_parts):
+    context, plugin, _, _ = context_parts
+    unknown = replace(
+        yamato_ship(10, 30, RELATION_ENEMY),
+        relation=None,
+        team_id=None,
+    )
+
+    first = context.observe(battle_snapshot(unknown), dry_run=False)
+    assert first.submitted_ship_ids == (4276041424,)
+    assert "敌军0" in plugin.calls[0]["parts"][0]["text"]
+
+    classified = replace(unknown, relation=RELATION_ENEMY, team_id=2)
+    updated = context.observe(battle_snapshot(classified), dry_run=False)
+
+    assert updated.updated_ship_ids == (4276041424,)
+    assert "敌军1" in plugin.calls[-1]["parts"][0]["text"]
+
+
+def test_late_self_identity_moves_a_seen_ship_from_ally_to_self(context_parts):
+    context, plugin, _, _ = context_parts
+    ship = yamato_ship(10, 30, RELATION_ALLY)
+
+    first = context.observe(
+        battle_snapshot(ship, own_player_id=None), dry_run=False)
+    assert first.submitted_ship_ids == (4276041424,)
+    assert "自身0 友军1" in plugin.calls[0]["parts"][0]["text"]
+
+    updated = context.observe(
+        battle_snapshot(ship, own_player_id=30), dry_run=False)
+
+    assert updated.updated_ship_ids == (4276041424,)
+    assert "自身1 友军0" in plugin.calls[-1]["parts"][0]["text"]
 
 
 def test_context_retries_unresolved_ui_object_when_identity_details_arrive(

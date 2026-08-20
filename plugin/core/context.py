@@ -1970,12 +1970,14 @@ class PluginContext:
         enabled: bool,
         timeout: float = 3.0,
     ) -> Dict[str, Any]:
+        if not isinstance(enabled, bool):
+            raise TypeError("enabled must be a bool")
         return await self._send_request_and_wait_async(
             method_name="set_live_frame_permission",
             request_type="LIVE_FRAME_PERMISSION_SET",
             request_data={
                 "token": token,
-                "enabled": bool(enabled),
+                "enabled": enabled,
             },
             timeout=timeout,
             wrap_result=True,

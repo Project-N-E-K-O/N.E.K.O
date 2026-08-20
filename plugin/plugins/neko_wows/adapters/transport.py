@@ -38,6 +38,7 @@ DROP_MALFORMED = "malformed"
 # the owner's recovery attempt costs a process launch.
 STALL_FAILURES = 3
 STALL_INTERVAL_SECONDS = 5.0
+WS_FRAME_TIMEOUT_SECONDS = 2.0
 
 
 @dataclass(frozen=True)
@@ -319,7 +320,22 @@ class TelemetryTransport:
         stop_flag: threading.Event,
     ) -> None:
         epoch = self.epoch
-        async for message in ws:
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + WS_FRAME_TIMEOUT_SECONDS
+        while not stop_flag.is_set():
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                with self._lock:
+                    self._stats.ws_failures += 1
+                self._note_error("ws: telemetry timeout")
+                return
+            try:
+                message = await asyncio.wait_for(ws.receive(), timeout=remaining)
+            except TimeoutError:
+                with self._lock:
+                    self._stats.ws_failures += 1
+                self._note_error("ws: telemetry timeout")
+                return
             if stop_flag.is_set():
                 return
             if message.type is aiohttp.WSMsgType.TEXT:
@@ -330,7 +346,12 @@ class TelemetryTransport:
                     self._note_error("ws: invalid message")
                     return
                 self._emit(payload, MODE_WS, epoch)
-            elif message.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
+                deadline = loop.time() + WS_FRAME_TIMEOUT_SECONDS
+            elif message.type in (
+                aiohttp.WSMsgType.CLOSED,
+                aiohttp.WSMsgType.CLOSING,
+                aiohttp.WSMsgType.ERROR,
+            ):
                 return
 
     async def _rest_loop(
@@ -353,6 +374,8 @@ class TelemetryTransport:
                             response.request_info, response.history,
                             status=response.status, message="bad status")
                     payload = await response.json(content_type=None)
+                    if not isinstance(payload, dict):
+                        raise ValueError("REST telemetry body must be an object")
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
@@ -364,8 +387,7 @@ class TelemetryTransport:
             with self._lock:
                 self._stats.rest_polls += 1
                 self._rest_failures_in_a_row = 0
-            if isinstance(payload, dict):
-                self._emit(payload, MODE_REST, epoch)
+            self._emit(payload, MODE_REST, epoch)
 
     def _stall_is_due(self) -> bool:
         """Count one failed poll and say whether the owner should be asked."""

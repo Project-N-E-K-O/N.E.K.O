@@ -82,12 +82,27 @@ async def _attach(mgr, cb, session):
         mgr, cb, session, session.stream_image)
 
 
+def _token_cb(token="generation-one"):
+    return {
+        "attach_live_frame": True,
+        "source_name": "neko_wows",
+        "metadata": {"live_frame_permission_token": token},
+    }
+
+
+def _authorize(token="generation-one"):
+    from main_logic.core.live_frame_permissions import set_live_frame_permission
+
+    set_live_frame_permission("neko_wows", token, enabled=True)
+
+
 # ------------------------------------------------------- when it does fire
 async def test_the_shared_frame_joins_the_turn_the_plugin_speaks_in():
+    _authorize()
     session = _FakeRealtime()
     mgr = _mgr(session, snapshot=_sharing())
 
-    assert await _attach(mgr, {"attach_live_frame": True}, session) is True
+    assert await _attach(mgr, _token_cb(), session) is True
     sent = session.sent[0]
     assert sent["b64"] == "cached-frame"
     # Bypass is the whole trick: without it the frame is held back until the
@@ -107,15 +122,15 @@ async def test_the_shared_frame_joins_the_turn_the_plugin_speaks_in():
     [
         ({}, _sharing(), {}, "plugin did not ask"),
         ({"attach_live_frame": False}, _sharing(), {}, "plugin opted out"),
-        ({"attach_live_frame": True}, _sharing(active=False), {}, "not sharing"),
+        (_token_cb(), _sharing(active=False), {}, "not sharing"),
         (
-            {"attach_live_frame": True},
+            _token_cb(),
             _sharing(source="camera"),
             {},
             "a room, not a screen",
         ),
         (
-            {"attach_live_frame": True},
+            _token_cb(),
             _sharing(),
             {"native": False},
             "model would need the vision detour anyway",
@@ -123,6 +138,7 @@ async def test_the_shared_frame_joins_the_turn_the_plugin_speaks_in():
     ],
 )
 async def test_no_frame_is_attached(cb, snapshot, session_kwargs, why):
+    _authorize()
     session = _FakeRealtime(**session_kwargs)
     mgr = _mgr(session, snapshot=snapshot)
 
@@ -131,19 +147,12 @@ async def test_no_frame_is_attached(cb, snapshot, session_kwargs, why):
 
 
 async def test_nothing_is_attached_when_the_host_holds_no_frame():
+    _authorize()
     session = _FakeRealtime()
     mgr = _mgr(session, snapshot=_sharing(), frame="")
 
-    assert await _attach(mgr, {"attach_live_frame": True}, session) is False
+    assert await _attach(mgr, _token_cb(), session) is False
     assert session.sent == []
-
-
-def _token_cb(token="generation-one"):
-    return {
-        "attach_live_frame": True,
-        "source_name": "neko_wows",
-        "metadata": {"live_frame_permission_token": token},
-    }
 
 
 @pytest.fixture(autouse=True)
@@ -166,6 +175,19 @@ async def test_a_token_bearing_callback_is_denied_until_the_host_authorizes_it()
     mgr = _mgr(session, snapshot=_sharing())
 
     assert await _attach(mgr, _token_cb(), session) is False
+    assert session.sent == []
+
+
+async def test_a_callback_without_a_permission_token_is_denied():
+    """Plugins must not gain screen access by omitting the capability token."""
+    session = _FakeRealtime()
+    mgr = _mgr(session, snapshot=_sharing())
+
+    assert await _attach(
+        mgr,
+        {"attach_live_frame": True, "source_name": "neko_wows"},
+        session,
+    ) is False
     assert session.sent == []
 
 
@@ -204,27 +226,30 @@ async def test_the_delivered_frame_is_the_share_not_the_ambient_cache():
     """An avatar drop, a pasted image or another plugin's picture all land in
     the session's ``_latest_image_b64``. Delivering that as "your screen" would
     be a different picture entirely, so the share is read from its own slot."""
+    _authorize()
     session = _FakeRealtime(frame="somebody-dropped-this")
     mgr = _mgr(session, snapshot=_sharing(), frame="the-actual-screen")
 
-    await _attach(mgr, {"attach_live_frame": True}, session)
+    await _attach(mgr, _token_cb(), session)
 
     assert session.sent[0]["b64"] == "the-actual-screen"
 
 
 async def test_a_failed_send_is_swallowed_rather_than_raised():
+    _authorize()
     session = _FakeRealtime(fail=True)
     mgr = _mgr(session, snapshot=_sharing())
 
-    assert await _attach(mgr, {"attach_live_frame": True}, session) is False
+    assert await _attach(mgr, _token_cb(), session) is False
 
 
 # ------------------------------------------------- inside _stream_cb_media
 async def test_a_failed_live_frame_still_lets_the_call_out_go_out():
     """Unlike media_images, whose failure defers the whole delivery."""
+    _authorize()
     session = _FakeRealtime(fail=True)
     mgr = _mgr(session, snapshot=_sharing())
-    cb = {"attach_live_frame": True}
+    cb = _token_cb()
 
     ok = await ProactiveMixin._stream_cb_media(mgr, [cb], session)
 
@@ -233,9 +258,10 @@ async def test_a_failed_live_frame_still_lets_the_call_out_go_out():
 
 async def test_a_batch_shares_one_frame_rather_than_one_each():
     """Cues released together land in one turn; a second copy buys nothing."""
+    _authorize()
     session = _FakeRealtime()
     mgr = _mgr(session, snapshot=_sharing())
-    cbs = [{"attach_live_frame": True} for _ in range(3)]
+    cbs = [_token_cb() for _ in range(3)]
 
     await ProactiveMixin._stream_cb_media(mgr, cbs, session)
 
@@ -245,17 +271,13 @@ async def test_a_batch_shares_one_frame_rather_than_one_each():
 def test_text_path_collects_the_live_frame_before_media_images():
     """Offline prompt_ephemeral never calls stream_image; the frame must ride
     the explicit images list instead of being promised but omitted."""
+    _authorize()
     session = SimpleNamespace(
         _supports_native_image=False,
         vision_model="vision-model",
     )
     mgr = _mgr(session, snapshot=_sharing(), frame="shared-screen")
-    cbs = [
-        {
-            "attach_live_frame": True,
-            "media_images": ["plugin-shot"],
-        }
-    ]
+    cbs = [{**_token_cb(), "media_images": ["plugin-shot"]}]
 
     images = mgr._collect_text_proactive_images(cbs)
 
@@ -288,6 +310,22 @@ def test_text_path_attaches_an_authorized_generation_before_plugin_media():
         "shared-screen", "plugin-shot"]
 
 
+def test_text_path_uses_an_offline_models_native_vision_capability():
+    from main_logic.core.live_frame_permissions import set_live_frame_permission
+
+    set_live_frame_permission("neko_wows", "generation-one", enabled=True)
+    session = SimpleNamespace(
+        _supports_native_image=False,
+        vision_model=None,
+        model="gpt-4o",
+    )
+    mgr = _mgr(session, snapshot=_sharing(), frame="shared-screen")
+    cbs = [{**_token_cb(), "media_images": ["plugin-shot"]}]
+
+    assert mgr._collect_text_proactive_images(cbs) == [
+        "shared-screen", "plugin-shot"]
+
+
 def test_text_path_drops_the_share_after_reuse_is_revoked():
     from main_logic.core.live_frame_permissions import set_live_frame_permission
 
@@ -304,9 +342,16 @@ def test_text_path_drops_the_share_after_reuse_is_revoked():
 
 
 # ------------------------------------------------------------- the liveness
-def _liveness(*, last_at, source="screen", native=True, frame="shared-frame"):
+def _liveness(
+    *,
+    last_at,
+    source="screen",
+    native=True,
+    frame="shared-frame",
+    model="",
+):
     mgr = SimpleNamespace(
-        session=SimpleNamespace(_supports_native_image=native),
+        session=SimpleNamespace(_supports_native_image=native, model=model),
         _live_vision_source=source,
         _live_vision_last_frame_at=last_at,
         _live_vision_frame_b64=frame,
@@ -335,6 +380,17 @@ def test_a_recent_frame_means_sharing(monkeypatch):
     assert state["active"] is True
     assert state["source"] == "screen"
     assert state["age_seconds"] == pytest.approx(1.0)
+
+
+def test_offline_vision_model_is_reported_as_native_vision(monkeypatch):
+    import main_logic.core.streaming as streaming
+
+    patch_module_clock(monkeypatch, streaming, monotonic=lambda: 500.0)
+    state = StreamingMixin.live_vision_snapshot(
+        _liveness(last_at=499.0, native=False, model="gpt-4o")
+    )
+
+    assert state["native_vision"] is True
 
 
 def test_frames_that_stopped_arriving_stop_counting(monkeypatch):

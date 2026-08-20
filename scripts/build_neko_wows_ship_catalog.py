@@ -70,7 +70,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--wowsinfo-json", type=Path)
     parser.add_argument("--lang-json", type=Path)
     parser.add_argument("--output-dir", type=Path, required=True)
-    parser.add_argument("--source-commit", default="local")
+    parser.add_argument("--source-commit")
     parser.add_argument(
         "--source-channel",
         choices=("live",),
@@ -86,6 +86,10 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.revision and (args.wowsinfo_json or args.lang_json):
         parser.error("--revision cannot be combined with local source files")
+    if args.revision and (args.source_commit is not None or args.source_channel is not None):
+        parser.error(
+            "--revision cannot be combined with --source-commit or --source-channel"
+        )
     if not args.revision and not (args.wowsinfo_json and args.lang_json):
         parser.error("provide --revision or both --wowsinfo-json and --lang-json")
     if not args.revision and args.source_channel is None:
@@ -110,7 +114,7 @@ def main(argv: list[str] | None = None) -> int:
             args.wowsinfo_json,
             args.lang_json,
             args.output_dir,
-            source_commit=args.source_commit,
+            source_commit=args.source_commit or "local",
             source_channel=source_channel,
             minimum_ship_count=args.minimum_ship_count,
             default_language=args.language,

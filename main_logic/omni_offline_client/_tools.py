@@ -93,6 +93,7 @@ class _ToolingMixin:
         calls,
         assistant_text: str = "",
         assistant_reasoning: str = "",
+        tool_image_slots=None,
     ) -> int:
         """Run each tool call through ``on_tool_call`` and mutate
         ``messages`` in place: append one assistant turn announcing all
@@ -201,7 +202,11 @@ class _ToolingMixin:
             if getattr(result, "images", None):
                 image_results.append(result)
         for result in image_results:
-            self._append_tool_result_images(messages, result)
+            self._append_tool_result_images(
+                messages,
+                result,
+                slots=tool_image_slots,
+            )
         return len(calls)
 
     # ------------------------------------------------------------------
@@ -227,7 +232,7 @@ class _ToolingMixin:
 
     _TOOL_IMAGE_DEFAULT_CAPTION = "（工具返回的画面）"
 
-    def _append_tool_result_images(self, messages, result) -> None:
+    def _append_tool_result_images(self, messages, result, *, slots=None) -> None:
         """Append one multimodal user turn carrying every image in ``result``.
 
         No-op when the tool returned none, which is the overwhelmingly common
@@ -254,10 +259,11 @@ class _ToolingMixin:
         # Remember the list too: ``prompt_ephemeral`` runs the tool loop over
         # a scratch list rather than ``_conversation_history``, so an index
         # alone would point into the wrong history.
-        slots = getattr(self, "_pending_tool_image_slots", None)
         if slots is None:
-            slots = []
-            self._pending_tool_image_slots = slots
+            slots = getattr(self, "_pending_tool_image_slots", None)
+            if slots is None:
+                slots = []
+                self._pending_tool_image_slots = slots
         output = result.output if isinstance(result.output, dict) else {}
         shot_id = output.get("shot_id")
         recall_hint = output.get("recall_hint")
@@ -274,7 +280,7 @@ class _ToolingMixin:
             f"图片只在产生它的那一轮可见{recall_suffix}]",
         ))
 
-    def _release_tool_image_slots(self) -> None:
+    def _release_tool_image_slots(self, slots=None) -> None:
         """Swap every injected image turn for its text placeholder.
 
         Called from the exit of both tool loops (``finally``, so an abandoned
@@ -282,7 +288,8 @@ class _ToolingMixin:
         another path may have rebuilt or truncated the history underneath us,
         and a blind index write would corrupt an unrelated message.
         """
-        slots = getattr(self, "_pending_tool_image_slots", None)
+        if slots is None:
+            slots = getattr(self, "_pending_tool_image_slots", None)
         if not slots:
             return
         for messages, index, message, placeholder in slots:
@@ -373,6 +380,7 @@ class _ToolingMixin:
         """
         tool_leak_filter = overrides.pop("_tool_leak_filter", None)
         tool_leak_provider = overrides.pop("_tool_leak_provider", None)
+        tool_image_slots = overrides.pop("_tool_image_slots", None)
         if self._use_genai_sdk and not self._genai_tools_unsupported:
             # 跟踪本轮 Gemini 路径是否已经把 text chunk yield 给上游。如果
             # 已经吐过文本，再 fallback 到 OpenAI-compat 会让用户在同一轮
@@ -385,6 +393,7 @@ class _ToolingMixin:
                     messages,
                     _tool_leak_filter=tool_leak_filter,
                     _tool_leak_provider=tool_leak_provider,
+                    _tool_image_slots=tool_image_slots,
                     **overrides,
                 ):
                     if getattr(chunk, "content", None):
@@ -421,11 +430,13 @@ class _ToolingMixin:
             messages,
             _tool_leak_filter=tool_leak_filter,
             _tool_leak_provider=tool_leak_provider,
+            _tool_image_slots=tool_image_slots,
             **overrides,
         ):
             yield chunk
 
     async def _astream_visible_with_tools(self, messages, **overrides):
+        tool_image_slots = []
         tool_names = {
             tool.name for tool in getattr(self, "_tool_definitions", [])
             if getattr(tool, "name", None)
@@ -445,7 +456,11 @@ class _ToolingMixin:
 
         try:
             async for chunk in self._astream_with_tools(
-                messages, _tool_leak_filter=leak_filter, _tool_leak_provider=provider, **overrides
+                messages,
+                _tool_leak_filter=leak_filter,
+                _tool_leak_provider=provider,
+                _tool_image_slots=tool_image_slots,
+                **overrides,
             ):
                 if getattr(chunk, "_tool_leak_filtered", False):
                     yield chunk
@@ -466,7 +481,7 @@ class _ToolingMixin:
             # of both callers (``stream_text`` and ``prompt_ephemeral``). In a
             # ``finally`` so an abandoned generator (GeneratorExit) still drops
             # the base64 out of history.
-            self._release_tool_image_slots()
+            self._release_tool_image_slots(tool_image_slots)
 
         chunk = _finalize_filter_chunk()
         if chunk is not None:
@@ -491,6 +506,7 @@ class _ToolingMixin:
         ``self.max_tool_iterations`` total LLM calls."""
         tool_leak_filter = overrides.pop("_tool_leak_filter", None)
         tool_leak_provider = overrides.pop("_tool_leak_provider", None)
+        tool_image_slots = overrides.pop("_tool_image_slots", None)
         tools_payload = self._openai_tools_payload()
         if tools_payload:
             overrides.setdefault("tools", tools_payload)
@@ -619,6 +635,7 @@ class _ToolingMixin:
                     # clean replies (no think tag present).
                     assistant_text=strip_thinking_segments(streamed_text_buffer),
                     assistant_reasoning=streamed_reasoning_buffer,
+                    tool_image_slots=tool_image_slots,
                 )
                 executed_tool_calls += executed_this_round
                 if executed_this_round:

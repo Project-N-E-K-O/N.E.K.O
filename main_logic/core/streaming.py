@@ -28,6 +28,7 @@ from main_logic.omni_realtime_client import OmniRealtimeClient
 from main_logic.omni_offline_client import OmniOfflineClient
 from main_logic.session_state import SessionEvent
 from utils.language_utils import get_global_language_full
+from utils.vision_capability import model_supports_vision
 from uuid import uuid4
 from ._shared import (
     _TEXT_SESSION_INPUT_TYPES,
@@ -191,7 +192,10 @@ class StreamingMixin:
         of being answerable.
         """
         session = self.session
-        native_vision = bool(getattr(session, "_supports_native_image", False))
+        native_vision = bool(
+            getattr(session, "_supports_native_image", False)
+            or model_supports_vision(getattr(session, "model", None))
+        )
         last_at = float(getattr(self, "_live_vision_last_frame_at", 0.0) or 0.0)
         if not last_at:
             return {

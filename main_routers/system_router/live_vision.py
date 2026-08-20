@@ -58,14 +58,14 @@ def _candidate_managers(role: str) -> list:
 
 
 def _pick_sharing_manager(managers: list) -> tuple:
-    """Return the first manager with an active share, else the first one.
+    """Prefer an active screen share, then another active share, then idle.
 
     Callers usually omit ``role`` because a plugin knows which game is running
-    but not which character the user is talking to. Preferring the manager that
-    is actually receiving frames makes the roleless query mean "is anyone
-    sharing", which is the question being asked.
+    but not which character the user is talking to. A camera share cannot serve
+    a game companion's desktop request, so a later screen share must outrank it.
     """
     fallback = None
+    active_fallback = None
     for mgr in managers:
         snapshot_fn = getattr(mgr, "live_vision_snapshot", None)
         if not callable(snapshot_fn):
@@ -76,9 +76,14 @@ def _pick_sharing_manager(managers: list) -> tuple:
             logger.debug("live-vision probe: snapshot failed: %s", exc)
             continue
         if state.get("active"):
-            return mgr, state
-        if fallback is None:
+            if state.get("source") == "screen":
+                return mgr, state
+            if active_fallback is None:
+                active_fallback = (mgr, state)
+        elif fallback is None:
             fallback = (mgr, state)
+    if active_fallback is not None:
+        return active_fallback
     return fallback if fallback is not None else (None, dict(_INACTIVE))
 
 

@@ -387,6 +387,69 @@ class KnowledgeStore:
                 "SELECT COALESCE(SUM(indexed), 0) AS n FROM chunks").fetchone()
         return int(row["n"] or 0)
 
+    def reconcile_index_cap(self, index_chunk_cap: int) -> int:
+        """Make persisted index flags and postings match the configured cap."""
+        cap = max(0, int(index_chunk_cap))
+        with self._lock:
+            conn = self._require()
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                desired_rows = conn.execute(
+                    "SELECT c.chunk_id, c.heading, c.text "
+                    "FROM chunks c JOIN documents d ON d.doc_id = c.doc_id "
+                    "ORDER BY d.imported_at, c.ordinal, c.chunk_id LIMIT ?",
+                    (cap,),
+                ).fetchall()
+                desired_ids = [int(row["chunk_id"]) for row in desired_rows]
+                desired = set(desired_ids)
+                indexed = {
+                    int(row["chunk_id"])
+                    for row in conn.execute(
+                        "SELECT chunk_id FROM chunks WHERE indexed = 1"
+                    ).fetchall()
+                }
+
+                removed = sorted(indexed - desired)
+                for batch in _batched(removed, _PARAM_BATCH):
+                    marks = ",".join("?" * len(batch))
+                    conn.execute(
+                        f"DELETE FROM chunk_terms WHERE chunk_id IN ({marks})",
+                        batch,
+                    )
+                    conn.execute(
+                        f"UPDATE chunks SET indexed = 0 "
+                        f"WHERE chunk_id IN ({marks})",
+                        batch,
+                    )
+
+                for row in desired_rows:
+                    chunk_id = int(row["chunk_id"])
+                    if chunk_id in indexed:
+                        continue
+                    conn.execute(
+                        "DELETE FROM chunk_terms WHERE chunk_id = ?", (chunk_id,))
+                    terms = dict(term_frequencies(
+                        f"{row['heading']}\n{row['text']}"))
+                    if terms:
+                        conn.executemany(
+                            "INSERT INTO chunk_terms (term, chunk_id, tf) "
+                            "VALUES (?, ?, ?)",
+                            [
+                                (term, chunk_id, int(tf))
+                                for term, tf in terms.items()
+                            ],
+                        )
+                    conn.execute(
+                        "UPDATE chunks SET indexed = 1, token_count = ? "
+                        "WHERE chunk_id = ?",
+                        (sum(terms.values()), chunk_id),
+                    )
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+        return len(desired_ids)
+
     # ------------------------------------------------------------------ 检索
     def chunk_ids_for_tags(self, tags: Sequence[tuple[str, str]]) -> dict[int, int]:
         """Chunk id -> number of distinct tags its document matched."""

@@ -71,10 +71,16 @@ class WowsTacticsRepository:
 
     def __init__(self, store: KnowledgeStore, cfg) -> None:
         self.store = store
+        self.store.reconcile_index_cap(cfg.tactics_index_chunk_cap)
         self.cfg = cfg
         self.diagnostics = SearchDiagnostics()
 
     def apply_config(self, cfg) -> None:
+        if (
+            int(cfg.tactics_index_chunk_cap)
+            != int(self.cfg.tactics_index_chunk_cap)
+        ):
+            self.store.reconcile_index_cap(cfg.tactics_index_chunk_cap)
         self.cfg = cfg
 
     # ------------------------------------------------------------------

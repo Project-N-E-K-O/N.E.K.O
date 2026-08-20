@@ -190,6 +190,18 @@ def test_visible_enemy_beyond_threat_scan_still_supplies_nearest_distance():
     assert facts.threats_in_scan_range == ()
 
 
+def test_id_less_ally_still_supplies_nearest_distance():
+    snapshot = frame(ships=[replace(ally(x=750.0), player_id=None)])
+    snapshot = replace(
+        snapshot,
+        self_ship=replace(snapshot.self_ship, player_id=None),
+    )
+
+    facts = BUILDER.build(snapshot)
+
+    assert facts.nearest_ally_distance_m == pytest.approx(750.0)
+
+
 # --- capability gating ---------------------------------------------------
 
 @pytest.mark.parametrize("detector", all_detectors(), ids=lambda d: d.name)
@@ -981,6 +993,13 @@ def test_boundary_risk_needs_a_heading_towards_the_edge():
         frame(seq=5, at=104.0, z=20000.0, yaw=0.0),
     ])
     assert BOUNDARY_RISK in fired(towards)
+    boundary = next(
+        event
+        for result in towards
+        for event in result.events
+        if event.event_id == BOUNDARY_RISK
+    )
+    assert boundary.detail["heading_deg"] == 0
 
 
 def test_boundary_risk_checks_every_nearby_edge_at_a_corner():
@@ -1042,6 +1061,24 @@ def test_target_broadside_uses_player_id_when_ui_id_is_missing():
     assert len(windows) == 1
     assert windows[0].detail["player_id"] == 3005
     assert windows[0].detail["ui_id"] is None
+
+
+def test_target_broadside_detail_preserves_zero_hp_ratio():
+    registry = DetectorRegistry(build_geometry_detectors(CFG))
+    bow = replace(enemy(ui_id=6, yaw=math.pi / 2), hp_ratio=0.0)
+    beam = replace(enemy(ui_id=6, yaw=0.0), hp_ratio=0.0)
+    results = feed(registry, [
+        frame(seq=1, at=100.0, ships=(bow,)),
+        frame(seq=2, at=101.0, ships=(beam,)),
+    ])
+    window = next(
+        event
+        for result in results
+        for event in result.events
+        if event.event_id == TARGET_BROADSIDE_WINDOW
+    )
+
+    assert window.detail["hp_ratio"] == 0.0
 
 
 def test_target_broadside_keeps_identity_aliases_across_field_flicker():

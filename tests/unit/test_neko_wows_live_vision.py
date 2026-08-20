@@ -103,6 +103,20 @@ def test_state_is_reused_inside_the_ttl():
     assert state["active"] is True
 
 
+def test_cached_state_is_scoped_to_the_requested_role():
+    probe, calls = _probe([
+        {**SHARING, "role": "beta"},
+        {**SHARING, "active": False, "role": "alpha"},
+    ])
+
+    beta = probe.snapshot(role="beta")
+    alpha = probe.snapshot(role="alpha")
+
+    assert beta["active"] is True
+    assert alpha["active"] is False
+    assert calls == [{"role": "beta"}, {"role": "alpha"}]
+
+
 def test_state_is_refetched_once_the_ttl_lapses():
     clock = _Clock()
     probe, calls = _probe([SHARING], clock=clock)
@@ -187,7 +201,9 @@ def test_oversized_age_does_not_wedge_future_refreshes():
 
     probe.snapshot()
     spawned.pop()()
-    assert probe.snapshot()["age_seconds"] is None
+    normalized = probe.snapshot()
+    assert normalized["active"] is True
+    assert normalized["age_seconds"] is None
 
     clock.advance(5.0)
     probe.snapshot()
@@ -229,6 +245,16 @@ def test_fetching_a_frame_decodes_it_and_asks_for_pixels():
 
     assert probe.fetch_frame() == jpeg
     assert calls == [{"include_frame": True}]
+
+
+def test_fetching_a_frame_is_scoped_to_the_requested_role():
+    jpeg = b"\xff\xd8role-scoped-jpeg"
+    probe, calls = _probe([
+        {**SHARING, "frame_b64": base64.b64encode(jpeg).decode()}
+    ])
+
+    assert probe.fetch_frame(role="beta") == jpeg
+    assert calls == [{"role": "beta", "include_frame": True}]
 
 
 @pytest.mark.parametrize(
@@ -481,7 +507,58 @@ def _plugin_with(cfg, probe):
     plugin = object.__new__(NekoWowsPlugin)
     plugin.cfg = cfg
     plugin.live_vision = probe
+    plugin._live_frame_permission_ready = True
     return plugin
+
+
+class _RoleRecordingProbe:
+    def __init__(self) -> None:
+        self.calls = []
+
+    def is_active(self, *, role):
+        self.calls.append(("active", role))
+        return True
+
+    def is_sharing_screen(self, *, role):
+        self.calls.append(("sharing", role))
+        return True
+
+    def fetch_frame(self, *, role):
+        self.calls.append(("frame", role))
+        return b"frame"
+
+    def status(self, *, role):
+        self.calls.append(("status", role))
+        return dict(SHARING)
+
+
+def test_live_activity_uses_the_delivery_target_role():
+    probe = _RoleRecordingProbe()
+    plugin = _plugin_with(
+        WowsConfig(live_vision_enabled=True, target_lanlan="beta"), probe)
+
+    assert plugin._live_vision_active() is True
+    assert probe.calls == [("active", "beta")]
+
+
+def test_live_frame_uses_the_delivery_target_role():
+    probe = _RoleRecordingProbe()
+    plugin = _plugin_with(
+        WowsConfig(live_vision_enabled=True, target_lanlan="beta"), probe)
+
+    assert plugin._live_frame() == b"frame"
+    assert probe.calls == [("sharing", "beta"), ("frame", "beta")]
+
+
+def test_live_panel_status_uses_the_delivery_target_role():
+    probe = _RoleRecordingProbe()
+    plugin = _plugin_with(
+        WowsConfig(live_vision_enabled=True, target_lanlan="beta"), probe)
+
+    payload = plugin._live_vision_payload(plugin.cfg)
+
+    assert payload["enabled"] is True
+    assert probe.calls == [("status", "beta")]
 
 
 def test_the_panel_switch_short_circuits_the_probe_entirely():
@@ -506,14 +583,15 @@ def test_the_panel_keeps_looking_even_when_no_battle_is_running():
     """Outside a battle the panel is the only caller, so if its read did not
     refresh it would sit on whatever the last battle left and report "not
     sharing" at someone who is."""
-    probe, calls = _probe([SHARING])
+    clock = _Clock()
+    probe, calls = _probe([SHARING], clock=clock)
     plugin = _plugin_with(WowsConfig(live_vision_enabled=True), probe)
 
     first = plugin._live_vision_payload(plugin.cfg)
     assert first["polled"] is True
     assert len(calls) == 1
 
-    probe._fetched_at = None  # next poll is due
+    clock.advance(5.0)
     second = plugin._live_vision_payload(plugin.cfg)
 
     assert len(calls) == 2

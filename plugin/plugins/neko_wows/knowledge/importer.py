@@ -223,6 +223,10 @@ def chunk_body(body: str, *, size: int, overlap: int) -> list[tuple[str, str]]:
             # retrievable from either side.
             tail = current[-overlap:] if overlap else ""
             current = f"{tail}\n\n{paragraph}".strip() if tail else paragraph
+            if len(current) > size:
+                pieces = _split_paragraph(current, size, overlap)
+                out.extend((heading, piece) for piece in pieces[:-1])
+                current = pieces[-1]
         if current:
             out.append((heading, current))
     return out

@@ -48,7 +48,11 @@ class BoundaryRiskDetector(Detector):
             facts=facts,
             detail={
                 "distance_m": round(distance),
-                "heading_deg": round(facts.own_heading_deg) if facts.own_heading_deg else None,
+                "heading_deg": (
+                    round(facts.own_heading_deg)
+                    if facts.own_heading_deg is not None
+                    else None
+                ),
                 "speed": facts.own_speed,
             },
         ),)
@@ -145,7 +149,11 @@ class TargetBroadsideDetector(Detector):
                 "ship_name": target.ship.spoken_name,
                 "player_id": target.ship.player_id,
                 "ui_id": target.ship.ui_id,
-                "hp_ratio": round(target.ship.hp_ratio, 3) if target.ship.hp_ratio else None,
+                "hp_ratio": (
+                    round(target.ship.hp_ratio, 3)
+                    if target.ship.hp_ratio is not None
+                    else None
+                ),
             },
         ),)
 

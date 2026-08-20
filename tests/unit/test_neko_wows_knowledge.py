@@ -9,6 +9,7 @@ import pytest
 
 from plugin.plugins.neko_wows.knowledge import importer as importer_module
 from plugin.plugins.neko_wows.knowledge import retrieval as retrieval_module
+from plugin.plugins.neko_wows.knowledge import store as store_module
 from plugin.plugins.neko_wows.domain.contracts import (
     NullTacticsRepository,
     TacticQuery,
@@ -164,6 +165,15 @@ def test_headings_become_a_breadcrumb():
 def test_chunks_respect_the_size_limit():
     body = "\n\n".join("句子。" * 40 for _ in range(20))
     pairs = chunk_body(body, size=300, overlap=50)
+    assert pairs
+    assert all(len(text) <= 300 for _heading, text in pairs)
+
+
+def test_overlap_never_pushes_a_following_paragraph_past_the_size_limit():
+    body = f"{'A' * 250}\n\n{'B' * 290}"
+
+    pairs = chunk_body(body, size=300, overlap=60)
+
     assert pairs
     assert all(len(text) <= 300 for _heading, text in pairs)
 
@@ -331,6 +341,86 @@ def test_an_exhausted_index_still_stores_the_document(store):
     assert store.stats()["documents"] == 1
 
 
+def test_hot_reload_reconciles_the_index_cap_in_both_directions(store):
+    store.add_document(
+        title="cap changes",
+        sha256="cap-changes",
+        size_bytes=30,
+        tags={},
+        chunks=[
+            {"heading": "", "text": "alpha tactics", "terms": {"alpha": 1}},
+            {"heading": "", "text": "beta tactics", "terms": {"beta": 1}},
+            {"heading": "", "text": "gamma tactics", "terms": {"gamma": 1}},
+        ],
+        index_chunk_cap=1,
+        max_documents=10,
+        max_total_bytes=10_000,
+    )
+    repo = WowsTacticsRepository(
+        store, cfg(tactics_index_chunk_cap=1))
+
+    repo.apply_config(cfg(tactics_index_chunk_cap=3))
+    assert store.stats()["indexed_chunks"] == 3
+    assert store.postings_for_terms(["gamma"])[0]
+
+    repo.apply_config(cfg(tactics_index_chunk_cap=1))
+    assert store.stats()["indexed_chunks"] == 1
+    assert store.postings_for_terms(["gamma"])[0] == {}
+
+
+def test_repository_startup_reconciles_a_persisted_index_cap(store):
+    store.add_document(
+        title="persisted cap",
+        sha256="persisted-cap",
+        size_bytes=20,
+        tags={},
+        chunks=[
+            {"heading": "", "text": "alpha tactics", "terms": {"alpha": 1}},
+            {"heading": "", "text": "beta tactics", "terms": {"beta": 1}},
+        ],
+        index_chunk_cap=2,
+        max_documents=10,
+        max_total_bytes=10_000,
+    )
+    assert store.stats()["indexed_chunks"] == 2
+
+    WowsTacticsRepository(store, cfg(tactics_index_chunk_cap=1))
+
+    assert store.stats()["indexed_chunks"] == 1
+
+
+def test_index_cap_reconciliation_rolls_back_on_reindex_failure(
+    store,
+    monkeypatch,
+):
+    store.add_document(
+        title="atomic cap",
+        sha256="atomic-cap",
+        size_bytes=20,
+        tags={},
+        chunks=[
+            {"heading": "", "text": "alpha tactics", "terms": {"alpha": 1}},
+            {"heading": "", "text": "beta tactics", "terms": {"beta": 1}},
+        ],
+        index_chunk_cap=1,
+        max_documents=10,
+        max_total_bytes=10_000,
+    )
+    repo = WowsTacticsRepository(
+        store, cfg(tactics_index_chunk_cap=1))
+    before = store.stats()
+
+    def fail_tokenization(_text):
+        raise RuntimeError("tokenizer failed")
+
+    monkeypatch.setattr(store_module, "term_frequencies", fail_tokenization)
+    with pytest.raises(RuntimeError, match="tokenizer failed"):
+        repo.apply_config(cfg(tactics_index_chunk_cap=2))
+
+    assert store.stats() == before
+    assert repo.cfg.tactics_index_chunk_cap == 1
+
+
 def test_bm25_average_length_uses_only_indexed_chunks(store, monkeypatch):
     tool = importer(
         store,
@@ -355,7 +445,7 @@ def test_bm25_average_length_uses_only_indexed_chunks(store, monkeypatch):
         return original_bm25(*args, **kwargs)
 
     monkeypatch.setattr(retrieval_module, "_bm25", capture_average)
-    repository(store).search(
+    repository(store, tactics_index_chunk_cap=1).search(
         TacticQuery(summary="巡洋舰距离", map_name="Ocean"), limit=3)
 
     assert averages

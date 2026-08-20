@@ -222,6 +222,17 @@ def test_extra_images_beyond_the_cap_are_dropped_with_a_warning():
     assert any("at most" in w for w in warnings)
 
 
+def test_image_entry_cap_is_applied_before_parsing_invalid_entries():
+    entries = [None] * 100 + [_image_entry()]
+
+    images, warnings = _parse_tool_images({"images": entries})
+
+    assert images == []
+    assert len(warnings) == _MAX_TOOL_IMAGES + 1
+    assert sum("not an object" in warning for warning in warnings) == _MAX_TOOL_IMAGES
+    assert sum("at most" in warning for warning in warnings) == 1
+
+
 def test_unsupported_mime_is_dropped_with_a_warning():
     images, warnings = _parse_tool_images(
         {"images": [_image_entry(mime="image/gif")]}

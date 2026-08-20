@@ -82,77 +82,88 @@ class LiveVisionProbe:
         self._clock = clock
         self._spawn = spawn
         self._lock = threading.RLock()
-        self._state: dict[str, Any] = dict(_UNKNOWN)
-        self._fetched_at: float | None = None
-        self._refreshing = False
+        self._states: dict[str, dict[str, Any]] = {}
+        self._fetched_at: dict[str, float] = {}
+        self._refreshing: set[str] = set()
 
     # ------------------------------------------------------------------
-    def snapshot(self) -> dict[str, Any]:
+    def snapshot(self, *, role: str = "") -> dict[str, Any]:
         """Fresh cached host state, or inactive while refreshing stale data."""
+        role = str(role or "")
         with self._lock:
+            fetched_at = self._fetched_at.get(role)
             due = (
-                self._fetched_at is None
-                or (self._clock() - self._fetched_at) >= self._ttl
+                fetched_at is None
+                or (self._clock() - fetched_at) >= self._ttl
             )
-            state = dict(_UNKNOWN) if due else dict(self._state)
+            state = (
+                dict(_UNKNOWN)
+                if due
+                else dict(self._states.get(role, _UNKNOWN))
+            )
             # Single-flight: a stalled refresh must not pile up one thread per
-            # telemetry frame.
-            start = due and not self._refreshing
+            # telemetry frame. Each delivery role has its own flight because
+            # one character's share says nothing about another's.
+            start = due and role not in self._refreshing
             if start:
-                self._refreshing = True
+                self._refreshing.add(role)
         if start:
             try:
-                self._spawn(self._refresh)
+                self._spawn(lambda: self._refresh(role))
             except Exception as exc:
                 with self._lock:
-                    self._refreshing = False
+                    self._refreshing.discard(role)
                 self._log("debug", f"live vision refresh could not start: {exc}")
             else:
                 # Test/in-process spawners may complete before returning. In
                 # that case the cache is fresh already; only conceal the old
                 # active state while a refresh is genuinely still in flight.
                 with self._lock:
-                    if not self._refreshing:
-                        state = dict(self._state)
+                    if role not in self._refreshing:
+                        state = dict(self._states.get(role, _UNKNOWN))
         return state
 
-    def is_active(self) -> bool:
+    def is_active(self, *, role: str = "") -> bool:
         """Whether a call-out can rely on the host attaching the live frame.
 
         Deliberately the same three conditions the host checks before it
         attaches one. If this disagreed with the host, the character would be
         told she can see the screen on a turn where no frame was sent.
         """
-        state = self.snapshot()
+        state = self.snapshot(role=role)
         return bool(
             state["active"]
             and state["source"] == SOURCE_SCREEN
             and state["native_vision"]
         )
 
-    def is_sharing_screen(self) -> bool:
+    def is_sharing_screen(self, *, role: str = "") -> bool:
         """Whether a screen share is running, native vision or not.
 
         The screenshot tool can use the frame either way -- it hands pictures
         to the host, which transcribes them when the model cannot read pixels.
         Only the zero-round-trip path needs native vision.
         """
-        state = self.snapshot()
+        state = self.snapshot(role=role)
         return bool(state["active"] and state["source"] == SOURCE_SCREEN)
 
-    def fetch_frame(self) -> bytes | None:
+    def fetch_frame(self, *, role: str = "") -> bytes | None:
         """Pull the current shared frame. Blocks; call it off the hot path.
 
         Used by the screenshot tool, which already runs in a worker thread, so
         the round trip is affordable there in a way it is not on the telemetry
         thread.
         """
+        role = str(role or "")
+        kwargs: dict[str, Any] = {"include_frame": True}
+        if role:
+            kwargs["role"] = role
         try:
-            payload = self._fetch(include_frame=True)
+            payload = self._fetch(**kwargs)
         except Exception as exc:
             self._log("debug", f"live vision frame fetch failed: {exc}")
             return None
-        self._store(payload)
+        self._store(role, payload)
         if not isinstance(payload, dict):
             return None
         if not payload.get("active") or payload.get("source") != SOURCE_SCREEN:
@@ -166,7 +177,7 @@ class LiveVisionProbe:
             self._log("debug", f"live vision frame was not valid base64: {exc}")
             return None
 
-    def status(self) -> dict[str, Any]:
+    def status(self, *, role: str = "") -> dict[str, Any]:
         """Panel view, refreshed like any other read.
 
         The panel is often the only caller: outside a battle nothing else asks,
@@ -175,9 +186,10 @@ class LiveVisionProbe:
         panel polls at roughly the probe's own TTL, so this costs about one
         refresh per poll -- the rate it was designed for.
         """
-        state = self.snapshot()
+        role = str(role or "")
+        state = self.snapshot(role=role)
         with self._lock:
-            state["polled"] = self._fetched_at is not None
+            state["polled"] = role in self._fetched_at
         state["usable"] = bool(
             state["active"]
             and state["source"] == SOURCE_SCREEN
@@ -186,24 +198,25 @@ class LiveVisionProbe:
         return state
 
     # ------------------------------------------------------------------
-    def _refresh(self) -> None:
+    def _refresh(self, role: str) -> None:
+        kwargs = {"role": role} if role else {}
         try:
-            payload = self._fetch()
+            payload = self._fetch(**kwargs)
         except Exception as exc:
             # An unreachable host means nobody is sharing anything with us,
             # which is the safe reading: the plugin falls back to its own
             # screenshot tool rather than telling her to look at nothing.
             self._log("debug", f"live vision probe failed: {exc}")
             payload = None
-        self._store(payload)
+        self._store(role, payload)
 
-    def _store(self, payload: Any) -> None:
+    def _store(self, role: str, payload: Any) -> None:
         with self._lock:
-            self._state = _normalize(payload)
+            self._states[role] = _normalize(payload)
             # Stamped even on failure so an outage is polled at the same rate
             # as a healthy host instead of once per telemetry frame.
-            self._fetched_at = self._clock()
-            self._refreshing = False
+            self._fetched_at[role] = self._clock()
+            self._refreshing.discard(role)
 
     def _log(self, level: str, message: str) -> None:
         if self._logger is None:

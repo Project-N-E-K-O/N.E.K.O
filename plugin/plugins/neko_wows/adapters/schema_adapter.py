@@ -81,7 +81,11 @@ class UnexpectedServiceIdentity(Exception):
 def _number(value: Any) -> float | None:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
-    return float(value)
+    try:
+        number = float(value)
+    except (OverflowError, TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
 
 
 def _read_alive(value: Any) -> bool | None:
@@ -370,7 +374,7 @@ class WowsSchemaAdapter:
                 for ship in ships
             ),
             DOMAIN_DAMAGE: any(
-                body.get(key) for key in
+                body.get(key) is not None for key in
                 ("damage_inflicted", "damage_received", "damage_team_total")
             ),
             DOMAIN_BALLISTICS: bool((body.get("ballistics") or {}).get("available")),
@@ -586,6 +590,7 @@ class WowsSchemaAdapter:
                     "ts": payload.get("ts"),
                     "self": payload.get("self"),
                     "objects": payload.get("objects"),
+                    "roster": payload.get("roster"),
                     "damage": payload.get("damage"),
                     "ballistics": payload.get("ballistics"),
                 },

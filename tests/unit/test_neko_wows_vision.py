@@ -411,6 +411,22 @@ def test_lowering_retain_evicts_immediately(tmp_path):
     assert len(list(tmp_path.glob("*.jpg"))) == 2
 
 
+def test_opening_store_purges_only_orphaned_managed_shots(tmp_path):
+    managed = [tmp_path / "shot_1.jpg", tmp_path / "shot_002.jpg"]
+    sentinels = [
+        tmp_path / "shot_x.jpg",
+        tmp_path / "shot_3.jpg.bak",
+        tmp_path / "prefix_shot_4.jpg",
+    ]
+    for path in managed + sentinels:
+        path.write_bytes(b"old")
+
+    ShotStore(tmp_path, retain=5)
+
+    assert all(not path.exists() for path in managed)
+    assert all(path.read_bytes() == b"old" for path in sentinels)
+
+
 @pytest.mark.parametrize("probe", [
     "../../../../Windows/System32/config/SAM",
     r"..\..\secrets.txt",
@@ -643,6 +659,28 @@ def test_recall_returns_the_stored_frame(service):
     out = service.recall(shot_id)
     assert out["output"]["recalled"] is True
     assert base64.b64decode(out["images"][0]["data_b64"]) == b"framebytes"
+
+
+def test_recall_reuses_capture_time_telemetry_without_resampling(service):
+    calls = 0
+    state = {"own_hp_ratio": 0.42}
+
+    def _telemetry():
+        nonlocal calls
+        calls += 1
+        return {"in_battle": True, **state}
+
+    service._telemetry = _telemetry
+    shot_id = service.look()["output"]["shot_id"]
+    state["own_hp_ratio"] = 0.08
+
+    out = service.recall(shot_id)
+
+    assert out["output"]["telemetry"] == {
+        "in_battle": True,
+        "own_hp_ratio": 0.42,
+    }
+    assert calls == 1
 
 
 def test_recall_is_not_rate_limited(service):

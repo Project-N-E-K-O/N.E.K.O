@@ -8,6 +8,7 @@ so adding the document layer will not change any call site.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
@@ -146,7 +147,7 @@ class WowsConfig:
     outnumbered_margin: int = 2
 
     # --- offline ship catalog and explicit official lookup ---
-    ship_catalog_enabled: bool = True
+    ship_catalog_enabled: bool = False
     ship_catalog_version_policy: str = SHIP_CATALOG_VERSION_WARN
     ship_catalog_language: str = SHIP_CATALOG_LANGUAGE_DEFAULT
     ship_catalog_context_batch_chars: int = 12_000
@@ -211,7 +212,13 @@ class WowsConfig:
             value = data.get(key, default)
             if isinstance(value, bool) or not isinstance(value, (int, float)):
                 return default
-            return _clamp(float(value), low, high)
+            try:
+                normalized = float(value)
+            except (OverflowError, ValueError):
+                return default
+            if not math.isfinite(normalized):
+                return default
+            return _clamp(normalized, low, high)
 
         def text(key: str, default: str) -> str:
             value = data.get(key, default)
@@ -254,12 +261,17 @@ class WowsConfig:
 
         ratios = data.get("low_health_ratios")
         if isinstance(ratios, (list, tuple)):
-            cleaned = sorted(
-                {_clamp(float(r), 0.01, 0.99)
-                 for r in ratios
-                 if isinstance(r, (int, float)) and not isinstance(r, bool)},
-                reverse=True,
-            )
+            finite_ratios: set[float] = set()
+            for ratio in ratios:
+                if isinstance(ratio, bool) or not isinstance(ratio, (int, float)):
+                    continue
+                try:
+                    normalized = float(ratio)
+                except (OverflowError, ValueError):
+                    continue
+                if math.isfinite(normalized):
+                    finite_ratios.add(_clamp(normalized, 0.01, 0.99))
+            cleaned = sorted(finite_ratios, reverse=True)
             if cleaned:
                 cfg.low_health_ratios = tuple(cleaned)
 
@@ -292,7 +304,7 @@ class WowsConfig:
             "enemy_sunk_min_ratio_threshold", 0.05, 0.0, 1.0)
         cfg.outnumbered_margin = int(number("outnumbered_margin", 2, 1, 12))
 
-        cfg.ship_catalog_enabled = flag("ship_catalog_enabled", True)
+        cfg.ship_catalog_enabled = flag("ship_catalog_enabled", False)
         version_policy = text(
             "ship_catalog_version_policy", SHIP_CATALOG_VERSION_WARN)
         cfg.ship_catalog_version_policy = (
@@ -426,6 +438,11 @@ class TacticQuery:
         return candidates
 
 
+def _host_priority(priority: int) -> int:
+    """Map the plugin's 0-100 ranking onto the host's shared 0-10 scale."""
+    return max(0, min(10, (int(priority) + 5) // 10))
+
+
 @dataclass(frozen=True)
 class DeliveryRequest:
     """Everything needed to hand one call-out to the host, and nothing more."""
@@ -441,15 +458,20 @@ class DeliveryRequest:
     target_lanlan: str = ""
     expires_at: float = 0.0
 
-    def push_kwargs(self) -> dict[str, Any]:
+    def push_kwargs(
+        self, *, expires_in_s: float | None = None,
+    ) -> dict[str, Any]:
+        metadata = dict(self.metadata)
+        if expires_in_s is not None:
+            metadata["expires_in_s"] = float(expires_in_s)
         return {
             "source": "neko_wows",
             "visibility": list(self.visibility),
             "ai_behavior": self.ai_behavior,
             "parts": [{"type": "text", "text": self.text}],
-            "priority": self.priority,
+            "priority": _host_priority(self.priority),
             "coalesce_key": self.coalesce_key,
-            "metadata": dict(self.metadata),
+            "metadata": metadata,
             "target_lanlan": self.target_lanlan or None,
         }
 

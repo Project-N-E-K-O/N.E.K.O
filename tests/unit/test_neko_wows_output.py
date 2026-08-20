@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import threading
 from dataclasses import replace
 from types import SimpleNamespace
@@ -121,6 +122,20 @@ def request(*, event_id=LOW_HEALTH, expires_at=0.0, text="说点什么"):
     )
 
 
+@pytest.mark.parametrize(("internal", "host"), [
+    (25, 3),
+    (60, 6),
+    (95, 10),
+])
+def test_delivery_request_maps_internal_priority_to_the_host_scale(
+    internal,
+    host,
+):
+    built = replace(request(), priority=internal)
+
+    assert built.push_kwargs()["priority"] == host
+
+
 # --- dry-run -------------------------------------------------------------
 
 def test_dry_run_makes_no_host_calls_at_all():
@@ -181,6 +196,17 @@ def test_a_declined_sdk_submission_is_not_reported_as_delivered():
     assert dispatcher.stats()["recent_failures"] == 1
 
 
+def test_delivery_forwards_the_remaining_event_ttl_to_the_host():
+    plugin = FakePlugin()
+    dispatcher = NekoDispatcher(
+        plugin, WowsConfig(), clock=FakeClock(now=100.0))
+
+    result = dispatcher.deliver(request(expires_at=112.5))
+
+    assert result.delivered is True
+    assert plugin.calls[0]["metadata"]["expires_in_s"] == pytest.approx(12.5)
+
+
 def test_context_injection_is_also_suppressed_in_dry_run():
     plugin = FakePlugin()
     injector = ContextInjector(plugin)
@@ -206,6 +232,56 @@ def test_context_injection_routes_to_the_active_character_session():
     injector = ContextInjector(plugin)
     assert injector.push("场景说明", dry_run=False) is True
     assert plugin.calls[0]["target_lanlan"] == "alpha"
+
+
+def test_context_injection_identity_includes_the_target_character():
+    plugin = FakePlugin()
+    plugin.cfg = WowsConfig(target_lanlan="alpha")
+    injector = ContextInjector(plugin)
+
+    assert injector.push("same scene", dry_run=False) is True
+    plugin.cfg.target_lanlan = "beta"
+    assert injector.push("same scene", dry_run=False) is True
+
+    assert [call["target_lanlan"] for call in plugin.calls] == [
+        "alpha", "beta",
+    ]
+
+
+def test_context_restore_targets_every_character_that_accepted_the_scene():
+    plugin = FakePlugin()
+    plugin.cfg = WowsConfig(target_lanlan="alpha")
+    injector = ContextInjector(plugin)
+    assert injector.push("battle scene", dry_run=False) is True
+    plugin.cfg.target_lanlan = "beta"
+    assert injector.push("battle scene", dry_run=False) is True
+
+    plugin.cfg.target_lanlan = "gamma"
+    assert injector.restore("normal scene", dry_run=False) is True
+
+    assert [call["target_lanlan"] for call in plugin.calls] == [
+        "alpha", "beta", "alpha", "beta",
+    ]
+    assert injector.injected is False
+
+
+def test_context_restore_skips_a_target_that_declined_injection():
+    plugin = FakePlugin()
+    plugin.cfg = WowsConfig(target_lanlan="alpha")
+    injector = ContextInjector(plugin)
+    assert injector.push("battle scene", dry_run=False) is True
+
+    plugin.cfg.target_lanlan = "beta"
+    plugin.receipt = {"submitted": False, "reason": "unavailable"}
+    assert injector.push("battle scene", dry_run=False) is False
+
+    plugin.cfg.target_lanlan = "gamma"
+    plugin.receipt = {"submitted": True}
+    assert injector.restore("normal scene", dry_run=False) is True
+
+    assert [call["target_lanlan"] for call in plugin.calls] == [
+        "alpha", "beta", "alpha",
+    ]
 
 
 def test_configured_target_lanlan_wins_over_the_active_session():
@@ -385,7 +461,7 @@ def test_shutdown_stops_workers_outside_pipeline_lock_and_cleans_up_inside_it():
     plugin.knowledge = SimpleNamespace(close=lambda: record("knowledge_close"))
     plugin.logger = SimpleNamespace(info=lambda _message: None)
 
-    NekoWowsPlugin.shutdown(plugin)
+    asyncio.run(NekoWowsPlugin.shutdown(plugin))
 
     assert calls == [
         ("transport_stop", False),
@@ -395,6 +471,49 @@ def test_shutdown_stops_workers_outside_pipeline_lock_and_cleans_up_inside_it():
         ("shots_clear", True),
         ("knowledge_close", True),
     ]
+
+
+def test_shutdown_revokes_the_live_frame_permission_generation():
+    async def scenario():
+        calls = []
+        plugin = object.__new__(NekoWowsPlugin)
+        plugin._state_lock = threading.RLock()
+        plugin._pipeline_lock = threading.RLock()
+        plugin._running = True
+        plugin._live_frame_permission_token = "active-generation"
+        plugin._live_frame_permission_ready = True
+        plugin.cfg = WowsConfig()
+
+        async def set_live_frame_permission_async(**kwargs):
+            calls.append(kwargs)
+            return {"ok": True, **kwargs}
+
+        plugin._host_ctx = SimpleNamespace(
+            set_live_frame_permission_async=set_live_frame_permission_async)
+        plugin.transport = SimpleNamespace(stop=lambda: None)
+        status = SimpleNamespace(as_dict=lambda: {"mode": "stopped"})
+        plugin.service = SimpleNamespace(stop=lambda: status)
+        plugin.context_injector = SimpleNamespace(restore=lambda *_a, **_k: None)
+        plugin.ship_context = SimpleNamespace(reset=lambda _reason: None)
+        plugin.shots = SimpleNamespace(clear=lambda: None)
+        plugin.knowledge = SimpleNamespace(close=lambda: None)
+        plugin.logger = SimpleNamespace(
+            info=lambda _message: None,
+            warning=lambda _message: None,
+        )
+
+        result = await NekoWowsPlugin.shutdown(plugin)
+
+        assert result.is_ok()
+        assert plugin._live_frame_permission_token != "active-generation"
+        assert plugin._live_frame_permission_ready is False
+        assert calls == [{
+            "token": plugin._live_frame_permission_token,
+            "enabled": False,
+            "timeout": 3.0,
+        }]
+
+    asyncio.run(scenario())
 
 
 def test_queued_evaluation_is_skipped_after_running_is_cleared():
@@ -422,11 +541,9 @@ def test_queued_evaluation_is_skipped_after_running_is_cleared():
     calls = []
     errors = []
     evaluator_attempted = threading.Event()
-    shutdown_attempted = threading.Event()
     transport_stopped = threading.Event()
     pipeline_lock = ObservedRLock({
         "queued-evaluator": evaluator_attempted,
-        "shutdown-worker": shutdown_attempted,
     })
     plugin = object.__new__(NekoWowsPlugin)
     plugin._pipeline_lock = pipeline_lock
@@ -465,7 +582,7 @@ def test_queued_evaluation_is_skipped_after_running_is_cleared():
 
     def shutdown_after_lock():
         try:
-            NekoWowsPlugin.shutdown(plugin)
+            asyncio.run(NekoWowsPlugin.shutdown(plugin))
         except BaseException as exc:  # pragma: no cover - asserted below
             errors.append(exc)
 
@@ -478,7 +595,6 @@ def test_queued_evaluation_is_skipped_after_running_is_cleared():
         assert evaluator_attempted.wait(timeout=5)
         shutdown_worker.start()
         assert transport_stopped.wait(timeout=5)
-        assert shutdown_attempted.wait(timeout=5)
 
     evaluator.join(timeout=5)
     shutdown_worker.join(timeout=5)
@@ -531,7 +647,7 @@ def _catalog_order_target(*, catalog_error: Exception | None = None):
     )
     plugin.context_injector = SimpleNamespace(
         push=lambda *_args, **_kwargs: calls.append("scene") or True)
-    plugin.live_vision = SimpleNamespace(is_active=lambda: False)
+    plugin.live_vision = SimpleNamespace(is_active=lambda **_kwargs: False)
 
     def observe(*_args, **_kwargs):
         calls.append("ship")
@@ -618,6 +734,34 @@ def test_callout_profile_routes_to_the_active_character_session():
     assert captured["target_lanlan"] == "alpha"
 
 
+def test_callout_profile_uses_one_target_for_probe_and_delivery(monkeypatch):
+    import plugin.plugins.neko_wows as wows_module
+
+    plugin, snapshot, _calls = _catalog_order_target()
+    plugin._live_frame_permission_ready = True
+    probed_roles = []
+    plugin.live_vision = SimpleNamespace(
+        is_active=lambda *, role: probed_roles.append(role) or True)
+    targets = iter(("alpha", "beta"))
+    monkeypatch.setattr(
+        wows_module,
+        "resolve_target_lanlan",
+        lambda _plugin: next(targets),
+    )
+    captured = {}
+
+    def build(_candidates, profile, _excerpts=()):
+        captured["target_lanlan"] = profile.target_lanlan
+        return SimpleNamespace(text="respond", event_id="battle_started")
+
+    plugin.router = SimpleNamespace(build=build)
+
+    NekoWowsPlugin._evaluate_locked(plugin, snapshot)
+
+    assert probed_roles == ["alpha"]
+    assert captured["target_lanlan"] == "alpha"
+
+
 def test_callout_profile_stamps_the_live_frame_permission_generation():
     plugin, snapshot, _calls = _catalog_order_target()
     plugin._live_frame_permission_token = "generation-one"
@@ -632,6 +776,65 @@ def test_callout_profile_stamps_the_live_frame_permission_generation():
     NekoWowsPlugin._evaluate_locked(plugin, snapshot)
 
     assert captured["token"] == "generation-one"
+
+
+def test_callout_profile_disables_live_vision_until_permission_is_ready():
+    plugin, snapshot, _calls = _catalog_order_target()
+    plugin.cfg.live_vision_enabled = True
+    plugin._live_frame_permission_ready = False
+    plugin.live_vision = SimpleNamespace(is_active=lambda **_kwargs: True)
+    captured = {}
+
+    def build(_candidates, profile, _excerpts=()):
+        captured["enabled"] = profile.live_vision_enabled
+        captured["active"] = profile.live_vision_active
+        captured["scene_context"] = profile.scene_context
+        return SimpleNamespace(text="respond", event_id="battle_started")
+
+    plugin.router = SimpleNamespace(build=build)
+
+    NekoWowsPlugin._evaluate_locked(plugin, snapshot)
+
+    assert captured["enabled"] is False
+    assert captured["active"] is False
+    assert captured["scene_context"] == WOWS_CONTEXT_INSTRUCTIONS
+
+
+def test_callout_profile_carries_scene_context_into_the_proactive_response():
+    plugin, snapshot, _calls = _catalog_order_target()
+    captured = {}
+
+    def build(_candidates, profile, _excerpts=()):
+        captured["scene_context"] = profile.scene_context
+        return SimpleNamespace(text="respond", event_id="battle_started")
+
+    plugin.router = SimpleNamespace(build=build)
+
+    NekoWowsPlugin._evaluate_locked(plugin, snapshot)
+
+    assert captured["scene_context"] == WOWS_CONTEXT_INSTRUCTIONS
+
+
+def test_tactical_lookup_prefers_the_humanized_ship_name():
+    plugin = object.__new__(NekoWowsPlugin)
+    seen = []
+    plugin.tactics = SimpleNamespace(
+        search=lambda query, **_kwargs: seen.append(query) or (),
+    )
+    plugin.logger = SimpleNamespace(warning=lambda *_args, **_kwargs: None)
+    snapshot = SimpleNamespace(
+        map_name="New Dawn",
+        own_ship_spoken_name="Yamato",
+        own_ship_name="PJSB018_Yamato_1944",
+        own_ship_type="Battleship",
+        game_mode="Domination",
+        battle_type="RandomBattle",
+    )
+    chosen = SimpleNamespace(summary="开局", event_id="battle_started")
+
+    NekoWowsPlugin._reference_for(plugin, chosen, snapshot)
+
+    assert seen[0].ship_name == "Yamato"
 
 
 def test_committed_bundle_acknowledges_every_detector_event():
@@ -891,6 +1094,7 @@ def test_automatic_lifecycle_never_queries_the_official_ship_api():
             raise AssertionError("automatic lifecycle must stay on offline catalog")
 
     plugin, snapshot, calls = _catalog_order_target()
+    plugin.cfg.ship_catalog_enabled = True
     plugin.cfg.official_api_enabled = True
     plugin.cfg.official_api_application_id = "test-only-app-id"
     official_api = GuardOfficialClient()
@@ -1174,6 +1378,22 @@ def test_the_request_carries_the_event_facts():
     assert "0.12" in built.text
     assert built.metadata["event_id"] == LOW_HEALTH
     assert built.metadata["lane"] == "urgent"
+
+
+def test_the_proactive_request_contains_its_standing_scene_context():
+    router = WowsPromptRouter(WowsConfig())
+    candidate = build_candidate(LOW_HEALTH, hp_ratio=0.12)
+
+    built = router.build(
+        candidate,
+        PromptProfile(
+            channel_mode=CHANNEL_DUAL,
+            dry_run=True,
+            scene_context="STANDING WOWS SCENE",
+        ),
+    )
+
+    assert "STANDING WOWS SCENE" in built.text
 
 
 def test_the_request_carries_an_ordered_event_bundle_in_one_prompt():
