@@ -2093,8 +2093,13 @@ class IndependentAsrRuntime:
                     try:
                         await suppression.detector.reset()
                         reset_succeeded = True
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        logger.warning(
+                            "[%s] rejection watchdog reset failed; "
+                            "speaker verification stays detached: %s",
+                            self.display_name,
+                            exc,
+                        )
                     factory = self._speaker_verifier_factory
                     if (
                         reset_succeeded
@@ -2107,7 +2112,13 @@ class IndependentAsrRuntime:
                                 await suppression.detector.replace_speaker_verifier(
                                     shadow
                                 )
-                            except Exception:
+                            except Exception as exc:
+                                logger.warning(
+                                    "[%s] rejection watchdog verifier reinstall "
+                                    "failed: %s",
+                                    self.display_name,
+                                    exc,
+                                )
                                 await self._close_created_speaker_shadow(shadow)
                 await self._complete_candidate_rejection(suppression)
             except asyncio.CancelledError:
