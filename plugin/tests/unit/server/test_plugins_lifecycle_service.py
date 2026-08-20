@@ -2294,6 +2294,38 @@ def test_delete_skips_legacy_inference_when_another_legacy_row_is_installed(
 
 
 @pytest.mark.plugin_unit
+def test_delete_skips_cleanup_when_a_sibling_row_lacks_a_package_id(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """The unidentifiable row can be the sibling rather than the one deleted.
+
+    A pre-package-id bundle whose members were reinstalled one at a time leaves
+    mixed rows. Resolving our own profile works, but the legacy sibling still
+    resolves to its plugin id, so the sharing check cannot tell that it shares
+    this profile.
+    """
+    plugin_dir = tmp_path / "shared_pkg"
+    profiles_root = tmp_path / "profiles"
+    profile_dir = profiles_root / "shared_pkg"
+    profile_dir.mkdir(parents=True)
+    (profile_dir / "sibling_config.toml").write_text("[keep]\nme = true\n", encoding="utf-8")
+    install_source_manager = _FakeInstallSourceManager(
+        package_id="shared_pkg",
+        profile_dir=str(profile_dir),
+        profile_installed=True,
+        active_package_ids=("",),
+        active_directory_names=("shared_b",),
+        active_channels=("imported",),
+    )
+    monkeypatch.setattr(module, "get_install_source_manager", lambda: install_source_manager)
+    monkeypatch.setattr(module, "get_user_package_profiles_root", lambda: profiles_root)
+
+    assert module._stage_orphaned_package_profile_sync(plugin_dir) is None
+    assert (profile_dir / "sibling_config.toml").is_file()
+
+
+@pytest.mark.plugin_unit
 def test_delete_still_cleans_legacy_profile_when_other_rows_record_package_ids(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

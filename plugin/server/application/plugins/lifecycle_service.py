@@ -613,19 +613,23 @@ def _stage_orphaned_package_profile_sync(plugin_dir: Path) -> _StagedPackageProf
         getattr(current_entry, "directory_name", ""),
     )
     recorded_package_id = str(getattr(current_entry, "package_id", "") or "")
-    if not recorded_package_id and _has_other_entry_without_package_id(
-        active_entries,
-        current_primary_key,
-    ):
+    if _has_other_entry_without_package_id(active_entries, current_primary_key):
         # Rows written before the package id was tracked do not say which
-        # package owns the profile, and a bundle's profile is named after the
-        # package rather than after any member plugin. Another such row may be
-        # a sibling from that same bundle, still using this profile, and the
-        # sharing check below cannot see it. Leave the profile alone: a stale
-        # profile blocks a reinstall, deleting a sibling's config is worse.
+        # package owns their profile, and a bundle's profile is named after the
+        # package rather than after any member plugin. Such a row may be a
+        # sibling from the same bundle that still uses this profile, and the
+        # sharing check below cannot see it: it can only infer that row's
+        # profile from its plugin id, which is not where a bundle profile
+        # lives. This holds whichever side is missing the package id, so the
+        # guard looks at every other installed row rather than only at ours.
+        #
+        # Cost: one such row suppresses profile cleanup for every deletion
+        # until it is itself removed or reinstalled, which degrades to the
+        # pre-change behaviour (a stale profile blocks a reinstall). That is
+        # strictly better than permanently deleting a sibling's configuration.
         logger.warning(
-            "delete_plugin: skipping profile cleanup for a legacy row without a "
-            "recorded package id while other legacy rows are installed: {}",
+            "delete_plugin: skipping profile cleanup while an installation "
+            "without a recorded package id may share this profile: {}",
             plugin_dir,
         )
         return None
