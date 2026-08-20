@@ -419,6 +419,22 @@ def _path_has_symlink_ancestor(path: Path) -> bool:
     return any(candidate.is_symlink() for candidate in (path, *path.parents))
 
 
+def _has_other_entry_without_package_id(
+    active_entries: object,
+    current_primary_key: tuple[str, str],
+) -> bool:
+    """Report whether another installed row also predates package id tracking."""
+    for entry in active_entries or ():
+        if getattr(entry, "channel", "") not in {"imported", "market"}:
+            continue
+        key = (getattr(entry, "root_id", ""), getattr(entry, "directory_name", ""))
+        if key == current_primary_key:
+            continue
+        if not str(getattr(entry, "package_id", "") or ""):
+            return True
+    return False
+
+
 @dataclass(frozen=True)
 class _StagedPackageProfile:
     original_dir: Path
@@ -592,9 +608,29 @@ def _stage_orphaned_package_profile_sync(plugin_dir: Path) -> _StagedPackageProf
     if current_entry is None or getattr(current_entry, "channel", "") not in {"imported", "market"}:
         return None
 
-    package_id = str(
-        getattr(current_entry, "package_id", "") or getattr(current_entry, "plugin_id", "")
+    current_primary_key = (
+        getattr(current_entry, "root_id", ""),
+        getattr(current_entry, "directory_name", ""),
     )
+    recorded_package_id = str(getattr(current_entry, "package_id", "") or "")
+    if not recorded_package_id and _has_other_entry_without_package_id(
+        active_entries,
+        current_primary_key,
+    ):
+        # Rows written before the package id was tracked do not say which
+        # package owns the profile, and a bundle's profile is named after the
+        # package rather than after any member plugin. Another such row may be
+        # a sibling from that same bundle, still using this profile, and the
+        # sharing check below cannot see it. Leave the profile alone: a stale
+        # profile blocks a reinstall, deleting a sibling's config is worse.
+        logger.warning(
+            "delete_plugin: skipping profile cleanup for a legacy row without a "
+            "recorded package id while other legacy rows are installed: {}",
+            plugin_dir,
+        )
+        return None
+
+    package_id = recorded_package_id or str(getattr(current_entry, "plugin_id", "") or "")
     if not package_id:
         return None
     recorded_profile_dir = str(getattr(current_entry, "profile_dir", "") or "")
@@ -636,10 +672,6 @@ def _stage_orphaned_package_profile_sync(plugin_dir: Path) -> _StagedPackageProf
         )
         return None
 
-    current_primary_key = (
-        getattr(current_entry, "root_id", ""),
-        getattr(current_entry, "directory_name", ""),
-    )
     for entry in active_entries:
         if (
             getattr(entry, "root_id", ""),

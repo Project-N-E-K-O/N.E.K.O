@@ -2263,6 +2263,62 @@ def test_delete_uses_plugin_directory_name_for_legacy_empty_package_id(
 
 
 @pytest.mark.plugin_unit
+def test_delete_skips_legacy_inference_when_another_legacy_row_is_installed(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A bundle predating package ids can hide a sibling that shares the profile.
+
+    Rows written before package ids were tracked name no owner, and a bundle
+    profile is named after the package rather than after any member plugin. The
+    sibling therefore resolves to a different path and the sharing check cannot
+    see it, so deleting the member whose id matches the bundle would take the
+    sibling's configuration with it.
+    """
+    plugin_dir = tmp_path / "legacy_bundle_member"
+    profiles_root = tmp_path / "profiles"
+    profile_dir = profiles_root / plugin_dir.name
+    profile_dir.mkdir(parents=True)
+    (profile_dir / "sibling_config.toml").write_text("[keep]\nme = true\n", encoding="utf-8")
+    install_source_manager = _FakeInstallSourceManager(
+        package_id="",
+        active_package_ids=("",),
+        active_directory_names=("legacy_bundle_sibling",),
+        active_channels=("imported",),
+    )
+    monkeypatch.setattr(module, "get_install_source_manager", lambda: install_source_manager)
+    monkeypatch.setattr(module, "get_user_package_profiles_root", lambda: profiles_root)
+
+    assert module._stage_orphaned_package_profile_sync(plugin_dir) is None
+    assert (profile_dir / "sibling_config.toml").is_file()
+
+
+@pytest.mark.plugin_unit
+def test_delete_still_cleans_legacy_profile_when_other_rows_record_package_ids(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """The legacy guard must not block cleanup once siblings are identifiable."""
+    plugin_dir = tmp_path / "legacy_plugin"
+    profiles_root = tmp_path / "profiles"
+    profile_dir = profiles_root / plugin_dir.name
+    profile_dir.mkdir(parents=True)
+    install_source_manager = _FakeInstallSourceManager(
+        package_id="",
+        active_package_ids=("some_other_package",),
+        active_directory_names=("some_other_plugin",),
+        active_channels=("imported",),
+    )
+    monkeypatch.setattr(module, "get_install_source_manager", lambda: install_source_manager)
+    monkeypatch.setattr(module, "get_user_package_profiles_root", lambda: profiles_root)
+
+    staged_profile = module._stage_orphaned_package_profile_sync(plugin_dir)
+
+    assert staged_profile is not None
+    assert profile_dir.exists() is False
+
+
+@pytest.mark.plugin_unit
 def test_delete_does_not_infer_profile_ownership_for_manual_plugin(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
