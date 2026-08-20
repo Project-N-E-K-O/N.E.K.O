@@ -339,7 +339,14 @@ def test_mic_capture_failure_restores_composer_without_outer_voice_start_lifecyc
     assert "S.voiceStartPending = false;" not in failure
     assert "window.isMicStarting = false;" not in failure
     assert "const hasOuterVoiceStartLifecycle = !!(S.voiceStartPending || window.isMicStarting);" in failure
-    restore_start = failure.index("if (!hasOuterVoiceStartLifecycle) {")
+    assert (
+        "const ownsPendingMicUi = "
+        "pendingMicStartUiOwnerToken === micStartToken;"
+        in failure
+    )
+    restore_start = failure.index(
+        "if (!hasOuterVoiceStartLifecycle && ownsPendingMicUi) {"
+    )
     throw_index = failure.index("throw err;")
     restore_block = failure[restore_start:throw_index]
     assert "S.isRecording = false;" in restore_block
@@ -721,6 +728,13 @@ def test_every_screen_share_toggle_treats_a_pending_start_as_on():
     assert "rememberScreenSharingAttemptStream(attempt" in start_once
     assert "var captureStream = attempt.initialStream;" in start_once
     assert "startScreenVideoStreaming(captureStream, streamInputType);" in start_once
+    playback_setup = start_once.index("await window.ensureAudioPlayerContext();")
+    post_playback_guard = start_once.index(
+        "if (discardCancelledScreenSharingStart(attempt)) return;",
+        playback_setup,
+    )
+    source_acquisition = start_once.index("if (captureStream == null)")
+    assert playback_setup < post_playback_guard < source_acquisition
     assert "captureStream.getVideoTracks()[0].onended" in start_once
     onended = start_once.index("captureStream.getVideoTracks()[0].onended")
     stale_guard = start_once.index(

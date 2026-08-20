@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { usePackageManager } from './usePackageManager'
 import {
+  getPluginCliPackages,
   installPluginPackage,
   planPluginInstall,
   type PluginCliInstallPlanResponse,
@@ -118,6 +119,31 @@ describe('usePackageManager external plugin selection', () => {
 
     expect(manager.selectedPluginIds.value).toEqual(['builtin:demo_plugin'])
     expect(manager.resolvedBuildTargets.value).toEqual(['builtin:demo_plugin'])
+  })
+})
+
+describe('usePackageManager local package filtering', () => {
+  it('recognizes an uppercase bundle suffix', async () => {
+    vi.mocked(getPluginCliPackages).mockResolvedValue({
+      packages: [
+        {
+          name: 'DEMO.NEKO-BUNDLE',
+          path: '/packages/DEMO.NEKO-BUNDLE',
+          suffix: '.NEKO-BUNDLE',
+          size_bytes: 1024,
+          modified_at: '2026-08-17T00:00:00+00:00',
+        },
+      ],
+      count: 1,
+      target_dir: '/packages',
+    })
+    const manager = usePackageManager()
+    manager.packageFilterType.value = 'bundle'
+
+    await manager.refreshPackageSources()
+
+    expect(manager.filteredLocalPackages.value).toHaveLength(1)
+    expect(manager.filteredLocalPackages.value[0]?.name).toBe('DEMO.NEKO-BUNDLE')
   })
 })
 

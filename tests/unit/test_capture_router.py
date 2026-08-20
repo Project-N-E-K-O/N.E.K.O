@@ -121,6 +121,30 @@ def test_capture_bridge_renderer_normalises_structured_capture_results_before_re
     assert direct_capture_index < direct_normalize_index < send_image_index
 
 
+def test_capture_bridge_renderer_advertises_and_handles_distinct_region_capture():
+    source = APP_WEBSOCKET_JS.read_text(encoding="utf-8")
+    assert "captureDesktopRegionAsDataUrl: !!(dc && dc.captureDesktopRegionAsDataUrl)" in source
+    assert "|| dc.captureDesktopRegionAsDataUrl" in source
+    region_start = source.index("response.type === 'capture_bridge_region_request'")
+    region_end = source.index("capture_bridge_request (galgame OCR window capture)", region_start)
+    region_block = source[region_start:region_end]
+    assert "capture_bridge_region_response" in region_block
+    assert "dc.captureDesktopRegionAsDataUrl" in region_block
+    assert "selectionOnly: response.selection_only === true" in region_block
+    assert "copyToClipboard: response.copy_to_clipboard !== false" in region_block
+    assert "sessionTimeoutMs: response.session_timeout_ms" in region_block
+    assert "boundCaptureBridgeRegionImage" in region_block
+    assert "capture_bridge_request'" not in region_block
+
+
+def test_websocket_router_dispatches_region_response_without_changing_legacy_response():
+    router_source = (
+        Path(__file__).resolve().parents[2] / "main_routers" / "websocket_router.py"
+    ).read_text(encoding="utf-8")
+    assert 'elif action == "capture_bridge_region_response":' in router_source
+    assert 'elif action == "capture_bridge_response":' in router_source
+
+
 class _DummyWebSocket:
     """Minimal WebSocket double for capture_bridge.send_text()."""
 
@@ -142,6 +166,7 @@ def _register_dummy_renderer(lanlan_name: str = "neko") -> _DummyWebSocket:
                 "getSources": True,
                 "captureSourceAsDataUrl": True,
                 "captureSourceWithoutNeko": True,
+                "captureDesktopRegionAsDataUrl": True,
             },
         },
     )

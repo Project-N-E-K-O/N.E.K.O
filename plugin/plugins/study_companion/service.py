@@ -92,6 +92,80 @@ def build_dependency_status(config: StudyConfig) -> dict[str, Any]:
         "tesseract": tesseract,
         "dxcam": dxcam,
         "missing_installable": missing,
+        "ocr_readiness": _build_ocr_readiness(
+            config=config,
+            rapidocr=rapidocr,
+            tesseract=tesseract,
+            dxcam=dxcam,
+        ),
+    }
+
+
+def _build_ocr_readiness(
+    *,
+    config: StudyConfig,
+    rapidocr: dict[str, Any],
+    tesseract: dict[str, Any],
+    dxcam: dict[str, Any],
+) -> dict[str, Any]:
+    enabled = bool(config.ocr_enabled)
+    selected_backend = str(config.ocr_backend_selection or "rapidocr").strip().lower()
+    capture_backend = str(config.ocr_capture_backend or "auto").strip().lower()
+    if capture_backend == "auto":
+        capture_backend = "dxcam"
+    if capture_backend == "dxcam":
+        capture_ready = dxcam.get("installed") is True
+    elif capture_backend in {"mss", "pyautogui"}:
+        capture_ready = importlib.util.find_spec(capture_backend) is not None
+    elif capture_backend == "printwindow":
+        capture_ready = sys.platform == "win32"
+    else:
+        capture_ready = False
+
+    selected_status: dict[str, Any] | None
+    if selected_backend == "rapidocr":
+        selected_status = rapidocr
+    elif selected_backend == "tesseract":
+        selected_status = tesseract
+    else:
+        selected_status = None
+
+    selected_backend_ready = bool(
+        selected_status is not None and selected_status.get("installed") is True
+    )
+    ready = enabled and selected_backend_ready and capture_ready
+
+    if not enabled:
+        diagnostic = "ocr_disabled"
+    elif selected_status is None:
+        diagnostic = "unsupported_ocr_backend"
+    elif not selected_backend_ready:
+        detail = str(selected_status.get("detail") or "").strip().lower()
+        if selected_backend == "rapidocr":
+            diagnostic = {
+                "missing_model_files": "rapidocr_models_missing",
+                "broken_runtime": "rapidocr_runtime_broken",
+            }.get(detail, "rapidocr_runtime_missing")
+        else:
+            diagnostic = (
+                "tesseract_languages_missing"
+                if detail == "missing_languages"
+                else "tesseract_missing"
+            )
+    elif capture_backend not in {"dxcam", "mss", "pyautogui", "printwindow"}:
+        diagnostic = "unsupported_capture_backend"
+    elif not capture_ready:
+        diagnostic = "capture_dependency_missing"
+    else:
+        diagnostic = "ready"
+
+    return {
+        "enabled": enabled,
+        "selected_backend": selected_backend,
+        "selected_backend_ready": selected_backend_ready,
+        "capture_ready": capture_ready,
+        "ready": ready,
+        "diagnostic": diagnostic,
     }
 
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -22,8 +23,18 @@ class TailReadResult:
     next_offset: int = 0
     file_size: int = 0
     line_buffer: bytes = b""
+    checkpoint: str = ""
     reset_detected: bool = False
     errors: list[str] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class EventStreamBoundary:
+    offset: int = 0
+    file_size: int = 0
+    last_seq: int = 0
+    checkpoint: str = ""
+    error: str = ""
 
 
 def expand_bridge_root(raw_path: str) -> Path:
@@ -84,6 +95,199 @@ def read_session_json(session_path: Path) -> SessionReadResult:
     return SessionReadResult(session=sanitize_session_snapshot(payload))
 
 
+def snapshot_events_boundary(
+    events_path: Path,
+    *,
+    session_id: str = "",
+    last_seq: int | None = None,
+    bytes_limit: int | None = None,
+    events_limit: int | None = None,
+    snapshot_file_size: int | None = None,
+) -> EventStreamBoundary:
+    if not events_path.exists():
+        return EventStreamBoundary()
+
+    try:
+        with events_path.open("rb") as handle:
+            handle.seek(0, os.SEEK_END)
+            file_size = handle.tell()
+            if file_size <= 0:
+                return EventStreamBoundary()
+
+            def _boundary_at(
+                offset: int,
+                *,
+                boundary_last_seq: int = 0,
+            ) -> EventStreamBoundary:
+                normalized_offset = max(0, min(file_size, int(offset)))
+                checkpoint = ""
+                if normalized_offset > 0:
+                    checkpoint_start = max(0, normalized_offset - 256)
+                    handle.seek(checkpoint_start)
+                    sample = handle.read(normalized_offset - checkpoint_start)
+                    if len(sample) == normalized_offset - checkpoint_start:
+                        checkpoint = hashlib.sha256(sample).hexdigest()
+                return EventStreamBoundary(
+                    offset=normalized_offset,
+                    file_size=file_size,
+                    last_seq=max(0, int(boundary_last_seq or 0)),
+                    checkpoint=checkpoint,
+                )
+
+            def _checkpoint_seq_at_boundary(offset: int) -> int:
+                normalized_offset = max(0, min(file_size, int(offset)))
+                if normalized_offset <= 0:
+                    return 0
+                handle.seek(normalized_offset - 1)
+                if handle.read(1) != b"\n":
+                    return 0
+                record_end = normalized_offset - 1
+                cursor = record_end
+                record_start = 0
+                while cursor > 0:
+                    chunk_size = min(cursor, 64 * 1024)
+                    cursor -= chunk_size
+                    handle.seek(cursor)
+                    chunk = handle.read(chunk_size)
+                    newline_index = chunk.rfind(b"\n")
+                    if newline_index >= 0:
+                        record_start = cursor + newline_index + 1
+                        break
+                handle.seek(record_start)
+                raw_line = handle.read(record_end - record_start)
+                event, _error = _parse_jsonl_line(raw_line)
+                if event is None or str(event.get("session_id") or "") != session_id:
+                    return 0
+                try:
+                    seq = int(event.get("seq") or 0)
+                except (TypeError, ValueError):
+                    return 0
+                return seq if 0 < seq <= checkpoint_seq else 0
+
+            snapshot_size = file_size
+            if snapshot_file_size is not None:
+                snapshot_size = max(0, min(file_size, int(snapshot_file_size)))
+
+            checkpoint_seq = max(0, int(last_seq or 0))
+            if session_id and checkpoint_seq > 0:
+                scan_size = snapshot_size
+                if bytes_limit is not None:
+                    scan_size = min(snapshot_size, max(1, int(bytes_limit)))
+                scan_start = snapshot_size - scan_size
+                starts_on_record_boundary = False
+                if scan_start > 0:
+                    handle.seek(scan_start - 1)
+                    starts_on_record_boundary = handle.read(1) == b"\n"
+                handle.seek(scan_start)
+                data = handle.read(scan_size)
+                data_start = scan_start
+                if scan_start > 0 and not starts_on_record_boundary:
+                    newline_index = data.find(b"\n")
+                    if newline_index < 0:
+                        fallback_offset = _complete_line_boundary_at_or_before(
+                            handle,
+                            scan_start,
+                        )
+                        return _boundary_at(
+                            fallback_offset,
+                            boundary_last_seq=_checkpoint_seq_at_boundary(
+                                fallback_offset
+                            ),
+                        )
+                    data_start += newline_index + 1
+                    data = data[newline_index + 1 :]
+
+                complete_lines: list[tuple[int, int, bytes]] = []
+                line_start = 0
+                while True:
+                    newline_index = data.find(b"\n", line_start)
+                    if newline_index < 0:
+                        break
+                    complete_lines.append(
+                        (
+                            data_start + line_start,
+                            data_start + newline_index + 1,
+                            data[line_start:newline_index],
+                        )
+                    )
+                    line_start = newline_index + 1
+                if events_limit is not None:
+                    complete_lines = complete_lines[-max(1, int(events_limit)) :]
+
+                # Keep an in-progress record behind the tail cursor.  This is
+                # also required when the scan starts at byte zero: advancing
+                # to EOF would make the next tail read begin in the record's
+                # suffix after the writer appends its terminating newline.
+                fallback_offset = complete_lines[0][0] if complete_lines else data_start
+                matched_offset = 0
+                matched_seq = 0
+                for _line_offset, line_end, raw_line in complete_lines:
+                    event, _error = _parse_jsonl_line(raw_line)
+                    if event is None or str(event.get("session_id") or "") != session_id:
+                        continue
+                    try:
+                        seq = int(event.get("seq") or 0)
+                    except (TypeError, ValueError):
+                        seq = 0
+                    if 0 < seq <= checkpoint_seq:
+                        matched_offset = line_end
+                        matched_seq = max(matched_seq, seq)
+                return _boundary_at(
+                    matched_offset or fallback_offset,
+                    boundary_last_seq=matched_seq if matched_offset else 0,
+                )
+
+            cursor = snapshot_size
+            while cursor > 0:
+                chunk_size = min(cursor, 64 * 1024)
+                cursor -= chunk_size
+                handle.seek(cursor)
+                chunk = handle.read(chunk_size)
+                newline_index = chunk.rfind(b"\n")
+                if newline_index >= 0:
+                    return _boundary_at(cursor + newline_index + 1)
+            return _boundary_at(0)
+    except OSError as exc:
+        return EventStreamBoundary(error=f"read events.jsonl boundary failed: {exc}")
+
+
+def _complete_line_boundary_at_or_before(handle: Any, offset: int) -> int:
+    cursor = max(0, int(offset))
+    while cursor > 0:
+        chunk_size = min(cursor, 64 * 1024)
+        cursor -= chunk_size
+        handle.seek(cursor)
+        chunk = handle.read(chunk_size)
+        newline_index = chunk.rfind(b"\n")
+        if newline_index >= 0:
+            return cursor + newline_index + 1
+    return 0
+
+
+def read_stream_checkpoint(
+    events_path: Path,
+    *,
+    offset: int,
+    bytes_limit: int = 256,
+) -> str:
+    normalized_offset = max(0, int(offset))
+    if normalized_offset <= 0 or not events_path.exists():
+        return ""
+    try:
+        with events_path.open("rb") as handle:
+            handle.seek(0, os.SEEK_END)
+            if normalized_offset > handle.tell():
+                return ""
+            start = max(0, normalized_offset - max(1, int(bytes_limit)))
+            handle.seek(start)
+            sample = handle.read(normalized_offset - start)
+    except OSError:
+        return ""
+    if len(sample) != normalized_offset - start:
+        return ""
+    return hashlib.sha256(sample).hexdigest()
+
+
 def _parse_jsonl_line(raw_line: bytes) -> tuple[dict[str, Any] | None, str]:
     if raw_line.endswith(b"\r"):
         raw_line = raw_line[:-1]
@@ -104,6 +308,7 @@ def tail_events_jsonl(
     *,
     offset: int,
     line_buffer: bytes,
+    expected_checkpoint: str = "",
 ) -> TailReadResult:
     result = TailReadResult(next_offset=max(0, offset))
     if not events_path.exists():
@@ -123,15 +328,31 @@ def tail_events_jsonl(
         result.line_buffer = b""
         return result
     if file_size < offset:
-        result.next_offset = offset
-        result.line_buffer = line_buffer
+        result.reset_detected = True
+        result.line_buffer = b""
         return result
 
     try:
         with events_path.open("rb") as handle:
+            if offset > 0 and expected_checkpoint:
+                start = max(0, offset - 256)
+                handle.seek(start)
+                sample = handle.read(offset - start)
+                if (
+                    len(sample) != offset - start
+                    or hashlib.sha256(sample).hexdigest() != expected_checkpoint
+                ):
+                    result.reset_detected = True
+                    result.line_buffer = b""
+                    return result
             handle.seek(offset)
             chunk = handle.read()
             result.next_offset = handle.tell()
+            checkpoint_start = max(0, result.next_offset - 256)
+            handle.seek(checkpoint_start)
+            checkpoint_sample = handle.read(result.next_offset - checkpoint_start)
+            if len(checkpoint_sample) == result.next_offset - checkpoint_start:
+                result.checkpoint = hashlib.sha256(checkpoint_sample).hexdigest()
     except OSError as exc:
         result.errors.append(f"read events.jsonl failed: {exc}")
         return result

@@ -34,6 +34,7 @@ from config.prompts.prompts_proactive import (
 from config.prompts.prompts_sys import _loc
 
 from ._response_arbiter import RealtimeResponseArbiter, ResponseTicket
+from ._protocol_capabilities import STRICT_REALTIME_PROTOCOL_CAPABILITIES
 
 
 # A missing response.done must fail conservatively instead of acknowledging a
@@ -64,6 +65,11 @@ class _ResponseMixin:
                 abort_transport=getattr(self, "_abort_failed_transport", None),
                 fail_open=response_arbiter_fail_open_enabled(),
                 on_stuck_release=getattr(self, "_on_arbiter_stuck_release", None),
+                protocol_capabilities=getattr(
+                    self,
+                    "_realtime_protocol_capabilities",
+                    STRICT_REALTIME_PROTOCOL_CAPABILITIES,
+                ),
             )
             self._response_arbiter = arbiter
         return arbiter

@@ -255,6 +255,17 @@ def sanitize_metadata(value: object) -> dict[str, Any]:
 
 def sanitize_snapshot_state(value: object) -> dict[str, Any]:
     raw = value if isinstance(value, dict) else {}
+    save_boundary_obj = raw.get("save_boundary")
+    save_boundary_raw = (
+        save_boundary_obj if isinstance(save_boundary_obj, dict) else {}
+    )
+    save_boundary = {
+        "kind": _string(save_boundary_raw.get("kind")).strip().lower(),
+        "seq": max(0, _int(save_boundary_raw.get("seq"), 0)),
+        "ts": _string(save_boundary_raw.get("ts")),
+    }
+    if not any(save_boundary.values()):
+        save_boundary = {}
     choices_obj = raw.get("choices")
     choices = (
         [sanitize_choice(item) for item in choices_obj]
@@ -270,6 +281,10 @@ def sanitize_snapshot_state(value: object) -> dict[str, Any]:
         "route_id": _string(raw.get("route_id")),
         "is_menu_open": _bool(raw.get("is_menu_open"), bool(choices)),
         "save_context": sanitize_save_context(raw.get("save_context")),
+        # Internal occurrence marker retained independently of the bounded
+        # history_events window.  It lets the agent distinguish two loads of
+        # the same slot/checkpoint after the newer save_loaded event is evicted.
+        "save_boundary": save_boundary,
         "stability": _string(raw.get("stability")),
         "screen_type": _string(raw.get("screen_type")),
         "screen_ui_elements": sanitize_screen_ui_elements(raw.get("screen_ui_elements")),

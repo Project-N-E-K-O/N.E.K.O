@@ -1288,6 +1288,10 @@ transition: max-height 0.3s ease-in-out, margin-top 0.3s ease-in-out;
     border-radius: 24px;
 }
 
+.model-content.expanded:has(.api-provider-dropdown.open) {
+    overflow: visible;
+}
+
 .nested-model-config-container {
     margin: 10px 12px;
     border: 0;

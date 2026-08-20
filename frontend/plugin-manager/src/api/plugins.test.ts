@@ -54,4 +54,22 @@ describe('plugin hosted UI API', () => {
       { suppressPluginNotRunningMessage: false },
     )
   })
+
+  it('passes an action abort signal to the HTTP request', async () => {
+    postMock.mockResolvedValue({ ok: true })
+    const { callPluginHostedSurfaceAction } = await import('./plugins')
+    const controller = new AbortController()
+
+    await callPluginHostedSurfaceAction('demo', 'slow', {}, {
+      kind: 'panel',
+      id: 'main',
+      signal: controller.signal,
+    })
+
+    expect(postMock).toHaveBeenCalledWith(
+      '/plugin/demo/hosted-ui/action/slow',
+      expect.any(Object),
+      expect.objectContaining({ signal: controller.signal }),
+    )
+  })
 })

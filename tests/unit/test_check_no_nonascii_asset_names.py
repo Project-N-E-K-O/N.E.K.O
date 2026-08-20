@@ -685,12 +685,21 @@ def test_excluded_plugin_paths_are_not_reported(tmp_path: Path) -> None:
     (plugin_dir / f"{CJK_NAME}.db").write_bytes(b"x")
     (plugin_dir / "__pycache__").mkdir()
     (plugin_dir / "__pycache__" / f"{CJK_NAME}.pyc").write_bytes(b"x")
+    (plugin_dir / ".idea").mkdir()
+    (plugin_dir / ".idea" / f"{CJK_NAME}.xml").write_bytes(b"x")
     shipped = plugin_dir / "assets"
     shipped.mkdir()
     (shipped / f"{CJK_NAME}.png").write_bytes(b"x")
 
     offenders, _ = module.collect_offenders(tmp_path)
     assert offenders == {f"plugin/plugins/demo/assets/{CJK_NAME}.png"}
+
+    offenders_from_disk, _ = module.collect_offenders(
+        tmp_path, include_untracked=True
+    )
+    assert offenders_from_disk == {
+        f"plugin/plugins/demo/assets/{CJK_NAME}.png"
+    }
 
 
 @pytest.mark.unit

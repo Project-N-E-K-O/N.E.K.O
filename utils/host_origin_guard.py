@@ -241,6 +241,70 @@ def _origins_match(left: _Origin, right: _Origin) -> bool:
     )
 
 
+def _parse_referer_origin(value: str) -> _Origin | None:
+    if not value or value != value.strip():
+        return None
+    if any(ord(char) <= 0x20 or char == "\\" for char in value):
+        return None
+    try:
+        parsed = urlsplit(value)
+    except ValueError:
+        return None
+    if parsed.scheme.lower() not in {"http", "https"} or not parsed.netloc:
+        return None
+    if parsed.username is not None or parsed.password is not None:
+        return None
+    return _parse_origin(f"{parsed.scheme.lower()}://{parsed.netloc}")
+
+
+def is_http_browser_origin_allowed(
+    scope,
+    *,
+    trusted_origins: str | None = None,
+) -> bool:
+    """Allow native HTTP clients and trusted browser origins for local routes."""
+    host_values = _header_values(scope, b"host")
+    if host_values is None or len(host_values) != 1:
+        return False
+    host = _parse_authority(host_values[0])
+    if host is None:
+        return False
+
+    origin_values = _header_values(scope, b"origin")
+    referer_values = _header_values(scope, b"referer")
+    if origin_values is None or referer_values is None:
+        return False
+    if len(origin_values) > 1 or len(referer_values) > 1:
+        return False
+    if origin_values:
+        origin = _parse_origin(origin_values[0])
+    elif referer_values:
+        origin = _parse_referer_origin(referer_values[0])
+    else:
+        return True
+    if origin is None:
+        return False
+
+    request_scheme = str(scope.get("scheme") or "http").lower()
+    if (
+        origin.scheme == request_scheme
+        and origin.authority.hostname == host.hostname
+        and _effective_port(origin.authority, origin.scheme)
+        == _effective_port(host, request_scheme)
+    ):
+        return True
+
+    if host.is_loopback and origin.authority.is_loopback:
+        return True
+
+    configured_origins = _read_trusted_origins(
+        os.getenv(TRUSTED_ORIGINS_ENV)
+        if trusted_origins is None
+        else trusted_origins
+    )
+    return any(_origins_match(origin, trusted) for trusted in configured_origins)
+
+
 class HostOriginGuardMiddleware:
     """Block DNS-rebinding Host values and cross-origin browser WebSockets."""
 

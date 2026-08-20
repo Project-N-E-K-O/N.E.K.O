@@ -235,7 +235,7 @@ export function verifyPluginPackage(payload: PluginCliPackageRef): Promise<Plugi
  */
 export function installPluginPackage(payload: PluginCliInstallRequest): Promise<PluginCliInstallResponse> {
   return post('/plugin-cli/install', payload, {
-    timeout: 120_000,
+    timeout: 300_000,
   })
 }
 
@@ -244,7 +244,7 @@ export function installPluginPackage(payload: PluginCliInstallRequest): Promise<
  */
 export function planPluginInstall(payload: PluginCliInstallPlanRequest): Promise<PluginCliInstallPlanResponse> {
   return post('/plugin-cli/install-plan', payload, {
-    timeout: 120_000,
+    timeout: 300_000,
   })
 }
 
@@ -276,7 +276,7 @@ export function uploadPluginPackage(file: File): Promise<PluginCliUploadResult> 
   const formData = new FormData()
   formData.append('file', file)
   return post('/plugin-cli/upload', formData, {
-    timeout: 120_000,
+    timeout: 300_000,
   })
 }
 
@@ -296,7 +296,7 @@ export function uploadAndInstallPlugin(
   const query = params.toString()
   const url = `/plugin-cli/upload-and-install${query ? `?${query}` : ''}`
   return post(url, formData, {
-    timeout: 120_000,
+    timeout: 300_000,
   })
 }
 

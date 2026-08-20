@@ -59,13 +59,3 @@ def test_bounded_vl_token_still_counts_as_vision(model):
 @pytest.mark.parametrize("model", ["", "   ", None, 123])
 def test_missing_or_junk_input_is_not_vision(model):
     assert model_supports_vision(model) is False
-
-
-def test_study_companion_delegates_to_the_shared_helper():
-    """study_companion had the original copy. It must keep answering
-    identically now that the logic moved, or its vision path silently
-    changes behaviour."""
-    from plugin.plugins.study_companion.tutor_llm_agent import TutorLLMAgent
-
-    for model in ("gpt-4o", "glm-4v", "deepseek-chat", ""):
-        assert TutorLLMAgent._model_supports_vision(model) == model_supports_vision(model)

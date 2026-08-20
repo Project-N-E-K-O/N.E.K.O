@@ -547,7 +547,7 @@ export function usePackageManager(options: UsePackageManagerOptions = {}) {
   }
 
   function inferPackageType(pkg: PluginCliLocalPackageItem): 'plugin' | 'bundle' {
-    return pkg.name.endsWith('.neko-bundle') ? 'bundle' : 'plugin'
+    return pkg.name.toLowerCase().endsWith('.neko-bundle') ? 'bundle' : 'plugin'
   }
 
   async function inspectSelectedPackage(pkg: PluginCliLocalPackageItem) {

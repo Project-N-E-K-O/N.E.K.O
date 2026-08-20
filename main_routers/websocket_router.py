@@ -1117,6 +1117,10 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                 from utils.capture_bridge import resolve_capture_response
                 resolve_capture_response(lanlan_name, message)
 
+            elif action == "capture_bridge_region_response":
+                from utils.capture_bridge import resolve_capture_response
+                resolve_capture_response(lanlan_name, message)
+
             elif action == "screenshot_response":
                 raw = message.get("data", "")
                 b64 = raw.split(",", 1)[1] if "," in raw else raw

@@ -36,6 +36,7 @@ _SENSITIVE_ARG_NAMES = frozenset(
         "ac_time_value",
         "authorization",
         "api_key",
+        "document_text",
     }
 )
 _SENSITIVE_ARG_SUFFIXES = (

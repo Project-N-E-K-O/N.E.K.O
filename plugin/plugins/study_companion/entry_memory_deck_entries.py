@@ -178,19 +178,97 @@ class _MemoryDeckEntriesMixin:
         ),
         input_schema={
             "type": "object",
-            "properties": {"limit": {"type": "integer", "default": 100}},
+            "properties": {
+                "limit": {"type": "integer", "default": 100},
+                "offset": {"type": "integer", "default": 0},
+            },
         },
-        llm_result_fields=["decks"],
+        llm_result_fields=["decks", "has_more", "next_offset"],
     )
-    async def study_memory_list_decks(self, limit: int = 100, **_):
+    async def study_memory_list_decks(
+        self, limit: int = 100, offset: int = 0, **_
+    ):
         try:
+            page_limit = max(1, min(500, int(limit or 100)))
+            page_offset = max(0, int(offset or 0))
             decks = await asyncio.to_thread(
                 self._memory_deck_store.list_decks,
-                limit=max(1, min(500, int(limit or 100))),
+                limit=page_limit + 1,
+                offset=page_offset,
             )
-            return Ok({"decks": decks})
+            page_decks = decks[:page_limit]
+            has_more = len(decks) > page_limit
+            return Ok(
+                {
+                    "decks": page_decks,
+                    "offset": page_offset,
+                    "limit": page_limit,
+                    "has_more": has_more,
+                    "next_offset": page_offset + len(page_decks)
+                    if has_more
+                    else None,
+                }
+            )
         except Exception as exc:
             return _entry_exception_error(self, exc, operation="study_memory_list_decks")
+
+    @ui.action()
+    @plugin_entry(
+        id="study_memory_list_deck_items",
+        name=tr(
+            "entries.memory_list_deck_items.name",
+            default="List Study Memory Deck Cards",
+        ),
+        description=tr(
+            "entries.memory_list_deck_items.description",
+            default="List the concrete cards saved in one local memory deck.",
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "deck_id": {"type": "string", "default": ""},
+                "limit": {"type": "integer", "default": 200},
+                "offset": {"type": "integer", "default": 0},
+            },
+            "required": ["deck_id"],
+        },
+        llm_result_fields=["deck", "items", "has_more", "next_offset"],
+    )
+    async def study_memory_list_deck_items(
+        self, deck_id: str = "", limit: int = 200, offset: int = 0, **_
+    ):
+        try:
+            deck_key = str(deck_id or "").strip()
+            page_limit = max(1, min(500, int(limit or 200)))
+            page_offset = max(0, int(offset or 0))
+            deck = await asyncio.to_thread(self._memory_deck_store.get_deck, deck_key)
+            if deck is None:
+                raise ValueError("deck not found")
+            items = await asyncio.to_thread(
+                self._memory_deck_store.list_items,
+                deck_id=deck_key,
+                limit=page_limit + 1,
+                offset=page_offset,
+                include_archived=False,
+            )
+            page_items = items[:page_limit]
+            has_more = len(items) > page_limit
+            return Ok(
+                {
+                    "deck": deck,
+                    "items": page_items,
+                    "offset": page_offset,
+                    "limit": page_limit,
+                    "has_more": has_more,
+                    "next_offset": page_offset + len(page_items)
+                    if has_more
+                    else None,
+                }
+            )
+        except Exception as exc:
+            return _entry_exception_error(
+                self, exc, operation="study_memory_list_deck_items"
+            )
 
     @ui.action()
     @plugin_entry(

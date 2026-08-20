@@ -32,7 +32,7 @@ auto_start = false
 default_mode = "companion"
 language = "zh-CN"
 history_limit = 50
-auto_open_ui = true
+auto_open_ui = false # Deprecated compatibility field; lifecycle never opens external UI.
 
 [study.pomodoro]
 focus_minutes = 25
@@ -67,9 +67,11 @@ distraction_detection = true
 
 [study_companion.communication]
 enabled = true
+solution_narration_enabled = true
+general_narration_enabled = true
 
 [llm]
-llm_call_timeout_seconds = 300
+llm_call_timeout_seconds = 120
 llm_vision_enabled = false
 llm_vision_max_image_px = 768
 
@@ -117,7 +119,7 @@ id = "study-panel"
 title = "Study Panel"
 entry = "surfaces/study_panel.tsx"
 context = "study"
-permissions = ["state:read", "action:call"]
+permissions = ["state:read", "action:call", "document:parse"]
 
 [[plugin.ui.panel]]
 id = "knowledge-map"
@@ -173,7 +175,7 @@ id = "note-exporter"
 title = "Note Exporter"
 entry = "surfaces/note_exporter.tsx"
 context = "study"
-permissions = ["state:read", "action:call"]
+permissions = ["state:read", "action:call", "config:read"]
 
 [[plugin.ui.panel]]
 id = "habit-dashboard"

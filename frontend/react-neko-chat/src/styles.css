@@ -2144,6 +2144,10 @@ body.neko-electron-runtime .app-shell:not(.chat-surface-mode-compact)[data-focus
   transition: background 0.16s ease, border-color 0.16s ease, transform 0.16s ease, box-shadow 0.16s ease;
 }
 
+.composer-icon-popover .composer-icon-button:is(:hover, :focus-visible) {
+  animation-play-state: paused;
+}
+
 .composer-icon-button::before,
 .composer-icon-button::after {
   content: '';

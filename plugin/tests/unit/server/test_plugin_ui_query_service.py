@@ -94,6 +94,12 @@ def test_build_plugin_list_actions_infers_open_ui_and_normalizes_custom_actions(
             "danger": True,
         },
         {
+            "id": "open_ui",
+            "kind": "ui",
+            "target": "/plugin/demo/ui/",
+            "open_in": "new_tab",
+        },
+        {
             "id": "open_panel",
             "kind": "route",
             "target": "/plugins/demo?tab=panel",
@@ -1029,6 +1035,105 @@ def test_call_surface_action_preserves_plugin_entry_error(monkeypatch, tmp_path)
     assert exc_info.value.code == "PLUGIN_UI_ACTION_FAILED"
     assert resolver_threads and resolver_threads[0] != caller_thread
     assert exc_info.value.message == "Failed to save server config: access denied"
+
+
+def test_call_surface_action_propagates_cancellation_to_plugin_run(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    monkeypatch.setattr(ui_query_module, "_resolve_hosted_entry_timeout", lambda *_args: 10.0)
+    plugin_dir = tmp_path / "demo_plugin"
+    plugin_dir.mkdir()
+    config_path = plugin_dir / "plugin.toml"
+    config_path.write_text("[plugin]\nid='demo'\n", encoding="utf-8")
+    plugin_ui = normalize_plugin_ui_manifest(
+        {
+            "plugin": {
+                "ui": {
+                    "panel": [{
+                        "id": "main",
+                        "entry": "ui/panel.tsx",
+                        "permissions": ["action:call"],
+                    }],
+                },
+            },
+        },
+        plugin_id="demo",
+    )
+
+    class _Host:
+        def __init__(self) -> None:
+            self.started = asyncio.Event()
+            self.trigger_args: dict[str, object] = {}
+            self.cancelled_run_ids: list[str] = []
+
+        def is_alive(self) -> bool:
+            return True
+
+        async def get_ui_context(self, context_id: str) -> dict[str, object]:
+            assert context_id == "main"
+            return {"actions": [{"id": "add_server", "entry_id": "add_server"}]}
+
+        async def trigger(
+            self,
+            entry_id: str,
+            args: dict[str, object],
+            timeout: float | None = None,
+        ) -> object:
+            assert entry_id == "add_server"
+            assert timeout == 10.0
+            self.trigger_args = args
+            self.started.set()
+            await asyncio.Event().wait()
+
+        async def cancel_run(self, run_id: str) -> None:
+            self.cancelled_run_ids.append(run_id)
+
+    host = _Host()
+    plugins_backup = dict(state.plugins)
+    hosts_backup = dict(state.plugin_hosts)
+
+    async def run() -> None:
+        task = asyncio.create_task(
+            PluginUiQueryService().call_surface_action(
+                "demo",
+                action_id="add_server",
+                args={"_ctx": {"lanlan_name": "requesting"}},
+                kind="panel",
+                surface_id="main",
+            )
+        )
+        await host.started.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    try:
+        with state.acquire_plugins_write_lock():
+            state.plugins.clear()
+            state.plugins["demo"] = {
+                "id": "demo",
+                "config_path": str(config_path),
+                "plugin_ui": plugin_ui,
+                "entries": [{"id": "add_server", "name": "Add Server"}],
+            }
+        with state.acquire_plugin_hosts_write_lock():
+            state.plugin_hosts.clear()
+            state.plugin_hosts["demo"] = host
+        asyncio.run(run())
+    finally:
+        with state.acquire_plugins_write_lock():
+            state.plugins.clear()
+            state.plugins.update(plugins_backup)
+        with state.acquire_plugin_hosts_write_lock():
+            state.plugin_hosts.clear()
+            state.plugin_hosts.update(hosts_backup)
+
+    context = host.trigger_args["_ctx"]
+    assert isinstance(context, dict)
+    assert context["lanlan_name"] == "requesting"
+    assert isinstance(context["run_id"], str) and context["run_id"]
+    assert host.cancelled_run_ids == [context["run_id"]]
 
 
 def test_call_surface_action_localizes_plugin_not_running(tmp_path) -> None:

@@ -80,12 +80,25 @@ def is_core_config_secret_placeholder(value) -> bool:
         return True
     if len(stripped) >= 3 and set(stripped) == {'*'}:
         return True
+    # The all-dot display (short or un-disclosable secrets) must round-trip as
+    # "keep existing" too, never be persisted as a literal bullet credential.
+    if stripped and set(stripped) == {'•'}:
+        return True
 
-    # Legacy web UI masking kept six characters at each end and replaced the
-    # middle with stars.  Require that exact shape and at least three stars.
-    if len(stripped) < 15:
+    # Display masks keep a visible prefix/suffix and star out the middle.  Both
+    # the current 3+3 shape and the legacy 6+6 shape mean "keep existing".
+    return _is_display_mask_shape(stripped, 3) or _is_display_mask_shape(stripped, 6)
+
+
+def _is_display_mask_shape(stripped: str, edge: int) -> bool:
+    """Whether *stripped* is ``edge`` visible chars + >=3 stars + ``edge`` chars."""
+    if len(stripped) < edge * 2 + 3:
         return False
-    prefix, masked, suffix = stripped[:6], stripped[6:-6], stripped[-6:]
+    prefix, masked, suffix = (
+        stripped[:edge],
+        stripped[edge:-edge],
+        stripped[-edge:],
+    )
     return (
         '*' not in prefix
         and '*' not in suffix
@@ -101,6 +114,24 @@ def redact_core_config_secret(value, *, preserve_free_access: bool = False) -> s
     if preserve_free_access and value == 'free-access':
         return 'free-access'
     return CORE_CONFIG_SECRET_SENTINEL
+
+
+def mask_core_config_secret_for_display(value) -> str:
+    """Return a safe, non-reversible partial display for a stored secret.
+
+    Only the first and last three characters are exposed, and only when the
+    secret is long enough that those fragments cannot disclose it in full.
+    """
+    if value is None or value == '' or value == 'free-access':
+        return ''
+    value = str(value)
+    # A three-character prefix/suffix would disclose a short credential in full.
+    if len(value) < 9:
+        return '••••••••••••'
+    prefix, suffix = value[:3], value[-3:]
+    if '*' in prefix or '*' in suffix:
+        return '••••••••••••'
+    return f'{prefix}{"*" * (len(value) - 6)}{suffix}'
 
 
 def apply_core_config_secret_update(target: dict, source: dict, field: str) -> bool:
@@ -240,6 +271,32 @@ async def get_core_config_api():
             response['api_key'],
             preserve_free_access=True,
         )
+        # Keep the POST contract as a sentinel while offering a separate,
+        # non-reversible value for settings-page display.
+        response['api_key_display'] = mask_core_config_secret_for_display(api_key)
+        # The assist input needs only its currently selected provider's mask.
+        # Resolve through the canonical registry instead of exposing a display
+        # fragment for every Key Book entry.
+        response['assist_api_key_display'] = ''
+        try:
+            from utils.api_config_loader import get_config
+
+            provider_config = await asyncio.to_thread(get_config)
+            api_key_registry = (
+                provider_config.get('api_key_registry', {})
+                if isinstance(provider_config, dict)
+                else {}
+            )
+            assist_key_field = get_core_config_provider_api_key_field(
+                _assist_api_provider,
+                api_key_registry,
+            )
+            if assist_key_field:
+                response['assist_api_key_display'] = mask_core_config_secret_for_display(
+                    response.get(assist_key_field, '')
+                )
+        except Exception:
+            logger.warning('Unable to build assist API key display mask', exc_info=True)
         for field in (
             *CORE_CONFIG_ASSIST_API_KEY_FIELDS,
             'mcpToken',

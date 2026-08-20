@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -144,6 +145,19 @@ class _FakeTutorAgent:
     def update_config(self, config: StudyConfig) -> None:
         self._config = config
 
+    async def _call_model(self, *_args, **_kwargs) -> str:
+        return json.dumps(
+            {
+                "subject": "math",
+                "content_type": "calculation_problem",
+                "intent": "solve",
+                "response_mode": "problem_solving",
+                "entity": "derivatives",
+                "retrieval_concepts": ["derivative rules"],
+                "confidence": 0.98,
+            }
+        )
+
     async def concept_explain(
         self,
         text: str,
@@ -155,7 +169,12 @@ class _FakeTutorAgent:
         return TutorReply(
             operation="concept_explain",
             input_text=text,
-            reply=f"Explained: {text}",
+            reply=(
+                "## Problem Analysis\nExplained concept analysis.\n\n"
+                "## Solution Process\nInternal process details.\n\n"
+                "## Final Answer\nExplained concept answer.\n\n"
+                "## Transfer Practice\nExplained concept transfer."
+            ),
             created_at="2026-05-11T00:00:00Z",
         )
 
@@ -276,15 +295,41 @@ async def test_neko_explain_current_pushes_with_ocr_text(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     plugin, ctx = await _started_plugin(tmp_path, monkeypatch)
-    plugin._agent = _FakeTutorAgent()
+    agent = _FakeTutorAgent()
+    plugin._agent = agent
     plugin._ocr_pipeline = _FakeStudyOcrPipeline("Derivative rules")
     try:
         result = await plugin._on_neko_command({"command": "explain_current"})
 
         assert isinstance(result, Ok)
-        await _wait_for_text(ctx, "[伴学·概念解释]")
-        await _wait_for_text(ctx, "Derivative rules")
-        assert _last_push(ctx)["visibility"] == []
+        narration = await _wait_for_text(ctx, "Explained concept analysis.")
+        assert agent.explain_inputs == ["Derivative rules"]
+        assert len(ctx.pushed_messages) == 1
+        assert _last_push(ctx)["visibility"] == ["chat"]
+        assert _last_push(ctx)["ai_behavior"] == "respond"
+        assert "Derivative rules" not in narration
+        assert "Internal process details." not in narration
+        assert "[伴学·概念解释]" not in narration
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_neko_explain_current_accepts_general_narration_schedule(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plugin, ctx = await _started_plugin(tmp_path, monkeypatch)
+    plugin._ocr_pipeline = _FakeStudyOcrPipeline("Derivative rules")
+
+    async def _explain_with_general_narration(**_kwargs):
+        return Ok({"general_narration_scheduled": True})
+
+    plugin.study_explain_text = _explain_with_general_narration  # type: ignore[method-assign]
+    pushed_before = len(ctx.pushed_messages)
+    try:
+        await plugin._handle_neko_explain_current({})
+
+        assert len(ctx.pushed_messages) == pushed_before
     finally:
         await plugin.shutdown()
 
@@ -796,7 +841,8 @@ async def test_neko_command_roundtrip_explain(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     plugin, ctx = await _started_plugin(tmp_path, monkeypatch)
-    plugin._agent = _FakeTutorAgent()
+    agent = _FakeTutorAgent()
+    plugin._agent = agent
     plugin._ocr_pipeline = _FakeStudyOcrPipeline("Limits and continuity")
     try:
         result = await ctx.transport.publish(
@@ -804,7 +850,14 @@ async def test_neko_command_roundtrip_explain(
         )
 
         assert isinstance(result, Ok)
-        await _wait_for_text(ctx, "Limits and continuity")
+        narration = await _wait_for_text(ctx, "Explained concept analysis.")
+        assert agent.explain_inputs == ["Limits and continuity"]
+        assert len(ctx.pushed_messages) == 1
+        assert _last_push(ctx)["visibility"] == ["chat"]
+        assert _last_push(ctx)["ai_behavior"] == "respond"
+        assert "Limits and continuity" not in narration
+        assert "Internal process details." not in narration
+        assert "[伴学·概念解释]" not in narration
     finally:
         await plugin.shutdown()
 

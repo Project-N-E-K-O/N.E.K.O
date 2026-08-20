@@ -27,43 +27,37 @@ Both package types are standard ZIP archives and must remain compatible with nor
 `neko_plugin_cli` now uses a single CLI entry:
 
 ```bash
-uv run python -m plugin.neko_plugin_cli.cli <command> ...
+uv run neko-plugin <command> ...
 ```
 
 Current commands:
 
 - `init`
-- `init-repo`
 - `setup-repo`
 - `check` (use `check -r` / `check --release` for the pre-release readiness check, `check --release --market-release` for the Market-publication variant)
-- `add` (deps): install Python dependencies into a plugin's `vendor/` and update its `pyproject.toml`
 - `sync` (deps): reinstall all declared dependencies into `vendor/` from `pyproject.toml`
 - `build`
-- `inspect`
-- `verify`
 - `install`
 - `analyze`
+- `publish`
 
 Examples:
 
 ```bash
-uv run python -m plugin.neko_plugin_cli.cli check qq_auto_reply
-uv run python -m plugin.neko_plugin_cli.cli check -r qq_auto_reply
-uv run python -m plugin.neko_plugin_cli.cli check --release --market-release qq_auto_reply
-uv run python -m plugin.neko_plugin_cli.cli add qq_auto_reply 'httpx>=0.27' pydantic
-uv run python -m plugin.neko_plugin_cli.cli sync qq_auto_reply --clean
-uv run python -m plugin.neko_plugin_cli.cli build qq_auto_reply
-uv run python -m plugin.neko_plugin_cli.cli inspect qq_auto_reply.neko-plugin
-uv run python -m plugin.neko_plugin_cli.cli verify qq_auto_reply.neko-plugin
-uv run python -m plugin.neko_plugin_cli.cli install qq_auto_reply.neko-plugin
-uv run python -m plugin.neko_plugin_cli.cli analyze qq_auto_reply mijia
+uv run neko-plugin check qq_auto_reply
+uv run neko-plugin check -r qq_auto_reply
+uv run neko-plugin check --release --market-release qq_auto_reply
+uv run neko-plugin sync qq_auto_reply --clean
+uv run neko-plugin build qq_auto_reply
+uv run neko-plugin install qq_auto_reply.neko-plugin
+uv run neko-plugin analyze qq_auto_reply mijia
 ```
 
 To add or safely upgrade the standard Market GitHub Actions files in an
 existing plugin repository, run from the N.E.K.O checkout:
 
 ```bash
-uv run python -m plugin.neko_plugin_cli.cli setup-repo /path/to/plugin-repo \
+uv run neko-plugin setup-repo qq_auto_reply \
   --upgrade-github-actions
 ```
 
@@ -350,7 +344,7 @@ Recommended pipeline for a single plugin:
 
 Current implementation notes:
 
-- single-plugin builds only accept `package_type = "plugin"`
+- single-plugin builds package one supported runtime type (`plugin` or `adapter`) as `package_type = "plugin"`
 - install verifies `metadata.toml` payload hash when metadata exists
 - install conflict handling currently supports `rename` and `fail`
 

@@ -8,8 +8,9 @@ from .prompt_templates import (
     STUDY_ANSWER_EVALUATE_REQUIREMENTS,
     STUDY_ANSWER_EVALUATE_SYSTEM_PROMPT,
     STUDY_CONCEPT_EXPLAIN_SYSTEM_WITH_MODE_TEMPLATE,
-    STUDY_CONCEPT_EXPLAIN_SYSTEM_PROMPT,
-    STUDY_CONCEPT_EXPLAIN_USER_TEMPLATE,
+    STUDY_CONCEPT_RESPONSE_MODE_SYSTEM_PROMPT,
+    STUDY_CONCEPT_RESPONSE_MODE_USER_TEMPLATE,
+    STUDY_CONCEPT_RESPONSE_MODE_GUIDANCE,
     STUDY_KNOWLEDGE_TRACK_EXAMPLE,
     STUDY_KNOWLEDGE_TRACK_REQUIREMENTS,
     STUDY_KNOWLEDGE_TRACK_SYSTEM_PROMPT,
@@ -36,6 +37,85 @@ from .constants import (
     SUPPORTED_LLM_OPERATIONS,
 )
 from .mode_manager import normalize_mode
+
+
+_PROMPT_CONTEXT_ALLOWED_FIELDS = frozenset(
+    {
+        "operation",
+        "input_text",
+        "language",
+        "mode",
+        "source",
+        "source_text",
+        "text",
+        "question",
+        "answer",
+        "expected_answer",
+        "question_payload",
+        "current_question",
+        "public_current_question",
+        "last_answer_evaluation",
+        "session_summary_seed",
+        "screen_classification",
+        "recent_screen_classifications",
+        "recent_learning_events",
+        "last_ocr_text",
+        "last_ocr_at",
+        "history",
+        "knowledge_summary",
+        "knowledge_session_summary",
+        "knowledge_guidance",
+        "knowledge_question_params",
+        "topic_hint",
+        "topic",
+        "selected_topic_id",
+        "selected_topic_name",
+        "selection_reason",
+        "selection_reason_payload",
+        "targeted_question",
+        "result",
+        "reply",
+        "focus",
+        "screen_type",
+        "weak_points",
+        "next_steps",
+    }
+)
+_PROMPT_PRIVATE_FIELDS = frozenset(
+    {
+        "vision_image_base64",
+        "last_vision_image_base64",
+        "image_base64",
+        "deadline",
+        "deadline_monotonic",
+        "correlation_id",
+        "request_id",
+        "api_key",
+        "base_url",
+        "internal_private_payload",
+        "current_question_private",
+    }
+)
+
+
+def _sanitize_nested_prompt_value(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            str(key): _sanitize_nested_prompt_value(item)
+            for key, item in value.items()
+            if str(key) not in _PROMPT_PRIVATE_FIELDS
+        }
+    if isinstance(value, list):
+        return [_sanitize_nested_prompt_value(item) for item in value]
+    return value
+
+
+def _prompt_context(context: dict[str, Any]) -> dict[str, Any]:
+    return {
+        str(key): _sanitize_nested_prompt_value(value)
+        for key, value in context.items()
+        if str(key) in _PROMPT_CONTEXT_ALLOWED_FIELDS
+    }
 
 
 def _json_dump(value: object) -> str:
@@ -101,7 +181,8 @@ def _compact_prompt_value(
 
 def _context_json_for_prompt(operation: str, context: dict[str, Any]) -> str:
     limit = STUDY_PROMPT_CONTEXT_MAX_TOKENS.get(operation, 4000)
-    raw = _json_dump(context)
+    safe_context = _prompt_context(context)
+    raw = _json_dump(safe_context)
     if count_tokens(raw) <= limit:
         return raw
     for list_limit, string_limit, dict_key_limit in (
@@ -110,7 +191,7 @@ def _context_json_for_prompt(operation: str, context: dict[str, Any]) -> str:
         (4, 240, 16),
     ):
         compact = _compact_prompt_value(
-            context,
+            safe_context,
             list_limit=list_limit,
             string_limit=string_limit,
             dict_key_limit=dict_key_limit,
@@ -170,6 +251,9 @@ def build_concept_explain_messages(
     context = context if isinstance(context, dict) else {}
     source = str(context.get("source") or "manual").strip() or "manual"
     selected_mode = normalize_mode(context.get("mode") or mode)
+    response_mode = str(context.get("study_response_mode") or "unknown").strip().lower()
+    if response_mode not in STUDY_CONCEPT_RESPONSE_MODE_GUIDANCE:
+        response_mode = "unknown"
     guidance = context.get("knowledge_guidance")
     guidance_block = ""
     if isinstance(guidance, dict) and guidance:
@@ -186,16 +270,20 @@ def build_concept_explain_messages(
         {
             "role": "system",
             "content": STUDY_CONCEPT_EXPLAIN_SYSTEM_WITH_MODE_TEMPLATE.format(
-                system_prompt=STUDY_CONCEPT_EXPLAIN_SYSTEM_PROMPT,
+                system_prompt=STUDY_CONCEPT_RESPONSE_MODE_SYSTEM_PROMPT,
                 mode_guidance=_mode_guidance(selected_mode),
             ),
         },
         {
             "role": "user",
-            "content": STUDY_CONCEPT_EXPLAIN_USER_TEMPLATE.format(
+            "content": STUDY_CONCEPT_RESPONSE_MODE_USER_TEMPLATE.format(
                 language=language,
                 source=source,
                 mode=selected_mode,
+                response_mode=response_mode,
+                content_type=str(context.get("study_semantic_content_type") or "unknown"),
+                intent=str(context.get("study_semantic_intent") or "unknown"),
+                response_guidance=STUDY_CONCEPT_RESPONSE_MODE_GUIDANCE[response_mode],
                 text=f"{text.strip()}{guidance_block}",
             ),
         },
