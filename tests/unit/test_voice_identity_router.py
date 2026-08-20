@@ -20,6 +20,7 @@ import main_routers.voice_identity_router as voice_identity_router
 API_ROOT = "/api/voice-identity"
 PCM_CONTENT_TYPE = "audio/pcm;format=pcm_s16le;rate=16000;channels=1"
 MAX_PCM_BYTES = 16_000 * 4 * 2
+MAX_FILTER_JSON_BYTES = 1024
 AUTH_HEADERS = {
     "Origin": "http://testserver",
     "X-CSRF-Token": "voice-identity-test-token",
@@ -418,6 +419,67 @@ def test_filter_rejects_missing_malformed_and_non_object_json_consistently(
     assert response.status_code == 422
     assert response.json() == {"error_code": "invalid_enabled"}
     service.set_filter.assert_not_awaited()
+
+
+@pytest.mark.unit
+def test_filter_rejects_oversized_json_before_parsing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = _fake_service()
+    client = _client(monkeypatch, service)
+
+    response = client.put(
+        f"{API_ROOT}/filter",
+        content=b"{" + b" " * MAX_FILTER_JSON_BYTES,
+        headers={"Content-Type": "application/json"},
+    )
+
+    assert response.status_code == 413
+    assert response.json() == {"error_code": "invalid_enabled"}
+    service.set_filter.assert_not_awaited()
+
+
+@pytest.mark.unit
+def test_filter_rejects_invalid_header_auth_before_reading_body(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = _fake_service()
+    bounded_reader = AsyncMock()
+    monkeypatch.setattr(voice_identity_router, "_read_bounded_body", bounded_reader)
+    client = _client(monkeypatch, service, authenticated=False)
+
+    response = client.put(
+        f"{API_ROOT}/filter",
+        json={"enabled": True},
+        headers={
+            "Origin": AUTH_HEADERS["Origin"],
+            "X-CSRF-Token": "invalid-token",
+        },
+    )
+
+    assert response.status_code == 403
+    bounded_reader.assert_not_awaited()
+    service.set_filter.assert_not_awaited()
+
+
+@pytest.mark.unit
+def test_filter_preserves_bounded_body_csrf_compatibility(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = _fake_service()
+    client = _client(monkeypatch, service, authenticated=False)
+
+    response = client.put(
+        f"{API_ROOT}/filter",
+        json={
+            "enabled": False,
+            "_csrf_token": AUTH_HEADERS["X-CSRF-Token"],
+        },
+        headers={"Origin": AUTH_HEADERS["Origin"]},
+    )
+
+    assert response.status_code == 200
+    service.set_filter.assert_awaited_once_with(False)
 
 
 @pytest.mark.unit

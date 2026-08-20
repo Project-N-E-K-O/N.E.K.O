@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
@@ -18,6 +20,7 @@ _ENROLLMENT_HEADER = "X-Voice-Identity-Enrollment"
 _PROFILE_HEADER = "X-Voice-Identity-Profile"
 _PCM_CONTENT_TYPE = "audio/pcm;format=pcm_s16le;rate=16000;channels=1"
 _MAX_PCM_BYTES = 16_000 * 4 * 2
+_MAX_FILTER_JSON_BYTES = 1024
 
 
 def _service():
@@ -152,14 +155,24 @@ async def cancel_voice_identity_enrollment(request: Request):
 
 @router.put("/filter")
 async def set_voice_identity_filter(request: Request):
+    has_csrf_header = bool(request.headers.get("X-CSRF-Token"))
+    if has_csrf_header:
+        rejected = _validate_mutation(request)
+        if rejected is not None:
+            return rejected
+
+    body = await _read_bounded_body(request, _MAX_FILTER_JSON_BYTES)
+    if body is None:
+        return JSONResponse({"error_code": "invalid_enabled"}, status_code=413)
     try:
-        parsed_payload = await request.json()
-    except Exception:
+        parsed_payload = json.loads(body)
+    except (json.JSONDecodeError, UnicodeDecodeError):
         parsed_payload = None
     payload = parsed_payload if type(parsed_payload) is dict else None
-    rejected = _validate_mutation(request, payload)
-    if rejected is not None:
-        return rejected
+    if not has_csrf_header:
+        rejected = _validate_mutation(request, payload)
+        if rejected is not None:
+            return rejected
     if payload is None:
         return JSONResponse({"error_code": "invalid_enabled"}, status_code=422)
     enabled = payload.get("enabled")
