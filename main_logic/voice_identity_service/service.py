@@ -551,6 +551,10 @@ class VoiceIdentityService:
                     except VoiceIdentityProfileStoreError:
                         rollback_failed = True
                 if rollback_failed:
+                    await self._activate(None, str(uuid.uuid4()))
+                    self._profile = None
+                    if old_profile is not None:
+                        old_profile.close()
                     self._set_ineffective(VoiceIdentityEffectiveReason.RUNTIME_DEGRADED)
                 raise VoiceIdentityServiceError("runtime_degraded") from exc
             self._requested_enabled = False

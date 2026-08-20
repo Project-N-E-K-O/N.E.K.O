@@ -114,6 +114,7 @@ class OwnerVoiceRuntimeRegistry:
                 if await self._attach_manager(manager, activation):
                     self._attach_pending.discard(manager)
                     return True
+                self._attach_pending.add(manager)
                 self._ensure_attach_watchdog()
                 return False
             self._managers.add(manager)
