@@ -6861,6 +6861,7 @@ def test_study_companion_notebook_is_integrated_with_static_exporter() -> None:
 
     assert 'data-open-surface="notebook-panel"' in index_html
     assert "./notebook-controller.js" in index_html
+    assert "./notebook.css" in index_html
     for entry_id in (
         "study_notebook_list",
         "study_notebook_create",

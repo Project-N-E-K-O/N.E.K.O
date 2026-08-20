@@ -1048,8 +1048,28 @@
     return root;
   }
 
+  function label(surfaceId, translate) {
+    const labels = {
+      'due-review-panel': translate('ui.feature.review.title', 'Review'),
+      'knowledge-map': translate('ui.feature.knowledge.title', 'Knowledge Map'),
+      'pomodoro-panel': translate('ui.feature.pomodoro.title', 'Pomodoro'),
+      'habit-dashboard': translate('ui.feature.checkin.title', 'Check-in'),
+      'notebook-panel': translate('ui.feature.notebook.title', 'Notebook'),
+      'note-exporter': translate('ui.feature.export.title', 'Export'),
+      'memory-deck-list': translate('ui.button.open_decks', 'Open Decks'),
+      'memory-importer': translate('ui.button.import_memory', 'Import Cards'),
+      'knowledge-contribution-settings': translate('ui.button.contribution_settings', 'Contribution Settings'),
+      'daily-goal-editor': translate('ui.button.edit_daily_goal', 'Edit Daily Goal'),
+      'session-summary': translate('ui.button.session_summary', 'Session Summary'),
+    };
+    return labels[surfaceId] || surfaceId;
+  }
+
   function render(surfaceId, ctx) {
     panelToken += 1;
+    const notebookPanel = window.StudyCompanionNotebook?.render?.(surfaceId, ctx);
+    if (notebookPanel) return notebookPanel;
+    window.StudyCompanionNotebook?.close?.();
     const token = panelToken;
     if (surfaceId === 'due-review-panel') return renderDueReview(ctx, token);
     if (surfaceId === 'pomodoro-panel') return renderPomodoro(ctx, token);
@@ -1065,10 +1085,12 @@
 
   window.StudyCompanionSurfacePanels = {
     render,
+    label,
     listAllMemoryDecks,
     loadDecks,
     close() {
       panelToken += 1;
+      window.StudyCompanionNotebook?.close?.();
     },
   };
 }());

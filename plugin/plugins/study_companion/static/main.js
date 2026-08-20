@@ -1353,20 +1353,7 @@ function handleSettingsTabKeydown(event) {
 }
 
 function hostedSurfaceLabel(surfaceId) {
-  const labels = {
-    'due-review-panel': t('ui.feature.review.title', 'Review'),
-    'knowledge-map': t('ui.feature.knowledge.title', 'Knowledge Map'),
-    'pomodoro-panel': t('ui.feature.pomodoro.title', 'Pomodoro'),
-    'habit-dashboard': t('ui.feature.checkin.title', 'Check-in'),
-    'notebook-panel': t('ui.feature.notebook.title', 'Notebook'),
-    'note-exporter': t('ui.feature.export.title', 'Export'),
-    'memory-deck-list': t('ui.button.open_decks', 'Open Decks'),
-    'memory-importer': t('ui.button.import_memory', 'Import Cards'),
-    'knowledge-contribution-settings': t('ui.button.contribution_settings', 'Contribution Settings'),
-    'daily-goal-editor': t('ui.button.edit_daily_goal', 'Edit Daily Goal'),
-    'session-summary': t('ui.button.session_summary', 'Session Summary'),
-  };
-  return labels[surfaceId] || surfaceId;
+  return window.StudyCompanionSurfacePanels.label(surfaceId, t);
 }
 
 function setActiveFeature(action) {
@@ -1388,7 +1375,6 @@ function focusAfterScroll(target, focusTarget) {
 function closeSurfaceDrawer() {
   if (!surfaceDrawer) return;
   mapRequestId += 1;
-  window.StudyCompanionNotebook?.close?.();
   window.StudyCompanionSurfacePanels?.close?.();
   surfaceDrawer.dataset.open = 'false';
   surfaceDrawer.setAttribute('aria-hidden', 'true');
@@ -1504,19 +1490,6 @@ function renderGenericLocalPanel(surfaceId) {
 }
 
 function renderSurfaceDrawerBody(surfaceId) {
-  if (surfaceId === 'notebook-panel') {
-    window.StudyCompanionSurfacePanels?.close?.();
-  } else {
-    window.StudyCompanionNotebook?.close?.();
-  }
-  const notebookPanel = window.StudyCompanionNotebook?.render?.(surfaceId, {
-    t,
-    tf,
-    label: hostedSurfaceLabel,
-    callPlugin,
-    openSurface: openSurfaceDrawer,
-  });
-  if (notebookPanel) return notebookPanel;
   const hostedPanel = window.StudyCompanionSurfacePanels?.render?.(surfaceId, {
     t,
     tf,
