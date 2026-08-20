@@ -245,9 +245,12 @@ class MijiaPlugin(NekoPluginBase):
     async def _load_devices_cache(self) -> list[dict]:
         """加载设备缓存，不存在或版本不匹配时自动拉取"""
         cache_path = self.data_path("devices_cache.json")
-        if cache_path.exists() and self.api:
+        if self.api:
             try:
                 cached = await read_json_async(cache_path)
+            except Exception:
+                cached = None
+            if cached is not None:
                 cache_user_id = cached.get('user_id')
                 current_user_id = self.api.credential.user_id if self.api.credential else None
                 if cached.get("schema_version") != _DEVICES_CACHE_SCHEMA:
@@ -258,8 +261,6 @@ class MijiaPlugin(NekoPluginBase):
                         self.logger.info(f"设备缓存有效: {len(devices)} 个设备")
                         return devices
                     self.logger.info("设备缓存为空，自动刷新")
-            except Exception:
-                pass
         self.logger.info("从 API 刷新设备缓存")
         result = await self.list_devices(refresh=True)
         if result.is_ok():
@@ -634,33 +635,48 @@ class MijiaPlugin(NekoPluginBase):
         """获取设备列表并缓存"""
         cache_path = self.data_path("devices_cache.json")
 
-        # 如果不强制刷新，尝试从缓存读取（必须已登录，防止跨用户缓存泄露）
-        if not refresh and cache_path.exists() and self.api:
+        # 异步读旧缓存（缺失抛 FileNotFoundError，不经同步 exists() 检查）：
+        # 用于命中缓存、保留 home_id 与用户自定义别名
+        cached = None
+        if self.api:
             try:
                 cached = await read_json_async(cache_path)
-                # 跨用户/家庭校验，防止缓存泄漏
-                cache_home_id = cached.get('home_id')
-                cache_user_id = cached.get('user_id')
-                current_user_id = self.api.credential.user_id if self.api.credential else None
-                # 归属匹配才返回缓存；不匹配时跳过缓存，继续走网络请求
-                if cached.get("schema_version") != _DEVICES_CACHE_SCHEMA:
-                    self.logger.info("设备缓存 schema 版本不匹配，跳过缓存")
-                elif cache_home_id == home_id and (not current_user_id or cache_user_id == current_user_id):
-                    devices = cached.get('devices', [])
-                    self.logger.info(f"从缓存读取设备列表: {len(devices)} 个设备")
-                    lines = [f"📱 共有 {len(devices)} 个设备（缓存）:"]
-                    for d in devices:
-                        status = "🟢" if d.get("is_online") else "🔴"
-                        lines.append(f"  {status} {d.get('name')} (型号: {d.get('model')})")
-                    message = "\n".join(lines)
-                    return Ok({"success": True, "message": message, "devices": devices, "from_cache": True, "count": len(devices)})
-                else:
-                    self.logger.warning(
-                        f"缓存归属不匹配(user_id: {cache_user_id}→{current_user_id}, "
-                        f"home_id: {cache_home_id}→{home_id})，跳过缓存"
-                    )
-            except Exception as e:
-                self.logger.warning(f"读取缓存失败: {e}")
+            except Exception:
+                cached = None
+
+        # 旧缓存里的设备别名（按 DID），刷新重建后回填，避免 set_device_alias 的别名丢失
+        old_aliases: dict[str, str] = {}
+        if cached is not None:
+            for d in cached.get("devices", []) or []:
+                did = d.get("did")
+                if did and d.get("alias"):
+                    old_aliases[did] = d["alias"]
+
+        current_user_id = self.api.credential.user_id if self.api and self.api.credential else None
+        cache_home_id = cached.get('home_id') if cached is not None else None
+        cache_user_id = cached.get('user_id') if cached is not None else None
+
+        # schema 不匹配：归属校验通过则保留旧 home_id，刷新仍用同一家庭，避免切错
+        if cached is not None and cached.get("schema_version") != _DEVICES_CACHE_SCHEMA:
+            self.logger.info("设备缓存 schema 版本不匹配，刷新并保留 home_id")
+            if not home_id and (not current_user_id or cache_user_id == current_user_id):
+                home_id = cache_home_id
+
+        # 不强制刷新且缓存归属匹配才返回缓存；否则走网络请求
+        if not refresh and cached is not None and cached.get("schema_version") == _DEVICES_CACHE_SCHEMA:
+            if cache_home_id == home_id and (not current_user_id or cache_user_id == current_user_id):
+                devices = cached.get('devices', [])
+                self.logger.info(f"从缓存读取设备列表: {len(devices)} 个设备")
+                lines = [f"📱 共有 {len(devices)} 个设备（缓存）:"]
+                for d in devices:
+                    status = "🟢" if d.get("is_online") else "🔴"
+                    lines.append(f"  {status} {d.get('name')} (型号: {d.get('model')})")
+                message = "\n".join(lines)
+                return Ok({"success": True, "message": message, "devices": devices, "from_cache": True, "count": len(devices)})
+            self.logger.warning(
+                f"缓存归属不匹配(user_id: {cache_user_id}→{current_user_id}, "
+                f"home_id: {cache_home_id}→{home_id})，跳过缓存"
+            )
 
         if not self.api:
             return Err(SdkError("未登录"))
@@ -702,6 +718,9 @@ class MijiaPlugin(NekoPluginBase):
                     "room_id": d.room_id,
                     "room_name": room_name,
                 }
+                # 回填用户自定义别名（按 DID），避免刷新重建后别名丢失
+                if d.did in old_aliases:
+                    device_info["alias"] = old_aliases[d.did]
                 
                 # 获取设备规格并缓存关键信息（siid, piid, aiid）
                 if d.model:
@@ -792,9 +811,12 @@ class MijiaPlugin(NekoPluginBase):
         cache_path = self.data_path("devices_cache.json")
 
         # 必须已登录才能读缓存，防止跨用户缓存泄露
-        if not refresh and cache_path.exists() and self.api:
+        if not refresh and self.api:
             try:
                 cached = await read_json_async(cache_path)
+            except Exception:
+                cached = None
+            if cached is not None:
                 # 跨用户校验，防止缓存泄漏
                 cache_user_id = cached.get('user_id')
                 current_user_id = self.api.credential.user_id if self.api.credential else None
@@ -810,12 +832,9 @@ class MijiaPlugin(NekoPluginBase):
                         lines.append(f"  {status} {d.get('name')} (型号: {d.get('model')})")
                     message = "\n".join(lines)
                     return Ok({"success": True, "message": message, "devices": devices, "from_cache": True, "count": len(devices)})
-                else:
-                    self.logger.warning(
-                        f"缓存归属不匹配(user_id: {cache_user_id}→{current_user_id})，跳过缓存"
-                    )
-            except Exception as e:
-                self.logger.warning(f"读取缓存失败: {e}")
+                self.logger.warning(
+                    f"缓存归属不匹配(user_id: {cache_user_id}→{current_user_id})，跳过缓存"
+                )
 
         # 缓存不存在或刷新，调用 list_devices
         return await self.list_devices(refresh=refresh)
@@ -839,9 +858,12 @@ class MijiaPlugin(NekoPluginBase):
         cache_path = self.data_path("scenes_cache.json")
 
         # 如果不强制刷新，尝试从缓存读取（必须已登录，防止跨用户缓存泄露）
-        if not refresh and cache_path.exists() and self.api:
+        if not refresh and self.api:
             try:
                 cached = await read_json_async(cache_path)
+            except Exception:
+                cached = None
+            if cached is not None:
                 cache_home_id = cached.get('home_id')
                 cache_user_id = cached.get('user_id')
                 current_user_id = self.api.credential.user_id if self.api.credential else None
@@ -854,13 +876,10 @@ class MijiaPlugin(NekoPluginBase):
                         lines.append(f"  • {s.get('name')} (ID: {s.get('id')})")
                     message = "\n".join(lines)
                     return Ok({"success": True, "message": message, "scenes": scenes, "from_cache": True, "count": len(scenes)})
-                else:
-                    self.logger.warning(
-                        f"场景缓存归属不匹配(user_id: {cache_user_id}→{current_user_id}, "
-                        f"home_id: {cache_home_id}→{home_id})，跳过缓存"
-                    )
-            except Exception as e:
-                self.logger.warning(f"读取场景缓存失败: {e}")
+                self.logger.warning(
+                    f"场景缓存归属不匹配(user_id: {cache_user_id}→{current_user_id}, "
+                    f"home_id: {cache_home_id}→{home_id})，跳过缓存"
+                )
 
         if not self.api:
             return Err(SdkError("未登录"))
@@ -921,11 +940,12 @@ class MijiaPlugin(NekoPluginBase):
     async def set_device_alias(self, did: str, alias: str = "", **_):
         """设置设备别名到缓存"""
         cache_path = self.data_path("devices_cache.json")
-        if not cache_path.exists():
+        try:
+            data = await read_json_async(cache_path)
+        except FileNotFoundError:
             return Err(SdkError("设备缓存不存在，请先获取设备列表"))
 
         try:
-            data = await read_json_async(cache_path)
             devices = data.get("devices", [])
             found = False
             for d in devices:
@@ -957,11 +977,12 @@ class MijiaPlugin(NekoPluginBase):
     async def get_device_aliases(self, **_):
         """获取所有设备别名"""
         cache_path = self.data_path("devices_cache.json")
-        if not cache_path.exists():
+        try:
+            data = await read_json_async(cache_path)
+        except FileNotFoundError:
             return Ok({"success": True, "aliases": {}, "message": "无缓存数据"})
 
         try:
-            data = await read_json_async(cache_path)
             devices = data.get("devices", [])
             aliases = {d.get("did"): d.get("alias", "") for d in devices if d.get("alias")}
             lines = [f"📝 共有 {len(aliases)} 个设备别名:"]
@@ -1671,13 +1692,12 @@ class MijiaPlugin(NekoPluginBase):
         cache_path = self.data_path("scenes_cache.json")
         scenes = []
         cached_home_id = None
-        if cache_path.exists():
-            try:
-                cached = await read_json_async(cache_path)
-                scenes = cached.get('scenes', [])
-                cached_home_id = cached.get('home_id')
-            except Exception:
-                pass
+        try:
+            cached = await read_json_async(cache_path)
+            scenes = cached.get('scenes', [])
+            cached_home_id = cached.get('home_id')
+        except Exception:
+            pass
 
         if not scenes:
             return Err(SdkError("场景列表为空，请先获取场景列表"))
