@@ -103,6 +103,91 @@ async def test_release_character_disposes_current_and_deferred_time_managers_onc
 
 
 @pytest.mark.unit
+@pytest.mark.asyncio
+async def test_release_drains_inflight_process_and_fences_engine_recreation():
+    """A pre-release write must finish, while queued writes cannot reopen SQLite."""
+    from app import memory_server
+
+    name = "发布窗口竞态角色"
+    claim_token = "foreground-drain-claim"
+    write_started = asyncio.Event()
+    finish_write = asyncio.Event()
+    order: list[str] = []
+
+    async def _astore(*_args, **_kwargs):
+        order.append("write_started")
+        write_started.set()
+        await finish_write.wait()
+        order.append("write_finished")
+
+    fake_time_manager = MagicMock()
+    fake_time_manager.astore_conversation = AsyncMock(side_effect=_astore)
+    fake_time_manager.dispose_engine.side_effect = lambda _name: order.append("disposed") or True
+    fake_recent = MagicMock()
+    fake_recent.update_history = AsyncMock(return_value=None)
+    fake_config = MagicMock()
+    fake_config.aload_characters = AsyncMock(return_value={"猫娘": {name: {}}})
+    request = memory_server.HistoryRequest(input_history="[]")
+
+    memory_server.review._retired_derived_task_names.discard(name)
+    memory_server.review._publication_held_derived_task_names.discard(name)
+    with patch.object(memory_server.runtime, "time_manager", fake_time_manager), patch.object(
+        memory_server.runtime, "_deferred_time_managers", [],
+    ), patch.object(
+        memory_server.runtime, "recent_history_manager", fake_recent,
+    ), patch.object(
+        memory_server.runtime, "_config_manager", fake_config,
+    ), patch.object(
+        memory_server.runtime, "embedding_warmup_worker", None,
+    ), patch.object(
+        memory_server.post_turn, "_spawn_outbox_post_turn_signals", AsyncMock(),
+    ), patch.object(
+        memory_server.review, "maybe_spawn_review", AsyncMock(),
+    ):
+        process_task = asyncio.create_task(
+            memory_server.process_conversation(request, name)
+        )
+        await asyncio.wait_for(write_started.wait(), timeout=1)
+
+        release_task = asyncio.create_task(
+            memory_server.runtime.release_character_resources(
+                name,
+                hold_derived_task_admission=True,
+                derived_task_claim_token=claim_token,
+                derived_task_claim_generation=0,
+            )
+        )
+        for _ in range(20):
+            if memory_server.review.is_character_publication_held(name):
+                break
+            await asyncio.sleep(0)
+
+        assert memory_server.review.is_character_publication_held(name)
+        assert "disposed" not in order
+        finish_write.set()
+        process_result, release_result = await asyncio.gather(
+            process_task,
+            release_task,
+        )
+
+        assert process_result == {"status": "processed"}
+        assert release_result["status"] == "success"
+        assert order == ["write_started", "write_finished", "disposed"]
+
+        queued_result = await memory_server.process_conversation(request, name)
+        assert queued_result == {
+            "status": "cancelled",
+            "message": "character release in progress",
+        }
+        assert fake_time_manager.astore_conversation.await_count == 1
+
+    await memory_server.review.release_character_derived_task_admission_claim(
+        name,
+        claim_token,
+    )
+
+
+@pytest.mark.unit
 def test_cross_generation_release_closes_real_sqlite_pool(tmp_path):
     """The deferred generation must stop holding the database file on Windows."""
     from sqlalchemy import create_engine, text

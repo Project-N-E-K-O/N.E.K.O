@@ -19,7 +19,7 @@ from memory.stop_names import collect_stop_names, strip_stop_names
 from utils.cloudsave_runtime import MaintenanceModeError, assert_cloudsave_writable
 from utils.config_manager import get_config_manager
 from utils.logger_config import get_module_logger
-from collections.abc import AsyncIterator, Generator, Iterator
+from collections.abc import AsyncIterator, Callable, Generator, Iterator
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 import asyncio
@@ -195,12 +195,18 @@ def token_overlap(left: list[str], right: list[str]) -> float:
 
 
 class TimeIndexedMemory:
-    def __init__(self, recent_history_manager):
+    def __init__(
+        self,
+        recent_history_manager,
+        *,
+        engine_admission_check: Callable[[str], bool] | None = None,
+    ):
         self.engines = {}  # 存储 {lanlan_name: engine}
         self.db_paths = {} # 存储 {lanlan_name: db_path}
         self._engine_readonly_flags = {}  # 存储 {lanlan_name: bool}
         self._writable_bootstrapped = set()  # 存储已完成可写初始化的角色
         self.recent_history_manager = recent_history_manager
+        self._engine_admission_check = engine_admission_check
         # 懒加载：不在构造器里同步初始化每角色 engine，首次访问时按需创建
         # （MaintenanceModeError 在 _ensure_engine_exists 内部按需处理）
 
@@ -260,6 +266,15 @@ class TimeIndexedMemory:
         readonly: bool = False,
     ) -> bool:
         """Ensure the given character's database engine is initialized, meow~"""
+        if (
+            self._engine_admission_check is not None
+            and not self._engine_admission_check(lanlan_name)
+        ):
+            logger.info(
+                "[TimeIndexedMemory] 角色 %s 正在删除或改名，跳过数据库引擎初始化",
+                lanlan_name,
+            )
+            return False
         if not readonly:
             self._assert_timeindex_writable(lanlan_name)
         if lanlan_name in self.engines and lanlan_name in self.db_paths:

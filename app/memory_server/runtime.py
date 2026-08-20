@@ -245,6 +245,13 @@ def _defer_time_manager_cleanup(manager: TimeIndexedMemory | None) -> None:
     logger.info("[MemoryServer] 旧的 TimeIndexedMemory 已加入延迟清理队列")
 
 
+def _is_character_publication_admitted(lanlan_name: str) -> bool:
+    """Keep a released identity from reopening storage before publication."""
+    from . import review
+
+    return not review.is_character_publication_held(lanlan_name)
+
+
 def _dispose_character_engines_across_generations(
     lanlan_name: str,
 ) -> tuple[int, int]:
@@ -323,7 +330,10 @@ async def reload_memory_components(
             # 先创建所有新实例
             new_recent = CompressedRecentHistoryManager()
             new_settings = ImportantSettingsManager()
-            new_time = TimeIndexedMemory(new_recent)
+            new_time = TimeIndexedMemory(
+                new_recent,
+                engine_admission_check=_is_character_publication_admitted,
+            )
             new_facts = FactStore(time_indexed_memory=new_time)
             # EventLog 复用（per-character lock dict 没有必要跨 reload 丢弃），
             # 但每次 reload 重建 Reconciler 以便 handlers 指向新 manager 实例。
@@ -487,36 +497,41 @@ async def release_character_resources(
             },
             status_code=409,
         )
-    async with _reload_lock:
-        try:
-            scanned_managers, released_managers = (
-                _dispose_character_engines_across_generations(lanlan_name)
-            )
-            logger.info(
-                "[MemoryServer] 已扫描角色 %s 的 %d 个 TimeIndexedMemory 实例，"
-                "实际释放 %d 个 SQLite 引擎并排空 %d 个派生任务",
-                lanlan_name,
-                scanned_managers,
-                released_managers,
-                cancelled_tasks,
-            )
-            return {
-                "status": "success",
-                "character_name": lanlan_name,
-                "cancelled_derived_tasks": cancelled_tasks,
-                "derived_task_claim_token": derived_task_claim_token,
-            }
-        except Exception as exc:
-            if derived_task_claim_token:
-                await review.release_character_derived_task_admission_claim(
-                    lanlan_name,
-                    derived_task_claim_token,
+    # The publication hold above prevents queued/new work from reopening the
+    # engine.  Taking the same per-character lock as the foreground write paths
+    # drains work that entered before the hold, then the reload lock gives us a
+    # stable current/deferred manager set for the disposal sweep.
+    async with _get_settle_lock(lanlan_name):
+        async with _reload_lock:
+            try:
+                scanned_managers, released_managers = (
+                    _dispose_character_engines_across_generations(lanlan_name)
                 )
-            logger.warning("[MemoryServer] 释放角色 %s 的 SQLite 引擎失败: %s", lanlan_name, exc)
-            return JSONResponse(
-                {"status": "error", "character_name": lanlan_name, "message": str(exc)},
-                status_code=500,
-            )
+                logger.info(
+                    "[MemoryServer] 已扫描角色 %s 的 %d 个 TimeIndexedMemory 实例，"
+                    "实际释放 %d 个 SQLite 引擎并排空 %d 个派生任务",
+                    lanlan_name,
+                    scanned_managers,
+                    released_managers,
+                    cancelled_tasks,
+                )
+                return {
+                    "status": "success",
+                    "character_name": lanlan_name,
+                    "cancelled_derived_tasks": cancelled_tasks,
+                    "derived_task_claim_token": derived_task_claim_token,
+                }
+            except Exception as exc:
+                if derived_task_claim_token:
+                    await review.release_character_derived_task_admission_claim(
+                        lanlan_name,
+                        derived_task_claim_token,
+                    )
+                logger.warning("[MemoryServer] 释放角色 %s 的 SQLite 引擎失败: %s", lanlan_name, exc)
+                return JSONResponse(
+                    {"status": "error", "character_name": lanlan_name, "message": str(exc)},
+                    status_code=500,
+                )
 
 
 # 全局变量用于控制服务器关闭
@@ -699,7 +714,10 @@ async def ensure_memory_server_runtime_initialized(*, reason: str = "") -> bool:
 
         recent_history_manager = CompressedRecentHistoryManager()
         settings_manager = ImportantSettingsManager()
-        time_manager = TimeIndexedMemory(recent_history_manager)
+        time_manager = TimeIndexedMemory(
+            recent_history_manager,
+            engine_admission_check=_is_character_publication_admitted,
+        )
         fact_store = FactStore(time_indexed_memory=time_manager)
         # Queue erasure is part of the privacy runtime, not the optional
         # vector worker. Construct the lightweight resolver before ready so
