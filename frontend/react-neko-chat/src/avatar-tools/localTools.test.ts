@@ -32,7 +32,11 @@ function dto(overrides: Partial<LocalAvatarToolDto> = {}): LocalAvatarToolDto {
   };
 }
 
-function context(imageFrameIndex: number, imageFrameCount: number) {
+function context(
+  imageFrameIndex: number,
+  imageFrameCount: number,
+  random: () => number = () => { throw new Error('RNG must not run'); },
+) {
   return {
     toolId: TOOL_ID,
     clientX: 10,
@@ -48,7 +52,7 @@ function context(imageFrameIndex: number, imageFrameCount: number) {
     imageFrameCount,
     interactionLocked: false,
     recordBurst: () => 1,
-    random: () => { throw new Error('RNG must not run'); },
+    random,
   };
 }
 
@@ -133,6 +137,81 @@ describe('local avatar tool image change modes', () => {
     });
   });
 
+  it('uses the shared chance pipeline for explicit miss and hit feedback', () => {
+    const definition = buildLocalAvatarToolDefinition(dto({
+      normalSoundUrl: `/user_avatar_tools/${TOOL_ID}/normal.mp3?v=1`,
+      special: {
+        probability: 0.1,
+        imageUrl: `/user_avatar_tools/${TOOL_ID}/special.png?v=1`,
+        soundUrl: `/user_avatar_tools/${TOOL_ID}/special.mp3?v=1`,
+      },
+    }));
+
+    expect(() => validateAvatarToolDefinition(definition)).not.toThrow();
+    expect(definition.sounds.map(sound => sound.id)).toEqual(['normal-feedback', 'special-feedback']);
+    expect(definition.effects).toEqual([expect.objectContaining({
+      id: 'special-scatter',
+      kind: 'random-scatter',
+      assetPath: `/user_avatar_tools/${TOOL_ID}/special.png?v=1`,
+    })]);
+    const handlers = createAvatarToolProfileHandlers(definition);
+    expect(handlers.commit(context(1, 2, () => 0.9))).toMatchObject({
+      sound: 'normal-feedback',
+      commit: { specialTriggered: false, changeIndex: 0 },
+    });
+    expect(handlers.commit(context(1, 2, () => 0.01))).toMatchObject({
+      sound: 'special-feedback',
+      effect: 'special-scatter',
+      commit: { specialTriggered: true, changeIndex: 0 },
+    });
+  });
+
+  it('rejects zero-probability and non-canonical local chance definitions', () => {
+    const zeroProbability = buildLocalAvatarToolDefinition(dto({
+      special: { probability: 0.1, imageUrl: `/user_avatar_tools/${TOOL_ID}/special.png?v=1` },
+    }));
+    const wrongField = buildLocalAvatarToolDefinition(dto({
+      special: { probability: 0.1, imageUrl: `/user_avatar_tools/${TOOL_ID}/special.png?v=1` },
+    }));
+    if (zeroProbability.interaction.kind !== 'press-release' || !zeroProbability.interaction.chance) {
+      throw new Error('invalid local profile');
+    }
+    if (wrongField.interaction.kind !== 'press-release' || !wrongField.interaction.chance) {
+      throw new Error('invalid local profile');
+    }
+    zeroProbability.interaction.chance.probability = 0;
+    wrongField.interaction.chance.field = 'otherTriggered';
+
+    expect(() => validateAvatarToolDefinition(zeroProbability)).toThrow(/greater than zero/);
+    expect(() => validateAvatarToolDefinition(wrongField)).toThrow(/must be specialTriggered/);
+  });
+
+  it('falls back to normal sound on a special hit and remains silent when neither sound exists', () => {
+    const withFallback = buildLocalAvatarToolDefinition(dto({
+      normalSoundUrl: `/user_avatar_tools/${TOOL_ID}/normal.mp3?v=1`,
+      special: {
+        probability: 1,
+        imageUrl: `/user_avatar_tools/${TOOL_ID}/special.png?v=1`,
+      },
+    }));
+    const silent = buildLocalAvatarToolDefinition(dto({
+      special: {
+        probability: 1,
+        imageUrl: `/user_avatar_tools/${TOOL_ID}/special.png?v=1`,
+      },
+    }));
+
+    expect(createAvatarToolProfileHandlers(withFallback).commit(context(1, 2, () => 0))).toMatchObject({
+      sound: 'normal-feedback',
+      effect: 'special-scatter',
+      commit: { specialTriggered: true },
+    });
+    expect(createAvatarToolProfileHandlers(silent).commit(context(1, 2, () => 0))).toEqual({
+      commit: expect.objectContaining({ specialTriggered: true }),
+      effect: 'special-scatter',
+    });
+  });
+
   it('keeps a valid authoritative item when another DTO is malformed', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({
       ok: true,
@@ -178,6 +257,12 @@ describe('local avatar tool image change modes', () => {
         { image: new File(['second'], 'second.png', { type: 'image/png' }), meaning: 'Second meaning' },
       ],
       normalSound: new File(['sound'], 'interaction.mp3', { type: 'audio/mpeg' }),
+      special: {
+        probability: 0.1,
+        image: new File(['special'], 'special.png', { type: 'image/png' }),
+        meaning: 'Surprise meaning',
+        sound: new File(['special-sound'], 'special.mp3', { type: 'audio/mpeg' }),
+      },
     });
 
     expect(result?.changeMode).toBe('click-advance');
@@ -189,5 +274,9 @@ describe('local avatar tool image change modes', () => {
     expect(firstForm.getAll('change_meanings')).toEqual(['First meaning', 'Second meaning']);
     expect(firstForm.get('normal_sound')).toBeInstanceOf(File);
     expect((firstForm.get('normal_sound') as File).name).toBe('interaction.mp3');
+    expect(firstForm.get('special_probability')).toBe('0.1');
+    expect((firstForm.get('special_image') as File).name).toBe('special.png');
+    expect(firstForm.get('special_meaning')).toBe('Surprise meaning');
+    expect((firstForm.get('special_sound') as File).name).toBe('special.mp3');
   });
 });

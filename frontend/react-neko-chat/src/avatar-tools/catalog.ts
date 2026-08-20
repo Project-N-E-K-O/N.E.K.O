@@ -889,6 +889,18 @@ function validateInteractionReferences(definition: AvatarToolDefinition) {
       assertProbability(definition, interaction.chance.probability, 'interaction.chance.probability');
       if (interaction.chance.sound) requireSound(interaction.chance.sound);
       requireEffect(interaction.chance.effect);
+      if (definition.definitionVersion === 2) {
+        if (interaction.chance.field !== 'specialTriggered') {
+          fail(definition, 'v2 interaction.chance.field must be specialTriggered');
+        }
+        if (interaction.chance.probability <= 0) {
+          fail(definition, 'v2 interaction.chance.probability must be greater than zero');
+        }
+        const chanceEffect = definition.effects.find(effect => effect.id === interaction.chance?.effect);
+        if (chanceEffect?.kind !== 'random-scatter') {
+          fail(definition, 'v2 interaction.chance.effect must reference random-scatter');
+        }
+      }
     }
     const referencedSounds = new Set([
       interaction.feedback?.sound,

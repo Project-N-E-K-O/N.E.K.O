@@ -11,6 +11,7 @@ from __future__ import annotations
 import io
 import json
 import logging
+import math
 import os
 import re
 import shutil
@@ -105,6 +106,21 @@ def _validate_text(value: object, *, field: str, maximum: int) -> str:
     return normalized
 
 
+def _validate_probability(value: object) -> float:
+    if isinstance(value, bool):
+        raise AvatarToolStoreError("special_probability_invalid", "Special probability is invalid")
+    try:
+        probability = float(value)
+    except (TypeError, ValueError) as exc:
+        raise AvatarToolStoreError(
+            "special_probability_invalid",
+            "Special probability is invalid",
+        ) from exc
+    if not math.isfinite(probability) or probability <= 0 or probability > 1:
+        raise AvatarToolStoreError("special_probability_invalid", "Special probability is invalid")
+    return probability
+
+
 def _decode_static_png(data: bytes, *, limits: dict[str, int]) -> bytes:
     if not data:
         raise AvatarToolStoreError("image_required", "PNG image is required")
@@ -185,6 +201,17 @@ def _validate_mp3(data: bytes, *, limits: dict[str, int]) -> bytes:
     return data
 
 
+def _validate_special_mp3(data: bytes, *, limits: dict[str, int]) -> bytes:
+    try:
+        return _validate_mp3(data, limits=limits)
+    except AvatarToolStoreError as exc:
+        raise AvatarToolStoreError(
+            f"special_{exc.code}",
+            str(exc),
+            status_code=exc.status_code,
+        ) from exc
+
+
 class AvatarToolStore:
     def __init__(self, config_manager: Any):
         self.config_manager = config_manager
@@ -262,17 +289,51 @@ class AvatarToolStore:
                     maximum=self.limits["maxMeaningChars"],
                 ),
             })
-        if not isinstance(interaction, dict) or set(interaction) not in (set(), {"normalSound"}):
+        if not isinstance(interaction, dict) or not set(interaction).issubset({"normalSound", "special"}):
             raise AvatarToolStoreError("record_invalid", "Avatar tool record is invalid", status_code=404)
         normal_sound = interaction.get("normalSound")
+        if "normalSound" in interaction and normal_sound is None:
+            raise AvatarToolStoreError("record_invalid", "Avatar tool record is invalid", status_code=404)
         if normal_sound is not None and normal_sound != "normal.mp3":
             raise AvatarToolStoreError("record_invalid", "Avatar tool record is invalid", status_code=404)
+        special = interaction.get("special")
+        if "special" in interaction and special is None:
+            raise AvatarToolStoreError("record_invalid", "Avatar tool record is invalid", status_code=404)
+        clean_special = None
+        if special is not None:
+            if not isinstance(special, dict) or set(special) not in (
+                {"probability", "image", "meaning"},
+                {"probability", "image", "meaning", "sound"},
+            ):
+                raise AvatarToolStoreError("record_invalid", "Avatar tool record is invalid", status_code=404)
+            if special.get("image") != "special.png":
+                raise AvatarToolStoreError("record_invalid", "Avatar tool record is invalid", status_code=404)
+            special_sound = special.get("sound")
+            if special_sound is not None and special_sound != "special.mp3":
+                raise AvatarToolStoreError("record_invalid", "Avatar tool record is invalid", status_code=404)
+            special_probability = special.get("probability")
+            if isinstance(special_probability, bool) or not isinstance(special_probability, (int, float)):
+                raise AvatarToolStoreError("record_invalid", "Avatar tool record is invalid", status_code=404)
+            clean_special = {
+                "probability": _validate_probability(special_probability),
+                "image": "special.png",
+                "meaning": _validate_text(
+                    special.get("meaning"),
+                    field="special_meaning",
+                    maximum=self.limits["maxMeaningChars"],
+                ),
+                **({"sound": "special.mp3"} if special_sound else {}),
+            }
         directory = self.root / expected_id
         if directory.is_symlink() or not directory.is_dir():
             raise AvatarToolStoreError("record_invalid", "Avatar tool record is invalid", status_code=404)
         resource_names = ["default.png", *(item["image"] for item in clean_items)]
         if normal_sound:
             resource_names.append(normal_sound)
+        if clean_special:
+            resource_names.append(clean_special["image"])
+            if clean_special.get("sound"):
+                resource_names.append(clean_special["sound"])
         for filename in resource_names:
             resource = directory / filename
             if resource.is_symlink() or not resource.is_file():
@@ -283,7 +344,10 @@ class AvatarToolStore:
             "name": name,
             "defaultImage": "default.png",
             "imageChange": {"mode": mode, "items": clean_items},
-            "interaction": {"normalSound": normal_sound} if normal_sound else {},
+            "interaction": {
+                **({"normalSound": normal_sound} if normal_sound else {}),
+                **({"special": clean_special} if clean_special else {}),
+            },
         }
 
     def _asset_url(self, tool_id: str, filename: str) -> str:
@@ -306,6 +370,17 @@ class AvatarToolStore:
         normal_sound = record["interaction"].get("normalSound")
         if normal_sound:
             item["normalSoundUrl"] = self._asset_url(tool_id, normal_sound)
+        special = record["interaction"].get("special")
+        if special:
+            item["special"] = {
+                "probability": special["probability"],
+                "imageUrl": self._asset_url(tool_id, special["image"]),
+                **(
+                    {"soundUrl": self._asset_url(tool_id, special["sound"])}
+                    if special.get("sound")
+                    else {}
+                ),
+            }
         return item
 
     def list_items(self) -> list[dict[str, Any]]:
@@ -340,6 +415,10 @@ class AvatarToolStore:
         default_image: bytes,
         change_images: list[bytes],
         normal_sound: bytes | None = None,
+        special_probability: object | None = None,
+        special_image: bytes | None = None,
+        special_meaning: str | None = None,
+        special_sound: bytes | None = None,
     ) -> dict[str, Any]:
         clean_name = _validate_text(name, field="name", maximum=self.limits["maxNameChars"])
         if change_mode not in LOCAL_AVATAR_TOOL_CHANGE_MODES:
@@ -364,6 +443,35 @@ class AvatarToolStore:
             for image in change_images
         ]
         normal_mp3 = _validate_mp3(normal_sound, limits=self.limits) if normal_sound is not None else None
+        special_values = (special_probability, special_image, special_meaning, special_sound)
+        special_enabled = any(value is not None for value in special_values)
+        clean_special = None
+        special_png = None
+        special_mp3 = None
+        if special_enabled:
+            if special_probability is None:
+                raise AvatarToolStoreError("special_probability_required", "Special probability is required")
+            if special_image is None:
+                raise AvatarToolStoreError("special_image_required", "Special image is required")
+            if special_meaning is None:
+                raise AvatarToolStoreError("special_meaning_required", "Special meaning is required")
+            probability = _validate_probability(special_probability)
+            special_png = _decode_static_png(special_image, limits=self.limits)
+            clean_special = {
+                "probability": probability,
+                "image": "special.png",
+                "meaning": _validate_text(
+                    special_meaning,
+                    field="special_meaning",
+                    maximum=self.limits["maxMeaningChars"],
+                ),
+                **({"sound": "special.mp3"} if special_sound is not None else {}),
+            }
+            special_mp3 = (
+                _validate_special_mp3(special_sound, limits=self.limits)
+                if special_sound is not None
+                else None
+            )
 
         with _MUTATION_LOCK:
             self.ensure()
@@ -393,7 +501,10 @@ class AvatarToolStore:
                         for index, meaning in enumerate(clean_meanings)
                     ],
                 },
-                "interaction": {"normalSound": "normal.mp3"} if normal_mp3 is not None else {},
+                "interaction": {
+                    **({"normalSound": "normal.mp3"} if normal_mp3 is not None else {}),
+                    **({"special": clean_special} if clean_special else {}),
+                },
             }
             try:
                 temporary.mkdir(mode=0o700)
@@ -402,6 +513,10 @@ class AvatarToolStore:
                     (temporary / f"change-{index:03d}.png").write_bytes(image)
                 if normal_mp3 is not None:
                     (temporary / "normal.mp3").write_bytes(normal_mp3)
+                if special_png is not None:
+                    (temporary / "special.png").write_bytes(special_png)
+                if special_mp3 is not None:
+                    (temporary / "special.mp3").write_bytes(special_mp3)
                 atomic_write_json(temporary / "record.json", record, ensure_ascii=False, indent=2)
                 created_size = sum(
                     entry.stat().st_size

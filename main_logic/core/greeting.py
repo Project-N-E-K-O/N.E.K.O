@@ -102,6 +102,31 @@ class GreetingMixin:
             }
         }
 
+    @staticmethod
+    def _resolve_local_avatar_tool_prompt_record(raw: dict, record: dict) -> dict:
+        change_items = record.get("imageChange", {}).get("items")
+        change_index = raw.get("change_index")
+        if (
+            not isinstance(change_items, list)
+            or isinstance(change_index, bool)
+            or not isinstance(change_index, int)
+            or change_index < 0
+            or change_index >= len(change_items)
+        ):
+            raise ValueError("invalid local change index")
+        special = record.get("interaction", {}).get("special")
+        has_special_fact = "special_triggered" in raw
+        if bool(special) != has_special_fact:
+            raise ValueError("local special fact does not match record")
+        return {
+            "name": record["name"],
+            "meaning": (
+                special["meaning"]
+                if special and raw["special_triggered"] is True
+                else change_items[change_index]["meaning"]
+            ),
+        }
+
     def note_avatar_interaction_ingress(self, payload: dict) -> bool:
         """Expose validated avatar engagement before background dispatch."""
         raw = normalize_avatar_interaction_payload(
@@ -151,28 +176,15 @@ class GreetingMixin:
                     raw_interaction_id, False, "invalid_payload"
                 )
                 return {"accepted": False, "reason": "invalid_payload"}
-            if "special_triggered" in raw:
+            try:
+                local_prompt_record = self._resolve_local_avatar_tool_prompt_record(
+                    raw, local_record
+                )
+            except (KeyError, TypeError, ValueError):
                 await self.send_avatar_interaction_ack(
                     raw_interaction_id, False, "invalid_payload"
                 )
                 return {"accepted": False, "reason": "invalid_payload"}
-            change_items = local_record.get("imageChange", {}).get("items")
-            change_index = raw.get("change_index")
-            if (
-                not isinstance(change_items, list)
-                or isinstance(change_index, bool)
-                or not isinstance(change_index, int)
-                or change_index < 0
-                or change_index >= len(change_items)
-            ):
-                await self.send_avatar_interaction_ack(
-                    raw_interaction_id, False, "invalid_payload"
-                )
-                return {"accepted": False, "reason": "invalid_payload"}
-            local_prompt_record = {
-                "name": local_record["name"],
-                "meaning": change_items[change_index]["meaning"],
-            }
 
         interaction_id = raw["interaction_id"]
         now_ms = int(time.time() * 1000)

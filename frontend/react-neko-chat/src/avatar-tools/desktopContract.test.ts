@@ -59,6 +59,11 @@ describe('desktop avatar tool contract', () => {
         '/user_avatar_tools/local-12345678-1234-4123-8123-123456789abc/change-001.png?v=1',
       ],
       normalSoundUrl: '/user_avatar_tools/local-12345678-1234-4123-8123-123456789abc/normal.mp3?v=1',
+      special: {
+        probability: 0.1,
+        imageUrl: '/user_avatar_tools/local-12345678-1234-4123-8123-123456789abc/special.png?v=1',
+        soundUrl: '/user_avatar_tools/local-12345678-1234-4123-8123-123456789abc/special.mp3?v=1',
+      },
     });
 
     const contract = projectDesktopAvatarToolContract(source);
@@ -70,12 +75,32 @@ describe('desktop avatar tool contract', () => {
       actionId: 'interact',
       imageChange: { kind: 'click-advance' },
       feedback: { sound: 'normal-feedback' },
+      chance: {
+        field: 'specialTriggered',
+        probability: 0.1,
+        effect: 'special-scatter',
+        sound: 'special-feedback',
+      },
     });
-    expect(contract.definition?.interaction?.sounds).toEqual([{
-      id: 'normal-feedback',
-      src: '/user_avatar_tools/local-12345678-1234-4123-8123-123456789abc/normal.mp3?v=1',
-      volume: 0.9,
-    }]);
+    expect(contract.definition?.interaction?.sounds).toEqual([
+      {
+        id: 'normal-feedback',
+        src: '/user_avatar_tools/local-12345678-1234-4123-8123-123456789abc/normal.mp3?v=1',
+        volume: 0.9,
+      },
+      {
+        id: 'special-feedback',
+        src: '/user_avatar_tools/local-12345678-1234-4123-8123-123456789abc/special.mp3?v=1',
+        volume: 0.9,
+      },
+    ]);
+    expect(contract.definition?.interaction?.effects).toEqual([
+      expect.objectContaining({
+        id: 'special-scatter',
+        kind: 'random-scatter',
+        assetPath: '/user_avatar_tools/local-12345678-1234-4123-8123-123456789abc/special.png?v=1',
+      }),
+    ]);
     expect(contract.definition?.interaction?.profile).not.toHaveProperty('pointerDown');
     expect(desktopAvatarToolContractSchema.parse(cloneJson(contract))).toEqual(contract);
   });

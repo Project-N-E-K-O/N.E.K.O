@@ -80,6 +80,54 @@ def test_post_then_get_returns_authoritative_item_without_meaning(tmp_path, monk
     assert (manager.avatar_tools_dir / item["id"] / "normal.mp3").is_file()
 
 
+def test_post_accepts_complete_special_block_and_keeps_meaning_private(tmp_path, monkeypatch):
+    client, manager = _client(tmp_path, monkeypatch, allow_mutation=True)
+    response = client.post(
+        "/api/avatar-tools",
+        files=[
+            ("name", (None, "Surprise feather")),
+            ("change_mode", (None, "press-swap")),
+            ("change_meanings", (None, "a gentle touch")),
+            ("default_image", ("default.png", _png(), "image/png")),
+            ("change_images", ("change.png", _png(), "image/png")),
+            ("special_probability", (None, "0.1")),
+            ("special_image", ("surprise.png", _png(), "image/png")),
+            ("special_meaning", (None, "feathers scatter everywhere")),
+            ("special_sound", ("surprise.mp3", _mp3(), "audio/mpeg")),
+        ],
+    )
+
+    assert response.status_code == 201
+    item = response.json()["item"]
+    assert item["special"]["probability"] == 0.1
+    assert "/special.png?v=" in item["special"]["imageUrl"]
+    assert "/special.mp3?v=" in item["special"]["soundUrl"]
+    assert "feathers scatter everywhere" not in response.text
+    directory = manager.avatar_tools_dir / item["id"]
+    assert (directory / "special.png").is_file()
+    assert (directory / "special.mp3").is_file()
+
+
+def test_post_rejects_partial_special_block_without_publishing(tmp_path, monkeypatch):
+    client, manager = _client(tmp_path, monkeypatch, allow_mutation=True)
+    response = client.post(
+        "/api/avatar-tools",
+        files=[
+            ("name", (None, "Partial surprise")),
+            ("change_mode", (None, "press-swap")),
+            ("change_meanings", (None, "a gentle touch")),
+            ("default_image", ("default.png", _png(), "image/png")),
+            ("change_images", ("change.png", _png(), "image/png")),
+            ("special_probability", (None, "0.1")),
+            ("special_meaning", (None, "missing image")),
+        ],
+    )
+
+    assert response.status_code == 400
+    assert response.json()["error_code"] == "special_image_required"
+    assert not manager.avatar_tools_dir.exists() or not list(manager.avatar_tools_dir.iterdir())
+
+
 def test_post_rejects_request_without_mutation_security(tmp_path, monkeypatch):
     client, _manager = _client(tmp_path, monkeypatch, allow_mutation=False)
     response = client.post(

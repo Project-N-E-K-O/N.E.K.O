@@ -68,6 +68,10 @@ async def create_avatar_tool(
     default_image: UploadFile = File(...),
     change_images: list[UploadFile] = File(...),
     normal_sound: UploadFile | None = File(None),
+    special_probability: str | None = Form(None),
+    special_image: UploadFile | None = File(None),
+    special_meaning: str | None = Form(None),
+    special_sound: UploadFile | None = File(None),
 ):
     rejected = _validate_local_mutation_request(request)
     if rejected is not None:
@@ -76,6 +80,10 @@ async def create_avatar_tool(
             await upload.close()
         if normal_sound is not None:
             await normal_sound.close()
+        if special_image is not None:
+            await special_image.close()
+        if special_sound is not None:
+            await special_sound.close()
         return rejected
 
     store = get_avatar_tool_store(get_config_manager())
@@ -111,6 +119,22 @@ async def create_avatar_tool(
                 error_code="audio_too_large",
                 error_message="MP3 audio is too large",
             )
+        special_image_data = None
+        if special_image is not None:
+            special_image_data = await _read_upload_limited(
+                special_image,
+                store.limits["maxImageBytes"],
+                error_code="image_too_large",
+                error_message="PNG image is too large",
+            )
+        special_sound_data = None
+        if special_sound is not None:
+            special_sound_data = await _read_upload_limited(
+                special_sound,
+                store.limits["maxAudioBytes"],
+                error_code="special_audio_too_large",
+                error_message="MP3 audio is too large",
+            )
         item = await asyncio.to_thread(
             store.create_tool,
             name=name,
@@ -119,6 +143,10 @@ async def create_avatar_tool(
             default_image=uploaded[0],
             change_images=list(uploaded[1:]),
             normal_sound=normal_sound_data,
+            special_probability=special_probability,
+            special_image=special_image_data,
+            special_meaning=special_meaning,
+            special_sound=special_sound_data,
         )
     except AvatarToolStoreError as exc:
         return _error_response(exc)
@@ -130,5 +158,9 @@ async def create_avatar_tool(
             await upload.close()
         if normal_sound is not None:
             await normal_sound.close()
+        if special_image is not None:
+            await special_image.close()
+        if special_sound is not None:
+            await special_sound.close()
 
     return JSONResponse(status_code=201, content={"ok": True, "item": item})

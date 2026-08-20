@@ -2,6 +2,7 @@ import {
   LOCAL_AVATAR_TOOL_ID_PATTERN,
   type AvatarToolDefinition,
   type LocalAvatarToolId,
+  type RandomScatterEffectRecipe,
 } from './catalog';
 
 export type LocalAvatarToolLimits = {
@@ -23,6 +24,11 @@ export type LocalAvatarToolDto = {
   defaultUrl: string;
   changeUrls: string[];
   normalSoundUrl?: string;
+  special?: {
+    probability: number;
+    imageUrl: string;
+    soundUrl?: string;
+  };
 };
 
 export type LocalAvatarToolChangeMode = 'press-swap' | 'click-advance';
@@ -38,12 +44,55 @@ export type CreateLocalAvatarToolInput = {
   defaultImage: File;
   changeItems: Array<{ image: File; meaning: string }>;
   normalSound?: File;
+  special?: {
+    probability: number;
+    image: File;
+    meaning: string;
+    sound?: File;
+  };
 };
+
+export const LOCAL_AVATAR_TOOL_SPECIAL_SCATTER_EFFECT_RECIPE = {
+  id: 'special-scatter',
+  kind: 'random-scatter',
+  interactionLock: 'none',
+  assetPath: '',
+  count: 5,
+  lifetimeMs: 920,
+  angleDeg: { min: -150, range: 120 },
+  distance: { min: 72, range: 52 },
+  offsetX: { min: -24, range: 48 },
+  offsetY: { min: -36, range: 24 },
+  rotation: { min: -135, range: 270 },
+  scale: { min: 0.72, range: 0.46 },
+  delayMs: { min: 0, range: 160 },
+} as const satisfies RandomScatterEffectRecipe;
+
+function decodeSpecial(value: unknown): LocalAvatarToolDto['special'] | null {
+  if (!value || typeof value !== 'object') return null;
+  const special = value as Record<string, unknown>;
+  if (
+    !Object.keys(special).every(key => ['probability', 'imageUrl', 'soundUrl'].includes(key))
+    || typeof special.probability !== 'number'
+    || !Number.isFinite(special.probability)
+    || special.probability <= 0
+    || special.probability > 1
+    || typeof special.imageUrl !== 'string'
+    || !special.imageUrl
+    || (special.soundUrl !== undefined && (typeof special.soundUrl !== 'string' || !special.soundUrl))
+  ) return null;
+  return {
+    probability: special.probability,
+    imageUrl: special.imageUrl,
+    ...(typeof special.soundUrl === 'string' ? { soundUrl: special.soundUrl } : {}),
+  };
+}
 
 function decodeLocalAvatarToolItem(value: unknown): LocalAvatarToolDto | null {
   if (!value || typeof value !== 'object') return null;
   const item = value as Record<string, unknown>;
   const changeUrls = item.changeUrls;
+  const special = item.special === undefined ? undefined : decodeSpecial(item.special);
   if (
     typeof item.id !== 'string' || !LOCAL_AVATAR_TOOL_ID_PATTERN.test(item.id)
     || typeof item.name !== 'string' || !item.name.trim()
@@ -55,6 +104,7 @@ function decodeLocalAvatarToolItem(value: unknown): LocalAvatarToolDto | null {
     || changeUrls.some(url => typeof url !== 'string' || !url)
     || (item.changeMode === 'press-swap' && changeUrls.length !== 1)
     || (item.normalSoundUrl !== undefined && (typeof item.normalSoundUrl !== 'string' || !item.normalSoundUrl))
+    || (item.special !== undefined && !special)
   ) return null;
   return {
     id: item.id as LocalAvatarToolId,
@@ -63,6 +113,7 @@ function decodeLocalAvatarToolItem(value: unknown): LocalAvatarToolDto | null {
     defaultUrl: item.defaultUrl,
     changeUrls: [...changeUrls] as string[],
     ...(typeof item.normalSoundUrl === 'string' ? { normalSoundUrl: item.normalSoundUrl } : {}),
+    ...(special ? { special } : {}),
   };
 }
 
@@ -124,6 +175,12 @@ async function postLocalAvatarTool(
     form.append('change_meanings', item.meaning);
   });
   if (input.normalSound) form.set('normal_sound', input.normalSound);
+  if (input.special) {
+    form.set('special_probability', String(input.special.probability));
+    form.set('special_image', input.special.image);
+    form.set('special_meaning', input.special.meaning);
+    if (input.special.sound) form.set('special_sound', input.special.sound);
+  }
   const security = window.nekoLocalMutationSecurity;
   const headers = security?.getMutationHeaders ? await security.getMutationHeaders() : {};
   const response = await fetch('/api/avatar-tools', {
@@ -171,6 +228,15 @@ export function buildLocalAvatarToolDefinition(item: LocalAvatarToolDto): Avatar
     src: item.normalSoundUrl,
     volume: 0.9,
   } : null;
+  const specialSound = item.special?.soundUrl ? {
+    id: 'special-feedback',
+    src: item.special.soundUrl,
+    volume: 0.9,
+  } : null;
+  const specialEffect = item.special ? {
+    ...LOCAL_AVATAR_TOOL_SPECIAL_SCATTER_EFFECT_RECIPE,
+    assetPath: item.special.imageUrl,
+  } : null;
   return {
     definitionVersion: 2,
     id: item.id,
@@ -205,8 +271,8 @@ export function buildLocalAvatarToolDefinition(item: LocalAvatarToolDto): Avatar
         renderedAnchor: { x: 40, y: 40, coordinateSpace: 'final-css-pixel' },
       },
     },
-    sounds: normalSound ? [normalSound] : [],
-    effects: [],
+    sounds: [normalSound, specialSound].filter((sound): sound is NonNullable<typeof sound> => !!sound),
+    effects: specialEffect ? [specialEffect] : [],
     interaction: {
       kind: 'press-release',
       actionId: 'interact',
@@ -221,6 +287,14 @@ export function buildLocalAvatarToolDefinition(item: LocalAvatarToolDto): Avatar
       touchZone: 'release',
       touchZones: ['ear', 'head', 'face', 'body'],
       ...(normalSound ? { feedback: { sound: normalSound.id } } : {}),
+      ...(item.special ? {
+        chance: {
+          field: 'specialTriggered',
+          probability: item.special.probability,
+          effect: LOCAL_AVATAR_TOOL_SPECIAL_SCATTER_EFFECT_RECIPE.id,
+          ...(specialSound ? { sound: specialSound.id } : {}),
+        },
+      } : {}),
     },
   };
 }

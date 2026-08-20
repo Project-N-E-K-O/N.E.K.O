@@ -15,6 +15,7 @@ type AvatarToolCreatePageProps = {
   limits: LocalAvatarToolLimits | null;
   userName?: string;
   assistantName?: string;
+  onSpecialEnabledChange(enabled: boolean): void;
   onCreate(input: CreateLocalAvatarToolInput): Promise<void>;
   onCancel(): void;
 };
@@ -50,14 +51,21 @@ export default function AvatarToolCreatePage({
   limits,
   userName = '',
   assistantName = '',
+  onSpecialEnabledChange,
   onCreate,
   onCancel,
 }: AvatarToolCreatePageProps) {
   const nextItemIdRef = useRef(2);
+  const createFieldsRef = useRef<HTMLDivElement | null>(null);
   const [name, setName] = useState('');
   const [changeMode, setChangeMode] = useState<LocalAvatarToolChangeMode>('press-swap');
   const [defaultImage, setDefaultImage] = useState<File | null>(null);
   const [normalSound, setNormalSound] = useState<File | null>(null);
+  const [specialEnabled, setSpecialEnabled] = useState(false);
+  const [specialProbabilityPercent, setSpecialProbabilityPercent] = useState(10);
+  const [specialImage, setSpecialImage] = useState<File | null>(null);
+  const [specialMeaning, setSpecialMeaning] = useState('');
+  const [specialSound, setSpecialSound] = useState<File | null>(null);
   const [changeItemsByMode, setChangeItemsByMode] = useState<Record<LocalAvatarToolChangeMode, ChangeItemDraft[]>>({
     'press-swap': [{ id: 0, image: null, meaning: '' }],
     'click-advance': [{ id: 1, image: null, meaning: '' }],
@@ -65,10 +73,19 @@ export default function AvatarToolCreatePage({
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
   const [audioError, setAudioError] = useState('');
+  const [specialAudioError, setSpecialAudioError] = useState('');
   const changeItems = changeItemsByMode[changeMode];
   const meaningExample = i18n(
     'chat.avatarToolCreateImageMeaningPlaceholder',
     'For example: “{{user}}” offers a lollipop to “{{character}}”, and “{{character}}” takes a bite.',
+    {
+      user: userName.trim() || i18n('chat.avatarToolCreateExampleUser', 'the user'),
+      character: assistantName.trim() || i18n('chat.avatarToolCreateExampleCharacter', 'the character'),
+    },
+  );
+  const specialMeaningExample = i18n(
+    'chat.avatarToolCreateSpecialMeaningPlaceholder',
+    'For example: “{{user}}” lightly interacts with this tool, and a reward drops.',
     {
       user: userName.trim() || i18n('chat.avatarToolCreateExampleUser', 'the user'),
       character: assistantName.trim() || i18n('chat.avatarToolCreateExampleCharacter', 'the character'),
@@ -117,7 +134,12 @@ export default function AvatarToolCreatePage({
     }
   };
 
-  const pickAudioWithDesktopHost = async (event: ReactMouseEvent<HTMLInputElement>) => {
+  const pickAudioWithDesktopHost = async (
+    event: ReactMouseEvent<HTMLInputElement>,
+    title: string,
+    setFile: (file: File) => void,
+    setFieldError: (message: string) => void,
+  ) => {
     const picker = window.nekoHost?.pickAudio;
     if (!picker) return;
 
@@ -125,7 +147,7 @@ export default function AvatarToolCreatePage({
     const input = event.currentTarget;
     try {
       const result = await picker({
-        title: i18n('chat.avatarToolCreateNormalSound', 'Interaction sound (optional)'),
+        title,
         maxBytes: limits?.maxAudioBytes,
       });
       if (result.cancelled) return;
@@ -144,10 +166,10 @@ export default function AvatarToolCreatePage({
       } catch {
         // File 已进入 React 状态即可保存；这里只同步 Chromium 原生控件的文件名。
       }
-      setNormalSound(file);
-      setAudioError('');
+      setFile(file);
+      setFieldError('');
     } catch {
-      setAudioError(i18n('chat.avatarToolCreateAudioPickError', 'Could not open this MP3. Please try another file.'));
+      setFieldError(i18n('chat.avatarToolCreateAudioPickError', 'Could not open this MP3. Please try another file.'));
     }
   };
 
@@ -196,6 +218,7 @@ export default function AvatarToolCreatePage({
       || !defaultImage
       || !completeItems
       || (changeMode === 'press-swap' && changeItems.length !== 1)
+      || (specialEnabled && (!specialImage || !specialMeaning.trim()))
     ) {
       setError(i18n('chat.avatarToolCreateRequiredError', 'Please complete all required fields.'));
       return;
@@ -212,10 +235,28 @@ export default function AvatarToolCreatePage({
           meaning: item.meaning,
         })),
         ...(normalSound ? { normalSound } : {}),
+        ...(specialEnabled ? {
+          special: {
+            probability: specialProbabilityPercent / 100,
+            image: specialImage!,
+            meaning: specialMeaning,
+            ...(specialSound ? { sound: specialSound } : {}),
+          },
+        } : {}),
       });
     } catch (cause) {
       const code = cause instanceof Error ? cause.message : '';
-      if (code === 'audio_too_large') {
+      if (code === 'special_audio_too_large') {
+        setSpecialAudioError(i18n('chat.avatarToolCreateAudioSizeError', 'The MP3 must be no larger than {{size}}.', {
+          size: formatLimit(limits?.maxAudioBytes),
+        }));
+      } else if (code === 'special_audio_too_long') {
+        setSpecialAudioError(i18n('chat.avatarToolCreateAudioDurationError', 'The MP3 must be no longer than {{seconds}} seconds.', {
+          seconds: String(Math.round((limits?.maxAudioDurationMs ?? 10_000) / 1000)),
+        }));
+      } else if (code.startsWith('special_audio_')) {
+        setSpecialAudioError(i18n('chat.avatarToolCreateAudioInvalidError', 'This file is not a valid MP3 with playable audio.'));
+      } else if (code === 'audio_too_large') {
         setAudioError(i18n('chat.avatarToolCreateAudioSizeError', 'The MP3 must be no larger than {{size}}.', {
           size: formatLimit(limits?.maxAudioBytes),
         }));
@@ -225,6 +266,8 @@ export default function AvatarToolCreatePage({
         }));
       } else if (code.startsWith('audio_')) {
         setAudioError(i18n('chat.avatarToolCreateAudioInvalidError', 'This file is not a valid MP3 with playable audio.'));
+      } else if (code.startsWith('special_')) {
+        setError(i18n('chat.avatarToolCreateSpecialInvalidError', 'Please complete the surprise settings and try again.'));
       } else {
         setError(i18n('chat.avatarToolCreateSaveError', 'Could not save this tool. Check the fields and try again.'));
       }
@@ -234,9 +277,15 @@ export default function AvatarToolCreatePage({
   };
 
   return (
-    <form className="avatar-tool-create-page" onSubmit={submit}>
-      <p className="avatar-tool-create-privacy">
-          {i18n(
+    <form className={`avatar-tool-create-page${specialEnabled ? ' has-special' : ''}`} onSubmit={submit}>
+      <div className="avatar-tool-create-fields" ref={createFieldsRef}>
+      <p
+        className={error ? 'avatar-tool-create-error' : 'avatar-tool-create-privacy'}
+        {...(error ? { role: 'alert' } : {})}
+      >
+        {error
+          ? error
+          : i18n(
             'chat.avatarToolCreatePrivacy',
             'Images and sounds stay on this device; during interactions, the name and matching description are sent to the model.',
           )}
@@ -402,7 +451,14 @@ export default function AvatarToolCreatePage({
             accept="audio/mpeg,.mp3"
             aria-label={i18n('chat.avatarToolCreateNormalSound', 'Interaction sound (optional)')}
             disabled={submitting}
-            onClick={(event) => { void pickAudioWithDesktopHost(event); }}
+            onClick={(event) => {
+              void pickAudioWithDesktopHost(
+                event,
+                i18n('chat.avatarToolCreateNormalSound', 'Interaction sound (optional)'),
+                setNormalSound,
+                setAudioError,
+              );
+            }}
             onChange={(event) => {
               const file = event.target.files?.[0] ?? null;
               setNormalSound(file);
@@ -426,7 +482,128 @@ export default function AvatarToolCreatePage({
         {audioError ? <small className="avatar-tool-create-audio-error" role="alert">{audioError}</small> : null}
       </div>
 
-      {error ? <p className="avatar-tool-create-error" role="alert">{error}</p> : null}
+      <section className={`avatar-tool-create-special${specialEnabled ? ' is-enabled' : ''}`}>
+        <label className="avatar-tool-create-special-toggle">
+          <span>{i18n('chat.avatarToolCreateSpecial', 'Surprise')}</span>
+          <input
+            type="checkbox"
+            checked={specialEnabled}
+            disabled={submitting}
+            onChange={(event) => {
+              const enabled = event.target.checked;
+              setSpecialEnabled(enabled);
+              onSpecialEnabledChange(enabled);
+              if (enabled) {
+                window.requestAnimationFrame(() => {
+                  const fields = createFieldsRef.current;
+                  if (fields && fields.scrollHeight > fields.clientHeight) {
+                    fields.scrollTop = fields.scrollHeight;
+                  }
+                });
+              }
+              setError('');
+              setSpecialAudioError('');
+            }}
+          />
+          <span className="avatar-tool-create-special-switch" aria-hidden="true" />
+        </label>
+
+        {specialEnabled ? (
+          <div className="avatar-tool-create-special-fields">
+            <label className="avatar-tool-create-field avatar-tool-create-special-probability">
+              <span>{i18n('chat.avatarToolCreateSpecialProbability', 'Trigger chance')}</span>
+              <input
+                type="range"
+                min="1"
+                max="100"
+                step="1"
+                value={specialProbabilityPercent}
+                aria-valuetext={`${specialProbabilityPercent}%`}
+                disabled={submitting}
+                onChange={event => setSpecialProbabilityPercent(Number(event.target.value))}
+              />
+              <strong>{specialProbabilityPercent}%</strong>
+            </label>
+
+            <div className="avatar-tool-create-field">
+              <span>{i18n('chat.avatarToolCreateSpecialImage', 'Surprise image')}</span>
+              <label className={`avatar-tool-create-file-control${submitting ? ' is-disabled' : ''}`}>
+                <input
+                  className="avatar-tool-create-file-input"
+                  type="file"
+                  accept="image/png,.png"
+                  aria-label={i18n('chat.avatarToolCreateSpecialImage', 'Surprise image')}
+                  disabled={submitting}
+                  onClick={(event) => {
+                    void pickImageWithDesktopHost(
+                      event,
+                      i18n('chat.avatarToolCreateSpecialImage', 'Surprise image'),
+                      setSpecialImage,
+                    );
+                  }}
+                  onChange={event => setSpecialImage(event.target.files?.[0] ?? null)}
+                  required={specialEnabled}
+                />
+                <span className="avatar-tool-create-file-button">
+                  {i18n('chat.avatarToolCreateChooseImage', 'Choose image')}
+                </span>
+                <span className={`avatar-tool-create-file-name${specialImage ? ' has-file' : ''}`}>
+                  {specialImage?.name ?? i18n('chat.avatarToolCreateNoImage', 'No image selected')}
+                </span>
+              </label>
+            </div>
+
+            <label className="avatar-tool-create-field avatar-tool-create-special-meaning">
+              <span>{i18n('chat.avatarToolCreateImageMeaning', 'Interaction description')}</span>
+              <textarea
+                value={specialMeaning}
+                maxLength={limits?.maxMeaningChars}
+                disabled={submitting}
+                onChange={event => setSpecialMeaning(event.target.value)}
+                placeholder={specialMeaningExample}
+                required={specialEnabled}
+                rows={3}
+              />
+            </label>
+
+            <div className="avatar-tool-create-field">
+              <span>{i18n('chat.avatarToolCreateSpecialSound', 'Surprise sound (optional)')}</span>
+              <label className={`avatar-tool-create-file-control${submitting ? ' is-disabled' : ''}`}>
+                <input
+                  className="avatar-tool-create-file-input"
+                  type="file"
+                  accept="audio/mpeg,.mp3"
+                  aria-label={i18n('chat.avatarToolCreateSpecialSound', 'Surprise sound (optional)')}
+                  disabled={submitting}
+                  onClick={(event) => {
+                    void pickAudioWithDesktopHost(
+                      event,
+                      i18n('chat.avatarToolCreateSpecialSound', 'Surprise sound (optional)'),
+                      setSpecialSound,
+                      setSpecialAudioError,
+                    );
+                  }}
+                  onChange={(event) => {
+                    setSpecialSound(event.target.files?.[0] ?? null);
+                    setSpecialAudioError('');
+                  }}
+                />
+                <span className="avatar-tool-create-file-button">
+                  {i18n('chat.avatarToolCreateChooseAudio', 'Choose MP3')}
+                </span>
+                <span className={`avatar-tool-create-file-name${specialSound ? ' has-file' : ''}`}>
+                  {specialSound?.name ?? i18n('chat.avatarToolCreateNoAudio', 'No sound selected')}
+                </span>
+              </label>
+              {specialAudioError ? (
+                <small className="avatar-tool-create-audio-error" role="alert">{specialAudioError}</small>
+              ) : null}
+            </div>
+          </div>
+        ) : null}
+      </section>
+      </div>
+
       <div className="avatar-tool-manager-actions avatar-tool-create-actions">
         <button className="avatar-tool-manager-action secondary" type="button" disabled={submitting} onClick={onCancel}>
           {i18n('chat.avatarToolCreateBack', 'Back')}

@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import AvatarToolItemManager from './AvatarToolItemManager';
 import { AVAILABLE_COMPACT_AVATAR_TOOLS, type AvatarToolId, type AvatarToolItem } from './avatarTools';
 import chatStyles from './styles.css?raw';
@@ -53,7 +53,7 @@ describe('AvatarToolItemManager local creation', () => {
     expect(chatStyles).toMatch(/\.avatar-tool-create-page\s*\{[\s\S]*?padding:\s*3px/);
     expect(chatStyles).toMatch(/\.avatar-tool-manager-create-body\s*\{[\s\S]*?overflow-y:\s*hidden/);
     expect(chatStyles).toMatch(/\.avatar-tool-create-field textarea\s*\{[\s\S]*?resize:\s*none[\s\S]*?overflow-y:\s*auto/);
-    expect(chatStyles).toMatch(/\.avatar-tool-create-change-list\s*\{[\s\S]*?flex:\s*1 1 120px[\s\S]*?min-height:\s*120px/);
+    expect(chatStyles).toMatch(/\.avatar-tool-create-change-list\s*\{[\s\S]*?flex:\s*1 1 164px[\s\S]*?min-height:\s*164px/);
     expect(chatStyles).toMatch(/\.avatar-tool-create-change-list:not\(\.has-multiple-items\)\s*\{[\s\S]*?grid-template-rows:\s*minmax\(0, 1fr\)/);
     expect(chatStyles).toMatch(/\.avatar-tool-create-actions\s*\{[\s\S]*?flex:\s*0 0 auto[\s\S]*?margin-top:\s*auto/);
     expect(chatStyles).toMatch(/\.avatar-tool-manager-header p\s*\{[\s\S]*?font-size:\s*13px/);
@@ -61,8 +61,23 @@ describe('AvatarToolItemManager local creation', () => {
     expect(chatStyles).toMatch(/\.avatar-tool-create-field small\s*\{[\s\S]*?font-size:\s*11px/);
     expect(chatStyles).toMatch(/\.avatar-tool-create-mode-options button\s*\{[\s\S]*?font-size:\s*13px/);
     expect(chatStyles).toMatch(/\.avatar-tool-create-file-control\s*\{[\s\S]*?grid-template-columns:\s*auto minmax\(0, 1fr\)/);
-    expect(chatStyles).toMatch(/\.avatar-tool-manager-dialog\.is-create-view\s*\{[\s\S]*?height:\s*min\(780px, calc\(100vh - 24px\)\)/);
+    expect(chatStyles).toMatch(/\.avatar-tool-create-change-item > \.avatar-tool-create-file-control\s*\{[\s\S]*?font-size:\s*13px/);
+    expect(chatStyles).toMatch(/\.avatar-tool-manager-dialog\.is-create-view\s*\{[\s\S]*?height:\s*min\(780px, calc\(100vh - 8px\)\)/);
+    expect(chatStyles).toMatch(/\.avatar-tool-manager-dialog\.is-create-view\.is-special-enabled\s*\{[\s\S]*?height:\s*min\(1040px, calc\(100vh - 8px\)\)/);
+    expect(chatStyles).toMatch(/\.avatar-tool-manager-dialog\.is-create-view:not\(\.is-positioned\)\s*\{[\s\S]*?top:\s*max\(4px, calc\(50% - 390px\)\)/);
+    expect(chatStyles).toMatch(/\.avatar-tool-manager-dialog\.is-create-view\.is-positioned\s*\{[\s\S]*?height:\s*var\(--avatar-tool-manager-positioned-create-height\)/);
     expect(chatStyles).toMatch(/\.avatar-tool-manager-icon-button::before\s*\{[\s\S]*?mask:\s*url\('\/static\/icons\/close_button\.png'\)/);
+    expect(chatStyles).toMatch(/\.avatar-tool-create-fields\s*\{[\s\S]*?overflow-y:\s*auto[\s\S]*?scrollbar-gutter:\s*stable/);
+    expect(chatStyles).toMatch(/\.avatar-tool-create-page:not\(\.has-special\) \.avatar-tool-create-fields\s*\{[\s\S]*?padding-bottom:\s*11px/);
+    expect(chatStyles).toMatch(/\.avatar-tool-create-special\s*\{[\s\S]*?min-height:\s*20px/);
+    expect(chatStyles).toMatch(/\.avatar-tool-create-special\.is-enabled\s*\{[\s\S]*?flex:\s*0 0 auto[\s\S]*?overflow:\s*hidden/);
+    expect(chatStyles).not.toMatch(/\.avatar-tool-create-page\.has-special \.avatar-tool-create-item-meaning textarea/);
+    expect(chatStyles).toMatch(/\.avatar-tool-create-special-probability\s*\{[\s\S]*?grid-template-columns:\s*auto minmax\(0, 1fr\) 34px/);
+    expect(chatStyles).toMatch(/\.avatar-tool-create-special-switch\s*\{[\s\S]*?width:\s*42px[\s\S]*?height:\s*22px/);
+    expect(chatStyles).toMatch(/\.avatar-tool-create-special-switch\s*\{[\s\S]*?margin-left:\s*11px/);
+    expect(chatStyles).not.toMatch(/\.avatar-tool-create-special-toggle > span:first-child\s*\{[\s\S]*?margin-right:\s*auto/);
+    expect(chatStyles).toMatch(/\.avatar-tool-create-special-switch::after\s*\{[\s\S]*?emotion_model_icon\.png/);
+    expect(chatStyles).toMatch(/\.avatar-tool-create-special-probability input\[type='range'\]::\-webkit-slider-thumb\s*\{[\s\S]*?emotion_model_icon\.png/);
   });
 
   it('shows a refresh failure without removing the previous library', () => {
@@ -128,7 +143,7 @@ describe('AvatarToolItemManager local creation', () => {
     fireEvent.change(fileInputs[1], {
       target: { files: [new File(['pressed'], 'pressed.png', { type: 'image/png' })] },
     });
-    fireEvent.change(screen.getByLabelText('Interaction description'), {
+    fireEvent.change(document.querySelector('.avatar-tool-create-item-meaning textarea')!, {
       target: { value: 'A gentle touch' },
     });
     fireEvent.submit(document.querySelector('.avatar-tool-create-page')!);
@@ -142,6 +157,63 @@ describe('AvatarToolItemManager local creation', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
     expect(onSave).toHaveBeenCalledWith(['lollipop', 'fist']);
+  });
+
+  it('keeps the anchored dialog position when create content grows and desktop layout updates', () => {
+    const desktopWindow = window as typeof window & {
+      __nekoDesktopCompactLayout?: unknown;
+    };
+    const originalLayout = desktopWindow.__nekoDesktopCompactLayout;
+    document.body.classList.add('electron-chat-window');
+    desktopWindow.__nekoDesktopCompactLayout = {
+      workArea: { x: 0, y: 0, width: 1280, height: 1200 },
+      windowBounds: { x: 0, y: 0, width: 1280, height: 1200 },
+    };
+
+    try {
+      render(
+        <AvatarToolItemManager
+          open
+          activeToolIds={[]}
+          availableTools={AVAILABLE_COMPACT_AVATAR_TOOLS}
+          anchorRect={{
+            left: 800,
+            top: 900,
+            right: 840,
+            bottom: 940,
+            width: 40,
+            height: 40,
+          }}
+          onSave={() => undefined}
+          onCancel={() => undefined}
+          createLimits={LIMITS}
+          onCreate={async () => undefined}
+        />,
+      );
+
+      const dialog = screen.getByRole('dialog', { name: 'Manage tools' });
+      const libraryLeft = dialog.style.getPropertyValue('--avatar-tool-manager-left');
+      const libraryTop = dialog.style.getPropertyValue('--avatar-tool-manager-top');
+      expect(libraryLeft).toBe('380px');
+      expect(libraryTop).toBe('208px');
+
+      fireEvent.click(screen.getByRole('button', { name: 'Create tool' }));
+
+      expect(dialog.style.getPropertyValue('--avatar-tool-manager-left')).toBe(libraryLeft);
+      expect(dialog.style.getPropertyValue('--avatar-tool-manager-top')).toBe(libraryTop);
+
+      fireEvent.click(screen.getByRole('checkbox', { name: 'Surprise' }));
+      act(() => {
+        window.dispatchEvent(new CustomEvent('neko:desktop-compact-layout-change'));
+      });
+
+      expect(dialog.style.getPropertyValue('--avatar-tool-manager-left')).toBe(libraryLeft);
+      expect(dialog.style.getPropertyValue('--avatar-tool-manager-top')).toBe(libraryTop);
+      expect(dialog.style.getPropertyValue('--avatar-tool-manager-positioned-create-height')).toBe('980px');
+    } finally {
+      document.body.classList.remove('electron-chat-window');
+      desktopWindow.__nekoDesktopCompactLayout = originalLayout;
+    }
   });
 
   it('uses desktop host pickers and keeps the optional MP3 in the create payload', async () => {
@@ -202,6 +274,72 @@ describe('AvatarToolItemManager local creation', () => {
     expect(payload.changeItems[0].meaning).toBe('A friendly interaction');
     expect(payload.normalSound).toBeInstanceOf(File);
     expect(payload.normalSound.name).toBe('interaction.mp3');
+  });
+
+  it('shows surprise fields only when enabled and submits a selected percentage', async () => {
+    const onCreate = vi.fn().mockResolvedValue(undefined);
+    render(
+      <AvatarToolItemManager
+        open
+        activeToolIds={[]}
+        availableTools={AVAILABLE_COMPACT_AVATAR_TOOLS}
+        onSave={() => undefined}
+        onCancel={() => undefined}
+        createLimits={LIMITS}
+        userName="Ming"
+        assistantName="Yui"
+        onCreate={onCreate}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Create tool' }));
+    const surpriseToggle = screen.getByRole('checkbox', { name: 'Surprise' });
+    expect(screen.getByRole('dialog')).not.toHaveClass('is-special-enabled');
+    expect(screen.queryByLabelText('Trigger chance')).toBeNull();
+    fireEvent.click(surpriseToggle);
+    expect(screen.getByRole('dialog')).toHaveClass('is-special-enabled');
+    const probability = screen.getByRole('slider', { name: /Trigger chance/ });
+    expect(probability).toHaveAttribute('min', '1');
+    expect(probability).toHaveAttribute('max', '100');
+    expect(document.querySelector('.avatar-tool-create-special input[type="number"]')).toBeNull();
+    expect(document.querySelector('.avatar-tool-create-special-meaning span')).toHaveTextContent('Interaction description');
+    expect(document.querySelector('.avatar-tool-create-special-meaning textarea')).toHaveAttribute(
+      'placeholder',
+      expect.stringContaining('reward drops'),
+    );
+    fireEvent.change(probability, { target: { value: '25' } });
+    expect(screen.getByText('25%')).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText('Tool name'), { target: { value: 'Surprise Tool' } });
+    fireEvent.change(screen.getByLabelText('Default image'), {
+      target: { files: [new File(['default'], 'default.png', { type: 'image/png' })] },
+    });
+    fireEvent.change(screen.getByLabelText('Change image'), {
+      target: { files: [new File(['change'], 'change.png', { type: 'image/png' })] },
+    });
+    fireEvent.change(document.querySelector('.avatar-tool-create-item-meaning textarea')!, {
+      target: { value: 'Normal meaning' },
+    });
+    fireEvent.change(screen.getByLabelText('Surprise image'), {
+      target: { files: [new File(['special'], 'special.png', { type: 'image/png' })] },
+    });
+    fireEvent.change(document.querySelector('.avatar-tool-create-special-meaning textarea')!, {
+      target: { value: 'Special meaning' },
+    });
+    fireEvent.change(screen.getByLabelText('Surprise sound (optional)'), {
+      target: { files: [new File(['sound'], 'special.mp3', { type: 'audio/mpeg' })] },
+    });
+    fireEvent.submit(document.querySelector('.avatar-tool-create-page')!);
+
+    await waitFor(() => expect(onCreate).toHaveBeenCalledTimes(1));
+    expect(onCreate).toHaveBeenCalledWith(expect.objectContaining({
+      special: expect.objectContaining({
+        probability: 0.25,
+        meaning: 'Special meaning',
+      }),
+    }));
+    expect(onCreate.mock.calls[0][0].special.image.name).toBe('special.png');
+    expect(onCreate.mock.calls[0][0].special.sound.name).toBe('special.mp3');
   });
 
   it('keeps independent drafts for both image modes and places add inside the sequential list', () => {

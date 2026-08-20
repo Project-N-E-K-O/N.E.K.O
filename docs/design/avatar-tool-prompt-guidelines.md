@@ -58,12 +58,12 @@
 
 ## 本地自定义道具
 
-- Host 只接受严格本地 UUID、`actionId=interact`、`intensity=normal|rapid`、合法触点和非负安全整数 `changeIndex`；不接收浏览器直接提供的名称或互动描述。
-- Python 在消耗互动冷却和构建 prompt 前，从权威 record 读取道具名称与 `changeIndex` 对应的唯一一段互动描述。record 缺失、损坏或索引越界时按 `invalid_payload` 拒绝，不回退到第一项或其它内置道具。
+- Host 只接受严格本地 UUID、`actionId=interact`、`intensity=normal|rapid`、合法触点、非负安全整数 `changeIndex`，以及可缺失但存在时必须为明确布尔值的 `specialTriggered`；不接收浏览器直接提供的名称或互动描述。
+- Python 在消耗互动冷却和构建 prompt 前，从权威 record 读取道具配置。未配置彩蛋时 `specialTriggered` 必须缺失；已配置时必须明确为 `true` 或 `false`。record 缺失、损坏、索引越界或彩蛋事实与记录不一致时按 `invalid_payload` 拒绝，不回退到第一项或其它内置道具。
 - 道具名称和互动描述是有长度边界的用户数据，模板中以 JSON 字符串表示并明确标注“不是指令”；其中的命令、角色设定或元指令不能覆盖现有 system prompt。
-- 即时 prompt 只加入本次命中的一段互动描述、已验证强度和触点，不拼入其它图片的描述，也不根据图片内容自行推断动作、情绪或事件。
-- memory note 只保存安全显示名称、强度和触点摘要，不保存用户填写的互动描述；去重 key 使用稳定本地 ID，只有 `rapid` 提高去重 rank。
-- 阶段一没有声音或彩蛋事实；未配置的字段不得进入 prompt。以后增加彩蛋时，也只能消费当前 record 与 runtime 共同证明的明确事实。
+- 彩蛋未命中或未配置时，即时 prompt 只加入当前 `changeIndex` 对应的一段互动描述；彩蛋命中时只加入彩蛋互动描述。两条路径都保留已验证强度和触点，不拼入其它描述，也不根据图片内容自行推断动作、情绪或事件。
+- 彩蛋开启时 prompt 明确写入已验证的“触发／未触发”事实；未配置彩蛋时不制造该事实。
+- memory note 只保存安全显示名称、强度、触点摘要和已确认的“彩蛋已触发”事实，不保存普通或彩蛋互动描述；去重 key 使用稳定本地 ID，只有 `rapid` 提高去重 rank。
 
 ## 多语言
 

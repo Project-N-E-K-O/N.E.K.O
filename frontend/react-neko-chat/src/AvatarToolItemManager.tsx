@@ -60,6 +60,7 @@ const AVATAR_TOOL_MANAGER_ANCHOR_GAP = 12;
 const AVATAR_TOOL_MANAGER_FALLBACK_WIDTH = 460;
 const AVATAR_TOOL_MANAGER_FALLBACK_HEIGHT = 680;
 const AVATAR_TOOL_CREATE_FALLBACK_HEIGHT = 780;
+const AVATAR_TOOL_CREATE_SPECIAL_FALLBACK_HEIGHT = 1040;
 const AVATAR_TOOL_MANAGER_FOCUSABLE_SELECTOR = [
   'a[href]',
   'button:not([disabled])',
@@ -332,6 +333,27 @@ function clampDialogPosition(
   };
 }
 
+function clampCreateDialogPosition(
+  position: AvatarToolManagerPosition,
+  dialogSize: { width: number; height: number },
+  viewport: AvatarToolManagerViewport,
+) {
+  const top = clampValue(
+    position.top,
+    viewport.top + AVATAR_TOOL_MANAGER_VIEWPORT_GUTTER,
+    viewport.bottom - AVATAR_TOOL_MANAGER_VIEWPORT_GUTTER - 1,
+  );
+  const availableHeight = Math.max(
+    1,
+    viewport.bottom - top - AVATAR_TOOL_MANAGER_VIEWPORT_GUTTER,
+  );
+  return clampDialogPosition(
+    { ...position, top },
+    { ...dialogSize, height: Math.min(dialogSize.height, availableHeight) },
+    viewport,
+  );
+}
+
 function resolveAnchoredDialogPosition(
   anchorRect: AvatarToolManagerAnchorRect | null | undefined,
   dialogSize: { width: number; height: number },
@@ -381,12 +403,15 @@ export default function AvatarToolItemManager({
   );
   const [draftSlots, setDraftSlots] = useState<AvatarToolSlotValue[]>(() => createSlots(activeToolIds));
   const [view, setView] = useState<'library' | 'create'>('library');
+  const [createSpecialEnabled, setCreateSpecialEnabled] = useState(false);
   const [notice, setNotice] = useState('');
   const [dragSession, setDragSession] = useState<AvatarToolDragSession | null>(null);
   const [dialogPosition, setDialogPosition] = useState<AvatarToolManagerPosition | null>(null);
   const [dialogDragSession, setDialogDragSession] = useState<AvatarToolManagerDialogDragSession | null>(null);
   const preferredDialogHeight = view === 'create'
-    ? AVATAR_TOOL_CREATE_FALLBACK_HEIGHT
+    ? (createSpecialEnabled
+      ? AVATAR_TOOL_CREATE_SPECIAL_FALLBACK_HEIGHT
+      : AVATAR_TOOL_CREATE_FALLBACK_HEIGHT)
     : AVATAR_TOOL_MANAGER_FALLBACK_HEIGHT;
   const dialogRef = useRef<HTMLElement | null>(null);
   const closeButtonRef = useRef<HTMLButtonElement | null>(null);
@@ -397,6 +422,7 @@ export default function AvatarToolItemManager({
     if (!open) return;
     setDraftSlots(createSlots(activeToolIds));
     setView('library');
+    setCreateSpecialEnabled(false);
     setNotice('');
     setDragSession(null);
     setDialogDragSession(null);
@@ -412,10 +438,18 @@ export default function AvatarToolItemManager({
     const viewport = getDialogViewport();
     const nextPosition = resolveAnchoredDialogPosition(
       anchorRect,
-      getDialogSize(dialogRef.current, viewport, preferredDialogHeight),
+      getDialogSize(dialogRef.current, viewport, AVATAR_TOOL_MANAGER_FALLBACK_HEIGHT),
     );
     setDialogPosition(nextPosition);
-  }, [anchorRect, open, preferredDialogHeight]);
+  }, [
+    anchorRect?.bottom,
+    anchorRect?.left,
+    anchorRect?.right,
+    anchorRect?.top,
+    anchorRect?.width,
+    anchorRect?.height,
+    open,
+  ]);
 
   useEffect(() => {
     if (!open || typeof window === 'undefined') return undefined;
@@ -424,11 +458,10 @@ export default function AvatarToolItemManager({
       setDialogPosition((position) => {
         if (!isElectronDesktopEnvironment() && viewport.width <= 640) return null;
         if (!position) return position;
-        return clampDialogPosition(
-          position,
-          getDialogSize(dialogRef.current, viewport, preferredDialogHeight),
-          viewport,
-        );
+        const dialogSize = getDialogSize(dialogRef.current, viewport, preferredDialogHeight);
+        return view === 'create'
+          ? clampCreateDialogPosition(position, dialogSize, viewport)
+          : clampDialogPosition(position, dialogSize, viewport);
       });
     };
     window.addEventListener('resize', clampCurrentPosition);
@@ -437,7 +470,7 @@ export default function AvatarToolItemManager({
       window.removeEventListener('resize', clampCurrentPosition);
       window.removeEventListener('neko:desktop-compact-layout-change', clampCurrentPosition);
     };
-  }, [open, preferredDialogHeight]);
+  }, [open, preferredDialogHeight, view]);
 
   const isPositioned = dialogPosition !== null;
 
@@ -649,10 +682,14 @@ export default function AvatarToolItemManager({
       if (!active) return session;
       event.preventDefault();
       const viewport = getDialogViewport();
-      setDialogPosition(clampDialogPosition({
+      const nextPosition = {
         left: session.startLeft + event.clientX - session.startX,
         top: session.startTop + event.clientY - session.startY,
-      }, getDialogSize(dialogRef.current, viewport, preferredDialogHeight), viewport));
+      };
+      const dialogSize = getDialogSize(dialogRef.current, viewport, preferredDialogHeight);
+      setDialogPosition(view === 'create'
+        ? clampCreateDialogPosition(nextPosition, dialogSize, viewport)
+        : clampDialogPosition(nextPosition, dialogSize, viewport));
       return {
         ...session,
         active,
@@ -687,6 +724,15 @@ export default function AvatarToolItemManager({
   const isDesktopMode = dialogPosition !== null;
   const dialogViewport = getDialogViewport();
   const dialogSize = getDialogSize(dialogRef.current, dialogViewport, preferredDialogHeight);
+  const positionedCreateHeight = dialogPosition && view === 'create'
+    ? Math.max(
+      1,
+      Math.min(
+        preferredDialogHeight,
+        dialogViewport.bottom - dialogPosition.top - AVATAR_TOOL_MANAGER_VIEWPORT_GUTTER,
+      ),
+    )
+    : null;
   const isDesktopCompactDialog = dialogViewport.compactDesktop;
   const dragTool = dragSession ? availableById.get(dragSession.toolId) : null;
   const managerDragging = !!dialogDragSession?.active || !!dragSession?.active;
@@ -696,6 +742,9 @@ export default function AvatarToolItemManager({
       ...(dialogPosition ? {
         '--avatar-tool-manager-left': `${dialogPosition.left}px`,
         '--avatar-tool-manager-top': `${dialogPosition.top}px`,
+        ...(positionedCreateHeight !== null ? {
+          '--avatar-tool-manager-positioned-create-height': `${positionedCreateHeight}px`,
+        } : {}),
       } : {}),
       ...(isDesktopCompactDialog ? {
         '--avatar-tool-manager-width': `${dialogSize.width}px`,
@@ -712,7 +761,7 @@ export default function AvatarToolItemManager({
 
   const dialogElement = (
     <section
-      className={`avatar-tool-manager-dialog${view === 'create' ? ' is-create-view' : ''}${dialogPosition ? ' is-positioned' : ''}${isDesktopCompactDialog ? ' is-desktop-compact-layout' : ''}${managerDragging ? ' is-dragging' : ''}`}
+      className={`avatar-tool-manager-dialog${view === 'create' ? ' is-create-view' : ''}${createSpecialEnabled ? ' is-special-enabled' : ''}${dialogPosition ? ' is-positioned' : ''}${isDesktopCompactDialog ? ' is-desktop-compact-layout' : ''}${managerDragging ? ' is-dragging' : ''}`}
       ref={dialogRef}
       style={dialogStyle}
       role="dialog"
@@ -761,9 +810,14 @@ export default function AvatarToolItemManager({
             limits={createLimits}
             userName={userName}
             assistantName={assistantName}
-            onCancel={() => setView('library')}
+            onSpecialEnabledChange={setCreateSpecialEnabled}
+            onCancel={() => {
+              setCreateSpecialEnabled(false);
+              setView('library');
+            }}
             onCreate={async (input) => {
               await onCreate(input);
+              setCreateSpecialEnabled(false);
               setView('library');
             }}
           />
@@ -864,7 +918,10 @@ export default function AvatarToolItemManager({
                   className="avatar-tool-manager-library-card avatar-tool-manager-create-card"
                   type="button"
                   data-avatar-tool-create
-                  onClick={() => setView('create')}
+                  onClick={() => {
+                    setCreateSpecialEnabled(false);
+                    setView('create');
+                  }}
                 >
                   <span className="avatar-tool-manager-create-plus" aria-hidden="true">+</span>
                   <span className="avatar-tool-manager-library-label">
