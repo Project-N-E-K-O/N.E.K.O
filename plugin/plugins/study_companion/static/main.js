@@ -1972,7 +1972,6 @@ async function runOcr(options = {}) {
   const fallbackMessage = data.capture_mode_used === 'fullscreen'
     ? interactiveOcrFallbackMessage(data.interactive_fallback_reason)
     : '';
-  setStatus(fallbackMessage || tf('ui.status.ocr_result', 'OCR {status}', { status: data.status || 'unknown' }));
   if (data.text) {
     studyInput.value = data.text;
   } else if (options.clearWhenEmpty && studyInput) {
@@ -1980,6 +1979,7 @@ async function runOcr(options = {}) {
   }
   setReply(data.text || data.diagnostic || data.summary || '');
   await refreshStatus({ updateReply: false });
+  setStatus(fallbackMessage || tf('ui.status.ocr_result', 'OCR {status}', { status: data.status || 'unknown' }));
   return data;
 }
 
