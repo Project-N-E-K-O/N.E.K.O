@@ -225,6 +225,7 @@ describe('usePackageManager safe installation flow', () => {
   it('does not duplicate warnings when registry and plugin source both return 404', async () => {
     const manager = usePackageManager()
     syncRegistryAndFetch.mockResolvedValue({
+      registryRefreshed: false,
       warningMessage: 'messages.resourceNotFound',
     })
     vi.mocked(getPluginCliPlugins).mockRejectedValue({ response: { status: 404 } })
@@ -233,6 +234,21 @@ describe('usePackageManager safe installation flow', () => {
 
     expect(ElMessage.warning).toHaveBeenCalledTimes(1)
     expect(ElMessage.warning).toHaveBeenCalledWith('messages.resourceNotFound')
+  })
+
+  it('still reports a plugin source failure after a partial registry refresh warning', async () => {
+    const manager = usePackageManager()
+    syncRegistryAndFetch.mockResolvedValue({
+      registryRefreshed: true,
+      warningMessage: 'messages.pluginListRefreshPartial',
+    })
+    vi.mocked(getPluginCliPlugins).mockRejectedValue({ response: { status: 404 } })
+
+    await manager.refreshPluginSources()
+
+    expect(ElMessage.warning).toHaveBeenCalledTimes(2)
+    expect(ElMessage.warning).toHaveBeenNthCalledWith(1, 'messages.pluginListRefreshPartial')
+    expect(ElMessage.warning).toHaveBeenNthCalledWith(2, 'messages.pluginListRefreshFailed')
   })
 
   it('reports install success before a registry refresh warning', async () => {

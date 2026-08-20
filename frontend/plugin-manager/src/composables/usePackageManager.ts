@@ -507,7 +507,9 @@ export function usePackageManager(options: UsePackageManagerOptions = {}) {
       const syncResult = await pluginStore.syncRegistryAndFetch({ preserveMessagesOn404: true })
       if (syncResult.warningMessage) {
         ElMessage.warning(syncResult.warningMessage)
-        warningShown = true
+        // 只有注册表请求本身失败（401/403/404）时，后续插件源请求的同类失败才算重复提示；
+        // 注册表已刷新但存在失败项属于另一个问题，不能吞掉插件源的失败反馈
+        warningShown = !syncResult.registryRefreshed
       }
       const response = await getPluginCliPlugins({ preserveMessagesOn404: true })
       const refs = response.plugin_refs || []
