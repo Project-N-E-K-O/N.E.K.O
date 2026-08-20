@@ -375,10 +375,14 @@ class FactBuilder:
             180.0: own.z - min_z,    # south edge
             270.0: own.x - min_x,    # west edge
         }
-        nearest_bearing, distance = min(margins.items(), key=lambda item: item[1])
+        distance = min(margins.values())
         heading_out = None
         if own_heading is not None:
-            heading_out = _angle_between(own_heading, nearest_bearing) <= 60.0
+            heading_out = any(
+                margin <= self.cfg.boundary_margin_m
+                and _angle_between(own_heading, bearing) <= 60.0
+                for bearing, margin in margins.items()
+            )
         return max(0.0, distance), heading_out
 
     def _own_broadside(self, own_heading, bearings):

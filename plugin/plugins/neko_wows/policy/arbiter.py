@@ -154,6 +154,12 @@ class Arbiter:
     def clear_quiet_window(self) -> None:
         self._quiet_until = 0.0
 
+    def clear_pending(self) -> int:
+        """Drop candidates that have not reached the host yet."""
+        count = len(self._queue)
+        self._queue.clear()
+        return count
+
     def quiet_until(self) -> float:
         return self._quiet_until
 

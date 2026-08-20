@@ -103,7 +103,10 @@ _SPECS: tuple[EventSpec, ...] = (
     EventSpec(
         event_id=POST_BATTLE_SUMMARY,
         lane=LANE_NORMAL,
-        priority=40,
+        # Keep this inside the terminal cue's attachment window. The service
+        # may publish only one ended frame, so a queued summary has no later
+        # accepted frame on which to drain.
+        priority=50,
         summary="战后摘要",
         cooldown_seconds=120.0,
         coalesce_key="wows_summary",

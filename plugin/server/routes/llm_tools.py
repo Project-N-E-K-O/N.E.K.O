@@ -195,6 +195,12 @@ async def llm_tool_callback(
         out = {"is_error": bool(result.get("is_error", False))}
         if "output" in result:
             out["output"] = result["output"]
+        else:
+            out.update({
+                key: value
+                for key, value in result.items()
+                if key not in {"output", "is_error", "error", "images"}
+            })
         if result.get("error"):
             out["error"] = str(result["error"])
         # Only forward a non-empty list. Emitting ``images: []`` for every

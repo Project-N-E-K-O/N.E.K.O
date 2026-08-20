@@ -20,6 +20,7 @@ from plugin.plugins.neko_wows.domain.catalog import (
     OWN_BROADSIDE_EXPOSED,
     OWN_SHIP_SUNK,
     OUTNUMBERED,
+    POST_BATTLE_SUMMARY,
     PRIORITY_TARGET,
     RAPID_DAMAGE,
     SITUATION_ADVICE,
@@ -104,6 +105,19 @@ def test_only_one_candidate_is_primary_per_round():
     assert decision.chosen.event_id == LOW_HEALTH
     assert tuple(item.event_id for item in decision.attached) == (
         ENEMY_CLOSING,
+    )
+    assert decision.queued == 0
+
+
+def test_post_battle_summary_is_bundled_with_the_terminal_cue():
+    decision = Arbiter(CFG).decide([
+        candidate(BATTLE_ENDED),
+        candidate(POST_BATTLE_SUMMARY),
+    ], 100.0)
+
+    assert tuple(item.event_id for item in decision.candidates) == (
+        BATTLE_ENDED,
+        POST_BATTLE_SUMMARY,
     )
     assert decision.queued == 0
 

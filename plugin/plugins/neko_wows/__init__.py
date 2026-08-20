@@ -440,7 +440,9 @@ class NekoWowsPlugin(NekoPluginBase):
             self.facts = FactBuilder(cfg)
             if thresholds_changed:
                 # Detector latches were computed against the old thresholds;
-                # keeping them would mix two rule sets in one battle.
+                # keeping either them or their queued candidates would mix two
+                # rule sets in one battle.
+                self.arbiter.clear_pending()
                 self.registry = self._build_registry()
                 self._blocked_signature = ()
 

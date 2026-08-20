@@ -488,6 +488,19 @@ async def test_callback_route_accepts_images_without_output():
 
 
 @pytest.mark.asyncio
+async def test_callback_route_preserves_metadata_beside_images_without_output():
+    out = await _call_with_handler_result({
+        "shot_id": "shot_1",
+        "telemetry": {"distance_m": 1200},
+        "images": [{"data_b64": "QUJD", "mime": "image/jpeg"}],
+    })
+
+    assert out["shot_id"] == "shot_1"
+    assert out["telemetry"] == {"distance_m": 1200}
+    assert "output" not in out
+
+
+@pytest.mark.asyncio
 async def test_callback_route_omits_images_key_when_there_are_none():
     """Every pre-existing plugin must keep producing a byte-identical
     response body; an empty ``images: []`` would be a silent wire change."""

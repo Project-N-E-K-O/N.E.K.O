@@ -681,7 +681,9 @@ def _inflicted_damage(
     if player_id is not None:
         # Identity is known but this frame has no local row yet.
         return None, {}
-    return _sum_table(raw), {}
+    # A flat table is keyed by attacker. Without the local player id, none of
+    # its rows can be attributed to this client safely.
+    return None, {}
 
 
 __all__ = [

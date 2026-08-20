@@ -983,6 +983,25 @@ def test_boundary_risk_needs_a_heading_towards_the_edge():
     assert BOUNDARY_RISK in fired(towards)
 
 
+def test_boundary_risk_checks_every_nearby_edge_at_a_corner():
+    registry = DetectorRegistry(build_geometry_detectors(CFG))
+    results = feed(registry, [
+        frame(seq=1, at=100.0),
+        # North is the closest edge, but the ship is also inside the east
+        # margin and is sailing east. The eastward risk must not be hidden by
+        # the slightly closer north edge.
+        frame(
+            seq=2,
+            at=101.0,
+            x=20_800.0,
+            z=20_900.0,
+            yaw=math.pi / 2,
+        ),
+    ])
+
+    assert BOUNDARY_RISK in fired(results)
+
+
 def test_broadside_exposure_requires_a_heading():
     registry = DetectorRegistry(build_geometry_detectors(CFG))
     east = enemy(x=5000.0, z=0.0)

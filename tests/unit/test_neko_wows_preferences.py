@@ -529,6 +529,35 @@ def test_apply_config_updates_ship_catalog_context_under_pipeline_lock():
     assert target.ship_context.calls == [("apply_config", (cfg,))]
 
 
+def test_apply_config_drops_candidates_created_with_old_detection_thresholds():
+    target = object.__new__(NekoWowsPlugin)
+    target._pipeline_lock = _TrackingLock()
+    target._state_lock = threading.RLock()
+    target.cfg = WowsConfig()
+    target.timeline = _GuardedDependency(target._pipeline_lock)
+    target.timeline.resize = lambda *_args: None
+    target.service = _GuardedDependency(target._pipeline_lock)
+    target.policy = _GuardedDependency(target._pipeline_lock)
+    target.arbiter = Arbiter(target.cfg)
+    target.router = _GuardedDependency(target._pipeline_lock)
+    target.dispatcher = _GuardedDependency(target._pipeline_lock)
+    target.transport = _GuardedDependency(target._pipeline_lock)
+    target.importer = _GuardedDependency(target._pipeline_lock)
+    target.ship_context = _GuardedDependency(target._pipeline_lock)
+    target.official_api = _GuardedDependency(target._pipeline_lock)
+    target.screenshots = _GuardedDependency(target._pipeline_lock)
+    target.tactics = NullTacticsRepository()
+    target._blocked_signature = ()
+
+    target.arbiter.submit([candidate(LOW_HEALTH, cfg=target.cfg)], 100.0)
+    assert target.arbiter.stats()["queued"] == 1
+
+    cfg = WowsConfig(low_health_ratios=(0.45, 0.25))
+    NekoWowsPlugin._apply_config(target, cfg)
+
+    assert target.arbiter.stats()["queued"] == 0
+
+
 class _ActionStore:
     def __init__(self, outcome=Ok(None), *, raises=None):
         self.outcome = outcome

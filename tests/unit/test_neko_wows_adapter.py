@@ -470,6 +470,26 @@ def test_nested_damage_without_local_identity_is_not_guessed():
     assert snapshot.damage_inflicted_by_victim == {}
 
 
+def test_flat_damage_without_local_identity_is_not_guessed():
+    payload = v1_payload(
+        self=None,
+        damage={
+            "inflicted": {
+                "2000": 15_000.0,
+                "9999": 80_000.0,
+            },
+            "received": {},
+            "teamTotal": {},
+        },
+    )
+
+    snapshot = WowsSchemaAdapter().parse(payload)
+
+    assert snapshot.damage_inflicted is None
+    assert snapshot.damage_inflicted_by_victim == {}
+    assert snapshot.availability_of(DOMAIN_DAMAGE) == AVAIL_UNKNOWN
+
+
 def test_damage_is_unknown_until_local_player_identity_exists():
     own_without_player_id = dict(flat_body()["self"])
     own_without_player_id.pop("playerId")
