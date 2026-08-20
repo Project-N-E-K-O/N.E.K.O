@@ -291,6 +291,56 @@ async def test_cancelled_attach_closes_unadopted_factory_material() -> None:
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_attach_watchdog_propagates_inflight_cancellation() -> None:
+    class BlockingRetryManager(_Manager):
+        def __init__(self) -> None:
+            super().__init__()
+            self.retry_started = asyncio.Event()
+
+        async def set_speaker_verifier_factory(
+            self,
+            factory: _Factory | None,
+            *,
+            activation_generation: str,
+        ) -> bool:
+            self.verifier_calls.append((factory, activation_generation))
+            if factory is None:
+                return True
+            if len(self.verifier_calls) == 1:
+                factory.close()
+                return False
+            self.retry_started.set()
+            await asyncio.Event().wait()
+            return True
+
+    registry = OwnerVoiceRuntimeRegistry(
+        enforce=True,
+        restore_retry_interval_seconds=0.01,
+        restore_retry_timeout_seconds=1.0,
+    )
+    profile = _profile("profile")
+    try:
+        assert await registry.activate(profile, "generation")
+    finally:
+        profile.close()
+    manager = BlockingRetryManager()
+    assert not await registry.register_manager(manager)
+    await asyncio.wait_for(manager.retry_started.wait(), 1)
+
+    watchdog = registry._attach_retry_task  # type: ignore[attr-defined]
+    assert watchdog is not None
+    watchdog.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await watchdog
+
+    factory = manager.verifier_calls[-1][0]
+    assert factory is not None and factory.closed
+    assert registry._attach_retry_task is None  # type: ignore[attr-defined]
+    await registry.close()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_detach_clears_current_and_future_factory() -> None:
     registry = OwnerVoiceRuntimeRegistry(enforce=True)
     current = _Manager()

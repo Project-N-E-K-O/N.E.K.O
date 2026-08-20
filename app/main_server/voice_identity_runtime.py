@@ -286,6 +286,10 @@ class OwnerVoiceRuntimeRegistry:
                 factory,
                 activation_generation=activation.generation,
             )
+        except asyncio.CancelledError:
+            if factory is not None:
+                factory.close()
+            raise
         except BaseException:
             if factory is not None:
                 factory.close()
