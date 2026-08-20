@@ -225,7 +225,7 @@ export default {
     noAvailable: '利用可能な GitHub ダウンロードソースがありません。GitHub 直結を使用します。',
     selectedFastest: '最速のソースを選択しました: {source}',
     testFailed: 'ミラーソースの測定に失敗しました',
-    installFallback: 'ミラーソースの測定に失敗したため、GitHub 直結を使用します。'
+    installFallback: 'ミラーソースを選択できないため、GitHub 直結を使用します。'
   },
   plugins: {
     title: 'プラグイン一覧',

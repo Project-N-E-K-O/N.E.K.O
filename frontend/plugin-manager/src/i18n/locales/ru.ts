@@ -225,7 +225,7 @@ export default {
     noAvailable: 'Нет доступных источников загрузки GitHub; используется GitHub напрямую.',
     selectedFastest: 'Выбран самый быстрый источник: {source}',
     testFailed: 'Не удалось проверить источник зеркала',
-    installFallback: 'Не удалось проверить источник зеркала; используется GitHub напрямую.'
+    installFallback: 'Не удалось выбрать источник зеркала; используется GitHub напрямую.'
   },
   plugins: {
     title: 'Список плагинов',

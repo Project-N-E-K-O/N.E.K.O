@@ -106,6 +106,26 @@ const mode = ref<GithubMirrorMode>(initial.mode)
 const specifiedSourceId = ref<GithubProxySourceId>(initial.specifiedSourceId)
 const autoSourceId = ref<GithubMirrorSourceId | null>(initial.autoSourceId)
 const autoMeasuredAt = ref<number | null>(initial.autoMeasuredAt)
+const autoMeasurementClock = ref(Date.now())
+let autoMeasurementExpiryTimer: ReturnType<typeof setTimeout> | null = null
+
+function scheduleAutoMeasurementExpiry() {
+  if (autoMeasurementExpiryTimer !== null) {
+    clearTimeout(autoMeasurementExpiryTimer)
+    autoMeasurementExpiryTimer = null
+  }
+  if (autoMeasuredAt.value === null) return
+
+  const remaining = autoMeasuredAt.value + AUTO_MIRROR_MEASUREMENT_MAX_AGE_MS - Date.now()
+  if (remaining <= 0) {
+    autoMeasurementClock.value = Date.now()
+    return
+  }
+  autoMeasurementExpiryTimer = setTimeout(() => {
+    autoMeasurementExpiryTimer = null
+    autoMeasurementClock.value = Date.now()
+  }, remaining)
+}
 
 function persist() {
   try {
@@ -133,14 +153,17 @@ function setSpecifiedSourceId(next: GithubProxySourceId) {
 function setAutoSourceId(next: GithubMirrorSourceId, measuredAt = Date.now()) {
   autoSourceId.value = next
   autoMeasuredAt.value = measuredAt
+  autoMeasurementClock.value = Date.now()
+  scheduleAutoMeasurementExpiry()
   persist()
 }
 
 function isAutoMeasurementFresh() {
+  const now = Math.max(autoMeasurementClock.value, Date.now())
   return (
     autoSourceId.value !== null
     && autoMeasuredAt.value !== null
-    && Date.now() - autoMeasuredAt.value < AUTO_MIRROR_MEASUREMENT_MAX_AGE_MS
+    && now - autoMeasuredAt.value < AUTO_MIRROR_MEASUREMENT_MAX_AGE_MS
   )
 }
 
@@ -155,6 +178,8 @@ const activeSource = computed(() => {
   }
   return null
 })
+
+scheduleAutoMeasurementExpiry()
 
 async function measureSpeedTestSources(): Promise<GithubMirrorMeasurement[]> {
   let response: Response

@@ -225,7 +225,7 @@ export default {
     noAvailable: '没有可用的 GitHub 下载源，已使用 GitHub 直连。',
     selectedFastest: '已选择最快节点：{source}',
     testFailed: '镜像源测速失败',
-    installFallback: '镜像测速失败，已使用 GitHub 直连。'
+    installFallback: '无法选择镜像源，已使用 GitHub 直连。'
   },
   plugins: {
     title: '插件列表',

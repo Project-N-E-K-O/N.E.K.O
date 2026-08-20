@@ -225,7 +225,7 @@ export default {
     noAvailable: '沒有可用的 GitHub 下載來源，已使用 GitHub 直連。',
     selectedFastest: '已選擇最快節點：{source}',
     testFailed: '鏡像來源測速失敗',
-    installFallback: '鏡像測速失敗，已使用 GitHub 直連。'
+    installFallback: '無法選擇鏡像來源，已使用 GitHub 直連。'
   },
   plugins: {
     title: '外掛列表',

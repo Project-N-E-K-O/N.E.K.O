@@ -225,7 +225,7 @@ export default {
     noAvailable: 'No hubo fuentes de descarga de GitHub disponibles; se usa GitHub directo.',
     selectedFastest: 'Fuente más rápida seleccionada: {source}',
     testFailed: 'Falló la prueba de fuente espejo',
-    installFallback: 'Falló la prueba de fuente espejo; se usa GitHub directo.'
+    installFallback: 'No se pudo seleccionar una fuente espejo; se usa GitHub directo.'
   },
   plugins: {
     title: 'Plugins',

@@ -225,7 +225,7 @@ export default {
     noAvailable: '사용 가능한 GitHub 다운로드 소스가 없어 GitHub 직접 연결을 사용합니다.',
     selectedFastest: '가장 빠른 소스를 선택했습니다: {source}',
     testFailed: '미러 소스 속도 측정 실패',
-    installFallback: '미러 소스 측정에 실패하여 GitHub 직접 연결을 사용합니다.'
+    installFallback: '미러 소스를 선택할 수 없어 GitHub 직접 연결을 사용합니다.'
   },
   plugins: {
     title: '플러그인 목록',

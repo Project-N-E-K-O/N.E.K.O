@@ -1356,35 +1356,67 @@ async def test_hash_mismatch_retries_allowlisted_proxy_via_github_direct(
         "plugin.neko-plugin"
     )
     proxied_url = f"https://cdn.gh-proxy.org/{direct_url}"
-    proxy_path = tmp_path / "proxy.neko-plugin"
-    direct_path = tmp_path / "direct.neko-plugin"
-    proxy_path.write_bytes(b"proxy-error-page")
-    direct_path.write_bytes(b"valid-package")
-    verification_paths: list[Path] = []
+    attempts: list[str] = []
 
-    def verify(path: Path, expected_hash: str) -> str:
-        verification_paths.append(path)
-        if path == proxy_path:
-            raise ValueError("SHA256 校验失败")
-        return "passed"
+    class Response:
+        status_code = 200
 
-    async def download_once(url: str, task: dict[str, Any]) -> Path:
-        assert url == direct_url
-        return direct_path
+        def __init__(self, url: str) -> None:
+            self.url = url
+            self.body = b"proxy-error-page" if url == proxied_url else b"valid-package"
+            self.headers = {"content-length": str(len(self.body))}
 
-    monkeypatch.setattr(market_bridge_module, "_verify_sha256_file", verify)
-    monkeypatch.setattr(market_bridge_module, "_download_package_once", download_once)
+        def raise_for_status(self) -> None:
+            return None
+
+        async def aiter_bytes(self, chunk_size: int) -> Any:
+            yield self.body
+
+    class Stream:
+        def __init__(self, url: str) -> None:
+            self.response = Response(url)
+
+        async def __aenter__(self) -> Response:
+            return self.response
+
+        async def __aexit__(self, *args: Any) -> None:
+            return None
+
+    class Client:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            pass
+
+        async def __aenter__(self) -> "Client":
+            return self
+
+        async def __aexit__(self, *args: Any) -> None:
+            return None
+
+        def stream(self, method: str, url: str) -> Stream:
+            assert method == "GET"
+            attempts.append(url)
+            return Stream(url)
+
+    monkeypatch.setattr(market_bridge_module.httpx, "AsyncClient", Client)
+    monkeypatch.setattr(
+        market_bridge_module.PluginCliPathPolicy,
+        "from_settings",
+        classmethod(lambda cls: type("Policy", (), {"package_artifacts_root": tmp_path})()),
+    )
+
+    proxy_path = await market_bridge_module._download_package_once(proxied_url, {})
+    expected_hash = hashlib.sha256(b"valid-package").hexdigest()
 
     package_path, sha_check = await market_bridge_module._verify_downloaded_package_with_fallback(
         proxied_url,
         proxy_path,
-        "a" * 64,
+        expected_hash,
         {},
     )
 
-    assert package_path == direct_path
+    assert attempts == [proxied_url, direct_url]
+    assert package_path.read_bytes() == b"valid-package"
     assert sha_check == "passed"
-    assert verification_paths == [proxy_path, direct_path]
     assert not proxy_path.exists()
 
 

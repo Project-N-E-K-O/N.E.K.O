@@ -225,7 +225,7 @@ export default {
     noAvailable: 'No GitHub download source was available; using GitHub Direct.',
     selectedFastest: 'Selected fastest source: {source}',
     testFailed: 'Mirror source test failed',
-    installFallback: 'Mirror source test failed; using GitHub Direct.'
+    installFallback: 'Could not select a mirror source; using GitHub Direct.'
   },
   plugins: {
     title: 'Plugins',
