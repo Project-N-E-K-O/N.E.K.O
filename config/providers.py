@@ -136,6 +136,12 @@ MODELS_EXTRA_BODY_MAP: dict[str, dict] = {
     "deepseek-ai/DeepSeek-V3.2": EXTRA_BODY_OPENAI,
     "deepseek-ai/DeepSeek-V4-Flash": EXTRA_BODY_OPENAI,
     "Qwen/Qwen3.5-397B-A17B": EXTRA_BODY_OPENAI,
+    # DeepSeek 官方（api.deepseek.com）：V4 默认开思考，且用的是 thinking.type 方言，
+    # 跟 GLM/Kimi/Doubao 同形状，直接复用 EXTRA_BODY_CLAUDE。转售同款的网关是另外的
+    # 键名（SiliconFlow 的 deepseek-ai/…、OpenRouter 的 deepseek/…），各走各的方言，
+    # 不会被这两行波及。
+    "deepseek-v4-flash": EXTRA_BODY_CLAUDE,
+    "deepseek-v4-pro": EXTRA_BODY_CLAUDE,
     # Step
     "step-2-mini": {"tools": [{"type": "web_search", "function": {"description": "这个web_search用来搜索互联网的信息"}}]},
     # 免费版（lanlan.tech / lanlan.app，模型名固定 free-model）：用 thinking.type 风格，

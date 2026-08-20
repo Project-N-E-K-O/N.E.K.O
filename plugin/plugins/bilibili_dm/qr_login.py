@@ -1,4 +1,4 @@
-"""B站私信插件的二维码登录状态机。
+"""B站集成插件的二维码登录状态机。
 
 插件 UI 由独立服务托管，不能调用主程序的媒体凭证路由；因此在插件进程内
 直接使用 ``bilibili_api.login_v2`` 完成二维码登录，并只向前端返回二维码和状态。
@@ -67,12 +67,18 @@ class BiliDMQrLogin:
         """Poll one specific QR session without touching a newer session."""
         session = self._session
         if session is None or not session_id or session_id != self._session_id:
-            return {"status": "no_session", "message": "没有进行中的登录，请重新获取二维码"}
+            return {
+                "status": "no_session",
+                "message": "没有进行中的登录，请重新获取二维码",
+            }
 
         _, events = self._require_sdk()
         state = await session.check_state()
         if self._session is not session or self._session_id != session_id:
-            return {"status": "no_session", "message": "扫码会话已更新，请重新获取二维码"}
+            return {
+                "status": "no_session",
+                "message": "扫码会话已更新，请重新获取二维码",
+            }
         none_event = getattr(events, "NONE", None)
         if none_event is not None and state == none_event:
             return {"status": "waiting", "message": "等待扫码…"}
@@ -94,9 +100,7 @@ class BiliDMQrLogin:
             "dedeuserid": str(getattr(credential, "dedeuserid", "") or ""),
             # Always include the refresh token: an account switch must replace
             # an older value, and an SDK result without one must clear it.
-            "ac_time_value": str(
-                getattr(credential, "ac_time_value", "") or ""
-            ),
+            "ac_time_value": str(getattr(credential, "ac_time_value", "") or ""),
         }
         if not values["sesdata"] or not values["bili_jct"]:
             self.clear(session_id=session_id)

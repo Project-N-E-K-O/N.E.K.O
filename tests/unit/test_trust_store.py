@@ -695,17 +695,17 @@ async def test_channel_collision_is_detected_without_touching_the_ledger():
     await _open_gate()
     await trust_store.aapply_trust_mutations([
         _mutation("qq:1", activity=[("activity_n0000001", 1)],
-                  channel="napcat"),
+                  channel="onebot"),
     ])
     snap = trust_store.trust_snapshot()
-    assert snap.channels_seen("qq:1") == ("napcat",)
+    assert snap.channels_seen("qq:1") == ("onebot",)
     assert snap.channel_collision("qq:1") is False
     before = dict(_account_record("qq:1"))
     result = await trust_store.aapply_trust_mutations([
         _mutation("qq:1", activity=[("activity_o0000001", 1)], channel="open"),
     ])
     snap = trust_store.trust_snapshot()
-    assert snap.channels_seen("qq:1") == ("napcat", "open")
+    assert snap.channels_seen("qq:1") == ("onebot", "open")
     assert snap.channel_collision("qq:1") is True
     assert result.channel_collisions == ("qq:1",)
     # One ledger, one accumulation — the channel changed nothing about it.
@@ -780,13 +780,13 @@ async def test_switching_connection_mode_redeclares_the_scope(pool):
         conversation_scope="global", asserted_by="protocol:qq-open-v2",
     )
     result = await trust_store.adeclare_platform_identity_scope(
-        "qq", channel="napcat", actor_scope="global",
+        "qq", channel="onebot", actor_scope="global",
         conversation_scope="global", asserted_by="protocol:onebot-v11",
     )
 
     assert result["persisted"] is True
     scope = trust_store.trust_snapshot().platform_identity_scope("qq")
-    assert (scope["channel"], scope["actor_scope"]) == ("napcat", "global")
+    assert (scope["channel"], scope["actor_scope"]) == ("onebot", "global")
 
 
 @pytest.mark.parametrize("actor_scope", [
@@ -1275,10 +1275,10 @@ async def test_malformed_channel_diagnostics_survive_a_load_and_a_write(pool):
     assert _account_record("qq:1")["channels_seen"] == {}
     result = await trust_store.aapply_trust_mutations([
         _mutation("qq:1", activity=[("activity_aaaaaaaa", 1)],
-                  channel="napcat"),
+                  channel="onebot"),
     ])
     assert result.persisted is True
-    observed = trust_store._POOL["channel_observations"]["qq"]["napcat"]
+    observed = trust_store._POOL["channel_observations"]["qq"]["onebot"]
     assert isinstance(observed, dict) and observed["accounts"] == 1
 
 

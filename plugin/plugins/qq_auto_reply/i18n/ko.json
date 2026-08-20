@@ -1,6 +1,6 @@
 {
   "plugin.name": "QQ 통합",
-  "plugin.description": "NapCat(OneBot 리버스 WebSocket) 또는 QQ 공식 오픈 플랫폼으로 연결. 답장 체인 분석, 음성, 스티커, 찌르기 등 멀티모달 출력 지원.",
+  "plugin.description": "OneBot v11(정방향/역방향 WebSocket, NapCat / LLOneBot / go-cqhttp / Lagrange 등 모든 OneBot 백엔드 호환) 또는 QQ 공식 오픈 플랫폼으로 연결. 다중 그룹 주의력 경쟁, 동적 응답 버퍼, 파일 내용 읽기(텍스트/VLM 이미지 설명), 답장 체인 분석, 음성, 스티커, 찌르기 등 멀티모달 출력 지원.",
   "entries.init_config.name": "QQ 설정 초기화",
   "entries.init_config.description": "QQ 플러그인을 처음 사용할 때, 가이드를 마친 뒤, 또는 설정 파일이 없을 때 새 QQ 설정을 만듭니다.",
   "entries.get_dashboard_state.name": "대시보드 상태 가져오기",

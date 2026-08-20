@@ -639,6 +639,20 @@ def _parse_entry(  # noqa: C901 — 10-step flow is intentionally explicit
     plugin_id = raw_plugin_id if isinstance(raw_plugin_id, str) else ""
     raw_package_id = raw.get("package_id", "")
     package_id = raw_package_id.strip() if isinstance(raw_package_id, str) else ""
+    raw_profile_dir = raw.get("profile_dir", "")
+    profile_dir = raw_profile_dir.strip() if isinstance(raw_profile_dir, str) else ""
+    raw_profile_installed = raw.get("profile_installed")
+    if "profile_installed" not in raw:
+        profile_installed = None
+    elif isinstance(raw_profile_installed, bool):
+        profile_installed = raw_profile_installed
+    else:
+        logger.warning(
+            "install_source: illegal profile_installed key=%s value=%r, treating as false",
+            key,
+            raw_profile_installed,
+        )
+        profile_installed = False
 
     # —— Timestamps ——
     installed_at = _normalize_ts(raw.get("installed_at"), now=now)
@@ -676,6 +690,8 @@ def _parse_entry(  # noqa: C901 — 10-step flow is intentionally explicit
         removed_at=removed_at,
         source_detail=source_detail,
         package_id=package_id,
+        profile_dir=profile_dir,
+        profile_installed=profile_installed,
     )
 
 
@@ -886,6 +902,10 @@ def _serialize_entry_for_json(entry: LockEntry) -> dict[str, Any]:
     # of legacy rows. New imported/market installs always populate it.
     if entry.package_id:
         out["package_id"] = entry.package_id
+    if entry.profile_dir:
+        out["profile_dir"] = entry.profile_dir
+    if entry.profile_installed is not None:
+        out["profile_installed"] = entry.profile_installed
 
     # removed_at only present when removed=True.
     if entry.removed:
@@ -1340,6 +1360,7 @@ class InstallSourceManager:
         package_filename: str,
         package_sha256: str,
         package_id: str = "",
+        profile_dir: str = "",
     ) -> None:
         """Record an ``imported`` install in the lock snapshot (Req 9.*).
 
@@ -1438,6 +1459,8 @@ class InstallSourceManager:
                     removed_at=None,
                     source_detail=detail,
                     package_id=package_id,
+                    profile_dir=profile_dir,
+                    profile_installed=bool(profile_dir),
                 )
             else:
                 # Idempotent overwrite: preserve installed_at (Req 9.4)
@@ -1453,6 +1476,19 @@ class InstallSourceManager:
                     removed=False,
                     removed_at=None,
                     package_id=package_id or existing.package_id,
+                    profile_dir=profile_dir or (
+                        existing.profile_dir
+                        if not existing.removed and existing.profile_installed is True
+                        else ""
+                    ),
+                    # Carry the tri-state forward: collapsing a legacy ``None``
+                    # row to ``False`` would make deletion skip the inferred
+                    # profile it still owns on disk.
+                    profile_installed=(
+                        True
+                        if profile_dir
+                        else (existing.profile_installed if not existing.removed else False)
+                    ),
                 )
 
             new_lock = self._replace_entry(
@@ -1473,6 +1509,7 @@ class InstallSourceManager:
         version: str,
         package_url: str,
         package_id: str = "",
+        profile_dir: str = "",
     ) -> None:
         """Record a ``market`` install in the lock snapshot (Req 10.*).
 
@@ -1603,6 +1640,8 @@ class InstallSourceManager:
                     removed_at=None,
                     source_detail=detail,
                     package_id=package_id,
+                    profile_dir=profile_dir,
+                    profile_installed=bool(profile_dir),
                 )
             else:
                 # Idempotent overwrite: preserve installed_at (Req 10.4)
@@ -1620,6 +1659,8 @@ class InstallSourceManager:
                     removed=False,
                     removed_at=None,
                     package_id=package_id or existing.package_id,
+                    profile_dir=profile_dir,
+                    profile_installed=bool(profile_dir),
                 )
 
             new_lock = self._replace_entry(
@@ -1691,6 +1732,7 @@ class InstallSourceManager:
         market_detail: dict[str, Any],
         is_upgrade: bool,
         package_id: str = "",
+        profile_dir: str = "",
     ) -> tuple[LockEntry, list[str]]:
         """Shared body of :meth:`record_market_install` / :meth:`record_market_upgrade`.
 
@@ -1758,6 +1800,25 @@ class InstallSourceManager:
                 removed_at=None,
                 source_detail=detail,
                 package_id=package_id or (existing.package_id if existing is not None else ""),
+                profile_dir=profile_dir or (
+                    existing.profile_dir
+                    if is_upgrade
+                    and existing is not None
+                    and existing.profile_installed is True
+                    else ""
+                ),
+                # Carry the tri-state forward: collapsing a legacy ``None``
+                # row to ``False`` would make deletion skip the inferred
+                # profile it still owns on disk.
+                profile_installed=(
+                    True
+                    if profile_dir
+                    else (
+                        existing.profile_installed
+                        if is_upgrade and existing is not None
+                        else False
+                    )
+                ),
             )
 
             try:
@@ -1789,6 +1850,7 @@ class InstallSourceManager:
         plugin_id: str,
         market_detail: dict[str, Any],
         package_id: str = "",
+        profile_dir: str = "",
     ) -> tuple[LockEntry, list[str]]:
         """Record a fresh ``channel="market"`` install (design §3.2 / Req 4).
 
@@ -1829,6 +1891,7 @@ class InstallSourceManager:
             market_detail=market_detail,
             is_upgrade=False,
             package_id=package_id,
+            profile_dir=profile_dir,
         )
 
     def record_market_upgrade(
@@ -1839,6 +1902,7 @@ class InstallSourceManager:
         plugin_id: str,
         market_detail: dict[str, Any],
         package_id: str = "",
+        profile_dir: str = "",
     ) -> tuple[LockEntry, list[str]]:
         """Record a ``channel="market"`` upgrade (design §3.2 / Req 4).
 
@@ -1867,6 +1931,7 @@ class InstallSourceManager:
             market_detail=market_detail,
             is_upgrade=True,
             package_id=package_id,
+            profile_dir=profile_dir,
         )
 
     def restore_entry_for_rollback(self, entry: LockEntry) -> None:
@@ -1896,8 +1961,17 @@ class InstallSourceManager:
                     },
                 ) from exc
 
-    def package_id_for_directory(self, directory_path: Path) -> str:
-        """Return the recorded profile key for an installed plugin directory."""
+    def package_id_for_directory(
+        self,
+        directory_path: Path,
+        *,
+        include_removed: bool = False,
+    ) -> str:
+        """Return the recorded profile key for a plugin directory.
+
+        ``include_removed`` lets deletion cleanup retry an earlier failed
+        profile removal after the lock entry has already been soft-deleted.
+        """
 
         root_id, directory_name = classify_plugin_path(
             directory_path,
@@ -1905,9 +1979,49 @@ class InstallSourceManager:
             user_root=self.user_root,
         )
         entry = self._find_entry(self._current, root_id, directory_name)
-        if entry is None or entry.removed:
+        if entry is None or (entry.removed and not include_removed):
             return ""
         return entry.package_id
+
+    def entry_for_directory(
+        self,
+        directory_path: Path,
+        *,
+        include_removed: bool = False,
+    ) -> LockEntry | None:
+        """Return the install-source entry identified by its full path key.
+
+        ``directory_name`` is only unique within a plugin root, so callers
+        which must reason about ownership should use this method instead of
+        matching entry names themselves.
+        """
+        root_id, directory_name = classify_plugin_path(
+            directory_path,
+            builtin_root=self.builtin_root,
+            user_root=self.user_root,
+        )
+        entry = self._find_entry(self._current, root_id, directory_name)
+        if entry is None or (entry.removed and not include_removed):
+            return None
+        return entry
+
+    def profile_dir_for_directory(
+        self,
+        directory_path: Path,
+        *,
+        include_removed: bool = False,
+    ) -> str:
+        """Return the recorded profile location for a plugin directory."""
+
+        root_id, directory_name = classify_plugin_path(
+            directory_path,
+            builtin_root=self.builtin_root,
+            user_root=self.user_root,
+        )
+        entry = self._find_entry(self._current, root_id, directory_name)
+        if entry is None or (entry.removed and not include_removed):
+            return ""
+        return entry.profile_dir
 
     def find_active_market_entry(self, plugin_ref: str) -> LockEntry | None:
         """Return the active (non-removed) market entry for ``plugin_ref``, if any.

@@ -36,10 +36,6 @@ _QUEUE_COMMANDS: frozenset[str] = frozenset(
 )
 
 
-def _fmt_explain_current_for_neko(*, text: str, explanation: str) -> str:
-    return f"[伴学·概念解释]\n原文: {text}\n\n{explanation}"
-
-
 def _fmt_quiz_for_neko(*, topic: str, question: str) -> str:
     header = f"[伴学·随堂测验] 主题: {topic}" if topic else "[伴学·随堂测验]"
     return f"{header}\n\n{question}"
@@ -342,15 +338,17 @@ class _NekoCommandsMixin:
 
         if isinstance(result, Ok):
             reply = result.value if isinstance(result.value, dict) else {}
-            explanation = str(
-                reply.get("explanation") or reply.get("reply") or result.value or ""
-            )
+            if bool(reply.get("solution_narration_scheduled")) or bool(
+                reply.get("general_narration_scheduled")
+            ):
+                return
             await self._push_neko_command_message(
                 visibility=[],
                 ai_behavior="respond",
                 priority=5,
-                text=_fmt_explain_current_for_neko(
-                    text=text[:300], explanation=explanation
+                text=(
+                    "[伴学] 解题已完成，但 N.E.K.O 讲述未能安排，"
+                    "请在伴学页面查看完整解答。"
                 ),
             )
             return

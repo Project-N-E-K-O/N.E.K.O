@@ -395,7 +395,17 @@ def get_tts_worker(
 
     # 没有自定义音色时，使用与 core_api 匹配的默认 TTS
     if core_api_type in ('qwen', 'qwen_intl'):
-        return qwen_realtime_tts_worker, None, 'qwen'
+        qwen_api_key_override = None
+        if excluded_provider_keys:
+            qwen_key_field = (
+                'ASSIST_API_KEY_QWEN_INTL'
+                if core_api_type == 'qwen_intl'
+                else 'ASSIST_API_KEY_QWEN'
+            )
+            # A supervised fallback must not inherit the failed configured
+            # endpoint's TTS_MODEL_API_KEY through the tts_default slot.
+            qwen_api_key_override = str(core_cfg.get(qwen_key_field) or '').strip()
+        return qwen_realtime_tts_worker, qwen_api_key_override, 'qwen'
     if core_api_type == 'free':
         # 免费服务拥有独立 worker；底层仍复用它与 StepFun 当前共有的流式
         # wire transport，但 provider 路由、端点和音色选择不再伪装成 StepFun。

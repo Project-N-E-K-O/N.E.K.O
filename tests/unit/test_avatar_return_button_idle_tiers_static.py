@@ -4253,7 +4253,7 @@ def test_live2d_renderer_ignores_and_recovers_return_ball_viewport_size():
 
     save_block = _source_slice_between(
         interaction_source,
-        "Live2DManager.prototype._savePositionAfterInteraction = async function () {",
+        "Live2DManager.prototype._savePositionAfterInteraction = async function (options = {}) {",
         "// 防抖动保存位置的辅助函数",
         "live2d save position",
     )

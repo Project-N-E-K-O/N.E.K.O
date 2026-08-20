@@ -41,6 +41,7 @@ from plugin.server.application.install_source import (
 )
 from plugin.server.application.plugin_cli import PluginCliService
 from plugin.server.application.plugin_cli.paths import PluginCliPathPolicy
+from plugin.server.application.plugins.operation_lock import serialized_plugin_operation
 from plugin.server.application.plugins.upgrade_support import (
     ReplacePluginError,
     plugin_is_running,
@@ -328,13 +329,23 @@ class MarketInstallRequest(BaseModel):
             "不一致会拒绝并回滚"
         ),
     )
-    on_conflict: str = Field(default="fail", pattern=r"^(rename|fail)$")
+    # Keep Market installs aligned with imported packages: an existing plugin
+    # directory is a conflict, never a request to create ``plugin_1``.  Accept
+    # the legacy value so cached Market clients remain compatible, then
+    # normalise it to the non-renaming behaviour.
+    on_conflict: str = Field(default="fail", pattern=r"^(fail|rename)$")
     require_confirm: bool = Field(default=True, description="是否需要用户确认（预留）")
 
     @field_validator("package_sha256", mode="before")
     @classmethod
     def _validate_package_sha256(cls, value: object) -> str:
         return _normalize_required_sha256(str(value) if value is not None else None)
+
+    @field_validator("on_conflict")
+    @classmethod
+    def _normalize_on_conflict(cls, value: str) -> str:
+        del cls
+        return "fail" if value == "rename" else value
 
 
 class MarketInstallResponse(BaseModel):
@@ -2810,6 +2821,54 @@ async def _do_install(
         task["install_source_warning"] = result["install_source_warning"]
 
 
+@serialized_plugin_operation
+async def _replace_market_plugin_transaction(
+    *,
+    manager: Any,
+    expected_plugin_id: str,
+    original_entry: LockEntry,
+    original_entry_fingerprint: tuple[object, ...],
+    installed_package_id: str,
+    replace_kwargs: dict[str, Any],
+    rollback_install_source: Any | None = None,
+) -> Any:
+    """Revalidate and replace under the shared plugin filesystem lock."""
+    active_entry = manager.find_active_market_entry(expected_plugin_id)
+    if active_entry is None or (
+        active_entry.plugin_id != original_entry.plugin_id
+        or active_entry.directory_name != original_entry.directory_name
+        or (getattr(active_entry, "package_id", "") or active_entry.plugin_id)
+        != installed_package_id
+        or _market_entry_fingerprint(active_entry) != original_entry_fingerprint
+    ):
+        raise _TaskError(
+            code="plugin_upgrade_plan_changed",
+            message="plugin installation changed while the package was downloading",
+            http_status=409,
+        )
+    try:
+        return await replace_plugin(**replace_kwargs)
+    except ReplacePluginError:
+        if rollback_install_source is not None:
+            await rollback_install_source()
+        raise
+
+
+def _market_entry_fingerprint(entry: object) -> tuple[object, ...]:
+    """Identify the exact lock snapshot an upgrade was planned against."""
+    source_detail = getattr(entry, "source_detail", None)
+    return (
+        getattr(entry, "root_id", ""),
+        getattr(entry, "directory_name", ""),
+        getattr(entry, "plugin_id", ""),
+        getattr(entry, "package_id", ""),
+        getattr(entry, "installed_at", ""),
+        getattr(entry, "updated_at", ""),
+        getattr(source_detail, "version", ""),
+        getattr(source_detail, "package_sha256", ""),
+    )
+
+
 async def _do_upgrade(
     task: dict[str, Any],
     payload: MarketInstallRequest,
@@ -2844,6 +2903,7 @@ async def _do_upgrade(
             http_status=400,
         )
     installed_plugin_id = entry.plugin_id
+    entry_fingerprint = _market_entry_fingerprint(entry)
 
     path_policy = PluginCliPathPolicy.from_settings()
     plugin_dir = (path_policy.user_plugins_root / entry.directory_name).resolve()
@@ -2907,7 +2967,29 @@ async def _do_upgrade(
                     f"installed={installed_package_id!r} incoming={package_id!r}"
                 ),
             )
-        profile_dir = (path_policy.package_profiles_root / package_id).resolve()
+        recorded_profile_dir = str(getattr(entry, "profile_dir", "") or "")
+        profile_candidate = (
+            Path(recorded_profile_dir).expanduser()
+            if recorded_profile_dir
+            else path_policy.package_profiles_root / package_id
+        )
+        if any(path.is_symlink() for path in (profile_candidate, *profile_candidate.parents)):
+            raise _TaskError(
+                code="unsafe_profile_path",
+                message=f"recorded package profile path contains a symlink: {profile_candidate}",
+            )
+        try:
+            profile_dir = profile_candidate.resolve()
+        except OSError as exc:
+            raise _TaskError(
+                code="unsafe_profile_path",
+                message=f"cannot resolve recorded package profile path: {profile_candidate}",
+            ) from exc
+        if profile_dir.name != package_id:
+            raise _TaskError(
+                code="unsafe_profile_path",
+                message=f"recorded package profile path does not match package id: {profile_dir}",
+            )
         market_override = _build_market_override(
             payload,
             mode="reinstall" if record_as_reinstall else "upgrade",
@@ -2915,6 +2997,7 @@ async def _do_upgrade(
         )
 
         source_write_attempted = False
+        source_restored = True
 
         async def install_new() -> dict[str, object]:
             nonlocal source_write_attempted
@@ -2922,9 +3005,26 @@ async def _do_upgrade(
             return await _cli_service.upload_and_install(
                 filename=_extract_filename(payload.package_url),
                 package_path=str(package_path),
+                profiles_root=str(profile_dir.parent),
+                _allow_external_profiles_root=True,
                 on_conflict="fail",
                 install_source_override=market_override,
             )
+
+        async def rollback_install_source() -> None:
+            nonlocal source_restored
+            restore_source = getattr(mgr, "restore_entry_for_rollback", None)
+            if not source_write_attempted or not callable(restore_source):
+                return
+            try:
+                await asyncio.to_thread(restore_source, entry)
+            except Exception as restore_exc:
+                source_restored = False
+                logger.error(
+                    "market install source rollback failed plugin_id={} err={}",
+                    installed_plugin_id,
+                    restore_exc,
+                )
 
         async def validate_new() -> None:
             actual_plugin_id = _read_plugin_toml_id(plugin_dir / "plugin.toml")
@@ -2964,31 +3064,27 @@ async def _do_upgrade(
         )
         task["rollback"] = {"prepared": True, "restored": False}
         try:
-            replacement = await replace_plugin(
-                layout=resolve_plugin_layout(installed_plugin_id, plugin_dir),
-                install_new=install_new,
-                validate_new=validate_new,
-                is_running=plugin_is_running,
-                stop=stop_plugin_for_upgrade,
-                start=start,
-                cleanup_backup=_async_remove_dir,
-                additional_targets=(profile_dir,),
-                preserve_targets=(profile_dir,),
-                on_rollback_start=mark_rollback_running,
+            replacement = await _replace_market_plugin_transaction(
+                manager=mgr,
+                expected_plugin_id=expected_plugin_id,
+                original_entry=entry,
+                original_entry_fingerprint=entry_fingerprint,
+                installed_package_id=installed_package_id,
+                rollback_install_source=rollback_install_source,
+                replace_kwargs={
+                    "layout": resolve_plugin_layout(installed_plugin_id, plugin_dir),
+                    "install_new": install_new,
+                    "validate_new": validate_new,
+                    "is_running": plugin_is_running,
+                    "stop": stop_plugin_for_upgrade,
+                    "start": start,
+                    "cleanup_backup": _async_remove_dir,
+                    "additional_targets": (profile_dir,),
+                    "preserve_targets": (profile_dir,),
+                    "on_rollback_start": mark_rollback_running,
+                },
             )
         except ReplacePluginError as exc:
-            source_restored = True
-            restore_source = getattr(mgr, "restore_entry_for_rollback", None)
-            if source_write_attempted and callable(restore_source):
-                try:
-                    await asyncio.to_thread(restore_source, entry)
-                except Exception as restore_exc:
-                    source_restored = False
-                    logger.error(
-                        "market install source rollback failed plugin_id={} err={}",
-                        installed_plugin_id,
-                        restore_exc,
-                    )
             rollback_ok = exc.rollback_status == "completed" and source_restored
             cause_code = exc.cause.code if isinstance(exc.cause, InstallSourceError) else None
             cause_message = (

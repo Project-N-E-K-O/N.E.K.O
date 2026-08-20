@@ -10,10 +10,11 @@ import threading
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
+from urllib.parse import urlsplit, urlunsplit
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from starlette.responses import Response
+from starlette.responses import RedirectResponse, Response
 
 from plugin.logging_config import get_logger
 from utils.host_origin_guard import HostOriginGuardMiddleware
@@ -23,6 +24,7 @@ from plugin.server.lifecycle import shutdown as lifecycle_shutdown
 from plugin.server.lifecycle import startup as lifecycle_startup
 from plugin.server.routes import (
     config_router,
+    documents_router,
     frontend_router,
     health_router,
     llm_tools_router,
@@ -48,6 +50,50 @@ else:
 
 def _can_register_faulthandler_signal() -> bool:
     return hasattr(faulthandler, "register") and hasattr(signal, "SIGUSR1")
+
+
+def _model_settings_url(request: Request, main_server_port: int) -> str:
+    public_origin = os.getenv("NEKO_MAIN_SERVER_PUBLIC_ORIGIN", "").strip()
+    if public_origin:
+        try:
+            parsed = urlsplit(public_origin)
+            _ = parsed.port
+            valid_origin = (
+                parsed.scheme in {"http", "https"}
+                and bool(parsed.hostname)
+                and parsed.username is None
+                and parsed.password is None
+                and parsed.path in {"", "/"}
+                and not parsed.query
+                and not parsed.fragment
+            )
+            if valid_origin:
+                return urlunsplit(
+                    (
+                        parsed.scheme,
+                        parsed.netloc,
+                        "/api_key",
+                        "",
+                        "",
+                    )
+                )
+        except ValueError:
+            pass
+        logger.warning(
+            "Ignoring invalid NEKO_MAIN_SERVER_PUBLIC_ORIGIN: {}", public_origin
+        )
+
+    # The plugin server and main server use different ports in a direct/LAN
+    # deployment, but they are reached through the same client-visible host.
+    # Keep loopback only when the request itself was loopback. Reverse proxies
+    # with mapped ports or TLS can provide the explicit public origin above.
+    hostname = request.url.hostname or "127.0.0.1"
+    if ":" in hostname and not hostname.startswith("["):
+        hostname = f"[{hostname}]"
+    scheme = request.url.scheme if request.url.scheme in {"http", "https"} else "http"
+    return urlunsplit(
+        (scheme, f"{hostname}:{int(main_server_port)}", "/api_key", "", "")
+    )
 
 
 def _include_optional_router(
@@ -184,6 +230,15 @@ async def plugin_server_lifespan(app: FastAPI) -> AsyncIterator[None]:
 def build_plugin_server_app(title: str = "N.E.K.O User Plugin Server") -> FastAPI:
     app = FastAPI(title=title, lifespan=plugin_server_lifespan)
 
+    @app.get("/api_key", include_in_schema=False)
+    async def redirect_model_settings(request: Request) -> RedirectResponse:
+        import config
+
+        return RedirectResponse(
+            url=_model_settings_url(request, int(config.MAIN_SERVER_PORT)),
+            status_code=307,
+        )
+
     # Market 域名通过 settings 配置，支持自部署
     from plugin.settings import MARKET_ORIGINS as _market_origins
 
@@ -227,6 +282,7 @@ def build_plugin_server_app(title: str = "N.E.K.O User Plugin Server") -> FastAP
         return response
 
     app.include_router(health_router)
+    app.include_router(documents_router)
     app.include_router(plugins_router)
     app.include_router(runs_router)
     app.include_router(messages_router)

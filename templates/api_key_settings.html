@@ -841,7 +841,9 @@
     </div>
 
 
-    <script src="/static/js/api_key_settings.js?v={{ static_asset_version }}"></script>
+    <!-- Independent revision forces existing clients off the previously cached
+         API-key settings script after a settings-display behavior change. -->
+    <script src="/static/js/api_key_settings.js?v={{ static_asset_version }}-api-key-mask-v8"></script>
 
 
     <script src="/static/tutorial/core/guide-helpers.js?v={{ static_asset_version }}"></script>

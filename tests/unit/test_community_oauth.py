@@ -285,6 +285,199 @@ async def test_oauth_status_serializes_concurrent_rotating_refreshes(monkeypatch
 
 
 @pytest.mark.unit
+async def test_oauth_status_reuses_validation_after_first_waiter_is_cancelled(monkeypatch):
+    started = asyncio.Event()
+    second_keyed = asyncio.Event()
+    release = asyncio.Event()
+    calls = 0
+    key_calls = 0
+
+    async def resolve_status(*, _records=None):
+        nonlocal calls
+        calls += 1
+        started.set()
+        await release.wait()
+        return {"logged_in": True, "snapshot": {"access_token": "ok"}, "auth": {}}
+
+    monkeypatch.setattr(O, "_oauth_status_tasks", {})
+    monkeypatch.setattr(
+        O,
+        "_load_oauth_status_records",
+        lambda: ({"access_token": "ok"}, {}),
+    )
+
+    def records_key(_snapshot, _auth):
+        nonlocal key_calls
+        key_calls += 1
+        if key_calls == 2:
+            second_keyed.set()
+        return "same-credentials"
+
+    monkeypatch.setattr(O, "_oauth_status_records_key", records_key)
+    monkeypatch.setattr(O, "_resolve_saved_oauth_status", resolve_status)
+
+    first = asyncio.create_task(O.resolve_saved_oauth_status())
+    await started.wait()
+    first.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await first
+
+    second = asyncio.create_task(O.resolve_saved_oauth_status())
+    await second_keyed.wait()
+    assert calls == 1
+    release.set()
+
+    status = await second
+    assert status["logged_in"] is True
+    assert calls == 1
+
+
+@pytest.mark.unit
+async def test_oauth_status_does_not_reuse_validation_after_credentials_change(
+    monkeypatch,
+):
+    old_started = asyncio.Event()
+    release_old = asyncio.Event()
+    current = {"records": ({"access_token": "old"}, {"user": {"display_name": "Old"}})}
+    calls: list[str | None] = []
+
+    async def resolve_status(*, _records=None):
+        snapshot, auth = _records
+        access_token = snapshot.get("access_token") if snapshot else None
+        calls.append(access_token)
+        if access_token == "old":
+            old_started.set()
+            await release_old.wait()
+        return {
+            "logged_in": bool(snapshot),
+            "snapshot": snapshot,
+            "auth": auth,
+        }
+
+    monkeypatch.setattr(O, "_oauth_status_tasks", {})
+    monkeypatch.setattr(O, "_load_oauth_status_records", lambda: current["records"])
+    monkeypatch.setattr(O, "_resolve_saved_oauth_status", resolve_status)
+
+    old_request = asyncio.create_task(O.resolve_saved_oauth_status())
+    await old_started.wait()
+    current["records"] = (None, {})
+
+    logged_out = await O.resolve_saved_oauth_status()
+    assert logged_out["logged_in"] is False
+    assert calls == ["old", None]
+
+    release_old.set()
+    old_result = await old_request
+    assert old_result["snapshot"]["access_token"] == "old"
+
+
+@pytest.mark.unit
+async def test_oauth_status_coalesces_while_the_auth_mirror_trails_a_refresh(
+    monkeypatch,
+):
+    """A read landing between the refresh's two writes must join the same task."""
+    started = asyncio.Event()
+    second_keyed = asyncio.Event()
+    release = asyncio.Event()
+    snapshot = {"access_token": "old", "refresh_token": "old-refresh"}
+    current = {
+        "records": (
+            snapshot,
+            {
+                "access_token": "old",
+                "refresh_token": "old-refresh",
+                "session_generation": 1,
+                "user": {"display_name": "Same"},
+            },
+        )
+    }
+    calls: list[str | None] = []
+
+    async def resolve_status(*, _records=None):
+        record_snapshot, record_auth = _records
+        calls.append(record_snapshot.get("access_token") if record_snapshot else None)
+        started.set()
+        await release.wait()
+        return {"logged_in": True, "snapshot": record_snapshot, "auth": record_auth}
+
+    real_records_key = O._oauth_status_records_key
+    key_calls = 0
+
+    def records_key(snapshot_arg, auth_arg):
+        nonlocal key_calls
+        key_calls += 1
+        if key_calls == 2:
+            second_keyed.set()
+        return real_records_key(snapshot_arg, auth_arg)
+
+    monkeypatch.setattr(O, "_oauth_status_tasks", {})
+    monkeypatch.setattr(O, "_load_oauth_status_records", lambda: current["records"])
+    monkeypatch.setattr(O, "_oauth_status_records_key", records_key)
+    monkeypatch.setattr(O, "_resolve_saved_oauth_status", resolve_status)
+
+    first = asyncio.create_task(O.resolve_saved_oauth_status())
+    await started.wait()
+    # The in-flight refresh already rewrote the auth mirror; the authoritative
+    # session file is still the one this task is resolving.
+    current["records"] = (
+        snapshot,
+        {
+            "access_token": "rotated",
+            "refresh_token": "rotated-refresh",
+            "session_generation": 2,
+            "user": {"display_name": "Same"},
+        },
+    )
+    second = asyncio.create_task(O.resolve_saved_oauth_status())
+    await second_keyed.wait()
+    assert calls == ["old"]
+
+    release.set()
+    assert (await first)["logged_in"] is True
+    assert (await second)["logged_in"] is True
+    assert calls == ["old"]
+
+
+@pytest.mark.unit
+async def test_oauth_status_does_not_reuse_validation_after_mirror_identity_change(
+    monkeypatch,
+):
+    """A different account in the mirror still forces its own validation."""
+    started = asyncio.Event()
+    release = asyncio.Event()
+    snapshot = {"access_token": "old", "refresh_token": "old-refresh"}
+    current = {
+        "records": (snapshot, {"user": {"display_name": "Old"}}),
+    }
+    calls: list[object] = []
+
+    async def resolve_status(*, _records=None):
+        record_snapshot, record_auth = _records
+        calls.append(record_auth.get("user"))
+        if len(calls) == 1:
+            started.set()
+            await release.wait()
+        return {"logged_in": True, "snapshot": record_snapshot, "auth": record_auth}
+
+    monkeypatch.setattr(O, "_oauth_status_tasks", {})
+    monkeypatch.setattr(O, "_load_oauth_status_records", lambda: current["records"])
+    monkeypatch.setattr(O, "_resolve_saved_oauth_status", resolve_status)
+
+    first = asyncio.create_task(O.resolve_saved_oauth_status())
+    await started.wait()
+    current["records"] = (snapshot, {"user": {"display_name": "New"}})
+
+    # A shared task would park this call behind the still-blocked first one,
+    # so bound the wait instead of hanging the suite on a regression.
+    switched = await asyncio.wait_for(O.resolve_saved_oauth_status(), timeout=5)
+    assert switched["auth"]["user"] == {"display_name": "New"}
+    assert calls == [{"display_name": "Old"}, {"display_name": "New"}]
+
+    release.set()
+    assert (await first)["auth"]["user"] == {"display_name": "Old"}
+
+
+@pytest.mark.unit
 @pytest.mark.parametrize(
     ("status_code", "payload", "expected_outcome"),
     [
