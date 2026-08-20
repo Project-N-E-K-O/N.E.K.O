@@ -6,7 +6,7 @@ import asyncio
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 import math
-from typing import Literal, Protocol
+from typing import Literal, Protocol, TypeVar
 import uuid
 
 import numpy as np
@@ -62,6 +62,23 @@ ActivationCallback = Callable[
     Awaitable[bool],
 ]
 VoiceIdentityRuntimeMode = Literal["off", "shadow", "enforce"]
+_ResultT = TypeVar("_ResultT")
+
+
+async def _await_cancellation_safe(
+    awaitable: Awaitable[_ResultT],
+    *,
+    name: str,
+    cancellations: list[asyncio.CancelledError],
+) -> _ResultT:
+    task = asyncio.create_task(awaitable, name=name)
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError as exc:
+            if not cancellations:
+                cancellations.append(exc)
+    return task.result()
 
 
 class VoiceIdentityServiceError(RuntimeError):
@@ -302,6 +319,14 @@ class VoiceIdentityService:
                     "voice_identity_enrollment",
                     ttl_seconds=self._enrollment_ttl_seconds,
                 )
+            except asyncio.CancelledError as exc:
+                cancellations = [exc]
+                await _await_cancellation_safe(
+                    self._close_model(model),
+                    name="voice-identity-cancelled-acquire-model-close",
+                    cancellations=cancellations,
+                )
+                raise cancellations[0]
             except Exception as exc:
                 await self._close_model(model)
                 self._record_failure(VoiceIdentityEffectiveReason.RUNTIME_DEGRADED)
@@ -515,14 +540,25 @@ class VoiceIdentityService:
             raise TypeError("enabled must be bool")
         async with self._operation_lock:
             self._require_initialized()
+            cancellations: list[asyncio.CancelledError] = []
             try:
-                await self._preference_store.asave(enabled)
+                await _await_cancellation_safe(
+                    self._preference_store.asave(enabled),
+                    name="voice-identity-filter-preference-save",
+                    cancellations=cancellations,
+                )
             except VoiceIdentityPreferenceStoreError as exc:
                 self._record_failure(VoiceIdentityEffectiveReason.RUNTIME_DEGRADED)
+                if cancellations:
+                    raise cancellations[0]
                 raise VoiceIdentityServiceError("runtime_degraded") from exc
             self._requested_enabled = enabled
             if not enabled:
-                detached = await self._activate(None, str(uuid.uuid4()))
+                detached = await _await_cancellation_safe(
+                    self._activate(None, str(uuid.uuid4())),
+                    name="voice-identity-filter-disable",
+                    cancellations=cancellations,
+                )
                 self._set_ineffective(
                     VoiceIdentityEffectiveReason.DISABLED
                     if detached
@@ -534,45 +570,85 @@ class VoiceIdentityService:
                 self._set_ineffective(VoiceIdentityEffectiveReason.PROFILE_INCOMPATIBLE)
             elif self._runtime_mode == "off":
                 self._set_ineffective(VoiceIdentityEffectiveReason.RUNTIME_DEGRADED)
-            elif await self._activate(self._profile, self._profile.generation):
-                self._set_ready()
             else:
-                self._set_ineffective(VoiceIdentityEffectiveReason.RUNTIME_DEGRADED)
-            return self.status()
+                activated = await _await_cancellation_safe(
+                    self._activate(self._profile, self._profile.generation),
+                    name="voice-identity-filter-enable",
+                    cancellations=cancellations,
+                )
+                if activated:
+                    self._set_ready()
+                else:
+                    self._set_ineffective(
+                        VoiceIdentityEffectiveReason.RUNTIME_DEGRADED
+                    )
+            status = self.status()
+            if cancellations:
+                raise cancellations[0]
+            return status
 
     async def delete_profile(self) -> VoiceIdentityServiceStatus:
         async with self._operation_lock:
             self._require_initialized()
+            cancellations: list[asyncio.CancelledError] = []
             session = self._enrollment
             self._enrollment = None
             cleanup_ok = True
             if session is not None:
-                cleanup_ok = await self._cleanup_session(session)
+                cleanup_ok = await _await_cancellation_safe(
+                    self._cleanup_session(session),
+                    name="voice-identity-delete-enrollment-cleanup",
+                    cancellations=cancellations,
+                )
                 if not cleanup_ok:
                     self._set_ineffective(VoiceIdentityEffectiveReason.RUNTIME_DEGRADED)
             old_profile = self._profile
             try:
-                await self._profile_store.adelete()
+                await _await_cancellation_safe(
+                    self._profile_store.adelete(),
+                    name="voice-identity-profile-delete",
+                    cancellations=cancellations,
+                )
             except VoiceIdentityProfileStoreError as exc:
+                if cancellations:
+                    raise cancellations[0]
                 raise VoiceIdentityServiceError("runtime_degraded") from exc
             try:
-                await self._preference_store.asave(False)
+                await _await_cancellation_safe(
+                    self._preference_store.asave(False),
+                    name="voice-identity-delete-preference-save",
+                    cancellations=cancellations,
+                )
             except VoiceIdentityPreferenceStoreError as exc:
                 rollback_failed = False
                 if old_profile is not None:
                     try:
-                        await self._profile_store.asave(old_profile)
+                        await _await_cancellation_safe(
+                            self._profile_store.asave(old_profile),
+                            name="voice-identity-delete-profile-rollback",
+                            cancellations=cancellations,
+                        )
                     except VoiceIdentityProfileStoreError:
                         rollback_failed = True
                 if rollback_failed:
-                    await self._activate(None, str(uuid.uuid4()))
+                    await _await_cancellation_safe(
+                        self._activate(None, str(uuid.uuid4())),
+                        name="voice-identity-delete-failed-rollback-detach",
+                        cancellations=cancellations,
+                    )
                     self._profile = None
                     if old_profile is not None:
                         old_profile.close()
                     self._set_ineffective(VoiceIdentityEffectiveReason.RUNTIME_DEGRADED)
+                if cancellations:
+                    raise cancellations[0]
                 raise VoiceIdentityServiceError("runtime_degraded") from exc
             self._requested_enabled = False
-            detached = await self._activate(None, str(uuid.uuid4()))
+            detached = await _await_cancellation_safe(
+                self._activate(None, str(uuid.uuid4())),
+                name="voice-identity-delete-profile-detach",
+                cancellations=cancellations,
+            )
             self._profile = None
             self._set_ineffective(
                 VoiceIdentityEffectiveReason.DISABLED
@@ -581,7 +657,10 @@ class VoiceIdentityService:
             )
             if old_profile is not None:
                 old_profile.close()
-            return self.status()
+            status = self.status()
+            if cancellations:
+                raise cancellations[0]
+            return status
 
     async def close(self) -> None:
         async with self._operation_lock:

@@ -620,6 +620,37 @@ async def test_suppression_failure_closes_loaded_model(
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_cancelled_suppression_acquire_closes_loaded_model(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service, model, _activations, _events = _service(tmp_path)
+    await service.initialize()
+    acquire_started = asyncio.Event()
+
+    async def block_acquire(*_args, **_kwargs):
+        acquire_started.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(
+        service._suppression_controller,  # type: ignore[attr-defined]
+        "acquire",
+        block_acquire,
+    )
+    enrollment = asyncio.create_task(service.start_enrollment())
+    await acquire_started.wait()
+    enrollment.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await enrollment
+
+    assert model.closed
+    assert service.status().enrollment is None
+    await service.close()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_public_guards_and_status_shape(tmp_path: Path) -> None:
     service, _model, _activations, _events = _service(tmp_path)
     with pytest.raises(VoiceIdentityServiceError, match="not_initialized"):
@@ -893,4 +924,84 @@ async def test_delete_revokes_activation_when_profile_rollback_fails(
     assert not status.state.has_profile
     assert not status.state.effective_enabled
     assert status.state.effective_reason == "runtime_degraded"
+    await service.close()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_cancelled_filter_write_reconciles_runtime_and_preference(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service, _model, activations, _events = _service(tmp_path)
+    await service.initialize()
+    enrollment = await service.start_enrollment()
+    await service.complete_enrollment(enrollment.enrollment_id, "profile-a", _pcm())
+    save_started = threading.Event()
+    save_release = threading.Event()
+    preference_store = service._preference_store  # type: ignore[attr-defined]
+    original_save = preference_store.save
+
+    def blocking_save(enabled: bool) -> None:
+        save_started.set()
+        assert save_release.wait(1.0)
+        original_save(enabled)
+
+    monkeypatch.setattr(preference_store, "save", blocking_save)
+    update = asyncio.create_task(service.set_filter(False))
+    assert await asyncio.to_thread(save_started.wait, 1.0)
+    update.cancel()
+    save_release.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await update
+
+    status = service.status()
+    assert not status.state.requested_enabled
+    assert not status.state.effective_enabled
+    assert status.state.effective_reason == "disabled"
+    assert not await preference_store.aload()
+    assert activations[-1][0] is None
+    await service.close()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_cancelled_profile_delete_reconciles_memory_and_runtime(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service, _model, activations, _events = _service(tmp_path)
+    await service.initialize()
+    enrollment = await service.start_enrollment()
+    await service.complete_enrollment(enrollment.enrollment_id, "profile-a", _pcm())
+    old_profile = service._profile  # type: ignore[attr-defined]
+    assert old_profile is not None
+    delete_started = threading.Event()
+    delete_release = threading.Event()
+    profile_store = service._profile_store  # type: ignore[attr-defined]
+    original_delete = profile_store.delete
+
+    def blocking_delete() -> bool:
+        delete_started.set()
+        assert delete_release.wait(1.0)
+        return original_delete()
+
+    monkeypatch.setattr(profile_store, "delete", blocking_delete)
+    deletion = asyncio.create_task(service.delete_profile())
+    assert await asyncio.to_thread(delete_started.wait, 1.0)
+    deletion.cancel()
+    delete_release.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await deletion
+
+    status = service.status()
+    assert not status.state.requested_enabled
+    assert not status.state.has_profile
+    assert not status.state.effective_enabled
+    assert status.state.effective_reason == "disabled"
+    assert old_profile.closed
+    assert await profile_store.aload() is None
+    assert activations[-1][0] is None
     await service.close()
