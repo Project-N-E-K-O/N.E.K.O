@@ -126,8 +126,13 @@ const staticDir = process.env.STUDY_COMPANION_STATIC_DIR;
 const i18nDir = process.env.STUDY_COMPANION_I18N_DIR;
 const html = fs.readFileSync(path.join(staticDir, 'index.html'), 'utf8');
 const mainJs = fs.readFileSync(path.join(staticDir, 'main.js'), 'utf8');
+const notebookControllerJs = fs.readFileSync(path.join(staticDir, 'notebook-controller.js'), 'utf8');
 const documentControllerJs = fs.readFileSync(path.join(staticDir, 'document-controller.js'), 'utf8');
+const dependencyControllerJs = fs.readFileSync(path.join(staticDir, 'dependency-controller.js'), 'utf8');
+const quickCardControllerJs = fs.readFileSync(path.join(staticDir, 'quick-card-controller.js'), 'utf8');
 const outcomeFormattersJs = fs.readFileSync(path.join(staticDir, 'outcome-formatters.js'), 'utf8');
+const modelRuntimeJs = fs.readFileSync(path.join(staticDir, 'model-runtime.js'), 'utf8');
+const requestUtilsJs = fs.readFileSync(path.join(staticDir, 'request-utils.js'), 'utf8');
 const surfacePanelsJs = fs.readFileSync(path.join(staticDir, 'surface-panels.js'), 'utf8');
 const knowledgeMapJs = fs.readFileSync(path.join(staticDir, 'knowledge-map.js'), 'utf8');
 const i18nJs = fs.readFileSync(path.join(staticDir, 'i18n.js'), 'utf8');
@@ -197,10 +202,16 @@ window.fetch = async (rawUrl, options = {}) => {
 };
 
 window.eval(i18nJs);
+window.eval(notebookControllerJs);
 window.eval(surfacePanelsJs);
+window.eval(knowledgeMapJs);
 window.eval(documentControllerJs);
+window.eval(dependencyControllerJs);
+window.eval(quickCardControllerJs);
 window.eval(outcomeFormattersJs);
-window.eval(`${knowledgeMapJs}\n${mainJs}`);
+window.eval(modelRuntimeJs);
+window.eval(requestUtilsJs);
+window.eval(mainJs);
 
 async function waitFor(predicate, label) {
   const deadline = Date.now() + 3000;
@@ -295,11 +306,17 @@ def test_browser_can_enable_communication_and_save_parent_child_values() -> None
         for name, content_type in {
             "index.html": "text/html",
             "style.css": "text/css",
+            "notebook.css": "text/css",
             "i18n.js": "text/javascript",
+            "notebook-controller.js": "text/javascript",
             "surface-panels.js": "text/javascript",
             "knowledge-map.js": "text/javascript",
             "document-controller.js": "text/javascript",
+            "dependency-controller.js": "text/javascript",
+            "quick-card-controller.js": "text/javascript",
             "outcome-formatters.js": "text/javascript",
+            "model-runtime.js": "text/javascript",
+            "request-utils.js": "text/javascript",
             "main.js": "text/javascript",
             "katex.min.js": "text/javascript",
             "katex-render.js": "text/javascript",
