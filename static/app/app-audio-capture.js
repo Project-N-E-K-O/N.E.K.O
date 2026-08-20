@@ -35,6 +35,12 @@
     // compares equal again and commits -- re-claiming through refreshMicLease()
     // the exact lease this counter exists to protect.
     let micStartGeneration = 0;
+    // Shared microphone controls can be painted before the capture pipeline
+    // commits. Keep exactly one bounded owner token so a stale attempt cannot
+    // restore the composer or clear the recording affordance while a newer
+    // attempt is still pending. The owner is released by that attempt's
+    // finally block on every success, cancellation and failure path.
+    let pendingMicStartUiOwnerToken = null;
     // Device ids are not a sufficient change token: a rapid A -> B -> A
     // sequence ends at the same id while still superseding the in-flight
     // selection attempt. Increment this on every authoritative selection write
@@ -1725,6 +1731,38 @@
         );
     }
 
+    function finishCancelledMicStart(micElement, micStartToken) {
+        // A newer attempt may already own the shared pipeline and UI. In that
+        // case the stale caller must report the live winner without repainting
+        // the controls as stopped.
+        if (hasLiveCommittedMicrophonePipeline()) {
+            return true;
+        }
+        if (
+            pendingMicStartUiOwnerToken !== null
+            && pendingMicStartUiOwnerToken !== micStartToken
+        ) {
+            return false;
+        }
+        S.isRecording = false;
+        window.isRecording = false;
+        if (micElement) {
+            micElement.classList.remove('recording');
+            micElement.classList.remove('active');
+        }
+        const cancelledTextInputArea = document.getElementById('text-input-area');
+        if (cancelledTextInputArea) {
+            cancelledTextInputArea.classList.remove('hidden');
+        }
+        if (typeof window.syncVoiceChatComposerHidden === 'function') {
+            window.syncVoiceChatComposerHidden(false);
+        }
+        if (typeof window.syncFloatingMicButtonState === 'function') {
+            window.syncFloatingMicButtonState(false);
+        }
+        return false;
+    }
+
     async function requestUsableMicrophoneStream(constraints) {
         const stream = await navigator.mediaDevices.getUserMedia(constraints);
         if (hasLiveMicrophoneTrack(stream)) {
@@ -1887,6 +1925,7 @@
         // getUserMedia() half of the window as well.
         micStartGeneration += 1;
         const micStartToken = micStartGeneration;
+        pendingMicStartUiOwnerToken = micStartToken;
         const _mic = micButton();
         const _mute = muteButton();
         const _screen = screenButton();
@@ -1915,15 +1954,31 @@
                 window.syncVoiceChatComposerHidden(true);
             }
 
-            if (!S.audioPlayerContext) {
+            if (typeof window.ensureAudioPlayerContext === 'function') {
+                await window.ensureAudioPlayerContext();
+            } else if (!S.audioPlayerContext) {
+                // Backward-compatible fallback for isolated route/test harnesses
+                // that load capture without the playback module.
                 S.audioPlayerContext = new (window.AudioContext || window.webkitAudioContext)();
                 if (typeof window.syncAudioGlobals === 'function') {
                     window.syncAudioGlobals();
                 }
             }
+            if (
+                micStartToken !== micStartGeneration
+                || S.voiceInputRouteBlocked === true
+            ) {
+                return finishCancelledMicStart(_mic, micStartToken);
+            }
 
             if (S.audioPlayerContext.state === 'suspended') {
                 await S.audioPlayerContext.resume();
+                if (
+                    micStartToken !== micStartGeneration
+                    || S.voiceInputRouteBlocked === true
+                ) {
+                    return finishCancelledMicStart(_mic, micStartToken);
+                }
             }
 
             // 获取麦克风流，使用选择的麦克风设备ID
@@ -1959,26 +2014,7 @@
                 // getUserMedia. Its pipeline and UI are shared globals, so the
                 // late loser must report the live winner instead of painting
                 // "not recording" over it.
-                if (hasLiveCommittedMicrophonePipeline()) {
-                    return true;
-                }
-                S.isRecording = false;
-                window.isRecording = false;
-                if (_mic) {
-                    _mic.classList.remove('recording');
-                    _mic.classList.remove('active');
-                }
-                const cancelledTextInputArea = document.getElementById('text-input-area');
-                if (cancelledTextInputArea) {
-                    cancelledTextInputArea.classList.remove('hidden');
-                }
-                if (typeof window.syncVoiceChatComposerHidden === 'function') {
-                    window.syncVoiceChatComposerHidden(false);
-                }
-                if (typeof window.syncFloatingMicButtonState === 'function') {
-                    window.syncFloatingMicButtonState(false);
-                }
-                return false;
+                return finishCancelledMicStart(_mic, micStartToken);
             }
             ownStream = microphoneOpenResult.stream;
 
@@ -2024,29 +2060,10 @@
                 // global, same as the S.* fields the unwind is careful about,
                 // and painting "not recording" over a window that is recording
                 // is the display-plane half of the same bug.
-                if (hasLiveCommittedMicrophonePipeline()) {
-                    return true;
-                }
-                S.isRecording = false;
-                window.isRecording = false;
-                if (_mic) {
-                    _mic.classList.remove('recording');
-                    _mic.classList.remove('active');
-                }
-                const cancelledTextInputArea = document.getElementById('text-input-area');
-                if (cancelledTextInputArea) {
-                    cancelledTextInputArea.classList.remove('hidden');
-                }
-                if (typeof window.syncVoiceChatComposerHidden === 'function') {
-                    window.syncVoiceChatComposerHidden(false);
-                }
-                if (typeof window.syncFloatingMicButtonState === 'function') {
-                    window.syncFloatingMicButtonState(false);
-                }
                 // A normal cancellation has no device/worklet error to
                 // propagate, but the outer voice starter must distinguish it
                 // from a committed capture before publishing session success.
-                return false;
+                return finishCancelledMicStart(_mic, micStartToken);
             }
             if (
                 microphoneOpenResult.fallbackFromMicrophoneId
@@ -2114,11 +2131,12 @@
 
             const hasOuterVoiceStartLifecycle = !!(S.voiceStartPending || window.isMicStarting);
 
-            if (_mic) {
+            const ownsPendingMicUi = pendingMicStartUiOwnerToken === micStartToken;
+            if (_mic && ownsPendingMicUi) {
                 _mic.classList.remove('recording');
                 _mic.classList.remove('active');
             }
-            if (!hasOuterVoiceStartLifecycle) {
+            if (!hasOuterVoiceStartLifecycle && ownsPendingMicUi) {
                 S.isRecording = false;
                 window.isRecording = false;
                 S.voiceChatActive = false;
@@ -2132,6 +2150,10 @@
             }
             stopGameVoiceSttGate({ restoreOrdinaryMic: false });
             throw err;
+        } finally {
+            if (pendingMicStartUiOwnerToken === micStartToken) {
+                pendingMicStartUiOwnerToken = null;
+            }
         }
     }
 
@@ -2633,6 +2655,10 @@
 
     var micPermissionGranted = false;
     var cachedMicDevices = null;
+    var cachedSpeakerDevices = null;
+    var mediaDeviceChangeGeneration = 0;
+    var mediaDeviceEnumerationGeneration = 0;
+    var latestMediaDeviceEnumerationPromise = Promise.resolve(null);
     var disposeVoiceRecognitionPopover = null;
     var voiceRecognitionPopoverRenderGeneration = 0;
 
@@ -2705,6 +2731,40 @@
         };
     }
 
+    async function enumerateAndCacheMediaDevices() {
+        var enumerationGeneration = ++mediaDeviceEnumerationGeneration;
+        var ownEnumerationPromise = navigator.mediaDevices.enumerateDevices().then(async function (devices) {
+            if (enumerationGeneration !== mediaDeviceEnumerationGeneration) {
+                return null;
+            }
+            cachedMicDevices = devices.filter(function (device) { return device.kind === 'audioinput'; });
+            cachedSpeakerDevices = devices.filter(function (device) { return device.kind === 'audiooutput'; });
+            // Cache ownership and speaker reconciliation form one transition.
+            // If a newer enumeration starts while this route is queued, it
+            // also queues its own reconciliation on the playback module's
+            // bounded transaction tail and therefore becomes the final route.
+            if (typeof window.reconcileSelectedSpeakerDevices === 'function') {
+                await window.reconcileSelectedSpeakerDevices(devices);
+            }
+            if (enumerationGeneration !== mediaDeviceEnumerationGeneration) {
+                return null;
+            }
+            return {
+                devices: devices,
+                generation: enumerationGeneration
+            };
+        });
+        var committedEnumerationPromise = ownEnumerationPromise.then(function (result) {
+            if (result) return result;
+            // A generation can become stale only after a newer invocation has
+            // synchronously replaced this scalar. Reuse that committed result
+            // so callers never reconcile or render an older device snapshot.
+            return latestMediaDeviceEnumerationPromise;
+        });
+        latestMediaDeviceEnumerationPromise = committedEnumerationPromise;
+        return committedEnumerationPromise;
+    }
+
     /** 请求麦克风权限并缓存设备列表 */
     async function ensureMicrophonePermission() {
         if (micPermissionGranted && cachedMicDevices && cachedMicDevices.length > 0) {
@@ -2715,15 +2775,13 @@
             tempStream.getTracks().forEach(function (track) { track.stop(); });
             micPermissionGranted = true;
             console.log('麦克风权限已获取');
-            var devices = await navigator.mediaDevices.enumerateDevices();
-            cachedMicDevices = devices.filter(function (d) { return d.kind === 'audioinput'; });
-            return cachedMicDevices;
+            await enumerateAndCacheMediaDevices();
+            return cachedMicDevices || [];
         } catch (error) {
             console.warn('请求麦克风权限失败:', error);
             try {
-                var devices2 = await navigator.mediaDevices.enumerateDevices();
-                cachedMicDevices = devices2.filter(function (d) { return d.kind === 'audioinput'; });
-                return cachedMicDevices;
+                await enumerateAndCacheMediaDevices();
+                return cachedMicDevices || [];
             } catch (enumError) {
                 console.error('获取设备列表失败:', enumError);
                 return [];
@@ -2734,10 +2792,15 @@
     // 监听设备变化，更新缓存
     if (navigator.mediaDevices && navigator.mediaDevices.addEventListener) {
         navigator.mediaDevices.addEventListener('devicechange', async function () {
+            var deviceChangeGeneration = ++mediaDeviceChangeGeneration;
             console.log('检测到设备变化，刷新麦克风列表...');
             try {
-                var devices = await navigator.mediaDevices.enumerateDevices();
-                cachedMicDevices = devices.filter(function (d) { return d.kind === 'audioinput'; });
+                var enumerationResult = await enumerateAndCacheMediaDevices();
+                if (deviceChangeGeneration !== mediaDeviceChangeGeneration) return;
+                if (
+                    deviceChangeGeneration !== mediaDeviceChangeGeneration
+                    || enumerationResult.generation !== mediaDeviceEnumerationGeneration
+                ) return;
                 var micPopup = document.getElementById('live2d-popup-mic') || document.getElementById('vrm-popup-mic') || document.getElementById('mmd-popup-mic');
                 if (micPopup && micPopup.style.display === 'flex') {
                     await window.renderFloatingMicList();
@@ -2789,6 +2852,22 @@
             if (!audioInputs || audioInputs.length === 0 || !micPermissionGranted) {
                 audioInputs = await ensureMicrophonePermission();
             }
+            var allMediaDevices = null;
+            if (!cachedSpeakerDevices) {
+                var enumerationResult = await enumerateAndCacheMediaDevices();
+                allMediaDevices = enumerationResult.devices;
+            }
+            if (typeof window.reconcileSelectedSpeakerDevices === 'function') {
+                await window.reconcileSelectedSpeakerDevices(
+                    allMediaDevices || cachedMicDevices.concat(cachedSpeakerDevices)
+                );
+            }
+            var defaultSpeakerDeviceId = C.DEFAULT_SPEAKER_DEVICE_ID || 'default';
+            function isPhysicalSpeakerDevice(device) {
+                return device.deviceId !== defaultSpeakerDeviceId
+                    && device.deviceId !== 'communications';
+            }
+            var audioOutputs = cachedSpeakerDevices.filter(isPhysicalSpeakerDevice);
             if (
                 renderGeneration !== voiceRecognitionPopoverRenderGeneration
                 || !isPopupAvailable()
@@ -3933,6 +4012,56 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                 return option;
             }
 
+            function updateSpeakerOptionSelection() {
+                document.querySelectorAll('.speaker-option').forEach(function (entry) {
+                    var selected = entry.dataset.deviceId === S.selectedSpeakerId;
+                    entry.classList.toggle('selected', selected);
+                    entry.setAttribute('aria-pressed', selected ? 'true' : 'false');
+                    entry.style.background = selected ? 'var(--neko-popup-selected-bg)' : 'transparent';
+                    entry.style.color = selected ? '#4f8cff' : 'var(--neko-popup-text)';
+                    entry.style.fontWeight = selected ? '500' : '400';
+                });
+            }
+
+            function createSpeakerDeviceOption(label, deviceId) {
+                var option = document.createElement('button');
+                option.type = 'button';
+                option.className = 'speaker-option';
+                option.dataset.deviceId = deviceId;
+                var isSelected = deviceId === S.selectedSpeakerId;
+                option.textContent = label;
+                if (isSelected) option.classList.add('selected');
+                option.setAttribute('aria-pressed', isSelected ? 'true' : 'false');
+                Object.assign(option.style, { padding: '8px 12px', cursor: 'pointer', border: 'none', background: isSelected ? 'var(--neko-popup-selected-bg)' : 'transparent', borderRadius: '6px', transition: 'background 0.2s ease', fontSize: '13px', width: '100%', textAlign: 'left', color: isSelected ? '#4f8cff' : 'var(--neko-popup-text)', fontWeight: isSelected ? '500' : '400' });
+                option.addEventListener('mouseenter', function () { if (!option.classList.contains('selected')) option.style.background = 'var(--neko-popup-hover)'; });
+                option.addEventListener('mouseleave', function () { if (!option.classList.contains('selected')) option.style.background = 'transparent'; });
+                option.addEventListener('click', async function (e) {
+                    e.stopPropagation();
+                    try {
+                        if (typeof window.selectSpeakerDevice !== 'function') {
+                            throw new Error('Speaker device selection is unavailable');
+                        }
+                        var applied = await window.selectSpeakerDevice(deviceId);
+                        if (applied === false) {
+                            throw new Error('Speaker device selection was not applied');
+                        }
+                        updateSpeakerOptionSelection();
+                        document.querySelectorAll('[data-neko-mic-main-action="speaker-device"] .neko-mic-action-sub-label').forEach(function (labelEl) {
+                            labelEl.textContent = label;
+                        });
+                    } catch (error) {
+                        console.error('[Audio] 切换播放设备失败:', error);
+                        if (typeof window.showStatusToast === 'function') {
+                            window.showStatusToast(
+                                window.t ? window.t('speaker.switchFailed') : '切换播放设备失败',
+                                3000
+                            );
+                        }
+                    }
+                });
+                return option;
+            }
+
             function openVoiceRecognitionSubwindow() {
                 var panel = createMicSubwindow(
                     window.t
@@ -4061,6 +4190,45 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                 requestAnimationFrame(function () { positionMicSubwindow(panel); });
             }
 
+            async function openSpeakerDeviceSubwindow() {
+                var panel = createMicSubwindow(
+                    window.t ? window.t('speaker.title') : '选择播放设备',
+                    null,
+                    '280px'
+                );
+                panel.classList.add('neko-speaker-device-subwindow');
+                var panelBody = panel._nekoMicSubwindowBody || panel;
+                var listBody = document.createElement('div');
+                Object.assign(listBody.style, { display: 'flex', flexDirection: 'column', gap: '4px' });
+                panelBody.appendChild(listBody);
+
+                var defaultLabel = window.t ? window.t('speaker.defaultDevice') : '系统默认播放设备';
+                listBody.appendChild(createSpeakerDeviceOption(
+                    defaultLabel,
+                    defaultSpeakerDeviceId
+                ));
+
+                var currentAudioOutputs = getCurrentSpeakerOutputs();
+                if (currentAudioOutputs.length === 0) {
+                    var noSpeakerItem = document.createElement('div');
+                    noSpeakerItem.textContent = window.t ? window.t('speaker.noDevices') : '没有检测到播放设备';
+                    Object.assign(noSpeakerItem.style, { padding: '8px 12px', color: 'var(--neko-popup-text-sub)', fontSize: '13px' });
+                    listBody.appendChild(noSpeakerItem);
+                    requestAnimationFrame(function () { positionMicSubwindow(panel); });
+                    return;
+                }
+
+                var sep = document.createElement('div');
+                Object.assign(sep.style, { height: '1px', backgroundColor: 'var(--neko-popup-separator)', margin: '5px 0' });
+                listBody.appendChild(sep);
+
+                currentAudioOutputs.forEach(function (device, idx) {
+                    var label = device.label || (window.t ? window.t('speaker.deviceLabel', { index: idx + 1 }) : '播放设备 ' + (idx + 1));
+                    listBody.appendChild(createSpeakerDeviceOption(label, device.deviceId));
+                });
+                requestAnimationFrame(function () { positionMicSubwindow(panel); });
+            }
+
             async function openScreenSourceSubwindow() {
                 var panel = createMicSubwindow(
                     window.t ? window.t('buttons.screenShare') : 'Screen Share',
@@ -4124,6 +4292,32 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                 ? (window.t ? window.t('microphone.defaultDevice') : 'System Default Microphone')
                 : (audioInputs.find(function (device) { return device.deviceId === S.selectedMicrophoneId; }) || {}).label || deviceButtonLabel;
             var screenButtonLabel = window.t ? window.t('buttons.screenShare') : 'Screen Share';
+            var speakerButtonLabel = window.t ? window.t('speaker.title') : '选择播放设备';
+            function getCurrentSpeakerOutputs() {
+                return (cachedSpeakerDevices || audioOutputs || []).filter(isPhysicalSpeakerDevice);
+            }
+            function getCurrentSpeakerLabel() {
+                if (S.selectedSpeakerId === defaultSpeakerDeviceId) {
+                    if (S.effectiveSpeakerId !== defaultSpeakerDeviceId) {
+                        return window.t
+                            ? window.t('speaker.unavailableFallbackFailed')
+                            : '所选设备不可用，且无法切换到系统默认播放设备';
+                    }
+                    return window.t ? window.t('speaker.defaultDevice') : '系统默认播放设备';
+                }
+                if (S.selectedSpeakerAvailable === false) {
+                    if (S.effectiveSpeakerId !== defaultSpeakerDeviceId) {
+                        return window.t
+                            ? window.t('speaker.unavailableFallbackFailed')
+                            : '所选设备不可用，且无法切换到系统默认播放设备';
+                    }
+                    return window.t
+                        ? window.t('speaker.unavailableFallback')
+                        : '所选设备不可用，正使用系统默认播放设备';
+                }
+                return (getCurrentSpeakerOutputs().find(function (device) { return device.deviceId === S.selectedSpeakerId; }) || {}).label || speakerButtonLabel;
+            }
+            var currentSpeakerLabel = getCurrentSpeakerLabel();
 
             var firstContent = leftColumn.firstChild;
             var screenActionButton = createMainActionButton(
@@ -4180,6 +4374,28 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
             );
             leftColumn.insertBefore(asrActionRow, firstContent);
             updateVoiceRecognitionUi();
+
+            var speakerActionButton = createMainActionButton(
+                null,
+                speakerButtonLabel,
+                currentSpeakerLabel,
+                'speaker-device',
+                openSpeakerDeviceSubwindow
+            );
+            var speakerActionRow = createMainActionRow(speakerActionButton, null);
+            leftColumn.insertBefore(speakerActionRow, firstContent);
+            var speakerSummary = speakerActionButton.querySelector('.neko-mic-action-sub-label');
+            if (speakerSummary) {
+                speakerSummary.setAttribute('aria-live', 'polite');
+                speakerSummary.title = currentSpeakerLabel;
+            }
+            addVoiceWindowListener('neko:speaker-device-changed', function () {
+                updateSpeakerOptionSelection();
+                if (!speakerSummary) return;
+                var nextLabel = getCurrentSpeakerLabel();
+                speakerSummary.textContent = nextLabel;
+                speakerSummary.title = nextLabel;
+            });
 
             // 组装
             micPopup.appendChild(leftColumn);

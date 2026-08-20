@@ -27,7 +27,11 @@ from datetime import datetime
 from websockets import exceptions as web_exceptions
 from fastapi import WebSocket, WebSocketDisconnect
 from main_logic.omni_realtime_client import OmniRealtimeClient
-from main_logic.omni_offline_client import OmniOfflineClient, _is_safety_violation_signal
+from main_logic.omni_offline_client import OmniOfflineClient
+from main_logic.provider_failure_signals import (
+    CODES_REQUIRING_MSG_DETAIL,
+    classify_provider_failure_text,
+)
 from main_logic.proactive_delivery import (
     DELIVERY_RETRACTED_KEY,
     SWAP_PRIME_DELIVERY_CLAIM_KEY,
@@ -232,6 +236,12 @@ class LifecycleMixin:
             logger.error(f"处理静默超时时出错: {e}")
     
     async def handle_connection_error(self, message=None, *, expected_session=None):
+        message_text = str(message) if message is not None else ""
+        try:
+            _parsed = json.loads(message_text) if message_text.startswith('{') else None
+        except (json.JSONDecodeError, TypeError):
+            _parsed = None
+
         async with self.lock:
             is_pending = False
             if expected_session is not None:
@@ -239,6 +249,27 @@ class LifecycleMixin:
                     is_pending = True
                 elif expected_session is not self.session:
                     logger.info("⏭️ handle_connection_error: expected_session stale (not current session), skipping")
+                    return
+                details = _parsed.get('details') if isinstance(_parsed, dict) else None
+                failure_generation = (
+                    details.get('connection_generation')
+                    if isinstance(details, dict)
+                    else None
+                )
+                current_generation = getattr(
+                    expected_session, '_connection_generation', None
+                )
+                if (
+                    isinstance(failure_generation, int)
+                    and isinstance(current_generation, int)
+                    and failure_generation != current_generation
+                ):
+                    logger.info(
+                        "⏭️ handle_connection_error: connection generation stale "
+                        "(failure=%s current=%s), skipping",
+                        failure_generation,
+                        current_generation,
+                    )
                     return
             # Only flag the manager-level flag for main session errors (or unguarded calls).
             # A pending_session failure must not misclassify the main session as closed.
@@ -251,36 +282,30 @@ class LifecycleMixin:
             return
         
         if message:
-            message_text = str(message)
-            message_text_lower = message_text.lower()
-
             # Pre-classified structured errors from omni_realtime_client (JSON with "code")
             # Forward them directly so the frontend sees the original code.
-            try:
-                _parsed = json.loads(message_text) if message_text.startswith('{') else None
-            except (json.JSONDecodeError, TypeError):
-                _parsed = None
             if _parsed and isinstance(_parsed, dict) and _parsed.get('code'):
-                await self.send_status(message_text)
-            elif '欠费' in message_text_lower or 'standing' in message_text_lower:
-                await self.send_status(json.dumps({"code": "API_ARREARS"}))
-            elif 'quota' in message_text_lower or 'time limit' in message_text_lower:
-                await self.send_status(json.dumps({"code": "API_QUOTA_TIME"}))
-            elif '429' in message_text_lower or 'too many' in message_text_lower:
-                await self.send_status(json.dumps({"code": "API_RATE_LIMIT"}))
-            elif ('401' in message_text_lower or 'unauthorized' in message_text_lower
-                    or 'authentication' in message_text_lower
-                    or 'incorrect api key' in message_text_lower
-                    or 'invalid_api_key' in message_text_lower
-                    or ('invalid' in message_text_lower and 'key' in message_text_lower)):
-                await self.send_status(json.dumps({"code": "API_KEY_REJECTED"}))
-            elif _is_safety_violation_signal(message_text_lower):
-                await self.send_status(json.dumps({"code": "API_POLICY_VIOLATION", "details": {"msg": message_text}}))
-            elif '1008' in message_text_lower:
-                await self.send_status(json.dumps({"code": "API_1008_FALLBACK", "details": {"msg": message_text}}))
+                # Peer disconnects use the existing recovery below, which
+                # supplies CHARACTER_DISCONNECTED with the configured name.
+                # Forwarding this marker here would show the same toast twice.
+                if _parsed.get('code') != 'CHARACTER_DISCONNECTED':
+                    await self.send_status(message_text)
             else:
-                await self.send_status(json.dumps({"code": "API_UNKNOWN_ERROR", "details": {"msg": message_text}}))
-        logger.info("💥 Session closed by API Server.")
+                # Same criteria, and the same ordering, the realtime close
+                # path reads — from one place, so a keyword added for one
+                # provider never goes missing on the other side. The details
+                # payload stays this side's own: here we are holding a real
+                # upstream diagnostic and echo it, where a peer-controlled
+                # close reason is deliberately withheld.
+                status_code = (
+                    classify_provider_failure_text(message_text)
+                    or "API_UNKNOWN_ERROR"
+                )
+                status_payload = {"code": status_code}
+                if status_code in CODES_REQUIRING_MSG_DETAIL:
+                    status_payload["details"] = {"msg": message_text}
+                await self.send_status(json.dumps(status_payload))
+        logger.info("💥 Realtime connection recovery requested.")
         await self.disconnected_by_server(expected_session=expected_session)
     
     async def handle_repetition_detected(self):

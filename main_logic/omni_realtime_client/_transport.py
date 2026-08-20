@@ -39,28 +39,14 @@ from ._shared import (
     uuid,
     websockets,
 )
-
-
-def _response_id_text(value: Any) -> str | None:
-    """One reading of "does this name a response", used by both id sources.
-
-    Absent is ``None`` or the empty string — neither names anything, and
-    admitting the empty one would collapse every unidentified response onto a
-    shared identity. Zero is PRESENT: a provider numbering from zero names its
-    first response perfectly well.
-
-    Both halves matter and I got each wrong once. The original truthiness test
-    dropped `0`; replacing it with a bare ``is None`` check then stopped an
-    empty top-level ``response_id`` from falling back to the nested
-    ``response.id``, so a late terminal of that shape skipped the stale filter
-    and finalized whatever turn was current. Reading it in one place is what
-    keeps the two sources from disagreeing again.
-    """
-
-    if value is None:
-        return None
-    text = str(value)
-    return text or None
+from main_logic.provider_failure_signals import (
+    CODES_REQUIRING_MSG_DETAIL,
+    classify_provider_failure_text,
+)
+from ._protocol_capabilities import (
+    ID_BEARING_RESPONSE_CONTENT_EVENT_TYPES,
+    _response_id_text,
+)
 
 
 _ATTACHED_TRANSPORT = object()
@@ -80,7 +66,6 @@ _STUCK_RELEASE_STEP_TIMEOUT = 0.5
 # arrives right behind its original, so this only has to outlive the events
 # interleaved between them; it is a leak guard, not a history.
 _USAGE_RECORDED_ID_LIMIT = 32
-
 
 # `error` 事件的致命性判定是一串子串匹配（'429' / '1008' / '503' / 'quota' ...）。它
 # 过去匹配在 `str(event['error'])` 上，也就是整个 dict 的 repr —— 里面回显着我们自己
@@ -106,6 +91,33 @@ def _error_classification_text(error: Any) -> str:
             if value is not None and not _is_correlation_key(str(key))
         )
     return str(error or "")
+
+
+def _peer_close_descriptor(received_code) -> str:
+    """Name a peer close by its code alone, never by its reason text."""
+
+    if received_code is None:
+        return "WebSocket closed without a close code"
+    return f"WebSocket close code {received_code}"
+
+
+def _classify_peer_close(received_code, received_reason) -> tuple[str, dict[str, str] | None]:
+    """Map a peer close to existing stable UI codes without exposing its reason."""
+
+    code = classify_provider_failure_text(received_reason)
+    if code is None and received_code == 1008:
+        # The reason said nothing, but the close code alone is a policy
+        # signal on every provider that sends it.
+        code = "API_1008_FALLBACK"
+    if code is None:
+        return "CHARACTER_DISCONNECTED", None
+    if code in CODES_REQUIRING_MSG_DETAIL:
+        # The reason string is peer-controlled and deliberately withheld, but
+        # these codes' i18n strings interpolate {{msg}} — emitting them with
+        # no msg renders the raw placeholder to the user. Substitute the close
+        # code, which is ours to disclose and is what a bug report needs.
+        return code, {"msg": _peer_close_descriptor(received_code)}
+    return code, None
 
 
 class RealtimeImagePayloadTooLargeError(RuntimeError):
@@ -178,10 +190,10 @@ class _TransportMixin:
         headers = {
             "Authorization": f"Bearer {self.api_key}"
         }
-        # close_timeout=0.5 缩短 close handshake 的等待上限：默认 10s 会把
-        # end_session 协程挂住数百毫秒~数秒（Qwen 回 CLOSE 帧偶尔很慢），
-        # 超时后 websockets 内部会 transport.abort() 强制关闭。
-        self.ws = await websockets.connect(url, additional_headers=headers, close_timeout=0.5)
+        # Give proxies and cross-region free routes enough time to complete the
+        # close handshake without restoring websockets' 10s default. A peer
+        # that never answers is still force-aborted after this bounded wait.
+        self.ws = await websockets.connect(url, additional_headers=headers, close_timeout=2.0)
         self._on_connection_attached()
         # Do not reopen the arbiter until the replacement transport exists.
         # A failed reconnect must leave the prior shutdown state intact.
@@ -190,6 +202,13 @@ class _TransportMixin:
         # connection (flag may be leftover from a previous failed session
         # when the same OmniRealtimeClient instance is reused).
         self._fatal_error_occurred = False
+        capabilities = self._realtime_protocol_capabilities
+        logger.info(
+            "Realtime protocol profile resolved "
+            "(route=%s response_start_evidence=%s)",
+            capabilities.route_key,
+            capabilities.response_start_evidence.value,
+        )
 
         # 启动静默检测任务（只在启用时）
         self._last_speech_time = time.time()
@@ -1207,6 +1226,23 @@ class _TransportMixin:
         # 确保中断标志在响应结束时清除，防止阻塞下一轮 text.delta
         self._interrupted = False
 
+    def _begin_response_lifecycle(self, response_id: Any) -> None:
+        """Apply the host-side state shared by all accepted start evidence."""
+
+        self._current_response_id = response_id
+        self._is_responding = True
+        self._turn_epoch += 1
+        self._current_turn_epoch = self._turn_epoch
+        self._current_turn_host_id = self._read_host_turn_id()
+        self._interrupted = False
+        # A stable successor id also closes the id-less quarantine opened by
+        # a fail-open release; ordered socket delivery puts this evidence
+        # before any later id-less event from the successor.
+        self._idless_quarantine = False
+        self._is_first_text_chunk = self._is_first_transcript_chunk = True
+        self._output_transcript_buffer = ""
+        self._current_response_transcript = ""
+
     def _read_host_turn_id(self) -> str | None:
         """Sample the host's live speech id, or None for "no answer".
 
@@ -1658,11 +1694,21 @@ class _TransportMixin:
             return
 
         try:
-            if not self.ws:
+            message_ws = self.ws
+            message_generation = self._connection_generation
+            if not message_ws:
                 logger.error("WebSocket connection is not established")
                 return
 
-            async for message in self.ws:
+            async for message in message_ws:
+                if (
+                    not self._still_owns_connection(message_generation)
+                    or self.ws is not message_ws
+                ):
+                    logger.info(
+                        "Ignoring a frame from a retired realtime connection"
+                    )
+                    return
                 event = json.loads(message)
                 event_type = event.get("type")
 
@@ -1719,6 +1765,15 @@ class _TransportMixin:
                             await self.on_connection_error(error_msg)
                         await self.close()
                     continue
+
+                if event_type in ID_BEARING_RESPONSE_CONTENT_EVENT_TYPES:
+                    content_started = self._response_arbiter.notify_response_content(
+                        event
+                    )
+                    if content_started:
+                        self._begin_response_lifecycle(
+                            _response_id_text(event.get("response_id"))
+                        )
 
                 # A cancelled response can still emit buffered events after a
                 # replacement response has become current.  Providers that
@@ -1929,29 +1984,29 @@ class _TransportMixin:
                     self._reset_per_turn_output_state()
                     await self._notify_turn_finished()
                 elif event_type == "response.created":
+                    confirms_started_owner = (
+                        self._response_arbiter.response_created_confirms_started_owner(
+                            event
+                        )
+                    )
                     expose_response = self._response_arbiter.notify_response_created(event)
                     self._response_created_total += 1
                     self._last_response_created_time = time.time()
                     if not expose_response:
+                        # A delayed announcement for a content-started owner is
+                        # consumed without beginning host lifecycle twice, but
+                        # still proves that this connection announces.
+                        if confirms_started_owner:
+                            self._announces_responses = True
                         continue
                     self._announces_responses = True
-                    self._current_response_id = event.get("response", {}).get("id")
-                    self._is_responding = True
-                    self._turn_epoch += 1
-                    self._current_turn_epoch = self._turn_epoch
-                    self._current_turn_host_id = self._read_host_turn_id()
-                    self._interrupted = False  # Clear interruption flag on new response
-                    # Closes the id-less quarantine a fail-open release opened.
-                    # Safe as the sole exit: a release only happens when the
-                    # abandoned response HAD an id, ids are written only here,
-                    # and this socket is consumed by one ordered ``async for`` —
-                    # so a successor's announcement always precedes its own
-                    # id-less events and none of them are ever suppressed.
-                    self._idless_quarantine = False
-                    self._is_first_text_chunk = self._is_first_transcript_chunk = True
-                    # 清空转录 buffer，防止累积旧内容
-                    self._output_transcript_buffer = ""
-                    self._current_response_transcript = ""  # 重置当前回复转录
+                    self._begin_response_lifecycle(
+                        _response_id_text(
+                            (event.get("response") or {}).get("id")
+                            if isinstance(event.get("response"), dict)
+                            else None
+                        )
+                    )
                 elif event_type == "response.output_item.added":
                     self._current_item_id = event.get("item", {}).get("id")
                 elif event_type == "input_audio_buffer.committed":
@@ -2103,26 +2158,66 @@ class _TransportMixin:
                                 self._skip_until_next_response, self._interrupted, self._current_response_id
                             )
 
-            await self._close_failed_transport("realtime message stream ended")
         except websockets.exceptions.ConnectionClosedOK:
-            await self._close_failed_transport("realtime connection closed")
-            logger.info("Connection closed as expected")
+            recovered = await self._recover_receive_loop_disconnect(
+                message_ws,
+                message_generation,
+                "realtime connection closed",
+                status_code="CHARACTER_DISCONNECTED",
+            )
+            if recovered:
+                logger.info("Realtime connection was closed by the peer")
         except websockets.exceptions.ConnectionClosedError as e:
-            error_msg = str(e)
-            await self._close_failed_transport(error_msg)
-            logger.error(f"Connection closed with error: {error_msg}")
-            if self.on_connection_error:
-                await self.on_connection_error(error_msg)
+            received_code = getattr(getattr(e, "rcvd", None), "code", None)
+            received_reason = getattr(getattr(e, "rcvd", None), "reason", None)
+            sent_code = getattr(getattr(e, "sent", None), "code", None)
+            status_code, status_details = _classify_peer_close(
+                received_code,
+                received_reason,
+            )
+            recovered = await self._recover_receive_loop_disconnect(
+                message_ws,
+                message_generation,
+                "realtime connection closed unexpectedly",
+                status_code=status_code,
+                status_details=status_details,
+            )
+            if recovered:
+                logger.warning(
+                    "Realtime connection closed unexpectedly "
+                    "(received_code=%s sent_code=%s)",
+                    received_code,
+                    sent_code,
+                )
         except asyncio.TimeoutError:
-            await self._close_failed_transport("realtime connection timeout")
-            if self.on_connection_error:
-                await self.on_connection_error(json.dumps({"code": "CONNECTION_TIMEOUT"}))
+            await self._recover_receive_loop_disconnect(
+                message_ws,
+                message_generation,
+                "realtime connection timeout",
+                status_code="CONNECTION_TIMEOUT",
+            )
         except Exception as e:
+            if (
+                not self._still_owns_connection(message_generation)
+                or self.ws is not message_ws
+            ):
+                logger.info(
+                    "Retired realtime receive loop failed after replacement; "
+                    "ignoring its handler exception"
+                )
+                return
             await self._close_failed_transport(
                 f"realtime message handling failed: {type(e).__name__}"
             )
             logger.error(f"Error in message handling: {str(e)}")
             raise
+        else:
+            await self._recover_receive_loop_disconnect(
+                message_ws,
+                message_generation,
+                "realtime message stream ended",
+                status_code="CHARACTER_DISCONNECTED",
+            )
 
     def _on_connection_attached(self) -> None:
         """Mark a replacement connection as live and hand it the teardown latches.
@@ -2150,6 +2245,10 @@ class _TransportMixin:
         self._close_task = None
         self._failed_transport_close_task = None
         self._gemini_close_task = None
+        # A predecessor's unclaimed abort is not the replacement's to report.
+        # The generation stamp already refuses it; dropping it here keeps the
+        # latch from outliving the connection it describes.
+        self._local_failure_recovery = None
 
     def _still_owns_connection(self, generation) -> bool:
         """Whether the connection a teardown seized is still the client's.
@@ -2165,6 +2264,117 @@ class _TransportMixin:
         """
 
         return self._connection_generation == generation
+
+    async def _recover_receive_loop_disconnect(
+        self,
+        message_ws,
+        generation,
+        reason: str,
+        *,
+        status_code: str,
+        status_details: dict[str, Any] | None = None,
+    ) -> bool:
+        """Retire a peer-failed connection and request the existing recovery.
+
+        ``close()`` detaches its socket synchronously before awaiting the close
+        handshake. Therefore an ending receive loop still owns ``self.ws`` only
+        when the peer (or the network) ended the live connection first. An old
+        loop ending after a manager close or replacement attach must be silent:
+        reporting it as a fresh provider failure would tear down the successor.
+        """
+
+        if not self._still_owns_connection(generation) or self.ws is not message_ws:
+            local_failure = self._consume_local_failure_recovery(generation)
+            if local_failure is None:
+                logger.info(
+                    "Realtime receive loop ended after its transport was already "
+                    "closed or replaced; no connection error will be reported"
+                )
+                return False
+            # A local component (the arbiter's fail-close, a fatal send) tore
+            # this transport down and nobody told the manager. Finish the host
+            # cleanup the aborting caller could not do from its own stack, and
+            # route it through the ordinary disconnect recovery. Deliberately
+            # NOT reclassified from the local close result: the primary cause
+            # is the reason the aborting caller already logged, and the CLOSE
+            # 1000 handshake outcome must not be shown as a provider API error.
+            logger.warning(
+                "Realtime transport was aborted locally (%s); requesting "
+                "session recovery",
+                local_failure,
+            )
+            await self._close_failed_transport(local_failure)
+            if not self._still_owns_connection(generation):
+                return False
+            self._schedule_connection_error(
+                "CHARACTER_DISCONNECTED",
+                generation,
+            )
+            return True
+
+        await self._close_failed_transport(reason)
+        if not self._still_owns_connection(generation):
+            return False
+        self._schedule_connection_error(
+            status_code,
+            generation,
+            status_details=status_details,
+        )
+        return True
+
+    def _consume_local_failure_recovery(self, generation) -> str | None:
+        """Take the pending local-abort reason, if it belongs to ``generation``.
+
+        One-shot on purpose: the receive loop that owned the aborted socket is
+        the only party that may act on it, and a retired loop or a replacement
+        connection must not inherit a predecessor's failure.
+        """
+
+        pending = getattr(self, "_local_failure_recovery", None)
+        if pending is None:
+            return None
+        pending_generation, reason = pending
+        if pending_generation != generation:
+            return None
+        self._local_failure_recovery = None
+        return reason
+
+    def _schedule_connection_error(
+        self,
+        status_code: str,
+        generation,
+        *,
+        status_details: dict[str, Any] | None = None,
+    ) -> None:
+        """Run manager recovery outside the receive loop that it must cancel."""
+
+        callback = self.on_connection_error
+        if callback is None:
+            return
+
+        async def _notify() -> None:
+            if not self._still_owns_connection(generation):
+                return
+            try:
+                details = dict(status_details or {})
+                details["connection_generation"] = generation
+                await callback(
+                    json.dumps(
+                        {
+                            "code": status_code,
+                            "details": details,
+                        }
+                    )
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.error(
+                    "Realtime connection recovery callback failed: %s",
+                    type(exc).__name__,
+                )
+
+        self._fire_task(_notify())
 
     async def _own_teardown(self, slot: str, detach):
         """Await a teardown that this client owns, not the caller.
@@ -2237,11 +2447,27 @@ class _TransportMixin:
         ws=_ATTACHED_TRANSPORT,
         generation=None,
     ) -> None:
-        """Detach, when needed, and physically close a failed raw WebSocket."""
+        """Detach, when needed, and physically close a failed raw WebSocket.
+
+        The sentinel ``ws`` marks the arbiter's own entry point: it seizes the
+        attached socket itself, where ``_close_failed_transport_impl`` hands
+        over a socket it already seized. Only the former leaves nobody holding
+        the failure — the receive loop is about to wake up on a socket it no
+        longer owns and, without the latch armed here, would exit silently and
+        strand the manager on a live session over a dead transport.
+        """
 
         if generation is None or self._still_owns_connection(generation):
             self._fatal_error_occurred = True
         if ws is _ATTACHED_TRANSPORT:
+            # getattr, because this path is reachable on a client shell built
+            # without __init__ (abort is deliberately the one teardown that
+            # needs nothing but a socket) — and a shell has no receive loop to
+            # claim the latch anyway.
+            self._local_failure_recovery = (
+                getattr(self, "_connection_generation", 0),
+                reason,
+            )
             ws, self.ws = self.ws, None
         if ws is not None:
             try:
@@ -2272,6 +2498,9 @@ class _TransportMixin:
 
         generation = self._connection_generation
         ws, self.ws = self.ws, None
+        # The manager is the one closing, so it already knows this session is
+        # over: an abort latched just before this must not also fire recovery.
+        self._local_failure_recovery = None
         silence_check_task, self._silence_check_task = self._silence_check_task, None
         gemini_context = self._gemini_context_manager
         gemini_close_task = self._gemini_close_task
@@ -2378,9 +2607,9 @@ class _TransportMixin:
             return
         if ws:
             try:
-                # 连接时已设 close_timeout=0.5s：远端超时未回 CLOSE 帧时，
+                # 连接时已设 close_timeout=2s：远端超时未回 CLOSE 帧时，
                 # websockets 内部会自行 abort transport 强制关闭，
-                # 保证 end_session 快速返回、主事件循环心跳不受影响。
+                # 在兼容慢代理的同时保持清理等待有界。
                 await ws.close()
             except Exception as e:
                 logger.error(f"Error closing websocket: {e}")

@@ -514,27 +514,43 @@
                         signal: controller.signal,
                     });
                     if (!response.ok) {
-                        const reason = response.status === 409
-                            ? 'desktop not logged in'
-                            : `HTTP ${response.status}`;
-                        console.warn(`[social] native delegate fetch failed (non-fatal): ${reason}`);
-                        return '';
+                        if (response.status === 409) {
+                            return { nativeDelegate: '', loginState: 'logged-out' };
+                        }
+                        console.warn(`[social] native delegate fetch failed (non-fatal): HTTP ${response.status}`);
+                        return { nativeDelegate: '', loginState: 'unknown' };
                     }
                     const payload = await response.json();
-                    return payload && payload.native_delegate
+                    const nativeDelegate = payload && payload.native_delegate
                         ? String(payload.native_delegate)
                         : '';
+                    return {
+                        nativeDelegate,
+                        loginState: nativeDelegate ? 'logged-in' : 'unknown'
+                    };
                 } catch (error) {
                     console.warn('[social] native delegate fetch failed (non-fatal):', error);
-                    return '';
+                    return { nativeDelegate: '', loginState: 'unknown' };
                 } finally {
                     clearTimeout(timeoutId);
                 }
             };
-            const attachNativeSyncTicket = async (targetUrl) => {
+            const fetchSocialClientId = async () => {
+                try {
+                    const response = await fetch('/api/system/client-id');
+                    if (!response.ok) {
+                        return '';
+                    }
+                    const payload = await response.json();
+                    return payload && payload.client_id ? String(payload.client_id) : '';
+                } catch (error) {
+                    console.warn('[social] client_id fetch failed (non-fatal):', error);
+                    return '';
+                }
+            };
+            const applyNativeSyncTicket = (targetUrl, syncTicket) => {
                 targetUrl.hash = '';
                 const hashParams = new URLSearchParams();
-                const syncTicket = await fetchNativeSyncTicket();
                 if (syncTicket) {
                     hashParams.set('native_sync', syncTicket);
                 }
@@ -542,6 +558,10 @@
                 if (hash) targetUrl.hash = hash;
                 return targetUrl;
             };
+            const attachNativeSyncTicket = async (targetUrl) => applyNativeSyncTicket(
+                targetUrl,
+                await fetchNativeSyncTicket()
+            );
             const attachNativeDelegate = (targetUrl, nativeDelegate) => {
                 const hashParams = new URLSearchParams(targetUrl.hash.replace(/^#/, ''));
                 // Scoped credits/facts proof — never the platform OAuth bearer.
@@ -552,14 +572,14 @@
                 targetUrl.hash = hash;
                 return targetUrl;
             };
-            const completeInitialCommunityHandoff = async (targetUrl) => {
-                if (!isElectron) {
-                    // 先让用户看到 Community；保留 WindowProxy 仅用于随后补发 delegate。
-                    navigateBrowserPopup(targetUrl, { keepReference: true });
+            const completeInitialCommunityHandoff = async (targetUrl, initialNativeDelegate = '') => {
+                // 已登录快速路径直接复用并行取得的 delegate。仅在状态接口失败、
+                // 但 auth-status 兜底确认已登录时重试一次，避免重复解析 OAuth 会话。
+                let nativeDelegate = initialNativeDelegate;
+                if (!nativeDelegate) {
+                    const retryHandoff = await fetchNativeDelegate();
+                    nativeDelegate = retryHandoff.nativeDelegate;
                 }
-                // auth-status 已完成且无需等待 OAuth 后才启动，避免可放弃的
-                // delegate 校验占住 OAuth 状态解析锁并阻塞登录态判断。
-                const nativeDelegate = await fetchNativeDelegate();
                 if (nativeDelegate) {
                     // 二次导航使用新签发的 native_sync，并与 delegate 一次性交付。
                     // 即使首次页面尚未读取 fragment 而被替换，也不会丢失同步能力；
@@ -638,20 +658,21 @@
                 // 把本体已经解析后的明暗状态交给社区首帧，避免暗色模式打开时短暂闪白。
                 // 只传 dark/light，不改变社区独立保存的主题偏好。
                 attachResolvedTheme(targetUrl);
+                // 配置确认后即可并行准备三项互不依赖的本地数据。delegate 内部会
+                // 完成 OAuth 会话校验，因此成功/未登录结果可直接作为登录态依据。
+                const initialSyncTicketPromise = fetchNativeSyncTicket();
+                const initialClientIdPromise = fetchSocialClientId();
+                const initialNativeHandoffPromise = fetchNativeDelegate();
+                const [initialSyncTicket, clientId] = await Promise.all([
+                    initialSyncTicketPromise,
+                    initialClientIdPromise
+                ]);
                 // 只有从本体按钮打开的页面才能拿到一次性同步票据。票据放 fragment，
                 // 不进入社区服务器 access log / Referer；社区页读取后会立即从地址栏移除。
-                await attachNativeSyncTicket(targetUrl);
+                applyNativeSyncTicket(targetUrl, initialSyncTicket);
                 // 顺手把 client_id 拼进 URL（仅关联游客身份，不构成登录态同步授权）。
-                try {
-                    const cidRes = await fetch('/api/system/client-id');
-                    if (cidRes.ok) {
-                        const cidJson = await cidRes.json();
-                        if (cidJson && cidJson.client_id) {
-                            targetUrl.searchParams.set('cid', cidJson.client_id);
-                        }
-                    }
-                } catch (cidErr) {
-                    console.warn('[social] client_id fetch failed (non-fatal):', cidErr);
+                if (clientId) {
+                    targetUrl.searchParams.set('cid', clientId);
                 }
                 url = targetUrl.toString();
                 // 先打开猫娘社区；Desktop 未登录时再额外拉起平台 Desktop OAuth（不挡社区）。
@@ -661,16 +682,21 @@
                     if (!openElectronSocialWindow(url)) {
                         throw new Error('popup blocked');
                     }
+                } else if (!navigateBrowserPopup(url, { keepReference: true })) {
+                    throw new Error('popup blocked');
                 }
-                let communityLoggedIn = false;
-                try {
-                    const statusRes = await fetch('/api/card-drop/auth-status', { cache: 'no-store' });
-                    if (statusRes.ok) {
-                        const statusJson = await statusRes.json();
-                        communityLoggedIn = !!(statusJson && statusJson.logged_in);
+                const initialNativeHandoff = await initialNativeHandoffPromise;
+                let communityLoggedIn = initialNativeHandoff.loginState === 'logged-in';
+                if (initialNativeHandoff.loginState === 'unknown') {
+                    try {
+                        const statusRes = await fetch('/api/card-drop/auth-status', { cache: 'no-store' });
+                        if (statusRes.ok) {
+                            const statusJson = await statusRes.json();
+                            communityLoggedIn = !!(statusJson && statusJson.logged_in);
+                        }
+                    } catch (statusErr) {
+                        console.warn('[social] auth-status fetch failed (non-fatal):', statusErr);
                     }
-                } catch (statusErr) {
-                    console.warn('[social] auth-status fetch failed (non-fatal):', statusErr);
                 }
                 if (!communityLoggedIn) {
                     let browserOAuthStarted = false;
@@ -741,9 +767,10 @@
                                 const refreshedTargetUrl = await attachNativeSyncTicket(
                                     new URL(url, window.location.href)
                                 );
+                                const refreshedHandoff = await refreshedDelegatePromise;
                                 attachNativeDelegate(
                                     refreshedTargetUrl,
-                                    await refreshedDelegatePromise
+                                    refreshedHandoff.nativeDelegate
                                 );
                                 if (isElectron) {
                                     if (!openElectronSocialWindow(refreshedTargetUrl.toString())) {
@@ -764,11 +791,17 @@
                                 }
                             }
                         } else {
-                            await completeInitialCommunityHandoff(url);
+                            await completeInitialCommunityHandoff(
+                                url,
+                                initialNativeHandoff.nativeDelegate
+                            );
                         }
                     }
                 } else {
-                    await completeInitialCommunityHandoff(url);
+                    await completeInitialCommunityHandoff(
+                        url,
+                        initialNativeHandoff.nativeDelegate
+                    );
                 }
                 return;
             } catch (err) {
