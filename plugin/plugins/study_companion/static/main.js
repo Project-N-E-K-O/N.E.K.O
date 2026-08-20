@@ -1951,7 +1951,6 @@ function interactiveOcrFallbackMessage(reason) {
 }
 
 async function runOcr(options = {}) {
-  ocrN = '';
   setStatus(t(
     'ui.status.preparing_ocr_selection',
     'Switch to the learning material. Screen selection opens in 2 seconds...',
@@ -1973,11 +1972,12 @@ async function runOcr(options = {}) {
   const s = data.status || 'unknown';
   const n = data.capture_mode_used === 'fullscreen' && ['ok', 'empty'].includes(s) ? interactiveOcrFallbackMessage(data.interactive_fallback_reason) : '';
   data.notice = n;
-  ocrN = data.text ? n : '';
   if (data.text) {
     studyInput.value = data.text;
+    ocrN = n;
   } else if (options.clearWhenEmpty && studyInput) {
     studyInput.value = '';
+    ocrN = '';
   }
   setReply(data.text || data.diagnostic || data.summary || '');
   await refreshStatus({ updateReply: false }).catch((error) => { if (!n) throw error; });
@@ -2024,7 +2024,7 @@ async function explainText(options = {}) {
       )
       : '',
   ].filter(Boolean).join('\n\n'));
-  await refreshStatus({ updateReply: false });
+  await refreshStatus({ updateReply: false }).catch((error) => { if (!n) throw error; });
 }
 
 async function generateQuestion() {
@@ -2314,6 +2314,7 @@ async function bootstrap() {
   }
   if (studyInput) {
     studyInput.addEventListener('input', () => { ocrN = ''; });
+    studyInput.addEventListener('paste', () => { ocrN = ''; });
     studyInput.addEventListener('paste', createImagePasteHandler({
       textarea: studyInput,
       kind: 'study',
