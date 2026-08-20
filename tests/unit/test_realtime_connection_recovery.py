@@ -522,10 +522,13 @@ async def test_a_close_that_cannot_finish_detached_is_never_cut_short(monkeypatc
 
 
 @pytest.mark.asyncio
-async def test_a_shielded_close_is_bounded_by_the_budget(monkeypatch):
-    # The dual: the realtime client declares close_finishes_detached, so
-    # giving up on the wait leaves its teardown running and the caller is
-    # released instead of parking on a wedged peer.
+async def test_a_shielded_close_is_bounded_but_still_runs_to_completion(monkeypatch):
+    # The dual, and the whole point of the contract: giving up on the WAIT
+    # must not give up on the CLOSE. The fake mirrors OmniRealtimeClient's
+    # `_own_teardown` — the teardown is an independent task awaited through
+    # asyncio.shield — because asserting only "the caller was released" would
+    # pass just as happily against a close that the timeout simply cancelled,
+    # which is the exact bug `close_finishes_detached` exists to prevent.
     monkeypatch.setattr(lifecycle_module, "SESSION_CLOSE_TIMEOUT_SECONDS", 0.01)
 
     class _ShieldedSession:
@@ -533,8 +536,14 @@ async def test_a_shielded_close_is_bounded_by_the_budget(monkeypatch):
 
         def __init__(self):
             self.fully_closed = False
+            self._teardown = None
 
         async def close(self):
+            if self._teardown is None:
+                self._teardown = asyncio.create_task(self._finish())
+            await asyncio.shield(self._teardown)
+
+        async def _finish(self):
             await asyncio.sleep(0.05)
             self.fully_closed = True
 
@@ -545,6 +554,12 @@ async def test_a_shielded_close_is_bounded_by_the_budget(monkeypatch):
     )
 
     assert session.fully_closed is False, "the budget must release the caller"
+
+    await asyncio.wait_for(session._teardown, timeout=1)
+    assert session.fully_closed is True, (
+        "the teardown must survive the caller giving up on it — that is what "
+        "close_finishes_detached promises"
+    )
 
 
 def test_the_realtime_client_declares_a_detachable_close():
