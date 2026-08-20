@@ -6704,7 +6704,7 @@ def test_study_companion_static_ui_supports_image_paste_contract() -> None:
     assert "args.vision_image_base64 = studyInputImageValue;" in source
     assert "t('ui.status.solving_problem'" in source
     assert "const pending = studyInputImageValue" in source
-    assert "setReply(notice ? `${notice}\\n\\n${pending}` : pending);" in source
+    assert "setReply(n ? `${n}\\n\\n${pending}` : pending);" in source
     assert "function scrollReplyIntoView()" in source
     assert "replyPanel.scrollIntoView({ block: 'start', behavior: 'smooth' });" in source
     assert "scrollReplyIntoView();" in source

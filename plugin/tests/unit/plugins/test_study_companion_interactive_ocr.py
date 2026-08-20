@@ -424,25 +424,34 @@ def test_ocr_entry_and_static_ui_expose_interactive_timeout_contract() -> None:
             "const documentController ="
         )
     ]
+    bind_button = main_js[
+        main_js.index("function bindButton(button, handler)") : main_js.index(
+            "async function handleNekoCoachAction(action)"
+        )
+    ]
     canceled = run_ocr[
         run_ocr.index("if (data.status === 'canceled')") : run_ocr.index(
-            "const notice = data.capture_mode_used === 'fullscreen'"
+            "const n = data.capture_mode_used === 'fullscreen'"
         )
     ]
     assert "return data;" in canceled
     assert "studyInput.value" not in canceled
     assert "setReply(" not in canceled
     assert "studyInput.value = data.text;" in run_ocr
-    assert "const status = data.status || 'unknown';" in run_ocr
-    assert "['ok', 'empty'].includes(status)" in run_ocr
-    assert "data.notice = notice;" in run_ocr
-    assert "if (!notice) throw error;" in run_ocr
+    assert "let ocrN = '';" in main_js
+    assert "ocrN = '';" in run_ocr
+    assert "const s = data.status || 'unknown';" in run_ocr
+    assert "['ok', 'empty'].includes(s)" in run_ocr
+    assert "data.notice = ocrN = n;" in run_ocr
+    assert "if (!n) throw error;" in run_ocr
     assert run_ocr.index("await refreshStatus({ updateReply: false }).catch") < run_ocr.index(
-        "setStatus(notice || tf('ui.status.ocr_result'"
+        "setStatus(n || tf('ui.status.ocr_result'"
     )
-    assert "{ status }" in run_ocr
-    assert "const notice = (options.notice || '').trim();" in explain_text
-    assert "setReply(notice ? `${notice}\\n\\n${pending}` : pending);" in explain_text
+    assert "{ status: s }" in run_ocr
+    assert "const n = (options.notice || ocrN).trim();" in explain_text
+    assert "setReply(n ? `${n}\\n\\n${pending}` : pending);" in explain_text
+    assert "error.n = n;" in explain_text
+    assert "[error?.n, formatPluginError(error)].filter(Boolean).join('\\n\\n')" in bind_button
     assert "await explainText({ notice: ocrData?.notice });" in coach_action
     assert "generateQuestion()" not in run_ocr
 

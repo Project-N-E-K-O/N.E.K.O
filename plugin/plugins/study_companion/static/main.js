@@ -86,73 +86,73 @@ const screenType = $id('screenType');
 const questionStatus = $id('questionStatus');
 const evaluationStatus = $id('evaluationStatus');
 const memoryDeckStatus = $id('memoryDeckStatus');
-const memoryFrontInput = document.getElementById('memoryFrontInput');
-const memoryBackInput = document.getElementById('memoryBackInput');
-const memoryDeckSelect = document.getElementById('memoryDeckSelect');
-const memoryItemTypeSelect = document.getElementById('memoryItemTypeSelect');
-const memoryDeckDialog = document.getElementById('memoryDeckDialog');
-const memoryDeckNameInput = document.getElementById('memoryDeckNameInput');
-const memoryDeckTypeSelect = document.getElementById('memoryDeckTypeSelect');
-const memoryDeckCreateBtn = document.getElementById('memoryDeckCreateBtn');
-const memoryDeckSkipBtn = document.getElementById('memoryDeckSkipBtn');
-const memoryRefreshBtn = document.getElementById('memoryRefreshBtn');
-const memoryAddBtn = document.getElementById('memoryAddBtn');
-const memoryDueCard = document.getElementById('memoryDueCard');
+const memoryFrontInput = $id('memoryFrontInput');
+const memoryBackInput = $id('memoryBackInput');
+const memoryDeckSelect = $id('memoryDeckSelect');
+const memoryItemTypeSelect = $id('memoryItemTypeSelect');
+const memoryDeckDialog = $id('memoryDeckDialog');
+const memoryDeckNameInput = $id('memoryDeckNameInput');
+const memoryDeckTypeSelect = $id('memoryDeckTypeSelect');
+const memoryDeckCreateBtn = $id('memoryDeckCreateBtn');
+const memoryDeckSkipBtn = $id('memoryDeckSkipBtn');
+const memoryRefreshBtn = $id('memoryRefreshBtn');
+const memoryAddBtn = $id('memoryAddBtn');
+const memoryDueCard = $id('memoryDueCard');
 const modeSwitch = document.getElementById('modeSwitch');
 const modeSelect = document.getElementById('modeSelect');
-const summaryMode = document.getElementById('summaryMode');
-const summaryDuration = document.getElementById('summaryDuration');
-const summaryGoal = document.getElementById('summaryGoal');
-const summaryStage = document.getElementById('summaryStage');
-const quickFocusState = document.getElementById('quickFocusState');
-const quickReviewCount = document.getElementById('quickReviewCount');
-const quickCheckinStatus = document.getElementById('quickCheckinStatus');
-const diagnosisTitle = document.getElementById('diagnosisTitle');
-const diagnosisBody = document.getElementById('diagnosisBody');
-const primaryDiagnosis = document.getElementById('primaryDiagnosis');
-const nekoCoachPanel = document.getElementById('nekoCoachPanel');
-const nekoCoachScene = document.getElementById('nekoCoachScene');
-const nekoCoachMessage = document.getElementById('nekoCoachMessage');
-const nekoCoachRecommendation = document.getElementById('nekoCoachRecommendation');
-const nekoCoachMode = document.getElementById('nekoCoachMode');
-const nekoCoachTimer = document.getElementById('nekoCoachTimer');
-const nekoCoachGoal = document.getElementById('nekoCoachGoal');
-const nekoCoachReview = document.getElementById('nekoCoachReview');
-const nekoCoachPrimaryAction = document.getElementById('nekoCoachPrimaryAction');
-const nekoCoachSecondaryAction = document.getElementById('nekoCoachSecondaryAction');
+const summaryMode = $id('summaryMode');
+const summaryDuration = $id('summaryDuration');
+const summaryGoal = $id('summaryGoal');
+const summaryStage = $id('summaryStage');
+const quickFocusState = $id('quickFocusState');
+const quickReviewCount = $id('quickReviewCount');
+const quickCheckinStatus = $id('quickCheckinStatus');
+const diagnosisTitle = $id('diagnosisTitle');
+const diagnosisBody = $id('diagnosisBody');
+const primaryDiagnosis = $id('primaryDiagnosis');
+const nekoCoachPanel = $id('nekoCoachPanel');
+const nekoCoachScene = $id('nekoCoachScene');
+const nekoCoachMessage = $id('nekoCoachMessage');
+const nekoCoachRecommendation = $id('nekoCoachRecommendation');
+const nekoCoachMode = $id('nekoCoachMode');
+const nekoCoachTimer = $id('nekoCoachTimer');
+const nekoCoachGoal = $id('nekoCoachGoal');
+const nekoCoachReview = $id('nekoCoachReview');
+const nekoCoachPrimaryAction = $id('nekoCoachPrimaryAction');
+const nekoCoachSecondaryAction = $id('nekoCoachSecondaryAction');
 const nekoCoachActionButtons = Array.from(document.querySelectorAll('[data-neko-coach-action]'));
-const firstRunGuide = document.getElementById('firstRunGuide');
-const firstRunSteps = document.getElementById('firstRunSteps');
-const firstRunSkipBtn = document.getElementById('firstRunSkipBtn');
-const advancedToggleBtn = document.getElementById('advancedToggleBtn');
-const advancedSettings = document.getElementById('advancedSettings');
+const firstRunGuide = $id('firstRunGuide');
+const firstRunSteps = $id('firstRunSteps');
+const firstRunSkipBtn = $id('firstRunSkipBtn');
+const advancedToggleBtn = $id('advancedToggleBtn');
+const advancedSettings = $id('advancedSettings');
 const settingsTabs = Array.from(document.querySelectorAll('[data-settings-tab]'));
 const settingsTabPanels = Array.from(document.querySelectorAll('[data-settings-tab-panel]'));
 const surfaceOpenButtons = Array.from(document.querySelectorAll('[data-open-surface]'));
 const featureActionButtons = Array.from(document.querySelectorAll('[data-feature-action]'));
-const surfaceDrawer = document.getElementById('surfaceDrawer');
-const surfaceDrawerTitle = document.getElementById('surfaceDrawerTitle');
+const surfaceDrawer = $id('surfaceDrawer');
+const surfaceDrawerTitle = $id('surfaceDrawerTitle');
 const surfaceDrawerBody = document.getElementById('surfaceDrawerBody');
-const surfaceDrawerCloseBtn = document.getElementById('surfaceDrawerCloseBtn');
-const settingsConfigForm = document.getElementById('settingsConfigForm');
-const settingsSaveBtn = document.getElementById('settingsSaveBtn');
-const settingsConfigStatus = document.getElementById('settingsConfigStatus');
-const settingsDataSaveBtn = document.getElementById('settingsDataSaveBtn');
-const settingsDataConfigStatus = document.getElementById('settingsDataConfigStatus');
-const settingsDocExportEnabled = document.getElementById('settingsDocExportEnabled');
-const settingsDefaultMode = document.getElementById('settingsDefaultMode');
-const settingsLearningProfileSummary = document.getElementById('settingsLearningProfileSummary');
-const settingsLearningStage = document.getElementById('settingsLearningStage');
-const settingsOcrEnabled = document.getElementById('settingsOcrEnabled');
-const settingsOcrLanguages = document.getElementById('settingsOcrLanguages');
-const settingsLlmTimeout = document.getElementById('settingsLlmTimeout');
-const settingsLlmVisionEnabled = document.getElementById('settingsLlmVisionEnabled');
-const settingsModelRefreshBtn = document.getElementById('settingsModelRefreshBtn');
+const surfaceDrawerCloseBtn = $id('surfaceDrawerCloseBtn');
+const settingsConfigForm = $id('settingsConfigForm');
+const settingsSaveBtn = $id('settingsSaveBtn');
+const settingsConfigStatus = $id('settingsConfigStatus');
+const settingsDataSaveBtn = $id('settingsDataSaveBtn');
+const settingsDataConfigStatus = $id('settingsDataConfigStatus');
+const settingsDocExportEnabled = $id('settingsDocExportEnabled');
+const settingsDefaultMode = $id('settingsDefaultMode');
+const settingsLearningProfileSummary = $id('settingsLearningProfileSummary');
+const settingsLearningStage = $id('settingsLearningStage');
+const settingsOcrEnabled = $id('settingsOcrEnabled');
+const settingsOcrLanguages = $id('settingsOcrLanguages');
+const settingsLlmTimeout = $id('settingsLlmTimeout');
+const settingsLlmVisionEnabled = $id('settingsLlmVisionEnabled');
+const settingsModelRefreshBtn = $id('settingsModelRefreshBtn');
 const settingsModelRuntimeCards = Array.from(document.querySelectorAll('[data-model-runtime]'));
 const settingsCommunicationEnabled = document.getElementById('settingsCommunicationEnabled');
 const settingsSolutionNarrationEnabled = document.getElementById('settingsSolutionNarrationEnabled');
 const settingsGeneralNarrationEnabled = document.getElementById('settingsGeneralNarrationEnabled');
-const settingsCommunicationRequiresEnabled = document.getElementById('settingsCommunicationRequiresEnabled');
+const settingsCommunicationRequiresEnabled = $id('settingsCommunicationRequiresEnabled');
 const settingsCommunicationRuntime = document.getElementById('settingsCommunicationRuntime');
 const modeButtons = Array.from(document.querySelectorAll('[data-mode]'));
 const memoryReviewButtons = Array.from(document.querySelectorAll('[data-memory-rating]'));
@@ -169,6 +169,7 @@ let modeChangeInFlight = false;
 let refreshPending = false;
 let learningProfileModal = null;
 let lastReplyValue = '';
+let ocrN = '';
 let studyInputImageValue = '';
 let answerInputImageValue = '';
 let pastePendingCount = 0;
@@ -414,7 +415,7 @@ function formatTutorDiagnostic(diagnostic) {
 }
 
 function setPanelBusy(busy) {
-  const mainView = document.getElementById('mainView');
+  const mainView = $id('mainView');
   if (mainView) {
     mainView.dataset.busy = busy ? 'true' : 'false';
   }
@@ -1021,7 +1022,7 @@ function updateStudySummaries(data = {}) {
   const cardCount = Number.isFinite(Number(memoryDeck.card_count)) ? Number(memoryDeck.card_count) : 0;
   const dueCount = Number.isFinite(Number(memoryDeck.due_count)) ? Number(memoryDeck.due_count) : 0;
   const setText = (id, value) => {
-    const node = document.getElementById(id);
+    const node = $id(id);
     if (node) {
       node.textContent = value;
     }
@@ -1567,7 +1568,7 @@ function openHostedSurface(surfaceId, featureAction = '') {
 }
 
 function openPracticePanel() {
-  const practicePanel=document.getElementById('practicePanel');
+  const practicePanel=$id('practicePanel');
   if(practicePanel)practicePanel.open=true;
   return practicePanel
 }
@@ -1578,9 +1579,9 @@ function handleFeatureAction(action) {
   if (action === 'practice') {
     focusAfterScroll(openPracticePanel(), generateQuestionBtn);
   } else if (action === 'explain') {
-    focusAfterScroll(document.getElementById('explainPanel'), studyInput);
+    focusAfterScroll($id('explainPanel'), studyInput);
   } else if (action === 'memory') {
-    const memoryPanel = document.getElementById('memoryPanel');
+    const memoryPanel = $id('memoryPanel');
     if (memoryPanel) {
       memoryPanel.open = true;
     }
@@ -1951,6 +1952,7 @@ function interactiveOcrFallbackMessage(reason) {
 }
 
 async function runOcr(options = {}) {
+  ocrN = '';
   setStatus(t(
     'ui.status.preparing_ocr_selection',
     'Switch to the learning material. Screen selection opens in 2 seconds...',
@@ -1969,17 +1971,17 @@ async function runOcr(options = {}) {
     setStatus(t('ui.status.ocr_canceled', 'Screen selection canceled'));
     return data;
   }
-  const status = data.status || 'unknown';
-  const notice = data.capture_mode_used === 'fullscreen' && ['ok', 'empty'].includes(status) ? interactiveOcrFallbackMessage(data.interactive_fallback_reason) : '';
+  const s = data.status || 'unknown';
+  const n = data.capture_mode_used === 'fullscreen' && ['ok', 'empty'].includes(s) ? interactiveOcrFallbackMessage(data.interactive_fallback_reason) : '';
+  data.notice = ocrN = n;
   if (data.text) {
     studyInput.value = data.text;
   } else if (options.clearWhenEmpty && studyInput) {
     studyInput.value = '';
   }
   setReply(data.text || data.diagnostic || data.summary || '');
-  if (notice) data.notice = notice;
-  await refreshStatus({ updateReply: false }).catch((error) => { if (!notice) throw error; });
-  setStatus(notice || tf('ui.status.ocr_result', 'OCR {status}', { status }));
+  await refreshStatus({ updateReply: false }).catch((error) => { if (!n) throw error; });
+  setStatus(n || tf('ui.status.ocr_result', 'OCR {status}', { status: s }));
   return data;
 }
 
@@ -1988,21 +1990,27 @@ async function explainText(options = {}) {
   if (!text && !studyInputImageValue) {
     throw new Error(t('ui.error.missing_study_input', 'Please enter text or paste an image first.'));
   }
-  const notice = (options.notice || '').trim();
+  const n = (options.notice || ocrN).trim();
   const pending = studyInputImageValue ? t('ui.status.solving_problem', 'Solving problem...') : t('ui.status.explaining', 'Explaining...');
   setStatus(pending);
-  setReply(notice ? `${notice}\n\n${pending}` : pending);
+  setReply(n ? `${n}\n\n${pending}` : pending);
   scrollReplyIntoView();
   const args = { text };
   if (studyInputImageValue) {
     args.vision_image_base64 = studyInputImageValue;
   }
-  const data = await callPlugin('study_explain_text', args);
+  let data;
+  try {
+    data = await callPlugin('study_explain_text', args);
+  } catch (error) {
+    if (n) error.n = n;
+    throw error;
+  }
   setStatus(data.degraded
     ? t('ui.status.reply_ready_fallback', 'Reply ready (fallback)')
     : t('ui.status.reply_ready', 'Reply ready'));
   setReply([
-    notice,
+    n,
     data.degraded
       ? formatTutorDiagnostic(data.diagnostic)
       : (data.reply || data.summary || data.transition_phrase || ''),
@@ -2211,7 +2219,7 @@ function bindButton(button, handler) {
       await handler();
     } catch (error) {
       setStatus(t('ui.status.error', 'Error'));
-      setReply(formatPluginError(error));
+      setReply([error?.n, formatPluginError(error)].filter(Boolean).join('\n\n'));
     } finally {
       button.disabled = false;
     }
