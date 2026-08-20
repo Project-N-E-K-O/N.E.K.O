@@ -334,7 +334,7 @@ export default {
     batchStartConfirm: '¿Iniciar los {count} plugins seleccionados?',
     batchStopConfirm: '¿Detener los {count} plugins en ejecución?',
     batchReloadConfirm: '¿Recargar los {count} plugins en ejecución?',
-    batchDeleteConfirm: '¿Eliminar los {count} plugins seleccionados? Esta acción no se puede deshacer.',
+    batchDeleteConfirm: '¿Eliminar los {count} plugins seleccionados? Esta acción no se puede deshacer. También se eliminarán los perfiles de configuración de paquete asociados que no compartan otros plugins instalados.',
     batchStartSuccess: 'Se iniciaron correctamente {count} plugins',
     batchStopSuccess: 'Se detuvieron correctamente {count} plugins',
     batchReloadSuccess: 'Se recargaron correctamente {count} plugins',
@@ -390,7 +390,7 @@ export default {
     dangerDialog: {
       title: 'Confirmar acción destructiva',
       warningTitle: 'Esta acción no se puede deshacer',
-      deleteMessage: 'Al eliminar "{pluginName}" se borrará su directorio de plugin y la lista se actualizará inmediatamente.',
+      deleteMessage: 'Al eliminar "{pluginName}" se borrará su directorio de plugin. El perfil de configuración del paquete asociado también se eliminará si no lo comparte otro plugin instalado. La lista se actualizará inmediatamente.',
       hint: 'Para evitar pulsaciones accidentales, mantén pulsado el botón siguiente para continuar.',
       holdIdle: 'Mantén pulsado para eliminar',
       holdActive: 'Sigue pulsando para confirmar…',

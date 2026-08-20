@@ -334,7 +334,7 @@ export default {
     batchStartConfirm: '선택한 {count}개의 플러그인을 시작하시겠습니까?',
     batchStopConfirm: '실행 중인 {count}개의 플러그인을 정지하시겠습니까?',
     batchReloadConfirm: '실행 중인 {count}개의 플러그인을 리로드하시겠습니까?',
-    batchDeleteConfirm: '선택한 {count}개의 플러그인을 삭제하시겠습니까? 이 작업은 되돌릴 수 없습니다.',
+    batchDeleteConfirm: '선택한 {count}개의 플러그인을 삭제하시겠습니까? 이 작업은 되돌릴 수 없습니다. 다른 설치된 플러그인과 공유되지 않는 연결된 패키지 설정 프로필도 삭제됩니다.',
     batchStartSuccess: '{count}개의 플러그인을 시작했습니다',
     batchStopSuccess: '{count}개의 플러그인을 정지했습니다',
     batchReloadSuccess: '{count}개의 플러그인을 리로드했습니다',
@@ -390,7 +390,7 @@ export default {
     dangerDialog: {
       title: '위험 작업 확인',
       warningTitle: '되돌릴 수 없는 작업',
-      deleteMessage: '"{pluginName}"을 삭제하면 플러그인 디렉터리가 제거되고 목록도 즉시 새로고침됩니다.',
+      deleteMessage: '"{pluginName}"을 삭제하면 플러그인 디렉터리가 제거됩니다. 연결된 패키지 설정 프로필이 다른 설치된 플러그인과 공유되지 않는 경우에도 함께 삭제됩니다. 목록도 즉시 새로고침됩니다.',
       hint: '오작동을 막기 위해 아래 버튼을 길게 눌러 확인해 주세요.',
       holdIdle: '길게 눌러 삭제',
       holdActive: '계속 누르면 확인됩니다…',

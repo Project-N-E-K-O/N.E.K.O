@@ -334,7 +334,7 @@ export default {
     batchStartConfirm: '确认批量启动 {count} 个插件？',
     batchStopConfirm: '确认批量停止 {count} 个运行中的插件？',
     batchReloadConfirm: '确认批量重载 {count} 个运行中的插件？',
-    batchDeleteConfirm: '确认批量删除 {count} 个插件？此操作不可逆。',
+    batchDeleteConfirm: '确认批量删除 {count} 个插件？此操作不可逆；未被其他已安装插件共享的关联配置 profile 也会被删除。',
     batchStartSuccess: '已成功启动 {count} 个插件',
     batchStopSuccess: '已成功停止 {count} 个插件',
     batchReloadSuccess: '已成功重载 {count} 个插件',
@@ -390,7 +390,7 @@ export default {
     dangerDialog: {
       title: '危险操作确认',
       warningTitle: '不可逆操作',
-      deleteMessage: '删除插件“{pluginName}”后，其目录会被移除，当前列表也会立即刷新。',
+      deleteMessage: '删除插件“{pluginName}”后，其目录会被移除；若关联的插件配置 profile 未被其他已安装插件共享，也会一并删除。当前列表会立即刷新。',
       hint: '为避免误触，请按住下方按钮完成确认。',
       holdIdle: '按住以确认删除',
       holdActive: '继续按住，正在确认…',
