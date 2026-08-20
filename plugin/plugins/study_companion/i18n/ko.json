@@ -1,6 +1,7 @@
 {
     "ui.status.preparing_ocr_selection": "학습 자료 화면으로 전환하세요. 2초 후 화면 영역 선택이 시작됩니다...",
     "ui.status.ocr_canceled": "화면 영역 선택을 취소했습니다",
+    "ui.status.ocr_fallback_fullscreen": "화면 영역 선택을 사용할 수 없어 전체 화면 OCR을 사용했습니다.",
     "ui.error.interactive_ocr_busy": "다른 화면 영역 선택이 진행 중입니다. 완료하거나 취소한 뒤 다시 시도하세요.",
     "ui.error.interactive_ocr_timeout": "화면 영역 선택 시간이 초과되었습니다. OCR을 눌러 다시 시도하세요.",
     "ui.error.interactive_ocr_unavailable": "화면 영역을 선택하려면 N.E.K.O 데스크톱 앱이 연결되어 있어야 합니다.",

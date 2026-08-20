@@ -1939,6 +1939,17 @@ function interactiveOcrErrorMessage(error) {
   return '';
 }
 
+function interactiveOcrFallbackMessage(reason) {
+  const normalized = String(reason || '').trim();
+  if (!normalized) {
+    return '';
+  }
+  return t(
+    'ui.status.ocr_fallback_fullscreen',
+    'Screen selection unavailable; used full-screen OCR.',
+  );
+}
+
 async function runOcr(options = {}) {
   setStatus(t(
     'ui.status.preparing_ocr_selection',
@@ -1958,7 +1969,10 @@ async function runOcr(options = {}) {
     setStatus(t('ui.status.ocr_canceled', 'Screen selection canceled'));
     return data;
   }
-  setStatus(tf('ui.status.ocr_result', 'OCR {status}', { status: data.status || 'unknown' }));
+  const fallbackMessage = data.capture_mode_used === 'fullscreen'
+    ? interactiveOcrFallbackMessage(data.interactive_fallback_reason)
+    : '';
+  setStatus(fallbackMessage || tf('ui.status.ocr_result', 'OCR {status}', { status: data.status || 'unknown' }));
   if (data.text) {
     studyInput.value = data.text;
   } else if (options.clearWhenEmpty && studyInput) {

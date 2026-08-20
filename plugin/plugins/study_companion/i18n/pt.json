@@ -1,6 +1,7 @@
 {
     "ui.status.preparing_ocr_selection": "Mude para o material de estudo. A seleção da tela abrirá em 2 segundos...",
     "ui.status.ocr_canceled": "Seleção da tela cancelada",
+    "ui.status.ocr_fallback_fullscreen": "Seleção da tela indisponível; OCR de tela cheia foi usado.",
     "ui.error.interactive_ocr_busy": "Já existe outra seleção da tela ativa. Conclua ou cancele-a e tente novamente.",
     "ui.error.interactive_ocr_timeout": "O tempo da seleção da tela esgotou. Clique em OCR para tentar novamente.",
     "ui.error.interactive_ocr_unavailable": "A seleção da tela requer que o aplicativo N.E.K.O para desktop esteja conectado.",

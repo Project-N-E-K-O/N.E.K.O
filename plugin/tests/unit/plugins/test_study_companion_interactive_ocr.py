@@ -245,6 +245,9 @@ async def test_ocr_entry_falls_back_to_fullscreen_when_interactive_is_unavailabl
 
     assert isinstance(result, Ok)
     assert result.value["text"] == "fullscreen"
+    assert result.value["capture_mode_requested"] == "interactive"
+    assert result.value["capture_mode_used"] == "fullscreen"
+    assert result.value["interactive_fallback_reason"] == error_code
     assert pipeline.fullscreen_calls == 1
 
 
@@ -392,10 +395,13 @@ def test_ocr_entry_and_static_ui_expose_interactive_timeout_contract() -> None:
     assert "if (data.status === 'canceled')" in main_js
     assert "await refreshStatus({ updateReply: false });" in main_js
     assert "function interactiveOcrErrorMessage(error)" in main_js
+    assert "function interactiveOcrFallbackMessage(reason)" in main_js
     assert "errorText.includes('capture_busy')" in main_js
     assert "errorText.includes('renderer_timeout')" in main_js
     assert "errorText.includes('SCREENSHOT_OVERLAY_SESSION_TIMEOUT')" in main_js
     assert "errorText.includes('no_renderer')" in main_js
+    assert "data.capture_mode_used === 'fullscreen'" in main_js
+    assert "data.interactive_fallback_reason" in main_js
     assert "if (!localizedMessage)" in main_js
     assert "throw error;" in main_js
     run_ocr = main_js[
@@ -405,7 +411,7 @@ def test_ocr_entry_and_static_ui_expose_interactive_timeout_contract() -> None:
     ]
     canceled = run_ocr[
         run_ocr.index("if (data.status === 'canceled')") : run_ocr.index(
-            "setStatus(tf('ui.status.ocr_result'"
+            "const fallbackMessage = data.capture_mode_used === 'fullscreen'"
         )
     ]
     assert "return data;" in canceled
@@ -419,6 +425,7 @@ def test_interactive_ocr_status_strings_exist_in_all_eight_locales() -> None:
     required = {
         "ui.status.preparing_ocr_selection",
         "ui.status.ocr_canceled",
+        "ui.status.ocr_fallback_fullscreen",
         "ui.error.interactive_ocr_busy",
         "ui.error.interactive_ocr_timeout",
         "ui.error.interactive_ocr_unavailable",

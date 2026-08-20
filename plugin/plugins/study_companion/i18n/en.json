@@ -1,6 +1,7 @@
 {
     "ui.status.preparing_ocr_selection": "Switch to the learning material. Screen selection opens in 2 seconds...",
     "ui.status.ocr_canceled": "Screen selection canceled",
+    "ui.status.ocr_fallback_fullscreen": "Screen selection unavailable; used full-screen OCR.",
     "ui.error.interactive_ocr_busy": "Another screen selection is already active. Finish or cancel it, then try again.",
     "ui.error.interactive_ocr_timeout": "Screen selection timed out. Click OCR to try again.",
     "ui.error.interactive_ocr_unavailable": "Screen selection requires the N.E.K.O desktop app to be connected.",

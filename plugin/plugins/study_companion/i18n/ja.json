@@ -1,6 +1,7 @@
 {
     "ui.status.preparing_ocr_selection": "学習教材の画面に切り替えてください。2秒後に範囲選択を開始します...",
     "ui.status.ocr_canceled": "画面範囲の選択をキャンセルしました",
+    "ui.status.ocr_fallback_fullscreen": "画面範囲選択を利用できないため、全画面 OCR を使用しました。",
     "ui.error.interactive_ocr_busy": "別の画面範囲選択が進行中です。完了またはキャンセルしてから、もう一度お試しください。",
     "ui.error.interactive_ocr_timeout": "画面範囲の選択がタイムアウトしました。OCR をクリックしてもう一度お試しください。",
     "ui.error.interactive_ocr_unavailable": "画面範囲を選択するには、N.E.K.O デスクトップアプリへの接続が必要です。",
