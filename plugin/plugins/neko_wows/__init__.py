@@ -1340,19 +1340,40 @@ class NekoWowsPlugin(NekoPluginBase):
         description="按当前配置重新探测并连接遥测服务。改过 URL/端口/目录后需要执行一次。",
     )
     async def reconnect(self, **_):
+        def disabled_error():
+            return Err(SdkError("neko_wows is disabled in configuration"))
+
+        if self._reconnect_disabled():
+            return disabled_error()
         await asyncio.to_thread(self.transport.stop)
+        if self._reconnect_disabled():
+            return disabled_error()
         status = await asyncio.to_thread(self._restart_managed_service)
         with self._pipeline_lock:
-            self.gate.reset()
-            self.registry.reset()
-            self.ship_context.reset("reconnect")
-            self.arbiter.reset_battle(None)
-            self._blocked_signature = ()
-            with self._state_lock:
-                self._previous = None
+            disabled = self._reconnect_disabled()
+            if not disabled:
+                self.gate.reset()
+                self.registry.reset()
+                self.ship_context.reset("reconnect")
+                self.arbiter.reset_battle(None)
+                self._blocked_signature = ()
+                with self._state_lock:
+                    self._previous = None
+        if disabled:
+            # The configuration changed while the managed service restarted.
+            # Put it back into the disabled state before returning the error.
+            await asyncio.to_thread(self.service.stop)
+            return disabled_error()
+        if self._reconnect_disabled():
+            await asyncio.to_thread(self.service.stop)
+            return disabled_error()
         connected = self._activate_transport(status)
         self._record_service(status)
         return Ok({"service": status.as_dict(), "transport_started": connected})
+
+    def _reconnect_disabled(self) -> bool:
+        with self._state_lock:
+            return not bool(self.cfg.enabled)
 
     @ui.action(id="clear_timeline", label="清空时间线", tone="info",
                group="diagnostics", order=60, refresh_context=True)

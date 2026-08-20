@@ -583,6 +583,7 @@ def test_reconnect_resets_pipeline_and_battle_state_before_transport_restart():
     plugin._reconnect_required = True
     plugin._previous = ("old-frame",)
     plugin._blocked_signature = (("old", ("battle",)),)
+    plugin.cfg = WowsConfig()
 
     def record(name, *args):
         if name == "transport_stop":
@@ -638,8 +639,90 @@ def test_reconnect_resets_pipeline_and_battle_state_before_transport_restart():
     }
 
 
+def test_reconnect_refuses_when_the_plugin_is_disabled():
+    calls = []
+
+    class Service:
+        def stop(self):
+            calls.append("service_stop")
+
+        def start_if_needed(self):
+            calls.append("service_start")
+            return ServiceStatus(mode=MODE_EXTERNAL)
+
+    plugin = _plugin_for_reconnect(Service())
+    plugin.cfg.enabled = False
+    plugin.transport = type("Transport", (), {
+        "stop": lambda _self: calls.append("transport_stop"),
+        "start": lambda _self: calls.append("transport_start"),
+    })()
+
+    result = asyncio.run(NekoWowsPlugin.reconnect(plugin))
+
+    assert result.is_err()
+    assert calls == []
+
+
+def test_reconnect_rechecks_enabled_after_stopping_transport():
+    service_calls = []
+    transport_starts = []
+
+    class Service:
+        def stop(self):
+            service_calls.append("stop")
+
+        def start_if_needed(self):
+            service_calls.append("start")
+            return ServiceStatus(mode=MODE_EXTERNAL)
+
+    plugin = _plugin_for_reconnect(Service())
+
+    def disable_during_stop():
+        plugin.cfg.enabled = False
+
+    plugin.transport = type("Transport", (), {
+        "stop": lambda _self: disable_during_stop(),
+        "start": lambda _self: transport_starts.append(True),
+    })()
+
+    result = asyncio.run(NekoWowsPlugin.reconnect(plugin))
+
+    assert result.is_err()
+    assert service_calls == []
+    assert transport_starts == []
+
+
+def test_reconnect_stops_restarted_service_if_disabled_during_restart():
+    transport_starts = []
+
+    class Service:
+        def __init__(self):
+            self.stop_count = 0
+
+        def stop(self):
+            self.stop_count += 1
+
+        def start_if_needed(self):
+            plugin.cfg.enabled = False
+            return ServiceStatus(mode=MODE_EXTERNAL)
+
+    service = Service()
+    plugin = _plugin_for_reconnect(service)
+    plugin.transport = type("Transport", (), {
+        "stop": lambda _self: None,
+        "start": lambda _self: transport_starts.append(True),
+    })()
+
+    result = asyncio.run(NekoWowsPlugin.reconnect(plugin))
+
+    assert result.is_err()
+    assert service.stop_count == 2
+    assert transport_starts == []
+
+
 def _plugin_for_reconnect(service):
     plugin = object.__new__(NekoWowsPlugin)
+    plugin.cfg = WowsConfig()
     plugin._state_lock = threading.RLock()
     plugin._pipeline_lock = threading.Lock()
     plugin._running = True
