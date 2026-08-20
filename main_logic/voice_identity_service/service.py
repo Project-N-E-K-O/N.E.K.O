@@ -635,9 +635,12 @@ class VoiceIdentityService:
                 )
                 return ok
             try:
-                embedding_task.result()
+                embedding = embedding_task.result()
             except BaseException:
                 pass
+            else:
+                if isinstance(embedding, np.ndarray) and embedding.flags.writeable:
+                    embedding.fill(0.0)
         await self._close_model(session.model)
         return ok
 

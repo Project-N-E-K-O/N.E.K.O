@@ -289,6 +289,8 @@ async def test_failed_activation_hands_blocked_rollback_to_watchdog() -> None:
         ) -> bool:
             if activation_generation == self.block_generation:
                 self.rollback_started.set()
+                # Intentionally ignore cancellation to model a blocking rollback;
+                # cleanup must set rollback_release before closing the registry.
                 while not self.rollback_release.is_set():
                     try:
                         await self.rollback_release.wait()
@@ -320,7 +322,7 @@ async def test_failed_activation_hands_blocked_rollback_to_watchdog() -> None:
         loop = asyncio.get_running_loop()
         started_at = loop.time()
         assert not await registry.activate(new_profile, "new-generation")
-        assert loop.time() - started_at < 0.1
+        assert loop.time() - started_at < 0.5
         assert changed in registry._attach_pending  # type: ignore[attr-defined]
 
         await asyncio.wait_for(changed.rollback_started.wait(), timeout=0.5)

@@ -450,6 +450,74 @@ async def test_timed_out_embedding_is_owned_until_worker_finishes(
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_completed_timed_out_embedding_is_cleared_before_model_close(
+    tmp_path: Path,
+) -> None:
+    class RacingModel(_Model):
+        def __init__(self) -> None:
+            super().__init__()
+            self.embedding_release = threading.Event()
+            self.embedding_finished = threading.Event()
+            self.embedding_result: np.ndarray | None = None
+
+        def embedding_from_pcm16(
+            self,
+            pcm16: bytes,
+            *,
+            sample_rate_hz: int,
+        ) -> np.ndarray:
+            if not self.embedding_release.wait(1.0):
+                raise TimeoutError("test did not release model inference")
+            self.embedding_result = super().embedding_from_pcm16(
+                pcm16,
+                sample_rate_hz=sample_rate_hz,
+            )
+            self.embedding_finished.set()
+            return self.embedding_result
+
+        def close(self) -> None:
+            assert self.embedding_result is not None
+            assert not np.any(self.embedding_result)
+            super().close()
+
+    model = RacingModel()
+    service, _selected, _activations, _suppression_events = _service(
+        tmp_path,
+        model=model,
+        model_timeout_seconds=0.1,
+    )
+    await service.initialize()
+    enrollment = await service.start_enrollment()
+    session = service._enrollment  # type: ignore[attr-defined]
+    assert session is not None
+    original_lease = session.lease
+
+    class ReleaseAfterInference:
+        expires_at = original_lease.expires_at
+
+        async def release(self) -> None:
+            model.embedding_release.set()
+            assert await asyncio.to_thread(model.embedding_finished.wait, 1.0)
+            await asyncio.sleep(0)
+            await original_lease.release()
+
+    session.lease = ReleaseAfterInference()  # type: ignore[assignment]
+
+    with pytest.raises(VoiceIdentityServiceError, match="model_unavailable"):
+        await service.complete_enrollment(
+            enrollment.enrollment_id,
+            "profile",
+            _pcm(),
+        )
+
+    assert model.closed
+    assert model.embedding_result is not None
+    assert not np.any(model.embedding_result)
+    await service.close()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_reenrollment_while_disabled_keeps_user_preference(
     tmp_path: Path,
 ) -> None:
