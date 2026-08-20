@@ -335,11 +335,18 @@ def _legacy_static_panel_enabled(plugin_meta: Mapping[str, object]) -> bool:
 
 
 def _static_ui_action_target(plugin_id: str, plugin_meta: Mapping[str, object]) -> str | None:
+    static_ui_config = _get_static_ui_config_from_meta(plugin_meta)
+    if static_ui_config is not None:
+        static_dir = _resolve_static_dir(static_ui_config)
+        if static_dir is not None and (static_dir / "index.html").exists():
+            return f"/plugin/{plugin_id}/ui/"
+
     static_surface = next(
         (
             surface
             for surface in _build_manifest_surfaces(plugin_id, plugin_meta)
             if surface.get("mode") == "static"
+            and surface.get("kind") == "panel"
             and surface.get("available") is not False
             and isinstance(surface.get("ui_path") or surface.get("url"), str)
             and str(surface.get("ui_path") or surface.get("url")).strip()
@@ -349,13 +356,7 @@ def _static_ui_action_target(plugin_id: str, plugin_meta: Mapping[str, object]) 
     if static_surface is not None:
         return str(static_surface.get("ui_path") or static_surface.get("url")).strip()
 
-    static_ui_config = _get_static_ui_config_from_meta(plugin_meta)
-    if static_ui_config is None:
-        return None
-    static_dir = _resolve_static_dir(static_ui_config)
-    if static_dir is None or not (static_dir / "index.html").exists():
-        return None
-    return f"/plugin/{plugin_id}/ui/"
+    return None
 
 
 def _build_surfaces_sync(

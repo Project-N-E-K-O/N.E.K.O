@@ -38,8 +38,10 @@ OCR backend from the plugin UI.
 ## 4. Review And Export
 
 After a session, open the summary panel to review completed and incomplete
-goals. Use the note exporter to create Markdown, PDF, DOCX, or XMind notes from
-recent study material.
+goals. Enable Note Export in the plugin settings before exporting Markdown,
+PDF, or DOCX notes from recent study material. XMind export is available only
+when both Note Export and the `doc_export.xmind_enabled` config flag are
+enabled.
 
 Use the knowledge map and memory deck panels to find weak topics and due memory
 cards before the next study session.
