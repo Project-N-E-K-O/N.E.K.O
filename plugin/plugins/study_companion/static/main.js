@@ -1971,7 +1971,7 @@ async function runOcr(options = {}) {
   }
   const s = data.status || 'unknown';
   const n = data.capture_mode_used === 'fullscreen' && ['ok', 'empty'].includes(s) ? interactiveOcrFallbackMessage(data.interactive_fallback_reason) : '';
-  data.notice = n;
+  data.notice = data.text ? n : '';
   if (data.text) {
     studyInput.value = data.text;
     ocrN = n;

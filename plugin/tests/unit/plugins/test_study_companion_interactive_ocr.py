@@ -442,7 +442,7 @@ def test_ocr_entry_and_static_ui_expose_interactive_timeout_contract() -> None:
     assert "ocrN = '';" not in canceled
     assert "const s = data.status || 'unknown';" in run_ocr
     assert "['ok', 'empty'].includes(s)" in run_ocr
-    assert "data.notice = n;" in run_ocr
+    assert "data.notice = data.text ? n : '';" in run_ocr
     assert "ocrN = n;" in run_ocr
     assert "ocrN = '';" in run_ocr
     assert "if (!n) throw error;" in run_ocr
