@@ -147,14 +147,18 @@ async function measureAndSelectFastest(options: { silent?: boolean } = {}) {
     measurements.value = results
     measuredOnce.value = true
     if (!fastest) {
+      autoLatencyMs.value = null
       if (!options.silent) ElMessage.warning(t('mirrorSource.noAvailable'))
       return
     }
     autoLatencyMs.value = Math.round(fastest.latency_ms ?? 0)
-    ElMessage.success(t('mirrorSource.selectedFastest', { source: sourceLabel(fastest.id) }))
-  } catch (error) {
+    if (!options.silent) {
+      ElMessage.success(t('mirrorSource.selectedFastest', { source: sourceLabel(fastest.id) }))
+    }
+  } catch {
+    autoLatencyMs.value = null
     measuredOnce.value = true
-    if (!options.silent) ElMessage.error(error instanceof Error ? error.message : t('mirrorSource.testFailed'))
+    if (!options.silent) ElMessage.error(t('mirrorSource.testFailed'))
   } finally {
     measuring.value = false
   }

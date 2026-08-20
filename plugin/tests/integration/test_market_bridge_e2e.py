@@ -1270,6 +1270,37 @@ async def test_download_package_logs_safe_network_failure_without_signed_url(
 
 
 @pytest.mark.asyncio
+async def test_download_package_retries_allowlisted_proxy_via_github_direct(
+    bridge_e2e_env: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A stream failure after a proxy 200 falls back to the original asset URL."""
+    from plugin.server.routes import market_bridge as market_bridge_module
+
+    direct_url = (
+        "https://github.com/example/plugin/releases/download/v1.0.0/"
+        "plugin.neko-plugin"
+    )
+    proxied_url = f"https://cdn.gh-proxy.org/{direct_url}"
+    attempts: list[str] = []
+    downloaded_path = tmp_path / "plugin.neko-plugin"
+
+    async def download_once(url: str, task: dict[str, Any]) -> Path:
+        attempts.append(url)
+        if url == proxied_url:
+            raise market_bridge_module._DownloadAttemptError("下载网络错误")
+        return downloaded_path
+
+    monkeypatch.setattr(market_bridge_module, "_download_package_once", download_once)
+
+    result = await market_bridge_module._download_package(proxied_url, {})
+
+    assert result == downloaded_path
+    assert attempts == [proxied_url, direct_url]
+
+
+@pytest.mark.asyncio
 async def test_oauth_account_summary_aggregates_safe_fields_and_caches(
     bridge_e2e_env: dict[str, Any],
     monkeypatch: pytest.MonkeyPatch,

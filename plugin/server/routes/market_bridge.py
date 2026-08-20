@@ -3208,8 +3208,54 @@ def _utc_iso_now() -> str:
     return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
 
+class _DownloadAttemptError(ValueError):
+    """A failed HTTP download that may safely use the GitHub direct fallback."""
+
+
+def _direct_github_download_fallback(url: str) -> str | None:
+    """Return the original GitHub Release asset for an allowlisted proxy URL."""
+
+    for source_id, base_url in _GITHUB_PROXY_SOURCES:
+        if source_id == "github-direct" or not url.startswith(base_url):
+            continue
+        candidate = url.removeprefix(base_url)
+        parsed = urlparse(candidate)
+        if (
+            parsed.scheme == "https"
+            and parsed.hostname == "github.com"
+            and parsed.username is None
+            and parsed.password is None
+            and parsed.path.startswith("/")
+            and "/releases/download/" in parsed.path
+        ):
+            return candidate
+    return None
+
+
 async def _download_package(url: str, task: dict[str, Any]) -> Path:
-    """Download a plugin package to a temp file with progress updates."""
+    """Download a package, retrying a failed allowlisted proxy via GitHub direct."""
+
+    try:
+        return await _download_package_once(url, task)
+    except _DownloadAttemptError:
+        fallback_url = _direct_github_download_fallback(url)
+        if not fallback_url:
+            raise
+        logger.warning(
+            "[market-download] proxy failed; retrying direct GitHub "
+            "origin={} fallback_origin={}",
+            _safe_url_log_origin(url),
+            _safe_url_log_origin(fallback_url),
+        )
+        task["downloaded_bytes"] = 0
+        task["total_bytes"] = None
+        task["progress"] = 0.1
+        task["message"] = "镜像下载失败，正在通过 GitHub 直连重试..."
+        return await _download_package_once(fallback_url, task)
+
+
+async def _download_package_once(url: str, task: dict[str, Any]) -> Path:
+    """Download one package URL to a temp file with progress updates."""
 
     _raise_if_task_cancel_requested(task)
     started_at = time.monotonic()
@@ -3284,7 +3330,7 @@ async def _download_package(url: str, task: dict[str, Any]) -> Path:
             elapsed_ms,
             _safe_url_log_origin(url),
         )
-        raise ValueError(f"下载失败: HTTP {exc.response.status_code}") from exc
+        raise _DownloadAttemptError(f"下载失败: HTTP {exc.response.status_code}") from exc
     except httpx.TimeoutException as exc:
         _cleanup_download_file(package_path)
         elapsed_ms = max(0, round((time.monotonic() - started_at) * 1000))
@@ -3295,7 +3341,7 @@ async def _download_package(url: str, task: dict[str, Any]) -> Path:
             elapsed_ms,
             _safe_url_log_origin(url),
         )
-        raise ValueError("下载超时") from exc
+        raise _DownloadAttemptError("下载超时") from exc
     except httpx.RequestError as exc:
         _cleanup_download_file(package_path)
         elapsed_ms = max(0, round((time.monotonic() - started_at) * 1000))
@@ -3307,7 +3353,7 @@ async def _download_package(url: str, task: dict[str, Any]) -> Path:
             elapsed_ms,
             _safe_url_log_origin(url),
         )
-        raise ValueError("下载网络错误") from exc
+        raise _DownloadAttemptError("下载网络错误") from exc
     except Exception:
         _cleanup_download_file(package_path)
         raise

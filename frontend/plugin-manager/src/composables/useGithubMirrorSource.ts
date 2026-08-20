@@ -37,6 +37,16 @@ export interface GithubMirrorMeasurement {
   status_code?: number | null
 }
 
+export class GithubMirrorMeasurementError extends Error {
+  readonly code: 'service_unavailable' | 'invalid_response'
+
+  constructor(code: 'service_unavailable' | 'invalid_response') {
+    super(code)
+    this.name = 'GithubMirrorMeasurementError'
+    this.code = code
+  }
+}
+
 function isSourceId(value: unknown): value is GithubProxySourceId {
   return typeof value === 'string' && GITHUB_PROXY_SOURCES.some((source) => source.id === value)
 }
@@ -131,9 +141,20 @@ const activeSource = computed(() => {
 })
 
 async function measureSpeedTestSources(): Promise<GithubMirrorMeasurement[]> {
-  const response = await fetch('/market/github-proxy/measure')
-  if (!response.ok) throw new Error('测速服务不可用')
-  const data = await response.json() as { sources?: GithubMirrorMeasurement[] }
+  let response: Response
+  try {
+    response = await fetch('/market/github-proxy/measure')
+  } catch {
+    throw new GithubMirrorMeasurementError('service_unavailable')
+  }
+  if (!response.ok) throw new GithubMirrorMeasurementError('service_unavailable')
+
+  let data: { sources?: GithubMirrorMeasurement[] }
+  try {
+    data = await response.json() as { sources?: GithubMirrorMeasurement[] }
+  } catch {
+    throw new GithubMirrorMeasurementError('invalid_response')
+  }
   return (data.sources ?? []).filter((item) => (
     GITHUB_SPEED_TEST_SOURCES.some((source) => source.id === item.id)
   ))

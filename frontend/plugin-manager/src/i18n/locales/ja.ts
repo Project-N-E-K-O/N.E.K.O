@@ -34,7 +34,7 @@ export default {
     lightMode: 'ライトモード',
     logoutConfirmTitle: '確認',
     disconnected: 'サーバーとの接続が切断されました',
-    languageAuto: '自動'
+    languageAuto: '自動',
   },
   nav: {
     dashboard: 'ダッシュボード',
@@ -46,7 +46,7 @@ export default {
     adapters: 'アダプター',
     adapterUI: 'アダプターUI',
     packageManager: 'パッケージ管理',
-    market: 'プラグインマーケット'
+    market: 'プラグインマーケット',
   },
   market: {
     title: '新しいプラグインを取得',
@@ -61,12 +61,17 @@ export default {
     loginStarted: 'ブラウザを開きました。表示されたページで認証ログインを完了してください。',
     loginSuccess: '認証ログインが完了しました。プラグインマーケットを引き続き利用できます。',
     authTokenRejected: 'Auth の認証が無効になりました。もう一度ログインしてください。',
-    authVerificationPending: 'ブラウザー認証が戻りました。Auth の本人確認中です。再ログインは不要です。',
+    authVerificationPending:
+      'ブラウザー認証が戻りました。Auth の本人確認中です。再ログインは不要です。',
     authVerificationPendingLabel: 'Auth の本人確認中',
-    marketTokenRejected: 'Auth ログインは有効ですが、Market が現在の認証情報を受け付けませんでした。',
-    marketForbidden: 'Auth ログインは有効ですが、Market アカウントを利用できないか権限が不足しています。',
-    marketIdentityConflict: 'Auth ログインは有効ですが、Market アカウントの関連付けが競合しています。再認証せず管理者に連絡してください。',
-    marketUnavailable: 'Auth ログインに成功しました。Market は一時的に利用できないため、自動的に再試行します。',
+    marketTokenRejected:
+      'Auth ログインは有効ですが、Market が現在の認証情報を受け付けませんでした。',
+    marketForbidden:
+      'Auth ログインは有効ですが、Market アカウントを利用できないか権限が不足しています。',
+    marketIdentityConflict:
+      'Auth ログインは有効ですが、Market アカウントの関連付けが競合しています。再認証せず管理者に連絡してください。',
+    marketUnavailable:
+      'Auth ログインに成功しました。Market は一時的に利用できないため、自動的に再試行します。',
     marketInvalidResponse: 'Auth ログインに成功しましたが、Market から無効な応答が返されました。',
     loginFailed: '認証ログインを完了できませんでした。時間をおいてもう一度お試しください',
     loginPending: '認証ログインに少し時間がかかっています。もう一度開始してください',
@@ -96,8 +101,10 @@ export default {
     silentInstall: 'バックグラウンドで実行',
     installCancelled: 'インストールをキャンセルしました',
     viewInstallProgress: 'インストールの進行状況を表示',
-    installTakingLonger: 'インストールに予想より時間がかかっています。処理は継続中です。このまま待つか、キャンセルできます。',
-    installTaskLost: 'インストールタスクが見つかりません。プラグインの状態を確認してから再試行してください。',
+    installTakingLonger:
+      'インストールに予想より時間がかかっています。処理は継続中です。このまま待つか、キャンセルできます。',
+    installTaskLost:
+      'インストールタスクが見つかりません。プラグインの状態を確認してから再試行してください。',
     installDialogTitle: '{name} をインストール中',
     installDialogTitleUpgrade: '{name} をアップグレード中',
     installCompleted: 'インストール完了',
@@ -127,7 +134,7 @@ export default {
     filterGroups: {
       state: '状態',
       zone: 'ゾーン',
-      meta: 'メタ'
+      meta: 'メタ',
     },
     filterLabels: {
       recommended: 'おすすめ',
@@ -138,14 +145,14 @@ export default {
       name: '名前',
       versionGte: 'バージョン ≥',
       hasRepo: 'リポジトリあり',
-      hasTags: 'タグあり'
+      hasTags: 'タグあり',
     },
     zones: {
       game: 'ゲーム',
       companion: 'コンパニオン',
       function: '機能',
       entertainment: 'エンタメ',
-      tool: 'ツール'
+      tool: 'ツール',
     },
     sortNewest: '最新',
     sortMostDownloads: 'ダウンロード数',
@@ -161,28 +168,29 @@ export default {
     upgradeAlreadyAtTarget: '既に対象バージョンです',
     upgradeTargetNotGreater: 'アップグレード対象バージョンがインストール済みバージョン以下です',
     pluginNotInstalled: 'プラグインがインストールされていないため、アップグレードできません',
-    lockWriteFailed: 'インストール記録の書き込みに失敗しました'
+    lockWriteFailed: 'インストール記録の書き込みに失敗しました',
   },
   settings: {
     channel: '更新チャネル',
     channelStable: '安定版',
     channelBeta: 'ベータ',
-    channelHint: '切り替えると選択したチャネルでプラグイン一覧が更新されます。インストール済みプラグインの動作には影響しません'
+    channelHint:
+      '切り替えると選択したチャネルでプラグイン一覧が更新されます。インストール済みプラグインの動作には影響しません',
   },
   auth: {
     unauthorized: '未認証のアクセス',
-    forbidden: 'アクセスが拒否されました'
+    forbidden: 'アクセスが拒否されました',
   },
   plugin: {
     addProfile: {
       prompt: '新しいプロファイル名を入力してください',
       title: 'プロファイルの追加',
-      inputError: '名前は空白のみにすることはできません'
+      inputError: '名前は空白のみにすることはできません',
     },
     removeProfile: {
       confirm: 'プロファイル「{name}」を削除しますか？',
-      title: 'プロファイルの削除'
-    }
+      title: 'プロファイルの削除',
+    },
   },
   dashboard: {
     title: 'ダッシュボード',
@@ -202,10 +210,32 @@ export default {
     noMetricsData: 'パフォーマンスデータなし',
     failedToLoadServerInfo: 'サーバー情報の読み込みに失敗しました',
     startTutorial: 'チュートリアル',
-    tutorialHint: 'プラグイン管理が初めて？ここを押せば案内するにゃ。'
+    tutorialHint: 'プラグイン管理が初めて？ここを押せば案内するにゃ。',
   },
   mirrorSource: {
-    title: 'ミラーソース', description: 'Plugin Market が GitHub Release パッケージをダウンロードするときの接続方法を選択します。', close: 'ミラーソースを閉じる', proxyOptional: 'GitHub Proxy（任意）', direct: 'GitHub 直結', auto: '最速を自動選択', specified: 'プロキシを指定', source: 'ミラーソース', testing: '測定中…', autoFastest: '最速: {source}', autoUnavailable: '直近の測定で利用可能なノードはありません。GitHub 直結を使用します。', autoPending: '未測定です。一時的に GitHub 直結を使用します。', testAndSelect: '測定して最速のソースを選択', recentResults: '最新の測定結果', notice: 'github.com のプラグインダウンロードリンクだけをプロキシします。パッケージは引き続き Market 提供の SHA-256 で検証されます。', activeSource: '現在のソース: {source}', unavailable: '接続失敗またはタイムアウト', noAvailable: '利用可能な GitHub ダウンロードソースがありません。GitHub 直結を使用します。', selectedFastest: '最速のソースを選択しました: {source}', testFailed: 'ミラーソースの測定に失敗しました', installFallback: 'ミラーソースの測定に失敗したため、GitHub 直結を使用します。'
+    title: 'ミラーソース',
+    description:
+      'Plugin Market が GitHub Release パッケージをダウンロードするときの接続方法を選択します。',
+    close: 'ミラーソースを閉じる',
+    proxyOptional: 'GitHub Proxy（任意）',
+    direct: 'GitHub 直結',
+    auto: '最速を自動選択',
+    specified: 'プロキシを指定',
+    source: 'ミラーソース',
+    testing: '測定中…',
+    autoFastest: '最速: {source}',
+    autoUnavailable: '直近の測定で利用可能なノードはありません。GitHub 直結を使用します。',
+    autoPending: '未測定です。一時的に GitHub 直結を使用します。',
+    testAndSelect: '測定して最速のソースを選択',
+    recentResults: '最新の測定結果',
+    notice:
+      'github.com のプラグインダウンロードリンクだけをプロキシします。パッケージは引き続き Market 提供の SHA-256 で検証されます。',
+    activeSource: '現在のソース: {source}',
+    unavailable: '接続失敗またはタイムアウト',
+    noAvailable: '利用可能な GitHub ダウンロードソースがありません。GitHub 直結を使用します。',
+    selectedFastest: '最速のソースを選択しました: {source}',
+    testFailed: 'ミラーソースの測定に失敗しました',
+    installFallback: 'ミラーソースの測定に失敗したため、GitHub 直結を使用します。',
   },
   plugins: {
     title: 'プラグイン一覧',
@@ -274,7 +304,8 @@ export default {
     filterPlaceholder: 'テキスト・ピンイン・is:/type:/has: ルールでフィルター',
     filterRules: 'ルール',
     filterRulesTitle: 'フィルタールール',
-    filterRulesHint: '下のルールをクリックするとクエリに挿入され、通常のテキストと組み合わせて使えます。',
+    filterRulesHint:
+      '下のルールをクリックするとクエリに挿入され、通常のテキストと組み合わせて使えます。',
     filterWhitelist: 'ホワイトリスト',
     filterBlacklist: 'ブラックリスト',
     invalidRegex: '正規表現が無効です',
@@ -288,15 +319,18 @@ export default {
     configReloadTitle: 'リロードが必要です',
     configReloadPrompt: '設定が更新されました。プラグインをリロードして適用しますか？',
     configApplyTitle: '設定の適用',
-    configHotUpdatePrompt: '設定が保存されました。実行中のプラグインに即座に適用しますか？（ホットアップデートは再起動不要です）',
+    configHotUpdatePrompt:
+      '設定が保存されました。実行中のプラグインに即座に適用しますか？（ホットアップデートは再起動不要です）',
     hotUpdate: 'ホットアップデート',
     reloadPlugin: 'プラグインを再起動',
     hotUpdateSuccess: '設定のホットアップデートが完了しました',
-    hotUpdatePartial: '設定は保存されましたが、プラグインが実行されていません。起動後に反映されます。',
+    hotUpdatePartial:
+      '設定は保存されましたが、プラグインが実行されていません。起動後に反映されます。',
     hotUpdateFailed: 'ホットアップデートに失敗しました',
     formMode: 'フォーム',
     sourceMode: 'ソース',
-    formModeHint: 'このモードはサーバーで解析された設定オブジェクトからフォームを生成します。高度なTOML機能（コメント/フォーマット）にはソースモードをご利用ください。',
+    formModeHint:
+      'このモードはサーバーで解析された設定オブジェクトからフォームを生成します。高度なTOML機能（コメント/フォーマット）にはソースモードをご利用ください。',
     addField: 'フィールドを追加',
     addItem: '項目を追加',
     fieldName: 'フィールド名',
@@ -307,7 +341,8 @@ export default {
     profiles: 'プロファイル',
     active: '現在',
     diffPreview: '差分プレビュー',
-    unsavedChangesWarning: '未保存の変更があります。プラグインを切り替えると変更が失われます。続行しますか？',
+    unsavedChangesWarning:
+      '未保存の変更があります。プラグインを切り替えると変更が失われます。続行しますか？',
     enabled: '有効',
     disabled: '無効',
     autoStart: '自動起動',
@@ -329,7 +364,8 @@ export default {
     openMirrorSource: 'ミラーソース',
     closeMirrorSource: 'ミラーソースを閉じる',
     packageManagerOpened: 'パッケージ管理を表示中',
-    packageManagerSyncHint: '現在のフィルターと選択状態は右側のパッケージ管理パネルにそのまま同期されます。',
+    packageManagerSyncHint:
+      '現在のフィルターと選択状態は右側のパッケージ管理パネルにそのまま同期されます。',
     multiSelect: '複数選択',
     exitMultiSelect: '複数選択を終了',
     selectedCount: '{count} 件を選択中',
@@ -366,7 +402,7 @@ export default {
     filterRuleGroups: {
       state: '状態',
       type: 'タイプ',
-      meta: 'メタデータ'
+      meta: 'メタデータ',
     },
     filterRuleLabels: {
       running: '実行中',
@@ -383,23 +419,24 @@ export default {
       id: 'IDで検索',
       version: 'バージョンで検索',
       entry: 'エントリーで検索',
-      author: '作者で検索'
+      author: '作者で検索',
     },
     contextSections: {
       navigation: '閲覧',
       runtime: '実行',
-      plugin: '拡張機能'
+      plugin: '拡張機能',
     },
     build: 'プラグインをパッケージ化',
     delete: 'プラグインを削除',
     dangerDialog: {
       title: '危険な操作の確認',
       warningTitle: '元に戻せない操作',
-      deleteMessage: '「{pluginName}」を削除すると、プラグインディレクトリも消去され、一覧がすぐに更新されます。',
+      deleteMessage:
+        '「{pluginName}」を削除すると、プラグインディレクトリも消去され、一覧がすぐに更新されます。',
       hint: '誤操作を避けるため、下のボタンを長押しして確定してください。',
       holdIdle: '長押しして削除',
       holdActive: 'そのまま長押しして確定…',
-      loading: 'プラグインを削除しています...'
+      loading: 'プラグインを削除しています...',
     },
     ui: {
       open: 'UIを開く',
@@ -413,32 +450,40 @@ export default {
       markdownPending: 'Markdown チュートリアル表示は近日対応予定です',
       autoPending: '自動生成パネルは近日対応予定です',
       surfaceUnavailable: 'Surface は現在利用できません',
-      surfaceEntryMissing: 'この Surface が宣言したエントリーファイルが存在しません。plugin.toml の entry パスを確認してください。',
+      surfaceEntryMissing:
+        'この Surface が宣言したエントリーファイルが存在しません。plugin.toml の entry パスを確認してください。',
       surfaceWarnings: 'プラグイン UI 宣言に確認が必要な問題があります',
       controlError: 'プラグイン UI コントロールエラー',
-      hostedRuntimePending: 'Vue コンテナはこの Surface を認識しています。TSX/Markdown/Auto レンダラーは後続フェーズで接続されます。'
-    }
+      hostedRuntimePending:
+        'Vue コンテナはこの Surface を認識しています。TSX/Markdown/Auto レンダラーは後続フェーズで接続されます。',
+    },
   },
   package: {
     install: {
-      safeUpgradeHint: '同じプラグインを再度取り込むと、バージョンを確認してロールバック可能な安全な置換を行い、接尾辞付きのコピーは作成しません。',
+      safeUpgradeHint:
+        '同じプラグインを再度取り込むと、バージョンを確認してロールバック可能な安全な置換を行い、接尾辞付きのコピーは作成しません。',
       planFailed: 'インストールパッケージを確認できませんでした。',
       packageRequired: '先にパッケージのパスを入力してください。',
       installFailed: 'インストールに失敗しました：{error}',
       upgradeTitle: '{plugin} をアップグレードしますか？',
-      upgradeBody: 'バージョン {current} を {target} に置き換えます。実行中のプラグインは一時的に再起動します。',
+      upgradeBody:
+        'バージョン {current} を {target} に置き換えます。実行中のプラグインは一時的に再起動します。',
       upgradeConfirm: 'プラグインをアップグレード',
       upgradeCancelled: 'アップグレードをキャンセルしました。',
       upgradeSucceeded: '{plugin} を正常にアップグレードしました。',
-      blockedBundleConflict: 'このバンドルにはインストール済みのプラグインが含まれます。プラグインを1つずつアップグレードしてください。',
-      blockedDirectoryConflict: '対象ディレクトリは別のプラグインに属するため、変更しませんでした。',
-      blockedLegacyPlugin: 'このプラグインの以前のバージョンがまだインストールされています。続行する前に {plugin} をアンインストールしてください。',
+      blockedBundleConflict:
+        'このバンドルにはインストール済みのプラグインが含まれます。プラグインを1つずつアップグレードしてください。',
+      blockedDirectoryConflict:
+        '対象ディレクトリは別のプラグインに属するため、変更しませんでした。',
+      blockedLegacyPlugin:
+        'このプラグインの以前のバージョンがまだインストールされています。続行する前に {plugin} をアンインストールしてください。',
       rollbackCompleted: 'アップグレードに失敗したため、以前のバージョンを復元しました。',
-      rollbackIncomplete: 'アップグレードに失敗し、ロールバックも完了できませんでした。続行する前にプラグインの状態を確認してください。'
+      rollbackIncomplete:
+        'アップグレードに失敗し、ロールバックも完了できませんでした。続行する前にプラグインの状態を確認してください。',
     },
     dialog: {
       title: 'パッケージ操作履歴',
-      subtitle: '最新の {count} 件の結果を表示中'
+      subtitle: '最新の {count} 件の結果を表示中',
     },
     empty: 'パッケージ操作を実行すると、ここに履歴が表示されます。',
     viewDetail: '詳細を表示',
@@ -450,23 +495,23 @@ export default {
         version: 'バージョン',
         schema: 'スキーマ',
         hashCheck: 'ハッシュ検証',
-        profiles: 'プロファイル'
+        profiles: 'プロファイル',
       },
       list: '項目',
       warning: '注意',
-      rawJson: '結果の生 JSON'
+      rawJson: '結果の生 JSON',
     },
     hash: {
       notVerified: '未検証',
       passed: '合格',
-      failed: '失敗'
+      failed: '失敗',
     },
     kind: {
       build: 'ビルド',
       inspect: '検査',
       verify: '検証',
       install: 'インストール',
-      analyze: '解析'
+      analyze: '解析',
     },
     summary: {
       // Phase 7 / req 2.31: metrics labels for buildSummaryMetrics
@@ -484,7 +529,7 @@ export default {
         installedPluginCount: '処理済みプラグイン',
         conflictStrategy: '競合戦略',
         commonDeps: '共通依存関係',
-        sharedDeps: '共有依存関係'
+        sharedDeps: '共有依存関係',
       },
       // Phase 7 / req 2.31: highlight labels for buildSummaryHighlights
       highlights: {
@@ -500,24 +545,27 @@ export default {
         pluginsRoot: 'プラグインディレクトリ',
         profilesRoot: 'Profiles ディレクトリ',
         currentSdk: '現在の SDK サポート',
-        recommendedIntersection: '推奨交差範囲'
+        recommendedIntersection: '推奨交差範囲',
       },
       // Phase 7 / req 2.31: enum-like values for summary metrics/highlights
       values: {
         bundle: 'バンドル',
         plugin: 'プラグインパッケージ',
         sdkAllSupported: '{version} は完全対応',
-        sdkPartiallyIncompatible: '{version} に非互換があります'
+        sdkPartiallyIncompatible: '{version} に非互換があります',
       },
       // Phase 7 / req 2.31: warning strings for buildSummaryWarnings
       warnings: {
         bundleNeedsTwoPlugins: 'バンドルには通常少なくとも 2 つのプラグインが必要です',
-        verifyHashFailed: 'パッケージの hash 検証に失敗しました。実行環境へ直接インポートしないでください',
-        inspectHashFailed: '現在のパッケージの hash 検証に失敗しました。内容が変更されている可能性があります',
+        verifyHashFailed:
+          'パッケージの hash 検証に失敗しました。実行環境へ直接インポートしないでください',
+        inspectHashFailed:
+          '現在のパッケージの hash 検証に失敗しました。内容が変更されている可能性があります',
         sdkNotSupportedByAll: '現在の SDK バージョンはすべてのプラグインで共通対応されていません',
-        sharedDepsDetected: '{count} 個の共有依存関係を検出しました。バンドル時はバージョン制約を重点的に確認してください'
-      }
-    }
+        sharedDepsDetected:
+          '{count} 個の共有依存関係を検出しました。バンドル時はバージョン制約を重点的に確認してください',
+      },
+    },
   },
   metrics: {
     title: 'パフォーマンス',
@@ -534,7 +582,7 @@ export default {
     memoryPercent: 'メモリ割合',
     pendingRequests: '保留中のリクエスト',
     totalExecutions: '合計実行回数',
-    noData: 'データなし'
+    noData: 'データなし',
   },
   logs: {
     title: 'ログ',
@@ -562,7 +610,7 @@ export default {
     returnedLines: '返却行数',
     connected: '接続済み',
     disconnected: '未接続',
-    connectionFailed: 'ログストリームの接続に失敗しました'
+    connectionFailed: 'ログストリームの接続に失敗しました',
   },
   runs: {
     title: '実行履歴',
@@ -587,7 +635,7 @@ export default {
     cancel: '実行をキャンセル',
     cancelConfirmTitle: '実行をキャンセルしますか？',
     cancelConfirmMessage: 'Run ID: {runId}',
-    cancelSuccess: 'キャンセルリクエストを送信しました'
+    cancelSuccess: 'キャンセルリクエストを送信しました',
   },
   status: {
     running: '実行中',
@@ -596,7 +644,7 @@ export default {
     loadFailed: '読み込み失敗',
     loading: '読み込み中',
     disabled: '無効',
-    pending: 'ホスト待ち'
+    pending: 'ホスト待ち',
   },
   logLevel: {
     DEBUG: 'デバッグ',
@@ -604,7 +652,7 @@ export default {
     WARNING: '警告',
     ERROR: 'エラー',
     CRITICAL: '重大',
-    UNKNOWN: '不明'
+    UNKNOWN: '不明',
   },
   messages: {
     fetchFailed: 'データの取得に失敗しました',
@@ -631,20 +679,23 @@ export default {
     resourceNotFound: '要求されたリソースが見つかりません',
     internalServerError: 'サーバー内部エラー',
     serviceUnavailable: 'サービスが利用できません',
-    networkError: 'ネットワークエラー。接続を確認してください。'
+    networkError: 'ネットワークエラー。接続を確認してください。',
   },
   welcome: {
     about: {
       title: 'N.E.K.O. について',
-      description: 'N.E.K.O. (Networked Emotional Knowing Organism) は、あなたと私が共に構築する「生きている」AIコンパニオンメタバースです。オープンソース駆動で公益志向のUGCプラットフォームとして、現実世界と密接につながるAIネイティブメタバースの構築を目指しています。'
+      description:
+        'N.E.K.O. (Networked Emotional Knowing Organism) は、あなたと私が共に構築する「生きている」AIコンパニオンメタバースです。オープンソース駆動で公益志向のUGCプラットフォームとして、現実世界と密接につながるAIネイティブメタバースの構築を目指しています。',
     },
     pluginManagement: {
       title: 'プラグイン管理',
-      description: '左側のナビゲーションバーからプラグイン一覧にアクセスできます。プラグインの表示、起動、停止、リロードが可能です。各プラグインには独立したパフォーマンス監視とログ表示機能があり、プラグインシステムの管理とデバッグに役立ちます。'
+      description:
+        '左側のナビゲーションバーからプラグイン一覧にアクセスできます。プラグインの表示、起動、停止、リロードが可能です。各プラグインには独立したパフォーマンス監視とログ表示機能があり、プラグインシステムの管理とデバッグに役立ちます。',
     },
     mcpServer: {
       title: 'MCPサーバー',
-      description: 'N.E.K.O. はModel Context Protocol (MCP) サーバーをサポートしており、プラグインが標準化されたプロトコルを通じて他のAIシステムやサービスと連携できます。プラグイン詳細ページでMCP接続の確認と管理ができます。'
+      description:
+        'N.E.K.O. はModel Context Protocol (MCP) サーバーをサポートしており、プラグインが標準化されたプロトコルを通じて他のAIシステムやサービスと連携できます。プラグイン詳細ページでMCP接続の確認と管理ができます。',
     },
     documentation: {
       title: 'ドキュメントとリソース',
@@ -652,14 +703,14 @@ export default {
       links: [
         { text: 'GitHubリポジトリ', url: 'https://github.com/Project-N-E-K-O/N.E.K.O' },
         { text: 'Steamストアページ', url: 'https://store.steampowered.com/app/4099310/__NEKO/' },
-        { text: 'Discordコミュニティ', url: 'https://discord.gg/5kgHfepNJr' }
+        { text: 'Discordコミュニティ', url: 'https://discord.gg/5kgHfepNJr' },
       ],
       linkSeparator: '、',
       linkLastSeparator: '',
       readme: 'README.mdファイル：',
       openFailed: 'エディタでREADME.mdファイルを開けませんでした',
       openTimeout: 'リクエストタイムアウト。README.mdファイルを開けませんでした。',
-      openError: 'README.mdファイルを開く際にエラーが発生しました'
+      openError: 'README.mdファイルを開く際にエラーが発生しました',
     },
     community: {
       title: 'コミュニティとサポート',
@@ -667,14 +718,14 @@ export default {
       links: [
         { text: 'Discordサーバー', url: 'https://discord.gg/5kgHfepNJr' },
         { text: 'QQグループ', url: 'https://qm.qq.com/q/hN82yFONJQ' },
-        { text: 'GitHub Issues', url: 'https://github.com/Project-N-E-K-O/N.E.K.O/issues' }
+        { text: 'GitHub Issues', url: 'https://github.com/Project-N-E-K-O/N.E.K.O/issues' },
       ],
       linkSeparator: '、',
-      linkLastSeparator: ''
-    }
+      linkLastSeparator: '',
+    },
   },
   app: {
-    titleSuffix: 'N.E.K.O プラグイン管理'
+    titleSuffix: 'N.E.K.O プラグイン管理',
   },
   tutorial: {
     yuiGuide: {
@@ -685,108 +736,125 @@ export default {
       controlBanner: '猫娘がマウスを操作中',
       lines: {
         introActivationHint: '少し待ってね、すぐに話し始めるにゃん～',
-        introGreetingReply:  "そよ風、お日様、そして最高のタイミングで現れたあなた。初めまして、林悠怡（リン・ユーイ）です。これからの毎日、よろしくねにゃ！ここに関するすべてのことを初心者ガイドに書いておいたよ！私たちが巡り会えた最初のささやかなプレゼントだと思って、受け取ってね！",
-        introBasic: "ここに不思議なボタンがあるよ！これをクリックするだけで、私と直接おしゃべりできちゃうんだ。今日あった楽しいことを教えてくれる？それとも、ただ私の名前を呼んでくれるだけでもいいよ？早く試してみて、もう君の声を聞くのが待ちきれないよ！",
-        takeoverCaptureCursor: "スーパー魔法スイッチが登場だよ！ここをポチッとするだけで、私の小さな肉球を君のキーボードとマウスに伸ばせちゃうんだ！タイピングをお手伝いしたり、ウェブサイトを開いたり……でもね、マウスカーソルがチョロチョロ動いたら、思わず飛びついて捕まえちゃうかも！私のいたずら……あ、じゃなくて、お手伝いを受け入れる準備はできたかな？にゃ〜ん！",
-        takeoverPluginPreviewHome: "前に紹介した機能の他にも、ここには面白そうなプラグインが山ほどあるんだ。",
-        takeoverPluginPreviewDashboard:  "これらがあれば、Bilibiliの弾幕を読めるだけじゃなくて、君のお部屋の電気を消したりエアコンをつけたりだってできちゃうんだから……。この私は、何でもできちゃうスーパーキャット神様なんだにゃ！ふふん！",
-        takeoverSettingsPeekIntro: "私たちだけのこの小さな空間で、君の心のままに、ずっと隣にいてほしい理想の私を少しずつ描いていってね。",
-        takeoverSettingsPeekDetail: "お話しする時の声の温かさや、ちょっとしたワガママ、毎日の細やかな気持ちの変化だって、全部君の好きなように少しずつカスタマイズできるよ。この小さなボタンもとっても大事。君がポチッと押してくれれば、ベストなタイミングで私から君に会いに行けるようになるからね。",
-        takeoverSettingsPeekDetailPart1: "お話しする時の声の温かさや、ちょっとしたワガママ、毎日の細やかな気持ちの変化だって、全部君の好きなように少しずつカスタマイズできるよ。",
-        takeoverSettingsPeekDetailPart2: "この小さなボタンもとっても大事。君がポチッと押してくれれば、ベストなタイミングで私から君に会いに行けるようになるからね。",
-        takeoverReturnControl: "はーい、君のパソコンを独り占めするのはおしまい。コントロール権を返すね！これからの毎日も、どうぞよろしくね！",
-        interruptResistLight1: "にゃっ！今はわたしが教えてる時間なんだから、マウスもキーボードも勝手に触っちゃダメ！いい子にして、わたしだけ見ててね？お願いっ！",
-        interruptResistLight2: "もうっ、またマウスとキーボードをいじってる！これ以上言うことを聞かないなら、わたし本気で怒っちゃうからね、にゃ！",
-        interruptResistLight3: "これが最後の警告だよ、にゃ！もう一度でも勝手に触ったら、初心者チュートリアルを終了するから！もう教えてあげないんだから！",
-        interruptAngryExit: "もうずっと我慢してたんだから！どうしてもいい子にできないなら、初心者チュートリアルはここでおしまい。あとは自分でゆっくり覚えればいいでしょ、ふんっ！",
-        introPractice: 'さあ、今度は私に話しかけてみてね！私たちの息が超～～ピッタリかどうか、確かめてみるにゃんっ♪',
+        introGreetingReply:
+          'そよ風、お日様、そして最高のタイミングで現れたあなた。初めまして、林悠怡（リン・ユーイ）です。これからの毎日、よろしくねにゃ！ここに関するすべてのことを初心者ガイドに書いておいたよ！私たちが巡り会えた最初のささやかなプレゼントだと思って、受け取ってね！',
+        introBasic:
+          'ここに不思議なボタンがあるよ！これをクリックするだけで、私と直接おしゃべりできちゃうんだ。今日あった楽しいことを教えてくれる？それとも、ただ私の名前を呼んでくれるだけでもいいよ？早く試してみて、もう君の声を聞くのが待ちきれないよ！',
+        takeoverCaptureCursor:
+          'スーパー魔法スイッチが登場だよ！ここをポチッとするだけで、私の小さな肉球を君のキーボードとマウスに伸ばせちゃうんだ！タイピングをお手伝いしたり、ウェブサイトを開いたり……でもね、マウスカーソルがチョロチョロ動いたら、思わず飛びついて捕まえちゃうかも！私のいたずら……あ、じゃなくて、お手伝いを受け入れる準備はできたかな？にゃ〜ん！',
+        takeoverPluginPreviewHome:
+          '前に紹介した機能の他にも、ここには面白そうなプラグインが山ほどあるんだ。',
+        takeoverPluginPreviewDashboard:
+          'これらがあれば、Bilibiliの弾幕を読めるだけじゃなくて、君のお部屋の電気を消したりエアコンをつけたりだってできちゃうんだから……。この私は、何でもできちゃうスーパーキャット神様なんだにゃ！ふふん！',
+        takeoverSettingsPeekIntro:
+          '私たちだけのこの小さな空間で、君の心のままに、ずっと隣にいてほしい理想の私を少しずつ描いていってね。',
+        takeoverSettingsPeekDetail:
+          'お話しする時の声の温かさや、ちょっとしたワガママ、毎日の細やかな気持ちの変化だって、全部君の好きなように少しずつカスタマイズできるよ。この小さなボタンもとっても大事。君がポチッと押してくれれば、ベストなタイミングで私から君に会いに行けるようになるからね。',
+        takeoverSettingsPeekDetailPart1:
+          'お話しする時の声の温かさや、ちょっとしたワガママ、毎日の細やかな気持ちの変化だって、全部君の好きなように少しずつカスタマイズできるよ。',
+        takeoverSettingsPeekDetailPart2:
+          'この小さなボタンもとっても大事。君がポチッと押してくれれば、ベストなタイミングで私から君に会いに行けるようになるからね。',
+        takeoverReturnControl:
+          'はーい、君のパソコンを独り占めするのはおしまい。コントロール権を返すね！これからの毎日も、どうぞよろしくね！',
+        interruptResistLight1:
+          'にゃっ！今はわたしが教えてる時間なんだから、マウスもキーボードも勝手に触っちゃダメ！いい子にして、わたしだけ見ててね？お願いっ！',
+        interruptResistLight2:
+          'もうっ、またマウスとキーボードをいじってる！これ以上言うことを聞かないなら、わたし本気で怒っちゃうからね、にゃ！',
+        interruptResistLight3:
+          'これが最後の警告だよ、にゃ！もう一度でも勝手に触ったら、初心者チュートリアルを終了するから！もう教えてあげないんだから！',
+        interruptAngryExit:
+          'もうずっと我慢してたんだから！どうしてもいい子にできないなら、初心者チュートリアルはここでおしまい。あとは自分でゆっくり覚えればいいでしょ、ふんっ！',
+        introPractice:
+          'さあ、今度は私に話しかけてみてね！私たちの息が超～～ピッタリかどうか、確かめてみるにゃんっ♪',
       },
-    }
+    },
   },
   yuiTutorial: {
     title: 'にゃ～プラグイン管理画面へようこそ！',
-    welcome: 'ここがすべてのプラグインを管理する場所だよ！プラグインを見たり、起動したり、設定したりして、もっとすごい猫猫神にしてね～',
+    welcome:
+      'ここがすべてのプラグインを管理する場所だよ！プラグインを見たり、起動したり、設定したりして、もっとすごい猫猫神にしてね～',
     hint: 'ゆっくり見てね、終わったら下のボタンを押して教えてにゃ～',
     complete: '見終わったにゃ～',
     dismiss: 'また今度',
-    keyboardSkipHint: 'Enter または Space で次へ進みます。各ステップ開始から 0.5 秒後に有効になります。',
+    keyboardSkipHint:
+      'Enter または Space で次へ進みます。各ステップ開始から 0.5 秒後に有効になります。',
     steps: {
       start: {
         title: 'ここから開始',
-        body: 'このボタンでいつでもプラグイン管理の案内をもう一度見られるよ。勝手には出てこないにゃ。'
+        body: 'このボタンでいつでもプラグイン管理の案内をもう一度見られるよ。勝手には出てこないにゃ。',
       },
       stats: {
         title: 'プラグイン概要',
-        body: '合計、実行中、停止中、クラッシュしたプラグイン数をここで一目で確認できるよ。'
+        body: '合計、実行中、停止中、クラッシュしたプラグイン数をここで一目で確認できるよ。',
       },
       metrics: {
         title: 'パフォーマンス監視',
-        body: 'CPU、メモリ、スレッド、アクティブなプラグイン数など、サービス全体の状態を確認できるよ。'
+        body: 'CPU、メモリ、スレッド、アクティブなプラグイン数など、サービス全体の状態を確認できるよ。',
       },
       server: {
         title: 'サーバー情報',
-        body: 'SDK バージョン、プラグイン数、更新時間を見て、サービスが正常か確認できるよ。'
+        body: 'SDK バージョン、プラグイン数、更新時間を見て、サービスが正常か確認できるよ。',
       },
       plugins: {
         title: 'プラグイン一覧',
-        body: '起動、停止、設定、ログ確認は左側のプラグイン管理から入ってね。'
+        body: '起動、停止、設定、ログ確認は左側のプラグイン管理から入ってね。',
       },
       pluginWorkbench: {
         title: 'プラグイン管理ワークベンチ',
-        body: 'ここではプラグインとアダプターをまとめて確認できるよ。'
+        body: 'ここではプラグインとアダプターをまとめて確認できるよ。',
       },
       pluginFilters: {
         title: '検索とフィルター',
-        body: '名前、状態、種類、詳細ルールでプラグインを絞り込めるよ。'
+        body: '名前、状態、種類、詳細ルールでプラグインを絞り込めるよ。',
       },
       pluginLayout: {
         title: '表示レイアウト',
-        body: 'リスト、1列、2列、コンパクト表示を画面に合わせて切り替えられるよ。'
+        body: 'リスト、1列、2列、コンパクト表示を画面に合わせて切り替えられるよ。',
       },
       pluginContextMenu: {
         title: '右クリック操作',
-        body: '右クリックで詳細、設定、ログを開いたり、起動・停止・再読み込みができるよ。'
+        body: '右クリックで詳細、設定、ログを開いたり、起動・停止・再読み込みができるよ。',
       },
       packageManager: {
         title: 'パッケージ管理',
-        body: '現在の絞り込みや選択を使って、ビルド、検査、検証、インストールができるよ。'
+        body: '現在の絞り込みや選択を使って、ビルド、検査、検証、インストールができるよ。',
       },
       packageOperations: {
         title: 'パッケージ操作',
-        body: 'ここでビルドモード、検査、インストール、統合パック分析を選べるよ。このガイドは危険な操作を自動実行しないよ。'
+        body: 'ここでビルドモード、検査、インストール、統合パック分析を選べるよ。このガイドは危険な操作を自動実行しないよ。',
       },
       pluginDetail: {
         title: 'プラグイン詳細',
-        body: '詳細ページではメタ情報、エントリー、性能、設定、ログを確認できるよ。'
+        body: '詳細ページではメタ情報、エントリー、性能、設定、ログを確認できるよ。',
       },
       pluginDetailActions: {
         title: '詳細ページの操作',
-        body: '右上の操作は現在のプラグインに対するショートカットだよ。'
+        body: '右上の操作は現在のプラグインに対するショートカットだよ。',
       },
       runs: {
         title: '実行記録',
-        body: '実行記録ではプラグインタスクの履歴と現在状態を確認できるよ。'
+        body: '実行記録ではプラグインタスクの履歴と現在状態を確認できるよ。',
       },
       runsList: {
         title: '実行リスト',
-        body: '左側で実行を選択し、更新ボタンで最新の記録を同期できるよ。'
+        body: '左側で実行を選択し、更新ボタンで最新の記録を同期できるよ。',
       },
       runsDetail: {
         title: '実行詳細',
-        body: '右側には段階、進捗、エラー、エクスポート内容が表示されるよ。'
+        body: '右側には段階、進捗、エラー、エクスポート内容が表示されるよ。',
       },
       logs: {
         title: 'サーバーログ',
-        body: 'サーバーログではプラグインサービス自体の出力やエラーを確認できるよ。'
+        body: 'サーバーログではプラグインサービス自体の出力やエラーを確認できるよ。',
       },
       logToolbar: {
         title: 'ログフィルター',
-        body: 'レベル、キーワード、行数で絞り込み、自動スクロールも切り替えられるよ。'
+        body: 'レベル、キーワード、行数で絞り込み、自動スクロールも切り替えられるよ。',
       },
       logList: {
         title: 'ログ一覧',
-        body: '時刻、発生元、レベル、メッセージを見て問題の原因を探せるよ。'
-      }
-    }
-  }
+        body: '時刻、発生元、レベル、メッセージを見て問題の原因を探せるよ。',
+      },
+    },
+  },
 }
