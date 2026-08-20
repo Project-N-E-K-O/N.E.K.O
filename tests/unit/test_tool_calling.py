@@ -101,7 +101,11 @@ async def test_registry_local_handler_envelope_extracts_images():
     """
     from main_logic.tool_calling import ToolCall, ToolDefinition, ToolRegistry
 
-    jpeg_b64 = "/9j/2Q=="
+    jpeg_b64 = (
+        "/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAP//////////////////////////////////////////"
+        "////////////////////////////////////////////wAALCAABAAEBAREA/8QAFAABAAAAAAAA"
+        "AAAAAAAAAAAAA//EABQQAQAAAAAAAAAAAAAAAAAAAAD/2gAIAQEAAD8AN//Z"
+    )
 
     async def screenshot_handler(_args):
         return {

@@ -45,10 +45,16 @@ def _normalize(payload: Any) -> dict[str, Any]:
     if not isinstance(payload, dict):
         return dict(_UNKNOWN)
     age = payload.get("age_seconds")
+    age_seconds = None
+    if isinstance(age, (int, float)) and not isinstance(age, bool):
+        try:
+            age_seconds = float(age)
+        except (OverflowError, TypeError, ValueError):
+            pass
     return {
         "active": bool(payload.get("active")),
         "source": str(payload.get("source") or ""),
-        "age_seconds": float(age) if isinstance(age, (int, float)) else None,
+        "age_seconds": age_seconds,
         "native_vision": bool(payload.get("native_vision")),
         "role": str(payload.get("role") or ""),
     }

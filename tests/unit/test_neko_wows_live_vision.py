@@ -173,6 +173,30 @@ def test_a_nonsense_reply_reads_as_not_sharing():
     }
 
 
+def test_oversized_age_does_not_wedge_future_refreshes():
+    clock = _Clock()
+    spawned = []
+    probe, calls = _probe(
+        [
+            {**SHARING, "age_seconds": 10**1000},
+            {**SHARING, "age_seconds": 0.5},
+        ],
+        clock=clock,
+        spawn=spawned.append,
+    )
+
+    probe.snapshot()
+    spawned.pop()()
+    assert probe.snapshot()["age_seconds"] is None
+
+    clock.advance(5.0)
+    probe.snapshot()
+    assert len(spawned) == 1
+    spawned.pop()()
+    assert probe.snapshot()["age_seconds"] == 0.5
+    assert len(calls) == 2
+
+
 @pytest.mark.parametrize(
     ("reply", "usable"),
     [

@@ -237,20 +237,16 @@ class _ToolingMixin:
         if not images:
             return
 
-        content = [
-            {
+        content = []
+        for img in images:
+            content.append({
                 "type": "image_url",
                 "image_url": {"url": f"data:{img.mime};base64,{img.data_b64}"},
-            }
-            for img in images
-        ]
-        # Always caption: several providers reject a content array that is
-        # nothing but image parts.
-        caption = next(
-            (img.vision_prompt.strip() for img in images if img.vision_prompt.strip()),
-            self._TOOL_IMAGE_DEFAULT_CAPTION,
-        )
-        content.append({"type": "text", "text": caption})
+            })
+            # Keep each instruction adjacent to the image it describes.
+            # Always caption: several providers reject bare image parts.
+            caption = img.vision_prompt.strip() or self._TOOL_IMAGE_DEFAULT_CAPTION
+            content.append({"type": "text", "text": caption})
 
         message = {"role": "user", "content": content}
         messages.append(message)

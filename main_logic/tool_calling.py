@@ -40,7 +40,10 @@ import binascii
 import json
 import time
 from dataclasses import dataclass, field
+from io import BytesIO
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple, Union
+
+from PIL import Image
 
 from utils.logger_config import get_module_logger
 
@@ -54,6 +57,7 @@ ToolHandler = Callable[[Dict[str, Any]], Union[Awaitable[Any], Any]]
 # both in-process handlers and remote plugin callbacks.
 _MAX_TOOL_IMAGE_B64_BYTES = 2 * 1024 * 1024
 _MAX_TOOL_IMAGES = 2
+_MAX_TOOL_IMAGE_PIXELS = 16 * 1024 * 1024
 _ALLOWED_TOOL_IMAGE_MIMES = frozenset({"image/jpeg", "image/png"})
 _JPEG_MAGIC = b"\xff\xd8"
 _PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
@@ -219,10 +223,29 @@ def _decode_tool_image_b64(data_b64: str) -> Tuple[bytes, str] | None:
     if not raw:
         return None
     if raw.startswith(_JPEG_MAGIC):
-        return raw, "image/jpeg"
-    if raw.startswith(_PNG_MAGIC):
-        return raw, "image/png"
-    return None
+        detected_mime = "image/jpeg"
+        expected_format = "JPEG"
+    elif raw.startswith(_PNG_MAGIC):
+        detected_mime = "image/png"
+        expected_format = "PNG"
+    else:
+        return None
+
+    try:
+        with Image.open(BytesIO(raw)) as image:
+            if image.format != expected_format:
+                return None
+            width, height = image.size
+            if width <= 0 or height <= 0 or width * height > _MAX_TOOL_IMAGE_PIXELS:
+                return None
+            image.verify()
+        # JPEG's lightweight ``verify`` does not decode entropy data and can
+        # accept a missing EOI marker, so force a bounded full decode too.
+        with Image.open(BytesIO(raw)) as image:
+            image.load()
+    except Exception:
+        return None
+    return raw, detected_mime
 
 
 def _normalize_tool_image_mime(mime: Any) -> str | None:

@@ -110,7 +110,7 @@ async def test_image_without_a_prompt_still_gets_a_text_part():
 
 
 @pytest.mark.asyncio
-async def test_two_images_ride_one_message():
+async def test_two_images_keep_their_own_prompts_in_one_message():
     result = _image_result(images=[
         ToolImage(data_b64="A", vision_prompt="first"),
         ToolImage(data_b64="B", vision_prompt="second"),
@@ -119,8 +119,14 @@ async def test_two_images_ride_one_message():
     messages: list = []
     await client._execute_and_append_openai_tool_calls(messages, [_Call()])
     assert len(_image_messages(messages)) == 1
-    types = [p["type"] for p in messages[-1]["content"]]
-    assert types == ["image_url", "image_url", "text"]
+    content = messages[-1]["content"]
+    assert [part["type"] for part in content] == [
+        "image_url", "text", "image_url", "text",
+    ]
+    assert content[0]["image_url"]["url"].endswith(",A")
+    assert content[1] == {"type": "text", "text": "first"}
+    assert content[2]["image_url"]["url"].endswith(",B")
+    assert content[3] == {"type": "text", "text": "second"}
 
 
 @pytest.mark.asyncio

@@ -8,6 +8,7 @@ of what shape the plugin returned.
 
 from __future__ import annotations
 
+import base64
 import json
 
 from main_logic.tool_calling import ToolImage, ToolResult
@@ -123,8 +124,12 @@ _TINY_PNG_B64 = (
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQ"
     "AAAABJRU5ErkJggg=="
 )
-# Minimal JPEG (SOI + EOI) — matches the default mime when the entry omits it.
-_TINY_JPEG_B64 = "/9j/2Q=="
+# Valid 1x1 grayscale JPEG; matches the default mime when the entry omits it.
+_TINY_JPEG_B64 = (
+    "/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAP//////////////////////////////////////////"
+    "////////////////////////////////////////////wAALCAABAAEBAREA/8QAFAABAAAAAAAA"
+    "AAAAAAAAAAAAA//EABQQAQAAAAAAAAAAAAAAAAAAAAD/2gAIAQEAAD8AN//Z"
+)
 
 
 def _image_entry(**overrides) -> dict:
@@ -174,6 +179,21 @@ def test_malformed_base64_is_dropped_with_a_warning():
     )
     assert images == []
     assert any("base64" in w.lower() or "invalid" in w.lower() for w in warnings)
+
+
+def test_truncated_jpeg_and_png_are_dropped_with_warnings():
+    payloads = [
+        (base64.b64decode(_TINY_JPEG_B64)[:-2], "image/jpeg"),
+        (base64.b64decode(_TINY_PNG_B64)[:-8], "image/png"),
+    ]
+
+    for raw, mime in payloads:
+        data_b64 = base64.b64encode(raw).decode("ascii")
+        images, warnings = _parse_tool_images(
+            {"images": [_image_entry(data_b64=data_b64, mime=mime)]}
+        )
+        assert images == []
+        assert any("invalid" in warning.lower() for warning in warnings)
 
 
 def test_images_only_body_strips_pixels_from_model_output():
