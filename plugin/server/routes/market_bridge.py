@@ -313,6 +313,10 @@ class MarketInstallRequest(BaseModel):
     语义并把 Market 已知的发布证据透传到 lock entry 上。
     """
     package_url: str = Field(..., description="插件包下载 URL")
+    canonical_package_url: str | None = Field(
+        default=None,
+        description="Market 提供的原始插件包 URL；镜像传输时用于保留安装来源记录",
+    )
     package_sha256: str = Field(
         ...,
         description="包文件 SHA256。Market 一键安装必须提供合法 64 位 hex，客户端会强制校验。",
@@ -644,10 +648,11 @@ async def _measure_github_proxy_sources() -> tuple[dict[str, object], ...]:
     semaphore = asyncio.Semaphore(_GITHUB_PROXY_PROBE_CONCURRENCY)
 
     async def probe(source_id: str, base_url: str) -> dict[str, object]:
-        started_at = time.monotonic()
+        started_at: float | None = None
         status_code: int | None = None
         try:
             async with semaphore:
+                started_at = time.monotonic()
                 async with httpx.AsyncClient(
                     timeout=httpx.Timeout(_GITHUB_PROXY_PROBE_TIMEOUT),
                     follow_redirects=True,
@@ -658,7 +663,7 @@ async def _measure_github_proxy_sources() -> tuple[dict[str, object], ...]:
                     available = response.status_code < 400
         except httpx.HTTPError:
             available = False
-        latency_ms = round((time.monotonic() - started_at) * 1000)
+        latency_ms = round((time.monotonic() - started_at) * 1000) if started_at else None
         return {
             "id": source_id,
             "url": base_url,
@@ -2821,7 +2826,10 @@ async def _do_install(
 
     package_path: Path | None = None
     try:
-        package_path = await _download_package(payload.package_url, task)
+        package_path, effective_package_url = _download_package_result(
+            await _download_package(payload.package_url, task),
+            payload.package_url,
+        )
     except _TaskCancelled:
         raise
     except Exception as exc:
@@ -2839,7 +2847,7 @@ async def _do_install(
                 message="正在校验文件完整性...",
             )
             package_path, sha_check = await _verify_downloaded_package_with_fallback(
-                payload.package_url,
+                effective_package_url,
                 package_path,
                 payload.package_sha256,
                 task,
@@ -2995,7 +3003,10 @@ async def _do_upgrade(
             message="正在下载新版本...",
         )
         try:
-            package_path = await _download_package(payload.package_url, task)
+            package_path, effective_package_url = _download_package_result(
+                await _download_package(payload.package_url, task),
+                payload.package_url,
+            )
         except _TaskCancelled:
             raise
         except Exception as exc:
@@ -3012,7 +3023,7 @@ async def _do_upgrade(
                 message="正在校验文件完整性...",
             )
             package_path, sha_check = await _verify_downloaded_package_with_fallback(
-                payload.package_url,
+                effective_package_url,
                 package_path,
                 payload.package_sha256,
                 task,
@@ -3238,7 +3249,7 @@ def _build_market_override(
         "market_detail": {
             "plugin_market_id": payload.plugin_id or "",
             "version": payload.version or "",
-            "package_url": payload.package_url,
+            "package_url": getattr(payload, "canonical_package_url", None) or payload.package_url,
             "channel": payload.channel or "stable",
             "package_sha256": (payload.package_sha256 or "").lower(),
             "payload_hash": payload.payload_hash,
@@ -3422,11 +3433,22 @@ async def _verify_downloaded_package_with_fallback(
         return direct_path, sha_check
 
 
-async def _download_package(url: str, task: dict[str, Any]) -> Path:
+def _download_package_result(
+    result: Path | tuple[Path, str],
+    requested_url: str,
+) -> tuple[Path, str]:
+    """Normalize a package result, including the URL that supplied its bytes."""
+
+    if isinstance(result, tuple):
+        return result
+    return result, requested_url
+
+
+async def _download_package(url: str, task: dict[str, Any]) -> tuple[Path, str]:
     """Download a package, retrying a failed allowlisted proxy via GitHub direct."""
 
     try:
-        return await _download_package_once(url, task)
+        return await _download_package_once(url, task), url
     except _DownloadAttemptError:
         fallback_url = _direct_github_download_fallback(url)
         if not fallback_url:
@@ -3441,7 +3463,7 @@ async def _download_package(url: str, task: dict[str, Any]) -> Path:
             task,
             "镜像下载失败，正在通过 GitHub 直连重试...",
         )
-        return await _download_package_once(fallback_url, task)
+        return await _download_package_once(fallback_url, task), fallback_url
 
 
 async def _download_package_once(url: str, task: dict[str, Any]) -> Path:
@@ -3544,6 +3566,9 @@ async def _download_package_once(url: str, task: dict[str, Any]) -> Path:
             _safe_url_log_origin(url),
         )
         raise _DownloadAttemptError("下载网络错误") from exc
+    except ValueError as exc:
+        _cleanup_download_file(package_path)
+        raise _DownloadAttemptError(str(exc)) from exc
     except Exception:
         _cleanup_download_file(package_path)
         raise

@@ -158,6 +158,14 @@ function setAutoSourceId(next: GithubMirrorSourceId, measuredAt = Date.now()) {
   persist()
 }
 
+function clearAutoSource() {
+  autoSourceId.value = null
+  autoMeasuredAt.value = null
+  autoMeasurementClock.value = Date.now()
+  scheduleAutoMeasurementExpiry()
+  persist()
+}
+
 function isAutoMeasurementFresh() {
   const now = Math.max(autoMeasurementClock.value, Date.now())
   return (
@@ -211,6 +219,7 @@ async function refreshAutoSource() {
   const measurements = await measureSpeedTestSources()
   const fastest = fastestAvailableSource(measurements)
   if (fastest) setAutoSourceId(fastest.id)
+  else clearAutoSource()
   return { measurements, fastest }
 }
 
@@ -245,6 +254,7 @@ export function useGithubMirrorSource() {
     setMode,
     setSpecifiedSourceId,
     setAutoSourceId,
+    clearAutoSource,
     measureSpeedTestSources,
     refreshAutoSource,
     ensureAutoSource,

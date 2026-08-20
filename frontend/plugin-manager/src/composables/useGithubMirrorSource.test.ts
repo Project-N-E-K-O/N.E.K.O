@@ -44,4 +44,24 @@ describe('automatic mirror measurement expiry', () => {
     expect(mirror.autoMeasurementFresh.value).toBe(false)
     expect(mirror.activeSource.value).toBeNull()
   })
+
+  it('clears a previous selection when a retest has no available source', async () => {
+    const mirror = useGithubMirrorSource()
+    mirror.setMode('auto')
+    mirror.setAutoSourceId('gh-proxy-com')
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = async () => new Response(JSON.stringify({
+      sources: [{ id: 'gh-proxy-com', available: false, latency_ms: null }],
+    }))
+
+    try {
+      await mirror.refreshAutoSource()
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+
+    expect(mirror.autoSourceId.value).toBeNull()
+    expect(mirror.autoMeasuredAt.value).toBeNull()
+    expect(mirror.activeSource.value).toBeNull()
+  })
 })

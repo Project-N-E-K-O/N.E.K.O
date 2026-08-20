@@ -1106,6 +1106,7 @@ async function handleInstall(plugin: MarketWorkbenchItem) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         package_url: packageUrl,
+        canonical_package_url: payload.package_url,
         package_sha256: payload.package_sha256,
         payload_hash: payload.payload_hash,
         plugin_id: String(plugin.rawId),
@@ -1190,6 +1191,7 @@ async function handleUpgrade(plugin: MarketWorkbenchItem) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         package_url: packageUrl,
+        canonical_package_url: payload.package_url,
         package_sha256: payload.package_sha256,
         payload_hash: payload.payload_hash,
         plugin_id: String(plugin.rawId),

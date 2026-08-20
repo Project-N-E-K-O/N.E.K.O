@@ -58,6 +58,21 @@ def test_market_install_request_normalizes_legacy_rename_conflict_policy() -> No
     assert request.on_conflict == "fail"
 
 
+def test_market_override_records_canonical_package_url() -> None:
+    canonical_url = "https://github.com/example/demo/releases/download/v1.0.0/demo.neko-plugin"
+    request = market_bridge.MarketInstallRequest(
+        plugin_id="demo",
+        version="1.0.0",
+        package_url=f"https://cdn.gh-proxy.org/{canonical_url}",
+        canonical_package_url=canonical_url,
+        package_sha256="a" * 64,
+    )
+
+    override = market_bridge._build_market_override(request, mode="install")
+
+    assert override["market_detail"]["package_url"] == canonical_url
+
+
 def _configure_paths(
     monkeypatch: pytest.MonkeyPatch,
     *,

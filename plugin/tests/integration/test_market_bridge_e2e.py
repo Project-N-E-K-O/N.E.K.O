@@ -1336,10 +1336,159 @@ async def test_download_package_retries_allowlisted_proxy_via_github_direct(
         classmethod(lambda cls: type("Policy", (), {"package_artifacts_root": tmp_path})()),
     )
 
-    result = await market_bridge_module._download_package(proxied_url, {})
+    result, effective_url = await market_bridge_module._download_package(proxied_url, {})
 
     assert attempts == [proxied_url, direct_url]
+    assert effective_url == direct_url
     assert result.read_bytes() == b"direct-package"
+
+
+@pytest.mark.asyncio
+async def test_download_package_retries_oversized_allowlisted_proxy_via_github_direct(
+    bridge_e2e_env: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A mirror-only content-length limit failure retries the GitHub asset."""
+    from plugin.server.routes import market_bridge as market_bridge_module
+
+    direct_url = (
+        "https://github.com/example/plugin/releases/download/v1.0.0/"
+        "plugin.neko-plugin"
+    )
+    proxied_url = f"https://cdn.gh-proxy.org/{direct_url}"
+    attempts: list[str] = []
+
+    class Response:
+        status_code = 200
+
+        def __init__(self, url: str) -> None:
+            self.headers = {
+                "content-length": str(
+                    market_bridge_module._DOWNLOAD_MAX_BYTES + 1
+                    if url == proxied_url
+                    else len(b"direct-package")
+                ),
+            }
+
+        def raise_for_status(self) -> None:
+            return None
+
+        async def aiter_bytes(self, chunk_size: int) -> Any:
+            yield b"direct-package"
+
+    class Stream:
+        def __init__(self, url: str) -> None:
+            self.response = Response(url)
+
+        async def __aenter__(self) -> Response:
+            return self.response
+
+        async def __aexit__(self, *args: Any) -> None:
+            return None
+
+    class Client:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            pass
+
+        async def __aenter__(self) -> "Client":
+            return self
+
+        async def __aexit__(self, *args: Any) -> None:
+            return None
+
+        def stream(self, method: str, url: str) -> Stream:
+            assert method == "GET"
+            attempts.append(url)
+            return Stream(url)
+
+    monkeypatch.setattr(market_bridge_module.httpx, "AsyncClient", Client)
+    monkeypatch.setattr(
+        market_bridge_module.PluginCliPathPolicy,
+        "from_settings",
+        classmethod(lambda cls: type("Policy", (), {"package_artifacts_root": tmp_path})()),
+    )
+
+    result, effective_url = await market_bridge_module._download_package(proxied_url, {})
+
+    assert attempts == [proxied_url, direct_url]
+    assert effective_url == direct_url
+    assert result.read_bytes() == b"direct-package"
+
+
+@pytest.mark.asyncio
+async def test_direct_download_hash_mismatch_does_not_retry_github_again(
+    bridge_e2e_env: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A network fallback is verified as direct and never triggers a second retry."""
+    from plugin.server.routes import market_bridge as market_bridge_module
+
+    direct_url = (
+        "https://github.com/example/plugin/releases/download/v1.0.0/"
+        "plugin.neko-plugin"
+    )
+    proxied_url = f"https://cdn.gh-proxy.org/{direct_url}"
+    attempts: list[str] = []
+
+    class Response:
+        status_code = 200
+        headers = {"content-length": "12"}
+
+        def __init__(self, url: str) -> None:
+            self.url = url
+
+        def raise_for_status(self) -> None:
+            return None
+
+        async def aiter_bytes(self, chunk_size: int) -> Any:
+            if self.url == proxied_url:
+                raise httpx.ReadError("proxy stream closed")
+            yield b"wrong-package"
+
+    class Stream:
+        def __init__(self, url: str) -> None:
+            self.response = Response(url)
+
+        async def __aenter__(self) -> Response:
+            return self.response
+
+        async def __aexit__(self, *args: Any) -> None:
+            return None
+
+    class Client:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            pass
+
+        async def __aenter__(self) -> "Client":
+            return self
+
+        async def __aexit__(self, *args: Any) -> None:
+            return None
+
+        def stream(self, method: str, url: str) -> Stream:
+            assert method == "GET"
+            attempts.append(url)
+            return Stream(url)
+
+    monkeypatch.setattr(market_bridge_module.httpx, "AsyncClient", Client)
+    monkeypatch.setattr(
+        market_bridge_module.PluginCliPathPolicy,
+        "from_settings",
+        classmethod(lambda cls: type("Policy", (), {"package_artifacts_root": tmp_path})()),
+    )
+
+    package_path, effective_url = await market_bridge_module._download_package(proxied_url, {})
+    with pytest.raises(ValueError, match="SHA256 校验失败"):
+        await market_bridge_module._verify_downloaded_package_with_fallback(
+            effective_url,
+            package_path,
+            hashlib.sha256(b"valid-package").hexdigest(),
+            {},
+        )
+
+    assert attempts == [proxied_url, direct_url]
 
 
 @pytest.mark.asyncio
