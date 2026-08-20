@@ -13,6 +13,7 @@ from unittest.mock import AsyncMock, MagicMock, call
 
 import pytest
 
+from main_logic.asr_client import VoiceIdentityActivationResult
 from main_logic.core import LLMSessionManager
 from main_logic.core.asr_runtime import AsrRuntimeMixin, _HotSwapAudioFrame
 from main_logic.asr_client.runtime import (
@@ -23,7 +24,6 @@ from main_logic.asr_client.runtime import (
 )
 from main_logic.asr_client.endpointing.detector_runtime import DetectorFeedResult, DetectorRuntime
 from main_logic.voice_input import VoiceInputDispatchResult
-from main_logic.voice_identity.contracts import VoiceIdentityActivationResult
 from main_logic.voice_input.consumers import CoreChatTurnContext
 from main_logic.asr_client.lifecycle import (
     AudioDisposition,

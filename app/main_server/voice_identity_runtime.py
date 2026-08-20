@@ -12,8 +12,8 @@ from pathlib import Path
 import uuid
 import weakref
 
+from main_logic.asr_client import VoiceIdentityActivationResult
 from main_logic.asr_client.speaker_shadow.campplus import CampPlusEmbeddingModel
-from main_logic.voice_identity.contracts import VoiceIdentityActivationResult
 from main_logic.voice_identity.profile import SpeakerProfile
 from main_logic.voice_identity_service.asr_composition import (
     OwnerVoiceAsrCompositionFactory,

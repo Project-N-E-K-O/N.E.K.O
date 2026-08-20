@@ -16,7 +16,10 @@ from typing import Callable, ClassVar, Literal
 
 from websockets import exceptions as web_exceptions
 
-from main_logic.asr_client import get_asr_core_capabilities
+from main_logic.asr_client import (
+    VoiceIdentityActivationResult,
+    get_asr_core_capabilities,
+)
 from main_logic.asr_client.runtime import (
     ASR_CONNECT_TOTAL_BUDGET_SECONDS,
     AsrRuntimeCallbacks,
@@ -24,7 +27,6 @@ from main_logic.asr_client.runtime import (
     IndependentAsrRuntime,
     SpeakerShadowFactory,
 )
-from main_logic.voice_identity.contracts import VoiceIdentityActivationResult
 from main_logic.voice_input import (
     BuiltinVoiceInputConsumer,
     VoiceInputConsumerCapabilities,

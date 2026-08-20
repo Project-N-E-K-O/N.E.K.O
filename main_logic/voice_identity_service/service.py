@@ -11,16 +11,14 @@ import uuid
 
 import numpy as np
 
+from main_logic.asr_client import VoiceIdentityActivationResult
 from main_logic.asr_client.speaker_shadow.asset_manifest import (
     CAMPPLUS_MODEL_ID,
     CAMPPLUS_MODEL_REVISION,
     CAMPPLUS_SAMPLE_RATE_HZ,
 )
 from main_logic.asr_client.speaker_shadow.campplus import CAMPPLUS_EMBEDDING_DIM
-from main_logic.voice_identity.contracts import (
-    SpeakerModelIdentity,
-    VoiceIdentityActivationResult,
-)
+from main_logic.voice_identity.contracts import SpeakerModelIdentity
 from main_logic.voice_identity.profile import SpeakerProfile
 from main_logic.voice_identity.reference import SpeakerReference
 from main_logic.voice_input.suppression import (

@@ -9,10 +9,8 @@ import pytest
 
 import app.main_server.voice_identity_runtime as runtime_module
 from app.main_server.voice_identity_runtime import OwnerVoiceRuntimeRegistry
-from main_logic.voice_identity.contracts import (
-    SpeakerModelIdentity,
-    VoiceIdentityActivationResult,
-)
+from main_logic.asr_client import VoiceIdentityActivationResult
+from main_logic.voice_identity.contracts import SpeakerModelIdentity
 from main_logic.voice_identity.profile import SpeakerProfile
 from main_logic.voice_identity.reference import SpeakerReference
 

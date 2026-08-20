@@ -3,20 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from enum import StrEnum
-
-
-class VoiceIdentityActivationResult(StrEnum):
-    """Outcome of applying a profile to the currently active ASR route."""
-
-    READY = "ready"
-    UNSUPPORTED_ASR_ROUTE = "unsupported_asr_route"
-    RUNTIME_DEGRADED = "runtime_degraded"
-
-    def __bool__(self) -> bool:
-        """Treat a future-route install as applied even when not active yet."""
-
-        return self is not VoiceIdentityActivationResult.RUNTIME_DEGRADED
 
 
 @dataclass(frozen=True, slots=True)

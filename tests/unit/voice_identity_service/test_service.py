@@ -8,11 +8,9 @@ import numpy as np
 import pytest
 
 import main_logic.voice_identity_service.profile_store as store_module
+from main_logic.asr_client import VoiceIdentityActivationResult
 from main_logic.asr_client.speaker_shadow.campplus import CAMPPLUS_EMBEDDING_DIM
-from main_logic.voice_identity.contracts import (
-    SpeakerModelIdentity,
-    VoiceIdentityActivationResult,
-)
+from main_logic.voice_identity.contracts import SpeakerModelIdentity
 from main_logic.voice_identity.profile import SpeakerProfile
 from main_logic.voice_identity.reference import SpeakerReference
 from main_logic.voice_identity_service.preference_store import (
