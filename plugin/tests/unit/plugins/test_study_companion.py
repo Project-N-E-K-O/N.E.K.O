@@ -142,7 +142,10 @@ from plugin.plugins.study_companion.ui_api import (
     build_knowledge_map_payload,
     build_open_ui_payload,
 )
-from plugin.server.application.plugins.ui_query_service import _build_surfaces_sync
+from plugin.server.application.plugins.ui_query_service import (
+    _build_plugin_list_actions_from_meta,
+    _build_surfaces_sync,
+)
 from plugin.sdk.plugin import Err, Ok, OsActivitySnapshot
 from plugin.sdk.shared.constants import EVENT_META_ATTR
 
@@ -5446,29 +5449,29 @@ def test_study_companion_i18n_bundles_are_present() -> None:
         "i18n": config["plugin"]["i18n"],
     }
     surfaces, warnings = _build_surfaces_sync("study_companion", meta)
+    actions = _build_plugin_list_actions_from_meta("study_companion", meta)
     assert warnings == []
+    assert plugin_ui["expose_legacy_static_panel"] is False
+    assert not any(surface["kind"] == "panel" for surface in surfaces)
     assert any(
-        surface["id"] == "study-panel" and surface["available"] is True
-        for surface in surfaces
-    )
-    study_panel_surface = next(
-        surface for surface in surfaces if surface["id"] == "study-panel"
-    )
-    assert "action:call" in study_panel_surface["permissions"]
-    assert any(
-        surface["id"] == "knowledge-map" and surface["available"] is True
-        for surface in surfaces
-    )
-    assert any(
-        surface["id"] == "knowledge-contribution-settings"
+        surface["id"] == "onboarding"
+        and surface["kind"] == "docs"
         and surface["available"] is True
         for surface in surfaces
     )
-    assert any(
-        surface["id"] == "note-exporter" and surface["available"] is True
-        for surface in surfaces
-    )
-    assert not any(surface["id"] == "quickstart" for surface in surfaces)
+    assert actions == [
+        {
+            "id": "open_ui",
+            "kind": "ui",
+            "target": "/plugin/study_companion/ui/",
+            "open_in": "new_tab",
+        },
+        {
+            "id": "open_guide",
+            "kind": "route",
+            "target": "/plugins/study_companion?tab=guide",
+        },
+    ]
 
     index_html = (plugin_dir / "static" / "index.html").read_text(encoding="utf-8")
     main_js = (plugin_dir / "static" / "main.js").read_text(encoding="utf-8")
@@ -5484,11 +5487,10 @@ def test_study_companion_ui7_surfaces_use_brand_css_and_quickstart_is_removed() 
 
     with (plugin_dir / "plugin.toml").open("rb") as handle:
         config = tomllib.load(handle)
-    panel_ids = {surface["id"] for surface in config["plugin"]["ui"]["panel"]}
-    assert "quickstart" not in panel_ids
+    panel_ids = {surface["id"] for surface in config["plugin"]["ui"].get("panel", [])}
+    assert panel_ids == set()
+    assert config["plugin"]["ui"]["expose_legacy_static_panel"] is False
     assert not config["plugin"]["ui"].get("guide")
-    assert "study-panel" in panel_ids
-    assert "memory-deck-list" in panel_ids
 
     quickstart_path = plugin_dir / "surfaces" / "quickstart.tsx"
     assert quickstart_path.exists()
@@ -6562,9 +6564,8 @@ def test_study_companion_hosted_surface_actions_are_bridge_authorized() -> None:
 
     with (plugin_dir / "plugin.toml").open("rb") as handle:
         config = tomllib.load(handle)
-    for surface in config["plugin"]["ui"]["panel"]:
-        assert surface["context"] == "study", surface["id"]
-        assert "action:call" in surface["permissions"], surface["id"]
+    assert config["plugin"]["ui"].get("panel", []) == []
+    assert config["plugin"]["ui"]["expose_legacy_static_panel"] is False
 
     for action_id in HOSTED_SURFACE_ACTION_IDS:
         assert re.search(
@@ -6814,20 +6815,19 @@ def test_study_companion_note_exporter_uses_backend_export_poll_budget() -> None
     assert "for (let i = 0; i < 40; i += 1)" not in source
 
 
-def test_study_companion_note_exporter_can_read_live_export_config() -> None:
+def test_study_companion_note_exporter_is_not_exposed_as_manager_panel() -> None:
     import tomllib
 
     plugin_dir = Path(__file__).resolve().parents[3] / "plugins" / "study_companion"
     manifest = tomllib.loads(
         (plugin_dir / "plugin.toml").read_text(encoding="utf-8")
     )
-    note_exporter = next(
-        panel
-        for panel in manifest["plugin"]["ui"]["panel"]
-        if panel["id"] == "note-exporter"
-    )
 
-    assert "config:read" in note_exporter["permissions"]
+    assert all(
+        panel["id"] != "note-exporter"
+        for panel in manifest["plugin"]["ui"].get("panel", [])
+    )
+    assert (plugin_dir / "surfaces" / "note_exporter.tsx").is_file()
 
 
 def test_study_companion_ui_export_failures_are_not_silent_successes() -> None:

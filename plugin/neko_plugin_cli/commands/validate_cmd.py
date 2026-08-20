@@ -465,8 +465,19 @@ def _check_ui_table(plugin_dir: Path, value: object, issues: list[tuple[str, str
     if not isinstance(value, dict):
         issues.append(("error", "[plugin.ui] must be a table"))
         return
-    _warn_unknown_keys(value, {"enabled", "panel", "guide", "docs", "warnings"}, "[plugin.ui]", issues)
+    _warn_unknown_keys(
+        value,
+        {"enabled", "expose_legacy_static_panel", "panel", "guide", "docs", "warnings"},
+        "[plugin.ui]",
+        issues,
+    )
     _check_optional_bool(value, "enabled", "[plugin.ui].enabled", issues)
+    _check_optional_bool(
+        value,
+        "expose_legacy_static_panel",
+        "[plugin.ui].expose_legacy_static_panel",
+        issues,
+    )
     for kind in ("panel", "guide", "docs"):
         raw = value.get(kind)
         if raw is None:
