@@ -308,6 +308,7 @@ import type {
 } from '@/composables/workbenchDescriptors'
 import { usePluginStore } from '@/stores/plugin'
 import { useUserPreferenceStore } from '@/stores/userPreference'
+import { useGithubMirrorSource } from '@/composables/useGithubMirrorSource'
 import { narrowMarketChannel } from '@/utils/narrowChannel'
 import { openExternalUrl } from '@/utils/openExternal'
 
@@ -343,6 +344,7 @@ const totalCount = ref(0)
 const installingId = ref<string | null>(null)
 const upgradingId = ref<string | number | null>(null)
 const bridgeToken = ref('')
+const { resolveGithubDownloadUrl } = useGithubMirrorSource()
 
 interface MarketInstallTask {
   task_id: string
@@ -1087,13 +1089,13 @@ async function handleInstall(plugin: MarketWorkbenchItem) {
       return
     }
 
-    packageUrl = payload.package_url
+    packageUrl = resolveGithubDownloadUrl(payload.package_url)
     installingId.value = plugin.id
     const res = await fetchBridge('/market/install', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        package_url: payload.package_url,
+        package_url: packageUrl,
         package_sha256: payload.package_sha256,
         payload_hash: payload.payload_hash,
         plugin_id: String(plugin.rawId),
@@ -1164,12 +1166,13 @@ async function handleUpgrade(plugin: MarketWorkbenchItem) {
       return
     }
 
+    const packageUrl = resolveGithubDownloadUrl(payload.package_url)
     upgradingId.value = plugin.id
     const res = await fetchBridge('/market/install', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        package_url: payload.package_url,
+        package_url: packageUrl,
         package_sha256: payload.package_sha256,
         payload_hash: payload.payload_hash,
         plugin_id: String(plugin.rawId),

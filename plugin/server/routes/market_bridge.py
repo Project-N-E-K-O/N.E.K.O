@@ -98,6 +98,18 @@ _DOWNLOAD_MAX_BYTES = 200 * 1024 * 1024  # 200 MB
 _DOWNLOAD_TIMEOUT = 120.0  # 秒
 _ALLOWED_SUFFIXES = frozenset({".neko-plugin", ".neko-bundle"})
 
+# GitHub Release download mirrors exposed by the local plugin-manager UI.
+# Keeping this allowlist server-side means the speed test never accepts an
+# arbitrary URL from a browser request.
+_GITHUB_PROXY_SOURCES = (
+    ("gh-proxy-com", "https://gh-proxy.com/"),
+    ("gh-proxy-org", "https://gh-proxy.org/"),
+    ("hk-gh-proxy-org", "https://hk.gh-proxy.org/"),
+    ("cdn-gh-proxy-org", "https://cdn.gh-proxy.org/"),
+    ("edgeone-gh-proxy-org", "https://edgeone.gh-proxy.org/"),
+)
+_GITHUB_PROXY_PROBE_TIMEOUT = 8.0
+
 
 def _normalize_required_sha256(value: str | None) -> str:
     """Normalize Market package hash; Market installs must never skip it."""
@@ -609,6 +621,39 @@ async def market_status():
         market_url=MARKET_API_URL,
         market_web_url=MARKET_WEB_URL,
     )
+
+
+@router.get("/github-proxy/measure")
+async def measure_github_proxy_sources() -> dict[str, object]:
+    """Measure the fixed proxy list from the machine that downloads packages."""
+
+    async def probe(source_id: str, base_url: str) -> dict[str, object]:
+        started_at = time.monotonic()
+        status_code: int | None = None
+        try:
+            async with httpx.AsyncClient(
+                timeout=httpx.Timeout(_GITHUB_PROXY_PROBE_TIMEOUT),
+                follow_redirects=True,
+                max_redirects=5,
+            ) as client:
+                response = await client.head(base_url)
+                status_code = response.status_code
+                available = response.status_code < 400
+        except httpx.HTTPError:
+            available = False
+        latency_ms = round((time.monotonic() - started_at) * 1000)
+        return {
+            "id": source_id,
+            "url": base_url,
+            "available": available,
+            "latency_ms": latency_ms if available else None,
+            "status_code": status_code,
+        }
+
+    measured = await asyncio.gather(
+        *(probe(source_id, base_url) for source_id, base_url in _GITHUB_PROXY_SOURCES)
+    )
+    return {"sources": measured}
 
 
 @router.post("/install", response_model=MarketInstallResponse)
