@@ -1327,6 +1327,82 @@ def test_study_companion_advanced_settings_surface_entries_are_complete() -> Non
             assert f'data-open-surface="{surface_id}"' in panel_html, panel_id
 
 
+def test_static_knowledge_contribution_settings_drawer_toggles_opt_in() -> None:
+    if shutil.which("node") is None:
+        pytest.skip("node is not installed")
+
+    frontend_dir = Path(__file__).resolve().parents[4] / "frontend" / "plugin-manager"
+    if not (frontend_dir / "node_modules" / "happy-dom").is_dir():
+        pytest.skip("frontend/plugin-manager node_modules with happy-dom is not installed")
+
+    script = r"""
+import { Window } from 'happy-dom';
+import fs from 'node:fs';
+import path from 'node:path';
+
+const source = fs.readFileSync(path.join(process.env.STUDY_COMPANION_STATIC_DIR, 'surface-panels.js'), 'utf8');
+const window = new Window({ url: 'http://testserver/plugin/study_companion/ui/?locale=en' });
+const { document } = window;
+const calls = [];
+
+window.eval(source);
+const root = window.StudyCompanionSurfacePanels.render('knowledge-contribution-settings', {
+  t: (_key, fallback) => fallback,
+  label: () => 'Contribution Settings',
+  callPlugin: async (entryId, args = {}) => {
+    calls.push({ entryId, args });
+    if (entryId === 'study_anonymous_knowledge_preview') {
+      return { opt_in: false, summary: { total: 5, queue_count: 2 } };
+    }
+    if (entryId === 'study_set_knowledge_contribution_opt_in') {
+      return { opt_in: args.opt_in, summary: { total: 6, queue_count: 3 } };
+    }
+    throw new Error(`unexpected entry call: ${entryId}`);
+  },
+});
+document.body.appendChild(root);
+
+for (let attempt = 0; attempt < 20; attempt += 1) {
+  if (calls.some((call) => call.entryId === 'study_anonymous_knowledge_preview')) break;
+  await new Promise((resolve) => window.setTimeout(resolve, 0));
+}
+await new Promise((resolve) => window.setTimeout(resolve, 0));
+
+if (!root.textContent.includes('Disabled') || !root.textContent.includes('5')) {
+  throw new Error(`initial contribution state missing: ${root.textContent}`);
+}
+
+const toggle = root.querySelector('[data-surface-action="knowledge-contribution-toggle"]');
+if (!toggle) {
+  throw new Error(`contribution toggle missing: ${root.outerHTML}`);
+}
+toggle.click();
+for (let attempt = 0; attempt < 20; attempt += 1) {
+  if (calls.some((call) => call.entryId === 'study_set_knowledge_contribution_opt_in')) break;
+  await new Promise((resolve) => window.setTimeout(resolve, 0));
+}
+await new Promise((resolve) => window.setTimeout(resolve, 0));
+
+const toggleCall = calls.find((call) => call.entryId === 'study_set_knowledge_contribution_opt_in');
+if (!toggleCall || toggleCall.args.opt_in !== true) {
+  throw new Error(`toggle call missing opt_in=true: ${JSON.stringify(calls)}`);
+}
+if (!root.textContent.includes('Enabled') || !root.textContent.includes('6')) {
+  throw new Error(`updated contribution state missing: ${root.textContent}`);
+}
+"""
+    completed = subprocess.run(
+        ["node", "--input-type=module", "-e", script],
+        cwd=frontend_dir,
+        env={**os.environ, "STUDY_COMPANION_STATIC_DIR": str(STATIC_DIR)},
+        capture_output=True,
+        text=True,
+        timeout=15,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr or completed.stdout
+
+
 def test_study_companion_brand_variables_stay_in_sync_between_static_and_tsx() -> None:
     style_css = (STATIC_DIR / "style.css").read_text(encoding="utf-8")
     surface_utils = (SURFACES_DIR / "study_surface_utils.ts").read_text(

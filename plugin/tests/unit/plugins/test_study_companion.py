@@ -5507,12 +5507,26 @@ def test_study_companion_i18n_bundles_are_present() -> None:
         "onboarding.md",
         "zh-TW",
     )
+    pt_doc_path, pt_doc_locale = resolve_localized_surface_entry_path(
+        meta,
+        "onboarding.md",
+        "pt",
+    )
+    ru_doc_path, ru_doc_locale = resolve_localized_surface_entry_path(
+        meta,
+        "onboarding.md",
+        "ru",
+    )
     assert zh_doc_path == plugin_dir / "onboarding.md"
     assert zh_doc_locale is None
     assert en_doc_path == plugin_dir / "onboarding.en.md"
     assert en_doc_locale == "en"
     assert zh_tw_doc_path == plugin_dir / "onboarding.zh-TW.md"
     assert zh_tw_doc_locale == "zh-TW"
+    assert pt_doc_path == plugin_dir / "onboarding.en.md"
+    assert pt_doc_locale == "en"
+    assert ru_doc_path == plugin_dir / "onboarding.en.md"
+    assert ru_doc_locale == "en"
     for doc_path in [zh_doc_path, en_doc_path, zh_tw_doc_path]:
         assert doc_path is not None
         doc_text = doc_path.read_text(encoding="utf-8").lstrip()

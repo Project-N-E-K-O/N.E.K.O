@@ -459,6 +459,7 @@ async function loadHostedTsx() {
     const response = await getPluginHostedSurfaceSource(props.pluginId, {
       kind: props.surface.kind,
       id: props.surface.id,
+      locale: String(locale.value),
     })
     if (loadId !== currentLoadId) return
     if (props.surface.mode === 'markdown') {

@@ -425,6 +425,31 @@ def test_validate_plugin_dir_accepts_previous_plugin_ids(tmp_path: Path) -> None
     assert not any("previous_ids is not a recognized" in message for _level, message in issues)
 
 
+def test_validate_plugin_dir_accepts_i18n_ui_surface_title(tmp_path: Path) -> None:
+    plugin_dir = _make_plugin_dir(tmp_path)
+    (plugin_dir / "onboarding.md").write_text("Guide\n", encoding="utf-8")
+    manifest_path = plugin_dir / "plugin.toml"
+    manifest_path.write_text(
+        manifest_path.read_text(encoding="utf-8")
+        + "\n"
+        + "[plugin.ui]\n"
+        + "enabled = true\n"
+        + "\n"
+        + "[[plugin.ui.docs]]\n"
+        + 'id = "onboarding"\n'
+        + 'title = { "$i18n" = "docs.onboarding.title", default = "Onboarding" }\n'
+        + 'entry = "onboarding.md"\n',
+        encoding="utf-8",
+    )
+
+    issues = validate_plugin_dir(plugin_dir)
+
+    assert not any(
+        level == "error" and "[plugin.ui].docs[0].title" in message
+        for level, message in issues
+    )
+
+
 @pytest.mark.parametrize("removed_type", ["script", "extension"])
 def test_validate_plugin_dir_rejects_removed_plugin_types(
     tmp_path: Path,

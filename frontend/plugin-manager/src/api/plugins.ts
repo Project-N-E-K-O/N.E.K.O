@@ -218,6 +218,7 @@ export async function getPluginUiSurfaceInfo(pluginId: string, locale?: string):
 export function getPluginHostedSurfaceSource(pluginId: string, params: {
   kind: PluginUiSurface['kind']
   id: string
+  locale?: string
 }): Promise<{
   plugin_id: string
   kind: string
@@ -235,6 +236,7 @@ export function getPluginHostedSurfaceSource(pluginId: string, params: {
     params: {
       kind: params.kind,
       id: params.id,
+      locale: params.locale,
     },
   })
 }

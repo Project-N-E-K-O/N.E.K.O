@@ -702,4 +702,28 @@ describe('HostedSurfaceFrame automatic startup retry', () => {
       context: nextContext,
     }, '*')
   })
+
+  it('passes the active locale when loading hosted source', async () => {
+    apiMocks.getPluginHostedSurfaceSource.mockResolvedValue({
+      source: 'Localized guide',
+      dependencies: [],
+    })
+    const frame = await mountFrame({
+      ...makeSurface('onboarding'),
+      kind: 'docs',
+      mode: 'markdown',
+      url: undefined,
+    } as PluginUiSurface)
+    await flushPromises()
+
+    expect(apiMocks.getPluginHostedSurfaceSource).toHaveBeenCalledWith(
+      'study_companion',
+      {
+        kind: 'docs',
+        id: 'onboarding',
+        locale: 'zh-CN',
+      },
+    )
+    frame.unmount()
+  })
 })

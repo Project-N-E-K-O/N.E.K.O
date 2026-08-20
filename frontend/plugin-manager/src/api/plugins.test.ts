@@ -72,4 +72,26 @@ describe('plugin hosted UI API', () => {
       expect.objectContaining({ signal: controller.signal }),
     )
   })
+
+  it('passes the requested locale when loading hosted surface source', async () => {
+    getMock.mockResolvedValue({ source: 'Guide' })
+    const { getPluginHostedSurfaceSource } = await import('./plugins')
+
+    await getPluginHostedSurfaceSource('study companion', {
+      kind: 'docs',
+      id: 'onboarding',
+      locale: 'pt',
+    })
+
+    expect(getMock).toHaveBeenCalledWith(
+      '/plugin/study%20companion/hosted-ui/source',
+      {
+        params: {
+          kind: 'docs',
+          id: 'onboarding',
+          locale: 'pt',
+        },
+      },
+    )
+  })
 })
