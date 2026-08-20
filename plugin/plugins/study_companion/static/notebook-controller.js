@@ -323,16 +323,16 @@
     }
 
     async function loadNotes() {
-      noteDetailRequest += 1;
+      const detailRequestAtStart = noteDetailRequest += 1;
       const requestId = notesRequest += 1;
       const payload = await ctx.callPlugin('study_note_list', noteListArgs());
       if (!isValid() || requestId !== notesRequest) return;
       notes = Array.isArray(payload.notes) ? payload.notes : [];
-      if (selectedNote) {
+      if (selectedNote && detailRequestAtStart === noteDetailRequest) {
         selectedNote = notes.find((note) => note.id === selectedNote.id) || null;
       }
       drawList();
-      drawEditor();
+      if (detailRequestAtStart === noteDetailRequest) drawEditor();
       updateSelectionBar();
       setStatus(tf(ctx, 'ui.notebook.note_count', '{count} notes', { count: notes.length }));
     }

@@ -6972,9 +6972,14 @@ const notes = [
   { id: 'note-2', title: 'Second', snippet: 'Second summary', content: 'Second body', updated_at: '2026-08-20T00:00:00Z' },
 ];
 const detailResolvers = new Map();
+const noteListResolvers = [];
+let deferNoteLists = false;
 async function callPlugin(entryId, args = {}) {
   if (entryId === 'study_notebook_list') return { notebooks: [] };
-  if (entryId === 'study_note_list') return { notes };
+  if (entryId === 'study_note_list') {
+    if (!deferNoteLists) return { notes };
+    return await new Promise((resolve) => noteListResolvers.push(resolve));
+  }
   if (entryId === 'study_note_get') {
     return await new Promise((resolve) => detailResolvers.set(args.note_id, resolve));
   }
@@ -7014,6 +7019,18 @@ detailResolvers.get('note-1')({ note: notes[0] });
 await new Promise((resolve) => setTimeout(resolve, 0));
 if (notebook.querySelector('.notebook-editor input')?.value !== 'Second') {
   throw new Error('a detail response survived a note-list refresh');
+}
+
+deferNoteLists = true;
+refreshButton.click();
+await new Promise((resolve) => setTimeout(resolve, 0));
+notebook.querySelectorAll('.notebook-note-row__open')[0].click();
+detailResolvers.get('note-1')({ note: { ...notes[0], content: 'Latest First body' } });
+await new Promise((resolve) => setTimeout(resolve, 0));
+noteListResolvers.shift()({ notes });
+await new Promise((resolve) => setTimeout(resolve, 0));
+if (notebook.querySelector('.notebook-editor__content')?.value !== 'Latest First body') {
+  throw new Error('an older note-list response replaced the latest note detail');
 }
 """
     completed = subprocess.run(
