@@ -92,15 +92,6 @@ class OmniRealtimeClient(_ToolingMixin, _AudioMixin, _TransportMixin, _ResponseM
             hooks behave exactly as they did before it existed.
     """
 
-    # ``close()`` seizes the socket synchronously and then awaits the teardown
-    # through ``asyncio.shield`` (see ``_own_teardown``), so a caller that
-    # stops waiting leaves the closing running to completion instead of
-    # abandoning a half-released connection. Callers use this to decide
-    # whether bounding their wait is safe; an implementation whose close is
-    # a plain coroutine must NOT set it, or a cancelled wait truncates its
-    # cleanup.
-    close_finishes_detached = True
-
     def __init__(
         self,
         base_url,

@@ -125,14 +125,6 @@ logger = get_module_logger("main_logic.core", "Main")
 IDLE_SESSION_RESET_THRESHOLD_SECONDS = 1800
 IDLE_SESSION_RESET_CHECK_INTERVAL_SECONDS = 60
 
-# 关闭一个已退役 session 的等待上限。热切换步骤 2 与 end_session 都持锁调
-# session.close()，过去完全无界，实际上界由 realtime 侧的 websockets
-# close_timeout 隐式决定——那个值从 0.5s 提到 2s 后，这两处的最坏停顿就跟着变长，
-# 说明它们本就不该依赖传输层的参数来封顶。这里显式封顶：超时只放弃「等」，不放弃
-# 「关」（realtime 的 close 走 shield，取消调用方不会中断关闭本身），退役 socket
-# 由后台收尾。取 3s：比 close_timeout=2s 略宽，让正常的慢握手仍能等到。
-SESSION_CLOSE_TIMEOUT_SECONDS = 3.0
-
 # 前端文本会话 start_session 等 session_started 的硬超时（static/app/app-buttons.js
 # 的 setTimeout(..., 15000)）。start_session 去重路径等 in-flight 启动落定后给
 # 本请求补发 ack 时，等待上限绑到这个值：超过前端这个超时再补发 session_started

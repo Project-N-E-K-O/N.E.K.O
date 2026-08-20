@@ -48,7 +48,6 @@ from ._shared import (
     logger,
     IDLE_SESSION_RESET_THRESHOLD_SECONDS,
     IDLE_SESSION_RESET_CHECK_INTERVAL_SECONDS,
-    SESSION_CLOSE_TIMEOUT_SECONDS,
     FRONTEND_START_SESSION_TIMEOUT_SECONDS,
     _HANDSHAKE_OVERRIDE_UNSET,
     _START_LLM_CONCURRENT_ABORTED,
@@ -2542,9 +2541,10 @@ class LifecycleMixin:
                 )
                 # ── 步骤 2：旧 task 已停，安全关闭旧 session ─────────────────────
                 if old_main_session:
-                    await self._close_session_within_budget(
-                        old_main_session, "Final Swap Sequence"
-                    )
+                    try:
+                        await old_main_session.close()
+                    except Exception as e:
+                        logger.error(f"💥 Final Swap Sequence: Error closing old session: {e}")
 
                 _abort_if_passive_claim_retracted("before promote")
 
@@ -2761,45 +2761,6 @@ class LifecycleMixin:
             self.is_hot_swap_imminent = False  # Always reset this flag
             if self.final_swap_task and self.final_swap_task.done():
                 self.final_swap_task = None
-
-    async def _close_session_within_budget(self, session, label: str) -> None:
-        """Close a retired session without letting a slow peer stall the caller.
-
-        Both callers sit on a teardown path other work is blocked behind, so
-        the wait wants a ceiling. Only some closes can safely be given one:
-        abandoning the WAIT is only harmless when the close itself keeps
-        running, and that is a property of the implementation, not of ours to
-        assume. ``close_finishes_detached`` is where an implementation says so
-        — the realtime client seizes its socket synchronously and awaits the
-        teardown behind a shield, so a cancelled waiter leaves the closing
-        intact. An offline client's close is a plain coroutine: cancelling it
-        skips ``self.llm = None`` and the threaded genai client close, leaking
-        the very connection pools it exists to release. Those stay unbounded,
-        exactly as they were before this ceiling existed.
-
-        ``asyncio.timeout``, NOT ``asyncio.wait_for``: wait_for runs the
-        coroutine in a CHILD task, so ``asyncio.current_task()`` inside
-        ``close()`` would stop being the caller's task. The hot-swap sequence
-        reads exactly that to survive Python 3.11 swallowing an external
-        cancel — its pre-promote ``cancelling() > 0`` checkpoint is what stops
-        a zombie swap from overwriting ``self.session``, and moving close()
-        off the swap task's own stack silently disarms it.
-        """
-
-        try:
-            if not getattr(session, "close_finishes_detached", False):
-                await session.close()
-                return
-            async with asyncio.timeout(SESSION_CLOSE_TIMEOUT_SECONDS):
-                await session.close()
-        except asyncio.TimeoutError:
-            logger.warning(
-                "⏱️ %s: close exceeded %.1fs; it finishes detached",
-                label,
-                SESSION_CLOSE_TIMEOUT_SECONDS,
-            )
-        except Exception as e:
-            logger.error(f"💥 {label}: Error closing session: {e}")
 
     async def disconnected_by_server(self, *, expected_session=None):
         if expected_session is not None and expected_session is not self.session:
@@ -3046,10 +3007,10 @@ class LifecycleMixin:
         if main_session_ref:
             try:
                 logger.info("End Session: Closing connection...")
-                await self._close_session_within_budget(
-                    main_session_ref, "End Session"
-                )
+                await main_session_ref.close()
                 logger.info("End Session: Qwen connection closed.")
+            except Exception as e:
+                logger.error(f"💥 End Session: Error during cleanup: {e}")
             finally:
                 if self.session is main_session_ref:
                     self.session = None
