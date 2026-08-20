@@ -80,10 +80,11 @@ async def route(
             match = match_devices(
                 device_hint, devices, api_room_map=api_room_map, device_room_map=device_room_map
             )
+            # 只有设备匹配成功才提交 action 分支；否则回落 control/switch 解析，
+            # 避免设备名以动作动词开头时（如"烘干机温度50度"→误拆"烘干"+"机温度50度"）
+            # 被动作分支抢先导致设备识别失败
             if match.status == "ok" and len(match.devices) == 1:
                 return RouteResult(branch="action", device_hint=device_hint, verb=verb, match=match)
-            # 动作动词已识别但设备未匹配/歧义：仍归 action 分支，由执行层给出明确错误
-            return RouteResult(branch="action", device_hint=device_hint, verb=verb, match=match)
 
     # === 属性/模式控制 ===
     parsed = parse_control_command(command)

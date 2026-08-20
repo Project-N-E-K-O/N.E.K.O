@@ -44,6 +44,28 @@ MOCK_DEVICES = [
         ],
         "actions": [],
     },
+    {
+        "did": "robot-vacuum-1",
+        "name": "扫地机",
+        "model": "roborock.vacuum.a10",
+        "room_name": "客厅",
+        "is_online": True,
+        "properties": [],
+        "actions": [
+            {"siid": 2, "aiid": 1, "name": "Start Sweep"},
+        ],
+    },
+    {
+        "did": "dryer-1",
+        "name": "烘干机",
+        "model": "midea.dryer.d10",
+        "room_name": "阳台",
+        "is_online": True,
+        "properties": [
+            {"siid": 2, "piid": 1, "name": "Temperature", "access": "read_write", "type": "uint8", "value_range": [30, 90, 5]},
+        ],
+        "actions": [],
+    },
 ]
 
 
@@ -83,6 +105,19 @@ async def test_action_branch():
     result = await route("开始扫地", MOCK_DEVICES)
     assert result.branch == "action"
     assert result.verb == "开始"
+
+
+async def test_action_verb_prefix_falls_to_control():
+    # 设备名以动作动词开头："烘干机温度50度" 应走 control（温度=50），
+    # 而不是被动作分支误拆成 verb="烘干" + device="机温度50度"
+    result = await route("烘干机温度50度", MOCK_DEVICES)
+    assert result.branch == "control"
+    assert result.parsed is not None
+    assert result.parsed.prop == "温度"
+    assert result.parsed.value == 50
+    assert result.match is not None
+    assert result.match.status == "ok"
+    assert result.match.devices[0]["did"] == "dryer-1"
 
 
 async def test_control_branch():

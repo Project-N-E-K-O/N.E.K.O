@@ -84,31 +84,31 @@ class MijiaPlugin(NekoPluginBase):
 
                 # 获取设备列表（从缓存，需归属校验防止跨用户泄露）
                 cache_path = self.data_path("devices_cache.json")
-                if cache_path.exists():
-                    try:
-                        cached = await read_json_async(cache_path)
-                        cache_user_id = cached.get('user_id')
-                        current_user_id = self.api.credential.user_id if self.api.credential else None
-                        if not current_user_id or cache_user_id == current_user_id:
-                            devices = cached.get("devices", [])
-                        else:
-                            self.logger.debug(f"设备缓存归属不匹配(u={cache_user_id}→{current_user_id})，跳过")
-                    except Exception:
-                        pass
+                try:
+                    cached = await read_json_async(cache_path)
+                except Exception:
+                    cached = None
+                if cached is not None:
+                    cache_user_id = cached.get('user_id')
+                    current_user_id = self.api.credential.user_id if self.api.credential else None
+                    if not current_user_id or cache_user_id == current_user_id:
+                        devices = cached.get("devices", [])
+                    else:
+                        self.logger.debug(f"设备缓存归属不匹配(u={cache_user_id}→{current_user_id})，跳过")
 
                 # 获取场景列表（从缓存，需归属校验防止跨用户泄露）
                 scenes_cache_path = self.data_path("scenes_cache.json")
-                if scenes_cache_path.exists():
-                    try:
-                        cached = await read_json_async(scenes_cache_path)
-                        cache_user_id = cached.get('user_id')
-                        current_user_id = self.api.credential.user_id if self.api.credential else None
-                        if not current_user_id or cache_user_id == current_user_id:
-                            scenes = cached.get("scenes", [])
-                        else:
-                            self.logger.debug(f"场景缓存归属不匹配(u={cache_user_id}→{current_user_id})，跳过")
-                    except Exception:
-                        pass
+                try:
+                    cached = await read_json_async(scenes_cache_path)
+                except Exception:
+                    cached = None
+                if cached is not None:
+                    cache_user_id = cached.get('user_id')
+                    current_user_id = self.api.credential.user_id if self.api.credential else None
+                    if not current_user_id or cache_user_id == current_user_id:
+                        scenes = cached.get("scenes", [])
+                    else:
+                        self.logger.debug(f"场景缓存归属不匹配(u={cache_user_id}→{current_user_id})，跳过")
             except Exception as e:
                 self.logger.warning(f"获取UI状态失败: {e}")
 
@@ -644,17 +644,18 @@ class MijiaPlugin(NekoPluginBase):
             except Exception:
                 cached = None
 
-        # 旧缓存里的设备别名（按 DID），刷新重建后回填，避免 set_device_alias 的别名丢失
+        current_user_id = self.api.credential.user_id if self.api and self.api.credential else None
+        cache_home_id = cached.get('home_id') if cached is not None else None
+        cache_user_id = cached.get('user_id') if cached is not None else None
+
+        # 旧缓存里的设备别名（按 DID）：仅在缓存归属严格匹配当前用户时提取，
+        # 否则跨账号共享 DID 会把上一账号的自定义别名泄露并持久化到本账号
         old_aliases: dict[str, str] = {}
-        if cached is not None:
+        if cached is not None and (not current_user_id or cache_user_id == current_user_id):
             for d in cached.get("devices", []) or []:
                 did = d.get("did")
                 if did and d.get("alias"):
                     old_aliases[did] = d["alias"]
-
-        current_user_id = self.api.credential.user_id if self.api and self.api.credential else None
-        cache_home_id = cached.get('home_id') if cached is not None else None
-        cache_user_id = cached.get('user_id') if cached is not None else None
 
         # schema 不匹配：归属校验通过则保留旧 home_id，刷新仍用同一家庭，避免切错
         if cached is not None and cached.get("schema_version") != _DEVICES_CACHE_SCHEMA:
@@ -944,6 +945,14 @@ class MijiaPlugin(NekoPluginBase):
             data = await read_json_async(cache_path)
         except FileNotFoundError:
             return Err(SdkError("设备缓存不存在，请先获取设备列表"))
+        except Exception as e:
+            return Err(SdkError(f"读取设备缓存失败: {e}"))
+
+        # 归属校验：别名只能写入当前用户的缓存，防止跨账号泄露
+        current_user_id = self.api.credential.user_id if self.api and self.api.credential else None
+        cache_user_id = data.get('user_id') if isinstance(data, dict) else None
+        if current_user_id and cache_user_id and cache_user_id != current_user_id:
+            return Err(SdkError("设备缓存归属不匹配，请先刷新设备列表"))
 
         try:
             devices = data.get("devices", [])
@@ -981,6 +990,14 @@ class MijiaPlugin(NekoPluginBase):
             data = await read_json_async(cache_path)
         except FileNotFoundError:
             return Ok({"success": True, "aliases": {}, "message": "无缓存数据"})
+        except Exception as e:
+            return Err(SdkError(f"读取设备缓存失败: {e}"))
+
+        # 归属校验：只读当前用户的别名，防止跨账号泄露
+        current_user_id = self.api.credential.user_id if self.api and self.api.credential else None
+        cache_user_id = data.get('user_id') if isinstance(data, dict) else None
+        if current_user_id and cache_user_id and cache_user_id != current_user_id:
+            return Err(SdkError("设备缓存归属不匹配，请先刷新设备列表"))
 
         try:
             devices = data.get("devices", [])
@@ -1093,7 +1110,11 @@ class MijiaPlugin(NekoPluginBase):
                     # call_device_action 返回 False 表示动作被设备/网关拒绝，不能报成功
                     if act_result:
                         return Ok({"success": True, "message": f"✅ 已对'{display_name}'执行'{result.verb}'操作", "device": display_name, "action": result.verb, "result": act_result})
-                    return Err(SdkError(f"对'{display_name}'执行'{result.verb}'操作失败（动作被拒绝）"))
+                    return Err(SdkError(self.i18n.t(
+                        "switch.action_rejected",
+                        default="对'{name}'执行'{action}'操作失败（动作被拒绝）",
+                        name=display_name, action=result.verb,
+                    )))
                 except TokenExpiredError:
                     return Err(SdkError("凭据已过期，请重新登录"))
                 except Exception as e:
@@ -1241,12 +1262,16 @@ class MijiaPlugin(NekoPluginBase):
                                 post = chk[0].get("value") if chk else None
                             except Exception:
                                 post = None
-                            # 只有观察到真实变化才确认唤醒：写入前不可读（cur 为 None）或
-                            # 值实际发生变更。写回当前值（无变化）无法区分"已开机"与
-                            # "未唤醒"（读到的可能是云端缓存旧值）→ 返回未确认，不报假成功
-                            if post is not None and post == target and (cur is None or cur != target):
+                            # 只有观察到"值实际从可读的旧值变更到 target"才确认唤醒。
+                            # 写前读不到值（cur 为 None）时无法用输入源回读确认真实电源
+                            # 状态 → 不报开机成功（返回未确认），避免云端缓存回显造成假成功
+                            if post is not None and post == target and cur is not None and cur != target:
                                 return Ok({"success": True, "message": f"✅ 已{action_text}'{display_name}'", "device": display_name, "action": action_text, "value": target})
-                            return Err(SdkError(f"已向'{display_name}'发送开机指令，但无法确认是否已唤醒"))
+                            return Err(SdkError(self.i18n.t(
+                                "switch.wake_unconfirmed",
+                                default="已向'{name}'发送开机指令，但无法确认是否已唤醒",
+                                name=display_name,
+                            )))
                     except TokenExpiredError:
                         return Err(SdkError("凭据已过期，请重新登录"))
                     except Exception:
@@ -1338,10 +1363,11 @@ class MijiaPlugin(NekoPluginBase):
                     f"开关回读校验失败: device={display_name}, siid={siid}, piid={piid}, "
                     f"期望={value}, 实际={actual}（写入未生效）"
                 )
-                return Err(SdkError(
-                    f"{action_text}'{display_name}'失败：设备未响应电源控制"
-                    f"（{display_name} 可能不支持云端开关）"
-                ))
+                return Err(SdkError(self.i18n.t(
+                    "switch.no_response",
+                    default="{action}'{name}'失败：设备未响应电源控制（{name} 可能不支持云端开关）",
+                    action=action_text, name=display_name,
+                )))
             return Ok({"success": True, "message": f"✅ 已{action_text}'{display_name}'", "device": display_name, "action": action_text})
         except TokenExpiredError:
             return Err(SdkError("凭据已过期，请重新登录"))
@@ -1692,15 +1718,22 @@ class MijiaPlugin(NekoPluginBase):
         cache_path = self.data_path("scenes_cache.json")
         scenes = []
         cached_home_id = None
+        cached_user_id = None
         try:
             cached = await read_json_async(cache_path)
             scenes = cached.get('scenes', [])
             cached_home_id = cached.get('home_id')
+            cached_user_id = cached.get('user_id')
         except Exception:
             pass
 
         if not scenes:
             return Err(SdkError("场景列表为空，请先获取场景列表"))
+
+        # 归属校验：场景缓存必须属于当前账号（user_id 严格匹配）
+        current_user_id = self.api.credential.user_id if self.api else None
+        if current_user_id and cached_user_id and cached_user_id != current_user_id:
+            return Err(SdkError("场景缓存归属不匹配，请先刷新场景列表"))
 
         # 归属校验：缓存的 home_id 必须属于当前账号
         if cached_home_id and self.api:
