@@ -363,13 +363,10 @@ Object.assign(AvatarButtonMixin.methods, {
             if (config.iconOff && config.iconOn) {
                 const imgContainer = document.createElement('div');
                 Object.assign(imgContainer.style, {
-                    position: 'relative',
-                    width: '48px',
-                    height: '48px',
+                    position: 'absolute',
+                    inset: '-1px',
                     boxSizing: 'border-box',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center'
+                    pointerEvents: 'none'
                 });
 
                 imgOff = document.createElement('img');
@@ -377,18 +374,15 @@ Object.assign(AvatarButtonMixin.methods, {
                 imgOff.alt = config.title;
                 Object.assign(imgOff.style, {
                     position: 'absolute',
-                    left: '50%',
-                    top: '50%',
-                    width: '48px',
-                    height: '48px',
+                    inset: '0',
+                    width: '100%',
+                    height: '100%',
                     objectFit: 'contain',
                     display: 'block',
                     pointerEvents: 'none',
                     opacity: '0.75',
                     transition: 'opacity 0.3s ease',
-                    transform: 'translate(-50%, -50%)',
-                    transformOrigin: 'center center',
-                    imageRendering: config.imageRendering || 'crisp-edges'
+                    imageRendering: config.imageRendering || 'auto'
                 });
 
                 imgOn = document.createElement('img');
@@ -396,18 +390,15 @@ Object.assign(AvatarButtonMixin.methods, {
                 imgOn.alt = config.title;
                 Object.assign(imgOn.style, {
                     position: 'absolute',
-                    left: '50%',
-                    top: '50%',
-                    width: '48px',
-                    height: '48px',
+                    inset: '0',
+                    width: '100%',
+                    height: '100%',
                     objectFit: 'contain',
                     display: 'block',
                     pointerEvents: 'none',
                     opacity: '0',
                     transition: 'opacity 0.3s ease',
-                    transform: 'translate(-50%, -50%)',
-                    transformOrigin: 'center center',
-                    imageRendering: config.imageRendering || 'crisp-edges'
+                    imageRendering: config.imageRendering || 'auto'
                 });
 
                 imgContainer.appendChild(imgOff);
@@ -422,6 +413,7 @@ Object.assign(AvatarButtonMixin.methods, {
                 width: '48px',
                 height: '48px',
                 boxSizing: 'border-box',
+                position: 'relative',
                 borderRadius: '50%',
                 background: 'var(--neko-btn-bg, rgba(255, 255, 255, 0.65))',
                 backdropFilter: 'saturate(180%) blur(20px)',
