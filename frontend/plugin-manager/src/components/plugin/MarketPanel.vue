@@ -1092,6 +1092,7 @@ async function handleInstall(plugin: MarketWorkbenchItem) {
       return
     }
 
+    installingId.value = plugin.id
     if (isGithubReleaseDownloadUrl(payload.package_url)) {
       try {
         await ensureAutoSource()
@@ -1100,7 +1101,6 @@ async function handleInstall(plugin: MarketWorkbenchItem) {
       }
     }
     packageUrl = resolveGithubDownloadUrl(payload.package_url)
-    installingId.value = plugin.id
     const res = await fetchBridge('/market/install', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -1177,6 +1177,7 @@ async function handleUpgrade(plugin: MarketWorkbenchItem) {
       return
     }
 
+    upgradingId.value = plugin.id
     if (isGithubReleaseDownloadUrl(payload.package_url)) {
       try {
         await ensureAutoSource()
@@ -1185,7 +1186,6 @@ async function handleUpgrade(plugin: MarketWorkbenchItem) {
       }
     }
     const packageUrl = resolveGithubDownloadUrl(payload.package_url)
-    upgradingId.value = plugin.id
     const res = await fetchBridge('/market/install', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
