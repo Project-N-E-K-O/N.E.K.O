@@ -101,12 +101,16 @@ class OwnerVoiceRuntimeRegistry:
             if self._closed:
                 raise RuntimeError("Owner voice runtime registry is closed")
             if manager in self._managers:
-                if manager not in self._attach_pending:
-                    return True
                 activation = self._activation
+                needs_attach = manager in self._attach_pending or (
+                    activation is not None and manager in self._detach_pending
+                )
+                if not needs_attach:
+                    return True
                 if activation is None:
                     self._attach_pending.discard(manager)
                     return True
+                self._detach_pending.pop(manager, None)
                 if await self._attach_manager(manager, activation):
                     self._attach_pending.discard(manager)
                     return True
@@ -128,6 +132,7 @@ class OwnerVoiceRuntimeRegistry:
                     self._restore_pending.discard(manager)
                 activation = self._activation
                 if activation is not None:
+                    self._detach_pending.pop(manager, None)
                     if not await self._attach_manager(manager, activation):
                         self._attach_pending.add(manager)
                         self._ensure_attach_watchdog()

@@ -171,6 +171,41 @@ async def test_registration_attachment_failure_retries_current_activation() -> N
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_reregistration_invalidates_stale_detach_before_attach_retry() -> None:
+    registry = OwnerVoiceRuntimeRegistry(
+        enforce=True,
+        restore_retry_interval_seconds=0.01,
+        restore_retry_timeout_seconds=1.0,
+    )
+    profile = _profile("profile")
+    try:
+        assert await registry.activate(profile, "generation")
+    finally:
+        profile.close()
+    manager = _Manager()
+    assert await registry.register_manager(manager)
+    manager.verifier_outcomes.extend([False, False, True])
+
+    await registry.unregister_manager(manager)
+    assert manager in registry._detach_pending  # type: ignore[attr-defined]
+    calls_before_registration = len(manager.verifier_calls)
+
+    assert not await registry.register_manager(manager)
+    assert manager not in registry._detach_pending  # type: ignore[attr-defined]
+    assert manager in registry._attach_pending  # type: ignore[attr-defined]
+    await _wait_until(
+        lambda: manager not in registry._attach_pending  # type: ignore[attr-defined]
+    )
+
+    registration_calls = manager.verifier_calls[calls_before_registration:]
+    assert len(registration_calls) == 2
+    assert all(factory is not None for factory, _generation in registration_calls)
+    assert all(generation == "generation" for _factory, generation in registration_calls)
+    await registry.close()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_failed_activation_rolls_changed_managers_back() -> None:
     registry = OwnerVoiceRuntimeRegistry(enforce=False)
     managers = [_Manager(), _Manager()]

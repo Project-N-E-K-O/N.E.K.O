@@ -440,6 +440,26 @@ def test_filter_rejects_oversized_json_before_parsing(
 
 
 @pytest.mark.unit
+def test_filter_accepts_json_body_at_size_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = _fake_service()
+    client = _client(monkeypatch, service)
+    prefix = b'{"enabled":true,"pad":"'
+    suffix = b'"}'
+    padding = b"x" * (MAX_FILTER_JSON_BYTES - len(prefix) - len(suffix))
+
+    response = client.put(
+        f"{API_ROOT}/filter",
+        content=prefix + padding + suffix,
+        headers={"Content-Type": "application/json"},
+    )
+
+    assert response.status_code == 200
+    service.set_filter.assert_awaited_once_with(True)
+
+
+@pytest.mark.unit
 def test_filter_rejects_invalid_header_auth_before_reading_body(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
