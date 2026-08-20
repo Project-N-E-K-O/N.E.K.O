@@ -18,6 +18,7 @@
     "plugin.name":  "학습 컴패니언",
     "plugin.description":  "OCR로 학습 자료를 읽고 설정된 LLM으로 개념을 설명하는 학습 보조 플러그인입니다.",
     "plugin.short_description":  "학습 세션용 OCR 및 개념 설명 도우미.",
+    "docs.onboarding.title":  "학습 컴패니언 온보딩",
     "entries.open_ui.name":  "학습 컴패니언 UI 열기",
     "entries.open_ui.description":  "study_companion 패널 페이지 경로를 반환합니다.",
     "entries.status.name":  "학습 컴패니언 상태",

@@ -117,7 +117,7 @@ expose_legacy_static_panel = false
 
 [[plugin.ui.docs]]
 id = "onboarding"
-title = "Study Companion Onboarding"
+title = { "$i18n" = "docs.onboarding.title", default = "Study Companion Onboarding" }
 entry = "onboarding.md"
 permissions = ["state:read"]
 

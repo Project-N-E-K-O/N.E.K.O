@@ -18,6 +18,7 @@
     "plugin.name":  "貓娘伴學",
     "plugin.description":  "透過 OCR 讀取學習內容，並使用已設定的 LLM 解釋概念的伴學外掛。",
     "plugin.short_description":  "用於學習情境的 OCR 與概念解釋助手。",
+    "docs.onboarding.title":  "貓娘伴學入門",
     "entries.open_ui.name":  "開啟伴學介面",
     "entries.open_ui.description":  "回傳 study_companion 面板頁面的存取路徑。",
     "entries.status.name":  "伴學狀態",

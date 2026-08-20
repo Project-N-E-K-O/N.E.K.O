@@ -18,6 +18,7 @@
     "plugin.name":  "Study Companion",
     "plugin.description":  "Учебный помощник: читает материалы через OCR и объясняет понятия с помощью настроенной LLM.",
     "plugin.short_description":  "OCR и объяснение понятий для учебных сессий.",
+    "docs.onboarding.title":  "Введение в Study Companion",
     "entries.open_ui.name":  "Открыть интерфейс Study Companion",
     "entries.open_ui.description":  "Вернуть путь к странице панели study_companion.",
     "entries.status.name":  "Статус Study Companion",

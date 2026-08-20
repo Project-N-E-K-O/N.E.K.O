@@ -60,7 +60,10 @@ except ModuleNotFoundError:  # pragma: no cover - Python < 3.11
 
 from tests.fake_clock import patch_module_clock
 
-from plugin.core.ui_manifest import normalize_plugin_ui_manifest
+from plugin.core.ui_manifest import (
+    normalize_plugin_ui_manifest,
+    resolve_localized_surface_entry_path,
+)
 from plugin.plugins import study_companion as study_companion_module
 from plugin.plugins.study_companion import StudyCompanionPlugin
 from plugin.plugins.study_companion._event_bus import StudyEvent
@@ -5416,6 +5419,7 @@ def test_study_companion_i18n_bundles_are_present() -> None:
         assert "status.mode.teaching" in bundle
         assert "ui.status.mode_switching" in bundle
         assert "ui.error.mode_switch_failed" in bundle
+        assert "docs.onboarding.title" in bundle
         assert "entries.knowledge_map.name" in bundle
         assert "entries.set_knowledge_contribution_opt_in.name" in bundle
         assert "entries.export_notes.name" in bundle
@@ -5433,6 +5437,8 @@ def test_study_companion_i18n_bundles_are_present() -> None:
     assert bundles["ja"]["entries.open_ui.name"] != en_bundle["entries.open_ui.name"]
     assert bundles["zh-CN"]["ui.profile.stage.cross_stage"] == "跨学段"
     assert bundles["en"]["ui.profile.stage.cross_stage"] == "Cross-stage"
+    assert bundles["zh-CN"]["docs.onboarding.title"] == "猫娘伴学入门"
+    assert bundles["en"]["docs.onboarding.title"] == "Study Companion Onboarding"
     assert (
         bundles["ja"]["entries.download_rapidocr_models.description"]
         != en_bundle["entries.download_rapidocr_models.description"]
@@ -5448,17 +5454,31 @@ def test_study_companion_i18n_bundles_are_present() -> None:
         "plugin_ui": plugin_ui,
         "i18n": config["plugin"]["i18n"],
     }
-    surfaces, warnings = _build_surfaces_sync("study_companion", meta)
+    surfaces, warnings = _build_surfaces_sync("study_companion", meta, locale="en")
+    zh_surfaces, zh_warnings = _build_surfaces_sync(
+        "study_companion",
+        meta,
+        locale="zh-CN",
+    )
     actions = _build_plugin_list_actions_from_meta("study_companion", meta)
     assert warnings == []
+    assert zh_warnings == []
     assert plugin_ui["expose_legacy_static_panel"] is False
     assert not any(surface["kind"] == "panel" for surface in surfaces)
-    assert any(
-        surface["id"] == "onboarding"
-        and surface["kind"] == "docs"
-        and surface["available"] is True
+    onboarding_surface = next(
+        surface
         for surface in surfaces
+        if surface["id"] == "onboarding" and surface["kind"] == "docs"
     )
+    zh_onboarding_surface = next(
+        surface
+        for surface in zh_surfaces
+        if surface["id"] == "onboarding" and surface["kind"] == "docs"
+    )
+    assert onboarding_surface["available"] is True
+    assert onboarding_surface["title"] == bundles["en"]["docs.onboarding.title"]
+    assert zh_onboarding_surface["available"] is True
+    assert zh_onboarding_surface["title"] == bundles["zh-CN"]["docs.onboarding.title"]
     assert actions == [
         {
             "id": "open_ui",
@@ -5472,6 +5492,34 @@ def test_study_companion_i18n_bundles_are_present() -> None:
             "target": "/plugins/study_companion?tab=guide",
         },
     ]
+    zh_doc_path, zh_doc_locale = resolve_localized_surface_entry_path(
+        meta,
+        "onboarding.md",
+        "zh-CN",
+    )
+    en_doc_path, en_doc_locale = resolve_localized_surface_entry_path(
+        meta,
+        "onboarding.md",
+        "en",
+    )
+    zh_tw_doc_path, zh_tw_doc_locale = resolve_localized_surface_entry_path(
+        meta,
+        "onboarding.md",
+        "zh-TW",
+    )
+    assert zh_doc_path == plugin_dir / "onboarding.md"
+    assert zh_doc_locale is None
+    assert en_doc_path == plugin_dir / "onboarding.en.md"
+    assert en_doc_locale == "en"
+    assert zh_tw_doc_path == plugin_dir / "onboarding.zh-TW.md"
+    assert zh_tw_doc_locale == "zh-TW"
+    for doc_path in [zh_doc_path, en_doc_path, zh_tw_doc_path]:
+        assert doc_path is not None
+        doc_text = doc_path.read_text(encoding="utf-8").lstrip()
+        assert not doc_text.startswith("# ")
+    assert "选择学习模式" in zh_doc_path.read_text(encoding="utf-8")
+    assert "Choose A Mode" in en_doc_path.read_text(encoding="utf-8")
+    assert "選擇學習模式" in zh_tw_doc_path.read_text(encoding="utf-8")
 
     index_html = (plugin_dir / "static" / "index.html").read_text(encoding="utf-8")
     main_js = (plugin_dir / "static" / "main.js").read_text(encoding="utf-8")

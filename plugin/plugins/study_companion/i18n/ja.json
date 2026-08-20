@@ -18,6 +18,7 @@
     "plugin.name":  "学習コンパニオン",
     "plugin.description":  "OCR で学習内容を読み取り、設定済みの LLM で概念を説明する学習支援プラグインです。",
     "plugin.short_description":  "学習向けの OCR と概念説明アシスタント。",
+    "docs.onboarding.title":  "学習コンパニオン入門",
     "entries.open_ui.name":  "学習画面を開く",
     "entries.open_ui.description":  "study_companion のパネルページへのパスを返します。",
     "entries.status.name":  "学習コンパニオンの状態",

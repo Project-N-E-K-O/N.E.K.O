@@ -18,6 +18,7 @@
     "plugin.name":  "Study Companion",
     "plugin.description":  "Compañero de estudio que lee material con OCR y explica conceptos usando el LLM configurado.",
     "plugin.short_description":  "OCR y explicación de conceptos para sesiones de estudio.",
+    "docs.onboarding.title":  "Introducción a Study Companion",
     "entries.open_ui.name":  "Abrir interfaz de Study Companion",
     "entries.open_ui.description":  "Devuelve la ruta de la página de panel de study_companion.",
     "entries.status.name":  "Estado de Study Companion",
