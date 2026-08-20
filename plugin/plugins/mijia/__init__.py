@@ -1194,25 +1194,27 @@ class MijiaPlugin(NekoPluginBase):
                     return Err(SdkError("凭据已过期，请重新登录"))
                 except Exception:
                     cur = None
-                # 电视在线时写回当前输入源（no-op 唤醒）；离线/读失败时写 HDMI 1（4），
+                # 电视在线时写回当前输入源；离线/读失败时写 HDMI 1（4），
                 # 不在列表则用列表第一个值
                 target = cur if cur in values else (4 if 4 in values else (values[0] if values else None))
                 if target is not None:
                     try:
                         ok = await self.api.control_device(did, selector["siid"], selector["piid"], target)
                         if ok:
-                            # 写入成功 ≠ 真机唤醒：回读确认输入源值实际变更为 target
-                            # 才算开机；否则继续回落尝试布尔电源属性（与开关属性同款校验）
+                            post = None
                             try:
                                 chk = await self.api.get_device_properties(
                                     [{"did": did, "siid": selector["siid"], "piid": selector["piid"]}]
                                 )
-                                actual = chk[0].get("value") if chk else None
+                                post = chk[0].get("value") if chk else None
                             except Exception:
-                                actual = None
-                            if actual is not None and actual == target:
+                                post = None
+                            # 只有观察到真实变化才确认唤醒：写入前不可读（cur 为 None）或
+                            # 值实际发生变更。写回当前值（无变化）无法区分"已开机"与
+                            # "未唤醒"（读到的可能是云端缓存旧值）→ 返回未确认，不报假成功
+                            if post is not None and post == target and (cur is None or cur != target):
                                 return Ok({"success": True, "message": f"✅ 已{action_text}'{display_name}'", "device": display_name, "action": action_text, "value": target})
-                            self.logger.info("输入源写入未确认生效，回落布尔电源属性")
+                            return Ok({"success": True, "confirmed": False, "message": f"已向'{display_name}'发送开机指令，无法确认是否已唤醒", "device": display_name, "action": action_text, "value": target})
                     except TokenExpiredError:
                         return Err(SdkError("凭据已过期，请重新登录"))
                     except Exception:
