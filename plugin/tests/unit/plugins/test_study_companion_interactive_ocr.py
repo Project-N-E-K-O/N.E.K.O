@@ -426,24 +426,24 @@ def test_ocr_entry_and_static_ui_expose_interactive_timeout_contract() -> None:
     ]
     canceled = run_ocr[
         run_ocr.index("if (data.status === 'canceled')") : run_ocr.index(
-            "const fallbackMessage = data.capture_mode_used === 'fullscreen'"
+            "const notice = data.capture_mode_used === 'fullscreen'"
         )
     ]
     assert "return data;" in canceled
     assert "studyInput.value" not in canceled
     assert "setReply(" not in canceled
     assert "studyInput.value = data.text;" in run_ocr
-    assert "const ocrStatus = data.status || 'unknown';" in run_ocr
-    assert "['ok', 'empty'].includes(ocrStatus)" in run_ocr
-    assert "data.ocr_fallback_notice = fallbackMessage;" in run_ocr
-    assert "catch (_statusError)" in run_ocr
-    assert run_ocr.index("await refreshStatus({ updateReply: false });") < run_ocr.index(
-        "setStatus(fallbackMessage || tf('ui.status.ocr_result'"
+    assert "const status = data.status || 'unknown';" in run_ocr
+    assert "['ok', 'empty'].includes(status)" in run_ocr
+    assert "data.notice = notice;" in run_ocr
+    assert "if (!notice) throw error;" in run_ocr
+    assert run_ocr.index("await refreshStatus({ updateReply: false }).catch") < run_ocr.index(
+        "setStatus(notice || tf('ui.status.ocr_result'"
     )
-    assert "{ status: ocrStatus }" in run_ocr
-    assert "const leadingNotice = String(options.leadingNotice || '').trim();" in explain_text
-    assert "[leadingNotice, pendingReply].filter(Boolean).join('\\n\\n')" in explain_text
-    assert "await explainText({ leadingNotice: ocrData?.ocr_fallback_notice });" in coach_action
+    assert "{ status }" in run_ocr
+    assert "const notice = (options.notice || '').trim();" in explain_text
+    assert "setReply(notice ? `${notice}\\n\\n${pending}` : pending);" in explain_text
+    assert "await explainText({ notice: ocrData?.notice });" in coach_action
     assert "generateQuestion()" not in run_ocr
 
 

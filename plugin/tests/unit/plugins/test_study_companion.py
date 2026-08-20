@@ -6703,10 +6703,8 @@ def test_study_companion_static_ui_supports_image_paste_contract() -> None:
     assert "answerInput.addEventListener('paste', createImagePasteHandler({" in source
     assert "args.vision_image_base64 = studyInputImageValue;" in source
     assert "t('ui.status.solving_problem'" in source
-    assert (
-        "setReply(studyInputImageValue ? t('ui.status.solving_problem', 'Solving problem...') : t('ui.status.explaining', 'Explaining...'));"
-        in source
-    )
+    assert "const pending = studyInputImageValue" in source
+    assert "setReply(notice ? `${notice}\\n\\n${pending}` : pending);" in source
     assert "function scrollReplyIntoView()" in source
     assert "replyPanel.scrollIntoView({ block: 'start', behavior: 'smooth' });" in source
     assert "scrollReplyIntoView();" in source

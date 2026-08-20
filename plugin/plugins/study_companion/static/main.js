@@ -1969,27 +1969,17 @@ async function runOcr(options = {}) {
     setStatus(t('ui.status.ocr_canceled', 'Screen selection canceled'));
     return data;
   }
-  const ocrStatus = data.status || 'unknown';
-  const fallbackMessage = data.capture_mode_used === 'fullscreen' && ['ok', 'empty'].includes(ocrStatus)
-    ? interactiveOcrFallbackMessage(data.interactive_fallback_reason)
-    : '';
+  const status = data.status || 'unknown';
+  const notice = data.capture_mode_used === 'fullscreen' && ['ok', 'empty'].includes(status) ? interactiveOcrFallbackMessage(data.interactive_fallback_reason) : '';
   if (data.text) {
     studyInput.value = data.text;
   } else if (options.clearWhenEmpty && studyInput) {
     studyInput.value = '';
   }
   setReply(data.text || data.diagnostic || data.summary || '');
-  if (fallbackMessage) {
-    data.ocr_fallback_notice = fallbackMessage;
-    try {
-      await refreshStatus({ updateReply: false });
-    } catch (_statusError) {
-      // Preserve the successful OCR fallback notice even if the status poll fails.
-    }
-  } else {
-    await refreshStatus({ updateReply: false });
-  }
-  setStatus(fallbackMessage || tf('ui.status.ocr_result', 'OCR {status}', { status: ocrStatus }));
+  if (notice) data.notice = notice;
+  await refreshStatus({ updateReply: false }).catch((error) => { if (!notice) throw error; });
+  setStatus(notice || tf('ui.status.ocr_result', 'OCR {status}', { status }));
   return data;
 }
 
@@ -1998,14 +1988,10 @@ async function explainText(options = {}) {
   if (!text && !studyInputImageValue) {
     throw new Error(t('ui.error.missing_study_input', 'Please enter text or paste an image first.'));
   }
-  const leadingNotice = String(options.leadingNotice || '').trim();
-  const pendingReply = studyInputImageValue
-    ? t('ui.status.solving_problem', 'Solving problem...')
-    : t('ui.status.explaining', 'Explaining...');
-  setStatus(studyInputImageValue
-    ? t('ui.status.solving_problem', 'Solving problem...')
-    : t('ui.status.explaining', 'Explaining...'));
-  setReply([leadingNotice, pendingReply].filter(Boolean).join('\n\n'));
+  const notice = (options.notice || '').trim();
+  const pending = studyInputImageValue ? t('ui.status.solving_problem', 'Solving problem...') : t('ui.status.explaining', 'Explaining...');
+  setStatus(pending);
+  setReply(notice ? `${notice}\n\n${pending}` : pending);
   scrollReplyIntoView();
   const args = { text };
   if (studyInputImageValue) {
@@ -2016,7 +2002,7 @@ async function explainText(options = {}) {
     ? t('ui.status.reply_ready_fallback', 'Reply ready (fallback)')
     : t('ui.status.reply_ready', 'Reply ready'));
   setReply([
-    leadingNotice,
+    notice,
     data.degraded
       ? formatTutorDiagnostic(data.diagnostic)
       : (data.reply || data.summary || data.transition_phrase || ''),
@@ -2237,7 +2223,7 @@ async function handleNekoCoachAction(action) {
   if (normalized === 'explain-current') {
     const ocrData = await runOcr({ clearWhenEmpty: true });
     if (String(ocrData?.text || '').trim() || studyInputImageValue) {
-      await explainText({ leadingNotice: ocrData?.ocr_fallback_notice });
+      await explainText({ notice: ocrData?.notice });
     }
     return;
   }
