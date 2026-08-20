@@ -4578,13 +4578,15 @@ def test_timeindexed_dispose_engine_also_clears_sql_chat_engine_cache(monkeypatc
         manager.engines = {"测试角色": primary_engine}
         manager.db_paths = {"测试角色": "D:/tmp/test-time-indexed.db"}
 
-        manager.dispose_engine("测试角色")
+        released = manager.dispose_engine("测试角色")
 
+        assert released is True
         assert primary_engine.dispose_calls == 1
         assert cached_engine.dispose_calls == 1
         assert "测试角色" not in manager.engines
         assert "测试角色" not in manager.db_paths
         assert connection_string not in SQLChatMessageHistory._engine_cache
+        assert manager.dispose_engine("不存在角色") is False
     finally:
         SQLChatMessageHistory._engine_cache.clear()
         SQLChatMessageHistory._engine_cache.update(original_cache)

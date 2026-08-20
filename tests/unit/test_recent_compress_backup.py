@@ -46,8 +46,11 @@ async def test_release_character_drains_old_identity_review_and_backup_tasks():
     memory_server.review.compress_backup_tasks[name] = backup_task
     memory_server.review.compress_backup_task_generations[name] = ("old", 0)
     fake_time_manager = MagicMock()
+    fake_time_manager.dispose_engine.return_value = False
 
-    with patch.object(memory_server.runtime, "time_manager", fake_time_manager):
+    with patch.object(memory_server.runtime, "time_manager", fake_time_manager), patch.object(
+        memory_server.runtime, "_deferred_time_managers", [],
+    ):
         result = await memory_server.runtime.release_character_resources(
             name,
             derived_task_claim_token="drain-claim",
@@ -68,6 +71,76 @@ async def test_release_character_drains_old_identity_review_and_backup_tasks():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_release_character_disposes_current_and_deferred_time_managers_once():
+    """A hot-reload generation must not retain the character's SQLite handle."""
+    from app import memory_server
+
+    name = "热重载后删除角色"
+    current_manager = MagicMock()
+    current_manager.dispose_engine.return_value = False
+    old_manager = MagicMock()
+    old_manager.dispose_engine.return_value = True
+    other_old_manager = MagicMock()
+    other_old_manager.dispose_engine.return_value = False
+    deferred = [old_manager, current_manager, old_manager, other_old_manager]
+
+    with patch.object(memory_server.runtime, "time_manager", current_manager), patch.object(
+        memory_server.runtime, "_deferred_time_managers", deferred,
+    ):
+        result = await memory_server.runtime.release_character_resources(
+            name,
+            derived_task_claim_token="cross-generation-claim",
+            derived_task_claim_generation=0,
+        )
+
+        assert memory_server.runtime._deferred_time_managers == deferred
+
+    assert result["status"] == "success"
+    current_manager.dispose_engine.assert_called_once_with(name)
+    old_manager.dispose_engine.assert_called_once_with(name)
+    other_old_manager.dispose_engine.assert_called_once_with(name)
+    memory_server.review._retired_derived_task_names.discard(name)
+
+
+@pytest.mark.unit
+def test_cross_generation_release_closes_real_sqlite_pool(tmp_path):
+    """The deferred generation must stop holding the database file on Windows."""
+    from sqlalchemy import create_engine, text
+
+    from app import memory_server
+    from memory.timeindex import TimeIndexedMemory
+
+    name = "真实连接池角色"
+    db_path = tmp_path / "time_indexed.db"
+    engine = create_engine(f"sqlite:///{db_path.as_posix()}")
+    with engine.begin() as connection:
+        connection.execute(text("CREATE TABLE probe (id INTEGER PRIMARY KEY)"))
+
+    current_manager = TimeIndexedMemory(recent_history_manager=None)
+    old_manager = TimeIndexedMemory(recent_history_manager=None)
+    old_manager.engines[name] = engine
+    old_manager.db_paths[name] = str(db_path)
+    deferred = [old_manager]
+
+    with patch.object(memory_server.runtime, "time_manager", current_manager), patch.object(
+        memory_server.runtime, "_deferred_time_managers", deferred,
+    ):
+        scanned_count, released_count = (
+            memory_server.runtime._dispose_character_engines_across_generations(name)
+        )
+
+        assert memory_server.runtime._deferred_time_managers == deferred
+
+    assert scanned_count == 2
+    assert released_count == 1
+    assert name not in old_manager.engines
+    assert name not in old_manager.db_paths
+    db_path.unlink()
+    assert not db_path.exists()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_release_failure_restores_derived_task_admission():
     """A failed resource release must not permanently retire an active name."""
     from app import memory_server
@@ -77,8 +150,12 @@ async def test_release_failure_restores_derived_task_admission():
     memory_server.review._publication_held_derived_task_names.discard(name)
     fake_time_manager = MagicMock()
     fake_time_manager.dispose_engine.side_effect = OSError("busy")
+    deferred_manager = MagicMock()
+    deferred_manager.dispose_engine.return_value = True
 
-    with patch.object(memory_server.runtime, "time_manager", fake_time_manager):
+    with patch.object(memory_server.runtime, "time_manager", fake_time_manager), patch.object(
+        memory_server.runtime, "_deferred_time_managers", [deferred_manager],
+    ):
         result = await memory_server.runtime.release_character_resources(
             name,
             hold_derived_task_admission=True,
@@ -87,6 +164,7 @@ async def test_release_failure_restores_derived_task_admission():
         )
 
     assert result.status_code == 500
+    deferred_manager.dispose_engine.assert_called_once_with(name)
     assert name not in memory_server.review._retired_derived_task_names
     assert name not in memory_server.review._publication_held_derived_task_names
 

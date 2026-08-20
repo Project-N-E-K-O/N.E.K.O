@@ -244,6 +244,49 @@ def _defer_time_manager_cleanup(manager: TimeIndexedMemory | None) -> None:
     _deferred_time_managers.append(manager)
     logger.info("[MemoryServer] 旧的 TimeIndexedMemory 已加入延迟清理队列")
 
+
+def _dispose_character_engines_across_generations(
+    lanlan_name: str,
+) -> tuple[int, int]:
+    """Release one character from the current and every deferred manager.
+
+    Hot reload deliberately keeps old managers alive for requests that already
+    captured them.  A character rename/delete must nevertheless close that
+    character's idle SQLite pools in every retained generation before touching
+    its files.  Other characters and the deferred-manager lifecycle are left
+    unchanged.
+    """
+    managers: list[TimeIndexedMemory] = []
+    seen: set[int] = set()
+    for manager in (time_manager, *_deferred_time_managers):
+        if manager is None or id(manager) in seen:
+            continue
+        seen.add(id(manager))
+        managers.append(manager)
+
+    released_count = 0
+    errors: list[tuple[int, Exception]] = []
+    for index, manager in enumerate(managers):
+        try:
+            if manager.dispose_engine(lanlan_name):
+                released_count += 1
+        except Exception as exc:
+            # Continue so one broken generation cannot hide the manager that
+            # actually owns the Windows file handle.
+            errors.append((index, exc))
+
+    if errors:
+        summary = ", ".join(
+            f"manager[{index}]={type(exc).__name__}"
+            for index, exc in errors
+        )
+        raise RuntimeError(
+            f"failed to dispose character engines: {summary}"
+        ) from errors[0][1]
+
+    return len(managers), released_count
+
+
 async def reload_memory_components(
     *,
     resume_derived_task_names: set[str] | None = None,
@@ -446,10 +489,15 @@ async def release_character_resources(
         )
     async with _reload_lock:
         try:
-            time_manager.dispose_engine(lanlan_name)
+            scanned_managers, released_managers = (
+                _dispose_character_engines_across_generations(lanlan_name)
+            )
             logger.info(
-                "[MemoryServer] 已主动释放角色 %s 的 SQLite 引擎并排空 %d 个派生任务",
+                "[MemoryServer] 已扫描角色 %s 的 %d 个 TimeIndexedMemory 实例，"
+                "实际释放 %d 个 SQLite 引擎并排空 %d 个派生任务",
                 lanlan_name,
+                scanned_managers,
+                released_managers,
                 cancelled_tasks,
             )
             return {

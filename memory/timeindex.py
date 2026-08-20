@@ -390,10 +390,11 @@ class TimeIndexedMemory:
         """
         return await asyncio.to_thread(self._ensure_engine_exists, lanlan_name, db_path)
 
-    def dispose_engine(self, lanlan_name: str):
-        """Dispose the given character's database engine resources, meow~"""
+    def dispose_engine(self, lanlan_name: str) -> bool:
+        """Dispose one character's cached engines and report whether any were known."""
         db_path = self.db_paths.pop(lanlan_name, None)
         engine = self.engines.pop(lanlan_name, None)
+        released = engine is not None
         self._engine_readonly_flags.pop(lanlan_name, None)
         self._writable_bootstrapped.discard(lanlan_name)
         if engine:
@@ -408,8 +409,11 @@ class TimeIndexedMemory:
             writable_connection_string = f"sqlite:///{uri_path}"
             for connection_string in {readonly_connection_string, writable_connection_string}:
                 cached_engine = SQLChatMessageHistory._engine_cache.pop(connection_string, None)
-                if cached_engine and cached_engine is not engine:
-                    cached_engine.dispose()
+                if cached_engine is not None:
+                    released = True
+                    if cached_engine is not engine:
+                        cached_engine.dispose()
+        return released
 
     def cleanup(self):
         """Clean up all engine resources, meow~"""
