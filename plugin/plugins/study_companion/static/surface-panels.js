@@ -1007,10 +1007,14 @@
       const toggleButton = button(
         optIn ? t(ctx, 'ui.button.disable', 'Disable') : t(ctx, 'ui.button.enable', 'Enable'),
         async () => {
-          const payload = await ctx.callPlugin('study_set_knowledge_contribution_opt_in', { opt_in: !optIn });
-          optIn = Boolean(payload?.opt_in);
-          summary = payload?.summary || {};
-          draw();
+          try {
+            const payload = await ctx.callPlugin('study_set_knowledge_contribution_opt_in', { opt_in: !optIn });
+            optIn = Boolean(payload?.opt_in);
+            summary = payload?.summary || {};
+            draw();
+          } catch (error) {
+            draw(errText(error));
+          }
         },
         true,
       );

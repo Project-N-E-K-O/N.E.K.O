@@ -1344,6 +1344,7 @@ const source = fs.readFileSync(path.join(process.env.STUDY_COMPANION_STATIC_DIR,
 const window = new Window({ url: 'http://testserver/plugin/study_companion/ui/?locale=en' });
 const { document } = window;
 const calls = [];
+let rejectToggle = false;
 
 window.eval(source);
 const root = window.StudyCompanionSurfacePanels.render('knowledge-contribution-settings', {
@@ -1355,6 +1356,7 @@ const root = window.StudyCompanionSurfacePanels.render('knowledge-contribution-s
       return { opt_in: false, summary: { total: 5, queue_count: 2 } };
     }
     if (entryId === 'study_set_knowledge_contribution_opt_in') {
+      if (rejectToggle) throw new Error('opt-in persistence failed');
       return { opt_in: args.opt_in, summary: { total: 6, queue_count: 3 } };
     }
     throw new Error(`unexpected entry call: ${entryId}`);
@@ -1389,6 +1391,26 @@ if (!toggleCall || toggleCall.args.opt_in !== true) {
 }
 if (!root.textContent.includes('Enabled') || !root.textContent.includes('6')) {
   throw new Error(`updated contribution state missing: ${root.textContent}`);
+}
+
+rejectToggle = true;
+const retryToggle = root.querySelector('[data-surface-action="knowledge-contribution-toggle"]');
+if (!retryToggle || retryToggle.disabled) {
+  throw new Error(`retry contribution toggle unavailable: ${root.outerHTML}`);
+}
+retryToggle.click();
+for (let attempt = 0; attempt < 20; attempt += 1) {
+  if (root.textContent.includes('opt-in persistence failed')) break;
+  await new Promise((resolve) => window.setTimeout(resolve, 0));
+}
+await new Promise((resolve) => window.setTimeout(resolve, 0));
+
+const recoveredToggle = root.querySelector('[data-surface-action="knowledge-contribution-toggle"]');
+if (!root.textContent.includes('opt-in persistence failed')) {
+  throw new Error(`toggle failure message missing: ${root.textContent}`);
+}
+if (!recoveredToggle || recoveredToggle.disabled) {
+  throw new Error(`toggle did not recover after failure: ${root.outerHTML}`);
 }
 """
     completed = subprocess.run(
