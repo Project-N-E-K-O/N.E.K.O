@@ -34,6 +34,7 @@
     const MUSIC_PLAY_URL_COORD_STORAGE_KEY = 'neko_music_play_url_coord';
     const CAPTURE_BRIDGE_REANNOUNCE_INTERVAL_MS = 250;
     const CAPTURE_BRIDGE_REANNOUNCE_MAX_ATTEMPTS = 40;
+    const CAPTURE_BRIDGE_REGION_IMAGE_MAX_CHARS = 9 * 1024 * 1024;
     let _pendingUserActivityCancelTimer = 0;
     let _pendingUserActivityCancelTurnId = null;
     let _lanlanNameWaitAttempts = 0;
@@ -73,20 +74,81 @@
         }
         try {
             var dc = resolveDesktopCaptureProvider();
-            var available = !!(dc && dc.getSources && dc.captureSourceAsDataUrl);
+            var available = !!(dc && (
+                (dc.getSources && dc.captureSourceAsDataUrl)
+                || dc.captureDesktopRegionAsDataUrl
+            ));
             socket.send(JSON.stringify({
                 action: 'capture_bridge_status',
                 available: available,
                 capabilities: {
                     getSources: !!(dc && dc.getSources),
                     captureSourceAsDataUrl: !!(dc && dc.captureSourceAsDataUrl),
-                    captureSourceWithoutNeko: !!(dc && dc.captureSourceWithoutNeko)
+                    captureSourceWithoutNeko: !!(dc && dc.captureSourceWithoutNeko),
+                    captureDesktopRegionAsDataUrl: !!(dc && dc.captureDesktopRegionAsDataUrl)
                 }
             }));
             return available;
         } catch (_) {
             return false;
         }
+    }
+
+    function getCaptureBridgeCropTranslations() {
+        var keys = [
+            'chat.cropTabScreenshot', 'chat.cropTabHideNeko', 'chat.cropTabCancel',
+            'chat.cropClearSelectionTitle', 'chat.cropConfirmTitle'
+        ];
+        var translations = {};
+        if (typeof window.t !== 'function') return translations;
+        keys.forEach(function (key) {
+            try {
+                var value = window.t(key);
+                if (typeof value === 'string' && value && value !== key) {
+                    translations[key] = value;
+                }
+            } catch (_) { /* use crop overlay fallback */ }
+        });
+        return translations;
+    }
+
+    function loadCaptureBridgeImage(dataUrl) {
+        return new Promise(function (resolve, reject) {
+            var image = new Image();
+            image.onload = function () { resolve(image); };
+            image.onerror = function () { reject(new Error('invalid_capture_image')); };
+            image.src = dataUrl;
+        });
+    }
+
+    async function boundCaptureBridgeRegionImage(dataUrl) {
+        if (typeof dataUrl !== 'string' || dataUrl.indexOf('data:image/') !== 0) return null;
+        if (dataUrl.length <= CAPTURE_BRIDGE_REGION_IMAGE_MAX_CHARS) return dataUrl;
+
+        var image;
+        try {
+            image = await loadCaptureBridgeImage(dataUrl);
+        } catch (_) {
+            return null;
+        }
+        var scales = [1, 0.85, 0.7, 0.55];
+        var qualities = [0.92, 0.85, 0.75];
+        for (var scaleIndex = 0; scaleIndex < scales.length; scaleIndex++) {
+            var canvas = document.createElement('canvas');
+            canvas.width = Math.max(1, Math.round(image.naturalWidth * scales[scaleIndex]));
+            canvas.height = Math.max(1, Math.round(image.naturalHeight * scales[scaleIndex]));
+            var context = canvas.getContext('2d');
+            if (!context) return null;
+            context.drawImage(image, 0, 0, canvas.width, canvas.height);
+            for (var qualityIndex = 0; qualityIndex < qualities.length; qualityIndex++) {
+                var candidate = canvas.toDataURL('image/jpeg', qualities[qualityIndex]);
+                if (candidate.length <= CAPTURE_BRIDGE_REGION_IMAGE_MAX_CHARS) {
+                    return candidate;
+                }
+                await Promise.resolve();
+            }
+        }
+        return null;
     }
 
     function reannounceCaptureBridgeWhenReady(socket, attempt) {
@@ -3645,6 +3707,58 @@
                     } catch (e) {
                         console.warn('[App] 处理 agent_task_update 失败:', e);
                     }
+
+                // -------- capture_bridge_region_request (interactive desktop selection) --------
+                } else if (response.type === 'capture_bridge_region_request') {
+                    (async function () {
+                        var requestId = response.request_id || '';
+                        var responseSocket = _thisSocket;
+                        var sendRegionResp = function (payload) {
+                            if (!responseSocket || responseSocket.readyState !== WebSocket.OPEN) return;
+                            payload.action = 'capture_bridge_region_response';
+                            payload.request_id = requestId;
+                            responseSocket.send(JSON.stringify(payload));
+                        };
+                        try {
+                            var dc = resolveDesktopCaptureProvider();
+                            if (!dc || typeof dc.captureDesktopRegionAsDataUrl !== 'function') {
+                                sendRegionResp({ success: false, error: 'unavailable' });
+                                return;
+                            }
+                            var regionResult = await dc.captureDesktopRegionAsDataUrl({
+                                selectionOnly: response.selection_only === true,
+                                copyToClipboard: response.copy_to_clipboard !== false,
+                                sessionTimeoutMs: response.session_timeout_ms,
+                                allowPin: false,
+                                returnDataUrl: true,
+                                includeOriginalDataUrl: false,
+                                translations: getCaptureBridgeCropTranslations()
+                            });
+                            if (!regionResult || regionResult.canceled || regionResult.cancelled) {
+                                sendRegionResp({ success: false, canceled: true });
+                                return;
+                            }
+                            if (regionResult.success === false) {
+                                sendRegionResp({
+                                    success: false,
+                                    error: regionResult.error || regionResult.code || 'capture_failed'
+                                });
+                                return;
+                            }
+                            var regionDataUrl = typeof regionResult === 'string'
+                                ? regionResult
+                                : regionResult.dataUrl;
+                            regionDataUrl = await boundCaptureBridgeRegionImage(regionDataUrl);
+                            if (!regionDataUrl) {
+                                sendRegionResp({ success: false, error: 'image_too_large' });
+                                return;
+                            }
+                            sendRegionResp({ success: true, image: regionDataUrl });
+                        } catch (regionError) {
+                            var regionCode = regionError && (regionError.code || regionError.message);
+                            sendRegionResp({ success: false, error: regionCode || 'internal_error' });
+                        }
+                    })();
 
                 // -------- capture_bridge_request (galgame OCR window capture) --------
                 } else if (response.type === 'capture_bridge_request') {

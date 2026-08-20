@@ -43,10 +43,12 @@ async def test_integration_llm_timeout_degrades_to_local_reply(
 ) -> None:
     agent = TutorLLMAgent(config=StudyConfig(language="en"), logger=_Logger())
 
-    async def fail_call(messages: list[dict[str, str]]) -> str:
+    async def fail_call_result(
+        messages: list[dict[str, str]], **_kwargs: object
+    ) -> object:
         raise TimeoutError("llm timeout")
 
-    monkeypatch.setattr(agent, "_call_model", fail_call)
+    monkeypatch.setattr(agent, "_call_model_result", fail_call_result)
 
     reply = await agent.concept_explain("Photosynthesis converts light.", mode="teaching")
 

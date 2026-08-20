@@ -8,7 +8,7 @@ import tomllib
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, BinaryIO, Literal
 
 from plugin.core.plugin_layout import resolve_plugin_layout
 from plugin.logging_config import get_logger
@@ -52,8 +52,9 @@ _TARGET_ROOT = USER_PLUGIN_PACKAGES_ROOT
 
 # Allowed extensions for uploaded plugin packages
 _ALLOWED_UPLOAD_SUFFIXES = frozenset({".neko-plugin", ".neko-bundle"})
-# Maximum upload size (200 MB)
-_UPLOAD_MAX_BYTES = 200 * 1024 * 1024
+# Maximum upload size (500 MiB)
+_UPLOAD_MAX_BYTES = 500 * 1024 * 1024
+_UPLOAD_COPY_CHUNK_BYTES = 1024 * 1024
 
 logger = get_logger("server.application.plugin_cli")
 
@@ -346,6 +347,14 @@ class PluginCliService:
         which can be passed to ``install`` or ``inspect``.
         """
         return await asyncio.to_thread(self._save_uploaded_package_sync, filename=filename, content=content)
+
+    async def save_uploaded_file(self, *, filename: str, source_file: BinaryIO) -> dict[str, object]:
+        """Stream an uploaded package into the managed artifacts directory."""
+        return await asyncio.to_thread(
+            self._save_uploaded_file_sync,
+            filename=filename,
+            source_file=source_file,
+        )
 
     async def upload_and_install(
         self,
@@ -923,9 +932,8 @@ class PluginCliService:
             items: list[dict[str, object]] = []
             package_paths = [
                 path
-                for suffix in _ALLOWED_UPLOAD_SUFFIXES
-                for path in target_root.glob(f"*{suffix}")
-                if path.is_file()
+                for path in target_root.glob("*")
+                if path.is_file() and self._has_allowed_upload_suffix(path.name)
             ]
             for path in sorted(
                 package_paths,
@@ -1303,6 +1311,34 @@ class PluginCliService:
         except Exception as exc:
             raise self._domain_error_from_exception(exc, action="analyze") from exc
 
+    @staticmethod
+    def _has_allowed_upload_suffix(filename: str) -> bool:
+        return filename.lower().endswith(tuple(_ALLOWED_UPLOAD_SUFFIXES))
+
+    @staticmethod
+    def _upload_filename_parts(filename: str) -> tuple[str, str, str]:
+        safe_name = Path(filename).name
+        if not safe_name:
+            raise ValueError("Invalid filename")
+
+        lower_name = safe_name.lower()
+        for allowed_suffix in sorted(_ALLOWED_UPLOAD_SUFFIXES, key=len, reverse=True):
+            if lower_name.endswith(allowed_suffix):
+                return safe_name, safe_name[: -len(allowed_suffix)], allowed_suffix
+
+        allowed = ", ".join(sorted(_ALLOWED_UPLOAD_SUFFIXES))
+        raise ValueError(f"Unsupported file type. Allowed: {allowed}")
+
+    @staticmethod
+    def _upload_metadata(path: Path) -> dict[str, object]:
+        stat = path.stat()
+        return {
+            "name": path.name,
+            "path": str(path.resolve()),
+            "size_bytes": stat.st_size,
+            "modified_at": datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat(),
+        }
+
     def _save_uploaded_package_sync(self, *, filename: str, content: bytes) -> dict[str, object]:
         try:
             target_root = self._path_policy().package_artifacts_root
@@ -1310,32 +1346,13 @@ class PluginCliService:
             if len(content) > _UPLOAD_MAX_BYTES:
                 raise ValueError(
                     f"File too large: {len(content)} bytes "
-                    f"(max {_UPLOAD_MAX_BYTES // (1024 * 1024)} MB)"
+                    f"(max {_UPLOAD_MAX_BYTES // (1024 * 1024)} MiB)"
                 )
 
-            # Validate and sanitize filename
-            safe_name = Path(filename).name  # strip directory components
-            if not safe_name:
-                raise ValueError("Invalid filename")
-
-            # Check extension — must match one of the allowed suffixes
-            # Path.suffixes gives e.g. ['.neko', '-plugin'] for "foo.neko-plugin",
-            # but we need the compound suffix, so we check the name directly.
-            has_valid_suffix = any(safe_name.endswith(suffix) for suffix in _ALLOWED_UPLOAD_SUFFIXES)
-            if not has_valid_suffix:
-                allowed = ", ".join(sorted(_ALLOWED_UPLOAD_SUFFIXES))
-                raise ValueError(f"Unsupported file type. Allowed: {allowed}")
+            safe_name, stem, suffix = self._upload_filename_parts(filename)
 
             # Ensure target directory exists
             target_root.mkdir(parents=True, exist_ok=True)
-
-            stem = safe_name
-            suffix = ""
-            for allowed_suffix in sorted(_ALLOWED_UPLOAD_SUFFIXES, key=len, reverse=True):
-                if stem.endswith(allowed_suffix):
-                    suffix = allowed_suffix
-                    stem = stem[: -len(allowed_suffix)]
-                    break
 
             # Exclusive create: if name collides (including concurrent uploads
             # racing on the same filename), pick a UUID-suffixed dest and retry.
@@ -1352,13 +1369,40 @@ class PluginCliService:
                     dest.unlink(missing_ok=True)
                     raise
 
-            stat = dest.stat()
-            return {
-                "name": dest.name,
-                "path": str(dest.resolve()),
-                "size_bytes": stat.st_size,
-                "modified_at": datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat(),
-            }
+            return self._upload_metadata(dest)
+        except Exception as exc:
+            raise self._domain_error_from_exception(exc, action="upload") from exc
+
+    def _save_uploaded_file_sync(self, *, filename: str, source_file: BinaryIO) -> dict[str, object]:
+        """Copy an incoming upload in bounded chunks and enforce the size limit."""
+        try:
+            target_root = self._path_policy().package_artifacts_root
+            safe_name, stem, suffix = self._upload_filename_parts(filename)
+            target_root.mkdir(parents=True, exist_ok=True)
+            source_file.seek(0)
+
+            dest = target_root / safe_name
+            while True:
+                try:
+                    total_bytes = 0
+                    with dest.open("xb") as target:
+                        while chunk := source_file.read(_UPLOAD_COPY_CHUNK_BYTES):
+                            total_bytes += len(chunk)
+                            if total_bytes > _UPLOAD_MAX_BYTES:
+                                raise ValueError(
+                                    f"File too large: {total_bytes} bytes "
+                                    f"(max {_UPLOAD_MAX_BYTES // (1024 * 1024)} MiB)"
+                                )
+                            target.write(chunk)
+                    break
+                except FileExistsError:
+                    unique = uuid.uuid4().hex[:8]
+                    dest = target_root / f"{stem}_{unique}{suffix}"
+                except Exception:
+                    dest.unlink(missing_ok=True)
+                    raise
+
+            return self._upload_metadata(dest)
         except Exception as exc:
             raise self._domain_error_from_exception(exc, action="upload") from exc
 
@@ -1371,26 +1415,16 @@ class PluginCliService:
         if source.stat().st_size > _UPLOAD_MAX_BYTES:
             raise ValueError(
                 f"File too large: {source.stat().st_size} bytes "
-                f"(max {_UPLOAD_MAX_BYTES // (1024 * 1024)} MB)"
+                f"(max {_UPLOAD_MAX_BYTES // (1024 * 1024)} MiB)"
             )
 
-        safe_name = Path(filename or source.name).name
-        if not safe_name:
-            raise ValueError("Invalid filename")
-        has_valid_suffix = any(safe_name.endswith(suffix) for suffix in _ALLOWED_UPLOAD_SUFFIXES)
-        if not has_valid_suffix:
-            allowed = ", ".join(sorted(_ALLOWED_UPLOAD_SUFFIXES))
-            raise ValueError(f"Unsupported file type. Allowed: {allowed}")
+        safe_name, stem, suffix = self._upload_filename_parts(filename or source.name)
 
         target_root = self._path_policy().package_artifacts_root
         target_root.mkdir(parents=True, exist_ok=True)
-        stem = safe_name
-        suffix = ""
-        for allowed_suffix in sorted(_ALLOWED_UPLOAD_SUFFIXES, key=len, reverse=True):
-            if stem.endswith(allowed_suffix):
-                suffix = allowed_suffix
-                stem = stem[: -len(allowed_suffix)]
-                break
+
+        if source.parent == target_root.resolve() and source.name == safe_name:
+            return self._upload_metadata(source)
 
         dest = target_root / safe_name
         while True:
@@ -1405,13 +1439,7 @@ class PluginCliService:
                 dest.unlink(missing_ok=True)
                 raise
 
-        stat = dest.stat()
-        return {
-            "name": dest.name,
-            "path": str(dest.resolve()),
-            "size_bytes": stat.st_size,
-            "modified_at": datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat(),
-        }
+        return self._upload_metadata(dest)
 
     def _resolve_plugin_sources(
         self,
@@ -1464,9 +1492,7 @@ class PluginCliService:
         target_root = self._path_policy().package_artifacts_root
 
         def _accept(path: Path) -> bool:
-            return path.is_file() and any(
-                path.name.endswith(suffix) for suffix in _ALLOWED_UPLOAD_SUFFIXES
-            )
+            return path.is_file() and self._has_allowed_upload_suffix(path.name)
 
         candidate = Path(raw).expanduser()
         if candidate.exists():

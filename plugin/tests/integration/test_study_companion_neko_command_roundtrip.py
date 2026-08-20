@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 from typing import Any
 
@@ -127,8 +128,37 @@ class _FakeStudyOcrPipeline:
 
 
 class _FakeTutorAgent:
+    def __init__(self) -> None:
+        self.response_mode = "problem_solving"
+
     def update_config(self, config: StudyConfig) -> None:
         self._config = config
+
+    async def _call_model(self, *_args, **_kwargs) -> str:
+        if self.response_mode == "general_discussion":
+            return json.dumps(
+                {
+                    "subject": "chinese",
+                    "content_type": "literary_work",
+                    "intent": "interpretation",
+                    "response_mode": "general_discussion",
+                    "entity": "《活着》",
+                    "retrieval_concepts": ["文学类文本阅读", "小说主题"],
+                    "confidence": 0.98,
+                },
+                ensure_ascii=False,
+            )
+        return json.dumps(
+            {
+                "subject": "math",
+                "content_type": "calculation_problem",
+                "intent": "solve",
+                "response_mode": "problem_solving",
+                "entity": "differentiation",
+                "retrieval_concepts": ["derivative", "chain rule"],
+                "confidence": 0.98,
+            }
+        )
 
     async def concept_explain(
         self,
@@ -137,10 +167,20 @@ class _FakeTutorAgent:
         mode: str = MODE_COMPANION,
         context: dict[str, object] | None = None,
     ) -> TutorReply:
+        reply = (
+            "Yu Hua presents endurance as an ordinary but profound form of life."
+            if self.response_mode == "general_discussion"
+            else (
+                "## Problem Analysis\nRoundtrip analysis.\n\n"
+                "## Solution Process\nRoundtrip private process.\n\n"
+                "## Final Answer\nRoundtrip answer.\n\n"
+                "## Transfer Practice\nRoundtrip transfer."
+            )
+        )
         return TutorReply(
             operation="concept_explain",
             input_text=text,
-            reply=f"Explained: {text}",
+            reply=reply,
             created_at="2026-05-11T00:00:00Z",
         )
 
@@ -233,7 +273,9 @@ async def test_roundtrip_interrupt_then_queue(
             Ok,
         )
 
-        await _wait_for_text(ctx, "Differentiation")
+        narration = await _wait_for_text(ctx, "Roundtrip analysis.")
+        assert "Differentiation" not in narration
+        assert "Roundtrip private process." not in narration
         await _wait_for_text(ctx, "What is chain rule?")
     finally:
         await plugin.shutdown()
@@ -313,3 +355,106 @@ async def test_roundtrip_shutdown_with_pending_commands(
     assert plugin._interruptible_task is None
     assert plugin._command_queue.empty()
     release.set()
+
+
+@pytest.mark.asyncio
+async def test_roundtrip_hot_toggle_enables_solution_narration_without_restart(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
+    ctx = _Ctx(tmp_path)
+    ctx._config["communication"] = {
+        "enabled": False,
+        "solution_narration_enabled": True,
+    }
+    plugin = StudyCompanionPlugin(ctx)
+    startup = await plugin.startup()
+    assert isinstance(startup, Ok)
+    plugin._agent = _FakeTutorAgent()
+    try:
+        initial_status = await plugin.study_neko_communication_status()
+        assert isinstance(initial_status, Ok)
+        assert initial_status.value["configured_enabled"] is False
+        assert initial_status.value["available"] is False
+
+        enabled = await plugin.study_update_settings_config(
+            config={"communication": {"enabled": True}}
+        )
+        assert isinstance(enabled, Ok)
+        assert enabled.value["communication_status"]["available"] is True
+
+        explained = await plugin.study_explain_text(text="Differentiate x squared")
+        assert isinstance(explained, Ok)
+        assert explained.value["solution_narration_scheduled"] is True
+        narration = await _wait_for_text(ctx, "Roundtrip analysis.")
+        assert "Roundtrip private process." not in narration
+
+        enabled_status = await plugin.study_neko_communication_status()
+        assert isinstance(enabled_status, Ok)
+        assert enabled_status.value["events_emitted"] == 1
+
+        persisted_enabled = plugin._store.load_config(StudyConfig())
+        assert persisted_enabled.communication.enabled is True
+        await plugin.shutdown()
+        plugin = StudyCompanionPlugin(ctx)
+        restarted = await plugin.startup()
+        assert isinstance(restarted, Ok)
+        plugin._agent = _FakeTutorAgent()
+        restarted_status = await plugin.study_neko_communication_status()
+        assert isinstance(restarted_status, Ok)
+        assert restarted_status.value["configured_enabled"] is True
+        assert restarted_status.value["available"] is True
+
+        disabled = await plugin.study_update_settings_config(
+            config={"communication": {"enabled": False}}
+        )
+        assert isinstance(disabled, Ok)
+        assert disabled.value["communication_status"]["available"] is False
+        persisted_disabled = plugin._store.load_config(StudyConfig())
+        assert persisted_disabled.communication.enabled is False
+
+        ctx.pushed_messages.clear()
+        explained_after_disable = await plugin.study_explain_text(
+            text="Differentiate x cubed"
+        )
+        assert isinstance(explained_after_disable, Ok)
+        assert explained_after_disable.value["solution_narration_scheduled"] is False
+        assert not _texts(ctx)
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_roundtrip_general_discussion_uses_only_general_narration_event(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
+    ctx = _Ctx(tmp_path)
+    ctx._config["communication"] = {
+        "enabled": True,
+        "solution_narration_enabled": True,
+        "general_narration_enabled": True,
+    }
+    plugin = StudyCompanionPlugin(ctx)
+    startup = await plugin.startup()
+    assert isinstance(startup, Ok)
+    agent = _FakeTutorAgent()
+    agent.response_mode = "general_discussion"
+    plugin._agent = agent
+    try:
+        explained = await plugin.study_explain_text(
+            text="谈谈你对《活着》这本书的理解"
+        )
+
+        assert isinstance(explained, Ok)
+        assert explained.value["study_response_mode"] == "general_discussion"
+        assert explained.value["solution_narration_scheduled"] is False
+        assert explained.value["general_narration_scheduled"] is True
+        assert explained.value["general_narration_status"] == "scheduled"
+        narration = await _wait_for_text(ctx, "Yu Hua presents endurance")
+        assert "Problem Analysis" not in narration
+        assert len(ctx.pushed_messages) == 1
+    finally:
+        await plugin.shutdown()

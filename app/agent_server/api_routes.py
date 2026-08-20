@@ -532,6 +532,117 @@ async def get_agent_state():
     return {"success": True, "snapshot": snapshot}
 
 
+_USER_PLUGIN_REGISTRY_CHECK_ATTEMPTS = 4
+_USER_PLUGIN_REGISTRY_CHECK_INTERVAL_S = 0.75
+_USER_PLUGIN_REGISTRY_CHECK_TIMEOUT_S = 8.0
+_USER_PLUGIN_REGISTRY_CHECK_MAX_DURATION_S = 12.0
+_USER_PLUGIN_EMPTY_CONFIRMATIONS = 3
+
+
+async def _check_user_plugin_registry_readiness() -> Dict[str, Any]:
+    """Classify the embedded plugin registry without conflating failures with emptiness.
+
+    ``GET /plugins`` is deliberately richer than a health endpoint: it may wait
+    for runtime-state locks and render metadata/i18n for every registered
+    plugin.  A short client timeout therefore means "registry unavailable",
+    not "there are no plugins".  Only repeated, structurally valid HTTP 200
+    responses containing an empty plugin list are authoritative enough to
+    return ``empty``.
+    """
+    empty_responses = 0
+    last_error = "no valid response"
+    timeout = httpx.Timeout(
+        _USER_PLUGIN_REGISTRY_CHECK_TIMEOUT_S,
+        connect=min(2.0, _USER_PLUGIN_REGISTRY_CHECK_TIMEOUT_S),
+    )
+
+    try:
+        async with httpx.AsyncClient(timeout=timeout, proxy=None, trust_env=False) as client:
+            async with asyncio.timeout(_USER_PLUGIN_REGISTRY_CHECK_MAX_DURATION_S):
+                for attempt in range(_USER_PLUGIN_REGISTRY_CHECK_ATTEMPTS):
+                    await asyncio.sleep(_USER_PLUGIN_REGISTRY_CHECK_INTERVAL_S)
+                    try:
+                        response = await client.get(
+                            f"http://127.0.0.1:{USER_PLUGIN_SERVER_PORT}/plugins"
+                        )
+                    except Exception as exc:
+                        last_error = f"{type(exc).__name__}: {exc}"
+                        logger.warning(
+                            "[Agent] UserPlugin registry check %d/%d failed: %s",
+                            attempt + 1,
+                            _USER_PLUGIN_REGISTRY_CHECK_ATTEMPTS,
+                            last_error,
+                        )
+                        continue
+
+                    if response.status_code != 200:
+                        last_error = f"HTTP {response.status_code}"
+                        logger.warning(
+                            "[Agent] UserPlugin registry check %d/%d returned %s",
+                            attempt + 1,
+                            _USER_PLUGIN_REGISTRY_CHECK_ATTEMPTS,
+                            last_error,
+                        )
+                        continue
+
+                    try:
+                        payload = response.json()
+                    except Exception as exc:
+                        last_error = f"invalid JSON ({type(exc).__name__})"
+                        logger.warning(
+                            "[Agent] UserPlugin registry check %d/%d returned %s",
+                            attempt + 1,
+                            _USER_PLUGIN_REGISTRY_CHECK_ATTEMPTS,
+                            last_error,
+                        )
+                        continue
+
+                    plugins = payload.get("plugins") if isinstance(payload, dict) else None
+                    if not isinstance(plugins, list):
+                        last_error = "invalid plugins payload"
+                        logger.warning(
+                            "[Agent] UserPlugin registry check %d/%d returned %s",
+                            attempt + 1,
+                            _USER_PLUGIN_REGISTRY_CHECK_ATTEMPTS,
+                            last_error,
+                        )
+                        continue
+
+                    if plugins:
+                        return {
+                            "status": "ready",
+                            "plugin_count": len(plugins),
+                            "empty_responses": empty_responses,
+                            "last_error": "",
+                        }
+
+                    empty_responses += 1
+                    last_error = "empty plugin list"
+                    if empty_responses >= _USER_PLUGIN_EMPTY_CONFIRMATIONS:
+                        return {
+                            "status": "empty",
+                            "plugin_count": 0,
+                            "empty_responses": empty_responses,
+                            "last_error": last_error,
+                        }
+    except TimeoutError:
+        last_error = (
+            "overall timeout "
+            f"({_USER_PLUGIN_REGISTRY_CHECK_MAX_DURATION_S:g}s)"
+        )
+        logger.warning("[Agent] UserPlugin registry check reached %s", last_error)
+    except Exception as exc:
+        last_error = f"{type(exc).__name__}: {exc}"
+        logger.warning("[Agent] UserPlugin registry client failed: %s", last_error)
+
+    return {
+        "status": "unavailable",
+        "plugin_count": 0,
+        "empty_responses": empty_responses,
+        "last_error": last_error,
+    }
+
+
 @app.post("/agent/flags")
 async def set_agent_flags(payload: Dict[str, Any]):
     lanlan_name = (payload or {}).get("lanlan_name")
@@ -554,6 +665,10 @@ async def set_agent_flags(payload: Dict[str, Any]):
     if isinstance(bf, bool):
         Modules.browser_use_lifecycle_seq += 1
         browser_use_lifecycle_seq = Modules.browser_use_lifecycle_seq
+    user_plugin_lifecycle_seq = Modules.user_plugin_lifecycle_seq
+    if isinstance(uf, bool):
+        Modules.user_plugin_lifecycle_seq += 1
+        user_plugin_lifecycle_seq = Modules.user_plugin_lifecycle_seq
     of = (payload or {}).get("openfang_enabled")
     # Agent LLM gate fail (endpoint/key not configured) blocks **only** the
     # four LLM-dependent sub flags. ``user_plugin_enabled`` runs entirely on
@@ -656,45 +771,82 @@ async def set_agent_flags(payload: Dict[str, Any]):
 
             async def _bg_plugin_enable():
                 _ln = lanlan_name
+
+                def _owns_generation() -> bool:
+                    return user_plugin_lifecycle_seq == Modules.user_plugin_lifecycle_seq
+
+                def _may_start_generation() -> bool:
+                    return (
+                        _owns_generation()
+                        and Modules.analyzer_enabled
+                        and Modules.agent_flags.get("user_plugin_enabled", False)
+                    )
+
                 try:
-                    started = await _ensure_plugin_lifecycle_started()
+                    if not Modules.analyzer_enabled:
+                        Modules.notification = ""
+                        _set_capability("user_plugin", True, "")
+                        logger.info(
+                            "[Agent] UserPlugin enable deferred until the master switch is ON"
+                        )
+                        return
+
+                    started = await _ensure_plugin_lifecycle_started(
+                        should_start=_may_start_generation
+                    )
+                    if not _owns_generation():
+                        return
+                    if not Modules.analyzer_enabled:
+                        return
                     if not started:
                         Modules.agent_flags["user_plugin_enabled"] = False
                         Modules.notification = json.dumps({"code": "AGENT_PLUGIN_SERVER_ERROR"})
                         logger.warning("[Agent] Cannot enable UserPlugin: lifecycle startup failed")
-                        _bump_state_revision()
-                        await _emit_agent_status_update(lanlan_name=_ln)
                         return
 
-                    plugins = []
-                    for _attempt in range(8):
-                        await asyncio.sleep(0.5)
-                        try:
-                            async with httpx.AsyncClient(timeout=1.0, proxy=None, trust_env=False) as client:
-                                r = await client.get(f"http://127.0.0.1:{USER_PLUGIN_SERVER_PORT}/plugins")
-                                if r.status_code == 200:
-                                    data = r.json()
-                                    plugins = data.get("plugins", []) if isinstance(data, dict) else []
-                                    if plugins:
-                                        break
-                        except Exception:
-                            pass
+                    registry = await _check_user_plugin_registry_readiness()
+                    if not _owns_generation():
+                        return
 
-                    if not plugins:
+                    registry_status = registry.get("status")
+                    if registry_status == "empty":
                         Modules.agent_flags["user_plugin_enabled"] = False
                         Modules.notification = json.dumps({"code": "AGENT_NO_PLUGINS_FOUND"})
-                        logger.warning("[Agent] Cannot enable UserPlugin: no plugins found after lifecycle start")
-                        await _ensure_plugin_lifecycle_stopped()
-                    else:
+                        logger.warning(
+                            "[Agent] Cannot enable UserPlugin: registry confirmed empty "
+                            "(%d valid empty responses)",
+                            registry.get("empty_responses", 0),
+                        )
+                        await _ensure_plugin_lifecycle_stopped(should_stop=_owns_generation)
+                    elif registry_status == "ready":
                         _set_capability("user_plugin", True, "")
-                        logger.info("[Agent] UserPlugin lifecycle ready (%d plugins)", len(plugins))
+                        logger.info(
+                            "[Agent] UserPlugin lifecycle ready (%d plugins)",
+                            registry.get("plugin_count", 0),
+                        )
+                    else:
+                        # A slow or temporarily unreachable registry is not an
+                        # authoritative empty registry.  Preserve the user's ON
+                        # intent so the provider can recover on a later request.
+                        _set_capability("user_plugin", True, "")
+                        Modules.notification = json.dumps({"code": "AGENT_PLUGIN_SERVER_ERROR"})
+                        logger.warning(
+                            "[Agent] UserPlugin registry unavailable within %.1fs; "
+                            "keeping user_plugin_enabled ON for recovery "
+                            "(empty_responses=%d, last_error=%s)",
+                            _USER_PLUGIN_REGISTRY_CHECK_MAX_DURATION_S,
+                            registry.get("empty_responses", 0),
+                            registry.get("last_error", "unknown"),
+                        )
                 except Exception as exc:
-                    Modules.agent_flags["user_plugin_enabled"] = False
-                    Modules.notification = json.dumps({"code": "AGENT_PLUGIN_SERVER_ERROR"})
-                    logger.error("[Agent] Background plugin enable failed: %s", exc)
+                    if _owns_generation():
+                        Modules.agent_flags["user_plugin_enabled"] = False
+                        Modules.notification = json.dumps({"code": "AGENT_PLUGIN_SERVER_ERROR"})
+                        logger.error("[Agent] Background plugin enable failed: %s", exc)
                 finally:
-                    _bump_state_revision()
-                    await _emit_agent_status_update(lanlan_name=_ln)
+                    if _owns_generation():
+                        _bump_state_revision()
+                        await _emit_agent_status_update(lanlan_name=_ln)
 
             _bg = asyncio.create_task(_bg_plugin_enable())
             Modules._persistent_tasks.add(_bg)
@@ -704,8 +856,16 @@ async def set_agent_flags(payload: Dict[str, Any]):
             _set_capability("user_plugin", True, "")
 
             async def _bg_plugin_disable():
+                def _owns_disabled_generation() -> bool:
+                    return (
+                        user_plugin_lifecycle_seq == Modules.user_plugin_lifecycle_seq
+                        and not Modules.agent_flags.get("user_plugin_enabled", False)
+                    )
+
+                if not _owns_disabled_generation():
+                    return
                 try:
-                    await _ensure_plugin_lifecycle_stopped()
+                    await _ensure_plugin_lifecycle_stopped(should_stop=_owns_disabled_generation)
                 except Exception as exc:
                     logger.warning("[Agent] Background plugin disable error: %s", exc)
 
@@ -841,10 +1001,22 @@ async def agent_command(payload: Dict[str, Any]):
                 first_reason = (gate.get("reasons") or ["AGENT_ENDPOINT_NOT_CONFIGURED"])[0]
                 _set_capability("computer_use", False, first_reason)
                 _set_capability("browser_use", False, first_reason)
+            if Modules.agent_flags.get("user_plugin_enabled"):
+                # Master OFF preserves sub-feature intent but stops the plugin
+                # lifecycle. Replaying the existing ON intent schedules a new,
+                # generation-owned startup for the re-enabled master.
+                await set_agent_flags({
+                    "user_plugin_enabled": True,
+                    "lanlan_name": lanlan_name,
+                    "_persist_intent": False,
+                })
         else:
             Modules.analyzer_enabled = False
             Modules.analyzer_profile = {}
             _cancel_openclaw_enable_probe()
+            # Invalidate an in-flight user-plugin enable/readiness task before
+            # stopping its lifecycle.  The sub-flag intent itself remains ON.
+            Modules.user_plugin_lifecycle_seq += 1
             # NOTE: sub flags are NOT reset here. The master switch is a runtime
             # gate, not a clear-all command — sub flags carry the user's intent
             # for each component and must survive a master OFF/ON cycle (so the
@@ -859,7 +1031,9 @@ async def agent_command(payload: Dict[str, Any]):
             _set_capability("user_plugin", True, "")
             _set_capability("openclaw", False, "")
             await admin_control({"action": "end_all"})
-            await _ensure_plugin_lifecycle_stopped()
+            await _ensure_plugin_lifecycle_stopped(
+                should_stop=lambda: not Modules.analyzer_enabled
+            )
         if persist_intent:
             try:
                 from app.agent_runtime_intent import set_intent

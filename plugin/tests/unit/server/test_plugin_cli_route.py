@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from io import BytesIO
 from pathlib import Path
 import hashlib
 import shutil
@@ -9,6 +10,7 @@ from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
 from plugin.neko_plugin_cli.public import pack_plugin
+from plugin.server.application.plugin_cli import service as plugin_cli_service
 from plugin.server.application.plugin_cli.service import PluginCliService
 from plugin.server.application.install_source import (
     InstallSourceManager,
@@ -97,6 +99,43 @@ class _MemoryUploadFile:
 
     async def read(self) -> bytes:
         return b"demo"
+
+
+@pytest.mark.asyncio
+async def test_save_uploaded_file_streams_and_accepts_uppercase_suffix(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    packages_root = tmp_path / "packages"
+    _patch_plugin_cli_settings(monkeypatch, builtin_root=tmp_path, packages_root=packages_root)
+
+    result = await PluginCliService().save_uploaded_file(
+        filename="DEMO.NEKO-PLUGIN",
+        source_file=BytesIO(b"package-bytes"),
+    )
+
+    saved_path = Path(str(result["path"]))
+    assert saved_path.name == "DEMO.NEKO-PLUGIN"
+    assert saved_path.read_bytes() == b"package-bytes"
+    assert PluginCliService()._resolve_package_path(str(saved_path)) == saved_path
+
+
+@pytest.mark.asyncio
+async def test_save_uploaded_file_removes_partial_file_when_size_limit_is_exceeded(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    packages_root = tmp_path / "packages"
+    _patch_plugin_cli_settings(monkeypatch, builtin_root=tmp_path, packages_root=packages_root)
+    monkeypatch.setattr(plugin_cli_service, "_UPLOAD_MAX_BYTES", 5)
+
+    with pytest.raises(ServerDomainError, match="File too large"):
+        await PluginCliService().save_uploaded_file(
+            filename="demo.neko-plugin",
+            source_file=BytesIO(b"123456"),
+        )
+
+    assert not list(packages_root.glob("*"))
 
 
 @pytest.fixture

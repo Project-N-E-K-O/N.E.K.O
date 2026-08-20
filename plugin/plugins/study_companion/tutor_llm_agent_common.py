@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
-import inspect
 import re
 from typing import Any, Awaitable, Callable
 
@@ -49,28 +47,10 @@ except Exception as exc:  # pragma: no cover - guarded runtime dependency.
 else:
     _CONFIG_MANAGER_IMPORT_ERROR = None
 
-try:
-    import utils.llm_client as _llm_client_module
-except Exception as exc:  # pragma: no cover - guarded runtime dependency.
-    _llm_client_module = None  # type: ignore[assignment]
-    _LLM_CLIENT_IMPORT_ERROR = exc
-else:
-    _LLM_CLIENT_IMPORT_ERROR = None
-
-try:
-    import utils.token_tracker as _token_tracker_module
-except Exception as exc:  # pragma: no cover - guarded runtime dependency.
-    _token_tracker_module = None  # type: ignore[assignment]
-    _TOKEN_TRACKER_IMPORT_ERROR = exc
-else:
-    _TOKEN_TRACKER_IMPORT_ERROR = None
-
-
 _CODE_FENCE_RE = re.compile(r"^```(?:json)?\s*|\s*```$", re.IGNORECASE | re.DOTALL)
 _JSON_CORRECTION_MAX_ATTEMPTS = 1
 _JSON_CORRECTION_BAD_OUTPUT_MAX_TOKENS = 6000
 _JSON_CORRECTION_ERROR_MAX_TOKENS = 300
-_LLM_CALL_TIMEOUT_GRACE_SECONDS = 0.5
 _ANSWER_VERDICTS = frozenset({"correct", "partial", "wrong", "dont_know"})
 
 
@@ -155,6 +135,9 @@ def _bounded_prompt_text_chars(value: object, *, max_chars: int) -> str:
 
 
 def diagnostic_code_for_exception(exc: BaseException) -> str:
+    explicit_diagnostic = str(getattr(exc, "diagnostic", "") or "").strip()
+    if explicit_diagnostic:
+        return explicit_diagnostic
     name = exc.__class__.__name__.lower()
     message = str(exc).lower()
     if (
@@ -169,8 +152,10 @@ def diagnostic_code_for_exception(exc: BaseException) -> str:
         or "missing runtime dependency" in message
     ):
         return "model_unavailable"
-    if "auth" in name or "connection" in name or "unavailable" in name:
-        return "model_unavailable"
+    if "auth" in name:
+        return "authentication_failed"
+    if "connection" in name or "unavailable" in name:
+        return "provider_unavailable"
     return "llm_call_failed"
 
 
@@ -179,8 +164,6 @@ __all__ = [
     "Awaitable",
     "Callable",
     "asyncio",
-    "hashlib",
-    "inspect",
     "re",
     "STUDY_EMPTY_INPUT_DEFAULT",
     "STUDY_FALLBACK_EXPLANATION_DEFAULT",
@@ -215,15 +198,10 @@ __all__ = [
     "robust_json_loads",
     "_config_manager_module",
     "_CONFIG_MANAGER_IMPORT_ERROR",
-    "_llm_client_module",
-    "_LLM_CLIENT_IMPORT_ERROR",
-    "_token_tracker_module",
-    "_TOKEN_TRACKER_IMPORT_ERROR",
     "_CODE_FENCE_RE",
     "_JSON_CORRECTION_MAX_ATTEMPTS",
     "_JSON_CORRECTION_BAD_OUTPUT_MAX_TOKENS",
     "_JSON_CORRECTION_ERROR_MAX_TOKENS",
-    "_LLM_CALL_TIMEOUT_GRACE_SECONDS",
     "_ANSWER_VERDICTS",
     "_as_str",
     "_as_dict",

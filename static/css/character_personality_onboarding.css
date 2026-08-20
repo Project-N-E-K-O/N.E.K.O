@@ -44,9 +44,11 @@
 }
 
 .character-personality-shell {
+    display: flex;
+    flex-direction: column;
     width: min(780px, 100%);
     max-height: min(780px, calc(100vh - 48px));
-    overflow: auto;
+    overflow: hidden;
     border: 4px solid rgba(255, 255, 255, 0.96);
     border-radius: 32px;
     background: linear-gradient(180deg, rgba(255, 255, 255, 0.99), rgba(244, 251, 255, 0.98));
@@ -55,6 +57,7 @@
 }
 
 .shell-deco-bar {
+    flex: 0 0 auto;
     height: 10px;
     width: 100%;
     background: linear-gradient(
@@ -65,7 +68,10 @@
 }
 
 .character-personality-body {
-    min-height: 440px;
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
 }
 
 .character-personality-stage {

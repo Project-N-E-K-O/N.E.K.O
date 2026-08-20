@@ -197,10 +197,8 @@ class SearchCoordinator:
     ) -> SearchResults:
         state = self._backends.setdefault(backend, _BackendState(asyncio.Lock()))
         try:
-            await asyncio.wait_for(
-                state.lock.acquire(),
-                timeout=self.queue_wait_seconds,
-            )
+            async with asyncio.timeout(self.queue_wait_seconds):
+                await state.lock.acquire()
         except TimeoutError as error:
             raise SearchBusyError("search backend is busy; retry shortly") from error
         try:
@@ -319,5 +317,12 @@ class SearchCoordinator:
                     if self._inflight.get(key) is task:
                         self._inflight.pop(key, None)
                     task.cancel()
+                    # On Python 3.11 a cancellation can race with an immediately
+                    # completing ``wait_for(lock.acquire())`` and be consumed by
+                    # that awaitable. Give the task one turn, then repeat the
+                    # cancellation so caller-level timeouts remain a hard bound.
+                    await asyncio.sleep(0)
+                    if not task.done():
+                        task.cancel()
                     with suppress(asyncio.CancelledError):
                         await task

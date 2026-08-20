@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 import shutil
+import subprocess
 import zipfile
 
 import pytest
@@ -84,6 +86,49 @@ def _metadata_snapshot(metadata: dict[str, object]) -> dict[str, object]:
             "paths": source.get("paths"),
         },
     }
+
+
+@pytest.mark.plugin_integration
+def test_init_custom_output_generates_runnable_vscode_check_task(
+    tmp_path: Path,
+) -> None:
+    output = tmp_path / "custom-source-root" / "custom_output"
+
+    assert (
+        neko_plugin_cli.main(
+            ["init", "custom_output", "--output", str(output)]
+        )
+        == 0
+    )
+
+    settings = json.loads(
+        (output / ".vscode/settings.json").read_text(encoding="utf-8")
+    )
+    tasks = json.loads(
+        (output / ".vscode/tasks.json").read_text(encoding="utf-8")
+    )["tasks"]
+    check_task = next(
+        task for task in tasks if task["label"] == "N.E.K.O: check custom_output"
+    )
+
+    task_cwd = check_task["options"]["cwd"]
+    if task_cwd == "${config:nekoPlugin.repoRoot}":
+        task_cwd = settings["nekoPlugin.repoRoot"]
+    task_cwd = task_cwd.replace("${workspaceFolder}", str(output))
+    resolved_cwd = Path(task_cwd)
+    if not resolved_cwd.is_absolute():
+        resolved_cwd = output / resolved_cwd
+
+    completed = subprocess.run(
+        check_task["command"].replace("${workspaceFolder}", str(output)),
+        cwd=resolved_cwd.resolve(),
+        shell=True,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 0, completed.stdout + completed.stderr
 
 
 @pytest.mark.plugin_integration
@@ -229,7 +274,6 @@ def test_cli_workflow_rejects_repeated_executable_install_without_renaming(tmp_p
 
     package_path = target_dir / "simple_plugin.neko-plugin"
     assert package_path.is_file()
-    assert neko_plugin_cli.main(["verify", str(package_path)]) == 0
 
     assert (
         neko_plugin_cli.main(

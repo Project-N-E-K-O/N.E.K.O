@@ -15,6 +15,357 @@
     const mod = {};
     const S = window.appState;
     const C = window.appConst;
+    const DEFAULT_SPEAKER_DEVICE_ID = C.DEFAULT_SPEAKER_DEVICE_ID || 'default';
+    const SELECTED_SPEAKER_STORAGE_KEY = 'neko_selected_speaker';
+    let audioPlayerContextSetupPromise = null;
+    let speakerTransitionPromise = Promise.resolve();
+    let localSpeakerPreferenceRevision = 0;
+
+    function normalizeSpeakerDeviceId(deviceId) {
+        return typeof deviceId === 'string' && deviceId.length > 0
+            ? deviceId
+            : DEFAULT_SPEAKER_DEVICE_ID;
+    }
+
+    function notifySpeakerDeviceChanged(reason) {
+        window.dispatchEvent(new CustomEvent('neko:speaker-device-changed', {
+            detail: {
+                selectedDeviceId: normalizeSpeakerDeviceId(S.selectedSpeakerId),
+                effectiveDeviceId: normalizeSpeakerDeviceId(S.effectiveSpeakerId),
+                selectedDeviceAvailable: S.selectedSpeakerAvailable !== false,
+                reason: reason || 'change'
+            }
+        }));
+    }
+
+    function persistSelectedSpeaker(deviceId) {
+        var normalized = normalizeSpeakerDeviceId(deviceId);
+        try {
+            if (normalized === DEFAULT_SPEAKER_DEVICE_ID) {
+                localStorage.removeItem(SELECTED_SPEAKER_STORAGE_KEY);
+            } else {
+                localStorage.setItem(SELECTED_SPEAKER_STORAGE_KEY, normalized);
+            }
+        } catch (error) {
+            // Storage can be unavailable in restricted webviews. The current
+            // session must keep the successfully routed device even then.
+            console.warn('[Audio] 保存播放设备设置失败:', error);
+        }
+    }
+
+    function getContextEffectiveSpeakerId(context, fallbackDeviceId) {
+        if (context && typeof context.sinkId === 'string') {
+            return normalizeSpeakerDeviceId(context.sinkId);
+        }
+        return normalizeSpeakerDeviceId(fallbackDeviceId);
+    }
+
+    async function applySpeakerDeviceToContext(context, deviceId) {
+        if (!context) return false;
+        var normalized = normalizeSpeakerDeviceId(deviceId);
+        if (typeof context.setSinkId !== 'function') {
+            if (normalized === DEFAULT_SPEAKER_DEVICE_ID) return false;
+            var unsupportedError = new Error('Audio output device selection is not supported');
+            unsupportedError.name = 'NotSupportedError';
+            throw unsupportedError;
+        }
+        if (
+            context.sinkId === normalized
+            || (
+                normalized === DEFAULT_SPEAKER_DEVICE_ID
+                && context.sinkId === ''
+            )
+        ) return true;
+        await context.setSinkId(normalized);
+        return true;
+    }
+
+    function enqueueSpeakerTransition(operation) {
+        var task = speakerTransitionPromise.catch(function () {
+            // A failed transition must not poison later selections or recovery.
+        }).then(operation);
+        speakerTransitionPromise = task.catch(function () {
+            // Keep exactly one bounded tail promise; callers still receive the
+            // current task's result or error.
+        });
+        return task;
+    }
+
+    async function fallbackToDefaultSpeaker(context, error, reason, defaultAlreadyFailed) {
+        console.warn('[Audio] 播放设备不可用，回退到系统默认播放设备:', error);
+        if (normalizeSpeakerDeviceId(S.selectedSpeakerId) !== DEFAULT_SPEAKER_DEVICE_ID) {
+            S.selectedSpeakerAvailable = false;
+        }
+        var fallbackError = defaultAlreadyFailed ? error : null;
+        if (!fallbackError) {
+            try {
+                await applySpeakerDeviceToContext(context, DEFAULT_SPEAKER_DEVICE_ID);
+            } catch (applyError) {
+                fallbackError = applyError;
+            }
+        }
+        if (fallbackError) {
+            console.warn('[Audio] 应用系统默认播放设备失败:', fallbackError);
+            S.effectiveSpeakerId = getContextEffectiveSpeakerId(
+                context,
+                S.effectiveSpeakerId
+            );
+            notifySpeakerDeviceChanged((reason || 'fallback') + '-failed');
+            return S.effectiveSpeakerId;
+        }
+        S.effectiveSpeakerId = DEFAULT_SPEAKER_DEVICE_ID;
+        // Keep selectedSpeakerId and its localStorage entry intact. A temporary
+        // device outage must not erase the user's preferred output.
+        notifySpeakerDeviceChanged(reason || 'fallback');
+        return DEFAULT_SPEAKER_DEVICE_ID;
+    }
+
+    async function ensureAudioPlayerContext() {
+        if (S.audioPlayerContext) {
+            if (audioPlayerContextSetupPromise) {
+                await audioPlayerContextSetupPromise;
+            }
+            await speakerTransitionPromise;
+            return S.audioPlayerContext;
+        }
+
+        var AudioContextConstructor = window.AudioContext || window.webkitAudioContext;
+        var context = new AudioContextConstructor();
+        S.audioPlayerContext = context;
+        if (typeof window.syncAudioGlobals === 'function') {
+            window.syncAudioGlobals();
+        }
+
+        var preferredDeviceId = normalizeSpeakerDeviceId(S.selectedSpeakerId);
+        var initialDeviceId = S.selectedSpeakerAvailable === false
+            ? DEFAULT_SPEAKER_DEVICE_ID
+            : preferredDeviceId;
+        var setupPromise = enqueueSpeakerTransition(async function () {
+            if (S.audioPlayerContext !== context) return null;
+            try {
+                await applySpeakerDeviceToContext(context, initialDeviceId);
+                S.effectiveSpeakerId = initialDeviceId;
+                return initialDeviceId;
+            } catch (error) {
+                return fallbackToDefaultSpeaker(
+                    context,
+                    error,
+                    'context-fallback',
+                    initialDeviceId === DEFAULT_SPEAKER_DEVICE_ID
+                );
+            }
+        }).finally(function () {
+            if (audioPlayerContextSetupPromise === setupPromise) {
+                audioPlayerContextSetupPromise = null;
+            }
+        });
+        audioPlayerContextSetupPromise = setupPromise;
+        await setupPromise;
+        return S.audioPlayerContext;
+    }
+
+    async function selectSpeakerDevice(deviceId) {
+        var normalized = normalizeSpeakerDeviceId(deviceId);
+        if (audioPlayerContextSetupPromise) {
+            await audioPlayerContextSetupPromise;
+        }
+        return enqueueSpeakerTransition(async function () {
+            var previousDeviceId = normalizeSpeakerDeviceId(S.selectedSpeakerId);
+            var previousDeviceAvailable = S.selectedSpeakerAvailable;
+            var previousEffectiveDeviceId = normalizeSpeakerDeviceId(S.effectiveSpeakerId);
+            S.selectedSpeakerId = normalized;
+            S.selectedSpeakerAvailable = true;
+
+            try {
+                if (S.audioPlayerContext) {
+                    await applySpeakerDeviceToContext(S.audioPlayerContext, normalized);
+                    S.effectiveSpeakerId = normalized;
+                } else if (normalized !== DEFAULT_SPEAKER_DEVICE_ID) {
+                    var AudioContextConstructor = window.AudioContext || window.webkitAudioContext;
+                    if (
+                        !AudioContextConstructor
+                        || !AudioContextConstructor.prototype
+                        || typeof AudioContextConstructor.prototype.setSinkId !== 'function'
+                    ) {
+                        var unsupportedError = new Error('Audio output device selection is not supported');
+                        unsupportedError.name = 'NotSupportedError';
+                        throw unsupportedError;
+                    }
+                }
+
+                persistSelectedSpeaker(normalized);
+                localSpeakerPreferenceRevision += 1;
+                notifySpeakerDeviceChanged('selection');
+                return true;
+            } catch (error) {
+                S.selectedSpeakerId = previousDeviceId;
+                S.selectedSpeakerAvailable = previousDeviceAvailable;
+                if (S.audioPlayerContext) {
+                    try {
+                        await applySpeakerDeviceToContext(
+                            S.audioPlayerContext,
+                            previousEffectiveDeviceId
+                        );
+                        S.effectiveSpeakerId = previousEffectiveDeviceId;
+                    } catch (restoreError) {
+                        S.effectiveSpeakerId = getContextEffectiveSpeakerId(
+                            S.audioPlayerContext,
+                            S.effectiveSpeakerId
+                        );
+                        console.warn('[Audio] 恢复原播放设备失败:', restoreError);
+                    }
+                }
+                notifySpeakerDeviceChanged('selection-failed');
+                throw error;
+            }
+        });
+    }
+
+    async function loadSelectedSpeaker() {
+        var saved = null;
+        try {
+            saved = localStorage.getItem(SELECTED_SPEAKER_STORAGE_KEY);
+        } catch (error) {
+            console.warn('[Audio] 读取播放设备设置失败，使用系统默认播放设备:', error);
+        }
+        var savedDeviceId = normalizeSpeakerDeviceId(saved);
+        if (audioPlayerContextSetupPromise) {
+            await audioPlayerContextSetupPromise;
+        }
+        return enqueueSpeakerTransition(async function () {
+            S.selectedSpeakerId = savedDeviceId;
+            S.selectedSpeakerAvailable = savedDeviceId === DEFAULT_SPEAKER_DEVICE_ID
+                ? true
+                : null;
+            if (!S.audioPlayerContext) return S.selectedSpeakerId;
+            try {
+                await applySpeakerDeviceToContext(
+                    S.audioPlayerContext,
+                    savedDeviceId
+                );
+                S.effectiveSpeakerId = savedDeviceId;
+                S.selectedSpeakerAvailable = true;
+            } catch (error) {
+                await fallbackToDefaultSpeaker(
+                    S.audioPlayerContext,
+                    error,
+                    'load-fallback',
+                    savedDeviceId === DEFAULT_SPEAKER_DEVICE_ID
+                );
+            }
+            return S.selectedSpeakerId;
+        });
+    }
+
+    async function reconcileSelectedSpeakerDevices(devices) {
+        if (S.audioPlayerContext && audioPlayerContextSetupPromise) {
+            await audioPlayerContextSetupPromise;
+        }
+        var outputDevices = Array.isArray(devices)
+            ? devices.filter(function (device) { return device && device.kind === 'audiooutput'; })
+            : [];
+        return enqueueSpeakerTransition(async function () {
+            var preferredDeviceId = normalizeSpeakerDeviceId(S.selectedSpeakerId);
+            var preferredAvailable = preferredDeviceId === DEFAULT_SPEAKER_DEVICE_ID
+                || outputDevices.some(function (device) {
+                    return device.deviceId === preferredDeviceId;
+                });
+            S.selectedSpeakerAvailable = preferredAvailable;
+            var targetDeviceId = preferredAvailable
+                ? preferredDeviceId
+                : DEFAULT_SPEAKER_DEVICE_ID;
+
+            if (!S.audioPlayerContext) {
+                S.effectiveSpeakerId = DEFAULT_SPEAKER_DEVICE_ID;
+                notifySpeakerDeviceChanged(
+                    preferredAvailable ? 'devices-checked' : 'device-missing'
+                );
+                return preferredAvailable;
+            }
+
+            var currentSinkId = getContextEffectiveSpeakerId(
+                S.audioPlayerContext,
+                S.effectiveSpeakerId
+            );
+            if (
+                targetDeviceId === normalizeSpeakerDeviceId(S.effectiveSpeakerId)
+                && targetDeviceId === currentSinkId
+            ) {
+                // devicechange still re-enumerates and verifies existence. Avoid a
+                // redundant setSinkId only after that verification succeeds.
+                notifySpeakerDeviceChanged('devices-checked');
+                return preferredAvailable;
+            }
+
+            try {
+                await applySpeakerDeviceToContext(S.audioPlayerContext, targetDeviceId);
+                S.effectiveSpeakerId = targetDeviceId;
+                notifySpeakerDeviceChanged(
+                    preferredAvailable ? 'device-restored' : 'device-missing'
+                );
+            } catch (error) {
+                await fallbackToDefaultSpeaker(
+                    S.audioPlayerContext,
+                    error,
+                    preferredAvailable ? 'device-restore-fallback' : 'device-missing',
+                    targetDeviceId === DEFAULT_SPEAKER_DEVICE_ID
+                );
+                return false;
+            }
+            return preferredAvailable;
+        });
+    }
+
+    window.addEventListener('storage', function (event) {
+        if (event.key !== SELECTED_SPEAKER_STORAGE_KEY) return;
+        var eventDeviceId = normalizeSpeakerDeviceId(event.newValue);
+        var localRevisionAtArrival = localSpeakerPreferenceRevision;
+        Promise.resolve(audioPlayerContextSetupPromise).then(function () {
+            return enqueueSpeakerTransition(async function () {
+                // A local selection that completed after this event arrived is
+                // authoritative for this window. It will not receive a storage
+                // event for its own write, so an older queued event must not
+                // route back over it.
+                if (localRevisionAtArrival !== localSpeakerPreferenceRevision) {
+                    return;
+                }
+                var deviceId = eventDeviceId;
+                try {
+                    // Storage events may be delivered after newer writes. Read
+                    // the value at transaction time instead of trusting the
+                    // event snapshot captured before queued routes completed.
+                    deviceId = normalizeSpeakerDeviceId(
+                        localStorage.getItem(SELECTED_SPEAKER_STORAGE_KEY)
+                    );
+                } catch (error) {
+                    console.warn('[Audio] 读取跨窗口播放设备设置失败:', error);
+                }
+                S.selectedSpeakerId = deviceId;
+                S.selectedSpeakerAvailable = deviceId === DEFAULT_SPEAKER_DEVICE_ID
+                    ? true
+                    : null;
+                if (S.audioPlayerContext) {
+                    try {
+                        await applySpeakerDeviceToContext(S.audioPlayerContext, deviceId);
+                        S.effectiveSpeakerId = deviceId;
+                        S.selectedSpeakerAvailable = true;
+                        notifySpeakerDeviceChanged('storage');
+                    } catch (error) {
+                        await fallbackToDefaultSpeaker(
+                            S.audioPlayerContext,
+                            error,
+                            'storage-fallback',
+                            deviceId === DEFAULT_SPEAKER_DEVICE_ID
+                        );
+                    }
+                } else {
+                    notifySpeakerDeviceChanged('storage');
+                }
+            });
+        }).catch(function (error) {
+            console.warn('[Audio] 同步播放设备设置失败:', error);
+        });
+    });
 
     function normalizeAssistantTurnId(turnId) {
         if (turnId === undefined || turnId === null || turnId === '') {
@@ -1336,9 +1687,9 @@
             return;
         }
 
-        if (!S.audioPlayerContext) {
-            S.audioPlayerContext = new (window.AudioContext || window.webkitAudioContext)();
-            window.syncAudioGlobals();
+        await ensureAudioPlayerContext();
+        if (expectedEpoch !== S.incomingAudioEpoch) {
+            return;
         }
 
         if (S.audioPlayerContext.state === 'suspended') {
@@ -1622,6 +1973,11 @@
     mod.schedulePendingAudioMetaStallCheck = schedulePendingAudioMetaStallCheck;
     mod.rememberAssistantAudioSpeechTurn = rememberAssistantAudioSpeechTurn;
     mod.noteAssistantAudioStreamClosed = noteAssistantAudioStreamClosed;
+    mod.ensureAudioPlayerContext = ensureAudioPlayerContext;
+    mod.applySpeakerDeviceToContext = applySpeakerDeviceToContext;
+    mod.selectSpeakerDevice = selectSpeakerDevice;
+    mod.loadSelectedSpeaker = loadSelectedSpeaker;
+    mod.reconcileSelectedSpeakerDevices = reconcileSelectedSpeakerDevices;
     mod.saveSpeakerVolumeSetting = saveSpeakerVolumeSetting;
     mod.loadSpeakerVolumeSetting = loadSpeakerVolumeSetting;
 
@@ -1638,6 +1994,10 @@
     window.enqueueIncomingAudioBlob = enqueueIncomingAudioBlob;
     window.processIncomingAudioBlobQueue = processIncomingAudioBlobQueue;
     window.schedulePendingAudioMetaStallCheck = schedulePendingAudioMetaStallCheck;
+    window.ensureAudioPlayerContext = ensureAudioPlayerContext;
+    window.selectSpeakerDevice = selectSpeakerDevice;
+    window.loadSelectedSpeaker = loadSelectedSpeaker;
+    window.reconcileSelectedSpeakerDevices = reconcileSelectedSpeakerDevices;
     window.saveSpeakerVolumeSetting = saveSpeakerVolumeSetting;
     window.loadSpeakerVolumeSetting = loadSpeakerVolumeSetting;
 

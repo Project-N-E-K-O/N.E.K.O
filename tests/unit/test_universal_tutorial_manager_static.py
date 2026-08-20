@@ -518,6 +518,43 @@ def test_universal_tutorial_manager_releases_startup_greeting_without_manager_or
     assert "this.dispatchStartupGreetingRelease('avatar-floating-auto-round-check-failed');" in auto_round_block
 
 
+def test_universal_tutorial_manager_rearms_startup_greeting_before_resize_init():
+    source = _read_manager()
+
+    assert "function rearmStartupGreetingWithoutManager(reason, detail = {})" in source
+    rearm_block = source.split(
+        "function rearmStartupGreetingWithoutManager(reason, detail = {})",
+        1,
+    )[1].split("\n}", 1)[0]
+    assert "window.isNekoHomeTutorialPending = true;" in rearm_block
+    assert "window.__NEKO_TUTORIAL_STARTUP_SETTLED__ = false;" in rearm_block
+    assert "delete window.__NEKO_STARTUP_GREETING_RELEASED__;" in rearm_block
+    assert "released: false," in rearm_block
+    assert "window.dispatchEvent(new CustomEvent(STARTUP_GREETING_RELEASE_EVENT" in rearm_block
+    assert "detail: rearmDetail" in rearm_block
+
+    resize_block = source.split(
+        "window.addEventListener('resize', function retryUniversalTutorialManagerInit() {",
+        1,
+    )[1].split("\n    });", 1)[0]
+    rearm_call = "rearmStartupGreetingWithoutManager('tutorial-manager-resize-init'"
+    wait_call = "waitForActiveAutostartPromptClosed().then(function () {"
+    assert rearm_call in resize_block
+    assert wait_call in resize_block
+    assert resize_block.index(rearm_call) < resize_block.index(wait_call)
+    assert resize_block.index(wait_call) < resize_block.index(
+        "return initUniversalTutorialManager();"
+    )
+
+    wait_block = source.split("function waitForActiveAutostartPromptClosed()", 1)[1].split(
+        "\n}",
+        1,
+    )[0]
+    assert "'.modal-overlay-autostart-retention'" in wait_block
+    assert "window.addEventListener('neko:decision-prompt-closed', onPromptClosed);" in wait_block
+    assert "detail.skin === 'autostart-retention'" in wait_block
+
+
 def test_universal_tutorial_manager_resets_and_delays_startup_greeting_release():
     source = _read_manager()
 

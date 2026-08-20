@@ -409,7 +409,10 @@ class AgentOcrActuationMixin:
         elif kind not in {"advance", "probe", "choose"}:
             return False
         runtime = shared.get("ocr_reader_runtime")
-        return isinstance(runtime, dict) and int(runtime.get("pid") or 0) > 0
+        return (
+            isinstance(runtime, dict)
+            and self._normalized_numeric_identity(runtime.get("pid")) > 0
+        )
 
     def _should_block_dialogue_advance_for_visible_choices(
         self,
@@ -475,7 +478,7 @@ class AgentOcrActuationMixin:
             runtime = shared.get("memory_reader_runtime")
         if not isinstance(runtime, dict):
             return ""
-        pid = int(runtime.get("pid") or 0)
+        pid = self._normalized_numeric_identity(runtime.get("pid"))
         process_name = str(
             runtime.get("effective_process_name") or runtime.get("process_name") or ""
         ).strip()

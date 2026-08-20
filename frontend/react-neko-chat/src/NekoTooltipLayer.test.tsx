@@ -211,4 +211,10 @@ describe('NekoTooltipLayer', () => {
       /\.compact-chat-minimize-ball:focus-visible\s*\{[\s\S]*?outline: 2px solid[\s\S]*?box-shadow: inset 0 0 0 3px/,
     );
   });
+
+  it('pauses floating emoji tools while hovered or keyboard-focused', () => {
+    expect(chatStyles).toMatch(
+      /\.composer-icon-popover \.composer-icon-button:is\(:hover, :focus-visible\)\s*\{\s*animation-play-state: paused;/,
+    );
+  });
 });

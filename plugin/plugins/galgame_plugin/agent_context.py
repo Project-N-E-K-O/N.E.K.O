@@ -170,7 +170,6 @@ class AgentContextMixin:
                 "trigger": trigger,
                 "context_boundary": json_copy(boundary),
             },
-            update_scene_memory=False,
         )
 
     async def query_context(self, shared: dict[str, Any], *, context_query: str) -> dict[str, Any]:
