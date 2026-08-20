@@ -432,6 +432,7 @@ async def test_external_callback_rechecks_user_activity_after_visual_analysis():
     sess._expire_inject_rejection_handler = _expire
     sess._fire_task = _fire_task
     mgr = _make_mgr(session=sess)
+    mgr._schedule_proactive_retry = MagicMock()
     cb = {
         "_callback_delivery_id": "id-vad-during-vision",
         "status": "completed",
@@ -449,6 +450,9 @@ async def test_external_callback_rechecks_user_activity_after_visual_analysis():
     assert sess._inject_rejection_handlers == {}
     assert mgr.pending_agent_callbacks == [cb]
     assert cb.get("_voice_delivery_committed") is None
+    mgr._schedule_proactive_retry.assert_called_once_with(
+        mgr.proactive_manager.min_gap_s
+    )
 
 
 async def test_external_callback_rechecks_independent_asr_turn_after_visual_analysis():
@@ -456,6 +460,7 @@ async def test_external_callback_rechecks_independent_asr_turn_after_visual_anal
     sess = _make_voice_sess()
     sess._inject_rejection_handlers = {}
     mgr = _make_mgr(session=sess)
+    mgr._schedule_proactive_retry = MagicMock()
     independent_turn_active = False
     mgr._independent_asr_user_turn_active = lambda: independent_turn_active
 
@@ -506,6 +511,9 @@ async def test_external_callback_rechecks_independent_asr_turn_after_visual_anal
     assert sess._inject_rejection_handlers == {}
     assert mgr.pending_agent_callbacks == [cb]
     assert cb.get("_voice_delivery_committed") is None
+    mgr._schedule_proactive_retry.assert_called_once_with(
+        mgr.proactive_manager.min_gap_s
+    )
 
 
 async def test_voice_mode_sid_rotation_failure_arms_callback_retry():

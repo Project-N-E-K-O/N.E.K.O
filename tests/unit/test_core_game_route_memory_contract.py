@@ -836,6 +836,109 @@ async def test_invalid_one_shot_image_does_not_destroy_voice_session(
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_invalid_text_does_not_destroy_voice_session():
+    mgr = _make_manager()
+    realtime_session = object.__new__(core_module.OmniRealtimeClient)
+    mgr.session = realtime_session
+    mgr.is_active = True
+    mgr._starting_session_count = 0
+    mgr._session_start_circuit_open = False
+    mgr._emit_cooldown_turn_end_if_needed = Mock(return_value=False)
+    mgr.end_session = AsyncMock()
+    mgr.start_session = AsyncMock()
+
+    await core_module.LLMSessionManager._process_stream_data_internal(
+        mgr,
+        {"input_type": "text", "data": {"not": "text"}},
+    )
+
+    mgr.end_session.assert_not_awaited()
+    mgr.start_session.assert_not_awaited()
+    assert mgr.session is realtime_session
+    assert mgr.is_active is True
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_attachment_stages_before_inputs_cached_during_offline_handoff(
+    monkeypatch,
+):
+    mgr = _make_transcript_manager()
+    realtime_session = object.__new__(core_module.OmniRealtimeClient)
+    offline_session = object.__new__(core_module.OmniOfflineClient)
+    offline_session._pending_images = []
+    offline_session.update_max_response_length = Mock()
+    delivery_order = []
+
+    async def _stream_image(image_b64):
+        assert mgr.session is offline_session
+        delivery_order.append(("image", image_b64))
+
+    async def _stream_text(text, **_kwargs):
+        assert mgr.session is offline_session
+        delivery_order.append(("text", text))
+
+    offline_session.stream_image = AsyncMock(side_effect=_stream_image)
+    offline_session.stream_text = AsyncMock(side_effect=_stream_text)
+    mgr.session = realtime_session
+    mgr.is_active = True
+    mgr.session_ready = True
+    mgr.input_cache_lock = asyncio.Lock()
+    mgr.pending_input_data = []
+    mgr._starting_session_count = 0
+    mgr._session_start_circuit_open = False
+    mgr.session_start_failure_count = 0
+    mgr.session_start_max_failures = 3
+    mgr._emit_cooldown_turn_end_if_needed = Mock(return_value=False)
+    mgr._is_agent_enabled = Mock(return_value=False)
+    mgr.agent_flags = {}
+    mgr.pending_agent_callbacks = []
+    mgr._fire_task = Mock()
+
+    async def _end_session(*, reset_starting_count=True):
+        assert reset_starting_count is False
+        mgr.session = None
+        mgr.is_active = False
+
+    async def _start_session(_websocket, *, new=False, input_mode=None):
+        assert new is False
+        assert input_mode == "text"
+        mgr.session = offline_session
+        mgr.is_active = True
+        mgr.session_ready = True
+        mgr.pending_input_data.append(
+            {"input_type": "text", "data": "describe this image"}
+        )
+        await core_module.LLMSessionManager._flush_pending_input_data(mgr)
+        assert delivery_order == []
+
+    mgr.end_session = AsyncMock(side_effect=_end_session)
+    mgr.start_session = AsyncMock(side_effect=_start_session)
+    monkeypatch.setattr(
+        core_module,
+        "process_screen_data",
+        AsyncMock(return_value="img-b64"),
+    )
+    monkeypatch.setattr(
+        core_module,
+        "dispatch_text_user_message",
+        lambda _name, _text: None,
+    )
+
+    await core_module.LLMSessionManager._process_stream_data_internal(
+        mgr,
+        {"input_type": "avatar_drop_image", "data": "raw-image"},
+    )
+
+    assert delivery_order == [
+        ("image", "img-b64"),
+        ("text", "describe this image"),
+    ]
+    assert mgr.pending_input_data == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 @pytest.mark.parametrize("input_type", ["avatar_drop_image", "user_image"])
 async def test_one_shot_user_image_records_engagement(
     monkeypatch,

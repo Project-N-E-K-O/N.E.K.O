@@ -566,7 +566,9 @@ class _ResponseMixin:
                 and existing_submit_task is not submit_task
                 and not existing_submit_task.done()
             ):
-                self._settle_gemini_proactive_inject(notify=False)
+                outcome = getattr(self, "_gemini_proactive_outcome", None)
+                if outcome is not None and outcome[0] == outcome_token:
+                    self._settle_gemini_proactive_inject(notify=False)
                 raise RuntimeError("another Gemini proactive SDK send is pending")
             self._gemini_proactive_submit_task = submit_task
             try:
@@ -601,7 +603,9 @@ class _ResponseMixin:
                         )
                 raise
             except Exception:
-                self._settle_gemini_proactive_inject(notify=False)
+                outcome = getattr(self, "_gemini_proactive_outcome", None)
+                if outcome is not None and outcome[0] == outcome_token:
+                    self._settle_gemini_proactive_inject(notify=False)
                 raise
             finally:
                 if (

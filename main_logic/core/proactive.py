@@ -1073,6 +1073,12 @@ class ProactiveMixin:
                         "external visual analysis; deferring callback delivery",
                         self.lanlan_name,
                     )
+                    # The winning ASR turn may end without a final transcript
+                    # or response lifecycle event. Re-arm independently so the
+                    # retained callback cannot wait forever for response.done.
+                    self._schedule_proactive_retry(
+                        self.proactive_manager.min_gap_s
+                    )
                     return False
                 if _reject_state["rejected"]:
                     self._clear_voice_delivery_committed(voice_commit_snapshot)

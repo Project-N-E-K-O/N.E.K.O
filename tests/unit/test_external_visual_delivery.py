@@ -149,9 +149,24 @@ async def test_raw_visual_guard_rejects_native_qwen_frame_without_provider_event
 
     assert result == ImageStageResult(
         accepted=False,
-        mode="external_description",
+        mode="native",
         generation=0,
+        rejection_reason="raw_visual_delivery_blocked",
     )
+    client.ws.send.assert_not_awaited()
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_native_mode_noop_does_not_clear_independent_raw_visual_fence():
+    client = _make_qwen_client()
+    client.block_raw_visual_delivery()
+
+    client.set_visual_delivery_mode(VisualDeliveryMode.NATIVE)
+
+    assert client._raw_visual_delivery_blocked is True
+    result = await client.stream_image(DUMMY_IMAGE_B64)
+    assert result.rejection_reason == "raw_visual_delivery_blocked"
     client.ws.send.assert_not_awaited()
     await client.close()
 
@@ -205,6 +220,30 @@ async def test_external_callback_empty_analysis_is_terminal_rejection():
         generation=0,
         rejection_reason="analysis_empty",
     )
+    client.ws.send.assert_not_awaited()
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_external_callback_transient_analysis_error_remains_retriable(
+    monkeypatch,
+):
+    client = _make_qwen_client()
+    client.set_visual_delivery_mode(VisualDeliveryMode.EXTERNAL_DESCRIPTION)
+    monkeypatch.setattr(
+        "utils.screenshot_utils.analyze_image_with_vision_model",
+        AsyncMock(side_effect=RuntimeError("vision provider timeout")),
+    )
+
+    with pytest.raises(RuntimeError, match="vision provider timeout"):
+        await client.stream_image(
+            DUMMY_IMAGE_B64,
+            source="callback",
+            request_id="callback-transient-analysis",
+            bypass_rate_limit=True,
+            cache_latest=False,
+        )
+
     client.ws.send.assert_not_awaited()
     await client.close()
 

@@ -725,6 +725,13 @@ class _TransportMixin:
             if 'censorship' in error_str:
                 if self.on_status_message:
                     await self.on_status_message(json.dumps({"code": "IMAGE_BLOCKED"}))
+                return ""
+            if not update_turn_state:
+                # Callback-owned one-shot images are retriable work. Preserve
+                # transient provider/time-out failures as exceptions so the
+                # callback remains queued with its image; only censorship or an
+                # explicit empty model result is terminal ``analysis_empty``.
+                raise
             return ""
         finally:
             if update_turn_state:
@@ -746,13 +753,12 @@ class _TransportMixin:
             # Arm the raw-frame fence before turn/cache cleanup. Independent
             # ASR can keep its microphone route even if that cleanup fails.
             self.block_raw_visual_delivery()
-        if selected == getattr(
+        previous = getattr(
             self,
             "_visual_delivery_mode",
             VisualDeliveryMode.NATIVE,
-        ):
-            if selected == VisualDeliveryMode.NATIVE:
-                self._raw_visual_delivery_blocked = False
+        )
+        if selected == previous:
             return
         self._visual_delivery_mode = selected
         self._visual_delivery_epoch = getattr(self, "_visual_delivery_epoch", 0) + 1
@@ -764,7 +770,10 @@ class _TransportMixin:
         self._latest_image_source = "unknown"
         self._latest_image_request_id = None
         self._proactive_image_consumed = True
-        if selected == VisualDeliveryMode.NATIVE:
+        if (
+            previous == VisualDeliveryMode.EXTERNAL_DESCRIPTION
+            and selected == VisualDeliveryMode.NATIVE
+        ):
             self._raw_visual_delivery_blocked = False
 
     def _begin_external_visual_turn(self, turn_id: str) -> None:
@@ -938,8 +947,9 @@ class _TransportMixin:
             ):
                 return ImageStageResult(
                     accepted=False,
-                    mode=VisualDeliveryMode.EXTERNAL_DESCRIPTION.value,
+                    mode=delivery_mode.value,
                     generation=getattr(self, "_latest_image_generation", 0),
+                    rejection_reason="raw_visual_delivery_blocked",
                 )
             if delivery_mode == VisualDeliveryMode.EXTERNAL_DESCRIPTION:
                 stable_source = str(source or "unknown").strip() or "unknown"

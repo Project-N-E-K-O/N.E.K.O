@@ -100,6 +100,13 @@ class StreamingMixin:
     
     async def _flush_pending_input_data(self):
         """Send the cached input data to the session"""
+        # A realtime -> offline attachment handoff must stage the attachment
+        # before inputs that arrived while the replacement session was
+        # starting. ``start_session`` normally flushes as soon as the session
+        # becomes ready; defer that nested flush until the owning attachment
+        # finishes its one-shot ``stream_image`` call.
+        if getattr(self, "_deferred_pending_input_flush_count", 0) > 0:
+            return
         async with self.input_cache_lock:
             if not self.pending_input_data:
                 return
@@ -327,8 +334,12 @@ class StreamingMixin:
                 logger.warning("⚠️ Session启动失败，放弃本次数据流")
                 return
         
+        defer_pending_flush = False
         try:
             validated_one_shot_image_b64 = None
+            if input_type == "text" and not isinstance(data, str):
+                logger.error(f"💥 Stream: Invalid text data type: {type(data)}")
+                return
             if input_type in {"avatar_drop_image", "user_image"}:
                 if self._should_drop_magic_command_image(message.get("request_id")):
                     return
@@ -348,6 +359,13 @@ class StreamingMixin:
                 if not validated_one_shot_image_b64:
                     logger.error("💥 Stream: 图像数据验证失败")
                     return
+
+                if not isinstance(self.session, OmniOfflineClient):
+                    self._deferred_pending_input_flush_count = (
+                        getattr(self, "_deferred_pending_input_flush_count", 0)
+                        + 1
+                    )
+                    defer_pending_flush = True
 
             if input_type in _TEXT_SESSION_INPUT_TYPES:
                 if not await self._ensure_offline_session_for_text_input(input_type):
@@ -696,3 +714,23 @@ class StreamingMixin:
             error_message = f"Stream: Error sending data to session: {e}"
             logger.error(f"💥 {error_message}")
             await self.send_status(json.dumps({"code": "API_UNKNOWN_ERROR", "details": {"msg": error_message}}))
+        finally:
+            if defer_pending_flush:
+                self._deferred_pending_input_flush_count = max(
+                    0,
+                    getattr(self, "_deferred_pending_input_flush_count", 1) - 1,
+                )
+                if (
+                    self._deferred_pending_input_flush_count == 0
+                    and self.is_active
+                    and isinstance(self.session, OmniOfflineClient)
+                ):
+                    try:
+                        await self._flush_pending_input_data()
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as flush_error:
+                        logger.error(
+                            "💥 deferred attachment input flush failed: %s",
+                            flush_error,
+                        )

@@ -866,6 +866,43 @@ async def test_gemini_cancelled_send_quarantines_until_terminal():
 
 
 @pytest.mark.unit
+async def test_gemini_send_conflict_cannot_clear_another_inject_outcome():
+    client = _make_client(api_type="gemini", model="gemini-live")
+    client._gemini_session = AsyncMock()
+    send_started = asyncio.Event()
+    release_send = asyncio.Event()
+
+    async def blocked_send(*_args, **kwargs):
+        if kwargs.get("turns") is not None:
+            send_started.set()
+            await release_send.wait()
+
+    client._gemini_session.send_client_content.side_effect = blocked_send
+    owner_task = asyncio.create_task(
+        client.inject_text_and_request_response(
+            "owner inject",
+            on_rejected=lambda _message: None,
+            on_completed=lambda: None,
+        )
+    )
+    await send_started.wait()
+    owner_outcome = client._gemini_proactive_outcome
+
+    with pytest.raises(
+        RuntimeError,
+        match="another Gemini proactive SDK send is pending",
+    ):
+        await client.inject_text_and_request_response("competing inject")
+
+    assert client._gemini_proactive_outcome is owner_outcome
+    assert client._proactive_inject_awaiting_outcome is True
+    release_send.set()
+    await owner_task
+    client._settle_gemini_proactive_inject(notify=False)
+    await client.close()
+
+
+@pytest.mark.unit
 async def test_delivery_timeout_cancels_only_returned_proactive_ticket(monkeypatch):
     client = _make_client()
     ticket = object()
