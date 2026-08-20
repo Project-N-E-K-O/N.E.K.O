@@ -111,6 +111,9 @@ _GITHUB_PROXY_SOURCES = (
     ("edgeone-gh-proxy-org", "https://edgeone.gh-proxy.org/"),
 )
 _GITHUB_PROXY_PROBE_TIMEOUT = 8.0
+_GITHUB_PROXY_PROBE_CONCURRENCY = 3
+_GITHUB_PROXY_MEASURE_LOCK = asyncio.Lock()
+_GITHUB_PROXY_MEASURE_TASK: asyncio.Task[tuple[dict[str, object], ...]] | None = None
 
 
 def _normalize_required_sha256(value: str | None) -> str:
@@ -635,22 +638,24 @@ async def market_status():
     )
 
 
-@router.get("/github-proxy/measure")
-async def measure_github_proxy_sources() -> dict[str, object]:
-    """Measure the fixed proxy list from the machine that downloads packages."""
+async def _measure_github_proxy_sources() -> tuple[dict[str, object], ...]:
+    """Measure the fixed proxy list with a bounded number of outbound probes."""
+
+    semaphore = asyncio.Semaphore(_GITHUB_PROXY_PROBE_CONCURRENCY)
 
     async def probe(source_id: str, base_url: str) -> dict[str, object]:
         started_at = time.monotonic()
         status_code: int | None = None
         try:
-            async with httpx.AsyncClient(
-                timeout=httpx.Timeout(_GITHUB_PROXY_PROBE_TIMEOUT),
-                follow_redirects=True,
-                max_redirects=5,
-            ) as client:
-                response = await client.head(base_url)
-                status_code = response.status_code
-                available = response.status_code < 400
+            async with semaphore:
+                async with httpx.AsyncClient(
+                    timeout=httpx.Timeout(_GITHUB_PROXY_PROBE_TIMEOUT),
+                    follow_redirects=True,
+                    max_redirects=5,
+                ) as client:
+                    response = await client.head(base_url)
+                    status_code = response.status_code
+                    available = response.status_code < 400
         except httpx.HTTPError:
             available = False
         latency_ms = round((time.monotonic() - started_at) * 1000)
@@ -665,6 +670,29 @@ async def measure_github_proxy_sources() -> dict[str, object]:
     measured = await asyncio.gather(
         *(probe(source_id, base_url) for source_id, base_url in _GITHUB_PROXY_SOURCES)
     )
+    return tuple(measured)
+
+
+@router.get("/github-proxy/measure")
+async def measure_github_proxy_sources() -> dict[str, object]:
+    """Measure sources once for concurrent callers from the local UI."""
+
+    global _GITHUB_PROXY_MEASURE_TASK
+    async with _GITHUB_PROXY_MEASURE_LOCK:
+        if _GITHUB_PROXY_MEASURE_TASK is None or _GITHUB_PROXY_MEASURE_TASK.done():
+            _GITHUB_PROXY_MEASURE_TASK = asyncio.create_task(
+                _measure_github_proxy_sources(),
+                name="market-github-proxy-measure",
+            )
+        task = _GITHUB_PROXY_MEASURE_TASK
+
+    try:
+        measured = await asyncio.shield(task)
+    finally:
+        if task.done():
+            async with _GITHUB_PROXY_MEASURE_LOCK:
+                if _GITHUB_PROXY_MEASURE_TASK is task:
+                    _GITHUB_PROXY_MEASURE_TASK = None
     return {"sources": measured}
 
 
@@ -2810,11 +2838,15 @@ async def _do_install(
                 progress=0.7,
                 message="正在校验文件完整性...",
             )
-            sha_check = await asyncio.to_thread(
-                _verify_sha256_file,
+            package_path, sha_check = await _verify_downloaded_package_with_fallback(
+                payload.package_url,
                 package_path,
                 payload.package_sha256,
+                task,
             )
+        except _DownloadAttemptError as exc:
+            _raise_if_task_cancel_requested(task)
+            raise _TaskError(code="download_failed", message=str(exc)) from exc
         except ValueError as exc:
             _raise_if_task_cancel_requested(task)
             raise _TaskError(code="package_hash_mismatch", message=str(exc)) from exc
@@ -2979,11 +3011,15 @@ async def _do_upgrade(
                 progress=0.7,
                 message="正在校验文件完整性...",
             )
-            sha_check = await asyncio.to_thread(
-                _verify_sha256_file,
+            package_path, sha_check = await _verify_downloaded_package_with_fallback(
+                payload.package_url,
                 package_path,
                 payload.package_sha256,
+                task,
             )
+        except _DownloadAttemptError as exc:
+            _raise_if_task_cancel_requested(task)
+            raise _TaskError(code="download_failed", message=str(exc)) from exc
         except ValueError as exc:
             _raise_if_task_cancel_requested(task)
             raise _TaskError(code="package_hash_mismatch", message=str(exc)) from exc
@@ -3328,6 +3364,57 @@ def _direct_github_download_fallback(url: str) -> str | None:
     return None
 
 
+def _prepare_direct_github_fallback(task: dict[str, Any], message: str) -> None:
+    """Reset task progress before retrying a failed proxy via GitHub direct."""
+
+    task["downloaded_bytes"] = 0
+    task["total_bytes"] = None
+    task["progress"] = 0.1
+    task["message"] = message
+
+
+async def _verify_downloaded_package_with_fallback(
+    url: str,
+    package_path: Path,
+    expected_hash: str,
+    task: dict[str, Any],
+) -> tuple[Path, Literal["passed", "mismatch"]]:
+    """Verify a package and retry one allowlisted proxy mismatch via GitHub."""
+
+    try:
+        return package_path, await asyncio.to_thread(
+            _verify_sha256_file,
+            package_path,
+            expected_hash,
+        )
+    except ValueError:
+        fallback_url = _direct_github_download_fallback(url)
+        if not fallback_url:
+            raise
+        _cleanup_download_file(package_path)
+        logger.warning(
+            "[market-download] proxy package hash mismatch; retrying direct GitHub "
+            "origin={} fallback_origin={}",
+            _safe_url_log_origin(url),
+            _safe_url_log_origin(fallback_url),
+        )
+        _prepare_direct_github_fallback(
+            task,
+            "镜像下载内容校验失败，正在通过 GitHub 直连重试...",
+        )
+        direct_path = await _download_package_once(fallback_url, task)
+        try:
+            sha_check = await asyncio.to_thread(
+                _verify_sha256_file,
+                direct_path,
+                expected_hash,
+            )
+        except Exception:
+            _cleanup_download_file(direct_path)
+            raise
+        return direct_path, sha_check
+
+
 async def _download_package(url: str, task: dict[str, Any]) -> Path:
     """Download a package, retrying a failed allowlisted proxy via GitHub direct."""
 
@@ -3343,10 +3430,10 @@ async def _download_package(url: str, task: dict[str, Any]) -> Path:
             _safe_url_log_origin(url),
             _safe_url_log_origin(fallback_url),
         )
-        task["downloaded_bytes"] = 0
-        task["total_bytes"] = None
-        task["progress"] = 0.1
-        task["message"] = "镜像下载失败，正在通过 GitHub 直连重试..."
+        _prepare_direct_github_fallback(
+            task,
+            "镜像下载失败，正在通过 GitHub 直连重试...",
+        )
         return await _download_package_once(fallback_url, task)
 
 

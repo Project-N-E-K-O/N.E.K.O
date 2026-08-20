@@ -308,7 +308,10 @@ import type {
 } from '@/composables/workbenchDescriptors'
 import { usePluginStore } from '@/stores/plugin'
 import { useUserPreferenceStore } from '@/stores/userPreference'
-import { useGithubMirrorSource } from '@/composables/useGithubMirrorSource'
+import {
+  isGithubReleaseDownloadUrl,
+  useGithubMirrorSource,
+} from '@/composables/useGithubMirrorSource'
 import { narrowMarketChannel } from '@/utils/narrowChannel'
 import { openExternalUrl } from '@/utils/openExternal'
 
@@ -1089,10 +1092,12 @@ async function handleInstall(plugin: MarketWorkbenchItem) {
       return
     }
 
-    try {
-      await ensureAutoSource()
-    } catch {
-      ElMessage.warning(t('mirrorSource.installFallback'))
+    if (isGithubReleaseDownloadUrl(payload.package_url)) {
+      try {
+        await ensureAutoSource()
+      } catch {
+        ElMessage.warning(t('mirrorSource.installFallback'))
+      }
     }
     packageUrl = resolveGithubDownloadUrl(payload.package_url)
     installingId.value = plugin.id
@@ -1171,10 +1176,12 @@ async function handleUpgrade(plugin: MarketWorkbenchItem) {
       return
     }
 
-    try {
-      await ensureAutoSource()
-    } catch {
-      ElMessage.warning(t('mirrorSource.installFallback'))
+    if (isGithubReleaseDownloadUrl(payload.package_url)) {
+      try {
+        await ensureAutoSource()
+      } catch {
+        ElMessage.warning(t('mirrorSource.installFallback'))
+      }
     }
     const packageUrl = resolveGithubDownloadUrl(payload.package_url)
     upgradingId.value = plugin.id

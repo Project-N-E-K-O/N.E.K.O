@@ -55,6 +55,22 @@ function isMirrorSourceId(value: unknown): value is GithubMirrorSourceId {
   return typeof value === 'string' && GITHUB_SPEED_TEST_SOURCES.some((source) => source.id === value)
 }
 
+/** Whether a URL is a credential-free GitHub Release asset safe to proxy. */
+export function isGithubReleaseDownloadUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url)
+    return (
+      parsed.protocol === 'https:'
+      && parsed.hostname.toLowerCase() === 'github.com'
+      && !parsed.username
+      && !parsed.password
+      && parsed.pathname.includes('/releases/download/')
+    )
+  } catch {
+    return false
+  }
+}
+
 function loadSettings(): StoredMirrorSource {
   const defaults: StoredMirrorSource = {
     mode: 'auto',
@@ -186,14 +202,7 @@ function resolveGithubDownloadUrl(url: string): string {
   if (!source) return url
   if (source.id === GITHUB_DIRECT_SOURCE.id) return url
 
-  try {
-    const parsed = new URL(url)
-    if (parsed.protocol !== 'https:' || parsed.hostname.toLowerCase() !== 'github.com') {
-      return url
-    }
-  } catch {
-    return url
-  }
+  if (!isGithubReleaseDownloadUrl(url)) return url
 
   return `${source.baseUrl}${url}`
 }
