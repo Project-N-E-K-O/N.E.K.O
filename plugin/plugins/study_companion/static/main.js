@@ -1969,7 +1969,8 @@ async function runOcr(options = {}) {
     setStatus(t('ui.status.ocr_canceled', 'Screen selection canceled'));
     return data;
   }
-  const fallbackMessage = data.capture_mode_used === 'fullscreen'
+  const ocrStatus = data.status || 'unknown';
+  const fallbackMessage = data.capture_mode_used === 'fullscreen' && ['ok', 'empty'].includes(ocrStatus)
     ? interactiveOcrFallbackMessage(data.interactive_fallback_reason)
     : '';
   if (data.text) {
@@ -1979,7 +1980,7 @@ async function runOcr(options = {}) {
   }
   setReply(data.text || data.diagnostic || data.summary || '');
   await refreshStatus({ updateReply: false });
-  setStatus(fallbackMessage || tf('ui.status.ocr_result', 'OCR {status}', { status: data.status || 'unknown' }));
+  setStatus(fallbackMessage || tf('ui.status.ocr_result', 'OCR {status}', { status: ocrStatus }));
   return data;
 }
 

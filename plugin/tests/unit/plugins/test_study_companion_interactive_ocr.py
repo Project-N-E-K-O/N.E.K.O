@@ -418,9 +418,12 @@ def test_ocr_entry_and_static_ui_expose_interactive_timeout_contract() -> None:
     assert "studyInput.value" not in canceled
     assert "setReply(" not in canceled
     assert "studyInput.value = data.text;" in run_ocr
+    assert "const ocrStatus = data.status || 'unknown';" in run_ocr
+    assert "['ok', 'empty'].includes(ocrStatus)" in run_ocr
     assert run_ocr.index("await refreshStatus({ updateReply: false });") < run_ocr.index(
         "setStatus(fallbackMessage || tf('ui.status.ocr_result'"
     )
+    assert "{ status: ocrStatus }" in run_ocr
     assert "generateQuestion()" not in run_ocr
 
 
