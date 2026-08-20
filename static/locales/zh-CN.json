@@ -2801,6 +2801,8 @@
         "enrollmentComplete": "Owner 声纹已保存并启用。",
         "microphoneDenied": "无法使用麦克风，请检查权限和设备。",
         "requestFailed": "操作失败，请稍后重试。",
+        "errorInvalidPcm": "录音格式无效，请重新录入。",
+        "errorAudioTooLong": "录音时间过长，请重新录入。",
         "deleteConfirm": "删除后需要重新录入才能使用声纹过滤。"
     },
     "settings": {

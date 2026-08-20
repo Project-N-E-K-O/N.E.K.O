@@ -368,7 +368,7 @@ async def _prepare_candidate_rejection_fixture() -> tuple[
     return detector, shadow, candidate, shadow_candidate, turn_token
 
 
-async def test_speaker_shadow_default_none_keeps_smart_turn_callbacks_inert() -> None:
+async def test_speaker_shadow_default_none_keeps_smart_turn_callbacks_installed() -> None:
     detector = DetectorRuntime(
         vad=_Vad(),
         gate=_Gate(),

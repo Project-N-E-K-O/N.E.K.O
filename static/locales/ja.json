@@ -2801,6 +2801,8 @@
         "enrollmentComplete": "Owner 声紋を保存して有効化しました。",
         "microphoneDenied": "マイクを使用できません。権限とデバイスを確認してください。",
         "requestFailed": "操作に失敗しました。もう一度お試しください。",
+        "errorInvalidPcm": "録音形式が無効です。もう一度登録してください。",
+        "errorAudioTooLong": "録音が長すぎます。もう一度登録してください。",
         "deleteConfirm": "削除すると、声紋フィルターを使う前に再登録が必要です。"
     },
     "settings": {

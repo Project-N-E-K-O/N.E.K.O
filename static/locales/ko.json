@@ -2801,6 +2801,8 @@
         "enrollmentComplete": "Owner 음성 지문이 저장되고 활성화되었습니다.",
         "microphoneDenied": "마이크를 사용할 수 없습니다. 권한과 장치를 확인해 주세요.",
         "requestFailed": "작업에 실패했습니다. 다시 시도해 주세요.",
+        "errorInvalidPcm": "녹음 형식이 올바르지 않습니다. 다시 등록해 주세요.",
+        "errorAudioTooLong": "녹음이 너무 깁니다. 다시 등록해 주세요.",
         "deleteConfirm": "삭제하면 음성 지문 필터를 사용하기 전에 다시 등록해야 합니다."
     },
     "settings": {

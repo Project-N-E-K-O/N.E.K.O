@@ -259,8 +259,8 @@ def test_binary_profile_upload_forwards_exact_headers_and_body_idempotently(
 @pytest.mark.parametrize(
     ("body_size", "content_type", "expected_status", "expected_code"),
     [
-        (MAX_PCM_BYTES, "application/octet-stream", 415, "pcm_invalid"),
-        (MAX_PCM_BYTES + 1, PCM_CONTENT_TYPE, 413, "pcm_too_long"),
+        (MAX_PCM_BYTES, "application/octet-stream", 415, "invalid_pcm"),
+        (MAX_PCM_BYTES + 1, PCM_CONTENT_TYPE, 413, "audio_too_long"),
     ],
 )
 def test_profile_upload_rejects_wrong_type_and_more_than_four_seconds(
@@ -392,6 +392,30 @@ def test_filter_requires_boolean_and_forwards_requested_value(
     assert enabled.json() == SAFE_STATUS
     service.set_filter.assert_awaited_once_with(True)
     _assert_private_values_absent(enabled.json())
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "request_kwargs",
+    [
+        {},
+        {"content": "{"},
+        {"json": []},
+        {"json": None},
+    ],
+)
+def test_filter_rejects_missing_malformed_and_non_object_json_consistently(
+    monkeypatch: pytest.MonkeyPatch,
+    request_kwargs: dict[str, object],
+) -> None:
+    service = _fake_service()
+    client = _client(monkeypatch, service)
+
+    response = client.put(f"{API_ROOT}/filter", **request_kwargs)
+
+    assert response.status_code == 422
+    assert response.json() == {"error_code": "invalid_enabled"}
+    service.set_filter.assert_not_awaited()
 
 
 @pytest.mark.unit

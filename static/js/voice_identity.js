@@ -19,6 +19,10 @@
         runtime_degraded: 'voiceIdentity.reasonRuntimeDegraded',
         unsupported_asr_route: 'voiceIdentity.reasonUnsupportedAsrRoute'
     });
+    const ENROLLMENT_ERROR_MESSAGES = Object.freeze({
+        invalid_pcm: ['voiceIdentity.errorInvalidPcm', '录音格式无效，请重新录入。'],
+        audio_too_long: ['voiceIdentity.errorAudioTooLong', '录音时间过长，请重新录入。']
+    });
 
     const state = {
         csrfToken: '',
@@ -242,6 +246,14 @@
         elements.message.classList.toggle('error', Boolean(isError));
     }
 
+    function enrollmentErrorMessage(error) {
+        const configured = error && ENROLLMENT_ERROR_MESSAGES[error.message];
+        if (!configured) {
+            return translate('voiceIdentity.requestFailed', '操作失败，请稍后重试。');
+        }
+        return translate(configured[0], configured[1]);
+    }
+
     function reasonMessage() {
         if (!state.profileAvailable) {
             return translate('voiceIdentity.profileMissing', '尚未录入 Owner 声纹');
@@ -419,6 +431,9 @@
         if (window.crypto && typeof window.crypto.randomUUID === 'function') {
             return window.crypto.randomUUID();
         }
+        if (!window.crypto || typeof window.crypto.getRandomValues !== 'function') {
+            throw new Error('crypto_unavailable');
+        }
         const bytes = new Uint8Array(16);
         window.crypto.getRandomValues(bytes);
         bytes[6] = (bytes[6] & 0x0f) | 0x40;
@@ -565,10 +580,7 @@
                                 'voiceIdentity.microphoneDenied',
                                 '无法使用麦克风，请检查权限和设备。'
                             )
-                            : translate(
-                                'voiceIdentity.requestFailed',
-                                '操作失败，请稍后重试。'
-                            ),
+                            : enrollmentErrorMessage(error),
                         true
                     );
                 }

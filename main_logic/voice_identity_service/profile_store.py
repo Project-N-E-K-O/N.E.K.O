@@ -34,6 +34,7 @@ _AAD: Final = b"N.E.K.O.voice-identity.profile\x00v1"
 _NONCE_BYTES: Final = 12
 _KEY_BYTES: Final = 32
 _DPAPI_UI_FORBIDDEN: Final = 0x1
+_replace = os.replace
 
 
 class VoiceIdentityProfileStoreError(RuntimeError):
@@ -434,7 +435,7 @@ class VoiceIdentityProfileStore:
     def _commit_staged(self, temporary_path: Path) -> None:
         with self._lock:
             try:
-                os.replace(temporary_path, self._path)
+                _replace(temporary_path, self._path)
             except OSError as exc:
                 raise VoiceIdentityProfileStoreError(
                     "voice identity profile could not be committed"

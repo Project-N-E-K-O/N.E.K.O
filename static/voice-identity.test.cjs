@@ -16,6 +16,13 @@ const template = fs.readFileSync(
 
 const API_ROOT = '/api/voice-identity';
 const PCM_CONTENT_TYPE = 'audio/pcm;format=pcm_s16le;rate=16000;channels=1';
+const TARGET_SAMPLE_RATE = 16000;
+const RECORDING_MS = 4000;
+const CAPTURE_TIMEOUT_MS = RECORDING_MS + 1000;
+const WINDOW_CLOSE_START_WAIT_MS = 500;
+const TARGET_SAMPLES = TARGET_SAMPLE_RATE * RECORDING_MS / 1000;
+const CHUNK_SAMPLES = 512;
+const FULL_AUDIO_CHUNKS = Math.ceil(TARGET_SAMPLES / CHUNK_SAMPLES);
 
 function deferred() {
     let resolve;
@@ -108,11 +115,12 @@ function createHarness({
     startGate,
     mediaGate,
     mediaError,
-    audioChunks = 125,
+    audioChunks = FULL_AUDIO_CHUNKS,
     manualAudio = false,
     profileError,
     showConfirm,
     nativeConfirm = true,
+    webCryptoAvailable = true,
 } = {}) {
     const elementIds = [
         'voice-identity-status-dot',
@@ -142,6 +150,7 @@ function createHarness({
     let enrollmentId = null;
     let statusRequestCount = 0;
     let timerId = 0;
+    let audioContext = null;
 
     const statusPayload = () => ({
         requested_enabled: serverRequested,
@@ -216,6 +225,7 @@ function createHarness({
 
     class MockAudioContext {
         constructor() {
+            audioContext = this;
             this.sampleRate = 48000;
             this.destination = {};
             this.state = 'suspended';
@@ -272,6 +282,8 @@ function createHarness({
                 'voiceIdentity.enrollmentComplete': 'Enrollment complete.',
                 'voiceIdentity.microphoneDenied': 'Microphone unavailable.',
                 'voiceIdentity.requestFailed': 'Request failed.',
+                'voiceIdentity.errorInvalidPcm': 'Invalid recording format.',
+                'voiceIdentity.errorAudioTooLong': 'Recording is too long.',
                 'voiceIdentity.deleteConfirm': 'Delete the profile?',
                 'voiceIdentity.delete': 'Delete voice profile',
             };
@@ -290,15 +302,21 @@ function createHarness({
         clearInterval() {},
         setTimeout(callback, delay) {
             timerId += 1;
-            if (delay === 5000 && !manualAudio) {
-                Promise.resolve().then(() => {
-                    for (let index = 0; index < audioChunks; index += 1) {
-                        processor?.port.onmessage?.({ data: new Int16Array(512).fill(1024) });
-                    }
-                    if (audioChunks < 125) callback();
-                });
-            } else if (delay === 500) {
+            if (delay === CAPTURE_TIMEOUT_MS) {
+                if (!manualAudio) {
+                    Promise.resolve().then(() => {
+                        for (let index = 0; index < audioChunks; index += 1) {
+                            processor?.port.onmessage?.({
+                                data: new Int16Array(CHUNK_SAMPLES).fill(1024),
+                            });
+                        }
+                        if (audioChunks < FULL_AUDIO_CHUNKS) callback();
+                    });
+                }
+            } else if (delay === WINDOW_CLOSE_START_WAIT_MS) {
                 Promise.resolve().then(callback);
+            } else {
+                throw new Error(`unmodeled setTimeout delay: ${delay}`);
             }
             return timerId;
         },
@@ -307,13 +325,13 @@ function createHarness({
         webkitAudioContext: undefined,
         showConfirm,
         confirm: () => nativeConfirm,
-        crypto: {
+        crypto: webCryptoAvailable ? {
             randomUUID: () => 'profile-1',
             getRandomValues(values) {
                 values.fill(1);
                 return values;
             },
-        },
+        } : undefined,
     };
 
     const context = {
@@ -364,6 +382,9 @@ function createHarness({
         fetchCalls,
         mediaStreams,
         workletModules,
+        getAudioContext() {
+            return audioContext;
+        },
         get mediaRequests() {
             return mediaRequests;
         },
@@ -427,7 +448,7 @@ test('one click requests permission, records four seconds, and PUTs exact PCM16'
     ]);
     const upload = harness.fetchCalls.at(-1);
     assert.equal(upload.options.method, 'PUT');
-    assert.equal(upload.options.body.byteLength, 16000 * 4 * 2);
+    assert.equal(upload.options.body.byteLength, TARGET_SAMPLES * 2);
     assert.equal(upload.options.headers.get('content-type'), PCM_CONTENT_TYPE);
     assert.equal(upload.options.headers.get('x-voice-identity-enrollment'), 'enrollment-1');
     assert.equal(upload.options.headers.get('x-voice-identity-profile'), 'profile-1');
@@ -466,6 +487,41 @@ test('server rejection for insufficient usable speech stays fail-safe and visibl
         true,
     );
     assert.equal(harness.elements.get('voice-identity-profile-controls').hidden, true);
+    assert.equal(harness.elements.get('voice-identity-message').textContent, 'Request failed.');
+});
+
+test('canonical enrollment audio errors show localized messages', async () => {
+    const invalid = createHarness({ profileError: 'invalid_pcm' });
+    await invalid.initialize();
+    await invalid.emit('voice-identity-start');
+    assert.equal(
+        invalid.elements.get('voice-identity-message').textContent,
+        'Invalid recording format.',
+    );
+
+    const tooLong = createHarness({ profileError: 'audio_too_long' });
+    await tooLong.initialize();
+    await tooLong.emit('voice-identity-start');
+    assert.equal(
+        tooLong.elements.get('voice-identity-message').textContent,
+        'Recording is too long.',
+    );
+});
+
+test('missing Web Crypto cancels enrollment without attempting an upload', async () => {
+    const harness = createHarness({ webCryptoAvailable: false });
+    await harness.initialize();
+
+    await harness.emit('voice-identity-start');
+
+    assert.equal(
+        harness.fetchCalls.some(call => call.url === `${API_ROOT}/enrollment/profile`),
+        false,
+    );
+    assert.equal(
+        harness.fetchCalls.some(call => call.url === `${API_ROOT}/enrollment/cancel`),
+        true,
+    );
     assert.equal(harness.elements.get('voice-identity-message').textContent, 'Request failed.');
 });
 
@@ -587,6 +643,7 @@ test('pagehide sends keepalive cancellation and stops microphone resources', asy
     ));
     assert.ok(cancel);
     assert.equal(harness.mediaStreams[0].track.stopped, true);
+    assert.equal(harness.getAudioContext().state, 'closed');
 });
 
 test('the one-click page keeps complete dark-theme overrides', () => {

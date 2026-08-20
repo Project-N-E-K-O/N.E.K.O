@@ -2801,6 +2801,8 @@
         "enrollmentComplete": "Owner voice profile is saved and enabled.",
         "microphoneDenied": "The microphone is unavailable. Check your permission and device.",
         "requestFailed": "The operation failed. Please try again.",
+        "errorInvalidPcm": "The recording format is invalid. Please enroll again.",
+        "errorAudioTooLong": "The recording is too long. Please enroll again.",
         "deleteConfirm": "You will need to enroll again before using the voice filter."
     },
     "settings": {

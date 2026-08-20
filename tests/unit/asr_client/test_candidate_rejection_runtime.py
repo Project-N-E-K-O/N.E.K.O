@@ -288,10 +288,12 @@ async def test_cleanup_failure_keeps_drop_and_watchdog_releases_suppression(
         _shadow_candidate(),
         activation_generation="profile-generation",
     )
-    for _ in range(100):
-        if runtime._asr_candidate_rejection is None:
-            break
-        await asyncio.sleep(0)
+
+    async def wait_until_released() -> None:
+        while runtime._asr_candidate_rejection is not None:
+            await asyncio.sleep(0)
+
+    await asyncio.wait_for(wait_until_released(), 1.0)
 
     assert outcome is CandidateRejectionOutcome.APPLIED_CLEANUP_DEGRADED
     assert detector.lease is not None and detector.lease.commit_calls == 1

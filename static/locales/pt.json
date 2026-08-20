@@ -2801,6 +2801,8 @@
         "enrollmentComplete": "O perfil de voz do Owner está salvo e ativo.",
         "microphoneDenied": "Não foi possível usar o microfone. Verifique a permissão e o dispositivo.",
         "requestFailed": "A operação falhou. Tente novamente.",
+        "errorInvalidPcm": "O formato da gravação é inválido. Faça o cadastro novamente.",
+        "errorAudioTooLong": "A gravação é longa demais. Faça o cadastro novamente.",
         "deleteConfirm": "Após excluir, será necessário cadastrar novamente para usar o filtro de voz."
     },
     "settings": {

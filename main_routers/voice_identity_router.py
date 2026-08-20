@@ -103,7 +103,7 @@ async def complete_voice_identity_enrollment(request: Request):
     if rejected is not None:
         return rejected
     if request.headers.get("content-type", "").lower() != _PCM_CONTENT_TYPE:
-        return JSONResponse({"error_code": "pcm_invalid"}, status_code=415)
+        return JSONResponse({"error_code": "invalid_pcm"}, status_code=415)
     content_length = request.headers.get("content-length")
     if content_length is not None:
         try:
@@ -112,14 +112,14 @@ async def complete_voice_identity_enrollment(request: Request):
                 raise ValueError
             if parsed_content_length > _MAX_PCM_BYTES:
                 return JSONResponse(
-                    {"error_code": "pcm_too_long"},
+                    {"error_code": "audio_too_long"},
                     status_code=413,
                 )
         except ValueError:
-            return JSONResponse({"error_code": "pcm_invalid"}, status_code=400)
+            return JSONResponse({"error_code": "invalid_pcm"}, status_code=400)
     pcm16 = await _read_bounded_body(request, _MAX_PCM_BYTES)
     if pcm16 is None:
-        return JSONResponse({"error_code": "pcm_too_long"}, status_code=413)
+        return JSONResponse({"error_code": "audio_too_long"}, status_code=413)
     service = _service()
     if service is None:
         return _service_unavailable()
@@ -151,10 +151,17 @@ async def cancel_voice_identity_enrollment(request: Request):
 
 
 @router.put("/filter")
-async def set_voice_identity_filter(request: Request, payload: dict):
+async def set_voice_identity_filter(request: Request):
+    try:
+        parsed_payload = await request.json()
+    except Exception:
+        parsed_payload = None
+    payload = parsed_payload if type(parsed_payload) is dict else None
     rejected = _validate_mutation(request, payload)
     if rejected is not None:
         return rejected
+    if payload is None:
+        return JSONResponse({"error_code": "invalid_enabled"}, status_code=422)
     enabled = payload.get("enabled")
     if type(enabled) is not bool:
         return JSONResponse({"error_code": "invalid_enabled"}, status_code=422)

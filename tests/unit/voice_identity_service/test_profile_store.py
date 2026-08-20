@@ -216,6 +216,25 @@ def test_tampered_ciphertext_fails_closed(tmp_path: Path) -> None:
 
 
 @pytest.mark.unit
+def test_wrapped_key_unprotect_failure_is_reported_as_storage_unavailable(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "voice_identity.profile"
+    store = VoiceIdentityProfileStore(path, key_protector=_TestKeyProtector())
+    profile = _profile()
+    try:
+        store.save(profile)
+    finally:
+        profile.close()
+    envelope = json.loads(path.read_text(encoding="ascii"))
+    envelope["wrapped_key"] = base64.b64encode(b"invalid-prefix").decode("ascii")
+    path.write_text(json.dumps(envelope), encoding="ascii")
+
+    with pytest.raises(SecureStorageUnavailableError):
+        store.load()
+
+
+@pytest.mark.unit
 def test_failed_replace_preserves_previous_profile(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -231,7 +250,7 @@ def test_failed_replace_preserves_previous_profile(
         def fail_replace(_source: Path, _destination: Path) -> None:
             raise OSError("replace failed")
 
-        monkeypatch.setattr(store_module.os, "replace", fail_replace)
+        monkeypatch.setattr(store_module, "_replace", fail_replace)
         with pytest.raises(VoiceIdentityProfileStoreError):
             store.save(second)
 
@@ -260,18 +279,18 @@ def test_failed_staged_commit_can_be_retried_or_aborted(
         staged = store.stage(profile)
     finally:
         profile.close()
-    original_replace = store_module.os.replace
+    original_replace = store_module._replace
 
     def fail_replace(_source: Path, _destination: Path) -> None:
         raise OSError("replace failed")
 
-    monkeypatch.setattr(store_module.os, "replace", fail_replace)
+    monkeypatch.setattr(store_module, "_replace", fail_replace)
     with pytest.raises(VoiceIdentityProfileStoreError, match="committed"):
         staged.commit()
     assert staged.staged
     assert len(list(tmp_path.glob(".*.tmp"))) == 1
 
-    monkeypatch.setattr(store_module.os, "replace", original_replace)
+    monkeypatch.setattr(store_module, "_replace", original_replace)
     staged.commit()
     assert staged.committed
     assert path.exists()
