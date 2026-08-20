@@ -87,32 +87,14 @@ _SUMMARY_HARD_TOKEN_CAP = 50
 
 _SUMMARY_API_BUDGET_FLOOR = 3000
 
-_API_KEY_REJECTED_KEYWORDS = (
-    "incorrect api key",
-    "incorect api key",
-    "invalid_api_key",
-    "invalid api key",
-    "invalid key",
-    "api key is invalid",
-)
-
-_SAFETY_VIOLATION_KEYWORDS = (
-    "safety",
-    "content_filter",
-    "content filter",
-    "policy violation",
-    "policy_violation",
-    "blocklist",
-    "prohibited",
-    "prohibited_content",
-    "recitation",
-    "spii",
-    "language",
-    "image_safety",
-    "image_prohibited_content",
-    "image_recitation",
-    "responsibleaipolicyviolation",
-    "responsible ai policy",
+# Re-exported, not redefined. The realtime transport and the session manager
+# classify the same provider vocabulary, and three private copies of these
+# tables is how a keyword added in one place stops being honoured in another.
+# Existing importers of these two names keep working unchanged.
+from main_logic.provider_failure_signals import (  # noqa: E402
+    _API_KEY_REJECTED_KEYWORDS,
+    _SAFETY_VIOLATION_KEYWORDS,
+    _is_safety_violation_signal,
 )
 
 def _is_api_key_rejected_error(error: BaseException | str) -> bool:
@@ -136,13 +118,6 @@ def _is_api_key_rejected_error(error: BaseException | str) -> bool:
         ("authenticationerror" in text or "authentication" in text or "unauthorized" in text)
         and "api key" in text
     )
-
-def _is_safety_violation_signal(*values: object) -> bool:
-    """Return True when provider diagnostics point to safety/policy blocking."""
-    text = " ".join(str(value) for value in values if value).lower()
-    if not text:
-        return False
-    return any(keyword in text for keyword in _SAFETY_VIOLATION_KEYWORDS)
 
 def _truncate_to_last_sentence_end(text: str) -> str:
     """Return the prefix of ``text`` up to and including the last

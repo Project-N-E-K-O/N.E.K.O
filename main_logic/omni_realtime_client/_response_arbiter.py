@@ -17,6 +17,13 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Iterator
 
+from ._protocol_capabilities import (
+    ID_BEARING_RESPONSE_CONTENT_EVENT_TYPES,
+    RealtimeProtocolCapabilities,
+    STRICT_REALTIME_PROTOCOL_CAPABILITIES,
+    _response_id_text,
+)
+
 
 SendEvent = Callable[[dict[str, Any]], Awaitable[None]]
 AbortTransport = Callable[[str], Awaitable[None]]
@@ -199,6 +206,7 @@ class RealtimeResponseArbiter:
         abort_transport: AbortTransport | None = None,
         fail_open: bool = False,
         on_stuck_release: OnStuckRelease | None = None,
+        protocol_capabilities: RealtimeProtocolCapabilities | None = None,
     ) -> None:
         self._send_event = send_event
         self._abort_transport = abort_transport
@@ -209,6 +217,9 @@ class RealtimeResponseArbiter:
         # Notified that a turn ended, so the host can run the same end-of-turn
         # work its terminal event drives. Dual to ``abort_transport``.
         self._on_stuck_release = on_stuck_release
+        self._protocol_capabilities = (
+            protocol_capabilities or STRICT_REALTIME_PROTOCOL_CAPABILITIES
+        )
         # True while the queue consumer is suspended inside a transport
         # write; only the worker's own sends set it.
         self._worker_send_in_flight = False
@@ -535,22 +546,11 @@ class RealtimeResponseArbiter:
         response = (event or {}).get("response")
         if not isinstance(response, dict):
             return None
-        response_id = response.get("id")
-        # Presence, not truthiness. A provider numbering its responses from
-        # zero would have had its FIRST response read as unidentified, which
-        # among other things makes ``_cannot_keep_the_connection`` report "no
-        # id to attribute later events by" and tear the transport down in
-        # spite of the escape hatch. No configured provider numbers this way —
-        # this is a trap, not a live failure — but "0 is not an id" is the
-        # kind of thing that is free to get right and expensive to discover.
-        #
-        # An empty string still normalizes to None on purpose: it names
-        # nothing, and admitting it would collapse every unidentified response
-        # onto one shared identity.
-        if response_id is None:
-            return None
-        text = str(response_id)
-        return text or None
+        return _response_id_text(response.get("id"))
+
+    @staticmethod
+    def _content_event_response_id(event: dict[str, Any] | None) -> str | None:
+        return _response_id_text((event or {}).get("response_id"))
 
     def _remember_server_response_id(self, response_id: str) -> None:
         self._server_response_ids.pop(response_id, None)
@@ -862,6 +862,8 @@ class RealtimeResponseArbiter:
     def notify_response_created(self, event: dict[str, Any]) -> bool:
         """Attribute an announcement and report whether transport may expose it."""
 
+        owner = self._response_owner
+        response_id = self._event_response_id(event)
         self._server_response_active = True
         self._idle.clear()
         retired_created_live = self._retired_created_window_live()
@@ -877,7 +879,6 @@ class RealtimeResponseArbiter:
             # second retirement window here would swallow a legitimate id-less
             # successor, recreating the ownership failure in the other direction.
             self._retired_created_deadline = None
-            response_id = self._event_response_id(event)
             self._remember_seen_response_id(response_id)
             logger.info(
                 "ignored late response.created %s from a retired owner",
@@ -888,7 +889,6 @@ class RealtimeResponseArbiter:
         if self._server_vad_response_pending:
             self._cancel_server_vad_pending_timer()
             self._server_vad_response_pending = False
-            response_id = self._event_response_id(event)
             self._remember_seen_response_id(response_id)
             if response_id is not None:
                 self._remember_server_response_id(response_id)
@@ -899,13 +899,24 @@ class RealtimeResponseArbiter:
             # automatic response, so it is the last thing a queued request
             # should be allowed to claim.
             return True
-        owner = self._response_owner
+        if self.response_created_confirms_started_owner(event):
+            # A capability-approved route may deliver real content before its
+            # announcement. The content already started this exact owner; the
+            # later created frame confirms it rather than naming a second,
+            # server-initiated response that would hold the lane after the
+            # owner's terminal arrives.
+            self._remember_seen_response_id(response_id)
+            logger.info(
+                "late response.created confirmed content-started owner (%s)",
+                owner.source,
+            )
+            return False
         if owner is not None and not owner.ticket.started.done():
             # The first response.created after the owner's response.create is
             # credited to the owner. Remember its response id (when the
             # provider supplies one) so only that response's terminal event
             # can release the lane.
-            owner.response_id = self._event_response_id(event)
+            owner.response_id = response_id
             self._remember_seen_response_id(owner.response_id)
             owner.ticket.started.set_result(None)
             return True
@@ -914,7 +925,6 @@ class RealtimeResponseArbiter:
         # server-initiated response. Remember its id so its terminal event is
         # recognized as an orphan even when the owner's own response.created
         # carried no id.
-        response_id = self._event_response_id(event)
         self._remember_seen_response_id(response_id)
         if response_id is not None:
             self._remember_server_response_id(response_id)
@@ -927,6 +937,70 @@ class RealtimeResponseArbiter:
         # here decides that; ``_adoptable_id_for`` does, against evidence the
         # dispatching request captured for itself.
         self._note_unowned_announcement(response_id)
+        return True
+
+    def response_created_confirms_started_owner(
+        self,
+        event: dict[str, Any],
+    ) -> bool:
+        """Whether a delayed announcement only confirms the current owner."""
+
+        if self._retired_created_window_live() or self._server_vad_response_pending:
+            return False
+        owner = self._response_owner
+        response_id = self._event_response_id(event)
+        return bool(
+            owner is not None
+            and owner.ticket.started.done()
+            and owner.response_id is not None
+            and response_id == owner.response_id
+        )
+
+    def notify_response_content(self, event: dict[str, Any]) -> bool:
+        """Use verified, id-bearing content as an owned response's start.
+
+        This is deliberately narrower than merely observing output. Only a
+        route whose protocol profile explicitly permits the fallback can use
+        it, and the id must still be new on this connection and attributable
+        to the single owner currently sending or awaiting its response.
+        """
+
+        if (
+            not self._protocol_capabilities.accepts_id_bearing_content_start
+            or str(event.get("type") or "")
+            not in ID_BEARING_RESPONSE_CONTENT_EVENT_TYPES
+        ):
+            return False
+        owner = self._response_owner
+        if (
+            owner is None
+            or self._current is not owner
+            or owner.ticket.started.done()
+            or not owner.response_send_started
+            or owner.interrupted
+            or owner.server_vad_won_during_response_send
+            or self._server_vad_response_pending
+            or self._retired_created_window_live()
+            or self._idless_server_response_live()
+        ):
+            return False
+        response_id = self._content_event_response_id(event)
+        if (
+            response_id is None
+            or response_id in self._seen_response_ids
+            or response_id in self._server_response_ids
+        ):
+            return False
+
+        owner.response_id = response_id
+        self._remember_seen_response_id(response_id)
+        owner.ticket.started.set_result(None)
+        logger.info(
+            "id-bearing response content confirmed owned response start "
+            "(route=%s source=%s)",
+            self._protocol_capabilities.route_key,
+            owner.source,
+        )
         return True
 
     def notify_server_vad_started(self) -> None:

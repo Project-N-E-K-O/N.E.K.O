@@ -81,15 +81,17 @@ def test_social_open_request_is_deduped_before_fetching_config():
     assert "hashParams.set('native_sync', syncTicket)" in listener
     assert "fetch('/api/card-drop/native-delegate', {" in listener
     assert "hashParams.set('native_delegate', nativeDelegate)" in listener
-    assert "const nativeDelegatePromise = fetchNativeDelegate();" not in listener
-    assert "const syncTicket = await fetchNativeSyncTicket();" in listener
-    assert "await Promise.all([" not in listener
+    assert "const initialSyncTicketPromise = fetchNativeSyncTicket();" in listener
+    assert "const initialClientIdPromise = fetchSocialClientId();" in listener
+    assert "const initialNativeHandoffPromise = fetchNativeDelegate();" in listener
+    assert "const [initialSyncTicket, clientId] = await Promise.all([" in listener
+    assert "applyNativeSyncTicket(targetUrl, initialSyncTicket);" in listener
     assert listener.count("setTimeout(() => controller.abort(), 4000)") == 2
     assert listener.count("signal: controller.signal") == 2
     assert listener.count("clearTimeout(timeoutId)") == 2
     assert "native session sync ticket fetch failed: HTTP" in listener
     assert "native delegate fetch failed (non-fatal):" in listener
-    assert "targetUrl.searchParams.set('cid', cidJson.client_id)" in listener
+    assert "targetUrl.searchParams.set('cid', clientId)" in listener
     assert "const attachResolvedTheme = (targetUrl) => {" in listener
     assert "function isResolvedDarkTheme()" in source
     assert "window.nekoTheme.isDark()" in source
@@ -124,11 +126,14 @@ def test_social_open_request_is_deduped_before_fetching_config():
     assert "registerSocialThemeTarget(socialWin, resolvedTargetUrl)" in listener
     assert "social_base_url" in listener
     assert "/feed" in listener
-    # Feed first; Desktop OAuth only after open when not logged in.
+    # Feed first; Desktop OAuth only after the native handoff proves the desktop is logged out.
     assert "fetch('/api/card-drop/auth-status', { cache: 'no-store' })" in listener
     assert "fetch('/api/card-drop/oauth/start'" in listener
     assert "请在浏览器完成统一账号登录" in listener
     assert listener.index("openElectronSocialWindow(url)") < listener.index(
+        "const initialNativeHandoff = await initialNativeHandoffPromise;"
+    )
+    assert listener.index("const initialNativeHandoff = await initialNativeHandoffPromise;") < listener.index(
         "fetch('/api/card-drop/auth-status'"
     )
     assert listener.index("fetch('/api/card-drop/auth-status'") < listener.index(
@@ -138,25 +143,27 @@ def test_social_open_request_is_deduped_before_fetching_config():
     protocol_guard = "targetUrl.protocol !== 'http:' && targetUrl.protocol !== 'https:'"
     assert protocol_guard in listener
     assert listener.index(protocol_guard) < listener.index(
-        "await attachNativeSyncTicket(targetUrl)"
+        "const initialSyncTicketPromise = fetchNativeSyncTicket();"
     )
     assert listener.index(protocol_guard) < listener.index("attachResolvedTheme(targetUrl)")
     assert listener.index("attachResolvedTheme(targetUrl)") < listener.index(
-        "await attachNativeSyncTicket(targetUrl)"
+        "applyNativeSyncTicket(targetUrl, initialSyncTicket);"
     )
-    # A slow delegate must not delay the initial Electron or browser Community navigation.
+    # A slow delegate must not delay the initial Electron Community navigation.
+    assert listener.index("const initialNativeHandoffPromise = fetchNativeDelegate();") < listener.index(
+        "openElectronSocialWindow(url)"
+    )
     assert listener.index("openElectronSocialWindow(url)") < listener.index(
-        "await completeInitialCommunityHandoff("
+        "const initialNativeHandoff = await initialNativeHandoffPromise;"
     )
     helper_start = listener.index(
-        "const completeInitialCommunityHandoff = async (targetUrl) => {"
+        "const completeInitialCommunityHandoff = async (targetUrl, initialNativeDelegate = '') => {"
     )
     helper_end = listener.index("\n            try {", helper_start)
     helper = listener[helper_start:helper_end]
-    assert helper.index("navigateBrowserPopup(targetUrl, { keepReference: true })") < helper.index(
-        "const nativeDelegate = await fetchNativeDelegate();"
-    )
-    assert helper.index("const nativeDelegate = await fetchNativeDelegate();") < helper.index(
+    assert "navigateBrowserPopup(targetUrl, { keepReference: true })" not in helper
+    assert "const retryHandoff = await fetchNativeDelegate();" in helper
+    assert helper.index("let nativeDelegate = initialNativeDelegate;") < helper.index(
         "openElectronSocialWindow(delegateTargetUrl.toString())"
     )
     assert re.search(
@@ -165,18 +172,50 @@ def test_social_open_request_is_deduped_before_fetching_config():
         listener,
     )
     assert "attachNativeDelegate(delegateTargetUrl, nativeDelegate);" in listener
-    assert "const completeInitialCommunityHandoff = async (targetUrl) => {" in listener
+    assert "const completeInitialCommunityHandoff = async (targetUrl, initialNativeDelegate = '') => {" in listener
     assert listener.count(
         "await completeInitialCommunityHandoff("
     ) == 2
     main_flow = listener[helper_end:]
+    assert "let communityLoggedIn = initialNativeHandoff.loginState === 'logged-in';" in main_flow
+    assert "if (initialNativeHandoff.loginState === 'unknown')" in main_flow
     assert main_flow.index("fetch('/api/card-drop/auth-status'") < main_flow.index(
         "await completeInitialCommunityHandoff("
     )
     assert re.search(
-        r"else \{\s*await completeInitialCommunityHandoff\(url\);\s*\}",
+        r"else \{\s*await completeInitialCommunityHandoff\(\s*"
+        r"url,\s*initialNativeHandoff\.nativeDelegate\s*\);\s*\}",
         listener,
     )
+
+
+@pytest.mark.unit
+def test_social_native_delegate_is_the_fast_path_login_proof_with_safe_fallback():
+    source = read_js_parts(APP_UI_PATH)
+
+    listener_start = source.index("window.addEventListener('live2d-social-click', async () => {")
+    listener_end = source.index("// 睡觉按钮（请她离开）", listener_start)
+    listener = source[listener_start:listener_end]
+
+    delegate_start = listener.index("const fetchNativeDelegate = async () => {")
+    delegate_end = listener.index("const fetchSocialClientId = async () => {", delegate_start)
+    delegate_helper = listener[delegate_start:delegate_end]
+    assert "response.status === 409" in delegate_helper
+    assert "{ nativeDelegate: '', loginState: 'logged-out' }" in delegate_helper
+    assert "loginState: nativeDelegate ? 'logged-in' : 'unknown'" in delegate_helper
+    assert delegate_helper.count("{ nativeDelegate: '', loginState: 'unknown' }") == 2
+
+    main_start = listener.index("const initialNativeHandoff = await initialNativeHandoffPromise;")
+    main_flow = listener[main_start:]
+    unknown_guard = "if (initialNativeHandoff.loginState === 'unknown')"
+    assert unknown_guard in main_flow
+    assert main_flow.index(unknown_guard) < main_flow.index(
+        "fetch('/api/card-drop/auth-status', { cache: 'no-store' })"
+    )
+    assert main_flow.index("if (!communityLoggedIn)") < main_flow.index(
+        "fetch('/api/card-drop/oauth/start'"
+    )
+    assert "initialNativeHandoff.nativeDelegate" in main_flow
 
 
 @pytest.mark.unit
@@ -207,8 +246,10 @@ def test_social_browser_fallback_preopens_popup_before_async_fetches():
     assert "await waitForOAuthCompletion(" in listener
     assert "const refreshedTargetUrl = await attachNativeSyncTicket(" in listener
     assert "const refreshedDelegatePromise = fetchNativeDelegate();" in listener
+    assert "const refreshedHandoff = await refreshedDelegatePromise;" in listener
     assert re.search(
-        r"attachNativeDelegate\(\s*refreshedTargetUrl,\s*await refreshedDelegatePromise\s*\)",
+        r"attachNativeDelegate\(\s*refreshedTargetUrl,\s*"
+        r"refreshedHandoff\.nativeDelegate\s*\)",
         listener,
     )
     assert "navigateBrowserPopup(refreshedTargetUrl.toString())" in listener
@@ -219,7 +260,9 @@ def test_social_browser_fallback_preopens_popup_before_async_fetches():
         r"await waitForOAuthCompletion\(\s*browserOAuthTimeoutMs,\s*!isElectron\s*\)",
         listener,
     )
-    assert "navigateBrowserPopup(targetUrl, { keepReference: true })" in listener
+    assert listener.index("navigateBrowserPopup(url, { keepReference: true })") < listener.index(
+        "const initialNativeHandoff = await initialNativeHandoffPromise;"
+    )
     assert listener.index("fetch('/api/card-drop/auth-status'") < listener.index(
         "navigateBrowserPopup(authUrl, { keepReference: true })"
     )
