@@ -481,8 +481,10 @@ async def test_failed_detach_never_restores_old_activation() -> None:
     future = _Manager()
     assert await registry.register_manager(future)
     assert future.verifier_calls == []
-    await asyncio.sleep(0.03)
-    assert manager not in registry._detach_pending  # type: ignore[attr-defined]
+    await _wait_until(
+        lambda: manager
+        not in registry._detach_pending  # type: ignore[attr-defined]
+    )
     assert all(
         generation != "active-generation"
         for _factory, generation in manager.verifier_calls[1:]
@@ -792,6 +794,89 @@ async def test_watchdog_exhaustion_emits_restore_and_detach_warnings(
 
     assert any("restore watchdog exhausted" in message for message in warnings)
     assert any("detach watchdog exhausted" in message for message in warnings)
+    await registry.close()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("watchdog_kind", ["attach", "restore", "detach"])
+async def test_watchdog_bounds_never_returning_manager_call(
+    watchdog_kind: str,
+) -> None:
+    class BlockingManager(_Manager):
+        def __init__(self) -> None:
+            super().__init__()
+            self.block_attach = False
+            self.block_restore = False
+            self.block_detach = False
+            self.call_started = asyncio.Event()
+
+        async def set_speaker_verifier_factory(
+            self,
+            factory: _Factory | None,
+            *,
+            activation_generation: str,
+        ) -> bool:
+            if (factory is None and self.block_detach) or (
+                factory is not None and self.block_attach
+            ):
+                self.call_started.set()
+                await asyncio.Event().wait()
+            return await super().set_speaker_verifier_factory(
+                factory,
+                activation_generation=activation_generation,
+            )
+
+        async def set_voice_input_suppressed(
+            self,
+            reason: str,
+            *,
+            suppressed: bool,
+        ) -> None:
+            if not suppressed and self.block_restore:
+                self.call_started.set()
+                await asyncio.Event().wait()
+            await super().set_voice_input_suppressed(reason, suppressed=suppressed)
+
+    registry = OwnerVoiceRuntimeRegistry(
+        enforce=True,
+        restore_retry_interval_seconds=0.01,
+        restore_retry_timeout_seconds=0.05,
+    )
+    manager = BlockingManager()
+
+    if watchdog_kind == "attach":
+        profile = _profile("profile")
+        try:
+            assert await registry.activate(profile, "generation")
+        finally:
+            profile.close()
+        manager.verifier_outcomes.append(False)
+        assert not await registry.register_manager(manager)
+        manager.block_attach = True
+        watchdog = registry._attach_retry_task  # type: ignore[attr-defined]
+    elif watchdog_kind == "restore":
+        await registry.register_manager(manager)
+        await registry.suppress("voice_identity_enrollment")
+        manager.restore_failures = 2
+        await registry.restore("voice_identity_enrollment")
+        manager.block_restore = True
+        watchdog = registry._restore_retry_task  # type: ignore[attr-defined]
+    else:
+        await registry.register_manager(manager)
+        manager.verifier_outcomes.append(False)
+        await registry.unregister_manager(manager)
+        manager.block_detach = True
+        watchdog = registry._detach_retry_task  # type: ignore[attr-defined]
+
+    assert watchdog is not None
+    await asyncio.wait_for(manager.call_started.wait(), 0.5)
+    await asyncio.wait_for(watchdog, 0.5)
+    assert watchdog.done()
+
+    manager.block_attach = False
+    manager.block_restore = False
+    manager.block_detach = False
     await registry.close()
 
 

@@ -34,6 +34,8 @@ from main_logic.voice_input.suppression import VoiceInputSuppressionController
 
 logger = logging.getLogger(__name__)
 
+_WATCHDOG_MANAGER_CALL_TIMEOUT_SECONDS = 1.0
+
 
 @dataclass(slots=True)
 class _OwnerActivation:
@@ -349,7 +351,20 @@ class OwnerVoiceRuntimeRegistry:
                         if manager not in self._managers:
                             self._attach_pending.discard(manager)
                             continue
-                        if await self._attach_manager(manager, activation):
+                        call_timeout = min(
+                            _WATCHDOG_MANAGER_CALL_TIMEOUT_SECONDS,
+                            deadline - loop.time(),
+                        )
+                        if call_timeout <= 0:
+                            break
+                        try:
+                            attached = await asyncio.wait_for(
+                                self._attach_manager(manager, activation),
+                                timeout=call_timeout,
+                            )
+                        except asyncio.TimeoutError:
+                            continue
+                        if attached:
                             self._attach_pending.discard(manager)
                             self._detach_pending.pop(manager, None)
             async with self._lock:
@@ -469,8 +484,17 @@ class OwnerVoiceRuntimeRegistry:
                     if not targets:
                         return
                     for manager in targets:
+                        call_timeout = min(
+                            _WATCHDOG_MANAGER_CALL_TIMEOUT_SECONDS,
+                            deadline - loop.time(),
+                        )
+                        if call_timeout <= 0:
+                            break
                         try:
-                            await self._restore_manager(manager, reason)
+                            await asyncio.wait_for(
+                                self._restore_manager(manager, reason),
+                                timeout=call_timeout,
+                            )
                         except Exception:
                             continue
                         self._restore_pending.discard(manager)
@@ -515,10 +539,19 @@ class OwnerVoiceRuntimeRegistry:
                     if not targets:
                         return
                     for manager, generation in targets:
+                        call_timeout = min(
+                            _WATCHDOG_MANAGER_CALL_TIMEOUT_SECONDS,
+                            deadline - loop.time(),
+                        )
+                        if call_timeout <= 0:
+                            break
                         try:
-                            detached = await manager.set_speaker_verifier_factory(
-                                None,
-                                activation_generation=generation,
+                            detached = await asyncio.wait_for(
+                                manager.set_speaker_verifier_factory(
+                                    None,
+                                    activation_generation=generation,
+                                ),
+                                timeout=call_timeout,
                             )
                         except Exception:
                             continue
