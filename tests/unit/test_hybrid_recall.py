@@ -1461,9 +1461,15 @@ class TestVectorDecodeCache(unittest.IsolatedAsyncioTestCase):
         this round, so the cache freezes on the prefix that fits and the
         remainder misses forever — degraded but stable.
 
-        Pinned as decode counts: with a 2-entry budget over 3 rows, steady
-        state must be exactly ONE decode per query (the row that never fits),
-        not three (thrashing, and not the whole-pool bypass this replaces).
+        Pinned as decode counts: with a 2-entry budget over 3 valid rows,
+        steady state must be exactly ONE decode per query (the row that never
+        fits), not three (thrashing, and not the whole-pool bypass this
+        replaces).
+
+        The pool also carries rows the validator must reject, because "runs
+        degraded" must not become "runs unvalidated" (CodeRabbit nitpick). A
+        pool of only-valid rows would pass this test even if the over-budget
+        path skipped fingerprint checks entirely.
         """
         import memory.embeddings as emb
         import memory.hybrid_recall as hr
@@ -1474,6 +1480,12 @@ class TestVectorDecodeCache(unittest.IsolatedAsyncioTestCase):
         ]
         # Rows are the same shape, so one row's cost sizes the whole budget.
         budget = self._fill_one(pool[0]) * 2
+
+        bad_text_stamp = self._doc("bad_text", "戳记失效的记忆", [1.0, 0.0, 0.0, 0.0])
+        bad_text_stamp["embedding_text_sha256"] = "0" * 64
+        bad_model_stamp = self._doc("bad_model", "模型失配的记忆", [1.0, 0.0, 0.0, 0.0])
+        bad_model_stamp["embedding_model_id"] = "someone-elses-model-4d-int8"
+        pool += [bad_text_stamp, bad_model_stamp]
 
         real_decode = emb._decode_vector_fp16
         calls = []
@@ -1487,7 +1499,7 @@ class TestVectorDecodeCache(unittest.IsolatedAsyncioTestCase):
              patch.object(emb, "_decode_vector_fp16", counting_decode), \
              patch.object(emb, "get_embedding_service", MagicMock(return_value=service)):
             first = await hr._cosine_rank("记忆", pool)
-            self.assertEqual(len(calls), 3)          # cold: every row decodes
+            self.assertEqual(len(calls), 3)          # cold: every *valid* row decodes
             self.assertEqual(list(hr._VEC_CACHE), ["p0", "p1"])
 
             calls.clear()
@@ -1499,6 +1511,11 @@ class TestVectorDecodeCache(unittest.IsolatedAsyncioTestCase):
             third = await hr._cosine_rank("记忆", pool)
             self.assertEqual(len(calls), 1)          # stable, not drifting
             self.assertEqual(list(hr._VEC_CACHE), ["p0", "p1"])
+
+        # Rejected rows stay rejected on every round — and never consume the
+        # budget that the surviving prefix depends on.
+        for scored in (first, second, third):
+            self.assertEqual({d["id"] for d, _ in scored}, {"p0", "p1", "p2"})
 
         # And the degraded mode must not change a single score.
         self.assertEqual(
