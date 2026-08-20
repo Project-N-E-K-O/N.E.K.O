@@ -18,7 +18,7 @@ session:
 
 - Cards: for vocabulary, formulas, or short facts.
 - Minutes: for focused reading or problem-solving blocks.
-- Attempts: for passage recitation or repeated practice.
+- Attempts: for repeated practice.
 
 For memory decks, open the memory deck panel and bind a deck goal before
 starting a focus session.

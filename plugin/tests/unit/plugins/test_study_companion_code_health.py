@@ -63,8 +63,8 @@ test_checkin_streak_is_not_truncated_at_default_checked_dates_limit = (
 test_memory_habit_bridge_updates_deck_goals_idempotently = (
     _habit_tests.test_memory_habit_bridge_updates_deck_goals_idempotently
 )
-test_memory_habit_bridge_summarizes_recitation_and_deck_focus = (
-    _habit_tests.test_memory_habit_bridge_summarizes_recitation_and_deck_focus
+test_memory_habit_bridge_summarizes_review_and_deck_focus = (
+    _habit_tests.test_memory_habit_bridge_summarizes_review_and_deck_focus
 )
 test_memory_habit_bridge_reuses_existing_focus_goal_without_shrinking = (
     _habit_tests.test_memory_habit_bridge_reuses_existing_focus_goal_without_shrinking

@@ -23,17 +23,6 @@ def rating_from_word_result(
     )
 
 
-def rating_from_recitation_score(score: float) -> StudyFsrsRating:
-    value = max(0.0, min(1.0, float(score or 0.0)))
-    if value >= 0.92:
-        return StudyFsrsRating.Easy
-    if value >= 0.70:
-        return StudyFsrsRating.Good
-    if value >= 0.40:
-        return StudyFsrsRating.Hard
-    return StudyFsrsRating.Again
-
-
 def normalize_rating(value: str | int | StudyFsrsRating) -> StudyFsrsRating:
     if isinstance(value, str):
         normalized = value.strip().lower()
@@ -60,6 +49,5 @@ def normalize_rating(value: str | int | StudyFsrsRating) -> StudyFsrsRating:
 __all__ = [
     "WORD_ERROR_RATINGS",
     "normalize_rating",
-    "rating_from_recitation_score",
     "rating_from_word_result",
 ]

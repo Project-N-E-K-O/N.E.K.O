@@ -914,7 +914,13 @@
       status = t(ctx, 'ui.status.exporting', 'Exporting...');
       draw();
       try {
-        const payload = await ctx.callPlugin('study_export_notes', { fmt, style, preview_only: previewOnly });
+        const noteIds = window.StudyCompanionNotebook?.getSelectedNoteIds?.() || [];
+        const payload = await ctx.callPlugin('study_export_notes', {
+          fmt,
+          style,
+          preview_only: previewOnly,
+          note_ids: noteIds,
+        });
         markdown = payload.markdown || '';
         if (!previewOnly) downloadBase64(payload.content_base64, payload.filename, payload.content_type);
         status = payload.filename || t(ctx, 'ui.status.export_ready', 'Export ready');
@@ -937,6 +943,7 @@
       const exportButton = button(t(ctx, 'ui.button.export', 'Export'), () => exportNotes(false), true);
       exportButton.dataset.surfaceAction = 'export-download';
       const controlsDisabled = !availabilityResolved || !exportAvailable;
+      const selectedNoteIds = window.StudyCompanionNotebook?.getSelectedNoteIds?.() || [];
       fmtSelect.disabled = controlsDisabled;
       styleSelect.disabled = controlsDisabled;
       previewButton.disabled = controlsDisabled;
@@ -950,7 +957,7 @@
         state([
           [t(ctx, 'ui.label.format', 'Format'), formatLabel(ctx, fmt)],
           [t(ctx, 'ui.label.style', 'Style'), exportStyleLabel(ctx, style)],
-          [t(ctx, 'ui.label.reply', 'Reply'), currentStatus],
+          [t(ctx, 'ui.notebook.selected_notes', 'Selected notes'), String(selectedNoteIds.length)],
         ]),
         actions([
           labeled(t(ctx, 'ui.label.format', 'Format'), fmtSelect),

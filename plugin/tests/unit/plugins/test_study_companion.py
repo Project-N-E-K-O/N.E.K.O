@@ -36,7 +36,6 @@ HOSTED_SURFACE_ACTION_IDS = [
     "study_memory_habit_status",
     "study_memory_import_words",
     "study_memory_list_decks",
-    "study_memory_recitation_attempt",
     "study_memory_review_item",
     "study_memory_set_deck_goal",
     "study_pomodoro_pause",
@@ -5574,12 +5573,9 @@ def test_study_companion_ui7_surfaces_use_brand_css_and_quickstart_is_removed() 
         "knowledge_map.tsx",
         "memory_deck_list.tsx",
         "memory_importer.tsx",
-        "note_exporter.tsx",
-        "passage_recitation.tsx",
         "pomodoro_panel.tsx",
         "session_summary.tsx",
         "study_panel.tsx",
-        "word_review.tsx",
     ]
     for filename in surface_files:
         source = (plugin_dir / "surfaces" / filename).read_text(encoding="utf-8")
@@ -6857,22 +6853,100 @@ def test_study_companion_static_knowledge_map_groups_by_base_library_hierarchy()
     assert "valueLabel(node.unit" in source
 
 
-def test_study_companion_note_exporter_uses_backend_export_poll_budget() -> None:
+def test_study_companion_notebook_is_integrated_with_static_exporter() -> None:
     plugin_dir = Path(__file__).resolve().parents[3] / "plugins" / "study_companion"
-    source = (plugin_dir / "surfaces" / "note_exporter.tsx").read_text(encoding="utf-8")
+    index_html = (plugin_dir / "static" / "index.html").read_text(encoding="utf-8")
+    notebook = (plugin_dir / "static" / "notebook-controller.js").read_text(encoding="utf-8")
+    exporter = (plugin_dir / "static" / "surface-panels.js").read_text(encoding="utf-8")
 
-    assert "DEFAULT_EXPORT_TIMEOUT_MS = 80_000" in source
-    assert "POLL_TIMEOUT_BUFFER_MS = 5_000" in source
-    assert "const timeoutSeconds = Number(entry?.timeout);" in source
-    assert "return timeoutSeconds * 1000 + POLL_TIMEOUT_BUFFER_MS;" in source
-    assert "pollTimeoutMs = getEntryTimeoutMs(exportEntry)" in source
-    assert "{ timeoutMs: pollTimeoutMs }" in source
-    assert "exportConfig?.enabled !== true" in source
-    assert "value !== 'xmind' || xmindEnabled" in source
-    assert "fetch('/runs'" not in source
-    assert "fetch(`/runs/" not in source
-    assert "for (let attempt = 0; attempt < 40; attempt += 1)" not in source
-    assert "for (let i = 0; i < 40; i += 1)" not in source
+    assert 'data-open-surface="notebook-panel"' in index_html
+    assert "./notebook-controller.js" in index_html
+    for entry_id in (
+        "study_notebook_list",
+        "study_notebook_create",
+        "study_notebook_update",
+        "study_notebook_delete",
+        "study_note_list",
+        "study_note_get",
+        "study_note_upsert",
+        "study_note_delete",
+    ):
+        assert entry_id in notebook
+    assert "selectedNoteIds" in notebook
+    assert "ctx.openSurface('note-exporter')" in notebook
+    assert "getSelectedNoteIds" in exporter
+    assert "note_ids: noteIds" in exporter
+
+
+def test_study_companion_selected_notebooks_reach_export_entry() -> None:
+    if shutil.which("node") is None:
+        pytest.skip("node is not installed")
+    plugin_dir = Path(__file__).resolve().parents[3] / "plugins" / "study_companion"
+    frontend_dir = Path(__file__).resolve().parents[4] / "frontend" / "plugin-manager"
+    if not (frontend_dir / "node_modules" / "happy-dom").is_dir():
+        pytest.skip("frontend/plugin-manager node_modules with happy-dom is not installed")
+
+    script = r"""
+import { Window } from 'happy-dom';
+import fs from 'node:fs';
+import path from 'node:path';
+
+const staticDir = process.env.STUDY_COMPANION_STATIC_DIR;
+const notebookJs = fs.readFileSync(path.join(staticDir, 'notebook-controller.js'), 'utf8');
+const surfacePanelsJs = fs.readFileSync(path.join(staticDir, 'surface-panels.js'), 'utf8');
+const window = new Window({ url: 'http://testserver/plugin/study_companion/ui/' });
+const { document } = window;
+const calls = [];
+const note = {
+  id: 'note-1', notebook_id: 'book-1', title: 'Limits', content: '# Limits',
+  snippet: 'Definition', topic_ids: ['calculus'], tags: ['exam'], updated_at: '2026-08-20T00:00:00Z',
+};
+async function callPlugin(entryId, args = {}) {
+  calls.push({ entryId, args });
+  if (entryId === 'study_notebook_list') return { notebooks: [{ id: 'book-1', name: 'Calculus', note_count: 1 }] };
+  if (entryId === 'study_note_list') return { notes: [note] };
+  if (entryId === 'study_note_get') return { note };
+  if (entryId === 'study_get_settings_config') return { config: { doc_export: { enabled: true, xmind_enabled: false } } };
+  if (entryId === 'study_export_notes') return { markdown: '# Limits', filename: 'limits.md' };
+  throw new Error(`Unexpected entry: ${entryId}`);
+}
+const ctx = {
+  t: (_key, fallback) => fallback,
+  tf: (_key, fallback, values) => fallback.replace(/\{([^}]+)\}/g, (_, name) => values[name] ?? ''),
+  label: (surfaceId) => surfaceId,
+  callPlugin,
+  openSurface: () => undefined,
+};
+window.eval(notebookJs);
+window.eval(surfacePanelsJs);
+const notebook = window.StudyCompanionNotebook.render('notebook-panel', ctx);
+document.body.appendChild(notebook);
+await new Promise((resolve) => setTimeout(resolve, 0));
+await new Promise((resolve) => setTimeout(resolve, 0));
+const checkbox = notebook.querySelector('.notebook-note-row__check');
+if (!checkbox) throw new Error('notebook note checkbox was not rendered');
+checkbox.checked = true;
+checkbox.dispatchEvent(new window.Event('change', { bubbles: true }));
+const exporter = window.StudyCompanionSurfacePanels.render('note-exporter', ctx);
+document.body.appendChild(exporter);
+await new Promise((resolve) => setTimeout(resolve, 0));
+exporter.querySelector('[data-surface-action="export-preview"]').click();
+await new Promise((resolve) => setTimeout(resolve, 0));
+const exportCall = calls.find((call) => call.entryId === 'study_export_notes');
+if (!exportCall || JSON.stringify(exportCall.args.note_ids) !== JSON.stringify(['note-1'])) {
+  throw new Error(`selected notes did not reach export: ${JSON.stringify(exportCall)}`);
+}
+"""
+    completed = subprocess.run(
+        ["node", "--input-type=module", "-e", script],
+        cwd=frontend_dir,
+        env={**os.environ, "STUDY_COMPANION_STATIC_DIR": str(plugin_dir / "static")},
+        capture_output=True,
+        text=True,
+        timeout=15,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr or completed.stdout
 
 
 def test_study_companion_note_exporter_is_not_exposed_as_manager_panel() -> None:
@@ -6887,7 +6961,8 @@ def test_study_companion_note_exporter_is_not_exposed_as_manager_panel() -> None
         panel["id"] != "note-exporter"
         for panel in manifest["plugin"]["ui"].get("panel", [])
     )
-    assert (plugin_dir / "surfaces" / "note_exporter.tsx").is_file()
+    assert not (plugin_dir / "surfaces" / "note_exporter.tsx").exists()
+    assert (plugin_dir / "static" / "notebook-controller.js").is_file()
 
 
 def test_study_companion_ui_export_failures_are_not_silent_successes() -> None:
@@ -10832,7 +10907,7 @@ async def test_study_plugin_starts_and_collects_entries(
     assert "study_memory_import_passage" in entries
     assert "study_memory_due_reviews" in entries
     assert "study_memory_review_item" in entries
-    assert "study_memory_recitation_attempt" in entries
+    assert "study_memory_recitation_attempt" not in entries
     assert "study_set_knowledge_contribution_opt_in" in entries
     disabled_export = await plugin._study_export_notes_entry(
         fmt="markdown", preview_only=True, title="Default Notes"
@@ -11657,83 +11732,6 @@ async def test_study_status_does_not_drive_review_due_emission(
 
         assert isinstance(status, Ok)
         assert calls == 0
-    finally:
-        await plugin.shutdown()
-
-
-@pytest.mark.asyncio
-async def test_recitation_emits_answer_evaluated(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    runtime_root = tmp_path / "runtime"
-    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
-    ctx = _Ctx(tmp_path, {"study": {"language": "en", "auto_open_ui": False}})
-    plugin = StudyCompanionPlugin(ctx)
-    result = await plugin.startup()
-    try:
-        assert isinstance(result, Ok)
-        deck = plugin._memory_deck_store.create_deck(name="Texts", deck_type="passage")
-        imported = plugin._memory_deck_store.import_passage(
-            deck_id=deck["id"],
-            title="Short Text",
-            text="First sentence. Second sentence.",
-        )
-
-        recited = await plugin.study_memory_recitation_attempt(
-            item_id=imported["items"][0]["id"],
-            user_input_text="First sentence.",
-        )
-
-        assert isinstance(recited, Ok)
-        await _drain_scheduled_events()
-        assert any("[Answer Evaluated]" in text for text in _study_push_texts(ctx))
-    finally:
-        await plugin.shutdown()
-
-
-@pytest.mark.asyncio
-async def test_recitation_emits_completion_for_total_queue_transition(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    runtime_root = tmp_path / "runtime"
-    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
-    ctx = _Ctx(tmp_path, {"study": {"language": "en", "auto_open_ui": False}})
-    plugin = StudyCompanionPlugin(ctx)
-    result = await plugin.startup()
-    completed: list[dict[str, object]] = []
-
-    async def _capture_completion(**kwargs) -> bool:
-        completed.append(dict(kwargs))
-        return True
-
-    try:
-        assert isinstance(result, Ok)
-        plugin.ctx._current_lanlan = "fallback-character"
-        plugin._emit_review_session_completed_event = (  # type: ignore[method-assign]
-            _capture_completion
-        )
-        deck = plugin._memory_deck_store.create_deck(
-            name="Recitation", deck_type="passage"
-        )
-        imported = plugin._memory_deck_store.import_passage(
-            deck_id=deck["id"], title="One Line", text="Only sentence."
-        )
-
-        recited = await plugin.study_memory_recitation_attempt(
-            item_id=imported["items"][0]["id"],
-            user_input_text="Only sentence.",
-        )
-
-        assert isinstance(recited, Ok)
-        assert completed == [
-            {
-                "reviewed_count": 1,
-                "deck_name": "Recitation",
-                "target_lanlan": "fallback-character",
-            }
-        ]
     finally:
         await plugin.shutdown()
 

@@ -6,7 +6,6 @@ from plugin.plugins.study_companion.fsrs_bridge import StudyFsrsRating
 from plugin.plugins.study_companion.memory_ratings import (
     WORD_ERROR_RATINGS,
     normalize_rating,
-    rating_from_recitation_score,
     rating_from_word_result,
 )
 
@@ -30,23 +29,6 @@ def test_rating_from_word_result_maps_errors_and_correct_override(
 ) -> None:
     assert rating_from_word_result(error_type, correct=correct) == expected
     assert WORD_ERROR_RATINGS["correct"] == StudyFsrsRating.Easy
-
-
-@pytest.mark.parametrize(
-    ("score", "expected"),
-    [
-        (-1.0, StudyFsrsRating.Again),
-        (0.39, StudyFsrsRating.Again),
-        (0.40, StudyFsrsRating.Hard),
-        (0.70, StudyFsrsRating.Good),
-        (0.92, StudyFsrsRating.Easy),
-        (2.0, StudyFsrsRating.Easy),
-    ],
-)
-def test_rating_from_recitation_score_clamps_and_buckets(
-    score: float, expected: StudyFsrsRating
-) -> None:
-    assert rating_from_recitation_score(score) == expected
 
 
 @pytest.mark.parametrize(

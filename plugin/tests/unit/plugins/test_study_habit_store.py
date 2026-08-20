@@ -283,7 +283,7 @@ def test_memory_habit_bridge_updates_deck_goals_idempotently(
         store.close()
 
 
-def test_memory_habit_bridge_summarizes_recitation_and_deck_focus(
+def test_memory_habit_bridge_summarizes_review_and_deck_focus(
     tmp_path: Path,
 ) -> None:
     store = _study_store(tmp_path)
@@ -297,11 +297,11 @@ def test_memory_habit_bridge_summarizes_recitation_and_deck_focus(
             title="Short Text",
             text="First sentence. Second sentence.",
         )
-        attempt_goal = bridge.create_deck_goal(
+        review_goal = bridge.create_deck_goal(
             date="2026-05-24",
             deck_id=deck["id"],
             target_amount=1,
-            unit="attempts",
+            unit="cards",
         )
         focus_goal = bridge.resolve_focus_goal(
             date="2026-05-24",
@@ -321,28 +321,25 @@ def test_memory_habit_bridge_summarizes_recitation_and_deck_focus(
             status="completed",
         )
 
-        recited = memory.add_recitation_attempt(
+        reviewed = memory.review_item(
             item_id=imported["items"][0]["id"],
-            user_input_text="First sentence.",
+            rating="good",
+            correct=True,
         )
         with store.transaction() as conn:
             conn.execute(
                 "UPDATE review_records SET reviewed_at = ? WHERE id = ?",
-                ("2026-05-24 01:00:00", recited["review"]["review_record"]["id"]),
+                ("2026-05-24 01:00:00", reviewed["review_record"]["id"]),
             )
-            conn.execute(
-                "UPDATE recitation_attempts SET reviewed_at = ? WHERE id = ?",
-                ("2026-05-24 01:00:00", recited["attempt"]["id"]),
-            )
-        progress = bridge.apply_recitation_progress(recited, date="2026-05-24")
+        progress = bridge.apply_review_progress(reviewed, date="2026-05-24")
         summary = bridge.memory_summary(date="2026-05-24")
-        attempt_goal_updated = habits.get_goal(attempt_goal["goal"]["id"])
+        review_goal_updated = habits.get_goal(review_goal["goal"]["id"])
 
         assert progress["applied"] == 1
-        assert attempt_goal_updated is not None
-        assert attempt_goal_updated["progress_amount"] == 1
+        assert review_goal_updated is not None
+        assert review_goal_updated["progress_amount"] == 1
         assert summary["reviewed_items"] == 1
-        assert summary["recitation_attempts"] == 1
+        assert summary["correct_items"] == 1
         assert summary["focus_minutes"] == 25
         assert summary["deck_count"] == 1
         assert summary["decks"][0]["deck_id"] == deck["id"]

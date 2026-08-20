@@ -8,7 +8,6 @@ import pytest
 from plugin.plugins.study_companion.memory_deck_store import (
     MemoryDeckStore,
     build_cloze_prompt,
-    diff_recitation,
     normalize_rating,
     rating_from_word_result,
     split_passage_text,
@@ -36,7 +35,7 @@ def _store(tmp_path: Path) -> StudyStore:
     return store
 
 
-def test_memory_deck_crud_review_recitation_and_cascade(tmp_path: Path) -> None:
+def test_memory_deck_crud_review_passage_and_cascade(tmp_path: Path) -> None:
     store = _store(tmp_path)
     try:
         memory = MemoryDeckStore(store)
@@ -65,24 +64,13 @@ def test_memory_deck_crud_review_recitation_and_cascade(tmp_path: Path) -> None:
         )
         assert reviewed["rating"] == 2
         assert reviewed["review_record"]["session_id"] == "memory-session"
-        with pytest.raises(ValueError, match="recitation is only supported"):
-            memory.add_recitation_attempt(
-                item_id=word["id"], user_input_text="abandon", hint_count=0
-            )
-
         passage_deck = memory.create_deck(name="Textbook", deck_type="passage")
         imported = memory.import_passage(
             deck_id=passage_deck["id"],
             title="Short Text",
             text="First sentence. Second sentence.\n\nThird sentence.",
         )
-        attempt = memory.add_recitation_attempt(
-            item_id=imported["items"][0]["id"],
-            user_input_text="First sentence. Second.",
-            hint_count=1,
-        )
-        assert attempt["attempt"]["missing_count"] > 0
-        assert attempt["review"]["review_record"]["id"]
+        assert len(imported["items"]) == 2
 
         deleted = memory.delete_deck(passage_deck["id"])
         assert deleted["deleted"] == 1
@@ -94,15 +82,12 @@ def test_memory_deck_crud_review_recitation_and_cascade(tmp_path: Path) -> None:
                     "memory_fsrs_cards",
                     "memory_review_log",
                     "review_records",
-                    "recitation_attempts",
                 )
             }
-        assert counts["recitation_attempts"] == 0
         assert counts["memory_items"] == 1
         assert counts["memory_fsrs_cards"] == 1
     finally:
         store.close()
-
 
 def test_memory_deck_listing_supports_stable_offsets(tmp_path: Path) -> None:
     store = _store(tmp_path)
@@ -190,15 +175,11 @@ def test_memory_custom_dedupe_uses_key_value_and_deck_scope(tmp_path: Path) -> N
         store.close()
 
 
-def test_memory_passage_split_recitation_diff_and_rating_mapping() -> None:
+def test_memory_passage_split_and_word_rating_mapping() -> None:
     chunks = split_passage_text("Alpha beta.\n\nGamma delta!")
-    diff = diff_recitation("Alpha beta.", "Alpha zeta.", hint_count=2)
 
     assert [chunk["paragraph_index"] for chunk in chunks] == [1, 2]
     assert chunks[0]["sentences"] == ["Alpha beta."]
-    assert diff["missing_count"] > 0
-    assert diff["extra_count"] > 0
-    assert diff["hint_count"] == 2
     assert rating_from_word_result("unknown_word").value == 1
     assert rating_from_word_result("spelling").value == 2
     assert rating_from_word_result("meaning_confused").value == 2
@@ -392,21 +373,5 @@ def test_memory_json_import_export_compat_status_and_missing_review(
 
         with pytest.raises(ValueError, match="memory item not found"):
             memory.review_item(item_id="missing", rating="good")
-    finally:
-        store.close()
-
-
-def test_memory_recitation_error_draft_is_candidate(tmp_path: Path) -> None:
-    store = _store(tmp_path)
-    try:
-        memory = MemoryDeckStore(store)
-        draft = memory.create_recitation_error_draft(
-            expected="Alpha beta.", actual="Alpha zeta."
-        )
-
-        assert draft["status"] == "candidate"
-        assert draft["item_type"] == "memory_draft"
-        assert draft["payload"]["draft_type"] == "recitation_error"
-        assert draft["payload"]["diff"]["wrong_count"] > 0
     finally:
         store.close()

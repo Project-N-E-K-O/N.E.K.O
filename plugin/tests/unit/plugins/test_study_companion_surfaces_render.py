@@ -35,16 +35,10 @@ SURFACE_FILES = {
     "knowledge-map": "knowledge_map.tsx",
     "memory-deck-list": "memory_deck_list.tsx",
     "memory-importer": "memory_importer.tsx",
-    "note-editor": "note_editor.tsx",
-    "note-exporter": "note_exporter.tsx",
-    "note-search": "note_search.tsx",
-    "notebook-panel": "notebook_panel.tsx",
-    "passage-recitation": "passage_recitation.tsx",
     "pomodoro-panel": "pomodoro_panel.tsx",
     "quickstart": "quickstart.tsx",
     "session-summary": "session_summary.tsx",
     "study-panel": "study_panel.tsx",
-    "word-review": "word_review.tsx",
 }
 
 
@@ -553,7 +547,6 @@ def test_study_companion_hosted_calls_forward_abort_signal_to_sdk() -> None:
 
 def test_study_companion_surfaces_share_ui8_interaction_styles_and_messages() -> None:
     surface_utils = _read("study_surface_utils.ts")
-    word_review = _read("word_review.tsx")
     due_review = _read("due_review_panel.tsx")
     memory_decks = _read("memory_deck_list.tsx")
     knowledge_map = _read("knowledge_map.tsx")
@@ -575,14 +568,10 @@ def test_study_companion_surfaces_share_ui8_interaction_styles_and_messages() ->
     assert "modeKey === 'long_break'" in pomodoro
     assert ".study-panel button[data-rating=\"again\"]" in surface_utils
 
-    assert "data-rating={rating}" in word_review
-    assert "STUDY_SURFACE_MESSAGE_TYPES.reviewCompleted" in word_review
-    assert "reviewed_count: 1" in word_review
     assert "data-rating={rating}" in due_review
     assert "study_memory_review_item" in due_review
     assert "STUDY_SURFACE_MESSAGE_TYPES.reviewCompleted" in due_review
     assert "reviewed_count: 1" in due_review
-    assert "STUDY_SURFACE_MESSAGE_TYPES.memoryDeckUpdated" in word_review
     assert "STUDY_SURFACE_MESSAGE_TYPES.memoryDeckUpdated" in due_review
     assert "STUDY_SURFACE_MESSAGE_TYPES.memoryDeckUpdated" in memory_decks
     assert "study_memory_list_deck_items" in memory_decks
