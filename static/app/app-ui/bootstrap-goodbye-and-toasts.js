@@ -1059,6 +1059,7 @@ I.mod = window.appUi;
 
             const overlay = document.createElement('div');
             overlay.id = 'survey-modal-overlay';
+            overlay.className = 'modal-overlay';
             overlay.style.cssText = `
                 position: fixed; inset: 0;
                 background: rgba(0,0,0,0.55);
