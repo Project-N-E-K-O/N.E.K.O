@@ -327,7 +327,7 @@ def test_activate_transport_opens_running_gate_before_start():
         with plugin._state_lock:
             observed_state.append(
                 (plugin._running, plugin._reconnect_required))
-        return False
+        return True
 
     plugin.transport = SimpleNamespace(start=start)
     status = SimpleNamespace(transport_allowed=True)

@@ -41,6 +41,7 @@ CONFLICT_CAUSE_PORT = "port_conflict"
 _BACKOFF_SECONDS = (1.0, 2.0, 4.0)
 _CRASH_WINDOW_SECONDS = 60.0
 _CRASH_LIMIT = 3
+_MAX_HEALTH_RESPONSE_BYTES = 64 * 1024
 
 LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1", "[::1]"})
 
@@ -165,12 +166,15 @@ def probe_health(base_url: str, timeout: float) -> ServiceHealth:
     url = base_url.rstrip("/") + "/healthz"
     try:
         with urllib.request.urlopen(url, timeout=timeout) as response:
-            raw = response.read()
+            raw = response.read(_MAX_HEALTH_RESPONSE_BYTES + 1)
     except urllib.error.HTTPError as exc:
         # An HTTP status, even 404, proves the address is occupied.
         return _foreign_health(type(exc).__name__)
     except (urllib.error.URLError, OSError, ValueError) as exc:
         return ServiceHealth(reachable=False, error=type(exc).__name__)
+
+    if len(raw) > _MAX_HEALTH_RESPONSE_BYTES:
+        return _foreign_health("health response too large")
 
     try:
         payload = json.loads(raw.decode("utf-8"))

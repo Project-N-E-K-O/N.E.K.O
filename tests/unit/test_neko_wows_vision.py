@@ -142,56 +142,67 @@ def game_window():
     )
 
 
-def test_capture_jpeg_uses_mss_first(monkeypatch, game_window):
+def test_capture_jpeg_prefers_window_owned_pixels(monkeypatch, game_window):
     calls = []
     frame = object()
-    region = {"left": 10, "top": 20, "width": 800, "height": 600}
 
-    def _grab_with_mss(actual_region):
-        calls.append(("mss", actual_region))
+    def _grab_with_printwindow(window):
+        calls.append(("printwindow", window))
         return frame
 
-    monkeypatch.setattr(capture_module, "_grab_with_mss", _grab_with_mss)
     monkeypatch.setattr(
         capture_module,
         "_grab_with_printwindow",
-        lambda _window: pytest.fail("PrintWindow should not run after mss succeeds"),
+        _grab_with_printwindow,
+    )
+    monkeypatch.setattr(
+        capture_module,
+        "_grab_with_mss",
+        lambda _region: pytest.fail("mss must not expose an occluding window"),
     )
     monkeypatch.setattr(
         capture_module,
         "_to_jpeg",
-        lambda image: b"mss-jpeg" if image is frame else pytest.fail("wrong frame"),
+        lambda image: b"printwindow-jpeg"
+        if image is frame
+        else pytest.fail("wrong frame"),
     )
 
-    assert capture_module.capture_jpeg(game_window) == b"mss-jpeg"
-    assert calls == [("mss", region)]
+    assert capture_module.capture_jpeg(game_window) == b"printwindow-jpeg"
+    assert calls == [("printwindow", game_window)]
 
 
-def test_capture_jpeg_falls_back_to_printwindow(monkeypatch, game_window):
+def test_capture_jpeg_falls_back_to_mss(monkeypatch, game_window):
     calls = []
-    printwindow_frame = object()
-
-    def _grab_with_mss(_region):
-        calls.append("mss")
-        raise RuntimeError("desktop grab failed")
+    mss_frame = object()
+    region = {"left": 10, "top": 20, "width": 800, "height": 600}
 
     def _grab_with_printwindow(window):
         calls.append("printwindow")
         assert window is game_window
-        return printwindow_frame
+        raise RuntimeError("window capture failed")
+
+    def _grab_with_mss(actual_region):
+        calls.append("mss")
+        assert actual_region == region
+        return mss_frame
 
     def _to_jpeg(image):
         calls.append("jpeg")
-        assert image is printwindow_frame
-        return b"printwindow-jpeg"
+        assert image is mss_frame
+        return b"mss-jpeg"
 
     monkeypatch.setattr(capture_module, "_grab_with_mss", _grab_with_mss)
     monkeypatch.setattr(
         capture_module, "_grab_with_printwindow", _grab_with_printwindow)
+    monkeypatch.setattr(
+        capture_module, "_window_is_foreground", lambda _window: True,
+        raising=False,
+    )
     monkeypatch.setattr(capture_module, "_to_jpeg", _to_jpeg)
 
-    assert capture_module.capture_jpeg(game_window) == b"printwindow-jpeg"
-    assert calls == ["mss", "printwindow", "jpeg"]
+    assert capture_module.capture_jpeg(game_window) == b"mss-jpeg"
+    assert calls == ["printwindow", "mss", "jpeg"]
 
 
 def test_capture_jpeg_returns_none_when_all_backends_fail(
@@ -209,9 +220,92 @@ def test_capture_jpeg_returns_none_when_all_backends_fail(
     monkeypatch.setattr(capture_module, "_grab_with_mss", _fail("mss"))
     monkeypatch.setattr(
         capture_module, "_grab_with_printwindow", _fail("printwindow"))
+    monkeypatch.setattr(
+        capture_module, "_window_is_foreground", lambda _window: True,
+        raising=False,
+    )
 
     assert capture_module.capture_jpeg(game_window) is None
-    assert calls == ["mss", "printwindow"]
+    assert calls == ["printwindow", "mss"]
+
+
+def test_capture_jpeg_does_not_read_desktop_pixels_for_a_background_window(
+    monkeypatch,
+    game_window,
+):
+    monkeypatch.setattr(
+        capture_module,
+        "_grab_with_printwindow",
+        lambda _window: (_ for _ in ()).throw(RuntimeError("capture failed")),
+    )
+    monkeypatch.setattr(
+        capture_module, "_window_is_foreground", lambda _window: False,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        capture_module,
+        "_grab_with_mss",
+        lambda _region: pytest.fail("background desktop pixels are private"),
+    )
+
+    assert capture_module.capture_jpeg(game_window) is None
+
+
+def test_capture_jpeg_discards_mss_frame_if_focus_changes_during_capture(
+    monkeypatch,
+    game_window,
+):
+    foreground = iter([True, False])
+    monkeypatch.setattr(
+        capture_module,
+        "_grab_with_printwindow",
+        lambda _window: (_ for _ in ()).throw(RuntimeError("capture failed")),
+    )
+    monkeypatch.setattr(
+        capture_module,
+        "_window_is_foreground",
+        lambda _window: next(foreground),
+    )
+    monkeypatch.setattr(
+        capture_module, "_grab_with_mss", lambda _region: object())
+    monkeypatch.setattr(
+        capture_module,
+        "_to_jpeg",
+        lambda _image: pytest.fail("focus-changed desktop frame was accepted"),
+    )
+
+    assert capture_module.capture_jpeg(game_window) is None
+
+
+def test_capture_jpeg_rejects_a_blank_printwindow_frame_before_mss_fallback(
+    monkeypatch,
+    game_window,
+):
+    class _BlankFrame:
+        mode = "RGB"
+
+        def getextrema(self):
+            return ((0, 0), (0, 0), (0, 0))
+
+    blank = _BlankFrame()
+    desktop = object()
+    monkeypatch.setattr(
+        capture_module, "_grab_with_printwindow", lambda _window: blank)
+    monkeypatch.setattr(
+        capture_module, "_window_is_foreground", lambda _window: True,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        capture_module, "_grab_with_mss", lambda _region: desktop)
+    monkeypatch.setattr(
+        capture_module,
+        "_to_jpeg",
+        lambda image: b"desktop-jpeg"
+        if image is desktop
+        else pytest.fail("blank PrintWindow frame was accepted"),
+    )
+
+    assert capture_module.capture_jpeg(game_window) == b"desktop-jpeg"
 
 
 def test_capture_jpeg_uses_primary_monitor_for_fullscreen(monkeypatch):

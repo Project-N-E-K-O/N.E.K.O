@@ -203,11 +203,12 @@ async def llm_tool_callback(
             })
         if result.get("error"):
             out["error"] = str(result["error"])
-        # Only forward a non-empty list. Emitting ``images: []`` for every
-        # tool would be a silent wire change for every existing plugin;
-        # main_server's parser treats a missing key as "no images".
-        images = result.get("images")
-        if isinstance(images, list) and images:
-            out["images"] = images
+        # Keep omitting an empty list for wire compatibility. Malformed values
+        # must still reach main_server's shared validator so it can attach an
+        # ``_image_warnings`` entry instead of silently losing the field.
+        if "images" in result:
+            images = result["images"]
+            if not isinstance(images, list) or images:
+                out["images"] = images
         return out
     return {"output": result, "is_error": False}

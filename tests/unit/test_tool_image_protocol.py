@@ -145,6 +145,12 @@ def test_body_without_images_yields_nothing_and_no_warnings():
     assert warnings == []
 
 
+def test_explicit_null_images_field_is_rejected_with_a_warning():
+    images, warnings = _parse_tool_images({"images": None})
+    assert images == []
+    assert any("must be a list" in warning for warning in warnings)
+
+
 def test_valid_entry_is_parsed():
     images, warnings = _parse_tool_images({"images": [_image_entry()]})
     assert warnings == []

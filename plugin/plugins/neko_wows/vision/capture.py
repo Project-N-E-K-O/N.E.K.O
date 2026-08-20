@@ -1,9 +1,9 @@
 """Turning a window (or the whole screen) into a 720p JPEG.
 
-Two backends, in order: ``mss`` grabs the window rectangle off the desktop,
-and Win32 ``PrintWindow`` asks the window to paint itself. The fallback
-matters because mss reads whatever is physically on screen — if something
-overlaps the game, mss returns the overlap.
+Two backends, in order: Win32 ``PrintWindow`` asks the window to paint itself,
+then ``mss`` may fall back to the window rectangle while the game is the
+foreground window. ``mss`` reads whatever is physically on screen, so using it
+for a background game could capture another application that overlaps it.
 
 Compression goes through ``utils.screenshot_utils.compress_screenshot`` so a
 battle frame is the same 720p JPEG q80 as every other screenshot in the app.
@@ -96,6 +96,32 @@ def _grab_with_printwindow(window: GameWindow):
             pass
 
 
+def _window_is_foreground(window: GameWindow) -> bool:
+    """Fail closed when desktop pixels might belong to another application."""
+    try:
+        import win32gui
+
+        return int(win32gui.GetForegroundWindow()) == window.hwnd
+    except Exception:
+        return False
+
+
+def _is_obviously_blank(image) -> bool:
+    """Detect the solid bitmaps PrintWindow can return for DirectX clients."""
+    try:
+        extrema = image.getextrema()
+    except Exception:
+        return False
+    if not isinstance(extrema, tuple):
+        return False
+    if extrema and all(
+        isinstance(channel, tuple) and len(channel) == 2
+        for channel in extrema
+    ):
+        return all(low == high for low, high in extrema)
+    return len(extrema) == 2 and extrema[0] == extrema[1]
+
+
 def capture_jpeg(window: GameWindow | None) -> bytes | None:
     """Capture ``window``, or the primary monitor when it is ``None``.
 
@@ -114,12 +140,22 @@ def capture_jpeg(window: GameWindow | None) -> bytes | None:
         "width": window.width,
         "height": window.height,
     }
-    for grab in (lambda: _grab_with_mss(region), lambda: _grab_with_printwindow(window)):
-        try:
-            return _to_jpeg(grab())
-        except Exception:
-            continue
-    return None
+    try:
+        image = _grab_with_printwindow(window)
+        if not _is_obviously_blank(image):
+            return _to_jpeg(image)
+    except Exception:
+        pass
+
+    if not _window_is_foreground(window):
+        return None
+    try:
+        image = _grab_with_mss(region)
+        if not _window_is_foreground(window):
+            return None
+        return _to_jpeg(image)
+    except Exception:
+        return None
 
 
 __all__ = ["capture_jpeg"]

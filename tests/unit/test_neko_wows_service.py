@@ -36,8 +36,8 @@ class FakeResponse:
     def __init__(self, payload):
         self._body = json.dumps(payload).encode("utf-8")
 
-    def read(self):
-        return self._body
+    def read(self, size=-1):
+        return self._body if size < 0 else self._body[:size]
 
     def __enter__(self):
         return self
@@ -47,8 +47,9 @@ class FakeResponse:
 
 
 class GarbageResponse:
-    def read(self):
-        return b"<html>not json</html>"
+    def read(self, size=-1):
+        body = b"<html>not json</html>"
+        return body if size < 0 else body[:size]
 
     def __enter__(self):
         return self
@@ -216,6 +217,34 @@ def test_garbage_response_does_not_raise(monkeypatch):
     assert health.conflict_cause == sm.CONFLICT_CAUSE_PORT
 
 
+def test_oversized_health_response_is_bounded_and_treated_as_foreign(monkeypatch):
+    class OversizedResponse:
+        def __init__(self):
+            self.read_sizes = []
+            self.body = b"x" * (64 * 1024 + 1)
+
+        def read(self, size=-1):
+            self.read_sizes.append(size)
+            return self.body if size < 0 else self.body[:size]
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    response = OversizedResponse()
+    monkeypatch.setattr(
+        sm.urllib.request, "urlopen", lambda *a, **k: response)
+
+    health = probe_health("http://127.0.0.1:8111", 1.0)
+
+    assert response.read_sizes == [64 * 1024 + 1]
+    assert health.reachable is True
+    assert health.ours is False
+    assert health.error == "health response too large"
+
+
 # --- start_if_needed ----------------------------------------------------
 
 def test_an_already_healthy_service_is_reused_not_relaunched(monkeypatch):
@@ -371,6 +400,23 @@ def test_plugin_does_not_start_transport_for_a_conflicting_service():
 
     assert NekoWowsPlugin._activate_transport(plugin, status) is False
     assert starts == []
+    assert plugin._running is False
+    assert plugin._reconnect_required is True
+
+
+def test_plugin_keeps_reconnect_required_when_transport_cannot_restart():
+    plugin = object.__new__(NekoWowsPlugin)
+    plugin._state_lock = threading.RLock()
+    plugin.transport = type("Transport", (), {"start": lambda _self: False})()
+    plugin._running = False
+    plugin._reconnect_required = False
+
+    started = NekoWowsPlugin._activate_transport(
+        plugin,
+        ServiceStatus(mode=MODE_EXTERNAL),
+    )
+
+    assert started is False
     assert plugin._running is False
     assert plugin._reconnect_required is True
 
@@ -582,6 +628,7 @@ def test_reconnect_resets_pipeline_and_battle_state_before_transport_restart():
     plugin._running = False
     plugin._reconnect_required = True
     plugin._previous = ("old-frame",)
+    plugin._latest = ("old-frame",)
     plugin._blocked_signature = (("old", ("battle",)),)
     plugin.cfg = WowsConfig()
 
@@ -630,6 +677,7 @@ def test_reconnect_resets_pipeline_and_battle_state_before_transport_restart():
     ]
     assert plugin._blocked_signature == ()
     assert plugin._previous is None
+    assert plugin._latest is None
     assert plugin._running is True
     assert plugin._reconnect_required is False
     assert transport_stop_threads[0] != event_loop_thread

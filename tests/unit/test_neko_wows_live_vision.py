@@ -114,6 +114,28 @@ def test_state_is_refetched_once_the_ttl_lapses():
     assert len(calls) == 2
 
 
+def test_stale_active_state_reads_inactive_until_refresh_finishes():
+    clock = _Clock()
+    spawned = []
+    probe, _calls = _probe(
+        [SHARING, SHARING],
+        clock=clock,
+        spawn=spawned.append,
+    )
+
+    probe.snapshot()
+    spawned.pop()()
+    assert probe.snapshot()["active"] is True
+
+    clock.advance(5.0)
+    stale = probe.snapshot()
+
+    assert stale["active"] is False
+    assert len(spawned) == 1
+    spawned.pop()()
+    assert probe.snapshot()["active"] is True
+
+
 def test_a_stalled_refresh_does_not_pile_up_threads():
     """One refresh per stale window, however many frames ask meanwhile."""
     spawned = []

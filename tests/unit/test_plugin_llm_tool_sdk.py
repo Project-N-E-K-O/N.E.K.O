@@ -516,14 +516,19 @@ async def test_callback_route_still_wraps_a_bare_dict():
     assert out == {"output": {"output": "just data"}, "is_error": False}
 
 
+@pytest.mark.parametrize(
+    "images",
+    ["not a list", {"data_b64": "QUJD"}, None],
+    ids=["string", "dict", "none"],
+)
 @pytest.mark.asyncio
-async def test_callback_route_rejects_non_list_images():
+async def test_callback_route_forwards_non_list_images_to_host_validator(images):
     out = await _call_with_handler_result({
         "output": {"ok": True},
         "is_error": False,
-        "images": "not a list",
+        "images": images,
     })
-    assert "images" not in out
+    assert out["images"] == images
 
 
 @pytest.mark.asyncio

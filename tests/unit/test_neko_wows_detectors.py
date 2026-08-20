@@ -1218,6 +1218,35 @@ def test_team_counts_are_not_confirmed_without_own_visible_object():
     assert facts.confirmed_visible_enemies == 3
 
 
+def test_relation_self_confirms_own_visible_hull_without_player_id():
+    own_object = Ship(
+        ui_id=1,
+        player_id=None,
+        team_id=0,
+        relation=0,
+        name="OwnShip",
+        alive=True,
+        visible=True,
+    )
+    snapshot = frame(ships=(
+        own_object,
+        ally(ui_id=10),
+        enemy(ui_id=2),
+        enemy(ui_id=3),
+        enemy(ui_id=4),
+    ))
+    snapshot = replace(
+        snapshot,
+        self_ship=replace(snapshot.self_ship, player_id=None),
+    )
+
+    facts = BUILDER.build(snapshot)
+
+    assert facts.team_counts_confirmed is True
+    assert facts.confirmed_visible_allies == 2
+    assert facts.confirmed_visible_enemies == 3
+
+
 def test_outnumbered_uses_only_confirmed_visible_team_counts():
     registry = DetectorRegistry(build_survival_detectors(CFG))
     ships = (

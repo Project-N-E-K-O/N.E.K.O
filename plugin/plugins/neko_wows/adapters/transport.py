@@ -200,22 +200,31 @@ class TelemetryTransport:
             self._stop_flag = threading.Event()
             stop_flag = self._stop_flag
             self._mode = MODE_STARTING
-            self._thread = threading.Thread(
+            thread = threading.Thread(
                 target=self._thread_main,
                 args=(stop_flag,),
                 name="wows-transport",
                 daemon=True,
             )
-            thread = self._thread
-        thread.start()
+            self._thread = thread
+            try:
+                # Publish and start atomically with respect to ``stop()``. An
+                # unstarted Thread reports not alive, so releasing this lock
+                # first would let stop detach it before its target can run.
+                thread.start()
+            except Exception:
+                if self._thread is thread:
+                    self._thread = None
+                    self._mode = MODE_STOPPED
+                raise
         return True
 
     def stop(self, timeout: float = 3.0) -> None:
         with self._lock:
             thread = self._thread
             loop = self._loop
-            self._thread = None
-        self._stop_flag.set()
+            stop_flag = self._stop_flag
+        stop_flag.set()
         if loop is not None:
             # The loop is blocked on an asyncio primitive; poke it from here.
             try:
@@ -226,7 +235,16 @@ class TelemetryTransport:
         if thread is not None and thread.is_alive():
             thread.join(timeout=timeout)
         with self._lock:
-            self._mode = MODE_STOPPED
+            # A timed-out thread still owns the transport generation. Keeping
+            # it attached prevents ``start()`` from launching a replacement
+            # whose shared state could later be overwritten by the old run's
+            # ``finally`` block. The identity guard also keeps a concurrent
+            # stop of an already-dead run from clearing a newer generation.
+            if self._thread is thread and (
+                thread is None or not thread.is_alive()
+            ):
+                self._thread = None
+                self._mode = MODE_STOPPED
 
     # ------------------------------------------------------------------
     def _thread_main(self, stop_flag: threading.Event) -> None:

@@ -7,6 +7,7 @@ import threading
 
 import pytest
 
+from plugin.plugins.neko_wows.adapters import transport as transport_module
 from plugin.plugins.neko_wows.adapters.schema_adapter import (
     BW_TO_METERS,
     LEGACY_STALE_SECONDS,
@@ -24,6 +25,7 @@ from plugin.plugins.neko_wows.adapters.transport import (
     DROP_DUPLICATE_SEQ,
     DROP_MALFORMED,
     DROP_STALE_EPOCH,
+    MODE_REST,
     STALL_FAILURES,
     STALL_INTERVAL_SECONDS,
     CursorGate,
@@ -1236,6 +1238,69 @@ def test_stop_swallows_a_closed_event_loop():
     transport._loop = _ClosedLoop()
     transport._thread = None
     transport.stop()
+
+
+def test_start_publishes_and_starts_the_thread_under_one_lifecycle_lock(
+    monkeypatch,
+):
+    transport = _transport(lambda: 1000.0)
+    observations = []
+
+    class _TrackingLock:
+        def __init__(self):
+            self._inner = threading.RLock()
+            self.held = False
+
+        def __enter__(self):
+            self._inner.acquire()
+            self.held = True
+            return self
+
+        def __exit__(self, *_exc):
+            self.held = False
+            self._inner.release()
+
+    lock = _TrackingLock()
+    transport._lock = lock
+
+    class _Thread:
+        def __init__(self, **_kwargs):
+            self.alive = False
+
+        def is_alive(self):
+            return self.alive
+
+        def start(self):
+            observations.append(lock.held)
+            self.alive = True
+
+    monkeypatch.setattr(transport_module.threading, "Thread", _Thread)
+
+    assert transport.start() is True
+    assert observations == [True]
+
+
+def test_stop_keeps_a_timed_out_thread_attached_until_it_exits():
+    transport = _transport(lambda: 1000.0)
+    joined = []
+
+    class _StuckThread:
+        def is_alive(self):
+            return True
+
+        def join(self, timeout=None):
+            joined.append(timeout)
+
+    stuck = _StuckThread()
+    transport._thread = stuck
+    transport._mode = MODE_REST
+
+    transport.stop(timeout=0.25)
+
+    assert joined == [0.25]
+    assert transport._thread is stuck
+    assert transport.mode == MODE_REST
+    assert transport.start() is False
 
 
 @pytest.mark.asyncio

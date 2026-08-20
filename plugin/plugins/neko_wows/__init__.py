@@ -697,12 +697,17 @@ class NekoWowsPlugin(NekoPluginBase):
             self._running = True
             self._reconnect_required = False
         try:
-            self.transport.start()
+            started = self.transport.start()
         except Exception:
             with self._state_lock:
                 self._running = False
                 self._reconnect_required = True
             raise
+        if started is False:
+            with self._state_lock:
+                self._running = False
+                self._reconnect_required = True
+            return False
         return True
 
     def _supervise_service(self) -> None:
@@ -1358,6 +1363,7 @@ class NekoWowsPlugin(NekoPluginBase):
                 self.arbiter.reset_battle(None)
                 self._blocked_signature = ()
                 with self._state_lock:
+                    self._latest = None
                     self._previous = None
         if disabled:
             # The configuration changed while the managed service restarted.

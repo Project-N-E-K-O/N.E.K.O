@@ -17,10 +17,9 @@ things at once, and all three have to hold or the frame never arrives:
 
 Reads never block. The pipeline asks this from the telemetry thread while a
 battle is running, so a slow or dead host must not stall a call-out: callers
-get the last known answer immediately and a refresh happens behind them. The
-state changes a few times an hour at most, so being a couple of seconds behind
-costs nothing, and polling -- unlike a subscription -- cannot get stuck
-believing a share is still on because it missed the stop.
+reuse a fresh cached answer, while an expired cache reads inactive until a
+refresh finishes behind them. Polling -- unlike a subscription -- cannot get
+stuck believing a share is still on because it missed the stop.
 """
 
 from __future__ import annotations
@@ -83,13 +82,13 @@ class LiveVisionProbe:
 
     # ------------------------------------------------------------------
     def snapshot(self) -> dict[str, Any]:
-        """Last known host state, refreshing in the background when stale."""
+        """Fresh cached host state, or inactive while refreshing stale data."""
         with self._lock:
-            state = dict(self._state)
             due = (
                 self._fetched_at is None
                 or (self._clock() - self._fetched_at) >= self._ttl
             )
+            state = dict(_UNKNOWN) if due else dict(self._state)
             # Single-flight: a stalled refresh must not pile up one thread per
             # telemetry frame.
             start = due and not self._refreshing
@@ -102,6 +101,13 @@ class LiveVisionProbe:
                 with self._lock:
                     self._refreshing = False
                 self._log("debug", f"live vision refresh could not start: {exc}")
+            else:
+                # Test/in-process spawners may complete before returning. In
+                # that case the cache is fresh already; only conceal the old
+                # active state while a refresh is genuinely still in flight.
+                with self._lock:
+                    if not self._refreshing:
+                        state = dict(self._state)
         return state
 
     def is_active(self) -> bool:

@@ -243,9 +243,9 @@ def parse_tool_images(body: Dict[str, Any]) -> Tuple[List[ToolImage], List[str]]
     entire backward-compatibility contract for tools written before the image
     channel existed.
     """
-    raw = body.get("images")
-    if raw is None:
+    if "images" not in body:
         return [], []
+    raw = body["images"]
     if not isinstance(raw, list):
         return [], ["tool images must be a list; ignored"]
 

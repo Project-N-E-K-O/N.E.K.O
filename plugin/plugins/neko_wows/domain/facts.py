@@ -18,6 +18,7 @@ from .snapshot import (
     DOMAIN_OBJECTS,
     DOMAIN_ROSTER,
     DOMAIN_SELF,
+    RELATION_SELF,
     Ship,
     WowsSnapshot,
     alive_from_health,
@@ -232,9 +233,13 @@ class FactBuilder:
             )
         own_player_id = own.player_id if own is not None else None
         own_confirmed_visible = bool(
-            own_player_id is not None
+            own is not None
             and any(
-                ship.player_id == own_player_id
+                (
+                    ship.player_id == own_player_id
+                    if own_player_id is not None
+                    else ship.relation == RELATION_SELF
+                )
                 and ship.is_confirmed_alive
                 and ship.visible
                 for ship in snapshot.own_side(visible_only=True)
