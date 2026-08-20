@@ -4594,7 +4594,7 @@ def test_timeindexed_dispose_engine_also_clears_sql_chat_engine_cache(monkeypatc
 
 @pytest.mark.unit
 def test_timeindexed_engine_admission_fence_prevents_lazy_recreation(monkeypatch):
-    from memory.timeindex import TimeIndexedMemory
+    from memory.timeindex import CharacterEngineAdmissionError, TimeIndexedMemory
 
     manager = TimeIndexedMemory(
         recent_history_manager=None,
@@ -4608,7 +4608,12 @@ def test_timeindexed_engine_admission_fence_prevents_lazy_recreation(monkeypatch
         ),
     )
 
-    assert manager._ensure_engine_exists("正在删除角色") is False
+    with pytest.raises(CharacterEngineAdmissionError):
+        manager._ensure_engine_exists("正在删除角色")
+    with pytest.raises(CharacterEngineAdmissionError):
+        manager._ensure_engine_exists("正在删除角色", readonly=True)
+    with pytest.raises(CharacterEngineAdmissionError):
+        manager.retrieve_original_by_timeframe("正在删除角色", None, None)
 
 
 @pytest.mark.unit

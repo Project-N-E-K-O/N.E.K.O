@@ -770,8 +770,6 @@ async def cache_conversation(request: HistoryRequest, lanlan_name: str):
             logger.info(f"[MemoryServer] cache: {lanlan_name} +{len(input_history)} 条消息")
             uid = str(uuid4())
             async with runtime._get_settle_lock(lanlan_name):
-                if not runtime._is_character_publication_admitted(lanlan_name):
-                    return {"status": "cancelled", "message": "character release in progress"}
                 await runtime.recent_history_manager.update_history(input_history, lanlan_name, compress=False)
                 # store_conversation 必须在 lock 内、与 update_history 串行：和
                 # /process / /renew 路径对偶，确保单角色 db 写顺序一致。
@@ -825,18 +823,15 @@ async def process_conversation(request: HistoryRequest, lanlan_name: str):
             if _has_human_messages(input_history):
                 await gates._aclear_review_clean(lanlan_name)
             logger.info(f"[MemoryServer] 收到 {lanlan_name} 的对话历史处理请求，消息数: {len(input_history)}")
-            async with runtime._get_settle_lock(lanlan_name):
-                if not runtime._is_character_publication_admitted(lanlan_name):
-                    return {"status": "cancelled", "message": "character release in progress"}
-                await runtime.recent_history_manager.update_history(
-                    input_history,
-                    lanlan_name,
-                    on_compress_done=review._on_compress_done,
-                )
-                # 旧模块已禁用（性能不足）：
-                # await settings_manager.extract_and_update_settings(input_history, lanlan_name)
-                # await semantic_manager.store_conversation(uid, input_history, lanlan_name)
-                await runtime.time_manager.astore_conversation(uid, input_history, lanlan_name)
+            await runtime.recent_history_manager.update_history(
+                input_history,
+                lanlan_name,
+                on_compress_done=review._on_compress_done,
+            )
+            # 旧模块已禁用（性能不足）：
+            # await settings_manager.extract_and_update_settings(input_history, lanlan_name)
+            # await semantic_manager.store_conversation(uid, input_history, lanlan_name)
+            await runtime.time_manager.astore_conversation(uid, input_history, lanlan_name)
 
             # 异步事实提取（不阻塞返回，失败静默跳过）
             await post_turn._spawn_outbox_post_turn_signals(
@@ -891,8 +886,6 @@ async def process_conversation_for_renew(request: HistoryRequest, lanlan_name: s
             logger.info(f"[MemoryServer] renew: 收到 {lanlan_name} 的对话历史处理请求，消息数: {len(input_history)}")
             # 首轮摘要带锁：阻塞 /new_dialog 直到摘要+时间戳写入完成
             async with runtime._get_settle_lock(lanlan_name):
-                if not runtime._is_character_publication_admitted(lanlan_name):
-                    return {"status": "cancelled", "message": "character release in progress"}
                 await runtime.recent_history_manager.update_history(
                     input_history,
                     lanlan_name,
@@ -947,8 +940,6 @@ async def settle_conversation(request: HistoryRequest, lanlan_name: str):
             logger.info(f"[MemoryServer] settle: 收到 {lanlan_name} 的结算请求，消息数: {len(input_history)}")
 
             async with runtime._get_settle_lock(lanlan_name):
-                if not runtime._is_character_publication_admitted(lanlan_name):
-                    return {"status": "cancelled", "message": "character release in progress"}
                 if input_history:
                     await runtime.time_manager.astore_conversation(uid, input_history, lanlan_name)
                 await runtime.recent_history_manager.update_history(

@@ -42,6 +42,10 @@ FACT_NEAR_DUP_ARBITRATE_OVERLAP = 0.25
 FACT_NEAR_DUP_ENQUEUE_TIMEOUT_SECONDS = 5.0
 
 
+class CharacterEngineAdmissionError(RuntimeError):
+    """The character identity is fenced for delete/rename publication."""
+
+
 def _next_readonly_batch(
     stream: Generator[list[tuple[object, object, object]], None, None],
 ) -> tuple[bool, list[tuple[object, object, object]] | None]:
@@ -270,11 +274,13 @@ class TimeIndexedMemory:
             self._engine_admission_check is not None
             and not self._engine_admission_check(lanlan_name)
         ):
-            logger.info(
-                "[TimeIndexedMemory] 角色 %s 正在删除或改名，跳过数据库引擎初始化",
+            logger.debug(
+                "[TimeIndexedMemory] 角色 %s 正在删除或改名，拒绝数据库引擎初始化",
                 lanlan_name,
             )
-            return False
+            raise CharacterEngineAdmissionError(
+                f"character engine admission is fenced: {lanlan_name}"
+            )
         if not readonly:
             self._assert_timeindex_writable(lanlan_name)
         if lanlan_name in self.engines and lanlan_name in self.db_paths:

@@ -32,6 +32,7 @@ the same reason.
 """
 
 import asyncio
+from contextvars import ContextVar, Token
 from datetime import datetime, timezone
 
 from fastapi import FastAPI, HTTPException, Request
@@ -74,12 +75,85 @@ class ContinueStorageStartupRequest(BaseModel):
 
 
 app = FastAPI()
+_CHARACTER_WRITE_PATH_PREFIXES = ("/cache/", "/process/", "/renew/", "/settle/")
+_admitted_character_context: ContextVar[frozenset[str]] = ContextVar(
+    "admitted_character_context",
+    default=frozenset(),
+)
+_active_character_requests: dict[str, int] = {}
+_active_character_request_events: dict[str, asyncio.Event] = {}
 _STORAGE_LIMITED_MODE_ALLOWED_PATHS = {
     "/health",
     "/shutdown",
     "/internal/storage/startup/continue",
     "/internal/storage/startup/block",
 }
+
+
+def _character_write_name_from_path(path: str) -> str | None:
+    for prefix in _CHARACTER_WRITE_PATH_PREFIXES:
+        if path.startswith(prefix):
+            lanlan_name = path[len(prefix):]
+            if lanlan_name and "/" not in lanlan_name:
+                return lanlan_name
+    return None
+
+
+def _begin_character_request(
+    lanlan_name: str,
+) -> Token[frozenset[str]] | None:
+    """Atomically admit one foreground request before its first await."""
+    if not _is_character_publication_admitted(lanlan_name):
+        return None
+    _active_character_requests[lanlan_name] = (
+        _active_character_requests.get(lanlan_name, 0) + 1
+    )
+    return _admitted_character_context.set(
+        _admitted_character_context.get() | {lanlan_name}
+    )
+
+
+def _end_character_request(
+    lanlan_name: str,
+    context_token: Token[frozenset[str]],
+) -> None:
+    _admitted_character_context.reset(context_token)
+    remaining = _active_character_requests.get(lanlan_name, 0) - 1
+    if remaining > 0:
+        _active_character_requests[lanlan_name] = remaining
+        return
+    _active_character_requests.pop(lanlan_name, None)
+    event = _active_character_request_events.pop(lanlan_name, None)
+    if event is not None:
+        event.set()
+
+
+async def _wait_for_character_requests(lanlan_name: str) -> None:
+    while _active_character_requests.get(lanlan_name, 0):
+        event = _active_character_request_events.setdefault(
+            lanlan_name,
+            asyncio.Event(),
+        )
+        event.clear()
+        if _active_character_requests.get(lanlan_name, 0):
+            await event.wait()
+
+
+@app.middleware("http")
+async def character_publication_guard(request: Request, call_next):
+    lanlan_name = _character_write_name_from_path(request.url.path)
+    if lanlan_name is None:
+        return await call_next(request)
+    context_token = _begin_character_request(lanlan_name)
+    if context_token is None:
+        return JSONResponse(
+            {"status": "cancelled", "message": "character release in progress"},
+            status_code=409,
+        )
+    try:
+        return await call_next(request)
+    finally:
+        _end_character_request(lanlan_name, context_token)
 
 
 @app.middleware("http")
@@ -252,6 +326,14 @@ def _is_character_publication_admitted(lanlan_name: str) -> bool:
     return not review.is_character_publication_held(lanlan_name)
 
 
+def _is_character_engine_admitted(lanlan_name: str) -> bool:
+    """Allow a request admitted before the publication hold to finish."""
+    return (
+        lanlan_name in _admitted_character_context.get()
+        or _is_character_publication_admitted(lanlan_name)
+    )
+
+
 def _dispose_character_engines_across_generations(
     lanlan_name: str,
 ) -> tuple[int, int]:
@@ -284,7 +366,7 @@ def _dispose_character_engines_across_generations(
 
     if errors:
         summary = ", ".join(
-            f"manager[{index}]={type(exc).__name__}"
+            f"manager[{index}]={type(exc).__name__}: {exc}"
             for index, exc in errors
         )
         raise RuntimeError(
@@ -332,7 +414,7 @@ async def reload_memory_components(
             new_settings = ImportantSettingsManager()
             new_time = TimeIndexedMemory(
                 new_recent,
-                engine_admission_check=_is_character_publication_admitted,
+                engine_admission_check=_is_character_engine_admitted,
             )
             new_facts = FactStore(time_indexed_memory=new_time)
             # EventLog 复用（per-character lock dict 没有必要跨 reload 丢弃），
@@ -498,9 +580,14 @@ async def release_character_resources(
             status_code=409,
         )
     # The publication hold above prevents queued/new work from reopening the
-    # engine.  Taking the same per-character lock as the foreground write paths
-    # drains work that entered before the hold, then the reload lock gives us a
-    # stable current/deferred manager set for the disposal sweep.
+    # engine. Requests admitted before the hold keep their request-local lease;
+    # drain them and their spawned post-turn tasks before disposing any manager.
+    from . import post_turn
+
+    await _wait_for_character_requests(lanlan_name)
+    cancelled_post_turn_tasks = await post_turn.cancel_character_post_turn_tasks(
+        lanlan_name
+    )
     async with _get_settle_lock(lanlan_name):
         async with _reload_lock:
             try:
@@ -513,7 +600,7 @@ async def release_character_resources(
                     lanlan_name,
                     scanned_managers,
                     released_managers,
-                    cancelled_tasks,
+                    cancelled_tasks + cancelled_post_turn_tasks,
                 )
                 return {
                     "status": "success",
@@ -590,9 +677,20 @@ def _get_settle_lock(lanlan_name: str) -> asyncio.Lock:
     return _settle_locks[lanlan_name]
 
 
-def _spawn_background_task(coro) -> asyncio.Task:
+def _spawn_background_task(
+    coro,
+    *,
+    inherit_character_admission: bool = True,
+) -> asyncio.Task:
     """Create a background task with strong reference + exception logging."""
-    task = asyncio.create_task(coro)
+    context_token = None
+    if not inherit_character_admission:
+        context_token = _admitted_character_context.set(frozenset())
+    try:
+        task = asyncio.create_task(coro)
+    finally:
+        if context_token is not None:
+            _admitted_character_context.reset(context_token)
     _BACKGROUND_TASKS.add(task)
 
     def _on_done(t: asyncio.Task):
@@ -716,7 +814,7 @@ async def ensure_memory_server_runtime_initialized(*, reason: str = "") -> bool:
         settings_manager = ImportantSettingsManager()
         time_manager = TimeIndexedMemory(
             recent_history_manager,
-            engine_admission_check=_is_character_publication_admitted,
+            engine_admission_check=_is_character_engine_admitted,
         )
         fact_store = FactStore(time_indexed_memory=time_manager)
         # Queue erasure is part of the privacy runtime, not the optional

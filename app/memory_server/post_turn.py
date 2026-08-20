@@ -39,6 +39,47 @@ from ._shared import logger
 from .rows import _extract_ai_response, _extract_user_messages
 
 
+_character_post_turn_tasks: dict[str, set[asyncio.Task]] = {}
+
+
+def _track_character_post_turn_task(
+    lanlan_name: str,
+    task: asyncio.Task,
+) -> asyncio.Task:
+    tasks = _character_post_turn_tasks.setdefault(lanlan_name, set())
+    tasks.add(task)
+
+    def _discard(done_task: asyncio.Task) -> None:
+        tasks.discard(done_task)
+        if not tasks and _character_post_turn_tasks.get(lanlan_name) is tasks:
+            _character_post_turn_tasks.pop(lanlan_name, None)
+
+    task.add_done_callback(_discard)
+    return task
+
+
+async def cancel_character_post_turn_tasks(lanlan_name: str) -> int:
+    tasks = [
+        task
+        for task in _character_post_turn_tasks.get(lanlan_name, ())
+        if not task.done()
+    ]
+    for task in tasks:
+        task.cancel()
+    for task in tasks:
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        except Exception as exc:
+            logger.warning(
+                "取消角色 %s 的 post-turn 任务时出现异常: %s",
+                lanlan_name,
+                exc,
+            )
+    return len(tasks)
+
+
 def _with_language_context(func):
     """Run one post-turn operation with its persisted task-local locale."""
 
@@ -189,9 +230,21 @@ async def _spawn_outbox_post_turn_signals(
                 locale_order=locale_order,
                 locale_only=not messages,
             )
-        return runtime._spawn_background_task(operation)
+        return _track_character_post_turn_task(
+            lanlan_name,
+            runtime._spawn_background_task(
+                operation,
+                inherit_character_admission=False,
+            ),
+        )
     op = {'op_id': op_id, 'type': OP_POST_TURN_SIGNALS, 'payload': payload}
-    return runtime._spawn_background_task(outbox_infra._run_outbox_op(lanlan_name, op))
+    return _track_character_post_turn_task(
+        lanlan_name,
+        runtime._spawn_background_task(
+            outbox_infra._run_outbox_op(lanlan_name, op),
+            inherit_character_admission=False,
+        ),
+    )
 
 
 async def _wait_for_character_prompt_locale_order(

@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -131,60 +132,115 @@ async def test_release_drains_inflight_process_and_fences_engine_recreation():
 
     memory_server.review._retired_derived_task_names.discard(name)
     memory_server.review._publication_held_derived_task_names.discard(name)
-    with patch.object(memory_server.runtime, "time_manager", fake_time_manager), patch.object(
-        memory_server.runtime, "_deferred_time_managers", [],
-    ), patch.object(
-        memory_server.runtime, "recent_history_manager", fake_recent,
-    ), patch.object(
-        memory_server.runtime, "_config_manager", fake_config,
-    ), patch.object(
-        memory_server.runtime, "embedding_warmup_worker", None,
-    ), patch.object(
-        memory_server.post_turn, "_spawn_outbox_post_turn_signals", AsyncMock(),
-    ), patch.object(
-        memory_server.review, "maybe_spawn_review", AsyncMock(),
-    ):
-        process_task = asyncio.create_task(
-            memory_server.process_conversation(request, name)
-        )
-        await asyncio.wait_for(write_started.wait(), timeout=1)
-
-        release_task = asyncio.create_task(
-            memory_server.runtime.release_character_resources(
-                name,
-                hold_derived_task_admission=True,
-                derived_task_claim_token=claim_token,
-                derived_task_claim_generation=0,
+    context_token = memory_server.runtime._begin_character_request(name)
+    assert context_token is not None
+    try:
+        with patch.object(memory_server.runtime, "time_manager", fake_time_manager), patch.object(
+            memory_server.runtime, "_deferred_time_managers", [],
+        ), patch.object(
+            memory_server.runtime, "recent_history_manager", fake_recent,
+        ), patch.object(
+            memory_server.runtime, "_config_manager", fake_config,
+        ), patch.object(
+            memory_server.runtime, "embedding_warmup_worker", None,
+        ), patch.object(
+            memory_server.post_turn, "_spawn_outbox_post_turn_signals", AsyncMock(),
+        ), patch.object(
+            memory_server.review, "maybe_spawn_review", AsyncMock(),
+        ):
+            process_task = asyncio.create_task(
+                memory_server.process_conversation(request, name)
             )
+            await asyncio.wait_for(write_started.wait(), timeout=1)
+
+            release_task = asyncio.create_task(
+                memory_server.runtime.release_character_resources(
+                    name,
+                    hold_derived_task_admission=True,
+                    derived_task_claim_token=claim_token,
+                    derived_task_claim_generation=0,
+                )
+            )
+
+            async def _wait_for_hold():
+                while not memory_server.review.is_character_publication_held(name):
+                    await asyncio.sleep(0)
+
+            await asyncio.wait_for(_wait_for_hold(), timeout=1)
+            assert memory_server.runtime._is_character_engine_admitted(name)
+            assert "disposed" not in order
+            finish_write.set()
+            process_result = await process_task
+            memory_server.runtime._end_character_request(name, context_token)
+            context_token = None
+            release_result = await release_task
+
+            assert process_result == {"status": "processed"}
+            assert release_result["status"] == "success"
+            assert order == ["write_started", "write_finished", "disposed"]
+
+            assert memory_server.runtime._begin_character_request(name) is None
+            assert fake_time_manager.astore_conversation.await_count == 1
+    finally:
+        if context_token is not None:
+            memory_server.runtime._end_character_request(name, context_token)
+        await memory_server.review.release_character_derived_task_admission_claim(
+            name,
+            claim_token,
         )
-        for _ in range(20):
-            if memory_server.review.is_character_publication_held(name):
-                break
-            await asyncio.sleep(0)
+        memory_server.review._retired_derived_task_names.discard(name)
+        memory_server.review._publication_held_derived_task_names.discard(name)
 
-        assert memory_server.review.is_character_publication_held(name)
-        assert "disposed" not in order
-        finish_write.set()
-        process_result, release_result = await asyncio.gather(
-            process_task,
-            release_task,
-        )
 
-        assert process_result == {"status": "processed"}
-        assert release_result["status"] == "success"
-        assert order == ["write_started", "write_finished", "disposed"]
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_publication_guard_rejects_new_write_with_non_success_status():
+    from starlette.requests import Request
 
-        queued_result = await memory_server.process_conversation(request, name)
-        assert queued_result == {
-            "status": "cancelled",
-            "message": "character release in progress",
+    from app import memory_server
+
+    name = "已关闭准入角色"
+    memory_server.review._publication_held_derived_task_names.add(name)
+    request = Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "scheme": "http",
+            "path": f"/cache/{name}",
+            "raw_path": f"/cache/{name}".encode(),
+            "query_string": b"",
+            "headers": [],
+            "server": ("127.0.0.1", 48912),
+            "client": ("127.0.0.1", 1),
         }
-        assert fake_time_manager.astore_conversation.await_count == 1
-
-    await memory_server.review.release_character_derived_task_admission_claim(
-        name,
-        claim_token,
     )
+    call_next = AsyncMock(side_effect=AssertionError("fenced request reached endpoint"))
+    try:
+        response = await memory_server.runtime.character_publication_guard(
+            request,
+            call_next,
+        )
+        assert response.status_code == 409
+        assert json.loads(response.body)["status"] == "cancelled"
+        call_next.assert_not_awaited()
+    finally:
+        memory_server.review._publication_held_derived_task_names.discard(name)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_release_cancels_tracked_post_turn_task():
+    from app import memory_server
+
+    name = "待取消后台角色"
+    task = asyncio.create_task(asyncio.sleep(30))
+    memory_server.post_turn._track_character_post_turn_task(name, task)
+
+    cancelled = await memory_server.post_turn.cancel_character_post_turn_tasks(name)
+
+    assert cancelled == 1
+    assert task.cancelled()
+    assert name not in memory_server.post_turn._character_post_turn_tasks
 
 
 @pytest.mark.unit
