@@ -62,6 +62,7 @@ ActivationCallback = Callable[
     [SpeakerProfile | None, str],
     Awaitable[bool | VoiceIdentityActivationResult],
 ]
+RuntimeStatusCallback = Callable[[], VoiceIdentityActivationResult]
 VoiceIdentityRuntimeMode = Literal["off", "shadow", "enforce"]
 _ResultT = TypeVar("_ResultT")
 
@@ -144,6 +145,7 @@ class VoiceIdentityService:
         enrollment_ttl_seconds: float = 30.0,
         model_timeout_seconds: float = 30.0,
         activation_timeout_seconds: float = 5.0,
+        runtime_status_callback: RuntimeStatusCallback | None = None,
     ) -> None:
         if not isinstance(profile_store, VoiceIdentityProfileStore):
             raise TypeError("profile_store must be VoiceIdentityProfileStore")
@@ -158,6 +160,10 @@ class VoiceIdentityService:
             )
         if not callable(model_factory) or not callable(activation_callback):
             raise TypeError("model_factory and activation_callback must be callable")
+        if runtime_status_callback is not None and not callable(
+            runtime_status_callback
+        ):
+            raise TypeError("runtime_status_callback must be callable or None")
         if runtime_mode not in ("off", "shadow", "enforce"):
             raise ValueError("runtime_mode must be off, shadow, or enforce")
         for name, value in (
@@ -175,6 +181,7 @@ class VoiceIdentityService:
         self._suppression_controller = suppression_controller
         self._model_factory = model_factory
         self._activation_callback = activation_callback
+        self._runtime_status_callback = runtime_status_callback
         self._runtime_mode: VoiceIdentityRuntimeMode = runtime_mode
         self._enrollment_ttl_seconds = float(enrollment_ttl_seconds)
         self._model_timeout_seconds = float(model_timeout_seconds)
@@ -244,6 +251,22 @@ class VoiceIdentityService:
             return self.status()
 
     def status(self) -> VoiceIdentityServiceStatus:
+        if (
+            self._runtime_status_callback is not None
+            and self._requested_enabled
+            and self._profile is not None
+            and self._runtime_mode != "off"
+            and self._effective_reason
+            in {
+                VoiceIdentityEffectiveReason.READY,
+                VoiceIdentityEffectiveReason.RUNTIME_DEGRADED,
+                VoiceIdentityEffectiveReason.UNSUPPORTED_ASR_ROUTE,
+            }
+        ):
+            try:
+                self._apply_activation_result(self._runtime_status_callback())
+            except Exception:
+                self._set_ineffective(VoiceIdentityEffectiveReason.RUNTIME_DEGRADED)
         enrollment = self._enrollment
         enrollment_status = (
             None
@@ -420,7 +443,14 @@ class VoiceIdentityService:
                     if isinstance(embedding, np.ndarray) and embedding.flags.writeable:
                         embedding.fill(0.0)
 
-                staged = await self._profile_store.astage(new_profile)
+                staging_cancellations: list[asyncio.CancelledError] = []
+                staged = await _await_cancellation_safe(
+                    self._profile_store.astage(new_profile),
+                    name="voice-identity-profile-stage",
+                    cancellations=staging_cancellations,
+                )
+                if staging_cancellations:
+                    raise staging_cancellations[0]
                 if desired_requested and self._runtime_mode != "off":
                     activation_result = await self._activate(new_profile, profile_id)
                     if not activation_result:

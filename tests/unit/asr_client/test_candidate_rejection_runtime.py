@@ -310,6 +310,97 @@ async def test_cleanup_failure_keeps_drop_and_watchdog_releases_suppression(
     await _close_dispatchers(runtime)
 
 
+async def test_rejection_watchdog_retries_verifier_reinstall(monkeypatch) -> None:
+    monkeypatch.setattr(
+        runtime_module,
+        "_CANDIDATE_REJECTION_WATCHDOG_SECONDS",
+        0.0,
+    )
+    runtime = IndependentAsrRuntime(_callbacks())
+    detector = _RejectionDetector()
+    first_shadow = SimpleNamespace(close=AsyncMock())
+    second_shadow = SimpleNamespace(close=AsyncMock())
+    detector.reset.side_effect = [RuntimeError("reset failed"), None]
+    detector.replace_speaker_verifier.side_effect = [
+        None,
+        RuntimeError("reinstall failed"),
+        None,
+    ]
+    session, _lifecycle, _turn_token = _install_active_candidate(runtime, detector)
+    runtime._speaker_verifier_factory = MagicMock(
+        side_effect=[first_shadow, second_shadow]
+    )
+
+    outcome = await runtime._reject_speaker_candidate(
+        _shadow_candidate(),
+        activation_generation="profile-generation",
+    )
+
+    async def wait_until_released() -> None:
+        while runtime._asr_candidate_rejection is not None:
+            await asyncio.sleep(0)
+
+    await asyncio.wait_for(wait_until_released(), 1.0)
+    assert outcome is CandidateRejectionOutcome.APPLIED_CLEANUP_DEGRADED
+    assert detector.replace_speaker_verifier.await_args_list == [
+        call(None),
+        call(first_shadow),
+        call(second_shadow),
+    ]
+    first_shadow.close.assert_awaited_once_with()
+    second_shadow.close.assert_not_awaited()
+    assert not runtime._speaker_verifier_degraded
+    assert runtime._asr_candidate_rejection is None
+    session.close.assert_awaited_once_with()
+    await _close_dispatchers(runtime)
+
+
+async def test_rejection_watchdog_bounds_stuck_recovery_and_resumes_asr(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        runtime_module,
+        "_CANDIDATE_REJECTION_WATCHDOG_SECONDS",
+        0.0,
+    )
+    monkeypatch.setattr(
+        runtime_module,
+        "_CANDIDATE_REJECTION_RECOVERY_STEP_TIMEOUT_SECONDS",
+        0.02,
+    )
+    runtime = IndependentAsrRuntime(_callbacks())
+    detector = _RejectionDetector()
+    detector.reset.side_effect = [RuntimeError("reset failed"), None]
+
+    async def never_replace(_shadow) -> None:
+        await asyncio.Event().wait()
+
+    detector.replace_speaker_verifier.side_effect = never_replace
+    _install_active_candidate(runtime, detector)
+    runtime._speaker_verifier_factory = MagicMock(
+        side_effect=lambda: SimpleNamespace(close=AsyncMock())
+    )
+    loop = asyncio.get_running_loop()
+    started_at = loop.time()
+
+    outcome = await runtime._reject_speaker_candidate(
+        _shadow_candidate(),
+        activation_generation="profile-generation",
+    )
+
+    async def wait_until_released() -> None:
+        while runtime._asr_candidate_rejection is not None:
+            await asyncio.sleep(0)
+
+    await asyncio.wait_for(wait_until_released(), 0.5)
+    assert loop.time() - started_at < 0.2
+    assert outcome is CandidateRejectionOutcome.APPLIED_CLEANUP_DEGRADED
+    assert runtime._speaker_verifier_degraded
+    assert runtime._asr_candidate_rejection is None
+    runtime._ensure_transport_restart_task.assert_called_once_with()
+    await _close_dispatchers(runtime)
+
+
 async def test_close_cancels_and_joins_owned_rejection_task() -> None:
     runtime = IndependentAsrRuntime(_callbacks())
     detector = _RejectionDetector()

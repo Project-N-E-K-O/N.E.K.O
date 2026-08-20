@@ -91,6 +91,8 @@ _CONNECT_TOTAL_BUDGET_SECONDS = 12.0
 # before the client gives up.
 ASR_CONNECT_TOTAL_BUDGET_SECONDS = _CONNECT_TOTAL_BUDGET_SECONDS
 _CANDIDATE_REJECTION_WATCHDOG_SECONDS = 10.0
+_CANDIDATE_REJECTION_RECOVERY_STEP_TIMEOUT_SECONDS = 1.0
+_CANDIDATE_REJECTION_REINSTALL_ATTEMPTS = 2
 
 
 def _uses_smart_turn_endpointing(provider_policy: Any) -> bool:
@@ -204,6 +206,7 @@ class IndependentAsrRuntime:
             factory is old_factory
             and activation_generation
             == self._speaker_verifier_activation_generation
+            and not self._speaker_verifier_degraded
         ):
             return True
 
@@ -270,6 +273,7 @@ class IndependentAsrRuntime:
             self._speaker_verifier_activation_generation = activation_generation
             if old_factory is not None and old_factory is not factory:
                 self._close_speaker_verifier_factory(old_factory)
+        self._speaker_verifier_degraded = False
         return True
 
     def request_speaker_candidate_rejection(
@@ -533,6 +537,7 @@ class IndependentAsrRuntime:
         self._asr_reserved_final_key: FinalKey | None = None
         self._speaker_verifier_factory: SpeakerShadowFactory | None = None
         self._speaker_verifier_activation_generation: str | None = None
+        self._speaker_verifier_degraded = False
         self._speaker_verifier_lock = asyncio.Lock()
         self._asr_candidate_rejection: _CandidateRejectionSuppression | None = None
         self._asr_rejection_tasks: set[
@@ -593,6 +598,9 @@ class IndependentAsrRuntime:
         if not hasattr(self, "_speaker_verifier_factory"):
             self._speaker_verifier_factory = None
             self._speaker_verifier_activation_generation = None
+            self._speaker_verifier_degraded = False
+        elif not hasattr(self, "_speaker_verifier_degraded"):
+            self._speaker_verifier_degraded = False
         if not hasattr(self, "_speaker_verifier_lock"):
             self._speaker_verifier_lock = asyncio.Lock()
         if not hasattr(self, "_asr_candidate_rejection"):
@@ -2080,19 +2088,63 @@ class IndependentAsrRuntime:
             old_watchdog.cancel()
 
         async def recover() -> None:
+            current = asyncio.current_task()
+
+            async def close_shadow(shadow: SpeakerShadowObserver | None) -> None:
+                try:
+                    await asyncio.wait_for(
+                        self._close_created_speaker_shadow(shadow),
+                        timeout=_CANDIDATE_REJECTION_RECOVERY_STEP_TIMEOUT_SECONDS,
+                    )
+                except asyncio.CancelledError:
+                    if current is not None and current.cancelling():
+                        raise
+                except Exception:
+                    pass
+
             try:
                 await asyncio.sleep(_CANDIDATE_REJECTION_WATCHDOG_SECONDS)
                 if self._asr_candidate_rejection is not suppression:
                     return
                 async with self._speaker_verifier_lock:
                     try:
-                        await suppression.detector.replace_speaker_verifier(None)
-                    except Exception:
-                        pass
+                        await asyncio.wait_for(
+                            suppression.detector.replace_speaker_verifier(None),
+                            timeout=(
+                                _CANDIDATE_REJECTION_RECOVERY_STEP_TIMEOUT_SECONDS
+                            ),
+                        )
+                    except asyncio.CancelledError:
+                        if current is not None and current.cancelling():
+                            raise
+                        logger.warning(
+                            "[%s] rejection watchdog verifier detach was "
+                            "cancelled by the detector",
+                            self.display_name,
+                        )
+                    except Exception as exc:
+                        logger.warning(
+                            "[%s] rejection watchdog verifier detach failed: %s",
+                            self.display_name,
+                            exc,
+                        )
                     reset_succeeded = False
                     try:
-                        await suppression.detector.reset()
+                        await asyncio.wait_for(
+                            suppression.detector.reset(),
+                            timeout=(
+                                _CANDIDATE_REJECTION_RECOVERY_STEP_TIMEOUT_SECONDS
+                            ),
+                        )
                         reset_succeeded = True
+                    except asyncio.CancelledError:
+                        if current is not None and current.cancelling():
+                            raise
+                        logger.warning(
+                            "[%s] rejection watchdog reset was cancelled by "
+                            "the detector; speaker verification stays detached",
+                            self.display_name,
+                        )
                     except Exception as exc:
                         logger.warning(
                             "[%s] rejection watchdog reset failed; "
@@ -2106,12 +2158,26 @@ class IndependentAsrRuntime:
                         and factory is not None
                         and self._asr_detector is suppression.detector
                     ):
-                        shadow = self._create_speaker_shadow(factory)
-                        if shadow is not None:
+                        reinstalled = False
+                        for _attempt in range(
+                            _CANDIDATE_REJECTION_REINSTALL_ATTEMPTS
+                        ):
+                            shadow = self._create_speaker_shadow(factory)
+                            if shadow is None:
+                                break
                             try:
-                                await suppression.detector.replace_speaker_verifier(
-                                    shadow
+                                await asyncio.wait_for(
+                                    suppression.detector.replace_speaker_verifier(
+                                        shadow
+                                    ),
+                                    timeout=(
+                                        _CANDIDATE_REJECTION_RECOVERY_STEP_TIMEOUT_SECONDS
+                                    ),
                                 )
+                            except asyncio.CancelledError:
+                                if current is not None and current.cancelling():
+                                    raise
+                                await close_shadow(shadow)
                             except Exception as exc:
                                 logger.warning(
                                     "[%s] rejection watchdog verifier reinstall "
@@ -2119,7 +2185,17 @@ class IndependentAsrRuntime:
                                     self.display_name,
                                     exc,
                                 )
-                                await self._close_created_speaker_shadow(shadow)
+                                await close_shadow(shadow)
+                            else:
+                                reinstalled = True
+                                break
+                            await asyncio.sleep(0)
+                        self._speaker_verifier_degraded = not reinstalled
+                    elif (
+                        factory is not None
+                        and self._asr_detector is suppression.detector
+                    ):
+                        self._speaker_verifier_degraded = True
                 await self._complete_candidate_rejection(suppression)
             except asyncio.CancelledError:
                 return

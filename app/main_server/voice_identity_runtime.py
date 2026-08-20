@@ -99,7 +99,10 @@ class OwnerVoiceRuntimeRegistry:
         self._suppressed = False
         self._closed = False
 
-    async def register_manager(self, manager) -> bool:
+    async def register_manager(
+        self,
+        manager,
+    ) -> VoiceIdentityActivationResult:
         async with self._lock:
             if self._closed:
                 raise RuntimeError("Owner voice runtime registry is closed")
@@ -109,17 +112,22 @@ class OwnerVoiceRuntimeRegistry:
                     activation is not None and manager in self._detach_pending
                 )
                 if not needs_attach:
-                    return True
+                    return (
+                        VoiceIdentityActivationResult.READY
+                        if activation is None
+                        else self._manager_activation_result(manager)
+                    )
                 if activation is None:
                     self._attach_pending.discard(manager)
-                    return True
+                    return VoiceIdentityActivationResult.READY
                 self._detach_pending.pop(manager, None)
-                if await self._attach_manager(manager, activation):
+                result = await self._attach_manager(manager, activation)
+                if result:
                     self._attach_pending.discard(manager)
-                    return True
+                    return result
                 self._attach_pending.add(manager)
                 self._ensure_attach_watchdog()
-                return False
+                return VoiceIdentityActivationResult.RUNTIME_DEGRADED
             self._managers.add(manager)
             try:
                 if self._suppressed:
@@ -137,13 +145,15 @@ class OwnerVoiceRuntimeRegistry:
                 activation = self._activation
                 if activation is not None:
                     self._detach_pending.pop(manager, None)
-                    if not await self._attach_manager(manager, activation):
+                    result = await self._attach_manager(manager, activation)
+                    if not result:
                         self._attach_pending.add(manager)
                         self._ensure_attach_watchdog()
-                        return False
+                        return VoiceIdentityActivationResult.RUNTIME_DEGRADED
                     self._attach_pending.discard(manager)
                     self._detach_pending.pop(manager, None)
-                return True
+                    return result
+                return VoiceIdentityActivationResult.READY
             except BaseException:
                 self._managers.discard(manager)
                 if self._suppressed:
@@ -299,8 +309,38 @@ class OwnerVoiceRuntimeRegistry:
                 old_activation.close()
             return activation_result
 
+    def activation_status(self) -> VoiceIdentityActivationResult:
+        if self._closed or self._activation is None:
+            return VoiceIdentityActivationResult.RUNTIME_DEGRADED
+        managers = tuple(self._managers)
+        if self._attach_pending or any(
+            manager in self._detach_pending for manager in managers
+        ):
+            return VoiceIdentityActivationResult.RUNTIME_DEGRADED
+        result = VoiceIdentityActivationResult.READY
+        for manager in managers:
+            manager_result = self._manager_activation_result(manager)
+            if manager_result is VoiceIdentityActivationResult.RUNTIME_DEGRADED:
+                return manager_result
+            if manager_result is VoiceIdentityActivationResult.UNSUPPORTED_ASR_ROUTE:
+                result = manager_result
+        return result
+
     @staticmethod
-    async def _attach_manager(manager, activation: _OwnerActivation) -> bool:
+    def _manager_activation_result(manager) -> VoiceIdentityActivationResult:
+        runtime = getattr(manager, "_asr_runtime", None)
+        if bool(getattr(runtime, "_speaker_verifier_degraded", False)):
+            return VoiceIdentityActivationResult.RUNTIME_DEGRADED
+        route_mode = getattr(manager, "_asr_route_mode", None)
+        if route_mode is not None and route_mode != "independent":
+            return VoiceIdentityActivationResult.UNSUPPORTED_ASR_ROUTE
+        return VoiceIdentityActivationResult.READY
+
+    @staticmethod
+    async def _attach_manager(
+        manager,
+        activation: _OwnerActivation,
+    ) -> VoiceIdentityActivationResult:
         factory: OwnerVoiceAsrCompositionFactory | None = None
         try:
             factory = activation.factory_for(manager)
@@ -315,11 +355,13 @@ class OwnerVoiceRuntimeRegistry:
         except BaseException:
             if factory is not None:
                 factory.close()
-            return False
+            return VoiceIdentityActivationResult.RUNTIME_DEGRADED
         if not updated:
             factory.close()
-            return False
-        return True
+            return VoiceIdentityActivationResult.RUNTIME_DEGRADED
+        if isinstance(updated, VoiceIdentityActivationResult):
+            return updated
+        return VoiceIdentityActivationResult.READY
 
     def _ensure_attach_watchdog(self) -> None:
         task = self._attach_retry_task
@@ -363,6 +405,10 @@ class OwnerVoiceRuntimeRegistry:
                                 timeout=call_timeout,
                             )
                         except asyncio.TimeoutError:
+                            continue
+                        except asyncio.CancelledError:
+                            if current is not None and current.cancelling():
+                                raise
                             continue
                         if attached:
                             self._attach_pending.discard(manager)
@@ -495,6 +541,10 @@ class OwnerVoiceRuntimeRegistry:
                                 self._restore_manager(manager, reason),
                                 timeout=call_timeout,
                             )
+                        except asyncio.CancelledError:
+                            if current is not None and current.cancelling():
+                                raise
+                            continue
                         except Exception:
                             continue
                         self._restore_pending.discard(manager)
@@ -553,6 +603,10 @@ class OwnerVoiceRuntimeRegistry:
                                 ),
                                 timeout=call_timeout,
                             )
+                        except asyncio.CancelledError:
+                            if current is not None and current.cancelling():
+                                raise
+                            continue
                         except Exception:
                             continue
                         if detached:
@@ -709,6 +763,7 @@ def install_voice_identity_runtime(config_manager) -> VoiceIdentityService:
         CampPlusEmbeddingModel,
         registry.activate,
         runtime_mode=runtime_mode,
+        runtime_status_callback=registry.activation_status,
     )
     install_voice_identity_service_for_app(service)
     _runtime_registry = registry
@@ -742,14 +797,16 @@ async def close_voice_identity_runtime() -> None:
         await registry.close()
 
 
-async def register_voice_identity_manager(manager) -> bool:
+async def register_voice_identity_manager(
+    manager,
+) -> VoiceIdentityActivationResult:
     registry = _runtime_registry
     if registry is None:
-        return True
+        return VoiceIdentityActivationResult.READY
     try:
         return await registry.register_manager(manager)
     except Exception:
-        return False
+        return VoiceIdentityActivationResult.RUNTIME_DEGRADED
 
 
 async def unregister_voice_identity_manager(manager) -> None:

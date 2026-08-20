@@ -68,7 +68,8 @@ def _service(
     tmp_path: Path,
     *,
     model: _Model | None = None,
-    activation_results: list[bool] | None = None,
+    activation_results: list[bool | VoiceIdentityActivationResult] | None = None,
+    runtime_status_results: list[VoiceIdentityActivationResult] | None = None,
     enrollment_ttl_seconds: float = 30.0,
     model_timeout_seconds: float = 1.0,
     runtime_mode: str = "enforce",
@@ -81,6 +82,7 @@ def _service(
     selected_model = model or _Model()
     activations: list[tuple[SpeakerProfile | None, str]] = []
     results = activation_results or []
+    runtime_results = runtime_status_results or []
     suppression_events: list[str] = []
 
     async def activate(
@@ -95,6 +97,13 @@ def _service(
 
     async def restore(reason: str) -> None:
         suppression_events.append(f"restore:{reason}")
+
+    def runtime_status() -> VoiceIdentityActivationResult:
+        return (
+            runtime_results[-1]
+            if runtime_results
+            else VoiceIdentityActivationResult.READY
+        )
 
     service = VoiceIdentityService(
         VoiceIdentityProfileStore(
@@ -114,6 +123,7 @@ def _service(
         enrollment_ttl_seconds=enrollment_ttl_seconds,
         model_timeout_seconds=model_timeout_seconds,
         activation_timeout_seconds=1.0,
+        runtime_status_callback=(runtime_status if runtime_status_results else None),
     )
     return service, selected_model, activations, suppression_events
 
@@ -169,6 +179,71 @@ async def test_unsupported_route_saves_profile_without_reporting_ready(
     assert status.profile_generation == "profile-a"
     assert model.closed
     assert suppression_events[-1] == "restore:voice_identity_enrollment"
+    await service.close()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_status_reconciles_live_runtime_route_result(tmp_path: Path) -> None:
+    runtime_results = [VoiceIdentityActivationResult.READY]
+    service, _model, _activations, _events = _service(
+        tmp_path,
+        runtime_status_results=runtime_results,
+    )
+    await service.initialize()
+    enrollment = await service.start_enrollment()
+    await service.complete_enrollment(
+        enrollment.enrollment_id,
+        "profile-a",
+        _pcm(),
+    )
+
+    runtime_results[0] = VoiceIdentityActivationResult.UNSUPPORTED_ASR_ROUTE
+    unsupported = service.status()
+    assert not unsupported.state.effective_enabled
+    assert unsupported.state.effective_reason == "unsupported_asr_route"
+
+    runtime_results[0] = VoiceIdentityActivationResult.READY
+    assert service.status().state.effective_enabled
+    await service.close()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_cancelled_profile_staging_aborts_completed_worker_write(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service, _model, _activations, _events = _service(tmp_path)
+    await service.initialize()
+    enrollment = await service.start_enrollment()
+    profile_store = service._profile_store  # type: ignore[attr-defined]
+    original_stage = profile_store.stage
+    stage_started = threading.Event()
+    stage_release = threading.Event()
+
+    def blocking_stage(profile: SpeakerProfile):
+        stage_started.set()
+        assert stage_release.wait(1.0)
+        return original_stage(profile)
+
+    monkeypatch.setattr(profile_store, "stage", blocking_stage)
+    completion = asyncio.create_task(
+        service.complete_enrollment(
+            enrollment.enrollment_id,
+            "profile-a",
+            _pcm(),
+        )
+    )
+    assert await asyncio.to_thread(stage_started.wait, 1.0)
+    completion.cancel()
+    stage_release.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await completion
+
+    assert list(tmp_path.glob(".*.tmp")) == []
+    assert not (tmp_path / "voice_identity.profile").exists()
     await service.close()
 
 
@@ -817,7 +892,10 @@ async def test_initialize_maps_preference_failure_and_incompatible_profile(
     assert (await broken.initialize()).state.effective_reason == "runtime_degraded"
     await broken.close()
 
-    service, _model, _activations, _events = _service(tmp_path / "incompatible")
+    service, _model, _activations, _events = _service(
+        tmp_path / "incompatible",
+        runtime_status_results=[VoiceIdentityActivationResult.READY],
+    )
     reference = SpeakerReference(
         SpeakerModelIdentity("other-model", "v1", 2),
         [1.0, 0.0],

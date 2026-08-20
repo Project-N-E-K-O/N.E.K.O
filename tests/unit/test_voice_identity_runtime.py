@@ -45,7 +45,9 @@ class _Manager:
     def __init__(self) -> None:
         self._asr_runtime = object()
         self.verifier_calls: list[tuple[_Factory | None, str]] = []
-        self.verifier_outcomes: list[bool | BaseException] = []
+        self.verifier_outcomes: list[
+            bool | VoiceIdentityActivationResult | BaseException
+        ] = []
         self.suppression_calls: list[tuple[str, bool]] = []
         self.restore_failures = 0
         self.cancel_restore = False
@@ -157,6 +159,55 @@ async def test_activation_preserves_unsupported_route_result() -> None:
 
     assert result is VoiceIdentityActivationResult.UNSUPPORTED_ASR_ROUTE
     assert registry._activation is not None  # type: ignore[attr-defined]
+    await registry.close()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_late_registration_preserves_unsupported_route_result() -> None:
+    registry = OwnerVoiceRuntimeRegistry(enforce=True)
+    profile = _profile("profile")
+    try:
+        assert await registry.activate(profile, "generation")
+    finally:
+        profile.close()
+    manager = _Manager()
+    manager.verifier_outcomes.append(
+        VoiceIdentityActivationResult.UNSUPPORTED_ASR_ROUTE
+    )
+
+    result = await registry.register_manager(manager)
+
+    assert result is VoiceIdentityActivationResult.UNSUPPORTED_ASR_ROUTE
+    await registry.close()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_activation_status_tracks_live_route_and_runtime_degradation() -> None:
+    registry = OwnerVoiceRuntimeRegistry(enforce=True)
+    manager = _Manager()
+    manager._asr_route_mode = "independent"  # type: ignore[attr-defined]
+    manager._asr_runtime = SimpleNamespace(_speaker_verifier_degraded=False)
+    await registry.register_manager(manager)
+    profile = _profile("profile")
+    try:
+        assert await registry.activate(profile, "generation")
+    finally:
+        profile.close()
+
+    assert registry.activation_status() is VoiceIdentityActivationResult.READY
+    manager._asr_route_mode = "native"  # type: ignore[attr-defined]
+    assert (
+        registry.activation_status()
+        is VoiceIdentityActivationResult.UNSUPPORTED_ASR_ROUTE
+    )
+    manager._asr_route_mode = "independent"  # type: ignore[attr-defined]
+    manager._asr_runtime._speaker_verifier_degraded = True
+    assert (
+        registry.activation_status()
+        is VoiceIdentityActivationResult.RUNTIME_DEGRADED
+    )
     await registry.close()
 
 
@@ -871,12 +922,102 @@ async def test_watchdog_bounds_never_returning_manager_call(
 
     assert watchdog is not None
     await asyncio.wait_for(manager.call_started.wait(), 0.5)
+    loop = asyncio.get_running_loop()
+    started_at = loop.time()
     await asyncio.wait_for(watchdog, 0.5)
+    assert loop.time() - started_at < 0.2
     assert watchdog.done()
 
     manager.block_attach = False
     manager.block_restore = False
     manager.block_detach = False
+    await registry.close()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("watchdog_kind", ["attach", "restore", "detach"])
+async def test_watchdog_retries_manager_originated_cancellation(
+    watchdog_kind: str,
+) -> None:
+    class CancellingManager(_Manager):
+        def __init__(self) -> None:
+            super().__init__()
+            self.cancel_attach = False
+            self.cancel_restore_watchdog = False
+            self.cancel_detach = False
+            self.cancelled_calls = 0
+            self.call_started = asyncio.Event()
+
+        async def set_speaker_verifier_factory(
+            self,
+            factory: _Factory | None,
+            *,
+            activation_generation: str,
+        ) -> bool:
+            if (factory is not None and self.cancel_attach) or (
+                factory is None and self.cancel_detach
+            ):
+                self.cancelled_calls += 1
+                self.call_started.set()
+                raise asyncio.CancelledError("manager-originated")
+            return await super().set_speaker_verifier_factory(
+                factory,
+                activation_generation=activation_generation,
+            )
+
+        async def set_voice_input_suppressed(
+            self,
+            reason: str,
+            *,
+            suppressed: bool,
+        ) -> None:
+            if not suppressed and self.cancel_restore_watchdog:
+                self.cancelled_calls += 1
+                self.call_started.set()
+                raise asyncio.CancelledError("manager-originated")
+            await super().set_voice_input_suppressed(reason, suppressed=suppressed)
+
+    registry = OwnerVoiceRuntimeRegistry(
+        enforce=True,
+        restore_retry_interval_seconds=0.01,
+        restore_retry_timeout_seconds=0.05,
+    )
+    manager = CancellingManager()
+
+    if watchdog_kind == "attach":
+        profile = _profile("profile")
+        try:
+            assert await registry.activate(profile, "generation")
+        finally:
+            profile.close()
+        manager.verifier_outcomes.append(False)
+        assert not await registry.register_manager(manager)
+        manager.cancel_attach = True
+        watchdog = registry._attach_retry_task  # type: ignore[attr-defined]
+    elif watchdog_kind == "restore":
+        await registry.register_manager(manager)
+        await registry.suppress("voice_identity_enrollment")
+        manager.restore_failures = 2
+        await registry.restore("voice_identity_enrollment")
+        manager.cancel_restore_watchdog = True
+        watchdog = registry._restore_retry_task  # type: ignore[attr-defined]
+    else:
+        await registry.register_manager(manager)
+        manager.verifier_outcomes.append(False)
+        await registry.unregister_manager(manager)
+        manager.cancel_detach = True
+        watchdog = registry._detach_retry_task  # type: ignore[attr-defined]
+
+    assert watchdog is not None
+    await asyncio.wait_for(manager.call_started.wait(), 0.5)
+    await asyncio.wait_for(watchdog, 0.5)
+    assert manager.cancelled_calls >= 2
+    assert watchdog.done()
+
+    manager.cancel_attach = False
+    manager.cancel_restore_watchdog = False
+    manager.cancel_detach = False
     await registry.close()
 
 
@@ -961,9 +1102,15 @@ async def test_runtime_install_and_wrapper_lifecycle(
             self.kwargs = kwargs
 
     class FakeService:
-        def __init__(self, *args, runtime_mode: str) -> None:
+        def __init__(
+            self,
+            *args,
+            runtime_mode: str,
+            runtime_status_callback,
+        ) -> None:
             self.args = args
             self.runtime_mode = runtime_mode
+            self.runtime_status_callback = runtime_status_callback
             self.initialized = 0
             self.closed = 0
 
