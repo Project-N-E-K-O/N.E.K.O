@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>N.E.K.O 数据备份</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main class="shell">
+    <header class="hero">
+      <div class="hero-copy">
+        <div class="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 24 24"><path d="M4 7.5 12 3l8 4.5v9L12 21l-8-4.5v-9Z"/><path d="m8 9 4 2.2L16 9M12 11.2V16"/></svg>
+        </div>
+        <div>
+          <p class="eyebrow">N.E.K.O · DATA VAULT</p>
+          <h1>数据备份</h1>
+          <p class="subtitle">妥善保存角色、记忆与模型资源，随时回到安心的状态。</p>
+        </div>
+      </div>
+      <button id="refresh" class="secondary refresh-button" type="button">
+        <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M20 6v5h-5"/><path d="M19 11a7 7 0 1 0 .2 5"/></svg>
+        刷新
+      </button>
+    </header>
+
+    <section class="summary" aria-label="存储位置">
+      <div class="summary-item"><span>数据目录</span><code id="data-root">—</code></div>
+      <div class="summary-item">
+        <div class="summary-heading">
+          <span>备份目录</span>
+          <button id="change-directory" class="summary-action" type="button">更改</button>
+        </div>
+        <code id="backup-root">—</code>
+      </div>
+      <div class="summary-item retention-item"><span>每组保留</span><strong id="retention">—</strong></div>
+    </section>
+
+    <section class="workspace">
+      <nav class="tabs" aria-label="备份组">
+        <button class="tab active" type="button" data-group="core">核心数据</button>
+        <button class="tab" type="button" data-group="assets">模型资源</button>
+      </nav>
+
+      <div class="group-card">
+        <div>
+          <p class="group-label">当前备份组</p>
+          <h2 id="group-title">核心数据</h2>
+          <p id="group-description">配置、角色卡与长期记忆</p>
+          <div id="paths" class="chips"></div>
+        </div>
+        <button id="create" class="primary" type="button">
+          <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
+          创建快照
+        </button>
+      </div>
+    </section>
+
+    <section class="schedule-card" aria-labelledby="schedule-title">
+      <div class="schedule-copy">
+        <p class="section-label">AUTOMATION</p>
+        <h2 id="schedule-title">定时快照</h2>
+        <p>默认关闭。开启后从保存时间开始计时，手动快照不会改变计划。</p>
+        <strong id="schedule-status">已关闭</strong>
+        <span id="schedule-history"></span>
+        <span id="schedule-error" class="schedule-error"></span>
+      </div>
+      <form id="schedule-form" class="schedule-form">
+        <label id="schedule-toggle" class="schedule-toggle" for="schedule-enabled">
+          <span class="schedule-toggle-copy">
+            <strong id="schedule-toggle-title">定时快照已关闭</strong>
+            <small id="schedule-toggle-help">不会自动创建快照，仍可随时手动备份。</small>
+          </span>
+          <span class="switch-control">
+            <input id="schedule-enabled" type="checkbox">
+            <span class="switch-track" aria-hidden="true"><span></span></span>
+            <b id="schedule-toggle-state">关闭</b>
+          </span>
+        </label>
+        <div id="schedule-options" class="schedule-options">
+          <label class="schedule-field" for="schedule-interval">
+            <span>每隔多久执行</span>
+            <span class="interval-input">
+              <input id="schedule-interval" type="number" min="1" max="365" value="7" required>
+              <span>天</span>
+            </span>
+          </label>
+          <fieldset class="schedule-groups">
+            <legend>要备份的内容</legend>
+            <label><input id="schedule-core" type="checkbox" value="core" checked> 核心数据</label>
+            <label title="模型资源通常体积较大"><input id="schedule-assets" type="checkbox" value="assets"> 模型资源</label>
+          </fieldset>
+        </div>
+        <button class="primary schedule-save" type="submit">保存定时设置</button>
+      </form>
+    </section>
+
+    <div id="notice" class="notice" role="status" aria-live="polite"></div>
+
+    <section class="snapshot-section">
+      <div class="section-heading">
+        <div>
+          <p class="section-label">SNAPSHOT HISTORY</p>
+          <h2>快照记录</h2>
+        </div>
+        <span id="snapshot-count" class="count-badge">0 份</span>
+      </div>
+      <div id="snapshots" class="snapshot-list"></div>
+    </section>
+  </main>
+
+  <dialog id="confirm-dialog" aria-labelledby="confirm-title">
+    <form id="confirm-form" class="dialog-card">
+      <div class="dialog-heading">
+        <div>
+          <p id="confirm-label" class="dialog-label">确认操作</p>
+          <h2 id="confirm-title">确认快照操作</h2>
+        </div>
+        <button id="confirm-close" class="dialog-close" type="button" aria-label="关闭">×</button>
+      </div>
+      <p id="confirm-description" class="dialog-description"></p>
+      <code id="confirm-snapshot-id" class="dialog-snapshot"></code>
+      <label class="confirm-field" for="confirm-input">
+        <span>输入上方快照 ID 以继续</span>
+        <input id="confirm-input" type="text" autocomplete="off" spellcheck="false" required>
+      </label>
+      <p id="confirm-error" class="dialog-error" role="alert"></p>
+      <div class="dialog-actions">
+        <button id="confirm-cancel" class="secondary" type="button">取消</button>
+        <button id="confirm-submit" class="primary dialog-submit" type="submit">确认</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="directory-dialog" aria-labelledby="directory-title">
+    <form id="directory-form" class="dialog-card">
+      <div class="dialog-heading">
+        <div>
+          <p class="dialog-label">BACKUP LOCATION</p>
+          <h2 id="directory-title">更改备份目录</h2>
+        </div>
+        <button id="directory-close" class="dialog-close" type="button" aria-label="关闭">×</button>
+      </div>
+      <p class="dialog-description">输入本机绝对路径。切换目录不会移动或删除原有快照。</p>
+      <label class="confirm-field" for="directory-input">
+        <span>备份目录</span>
+        <input id="directory-input" type="text" autocomplete="off" spellcheck="false" required>
+      </label>
+      <p class="directory-default">默认目录：<code id="default-backup-root">—</code></p>
+      <p id="directory-error" class="dialog-error" role="alert"></p>
+      <div class="dialog-actions directory-actions">
+        <button id="directory-default" class="secondary" type="button">恢复默认</button>
+        <span class="dialog-action-spacer"></span>
+        <button id="directory-cancel" class="secondary" type="button">取消</button>
+        <button class="primary dialog-submit" type="submit">保存</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script src="main.js"></script>
+</body>
+</html>
