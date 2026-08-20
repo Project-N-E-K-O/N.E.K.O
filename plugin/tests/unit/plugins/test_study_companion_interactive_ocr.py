@@ -439,25 +439,29 @@ def test_ocr_entry_and_static_ui_expose_interactive_timeout_contract() -> None:
     assert "setReply(" not in canceled
     assert "studyInput.value = data.text;" in run_ocr
     assert "let ocrN = '';" in main_js
+    assert "let ocrT = '';" in main_js
     assert "ocrN = '';" not in canceled
     assert "const s = data.status || 'unknown';" in run_ocr
     assert "['ok', 'empty'].includes(s)" in run_ocr
+    assert "const text = String(data.text || '').trim();" in run_ocr
+    assert "if (text)" in run_ocr
     assert "ocrN = n;" in run_ocr
-    assert "ocrN = '';" in run_ocr
+    assert "ocrT = text;" in run_ocr
+    assert "ocrN = ocrT = '';" in run_ocr
     assert "if (!n) throw error;" in run_ocr
     assert run_ocr.index("await refreshStatus({ updateReply: false }).catch") < run_ocr.index(
         "setStatus(n || tf('ui.status.ocr_result'"
     )
     assert "{ status: s }" in run_ocr
-    assert "const n = (options.notice || ocrN).trim();" in explain_text
-    assert "studyInput.addEventListener('input', () => { ocrN = ''; });" in main_js
+    assert "const n = (options.notice || (text === ocrT ? ocrN : '')).trim();" in explain_text
+    assert "studyInput.addEventListener('input', () => { ocrN = ocrT = ''; });" in main_js
     assert "setReply(n ? `${n}\\n\\n${pending}` : pending);" in explain_text
     assert "error.n = n;" in explain_text
     assert "setStatus(data.degraded" in explain_text
     assert "await refreshStatus({ updateReply: false }).catch((error) => { if (!n) throw error; setStatus(t('ui.status.reply_ready', 'Reply ready')); });" in explain_text
     assert "[error?.n,formatPluginError(error)].filter(Boolean).join('\\n\\n')" in bind_button
     assert "await explainText({ notice: ocrN });" in coach_action
-    assert main_js.count("if (kind === 'study') ocrN = '';") >= 2
+    assert "if (kind === 'study') ocrN = ocrT = '';" in main_js
     assert "generateQuestion()" not in run_ocr
 
 

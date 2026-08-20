@@ -169,6 +169,7 @@ let refreshPending = false;
 let learningProfileModal = null;
 let lastReplyValue = '';
 let ocrN = '';
+let ocrT = '';
 let studyInputImageValue = '';
 let answerInputImageValue = '';
 let pastePendingCount = 0;
@@ -606,12 +607,11 @@ function createImagePasteHandler(options) {
             continue;
           }
           setImagePreview(kind, image);
-          if (kind === 'study') ocrN = '';
           setPasteError(errorTarget, '');
         } else if (item.type === 'text/plain') {
           item.getAsString((pastedText) => {
             if (!controller.signal.aborted) {
-              if (kind === 'study') ocrN = '';
+              if (kind === 'study') ocrN = ocrT = '';
               insertPastedText(textarea, pastedText);
             }
           });
@@ -1955,7 +1955,7 @@ function interactiveOcrFallbackMessage(reason) {
 async function runOcr(options = {}) {
   setStatus(t(
     'ui.status.preparing_ocr_selection',
-    'Switch to the learning material. Screen selection opens in 2 seconds...',
+    'Screen selection opens in 2 seconds...',
   ));
   let data;
   try {
@@ -1973,12 +1973,14 @@ async function runOcr(options = {}) {
   }
   const s = data.status || 'unknown';
   const n = data.capture_mode_used === 'fullscreen' && ['ok', 'empty'].includes(s) ? interactiveOcrFallbackMessage(data.interactive_fallback_reason) : '';
-  if (data.text) {
+  const text = String(data.text || '').trim();
+  if (text) {
     studyInput.value = data.text;
     ocrN = n;
+    ocrT = text;
   } else if (options.clearWhenEmpty && studyInput) {
     studyInput.value = '';
-    ocrN = '';
+    ocrN = ocrT = '';
   }
   setReply(data.text || data.diagnostic || data.summary || '');
   await refreshStatus({ updateReply: false }).catch((error) => { if (!n) throw error; });
@@ -1991,7 +1993,7 @@ async function explainText(options = {}) {
   if (!text && !studyInputImageValue) {
     throw new Error(t('ui.error.missing_study_input', 'Please enter text or paste an image first.'));
   }
-  const n = (options.notice || ocrN).trim();
+  const n = (options.notice || (text === ocrT ? ocrN : '')).trim();
   const pending = studyInputImageValue ? t('ui.status.solving_problem', 'Solving problem...') : t('ui.status.explaining', 'Explaining...');
   setStatus(pending);
   setReply(n ? `${n}\n\n${pending}` : pending);
@@ -2314,7 +2316,7 @@ async function bootstrap() {
     });
   }
   if (studyInput) {
-    studyInput.addEventListener('input', () => { ocrN = ''; });
+    studyInput.addEventListener('input', () => { ocrN = ocrT = ''; });
     studyInput.addEventListener('paste', createImagePasteHandler({
       textarea: studyInput,
       kind: 'study',
