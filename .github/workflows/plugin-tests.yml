@@ -52,6 +52,13 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/plugin-manager/package-lock.json
+
       - name: Set up Python 3.11
         uses: actions/setup-python@v5
         with:
@@ -68,6 +75,10 @@ jobs:
         # installed — the plugin degrades its OCR backend gracefully and the
         # affected tests mock or skip that cohort.
         run: uv sync
+
+      - name: Install plugin-manager test dependencies
+        working-directory: frontend/plugin-manager
+        run: npm ci
 
       - name: Run plugin test suite
         # Explicit path (not bare `pytest` under plugin/tests): passing the
