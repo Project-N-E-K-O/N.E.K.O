@@ -108,3 +108,19 @@ def test_resolve_adjust_target_explicit_delta():
 def test_resolve_adjust_target_step_align():
     # step=5：61 → 对齐到 60
     assert resolve_adjust_target(51, 1, None, [0, 100, 5]) == 60
+
+
+def test_resolve_adjust_target_align_reclamp():
+    # 步长对齐后可能越界（[0,100,60] 下 t=100 → round(100/60)*60=120），需重新钳回
+    assert resolve_adjust_target(100, 1, None, [0, 100, 60]) == 100
+    assert resolve_adjust_target(0, -1, None, [0, 100, 60]) == 0
+
+
+def test_parse_split_verb_shecheng():
+    # 分界动词"设成"："空调设成26度" → 温度=26
+    parsed = parse_control_command("空调设成26度")
+    assert parsed is not None
+    assert parsed.device == "空调"
+    assert parsed.action == "set_prop"
+    assert parsed.prop == "温度"
+    assert parsed.value == 26

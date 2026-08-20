@@ -70,6 +70,15 @@ async def test_switch_branch():
     assert result.match.devices[0]["did"] == "bedroom-light-1"
 
 
+async def test_switch_branch_not_hijacked_by_query():
+    # "关闭卧室灯怎么样" 同时命中开关标记与查询词，应走开关分支而非查询
+    result = await route("关闭卧室灯怎么样", MOCK_DEVICES)
+    assert result.branch == "switch"
+    assert result.parsed is not None
+    assert result.parsed.action == "switch"
+    assert result.parsed.value is False
+
+
 async def test_action_branch():
     result = await route("开始扫地", MOCK_DEVICES)
     assert result.branch == "action"

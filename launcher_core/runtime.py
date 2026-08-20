@@ -13,7 +13,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Service orchestration and main runtime for the root launcher facade."""
+"""Service orchestration and main runtime for the root launcher facade.
+
+启动拓扑：开发环境（非打包，IS_FROZEN=False）默认启动三个独立进程
+（memory_server / main_server / agent_server）；打包分发默认合并为单进程；
+NEKO_MERGED=1/0 环境变量可强制覆盖（见 _should_use_merged_mode）。"""
 
 from __future__ import annotations
 

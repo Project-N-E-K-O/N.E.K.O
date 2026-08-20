@@ -90,4 +90,6 @@ def resolve_adjust_target(
     target = max(v_min, min(v_max, target))
     if step > 1:
         target = round((target - v_min) / step) * step + v_min
+        # 对齐可能越界（如 [0,100,60] 下 t=100 → round(100/60)*60=120），重新钳回
+        target = max(v_min, min(v_max, target))
     return target

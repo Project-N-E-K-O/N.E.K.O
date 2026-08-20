@@ -58,7 +58,7 @@ class DeviceSpecRepositoryImpl(IDeviceSpecRepository):
             MijiaAPIException: 网络请求失败或解析失败
         """
         # 检查缓存（使用永久缓存，TTL设置为很大的值）
-        cache_key = f"device_spec:{model}"
+        cache_key = f"device_spec:v2:{model}"
         cached = self._cache.get(cache_key, namespace="specs")
 
         if cached:
@@ -94,7 +94,7 @@ class DeviceSpecRepositoryImpl(IDeviceSpecRepository):
             model: 设备型号
             spec: 设备规格对象
         """
-        cache_key = f"device_spec:{model}"
+        cache_key = f"device_spec:v2:{model}"
         # 使用很长的TTL（1年）实现永久缓存
         self._cache.set(cache_key, spec.model_dump(), ttl=365 * 24 * 3600, namespace="specs")
         logger.info(f"设备规格已缓存: {model}")

@@ -136,7 +136,11 @@ def match_devices(
                     if d.get("room_name", "").lower() != rn_lower:
                         continue
                     dname = d.get("name", "").lower()
-                    if device_part in dname or device_part in _alias_list(d):
+                    # 设备部分对设备名/别名都做双向子串匹配（别名如"床头台灯"，
+                    # 房间限定输入"卧室床头"的设备部分"床头"是它的子串）
+                    if device_part in dname or any(
+                        device_part in a or a in device_part for a in _alias_list(d)
+                    ):
                         room_matched.append(d)
             else:
                 # 无房间数据时不能确认设备归属房间，丢掉房间限定走模糊匹配

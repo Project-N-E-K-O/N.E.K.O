@@ -1,4 +1,4 @@
-"""意图路由：smart_control 的 5 步短路（场景/查询/开关标记/动作动词/属性控制）。
+"""意图路由：smart_control 的 5 步短路（场景/开关标记/查询/动作动词/属性控制）。
 
 从 MijiaPlugin（plugin/plugins/mijia/__init__.py）原 `smart_control` 的分支
 判定逻辑搬出。纯规则判定，不访问 API；设备匹配结果随 RouteResult 一并返回，
@@ -62,9 +62,9 @@ async def route(
     # === 开关指令标记（最高优先级，防止动作动词分支抢先匹配） ===
     is_switch_cmd = bool(T.SWITCH_CMD_RE.match(command)) and not T.ACTION_VERB_PREFIX_RE.match(command)
 
-    # === 查询意图 ===
+    # === 查询意图（开关指令优先，防止 "关闭卧室灯怎么样" 被查询分支劫持） ===
     query_m = T.QUERY_RE.search(command)
-    if query_m:
+    if not is_switch_cmd and query_m:
         # 去掉查询关键词，提取设备名
         device_hint = command[:query_m.start()].strip()
         # 去掉属性名后缀（温度/湿度/亮度/电量等），保留设备名

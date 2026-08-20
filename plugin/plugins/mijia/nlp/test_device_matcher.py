@@ -21,11 +21,11 @@ MOCK_DEVICES = [
     },
     {
         "did": "living-ac-1",
-        "name": "客厅空调",
+        "name": "空调",
         "model": "ac.midea.fz",
         "room_name": "客厅",
         "is_online": True,
-        "alias": "空调",
+        "alias": "",
         "properties": [],
         "actions": [],
     },
@@ -57,9 +57,28 @@ def test_alias_match():
 
 
 def test_room_prefix_split():
+    # 设备名是"空调"（非"客厅空调"），"客厅空调"只能靠房间前缀拆分命中
+    # （精确名/别名都不匹配），真正走到区域+设备名拆分分支
     result = match_devices("客厅空调", MOCK_DEVICES)
     assert result.status == "ok"
     assert result.device["did"] == "living-ac-1"
+
+
+def test_room_split_partial_alias():
+    # 房间限定 + 设备部分只是别名的子串："卧室床尾" → 设备部分"床尾" ⊆ 别名"床尾台灯"
+    devices = MOCK_DEVICES + [{
+        "did": "bedroom-lamp-3",
+        "name": "台灯",
+        "model": "light.wyze",
+        "room_name": "卧室",
+        "is_online": True,
+        "alias": "床尾台灯",
+        "properties": [],
+        "actions": [],
+    }]
+    result = match_devices("卧室床尾", devices)
+    assert result.status == "ok"
+    assert result.device["did"] == "bedroom-lamp-3"
 
 
 def test_fuzzy_tv_match():
@@ -86,16 +105,27 @@ def test_empty_devices():
 
 
 def test_ambiguous_room_device():
-    # 两个同房设备："卧室 灯" 与 "卧室 电视" 共存时，仅按房间名会歧义
-    devices = MOCK_DEVICES + [{
-        "did": "bedroom-tv-2",
-        "name": "电视",
-        "model": "miot.tv.v2",
-        "room_name": "卧室",
-        "is_online": True,
-        "properties": [],
-        "actions": [],
-    }]
-    result = match_devices("电视", devices)
+    # 两个同房设备（卧室里两台"电视"），"卧室电视"走房间拆分后歧义
+    devices = MOCK_DEVICES + [
+        {
+            "did": "bedroom-tv-2",
+            "name": "电视",
+            "model": "miot.tv.v2",
+            "room_name": "卧室",
+            "is_online": True,
+            "properties": [],
+            "actions": [],
+        },
+        {
+            "did": "bedroom-tv-3",
+            "name": "电视",
+            "model": "miot.tv.v2",
+            "room_name": "卧室",
+            "is_online": True,
+            "properties": [],
+            "actions": [],
+        },
+    ]
+    result = match_devices("卧室电视", devices)
     assert result.status == "ambiguous"
     assert "找到 2 个匹配" in result.message

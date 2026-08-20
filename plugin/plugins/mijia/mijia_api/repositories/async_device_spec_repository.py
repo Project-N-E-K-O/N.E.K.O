@@ -37,7 +37,7 @@ class AsyncDeviceSpecRepositoryImpl(IDeviceSpecRepository):
 
     async def get_spec(self, model: str) -> Optional[DeviceSpec]:
         """异步获取设备规格"""
-        cache_key = f"device_spec:{model}"
+        cache_key = f"device_spec:v2:{model}"
         cached = self._cache.get(cache_key, namespace="specs")
 
         if cached:
@@ -62,7 +62,7 @@ class AsyncDeviceSpecRepositoryImpl(IDeviceSpecRepository):
 
     def cache_spec(self, model: str, spec: DeviceSpec) -> None:
         """缓存设备规格"""
-        cache_key = f"device_spec:{model}"
+        cache_key = f"device_spec:v2:{model}"
         self._cache.set(cache_key, spec.model_dump(), ttl=365 * 24 * 3600, namespace="specs")
         logger.info(f"设备规格已缓存: {model}")
 

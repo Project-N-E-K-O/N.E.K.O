@@ -979,19 +979,31 @@ class MijiaPlugin(NekoPluginBase):
         if not self.api:
             return Err(SdkError("未登录"))
 
-        self.logger.info(f"智能控制命令: {command}")
+        # 原始指令属会话文本，按仓库规范用 print 而非 logger
+        print(f"[smart_control] 指令: {command}", flush=True)
 
-        # 意图路由（nlp/ 纯规则引擎）：场景/查询/动作/开关/属性五分支短路
+        # 意图路由（nlp/ 纯规则引擎）：场景/开关/查询/动作/属性五分支短路
         devices = await self._load_devices_cache()
-        room_map, device_room_map = None, None
-        if devices and not any(d.get("room_name") for d in devices):
+        result = await route(command, devices)
+        # 房间映射惰性获取：仅当匹配确实需要（not_found/ambiguous 且设备缓存
+        # 缺房间名）时才调 get_homes，避免场景/精确匹配等命令被拖慢
+        if (
+            result.branch in ("switch", "control", "action")
+            and result.match is not None
+            and result.match.status in ("not_found", "ambiguous")
+            and devices
+            and not any(d.get("room_name") for d in devices)
+        ):
             room_map, device_room_map = await self._build_room_maps()
-
-        result = await route(
-            command, devices, api_room_map=room_map, device_room_map=device_room_map
-        )
-        self.logger.info(
-            f"路由结果: branch={result.branch}, device={result.device_hint!r}, parsed={result.parsed!r}"
+            result = await route(
+                command, devices, api_room_map=room_map, device_room_map=device_room_map
+            )
+        self.logger.info(f"路由结果: branch={result.branch}")
+        # 设备/解析诊断含用户原文片段，按规范用 print
+        print(
+            f"[smart_control] 路由: branch={result.branch}, "
+            f"device={result.device_hint!r}, parsed={result.parsed!r}",
+            flush=True,
         )
 
         if result.branch == "scene":
@@ -1083,8 +1095,9 @@ class MijiaPlugin(NekoPluginBase):
 
         MIoT 电视/显示器等设备没有可写的 power 属性，电源开关以动作形式暴露
         （如 xiaomi.tv.rmh1 的 "Turn On"(siid 6) / "Turn Off"(siid 2)）。
+        不收录 "set power" 类动作——它们通常带 in 参数，无参调用会被云端拒绝。
         """
-        keywords = ["turn on", "power on", "switch on", "set power", "power-on"]
+        keywords = ["turn on", "power on", "switch on", "power-on"]
         if not value:
             keywords = ["turn off", "power off", "switch off", "power-off"]
         for a in actions:
@@ -1116,14 +1129,17 @@ class MijiaPlugin(NekoPluginBase):
         """执行二元开关控制（电源动作 → 输入源唤醒 → 开关属性，含多控开关方位词匹配）"""
         action_text = "打开" if value else "关闭"
 
-        # 1) 电源动作优先；网关不支持动作时（如 /miotspec/action 返回 -6）回落属性通道
+        # 1) 电源动作优先；网关不支持动作时（如 /miotspec/action 返回 -6）回落属性通道。
+        #    仅当动作真正执行成功（act_result 为 True）才返回成功，否则继续回落。
         power_action = self._find_power_action(actions, value)
         if power_action:
             try:
                 act_result = await self.api.call_device_action(
                     did, power_action["siid"], power_action["aiid"]
                 )
-                return Ok({"success": True, "message": f"✅ 已{action_text}'{display_name}'", "device": display_name, "action": action_text, "result": act_result})
+                if act_result:
+                    return Ok({"success": True, "message": f"✅ 已{action_text}'{display_name}'", "device": display_name, "action": action_text, "result": act_result})
+                self.logger.info("电源动作返回失败，回落属性控制")
             except TokenExpiredError:
                 return Err(SdkError("凭据已过期，请重新登录"))
             except Exception as e:
@@ -1146,6 +1162,8 @@ class MijiaPlugin(NekoPluginBase):
                         [{"did": did, "siid": selector["siid"], "piid": selector["piid"]}]
                     )
                     cur = res[0].get("value") if res else None
+                except TokenExpiredError:
+                    return Err(SdkError("凭据已过期，请重新登录"))
                 except Exception:
                     cur = None
                 # 电视在线时写回当前输入源（no-op 唤醒）；离线/读失败时写 HDMI 1（4），
@@ -1156,6 +1174,8 @@ class MijiaPlugin(NekoPluginBase):
                         ok = await self.api.control_device(did, selector["siid"], selector["piid"], target)
                         if ok:
                             return Ok({"success": True, "message": f"✅ 已{action_text}'{display_name}'", "device": display_name, "action": action_text, "value": target})
+                    except TokenExpiredError:
+                        return Err(SdkError("凭据已过期，请重新登录"))
                     except Exception:
                         pass  # 写入失败，继续回落
 
@@ -1166,11 +1186,10 @@ class MijiaPlugin(NekoPluginBase):
             if any(k in pname for k in ["开关", "电源", "power", "switch", "on"]):
                 if p.get("access") in ["write", "read_write", "notify_read_write"]:
                     switch_props.append(p)
-        # 二进制开关指令只应发给 bool 型属性：避免名字含 "on"（如 "TV Input
-        # Control"）的 uint/string 属性被误当电源开关，导致 "属性值无效: True"
-        bool_switches = [p for p in switch_props if p.get("type") == "bool"]
-        if bool_switches:
-            switch_props = bool_switches
+        # 二进制开关指令只应发给 bool 型属性：无条件过滤掉名字含 "on" 的非布尔
+        # 属性（"TV Input Control"/position/ventilation/illumination 等），
+        # 否则 True/False 会被发给 enum/int/string 属性并触发控制失败
+        switch_props = [p for p in switch_props if p.get("type") == "bool"]
         # fallback: 找第一个可写 bool 属性
         if not switch_props:
             for p in props:
@@ -1226,9 +1245,12 @@ class MijiaPlugin(NekoPluginBase):
                 return Ok({"success": False, "message": f"❌ {action_text}'{display_name}'失败"})
             # 写后回读校验：防止写入"属性合法但并非电源"的字段（如电视 speaker-mode
             # 的 is-on）被 API 照单全收返回 code 0，却对真机毫无作用。
+            # 只写（access="write"）属性读不回来，跳过校验直接按成功返回。
             # 云端属性传播有延迟（实测关闭可慢至数秒），故轮询而非单次回读。
+            if switch.get("access") == "write":
+                return Ok({"success": True, "message": f"✅ 已{action_text}'{display_name}'", "device": display_name, "action": action_text})
             actual = None
-            for wait in (0.5, 1.0, 2.0, 3.0, 3.0):
+            for wait in (0.5, 1.5, 3.0):
                 await asyncio.sleep(wait)
                 try:
                     chk = await self.api.get_device_properties(
@@ -1670,12 +1692,18 @@ class MijiaPlugin(NekoPluginBase):
 
         # 统一设备匹配（支持区域+设备名、别名、模糊匹配）
         cached_devices = await self._load_devices_cache()
-        room_map, device_room_map = None, None
-        if cached_devices and not any(d.get("room_name") for d in cached_devices):
+        match_result = match_devices(name, cached_devices)
+        # 房间映射惰性获取：仅当匹配需要（not_found/ambiguous 且缓存缺房间名）时
+        # 才调 get_homes，避免精确匹配被拖慢
+        if (
+            match_result.status in ("not_found", "ambiguous")
+            and cached_devices
+            and not any(d.get("room_name") for d in cached_devices)
+        ):
             room_map, device_room_map = await self._build_room_maps()
-        match_result = match_devices(
-            name, cached_devices, api_room_map=room_map, device_room_map=device_room_map
-        )
+            match_result = match_devices(
+                name, cached_devices, api_room_map=room_map, device_room_map=device_room_map
+            )
         if match_result.status == "not_found":
             return Err(SdkError(match_result.message))
         if match_result.status == "ambiguous":

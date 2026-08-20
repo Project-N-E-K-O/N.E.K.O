@@ -242,6 +242,11 @@ class AsyncDeviceRepositoryImpl(IAsyncDeviceRepository):
             {"did": device_id, "siid": siid, "aiid": aiid, "in": params},
             credential,
         )
+        # 顶层 code=0 时 per-item code 可能非 0（如设备拒绝），需一并检查，
+        # 否则动作失败会被误报成功（与 set_property 的判定一致）
+        result = response.get("result", [])
+        if result and len(result) > 0 and isinstance(result[0], dict):
+            return result[0].get("code") == 0
         return response.get("code") == 0
 
     async def batch_get_properties(
