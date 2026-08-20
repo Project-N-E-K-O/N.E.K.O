@@ -672,3 +672,87 @@ def test_market_upgrade_preserves_owned_profile_when_new_package_has_none(
 
     assert upgraded.profile_installed is True
     assert upgraded.profile_dir == str(profile_dir)
+
+
+def _write_legacy_lock(manager: InstallSourceManager, directory_name: str) -> None:
+    """Seed a pre-``profile_installed`` row, whose ownership is inferred."""
+    manager.lock_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "updated_at": "2026-01-01T00:00:00.000000Z",
+                "entries": [
+                    {
+                        "root_id": "user",
+                        "directory_name": directory_name,
+                        "plugin_id": directory_name,
+                        "channel": "market",
+                        "reason": "user_requested",
+                        "installed_at": "2026-01-01T00:00:00.000000Z",
+                        "updated_at": "2026-01-01T00:00:00.000000Z",
+                        "last_seen_at": "2026-01-01T00:00:00.000000Z",
+                        "removed": False,
+                        "source_detail": None,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    manager.load()
+
+
+def test_market_upgrade_keeps_legacy_profile_ownership_unknown(
+    manager: InstallSourceManager,
+) -> None:
+    """A legacy row must not be downgraded to "owns no profile" by an upgrade.
+
+    Collapsing ``None`` to ``False`` makes deletion skip the inferred profile
+    that is still on disk, and the next install of a profile-carrying version
+    then fails against it under ``on_conflict="fail"``.
+    """
+    _write_legacy_lock(manager, "legacy-plugin")
+
+    upgraded, _ = manager.record_market_upgrade(
+        root_id="user",
+        directory_name="legacy-plugin",
+        plugin_id="legacy-plugin",
+        market_detail={
+            "plugin_market_id": "legacy-plugin",
+            "version": "2.0.0",
+            "package_url": "https://example.com/v2.neko-plugin",
+            "channel": "stable",
+            "package_sha256": "c" * 64,
+            "payload_hash": None,
+            "published_at": "2026-01-01T00:00:00.000000Z",
+        },
+        package_id="legacy-package",
+        profile_dir="",
+    )
+
+    assert upgraded.profile_installed is None
+
+
+def test_import_upgrade_keeps_legacy_profile_ownership_unknown(
+    manager: InstallSourceManager,
+) -> None:
+    """The imported write path carries the same tri-state as the Market one."""
+    target = manager.user_root / "legacy-import"
+    target.mkdir(parents=True)
+    (target / "plugin.toml").write_text(
+        '[plugin]\nid = "legacy-import"\n',
+        encoding="utf-8",
+    )
+    _write_legacy_lock(manager, "legacy-import")
+
+    manager.record_import(
+        directory_path=target,
+        package_filename="v2.neko-plugin",
+        package_sha256="d" * 64,
+        package_id="legacy-package",
+        profile_dir="",
+    )
+
+    entry = manager.entry_for_directory(target, include_removed=False)
+    assert entry is not None
+    assert entry.profile_installed is None

@@ -75,8 +75,10 @@ logger = get_logger("server.application.plugins.lifecycle")
 _PLUGIN_ID_PATTERN = re.compile(r"^[a-zA-Z0-9_-]+$")
 _PLUGIN_STARTUP_TIMEOUT_MAX = 300.0
 _DEFERRED_PROFILE_CLEANUP_FILENAME = "package_profile_cleanup.json"
+# ``package_id`` allows dots, so the staged name must too; the leading dot,
+# the ``.deleting-<uuid4hex>`` suffix and full-name anchoring keep it exact.
 _DEFERRED_PROFILE_STAGING_NAME_PATTERN = re.compile(
-    r"^\.[a-zA-Z0-9_-]+\.deleting-[0-9a-f]{32}$"
+    r"^\.[A-Za-z0-9._-]+\.deleting-[0-9a-f]{32}$"
 )
 plugin_registry_service = PluginRegistryService()
 # The profile sharing decision and install-source soft-removal must form one
@@ -430,7 +432,13 @@ def _deferred_profile_cleanup_record_path_sync() -> Path:
     )
 
 
-def _load_deferred_profile_cleanup_paths_sync(record_path: Path) -> list[str]:
+def _load_deferred_profile_cleanup_paths_sync(record_path: Path) -> list[str] | None:
+    """Return the pending paths, or ``None`` when an existing record is unusable.
+
+    Callers must not overwrite a record they could not read: the paths already
+    queued in it would be dropped and their staging directories would then be
+    retained forever.
+    """
     try:
         raw = json.loads(record_path.read_text(encoding="utf-8"))
     except FileNotFoundError:
@@ -441,13 +449,13 @@ def _load_deferred_profile_cleanup_paths_sync(record_path: Path) -> list[str]:
             record_path,
             exc,
         )
-        return []
+        return None
     if not isinstance(raw, dict) or not isinstance(raw.get("staged_paths"), list):
         logger.error(
             "delete_plugin: invalid deferred profile cleanup record: {}",
             record_path,
         )
-        return []
+        return None
     return [path for path in raw["staged_paths"] if isinstance(path, str) and path]
 
 
@@ -479,12 +487,14 @@ def _record_deferred_profile_cleanup_sync(staged_profile: _StagedPackageProfile)
     try:
         record_path = _deferred_profile_cleanup_record_path_sync()
         paths = _load_deferred_profile_cleanup_paths_sync(record_path)
+        if paths is None:
+            return False
         staged_path = str(staged_profile.staged_dir)
         if staged_path not in paths:
             paths.append(staged_path)
         _save_deferred_profile_cleanup_paths_sync(record_path, paths)
         return True
-    except OSError as exc:
+    except Exception as exc:
         logger.error(
             "delete_plugin: failed to persist deferred profile cleanup for {}: {}",
             staged_profile.staged_dir,

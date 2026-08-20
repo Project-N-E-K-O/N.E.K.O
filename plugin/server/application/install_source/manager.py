@@ -1481,8 +1481,14 @@ class InstallSourceManager:
                         if not existing.removed and existing.profile_installed is True
                         else ""
                     ),
-                    profile_installed=bool(profile_dir)
-                    or (not existing.removed and existing.profile_installed is True),
+                    # Carry the tri-state forward: collapsing a legacy ``None``
+                    # row to ``False`` would make deletion skip the inferred
+                    # profile it still owns on disk.
+                    profile_installed=(
+                        True
+                        if profile_dir
+                        else (existing.profile_installed if not existing.removed else False)
+                    ),
                 )
 
             new_lock = self._replace_entry(
@@ -1801,11 +1807,17 @@ class InstallSourceManager:
                     and existing.profile_installed is True
                     else ""
                 ),
-                profile_installed=bool(profile_dir)
-                or (
-                    is_upgrade
-                    and existing is not None
-                    and existing.profile_installed is True
+                # Carry the tri-state forward: collapsing a legacy ``None``
+                # row to ``False`` would make deletion skip the inferred
+                # profile it still owns on disk.
+                profile_installed=(
+                    True
+                    if profile_dir
+                    else (
+                        existing.profile_installed
+                        if is_upgrade and existing is not None
+                        else False
+                    )
                 ),
             )
 

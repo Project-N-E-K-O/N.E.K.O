@@ -2592,6 +2592,80 @@ def test_deferred_profile_cleanup_is_persisted_and_retried(
 
 
 @pytest.mark.plugin_unit
+def test_deferred_profile_cleanup_retries_dotted_package_ids(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """``package_id`` may contain dots, so the staged name must still be recognised."""
+    record_path = tmp_path / "package_profile_cleanup.json"
+    staged_dir = (
+        tmp_path / "profiles" / (".com.example.demo.deleting-" + "0123456789abcdef" * 2)
+    )
+    staged_dir.mkdir(parents=True)
+    (staged_dir / "config.toml").write_text("value = true\n", encoding="utf-8")
+    staged_profile = module._StagedPackageProfile(
+        original_dir=tmp_path / "profiles" / "com.example.demo",
+        staged_dir=staged_dir,
+    )
+    monkeypatch.setattr(
+        module,
+        "_deferred_profile_cleanup_record_path_sync",
+        lambda: record_path,
+    )
+
+    assert module._record_deferred_profile_cleanup_sync(staged_profile) is True
+    assert module._retry_deferred_profile_cleanup_sync() == 1
+    assert staged_dir.exists() is False
+
+
+@pytest.mark.plugin_unit
+def test_unreadable_deferred_cleanup_record_is_never_overwritten(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A record we could not parse still names staging dirs nobody else tracks."""
+    record_path = tmp_path / "package_profile_cleanup.json"
+    record_path.write_text("{ not json", encoding="utf-8")
+    staged_profile = module._StagedPackageProfile(
+        original_dir=tmp_path / "profiles" / "demo_package",
+        staged_dir=tmp_path / "profiles" / (".demo_package.deleting-" + "a" * 32),
+    )
+    monkeypatch.setattr(
+        module,
+        "_deferred_profile_cleanup_record_path_sync",
+        lambda: record_path,
+    )
+
+    assert module._load_deferred_profile_cleanup_paths_sync(record_path) is None
+    assert module._record_deferred_profile_cleanup_sync(staged_profile) is False
+    assert module._retry_deferred_profile_cleanup_sync() == 0
+    assert record_path.read_text(encoding="utf-8") == "{ not json"
+
+
+@pytest.mark.plugin_unit
+def test_deferred_cleanup_recording_swallows_non_oserror(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Best-effort recording must not abort the deletion flow that calls it."""
+
+    def _raise_runtime_error() -> Path:
+        raise RuntimeError("plugin config root unavailable")
+
+    monkeypatch.setattr(
+        module,
+        "_deferred_profile_cleanup_record_path_sync",
+        _raise_runtime_error,
+    )
+    staged_profile = module._StagedPackageProfile(
+        original_dir=tmp_path / "profiles" / "demo_package",
+        staged_dir=tmp_path / "profiles" / (".demo_package.deleting-" + "a" * 32),
+    )
+
+    assert module._record_deferred_profile_cleanup_sync(staged_profile) is False
+
+
+@pytest.mark.plugin_unit
 @pytest.mark.asyncio
 async def test_delete_plugin_stops_running_host_before_removing(
     monkeypatch: pytest.MonkeyPatch,
