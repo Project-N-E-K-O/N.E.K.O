@@ -205,6 +205,22 @@ Object.assign(AvatarButtonMixin.methods, {
                     return;
                 }
                 e.stopPropagation();
+                const desktopInteractions = window.NekoDesktopWindowInteractions;
+                if (desktopInteractions && typeof desktopInteractions.cancel === 'function') {
+                    desktopInteractions.cancel(returnBtn, {
+                        reason: 'return-click',
+                        restoreArt: false
+                    });
+                } else {
+                    [window.NekoDesktopWindowTopEdgePerch, window.NekoDesktopWindowEdgePeek].forEach((runner) => {
+                        if (runner && typeof runner.cancel === 'function') {
+                            runner.cancel(returnBtn, {
+                                reason: 'return-click',
+                                restoreArt: false
+                            });
+                        }
+                    });
+                }
                 _clearNekoIdleCat1QuestionMark(returnBtn);
                 _cancelNekoIdleCat1EatAction(returnBtn, { restoreArt: false });
                 _cancelNekoIdleCat1StretchAction(returnBtn, { restoreArt: false });
