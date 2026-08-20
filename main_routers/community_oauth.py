@@ -155,10 +155,33 @@ def _load_oauth_status_records() -> tuple[dict | None, dict]:
     return C._desktop_session_snapshot(), C._load_auth() or {}
 
 
+# The refresh rewrites the authoritative session file and the auth mirror
+# without a shared lock, so these mirror fields trail the snapshot for a moment.
+_AUTH_MIRROR_REFRESHED_FIELDS = (
+    "access_token",
+    "refresh_token",
+    "session_generation",
+    "schema_version",
+)
+
+
 def _oauth_status_records_key(snapshot: dict | None, auth: dict) -> str:
-    """Fingerprint one credential snapshot without retaining tokens as map keys."""
+    """Fingerprint one credential snapshot without retaining tokens as map keys.
+
+    The mirror's own token fields stay out of the fingerprint: a status read
+    that lands between the two writes of a refresh would otherwise fingerprint
+    an old-session/new-mirror pair that never existed, miss the in-flight task,
+    and resolve the already-rotated refresh token a second time. The snapshot
+    still carries the authoritative tokens, so a real credential change (login,
+    logout, account switch) keeps producing a different key.
+    """
+    mirror = {
+        key: value
+        for key, value in (auth or {}).items()
+        if key not in _AUTH_MIRROR_REFRESHED_FIELDS
+    }
     encoded = json.dumps(
-        {"snapshot": snapshot, "auth": auth},
+        {"snapshot": snapshot, "auth": mirror},
         ensure_ascii=False,
         sort_keys=True,
         separators=(",", ":"),
