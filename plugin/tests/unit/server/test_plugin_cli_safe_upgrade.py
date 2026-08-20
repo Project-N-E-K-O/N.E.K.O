@@ -462,8 +462,8 @@ async def test_service_uses_custom_profile_root_with_recorded_package_identity(
 
     plugins_root = tmp_path / "plugins"
     _write_plugin(plugins_root, "demo", "1.0.0")
-    profiles_root = tmp_path / "profiles"
-    custom_profiles_root = profiles_root / "custom"
+    profiles_root = tmp_path / "current_profiles"
+    custom_profiles_root = tmp_path / "recorded_profiles" / "custom"
     profile_dir = custom_profiles_root / "demo-package"
     profile_dir.mkdir(parents=True)
     (profile_dir / "custom.toml").write_text("custom = true\n", encoding="utf-8")
@@ -490,6 +490,7 @@ async def test_service_uses_custom_profile_root_with_recorded_package_identity(
     plan = await service.plan_install(
         package=str(package_path),
         profiles_root=str(custom_profiles_root),
+        _allow_external_profiles_root=True,
     )
 
     assert plan["action"] == "upgrade"
@@ -500,6 +501,7 @@ async def test_service_uses_custom_profile_root_with_recorded_package_identity(
         profiles_root=str(custom_profiles_root),
         confirm_upgrade=True,
         confirmation_token=str(plan["confirmation_token"]),
+        _allow_external_profiles_root=True,
     )
 
     assert result["operation"] == "upgrade"
