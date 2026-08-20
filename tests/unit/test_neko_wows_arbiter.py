@@ -122,6 +122,24 @@ def test_post_battle_summary_is_bundled_with_the_terminal_cue():
     assert decision.queued == 0
 
 
+def test_terminal_summary_reserves_a_slot_behind_higher_priority_events():
+    decision = Arbiter(CFG).decide([
+        candidate(BOUNDARY_RISK, priority=70),
+        candidate(PRIORITY_TARGET, priority=69),
+        candidate(LOCALLY_ISOLATED, priority=68),
+        candidate(BATTLE_ENDED, priority=65),
+        candidate(POST_BATTLE_SUMMARY, priority=50),
+    ], 100.0)
+
+    assert tuple(item.event_id for item in decision.candidates) == (
+        BOUNDARY_RISK,
+        PRIORITY_TARGET,
+        BATTLE_ENDED,
+        POST_BATTLE_SUMMARY,
+    )
+    assert decision.queued == 1
+
+
 def test_decide_bundles_an_eligible_event_from_a_recent_queue_round():
     arbiter = Arbiter(CFG)
     arbiter.submit([candidate(BOUNDARY_RISK, at=100.0)], 100.0)

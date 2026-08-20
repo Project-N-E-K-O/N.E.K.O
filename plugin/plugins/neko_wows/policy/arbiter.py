@@ -18,7 +18,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Any, Sequence
 
-from ..domain.catalog import ENEMY_SUNK
+from ..domain.catalog import BATTLE_ENDED, ENEMY_SUNK, POST_BATTLE_SUMMARY
 from ..domain.contracts import (
     ALL_LANES,
     INTRUSION_ALLOW_INTERRUPT,
@@ -42,6 +42,7 @@ REASON_ATTACHED = "attached"
 
 ATTACH_PRIORITY_WINDOW = 15
 MAX_DECISION_EVENTS = 4
+TERMINAL_EVENT_IDS = frozenset({BATTLE_ENDED, POST_BATTLE_SUMMARY})
 
 
 def _coalesce_identity(candidate: AdviceCandidate) -> tuple[str, str | int] | None:
@@ -374,6 +375,34 @@ class Arbiter:
                 steps.append(DecisionStep(
                     candidate.event_id, candidate.lane, REASON_CHOSEN))
                 attached: list[AdviceCandidate] = []
+
+                # The service may publish only one ended frame. If the terminal
+                # cue can join this bundle, its summary must join it too; there
+                # may be no later decision on which to drain a queued summary.
+                terminal_candidates = {
+                    item.event_id: item
+                    for item in ranked
+                    if item.event_id in TERMINAL_EVENT_IDS
+                }
+                required_terminal_ids: set[str] = set()
+                if TERMINAL_EVENT_IDS.issubset(terminal_candidates):
+                    terminal_cue = terminal_candidates[BATTLE_ENDED]
+                    cue_in_window = (
+                        terminal_cue is candidate
+                        or (
+                            terminal_cue.rank >= candidate.rank
+                            and terminal_cue.priority
+                            >= candidate.priority - ATTACH_PRIORITY_WINDOW
+                        )
+                    )
+                    terminal_unblocked = all(
+                        self._blocked_reason(item, now) is None
+                        for item in terminal_candidates.values()
+                    )
+                    if cue_in_window and terminal_unblocked:
+                        required_terminal_ids = set(TERMINAL_EVENT_IDS)
+                        required_terminal_ids.discard(candidate.event_id)
+
                 for sibling in ranked:
                     if sibling is candidate:
                         continue
@@ -389,10 +418,19 @@ class Arbiter:
                         == candidate.spec.attach_group
                         and ENEMY_SUNK in (candidate.event_id, sibling.event_id)
                     )
-                    if not in_window and not same_group:
+                    is_required_terminal = (
+                        sibling.event_id in required_terminal_ids
+                    )
+                    if not in_window and not same_group and not is_required_terminal:
                         continue
-                    if len(attached) >= MAX_DECISION_EVENTS - 1:
+                    slots_left = MAX_DECISION_EVENTS - 1 - len(attached)
+                    if slots_left <= 0:
                         break
+                    if (
+                        not is_required_terminal
+                        and slots_left <= len(required_terminal_ids)
+                    ):
+                        continue
                     sibling_blocked = self._blocked_reason(sibling, now)
                     if sibling_blocked is not None:
                         steps.append(DecisionStep(
@@ -404,6 +442,7 @@ class Arbiter:
                         continue
                     self._queue.remove(sibling)
                     attached.append(sibling)
+                    required_terminal_ids.discard(sibling.event_id)
                     steps.append(DecisionStep(
                         sibling.event_id, sibling.lane, REASON_ATTACHED,
                         f"attached to {candidate.event_id}"))

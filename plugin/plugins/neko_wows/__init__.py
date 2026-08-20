@@ -535,6 +535,8 @@ class NekoWowsPlugin(NekoPluginBase):
             cfg.high_damage_absolute_threshold,
             cfg.high_damage_ratio_threshold,
             cfg.devastating_strike_ratio_threshold,
+            cfg.enemy_sunk_min_absolute_threshold,
+            cfg.enemy_sunk_min_ratio_threshold,
             cfg.outnumbered_margin,
         )
 

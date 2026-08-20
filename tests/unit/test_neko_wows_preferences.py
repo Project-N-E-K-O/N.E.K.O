@@ -529,7 +529,15 @@ def test_apply_config_updates_ship_catalog_context_under_pipeline_lock():
     assert target.ship_context.calls == [("apply_config", (cfg,))]
 
 
-def test_apply_config_drops_candidates_created_with_old_detection_thresholds():
+@pytest.mark.parametrize(("field", "value"), [
+    ("low_health_ratios", (0.45, 0.25)),
+    ("enemy_sunk_min_absolute_threshold", 4_000.0),
+    ("enemy_sunk_min_ratio_threshold", 0.1),
+])
+def test_apply_config_drops_candidates_created_with_old_detection_thresholds(
+    field,
+    value,
+):
     target = object.__new__(NekoWowsPlugin)
     target._pipeline_lock = _TrackingLock()
     target._state_lock = threading.RLock()
@@ -552,7 +560,8 @@ def test_apply_config_drops_candidates_created_with_old_detection_thresholds():
     target.arbiter.submit([candidate(LOW_HEALTH, cfg=target.cfg)], 100.0)
     assert target.arbiter.stats()["queued"] == 1
 
-    cfg = WowsConfig(low_health_ratios=(0.45, 0.25))
+    cfg = WowsConfig()
+    setattr(cfg, field, value)
     NekoWowsPlugin._apply_config(target, cfg)
 
     assert target.arbiter.stats()["queued"] == 0
