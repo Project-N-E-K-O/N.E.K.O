@@ -334,7 +334,7 @@ export default {
     batchStartConfirm: 'Start {count} selected plugins?',
     batchStopConfirm: 'Stop {count} running plugins?',
     batchReloadConfirm: 'Reload {count} running plugins?',
-    batchDeleteConfirm: 'Delete {count} selected plugins? This cannot be undone.',
+    batchDeleteConfirm: 'Delete {count} selected plugins? This cannot be undone. Any related package configuration profile that is not shared by another installed plugin will also be deleted.',
     batchStartSuccess: 'Successfully started {count} plugins',
     batchStopSuccess: 'Successfully stopped {count} plugins',
     batchReloadSuccess: 'Successfully reloaded {count} plugins',
@@ -390,7 +390,7 @@ export default {
     dangerDialog: {
       title: 'Confirm Destructive Action',
       warningTitle: 'This action cannot be undone',
-      deleteMessage: 'Deleting "{pluginName}" will remove its plugin directory and refresh the list immediately.',
+      deleteMessage: 'Deleting "{pluginName}" will remove its plugin directory. Its related package configuration profile will also be deleted if it is not shared by another installed plugin. The list will refresh immediately.',
       hint: 'To avoid accidental clicks, press and hold the button below to continue.',
       holdIdle: 'Press and hold to delete',
       holdActive: 'Keep holding to confirm…',

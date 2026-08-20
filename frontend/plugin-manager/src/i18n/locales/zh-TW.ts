@@ -334,7 +334,7 @@ export default {
     batchStartConfirm: '確認批次啟動 {count} 個外掛？',
     batchStopConfirm: '確認批次停止 {count} 個執行中的外掛？',
     batchReloadConfirm: '確認批次重新載入 {count} 個執行中的外掛？',
-    batchDeleteConfirm: '確認批次刪除 {count} 個外掛？此操作不可逆。',
+    batchDeleteConfirm: '確認批次刪除 {count} 個外掛？此操作不可逆；未被其他已安裝外掛共用的關聯設定 profile 也會被刪除。',
     batchStartSuccess: '已成功啟動 {count} 個外掛',
     batchStopSuccess: '已成功停止 {count} 個外掛',
     batchReloadSuccess: '已成功重新載入 {count} 個外掛',
@@ -390,7 +390,7 @@ export default {
     dangerDialog: {
       title: '危險操作確認',
       warningTitle: '不可逆操作',
-      deleteMessage: '刪除外掛「{pluginName}」後，外掛目錄也會被移除，列表會立即更新。',
+      deleteMessage: '刪除外掛「{pluginName}」後，外掛目錄會被移除；若關聯的外掛設定 profile 未被其他已安裝外掛共用，也會一併刪除。列表會立即更新。',
       hint: '為避免誤觸，請長按下方按鈕完成確認。',
       holdIdle: '長按以確認刪除',
       holdActive: '繼續長按以完成確認…',

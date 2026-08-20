@@ -532,7 +532,7 @@ async def test_install_happy_path_writes_v2_lock_entry(
                 "channel": "stable",
                 "published_at": "2026-05-16T08:00:00.000000Z",
                 "mode": "install",
-                "on_conflict": "rename",
+                "on_conflict": "fail",
             },
         )
         assert resp.status_code == 200, resp.text
@@ -615,7 +615,7 @@ async def test_installed_endpoint_projects_latest_install_source(
                 "channel": "beta",
                 "published_at": "2026-05-16T09:00:00.000000Z",
                 "mode": "install",
-                "on_conflict": "rename",
+                "on_conflict": "fail",
             },
         )
         task_id = resp.json()["task_id"]
@@ -673,6 +673,7 @@ async def test_built_market_package_install_surfaces_in_plugin_list(
     client: AsyncClient = bridge_e2e_env["client"]
     token: str = bridge_e2e_env["token"]
     user_root: Path = bridge_e2e_env["user_root"]
+    profiles_root: Path = bridge_e2e_env["profiles_root"]
 
     with _serve_bytes(
         filename=f"{plugin_id}-{version}.neko-plugin", content=package_bytes,
@@ -688,7 +689,7 @@ async def test_built_market_package_install_surfaces_in_plugin_list(
                 "channel": "stable",
                 "published_at": "2026-05-21T08:00:00.000000Z",
                 "mode": "install",
-                "on_conflict": "rename",
+                "on_conflict": "fail",
             },
         )
         assert resp.status_code == 200, resp.text
@@ -709,6 +710,9 @@ async def test_built_market_package_install_surfaces_in_plugin_list(
     assert final_status["status"] == "completed", final_status
     installed_toml = user_root / plugin_id / "plugin.toml"
     assert installed_toml.is_file()
+    manager: InstallSourceManager = bridge_e2e_env["manager"]
+    [entry] = [entry for entry in manager.snapshot().entries if entry.plugin_id == plugin_id]
+    assert Path(entry.profile_dir) == profiles_root / plugin_id
 
     from plugin.server.application.plugins import query_service as query_module
 
@@ -847,7 +851,7 @@ async def test_authenticated_market_install_reports_usage(
                 "channel": "stable",
                 "published_at": "2026-05-21T08:30:00.000000Z",
                 "mode": "install",
-                "on_conflict": "rename",
+                "on_conflict": "fail",
             },
         )
         assert resp.status_code == 200, resp.text
@@ -3730,7 +3734,7 @@ async def test_install_identity_mismatch_warns_but_succeeds(
 async def test_install_conflict_fails_without_renaming_executable_directory(
     bridge_e2e_env: dict[str, Any],
 ) -> None:
-    """Even a legacy rename request must not create an executable plugin copy."""
+    """Legacy rename requests are accepted but still fail on directory conflict."""
 
     plugin_id = "e2e_rename_identity"
     version = "1.0.0"
@@ -3768,20 +3772,19 @@ async def test_install_conflict_fails_without_renaming_executable_directory(
                 "on_conflict": "rename",
             },
         )
+        assert resp.status_code == 200, resp.text
         task_id = resp.json()["task_id"]
-
-        deadline = time.monotonic() + 30
-        final_status: dict[str, Any] | None = None
-        while time.monotonic() < deadline:
+        for _ in range(100):
             poll = await client.get(f"/market/tasks/{task_id}?token={token}")
-            body = poll.json()
-            if body["status"] in ("completed", "failed"):
-                final_status = body
+            assert poll.status_code == 200, poll.text
+            task = poll.json()
+            if task["status"] in {"completed", "failed", "cancelled"}:
                 break
-            await asyncio.sleep(0.05)
+            await asyncio.sleep(0.01)
+        else:
+            pytest.fail("legacy rename install task did not finish")
+        assert task["status"] == "failed"
 
-    assert final_status is not None
-    assert final_status["status"] == "failed", final_status
     assert not (user_root / f"{plugin_id}_1").exists()
 
     active_entries = []
@@ -3838,7 +3841,7 @@ async def test_upgrade_happy_path_replaces_lock_entry(
                     "version": version,
                     "channel": "stable",
                     "mode": mode,
-                    "on_conflict": "rename" if mode == "install" else "fail",
+                    "on_conflict": "fail",
                 },
             )
             assert resp.status_code == 200, resp.text

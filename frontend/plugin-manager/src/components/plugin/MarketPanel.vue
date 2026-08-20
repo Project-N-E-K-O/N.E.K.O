@@ -1104,7 +1104,7 @@ async function handleInstall(plugin: MarketWorkbenchItem) {
         // 在 unpack 后做身份一致性校验；不一致不阻塞，只 warn。
         expected_plugin_toml_id: resolveExpectedTomlId(plugin),
         mode: 'install',
-        on_conflict: 'rename',
+        on_conflict: 'fail',
       }),
     })
     if (!res) {
@@ -1138,9 +1138,9 @@ async function handleInstall(plugin: MarketWorkbenchItem) {
  * v2 (R9): 升级已装插件到 Market 的最新版本。
  *
  * 与 install 路径区别：
- *   - mode = 'upgrade' 让 bridge 走 _do_upgrade 分支（rename 旧目录 →
+ *   - mode = 'upgrade' 让 bridge 走 _do_upgrade 分支（暂存旧目录 →
  *     unpack 新包 → record_market_upgrade）；
- *   - on_conflict = 'fail'：旧目录已 rename 走，新目录不该撞名；
+ *   - on_conflict = 'fail'：旧目录已暂存，新目录不应撞名；
  *   - 错误码识别在 pollInstallTask 内统一处理。
  */
 async function handleUpgrade(plugin: MarketWorkbenchItem) {

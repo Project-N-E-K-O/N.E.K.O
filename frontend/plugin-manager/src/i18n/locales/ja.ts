@@ -334,7 +334,7 @@ export default {
     batchStartConfirm: '選択した {count} 個のプラグインを起動しますか？',
     batchStopConfirm: '実行中の {count} 個のプラグインを停止しますか？',
     batchReloadConfirm: '実行中の {count} 個のプラグインをリロードしますか？',
-    batchDeleteConfirm: '選択した {count} 個のプラグインを削除しますか？この操作は元に戻せません。',
+    batchDeleteConfirm: '選択した {count} 個のプラグインを削除しますか？この操作は元に戻せません。他のインストール済みプラグインと共有されていない関連パッケージ設定プロファイルも削除されます。',
     batchStartSuccess: '{count} 個のプラグインを起動しました',
     batchStopSuccess: '{count} 個のプラグインを停止しました',
     batchReloadSuccess: '{count} 個のプラグインをリロードしました',
@@ -390,7 +390,7 @@ export default {
     dangerDialog: {
       title: '危険な操作の確認',
       warningTitle: '元に戻せない操作',
-      deleteMessage: '「{pluginName}」を削除すると、プラグインディレクトリも消去され、一覧がすぐに更新されます。',
+      deleteMessage: '「{pluginName}」を削除すると、プラグインディレクトリが消去されます。関連するパッケージ設定プロファイルは、他のインストール済みプラグインと共有されていない場合にも削除されます。一覧がすぐに更新されます。',
       hint: '誤操作を避けるため、下のボタンを長押しして確定してください。',
       holdIdle: '長押しして削除',
       holdActive: 'そのまま長押しして確定…',

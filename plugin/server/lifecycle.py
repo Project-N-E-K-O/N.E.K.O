@@ -174,6 +174,17 @@ class ServerLifecycleService:
         await ensure_plugin_messaging_started()
 
         try:
+            cleaned_profiles = await self._plugin_lifecycle_service.retry_deferred_profile_cleanup()
+            if cleaned_profiles:
+                logger.info("retried deferred package profile cleanup: cleaned={}", cleaned_profiles)
+        except Exception as exc:
+            logger.warning(
+                "deferred package profile cleanup retry failed at startup: err_type={}, err={}",
+                type(exc).__name__,
+                str(exc),
+            )
+
+        try:
             await self._start_message_plane()
         except (RuntimeError, ValueError, TypeError, OSError, AttributeError, KeyError, TimeoutError) as exc:
             logger.warning(
