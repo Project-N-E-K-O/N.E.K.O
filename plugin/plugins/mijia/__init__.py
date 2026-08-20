@@ -44,6 +44,7 @@ from .mijia_api.domain.exceptions import TokenExpiredError, DeviceNotFoundError,
 # 导入 NLP 规则引擎（纯函数，见 nlp/ 子包）
 from .nlp import MatchResult, RouteResult, match_devices, route
 from .nlp.action_verbs import VERB_TO_ACTION
+from .nlp.intent_terms import SCENE_RE
 from .nlp.value_resolver import resolve_adjust_target
 
 _EMBEDDED_BY_AGENT = os.getenv("NEKO_PLUGIN_HOSTED_BY_AGENT", "").strip().lower() == "true"
@@ -982,11 +983,16 @@ class MijiaPlugin(NekoPluginBase):
         # 原始指令属会话文本，按仓库规范用 print 而非 logger
         print(f"[smart_control] 指令: {command}", flush=True)
 
-        # 意图路由（nlp/ 纯规则引擎）：场景/开关/查询/动作/属性五分支短路
+        # 场景命令与设备无关，先短路：避免加载设备缓存（缓存缺失时会触发网络刷新）
+        scene_m = SCENE_RE.match(command.strip())
+        if scene_m:
+            return await self._execute_scene_by_name(scene_m.group(1).strip())
+
+        # 意图路由（nlp/ 纯规则引擎）：开关/查询/动作/属性分支短路
         devices = await self._load_devices_cache()
         result = await route(command, devices)
         # 房间映射惰性获取：仅当匹配确实需要（not_found/ambiguous 且设备缓存
-        # 缺房间名）时才调 get_homes，避免场景/精确匹配等命令被拖慢
+        # 缺房间名）时才调 get_homes，避免精确匹配等命令被拖慢
         if (
             result.branch in ("switch", "control", "action")
             and result.match is not None
@@ -1006,8 +1012,6 @@ class MijiaPlugin(NekoPluginBase):
             flush=True,
         )
 
-        if result.branch == "scene":
-            return await self._execute_scene_by_name(result.scene_name)
         if result.branch == "query":
             return await self.query_device_state(result.device_hint)
         if result.branch == "action":
@@ -1054,7 +1058,12 @@ class MijiaPlugin(NekoPluginBase):
                     act_result = await self.api.call_device_action(
                         did, matched_action["siid"], matched_action["aiid"]
                     )
-                    return Ok({"success": True, "message": f"✅ 已对'{display_name}'执行'{result.verb}'操作", "device": display_name, "action": result.verb, "result": act_result})
+                    # call_device_action 返回 False 表示动作被设备/网关拒绝，不能报成功
+                    if act_result:
+                        return Ok({"success": True, "message": f"✅ 已对'{display_name}'执行'{result.verb}'操作", "device": display_name, "action": result.verb, "result": act_result})
+                    return Err(SdkError(f"对'{display_name}'执行'{result.verb}'操作失败（动作被拒绝）"))
+                except TokenExpiredError:
+                    return Err(SdkError("凭据已过期，请重新登录"))
                 except Exception as e:
                     return Err(SdkError(f"对'{display_name}'执行'{result.verb}'操作失败: {e}"))
             else:
@@ -1125,6 +1134,23 @@ class MijiaPlugin(NekoPluginBase):
                 return p
         return None
 
+    @staticmethod
+    def _has_bool_power_prop(props: list[dict]) -> bool:
+        """是否存在真正的 bool 型电源属性（名称含 power/switch/开关/电源）。
+
+        不含裸 "on"（is-on 是 speaker-mode 状态，非电源）；用于判断输入源唤醒
+        是否让位于真正的电源属性。
+        """
+        for p in props:
+            if p.get("type") != "bool":
+                continue
+            if p.get("access") not in ["write", "read_write", "notify_read_write"]:
+                continue
+            pname = (p.get("name") or "").lower()
+            if any(k in pname for k in ["开关", "电源", "power", "switch"]):
+                return True
+        return False
+
     async def _execute_switch(self, props: list[dict], actions: list[dict], did: str, display_name: str, value: Any, command: str) -> Any:
         """执行二元开关控制（电源动作 → 输入源唤醒 → 开关属性，含多控开关方位词匹配）"""
         action_text = "打开" if value else "关闭"
@@ -1145,8 +1171,10 @@ class MijiaPlugin(NekoPluginBase):
             except Exception as e:
                 self.logger.info(f"电源动作不可用，回落属性控制: {e}")
 
-        # 2) 打开命令：输入源选择属性唤醒（电视等设备无 power 属性时的唯一云端开机途径）
-        if value is True:
+        # 2) 打开命令：输入源选择属性唤醒（仅当设备没有真正的 bool 电源属性时——
+        # 电视等设备无 power 属性，靠写输入源唤醒；若同时有电源属性，优先走属性通道，
+        # 避免被输入源路径抢先而跳过真正的电源属性）
+        if value is True and not self._has_bool_power_prop(props):
             selector = self._find_input_selector_prop(props)
             if selector:
                 # value_list 可能是 dict 列表 [{value,...}] 或纯值列表 [1,2,3]（标准解析器扁平化）

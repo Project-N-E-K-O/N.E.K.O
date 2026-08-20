@@ -15,9 +15,12 @@
 
 """Service orchestration and main runtime for the root launcher facade.
 
-启动拓扑：开发环境（非打包，IS_FROZEN=False）默认启动三个独立进程
-（memory_server / main_server / agent_server）；打包分发默认合并为单进程；
-NEKO_MERGED=1/0 环境变量可强制覆盖（见 _should_use_merged_mode）。"""
+Startup topology: in dev (unfrozen, ``IS_FROZEN=False``) the default is three
+separate processes (``memory_server`` / ``main_server`` / ``agent_server``);
+packaged distributions default to a merged single process. ``NEKO_MERGED``
+overrides the default: ``1``/``true``/``yes`` forces merged,
+``0``/``false``/``no`` forces separate; any other value, or unset, falls back
+to ``IS_FROZEN`` (see ``_should_use_merged_mode``)."""
 
 from __future__ import annotations
 
