@@ -69,6 +69,7 @@ def _service(
     model: _Model | None = None,
     activation_results: list[bool] | None = None,
     enrollment_ttl_seconds: float = 30.0,
+    model_timeout_seconds: float = 1.0,
     runtime_mode: str = "enforce",
 ) -> tuple[
     VoiceIdentityService,
@@ -110,7 +111,7 @@ def _service(
         activate,
         runtime_mode=runtime_mode,  # type: ignore[arg-type]
         enrollment_ttl_seconds=enrollment_ttl_seconds,
-        model_timeout_seconds=1.0,
+        model_timeout_seconds=model_timeout_seconds,
         activation_timeout_seconds=1.0,
     )
     return service, selected_model, activations, suppression_events
@@ -303,6 +304,82 @@ async def test_activation_failure_aborts_first_profile_transaction(
     assert not (tmp_path / "voice_identity.profile").exists()
     assert model.closed
     assert events[-1] == "restore:voice_identity_enrollment"
+    await service.close()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_failed_reenrollment_marks_degraded_when_old_activation_cannot_restore(
+    tmp_path: Path,
+) -> None:
+    service, _model, activations, _events = _service(
+        tmp_path,
+        activation_results=[True, False, False],
+    )
+    await service.initialize()
+    first = await service.start_enrollment()
+    await service.complete_enrollment(first.enrollment_id, "profile-a", _pcm())
+    second = await service.start_enrollment()
+
+    with pytest.raises(VoiceIdentityServiceError, match="runtime_degraded"):
+        await service.complete_enrollment(second.enrollment_id, "profile-b", _pcm())
+
+    status = service.status()
+    assert status.profile_generation == "profile-a"
+    assert not status.state.effective_enabled
+    assert status.state.effective_reason == "runtime_degraded"
+    assert [generation for _profile, generation in activations[-2:]] == [
+        "profile-b",
+        "profile-a",
+    ]
+    await service.close()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_timed_out_model_load_is_owned_until_worker_finishes(
+    tmp_path: Path,
+) -> None:
+    class BlockingModel(_Model):
+        def __init__(self) -> None:
+            super().__init__()
+            self.load_started = threading.Event()
+            self.load_release = threading.Event()
+            self.close_finished = threading.Event()
+            self.load_calls = 0
+
+        def load(self) -> bool:
+            self.load_calls += 1
+            self.load_started.set()
+            if not self.load_release.wait(1.0):
+                raise TimeoutError("test did not release model load")
+            return True
+
+        def close(self) -> None:
+            assert self.load_release.is_set()
+            super().close()
+            self.close_finished.set()
+
+    model = BlockingModel()
+    service, _selected, _activations, _events = _service(
+        tmp_path,
+        model=model,
+        model_timeout_seconds=0.1,
+    )
+    await service.initialize()
+
+    with pytest.raises(VoiceIdentityServiceError, match="model_unavailable"):
+        await service.start_enrollment()
+    assert await asyncio.to_thread(model.load_started.wait, 1.0)
+    assert not model.closed
+
+    with pytest.raises(VoiceIdentityServiceError, match="model_unavailable"):
+        await service.start_enrollment()
+    assert model.load_calls == 1
+
+    model.load_release.set()
+    assert await asyncio.to_thread(model.close_finished.wait, 1.0)
+    assert model.closed
     await service.close()
 
 

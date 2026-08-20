@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, call
 
 import pytest
 
@@ -281,8 +281,10 @@ async def test_cleanup_failure_keeps_drop_and_watchdog_releases_suppression(
     )
     runtime = IndependentAsrRuntime(_callbacks())
     detector = _RejectionDetector()
-    detector.reset.side_effect = RuntimeError("reset failed")
+    detector.reset.side_effect = [RuntimeError("reset failed"), None]
     session, _lifecycle, _turn_token = _install_active_candidate(runtime, detector)
+    shadow = SimpleNamespace(close=AsyncMock())
+    runtime._speaker_verifier_factory = MagicMock(return_value=shadow)
 
     outcome = await runtime._reject_speaker_candidate(
         _shadow_candidate(),
@@ -298,7 +300,10 @@ async def test_cleanup_failure_keeps_drop_and_watchdog_releases_suppression(
     assert outcome is CandidateRejectionOutcome.APPLIED_CLEANUP_DEGRADED
     assert detector.lease is not None and detector.lease.commit_calls == 1
     session.close.assert_awaited_once_with()
-    detector.replace_speaker_verifier.assert_awaited_once_with(None)
+    assert detector.replace_speaker_verifier.await_args_list == [
+        call(None),
+        call(shadow),
+    ]
     assert detector.reset.await_count == 2
     assert runtime._asr_candidate_rejection is None
     runtime._ensure_transport_restart_task.assert_called_once_with()

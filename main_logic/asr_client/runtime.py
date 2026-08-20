@@ -187,6 +187,18 @@ class IndependentAsrRuntime:
         ):
             raise ValueError("activation_generation must be a non-empty string")
         self._ensure_asr_runtime_state()
+        async with self._speaker_verifier_lock:
+            return await self._set_speaker_verifier_factory_locked(
+                factory,
+                activation_generation=activation_generation,
+            )
+
+    async def _set_speaker_verifier_factory_locked(
+        self,
+        factory: SpeakerShadowFactory | None,
+        *,
+        activation_generation: str,
+    ) -> bool:
         old_factory = self._speaker_verifier_factory
         if (
             factory is old_factory
@@ -521,6 +533,7 @@ class IndependentAsrRuntime:
         self._asr_reserved_final_key: FinalKey | None = None
         self._speaker_verifier_factory: SpeakerShadowFactory | None = None
         self._speaker_verifier_activation_generation: str | None = None
+        self._speaker_verifier_lock = asyncio.Lock()
         self._asr_candidate_rejection: _CandidateRejectionSuppression | None = None
         self._asr_rejection_tasks: set[
             asyncio.Task[CandidateRejectionOutcome | None]
@@ -580,6 +593,8 @@ class IndependentAsrRuntime:
         if not hasattr(self, "_speaker_verifier_factory"):
             self._speaker_verifier_factory = None
             self._speaker_verifier_activation_generation = None
+        if not hasattr(self, "_speaker_verifier_lock"):
+            self._speaker_verifier_lock = asyncio.Lock()
         if not hasattr(self, "_asr_candidate_rejection"):
             self._asr_candidate_rejection = None
         if not hasattr(self, "_asr_rejection_tasks"):
@@ -1777,25 +1792,31 @@ class IndependentAsrRuntime:
                 if not accepted:
                     raise RuntimeError("ASR_DETECTOR_CONTROL_BACKPRESSURE")
 
-            speaker_shadow = self._create_speaker_shadow(speaker_shadow_factory)
-            try:
-                detector_ref = DetectorRuntime(
-                    resource_optimization_enabled=(
-                        self._voice_input_resource_optimization_enabled
-                    ),
-                    provider_policy=policy,
-                    on_endpointing_failure=(
-                        on_detector_endpointing_failure
-                        if _uses_smart_turn_endpointing(policy)
-                        else None
-                    ),
-                    on_event=on_detector_event,
-                    speaker_shadow=speaker_shadow,
+            async with self._speaker_verifier_lock:
+                current_factory = (
+                    speaker_shadow_factory
+                    if self._speaker_verifier_activation_generation is None
+                    else self._speaker_verifier_factory
                 )
-            except Exception:
-                await self._close_created_speaker_shadow(speaker_shadow)
-                raise
-            self._asr_detector = detector_ref
+                speaker_shadow = self._create_speaker_shadow(current_factory)
+                try:
+                    detector_ref = DetectorRuntime(
+                        resource_optimization_enabled=(
+                            self._voice_input_resource_optimization_enabled
+                        ),
+                        provider_policy=policy,
+                        on_endpointing_failure=(
+                            on_detector_endpointing_failure
+                            if _uses_smart_turn_endpointing(policy)
+                            else None
+                        ),
+                        on_event=on_detector_event,
+                        speaker_shadow=speaker_shadow,
+                    )
+                except Exception:
+                    await self._close_created_speaker_shadow(speaker_shadow)
+                    raise
+                self._asr_detector = detector_ref
             self._asr_session_factory = create_candidate
             self._asr_transport_selection = selection
             self._schedule_transport_warm_expiry(
@@ -2063,14 +2084,31 @@ class IndependentAsrRuntime:
                 await asyncio.sleep(_CANDIDATE_REJECTION_WATCHDOG_SECONDS)
                 if self._asr_candidate_rejection is not suppression:
                     return
-                try:
-                    await suppression.detector.replace_speaker_verifier(None)
-                except Exception:
-                    pass
-                try:
-                    await suppression.detector.reset()
-                except Exception:
-                    pass
+                async with self._speaker_verifier_lock:
+                    try:
+                        await suppression.detector.replace_speaker_verifier(None)
+                    except Exception:
+                        pass
+                    reset_succeeded = False
+                    try:
+                        await suppression.detector.reset()
+                        reset_succeeded = True
+                    except Exception:
+                        pass
+                    factory = self._speaker_verifier_factory
+                    if (
+                        reset_succeeded
+                        and factory is not None
+                        and self._asr_detector is suppression.detector
+                    ):
+                        shadow = self._create_speaker_shadow(factory)
+                        if shadow is not None:
+                            try:
+                                await suppression.detector.replace_speaker_verifier(
+                                    shadow
+                                )
+                            except Exception:
+                                await self._close_created_speaker_shadow(shadow)
                 await self._complete_candidate_rejection(suppression)
             except asyncio.CancelledError:
                 return

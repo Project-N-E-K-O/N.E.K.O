@@ -362,15 +362,26 @@ class OwnerVoiceRuntimeRegistry:
                     ),
                 )
                 if updated:
+                    self._attach_pending.discard(manager)
                     self._detach_pending.pop(manager, None)
                 else:
                     if factory is not None:
                         factory.close()
-                    self._detach_pending[manager] = detach_generation
+                    if activation is None:
+                        self._detach_pending[manager] = detach_generation
+                    else:
+                        self._attach_pending.add(manager)
+                        self._detach_pending.pop(manager, None)
             except BaseException:
                 if factory is not None:
                     factory.close()
-                self._detach_pending[manager] = detach_generation
+                if activation is None:
+                    self._detach_pending[manager] = detach_generation
+                else:
+                    self._attach_pending.add(manager)
+                    self._detach_pending.pop(manager, None)
+        if self._attach_pending:
+            self._ensure_attach_watchdog()
         if self._detach_pending:
             self._ensure_detach_watchdog()
 

@@ -167,6 +167,7 @@ class VoiceIdentityService:
         self._effective_reason = VoiceIdentityEffectiveReason.DISABLED
         self._enrollment: _EnrollmentSession | None = None
         self._last_completed: tuple[str, str] | None = None
+        self._model_load_cleanup_task: asyncio.Task[None] | None = None
         self._initialized = False
         self._closed = False
 
@@ -252,19 +253,35 @@ class VoiceIdentityService:
                     self._enrollment.enrollment_id,
                     self._enrollment.expires_at,
                 )
+            cleanup_task = self._model_load_cleanup_task
+            if cleanup_task is not None:
+                if not cleanup_task.done():
+                    self._record_failure(VoiceIdentityEffectiveReason.MODEL_UNAVAILABLE)
+                    raise VoiceIdentityServiceError("model_unavailable")
+                self._model_load_cleanup_task = None
             try:
                 model = self._model_factory()
             except Exception as exc:
                 self._record_failure(VoiceIdentityEffectiveReason.MODEL_UNAVAILABLE)
                 raise VoiceIdentityServiceError("model_unavailable") from exc
-            loaded = False
+            load_task = asyncio.create_task(
+                asyncio.to_thread(model.load),
+                name="voice-identity-model-load",
+            )
             try:
                 loaded = bool(
                     await asyncio.wait_for(
-                        asyncio.to_thread(model.load),
+                        asyncio.shield(load_task),
                         timeout=self._model_timeout_seconds,
                     )
                 )
+            except TimeoutError:
+                self._retain_timed_out_model_load(model, load_task)
+                self._record_failure(VoiceIdentityEffectiveReason.MODEL_UNAVAILABLE)
+                raise VoiceIdentityServiceError("model_unavailable")
+            except asyncio.CancelledError:
+                self._retain_timed_out_model_load(model, load_task)
+                raise
             except Exception:
                 loaded = False
             if not loaded:
@@ -365,6 +382,16 @@ class VoiceIdentityService:
                 staged = await self._profile_store.astage(new_profile)
                 if desired_requested and self._runtime_mode != "off":
                     if not await self._activate(new_profile, profile_id):
+                        rollback_profile = old_profile if old_effective else None
+                        rollback_generation = (
+                            old_profile.generation
+                            if rollback_profile is not None
+                            else str(uuid.uuid4())
+                        )
+                        old_activation_restored = await self._activate(
+                            rollback_profile,
+                            rollback_generation,
+                        )
                         raise VoiceIdentityServiceError("runtime_degraded")
                     activation_changed = True
                 if desired_requested != old_requested:
@@ -591,6 +618,30 @@ class VoiceIdentityService:
             )
         except Exception:
             pass
+
+    def _retain_timed_out_model_load(
+        self,
+        model: EnrollmentEmbeddingModel,
+        load_task: asyncio.Task[bool],
+    ) -> None:
+        async def finish_and_close() -> None:
+            try:
+                await load_task
+            except BaseException:
+                pass
+            await self._close_model(model)
+
+        cleanup_task = asyncio.create_task(
+            finish_and_close(),
+            name="voice-identity-model-load-cleanup",
+        )
+        self._model_load_cleanup_task = cleanup_task
+
+        def clear_finished(task: asyncio.Task[None]) -> None:
+            if self._model_load_cleanup_task is task:
+                self._model_load_cleanup_task = None
+
+        cleanup_task.add_done_callback(clear_finished)
 
     async def _activate(
         self,

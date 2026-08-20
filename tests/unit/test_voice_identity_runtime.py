@@ -230,8 +230,12 @@ async def test_failed_activation_rolls_changed_managers_back() -> None:
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_failed_activation_queues_detach_when_rollback_degrades() -> None:
-    registry = OwnerVoiceRuntimeRegistry(enforce=True)
+async def test_failed_activation_retries_prior_verifier_when_rollback_degrades() -> None:
+    registry = OwnerVoiceRuntimeRegistry(
+        enforce=True,
+        restore_retry_interval_seconds=0.01,
+        restore_retry_timeout_seconds=1.0,
+    )
     managers = [_Manager(), _Manager()]
     for manager in managers:
         await registry.register_manager(manager)
@@ -240,13 +244,19 @@ async def test_failed_activation_queues_detach_when_rollback_degrades() -> None:
     try:
         assert await registry.activate(old_profile, "old-generation")
         ordered = tuple(registry._managers)  # type: ignore[attr-defined]
-        ordered[0].verifier_outcomes.extend([True, False])
+        ordered[0].verifier_outcomes.extend([True, False, True])
         ordered[1].verifier_outcomes.append(False)
 
         assert not await registry.activate(new_profile, "new-generation")
 
-        assert ordered[0] in registry._detach_pending  # type: ignore[attr-defined]
-        assert registry._detach_retry_task is not None  # type: ignore[attr-defined]
+        assert ordered[0] in registry._attach_pending  # type: ignore[attr-defined]
+        assert ordered[0] not in registry._detach_pending  # type: ignore[attr-defined]
+        await _wait_until(
+            lambda: ordered[0]
+            not in registry._attach_pending  # type: ignore[attr-defined]
+        )
+        assert ordered[0].verifier_calls[-1][1] == "old-generation"
+        assert ordered[0].verifier_calls[-1][0] is not None
     finally:
         old_profile.close()
         new_profile.close()

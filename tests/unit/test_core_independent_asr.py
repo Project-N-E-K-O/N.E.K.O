@@ -8072,6 +8072,63 @@ async def test_speaker_shadow_factory_is_lightweight_sync_and_fail_open(
     )
 
 
+async def test_start_installs_latest_verifier_published_during_connect(
+    monkeypatch,
+) -> None:
+    import main_logic.asr_client.runtime as runtime_module
+
+    runtime = _Runtime()
+    selection = _selection("qwen", "provider")
+    connect_started = asyncio.Event()
+    connect_release = asyncio.Event()
+
+    async def connect() -> None:
+        connect_started.set()
+        await connect_release.wait()
+
+    session = SimpleNamespace(
+        is_ready=True,
+        connect=connect,
+        close=AsyncMock(),
+    )
+    monkeypatch.setattr(
+        runtime_module,
+        "_resolve_asr_selection",
+        lambda _core_type: selection,
+    )
+    monkeypatch.setattr(
+        runtime_module,
+        "_create_asr_session_from_selection",
+        lambda _core_type, **_kwargs: session,
+    )
+    detector_factory = MagicMock(return_value=_ReadyDetector())
+    monkeypatch.setattr(runtime_module, "DetectorRuntime", detector_factory)
+    stale_shadow = SimpleNamespace(close=AsyncMock())
+    current_shadow = SimpleNamespace(close=AsyncMock())
+    stale_factory = MagicMock(return_value=stale_shadow)
+    current_factory = MagicMock(return_value=current_shadow)
+
+    start_task = asyncio.create_task(
+        runtime._asr_runtime.start(
+            route_key="qwen",
+            resource_optimization_enabled=True,
+            speaker_shadow_factory=stale_factory,
+        )
+    )
+    await asyncio.wait_for(connect_started.wait(), 1.0)
+    assert await runtime._asr_runtime.set_speaker_verifier_factory(
+        current_factory,
+        activation_generation="current-profile",
+    )
+    connect_release.set()
+    result = await asyncio.wait_for(start_task, 1.0)
+
+    assert result.status is AsrStartStatus.READY
+    stale_factory.assert_not_called()
+    current_factory.assert_called_once_with()
+    assert detector_factory.call_args.kwargs["speaker_shadow"] is current_shadow
+
+
 async def test_failed_detector_construction_closes_created_speaker_shadow(
     monkeypatch,
 ) -> None:
