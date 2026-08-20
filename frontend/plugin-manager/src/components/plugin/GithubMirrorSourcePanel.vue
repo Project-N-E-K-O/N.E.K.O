@@ -4,29 +4,29 @@
       <div>
         <div class="mirror-source-panel__title">
           <el-icon><Connection /></el-icon>
-          <span>镜像源</span>
+          <span>{{ t('mirrorSource.title') }}</span>
         </div>
-        <p>选择插件市场下载 GitHub Release 包时使用的连接方式。</p>
+        <p>{{ t('mirrorSource.description') }}</p>
       </div>
-      <el-button text circle aria-label="关闭镜像源" @click="$emit('close')">
+      <el-button text circle :aria-label="t('mirrorSource.close')" @click="$emit('close')">
         <el-icon><Close /></el-icon>
       </el-button>
     </header>
 
     <div class="mirror-source-panel__content">
       <el-form label-position="top">
-        <el-form-item label="GitHub Proxy（可选）">
+        <el-form-item :label="t('mirrorSource.proxyOptional')">
           <el-select :model-value="mode" @update:model-value="setModeFromSelect">
-            <el-option label="GitHub 直连" value="direct" />
-            <el-option label="自动测速选择" value="auto" />
-            <el-option label="指定代理" value="specified" />
+            <el-option :label="t('mirrorSource.direct')" value="direct" />
+            <el-option :label="t('mirrorSource.auto')" value="auto" />
+            <el-option :label="t('mirrorSource.specified')" value="specified" />
           </el-select>
         </el-form-item>
 
-        <el-form-item v-if="mode !== 'direct'" label="镜像源">
+        <el-form-item v-if="mode !== 'direct'" :label="t('mirrorSource.source')">
           <el-input
             v-if="mode === 'auto'"
-            :model-value="activeSource?.label ?? '正在测速…'"
+            :model-value="activeSource ? sourceLabel(activeSource.id) : t('mirrorSource.testing')"
             readonly
           />
           <el-select
@@ -42,9 +42,9 @@
             />
           </el-select>
           <div v-if="mode === 'auto'" class="mirror-source-panel__auto-result">
-            <span v-if="activeSource">当前最快：{{ activeSource.label }}</span>
-            <span v-else-if="measuredOnce">最近测速没有可用节点，已回退 GitHub 直连。</span>
-            <span v-else>尚未测速；将暂时使用 GitHub 直连。</span>
+            <span v-if="activeSource">{{ t('mirrorSource.autoFastest', { source: sourceLabel(activeSource.id) }) }}</span>
+            <span v-else-if="measuredOnce">{{ t('mirrorSource.autoUnavailable') }}</span>
+            <span v-else>{{ t('mirrorSource.autoPending') }}</span>
             <span v-if="autoLatencyMs !== null">{{ autoLatencyMs }} ms</span>
           </div>
         </el-form-item>
@@ -56,12 +56,12 @@
           :loading="measuring"
           @click="measureAndSelectFastest"
         >
-          自动测速并选择最快节点
+          {{ t('mirrorSource.testAndSelect') }}
         </el-button>
       </el-form>
 
       <div v-if="measuredOnce" class="mirror-source-panel__test-results">
-        <span class="mirror-source-panel__test-results-title">最近测速结果</span>
+        <span class="mirror-source-panel__test-results-title">{{ t('mirrorSource.recentResults') }}</span>
         <div v-for="item in measurements" :key="item.id" class="mirror-source-panel__test-result">
           <span>{{ sourceLabel(item.id) }}</span>
           <span :class="item.available ? 'is-ready' : 'is-unavailable'">
@@ -72,12 +72,12 @@
 
       <el-alert type="info" :closable="false" show-icon>
         <template #title>
-          仅代理 github.com 的插件下载链接；包仍会按 Market 提供的 SHA-256 校验。
+          {{ t('mirrorSource.notice') }}
         </template>
       </el-alert>
 
       <p v-if="activeSource" class="mirror-source-panel__active">
-        当前镜像：{{ activeSource.baseUrl }}
+        {{ t('mirrorSource.activeSource', { source: activeSource.baseUrl }) }}
       </p>
     </div>
   </section>
@@ -86,6 +86,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
+import { useI18n } from 'vue-i18n'
 import { Close, Connection } from '@element-plus/icons-vue'
 import {
   useGithubMirrorSource,
@@ -96,6 +97,7 @@ import {
 } from '@/composables/useGithubMirrorSource'
 
 defineEmits<{ close: [] }>()
+const { t } = useI18n()
 
 const {
   mode,
@@ -129,11 +131,13 @@ function setSpecifiedSourceFromSelect(value: string | number | boolean | undefin
 type ProxyMeasurement = GithubMirrorMeasurement
 
 function sourceLabel(sourceId: GithubMirrorSourceId): string {
-  return speedTestSources.find((source) => source.id === sourceId)?.label ?? sourceId
+  if (sourceId === 'github-direct') return t('mirrorSource.direct')
+  const source = speedTestSources.find((item) => item.id === sourceId)
+  return source && 'label' in source ? source.label : sourceId
 }
 
 function measurementFailureLabel(item: ProxyMeasurement): string {
-  return item.status_code ? `HTTP ${item.status_code}` : '连接失败或超时'
+  return item.status_code ? `HTTP ${item.status_code}` : t('mirrorSource.unavailable')
 }
 
 async function measureAndSelectFastest(options: { silent?: boolean } = {}) {
@@ -143,14 +147,14 @@ async function measureAndSelectFastest(options: { silent?: boolean } = {}) {
     measurements.value = results
     measuredOnce.value = true
     if (!fastest) {
-      if (!options.silent) ElMessage.warning('没有可用的 GitHub Proxy 节点，已回退 GitHub 直连。')
+      if (!options.silent) ElMessage.warning(t('mirrorSource.noAvailable'))
       return
     }
     autoLatencyMs.value = Math.round(fastest.latency_ms ?? 0)
-    ElMessage.success(`已选择最快节点：${sourceLabel(fastest.id)}`)
+    ElMessage.success(t('mirrorSource.selectedFastest', { source: sourceLabel(fastest.id) }))
   } catch (error) {
     measuredOnce.value = true
-    if (!options.silent) ElMessage.error(error instanceof Error ? error.message : '镜像源测速失败')
+    if (!options.silent) ElMessage.error(error instanceof Error ? error.message : t('mirrorSource.testFailed'))
   } finally {
     measuring.value = false
   }

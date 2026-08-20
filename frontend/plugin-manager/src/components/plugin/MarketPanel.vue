@@ -1092,7 +1092,7 @@ async function handleInstall(plugin: MarketWorkbenchItem) {
     try {
       await ensureAutoSource()
     } catch {
-      ElMessage.warning('镜像测速失败，已使用 GitHub 直连。')
+      ElMessage.warning(t('mirrorSource.installFallback'))
     }
     packageUrl = resolveGithubDownloadUrl(payload.package_url)
     installingId.value = plugin.id
@@ -1174,7 +1174,7 @@ async function handleUpgrade(plugin: MarketWorkbenchItem) {
     try {
       await ensureAutoSource()
     } catch {
-      ElMessage.warning('镜像测速失败，已使用 GitHub 直连。')
+      ElMessage.warning(t('mirrorSource.installFallback'))
     }
     const packageUrl = resolveGithubDownloadUrl(payload.package_url)
     upgradingId.value = plugin.id

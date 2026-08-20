@@ -165,7 +165,7 @@
                 @click="toggleMirrorPanel"
               >
                 <el-icon><Connection /></el-icon>
-                <span>{{ mirrorPanelVisible ? '收起镜像源' : '镜像源' }}</span>
+                <span>{{ mirrorPanelVisible ? $t('plugins.closeMirrorSource') : $t('plugins.openMirrorSource') }}</span>
               </button>
               <button
                 class="header-btn"

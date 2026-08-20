@@ -13,7 +13,6 @@ export const GITHUB_PROXY_SOURCES = [
 export type GithubProxySourceId = typeof GITHUB_PROXY_SOURCES[number]['id']
 export const GITHUB_DIRECT_SOURCE = {
   id: 'github-direct',
-  label: 'GitHub 直连',
   baseUrl: 'https://github.com/',
 } as const
 export const GITHUB_SPEED_TEST_SOURCES = [GITHUB_DIRECT_SOURCE, ...GITHUB_PROXY_SOURCES] as const
