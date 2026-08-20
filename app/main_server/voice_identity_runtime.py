@@ -13,6 +13,7 @@ import uuid
 import weakref
 
 from main_logic.asr_client.speaker_shadow.campplus import CampPlusEmbeddingModel
+from main_logic.voice_identity.contracts import VoiceIdentityActivationResult
 from main_logic.voice_identity.profile import SpeakerProfile
 from main_logic.voice_identity_service.asr_composition import (
     OwnerVoiceAsrCompositionFactory,
@@ -203,9 +204,9 @@ class OwnerVoiceRuntimeRegistry:
         self,
         profile: SpeakerProfile | None,
         generation: str,
-    ) -> bool:
+    ) -> VoiceIdentityActivationResult:
         if type(generation) is not str or not generation.strip():
-            return False
+            return VoiceIdentityActivationResult.RUNTIME_DEGRADED
         try:
             next_activation = (
                 None
@@ -217,13 +218,13 @@ class OwnerVoiceRuntimeRegistry:
                 )
             )
         except Exception:
-            return False
+            return VoiceIdentityActivationResult.RUNTIME_DEGRADED
 
         async with self._lock:
             if self._closed:
                 if next_activation is not None:
                     next_activation.close()
-                return False
+                return VoiceIdentityActivationResult.RUNTIME_DEGRADED
             old_activation = self._activation
             if next_activation is None:
                 self._activation = None
@@ -231,13 +232,20 @@ class OwnerVoiceRuntimeRegistry:
                 if old_activation is not None:
                     old_activation.close()
                 all_detached = True
-                for manager in tuple(self._managers):
+                managers = tuple(self._managers)
+                for index, manager in enumerate(managers):
                     try:
                         detached = await manager.set_speaker_verifier_factory(
                             None,
                             activation_generation=generation,
                         )
-                    except BaseException:
+                    except asyncio.CancelledError:
+                        all_detached = False
+                        for pending_manager in managers[index:]:
+                            self._detach_pending[pending_manager] = generation
+                        self._ensure_detach_watchdog()
+                        return VoiceIdentityActivationResult.RUNTIME_DEGRADED
+                    except Exception:
                         detached = False
                     if detached:
                         self._detach_pending.pop(manager, None)
@@ -246,8 +254,13 @@ class OwnerVoiceRuntimeRegistry:
                         self._detach_pending[manager] = generation
                 if self._detach_pending:
                     self._ensure_detach_watchdog()
-                return all_detached
+                return (
+                    VoiceIdentityActivationResult.READY
+                    if all_detached
+                    else VoiceIdentityActivationResult.RUNTIME_DEGRADED
+                )
             changed: list[object] = []
+            activation_result = VoiceIdentityActivationResult.READY
             try:
                 for manager in tuple(self._managers):
                     factory = next_activation.factory_for(manager)
@@ -263,19 +276,26 @@ class OwnerVoiceRuntimeRegistry:
                     if not updated:
                         factory.close()
                         raise RuntimeError("speaker verifier activation failed")
+                    if (
+                        updated
+                        is VoiceIdentityActivationResult.UNSUPPORTED_ASR_ROUTE
+                    ):
+                        activation_result = (
+                            VoiceIdentityActivationResult.UNSUPPORTED_ASR_ROUTE
+                        )
                     self._attach_pending.discard(manager)
                     self._detach_pending.pop(manager, None)
             except BaseException:
                 self._rollback_activation(changed, old_activation)
                 if next_activation is not None:
                     next_activation.close()
-                return False
+                return VoiceIdentityActivationResult.RUNTIME_DEGRADED
 
             self._activation = next_activation
             self._attach_pending.clear()
             if old_activation is not None:
                 old_activation.close()
-            return True
+            return activation_result
 
     @staticmethod
     async def _attach_manager(manager, activation: _OwnerActivation) -> bool:

@@ -9,7 +9,10 @@ import pytest
 
 import app.main_server.voice_identity_runtime as runtime_module
 from app.main_server.voice_identity_runtime import OwnerVoiceRuntimeRegistry
-from main_logic.voice_identity.contracts import SpeakerModelIdentity
+from main_logic.voice_identity.contracts import (
+    SpeakerModelIdentity,
+    VoiceIdentityActivationResult,
+)
 from main_logic.voice_identity.profile import SpeakerProfile
 from main_logic.voice_identity.reference import SpeakerReference
 
@@ -137,6 +140,26 @@ async def test_activation_updates_current_and_future_managers() -> None:
     assert await registry.register_manager(future)
     assert future.verifier_calls[-1][1] == "generation-a"
     assert future.verifier_calls[-1][0] is not current_factory
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_activation_preserves_unsupported_route_result() -> None:
+    registry = OwnerVoiceRuntimeRegistry(enforce=True)
+    manager = _Manager()
+    manager.verifier_outcomes.append(
+        VoiceIdentityActivationResult.UNSUPPORTED_ASR_ROUTE
+    )
+    await registry.register_manager(manager)
+    profile = _profile("profile")
+    try:
+        result = await registry.activate(profile, "generation")
+    finally:
+        profile.close()
+
+    assert result is VoiceIdentityActivationResult.UNSUPPORTED_ASR_ROUTE
+    assert registry._activation is not None  # type: ignore[attr-defined]
+    await registry.close()
 
 
 @pytest.mark.unit
@@ -466,6 +489,62 @@ async def test_failed_detach_never_restores_old_activation() -> None:
         generation != "active-generation"
         for _factory, generation in manager.verifier_calls[1:]
     )
+    await registry.close()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_cancelled_detach_defers_current_and_remaining_managers() -> None:
+    class BlockingDetachManager(_Manager):
+        def __init__(self) -> None:
+            super().__init__()
+            self.detach_started = asyncio.Event()
+            self.detach_release = asyncio.Event()
+
+        async def set_speaker_verifier_factory(
+            self,
+            factory: _Factory | None,
+            *,
+            activation_generation: str,
+        ) -> bool:
+            if factory is None:
+                self.verifier_calls.append((factory, activation_generation))
+                self.detach_started.set()
+                await self.detach_release.wait()
+            return await super().set_speaker_verifier_factory(
+                factory,
+                activation_generation=activation_generation,
+            )
+
+    registry = OwnerVoiceRuntimeRegistry(
+        enforce=True,
+        restore_retry_interval_seconds=10.0,
+    )
+    managers = [BlockingDetachManager(), BlockingDetachManager()]
+    for manager in managers:
+        await registry.register_manager(manager)
+    profile = _profile("profile")
+    try:
+        assert await registry.activate(profile, "active-generation")
+    finally:
+        profile.close()
+    ordered = tuple(registry._managers)  # type: ignore[attr-defined]
+
+    detach_task = asyncio.create_task(
+        registry.activate(None, "detach-generation")
+    )
+    await asyncio.wait_for(ordered[0].detach_started.wait(), 1.0)
+    detach_task.cancel()
+
+    result = await asyncio.wait_for(detach_task, 1.0)
+    assert result is VoiceIdentityActivationResult.RUNTIME_DEGRADED
+    assert not ordered[1].detach_started.is_set()
+    assert registry._detach_pending == {  # type: ignore[attr-defined]
+        ordered[0]: "detach-generation",
+        ordered[1]: "detach-generation",
+    }
+    for manager in ordered:
+        manager.detach_release.set()
     await registry.close()
 
 

@@ -23,6 +23,7 @@ from main_logic.asr_client.runtime import (
 )
 from main_logic.asr_client.endpointing.detector_runtime import DetectorFeedResult, DetectorRuntime
 from main_logic.voice_input import VoiceInputDispatchResult
+from main_logic.voice_identity.contracts import VoiceIdentityActivationResult
 from main_logic.voice_input.consumers import CoreChatTurnContext
 from main_logic.asr_client.lifecycle import (
     AudioDisposition,
@@ -163,6 +164,37 @@ async def test_external_voice_suppression_reasons_are_independent() -> None:
 
     assert runtime._voice_input_accepts_pcm() is True
     assert runtime._abort_independent_asr.await_count == 2
+
+
+async def test_external_voice_suppression_resets_native_audio_turn() -> None:
+    runtime = _Runtime()
+    runtime._asr_route_mode = "native"
+    runtime._invalidate_voice_pcm_sync = MagicMock()
+    runtime._abort_independent_asr = AsyncMock()
+    runtime.session.clear_audio_buffer = AsyncMock()
+
+    await runtime.set_voice_input_suppressed(
+        "voice_identity_enrollment",
+        suppressed=True,
+    )
+
+    runtime.session.clear_audio_buffer.assert_awaited_once_with()
+    runtime._abort_independent_asr.assert_not_awaited()
+
+
+async def test_native_route_installs_future_verifier_but_reports_unsupported() -> None:
+    runtime = _Runtime()
+    runtime._asr_route_mode = "native"
+    runtime._asr_runtime.set_speaker_verifier_factory = AsyncMock(return_value=True)
+    factory = MagicMock()
+
+    result = await runtime.set_speaker_verifier_factory(
+        factory,
+        activation_generation="profile-generation",
+    )
+
+    assert result is VoiceIdentityActivationResult.UNSUPPORTED_ASR_ROUTE
+    assert runtime._speaker_shadow_factory is factory
 
 
 async def test_core_forgets_future_verifier_when_physical_detach_degrades() -> None:

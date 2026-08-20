@@ -24,6 +24,7 @@ from main_logic.asr_client.runtime import (
     IndependentAsrRuntime,
     SpeakerShadowFactory,
 )
+from main_logic.voice_identity.contracts import VoiceIdentityActivationResult
 from main_logic.voice_input import (
     BuiltinVoiceInputConsumer,
     VoiceInputConsumerCapabilities,
@@ -542,14 +543,17 @@ class AsrRuntimeMixin:
             return
         self._invalidate_voice_pcm_sync(normalized)
         if suppressed:
-            await self._abort_independent_asr(normalized)
+            if getattr(self, "_asr_route_mode", "blocked") == "native":
+                await self._reset_native_audio_turn(normalized)
+            else:
+                await self._abort_independent_asr(normalized)
 
     async def set_speaker_verifier_factory(
         self,
         factory: SpeakerShadowFactory | None,
         *,
         activation_generation: str,
-    ) -> bool:
+    ) -> bool | VoiceIdentityActivationResult:
         """Update future and active independent-ASR speaker verification."""
 
         try:
@@ -564,7 +568,12 @@ class AsrRuntimeMixin:
         if updated or factory is None:
             self._speaker_shadow_factory = factory
         if updated:
-            return True
+            if (
+                factory is not None
+                and getattr(self, "_asr_route_mode", "blocked") != "independent"
+            ):
+                return VoiceIdentityActivationResult.UNSUPPORTED_ASR_ROUTE
+            return VoiceIdentityActivationResult.READY
         close = getattr(factory, "close", None)
         if callable(close):
             try:

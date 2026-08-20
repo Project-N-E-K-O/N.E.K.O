@@ -688,6 +688,24 @@ test('pagehide sends keepalive cancellation and stops microphone resources', asy
     assert.equal(harness.getAudioContext().state, 'closed');
 });
 
+test('slow enrollment start uses keepalive cancellation after close wait expires', async () => {
+    const startGate = deferred();
+    const harness = createHarness({ startGate, manualAudio: true });
+    await harness.initialize();
+
+    const enrolling = harness.emit('voice-identity-start');
+    await flush();
+    await harness.beforeClose();
+    startGate.resolve();
+    await enrolling;
+
+    const cancel = harness.fetchCalls.find(call => (
+        call.url === `${API_ROOT}/enrollment/cancel`
+        && call.options.keepalive === true
+    ));
+    assert.ok(cancel);
+});
+
 test('the one-click page keeps complete dark-theme overrides', () => {
     for (const token of [
         '--voice-ink: #e8f5fb',

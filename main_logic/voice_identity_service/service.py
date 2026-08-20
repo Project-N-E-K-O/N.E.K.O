@@ -17,7 +17,10 @@ from main_logic.asr_client.speaker_shadow.asset_manifest import (
     CAMPPLUS_SAMPLE_RATE_HZ,
 )
 from main_logic.asr_client.speaker_shadow.campplus import CAMPPLUS_EMBEDDING_DIM
-from main_logic.voice_identity.contracts import SpeakerModelIdentity
+from main_logic.voice_identity.contracts import (
+    SpeakerModelIdentity,
+    VoiceIdentityActivationResult,
+)
 from main_logic.voice_identity.profile import SpeakerProfile
 from main_logic.voice_identity.reference import SpeakerReference
 from main_logic.voice_input.suppression import (
@@ -59,7 +62,7 @@ class EnrollmentEmbeddingModel(Protocol):
 EnrollmentModelFactory = Callable[[], EnrollmentEmbeddingModel]
 ActivationCallback = Callable[
     [SpeakerProfile | None, str],
-    Awaitable[bool],
+    Awaitable[bool | VoiceIdentityActivationResult],
 ]
 VoiceIdentityRuntimeMode = Literal["off", "shadow", "enforce"]
 _ResultT = TypeVar("_ResultT")
@@ -235,10 +238,10 @@ class VoiceIdentityService:
                 self._set_ineffective(VoiceIdentityEffectiveReason.DISABLED)
             elif self._runtime_mode == "off":
                 self._set_ineffective(VoiceIdentityEffectiveReason.RUNTIME_DEGRADED)
-            elif await self._activate(profile, profile.generation):
-                self._set_ready()
             else:
-                self._set_ineffective(VoiceIdentityEffectiveReason.RUNTIME_DEGRADED)
+                self._apply_activation_result(
+                    await self._activate(profile, profile.generation)
+                )
             self._initialized = True
             return self.status()
 
@@ -376,6 +379,7 @@ class VoiceIdentityService:
             new_profile: SpeakerProfile | None = None
             staged: VoiceIdentityProfileWrite | None = None
             activation_changed = False
+            activation_result = VoiceIdentityActivationResult.READY
             preference_changed = False
             succeeded = False
             commit_cancellation: asyncio.CancelledError | None = None
@@ -420,7 +424,8 @@ class VoiceIdentityService:
 
                 staged = await self._profile_store.astage(new_profile)
                 if desired_requested and self._runtime_mode != "off":
-                    if not await self._activate(new_profile, profile_id):
+                    activation_result = await self._activate(new_profile, profile_id)
+                    if not activation_result:
                         rollback_profile = old_profile if old_effective else None
                         rollback_generation = (
                             old_profile.generation
@@ -452,7 +457,7 @@ class VoiceIdentityService:
                 new_profile = None
                 self._requested_enabled = desired_requested
                 if desired_requested and self._runtime_mode != "off":
-                    self._set_ready()
+                    self._apply_activation_result(activation_result)
                 elif desired_requested:
                     self._set_ineffective(VoiceIdentityEffectiveReason.RUNTIME_DEGRADED)
                 else:
@@ -576,12 +581,7 @@ class VoiceIdentityService:
                     name="voice-identity-filter-enable",
                     cancellations=cancellations,
                 )
-                if activated:
-                    self._set_ready()
-                else:
-                    self._set_ineffective(
-                        VoiceIdentityEffectiveReason.RUNTIME_DEGRADED
-                    )
+                self._apply_activation_result(activated)
             status = self.status()
             if cancellations:
                 raise cancellations[0]
@@ -787,16 +787,30 @@ class VoiceIdentityService:
         self,
         profile: SpeakerProfile | None,
         generation: str,
-    ) -> bool:
+    ) -> VoiceIdentityActivationResult:
         try:
-            return bool(
-                await asyncio.wait_for(
-                    self._activation_callback(profile, generation),
-                    timeout=self._activation_timeout_seconds,
-                )
+            result = await asyncio.wait_for(
+                self._activation_callback(profile, generation),
+                timeout=self._activation_timeout_seconds,
+            )
+            if isinstance(result, VoiceIdentityActivationResult):
+                return result
+            return (
+                VoiceIdentityActivationResult.READY
+                if result
+                else VoiceIdentityActivationResult.RUNTIME_DEGRADED
             )
         except Exception:
-            return False
+            return VoiceIdentityActivationResult.RUNTIME_DEGRADED
+
+    def _apply_activation_result(
+        self,
+        result: VoiceIdentityActivationResult,
+    ) -> None:
+        if result is VoiceIdentityActivationResult.READY:
+            self._set_ready()
+            return
+        self._set_ineffective(VoiceIdentityEffectiveReason(result.value))
 
     def _profile_is_compatible(self, profile: SpeakerProfile) -> bool:
         identity = profile.model_identity

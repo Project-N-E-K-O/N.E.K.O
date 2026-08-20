@@ -530,7 +530,10 @@
             );
             if (!state.enrollmentId) throw new Error('enrollment_id_missing');
             if (state.closeStarted || state.cancelPending) {
-                await cancelSession();
+                await cancelSession({
+                    keepalive: state.closeStarted,
+                    silent: true
+                });
                 return;
             }
 

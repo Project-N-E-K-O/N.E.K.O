@@ -9,7 +9,10 @@ import pytest
 
 import main_logic.voice_identity_service.profile_store as store_module
 from main_logic.asr_client.speaker_shadow.campplus import CAMPPLUS_EMBEDDING_DIM
-from main_logic.voice_identity.contracts import SpeakerModelIdentity
+from main_logic.voice_identity.contracts import (
+    SpeakerModelIdentity,
+    VoiceIdentityActivationResult,
+)
 from main_logic.voice_identity.profile import SpeakerProfile
 from main_logic.voice_identity.reference import SpeakerReference
 from main_logic.voice_identity_service.preference_store import (
@@ -140,6 +143,34 @@ async def test_first_enrollment_loads_before_suppression_and_enables(
     assert activations[-1][1] == "profile-a"
     assert suppression_events[-1] == "restore:voice_identity_enrollment"
     assert model.closed
+    await service.close()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_unsupported_route_saves_profile_without_reporting_ready(
+    tmp_path: Path,
+) -> None:
+    service, model, _activations, suppression_events = _service(
+        tmp_path,
+        activation_results=[VoiceIdentityActivationResult.UNSUPPORTED_ASR_ROUTE],
+    )
+    await service.initialize()
+    enrollment = await service.start_enrollment()
+
+    status = await service.complete_enrollment(
+        enrollment.enrollment_id,
+        "profile-a",
+        _pcm(),
+    )
+
+    assert status.state.requested_enabled
+    assert not status.state.effective_enabled
+    assert status.state.effective_reason == "unsupported_asr_route"
+    assert status.state.has_profile
+    assert status.profile_generation == "profile-a"
+    assert model.closed
+    assert suppression_events[-1] == "restore:voice_identity_enrollment"
     await service.close()
 
 
