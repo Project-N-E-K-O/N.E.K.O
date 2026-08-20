@@ -11,26 +11,47 @@ export const GITHUB_PROXY_SOURCES = [
 ] as const
 
 export type GithubProxySourceId = typeof GITHUB_PROXY_SOURCES[number]['id']
+export const GITHUB_DIRECT_SOURCE = {
+  id: 'github-direct',
+  label: 'GitHub 直连',
+  baseUrl: 'https://github.com/',
+} as const
+export const GITHUB_SPEED_TEST_SOURCES = [GITHUB_DIRECT_SOURCE, ...GITHUB_PROXY_SOURCES] as const
+export type GithubMirrorSourceId = typeof GITHUB_SPEED_TEST_SOURCES[number]['id']
 
 const STORAGE_KEY = 'neko.market.github-mirror-source.v2'
 const LEGACY_STORAGE_KEY = 'neko.market.github-mirror-source'
 const DEFAULT_PROXY_ID: GithubProxySourceId = 'gh-proxy-com'
+export const AUTO_MIRROR_MEASUREMENT_MAX_AGE_MS = 5 * 60 * 1000
 
 interface StoredMirrorSource {
   mode: GithubMirrorMode
   specifiedSourceId: GithubProxySourceId
-  autoSourceId: GithubProxySourceId | null
+  autoSourceId: GithubMirrorSourceId | null
+  autoMeasuredAt: number | null
+}
+
+export interface GithubMirrorMeasurement {
+  id: GithubMirrorSourceId
+  latency_ms: number | null
+  available: boolean
+  status_code?: number | null
 }
 
 function isSourceId(value: unknown): value is GithubProxySourceId {
   return typeof value === 'string' && GITHUB_PROXY_SOURCES.some((source) => source.id === value)
 }
 
+function isMirrorSourceId(value: unknown): value is GithubMirrorSourceId {
+  return typeof value === 'string' && GITHUB_SPEED_TEST_SOURCES.some((source) => source.id === value)
+}
+
 function loadSettings(): StoredMirrorSource {
   const defaults: StoredMirrorSource = {
-    mode: 'direct',
+    mode: 'auto',
     specifiedSourceId: DEFAULT_PROXY_ID,
     autoSourceId: null,
+    autoMeasuredAt: null,
   }
   try {
     const raw = window.localStorage.getItem(STORAGE_KEY)
@@ -39,7 +60,10 @@ function loadSettings(): StoredMirrorSource {
       return {
         mode: parsed.mode === 'auto' || parsed.mode === 'specified' ? parsed.mode : 'direct',
         specifiedSourceId: isSourceId(parsed.specifiedSourceId) ? parsed.specifiedSourceId : DEFAULT_PROXY_ID,
-        autoSourceId: isSourceId(parsed.autoSourceId) ? parsed.autoSourceId : null,
+        autoSourceId: isMirrorSourceId(parsed.autoSourceId) ? parsed.autoSourceId : null,
+        autoMeasuredAt: typeof parsed.autoMeasuredAt === 'number' && parsed.autoMeasuredAt > 0
+          ? parsed.autoMeasuredAt
+          : null,
       }
     }
     // Keep the former single-source setting working after the upgrade.
@@ -55,7 +79,8 @@ function loadSettings(): StoredMirrorSource {
 const initial = loadSettings()
 const mode = ref<GithubMirrorMode>(initial.mode)
 const specifiedSourceId = ref<GithubProxySourceId>(initial.specifiedSourceId)
-const autoSourceId = ref<GithubProxySourceId | null>(initial.autoSourceId)
+const autoSourceId = ref<GithubMirrorSourceId | null>(initial.autoSourceId)
+const autoMeasuredAt = ref<number | null>(initial.autoMeasuredAt)
 
 function persist() {
   try {
@@ -63,6 +88,7 @@ function persist() {
       mode: mode.value,
       specifiedSourceId: specifiedSourceId.value,
       autoSourceId: autoSourceId.value,
+      autoMeasuredAt: autoMeasuredAt.value,
     }))
   } catch {
     // Keep the in-memory choice when localStorage is unavailable.
@@ -79,25 +105,66 @@ function setSpecifiedSourceId(next: GithubProxySourceId) {
   persist()
 }
 
-function setAutoSourceId(next: GithubProxySourceId) {
+function setAutoSourceId(next: GithubMirrorSourceId, measuredAt = Date.now()) {
   autoSourceId.value = next
+  autoMeasuredAt.value = measuredAt
   persist()
 }
+
+function isAutoMeasurementFresh() {
+  return (
+    autoSourceId.value !== null
+    && autoMeasuredAt.value !== null
+    && Date.now() - autoMeasuredAt.value < AUTO_MIRROR_MEASUREMENT_MAX_AGE_MS
+  )
+}
+
+const autoMeasurementFresh = computed(() => isAutoMeasurementFresh())
 
 const activeSource = computed(() => {
   if (mode.value === 'specified') {
     return GITHUB_PROXY_SOURCES.find((source) => source.id === specifiedSourceId.value) ?? null
   }
-  if (mode.value === 'auto' && autoSourceId.value) {
-    return GITHUB_PROXY_SOURCES.find((source) => source.id === autoSourceId.value) ?? null
+  if (mode.value === 'auto' && autoSourceId.value && isAutoMeasurementFresh()) {
+    return GITHUB_SPEED_TEST_SOURCES.find((source) => source.id === autoSourceId.value) ?? null
   }
   return null
 })
 
+async function measureSpeedTestSources(): Promise<GithubMirrorMeasurement[]> {
+  const response = await fetch('/market/github-proxy/measure')
+  if (!response.ok) throw new Error('测速服务不可用')
+  const data = await response.json() as { sources?: GithubMirrorMeasurement[] }
+  return (data.sources ?? []).filter((item) => (
+    GITHUB_SPEED_TEST_SOURCES.some((source) => source.id === item.id)
+  ))
+}
+
+function fastestAvailableSource(measurements: GithubMirrorMeasurement[]): GithubMirrorMeasurement | null {
+  return measurements
+    .filter((item) => item.available && typeof item.latency_ms === 'number')
+    .sort((left, right) => Number(left.latency_ms) - Number(right.latency_ms))[0] ?? null
+}
+
+async function refreshAutoSource() {
+  const measurements = await measureSpeedTestSources()
+  const fastest = fastestAvailableSource(measurements)
+  if (fastest) setAutoSourceId(fastest.id)
+  return { measurements, fastest }
+}
+
+/** Refresh an expired automatic result before a Market installation uses it. */
+async function ensureAutoSource() {
+  if (mode.value !== 'auto' || isAutoMeasurementFresh()) return null
+  return refreshAutoSource()
+}
+
 /** Return a GitHub Release URL through the selected mirror when applicable. */
 function resolveGithubDownloadUrl(url: string): string {
+  if (mode.value === 'auto' && !isAutoMeasurementFresh()) return url
   const source = activeSource.value
   if (!source) return url
+  if (source.id === GITHUB_DIRECT_SOURCE.id) return url
 
   try {
     const parsed = new URL(url)
@@ -116,11 +183,17 @@ export function useGithubMirrorSource() {
     mode,
     specifiedSourceId,
     autoSourceId,
+    autoMeasuredAt,
+    autoMeasurementFresh,
     activeSource,
     sources: GITHUB_PROXY_SOURCES,
+    speedTestSources: GITHUB_SPEED_TEST_SOURCES,
     setMode,
     setSpecifiedSourceId,
     setAutoSourceId,
+    measureSpeedTestSources,
+    refreshAutoSource,
+    ensureAutoSource,
     resolveGithubDownloadUrl,
   }
 }

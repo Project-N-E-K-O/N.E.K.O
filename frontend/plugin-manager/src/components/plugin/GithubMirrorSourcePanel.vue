@@ -24,9 +24,14 @@
         </el-form-item>
 
         <el-form-item v-if="mode !== 'direct'" label="镜像源">
+          <el-input
+            v-if="mode === 'auto'"
+            :model-value="activeSource?.label ?? '正在测速…'"
+            readonly
+          />
           <el-select
+            v-else
             :model-value="selectedSourceId"
-            :disabled="mode === 'auto'"
             @update:model-value="setSpecifiedSourceFromSelect"
           >
             <el-option
@@ -79,12 +84,14 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Close, Connection } from '@element-plus/icons-vue'
 import {
   useGithubMirrorSource,
+  type GithubMirrorMeasurement,
   type GithubMirrorMode,
+  type GithubMirrorSourceId,
   type GithubProxySourceId,
 } from '@/composables/useGithubMirrorSource'
 
@@ -95,9 +102,10 @@ const {
   specifiedSourceId,
   activeSource,
   sources,
+  speedTestSources,
   setMode,
   setSpecifiedSourceId,
-  setAutoSourceId,
+  refreshAutoSource,
 } = useGithubMirrorSource()
 const measuring = ref(false)
 const autoLatencyMs = ref<number | null>(null)
@@ -118,15 +126,10 @@ function setSpecifiedSourceFromSelect(value: string | number | boolean | undefin
   }
 }
 
-interface ProxyMeasurement {
-  id: GithubProxySourceId
-  latency_ms: number | null
-  available: boolean
-  status_code?: number | null
-}
+type ProxyMeasurement = GithubMirrorMeasurement
 
-function sourceLabel(sourceId: GithubProxySourceId): string {
-  return sources.find((source) => source.id === sourceId)?.label ?? sourceId
+function sourceLabel(sourceId: GithubMirrorSourceId): string {
+  return speedTestSources.find((source) => source.id === sourceId)?.label ?? sourceId
 }
 
 function measurementFailureLabel(item: ProxyMeasurement): string {
@@ -136,25 +139,15 @@ function measurementFailureLabel(item: ProxyMeasurement): string {
 async function measureAndSelectFastest(options: { silent?: boolean } = {}) {
   measuring.value = true
   try {
-    const response = await fetch('/market/github-proxy/measure')
-    if (!response.ok) throw new Error('测速服务不可用')
-    const data = await response.json() as { sources?: ProxyMeasurement[] }
-    measurements.value = (data.sources ?? []).filter((item) => sources.some((source) => source.id === item.id))
+    const { measurements: results, fastest } = await refreshAutoSource()
+    measurements.value = results
     measuredOnce.value = true
-    const fastest = (data.sources ?? [])
-      .filter((item) => (
-        item.available
-        && typeof item.latency_ms === 'number'
-        && sources.some((source) => source.id === item.id)
-      ))
-      .sort((left, right) => Number(left.latency_ms) - Number(right.latency_ms))[0]
     if (!fastest) {
       if (!options.silent) ElMessage.warning('没有可用的 GitHub Proxy 节点，已回退 GitHub 直连。')
       return
     }
-    setAutoSourceId(fastest.id)
     autoLatencyMs.value = Math.round(fastest.latency_ms ?? 0)
-    ElMessage.success(`已选择最快节点：${sources.find((source) => source.id === fastest.id)?.label ?? fastest.id}`)
+    ElMessage.success(`已选择最快节点：${sourceLabel(fastest.id)}`)
   } catch (error) {
     measuredOnce.value = true
     if (!options.silent) ElMessage.error(error instanceof Error ? error.message : '镜像源测速失败')
@@ -165,6 +158,12 @@ async function measureAndSelectFastest(options: { silent?: boolean } = {}) {
 
 watch(mode, (next) => {
   if (next === 'auto' && !activeSource.value && !measuring.value) {
+    void measureAndSelectFastest({ silent: true })
+  }
+})
+
+onMounted(() => {
+  if (mode.value === 'auto' && !activeSource.value) {
     void measureAndSelectFastest({ silent: true })
   }
 })

@@ -102,6 +102,7 @@ _ALLOWED_SUFFIXES = frozenset({".neko-plugin", ".neko-bundle"})
 # Keeping this allowlist server-side means the speed test never accepts an
 # arbitrary URL from a browser request.
 _GITHUB_PROXY_SOURCES = (
+    ("github-direct", "https://github.com/"),
     ("gh-proxy-com", "https://gh-proxy.com/"),
     ("gh-proxy-org", "https://gh-proxy.org/"),
     ("hk-gh-proxy-org", "https://hk.gh-proxy.org/"),

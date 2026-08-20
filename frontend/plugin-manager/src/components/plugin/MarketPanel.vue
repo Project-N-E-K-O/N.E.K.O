@@ -344,7 +344,7 @@ const totalCount = ref(0)
 const installingId = ref<string | null>(null)
 const upgradingId = ref<string | number | null>(null)
 const bridgeToken = ref('')
-const { resolveGithubDownloadUrl } = useGithubMirrorSource()
+const { resolveGithubDownloadUrl, ensureAutoSource } = useGithubMirrorSource()
 
 interface MarketInstallTask {
   task_id: string
@@ -1089,6 +1089,11 @@ async function handleInstall(plugin: MarketWorkbenchItem) {
       return
     }
 
+    try {
+      await ensureAutoSource()
+    } catch {
+      ElMessage.warning('镜像测速失败，已使用 GitHub 直连。')
+    }
     packageUrl = resolveGithubDownloadUrl(payload.package_url)
     installingId.value = plugin.id
     const res = await fetchBridge('/market/install', {
@@ -1166,6 +1171,11 @@ async function handleUpgrade(plugin: MarketWorkbenchItem) {
       return
     }
 
+    try {
+      await ensureAutoSource()
+    } catch {
+      ElMessage.warning('镜像测速失败，已使用 GitHub 直连。')
+    }
     const packageUrl = resolveGithubDownloadUrl(payload.package_url)
     upgradingId.value = plugin.id
     const res = await fetchBridge('/market/install', {
