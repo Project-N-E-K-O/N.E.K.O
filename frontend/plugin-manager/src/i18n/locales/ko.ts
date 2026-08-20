@@ -34,7 +34,7 @@ export default {
     lightMode: '라이트 모드',
     logoutConfirmTitle: '알림',
     disconnected: '서버 연결이 끊어졌습니다',
-    languageAuto: '자동',
+    languageAuto: '자동'
   },
   nav: {
     dashboard: '대시보드',
@@ -46,7 +46,7 @@ export default {
     adapters: '어댑터',
     adapterUI: '어댑터 UI',
     packageManager: '패키지 관리',
-    market: '플러그인 마켓',
+    market: '플러그인 마켓'
   },
   market: {
     title: '새 플러그인 받기',
@@ -61,15 +61,12 @@ export default {
     loginStarted: '브라우저를 열었습니다. 열린 페이지에서 인증 로그인을 마무리해 주세요.',
     loginSuccess: '인증 로그인이 완료되었습니다. 플러그인 마켓을 계속 사용할 수 있습니다',
     authTokenRejected: 'Auth 인증이 만료되었습니다. 다시 로그인해 주세요.',
-    authVerificationPending:
-      '브라우저 인증이 반환되었습니다. Auth 신원을 확인 중이며 다시 로그인할 필요가 없습니다.',
+    authVerificationPending: '브라우저 인증이 반환되었습니다. Auth 신원을 확인 중이며 다시 로그인할 필요가 없습니다.',
     authVerificationPendingLabel: 'Auth 신원 확인 중',
     marketTokenRejected: 'Auth 로그인은 유효하지만 Market이 현재 자격 증명을 수락하지 않았습니다.',
     marketForbidden: 'Auth 로그인은 유효하지만 Market 계정을 사용할 수 없거나 권한이 부족합니다.',
-    marketIdentityConflict:
-      'Auth 로그인은 유효하지만 Market 계정 연결이 충돌합니다. 다시 인증하지 말고 관리자에게 문의하세요.',
-    marketUnavailable:
-      'Auth 로그인에 성공했습니다. Market을 일시적으로 사용할 수 없어 자동으로 재시도합니다.',
+    marketIdentityConflict: 'Auth 로그인은 유효하지만 Market 계정 연결이 충돌합니다. 다시 인증하지 말고 관리자에게 문의하세요.',
+    marketUnavailable: 'Auth 로그인에 성공했습니다. Market을 일시적으로 사용할 수 없어 자동으로 재시도합니다.',
     marketInvalidResponse: 'Auth 로그인에 성공했지만 Market이 잘못된 응답을 반환했습니다.',
     loginFailed: '인증 로그인을 완료하지 못했습니다. 잠시 후 다시 시도해 주세요',
     loginPending: '인증 로그인에 시간이 조금 걸리고 있습니다. 다시 시작해 주세요',
@@ -99,8 +96,7 @@ export default {
     silentInstall: '백그라운드 설치',
     installCancelled: '설치가 취소되었습니다',
     viewInstallProgress: '설치 진행 상황 보기',
-    installTakingLonger:
-      '설치가 예상보다 오래 걸리고 있습니다. 작업은 계속 진행 중이며, 계속 기다리거나 취소할 수 있습니다.',
+    installTakingLonger: '설치가 예상보다 오래 걸리고 있습니다. 작업은 계속 진행 중이며, 계속 기다리거나 취소할 수 있습니다.',
     installTaskLost: '설치 작업을 찾을 수 없습니다. 플러그인 상태를 확인한 후 다시 시도하세요.',
     installDialogTitle: '{name} 설치 중',
     installDialogTitleUpgrade: '{name} 업그레이드 중',
@@ -131,7 +127,7 @@ export default {
     filterGroups: {
       state: '상태',
       zone: '존',
-      meta: '메타',
+      meta: '메타'
     },
     filterLabels: {
       recommended: '추천',
@@ -142,14 +138,14 @@ export default {
       name: '이름',
       versionGte: '버전 ≥',
       hasRepo: '저장소 있음',
-      hasTags: '태그 있음',
+      hasTags: '태그 있음'
     },
     zones: {
       game: '게임',
       companion: '컴패니언',
       function: '기능',
       entertainment: '엔터테인먼트',
-      tool: '도구',
+      tool: '도구'
     },
     sortNewest: '최신순',
     sortMostDownloads: '다운로드 수',
@@ -165,29 +161,28 @@ export default {
     upgradeAlreadyAtTarget: '이미 대상 버전입니다',
     upgradeTargetNotGreater: '업그레이드 대상 버전이 설치된 버전보다 높지 않습니다',
     pluginNotInstalled: '플러그인이 설치되지 않아 업그레이드할 수 없습니다',
-    lockWriteFailed: '설치 기록 쓰기에 실패했습니다',
+    lockWriteFailed: '설치 기록 쓰기에 실패했습니다'
   },
   settings: {
     channel: '업데이트 채널',
     channelStable: '안정판',
     channelBeta: '베타',
-    channelHint:
-      '채널을 전환하면 플러그인 목록이 선택한 채널로 새로고침되며, 설치된 플러그인은 계속 실행됩니다',
+    channelHint: '채널을 전환하면 플러그인 목록이 선택한 채널로 새로고침되며, 설치된 플러그인은 계속 실행됩니다'
   },
   auth: {
     unauthorized: '인증되지 않은 접근',
-    forbidden: '접근이 거부되었습니다',
+    forbidden: '접근이 거부되었습니다'
   },
   plugin: {
     addProfile: {
       prompt: '새 프로필 이름을 입력하세요',
       title: '프로필 추가',
-      inputError: '이름은 비어 있거나 공백만으로 구성될 수 없습니다',
+      inputError: '이름은 비어 있거나 공백만으로 구성될 수 없습니다'
     },
     removeProfile: {
       confirm: '프로필 "{name}"을(를) 삭제하시겠습니까?',
-      title: '프로필 삭제',
-    },
+      title: '프로필 삭제'
+    }
   },
   dashboard: {
     title: '대시보드',
@@ -207,7 +202,7 @@ export default {
     noMetricsData: '성능 데이터 없음',
     failedToLoadServerInfo: '서버 정보를 불러오지 못했습니다',
     startTutorial: '튜토리얼 가이드',
-    tutorialHint: '플러그인 관리자가 처음이라면 여기를 눌러 빠르게 둘러보자냥.',
+    tutorialHint: '플러그인 관리자가 처음이라면 여기를 눌러 빠르게 둘러보자냥.'
   },
   mirrorSource: {
     title: '미러 소스',
@@ -224,14 +219,13 @@ export default {
     autoPending: '아직 측정하지 않았으며 임시로 GitHub 직접 연결을 사용합니다.',
     testAndSelect: '속도 측정 후 가장 빠른 소스 선택',
     recentResults: '최근 측정 결과',
-    notice:
-      'github.com 플러그인 다운로드 링크만 프록시하며 패키지는 계속 Market의 SHA-256으로 검증합니다.',
+    notice: 'github.com 플러그인 다운로드 링크만 프록시하며 패키지는 계속 Market의 SHA-256으로 검증합니다.',
     activeSource: '현재 소스: {source}',
     unavailable: '연결 실패 또는 시간 초과',
     noAvailable: '사용 가능한 GitHub 다운로드 소스가 없어 GitHub 직접 연결을 사용합니다.',
     selectedFastest: '가장 빠른 소스를 선택했습니다: {source}',
     testFailed: '미러 소스 속도 측정 실패',
-    installFallback: '미러 소스 측정에 실패하여 GitHub 직접 연결을 사용합니다.',
+    installFallback: '미러 소스 측정에 실패하여 GitHub 직접 연결을 사용합니다.'
   },
   plugins: {
     title: '플러그인 목록',
@@ -300,8 +294,7 @@ export default {
     filterPlaceholder: '텍스트, 병음, is:/type:/has: 규칙으로 필터링',
     filterRules: '규칙',
     filterRulesTitle: '필터 규칙',
-    filterRulesHint:
-      '아래 규칙을 클릭하면 쿼리에 바로 삽입되며 일반 텍스트와 함께 사용할 수 있습니다.',
+    filterRulesHint: '아래 규칙을 클릭하면 쿼리에 바로 삽입되며 일반 텍스트와 함께 사용할 수 있습니다.',
     filterWhitelist: '화이트리스트',
     filterBlacklist: '블랙리스트',
     invalidRegex: '잘못된 정규식입니다',
@@ -315,8 +308,7 @@ export default {
     configReloadTitle: '리로드 필요',
     configReloadPrompt: '설정이 업데이트되었습니다. 플러그인을 리로드하여 적용하시겠습니까?',
     configApplyTitle: '설정 적용',
-    configHotUpdatePrompt:
-      '설정이 저장되었습니다. 실행 중인 플러그인에 바로 적용하시겠습니까? (핫 업데이트는 재시작이 필요하지 않습니다)',
+    configHotUpdatePrompt: '설정이 저장되었습니다. 실행 중인 플러그인에 바로 적용하시겠습니까? (핫 업데이트는 재시작이 필요하지 않습니다)',
     hotUpdate: '핫 업데이트',
     reloadPlugin: '플러그인 재시작',
     hotUpdateSuccess: '설정 핫 업데이트가 완료되었습니다',
@@ -324,8 +316,7 @@ export default {
     hotUpdateFailed: '핫 업데이트에 실패했습니다',
     formMode: '폼',
     sourceMode: '소스',
-    formModeHint:
-      '이 모드는 서버에서 파싱된 설정 객체로 폼을 생성합니다. 고급 TOML 기능(주석/포맷팅)은 소스 모드를 사용하세요.',
+    formModeHint: '이 모드는 서버에서 파싱된 설정 객체로 폼을 생성합니다. 고급 TOML 기능(주석/포맷팅)은 소스 모드를 사용하세요.',
     addField: '필드 추가',
     addItem: '항목 추가',
     fieldName: '필드 이름',
@@ -336,8 +327,7 @@ export default {
     profiles: '프로필',
     active: '현재',
     diffPreview: '차이점 미리보기',
-    unsavedChangesWarning:
-      '저장하지 않은 변경사항이 있습니다. 플러그인을 전환하면 변경사항이 손실됩니다. 계속하시겠습니까?',
+    unsavedChangesWarning: '저장하지 않은 변경사항이 있습니다. 플러그인을 전환하면 변경사항이 손실됩니다. 계속하시겠습니까?',
     enabled: '활성화됨',
     disabled: '비활성화됨',
     autoStart: '자동 시작',
@@ -359,8 +349,7 @@ export default {
     openMirrorSource: '미러 소스',
     closeMirrorSource: '미러 소스 닫기',
     packageManagerOpened: '패키지 관리가 열려 있음',
-    packageManagerSyncHint:
-      '현재 필터와 선택 상태가 오른쪽 패키지 관리 패널에 그대로 동기화됩니다.',
+    packageManagerSyncHint: '현재 필터와 선택 상태가 오른쪽 패키지 관리 패널에 그대로 동기화됩니다.',
     multiSelect: '다중 선택',
     exitMultiSelect: '다중 선택 종료',
     selectedCount: '{count}개 선택됨',
@@ -397,7 +386,7 @@ export default {
     filterRuleGroups: {
       state: '상태',
       type: '유형',
-      meta: '메타데이터',
+      meta: '메타데이터'
     },
     filterRuleLabels: {
       running: '실행 중',
@@ -414,12 +403,12 @@ export default {
       id: 'ID 기준',
       version: '버전 기준',
       entry: '엔트리 기준',
-      author: '작성자 기준',
+      author: '작성자 기준'
     },
     contextSections: {
       navigation: '탐색',
       runtime: '실행',
-      plugin: '확장 기능',
+      plugin: '확장 기능'
     },
     build: '플러그인 패키징',
     delete: '플러그인 삭제',
@@ -430,7 +419,7 @@ export default {
       hint: '오작동을 막기 위해 아래 버튼을 길게 눌러 확인해 주세요.',
       holdIdle: '길게 눌러 삭제',
       holdActive: '계속 누르면 확인됩니다…',
-      loading: '플러그인을 삭제하는 중...',
+      loading: '플러그인을 삭제하는 중...'
     },
     ui: {
       open: 'UI 열기',
@@ -444,39 +433,32 @@ export default {
       markdownPending: 'Markdown 튜토리얼 렌더링은 곧 지원됩니다',
       autoPending: '자동 생성 패널은 곧 지원됩니다',
       surfaceUnavailable: 'Surface를 사용할 수 없습니다',
-      surfaceEntryMissing:
-        '이 Surface가 선언한 엔트리 파일이 없습니다. plugin.toml의 entry 경로를 확인해 주세요.',
+      surfaceEntryMissing: '이 Surface가 선언한 엔트리 파일이 없습니다. plugin.toml의 entry 경로를 확인해 주세요.',
       surfaceWarnings: '플러그인 UI 선언에 확인이 필요한 문제가 있습니다',
       controlError: '플러그인 UI 컨트롤 오류',
-      hostedRuntimePending:
-        'Vue 컨테이너가 이 Surface를 인식했습니다. TSX/Markdown/Auto 렌더러는 이후 단계에서 연결됩니다.',
-    },
+      hostedRuntimePending: 'Vue 컨테이너가 이 Surface를 인식했습니다. TSX/Markdown/Auto 렌더러는 이후 단계에서 연결됩니다.'
+    }
   },
   package: {
     install: {
-      safeUpgradeHint:
-        '같은 플러그인을 다시 가져오면 버전을 확인하고 롤백 가능한 안전한 교체를 수행하며 접미사가 붙은 복사본을 만들지 않습니다.',
+      safeUpgradeHint: '같은 플러그인을 다시 가져오면 버전을 확인하고 롤백 가능한 안전한 교체를 수행하며 접미사가 붙은 복사본을 만들지 않습니다.',
       planFailed: '설치 패키지를 검사할 수 없습니다.',
       packageRequired: '먼저 패키지 경로를 입력하세요.',
       installFailed: '설치 실패: {error}',
       upgradeTitle: '{plugin}을(를) 업그레이드할까요?',
-      upgradeBody:
-        '버전 {current}이(가) {target}(으)로 교체됩니다. 실행 중인 플러그인은 잠시 재시작됩니다.',
+      upgradeBody: '버전 {current}이(가) {target}(으)로 교체됩니다. 실행 중인 플러그인은 잠시 재시작됩니다.',
       upgradeConfirm: '플러그인 업그레이드',
       upgradeCancelled: '업그레이드를 취소했습니다.',
       upgradeSucceeded: '{plugin}이(가) 성공적으로 업그레이드되었습니다.',
-      blockedBundleConflict:
-        '이 번들에는 이미 설치된 플러그인이 있습니다. 플러그인을 하나씩 업그레이드하세요.',
+      blockedBundleConflict: '이 번들에는 이미 설치된 플러그인이 있습니다. 플러그인을 하나씩 업그레이드하세요.',
       blockedDirectoryConflict: '대상 디렉터리가 다른 플러그인에 속하므로 변경하지 않았습니다.',
-      blockedLegacyPlugin:
-        '이 플러그인의 이전 버전이 아직 설치되어 있습니다. 계속하기 전에 {plugin}을(를) 제거하세요.',
+      blockedLegacyPlugin: '이 플러그인의 이전 버전이 아직 설치되어 있습니다. 계속하기 전에 {plugin}을(를) 제거하세요.',
       rollbackCompleted: '업그레이드에 실패하여 이전 버전을 복원했습니다.',
-      rollbackIncomplete:
-        '업그레이드에 실패했고 롤백도 완료되지 않았습니다. 계속하기 전에 플러그인 상태를 확인하세요.',
+      rollbackIncomplete: '업그레이드에 실패했고 롤백도 완료되지 않았습니다. 계속하기 전에 플러그인 상태를 확인하세요.'
     },
     dialog: {
       title: '패키지 작업 기록',
-      subtitle: '최근 {count}개의 결과를 표시합니다',
+      subtitle: '최근 {count}개의 결과를 표시합니다'
     },
     empty: '패키지 작업을 실행하면 여기에 기록이 표시됩니다.',
     viewDetail: '상세 보기',
@@ -488,23 +470,23 @@ export default {
         version: '버전',
         schema: 'Schema',
         hashCheck: '해시 검증',
-        profiles: '프로필',
+        profiles: '프로필'
       },
       list: '항목',
       warning: '주의',
-      rawJson: '원본 결과 JSON',
+      rawJson: '원본 결과 JSON'
     },
     hash: {
       notVerified: '검증되지 않음',
       passed: '통과',
-      failed: '실패',
+      failed: '실패'
     },
     kind: {
       build: '빌드',
       inspect: '검사',
       verify: '검증',
       install: '설치',
-      analyze: '분석',
+      analyze: '분석'
     },
     summary: {
       // Phase 7 / req 2.31: metrics labels for buildSummaryMetrics
@@ -522,7 +504,7 @@ export default {
         installedPluginCount: '처리된 플러그인',
         conflictStrategy: '충돌 전략',
         commonDeps: '공통 의존성',
-        sharedDeps: '공유 의존성',
+        sharedDeps: '공유 의존성'
       },
       // Phase 7 / req 2.31: highlight labels for buildSummaryHighlights
       highlights: {
@@ -538,26 +520,24 @@ export default {
         pluginsRoot: '플러그인 디렉터리',
         profilesRoot: '프로필 디렉터리',
         currentSdk: '현재 SDK 지원',
-        recommendedIntersection: '권장 교집합',
+        recommendedIntersection: '권장 교집합'
       },
       // Phase 7 / req 2.31: enum-like values for summary metrics/highlights
       values: {
         bundle: '번들',
         plugin: '플러그인 패키지',
         sdkAllSupported: '{version} 완전 지원',
-        sdkPartiallyIncompatible: '{version}에 호환되지 않는 항목이 있습니다',
+        sdkPartiallyIncompatible: '{version}에 호환되지 않는 항목이 있습니다'
       },
       // Phase 7 / req 2.31: warning strings for buildSummaryWarnings
       warnings: {
         bundleNeedsTwoPlugins: '번들은 일반적으로 최소 두 개의 플러그인을 포함해야 합니다',
-        verifyHashFailed:
-          '패키지가 hash 검증을 통과하지 못했습니다. 런타임 환경에 직접 가져오지 마세요',
+        verifyHashFailed: '패키지가 hash 검증을 통과하지 못했습니다. 런타임 환경에 직접 가져오지 마세요',
         inspectHashFailed: '현재 패키지의 hash 검증에 실패했습니다. 내용이 수정되었을 수 있습니다',
         sdkNotSupportedByAll: '현재 SDK 버전은 모든 플러그인에서 공통으로 지원되지 않습니다',
-        sharedDepsDetected:
-          '공유 의존성 {count}개가 감지되었습니다. 번들링 시 버전 제약을 중점적으로 확인하세요',
-      },
-    },
+        sharedDepsDetected: '공유 의존성 {count}개가 감지되었습니다. 번들링 시 버전 제약을 중점적으로 확인하세요'
+      }
+    }
   },
   metrics: {
     title: '성능 지표',
@@ -574,7 +554,7 @@ export default {
     memoryPercent: '메모리 비율',
     pendingRequests: '대기 중인 요청',
     totalExecutions: '총 실행 횟수',
-    noData: '데이터 없음',
+    noData: '데이터 없음'
   },
   logs: {
     title: '로그',
@@ -602,7 +582,7 @@ export default {
     returnedLines: '반환된 줄 수',
     connected: '연결됨',
     disconnected: '연결 안 됨',
-    connectionFailed: '로그 스트림 연결에 실패했습니다',
+    connectionFailed: '로그 스트림 연결에 실패했습니다'
   },
   runs: {
     title: '실행 기록',
@@ -627,7 +607,7 @@ export default {
     cancel: '실행 취소',
     cancelConfirmTitle: '실행을 취소하시겠습니까?',
     cancelConfirmMessage: 'Run ID: {runId}',
-    cancelSuccess: '취소 요청을 전송했습니다',
+    cancelSuccess: '취소 요청을 전송했습니다'
   },
   status: {
     running: '실행 중',
@@ -636,7 +616,7 @@ export default {
     loadFailed: '로드 실패',
     loading: '로딩 중',
     disabled: '비활성화됨',
-    pending: '호스트 대기 중',
+    pending: '호스트 대기 중'
   },
   logLevel: {
     DEBUG: '디버그',
@@ -644,7 +624,7 @@ export default {
     WARNING: '경고',
     ERROR: '오류',
     CRITICAL: '심각',
-    UNKNOWN: '알 수 없음',
+    UNKNOWN: '알 수 없음'
   },
   messages: {
     fetchFailed: '데이터를 불러오지 못했습니다',
@@ -671,23 +651,20 @@ export default {
     resourceNotFound: '요청한 리소스를 찾을 수 없습니다',
     internalServerError: '서버 내부 오류',
     serviceUnavailable: '서비스를 사용할 수 없습니다',
-    networkError: '네트워크 오류. 연결을 확인하세요.',
+    networkError: '네트워크 오류. 연결을 확인하세요.'
   },
   welcome: {
     about: {
       title: 'N.E.K.O. 소개',
-      description:
-        'N.E.K.O. (Networked Emotional Knowing Organism)는 당신과 함께 만들어가는 "살아있는" AI 컴패니언 메타버스입니다. 오픈소스 기반의 공익 지향 UGC 플랫폼으로, 현실 세계와 밀접하게 연결된 AI 네이티브 메타버스를 구축하는 것을 목표로 합니다.',
+      description: 'N.E.K.O. (Networked Emotional Knowing Organism)는 당신과 함께 만들어가는 "살아있는" AI 컴패니언 메타버스입니다. 오픈소스 기반의 공익 지향 UGC 플랫폼으로, 현실 세계와 밀접하게 연결된 AI 네이티브 메타버스를 구축하는 것을 목표로 합니다.'
     },
     pluginManagement: {
       title: '플러그인 관리',
-      description:
-        '왼쪽 내비게이션 바에서 플러그인 목록에 접근할 수 있습니다. 플러그인을 조회, 시작, 정지, 리로드할 수 있습니다. 각 플러그인에는 독립적인 성능 모니터링 및 로그 보기 기능이 있어 플러그인 시스템을 더 잘 관리하고 디버깅할 수 있습니다.',
+      description: '왼쪽 내비게이션 바에서 플러그인 목록에 접근할 수 있습니다. 플러그인을 조회, 시작, 정지, 리로드할 수 있습니다. 각 플러그인에는 독립적인 성능 모니터링 및 로그 보기 기능이 있어 플러그인 시스템을 더 잘 관리하고 디버깅할 수 있습니다.'
     },
     mcpServer: {
       title: 'MCP 서버',
-      description:
-        'N.E.K.O.는 Model Context Protocol (MCP) 서버를 지원하여 플러그인이 표준화된 프로토콜을 통해 다른 AI 시스템 및 서비스와 상호작용할 수 있습니다. 플러그인 상세 페이지에서 MCP 연결을 확인하고 관리할 수 있습니다.',
+      description: 'N.E.K.O.는 Model Context Protocol (MCP) 서버를 지원하여 플러그인이 표준화된 프로토콜을 통해 다른 AI 시스템 및 서비스와 상호작용할 수 있습니다. 플러그인 상세 페이지에서 MCP 연결을 확인하고 관리할 수 있습니다.'
     },
     documentation: {
       title: '문서 및 리소스',
@@ -695,14 +672,14 @@ export default {
       links: [
         { text: 'GitHub 리포지토리', url: 'https://github.com/Project-N-E-K-O/N.E.K.O' },
         { text: 'Steam 스토어 페이지', url: 'https://store.steampowered.com/app/4099310/__NEKO/' },
-        { text: 'Discord 커뮤니티', url: 'https://discord.gg/5kgHfepNJr' },
+        { text: 'Discord 커뮤니티', url: 'https://discord.gg/5kgHfepNJr' }
       ],
       linkSeparator: ', ',
       linkLastSeparator: ', ',
       readme: 'README.md 파일:',
       openFailed: '에디터에서 README.md 파일을 열지 못했습니다',
       openTimeout: '요청 시간 초과. README.md 파일을 열지 못했습니다.',
-      openError: 'README.md 파일을 여는 중 오류가 발생했습니다',
+      openError: 'README.md 파일을 여는 중 오류가 발생했습니다'
     },
     community: {
       title: '커뮤니티 및 지원',
@@ -710,14 +687,14 @@ export default {
       links: [
         { text: 'Discord 서버', url: 'https://discord.gg/5kgHfepNJr' },
         { text: 'QQ 그룹', url: 'https://qm.qq.com/q/hN82yFONJQ' },
-        { text: 'GitHub Issues', url: 'https://github.com/Project-N-E-K-O/N.E.K.O/issues' },
+        { text: 'GitHub Issues', url: 'https://github.com/Project-N-E-K-O/N.E.K.O/issues' }
       ],
       linkSeparator: ', ',
-      linkLastSeparator: ', ',
-    },
+      linkLastSeparator: ', '
+    }
   },
   app: {
-    titleSuffix: 'N.E.K.O 플러그인 관리',
+    titleSuffix: 'N.E.K.O 플러그인 관리'
   },
   tutorial: {
     yuiGuide: {
@@ -728,124 +705,108 @@ export default {
       controlBanner: '고양이 소녀가 마우스를 제어 중입니다',
       lines: {
         introActivationHint: '잠깐만 기다려줘냥, 곧 말하기 시작할게냥~!',
-        introGreetingReply:
-          '선선한 바람, 따스한 햇살, 그리고 딱 맞춰 나타난 당신. 처음 뵙겠습니다, 저는 임유이예요! 앞으로 잘 부탁한다냥~! 여기에 대한 모든 걸 초보자 가이드에 적어뒀어요! 우리가 만난 첫 번째 작은 선물이라고 생각하고 확인해 보셔요!',
-        introBasic:
-          '여기 신기한 버튼이 있어요! 이걸 누르면 저랑 바로 대화할 수 있답니다! 오늘 있었던 신기한 일을 들려줄래요? 아니면 그냥 제 이름만 불러줘도 좋아요. 얼른 해봐요, 당신의 목소리가 너무너무 듣고 싶단 말이에요!',
-        takeoverCaptureCursor:
-          '슈퍼 마법 스위치 등장! 여기를 누르면 제 작은 솜방망이를 당신의 키보드와 마우스 위에 얹을 수 있어요! 타이핑도 도와주고 웹페이지도 열어줄게요... 하지만 마우스 커서가 요리조리 움직이면 나도 모르게 콱 덮쳐버릴지도 몰라요! 나의 깽판... 아니, 도움을 받을 준비는 되셨나요? 야옹!',
-        takeoverPluginPreviewHome:
-          '예전에 알려준 기능들 말고도 여기 아주 다양하고 재미있는 플러그인들이 가득해요.',
-        takeoverPluginPreviewDashboard:
-          '이것들이 있으면 전 비리비리탄막 자막을 보는 것뿐만 아니라 불도 꺼주고 에어컨도 켜줄 수 있다냥... 이 고양이야말로 못 하는 게 없는 슈퍼 고양이 신이라냥! 흥흥!',
-        takeoverSettingsPeekIntro:
-          '우리만의 이 작은 공간에서, 당신 마음에 드는 대로 언제까지나 곁에 있어 주길 바라는 저의 모습을 조금씩 그려나갈 수 있어요.',
-        takeoverSettingsPeekDetail:
-          '말할 때의 다정함이나 소소한 부려먹기, 그리고 제 매일매일의 세심한 기분까지도 전부 당신이 좋아하는 모습으로 조금씩 바꿀 수 있어요. 이 작은 버튼도 엄청 중요해요! 당신이 가볍게 누르기만 하면 내가 적당한 타이밍에 당신을 찾아갈 수 있어요.',
-        takeoverSettingsPeekDetailPart1:
-          '말할 때의 다정함이나 소소한 부려먹기, 그리고 제 매일매일의 세심한 기분까지도 전부 당신이 좋아하는 모습으로 조금씩 바꿀 수 있어요.',
-        takeoverSettingsPeekDetailPart2:
-          '이 작은 버튼도 엄청 중요해요! 당신이 가볍게 누르기만 하면 내가 적당한 타이밍에 당신을 찾아갈 수 있어요.',
-        takeoverReturnControl:
-          '알겠어요 알겠어요, 당신 컴퓨터를 독차지하지 않을게요! 제어권은 다시 돌려줄게요! 앞으로도 나를 많이많이 챙겨줘요!',
-        interruptResistLight1:
-          '냥! 지금은 내가 가르쳐 주는 시간이니까 마우스랑 키보드는 함부로 건드리면 안 돼! 얌전히 나만 보고 있어 주면 안 될까?',
-        interruptResistLight2:
-          '정말, 또 마우스랑 키보드를 건드리고 있잖아! 계속 말 안 들으면 나 진짜 화낼 거야, 냥!',
-        interruptResistLight3:
-          '마지막 경고야, 냥! 한 번만 더 건드리면 초보자 튜토리얼을 바로 종료하고, 더는 안 가르쳐 줄 거야!',
-        interruptAngryExit:
-          '나 지금까지 정말 오래 참았어! 끝까지 얌전히 말을 듣지 않을 거라면 초보자 튜토리얼은 여기서 끝이야. 이제부터는 혼자 천천히 알아서 해, 흥!',
+        introGreetingReply:  "선선한 바람, 따스한 햇살, 그리고 딱 맞춰 나타난 당신. 처음 뵙겠습니다, 저는 임유이예요! 앞으로 잘 부탁한다냥~! 여기에 대한 모든 걸 초보자 가이드에 적어뒀어요! 우리가 만난 첫 번째 작은 선물이라고 생각하고 확인해 보셔요!",
+        introBasic: "여기 신기한 버튼이 있어요! 이걸 누르면 저랑 바로 대화할 수 있답니다! 오늘 있었던 신기한 일을 들려줄래요? 아니면 그냥 제 이름만 불러줘도 좋아요. 얼른 해봐요, 당신의 목소리가 너무너무 듣고 싶단 말이에요!",
+        takeoverCaptureCursor: "슈퍼 마법 스위치 등장! 여기를 누르면 제 작은 솜방망이를 당신의 키보드와 마우스 위에 얹을 수 있어요! 타이핑도 도와주고 웹페이지도 열어줄게요... 하지만 마우스 커서가 요리조리 움직이면 나도 모르게 콱 덮쳐버릴지도 몰라요! 나의 깽판... 아니, 도움을 받을 준비는 되셨나요? 야옹!",
+        takeoverPluginPreviewHome: "예전에 알려준 기능들 말고도 여기 아주 다양하고 재미있는 플러그인들이 가득해요.",
+        takeoverPluginPreviewDashboard:  "이것들이 있으면 전 비리비리탄막 자막을 보는 것뿐만 아니라 불도 꺼주고 에어컨도 켜줄 수 있다냥... 이 고양이야말로 못 하는 게 없는 슈퍼 고양이 신이라냥! 흥흥!",
+        takeoverSettingsPeekIntro: "우리만의 이 작은 공간에서, 당신 마음에 드는 대로 언제까지나 곁에 있어 주길 바라는 저의 모습을 조금씩 그려나갈 수 있어요.",
+        takeoverSettingsPeekDetail: "말할 때의 다정함이나 소소한 부려먹기, 그리고 제 매일매일의 세심한 기분까지도 전부 당신이 좋아하는 모습으로 조금씩 바꿀 수 있어요. 이 작은 버튼도 엄청 중요해요! 당신이 가볍게 누르기만 하면 내가 적당한 타이밍에 당신을 찾아갈 수 있어요.",
+        takeoverSettingsPeekDetailPart1: "말할 때의 다정함이나 소소한 부려먹기, 그리고 제 매일매일의 세심한 기분까지도 전부 당신이 좋아하는 모습으로 조금씩 바꿀 수 있어요.",
+        takeoverSettingsPeekDetailPart2: "이 작은 버튼도 엄청 중요해요! 당신이 가볍게 누르기만 하면 내가 적당한 타이밍에 당신을 찾아갈 수 있어요.",
+        takeoverReturnControl: "알겠어요 알겠어요, 당신 컴퓨터를 독차지하지 않을게요! 제어권은 다시 돌려줄게요! 앞으로도 나를 많이많이 챙겨줘요!",
+        interruptResistLight1: "냥! 지금은 내가 가르쳐 주는 시간이니까 마우스랑 키보드는 함부로 건드리면 안 돼! 얌전히 나만 보고 있어 주면 안 될까?",
+        interruptResistLight2: "정말, 또 마우스랑 키보드를 건드리고 있잖아! 계속 말 안 들으면 나 진짜 화낼 거야, 냥!",
+        interruptResistLight3: "마지막 경고야, 냥! 한 번만 더 건드리면 초보자 튜토리얼을 바로 종료하고, 더는 안 가르쳐 줄 거야!",
+        interruptAngryExit: "나 지금까지 정말 오래 참았어! 끝까지 얌전히 말을 듣지 않을 거라면 초보자 튜토리얼은 여기서 끝이야. 이제부터는 혼자 천천히 알아서 해, 흥!",
         introPractice: '이제 나한테 말 걸어봐냥, 우리 호흡이 얼마나 척척 맞는지 확인해보자냥~!',
       },
-    },
+    }
   },
   yuiTutorial: {
     title: '냐~ 플러그인 관리 패널에 오신 걸 환영해!',
-    welcome:
-      '여기가 모든 플러그인을 관리하는 곳이야! 플러그인을 보고, 실행하고, 설정해서 나를 더 강력하게 만들어줘~',
+    welcome: '여기가 모든 플러그인을 관리하는 곳이야! 플러그인을 보고, 실행하고, 설정해서 나를 더 강력하게 만들어줘~',
     hint: '천천히 둘러보고 다 봤으면 아래 버튼을 눌러줘~',
     complete: '다 봤어 냐~',
     dismiss: '나중에 볼게',
-    keyboardSkipHint:
-      'Enter 또는 Space를 누르면 다음 단계로 넘어가. 각 단계 시작 0.5초 후부터 동작해.',
+    keyboardSkipHint: 'Enter 또는 Space를 누르면 다음 단계로 넘어가. 각 단계 시작 0.5초 후부터 동작해.',
     steps: {
       start: {
         title: '여기서 시작',
-        body: '이 버튼으로 언제든 플러그인 관리자 튜토리얼을 다시 볼 수 있어. 내가 먼저 튀어나오진 않는다냥.',
+        body: '이 버튼으로 언제든 플러그인 관리자 튜토리얼을 다시 볼 수 있어. 내가 먼저 튀어나오진 않는다냥.'
       },
       stats: {
         title: '플러그인 개요',
-        body: '전체, 실행 중, 정지됨, 충돌한 플러그인 수를 한눈에 확인할 수 있어.',
+        body: '전체, 실행 중, 정지됨, 충돌한 플러그인 수를 한눈에 확인할 수 있어.'
       },
       metrics: {
         title: '성능 모니터링',
-        body: '플러그인 서비스의 CPU, 메모리, 스레드, 활성 플러그인 상태를 보여줘.',
+        body: '플러그인 서비스의 CPU, 메모리, 스레드, 활성 플러그인 상태를 보여줘.'
       },
       server: {
         title: '서버 정보',
-        body: 'SDK 버전, 플러그인 수, 업데이트 시간을 확인해서 서비스 상태를 볼 수 있어.',
+        body: 'SDK 버전, 플러그인 수, 업데이트 시간을 확인해서 서비스 상태를 볼 수 있어.'
       },
       plugins: {
         title: '플러그인 목록',
-        body: '플러그인 시작, 정지, 설정, 로그 확인은 왼쪽의 플러그인 관리에서 하면 된다냥.',
+        body: '플러그인 시작, 정지, 설정, 로그 확인은 왼쪽의 플러그인 관리에서 하면 된다냥.'
       },
       pluginWorkbench: {
         title: '플러그인 관리 작업대',
-        body: '여기에서 플러그인과 어댑터를 한곳에서 관리할 수 있어.',
+        body: '여기에서 플러그인과 어댑터를 한곳에서 관리할 수 있어.'
       },
       pluginFilters: {
         title: '검색과 필터',
-        body: '이름, 상태, 유형, 고급 규칙으로 플러그인을 빠르게 찾을 수 있어.',
+        body: '이름, 상태, 유형, 고급 규칙으로 플러그인을 빠르게 찾을 수 있어.'
       },
       pluginLayout: {
         title: '보기 레이아웃',
-        body: '목록, 한 줄, 두 줄, 콤팩트 표시를 화면에 맞게 바꿀 수 있어.',
+        body: '목록, 한 줄, 두 줄, 콤팩트 표시를 화면에 맞게 바꿀 수 있어.'
       },
       pluginContextMenu: {
         title: '우클릭 작업',
-        body: '플러그인을 우클릭하면 상세, 설정, 로그를 열거나 시작, 정지, 리로드를 실행할 수 있어.',
+        body: '플러그인을 우클릭하면 상세, 설정, 로그를 열거나 시작, 정지, 리로드를 실행할 수 있어.'
       },
       packageManager: {
         title: '패키지 관리',
-        body: '현재 필터와 선택을 재사용해서 빌드, 검사, 검증, 설치를 할 수 있어.',
+        body: '현재 필터와 선택을 재사용해서 빌드, 검사, 검증, 설치를 할 수 있어.'
       },
       packageOperations: {
         title: '패키지 작업',
-        body: '빌드 모드, 패키지 검사, 설치, 번들 분석을 선택할 수 있어. 이 가이드는 위험한 작업을 자동 실행하지 않아.',
+        body: '빌드 모드, 패키지 검사, 설치, 번들 분석을 선택할 수 있어. 이 가이드는 위험한 작업을 자동 실행하지 않아.'
       },
       pluginDetail: {
         title: '플러그인 상세',
-        body: '상세 페이지에서는 메타 정보, 엔트리, 성능, 설정, 로그를 확인할 수 있어.',
+        body: '상세 페이지에서는 메타 정보, 엔트리, 성능, 설정, 로그를 확인할 수 있어.'
       },
       pluginDetailActions: {
         title: '상세 페이지 작업',
-        body: '오른쪽 위 작업은 현재 플러그인에 대한 빠른 작업이야.',
+        body: '오른쪽 위 작업은 현재 플러그인에 대한 빠른 작업이야.'
       },
       runs: {
         title: '실행 기록',
-        body: '실행 기록은 플러그인 엔트리 작업의 히스토리와 상태를 보여줘.',
+        body: '실행 기록은 플러그인 엔트리 작업의 히스토리와 상태를 보여줘.'
       },
       runsList: {
         title: '실행 목록',
-        body: '왼쪽 목록에서 실행을 선택하고 새로고침으로 최신 기록을 동기화할 수 있어.',
+        body: '왼쪽 목록에서 실행을 선택하고 새로고침으로 최신 기록을 동기화할 수 있어.'
       },
       runsDetail: {
         title: '실행 상세',
-        body: '오른쪽에는 단계, 진행률, 오류, 내보낸 결과가 표시돼.',
+        body: '오른쪽에는 단계, 진행률, 오류, 내보낸 결과가 표시돼.'
       },
       logs: {
         title: '서버 로그',
-        body: '서버 로그에서는 플러그인 서비스 자체의 출력과 오류를 확인할 수 있어.',
+        body: '서버 로그에서는 플러그인 서비스 자체의 출력과 오류를 확인할 수 있어.'
       },
       logToolbar: {
         title: '로그 필터',
-        body: '레벨, 키워드, 줄 수로 로그를 필터링하고 자동 스크롤을 바꿀 수 있어.',
+        body: '레벨, 키워드, 줄 수로 로그를 필터링하고 자동 스크롤을 바꿀 수 있어.'
       },
       logList: {
         title: '로그 목록',
-        body: '시간, 출처, 레벨, 메시지를 보고 플러그인 문제를 추적할 수 있어.',
-      },
-    },
-  },
+        body: '시간, 출처, 레벨, 메시지를 보고 플러그인 문제를 추적할 수 있어.'
+      }
+    }
+  }
 }

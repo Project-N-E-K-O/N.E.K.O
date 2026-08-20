@@ -3897,10 +3897,8 @@ async def test_install_conflict_fails_without_renaming_executable_directory(
 
     existing = user_root / plugin_id
     existing.mkdir(parents=True)
-    (existing / "plugin.toml").write_text(
-        f'[plugin]\nid = "{plugin_id}"\nversion = "0.9.0"\n',
-        encoding="utf-8",
-    )
+    original_plugin_toml = f'[plugin]\nid = "{plugin_id}"\nversion = "0.9.0"\n'
+    (existing / "plugin.toml").write_text(original_plugin_toml, encoding="utf-8")
 
     with _serve_bytes(
         filename=f"{plugin_id}-{version}.neko-plugin", content=zip_bytes,
@@ -3921,7 +3919,9 @@ async def test_install_conflict_fails_without_renaming_executable_directory(
         )
         assert resp.status_code == 200, resp.text
         task_id = resp.json()["task_id"]
-        for _ in range(100):
+        deadline = time.monotonic() + 30
+        task: dict[str, Any] | None = None
+        while time.monotonic() < deadline:
             poll = await client.get(f"/market/tasks/{task_id}?token={token}")
             assert poll.status_code == 200, poll.text
             task = poll.json()
@@ -3930,9 +3930,12 @@ async def test_install_conflict_fails_without_renaming_executable_directory(
             await asyncio.sleep(0.01)
         else:
             pytest.fail("legacy rename install task did not finish")
+        assert task is not None
         assert task["status"] == "failed"
 
     assert not (user_root / f"{plugin_id}_1").exists()
+    assert existing.is_dir()
+    assert (existing / "plugin.toml").read_text(encoding="utf-8") == original_plugin_toml
 
     active_entries = []
     if lock_path.exists():

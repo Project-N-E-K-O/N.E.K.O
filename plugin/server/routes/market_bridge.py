@@ -3402,7 +3402,14 @@ async def _verify_downloaded_package_with_fallback(
             task,
             "镜像下载内容校验失败，正在通过 GitHub 直连重试...",
         )
-        direct_path = await _download_package_once(fallback_url, task)
+        try:
+            direct_path = await _download_package_once(fallback_url, task)
+        except _TaskCancelled:
+            raise
+        except _DownloadAttemptError:
+            raise
+        except Exception as exc:
+            raise _DownloadAttemptError(str(exc)) from exc
         try:
             sha_check = await asyncio.to_thread(
                 _verify_sha256_file,
