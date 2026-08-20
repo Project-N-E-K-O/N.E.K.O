@@ -141,6 +141,36 @@ async def test_activation_updates_current_and_future_managers() -> None:
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_registration_attachment_failure_retries_current_activation() -> None:
+    registry = OwnerVoiceRuntimeRegistry(
+        enforce=True,
+        restore_retry_interval_seconds=0.01,
+        restore_retry_timeout_seconds=1.0,
+    )
+    profile = _profile("profile")
+    try:
+        assert await registry.activate(profile, "generation")
+    finally:
+        profile.close()
+    manager = _Manager()
+    manager.verifier_outcomes.extend([False, True])
+
+    assert not await registry.register_manager(manager)
+    assert manager in registry._attach_pending  # type: ignore[attr-defined]
+    await _wait_until(
+        lambda: manager not in registry._attach_pending  # type: ignore[attr-defined]
+    )
+
+    assert len(manager.verifier_calls) == 2
+    assert manager.verifier_calls[-1][1] == "generation"
+    await _wait_until(
+        lambda: registry._attach_retry_task is None  # type: ignore[attr-defined]
+    )
+    await registry.close()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_failed_activation_rolls_changed_managers_back() -> None:
     registry = OwnerVoiceRuntimeRegistry(enforce=False)
     managers = [_Manager(), _Manager()]

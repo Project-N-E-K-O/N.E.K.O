@@ -88,6 +88,7 @@ class EnrollmentStatus:
 class VoiceIdentityServiceStatus:
     state: VoiceIdentityState
     enrollment: EnrollmentStatus | None
+    profile_generation: str | None
     runtime_mode: VoiceIdentityRuntimeMode
 
     def as_dict(self) -> dict[str, object]:
@@ -95,6 +96,7 @@ class VoiceIdentityServiceStatus:
         result["enrollment"] = (
             None if self.enrollment is None else self.enrollment.as_dict()
         )
+        result["profile_generation"] = self.profile_generation
         result["runtime_mode"] = self.runtime_mode
         return result
 
@@ -238,6 +240,7 @@ class VoiceIdentityService:
                 has_profile=self._profile is not None,
             ),
             enrollment_status,
+            None if self._profile is None else self._profile.generation,
             self._runtime_mode,
         )
 
@@ -325,6 +328,7 @@ class VoiceIdentityService:
             activation_changed = False
             preference_changed = False
             succeeded = False
+            commit_cancellation: asyncio.CancelledError | None = None
             old_activation_restored = True
             failure_reason = VoiceIdentityEffectiveReason.RUNTIME_DEGRADED
             try:
@@ -366,7 +370,17 @@ class VoiceIdentityService:
                 if desired_requested != old_requested:
                     await self._preference_store.asave(desired_requested)
                     preference_changed = True
-                await staged.acommit()
+                commit_task = asyncio.create_task(
+                    staged.acommit(),
+                    name="voice-identity-profile-commit",
+                )
+                while not commit_task.done():
+                    try:
+                        await asyncio.shield(commit_task)
+                    except asyncio.CancelledError as exc:
+                        if commit_cancellation is None:
+                            commit_cancellation = exc
+                await commit_task
 
                 self._profile = new_profile
                 new_profile = None
@@ -381,6 +395,8 @@ class VoiceIdentityService:
                 succeeded = True
                 if old_profile is not None:
                     old_profile.close()
+                if commit_cancellation is not None:
+                    raise commit_cancellation
             except EnrollmentAudioError as exc:
                 failure_reason = self._idle_reason()
                 raise VoiceIdentityServiceError(exc.code) from exc

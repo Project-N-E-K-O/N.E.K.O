@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+import threading
 
 import numpy as np
 import pytest
 
+import main_logic.voice_identity_service.profile_store as store_module
 from main_logic.asr_client.speaker_shadow.campplus import CAMPPLUS_EMBEDDING_DIM
 from main_logic.voice_identity.contracts import SpeakerModelIdentity
 from main_logic.voice_identity.profile import SpeakerProfile
@@ -133,6 +135,7 @@ async def test_first_enrollment_loads_before_suppression_and_enables(
     assert status.state.requested_enabled
     assert status.state.effective_enabled
     assert status.state.has_profile
+    assert status.profile_generation == "profile-a"
     assert activations[-1][1] == "profile-a"
     assert suppression_events[-1] == "restore:voice_identity_enrollment"
     assert model.closed
@@ -422,6 +425,7 @@ async def test_public_guards_and_status_shape(tmp_path: Path) -> None:
         "effective_reason": "disabled",
         "has_profile": False,
         "enrollment": None,
+        "profile_generation": None,
         "runtime_mode": "enforce",
     }
     enrollment = await service.start_enrollment()
@@ -439,6 +443,51 @@ async def test_public_guards_and_status_shape(tmp_path: Path) -> None:
     await service.close()
     with pytest.raises(VoiceIdentityServiceError, match="service_closed"):
         await service.start_enrollment()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_cancelled_profile_commit_keeps_memory_and_disk_on_new_generation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service, _model, activations, _events = _service(tmp_path)
+    await service.initialize()
+    first = await service.start_enrollment()
+    await service.complete_enrollment(first.enrollment_id, "profile-a", _pcm())
+    second = await service.start_enrollment()
+    replace_started = threading.Event()
+    replace_release = threading.Event()
+    original_replace = store_module._replace
+
+    def blocking_replace(source: Path, destination: Path) -> None:
+        replace_started.set()
+        if not replace_release.wait(1.0):
+            raise TimeoutError("test did not release profile commit")
+        original_replace(source, destination)
+
+    monkeypatch.setattr(store_module, "_replace", blocking_replace)
+    completion = asyncio.create_task(
+        service.complete_enrollment(second.enrollment_id, "profile-b", _pcm())
+    )
+    assert await asyncio.to_thread(replace_started.wait, 1.0)
+    completion.cancel()
+    replace_release.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await completion
+
+    status = service.status()
+    assert status.state.effective_enabled
+    assert status.profile_generation == "profile-b"
+    assert activations[-1][1] == "profile-b"
+    stored = await service._profile_store.aload()  # type: ignore[attr-defined]
+    assert stored is not None
+    try:
+        assert stored.generation == "profile-b"
+    finally:
+        stored.close()
+    await service.close()
 
 
 @pytest.mark.unit

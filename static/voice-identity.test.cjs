@@ -16,6 +16,7 @@ const template = fs.readFileSync(
 
 const API_ROOT = '/api/voice-identity';
 const PCM_CONTENT_TYPE = 'audio/pcm;format=pcm_s16le;rate=16000;channels=1';
+const PROFILE_HEADER = 'X-Voice-Identity-Profile';
 const TARGET_SAMPLE_RATE = 16000;
 const RECORDING_MS = 4000;
 const CAPTURE_TIMEOUT_MS = RECORDING_MS + 1000;
@@ -118,9 +119,11 @@ function createHarness({
     audioChunks = FULL_AUDIO_CHUNKS,
     manualAudio = false,
     profileError,
+    profileTransportErrorAfterCommit = false,
     showConfirm,
     nativeConfirm = true,
     webCryptoAvailable = true,
+    initialEffectiveReason = null,
 } = {}) {
     const elementIds = [
         'voice-identity-status-dot',
@@ -146,6 +149,7 @@ function createHarness({
     let processor = null;
     let mediaRequests = 0;
     let serverProfile = initialProfile;
+    let serverProfileGeneration = initialProfile ? 'profile-0' : null;
     let serverRequested = initialRequested;
     let enrollmentId = null;
     let statusRequestCount = 0;
@@ -157,11 +161,12 @@ function createHarness({
         effective_enabled: serverProfile && serverRequested,
         effective_reason: serverProfile
             ? (serverRequested ? 'ready' : 'disabled')
-            : (enrollmentId ? 'enrollment_active' : 'no_profile'),
+            : (enrollmentId ? 'enrollment_active' : (initialEffectiveReason || 'no_profile')),
         has_profile: serverProfile,
         enrollment: enrollmentId
             ? { enrollment_id: enrollmentId, expires_at: 123.5 }
             : null,
+        profile_generation: serverProfileGeneration,
         runtime_mode: 'enforce',
     });
 
@@ -188,7 +193,11 @@ function createHarness({
                 );
             }
             serverProfile = true;
+            serverProfileGeneration = call.options.headers.get(PROFILE_HEADER);
             serverRequested = initialProfile ? serverRequested : true;
+            if (profileTransportErrorAfterCommit) {
+                throw new Error('profile_response_lost');
+            }
             return jsonResponse(statusPayload());
         }
         if (call.url === `${API_ROOT}/enrollment/cancel`) {
@@ -201,6 +210,7 @@ function createHarness({
         }
         if (call.url === `${API_ROOT}/profile`) {
             serverProfile = false;
+            serverProfileGeneration = null;
             serverRequested = false;
             enrollmentId = null;
             return jsonResponse(statusPayload());
@@ -277,6 +287,7 @@ function createHarness({
                 'voiceIdentity.profileReady': 'Owner voice profile is saved and enabled',
                 'voiceIdentity.profileSavedDisabled': 'Owner voice profile is saved; filtering is off',
                 'voiceIdentity.reasonRuntimeDegraded': 'Voice filtering is unavailable',
+                'voiceIdentity.reasonSecureStorageUnavailable': 'Secure storage is unavailable',
                 'voiceIdentity.recording': 'Recording...',
                 'voiceIdentity.saving': 'Saving...',
                 'voiceIdentity.enrollmentComplete': 'Enrollment complete.',
@@ -553,6 +564,19 @@ test('canonical has_profile reveals only switch, re-enroll, and delete controls'
     assert.equal(template.includes('step-progress'), false);
 });
 
+test('backend degradation reason is preserved when no profile exists', async () => {
+    const harness = createHarness({
+        initialEffectiveReason: 'secure_storage_unavailable',
+    });
+    await harness.initialize();
+
+    assert.equal(
+        harness.elements.get('voice-identity-profile-status').textContent,
+        'Secure storage is unavailable',
+    );
+    assert.equal(harness.elements.get('voice-identity-start').disabled, true);
+});
+
 test('filter toggle sends the requested boolean and adopts canonical state', async () => {
     const harness = createHarness({ initialProfile: true });
     await harness.initialize();
@@ -586,6 +610,24 @@ test('re-enrollment hides profile mutations while the new session starts', async
 
     assert.equal(harness.elements.get('voice-identity-profile-controls').hidden, false);
     assert.equal(harness.elements.get('voice-identity-filter').checked, false);
+});
+
+test('re-enrollment recovers a lost response and preserves disabled preference', async () => {
+    const harness = createHarness({
+        initialProfile: true,
+        initialRequested: false,
+        profileTransportErrorAfterCommit: true,
+    });
+    await harness.initialize();
+
+    await harness.emit('voice-identity-reenroll');
+
+    assert.equal(harness.elements.get('voice-identity-profile-controls').hidden, false);
+    assert.equal(harness.elements.get('voice-identity-filter').checked, false);
+    assert.equal(
+        harness.elements.get('voice-identity-message').textContent,
+        'Owner voice profile is saved; filtering is off',
+    );
 });
 
 test('delete confirms, removes the profile, and returns to one-click enrollment', async () => {

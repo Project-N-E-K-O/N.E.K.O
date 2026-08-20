@@ -88,6 +88,8 @@ class OwnerVoiceRuntimeRegistry:
         self._managers: weakref.WeakSet = weakref.WeakSet()
         self._restore_pending: weakref.WeakSet = weakref.WeakSet()
         self._restore_retry_task: asyncio.Task[None] | None = None
+        self._attach_pending: weakref.WeakSet = weakref.WeakSet()
+        self._attach_retry_task: asyncio.Task[None] | None = None
         self._detach_pending: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
         self._detach_retry_task: asyncio.Task[None] | None = None
         self._activation: _OwnerActivation | None = None
@@ -99,7 +101,17 @@ class OwnerVoiceRuntimeRegistry:
             if self._closed:
                 raise RuntimeError("Owner voice runtime registry is closed")
             if manager in self._managers:
-                return True
+                if manager not in self._attach_pending:
+                    return True
+                activation = self._activation
+                if activation is None:
+                    self._attach_pending.discard(manager)
+                    return True
+                if await self._attach_manager(manager, activation):
+                    self._attach_pending.discard(manager)
+                    return True
+                self._ensure_attach_watchdog()
+                return False
             self._managers.add(manager)
             try:
                 if self._suppressed:
@@ -116,20 +128,11 @@ class OwnerVoiceRuntimeRegistry:
                     self._restore_pending.discard(manager)
                 activation = self._activation
                 if activation is not None:
-                    factory: OwnerVoiceAsrCompositionFactory | None = None
-                    try:
-                        factory = activation.factory_for(manager)
-                        updated = await manager.set_speaker_verifier_factory(
-                            factory,
-                            activation_generation=activation.generation,
-                        )
-                    except BaseException:
-                        if factory is not None:
-                            factory.close()
+                    if not await self._attach_manager(manager, activation):
+                        self._attach_pending.add(manager)
+                        self._ensure_attach_watchdog()
                         return False
-                    if not updated:
-                        factory.close()
-                        return False
+                    self._attach_pending.discard(manager)
                     self._detach_pending.pop(manager, None)
                 return True
             except BaseException:
@@ -149,6 +152,7 @@ class OwnerVoiceRuntimeRegistry:
     async def unregister_manager(self, manager) -> None:
         async with self._lock:
             self._managers.discard(manager)
+            self._attach_pending.discard(manager)
             detach_generation = str(uuid.uuid4())
             cancellation: asyncio.CancelledError | None = None
             try:
@@ -217,6 +221,7 @@ class OwnerVoiceRuntimeRegistry:
             old_activation = self._activation
             if next_activation is None:
                 self._activation = None
+                self._attach_pending.clear()
                 if old_activation is not None:
                     old_activation.close()
                 all_detached = True
@@ -252,6 +257,7 @@ class OwnerVoiceRuntimeRegistry:
                         factory.close()
                         raise RuntimeError("speaker verifier activation failed")
                     changed.append(manager)
+                    self._attach_pending.discard(manager)
                     self._detach_pending.pop(manager, None)
             except BaseException:
                 await asyncio.shield(self._rollback_activation(changed, old_activation))
@@ -260,9 +266,75 @@ class OwnerVoiceRuntimeRegistry:
                 return False
 
             self._activation = next_activation
+            self._attach_pending.clear()
             if old_activation is not None:
                 old_activation.close()
             return True
+
+    @staticmethod
+    async def _attach_manager(manager, activation: _OwnerActivation) -> bool:
+        factory: OwnerVoiceAsrCompositionFactory | None = None
+        try:
+            factory = activation.factory_for(manager)
+            updated = await manager.set_speaker_verifier_factory(
+                factory,
+                activation_generation=activation.generation,
+            )
+        except BaseException:
+            if factory is not None:
+                factory.close()
+            return False
+        if not updated:
+            factory.close()
+            return False
+        return True
+
+    def _ensure_attach_watchdog(self) -> None:
+        task = self._attach_retry_task
+        if task is not None and not task.done():
+            return
+        self._attach_retry_task = asyncio.create_task(
+            self._run_attach_watchdog(),
+            name="voice-identity-attach-watchdog",
+        )
+
+    async def _run_attach_watchdog(self) -> None:
+        current = asyncio.current_task()
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + self._restore_retry_timeout_seconds
+        try:
+            while loop.time() < deadline:
+                await asyncio.sleep(self._restore_retry_interval_seconds)
+                async with self._lock:
+                    if self._closed:
+                        return
+                    activation = self._activation
+                    if activation is None:
+                        self._attach_pending.clear()
+                        return
+                    targets = tuple(self._attach_pending)
+                    if not targets:
+                        return
+                    for manager in targets:
+                        if manager not in self._managers:
+                            self._attach_pending.discard(manager)
+                            continue
+                        if await self._attach_manager(manager, activation):
+                            self._attach_pending.discard(manager)
+                            self._detach_pending.pop(manager, None)
+            async with self._lock:
+                pending_count = 0 if self._closed else len(self._attach_pending)
+            if pending_count:
+                logger.warning(
+                    "Owner voice verifier attach watchdog exhausted with %d "
+                    "manager(s) still pending",
+                    pending_count,
+                )
+        except asyncio.CancelledError:
+            raise
+        finally:
+            if self._attach_retry_task is current:
+                self._attach_retry_task = None
 
     async def _rollback_activation(
         self,
@@ -458,14 +530,21 @@ class OwnerVoiceRuntimeRegistry:
                 return
             self._closed = True
             retry_task = self._restore_retry_task
+            attach_task = self._attach_retry_task
             detach_task = self._detach_retry_task
-        tasks = tuple(task for task in (retry_task, detach_task) if task is not None)
+        tasks = tuple(
+            task
+            for task in (retry_task, attach_task, detach_task)
+            if task is not None
+        )
         for task in tasks:
             task.cancel()
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
         if self._restore_retry_task is retry_task:
             self._restore_retry_task = None
+        if self._attach_retry_task is attach_task:
+            self._attach_retry_task = None
         if self._detach_retry_task is detach_task:
             self._detach_retry_task = None
         async with self._lock:
@@ -476,6 +555,7 @@ class OwnerVoiceRuntimeRegistry:
             )
             self._suppressed = False
             self._restore_pending.clear()
+            self._attach_pending.clear()
             self._detach_pending.clear()
             for manager in managers:
                 try:

@@ -30,6 +30,7 @@ SAFE_STATUS = {
     "effective_reason": "ready",
     "has_profile": True,
     "enrollment": None,
+    "profile_generation": "profile-a",
     "runtime_mode": "enforce",
 }
 
@@ -208,6 +209,7 @@ def test_start_returns_canonical_status_without_private_model_data(
             "enrollment_id": "enrollment-1",
             "expires_at": 123.5,
         },
+        "profile_generation": None,
     }
     service = _fake_service(payload)
     client = _client(monkeypatch, service)
@@ -428,6 +430,7 @@ def test_delete_profile_returns_canonical_disabled_status(
         "effective_enabled": False,
         "effective_reason": "disabled",
         "has_profile": False,
+        "profile_generation": None,
     }
     service = _fake_service(payload)
     client = _client(monkeypatch, service)

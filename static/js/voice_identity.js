@@ -205,7 +205,7 @@
         );
         state.profileRevision = firstScalar(
             [status, profile],
-            ['profile_generation', 'generation'],
+            ['profile_generation'],
             state.profileRevision
         );
         state.requestedEnabled = firstBoolean(
@@ -224,9 +224,7 @@
             state.effectiveEnabled ? 'ready' : (state.profileAvailable ? 'disabled' : 'no_profile')
         );
         if (!state.profileAvailable) {
-            state.requestedEnabled = false;
             state.effectiveEnabled = false;
-            state.effectiveReason = 'no_profile';
         }
         render();
     }
@@ -256,7 +254,12 @@
 
     function reasonMessage() {
         if (!state.profileAvailable) {
-            return translate('voiceIdentity.profileMissing', '尚未录入 Owner 声纹');
+            if (['disabled', 'no_profile'].includes(state.effectiveReason)) {
+                return translate('voiceIdentity.profileMissing', '尚未录入 Owner 声纹');
+            }
+            const unavailableKey = EFFECTIVE_REASON_KEYS[state.effectiveReason]
+                || 'voiceIdentity.reasonRuntimeDegraded';
+            return translate(unavailableKey, '声纹暂时不可用，独立 ASR 将正常放行');
         }
         if (state.effectiveEnabled) {
             return translate('voiceIdentity.profileReady', 'Owner 声纹已保存并启用');
@@ -267,6 +270,22 @@
         const key = EFFECTIVE_REASON_KEYS[state.effectiveReason]
             || 'voiceIdentity.reasonRuntimeDegraded';
         return translate(key, '声纹暂时不可用，独立 ASR 将正常放行');
+    }
+
+    function enrollmentCompleteMessage() {
+        if (state.effectiveEnabled) {
+            return translate(
+                'voiceIdentity.enrollmentComplete',
+                'Owner 声纹已保存并启用。'
+            );
+        }
+        if (!state.requestedEnabled) {
+            return translate(
+                'voiceIdentity.profileSavedDisabled',
+                'Owner 声纹已保存，过滤当前关闭'
+            );
+        }
+        return reasonMessage();
     }
 
     function renderProfile() {
@@ -281,8 +300,10 @@
 
         const pending = !state.initialized || state.busy
             || state.cancelPending || state.filterPending;
+        const enrollmentUnavailable = !state.profileAvailable
+            && state.effectiveReason === 'secure_storage_unavailable';
         elements.start.hidden = state.profileAvailable || state.busy || state.cancelPending;
-        elements.start.disabled = pending;
+        elements.start.disabled = pending || enrollmentUnavailable;
         elements.cancel.hidden = !state.busy && !state.cancelPending && !state.enrollmentId;
         elements.cancel.disabled = state.cancelPending;
         elements.reenroll.disabled = pending;
@@ -537,10 +558,7 @@
             if (!state.profileAvailable) throw new Error('profile_not_confirmed');
             state.enrollmentId = null;
             state.profileId = null;
-            setMessage(
-                translate('voiceIdentity.enrollmentComplete', 'Owner 声纹已保存并启用。'),
-                false
-            );
+            setMessage(enrollmentCompleteMessage(), false);
         } catch (error) {
             stopMicrophone();
             const reconciled = await reconcileStatus();
@@ -558,10 +576,7 @@
             if (replacementConfirmed) {
                 state.enrollmentId = null;
                 state.profileId = null;
-                setMessage(
-                    translate('voiceIdentity.enrollmentComplete', 'Owner 声纹已保存并启用。'),
-                    false
-                );
+                setMessage(enrollmentCompleteMessage(), false);
             } else {
                 try {
                     await cancelSession();
