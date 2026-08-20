@@ -220,12 +220,20 @@ async def test_failed_activation_rolls_changed_managers_back() -> None:
 
         assert not await registry.activate(new_profile, "new-generation")
 
+        await _wait_until(
+            lambda: all(
+                manager
+                not in registry._attach_pending  # type: ignore[attr-defined]
+                for manager in ordered
+            )
+        )
         assert ordered[0].verifier_calls[-1][1] == "old-generation"
-        assert ordered[1].verifier_calls[-1][1] == "new-generation"
+        assert ordered[1].verifier_calls[-1][1] == "old-generation"
         assert not ordered[0].verifier_calls[-1][0].enforce
     finally:
         old_profile.close()
         new_profile.close()
+        await registry.close()
 
 
 @pytest.mark.unit
@@ -260,6 +268,71 @@ async def test_failed_activation_retries_prior_verifier_when_rollback_degrades()
     finally:
         old_profile.close()
         new_profile.close()
+        await registry.close()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_failed_activation_hands_blocked_rollback_to_watchdog() -> None:
+    class BlockingRollbackManager(_Manager):
+        def __init__(self) -> None:
+            super().__init__()
+            self.block_generation: str | None = None
+            self.rollback_started = asyncio.Event()
+            self.rollback_release = asyncio.Event()
+
+        async def set_speaker_verifier_factory(
+            self,
+            factory: _Factory | None,
+            *,
+            activation_generation: str,
+        ) -> bool:
+            if activation_generation == self.block_generation:
+                self.rollback_started.set()
+                while not self.rollback_release.is_set():
+                    try:
+                        await self.rollback_release.wait()
+                    except asyncio.CancelledError:
+                        continue
+            return await super().set_speaker_verifier_factory(
+                factory,
+                activation_generation=activation_generation,
+            )
+
+    registry = OwnerVoiceRuntimeRegistry(
+        enforce=True,
+        restore_retry_interval_seconds=0.01,
+        restore_retry_timeout_seconds=1.0,
+    )
+    managers = [BlockingRollbackManager(), BlockingRollbackManager()]
+    for manager in managers:
+        await registry.register_manager(manager)
+    old_profile = _profile("old")
+    new_profile = _profile("new")
+    try:
+        assert await registry.activate(old_profile, "old-generation")
+        ordered = tuple(registry._managers)  # type: ignore[attr-defined]
+        changed = ordered[0]
+        failed = ordered[1]
+        changed.block_generation = "old-generation"
+        failed.verifier_outcomes.append(False)
+
+        loop = asyncio.get_running_loop()
+        started_at = loop.time()
+        assert not await registry.activate(new_profile, "new-generation")
+        assert loop.time() - started_at < 0.1
+        assert changed in registry._attach_pending  # type: ignore[attr-defined]
+
+        await asyncio.wait_for(changed.rollback_started.wait(), timeout=0.5)
+        changed.rollback_release.set()
+        await _wait_until(
+            lambda: changed not in registry._attach_pending  # type: ignore[attr-defined]
+        )
+    finally:
+        old_profile.close()
+        new_profile.close()
+        for manager in managers:
+            manager.rollback_release.set()
         await registry.close()
 
 

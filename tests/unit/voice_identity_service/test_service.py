@@ -385,6 +385,71 @@ async def test_timed_out_model_load_is_owned_until_worker_finishes(
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_timed_out_embedding_is_owned_until_worker_finishes(
+    tmp_path: Path,
+) -> None:
+    class BlockingModel(_Model):
+        def __init__(self) -> None:
+            super().__init__()
+            self.embedding_started = threading.Event()
+            self.embedding_release = threading.Event()
+            self.close_finished = threading.Event()
+            self.load_calls = 0
+
+        def load(self) -> bool:
+            self.load_calls += 1
+            return True
+
+        def embedding_from_pcm16(
+            self,
+            pcm16: bytes,
+            *,
+            sample_rate_hz: int,
+        ) -> np.ndarray:
+            self.embedding_started.set()
+            if not self.embedding_release.wait(1.0):
+                raise TimeoutError("test did not release model inference")
+            return super().embedding_from_pcm16(
+                pcm16,
+                sample_rate_hz=sample_rate_hz,
+            )
+
+        def close(self) -> None:
+            assert self.embedding_release.is_set()
+            super().close()
+            self.close_finished.set()
+
+    model = BlockingModel()
+    service, _selected, _activations, suppression_events = _service(
+        tmp_path,
+        model=model,
+        model_timeout_seconds=0.1,
+    )
+    await service.initialize()
+    enrollment = await service.start_enrollment()
+
+    with pytest.raises(VoiceIdentityServiceError, match="model_unavailable"):
+        await service.complete_enrollment(
+            enrollment.enrollment_id,
+            "profile",
+            _pcm(),
+        )
+    assert await asyncio.to_thread(model.embedding_started.wait, 1.0)
+    assert not model.closed
+    assert suppression_events[-1] == "restore:voice_identity_enrollment"
+
+    with pytest.raises(VoiceIdentityServiceError, match="model_unavailable"):
+        await service.start_enrollment()
+    assert model.load_calls == 1
+
+    model.embedding_release.set()
+    assert await asyncio.to_thread(model.close_finished.wait, 1.0)
+    assert model.closed
+    await service.close()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_reenrollment_while_disabled_keeps_user_preference(
     tmp_path: Path,
 ) -> None:

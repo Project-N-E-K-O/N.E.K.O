@@ -251,6 +251,7 @@ class OwnerVoiceRuntimeRegistry:
             try:
                 for manager in tuple(self._managers):
                     factory = next_activation.factory_for(manager)
+                    changed.append(manager)
                     try:
                         updated = await manager.set_speaker_verifier_factory(
                             factory,
@@ -262,11 +263,10 @@ class OwnerVoiceRuntimeRegistry:
                     if not updated:
                         factory.close()
                         raise RuntimeError("speaker verifier activation failed")
-                    changed.append(manager)
                     self._attach_pending.discard(manager)
                     self._detach_pending.pop(manager, None)
             except BaseException:
-                await asyncio.shield(self._rollback_activation(changed, old_activation))
+                self._rollback_activation(changed, old_activation)
                 if next_activation is not None:
                     next_activation.close()
                 return False
@@ -346,45 +346,18 @@ class OwnerVoiceRuntimeRegistry:
             if self._attach_retry_task is current:
                 self._attach_retry_task = None
 
-    async def _rollback_activation(
+    def _rollback_activation(
         self,
         managers: list[object],
         activation: _OwnerActivation | None,
     ) -> None:
-        for manager in reversed(managers):
-            factory: OwnerVoiceAsrCompositionFactory | None = None
-            detach_generation = str(uuid.uuid4())
-            try:
-                factory = (
-                    None if activation is None else activation.factory_for(manager)
-                )
-                updated = await manager.set_speaker_verifier_factory(
-                    factory,
-                    activation_generation=(
-                        str(uuid.uuid4())
-                        if activation is None
-                        else activation.generation
-                    ),
-                )
-                if updated:
-                    self._attach_pending.discard(manager)
-                    self._detach_pending.pop(manager, None)
-                else:
-                    if factory is not None:
-                        factory.close()
-                    if activation is None:
-                        self._detach_pending[manager] = detach_generation
-                    else:
-                        self._attach_pending.add(manager)
-                        self._detach_pending.pop(manager, None)
-            except BaseException:
-                if factory is not None:
-                    factory.close()
-                if activation is None:
-                    self._detach_pending[manager] = detach_generation
-                else:
-                    self._attach_pending.add(manager)
-                    self._detach_pending.pop(manager, None)
+        for manager in managers:
+            if activation is None:
+                self._attach_pending.discard(manager)
+                self._detach_pending[manager] = str(uuid.uuid4())
+            else:
+                self._attach_pending.add(manager)
+                self._detach_pending.pop(manager, None)
         if self._attach_pending:
             self._ensure_attach_watchdog()
         if self._detach_pending:

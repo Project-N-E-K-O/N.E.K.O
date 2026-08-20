@@ -108,6 +108,7 @@ class _EnrollmentSession:
     model: EnrollmentEmbeddingModel
     lease: VoiceInputSuppressionLease
     expiry_task: asyncio.Task[None]
+    embedding_task: asyncio.Task[np.ndarray] | None = None
 
 
 class VoiceIdentityService:
@@ -168,6 +169,7 @@ class VoiceIdentityService:
         self._enrollment: _EnrollmentSession | None = None
         self._last_completed: tuple[str, str] | None = None
         self._model_load_cleanup_task: asyncio.Task[None] | None = None
+        self._model_inference_cleanup_task: asyncio.Task[None] | None = None
         self._initialized = False
         self._closed = False
 
@@ -259,6 +261,12 @@ class VoiceIdentityService:
                     self._record_failure(VoiceIdentityEffectiveReason.MODEL_UNAVAILABLE)
                     raise VoiceIdentityServiceError("model_unavailable")
                 self._model_load_cleanup_task = None
+            cleanup_task = self._model_inference_cleanup_task
+            if cleanup_task is not None:
+                if not cleanup_task.done():
+                    self._record_failure(VoiceIdentityEffectiveReason.MODEL_UNAVAILABLE)
+                    raise VoiceIdentityServiceError("model_unavailable")
+                self._model_inference_cleanup_task = None
             try:
                 model = self._model_factory()
             except Exception as exc:
@@ -351,14 +359,20 @@ class VoiceIdentityService:
             try:
                 await asyncio.to_thread(validate_enrollment_pcm16, pcm16)
                 try:
-                    embedding = await asyncio.wait_for(
+                    embedding_task = asyncio.create_task(
                         asyncio.to_thread(
                             session.model.embedding_from_pcm16,
                             pcm16,
                             sample_rate_hz=CAMPPLUS_SAMPLE_RATE_HZ,
                         ),
+                        name="voice-identity-model-inference",
+                    )
+                    session.embedding_task = embedding_task
+                    embedding = await asyncio.wait_for(
+                        asyncio.shield(embedding_task),
                         timeout=self._model_timeout_seconds,
                     )
+                    session.embedding_task = None
                 except Exception as exc:
                     failure_reason = VoiceIdentityEffectiveReason.MODEL_UNAVAILABLE
                     raise VoiceIdentityServiceError("model_unavailable") from exc
@@ -611,6 +625,19 @@ class VoiceIdentityService:
             await session.lease.release()
         except Exception:
             ok = False
+        embedding_task = session.embedding_task
+        session.embedding_task = None
+        if embedding_task is not None:
+            if not embedding_task.done():
+                self._retain_timed_out_model_inference(
+                    session.model,
+                    embedding_task,
+                )
+                return ok
+            try:
+                embedding_task.result()
+            except BaseException:
+                pass
         await self._close_model(session.model)
         return ok
 
@@ -644,6 +671,33 @@ class VoiceIdentityService:
         def clear_finished(task: asyncio.Task[None]) -> None:
             if self._model_load_cleanup_task is task:
                 self._model_load_cleanup_task = None
+
+        cleanup_task.add_done_callback(clear_finished)
+
+    def _retain_timed_out_model_inference(
+        self,
+        model: EnrollmentEmbeddingModel,
+        inference_task: asyncio.Task[np.ndarray],
+    ) -> None:
+        async def finish_and_close() -> None:
+            try:
+                embedding = await inference_task
+            except BaseException:
+                pass
+            else:
+                if isinstance(embedding, np.ndarray) and embedding.flags.writeable:
+                    embedding.fill(0.0)
+            await self._close_model(model)
+
+        cleanup_task = asyncio.create_task(
+            finish_and_close(),
+            name="voice-identity-model-inference-cleanup",
+        )
+        self._model_inference_cleanup_task = cleanup_task
+
+        def clear_finished(task: asyncio.Task[None]) -> None:
+            if self._model_inference_cleanup_task is task:
+                self._model_inference_cleanup_task = None
 
         cleanup_task.add_done_callback(clear_finished)
 
