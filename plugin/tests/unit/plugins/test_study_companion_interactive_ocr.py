@@ -390,6 +390,11 @@ def test_ocr_entry_and_static_ui_expose_interactive_timeout_contract() -> None:
         "default": "fullscreen",
     }
     assert meta.timeout == 90.0
+    assert set(meta.llm_result_fields or ()) >= {
+        "capture_mode_requested",
+        "capture_mode_used",
+        "interactive_fallback_reason",
+    }
     assert "study_ocr_snapshot: 100000" in main_js
     assert "callPlugin('study_ocr_snapshot', { capture_mode: 'interactive' })" in main_js
     assert "if (data.status === 'canceled')" in main_js
@@ -406,7 +411,17 @@ def test_ocr_entry_and_static_ui_expose_interactive_timeout_contract() -> None:
     assert "throw error;" in main_js
     run_ocr = main_js[
         main_js.index("async function runOcr(options = {})") : main_js.index(
-            "async function explainText()"
+            "async function explainText(options = {})"
+        )
+    ]
+    explain_text = main_js[
+        main_js.index("async function explainText(options = {})") : main_js.index(
+            "async function generateQuestion()"
+        )
+    ]
+    coach_action = main_js[
+        main_js.index("async function handleNekoCoachAction(action)") : main_js.index(
+            "const documentController ="
         )
     ]
     canceled = run_ocr[
@@ -420,10 +435,15 @@ def test_ocr_entry_and_static_ui_expose_interactive_timeout_contract() -> None:
     assert "studyInput.value = data.text;" in run_ocr
     assert "const ocrStatus = data.status || 'unknown';" in run_ocr
     assert "['ok', 'empty'].includes(ocrStatus)" in run_ocr
+    assert "data.ocr_fallback_notice = fallbackMessage;" in run_ocr
+    assert "catch (_statusError)" in run_ocr
     assert run_ocr.index("await refreshStatus({ updateReply: false });") < run_ocr.index(
         "setStatus(fallbackMessage || tf('ui.status.ocr_result'"
     )
     assert "{ status: ocrStatus }" in run_ocr
+    assert "const leadingNotice = String(options.leadingNotice || '').trim();" in explain_text
+    assert "[leadingNotice, pendingReply].filter(Boolean).join('\\n\\n')" in explain_text
+    assert "await explainText({ leadingNotice: ocrData?.ocr_fallback_notice });" in coach_action
     assert "generateQuestion()" not in run_ocr
 
 

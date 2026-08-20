@@ -1979,20 +1979,33 @@ async function runOcr(options = {}) {
     studyInput.value = '';
   }
   setReply(data.text || data.diagnostic || data.summary || '');
-  await refreshStatus({ updateReply: false });
+  if (fallbackMessage) {
+    data.ocr_fallback_notice = fallbackMessage;
+    try {
+      await refreshStatus({ updateReply: false });
+    } catch (_statusError) {
+      // Preserve the successful OCR fallback notice even if the status poll fails.
+    }
+  } else {
+    await refreshStatus({ updateReply: false });
+  }
   setStatus(fallbackMessage || tf('ui.status.ocr_result', 'OCR {status}', { status: ocrStatus }));
   return data;
 }
 
-async function explainText() {
+async function explainText(options = {}) {
   const text = studyInput.value.trim();
   if (!text && !studyInputImageValue) {
     throw new Error(t('ui.error.missing_study_input', 'Please enter text or paste an image first.'));
   }
+  const leadingNotice = String(options.leadingNotice || '').trim();
+  const pendingReply = studyInputImageValue
+    ? t('ui.status.solving_problem', 'Solving problem...')
+    : t('ui.status.explaining', 'Explaining...');
   setStatus(studyInputImageValue
     ? t('ui.status.solving_problem', 'Solving problem...')
     : t('ui.status.explaining', 'Explaining...'));
-  setReply(studyInputImageValue ? t('ui.status.solving_problem', 'Solving problem...') : t('ui.status.explaining', 'Explaining...'));
+  setReply([leadingNotice, pendingReply].filter(Boolean).join('\n\n'));
   scrollReplyIntoView();
   const args = { text };
   if (studyInputImageValue) {
@@ -2003,6 +2016,7 @@ async function explainText() {
     ? t('ui.status.reply_ready_fallback', 'Reply ready (fallback)')
     : t('ui.status.reply_ready', 'Reply ready'));
   setReply([
+    leadingNotice,
     data.degraded
       ? formatTutorDiagnostic(data.diagnostic)
       : (data.reply || data.summary || data.transition_phrase || ''),
@@ -2223,7 +2237,7 @@ async function handleNekoCoachAction(action) {
   if (normalized === 'explain-current') {
     const ocrData = await runOcr({ clearWhenEmpty: true });
     if (String(ocrData?.text || '').trim() || studyInputImageValue) {
-      await explainText();
+      await explainText({ leadingNotice: ocrData?.ocr_fallback_notice });
     }
     return;
   }

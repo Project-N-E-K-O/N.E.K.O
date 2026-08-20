@@ -63,7 +63,14 @@ class _OcrEntriesMixin:
             },
         },
         timeout=90.0,
-        llm_result_fields=["summary", "status", "diagnostic"],
+        llm_result_fields=[
+            "summary",
+            "status",
+            "diagnostic",
+            "capture_mode_requested",
+            "capture_mode_used",
+            "interactive_fallback_reason",
+        ],
     )
     async def study_ocr_snapshot(self, capture_mode: str = "fullscreen", **kwargs):
         if self._ocr_pipeline is None:
