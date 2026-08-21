@@ -472,6 +472,7 @@
     "ui.notebook.content":  "Contenido",
     "ui.notebook.ai_expand":  "Ampliar con IA",
     "ui.notebook.delete_note_confirm":  "¿Eliminar esta nota?",
+    "ui.notebook.discard_draft_confirm":  "¿Descartar los cambios sin guardar?",
     "ui.notebook.note_count":  "{count} notas",
     "ui.notebook.name_required":  "El nombre del cuaderno es obligatorio",
     "ui.notebook.saved":  "Guardado",

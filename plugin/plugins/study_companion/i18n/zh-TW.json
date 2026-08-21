@@ -472,6 +472,7 @@
     "ui.notebook.content":  "內容",
     "ui.notebook.ai_expand":  "AI 擴寫",
     "ui.notebook.delete_note_confirm":  "確定刪除這則筆記嗎？",
+    "ui.notebook.discard_draft_confirm":  "放棄未儲存的變更嗎？",
     "ui.notebook.note_count":  "共 {count} 則筆記",
     "ui.notebook.name_required":  "請輸入筆記本名稱",
     "ui.notebook.saved":  "已儲存",

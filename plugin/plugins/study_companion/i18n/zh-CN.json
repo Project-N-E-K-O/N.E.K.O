@@ -472,6 +472,7 @@
     "ui.notebook.content":  "内容",
     "ui.notebook.ai_expand":  "AI 扩写",
     "ui.notebook.delete_note_confirm":  "确定删除这条笔记吗？",
+    "ui.notebook.discard_draft_confirm":  "放弃未保存的更改吗？",
     "ui.notebook.note_count":  "共 {count} 条笔记",
     "ui.notebook.name_required":  "请输入笔记本名称",
     "ui.notebook.saved":  "已保存",

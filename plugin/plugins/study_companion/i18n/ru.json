@@ -472,6 +472,7 @@
     "ui.notebook.content":  "Содержимое",
     "ui.notebook.ai_expand":  "Дополнить с помощью ИИ",
     "ui.notebook.delete_note_confirm":  "Удалить эту заметку?",
+    "ui.notebook.discard_draft_confirm":  "Отменить несохранённые изменения?",
     "ui.notebook.note_count":  "Заметок: {count}",
     "ui.notebook.name_required":  "Укажите название блокнота",
     "ui.notebook.saved":  "Сохранено",

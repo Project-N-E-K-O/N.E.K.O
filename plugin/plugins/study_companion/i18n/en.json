@@ -472,6 +472,7 @@
     "ui.notebook.content":  "Content",
     "ui.notebook.ai_expand":  "AI expand",
     "ui.notebook.delete_note_confirm":  "Delete this note?",
+    "ui.notebook.discard_draft_confirm":  "Discard unsaved changes?",
     "ui.notebook.note_count":  "{count} notes",
     "ui.notebook.name_required":  "Notebook name is required",
     "ui.notebook.saved":  "Saved",

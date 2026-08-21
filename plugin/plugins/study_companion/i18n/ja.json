@@ -472,6 +472,7 @@
     "ui.notebook.content":  "内容",
     "ui.notebook.ai_expand":  "AIで展開",
     "ui.notebook.delete_note_confirm":  "このノートを削除しますか？",
+    "ui.notebook.discard_draft_confirm":  "未保存の変更を破棄しますか？",
     "ui.notebook.note_count":  "{count}件のノート",
     "ui.notebook.name_required":  "ノートブック名を入力してください",
     "ui.notebook.saved":  "保存しました",

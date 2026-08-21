@@ -5423,6 +5423,7 @@ def test_study_companion_i18n_bundles_are_present() -> None:
         assert "entries.set_knowledge_contribution_opt_in.name" in bundle
         assert "entries.export_notes.name" in bundle
         assert "ui.profile.stage.cross_stage" in bundle
+        assert bundle["ui.notebook.discard_draft_confirm"]
         assert "qwen" not in bundle["ui.error.llm_model_not_supported"].casefold()
 
     en_bundle = json.loads(

@@ -472,6 +472,7 @@
     "ui.notebook.content":  "내용",
     "ui.notebook.ai_expand":  "AI 확장",
     "ui.notebook.delete_note_confirm":  "이 노트를 삭제할까요?",
+    "ui.notebook.discard_draft_confirm":  "저장하지 않은 변경 사항을 버릴까요?",
     "ui.notebook.note_count":  "노트 {count}개",
     "ui.notebook.name_required":  "노트북 이름이 필요합니다",
     "ui.notebook.saved":  "저장됨",
