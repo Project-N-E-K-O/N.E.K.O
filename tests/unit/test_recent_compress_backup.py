@@ -374,6 +374,119 @@ async def test_admission_lease_survives_a_hold_flip_through_the_real_middleware(
 
 
 @pytest.mark.unit
+def test_every_character_scoped_post_route_is_classified_for_the_fence():
+    """A new character-scoped writer must not silently miss the fence.
+
+    Anything added under ``{lanlan_name}`` either enters the publication guard
+    or gets listed here as a deliberate read/control route.
+    """
+    from app import memory_server
+
+    runtime = memory_server.runtime
+    unfenced_by_design = {
+        # 只读召回：读路径由引擎准入检查兜底，围栏住只会白白打断读取。
+        "/query_memory/{lanlan_name}",
+        "/internal/memory/{lanlan_name}/scoped_context",
+        # 只取消任务，不写角色文件——删除期间恰恰需要它还能用。
+        "/cancel_correction/{lanlan_name}",
+        # 围栏本身就是它设的，自己不能被自己拦。
+        "/release_character/{lanlan_name}",
+    }
+    probe_name = "围栏探针角色"
+    fenced: set[str] = set()
+    unfenced: set[str] = set()
+    for route in runtime.app.routes:
+        path = getattr(route, "path", "")
+        methods = getattr(route, "methods", None) or set()
+        if "{lanlan_name}" not in path or "POST" not in methods:
+            continue
+        probe_path = path.replace("{lanlan_name}", probe_name)
+        if runtime._character_write_name_from_path(probe_path) == probe_name:
+            fenced.add(path)
+        else:
+            unfenced.add(path)
+
+    assert unfenced == unfenced_by_design
+    assert "/cache/{lanlan_name}" in fenced
+    assert "/record_surfaced/{lanlan_name}" in fenced
+
+
+@pytest.mark.unit
+def test_dispose_engine_keeps_bookkeeping_when_disposal_fails(tmp_path):
+    """A failed disposal must stay retryable, not vanish from this generation."""
+    from memory.timeindex import TimeIndexedMemory
+
+    name = "释放失败可重试角色"
+    db_path = tmp_path / "time_indexed.db"
+    engine = MagicMock()
+    engine.dispose.side_effect = OSError("busy")
+    manager = TimeIndexedMemory(recent_history_manager=None)
+    manager.engines[name] = engine
+    manager.db_paths[name] = str(db_path)
+    manager._engine_readonly_flags[name] = False
+    manager._writable_bootstrapped.add(name)
+
+    with pytest.raises(OSError):
+        manager.dispose_engine(name)
+
+    assert manager.engines[name] is engine
+    assert manager.db_paths[name] == str(db_path)
+
+    engine.dispose.side_effect = None
+    assert manager.dispose_engine(name) is True
+    assert name not in manager.engines
+    assert name not in manager.db_paths
+    assert name not in manager._writable_bootstrapped
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_startup_replay_tasks_join_the_per_character_registry(tmp_path):
+    """A long outbox replay must be drainable by a rename/delete that lands on it."""
+    from app import memory_server
+    from app.memory_server import outbox_infra
+
+    name = "补跑登记角色"
+    memory_server.post_turn._character_post_turn_tasks.pop(name, None)
+    started = asyncio.Event()
+
+    async def _fake_run_outbox_op(_name, _op, _semaphore=None):
+        started.set()
+        await asyncio.sleep(30)
+
+    fake_config = MagicMock()
+    fake_config.aload_characters = AsyncMock(return_value={"猫娘": {name: {}}})
+    fake_config.memory_dir = str(tmp_path)
+    fake_outbox = MagicMock()
+    fake_outbox.apending_ops = AsyncMock(
+        return_value=[{"op_id": "op-1", "type": "extract_facts"}]
+    )
+
+    spawned = []
+    try:
+        with patch.object(memory_server.runtime, "_config_manager", fake_config), patch.object(
+            memory_server.runtime, "outbox", fake_outbox,
+        ), patch.object(
+            outbox_infra, "_run_outbox_op", _fake_run_outbox_op,
+        ):
+            spawned = await outbox_infra._replay_pending_outbox()
+            await asyncio.wait_for(started.wait(), timeout=1)
+
+            assert len(spawned) == 1
+            assert len(
+                memory_server.post_turn._character_post_turn_tasks.get(name, ())
+            ) == 1
+            cancelled = await memory_server.post_turn.cancel_character_post_turn_tasks(
+                name
+            )
+            assert cancelled == 1
+    finally:
+        for task in spawned:
+            await _cleanup_task(task)
+        memory_server.post_turn._character_post_turn_tasks.pop(name, None)
+
+
+@pytest.mark.unit
 def test_release_drain_budget_stays_under_the_tightest_caller_timeout():
     """A caller that gives up first starts deleting files while the drain runs."""
     import inspect

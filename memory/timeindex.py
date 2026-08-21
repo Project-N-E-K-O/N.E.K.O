@@ -412,15 +412,25 @@ class TimeIndexedMemory:
         return await asyncio.to_thread(self._ensure_engine_exists, lanlan_name, db_path)
 
     def dispose_engine(self, lanlan_name: str) -> bool:
-        """Dispose one character's cached engines and report whether any were known."""
-        db_path = self.db_paths.pop(lanlan_name, None)
-        engine = self.engines.pop(lanlan_name, None)
+        """Dispose one character's cached engines and report whether any were known.
+
+        Bookkeeping is only cleared once every disposal succeeded: a caller that
+        retries after a failure must still find this generation, otherwise the
+        pool that caused the failure keeps the database file locked until the
+        process exits.
+        """
+        db_path = self.db_paths.get(lanlan_name)
+        engine = self.engines.get(lanlan_name)
         released = engine is not None
-        self._engine_readonly_flags.pop(lanlan_name, None)
-        self._writable_bootstrapped.discard(lanlan_name)
+        errors: list[Exception] = []
         if engine:
-            engine.dispose()
-            logger.info(f"[TimeIndexedMemory] 已释放角色 {lanlan_name} 的数据库引擎")
+            try:
+                engine.dispose()
+                logger.info(f"[TimeIndexedMemory] 已释放角色 {lanlan_name} 的数据库引擎")
+            except Exception as exc:
+                # 继续走下面的 _engine_cache 清理：真正扣着文件句柄的往往是
+                # 缓存里的那个 pool，不能因为这一步失败就整段跳过。
+                errors.append(exc)
         if db_path:
             normalized_db_path, readonly_connection_string = self._build_sqlite_connection_string(
                 str(db_path),
@@ -433,7 +443,16 @@ class TimeIndexedMemory:
                 if cached_engine is not None:
                     released = True
                     if cached_engine is not engine:
-                        cached_engine.dispose()
+                        try:
+                            cached_engine.dispose()
+                        except Exception as exc:
+                            errors.append(exc)
+        if errors:
+            raise errors[0]
+        self.db_paths.pop(lanlan_name, None)
+        self.engines.pop(lanlan_name, None)
+        self._engine_readonly_flags.pop(lanlan_name, None)
+        self._writable_bootstrapped.discard(lanlan_name)
         return released
 
     def cleanup(self):

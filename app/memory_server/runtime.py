@@ -75,7 +75,16 @@ class ContinueStorageStartupRequest(BaseModel):
 
 
 app = FastAPI()
-_CHARACTER_WRITE_PATH_PREFIXES = ("/cache/", "/process/", "/renew/", "/settle/")
+_CHARACTER_WRITE_PATH_PREFIXES = (
+    "/cache/",
+    "/process/",
+    "/renew/",
+    "/settle/",
+    # 反思合成与 surfaced 冷却登记同样往角色目录写 reflections.json /
+    # surfaced.json，删除后落盘会把旧身份的目录重建出来。
+    "/reflect/",
+    "/record_surfaced/",
+)
 # 群记忆写端点走 /internal/memory/{lanlan_name}/<op>，最终同样落到该角色的
 # FactStore / TimeIndexedMemory。围栏漏掉它们的话，删除窗口里这些请求既不会被
 # 拒绝也不会被排空，仍能带着已 checkout 的 SQLite 连接跨过 dispose。
