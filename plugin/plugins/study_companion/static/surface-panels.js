@@ -939,6 +939,7 @@
       if (!visibleFormats.includes(fmt)) fmt = visibleFormats[0];
       const fmtSelect = select(fmt, visibleFormats.map((value) => [value, formatLabel(ctx, value)]));
       fmtSelect.addEventListener('change', () => { fmt = fmtSelect.value; draw(); });
+      if (notebookNoteIds.length) style = 'neko';
       const styleSelect = select(style, [['neko', exportStyleLabel(ctx, 'neko')], ['academic', exportStyleLabel(ctx, 'academic')], ['compact', exportStyleLabel(ctx, 'compact')]]);
       styleSelect.addEventListener('change', () => { style = styleSelect.value; draw(); });
       const previewButton = button(t(ctx, 'ui.button.preview', 'Preview'), () => exportNotes(true));
@@ -947,7 +948,7 @@
       exportButton.dataset.surfaceAction = 'export-download';
       const controlsDisabled = !availabilityResolved || !exportAvailable;
       fmtSelect.disabled = controlsDisabled;
-      styleSelect.disabled = controlsDisabled;
+      styleSelect.disabled = controlsDisabled || notebookNoteIds.length > 0;
       previewButton.disabled = controlsDisabled;
       exportButton.disabled = controlsDisabled;
       const currentStatus = status || (!availabilityResolved

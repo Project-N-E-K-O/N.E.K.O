@@ -6956,6 +6956,10 @@ await new Promise((resolve) => setTimeout(resolve, 0));
 const exporter = document.querySelector('[data-surface="note-exporter"]');
 if (!exporter) throw new Error('notebook export action did not open the exporter');
 await new Promise((resolve) => setTimeout(resolve, 0));
+const selectedStyleSelect = exporter.querySelectorAll('select')[1];
+if (!selectedStyleSelect?.disabled || selectedStyleSelect.value !== 'neko') {
+  throw new Error('selected-note exporter did not disable the unused style picker');
+}
 exporter.querySelector('[data-surface-action="export-preview"]').click();
 await new Promise((resolve) => setTimeout(resolve, 0));
 const exportCall = calls.find((call) => call.entryId === 'study_export_notes');
@@ -6965,6 +6969,10 @@ if (!exportCall || JSON.stringify(exportCall.args.note_ids) !== JSON.stringify([
 const standaloneExporter = window.StudyCompanionSurfacePanels.render('note-exporter', ctx);
 document.body.appendChild(standaloneExporter);
 await new Promise((resolve) => setTimeout(resolve, 0));
+const standaloneStyleSelect = standaloneExporter.querySelectorAll('select')[1];
+if (!standaloneStyleSelect || standaloneStyleSelect.disabled) {
+  throw new Error('standalone exporter style picker should remain enabled');
+}
 standaloneExporter.querySelector('[data-surface-action="export-preview"]').click();
 await new Promise((resolve) => setTimeout(resolve, 0));
 const standaloneExportCall = calls.filter((call) => call.entryId === 'study_export_notes').at(-1);
@@ -7005,7 +7013,7 @@ const notes = [
   { id: 'note-1', title: 'First', snippet: 'First summary', content: 'First body', updated_at: '2026-08-20T00:00:00Z' },
   { id: 'note-2', title: 'Second', snippet: 'Second summary', content: 'Second body', updated_at: '2026-08-20T00:00:00Z' },
 ];
-const detailResolvers = new Map();
+const detailRequests = new Map();
 const noteListResolvers = [];
 let deferNoteLists = false;
 async function callPlugin(entryId, args = {}) {
@@ -7015,7 +7023,7 @@ async function callPlugin(entryId, args = {}) {
     return await new Promise((resolve) => noteListResolvers.push(resolve));
   }
   if (entryId === 'study_note_get') {
-    return await new Promise((resolve) => detailResolvers.set(args.note_id, resolve));
+    return await new Promise((resolve, reject) => detailRequests.set(args.note_id, { resolve, reject }));
   }
   throw new Error(`Unexpected entry: ${entryId}`);
 }
@@ -7035,21 +7043,32 @@ await new Promise((resolve) => setTimeout(resolve, 0));
 const noteButtons = notebook.querySelectorAll('.notebook-note-row__open');
 noteButtons[0].click();
 noteButtons[1].click();
-detailResolvers.get('note-2')({ note: notes[1] });
+detailRequests.get('note-2').resolve({ note: notes[1] });
 await new Promise((resolve) => setTimeout(resolve, 0));
-detailResolvers.get('note-1')({ note: notes[0] });
+detailRequests.get('note-1').resolve({ note: notes[0] });
 await new Promise((resolve) => setTimeout(resolve, 0));
 if (notebook.querySelector('.notebook-editor input')?.value !== 'Second') {
   throw new Error('an older detail response replaced the latest note selection');
 }
 
 noteButtons[0].click();
+await new Promise((resolve) => setTimeout(resolve, 0));
+notebook.querySelectorAll('.notebook-note-row__open')[1].click();
+detailRequests.get('note-2').resolve({ note: notes[1] });
+await new Promise((resolve) => setTimeout(resolve, 0));
+detailRequests.get('note-1').reject(new Error('stale detail failed'));
+await new Promise((resolve) => setTimeout(resolve, 0));
+if (notebook.querySelector('.study-panel__status-chip')?.textContent.includes('stale detail failed')) {
+  throw new Error('a superseded note-detail rejection overwrote the current status');
+}
+
+notebook.querySelectorAll('.notebook-note-row__open')[0].click();
 const refreshButton = [...notebook.querySelectorAll('.notebook-toolbar__actions button')]
   .find((button) => button.textContent === 'Refresh');
 refreshButton.click();
 await new Promise((resolve) => setTimeout(resolve, 0));
 await new Promise((resolve) => setTimeout(resolve, 0));
-detailResolvers.get('note-1')({ note: notes[0] });
+detailRequests.get('note-1').resolve({ note: notes[0] });
 await new Promise((resolve) => setTimeout(resolve, 0));
 if (notebook.querySelector('.notebook-editor input')?.value !== 'Second') {
   throw new Error('a detail response survived a note-list refresh');
@@ -7059,7 +7078,7 @@ deferNoteLists = true;
 refreshButton.click();
 await new Promise((resolve) => setTimeout(resolve, 0));
 notebook.querySelectorAll('.notebook-note-row__open')[0].click();
-detailResolvers.get('note-1')({ note: { ...notes[0], content: 'Latest First body' } });
+detailRequests.get('note-1').resolve({ note: { ...notes[0], content: 'Latest First body' } });
 await new Promise((resolve) => setTimeout(resolve, 0));
 noteListResolvers.shift()({ notes });
 await new Promise((resolve) => setTimeout(resolve, 0));

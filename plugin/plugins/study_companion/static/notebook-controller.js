@@ -473,6 +473,8 @@
         selectedNote = payload.note || null;
         drawList();
         drawEditor();
+      } catch (error) {
+        if (isValid() && requestId === noteDetailRequest) setStatus(errorText(error));
       } finally {
         setBusy(false);
       }
