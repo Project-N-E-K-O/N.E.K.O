@@ -7274,6 +7274,7 @@ const { document } = window;
 let expandResolve;
 let saveResolve;
 let deleteNotebookResolve;
+let failNotebookList = false;
 const calls = [];
 let note = {
   id: 'note-1',
@@ -7288,7 +7289,13 @@ let note = {
 };
 async function callPlugin(entryId, args = {}) {
   calls.push({ entryId, args });
-  if (entryId === 'study_notebook_list') return { notebooks: [{ id: 'book-1', name: 'Book', note_count: 1 }] };
+  if (entryId === 'study_notebook_list') {
+    if (failNotebookList) {
+      failNotebookList = false;
+      throw new Error('forced notebook refresh failure');
+    }
+    return { notebooks: [{ id: 'book-1', name: 'Book', note_count: 1 }] };
+  }
   if (entryId === 'study_note_list') return { notes: [note] };
   if (entryId === 'study_note_get') return { note };
   if (entryId === 'study_note_upsert') {
@@ -7433,9 +7440,16 @@ if (calls.filter((call) => call.entryId === 'study_note_get').length !== detailC
 if (calls.filter((call) => call.entryId === 'study_note_upsert').length !== upsertsBeforeDelete) {
   throw new Error('new note mutation ran concurrently with notebook deletion');
 }
+failNotebookList = true;
 deleteNotebookResolve({});
 await new Promise((resolve) => setTimeout(resolve, 0));
 await new Promise((resolve) => setTimeout(resolve, 0));
+if (notebook.querySelector('.notebook-editor__actions')) {
+  throw new Error('deleted notebook editor remained actionable after refresh failure');
+}
+if (!notebook.querySelector('.notebook-editor')?.textContent.includes('Select a note to edit')) {
+  throw new Error('deleted notebook editor was not cleared before refresh failure');
+}
 """
     completed = subprocess.run(
         ["node", "--input-type=module", "-e", script],
@@ -7576,7 +7590,8 @@ window.confirm = () => {
 };
 const calls = [];
 let failureEntry = '';
-const notes = [
+let createdNoteCount = 0;
+let notes = [
   { id: 'note-1', notebook_id: 'book-1', title: 'First', snippet: 'First summary', content: 'First body', topic_ids: [], tags: [], updated_at: '2026-08-20T00:00:00Z' },
   { id: 'note-2', notebook_id: 'book-1', title: 'Second', snippet: 'Second summary', content: 'Second body', topic_ids: [], tags: [], updated_at: '2026-08-20T00:00:00Z' },
 ];
@@ -7594,7 +7609,15 @@ async function callPlugin(entryId, args = {}) {
   if (entryId === 'study_note_get') return { note: notes.find((item) => item.id === args.note_id) };
   if (entryId === 'study_notebook_create') return { notebook: { id: 'book-2', name: args.name, note_count: 0 } };
   if (entryId === 'study_note_upsert') {
-    return { note: { ...notes[0], ...args, id: args.note_id || 'note-new' } };
+    const noteId = args.note_id || `note-new-${createdNoteCount += 1}`;
+    const previous = notes.find((item) => item.id === noteId) || notes[0];
+    const saved = { ...previous, ...args, id: noteId };
+    notes = [saved, ...notes.filter((item) => item.id !== noteId)];
+    return { note: saved };
+  }
+  if (entryId === 'study_note_delete') {
+    notes = notes.filter((item) => item.id !== args.note_id);
+    return {};
   }
   throw new Error(`Unexpected entry: ${entryId}`);
 }
@@ -7710,11 +7733,12 @@ for (const entryId of ['study_notebook_create', 'study_notebook_list', 'study_no
 }
 
 async function expectNewNoteRefreshFailure(entryId) {
-  const draft = `Draft retained after new note ${entryId}`;
+  const draft = `Draft discarded before new note ${entryId}`;
   const editorContent = notebook.querySelector('.notebook-editor__content');
   editorContent.value = draft;
   editorContent.dispatchEvent(new window.Event('input', { bubbles: true }));
   failureEntry = entryId;
+  const createsBefore = calls.filter((call) => call.entryId === 'study_note_upsert' && !call.args.note_id).length;
   const savesBefore = calls.filter((call) => call.entryId === 'study_note_upsert' && call.args.note_id).length;
   const newNoteButton = [...notebook.querySelectorAll('.notebook-toolbar__actions button')]
     .find((button) => button.textContent === 'New note');
@@ -7722,31 +7746,53 @@ async function expectNewNoteRefreshFailure(entryId) {
   await new Promise((resolve) => setTimeout(resolve, 0));
   await new Promise((resolve) => setTimeout(resolve, 0));
   await new Promise((resolve) => setTimeout(resolve, 0));
-  if (!notebook.querySelector('.study-panel__status-chip')?.textContent.includes(`forced ${entryId} failure`)) {
-    throw new Error(`new-note ${entryId} failure was not reported`);
+  const status = notebook.querySelector('.study-panel__status-chip')?.textContent || '';
+  if (!status.startsWith('Saved:') || !status.includes(`forced ${entryId} failure`)) {
+    throw new Error(`new-note ${entryId} refresh failure did not preserve saved status: ${status}`);
   }
-  if (notebook.querySelector('.notebook-editor__content')?.value !== draft) {
-    throw new Error(`new-note ${entryId} failure did not preserve the previous editor`);
+  if (notebook.querySelector('.notebook-editor__content')?.value !== '') {
+    throw new Error(`new-note ${entryId} refresh failure restored the discarded draft`);
+  }
+  if (notebook.querySelector('.notebook-editor input')?.value !== 'New note') {
+    throw new Error(`new-note ${entryId} refresh failure did not show the created note`);
   }
   const failedUnload = new window.Event('beforeunload', { cancelable: true });
   window.dispatchEvent(failedUnload);
-  if (!failedUnload.defaultPrevented) {
-    throw new Error(`new-note ${entryId} failure did not restore the dirty draft guard`);
+  if (failedUnload.defaultPrevented) {
+    throw new Error(`new-note ${entryId} refresh failure restored the discarded draft guard`);
   }
+  const createdNoteId = `note-new-${createdNoteCount}`;
   const saveButton = [...notebook.querySelectorAll('.notebook-editor__actions button')]
     .find((button) => button.textContent === 'Save');
   saveButton.click();
   await new Promise((resolve) => setTimeout(resolve, 0));
   await new Promise((resolve) => setTimeout(resolve, 0));
   await new Promise((resolve) => setTimeout(resolve, 0));
+  const creates = calls.filter((call) => call.entryId === 'study_note_upsert' && !call.args.note_id);
   const saves = calls.filter((call) => call.entryId === 'study_note_upsert' && call.args.note_id);
-  if (saves.length !== savesBefore + 1 || saves.at(-1).args.note_id !== 'note-1') {
-    throw new Error(`new-note ${entryId} failure detached the visible editor from its note`);
+  if (creates.length !== createsBefore + 1) {
+    throw new Error(`new-note ${entryId} refresh failure caused duplicate creation`);
+  }
+  if (saves.length !== savesBefore + 1 || saves.at(-1).args.note_id !== createdNoteId) {
+    throw new Error(`new-note ${entryId} refresh failure detached the created editor from its note`);
   }
 }
 
 for (const entryId of ['study_notebook_list', 'study_note_list']) {
   await expectNewNoteRefreshFailure(entryId);
+}
+
+failureEntry = 'study_notebook_list';
+const deleteNoteButton = [...notebook.querySelectorAll('.notebook-editor__actions button')]
+  .find((button) => button.textContent === 'Delete');
+deleteNoteButton.click();
+await new Promise((resolve) => setTimeout(resolve, 0));
+await new Promise((resolve) => setTimeout(resolve, 0));
+if (notebook.querySelector('.notebook-editor__actions')) {
+  throw new Error('deleted note editor remained actionable after refresh failure');
+}
+if (!notebook.querySelector('.notebook-editor')?.textContent.includes('Select a note to edit')) {
+  throw new Error('deleted note editor was not cleared before refresh failure');
 }
 """
     completed = subprocess.run(

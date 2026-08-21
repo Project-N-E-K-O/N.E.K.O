@@ -447,7 +447,11 @@
         const noteId = selectedNote.id;
         await ctx.callPlugin('study_note_delete', { note_id: noteId });
         selectedNoteIds.delete(noteId);
+        notes = notes.filter((note) => note.id !== noteId);
         selectedNote = null;
+        drawList();
+        drawEditor();
+        updateSelectionBar();
         await refresh();
       }, false, true);
       actions.append(deleteButton, expandButton, saveButton);
@@ -558,8 +562,12 @@
       if (!window.confirm(t(ctx, 'ui.notebook.delete_notebook_confirm', 'Delete this notebook? Its notes will become unfiled.'))) return;
       setEditorDirty(false);
       await ctx.callPlugin('study_notebook_delete', { notebook_id: notebookId });
+      notebooks = notebooks.filter((notebook) => notebook.id !== notebookId);
       selectedNotebook = 'all';
       selectedNote = null;
+      drawNotebookOptions();
+      drawList();
+      drawEditor();
       await refresh();
     }
 
@@ -567,20 +575,32 @@
       const restoreDirtyDraft = editorDirty;
       if (!confirmDiscardDraft()) return;
       setEditorDirty(false);
+      let payload;
       try {
-        const payload = await ctx.callPlugin('study_note_upsert', {
+        payload = await ctx.callPlugin('study_note_upsert', {
           notebook_id: currentNotebookId(),
           title: t(ctx, 'ui.notebook.new_note', 'New note'),
           content: '',
         });
-        if (!isValid()) return;
+      } catch (error) {
+        setEditorDirty(restoreDirtyDraft);
+        throw error;
+      }
+      if (!isValid()) return;
+      selectedNote = payload.note || selectedNote;
+      drawList();
+      drawEditor();
+      try {
         await refresh();
         if (!isValid()) return;
         if (payload.note?.id) await selectNote(payload.note.id);
         setStatus(t(ctx, 'ui.notebook.saved', 'Saved'));
       } catch (error) {
-        setEditorDirty(restoreDirtyDraft);
-        throw error;
+        if (!isValid()) return;
+        selectedNote = payload.note || selectedNote;
+        drawList();
+        drawEditor();
+        setStatus(`${t(ctx, 'ui.notebook.saved', 'Saved')}: ${errorText(error)}`);
       }
     }
 
