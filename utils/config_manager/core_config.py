@@ -1527,6 +1527,33 @@ class CoreConfigMixin:
                     _derived_book = (
                         str(config.get(_book_field) or '').strip() if _book_field else ''
                     )
+                    # 管理簿里这家的 Key 只能配这家的端点。走过 UI 的配置里两者
+                    # 一定同源（选中服务商时 URL 被自动填成该家地址且只读），但
+                    # 存量 / 导入 / 手改的配置可能留着另一家的 URL —— 那时把这家的
+                    # 真 Key 解析出来，就是把 A 家的凭证发给 B 家。
+                    # URL 为空不构成风险：自定义三元组凑不齐，下游整体回退。
+                    # 两个来源装的是**同一把**密钥（_derived_book 只是多一层
+                    # ASSIST_API_KEY_* 派生），所以要一起把关：只 gate 显式那个
+                    # 会从派生那条漏出去。
+                    _slot_url = str(config.get(url_key) or '').strip()
+                    if (_explicit_book or _derived_book) and _slot_url:
+                        _profile = assist_api_profiles.get(provider)
+                        _candidates = (
+                            self._provider_url_candidates(
+                                _profile, 'OPENROUTER_URL', 'OPENROUTER_URLS'
+                            )
+                            if isinstance(_profile, dict)
+                            else []
+                        )
+
+                        def _norm_url(value: str) -> str:
+                            return str(value or '').strip().rstrip('/').lower()
+
+                        if _norm_url(_slot_url) not in {_norm_url(c) for c in _candidates}:
+                            # 端点不是这家的 → 不交出这家的 Key。回落到槽位存量值，
+                            # 请求不带（或带旧的）凭证会 401，比静默发错家可诊断。
+                            _explicit_book = ''
+                            _derived_book = ''
                     if _explicit_book:
                         config[apikey_key] = _explicit_book
                     elif cfg_key:

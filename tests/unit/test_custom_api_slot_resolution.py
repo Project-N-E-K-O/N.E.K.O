@@ -92,6 +92,43 @@ class TestNamedProviderSlotKey:
         )
 
     @pytest.mark.unit
+    def test_key_book_secret_is_withheld_from_a_foreign_url(self, config_manager):
+        """A provider's key may only be paired with that provider's endpoint.
+
+        Configs that went through the settings page always agree (picking a
+        provider overwrites the slot URL with its own, read-only). Imported or
+        hand-edited configs can pair a provider with another vendor's URL —
+        resolving the key book there sends one vendor's credential to another.
+        """
+        _write_core_config(config_manager, _base_config(
+            conversationModelProvider='deepseek',
+            conversationModelId='deepseek-v4-flash',
+            # 另一家的端点（存量 / 导入 / 手改）
+            conversationModelUrl='https://api.openai.com/v1',
+            assistApiKeyDeepseek='DEEPSEEK-REAL-KEY',
+        ))
+        conv = config_manager.get_model_api_config('conversation')
+        assert conv['api_key'] != 'DEEPSEEK-REAL-KEY', (
+            "端点不属于该服务商时不得交出它的管理簿 Key，"
+            f"base_url={conv['base_url']!r} api_key={conv['api_key']!r}"
+        )
+
+    @pytest.mark.unit
+    def test_key_book_secret_is_used_for_the_providers_own_url(self, config_manager):
+        """The guard must not withhold the key on a legitimate pairing."""
+        _write_core_config(config_manager, _base_config(
+            conversationModelProvider='deepseek',
+            conversationModelId='deepseek-v4-flash',
+            conversationModelUrl='https://api.deepseek.com/v1/',  # 尾斜杠写法差异
+            assistApiKeyDeepseek='DEEPSEEK-REAL-KEY',
+        ))
+        conv = config_manager.get_model_api_config('conversation')
+        assert conv['api_key'] == 'DEEPSEEK-REAL-KEY', (
+            "同家端点必须照常拿到管理簿 Key（尾斜杠不算换了一家），"
+            f"实际={conv['api_key']!r}"
+        )
+
+    @pytest.mark.unit
     def test_legacy_slot_key_survives_when_key_book_empty(self, config_manager):
         """Key-book-less legacy configs keep using the stored slot key."""
         _write_core_config(config_manager, _base_config(
