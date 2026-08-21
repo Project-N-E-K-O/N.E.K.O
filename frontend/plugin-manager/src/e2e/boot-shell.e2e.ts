@@ -19,6 +19,14 @@ test.beforeEach(async ({ page }) => {
   await stubCorePluginManagerApis(page)
 })
 
+test('redirects unknown routes and completes the boot shell handoff', async ({ page }) => {
+  await page.goto(`${PREVIEW_ORIGIN}/ui/route-that-does-not-exist`)
+
+  await expect(page).toHaveURL(`${PREVIEW_ORIGIN}/ui/`)
+  await expect(page.locator('.dashboard')).toBeVisible()
+  await expect(page.locator(`#${BOOT_SHELL_ID}`)).toHaveCount(0)
+})
+
 test('shows a theme-matched shell until the plugin manager layout is ready', async ({ page }) => {
   await page.addInitScript(() => {
     window.localStorage.setItem('neko-dark-mode', 'true')
