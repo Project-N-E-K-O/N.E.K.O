@@ -245,6 +245,28 @@ class ExternalMemoryImportRequest(BaseModel):
 
 @app.post("/internal/memory/import_external_markdown")
 async def import_external_markdown(request: ExternalMemoryImportRequest):
+    """Join the per-character admission ledger, then run the import.
+
+    This endpoint is body-addressed, so the publication guard middleware cannot
+    see which character it writes to. Its facts path reaches
+    ``fact_store`` → ``aindex_fact`` → that character's SQLite index, and one
+    persona fusion can run for minutes, so it has to register here explicitly —
+    otherwise release sees no active request and can dispose underneath it.
+    """
+    name = validate_lanlan_name(request.character_name)
+    context_token = runtime._begin_character_request(name)
+    if context_token is None:
+        return JSONResponse(
+            {"status": "cancelled", "message": "character release in progress"},
+            status_code=409,
+        )
+    try:
+        return await _import_external_markdown(request)
+    finally:
+        runtime._end_character_request(name, context_token)
+
+
+async def _import_external_markdown(request: ExternalMemoryImportRequest):
     """Persist already-previewed OpenClaw/Hermes entries via live managers.
 
     The persona and facts persistence paths are **asymmetric**, because their
@@ -647,7 +669,12 @@ async def api_reflect(lanlan_name: str):
     # timeout。periodic auto_promote loop 每 180s 跑一次会兜底，本端点不
     # 等也安全。caller (system_router) 仅用 auto_transitions 打 log，丢失
     # 计数无功能影响。
-    runtime._spawn_background_task(_safe_auto_promote(lanlan_name))
+    # 这个 30-90s 的 task 活得比请求久，改名/删除必须能排空它，否则它会在
+    # dispose 之后继续给旧身份写 reflection / persona 状态。
+    post_turn._track_character_post_turn_task(
+        lanlan_name,
+        runtime._spawn_background_task(_safe_auto_promote(lanlan_name)),
+    )
     try:
         reflection_result = await locale_state.run_with_character_prompt_locale(
             lanlan_name,
@@ -3640,7 +3667,13 @@ async def _new_dialog(
                     locale_admission_order=locale_admission_order,
                     op_id=op_id,
                 )
-                runtime._spawn_background_task(operation)
+                # 这个重试活得比 /new_dialog 请求久：不登记的话中间件一放行
+                # 就算排空了，改名/删除之后它还能把 prompt_locale.json 写回去，
+                # 把旧身份的目录重建出来。
+                post_turn._track_character_post_turn_task(
+                    lanlan_name,
+                    runtime._spawn_background_task(operation),
+                )
         else:
             _promote_new_dialog_locale_generation(
                 lanlan_name,
