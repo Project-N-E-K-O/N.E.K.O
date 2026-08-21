@@ -209,6 +209,10 @@ class TimeIndexedMemory:
         self.db_paths = {} # 存储 {lanlan_name: db_path}
         self._engine_readonly_flags = {}  # 存储 {lanlan_name: bool}
         self._writable_bootstrapped = set()  # 存储已完成可写初始化的角色
+        # {lanlan_name: {connection_string}}：dispose 失败、仍扣着文件句柄的 pool。
+        # 按连接串记账而不是靠 db_path 现推——路径漂移重建会覆盖 db_path，
+        # 那之后就再也推不出失败 pool 的键了。
+        self._undisposed_pools: dict[str, set[str]] = {}
         self.recent_history_manager = recent_history_manager
         self._engine_admission_check = engine_admission_check
         # 懒加载：不在构造器里同步初始化每角色 engine，首次访问时按需创建
@@ -431,6 +435,23 @@ class TimeIndexedMemory:
         released = engine is not None
         errors: list[Exception] = []
         engine_disposed = engine is None
+        # 本次要处理的连接串 = 当前 db_path 推出来的两个 + 以前失败留账的那些。
+        connection_strings: set[str] = set(
+            self._undisposed_pools.get(lanlan_name, ())
+        )
+        if db_path:
+            normalized_db_path, readonly_connection_string = self._build_sqlite_connection_string(
+                str(db_path),
+                readonly=True,
+            )
+            uri_path = normalized_db_path.replace("\\", "/")
+            connection_strings.add(readonly_connection_string)
+            connection_strings.add(f"sqlite:///{uri_path}")
+
+        def _remember_undisposed(keys: set[str]) -> None:
+            if keys:
+                self._undisposed_pools.setdefault(lanlan_name, set()).update(keys)
+
         if engine:
             try:
                 engine.dispose()
@@ -440,40 +461,34 @@ class TimeIndexedMemory:
                 # 继续走下面的 _engine_cache 清理：真正扣着文件句柄的往往是
                 # 缓存里的那个 pool，不能因为这一步失败就整段跳过。
                 errors.append(exc)
-        if db_path:
-            normalized_db_path, readonly_connection_string = self._build_sqlite_connection_string(
-                str(db_path),
-                readonly=True,
-            )
-            uri_path = normalized_db_path.replace("\\", "/")
-            writable_connection_string = f"sqlite:///{uri_path}"
-            for connection_string in {readonly_connection_string, writable_connection_string}:
-                # 只在确认释放成功之后才摘缓存条目：先摘后放的话，dispose 一抛
-                # 这个 pool 就再也找不回来，重试摸不到它，句柄会一直扣到进程退出。
-                cached_engine = SQLChatMessageHistory._engine_cache.get(connection_string)
-                if cached_engine is None:
+                _remember_undisposed(connection_strings)
+        for connection_string in sorted(connection_strings):
+            # 只在确认释放成功之后才摘缓存条目：先摘后放的话，dispose 一抛
+            # 这个 pool 就再也找不回来，重试摸不到它，句柄会一直扣到进程退出。
+            cached_engine = SQLChatMessageHistory._engine_cache.get(connection_string)
+            if cached_engine is None:
+                self._undisposed_pools.get(lanlan_name, set()).discard(connection_string)
+                continue
+            released = True
+            if cached_engine is engine:
+                if not engine_disposed:
                     continue
-                released = True
-                if cached_engine is engine:
-                    if not engine_disposed:
-                        continue
-                else:
-                    try:
-                        cached_engine.dispose()
-                    except Exception as exc:
-                        errors.append(exc)
-                        continue
-                SQLChatMessageHistory._engine_cache.pop(connection_string, None)
+            else:
+                try:
+                    cached_engine.dispose()
+                except Exception as exc:
+                    errors.append(exc)
+                    _remember_undisposed({connection_string})
+                    continue
+            SQLChatMessageHistory._engine_cache.pop(connection_string, None)
+            self._undisposed_pools.get(lanlan_name, set()).discard(connection_string)
+        if not self._undisposed_pools.get(lanlan_name):
+            self._undisposed_pools.pop(lanlan_name, None)
         if not (errors and retain_on_failure):
+            self.db_paths.pop(lanlan_name, None)
             self.engines.pop(lanlan_name, None)
             self._engine_readonly_flags.pop(lanlan_name, None)
             self._writable_bootstrapped.discard(lanlan_name)
-            if not errors:
-                self.db_paths.pop(lanlan_name, None)
-            # 失败时保留 db_path：没释放掉的那个 pool 还挂在
-            # ``SQLChatMessageHistory._engine_cache`` 里，而它的 connection string
-            # 只能从 db_path 推出来——丢了它，之后的 /release_character 就再也够
-            # 不到那个 pool。清掉 engines 已足够让就地修复分支落到重建。
         if errors:
             raise errors[0]
         return released

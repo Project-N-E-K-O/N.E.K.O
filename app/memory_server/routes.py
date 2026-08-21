@@ -245,6 +245,28 @@ class ExternalMemoryImportRequest(BaseModel):
 
 @app.post("/internal/memory/import_external_markdown")
 async def import_external_markdown(request: ExternalMemoryImportRequest):
+    """Join the per-character admission ledger, then run the import.
+
+    This endpoint is body-addressed, so the publication guard middleware cannot
+    see which character it writes to. Its facts path reaches
+    ``fact_store`` → ``aindex_fact`` → that character's SQLite index, and one
+    persona fusion can run for minutes, so it has to register here explicitly —
+    otherwise release sees no active request and can dispose underneath it.
+    """
+    name = validate_lanlan_name(request.character_name)
+    context_token = runtime._begin_character_request(name)
+    if context_token is None:
+        return JSONResponse(
+            {"status": "cancelled", "message": "character release in progress"},
+            status_code=409,
+        )
+    try:
+        return await _import_external_markdown(request)
+    finally:
+        runtime._end_character_request(name, context_token)
+
+
+async def _import_external_markdown(request: ExternalMemoryImportRequest):
     """Persist already-previewed OpenClaw/Hermes entries via live managers.
 
     The persona and facts persistence paths are **asymmetric**, because their
