@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test'
+import { expect, test, type Response } from '@playwright/test'
 import { PREVIEW_ORIGIN, stubCorePluginManagerApis } from './plugin-manager-test-helpers'
 
 test('keeps the initial plugin manager payload within the cold-start budget', async ({
@@ -17,6 +17,8 @@ test('keeps the initial plugin manager payload within the cold-start budget', as
     request.get(`${PREVIEW_ORIGIN}${entryPath}`),
     request.get(`${PREVIEW_ORIGIN}${stylesheetPath}`),
   ])
+  expect(entryResponse.ok()).toBe(true)
+  expect(stylesheetResponse.ok()).toBe(true)
   const [entryBody, stylesheetBody] = await Promise.all([
     entryResponse.body(),
     stylesheetResponse.body(),
@@ -28,22 +30,26 @@ test('keeps the initial plugin manager payload within the cold-start budget', as
 
 test('keeps the complete initial route script and stylesheet payload bounded', async ({ page }) => {
   await stubCorePluginManagerApis(page)
-  const scriptBodies: Array<Promise<Uint8Array>> = []
-  const stylesheetBodies: Array<Promise<Uint8Array>> = []
+  const scriptResponses: Response[] = []
+  const stylesheetResponses: Response[] = []
   page.on('response', (response) => {
     if (!response.url().startsWith(PREVIEW_ORIGIN)) return
     const resourceType = response.request().resourceType()
-    if (resourceType === 'script') scriptBodies.push(response.body())
-    if (resourceType === 'stylesheet') stylesheetBodies.push(response.body())
+    if (resourceType === 'script') scriptResponses.push(response)
+    if (resourceType === 'stylesheet') stylesheetResponses.push(response)
   })
 
   await page.goto(`${PREVIEW_ORIGIN}/ui/`)
   await expect(page.locator('.app-root')).toBeVisible()
   await expect(page.locator('.dashboard')).toBeVisible()
 
+  for (const response of [...scriptResponses, ...stylesheetResponses]) {
+    expect(response.ok(), `${response.status()} ${response.url()}`).toBe(true)
+  }
+
   const [scripts, stylesheets] = await Promise.all([
-    Promise.all(scriptBodies),
-    Promise.all(stylesheetBodies),
+    Promise.all(scriptResponses.map((response) => response.body())),
+    Promise.all(stylesheetResponses.map((response) => response.body())),
   ])
   const scriptBytes = scripts.reduce((total, body) => total + body.byteLength, 0)
   const stylesheetBytes = stylesheets.reduce((total, body) => total + body.byteLength, 0)
