@@ -374,41 +374,119 @@ async def test_admission_lease_survives_a_hold_flip_through_the_real_middleware(
 
 
 @pytest.mark.unit
-def test_every_character_scoped_post_route_is_classified_for_the_fence():
+def test_every_character_scoped_route_is_classified_for_the_fence():
     """A new character-scoped writer must not silently miss the fence.
 
-    Anything added under ``{lanlan_name}`` either enters the publication guard
-    or gets listed here as a deliberate read/control route.
+    Every ``{lanlan_name}`` route/method pair either enters the publication
+    guard or is listed here as a deliberate read/control route. The list is the
+    written-down boundary — adding an endpoint forces a decision about it.
     """
     from app import memory_server
 
     runtime = memory_server.runtime
     unfenced_by_design = {
-        # 只读召回：读路径由引擎准入检查兜底，围栏住只会白白打断读取。
-        "/query_memory/{lanlan_name}",
-        "/internal/memory/{lanlan_name}/scoped_context",
+        # 只读：读路径由引擎准入检查兜底，围栏住只会白白打断读取。
+        ("/query_memory/{lanlan_name}", "POST"),
+        ("/internal/memory/{lanlan_name}/scoped_context", "POST"),
+        ("/followup_topics/{lanlan_name}", "GET"),
+        ("/get_recent_history/{lanlan_name}", "GET"),
+        ("/search_for_memory/{lanlan_name}/{query}", "GET"),
+        ("/get_persona/{lanlan_name}", "GET"),
+        ("/api/memory/funnel/{lanlan_name}", "GET"),
+        ("/prompt-locale/{lanlan_name}", "GET"),
+        ("/last_conversation_gap/{lanlan_name}", "GET"),
+        # 渲染型读取；顺带刷新 suppress 冷却是 best-effort，而且它本身对
+        # 「角色已不在配置中」有短路分支，不值得为它换来发布窗口里的 409。
+        ("/get_settings/{lanlan_name}", "GET"),
         # 只取消任务，不写角色文件——删除期间恰恰需要它还能用。
-        "/cancel_correction/{lanlan_name}",
+        ("/cancel_correction/{lanlan_name}", "POST"),
         # 围栏本身就是它设的，自己不能被自己拦。
-        "/release_character/{lanlan_name}",
+        ("/release_character/{lanlan_name}", "POST"),
     }
     probe_name = "围栏探针角色"
-    fenced: set[str] = set()
-    unfenced: set[str] = set()
+    fenced: set[tuple[str, str]] = set()
+    unfenced: set[tuple[str, str]] = set()
     for route in runtime.app.routes:
         path = getattr(route, "path", "")
-        methods = getattr(route, "methods", None) or set()
-        if "{lanlan_name}" not in path or "POST" not in methods:
+        if "{lanlan_name}" not in path:
             continue
         probe_path = path.replace("{lanlan_name}", probe_name)
-        if runtime._character_write_name_from_path(probe_path) == probe_name:
-            fenced.add(path)
-        else:
-            unfenced.add(path)
+        for method in getattr(route, "methods", None) or set():
+            if method in {"HEAD", "OPTIONS"}:
+                continue
+            name = runtime._character_write_name_from_path(probe_path, method)
+            (fenced if name == probe_name else unfenced).add((path, method))
 
     assert unfenced == unfenced_by_design
-    assert "/cache/{lanlan_name}" in fenced
-    assert "/record_surfaced/{lanlan_name}" in fenced
+    assert ("/cache/{lanlan_name}", "POST") in fenced
+    assert ("/record_surfaced/{lanlan_name}", "POST") in fenced
+    assert ("/new_dialog/{lanlan_name}", "GET") in fenced
+    assert ("/prompt-locale/{lanlan_name}", "PUT") in fenced
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_reflect_auto_promote_task_joins_the_per_character_registry():
+    """auto_promote runs 30-90s past the request, so release must drain it."""
+    from app import memory_server
+    from app.memory_server import routes as routes_module
+
+    name = "反思提升登记角色"
+    memory_server.post_turn._character_post_turn_tasks.pop(name, None)
+    started = asyncio.Event()
+
+    async def _slow_auto_promote(_name):
+        started.set()
+        await asyncio.sleep(30)
+
+    with patch.object(routes_module, "_safe_auto_promote", _slow_auto_promote), patch.object(
+        routes_module.locale_state,
+        "run_with_character_prompt_locale",
+        AsyncMock(return_value=None),
+    ):
+        await routes_module.api_reflect(name)
+        await asyncio.wait_for(started.wait(), timeout=1)
+
+        assert len(
+            memory_server.post_turn._character_post_turn_tasks.get(name, ())
+        ) == 1
+        cancelled = await memory_server.post_turn.cancel_character_post_turn_tasks(
+            name
+        )
+
+    assert cancelled == 1
+    memory_server.post_turn._character_post_turn_tasks.pop(name, None)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_background_tasks_never_inherit_the_admission_lease():
+    """A detached task outlives the request, so release cannot drain it."""
+    from app import memory_server
+
+    name = "后台不继承租约角色"
+    memory_server.review._publication_held_derived_task_names.discard(name)
+    observed: dict[str, object] = {}
+    done = asyncio.Event()
+
+    async def _detached():
+        observed["lease"] = name in (
+            memory_server.runtime._admitted_character_context.get()
+        )
+        done.set()
+
+    context_token = memory_server.runtime._begin_character_request(name)
+    assert context_token is not None
+    task = None
+    try:
+        assert name in memory_server.runtime._admitted_character_context.get()
+        task = memory_server.runtime._spawn_background_task(_detached())
+        await asyncio.wait_for(done.wait(), timeout=1)
+    finally:
+        memory_server.runtime._end_character_request(name, context_token)
+        await _cleanup_task(task)
+
+    assert observed["lease"] is False
 
 
 @pytest.mark.unit

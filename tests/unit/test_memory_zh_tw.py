@@ -4286,11 +4286,16 @@ async def test_reflect_endpoint_uses_durable_character_locale(monkeypatch, tmp_p
     monkeypatch.setattr(locale_state, "_locale_path", lambda _name: str(locale_path))
     monkeypatch.setattr(runtime, "reflection_engine", ReflectionEngine())
     monkeypatch.setattr(gates, "_ais_powerful_memory_enabled", powerful_enabled)
-    monkeypatch.setattr(
-        runtime,
-        "_spawn_background_task",
-        lambda coroutine: coroutine.close(),
-    )
+    def _spawn_stub(coroutine):
+        # 不真起 task（下面手动 await _safe_auto_promote），但仍要返回一个
+        # 已完成的 awaitable：调用点会把它登记进 per-character registry，
+        # 已完成的 future 会立刻触发登记表的自清理回调。
+        coroutine.close()
+        finished = asyncio.get_running_loop().create_future()
+        finished.set_result(None)
+        return finished
+
+    monkeypatch.setattr(runtime, "_spawn_background_task", _spawn_stub)
     locale_state._locale_cache.clear()
     locale_state.record_character_prompt_locale("Neko", "zh-TW")
     locale_state._locale_cache.clear()

@@ -647,7 +647,12 @@ async def api_reflect(lanlan_name: str):
     # timeout。periodic auto_promote loop 每 180s 跑一次会兜底，本端点不
     # 等也安全。caller (system_router) 仅用 auto_transitions 打 log，丢失
     # 计数无功能影响。
-    runtime._spawn_background_task(_safe_auto_promote(lanlan_name))
+    # 这个 30-90s 的 task 活得比请求久，改名/删除必须能排空它，否则它会在
+    # dispose 之后继续给旧身份写 reflection / persona 状态。
+    post_turn._track_character_post_turn_task(
+        lanlan_name,
+        runtime._spawn_background_task(_safe_auto_promote(lanlan_name)),
+    )
     try:
         reflection_result = await locale_state.run_with_character_prompt_locale(
             lanlan_name,

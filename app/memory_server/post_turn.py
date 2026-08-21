@@ -232,17 +232,13 @@ async def _spawn_outbox_post_turn_signals(
             )
         return _track_character_post_turn_task(
             lanlan_name,
-            runtime._spawn_background_task(
-                operation,
-                inherit_character_admission=False,
-            ),
+            runtime._spawn_background_task(operation),
         )
     op = {'op_id': op_id, 'type': OP_POST_TURN_SIGNALS, 'payload': payload}
     return _track_character_post_turn_task(
         lanlan_name,
         runtime._spawn_background_task(
             outbox_infra._run_outbox_op(lanlan_name, op),
-            inherit_character_admission=False,
         ),
     )
 
@@ -507,7 +503,6 @@ async def _run_post_turn_signals(
                         signal_extraction._amaybe_trigger_negative_keyword_hook(
                             lanlan_name, user_msgs, get_global_language_full(),
                         ),
-                        inherit_character_admission=False,
                     ),
                 )
         except Exception as e:

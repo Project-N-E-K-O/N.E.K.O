@@ -75,15 +75,20 @@ class ContinueStorageStartupRequest(BaseModel):
 
 
 app = FastAPI()
-_CHARACTER_WRITE_PATH_PREFIXES = (
-    "/cache/",
-    "/process/",
-    "/renew/",
-    "/settle/",
+# 角色写端点 → 允许的方法。围栏和排空按这张表走；方法维度是必要的，
+# /prompt-locale/{name} 的 GET 只读、PUT 才写。
+_CHARACTER_WRITE_ROUTES: tuple[tuple[str, frozenset[str]], ...] = (
+    ("/cache/", frozenset({"POST"})),
+    ("/process/", frozenset({"POST"})),
+    ("/renew/", frozenset({"POST"})),
+    ("/settle/", frozenset({"POST"})),
     # 反思合成与 surfaced 冷却登记同样往角色目录写 reflections.json /
     # surfaced.json，删除后落盘会把旧身份的目录重建出来。
-    "/reflect/",
-    "/record_surfaced/",
+    ("/reflect/", frozenset({"POST"})),
+    ("/record_surfaced/", frozenset({"POST"})),
+    # GET，但显式带语言的请求会落盘 prompt_locale.json。
+    ("/new_dialog/", frozenset({"GET"})),
+    ("/prompt-locale/", frozenset({"PUT"})),
 )
 # 群记忆写端点走 /internal/memory/{lanlan_name}/<op>，最终同样落到该角色的
 # FactStore / TimeIndexedMemory。围栏漏掉它们的话，删除窗口里这些请求既不会被
@@ -115,15 +120,20 @@ _STORAGE_LIMITED_MODE_ALLOWED_PATHS = {
 }
 
 
-def _character_write_name_from_path(path: str) -> str | None:
+def _character_write_name_from_path(path: str, method: str) -> str | None:
     raw_name = None
-    for prefix in _CHARACTER_WRITE_PATH_PREFIXES:
+    method = (method or "").upper()
+    for prefix, methods in _CHARACTER_WRITE_ROUTES:
         if path.startswith(prefix):
             candidate = path[len(prefix):]
-            if candidate and "/" not in candidate:
+            if method in methods and candidate and "/" not in candidate:
                 raw_name = candidate
             break
-    if raw_name is None and path.startswith(_CHARACTER_SCOPED_WRITE_PATH_PREFIX):
+    if (
+        raw_name is None
+        and method == "POST"
+        and path.startswith(_CHARACTER_SCOPED_WRITE_PATH_PREFIX)
+    ):
         segments = path[len(_CHARACTER_SCOPED_WRITE_PATH_PREFIX):].split("/")
         if len(segments) == 2 and segments[1] in _CHARACTER_SCOPED_WRITE_OPS:
             raw_name = segments[0]
@@ -202,7 +212,9 @@ async def _wait_for_character_requests(
 
 @app.middleware("http")
 async def character_publication_guard(request: Request, call_next):
-    lanlan_name = _character_write_name_from_path(request.url.path)
+    lanlan_name = _character_write_name_from_path(
+        request.url.path, request.method,
+    )
     if lanlan_name is None:
         return await call_next(request)
     context_token = _begin_character_request(lanlan_name)
@@ -784,20 +796,19 @@ def _get_settle_lock(lanlan_name: str) -> asyncio.Lock:
     return _settle_locks[lanlan_name]
 
 
-def _spawn_background_task(
-    coro,
-    *,
-    inherit_character_admission: bool = True,
-) -> asyncio.Task:
-    """Create a background task with strong reference + exception logging."""
-    context_token = None
-    if not inherit_character_admission:
-        context_token = _admitted_character_context.set(frozenset())
+def _spawn_background_task(coro) -> asyncio.Task:
+    """Create a background task with strong reference + exception logging.
+
+    Detached work never inherits the caller's admission lease. That lease means
+    "an admitted request is still running and release will wait for it"; a
+    fire-and-forget task outlives the request and is not waited for, so keeping
+    the lease would let it reopen the engine after disposal.
+    """
+    context_token = _admitted_character_context.set(frozenset())
     try:
         task = asyncio.create_task(coro)
     finally:
-        if context_token is not None:
-            _admitted_character_context.reset(context_token)
+        _admitted_character_context.reset(context_token)
     _BACKGROUND_TASKS.add(task)
 
     def _on_done(t: asyncio.Task):

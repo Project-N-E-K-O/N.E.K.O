@@ -237,7 +237,6 @@ async def _replay_pending_outbox() -> list[asyncio.Task]:
                     name,
                     runtime._spawn_background_task(
                         _run_outbox_op(name, op, semaphore),
-                        inherit_character_admission=False,
                     ),
                 )
             )
