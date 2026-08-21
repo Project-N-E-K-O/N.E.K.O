@@ -13,7 +13,10 @@ class AudioProcessor extends AudioWorkletProcessor {
         this.needsResampling = this.resampleRatio !== 1.0;
         this.needsLowPass = this.targetSampleRate < this.originalSampleRate;
         this.lowPassTaps = this.needsLowPass ? this.createLowPassFilter() : null;
-        this.lowPassHistory = [];
+        this.lowPassHistory = this.lowPassTaps
+            ? new Float32Array(Math.floor(this.lowPassTaps.length / 2))
+            : null;
+        this.lowPassHistoryFilled = 0;
 
         // 缓冲区大小根据目标采样率调整
         // 48kHz: 480 samples (10ms, RNNoise frame size)
@@ -105,27 +108,53 @@ class AudioProcessor extends AudioWorkletProcessor {
         }
         const taps = this.lowPassTaps;
         const half = Math.floor(taps.length / 2);
-        const input = Array.from(audioData);
-        const extended = this.lowPassHistory.concat(input);
-        const result = new Float32Array(input.length);
+        const history = this.lowPassHistory;
+        const historyLength = this.lowPassHistoryFilled;
+        const inputLength = audioData.length;
+        const result = new Float32Array(inputLength);
 
-        for (let i = 0; i < input.length; i++) {
-            const center = this.lowPassHistory.length + i;
+        for (let i = 0; i < inputLength; i++) {
+            const center = historyLength + i;
             let sample = 0;
             for (let tap = 0; tap < taps.length; tap++) {
-                let sourceIndex = center + tap - half;
-                if (sourceIndex < 0) {
-                    sourceIndex = 0;
-                } else if (sourceIndex >= extended.length) {
-                    sourceIndex = extended.length - 1;
-                }
-                sample += extended[sourceIndex] * taps[tap];
+                sample += this.lowPassSampleAt(
+                    history,
+                    historyLength,
+                    audioData,
+                    center + tap - half
+                ) * taps[tap];
             }
             result[i] = sample;
         }
 
-        this.lowPassHistory = extended.slice(Math.max(0, extended.length - half));
+        this.updateLowPassHistory(history, historyLength, audioData, half);
         return result;
+    }
+
+    lowPassSampleAt(history, historyLength, audioData, index) {
+        if (index < 0) {
+            return historyLength > 0 ? history[0] : audioData[0];
+        }
+        if (index < historyLength) {
+            return history[index];
+        }
+        const offset = index - historyLength;
+        return offset < audioData.length
+            ? audioData[offset]
+            : audioData[audioData.length - 1];
+    }
+
+    updateLowPassHistory(history, historyLength, audioData, historyLimit) {
+        const combinedLength = historyLength + audioData.length;
+        const keep = Math.min(historyLimit, combinedLength);
+        const start = combinedLength - keep;
+        for (let i = 0; i < keep; i++) {
+            const sourceIndex = start + i;
+            history[i] = sourceIndex < historyLength
+                ? history[sourceIndex]
+                : audioData[sourceIndex - historyLength];
+        }
+        this.lowPassHistoryFilled = keep;
     }
 
     // 低通抗混叠后再做线性插值重采样

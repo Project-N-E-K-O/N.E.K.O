@@ -205,6 +205,9 @@ def test_browser_capture_is_one_click_audio_worklet_pcm16_and_cancels_on_close()
     assert "createLowPassFilter()" in processor
     assert "applyLowPassFilter(audioData)" in processor
     assert "const sourceData = this.applyLowPassFilter(audioData)" in processor
+    assert "Array.from(audioData)" not in processor
+    assert ".concat(input)" not in processor
+    assert "extended.slice" not in processor
 
 
 def test_voice_identity_route_is_reserved_for_character_profiles() -> None:
