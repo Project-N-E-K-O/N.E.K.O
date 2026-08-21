@@ -214,6 +214,8 @@ def test_browser_capture_is_one_click_audio_worklet_pcm16_and_cancels_on_close()
     assert "const sourceData = this.applyLowPassFilter(audioData)" in processor
     assert "Array.from(" not in processor
     assert ".concat(" not in processor
+    assert "resampleInputSize" not in processor
+    assert "resampleBufferIndex" not in processor
     assert "extended.slice" not in processor
     assert "audioData[audioData.length - 1]" not in processor
 
@@ -253,6 +255,64 @@ def test_voice_identity_lowpass_is_causal_across_worklet_blocks() -> None:
         }
         if (JSON.stringify(second) !== JSON.stringify([1, 2])) {
           throw new Error(`second block did not consume prior history: ${second}`);
+        }
+        """
+    )
+    result: subprocess.CompletedProcess[str] = run_node_script(
+        node,
+        script,
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        timeout=20,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr or result.stdout
+
+
+def test_voice_identity_resampler_preserves_phase_across_worklet_blocks() -> None:
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node is required for audio processor behavioural contract")
+    script = textwrap.dedent(
+        """
+        const fs = require('fs');
+        global.AudioWorkletProcessor = class {};
+        global.registerProcessor = (_name, processorClass) => {
+          global.AudioProcessor = processorClass;
+        };
+        eval(fs.readFileSync('static/audio-processor.js', 'utf8'));
+
+        const processor = new global.AudioProcessor({
+          processorOptions: {
+            originalSampleRate: 44100,
+            targetSampleRate: 16000,
+          },
+        });
+        processor.applyLowPassFilter = (audioData) => audioData;
+
+        const makeRamp = (start, length) => {
+          const data = new Float32Array(length);
+          for (let i = 0; i < length; i++) {
+            data[i] = start + i;
+          }
+          return data;
+        };
+
+        const first = processor.resampleAudio(makeRamp(0, 1412));
+        const second = processor.resampleAudio(makeRamp(1412, 1412));
+        const expectedSecondFirst = 512 * 44100 / 16000;
+
+        if (first.length !== 512) {
+          throw new Error(`unexpected first block sample count: ${first.length}`);
+        }
+        if (second.length !== 513) {
+          throw new Error(`unexpected second block sample count: ${second.length}`);
+        }
+        if (Math.abs(second[0] - expectedSecondFirst) > 0.0001) {
+          throw new Error(
+            `resampler restarted at ${second[0]} instead of ${expectedSecondFirst}`
+          );
         }
         """
     )

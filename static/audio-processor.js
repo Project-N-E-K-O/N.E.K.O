@@ -25,14 +25,12 @@ class AudioProcessor extends AudioWorkletProcessor {
         this.buffer = new Float32Array(this.bufferSize);
         this.bufferIndex = 0;
 
-        // 用于重采样的固定输入缓冲区
-        this.resampleInputSize = this.needsResampling
-            ? Math.ceil(this.bufferSize / this.resampleRatio)
-            : 0;
-        this.resampleBuffer = this.needsResampling
-            ? new Float32Array(this.resampleInputSize)
-            : null;
-        this.resampleBufferIndex = 0;
+        this.resampleStep = this.needsResampling
+            ? this.originalSampleRate / this.targetSampleRate
+            : 1;
+        this.resamplePosition = 0;
+        this.resampleTailSample = 0;
+        this.hasResampleTail = false;
 
         console.log(`AudioProcessor初始化: 原始采样率=${this.originalSampleRate}Hz, 目标采样率=${this.targetSampleRate}Hz, 需要重采样=${this.needsResampling}`);
     }
@@ -47,29 +45,26 @@ class AudioProcessor extends AudioWorkletProcessor {
 
         if (this.needsResampling) {
             // 需要重采样的情况（如16kHz目标）
-            for (let i = 0; i < input.length; i++) {
-                this.resampleBuffer[this.resampleBufferIndex++] = input[i];
-                if (this.resampleBufferIndex >= this.resampleInputSize) {
-                    const resampledData = this.resampleAudio(this.resampleBuffer);
-                    const pcmData = this.floatToPcm16(resampledData);
-                    this.port.postMessage(pcmData);
-                    this.resampleBufferIndex = 0;
-                }
-            }
+            const resampledData = this.resampleAudio(input);
+            this.appendToOutputBuffer(resampledData);
         } else {
             // 不需要重采样，直接处理（48kHz passthrough）
-            for (let i = 0; i < input.length; i++) {
-                this.buffer[this.bufferIndex++] = input[i];
-
-                if (this.bufferIndex >= this.bufferSize) {
-                    const pcmData = this.floatToPcm16(this.buffer);
-                    this.port.postMessage(pcmData);
-                    this.bufferIndex = 0;
-                }
-            }
+            this.appendToOutputBuffer(input);
         }
 
         return true;
+    }
+
+    appendToOutputBuffer(audioData) {
+        for (let i = 0; i < audioData.length; i++) {
+            this.buffer[this.bufferIndex++] = audioData[i];
+
+            if (this.bufferIndex >= this.bufferSize) {
+                const pcmData = this.floatToPcm16(this.buffer);
+                this.port.postMessage(pcmData);
+                this.bufferIndex = 0;
+            }
+        }
     }
 
     // Float32 转 Int16 PCM
@@ -160,22 +155,34 @@ class AudioProcessor extends AudioWorkletProcessor {
     resampleAudio(audioData) {
         const sourceData = this.applyLowPassFilter(audioData);
         const inputLength = sourceData.length;
-        const outputLength = Math.floor(inputLength * this.resampleRatio);
-        const result = new Float32Array(outputLength);
-
-        for (let i = 0; i < outputLength; i++) {
-            const position = i / this.resampleRatio;
-            const index = Math.floor(position);
-            const fraction = position - index;
-
-            // 线性插值
-            if (index + 1 < inputLength) {
-                result[i] = sourceData[index] * (1 - fraction) + sourceData[index + 1] * fraction;
-            } else {
-                result[i] = sourceData[index];
-            }
+        if (inputLength === 0) {
+            return new Float32Array(0);
         }
 
+        const limit = inputLength - 1;
+        let position = this.resamplePosition;
+        let outputLength = 0;
+        while (position < limit && (position >= 0 || this.hasResampleTail)) {
+            outputLength++;
+            position += this.resampleStep;
+        }
+
+        const result = new Float32Array(outputLength);
+        position = this.resamplePosition;
+
+        for (let i = 0; i < outputLength; i++) {
+            const index = Math.floor(position);
+            const fraction = position - index;
+            const currentSample = index >= 0
+                ? sourceData[index]
+                : this.resampleTailSample;
+            result[i] = currentSample * (1 - fraction) + sourceData[index + 1] * fraction;
+            position += this.resampleStep;
+        }
+
+        this.resamplePosition = position - inputLength;
+        this.resampleTailSample = sourceData[inputLength - 1];
+        this.hasResampleTail = true;
         return result;
     }
 }
