@@ -1,4 +1,5 @@
 (function () {
+  const NOTEBOOK_PAGE_SIZE = 100;
   const NOTE_PAGE_SIZE = 200;
   let panelToken = 0;
   let activeBeforeClose = null;
@@ -62,6 +63,7 @@
     let notebooksRequest = 0;
     let notesRequest = 0;
     let noteDetailRequest = 0;
+    let noteNavigationRequest = 0;
     let busyCount = 0;
     let mutationBusyCount = 0;
     let editorDirty = false;
@@ -240,6 +242,24 @@
       if (!summary.content && current.content) merged.content = current.content;
       if (!summary.content_plain && current.content_plain) merged.content_plain = current.content_plain;
       return merged;
+    }
+
+    function selectedNoteSnapshot() {
+      if (!selectedNote) return null;
+      return {
+        ...selectedNote,
+        topic_ids: Array.isArray(selectedNote.topic_ids) ? [...selectedNote.topic_ids] : [],
+        tags: Array.isArray(selectedNote.tags) ? [...selectedNote.tags] : [],
+      };
+    }
+
+    function restoreSelectedDraft(snapshot, dirty) {
+      if (snapshot) {
+        selectedNote = snapshot;
+        drawList();
+        drawEditor();
+      }
+      setEditorDirty(dirty);
     }
 
     function captureEditorDraft() {
@@ -438,13 +458,13 @@
       const expandButton = commandButton(t(ctx, 'ui.notebook.ai_expand', 'AI expand'), async () => {
         const noteId = selectedNote.id;
         const contentSnapshot = contentInput.value;
-        const detailRequestSnapshot = noteDetailRequest;
+        const navigationRequestSnapshot = noteNavigationRequest;
         const payload = await ctx.callPlugin('study_note_ai_expand', {
           note_id: noteId,
           content: contentSnapshot,
           topic_context: topicsInput.value,
         });
-        if (!isValid() || selectedNote?.id !== noteId || detailRequestSnapshot !== noteDetailRequest) return;
+        if (!isValid() || selectedNote?.id !== noteId || navigationRequestSnapshot !== noteNavigationRequest) return;
         if (payload.content) {
           const currentContentInput = contentInput.isConnected
             ? contentInput
@@ -459,6 +479,7 @@
       const deleteButton = commandButton(t(ctx, 'ui.button.delete', 'Delete'), async () => {
         const restoreDirtyDraft = editorDirty;
         if (restoreDirtyDraft && !confirmDiscardDraft()) return;
+        const draftSnapshot = restoreDirtyDraft ? selectedNoteSnapshot() : null;
         const confirmed = window.confirm(t(ctx, 'ui.notebook.delete_note_confirm', 'Delete this note?'));
         if (!confirmed) return;
         setEditorDirty(false);
@@ -466,7 +487,7 @@
         try {
           await ctx.callPlugin('study_note_delete', { note_id: noteId });
         } catch (error) {
-          setEditorDirty(restoreDirtyDraft);
+          if (isValid()) restoreSelectedDraft(draftSnapshot, restoreDirtyDraft);
           throw error;
         }
         selectedNoteIds.delete(noteId);
@@ -484,15 +505,35 @@
 
     async function loadNotebooks() {
       const requestId = notebooksRequest += 1;
-      let payload;
-      try {
-        payload = await ctx.callPlugin('study_notebook_list', { limit: 100 });
-      } catch (error) {
+      const loadedNotebooks = [];
+      const loadedIds = new Set();
+      let offset = 0;
+      while (true) {
+        let payload;
+        try {
+          payload = await ctx.callPlugin('study_notebook_list', {
+            limit: NOTEBOOK_PAGE_SIZE,
+            offset,
+          });
+        } catch (error) {
+          if (!isValid() || requestId !== notebooksRequest) return false;
+          throw error;
+        }
         if (!isValid() || requestId !== notebooksRequest) return false;
-        throw error;
+        const pageNotebooks = Array.isArray(payload.notebooks) ? payload.notebooks : [];
+        pageNotebooks.forEach((notebook) => {
+          if (loadedIds.has(notebook.id)) return;
+          loadedIds.add(notebook.id);
+          loadedNotebooks.push(notebook);
+        });
+        if (payload.has_more !== true) break;
+        const nextOffset = Number(payload.next_offset);
+        if (!Number.isSafeInteger(nextOffset) || nextOffset <= offset) {
+          throw new Error('Invalid notebook continuation offset');
+        }
+        offset = nextOffset;
       }
-      if (!isValid() || requestId !== notebooksRequest) return false;
-      notebooks = Array.isArray(payload.notebooks) ? payload.notebooks : [];
+      notebooks = loadedNotebooks;
       drawNotebookOptions();
       return true;
     }
@@ -547,20 +588,32 @@
     }
 
     async function selectNote(noteId) {
+      const restoreDirtyDraft = editorDirty;
       if (!confirmDiscardDraft()) return;
+      const draftSnapshot = restoreDirtyDraft ? selectedNoteSnapshot() : null;
       setEditorDirty(false);
+      const navigationId = noteNavigationRequest += 1;
       const requestId = noteDetailRequest += 1;
       setBusy(true);
       try {
         const payload = await ctx.callPlugin('study_note_get', { note_id: noteId });
-        if (!isValid() || requestId !== noteDetailRequest) return;
+        if (!isValid()) return;
+        if (requestId !== noteDetailRequest) {
+          if (navigationId === noteNavigationRequest) {
+            restoreSelectedDraft(draftSnapshot, restoreDirtyDraft);
+          }
+          return;
+        }
         if (editorDirty && !confirmDiscardDraft()) return;
         setEditorDirty(false);
         selectedNote = payload.note || null;
         drawList();
         drawEditor();
       } catch (error) {
-        if (isValid() && requestId === noteDetailRequest) setStatus(errorText(error));
+        if (isValid() && navigationId === noteNavigationRequest) {
+          restoreSelectedDraft(draftSnapshot, restoreDirtyDraft);
+          setStatus(errorText(error));
+        }
       } finally {
         setBusy(false);
       }
@@ -588,12 +641,13 @@
       }
       const restoreDirtyDraft = editorDirty;
       if (!confirmDiscardDraft()) return;
+      const draftSnapshot = restoreDirtyDraft ? selectedNoteSnapshot() : null;
       setEditorDirty(false);
       let payload;
       try {
         payload = await ctx.callPlugin('study_notebook_create', { name });
       } catch (error) {
-        setEditorDirty(restoreDirtyDraft);
+        if (isValid()) restoreSelectedDraft(draftSnapshot, restoreDirtyDraft);
         throw error;
       }
       if (!isValid()) return;
@@ -625,12 +679,13 @@
       if (!notebookId) return;
       const restoreDirtyDraft = editorDirty;
       if (!confirmDiscardDraft()) return;
+      const draftSnapshot = restoreDirtyDraft ? selectedNoteSnapshot() : null;
       if (!window.confirm(t(ctx, 'ui.notebook.delete_notebook_confirm', 'Delete this notebook? Its notes will become unfiled.'))) return;
       setEditorDirty(false);
       try {
         await ctx.callPlugin('study_notebook_delete', { notebook_id: notebookId });
       } catch (error) {
-        setEditorDirty(restoreDirtyDraft);
+        if (isValid()) restoreSelectedDraft(draftSnapshot, restoreDirtyDraft);
         throw error;
       }
       notebooks = notebooks.filter((notebook) => notebook.id !== notebookId);

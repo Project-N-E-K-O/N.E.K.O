@@ -308,6 +308,38 @@ async def test_notebook_note_list_paginates_without_omitting_notes(tmp_path) -> 
         store.close()
 
 
+@pytest.mark.asyncio
+async def test_notebook_list_paginates_without_omitting_notebooks(tmp_path) -> None:
+    store, notebooks, _logger = _make_store(tmp_path)
+    harness = _EntryHarness(notebooks)
+    try:
+        created_ids = []
+        for index in range(3):
+            created = await harness.study_notebook_create(name=f"Paged notebook {index}")
+            assert isinstance(created, Ok)
+            created_ids.append(created.value["notebook"]["id"])
+
+        first = await harness.study_notebook_list(limit=2, offset=0)
+        assert isinstance(first, Ok)
+        assert len(first.value["notebooks"]) == 2
+        assert first.value["has_more"] is True
+        assert first.value["next_offset"] == 2
+
+        second = await harness.study_notebook_list(
+            limit=2, offset=first.value["next_offset"]
+        )
+        assert isinstance(second, Ok)
+        assert len(second.value["notebooks"]) == 1
+        assert second.value["has_more"] is False
+        assert second.value["next_offset"] is None
+        assert {
+            notebook["id"]
+            for notebook in [*first.value["notebooks"], *second.value["notebooks"]]
+        } == set(created_ids)
+    finally:
+        store.close()
+
+
 def test_notebook_filter_semantics_are_explicit(tmp_path) -> None:
     store, notebooks, _logger = _make_store(tmp_path)
     try:

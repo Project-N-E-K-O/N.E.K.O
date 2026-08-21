@@ -189,7 +189,7 @@ class NotebookStore:
             )
         return self._notebook_from_row(row)
 
-    def list_notebooks(self, *, limit: int = 100) -> list[NotebookMeta]:
+    def list_notebooks(self, *, limit: int = 100, offset: int = 0) -> list[NotebookMeta]:
         with self.store._lock:
             rows = (
                 self.store._require_conn()
@@ -201,9 +201,9 @@ class NotebookStore:
                     LEFT JOIN notes ON notes.notebook_id = n.id
                     GROUP BY n.id
                     ORDER BY n.sort_order ASC, n.updated_at DESC, n.name ASC
-                    LIMIT ?
+                    LIMIT ? OFFSET ?
                     """,
-                    (max(1, int(limit or 100)),),
+                    (max(1, int(limit or 100)), max(0, int(offset or 0))),
                 )
                 .fetchall()
             )

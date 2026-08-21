@@ -6920,6 +6920,10 @@ const surfacePanelsJs = fs.readFileSync(path.join(staticDir, 'surface-panels.js'
 const window = new Window({ url: 'http://testserver/plugin/study_companion/ui/' });
 const { document } = window;
 const calls = [];
+const notebooks = Array.from({ length: 101 }, (_, index) => ({
+  id: `book-${index + 1}`, name: `Book ${index + 1}`,
+  note_count: index === 0 ? 201 : 0,
+}));
 const notes = Array.from({ length: 201 }, (_, index) => ({
   id: `note-${index + 1}`, notebook_id: 'book-1', title: `Note ${index + 1}`,
   content: `Body ${index + 1}`, snippet: `Summary ${index + 1}`,
@@ -6927,7 +6931,13 @@ const notes = Array.from({ length: 201 }, (_, index) => ({
 }));
 async function callPlugin(entryId, args = {}) {
   calls.push({ entryId, args });
-  if (entryId === 'study_notebook_list') return { notebooks: [{ id: 'book-1', name: 'Calculus', note_count: notes.length }] };
+  if (entryId === 'study_notebook_list') {
+    const offset = Number(args.offset || 0);
+    const limit = Number(args.limit || 100);
+    const page = notebooks.slice(offset, offset + limit);
+    const hasMore = offset + page.length < notebooks.length;
+    return { notebooks: page, has_more: hasMore, next_offset: hasMore ? offset + page.length : null };
+  }
   if (entryId === 'study_note_list') {
     const offset = Number(args.offset || 0);
     const limit = Number(args.limit || 200);
@@ -6956,6 +6966,16 @@ const notebook = window.StudyCompanionNotebook.render('notebook-panel', ctx);
 document.body.appendChild(notebook);
 await new Promise((resolve) => setTimeout(resolve, 0));
 await new Promise((resolve) => setTimeout(resolve, 0));
+if (notebook.querySelectorAll('.notebook-field select option').length !== 103) {
+  throw new Error('notebook picker omitted options after the first page');
+}
+if (!notebook.querySelector('.notebook-field select option[value="book-101"]')) {
+  throw new Error('notebook picker did not render the final paginated notebook');
+}
+const notebookListCalls = calls.filter((call) => call.entryId === 'study_notebook_list');
+if (notebookListCalls.length !== 2 || notebookListCalls[0].args.offset !== 0 || notebookListCalls[1].args.offset !== 100) {
+  throw new Error(`notebook picker used invalid page offsets: ${JSON.stringify(notebookListCalls)}`);
+}
 if (notebook.querySelectorAll('.notebook-note-row').length !== 200) {
   throw new Error('notebook did not render the first 200-note page');
 }
@@ -7436,6 +7456,19 @@ if (notebook.querySelector('.notebook-editor__content')?.value !== 'Expanded bod
 }
 
 buttons = [...notebook.querySelectorAll('.notebook-editor__actions button')];
+const refreshExpandButton = buttons.find((button) => button.textContent === 'AI expand');
+refreshExpandButton.click();
+await new Promise((resolve) => setTimeout(resolve, 0));
+refreshButton.click();
+await new Promise((resolve) => setTimeout(resolve, 0));
+await new Promise((resolve) => setTimeout(resolve, 0));
+expandResolve({ content: 'Expanded after refresh' });
+await new Promise((resolve) => setTimeout(resolve, 0));
+if (notebook.querySelector('.notebook-editor__content')?.value !== 'Expanded after refresh') {
+  throw new Error('refresh discarded the AI expansion response for the same note');
+}
+
+buttons = [...notebook.querySelectorAll('.notebook-editor__actions button')];
 const secondExpandButton = buttons.find((button) => button.textContent === 'AI expand');
 const editedContent = notebook.querySelector('.notebook-editor__content');
 secondExpandButton.click();
@@ -7592,6 +7625,27 @@ if (confirmCount !== 1) {
 if (notebook.querySelector('.notebook-editor input')?.value !== 'Unsaved title') {
   throw new Error('draft was discarded after canceling confirmation');
 }
+window.confirm = () => {
+  confirmCount += 1;
+  return true;
+};
+notebook.querySelectorAll('.notebook-note-row__open')[1].click();
+await new Promise((resolve) => setTimeout(resolve, 0));
+if (!notebook.querySelector('.study-panel__status-chip')?.textContent.includes('detail failed')) {
+  throw new Error('confirmed draft switch failure was not reported');
+}
+if (notebook.querySelector('.notebook-editor input')?.value !== 'Unsaved title') {
+  throw new Error('failed draft switch did not restore the previous draft');
+}
+const failedSwitchUnload = new window.Event('beforeunload', { cancelable: true });
+window.dispatchEvent(failedSwitchUnload);
+if (!failedSwitchUnload.defaultPrevented) {
+  throw new Error('failed draft switch did not restore the page-unload guard');
+}
+window.confirm = () => {
+  confirmCount += 1;
+  return false;
+};
 if (window.StudyCompanionNotebook.close() !== false) {
   throw new Error('dirty notebook close did not respect canceled confirmation');
 }
@@ -7647,6 +7701,8 @@ window.confirm = () => {
 };
 const calls = [];
 let failureEntry = '';
+let deferredDeleteEntry = '';
+let deleteReject;
 let createdNotebookCount = 0;
 let createdNoteCount = 0;
 let notebooks = [{ id: 'book-1', name: 'Book', note_count: 2 }];
@@ -7656,6 +7712,9 @@ let notes = [
 ];
 async function callPlugin(entryId, args = {}) {
   calls.push({ entryId, args });
+  if (entryId === deferredDeleteEntry) {
+    return await new Promise((_resolve, reject) => { deleteReject = reject; });
+  }
   if (entryId === failureEntry) {
     failureEntry = '';
     throw new Error(`forced ${entryId} failure`);
@@ -7924,18 +7983,45 @@ await new Promise((resolve) => setTimeout(resolve, 0));
 deleteFailurePanel.querySelector('.notebook-note-row__open').click();
 await new Promise((resolve) => setTimeout(resolve, 0));
 
-let deleteFailureContent = deleteFailurePanel.querySelector('.notebook-editor__content');
-deleteFailureContent.value = 'Dirty note deletion draft';
-deleteFailureContent.dispatchEvent(new window.Event('input', { bubbles: true }));
-failureEntry = 'study_note_delete';
+function setDeleteFailureDraft(prefix) {
+  const inputs = deleteFailurePanel.querySelectorAll('.notebook-editor__field input');
+  inputs[0].value = `${prefix} title`;
+  inputs[0].dispatchEvent(new window.Event('input', { bubbles: true }));
+  inputs[1].value = `${prefix} topic`;
+  inputs[1].dispatchEvent(new window.Event('input', { bubbles: true }));
+  inputs[2].value = `${prefix} tag`;
+  inputs[2].dispatchEvent(new window.Event('input', { bubbles: true }));
+  const content = deleteFailurePanel.querySelector('.notebook-editor__content');
+  content.value = `${prefix} body`;
+  content.dispatchEvent(new window.Event('input', { bubbles: true }));
+}
+
+function assertDeleteFailureDraft(prefix) {
+  const inputs = deleteFailurePanel.querySelectorAll('.notebook-editor__field input');
+  if (inputs[0]?.value !== `${prefix} title`
+      || inputs[1]?.value !== `${prefix} topic`
+      || inputs[2]?.value !== `${prefix} tag`
+      || deleteFailurePanel.querySelector('.notebook-editor__content')?.value !== `${prefix} body`) {
+    throw new Error(`failed deletion did not restore the complete ${prefix} draft`);
+  }
+}
+
+setDeleteFailureDraft('Dirty note deletion');
+deferredDeleteEntry = 'study_note_delete';
 const failedDeleteNoteButton = [...deleteFailurePanel.querySelectorAll('.notebook-editor__actions button')]
   .find((button) => button.textContent === 'Delete');
 failedDeleteNoteButton.click();
 await new Promise((resolve) => setTimeout(resolve, 0));
+const deleteFailureRefresh = [...deleteFailurePanel.querySelectorAll('.notebook-toolbar__actions button')]
+  .find((button) => button.textContent === 'Refresh');
+deleteFailureRefresh.click();
 await new Promise((resolve) => setTimeout(resolve, 0));
-if (deleteFailurePanel.querySelector('.notebook-editor__content')?.value !== 'Dirty note deletion draft') {
-  throw new Error('failed note deletion did not preserve the visible draft');
-}
+await new Promise((resolve) => setTimeout(resolve, 0));
+deferredDeleteEntry = '';
+deleteReject(new Error('forced study_note_delete failure'));
+await new Promise((resolve) => setTimeout(resolve, 0));
+await new Promise((resolve) => setTimeout(resolve, 0));
+assertDeleteFailureDraft('Dirty note deletion');
 const failedNoteDeleteUnload = new window.Event('beforeunload', { cancelable: true });
 window.dispatchEvent(failedNoteDeleteUnload);
 if (!failedNoteDeleteUnload.defaultPrevented) {
@@ -7948,18 +8034,20 @@ saveAfterDeleteFailure.click();
 await new Promise((resolve) => setTimeout(resolve, 0));
 await new Promise((resolve) => setTimeout(resolve, 0));
 await new Promise((resolve) => setTimeout(resolve, 0));
-deleteFailureContent = deleteFailurePanel.querySelector('.notebook-editor__content');
-deleteFailureContent.value = 'Dirty notebook deletion draft';
-deleteFailureContent.dispatchEvent(new window.Event('input', { bubbles: true }));
-failureEntry = 'study_notebook_delete';
+setDeleteFailureDraft('Dirty notebook deletion');
+deferredDeleteEntry = 'study_notebook_delete';
 const failedDeleteNotebookButton = [...deleteFailurePanel.querySelectorAll('.notebook-toolbar__actions button')]
   .find((button) => button.textContent === 'Delete notebook');
 failedDeleteNotebookButton.click();
 await new Promise((resolve) => setTimeout(resolve, 0));
+deleteFailureRefresh.click();
 await new Promise((resolve) => setTimeout(resolve, 0));
-if (deleteFailurePanel.querySelector('.notebook-editor__content')?.value !== 'Dirty notebook deletion draft') {
-  throw new Error('failed notebook deletion did not preserve the visible draft');
-}
+await new Promise((resolve) => setTimeout(resolve, 0));
+deferredDeleteEntry = '';
+deleteReject(new Error('forced study_notebook_delete failure'));
+await new Promise((resolve) => setTimeout(resolve, 0));
+await new Promise((resolve) => setTimeout(resolve, 0));
+assertDeleteFailureDraft('Dirty notebook deletion');
 const failedNotebookDeleteUnload = new window.Event('beforeunload', { cancelable: true });
 window.dispatchEvent(failedNotebookDeleteUnload);
 if (!failedNotebookDeleteUnload.defaultPrevented) {
