@@ -7199,6 +7199,7 @@ const notebookJs = fs.readFileSync(path.join(staticDir, 'notebook-controller.js'
 const window = new Window({ url: 'http://testserver/plugin/study_companion/ui/' });
 const { document } = window;
 let expandResolve;
+let saveResolve;
 const calls = [];
 let note = {
   id: 'note-1',
@@ -7217,6 +7218,9 @@ async function callPlugin(entryId, args = {}) {
   if (entryId === 'study_note_list') return { notes: [note] };
   if (entryId === 'study_note_get') return { note };
   if (entryId === 'study_note_upsert') {
+    if (args.content === 'Saving body') {
+      return await new Promise((resolve) => { saveResolve = resolve; });
+    }
     note = { ...note, ...args, id: args.note_id, updated_at: '2026-08-20T00:01:00Z' };
     return { note };
   }
@@ -7256,6 +7260,25 @@ if (JSON.stringify(saveCall.args.topic_ids) !== JSON.stringify(['machine learnin
 if (JSON.stringify(saveCall.args.tags) !== JSON.stringify(['spaced tag', 'two words'])) {
   throw new Error(`tags were split on spaces: ${JSON.stringify(saveCall.args.tags)}`);
 }
+
+const savingContent = notebook.querySelector('.notebook-editor__content');
+savingContent.value = 'Saving body';
+savingContent.dispatchEvent(new window.Event('input', { bubbles: true }));
+buttons = [...notebook.querySelectorAll('.notebook-editor__actions button')];
+saveButton = buttons.find((button) => button.textContent === 'Save');
+saveButton.click();
+await new Promise((resolve) => setTimeout(resolve, 0));
+const refreshButton = [...notebook.querySelectorAll('.notebook-toolbar__actions button')]
+  .find((button) => button.textContent === 'Refresh');
+refreshButton.click();
+await new Promise((resolve) => setTimeout(resolve, 0));
+await new Promise((resolve) => setTimeout(resolve, 0));
+if (!notebook.querySelector('.notebook-editor__content')?.disabled) {
+  throw new Error('redrawn editor fields were editable while save was in flight');
+}
+saveResolve({ note: { ...note, content: 'Saving body', content_plain: 'Saving body', snippet: 'Saving body' } });
+await new Promise((resolve) => setTimeout(resolve, 0));
+await new Promise((resolve) => setTimeout(resolve, 0));
 
 buttons = [...notebook.querySelectorAll('.notebook-editor__actions button')];
 saveButton = buttons.find((button) => button.textContent === 'Save');

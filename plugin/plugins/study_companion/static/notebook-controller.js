@@ -423,6 +423,7 @@
       });
       actions.append(deleteButton, expandButton, saveButton);
       editor.append(fields, actions);
+      setEditorLocked(busyCount > 0);
     }
 
     async function loadNotebooks() {
