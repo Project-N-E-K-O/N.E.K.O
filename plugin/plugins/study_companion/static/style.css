@@ -446,9 +446,7 @@ button:disabled {
   transform: none;
 }
 
-button.loading {
-  cursor: wait;
-}
+button.loading { cursor: wait; }
 
 .study-hub {
   display: grid;
@@ -471,11 +469,7 @@ button.loading {
     0 12px 26px rgba(31, 52, 40, 0.08);
 }
 
-@media (min-width: 981px) and (max-width: 1220px) {
-  .feature-dock {
-    grid-template-columns: repeat(4, minmax(0, 1fr));
-  }
-}
+@media (min-width: 981px) and (max-width: 1220px) { .feature-dock { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
 
 .feature-action {
   --feature-color: var(--brand);
