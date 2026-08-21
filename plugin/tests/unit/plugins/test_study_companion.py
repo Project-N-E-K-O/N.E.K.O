@@ -6884,6 +6884,9 @@ def test_study_companion_notebook_is_integrated_with_static_exporter() -> None:
     assert "notebooksRequest" in notebook
     assert "Discard unsaved changes?" in notebook
     assert "activeBeforeClose" in notebook
+    assert "captureEditorDraft()" in notebook
+    assert "setEditorLocked" in notebook
+    assert "consumeExportSelectionIntent" in notebook
     assert "contentSnapshot" in notebook
     assert "button.disabled = busyCount > 0;" in notebook
     assert "window.StudyCompanionNotebook?.close?.() === false" in exporter
@@ -6891,7 +6894,7 @@ def test_study_companion_notebook_is_integrated_with_static_exporter() -> None:
     assert "if (!drawerBody) return;" in main_js
     assert "${raw.replace(' ', 'T')}Z" in notebook
     assert "getSelectedNoteIds" in exporter
-    assert "note_ids: noteIds" in exporter
+    assert "note_ids: notebookNoteIds" in exporter
 
 
 def test_study_companion_selected_notebooks_reach_export_entry() -> None:
@@ -6931,7 +6934,10 @@ const ctx = {
   tf: (_key, fallback, values) => fallback.replace(/\{([^}]+)\}/g, (_, name) => values[name] ?? ''),
   label: (surfaceId) => surfaceId,
   callPlugin,
-  openSurface: () => undefined,
+  openSurface: (surfaceId) => {
+    const opened = window.StudyCompanionSurfacePanels.render(surfaceId, ctx);
+    if (opened) document.body.appendChild(opened);
+  },
 };
 window.eval(notebookJs);
 window.eval(surfacePanelsJs);
@@ -6943,14 +6949,27 @@ const checkbox = notebook.querySelector('.notebook-note-row__check');
 if (!checkbox) throw new Error('notebook note checkbox was not rendered');
 checkbox.checked = true;
 checkbox.dispatchEvent(new window.Event('change', { bubbles: true }));
-const exporter = window.StudyCompanionSurfacePanels.render('note-exporter', ctx);
-document.body.appendChild(exporter);
+const exportSelectedButton = [...notebook.querySelectorAll('.notebook-selection__actions button')]
+  .find((button) => button.textContent === 'Export selected');
+exportSelectedButton.click();
+await new Promise((resolve) => setTimeout(resolve, 0));
+const exporter = document.querySelector('[data-surface="note-exporter"]');
+if (!exporter) throw new Error('notebook export action did not open the exporter');
 await new Promise((resolve) => setTimeout(resolve, 0));
 exporter.querySelector('[data-surface-action="export-preview"]').click();
 await new Promise((resolve) => setTimeout(resolve, 0));
 const exportCall = calls.find((call) => call.entryId === 'study_export_notes');
 if (!exportCall || JSON.stringify(exportCall.args.note_ids) !== JSON.stringify(['note-1'])) {
   throw new Error(`selected notes did not reach export: ${JSON.stringify(exportCall)}`);
+}
+const standaloneExporter = window.StudyCompanionSurfacePanels.render('note-exporter', ctx);
+document.body.appendChild(standaloneExporter);
+await new Promise((resolve) => setTimeout(resolve, 0));
+standaloneExporter.querySelector('[data-surface-action="export-preview"]').click();
+await new Promise((resolve) => setTimeout(resolve, 0));
+const standaloneExportCall = calls.filter((call) => call.entryId === 'study_export_notes').at(-1);
+if (!standaloneExportCall || JSON.stringify(standaloneExportCall.args.note_ids) !== JSON.stringify([])) {
+  throw new Error(`standalone exporter reused stale note IDs: ${JSON.stringify(standaloneExportCall)}`);
 }
 """
     completed = subprocess.run(
@@ -7346,6 +7365,123 @@ if (notebook.querySelector('.notebook-editor input')?.value !== 'Unsaved title')
 }
 if (window.StudyCompanionNotebook.close() !== false) {
   throw new Error('dirty notebook close did not respect canceled confirmation');
+}
+"""
+    completed = subprocess.run(
+        ["node", "--input-type=module", "-e", script],
+        cwd=frontend_dir,
+        env={**os.environ, "STUDY_COMPANION_STATIC_DIR": str(plugin_dir / "static")},
+        capture_output=True,
+        text=True,
+        timeout=15,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr or completed.stdout
+
+
+def test_study_companion_notebook_preserves_drafts_across_refresh_and_reopen() -> None:
+    if shutil.which("node") is None:
+        pytest.skip("node is not installed")
+    plugin_dir = Path(__file__).resolve().parents[3] / "plugins" / "study_companion"
+    frontend_dir = Path(__file__).resolve().parents[4] / "frontend" / "plugin-manager"
+    if not (frontend_dir / "node_modules" / "happy-dom").is_dir():
+        pytest.skip("frontend/plugin-manager node_modules with happy-dom is not installed")
+
+    script = r"""
+import { Window } from 'happy-dom';
+import fs from 'node:fs';
+import path from 'node:path';
+
+const staticDir = process.env.STUDY_COMPANION_STATIC_DIR;
+const notebookJs = fs.readFileSync(path.join(staticDir, 'notebook-controller.js'), 'utf8');
+const surfacePanelsJs = fs.readFileSync(path.join(staticDir, 'surface-panels.js'), 'utf8');
+const window = new Window({ url: 'http://testserver/plugin/study_companion/ui/' });
+const { document } = window;
+let confirmCount = 0;
+window.confirm = () => {
+  confirmCount += 1;
+  return false;
+};
+const calls = [];
+const notes = [
+  { id: 'note-1', notebook_id: 'book-1', title: 'First', snippet: 'First summary', content: 'First body', topic_ids: [], tags: [], updated_at: '2026-08-20T00:00:00Z' },
+  { id: 'note-2', notebook_id: 'book-1', title: 'Second', snippet: 'Second summary', content: 'Second body', topic_ids: [], tags: [], updated_at: '2026-08-20T00:00:00Z' },
+];
+async function callPlugin(entryId, args = {}) {
+  calls.push({ entryId, args });
+  if (entryId === 'study_notebook_list') return { notebooks: [{ id: 'book-1', name: 'Book', note_count: 2 }] };
+  if (entryId === 'study_note_list') {
+    if (args.search_query === 'missing') return { notes: [] };
+    return { notes };
+  }
+  if (entryId === 'study_note_get') return { note: notes.find((item) => item.id === args.note_id) };
+  if (entryId === 'study_notebook_create') return { notebook: { id: 'book-2', name: args.name, note_count: 0 } };
+  throw new Error(`Unexpected entry: ${entryId}`);
+}
+const ctx = {
+  t: (_key, fallback) => fallback,
+  tf: (_key, fallback, values) => fallback.replace(/\{([^}]+)\}/g, (_, name) => values[name] ?? ''),
+  label: (surfaceId) => surfaceId,
+  callPlugin,
+  openSurface: () => undefined,
+};
+window.eval(notebookJs);
+window.eval(surfacePanelsJs);
+const notebook = window.StudyCompanionSurfacePanels.render('notebook-panel', ctx);
+document.body.appendChild(notebook);
+await new Promise((resolve) => setTimeout(resolve, 0));
+await new Promise((resolve) => setTimeout(resolve, 0));
+
+notebook.querySelector('.notebook-note-row__open').click();
+await new Promise((resolve) => setTimeout(resolve, 0));
+const contentInput = notebook.querySelector('.notebook-editor__content');
+contentInput.value = 'Unsaved body';
+contentInput.dispatchEvent(new window.Event('input', { bubbles: true }));
+
+const refreshButton = [...notebook.querySelectorAll('.notebook-toolbar__actions button')]
+  .find((button) => button.textContent === 'Refresh');
+refreshButton.click();
+await new Promise((resolve) => setTimeout(resolve, 0));
+await new Promise((resolve) => setTimeout(resolve, 0));
+if (notebook.querySelector('.notebook-editor__content')?.value !== 'Unsaved body') {
+  throw new Error('refresh discarded the unsaved editor body');
+}
+
+const searchInput = notebook.querySelector('input[type="search"]');
+searchInput.value = 'missing';
+searchInput.dispatchEvent(new window.Event('input', { bubbles: true }));
+await new Promise((resolve) => setTimeout(resolve, 300));
+await new Promise((resolve) => setTimeout(resolve, 0));
+if (notebook.querySelector('.notebook-editor__content')?.value !== 'Unsaved body') {
+  throw new Error('search filtering discarded the unsaved editor body');
+}
+if (confirmCount !== 0) {
+  throw new Error(`search/refresh prompted repeatedly for the draft: ${confirmCount}`);
+}
+
+const newNotebookInput = [...notebook.querySelectorAll('.notebook-toolbar input')]
+  .find((input) => input.type !== 'search');
+newNotebookInput.value = 'New Book';
+const createNotebookButton = [...notebook.querySelectorAll('.notebook-toolbar__actions button')]
+  .find((button) => button.textContent === 'Create notebook');
+createNotebookButton.click();
+await new Promise((resolve) => setTimeout(resolve, 0));
+if (confirmCount !== 1) {
+  throw new Error(`notebook creation did not guard the draft: ${confirmCount}`);
+}
+if (calls.some((call) => call.entryId === 'study_notebook_create')) {
+  throw new Error('notebook was created after draft discard was canceled');
+}
+
+const reopened = window.StudyCompanionSurfacePanels.render('notebook-panel', ctx);
+if (reopened !== false) {
+  throw new Error('reopening notebook replaced a dirty draft without confirmation');
+}
+if (confirmCount !== 2) {
+  throw new Error(`reopening notebook did not use the close guard: ${confirmCount}`);
+}
+if (notebook.querySelector('.notebook-editor__content')?.value !== 'Unsaved body') {
+  throw new Error('canceled reopen changed the dirty editor');
 }
 """
     completed = subprocess.run(

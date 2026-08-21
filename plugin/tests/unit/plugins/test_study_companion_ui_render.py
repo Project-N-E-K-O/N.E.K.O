@@ -551,7 +551,9 @@ def test_study_companion_static_ui_browser_smoke_desktop_reduced_motion() -> Non
     static_files = {
         "index.html": ("text/html", (STATIC_DIR / "index.html").read_text(encoding="utf-8")),
         "style.css": ("text/css", (STATIC_DIR / "style.css").read_text(encoding="utf-8")),
+        "notebook.css": ("text/css", (STATIC_DIR / "notebook.css").read_text(encoding="utf-8")),
         "i18n.js": ("text/javascript", (STATIC_DIR / "i18n.js").read_text(encoding="utf-8")),
+        "notebook-controller.js": ("text/javascript", (STATIC_DIR / "notebook-controller.js").read_text(encoding="utf-8")),
         "surface-panels.js": ("text/javascript", (STATIC_DIR / "surface-panels.js").read_text(encoding="utf-8")),
         "knowledge-map.js": ("text/javascript", (STATIC_DIR / "knowledge-map.js").read_text(encoding="utf-8")),
             "outcome-formatters.js": ("text/javascript", (STATIC_DIR / "outcome-formatters.js").read_text(encoding="utf-8")),

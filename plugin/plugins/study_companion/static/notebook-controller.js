@@ -1,6 +1,7 @@
 (function () {
   let panelToken = 0;
   let activeBeforeClose = null;
+  let exportSelectionIntent = false;
   const selectedNoteIds = new Set();
 
   function t(ctx, key, fallback) {
@@ -59,6 +60,7 @@
     let noteDetailRequest = 0;
     let busyCount = 0;
     let editorDirty = false;
+    let currentEditor = null;
 
     const root = el('div', 'study-panel surface-shell notebook-panel');
     root.dataset.surface = 'notebook-panel';
@@ -122,12 +124,28 @@
       if (isValid()) statusChip.textContent = String(value || t(ctx, 'ui.status.ready', 'Ready'));
     }
 
+    function setEditorLocked(locked) {
+      if (currentEditor) {
+        currentEditor.inputs.forEach((input) => {
+          input.disabled = locked;
+        });
+      }
+      editor.querySelectorAll('.notebook-editor__actions button').forEach((button) => {
+        button.disabled = locked;
+      });
+    }
+
     function setBusy(active) {
       busyCount = Math.max(0, busyCount + (active ? 1 : -1));
       root.dataset.busy = busyCount > 0 ? 'true' : 'false';
-      editor.querySelectorAll('.notebook-editor__actions button').forEach((button) => {
-        button.disabled = busyCount > 0;
-      });
+      setEditorLocked(busyCount > 0);
+      if (busyCount === 0) {
+        root.querySelectorAll('button').forEach((button) => {
+          button.disabled = false;
+        });
+        updateNotebookActions();
+        updateSelectionBar();
+      }
     }
 
     function commandButton(label, handler, primary = false) {
@@ -173,14 +191,38 @@
       };
     }
 
-    function mergeNoteSummary(current, summary) {
-      const merged = { ...current, ...summary };
+    function mergeNoteSummary(current, summary, preserveDraft = false) {
+      const draftFields = preserveDraft
+        ? {
+          notebook_id: current.notebook_id,
+          title: current.title,
+          content: current.content,
+          content_plain: current.content_plain,
+          topic_ids: current.topic_ids,
+          tags: current.tags,
+        }
+        : {};
+      const merged = { ...current, ...summary, ...draftFields };
       if (!summary.content && current.content) merged.content = current.content;
       if (!summary.content_plain && current.content_plain) merged.content_plain = current.content_plain;
       return merged;
     }
 
+    function captureEditorDraft() {
+      if (!selectedNote || !currentEditor || currentEditor.noteId !== selectedNote.id) return;
+      selectedNote = {
+        ...selectedNote,
+        notebook_id: currentEditor.notebookInput.value,
+        title: currentEditor.titleInput.value,
+        content: currentEditor.contentInput.value,
+        content_plain: currentEditor.contentInput.value,
+        topic_ids: listFromCsv(currentEditor.topicsInput.value),
+        tags: listFromCsv(currentEditor.tagsInput.value),
+      };
+    }
+
     function confirmDiscardDraft() {
+      captureEditorDraft();
       if (!editorDirty) return true;
       return window.confirm(t(ctx, 'ui.notebook.discard_draft_confirm', 'Discard unsaved changes?'));
     }
@@ -265,6 +307,7 @@
     }
 
     function drawEditor() {
+      currentEditor = null;
       editor.replaceChildren();
       if (!selectedNote) {
         editor.appendChild(el('p', 'study-panel__empty', t(ctx, 'ui.notebook.select_to_edit', 'Select a note to edit')));
@@ -278,12 +321,20 @@
       const unfiledOption = el('option', '', t(ctx, 'ui.notebook.unfiled', 'Unfiled'));
       unfiledOption.value = '';
       notebookInput.appendChild(unfiledOption);
+      const notebookOptionIds = new Set(['']);
       notebooks.forEach((notebook) => {
         const option = el('option', '', notebook.name || t(ctx, 'ui.notebook.untitled', 'Untitled'));
         option.value = notebook.id;
+        notebookOptionIds.add(option.value);
         notebookInput.appendChild(option);
       });
-      notebookInput.value = selectedNote.notebook_id || '';
+      const selectedNotebookId = selectedNote.notebook_id || '';
+      if (selectedNotebookId && !notebookOptionIds.has(selectedNotebookId)) {
+        const currentNotebookOption = el('option', '', selectedNotebookId);
+        currentNotebookOption.value = selectedNotebookId;
+        notebookInput.appendChild(currentNotebookOption);
+      }
+      notebookInput.value = selectedNotebookId;
       const topicsInput = el('input');
       topicsInput.value = csvFromList(selectedNote.topic_ids);
       const tagsInput = el('input');
@@ -291,12 +342,23 @@
       const contentInput = el('textarea', 'notebook-editor__content');
       contentInput.value = selectedNote.content || '';
       contentInput.spellcheck = true;
+      currentEditor = {
+        noteId: selectedNote.id,
+        titleInput,
+        notebookInput,
+        topicsInput,
+        tagsInput,
+        contentInput,
+        inputs: [titleInput, notebookInput, topicsInput, tagsInput, contentInput],
+      };
       [titleInput, notebookInput, topicsInput, tagsInput, contentInput].forEach((input) => {
         input.addEventListener('input', () => {
           editorDirty = true;
+          captureEditorDraft();
         });
         input.addEventListener('change', () => {
           editorDirty = true;
+          captureEditorDraft();
         });
       });
 
@@ -311,6 +373,7 @@
 
       const actions = el('div', 'study-panel__actions notebook-editor__actions');
       const saveButton = commandButton(t(ctx, 'ui.button.save', 'Save'), async () => {
+        captureEditorDraft();
         const noteId = selectedNote.id;
         const payload = await ctx.callPlugin('study_note_upsert', {
           note_id: noteId,
@@ -329,12 +392,13 @@
       const expandButton = commandButton(t(ctx, 'ui.notebook.ai_expand', 'AI expand'), async () => {
         const noteId = selectedNote.id;
         const contentSnapshot = contentInput.value;
+        const detailRequestSnapshot = noteDetailRequest;
         const payload = await ctx.callPlugin('study_note_ai_expand', {
           note_id: noteId,
           content: contentSnapshot,
           topic_context: topicsInput.value,
         });
-        if (!isValid() || selectedNote?.id !== noteId) return;
+        if (!isValid() || selectedNote?.id !== noteId || detailRequestSnapshot !== noteDetailRequest) return;
         if (payload.content) {
           const currentContentInput = contentInput.isConnected
             ? contentInput
@@ -347,8 +411,10 @@
         setStatus(t(ctx, 'ui.status.reply_ready', 'Reply ready'));
       });
       const deleteButton = commandButton(t(ctx, 'ui.button.delete', 'Delete'), async () => {
+        if (editorDirty && !confirmDiscardDraft()) return;
         const confirmed = window.confirm(t(ctx, 'ui.notebook.delete_note_confirm', 'Delete this note?'));
         if (!confirmed) return;
+        editorDirty = false;
         const noteId = selectedNote.id;
         await ctx.callPlugin('study_note_delete', { note_id: noteId });
         selectedNoteIds.delete(noteId);
@@ -368,6 +434,7 @@
     }
 
     async function loadNotes() {
+      captureEditorDraft();
       const detailRequestAtStart = noteDetailRequest += 1;
       const requestId = notesRequest += 1;
       const payload = await ctx.callPlugin('study_note_list', noteListArgs());
@@ -375,7 +442,11 @@
       notes = Array.isArray(payload.notes) ? payload.notes : [];
       if (selectedNote && detailRequestAtStart === noteDetailRequest) {
         const summary = notes.find((note) => note.id === selectedNote.id);
-        selectedNote = summary ? mergeNoteSummary(selectedNote, summary) : null;
+        if (summary) {
+          selectedNote = mergeNoteSummary(selectedNote, summary, editorDirty);
+        } else if (!editorDirty) {
+          selectedNote = null;
+        }
       }
       drawList();
       if (detailRequestAtStart === noteDetailRequest) drawEditor();
@@ -392,11 +463,18 @@
       if (!confirmDiscardDraft()) return;
       editorDirty = false;
       const requestId = noteDetailRequest += 1;
-      const payload = await ctx.callPlugin('study_note_get', { note_id: noteId });
-      if (!isValid() || requestId !== noteDetailRequest) return;
-      selectedNote = payload.note || null;
-      drawList();
-      drawEditor();
+      setBusy(true);
+      try {
+        const payload = await ctx.callPlugin('study_note_get', { note_id: noteId });
+        if (!isValid() || requestId !== noteDetailRequest) return;
+        if (editorDirty && !confirmDiscardDraft()) return;
+        editorDirty = false;
+        selectedNote = payload.note || null;
+        drawList();
+        drawEditor();
+      } finally {
+        setBusy(false);
+      }
     }
 
     async function createNotebook() {
@@ -405,6 +483,9 @@
         setStatus(t(ctx, 'ui.notebook.name_required', 'Notebook name is required'));
         return;
       }
+      if (!confirmDiscardDraft()) return;
+      editorDirty = false;
+      selectedNote = null;
       const payload = await ctx.callPlugin('study_notebook_create', { name });
       newNotebookInput.value = '';
       await loadNotebooks();
@@ -430,7 +511,9 @@
     async function deleteNotebook() {
       const notebookId = currentNotebookId();
       if (!notebookId) return;
+      if (!confirmDiscardDraft()) return;
       if (!window.confirm(t(ctx, 'ui.notebook.delete_notebook_confirm', 'Delete this notebook? Its notes will become unfiled.'))) return;
+      editorDirty = false;
       await ctx.callPlugin('study_notebook_delete', { notebook_id: notebookId });
       selectedNotebook = 'all';
       selectedNote = null;
@@ -460,6 +543,7 @@
 
     function openExport() {
       if (selectedNoteIds.size && typeof ctx.openSurface === 'function') {
+        exportSelectionIntent = true;
         ctx.openSurface('note-exporter');
       }
     }
@@ -472,6 +556,8 @@
       editorDirty = false;
       selectedNotebook = notebookSelect.value;
       selectedNote = null;
+      drawList();
+      drawEditor();
       updateNotebookActions();
       loadNotes().catch((error) => setStatus(errorText(error)));
     });
@@ -487,7 +573,11 @@
     });
 
     updateSelectionBar();
-    activeBeforeClose = () => confirmDiscardDraft();
+    activeBeforeClose = () => {
+      if (!confirmDiscardDraft()) return false;
+      editorDirty = false;
+      return true;
+    };
     refresh().catch((error) => setStatus(errorText(error)));
     return root;
   }
@@ -499,6 +589,12 @@
     },
     clearSelectedNoteIds() {
       selectedNoteIds.clear();
+      exportSelectionIntent = false;
+    },
+    consumeExportSelectionIntent() {
+      const shouldUseSelection = exportSelectionIntent;
+      exportSelectionIntent = false;
+      return shouldUseSelection;
     },
     close() {
       if (typeof activeBeforeClose === 'function' && !activeBeforeClose()) return false;

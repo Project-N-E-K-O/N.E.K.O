@@ -874,6 +874,10 @@
 
   function renderExporter(ctx, token) {
     const root = panel(ctx, 'note-exporter', t(ctx, 'ui.status.ready', 'Ready'));
+    const useNotebookSelection = window.StudyCompanionNotebook?.consumeExportSelectionIntent?.() === true;
+    const notebookNoteIds = useNotebookSelection
+      ? window.StudyCompanionNotebook?.getSelectedNoteIds?.() || []
+      : [];
     let fmt = 'markdown';
     let style = 'neko';
     let markdown = '';
@@ -914,12 +918,11 @@
       status = t(ctx, 'ui.status.exporting', 'Exporting...');
       draw();
       try {
-        const noteIds = window.StudyCompanionNotebook?.getSelectedNoteIds?.() || [];
         const payload = await ctx.callPlugin('study_export_notes', {
           fmt,
           style,
           preview_only: previewOnly,
-          note_ids: noteIds,
+          note_ids: notebookNoteIds,
         });
         markdown = payload.markdown || '';
         if (!previewOnly) downloadBase64(payload.content_base64, payload.filename, payload.content_type);
@@ -943,7 +946,6 @@
       const exportButton = button(t(ctx, 'ui.button.export', 'Export'), () => exportNotes(false), true);
       exportButton.dataset.surfaceAction = 'export-download';
       const controlsDisabled = !availabilityResolved || !exportAvailable;
-      const selectedNoteIds = window.StudyCompanionNotebook?.getSelectedNoteIds?.() || [];
       fmtSelect.disabled = controlsDisabled;
       styleSelect.disabled = controlsDisabled;
       previewButton.disabled = controlsDisabled;
@@ -957,7 +959,7 @@
         state([
           [t(ctx, 'ui.label.format', 'Format'), formatLabel(ctx, fmt)],
           [t(ctx, 'ui.label.style', 'Style'), exportStyleLabel(ctx, style)],
-          [t(ctx, 'ui.notebook.selected_notes', 'Selected notes'), String(selectedNoteIds.length)],
+          [t(ctx, 'ui.notebook.selected_notes', 'Selected notes'), String(notebookNoteIds.length)],
         ]),
         actions([
           labeled(t(ctx, 'ui.label.format', 'Format'), fmtSelect),
@@ -1067,9 +1069,12 @@
 
   function render(surfaceId, ctx) {
     panelToken += 1;
+    if (window.StudyCompanionNotebook?.close?.() === false) {
+      window.StudyCompanionNotebook?.consumeExportSelectionIntent?.();
+      return false;
+    }
     const notebookPanel = window.StudyCompanionNotebook?.render?.(surfaceId, ctx);
     if (notebookPanel) return notebookPanel;
-    if (window.StudyCompanionNotebook?.close?.() === false) return false;
     const token = panelToken;
     if (surfaceId === 'due-review-panel') return renderDueReview(ctx, token);
     if (surfaceId === 'pomodoro-panel') return renderPomodoro(ctx, token);
