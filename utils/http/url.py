@@ -49,7 +49,10 @@ def _canonical_host(host: str) -> str:
     still compares equal to an identically-written one.
     """
     if not (host.startswith('[') and host.endswith(']')):
-        return host
+        # 尾点是 DNS 根，`api.example.com.` 与 `api.example.com` 是同一台主机。
+        # 只去一个，与 path 尾斜杠同一条规则：`example.com..` 不是合法域名，
+        # 保持它与单点形式不同，宁可判成不同端点也不越权归一。
+        return host.removesuffix('.')
     import ipaddress
 
     try:

@@ -34,6 +34,8 @@ SAME = [
     ('非默认端口前导零', 'https://api.example.com:08443/v1', 'https://api.example.com:8443/v1'),
     ('IPv6 压缩与展开', 'http://[2001:0db8:0:0:0:0:0:1]:8080/v1', 'http://[2001:db8::1]:8080/v1'),
     ('IPv6 大小写', 'http://[2001:DB8::1]/v1', 'http://[2001:db8::1]/v1'),
+    ('host 尾点(DNS 根)', 'https://api.example.com./v1', 'https://api.example.com/v1'),
+    ('尾点+大小写', 'https://API.Example.COM./v1', 'https://api.example.com/v1'),
     ('同样写坏的 URL', 'http://[::1/v1', 'http://[::1/v1'),
 ]
 
@@ -49,6 +51,7 @@ DIFFERENT = [
     ('不同 scheme', 'https://api.example.com/v1', 'http://api.example.com/v1'),
     ('不同 path', 'https://api.example.com/v1', 'https://api.example.com/v2'),
     ('不同 IPv6', 'http://[2001:db8::1]/v1', 'http://[2001:db8::2]/v1'),
+    ('host 双尾点', 'https://api.example.com../v1', 'https://api.example.com/v1'),
     ('写坏但不同', 'http://[::1/v1', 'http://[::2/v1'),
 ]
 
