@@ -1069,7 +1069,7 @@
     panelToken += 1;
     const notebookPanel = window.StudyCompanionNotebook?.render?.(surfaceId, ctx);
     if (notebookPanel) return notebookPanel;
-    window.StudyCompanionNotebook?.close?.();
+    if (window.StudyCompanionNotebook?.close?.() === false) return false;
     const token = panelToken;
     if (surfaceId === 'due-review-panel') return renderDueReview(ctx, token);
     if (surfaceId === 'pomodoro-panel') return renderPomodoro(ctx, token);
@@ -1089,8 +1089,9 @@
     listAllMemoryDecks,
     loadDecks,
     close() {
+      if (window.StudyCompanionNotebook?.close?.() === false) return false;
       panelToken += 1;
-      window.StudyCompanionNotebook?.close?.();
+      return true;
     },
   };
 }());

@@ -1,5 +1,6 @@
 (function () {
   let panelToken = 0;
+  let activeBeforeClose = null;
   const selectedNoteIds = new Set();
 
   function t(ctx, key, fallback) {
@@ -132,6 +133,7 @@
     function commandButton(label, handler, primary = false) {
       const button = el('button', primary ? 'button button-primary' : 'button button-secondary', label);
       button.type = 'button';
+      button.disabled = busyCount > 0;
       button.addEventListener('click', async () => {
         if (button.disabled) return;
         button.disabled = true;
@@ -326,9 +328,10 @@
       }, true);
       const expandButton = commandButton(t(ctx, 'ui.notebook.ai_expand', 'AI expand'), async () => {
         const noteId = selectedNote.id;
+        const contentSnapshot = contentInput.value;
         const payload = await ctx.callPlugin('study_note_ai_expand', {
           note_id: noteId,
-          content: contentInput.value,
+          content: contentSnapshot,
           topic_context: topicsInput.value,
         });
         if (!isValid() || selectedNote?.id !== noteId) return;
@@ -336,6 +339,7 @@
           const currentContentInput = contentInput.isConnected
             ? contentInput
             : editor.querySelector('.notebook-editor__content');
+          if (!currentContentInput || currentContentInput.value !== contentSnapshot) return;
           if (currentContentInput) currentContentInput.value = payload.content;
           selectedNote = { ...selectedNote, content: payload.content, content_plain: payload.content };
           editorDirty = true;
@@ -483,6 +487,7 @@
     });
 
     updateSelectionBar();
+    activeBeforeClose = () => confirmDiscardDraft();
     refresh().catch((error) => setStatus(errorText(error)));
     return root;
   }
@@ -496,7 +501,10 @@
       selectedNoteIds.clear();
     },
     close() {
+      if (typeof activeBeforeClose === 'function' && !activeBeforeClose()) return false;
+      activeBeforeClose = null;
       panelToken += 1;
+      return true;
     },
   };
 }());

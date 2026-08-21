@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+import re
 from types import SimpleNamespace
 
 import pytest
@@ -179,9 +180,8 @@ def test_notebook_selected_note_export_is_not_truncated_to_default_list_limit(
             store, config=DocExportConfig(enabled=True)
         ).export(fmt="markdown", note_ids=note_ids, title="Selected Notes")
 
-        assert "## Note 000" in exported.markdown
-        assert "## Note 204" in exported.markdown
-        assert exported.markdown.index("## Note 000") < exported.markdown.index("## Note 204")
+        exported_titles = re.findall(r"^## (Note \d{3})$", exported.markdown, re.MULTILINE)
+        assert exported_titles == [f"Note {index:03d}" for index in range(205)]
     finally:
         store.close()
 

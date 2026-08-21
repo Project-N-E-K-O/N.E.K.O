@@ -1375,8 +1375,8 @@ function focusAfterScroll(target, focusTarget) {
 
 function closeSurfaceDrawer() {
   if (!surfaceDrawer) return;
+  if (window.StudyCompanionSurfacePanels?.close?.() === false) return;
   mapRequestId += 1;
-  window.StudyCompanionSurfacePanels?.close?.();
   surfaceDrawer.dataset.open = 'false';
   surfaceDrawer.setAttribute('aria-hidden', 'true');
 }
@@ -1498,6 +1498,7 @@ function renderSurfaceDrawerBody(surfaceId) {
     callPlugin,
     openSurface: openSurfaceDrawer,
   });
+  if (hostedPanel === false) return null;
   if (hostedPanel) return hostedPanel;
   if (surfaceId === 'knowledge-map') return renderKnowledgePanel();
   return renderGenericLocalPanel(surfaceId);
@@ -1525,6 +1526,8 @@ function openSurfaceDrawer(surfaceId) {
   if (!surfaceDrawer || !surfaceDrawerBody) {
     return;
   }
+  const drawerBody = renderSurfaceDrawerBody(surfaceId);
+  if (!drawerBody) return;
   if (surfaceDrawerTitle) {
     surfaceDrawerTitle.textContent = hostedSurfaceLabel(surfaceId);
   }
@@ -1539,7 +1542,7 @@ function openSurfaceDrawer(surfaceId) {
     surfaceDrawer.removeAttribute('aria-modal');
     delete surfaceDrawer.dataset.windowScale;
   }
-  surfaceDrawerBody.replaceChildren(renderSurfaceDrawerBody(surfaceId));
+  surfaceDrawerBody.replaceChildren(drawerBody);
   surfaceDrawer.dataset.open = 'true';
   surfaceDrawer.setAttribute('aria-hidden', 'false');
   if (surfaceId === 'knowledge-map') {

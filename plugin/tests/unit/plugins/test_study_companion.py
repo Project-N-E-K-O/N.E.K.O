@@ -6883,6 +6883,12 @@ def test_study_companion_notebook_is_integrated_with_static_exporter() -> None:
     assert "confirmDiscardDraft()" in notebook
     assert "notebooksRequest" in notebook
     assert "Discard unsaved changes?" in notebook
+    assert "activeBeforeClose" in notebook
+    assert "contentSnapshot" in notebook
+    assert "button.disabled = busyCount > 0;" in notebook
+    assert "window.StudyCompanionNotebook?.close?.() === false" in exporter
+    assert "const drawerBody = renderSurfaceDrawerBody(surfaceId);" in main_js
+    assert "if (!drawerBody) return;" in main_js
     assert "${raw.replace(' ', 'T')}Z" in notebook
     assert "getSelectedNoteIds" in exporter
     assert "note_ids: noteIds" in exporter
@@ -7245,6 +7251,19 @@ await new Promise((resolve) => setTimeout(resolve, 0));
 if (notebook.querySelector('.notebook-editor__content')?.value !== 'Expanded body') {
   throw new Error('AI expansion result was not written back to the editor');
 }
+
+buttons = [...notebook.querySelectorAll('.notebook-editor__actions button')];
+const secondExpandButton = buttons.find((button) => button.textContent === 'AI expand');
+const editedContent = notebook.querySelector('.notebook-editor__content');
+secondExpandButton.click();
+await new Promise((resolve) => setTimeout(resolve, 0));
+editedContent.value = 'User edit while AI is pending';
+editedContent.dispatchEvent(new window.Event('input', { bubbles: true }));
+expandResolve({ content: 'Stale AI body' });
+await new Promise((resolve) => setTimeout(resolve, 0));
+if (notebook.querySelector('.notebook-editor__content')?.value !== 'User edit while AI is pending') {
+  throw new Error('stale AI expansion overwrote a newer editor draft');
+}
 """
     completed = subprocess.run(
         ["node", "--input-type=module", "-e", script],
@@ -7324,6 +7343,9 @@ if (confirmCount !== 1) {
 }
 if (notebook.querySelector('.notebook-editor input')?.value !== 'Unsaved title') {
   throw new Error('draft was discarded after canceling confirmation');
+}
+if (window.StudyCompanionNotebook.close() !== false) {
+  throw new Error('dirty notebook close did not respect canceled confirmation');
 }
 """
     completed = subprocess.run(
