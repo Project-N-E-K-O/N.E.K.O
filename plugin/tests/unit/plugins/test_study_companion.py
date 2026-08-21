@@ -6122,12 +6122,14 @@ const requestUtilsJs = fs.readFileSync(path.join(staticDir, 'request-utils.js'),
 const documentControllerJs = fs.readFileSync(path.join(staticDir, 'document-controller.js'), 'utf8');
 const outcomeFormattersJs = fs.readFileSync(path.join(staticDir, 'outcome-formatters.js'), 'utf8');
 const surfacePanelsJs = fs.readFileSync(path.join(staticDir, 'surface-panels.js'), 'utf8');
+const notebookControllerJs = fs.readFileSync(path.join(staticDir, 'notebook-controller.js'), 'utf8');
 const knowledgeMapJs = fs.readFileSync(path.join(staticDir, 'knowledge-map.js'), 'utf8');
 const i18nJs = fs.readFileSync(path.join(staticDir, 'i18n.js'), 'utf8');
 const enBundle = JSON.parse(fs.readFileSync(path.join(i18nDir, 'en.json'), 'utf8'));
 
 const window = new Window({ url: 'http://testserver/plugin/study_companion/ui/?locale=en' });
 const { document } = window;
+window.happyDOM.settings.disableCSSFileLoading = true;
 const parentMessages = [];
 Object.defineProperty(window, 'parent', {
   value: { postMessage: (message) => parentMessages.push(message) },
@@ -6192,6 +6194,34 @@ window.fetch = async (rawUrl, options = {}) => {
         config: run.args.config,
       };
       data = { config: configPayload.config };
+    } else if (run.entry_id === 'study_notebook_list') {
+      data = { notebooks: [{ id: 'book-1', name: 'Book', note_count: 1 }] };
+    } else if (run.entry_id === 'study_note_list') {
+      data = {
+        notes: [{
+          id: 'note-1',
+          notebook_id: 'book-1',
+          title: 'Notebook note',
+          snippet: 'Notebook body',
+          content: 'Notebook body',
+          topic_ids: [],
+          tags: [],
+          updated_at: '2026-08-20T00:00:00Z',
+        }],
+      };
+    } else if (run.entry_id === 'study_note_get') {
+      data = {
+        note: {
+          id: 'note-1',
+          notebook_id: 'book-1',
+          title: 'Notebook note',
+          snippet: 'Notebook body',
+          content: 'Notebook body',
+          topic_ids: [],
+          tags: [],
+          updated_at: '2026-08-20T00:00:00Z',
+        },
+      };
     }
     return Response.json({
       items: [{
@@ -6208,6 +6238,7 @@ window.fetch = async (rawUrl, options = {}) => {
 
 window.eval(i18nJs);
 window.eval(surfacePanelsJs);
+window.eval(notebookControllerJs);
 window.eval(documentControllerJs);
 window.eval(outcomeFormattersJs);
 window.eval(requestUtilsJs);
@@ -6454,6 +6485,32 @@ await new Promise((resolve) => window.setTimeout(resolve, 0));
 if (runEntries.filter((entry) => entry.entry_id === 'study_export_notes').length !== exportCallCountBeforeDisable) {
   throw new Error('disabled export drawer must not call study_export_notes');
 }
+
+document.querySelector('[data-feature-action="notebook"]').click();
+assertSurfaceDrawer('notebook-panel');
+await waitFor(
+  () => document.querySelector('#surfaceDrawerBody .notebook-note-row__open'),
+  'notebook drawer note load',
+);
+document.querySelector('#surfaceDrawerBody .notebook-note-row__open').click();
+await waitFor(
+  () => document.querySelector('#surfaceDrawerBody .notebook-editor__content')?.value === 'Notebook body',
+  'notebook note detail load',
+);
+const notebookContent = document.querySelector('#surfaceDrawerBody .notebook-editor__content');
+notebookContent.value = 'Dirty notebook body';
+notebookContent.dispatchEvent(new window.Event('input', { bubbles: true }));
+window.confirm = () => false;
+document.querySelector('[data-feature-action="memory"]').click();
+await new Promise((resolve) => window.setTimeout(resolve, 0));
+assertSurfaceDrawer('notebook-panel');
+if (document.querySelector('[data-feature-action="memory"]').classList.contains('is-active')) {
+  throw new Error('canceled dirty notebook close switched the active feature');
+}
+if (document.querySelector('#surfaceDrawerBody .notebook-editor__content')?.value !== 'Dirty notebook body') {
+  throw new Error('canceled dirty notebook close discarded the editor draft');
+}
+window.confirm = () => true;
 
 const statusRunCountBeforeMessage = runEntries.filter((entry) => entry.entry_id === 'study_status').length;
 window.dispatchEvent(new window.MessageEvent('message', {
@@ -7258,6 +7315,274 @@ if (overlappingNotebook.querySelector('.study-panel__status-chip')?.textContent.
 if (noteListCallCount !== noteListCallsBeforeOverlap + 1) {
   throw new Error('a superseded notebook refresh continued into an extra note-list request');
 }
+"""
+    completed = subprocess.run(
+        ["node", "--input-type=module", "-e", script],
+        cwd=frontend_dir,
+        env={**os.environ, "STUDY_COMPANION_STATIC_DIR": str(plugin_dir / "static")},
+        capture_output=True,
+        text=True,
+        timeout=15,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr or completed.stdout
+
+
+def test_study_companion_notebook_keeps_next_name_typed_during_create() -> None:
+    if shutil.which("node") is None:
+        pytest.skip("node is not installed")
+
+    plugin_dir = Path(__file__).resolve().parents[3] / "plugins" / "study_companion"
+    frontend_dir = Path(__file__).resolve().parents[4] / "frontend" / "plugin-manager"
+    if not (frontend_dir / "node_modules" / "happy-dom").is_dir():
+        pytest.skip("frontend/plugin-manager node_modules with happy-dom is not installed")
+
+    script = r"""
+import { Window } from 'happy-dom';
+import fs from 'node:fs';
+import path from 'node:path';
+
+const staticDir = process.env.STUDY_COMPANION_STATIC_DIR;
+const notebookJs = fs.readFileSync(path.join(staticDir, 'notebook-controller.js'), 'utf8');
+const window = new Window({ url: 'http://testserver/plugin/study_companion/ui/' });
+const { document } = window;
+let notebooks = [];
+let createResolve;
+let createdNotebookCount = 0;
+const calls = [];
+
+function createNotebookPayload(name) {
+  const created = { id: `book-new-${createdNotebookCount += 1}`, name, note_count: 0 };
+  notebooks = [created, ...notebooks];
+  return { notebook: created };
+}
+
+async function callPlugin(entryId, args = {}) {
+  calls.push({ entryId, args });
+  if (entryId === 'study_notebook_list') return { notebooks };
+  if (entryId === 'study_note_list') return { notes: [] };
+  if (entryId === 'study_notebook_create') {
+    return await new Promise((resolve) => {
+      createResolve = () => resolve(createNotebookPayload(args.name));
+    });
+  }
+  throw new Error(`Unexpected entry: ${entryId}`);
+}
+
+const ctx = {
+  t: (_key, fallback) => fallback,
+  tf: (_key, fallback, values) => fallback.replace(/\{([^}]+)\}/g, (_, name) => values[name] ?? ''),
+  label: (surfaceId) => surfaceId,
+  callPlugin,
+  openSurface: () => undefined,
+};
+window.eval(notebookJs);
+const notebook = window.StudyCompanionNotebook.render('notebook-panel', ctx);
+document.body.appendChild(notebook);
+await new Promise((resolve) => setTimeout(resolve, 0));
+await new Promise((resolve) => setTimeout(resolve, 0));
+
+const newNotebookInput = [...notebook.querySelectorAll('.notebook-toolbar input')]
+  .find((input) => input.type !== 'search');
+const createNotebookButton = [...notebook.querySelectorAll('.notebook-toolbar__actions button')]
+  .find((button) => button.textContent === 'Create notebook');
+newNotebookInput.value = 'First Book';
+createNotebookButton.click();
+await new Promise((resolve) => setTimeout(resolve, 0));
+newNotebookInput.value = 'Second Book';
+createResolve();
+await new Promise((resolve) => setTimeout(resolve, 0));
+await new Promise((resolve) => setTimeout(resolve, 0));
+
+const createCall = calls.find((call) => call.entryId === 'study_notebook_create');
+if (createCall?.args.name !== 'First Book') {
+  throw new Error(`notebook create used the wrong submitted name: ${JSON.stringify(createCall)}`);
+}
+if (newNotebookInput.value !== 'Second Book') {
+  throw new Error(`notebook create cleared a newer typed name: ${newNotebookInput.value}`);
+}
+"""
+    completed = subprocess.run(
+        ["node", "--input-type=module", "-e", script],
+        cwd=frontend_dir,
+        env={**os.environ, "STUDY_COMPANION_STATIC_DIR": str(plugin_dir / "static")},
+        capture_output=True,
+        text=True,
+        timeout=15,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr or completed.stdout
+
+
+def test_study_companion_notebook_invalidates_pending_lists_after_deletions() -> None:
+    if shutil.which("node") is None:
+        pytest.skip("node is not installed")
+
+    plugin_dir = Path(__file__).resolve().parents[3] / "plugins" / "study_companion"
+    frontend_dir = Path(__file__).resolve().parents[4] / "frontend" / "plugin-manager"
+    if not (frontend_dir / "node_modules" / "happy-dom").is_dir():
+        pytest.skip("frontend/plugin-manager node_modules with happy-dom is not installed")
+
+    script = r"""
+import { Window } from 'happy-dom';
+import fs from 'node:fs';
+import path from 'node:path';
+
+const staticDir = process.env.STUDY_COMPANION_STATIC_DIR;
+const notebookJs = fs.readFileSync(path.join(staticDir, 'notebook-controller.js'), 'utf8');
+const window = new Window({ url: 'http://testserver/plugin/study_companion/ui/' });
+const { document } = window;
+window.confirm = () => true;
+
+let notebooks = [{ id: 'book-1', name: 'Book', note_count: 1 }];
+let notes = [{
+  id: 'note-1',
+  notebook_id: 'book-1',
+  title: 'Deleted note',
+  snippet: 'Deleted body',
+  content: 'Deleted body',
+  topic_ids: [],
+  tags: [],
+  updated_at: '2026-08-20T00:00:00Z',
+}];
+let deferNoteLists = false;
+let deleteNoteResolve;
+let deleteNotebookResolve;
+const noteListRequests = [];
+
+async function callPlugin(entryId, args = {}) {
+  if (entryId === 'study_notebook_list') return { notebooks };
+  if (entryId === 'study_note_list') {
+    if (deferNoteLists) {
+      return await new Promise((resolve) => noteListRequests.push({ args, resolve }));
+    }
+    return { notes };
+  }
+  if (entryId === 'study_note_get') return { note: notes.find((item) => item.id === args.note_id) };
+  if (entryId === 'study_note_delete') {
+    return await new Promise((resolve) => {
+      deleteNoteResolve = () => {
+        notes = notes.filter((item) => item.id !== args.note_id);
+        resolve({});
+      };
+    });
+  }
+  if (entryId === 'study_notebook_delete') {
+    return await new Promise((resolve) => {
+      deleteNotebookResolve = () => {
+        notebooks = notebooks.filter((item) => item.id !== args.notebook_id);
+        notes = [];
+        resolve({});
+      };
+    });
+  }
+  throw new Error(`Unexpected entry: ${entryId}`);
+}
+
+const ctx = {
+  t: (_key, fallback) => fallback,
+  tf: (_key, fallback, values) => fallback.replace(/\{([^}]+)\}/g, (_, name) => values[name] ?? ''),
+  label: (surfaceId) => surfaceId,
+  callPlugin,
+  openSurface: () => undefined,
+};
+
+async function waitFor(predicate, label) {
+  const deadline = Date.now() + 3000;
+  while (Date.now() < deadline) {
+    if (predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error(`timed out waiting for ${label}`);
+}
+
+async function settle() {
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+window.eval(notebookJs);
+const noteDeletePanel = window.StudyCompanionNotebook.render('notebook-panel', ctx);
+document.body.appendChild(noteDeletePanel);
+await settle();
+noteDeletePanel.querySelector('.notebook-note-row__open').click();
+await settle();
+deferNoteLists = true;
+const deleteNoteButton = [...noteDeletePanel.querySelectorAll('.notebook-editor__actions button')]
+  .find((button) => button.textContent === 'Delete');
+deleteNoteButton.click();
+await settle();
+const noteDeleteRefresh = [...noteDeletePanel.querySelectorAll('.notebook-toolbar__actions button')]
+  .find((button) => button.textContent === 'Refresh');
+noteDeleteRefresh.click();
+await waitFor(() => noteListRequests.length === 1, 'stale note-delete refresh list');
+deleteNoteResolve();
+await waitFor(() => noteListRequests.length === 2, 'post-delete refresh list');
+noteListRequests[0].resolve({ notes: [{
+  id: 'note-1',
+  notebook_id: 'book-1',
+  title: 'Stale deleted note',
+  snippet: 'Stale body',
+  content: 'Stale body',
+  topic_ids: [],
+  tags: [],
+  updated_at: '2026-08-20T00:00:00Z',
+}] });
+await settle();
+if (noteDeletePanel.querySelector('.notebook-note-row')) {
+  throw new Error('stale note list reinserted a locally deleted note');
+}
+noteListRequests[1].resolve({ notes: [] });
+await settle();
+
+notebooks = [{ id: 'book-1', name: 'Book', note_count: 1 }];
+notes = [{
+  id: 'note-1',
+  notebook_id: 'book-1',
+  title: 'Notebook note',
+  snippet: 'Notebook body',
+  content: 'Notebook body',
+  topic_ids: [],
+  tags: [],
+  updated_at: '2026-08-20T00:00:00Z',
+}];
+deferNoteLists = false;
+noteListRequests.length = 0;
+
+const notebookDeletePanel = window.StudyCompanionNotebook.render('notebook-panel', ctx);
+document.body.appendChild(notebookDeletePanel);
+await settle();
+const notebookSelect = notebookDeletePanel.querySelector('.notebook-toolbar select');
+notebookSelect.value = 'book-1';
+notebookSelect.dispatchEvent(new window.Event('change', { bubbles: true }));
+await settle();
+deferNoteLists = true;
+const deleteNotebookButton = [...notebookDeletePanel.querySelectorAll('.notebook-toolbar__actions button')]
+  .find((button) => button.textContent === 'Delete notebook');
+deleteNotebookButton.click();
+await settle();
+const notebookDeleteRefresh = [...notebookDeletePanel.querySelectorAll('.notebook-toolbar__actions button')]
+  .find((button) => button.textContent === 'Refresh');
+notebookDeleteRefresh.click();
+await waitFor(() => noteListRequests.length === 1, 'stale notebook-delete refresh list');
+deleteNotebookResolve();
+await waitFor(() => noteListRequests.length === 2, 'post-notebook-delete refresh list');
+noteListRequests[0].resolve({ notes: [{
+  id: 'note-1',
+  notebook_id: 'book-1',
+  title: 'Stale notebook note',
+  snippet: 'Stale body',
+  content: 'Stale body',
+  topic_ids: [],
+  tags: [],
+  updated_at: '2026-08-20T00:00:00Z',
+}] });
+await settle();
+if (notebookDeletePanel.querySelector('.notebook-note-row')) {
+  throw new Error('stale note list repopulated notes after notebook deletion reset');
+}
+noteListRequests[1].resolve({ notes: [] });
+await settle();
 """
     completed = subprocess.run(
         ["node", "--input-type=module", "-e", script],

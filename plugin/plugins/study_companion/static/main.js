@@ -1374,11 +1374,12 @@ function focusAfterScroll(target, focusTarget) {
 }
 
 function closeSurfaceDrawer() {
-  if (!surfaceDrawer) return;
-  if (window.StudyCompanionSurfacePanels?.close?.() === false) return;
+  if (!surfaceDrawer) return true;
+  if (window.StudyCompanionSurfacePanels?.close?.() === false) return false;
   mapRequestId += 1;
   surfaceDrawer.dataset.open = 'false';
   surfaceDrawer.setAttribute('aria-hidden', 'true');
+  return true;
 }
 
 function drawerElement(tag, className = '', text = '') {
@@ -1524,10 +1525,10 @@ async function loadKnowledgeMapIntoDrawer(surfaceId, requestId) {
 
 function openSurfaceDrawer(surfaceId) {
   if (!surfaceDrawer || !surfaceDrawerBody) {
-    return;
+    return false;
   }
   const drawerBody = renderSurfaceDrawerBody(surfaceId);
-  if (!drawerBody) return;
+  if (!drawerBody) return false;
   if (surfaceDrawerTitle) {
     surfaceDrawerTitle.textContent = hostedSurfaceLabel(surfaceId);
   }
@@ -1551,14 +1552,15 @@ function openSurfaceDrawer(surfaceId) {
     loadKnowledgeMapIntoDrawer(surfaceId, requestId);
   }
   surfaceDrawerCloseBtn?.focus?.();
+  return true;
 }
 
 function openHostedSurface(surfaceId, featureAction = '') {
   if (!surfaceId) {
     return;
   }
+  if (openSurfaceDrawer(surfaceId) === false) return;
   setActiveFeature(featureAction);
-  openSurfaceDrawer(surfaceId);
 }
 
 function openPracticePanel() {
@@ -1568,7 +1570,7 @@ function openPracticePanel() {
 }
 
 function handleFeatureAction(action) {
-  closeSurfaceDrawer();
+  if (closeSurfaceDrawer() === false) return;
   setActiveFeature(action);
   if (action === 'practice') {
     focusAfterScroll(openPracticePanel(), generateQuestionBtn);

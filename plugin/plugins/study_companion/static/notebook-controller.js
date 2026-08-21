@@ -492,6 +492,7 @@
           throw error;
         }
         selectedNoteIds.delete(noteId);
+        notesRequest += 1;
         notes = notes.filter((note) => note.id !== noteId);
         selectedNote = null;
         drawList();
@@ -655,7 +656,9 @@
         throw error;
       }
       if (!isValid()) return;
-      newNotebookInput.value = '';
+      if (newNotebookInput.value.trim() === name) {
+        newNotebookInput.value = '';
+      }
       const createdNotebook = payload.notebook || null;
       showCreatedNotebook(createdNotebook);
       try {
@@ -695,6 +698,7 @@
       notebooks = notebooks.filter((notebook) => notebook.id !== notebookId);
       selectedNotebook = 'all';
       selectedNote = null;
+      notesRequest += 1;
       notes = [];
       notesScope = '';
       notesHasMore = false;
