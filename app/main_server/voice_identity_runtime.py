@@ -344,6 +344,7 @@ class OwnerVoiceRuntimeRegistry:
                     if (
                         updated
                         is VoiceIdentityActivationResult.UNSUPPORTED_ASR_ROUTE
+                        and not self._manager_is_inactive_blocked(manager)
                     ):
                         activation_result = (
                             VoiceIdentityActivationResult.UNSUPPORTED_ASR_ROUTE
@@ -398,10 +399,23 @@ class OwnerVoiceRuntimeRegistry:
         runtime = getattr(manager, "_asr_runtime", None)
         if bool(getattr(runtime, "_speaker_verifier_degraded", False)):
             return VoiceIdentityActivationResult.RUNTIME_DEGRADED
+        return OwnerVoiceRuntimeRegistry._manager_route_result(manager)
+
+    @staticmethod
+    def _manager_route_result(manager) -> VoiceIdentityActivationResult:
         route_mode = getattr(manager, "_asr_route_mode", None)
+        if OwnerVoiceRuntimeRegistry._manager_is_inactive_blocked(manager):
+            return VoiceIdentityActivationResult.READY
         if route_mode is not None and route_mode != "independent":
             return VoiceIdentityActivationResult.UNSUPPORTED_ASR_ROUTE
         return VoiceIdentityActivationResult.READY
+
+    @staticmethod
+    def _manager_is_inactive_blocked(manager) -> bool:
+        return (
+            getattr(manager, "_asr_route_mode", None) == "blocked"
+            and getattr(manager, "is_active", None) is False
+        )
 
     @staticmethod
     def _current_task_is_cancelling() -> bool:
@@ -435,6 +449,11 @@ class OwnerVoiceRuntimeRegistry:
             factory.close()
             return VoiceIdentityActivationResult.RUNTIME_DEGRADED
         if isinstance(updated, VoiceIdentityActivationResult):
+            if (
+                updated is VoiceIdentityActivationResult.UNSUPPORTED_ASR_ROUTE
+                and OwnerVoiceRuntimeRegistry._manager_is_inactive_blocked(manager)
+            ):
+                return VoiceIdentityActivationResult.READY
             return updated
         return VoiceIdentityActivationResult.READY
 

@@ -1061,7 +1061,10 @@ async def _init_character_resources(k: str, is_new_character: bool):
     Writes the per-k slots: role_state[k].session_manager / sync_task — no state is
     shared between different k, so this is safe to run in parallel.
     """
-    rs = role_state[k]  # 调用方必须先 _ensure_character_slots，保证这里可直接索引
+    rs = role_state.get(k)
+    if rs is None:
+        logger.info(f"{k} 的角色资源已被并发删除，跳过初始化")
+        return
     # 更新或创建session manager（使用最新的prompt）
     # 使用锁保护websocket的preserve/restore操作，防止与cleanup()竞争
     async with rs.websocket_lock:

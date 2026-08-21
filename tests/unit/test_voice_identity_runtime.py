@@ -219,6 +219,50 @@ async def test_activation_status_tracks_live_route_and_runtime_degradation() -> 
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_inactive_blocked_managers_do_not_override_active_route_status() -> None:
+    registry = OwnerVoiceRuntimeRegistry(enforce=True)
+    active = _Manager()
+    active.is_active = True  # type: ignore[attr-defined]
+    active._asr_route_mode = "independent"  # type: ignore[attr-defined]
+    inactive = _Manager()
+    inactive.is_active = False  # type: ignore[attr-defined]
+    inactive._asr_route_mode = "blocked"  # type: ignore[attr-defined]
+    await registry.register_manager(active)
+    await registry.register_manager(inactive)
+    inactive.verifier_outcomes.append(
+        VoiceIdentityActivationResult.UNSUPPORTED_ASR_ROUTE
+    )
+    profile = _profile("profile")
+    try:
+        result = await registry.activate(profile, "generation")
+    finally:
+        profile.close()
+
+    assert result is VoiceIdentityActivationResult.READY
+    assert registry.activation_status() is VoiceIdentityActivationResult.READY
+
+    late_inactive = _Manager()
+    late_inactive.is_active = False  # type: ignore[attr-defined]
+    late_inactive._asr_route_mode = "blocked"  # type: ignore[attr-defined]
+    late_inactive.verifier_outcomes.append(
+        VoiceIdentityActivationResult.UNSUPPORTED_ASR_ROUTE
+    )
+    assert (
+        await registry.register_manager(late_inactive)
+        is VoiceIdentityActivationResult.READY
+    )
+    assert registry.activation_status() is VoiceIdentityActivationResult.READY
+
+    active._asr_route_mode = "blocked"  # type: ignore[attr-defined]
+    assert (
+        registry.activation_status()
+        is VoiceIdentityActivationResult.UNSUPPORTED_ASR_ROUTE
+    )
+    await registry.close()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_registration_attachment_failure_retries_current_activation() -> None:
     registry = OwnerVoiceRuntimeRegistry(
         enforce=True,

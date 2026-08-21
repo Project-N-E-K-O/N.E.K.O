@@ -877,6 +877,27 @@ async def test_character_init_skips_slot_removed_while_waiting_for_lock(
 
 
 @pytest.mark.asyncio
+async def test_character_init_skips_slot_removed_before_first_schedule(monkeypatch):
+    from app.main_server import character_runtime
+
+    name = "NekoDeletedBeforeInitSchedule"
+    role = SimpleNamespace(
+        websocket_lock=asyncio.Lock(),
+        session_manager=None,
+        sync_message_queue=SimpleNamespace(empty=lambda: True),
+        sync_task=None,
+    )
+    monkeypatch.setitem(character_runtime.role_state, name, role)
+
+    init = character_runtime._init_character_resources(name, False)
+    await character_runtime._unregister_and_cleanup_character_slot(name)
+    results = await asyncio.gather(init, return_exceptions=True)
+
+    assert results == [None]
+    assert name not in character_runtime.role_state
+
+
+@pytest.mark.asyncio
 async def test_game_archive_writer_forwards_full_session_locale(monkeypatch):
     from main_routers.game_router import archive
     from utils import internal_http_client
