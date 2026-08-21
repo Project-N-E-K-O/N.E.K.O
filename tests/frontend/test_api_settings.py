@@ -1820,6 +1820,7 @@ def test_saved_incapable_provider_falls_back_and_clears_stale_credentials(
         data['ttsModelApiKey'] = 'sk-stale-deepseek'
         data['omniModelProvider'] = 'claude'
         data['omniModelUrl'] = 'https://api.anthropic.com/v1'
+        data['omniModelApiKey'] = 'sk-stale-claude'
         route.fulfill(response=response, json=data)
 
     mock_page.route("**/api/config/core_api", _seed)
@@ -1839,6 +1840,7 @@ def test_saved_incapable_provider_falls_back_and_clears_stale_credentials(
                 ttsUrl: read('ttsModelUrl'),
                 ttsKey: read('ttsModelApiKey'),
                 omniUrl: read('omniModelUrl'),
+                omniKey: read('omniModelApiKey'),
             };
         }
     """)
@@ -1859,4 +1861,7 @@ def test_saved_incapable_provider_falls_back_and_clears_stale_credentials(
     )
     assert 'anthropic' not in (state['omniUrl'] or ''), (
         f"残留的 Anthropic 端点应被覆盖，实际 omniUrl={state['omniUrl']!r}"
+    )
+    assert 'sk-stale-claude' not in (state['omniKey'] or ''), (
+        f"残留凭证应被覆盖，实际 omniKey={state['omniKey']!r}"
     )
