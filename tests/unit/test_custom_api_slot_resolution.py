@@ -171,6 +171,49 @@ class TestNamedProviderSlotKey:
         )
 
     @pytest.mark.unit
+    def test_non_string_slot_key_is_normalised(self, config_manager):
+        """A hand-edited non-string slot key must not reach `.strip()` callers.
+
+        brain/openfang_adapter.py strips the agent key straight from
+        get_model_api_config(), so a raw non-string here is an AttributeError
+        during OpenFang sync.
+        """
+        _write_core_config(config_manager, _base_config(
+            agentModelProvider='custom',
+            agentModelId='my-agent',
+            agentModelUrl='https://llm.example.com/v1',
+            agentModelApiKey=98765,
+        ))
+        cfg = config_manager.get_core_config()
+        assert isinstance(cfg['AGENT_MODEL_API_KEY'], str), (
+            "槽位 Key 必须归一化成字符串，实际类型="
+            f"{type(cfg['AGENT_MODEL_API_KEY']).__name__}"
+        )
+        assert cfg['AGENT_MODEL_API_KEY'] == '98765'
+
+    @pytest.mark.unit
+    def test_doubao_tts_keeps_the_slot_as_its_credential_truth(self, config_manager):
+        """Doubao speech reads its key from the slot, not from the key book.
+
+        voice_storage.get_tts_api_key('doubao_tts') is slot-first with the book
+        as fallback, and the save path deliberately preserves a legacy key that
+        only exists on the slot. Redirecting this provider to the book would
+        give one credential two opposite resolution orders.
+        """
+        _write_core_config(config_manager, _base_config(
+            ttsModelProvider='doubao_tts',
+            ttsModelId='doubao-tts',
+            ttsModelUrl='https://openspeech.bytedance.com/api/v3/tts',
+            ttsModelApiKey='ark-slot-key',
+            assistApiKeyDoubaoTts='ark-book-key',
+        ))
+        cfg = config_manager.get_core_config()
+        assert cfg['TTS_MODEL_API_KEY'] == 'ark-slot-key', (
+            "豆包语音的凭证真相是槽位字段，改道管理簿会与 get_tts_api_key 反向，"
+            f"实际={cfg['TTS_MODEL_API_KEY']!r}"
+        )
+
+    @pytest.mark.unit
     def test_custom_provider_keeps_slot_key(self, config_manager):
         """'custom' is user-typed and must never be redirected to the book."""
         _write_core_config(config_manager, _base_config(
@@ -511,6 +554,39 @@ class TestVisionCredentialBoundary:
         )
         assert client.vision_api_key == 'sk-conversation', (
             "尾斜杠差异不该被当成换了一家而掐掉继承，实际="
+            f"{client.vision_api_key!r}"
+        )
+
+    @pytest.mark.unit
+    def test_path_case_is_not_folded_away(self):
+        """Host case is insignificant; path case is not.
+
+        Two tenants or routes can differ by path case alone. Folding the whole
+        URL would call them the same endpoint and hand one provider's
+        credential to the other.
+        """
+        # 两个 path **只**差大小写：这才是「折叠整条 URL」与「只折叠 scheme/host」
+        # 的分界。差别更大的话两种写法都会判成不同，测不出东西。
+        client = _make_offline_client(
+            base_url='https://api.example.com/v1/TenantA',
+            vision_base_url='https://api.example.com/v1/tenanta',
+            vision_api_key='',
+        )
+        assert client.vision_api_key is None, (
+            "path 大小写不同就是不同路由，不得继承凭证，实际="
+            f"{client.vision_api_key!r}"
+        )
+
+    @pytest.mark.unit
+    def test_host_case_is_still_folded(self):
+        """Scheme and host are case-insensitive per RFC 3986."""
+        client = _make_offline_client(
+            base_url='https://API.Example.com/v1',
+            vision_base_url='https://api.example.com/v1',
+            vision_api_key='',
+        )
+        assert client.vision_api_key == 'sk-conversation', (
+            "host 大小写差异不该被当成换了一家，实际="
             f"{client.vision_api_key!r}"
         )
 

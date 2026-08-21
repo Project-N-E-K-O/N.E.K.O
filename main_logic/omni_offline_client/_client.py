@@ -44,12 +44,35 @@ from ._lifecycle import _LifecycleMixin
 def _same_endpoint(a: str | None, b: str | None) -> bool:
     """Whether two configured base URLs address the same endpoint.
 
-    Used to decide whether the vision slot may inherit the chat credential.
-    Compared after trimming and dropping a trailing slash so the cosmetic
-    differences that accumulate in saved configs do not read as a different
-    provider — a false "different" would drop a key that used to work.
+    Used to decide whether the vision slot may inherit the chat credential, so
+    it has to be wrong in the safe direction: only the parts of a URL that are
+    genuinely case-insensitive get folded.
+
+    Scheme and host are case-insensitive per RFC 3986, and a trailing slash on
+    the path is cosmetic — those differences accumulate in saved configs and
+    must not read as "a different provider" (that would drop a key that used to
+    work). Path and query are case-SENSITIVE: two routes or tenants can differ
+    by case alone, and treating those as the same endpoint would hand one
+    provider's credential to another.
     """
-    return (a or '').strip().rstrip('/').lower() == (b or '').strip().rstrip('/').lower()
+    from urllib.parse import urlsplit
+
+    def _key(raw: str | None):
+        text = (raw or '').strip()
+        if not text:
+            return None
+        if '://' not in text:
+            text = f'//{text}'
+        parts = urlsplit(text)
+        return (
+            (parts.scheme or '').lower(),
+            (parts.netloc or '').lower(),
+            (parts.path or '').rstrip('/'),
+            parts.query,
+        )
+
+    key_a, key_b = _key(a), _key(b)
+    return key_a is not None and key_a == key_b
 
 
 class OmniOfflineClient(_ToolingMixin, _GenaiMixin, _StreamingMixin, _MediaMixin, _LifecycleMixin):

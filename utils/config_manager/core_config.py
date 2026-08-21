@@ -1495,12 +1495,22 @@ class CoreConfigMixin:
                     # 三处都先转字符串再 strip：core_config.json 用户可手改，字段里
                     # 可能落进任意 JSON 类型，直接 .strip() 会让整个 get_core_config()
                     # 抛 AttributeError —— 那是启动即崩，不是某个槽降级。
-                    cfg_key = core_cfg.get(f'{prefix}ModelApiKey')
-                    _raw_book_field = assist_api_key_raw_fields.get(provider, '') if provider else ''
+                    _raw_cfg_key = core_cfg.get(f'{prefix}ModelApiKey')
+                    cfg_key = (
+                        str(_raw_cfg_key).strip() if _raw_cfg_key is not None else None
+                    )
+                    # 豆包语音例外：它虽然在管理簿映射里，但凭证真相是槽位字段——
+                    # voice_storage.get_tts_api_key('doubao_tts') 槽位优先、管理簿兜底，
+                    # POST 侧的仲裁也刻意保住「只存在 ttsModelApiKey 的 legacy key」。
+                    # 这里跟着走管理簿优先就会让同一份凭证出现两条反向的解析路径。
+                    _uses_key_book = bool(provider) and provider != 'doubao_tts'
+                    _raw_book_field = (
+                        assist_api_key_raw_fields.get(provider, '') if _uses_key_book else ''
+                    )
                     _explicit_book = (
                         str(core_cfg.get(_raw_book_field) or '').strip() if _raw_book_field else ''
                     )
-                    _book_field = assist_api_key_fields.get(provider) if provider else ''
+                    _book_field = assist_api_key_fields.get(provider) if _uses_key_book else ''
                     _derived_book = (
                         str(config.get(_book_field) or '').strip() if _book_field else ''
                     )
