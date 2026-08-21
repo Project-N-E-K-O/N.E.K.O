@@ -49,16 +49,24 @@ def _canonical_host(host: str) -> str:
     still compares equal to an identically-written one.
     """
     if not (host.startswith('[') and host.endswith(']')):
-        # 尾点是 DNS 根，`api.example.com.` 与 `api.example.com` 是同一台主机。
-        # 只去一个，与 path 尾斜杠同一条规则：`example.com..` 不是合法域名，
-        # 保持它与单点形式不同，宁可判成不同端点也不越权归一。
-        return host.removesuffix('.')
+        # DNS 名大小写无关；尾点是 DNS 根，`api.example.com.` 与
+        # `api.example.com` 是同一台主机。只去一个尾点，与 path 尾斜杠同一条
+        # 规则：`example.com..` 不是合法域名，保持它与单点形式不同——宁可判成
+        # 不同端点，也不越权归一。
+        return host.lower().removesuffix('.')
     import ipaddress
 
+    # scoped IPv6 的 zone id（%eth0）是**接口名**，在 Unix 上大小写敏感，
+    # 不能跟着地址一起折叠——那会把两个不同接口判成同一个端点，凭证就送错了。
+    inner = host[1:-1]
+    addr, sep, zone = inner.partition('%')
     try:
-        return f'[{ipaddress.IPv6Address(host[1:-1]).compressed}]'
+        canonical = ipaddress.IPv6Address(addr).compressed
     except ValueError:
+        # 解析不了就原样保留（含大小写）：判据保持 total，且两个写法不同的
+        # 坏地址仍算不同端点。
         return host
+    return f'[{canonical}{sep}{zone}]'
 
 
 def endpoint_identity(raw: str | None):
@@ -97,7 +105,9 @@ def endpoint_identity(raw: str | None):
     # 与 host:port，只折叠后者。刻意不碰 parts.port —— 它对非法端口会抛。
     userinfo, _, hostinfo = (parts.netloc or '').rpartition('@')
     scheme = (parts.scheme or '').lower()
-    host, port = _split_hostinfo(hostinfo.lower())
+    # 不在这里整体转小写：hostinfo 里可能带 scoped IPv6 的 zone id，那是接口名、
+    # 大小写敏感。大小写归一交给 _canonical_host 分部位处理。
+    host, port = _split_hostinfo(hostinfo)
     host = _canonical_host(host)
     if port.isdigit():
         port = str(int(port))
