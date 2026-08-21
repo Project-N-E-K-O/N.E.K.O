@@ -7254,10 +7254,11 @@ const window = new Window({ url: 'http://testserver/plugin/study_companion/ui/' 
 const { document } = window;
 let expandResolve;
 let saveResolve;
+let deleteNotebookResolve;
 const calls = [];
 let note = {
   id: 'note-1',
-  notebook_id: '',
+  notebook_id: 'book-1',
   title: 'Original',
   content: 'Original body',
   content_plain: 'Original body',
@@ -7268,7 +7269,7 @@ let note = {
 };
 async function callPlugin(entryId, args = {}) {
   calls.push({ entryId, args });
-  if (entryId === 'study_notebook_list') return { notebooks: [] };
+  if (entryId === 'study_notebook_list') return { notebooks: [{ id: 'book-1', name: 'Book', note_count: 1 }] };
   if (entryId === 'study_note_list') return { notes: [note] };
   if (entryId === 'study_note_get') return { note };
   if (entryId === 'study_note_upsert') {
@@ -7280,6 +7281,9 @@ async function callPlugin(entryId, args = {}) {
   }
   if (entryId === 'study_note_ai_expand') {
     return await new Promise((resolve) => { expandResolve = resolve; });
+  }
+  if (entryId === 'study_notebook_delete') {
+    return await new Promise((resolve) => { deleteNotebookResolve = resolve; });
   }
   throw new Error(`Unexpected entry: ${entryId}`);
 }
@@ -7360,6 +7364,40 @@ await new Promise((resolve) => setTimeout(resolve, 0));
 if (notebook.querySelector('.notebook-editor__content')?.value !== 'User edit while AI is pending') {
   throw new Error('stale AI expansion overwrote a newer editor draft');
 }
+
+const latestSaveButton = [...notebook.querySelectorAll('.notebook-editor__actions button')]
+  .find((button) => button.textContent === 'Save');
+latestSaveButton.click();
+await new Promise((resolve) => setTimeout(resolve, 0));
+await new Promise((resolve) => setTimeout(resolve, 0));
+const notebookFilter = notebook.querySelector('.notebook-toolbar select');
+notebookFilter.value = 'book-1';
+notebookFilter.dispatchEvent(new window.Event('change', { bubbles: true }));
+await new Promise((resolve) => setTimeout(resolve, 0));
+await new Promise((resolve) => setTimeout(resolve, 0));
+window.confirm = () => true;
+const toolbarButtons = [...notebook.querySelectorAll('.notebook-toolbar__actions button')];
+const deleteNotebookButton = toolbarButtons.find((button) => button.textContent === 'Delete notebook');
+const refreshButtonDuringDelete = toolbarButtons.find((button) => button.textContent === 'Refresh');
+const newNoteButtonDuringDelete = toolbarButtons.find((button) => button.textContent === 'New note');
+const upsertsBeforeDelete = calls.filter((call) => call.entryId === 'study_note_upsert').length;
+deleteNotebookButton.click();
+await new Promise((resolve) => setTimeout(resolve, 0));
+for (const label of ['Create notebook', 'Rename', 'Delete notebook', 'New note']) {
+  const button = toolbarButtons.find((item) => item.textContent === label);
+  if (!button?.disabled) throw new Error(`${label} stayed enabled during notebook deletion`);
+}
+if (refreshButtonDuringDelete?.disabled) {
+  throw new Error('read-only refresh was blocked during notebook deletion');
+}
+newNoteButtonDuringDelete.click();
+await new Promise((resolve) => setTimeout(resolve, 0));
+if (calls.filter((call) => call.entryId === 'study_note_upsert').length !== upsertsBeforeDelete) {
+  throw new Error('new note mutation ran concurrently with notebook deletion');
+}
+deleteNotebookResolve({});
+await new Promise((resolve) => setTimeout(resolve, 0));
+await new Promise((resolve) => setTimeout(resolve, 0));
 """
     completed = subprocess.run(
         ["node", "--input-type=module", "-e", script],
@@ -7499,12 +7537,17 @@ window.confirm = () => {
   return false;
 };
 const calls = [];
+let failureEntry = '';
 const notes = [
   { id: 'note-1', notebook_id: 'book-1', title: 'First', snippet: 'First summary', content: 'First body', topic_ids: [], tags: [], updated_at: '2026-08-20T00:00:00Z' },
   { id: 'note-2', notebook_id: 'book-1', title: 'Second', snippet: 'Second summary', content: 'Second body', topic_ids: [], tags: [], updated_at: '2026-08-20T00:00:00Z' },
 ];
 async function callPlugin(entryId, args = {}) {
   calls.push({ entryId, args });
+  if (entryId === failureEntry) {
+    failureEntry = '';
+    throw new Error(`forced ${entryId} failure`);
+  }
   if (entryId === 'study_notebook_list') return { notebooks: [{ id: 'book-1', name: 'Book', note_count: 2 }] };
   if (entryId === 'study_note_list') {
     if (args.search_query === 'missing') return { notes: [] };
@@ -7512,6 +7555,9 @@ async function callPlugin(entryId, args = {}) {
   }
   if (entryId === 'study_note_get') return { note: notes.find((item) => item.id === args.note_id) };
   if (entryId === 'study_notebook_create') return { notebook: { id: 'book-2', name: args.name, note_count: 0 } };
+  if (entryId === 'study_note_upsert') {
+    return { note: { ...notes[0], ...args, id: args.note_id } };
+  }
   throw new Error(`Unexpected entry: ${entryId}`);
 }
 const ctx = {
@@ -7578,6 +7624,51 @@ if (confirmCount !== 2) {
 }
 if (notebook.querySelector('.notebook-editor__content')?.value !== 'Unsaved body') {
   throw new Error('canceled reopen changed the dirty editor');
+}
+
+window.confirm = () => true;
+searchInput.value = '';
+searchInput.dispatchEvent(new window.Event('input', { bubbles: true }));
+await new Promise((resolve) => setTimeout(resolve, 300));
+await new Promise((resolve) => setTimeout(resolve, 0));
+
+async function expectCreateFailure(entryId) {
+  const draft = `Draft retained after ${entryId}`;
+  const editorContent = notebook.querySelector('.notebook-editor__content');
+  editorContent.value = draft;
+  editorContent.dispatchEvent(new window.Event('input', { bubbles: true }));
+  newNotebookInput.value = `Failure ${entryId}`;
+  failureEntry = entryId;
+  const savesBefore = calls.filter((call) => call.entryId === 'study_note_upsert').length;
+  createNotebookButton.click();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  if (!notebook.querySelector('.study-panel__status-chip')?.textContent.includes(`forced ${entryId} failure`)) {
+    throw new Error(`${entryId} failure was not reported`);
+  }
+  if (notebook.querySelector('.notebook-editor__content')?.value !== draft) {
+    throw new Error(`${entryId} failure did not preserve the previous editor`);
+  }
+  const failedUnload = new window.Event('beforeunload', { cancelable: true });
+  window.dispatchEvent(failedUnload);
+  if (!failedUnload.defaultPrevented) {
+    throw new Error(`${entryId} failure did not restore the dirty draft guard`);
+  }
+  const saveButton = [...notebook.querySelectorAll('.notebook-editor__actions button')]
+    .find((button) => button.textContent === 'Save');
+  saveButton.click();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  const saves = calls.filter((call) => call.entryId === 'study_note_upsert');
+  if (saves.length !== savesBefore + 1 || saves.at(-1).args.note_id !== 'note-1') {
+    throw new Error(`${entryId} failure left the visible editor detached from its note`);
+  }
+}
+
+for (const entryId of ['study_notebook_create', 'study_notebook_list', 'study_note_list']) {
+  await expectCreateFailure(entryId);
 }
 """
     completed = subprocess.run(

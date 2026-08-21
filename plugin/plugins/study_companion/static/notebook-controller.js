@@ -59,6 +59,7 @@
     let notesRequest = 0;
     let noteDetailRequest = 0;
     let busyCount = 0;
+    let mutationBusyCount = 0;
     let editorDirty = false;
     let currentEditor = null;
 
@@ -92,10 +93,10 @@
     newNotebookLabel.appendChild(newNotebookInput);
 
     const toolbarActions = el('div', 'notebook-toolbar__actions');
-    const createNotebookButton = commandButton(t(ctx, 'ui.notebook.create_notebook', 'Create notebook'), createNotebook);
-    const renameNotebookButton = commandButton(t(ctx, 'ui.notebook.rename_notebook', 'Rename'), renameNotebook);
-    const deleteNotebookButton = commandButton(t(ctx, 'ui.notebook.delete_notebook', 'Delete notebook'), deleteNotebook);
-    const newNoteButton = commandButton(t(ctx, 'ui.notebook.new_note', 'New note'), createNote, true);
+    const createNotebookButton = commandButton(t(ctx, 'ui.notebook.create_notebook', 'Create notebook'), createNotebook, false, true);
+    const renameNotebookButton = commandButton(t(ctx, 'ui.notebook.rename_notebook', 'Rename'), renameNotebook, false, true);
+    const deleteNotebookButton = commandButton(t(ctx, 'ui.notebook.delete_notebook', 'Delete notebook'), deleteNotebook, false, true);
+    const newNoteButton = commandButton(t(ctx, 'ui.notebook.new_note', 'New note'), createNote, true, true);
     const refreshButton = commandButton(t(ctx, 'ui.button.refresh', 'Refresh'), refresh);
     toolbarActions.append(createNotebookButton, renameNotebookButton, deleteNotebookButton, newNoteButton, refreshButton);
     toolbar.append(filterLabel, searchLabel, newNotebookLabel, toolbarActions);
@@ -148,10 +149,12 @@
       });
     }
 
-    function setBusy(active) {
+    function setBusy(active, mutation = false) {
       busyCount = Math.max(0, busyCount + (active ? 1 : -1));
+      if (mutation) mutationBusyCount = Math.max(0, mutationBusyCount + (active ? 1 : -1));
       root.dataset.busy = busyCount > 0 ? 'true' : 'false';
       setEditorLocked(busyCount > 0);
+      updateNotebookActions();
       if (busyCount === 0) {
         root.querySelectorAll('button').forEach((button) => {
           button.disabled = false;
@@ -161,20 +164,20 @@
       }
     }
 
-    function commandButton(label, handler, primary = false) {
+    function commandButton(label, handler, primary = false, mutation = false) {
       const button = el('button', primary ? 'button button-primary' : 'button button-secondary', label);
       button.type = 'button';
       button.disabled = busyCount > 0;
       button.addEventListener('click', async () => {
         if (button.disabled) return;
         button.disabled = true;
-        setBusy(true);
+        setBusy(true, mutation);
         try {
           await handler();
         } catch (error) {
           setStatus(errorText(error));
         } finally {
-          setBusy(false);
+          setBusy(false, mutation);
           if (isValid()) {
             button.disabled = busyCount > 0;
             updateNotebookActions();
@@ -266,8 +269,11 @@
 
     function updateNotebookActions() {
       const hasNotebook = Boolean(currentNotebookId());
-      renameNotebookButton.disabled = !hasNotebook;
-      deleteNotebookButton.disabled = !hasNotebook;
+      const mutationsLocked = mutationBusyCount > 0;
+      createNotebookButton.disabled = mutationsLocked;
+      renameNotebookButton.disabled = mutationsLocked || !hasNotebook;
+      deleteNotebookButton.disabled = mutationsLocked || !hasNotebook;
+      newNoteButton.disabled = mutationsLocked;
     }
 
     function updateSelectionBar() {
@@ -401,7 +407,7 @@
         setEditorDirty(false);
         await refresh();
         setStatus(t(ctx, 'ui.notebook.saved', 'Saved'));
-      }, true);
+      }, true, true);
       const expandButton = commandButton(t(ctx, 'ui.notebook.ai_expand', 'AI expand'), async () => {
         const noteId = selectedNote.id;
         const contentSnapshot = contentInput.value;
@@ -422,7 +428,7 @@
           setEditorDirty(true);
         }
         setStatus(t(ctx, 'ui.status.reply_ready', 'Reply ready'));
-      });
+      }, false, true);
       const deleteButton = commandButton(t(ctx, 'ui.button.delete', 'Delete'), async () => {
         if (editorDirty && !confirmDiscardDraft()) return;
         const confirmed = window.confirm(t(ctx, 'ui.notebook.delete_note_confirm', 'Delete this note?'));
@@ -433,7 +439,7 @@
         selectedNoteIds.delete(noteId);
         selectedNote = null;
         await refresh();
-      });
+      }, false, true);
       actions.append(deleteButton, expandButton, saveButton);
       editor.append(fields, actions);
       setEditorLocked(busyCount > 0);
@@ -505,18 +511,23 @@
         setStatus(t(ctx, 'ui.notebook.name_required', 'Notebook name is required'));
         return;
       }
+      const restoreDirtyDraft = editorDirty;
       if (!confirmDiscardDraft()) return;
       setEditorDirty(false);
-      selectedNote = null;
-      const payload = await ctx.callPlugin('study_notebook_create', { name });
-      newNotebookInput.value = '';
-      await loadNotebooks();
-      if (payload.notebook?.id) {
-        selectedNotebook = payload.notebook.id;
-        notebookSelect.value = selectedNotebook;
-        updateNotebookActions();
+      try {
+        const payload = await ctx.callPlugin('study_notebook_create', { name });
+        newNotebookInput.value = '';
+        await loadNotebooks();
+        if (payload.notebook?.id) {
+          selectedNotebook = payload.notebook.id;
+          notebookSelect.value = selectedNotebook;
+          updateNotebookActions();
+        }
+        await loadNotes();
+      } catch (error) {
+        setEditorDirty(restoreDirtyDraft);
+        throw error;
       }
-      await loadNotes();
     }
 
     async function renameNotebook() {
