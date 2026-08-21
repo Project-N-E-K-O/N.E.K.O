@@ -642,7 +642,13 @@ async def release_character_resources(
     cancelled_post_turn_tasks = await post_turn.cancel_character_post_turn_tasks(
         lanlan_name
     )
-    drained = await _wait_for_character_requests(lanlan_name)
+    # 排空的前提是 publication hold 已经挡住新准入，计数才会单调降到 0。
+    # 不取 hold 的调用方（云存档下载、取消订阅）随时还会有新请求进来，等下去
+    # 只会等到超时——那等于把这两条路径从「立刻释放句柄」变成「永远释放不掉」。
+    # 它们的保护仍是原来那套（清理侧的 PermissionError 重试）。
+    drained = True
+    if review.is_character_publication_held(lanlan_name):
+        drained = await _wait_for_character_requests(lanlan_name)
     cancelled_post_turn_tasks += await post_turn.cancel_character_post_turn_tasks(
         lanlan_name
     )

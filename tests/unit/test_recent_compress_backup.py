@@ -316,6 +316,64 @@ async def test_publication_guard_covers_group_memory_scoped_writes():
 
 
 @pytest.mark.unit
+@pytest.mark.asyncio
+async def test_admission_lease_survives_a_hold_flip_through_the_real_middleware():
+    """The lease is a ContextVar set in middleware — prove it reaches the endpoint.
+
+    Calling the guard directly (as the other tests do) runs it in the caller's
+    own task, so it cannot show whether Starlette's middleware task spawn
+    carries the lease downstream. Drive a real ASGI stack instead.
+    """
+    import httpx
+    from fastapi import FastAPI
+
+    from app import memory_server
+
+    name = "租约穿透角色"
+    observed: dict[str, object] = {}
+
+    probe = FastAPI()
+    probe.middleware("http")(memory_server.runtime.character_publication_guard)
+
+    @probe.post("/process/{lanlan_name}")
+    async def _probe_endpoint(lanlan_name: str):
+        observed["active"] = memory_server.runtime._active_character_requests.get(
+            lanlan_name, 0
+        )
+        observed["admitted"] = memory_server.runtime._is_character_engine_admitted(
+            lanlan_name
+        )
+        # release 在这个请求准入之后才设 hold：已准入的写入必须能写完。
+        memory_server.review._publication_held_derived_task_names.add(lanlan_name)
+        observed["admitted_after_hold"] = (
+            memory_server.runtime._is_character_engine_admitted(lanlan_name)
+        )
+        return {"status": "processed"}
+
+    memory_server.review._publication_held_derived_task_names.discard(name)
+    try:
+        transport = httpx.ASGITransport(app=probe)
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://memory-server-probe",
+        ) as client:
+            response = await client.post(f"/process/{name}")
+            assert response.status_code == 200
+
+            # hold 已生效：下一个请求必须被拒。
+            blocked = await client.post(f"/process/{name}")
+            assert blocked.status_code == 409
+            assert blocked.json()["status"] == "cancelled"
+    finally:
+        memory_server.review._publication_held_derived_task_names.discard(name)
+
+    assert observed["active"] == 1
+    assert observed["admitted"] is True
+    assert observed["admitted_after_hold"] is True
+    # 请求结束后账本必须归零，否则 release 会永远排空不掉。
+    assert memory_server.runtime._active_character_requests.get(name, 0) == 0
+
+
+@pytest.mark.unit
 def test_release_drain_budget_stays_under_the_tightest_caller_timeout():
     """A caller that gives up first starts deleting files while the drain runs."""
     import inspect
@@ -447,6 +505,51 @@ async def test_release_gives_up_instead_of_disposing_after_the_caller_timeout():
     )
     assert memory_server.runtime._is_character_publication_admitted(name)
     memory_server.review._retired_derived_task_names.discard(name)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_release_without_a_publication_hold_never_waits_for_new_writes():
+    """Cloudsave / unsubscribe take no hold, so nothing stops new admissions.
+
+    Draining there would just burn the whole budget and report failure while the
+    caller goes on deleting storage — worse than releasing the handles at once.
+    """
+    from app import memory_server
+
+    name = "无围栏释放角色"
+    memory_server.review._retired_derived_task_names.discard(name)
+    memory_server.review._publication_held_derived_task_names.discard(name)
+    fake_time_manager = MagicMock()
+    fake_time_manager.dispose_engine.return_value = True
+
+    # 一个永不结束的在途写入：真去排空就一定超时。
+    context_token = memory_server.runtime._begin_character_request(name)
+    assert context_token is not None
+    try:
+        with patch.object(memory_server.runtime, "time_manager", fake_time_manager), patch.object(
+            memory_server.runtime, "_deferred_time_managers", [],
+        ), patch.object(
+            memory_server.runtime, "_CHARACTER_REQUEST_DRAIN_TIMEOUT_SECONDS", 0.05,
+        ):
+            result = await asyncio.wait_for(
+                memory_server.runtime.release_character_resources(
+                    name,
+                    hold_derived_task_admission=False,
+                    derived_task_claim_token="no-hold-claim",
+                    derived_task_claim_generation=0,
+                ),
+                timeout=2,
+            )
+    finally:
+        memory_server.runtime._end_character_request(name, context_token)
+
+    assert result["status"] == "success"
+    fake_time_manager.dispose_engine.assert_called_once_with(name)
+    memory_server.review._retired_derived_task_names.discard(name)
+    await memory_server.review.release_character_derived_task_admission_claim(
+        name, "no-hold-claim",
+    )
 
 
 @pytest.mark.unit
