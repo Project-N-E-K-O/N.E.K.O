@@ -560,6 +560,20 @@
       }
     }
 
+    function showCreatedNotebook(notebook) {
+      if (!notebook?.id) return;
+      notebooks = [notebook, ...notebooks.filter((item) => item.id !== notebook.id)];
+      selectedNotebook = notebook.id;
+      selectedNote = null;
+      notes = [];
+      notesHasMore = false;
+      notesNextOffset = 0;
+      notesScope = '';
+      drawNotebookOptions();
+      drawList();
+      drawEditor();
+    }
+
     async function createNotebook() {
       const name = newNotebookInput.value.trim();
       if (!name) {
@@ -569,19 +583,23 @@
       const restoreDirtyDraft = editorDirty;
       if (!confirmDiscardDraft()) return;
       setEditorDirty(false);
+      let payload;
       try {
-        const payload = await ctx.callPlugin('study_notebook_create', { name });
-        newNotebookInput.value = '';
-        await loadNotebooks();
-        if (payload.notebook?.id) {
-          selectedNotebook = payload.notebook.id;
-          notebookSelect.value = selectedNotebook;
-          updateNotebookActions();
-        }
-        await loadNotes();
+        payload = await ctx.callPlugin('study_notebook_create', { name });
       } catch (error) {
         setEditorDirty(restoreDirtyDraft);
         throw error;
+      }
+      if (!isValid()) return;
+      newNotebookInput.value = '';
+      const createdNotebook = payload.notebook || null;
+      showCreatedNotebook(createdNotebook);
+      try {
+        await refresh();
+      } catch (error) {
+        if (!isValid()) return;
+        showCreatedNotebook(createdNotebook);
+        setStatus(`${t(ctx, 'ui.notebook.saved', 'Saved')}: ${errorText(error)}`);
       }
     }
 

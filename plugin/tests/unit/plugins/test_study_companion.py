@@ -7647,7 +7647,9 @@ window.confirm = () => {
 };
 const calls = [];
 let failureEntry = '';
+let createdNotebookCount = 0;
 let createdNoteCount = 0;
+let notebooks = [{ id: 'book-1', name: 'Book', note_count: 2 }];
 let notes = [
   { id: 'note-1', notebook_id: 'book-1', title: 'First', snippet: 'First summary', content: 'First body', topic_ids: [], tags: [], updated_at: '2026-08-20T00:00:00Z' },
   { id: 'note-2', notebook_id: 'book-1', title: 'Second', snippet: 'Second summary', content: 'Second body', topic_ids: [], tags: [], updated_at: '2026-08-20T00:00:00Z' },
@@ -7658,13 +7660,17 @@ async function callPlugin(entryId, args = {}) {
     failureEntry = '';
     throw new Error(`forced ${entryId} failure`);
   }
-  if (entryId === 'study_notebook_list') return { notebooks: [{ id: 'book-1', name: 'Book', note_count: 2 }] };
+  if (entryId === 'study_notebook_list') return { notebooks };
   if (entryId === 'study_note_list') {
     if (args.search_query === 'missing') return { notes: [] };
     return { notes };
   }
   if (entryId === 'study_note_get') return { note: notes.find((item) => item.id === args.note_id) };
-  if (entryId === 'study_notebook_create') return { notebook: { id: 'book-2', name: args.name, note_count: 0 } };
+  if (entryId === 'study_notebook_create') {
+    const created = { id: `book-new-${createdNotebookCount += 1}`, name: args.name, note_count: 0 };
+    notebooks = [created, ...notebooks];
+    return { notebook: created };
+  }
   if (entryId === 'study_note_upsert') {
     const noteId = args.note_id || `note-new-${createdNoteCount += 1}`;
     const previous = notes.find((item) => item.id === noteId) || notes[0];
@@ -7785,9 +7791,7 @@ async function expectCreateFailure(entryId) {
   }
 }
 
-for (const entryId of ['study_notebook_create', 'study_notebook_list', 'study_note_list']) {
-  await expectCreateFailure(entryId);
-}
+await expectCreateFailure('study_notebook_create');
 
 async function expectNewNoteRefreshFailure(entryId) {
   const draft = `Draft discarded before new note ${entryId}`;
@@ -7850,6 +7854,63 @@ if (notebook.querySelector('.notebook-editor__actions')) {
 }
 if (!notebook.querySelector('.notebook-editor')?.textContent.includes('Select a note to edit')) {
   throw new Error('deleted note editor was not cleared before refresh failure');
+}
+
+async function expectNotebookRefreshFailure(entryId) {
+  const panel = window.StudyCompanionNotebook.render('notebook-panel', ctx);
+  document.body.appendChild(panel);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  panel.querySelector('.notebook-note-row__open').click();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  const draft = `Draft discarded before notebook ${entryId}`;
+  const editorContent = panel.querySelector('.notebook-editor__content');
+  editorContent.value = draft;
+  editorContent.dispatchEvent(new window.Event('input', { bubbles: true }));
+  const nameInput = [...panel.querySelectorAll('.notebook-toolbar input')]
+    .find((input) => input.type !== 'search');
+  const createButton = [...panel.querySelectorAll('.notebook-toolbar__actions button')]
+    .find((button) => button.textContent === 'Create notebook');
+  nameInput.value = `Created before ${entryId}`;
+  failureEntry = entryId;
+  const createsBefore = calls.filter((call) => call.entryId === 'study_notebook_create').length;
+  createButton.click();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  const status = panel.querySelector('.study-panel__status-chip')?.textContent || '';
+  if (!status.startsWith('Saved:') || !status.includes(`forced ${entryId} failure`)) {
+    throw new Error(`notebook ${entryId} refresh failure did not preserve saved status: ${status}`);
+  }
+  const selectedNotebookId = panel.querySelector('.notebook-field select')?.value || '';
+  if (!selectedNotebookId.startsWith('book-new-')) {
+    throw new Error(`notebook ${entryId} refresh failure did not keep the created notebook selected`);
+  }
+  const selectedOption = panel.querySelector(`.notebook-field select option[value="${selectedNotebookId}"]`);
+  if (!selectedOption?.textContent.includes(`Created before ${entryId}`)) {
+    throw new Error(`notebook ${entryId} refresh failure hid the created notebook`);
+  }
+  if (panel.querySelector('.notebook-editor__content')?.value === draft) {
+    throw new Error(`notebook ${entryId} refresh failure restored the discarded draft`);
+  }
+  const failedUnload = new window.Event('beforeunload', { cancelable: true });
+  window.dispatchEvent(failedUnload);
+  if (failedUnload.defaultPrevented) {
+    throw new Error(`notebook ${entryId} refresh failure restored the discarded draft guard`);
+  }
+  if (nameInput.value !== '') {
+    throw new Error(`notebook ${entryId} refresh failure kept the submitted notebook name`);
+  }
+  createButton.click();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  const creates = calls.filter((call) => call.entryId === 'study_notebook_create');
+  if (creates.length !== createsBefore + 1) {
+    throw new Error(`notebook ${entryId} refresh failure caused duplicate creation`);
+  }
+}
+
+for (const entryId of ['study_notebook_list', 'study_note_list']) {
+  await expectNotebookRefreshFailure(entryId);
 }
 """
     completed = subprocess.run(
