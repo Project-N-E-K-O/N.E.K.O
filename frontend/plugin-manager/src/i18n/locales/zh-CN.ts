@@ -122,6 +122,7 @@ export default {
     noDescription: '暂无描述',
     detailDescription: '插件介绍',
     detailReadme: '使用说明',
+    detailReadmeUnavailable: '这个已审核版本没有提供 README。',
     detailVersions: '版本更新',
     detailLatest: '最新',
     detailPublished: '发布于：',

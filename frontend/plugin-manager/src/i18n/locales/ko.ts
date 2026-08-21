@@ -122,6 +122,7 @@ export default {
     noDescription: '설명 없음',
     detailDescription: '플러그인 소개',
     detailReadme: '문서',
+    detailReadmeUnavailable: '이 검토된 버전에는 README가 없습니다.',
     detailVersions: '버전 기록',
     detailLatest: '최신',
     detailPublished: '게시일: ',

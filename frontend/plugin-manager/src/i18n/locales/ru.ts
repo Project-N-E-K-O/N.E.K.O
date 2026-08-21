@@ -122,6 +122,7 @@ export default {
     noDescription: 'Без описания',
     detailDescription: 'О плагине',
     detailReadme: 'Документация',
+    detailReadmeUnavailable: 'Для этой проверенной версии README недоступен.',
     detailVersions: 'История версий',
     detailLatest: 'Последняя',
     detailPublished: 'Опубликован: ',

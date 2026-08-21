@@ -143,6 +143,14 @@ export interface MarketPluginVersion {
   created_at: string
 }
 
+/** 已审核版本的 README；由 Market 单独的公开接口提供。 */
+export interface MarketPluginReadme {
+  availability: 'available' | 'unavailable'
+  content?: string | null
+  repository_url?: string
+  source_ref?: string
+}
+
 const ZONE_BY_ID: Record<number, string> = {
   1: 'game',
   2: 'companion',
@@ -338,6 +346,22 @@ export async function fetchMarketPlugin(
     return normalizeMarketPlugin(res.data)
   } catch (err) {
     console.warn('[Market] Failed to fetch plugin:', err)
+    return null
+  }
+}
+
+/** 获取 Market 审核快照对应的 README，而不是仓库当前分支的 README。 */
+export async function fetchMarketPluginReadme(
+  pluginId: string | number,
+): Promise<MarketPluginReadme | null> {
+  const client = await getClient()
+  if (!client) return null
+
+  try {
+    const res = await client.get<MarketPluginReadme>(`/plugins/${pluginId}/readme`)
+    return res.data
+  } catch (err) {
+    console.warn('[Market] Failed to fetch plugin README:', err)
     return null
   }
 }

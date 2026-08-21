@@ -122,6 +122,7 @@ export default {
     noDescription: '説明なし',
     detailDescription: 'プラグインについて',
     detailReadme: 'ドキュメント',
+    detailReadmeUnavailable: 'この審査済みバージョンには README がありません。',
     detailVersions: 'バージョン履歴',
     detailLatest: '最新',
     detailPublished: '公開日: ',

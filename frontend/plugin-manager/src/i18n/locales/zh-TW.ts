@@ -122,6 +122,7 @@ export default {
     noDescription: '暫無說明',
     detailDescription: '外掛介紹',
     detailReadme: '使用說明',
+    detailReadmeUnavailable: '這個已審核版本沒有提供 README。',
     detailVersions: '版本更新',
     detailLatest: '最新',
     detailPublished: '發布於：',

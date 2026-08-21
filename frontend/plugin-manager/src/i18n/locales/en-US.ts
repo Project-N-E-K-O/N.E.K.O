@@ -122,6 +122,7 @@ export default {
     noDescription: 'No description',
     detailDescription: 'About this plugin',
     detailReadme: 'Documentation',
+    detailReadmeUnavailable: 'This reviewed version does not provide a README.',
     detailVersions: 'Version history',
     detailLatest: 'Latest',
     detailPublished: 'Published: ',

@@ -594,6 +594,19 @@ async def market_catalog_plugin_versions(
     )
 
 
+@router.get("/catalog/api/v1/plugins/{plugin_id}/readme")
+async def market_catalog_plugin_readme(
+    request: Request,
+    plugin_id: str,
+) -> Response:
+    """Proxy the Market's reviewed README for an in-app detail view."""
+
+    return await _proxy_market_catalog(
+        request,
+        f"/plugins/{quote(plugin_id, safe='')}/readme",
+    )
+
+
 @router.get("/catalog/api/v1/plugins/{plugin_id}")
 async def market_catalog_plugin(request: Request, plugin_id: str) -> Response:
     return await _proxy_market_catalog(

@@ -13,7 +13,12 @@ vi.mock('axios', () => ({
   },
 }))
 
-import { fetchMarketPlugins, normalizeMarketPlugin, resetMarketClient } from './market'
+import {
+  fetchMarketPluginReadme,
+  fetchMarketPlugins,
+  normalizeMarketPlugin,
+  resetMarketClient,
+} from './market'
 
 describe('Market API transport', () => {
   beforeEach(() => {
@@ -98,5 +103,16 @@ describe('Market API transport', () => {
       rating_count: 9,
       version: '1.2.3',
     })
+  })
+
+  it('fetches the reviewed README through the local catalog bridge', async () => {
+    mocks.marketGet.mockResolvedValueOnce({
+      data: { availability: 'available', content: '# Reviewed README' },
+    })
+
+    await expect(fetchMarketPluginReadme(15)).resolves.toMatchObject({
+      content: '# Reviewed README',
+    })
+    expect(mocks.marketGet).toHaveBeenCalledWith('/plugins/15/readme')
   })
 })
