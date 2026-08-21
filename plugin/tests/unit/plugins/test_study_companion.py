@@ -7059,11 +7059,18 @@ const notes = [
   { id: 'note-2', title: 'Second', snippet: 'Second summary', content: 'Second body', updated_at: '2026-08-20T00:00:00Z' },
 ];
 const detailRequests = new Map();
+const notebookListRequests = [];
 const noteListRequests = [];
+let deferNotebookLists = false;
 let deferNoteLists = false;
+let noteListCallCount = 0;
 async function callPlugin(entryId, args = {}) {
-  if (entryId === 'study_notebook_list') return { notebooks: [] };
+  if (entryId === 'study_notebook_list') {
+    if (!deferNotebookLists) return { notebooks: [] };
+    return await new Promise((resolve, reject) => notebookListRequests.push({ args, resolve, reject }));
+  }
   if (entryId === 'study_note_list') {
+    noteListCallCount += 1;
     if (!deferNoteLists) return { notes };
     return await new Promise((resolve, reject) => noteListRequests.push({ args, resolve, reject }));
   }
@@ -7152,6 +7159,31 @@ if (notebook.querySelector('.study-panel__status-chip')?.textContent.includes('s
 }
 if (notebook.querySelector('.notebook-note-row strong')?.textContent !== 'Second') {
   throw new Error('a superseded search rejection replaced the current results');
+}
+
+deferNotebookLists = true;
+deferNoteLists = false;
+const noteListCallsBeforeOverlap = noteListCallCount;
+const overlappingNotebook = window.StudyCompanionNotebook.render('notebook-panel', ctx);
+document.body.appendChild(overlappingNotebook);
+await new Promise((resolve) => setTimeout(resolve, 0));
+const staleNotebookRequest = notebookListRequests.shift();
+const overlappingRefresh = [...overlappingNotebook.querySelectorAll('.notebook-toolbar__actions button')]
+  .find((button) => button.textContent === 'Refresh');
+overlappingRefresh.click();
+await new Promise((resolve) => setTimeout(resolve, 0));
+const currentNotebookRequest = notebookListRequests.shift();
+currentNotebookRequest.resolve({ notebooks: [] });
+await new Promise((resolve) => setTimeout(resolve, 0));
+await new Promise((resolve) => setTimeout(resolve, 0));
+staleNotebookRequest.reject(new Error('stale notebook refresh failed'));
+await new Promise((resolve) => setTimeout(resolve, 0));
+await new Promise((resolve) => setTimeout(resolve, 0));
+if (overlappingNotebook.querySelector('.study-panel__status-chip')?.textContent.includes('stale notebook refresh failed')) {
+  throw new Error('a superseded notebook-list rejection overwrote the current status');
+}
+if (noteListCallCount !== noteListCallsBeforeOverlap + 1) {
+  throw new Error('a superseded notebook refresh continued into an extra note-list request');
 }
 """
     completed = subprocess.run(

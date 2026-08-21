@@ -478,10 +478,17 @@
 
     async function loadNotebooks() {
       const requestId = notebooksRequest += 1;
-      const payload = await ctx.callPlugin('study_notebook_list', { limit: 100 });
-      if (!isValid() || requestId !== notebooksRequest) return;
+      let payload;
+      try {
+        payload = await ctx.callPlugin('study_notebook_list', { limit: 100 });
+      } catch (error) {
+        if (!isValid() || requestId !== notebooksRequest) return false;
+        throw error;
+      }
+      if (!isValid() || requestId !== notebooksRequest) return false;
       notebooks = Array.isArray(payload.notebooks) ? payload.notebooks : [];
       drawNotebookOptions();
+      return true;
     }
 
     async function loadNotes(append = false) {
@@ -529,7 +536,7 @@
     }
 
     async function refresh() {
-      await loadNotebooks();
+      if (!await loadNotebooks()) return;
       await loadNotes();
     }
 
