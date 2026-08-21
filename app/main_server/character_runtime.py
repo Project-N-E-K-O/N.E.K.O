@@ -17,24 +17,265 @@
 
 import asyncio
 import atexit
+import base64
+import ipaddress
 import logging
 import sys
 import time
 import traceback
 from dataclasses import dataclass
+from io import BytesIO
 from typing import Any, Optional
+from urllib.parse import urlsplit
+
+from PIL import Image
 
 from config import MONITOR_SERVER_PORT, USER_NOTIFICATION_ERROR_MAX_CHARS
 from main_logic import core, cross_server
 from main_logic.agent_event_bus import notify_analyze_ack
-from main_logic.proactive_delivery import CALLBACK_EXPIRES_AT_KEY
+from main_logic.proactive_delivery import (
+    CALLBACK_EXPIRES_AT_KEY,
+    CALLBACK_IMAGE_MAX_COUNT,
+    CALLBACK_IMAGE_MAX_TOTAL_BYTES,
+    approx_base64_decoded_bytes,
+)
+from plugin.sdk.shared.core.images import MAX_SOURCE_IMAGE_PIXELS
 from utils.config_manager import get_reserved
+from utils.internal_http_client import get_internal_http_client
 
 from ._shared import runtime
 
 _IS_MAIN_PROCESS = runtime.is_main_process
 _config_manager = runtime.config_manager
 logger = runtime.logger
+
+_PLUGIN_IMAGE_MAX_BYTES = 8 * 1024 * 1024
+_PLUGIN_IMAGE_FETCH_BATCH_SIZE = 4
+# Per-push budgets. A single push carries an unbounded ``parts`` list, so
+# without these one plugin can pin (count x 8 MiB) of decoded image bytes in
+# this handler — and, for ``respond``, keep it pinned on the queued callback
+# until the pacing manager releases it. The count cap also bounds how long the
+# event handler blocks on fetches (ceil(count / batch) x the 2s per-fetch
+# timeout). Budgets are in DECODED bytes, matching _PLUGIN_IMAGE_MAX_BYTES.
+#
+# The 8 images / 8 MiB figures are the contract PLUGIN_DEVELOPMENT_GUIDE.md
+# already advertises to plugin authors ("单条消息最多向模型注入 8 张、合计
+# 8 MiB 图片"). One push is one turn's worth, so share the constants with the
+# per-turn budget in proactive_delivery rather than keeping a second spelling.
+_PLUGIN_IMAGE_MAX_COUNT = CALLBACK_IMAGE_MAX_COUNT
+_PLUGIN_IMAGE_TOTAL_MAX_BYTES = CALLBACK_IMAGE_MAX_TOTAL_BYTES
+# The chat path is separate: URL-backed blocks cost the frontend a fetch (count
+# only), while inline data: URLs ride the WebSocket frame itself (count+bytes).
+_PLUGIN_CHAT_IMAGE_MAX_COUNT = 8
+_PLUGIN_CHAT_INLINE_TOTAL_MAX_BYTES = 8 * 1024 * 1024
+# Bounded base64 prefix that the dimension probe reads. Large enough for PNG
+# and JPEG headers; formats Pillow cannot parse from a truncated stream fall
+# back to a full decode.
+_PLUGIN_CHAT_HEADER_PREFIX_B64_CHARS = 64 * 1024
+
+_approx_decoded_bytes = approx_base64_decoded_bytes
+
+
+def _inline_image_pixels_ok(encoded: str) -> bool:
+    """Reject decompression bombs before a data: URL reaches the browser.
+
+    The byte budget is structurally blind to these: a 20000x20000 single-colour
+    PNG compresses to ~1.2 MiB, sails through an 8 MiB cap, and costs the
+    renderer ~1.6 GB to decode. Only a pixel count catches it.
+
+    Reads the dimensions from a bounded base64 prefix so the probe does not
+    scale with payload size (~0.1 ms flat, against ~14 ms to base64-decode a
+    full 8 MiB payload just to read its header). WebP is the one format Pillow
+    cannot open from a truncated stream, so it takes the full-decode fallback —
+    harmless, because a weaponized image is small by construction.
+
+    Returns False when the dimensions cannot be established at all: an image
+    this host cannot inspect is one it should not hand to the renderer.
+    """
+    head = encoded[:_PLUGIN_CHAT_HEADER_PREFIX_B64_CHARS]
+    head = head[: len(head) - (len(head) % 4)]
+    for candidate in (head, encoded):
+        if not candidate:
+            continue
+        try:
+            raw = base64.b64decode(candidate)
+        except Exception:
+            return False
+        try:
+            with Image.open(BytesIO(raw)) as image:
+                width, height = image.size
+        except Image.DecompressionBombError:
+            # Already past Pillow's own ceiling; a full decode cannot help.
+            return False
+        except Exception:
+            continue
+        if width <= 0 or height <= 0:
+            return False
+        return width * height <= MAX_SOURCE_IMAGE_PIXELS
+    return False
+
+
+def _is_local_plugin_media_url(url: str) -> bool:
+    """Accept temporary media on any loopback port selected by the plugin host."""
+    try:
+        parsed = urlsplit(url)
+        host = parsed.hostname
+        port = parsed.port
+        media_id = parsed.path.removeprefix("/media/")
+        return (
+            parsed.scheme == "http"
+            and parsed.username is None
+            and parsed.password is None
+            and host is not None
+            and ipaddress.ip_address(host).is_loopback
+            and port is not None
+            and not parsed.query
+            and not parsed.fragment
+            and parsed.path.startswith("/media/")
+            and bool(media_id)
+            and "/" not in media_id
+        )
+    except ValueError:
+        return False
+
+
+async def _resolve_plugin_model_image(part: dict[str, Any]) -> str:
+    """Resolve one canonical image part to the model's base64 input."""
+    encoded = part.get("binary_base64")
+    if isinstance(encoded, str) and encoded:
+        return encoded
+    url = part.get("url")
+    if not isinstance(url, str) or not url:
+        raise ValueError("plugin image part has no usable payload")
+    return await _fetch_plugin_image_base64(url)
+
+
+def _build_plugin_chat_blocks(
+    parts: list[Any],
+    *,
+    include_text: bool,
+) -> list[dict[str, str]]:
+    """Project canonical plugin parts to the frontend's supported blocks.
+
+    Images past the per-push budget are dropped; text blocks keep flowing so
+    the surviving mix stays in canonical order rather than truncating the tail.
+    """
+    blocks: list[dict[str, str]] = []
+    image_count = 0
+    inline_bytes = 0
+    dropped_images = 0
+    bomb_images = 0
+    for part in parts:
+        if not isinstance(part, dict):
+            continue
+        if (
+            include_text
+            and part.get("type") == "text"
+            and isinstance(part.get("text"), str)
+        ):
+            blocks.append({"type": "text", "text": part["text"]})
+            continue
+        if part.get("type") != "image":
+            continue
+        if image_count >= _PLUGIN_CHAT_IMAGE_MAX_COUNT:
+            dropped_images += 1
+            continue
+        url = part.get("url")
+        if isinstance(url, str) and _is_local_plugin_media_url(url):
+            blocks.append({"type": "image", "url": url})
+            image_count += 1
+            continue
+        encoded = part.get("binary_base64")
+        mime = str(part.get("mime") or "").strip().lower()
+        if isinstance(encoded, str) and encoded and mime.startswith("image/"):
+            decoded_bytes = _approx_decoded_bytes(encoded)
+            if inline_bytes + decoded_bytes > _PLUGIN_CHAT_INLINE_TOTAL_MAX_BYTES:
+                dropped_images += 1
+                continue
+            if not _inline_image_pixels_ok(encoded):
+                # Bytes and pixels are independent axes; the budget above
+                # cannot see a bomb, so this check is not redundant with it.
+                bomb_images += 1
+                continue
+            inline_bytes += decoded_bytes
+            blocks.append({"type": "image", "url": f"data:{mime};base64,{encoded}"})
+            image_count += 1
+    if dropped_images:
+        logger.warning(
+            "[EventBus] %d chat image part(s) dropped: over the per-push budget "
+            "(max %d images, %d inline bytes)",
+            dropped_images,
+            _PLUGIN_CHAT_IMAGE_MAX_COUNT,
+            _PLUGIN_CHAT_INLINE_TOTAL_MAX_BYTES,
+        )
+    if bomb_images:
+        logger.warning(
+            "[EventBus] %d inline chat image(s) dropped: unreadable header or "
+            "over the %d pixel decode limit",
+            bomb_images,
+            MAX_SOURCE_IMAGE_PIXELS,
+        )
+    return blocks
+
+
+def _build_plugin_image_chat_blocks(media_parts: list[Any]) -> list[dict[str, str]]:
+    """Synchronously validate plugin image parts and build frontend blocks."""
+    return _build_plugin_chat_blocks(media_parts, include_text=False)
+
+
+def _build_ordered_plugin_chat_blocks(parts: list[Any]) -> list[dict[str, str]]:
+    """Build supported frontend blocks without changing canonical part order."""
+    return _build_plugin_chat_blocks(parts, include_text=True)
+
+
+def _ordered_plugin_chat_blocks(parts: list[Any], mgr: Any) -> list[dict[str, str]]:
+    """Build ordered blocks and expand role placeholders in text."""
+    blocks = _build_ordered_plugin_chat_blocks(parts)
+    for block in blocks:
+        if block["type"] == "text":
+            block["text"] = core.apply_role_placeholders(
+                block["text"],
+                lanlan_name=getattr(mgr, "lanlan_name", "") or "",
+                master_name=getattr(mgr, "master_name", "") or "",
+            )
+    return blocks
+
+
+async def _fetch_plugin_image_base64(url: str) -> str:
+    """Fetch one temporary plugin image without blocking the event loop."""
+    if not _is_local_plugin_media_url(url):
+        raise ValueError("image URL is not served by the local plugin media store")
+    client = get_internal_http_client()
+    async with client.stream(
+        "GET",
+        url,
+        timeout=2.0,
+        follow_redirects=False,
+    ) as response:
+        response.raise_for_status()
+        content_type = str(response.headers.get("content-type") or "").lower()
+        if not content_type.startswith("image/"):
+            raise ValueError("plugin media store returned a non-image response")
+        raw_content_length = str(response.headers.get("content-length") or "").strip()
+        if raw_content_length:
+            try:
+                content_length = int(raw_content_length)
+            except ValueError:
+                content_length = 0
+            if content_length > _PLUGIN_IMAGE_MAX_BYTES:
+                raise ValueError("plugin image exceeds the 8 MiB model input limit")
+        buffered = bytearray()
+        async for chunk in response.aiter_bytes():
+            if not chunk:
+                continue
+            buffered.extend(chunk)
+            if len(buffered) > _PLUGIN_IMAGE_MAX_BYTES:
+                raise ValueError("plugin image exceeds the 8 MiB model input limit")
+        content = bytes(buffered)
+    if not content:
+        raise ValueError("plugin media store returned an empty image")
+    encoded = await asyncio.to_thread(base64.b64encode, content)
+    return encoded.decode("ascii")
 
 
 def _resolve_callback_origin(event_type: str, event: dict, channel: str) -> str:
@@ -551,20 +792,30 @@ async def _handle_agent_event(event: dict):
             text = raw_text.strip()
 
             # v2 push_message: media parts (image/audio/video) ride on the
-            # same proactive_message event.  Image parts go straight to the
-            # realtime session via ``stream_image`` (the public vision-input
-            # API on OmniRealtimeClient/OmniOfflineClient) before the (text
-            # → callback) path so the AI sees them in the same context
-            # window as the text it's about to respond to.
+            # same proactive_message event. Image parts are either injected
+            # into the active model session or retained on the callback that
+            # owns their eventual text/voice delivery boundary.
             #
             # Audio / video aren't supported here — ``stream_audio`` is the
             # live-mic PCM pipeline (specific sample rate + RNNoise gate),
             # not a generic file injector, and we have no video API.
             # ai_behavior=blind suppresses injection entirely.
+            ordered_parts = (
+                event.get("parts") if isinstance(event.get("parts"), list) else None
+            )
             media_parts = (
-                event.get("media_parts")
-                if isinstance(event.get("media_parts"), list)
-                else []
+                [
+                    part
+                    for part in ordered_parts
+                    if isinstance(part, dict)
+                    and part.get("type") in ("image", "audio", "video")
+                ]
+                if ordered_parts is not None
+                else (
+                    event.get("media_parts")
+                    if isinstance(event.get("media_parts"), list)
+                    else []
+                )
             )
             ai_behavior_v2 = event.get("ai_behavior")
             # Images that must travel WITH a proactive (respond) callback so they
@@ -574,16 +825,57 @@ async def _handle_agent_event(event: dict):
             # (or drop it when no session exists yet) while the text is held back
             # by the manager — the eventual proactive response would then lack
             # its matching visual context.
-            deferred_proactive_images: list[str] = []
+            deferred_callback_images: list[str] = []
             if media_parts and ai_behavior_v2 in ("respond", "read"):
                 sess = getattr(mgr, "session", None)
                 stream_image = getattr(sess, "stream_image", None) if sess else None
-                for mp in media_parts:
+                image_indexes = [
+                    index
+                    for index, part in enumerate(media_parts)
+                    if isinstance(part, dict) and part.get("type") == "image"
+                ]
+                if len(image_indexes) > _PLUGIN_IMAGE_MAX_COUNT:
+                    logger.warning(
+                        "[EventBus] plugin push carried %d images; only the first %d reach the model path",
+                        len(image_indexes),
+                        _PLUGIN_IMAGE_MAX_COUNT,
+                    )
+                    image_indexes = image_indexes[:_PLUGIN_IMAGE_MAX_COUNT]
+                resolved_model_images: dict[int, str | BaseException] = {}
+                remaining_image_bytes = _PLUGIN_IMAGE_TOTAL_MAX_BYTES
+                for offset in range(0, len(image_indexes), _PLUGIN_IMAGE_FETCH_BATCH_SIZE):
+                    if remaining_image_bytes <= 0:
+                        # Short-circuit the remaining batches: the budget is
+                        # spent, so fetching them would only add latency.
+                        logger.warning(
+                            "[EventBus] plugin image byte budget (%d) exhausted; %d image(s) not fetched",
+                            _PLUGIN_IMAGE_TOTAL_MAX_BYTES,
+                            len(image_indexes) - offset,
+                        )
+                        break
+                    batch = image_indexes[offset : offset + _PLUGIN_IMAGE_FETCH_BATCH_SIZE]
+                    results = await asyncio.gather(
+                        *(_resolve_plugin_model_image(media_parts[index]) for index in batch),
+                        return_exceptions=True,
+                    )
+                    for index, result in zip(batch, results):
+                        if isinstance(result, str):
+                            decoded_bytes = _approx_decoded_bytes(result)
+                            if decoded_bytes > remaining_image_bytes:
+                                logger.warning(
+                                    "[EventBus] plugin image dropped: over the %d byte per-push model budget",
+                                    _PLUGIN_IMAGE_TOTAL_MAX_BYTES,
+                                )
+                                continue
+                            remaining_image_bytes -= decoded_bytes
+                        # Exceptions are retained so the drop below still logs
+                        # the underlying resolve failure.
+                        resolved_model_images[index] = result
+
+                for index, mp in enumerate(media_parts):
                     if not isinstance(mp, dict):
                         continue
                     part_type = mp.get("type")
-                    b64 = mp.get("binary_base64")
-                    url = mp.get("url")
                     mime = mp.get("mime") or ""
                     if part_type != "image":
                         # ``audio`` / ``video`` need provider-specific transport
@@ -596,48 +888,83 @@ async def _handle_agent_event(event: dict):
                             mime,
                         )
                         continue
-                    if isinstance(b64, str) and b64:
-                        if ai_behavior_v2 == "respond" and text:
-                            # Defer: stream when the manager releases this cue so
-                            # the image shares the proactive response's context.
-                            # (Only when there's text — the callback that carries
-                            # these images is built in the ``if text:`` block.)
-                            deferred_proactive_images.append(b64)
-                            continue
-                        # read (passive), OR image-only respond with no text to
-                        # carry it through the pacing manager: inject now so it
-                        # isn't lost (image-only respond has no text cue to drive
-                        # a proactive turn anyway).
-                        if stream_image is None:
-                            logger.debug(
-                                "[EventBus] image media_part dropped: session=%s has no stream_image",
-                                type(sess).__name__ if sess else "None",
-                            )
-                            continue
-                        # ``stream_image`` takes a base64 STRING (not bytes); pass through
-                        try:
-                            await stream_image(b64)
-                            logger.debug(
-                                "[EventBus] image media_part injected (base64 len=%d, mime=%s)",
-                                len(b64),
-                                mime,
-                            )
-                        except Exception as e:
-                            logger.warning(
-                                "[EventBus] image media_part stream_image failed: %s", e
-                            )
-                    elif isinstance(url, str) and url:
-                        # TODO(v0.9): fetch URL → bytes → base64 → stream_image.
-                        # Until then plugin authors should inline-encode small
-                        # images (≤256KB) or pre-fetch URL-served frames into
-                        # ``parts`` themselves.
+                    resolved_b64 = resolved_model_images.get(index)
+                    if isinstance(resolved_b64, BaseException):
                         logger.warning(
-                            "[EventBus] image media_part url=%s not yet fetched; dropped",
-                            url[:80],
+                            "[EventBus] plugin image resolve failed; dropped: %s",
+                            resolved_b64,
                         )
-                    # else: malformed part, silently skip
+                        continue
+                    if not isinstance(resolved_b64, str) or not resolved_b64:
+                        continue
+                    if ai_behavior_v2 == "respond":
+                        # Defer: stream when the manager releases this cue so
+                        # the image shares the proactive response's context.
+                        deferred_callback_images.append(resolved_b64)
+                        continue
+                    # ``read`` is best-effort input to the current session.
+                    # It does not create a cross-session media inbox.
+                    if stream_image is None:
+                        logger.debug(
+                            "[EventBus] read image dropped: session=%s has no stream_image",
+                            type(sess).__name__ if sess else "None",
+                        )
+                        continue
+                    try:
+                        await stream_image(
+                            resolved_b64,
+                            bypass_rate_limit=True,
+                        )
+                        logger.debug(
+                            "[EventBus] image media_part injected (base64 len=%d, mime=%s)",
+                            len(resolved_b64),
+                            mime,
+                        )
+                    except Exception as e:
+                        logger.warning(
+                            "[EventBus] read image stream_image failed; dropped: %s",
+                            e,
+                        )
 
-            if text:
+            # ``visibility`` and ``ai_behavior`` are orthogonal. For read/respond,
+            # render URL-backed images through a display-only frame while model
+            # injection continues independently below. Blind uses the existing
+            # passthrough branch so text and image stay in one bubble.
+            visibility = event.get("visibility")
+            if (
+                ai_behavior_v2 in ("respond", "read")
+                and isinstance(visibility, list)
+                and "chat" in visibility
+                and hasattr(mgr, "render_chat_blocks")
+            ):
+                if ordered_parts is not None:
+                    visible_blocks = _ordered_plugin_chat_blocks(ordered_parts, mgr)
+                else:
+                    visible_images = _build_plugin_image_chat_blocks(media_parts)
+                    visible_blocks = []
+                    if text:
+                        visible_text = core.apply_role_placeholders(
+                            raw_text,
+                            lanlan_name=getattr(mgr, "lanlan_name", "") or "",
+                            master_name=getattr(mgr, "master_name", "") or "",
+                        )
+                        visible_blocks.append({"type": "text", "text": visible_text})
+                    visible_blocks.extend(visible_images)
+                # This PR adds structured rendering only for image-bearing
+                # pushes. Keep the pre-existing text-only read/respond path
+                # unchanged; its visibility semantics need a separate change.
+                if any(block["type"] == "image" for block in visible_blocks):
+                    channel = str(event.get("channel") or "")
+                    visible_source = str(event.get("source_kind") or "").strip()
+                    if not visible_source:
+                        visible_source = "plugin" if channel.startswith("plugin:") else "system"
+                    await mgr.render_chat_blocks(
+                        visible_blocks,
+                        request_id=event.get("task_id") or None,
+                        source=visible_source,
+                    )
+
+            if text or deferred_callback_images:
                 if event.get("direct_reply"):
                     detail_text = (event.get("detail") or text).strip()
                     # Plugin-supplied direct_reply text bypasses the LLM and
@@ -763,9 +1090,9 @@ async def _handle_agent_event(event: dict):
                     "delivery_mode": delivery_mode,
                     "priority": cb_priority,
                     "coalesce_key": cb_coalesce_key,
-                    # Images to stream at manager-release time (respond only;
-                    # empty for read, which already streamed above).
-                    "media_images": deferred_proactive_images,
+                    # Respond images stream at manager release. Read images are
+                    # best-effort input to the current session and are not queued.
+                    "media_images": deferred_callback_images,
                     "timestamp": event.get("timestamp") or "",
                     "metadata": event_metadata,
                     "context_type": event_metadata.get("context_type") or "",
@@ -848,11 +1175,33 @@ async def _handle_agent_event(event: dict):
                             lanlan_name=getattr(mgr, "lanlan_name", "") or "",
                             master_name=getattr(mgr, "master_name", "") or "",
                         )
+                        ordered_chat_blocks = (
+                            _ordered_plugin_chat_blocks(ordered_parts, mgr)
+                            if ordered_parts is not None
+                            else None
+                        )
+                        chat_image_blocks = (
+                            []
+                            if ordered_chat_blocks is not None
+                            else _build_plugin_image_chat_blocks(media_parts)
+                        )
+                        passthrough_kwargs: dict[str, Any] = {
+                            "request_id": event.get("task_id") or None,
+                            "source": passthrough_source,
+                        }
+                        if ordered_chat_blocks is not None and any(
+                            block["type"] == "image" for block in ordered_chat_blocks
+                        ):
+                            passthrough_kwargs["blocks"] = ordered_chat_blocks
+                        elif chat_image_blocks:
+                            passthrough_kwargs["blocks"] = [
+                                {"type": "text", "text": passthrough_text},
+                                *chat_image_blocks,
+                            ]
                         passthrough_dispatched = bool(
                             await mgr.passthrough_to_chat_bubble(
                                 passthrough_text,
-                                request_id=event.get("task_id") or None,
-                                source=passthrough_source,
+                                **passthrough_kwargs,
                             )
                         )
                         logger.info(
@@ -937,6 +1286,31 @@ async def _handle_agent_event(event: dict):
                         "[EventBus] agent_notification: WebSocket not connected for lanlan=%s",
                         lanlan,
                     )
+            elif (
+                ai_behavior_v2 == "blind"
+                and "chat" in (event.get("visibility") or [])
+                and hasattr(mgr, "passthrough_to_chat_bubble")
+            ):
+                image_blocks = (
+                    _ordered_plugin_chat_blocks(ordered_parts, mgr)
+                    if ordered_parts is not None
+                    else _build_plugin_image_chat_blocks(media_parts)
+                )
+                if image_blocks:
+                    channel = str(event.get("channel") or "")
+                    source_kind = str(event.get("source_kind") or "").strip()
+                    if not source_kind:
+                        source_kind = "plugin" if channel.startswith("plugin:") else "system"
+                    dispatched = bool(
+                        await mgr.passthrough_to_chat_bubble(
+                            "",
+                            request_id=event.get("task_id") or None,
+                            source=source_kind,
+                            blocks=image_blocks,
+                        )
+                    )
+                    if dispatched and hasattr(mgr, "handle_proactive_complete"):
+                        await mgr.handle_proactive_complete()
         elif event_type == "agent_notification":
             ws = getattr(mgr, "websocket", None)
             if _is_websocket_connected(ws):

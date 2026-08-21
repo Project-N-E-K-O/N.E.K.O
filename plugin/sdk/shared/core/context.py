@@ -20,7 +20,7 @@ from .result_contract import contract_from_meta, validate_reply_payload
 from .types import LoggerLike, Metadata, PluginContextProtocol, PushMessageResult
 
 _UNSET = object()
-_SDK_CONTEXT_ATTR_NAMES = ("plugin_id", "metadata", "logger", "config_path", "bus")
+_SDK_CONTEXT_ATTR_NAMES = ("plugin_id", "metadata", "logger", "config_path", "bus", "images")
 _SDK_CONTEXT_METHOD_NAMES = (
     "get_own_config",
     "get_own_base_config",
@@ -216,6 +216,10 @@ class SdkContext:
             return cast(SdkBusContext | None, cached)
         self._bus_ctx = ensure_sdk_bus_context(getattr(self._host_ctx, "bus", None), host_ctx=self._host_ctx)
         return cast(SdkBusContext | None, self._bus_ctx)
+
+    @property
+    def images(self) -> object:
+        return getattr(self._host_ctx, "images")
 
     async def get_own_config(self, timeout: float = 5.0) -> object:
         return await self._host_ctx.get_own_config(timeout=timeout)

@@ -70,6 +70,64 @@ CALLBACK_EXPIRES_AT_KEY = "_expires_at_monotonic"
 VOICE_DELIVERY_COMMITTED_KEY = "_voice_delivery_committed"
 SWAP_PRIME_DELIVERY_CLAIM_KEY = "_swap_prime_delivery_claimed"
 
+# Image budget for ONE model turn. A trigger drains every pending proactive
+# callback into a single turn, so a per-push cap alone does not bound what the
+# provider receives: cues pile up whenever the proactive claim is denied (the
+# user is mid-conversation), then release together. The figures match the
+# contract PLUGIN_DEVELOPMENT_GUIDE.md advertises to plugin authors.
+CALLBACK_IMAGE_MAX_COUNT = 8
+CALLBACK_IMAGE_MAX_TOTAL_BYTES = 8 * 1024 * 1024
+
+
+def approx_base64_decoded_bytes(encoded: str) -> int:
+    """Decoded size of a base64 payload, without materializing the bytes."""
+    return len(encoded) * 3 // 4
+
+
+def split_callbacks_by_image_budget(callbacks: list) -> tuple[list, list]:
+    """Split a FIFO batch into (deliverable prefix, overflow) on the image budget.
+
+    The split is callback-ATOMIC: a callback is taken whole or left whole, so a
+    taken callback keeps its complete ``media_images`` and the downstream
+    preserve-until-success retry semantics stay intact.
+
+    The head callback is always taken even when it alone exceeds the budget.
+    Deferring it would park a cue that can never fit, and the queue would spin
+    on it forever — the opposite of what this bound exists to prevent.
+
+    Strict FIFO: once the budget is spent, everything after it defers, including
+    text-only callbacks. Letting later text jump the queue would reorder cues
+    against the narrative order the instruction renders them in.
+    """
+    taken: list = []
+    overflow: list = []
+    count = 0
+    total_bytes = 0
+    for callback in callbacks:
+        if overflow:
+            overflow.append(callback)
+            continue
+        images = callback.get("media_images") if isinstance(callback, dict) else None
+        images = [img for img in (images or []) if isinstance(img, str) and img]
+        if not images:
+            taken.append(callback)
+            continue
+        cb_bytes = sum(approx_base64_decoded_bytes(img) for img in images)
+        fits = (
+            count + len(images) <= CALLBACK_IMAGE_MAX_COUNT
+            and total_bytes + cb_bytes <= CALLBACK_IMAGE_MAX_TOTAL_BYTES
+        )
+        # ``count`` only advances for callbacks that contributed real images,
+        # so a non-zero count IS "the prefix already claimed budget" — which is
+        # the condition the head-progress rule turns on.
+        if not fits and count > 0:
+            overflow.append(callback)
+            continue
+        count += len(images)
+        total_bytes += cb_bytes
+        taken.append(callback)
+    return taken, overflow
+
 
 def resolve_callback_delivery_ack(callback: dict, delivered: bool) -> None:
     """Resolve an optional in-memory delivery acknowledgement future."""

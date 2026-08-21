@@ -19,7 +19,10 @@ import os
 import re
 import sys
 import time
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
+
+import pytest
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../")))
 
@@ -33,6 +36,7 @@ from main_logic.proactive_delivery import (
     CALLBACK_EXPIRES_AT_KEY,
     DELIVERY_ACK_FUTURE_KEY,
     DELIVERY_RETRACTED_KEY,
+    SWAP_PRIME_DELIVERY_CLAIM_KEY,
 )
 from main_logic.session_state import (
     ProactivePhase,
@@ -67,6 +71,25 @@ class _FakeOmniOffline(OmniOfflineClient):
 
     def update_max_response_length(self, *_a, **_kw):
         pass
+
+
+class _CapturingImageOmniOffline(_FakeOmniOffline):
+    def __init__(self):
+        super().__init__(delivered=True)
+        self.image_batches: list[list[str]] = []
+
+    async def prompt_ephemeral(
+        self,
+        instruction: str,
+        *,
+        images=None,
+        on_committed=None,
+    ) -> bool:
+        self.called_with.append(instruction)
+        self.image_batches.append(list(images or []))
+        if on_committed:
+            on_committed()
+        return True
 
 
 def _make_mgr(session=None) -> core_module.LLMSessionManager:
@@ -157,6 +180,25 @@ def test_enqueue_agent_callback_uses_generic_context_source_budget(monkeypatch):
     assert mgr.pending_agent_callbacks[1]["summary"] == "4:proactive summary"
     assert mgr.pending_agent_callbacks[1]["detail"] == "4:proactive detail"
     assert mgr.pending_extra_replies[1]["context_source"] == "proactive.callback"
+
+
+def test_image_only_callback_is_accepted_only_for_proactive_delivery():
+    mgr = _make_mgr()
+    passive = {
+        "status": "completed",
+        "delivery_mode": "passive",
+        "media_images": ["read-image"],
+    }
+    proactive = {
+        "status": "completed",
+        "delivery_mode": "proactive",
+        "media_images": ["respond-image"],
+    }
+
+    core_module.LLMSessionManager.enqueue_agent_callback(mgr, passive)
+    core_module.LLMSessionManager.enqueue_agent_callback(mgr, proactive)
+
+    assert mgr.pending_agent_callbacks == [proactive]
 
 
 def _make_voice_sess(*, is_responding=False, inject=None):
@@ -873,10 +915,12 @@ async def test_text_mode_success_keeps_late_extra_replies():
     mgr.pending_extra_replies = [initial_extra]
 
     delivered = await core_module.LLMSessionManager.trigger_agent_callbacks(mgr)
+    await asyncio.sleep(0)
 
     assert delivered is True
     assert mgr.pending_agent_callbacks == [late_cb]
     assert mgr.pending_extra_replies == [late_extra]
+    assert mgr._fired_tasks == []
 
 
 def test_drain_agent_callbacks_purges_retracted_callbacks_and_extras():
@@ -2554,3 +2598,137 @@ async def test_cat_greeting_episode_scene_is_request_local_and_keeps_existing_gu
         assert get_cat_greeting_episode_scene(episode, "en") in name_session.called_with[0]
         if master_name:
             assert master_name in name_session.called_with[0]
+
+
+# ---------------------------------------------------------------------------
+# Per-turn image budget at the two real consumption points
+#
+# Both paths flatten EVERY pending callback into one model turn. Batches build
+# up whenever the proactive claim is denied (user mid-conversation) and release
+# together, so a per-push cap alone does not bound the request. An over-limit
+# request also re-queues its whole snapshot on failure — it would retry forever
+# and wedge every later cue behind it.
+# ---------------------------------------------------------------------------
+
+
+def _budget_cb(name: str, image_count: int) -> dict:
+    return {
+        "_callback_delivery_id": "id-%s" % name,
+        "status": "completed",
+        "summary": "cue %s" % name,
+        "media_images": ["%s-img%d" % (name, i) for i in range(image_count)],
+    }
+
+
+async def test_text_mode_bounds_images_across_one_proactive_turn():
+    from main_logic.proactive_delivery import CALLBACK_IMAGE_MAX_COUNT
+
+    assert CALLBACK_IMAGE_MAX_COUNT == 8
+    sess = _CapturingImageOmniOffline()
+    mgr = _make_mgr(session=sess)
+    cbs = [_budget_cb("a", 4), _budget_cb("b", 4), _budget_cb("c", 4)]
+    mgr.pending_agent_callbacks = list(cbs)
+
+    delivered = await core_module.LLMSessionManager.trigger_agent_callbacks(mgr)
+
+    assert delivered is True
+    assert len(sess.image_batches) == 1
+    assert sess.image_batches[0] == [
+        "a-img0", "a-img1", "a-img2", "a-img3",
+        "b-img0", "b-img1", "b-img2", "b-img3",
+    ]
+    # The third cue is DEFERRED, not dropped: it goes back on the queue for the
+    # next turn rather than silently losing its images.
+    assert mgr.pending_agent_callbacks == [cbs[2]]
+
+
+async def test_text_mode_under_budget_batch_is_untouched():
+    """The bound must not disturb ordinary multi-cue batches."""
+    sess = _CapturingImageOmniOffline()
+    mgr = _make_mgr(session=sess)
+    cbs = [_budget_cb("a", 1), _budget_cb("b", 2)]
+    mgr.pending_agent_callbacks = list(cbs)
+
+    delivered = await core_module.LLMSessionManager.trigger_agent_callbacks(mgr)
+
+    assert delivered is True
+    assert sess.image_batches == [["a-img0", "b-img0", "b-img1"]]
+    assert mgr.pending_agent_callbacks == []
+
+
+async def test_voice_mode_bounds_images_across_one_proactive_turn():
+    sess = _make_voice_sess()
+    streamed: list[str] = []
+
+    async def _stream_image(
+        image_b64,
+        *,
+        bypass_rate_limit=False,
+        cache_latest=True,
+        on_rejected=None,
+    ):
+        streamed.append(image_b64)
+
+    sess.stream_image = _stream_image
+    mgr = _make_mgr(session=sess)
+    cbs = [_budget_cb("a", 4), _budget_cb("b", 4), _budget_cb("c", 4)]
+    mgr.pending_agent_callbacks = list(cbs)
+    mgr.pending_extra_replies = []
+
+    delivered = await core_module.LLMSessionManager.trigger_agent_callbacks(mgr)
+
+    assert delivered is True
+    assert streamed == [
+        "a-img0", "a-img1", "a-img2", "a-img3",
+        "b-img0", "b-img1", "b-img2", "b-img3",
+    ]
+    # Voice prunes pending only after a successful inject, so the deferred cue
+    # is re-queued by construction — it was simply never taken.
+    assert mgr.pending_agent_callbacks == [cbs[2]]
+
+
+async def test_image_overflow_keeps_fifo_order_when_delivery_fails():
+    """The deferred tail must not overtake the prefix it was split from.
+
+    The exception path re-queues the delivered prefix, so re-queuing the
+    overflow at split time would leave [C, A, B] and the next turn would speak
+    the cues out of order.
+    """
+    sess = _FakeOmniOffline(raise_exc=RuntimeError("provider rejected the request"))
+    mgr = _make_mgr(session=sess)
+    cbs = [_budget_cb("a", 4), _budget_cb("b", 4), _budget_cb("c", 4)]
+    mgr.pending_agent_callbacks = list(cbs)
+
+    delivered = await core_module.LLMSessionManager.trigger_agent_callbacks(mgr)
+
+    assert delivered is False
+    assert [cb["summary"] for cb in mgr.pending_agent_callbacks] == [
+        "cue a", "cue b", "cue c",
+    ]
+
+
+async def test_topic_hint_is_retracted_when_its_hook_lands_in_image_overflow():
+    """A teaser must never outlive the opener it promised.
+
+    The hint fires from the pre-split batch, so a topic hook pushed into the
+    overflow would leave "she has something to bring up" on screen while the
+    turn prompts only unrelated cues and the topic slips to a later turn.
+    """
+    sess = _CapturingImageOmniOffline()
+    mgr = _make_mgr(session=sess)
+    mgr.topic_hook_delivery_allowed = lambda: True
+    mgr.send_topic_hint = AsyncMock(return_value=True)
+    mgr.send_cancel_topic_hint = AsyncMock()
+    heavy = _budget_cb("heavy", 8)
+    topic = _budget_cb("topic", 1)
+    topic["channel"] = "topic_hook"
+    topic["source_kind"] = "topic"
+    mgr.pending_agent_callbacks = [heavy, topic]
+
+    delivered = await core_module.LLMSessionManager.trigger_agent_callbacks(mgr)
+
+    assert delivered is True
+    mgr.send_topic_hint.assert_awaited_once()
+    mgr.send_cancel_topic_hint.assert_awaited_once()
+    assert [cb["summary"] for cb in mgr.pending_agent_callbacks] == ["cue topic"]
+    assert sess.image_batches == [["heavy-img%d" % i for i in range(8)]]

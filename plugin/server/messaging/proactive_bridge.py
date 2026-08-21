@@ -286,18 +286,18 @@ class ProactiveBridge:
 
         # ---- text + media parts → proactive_message (or HUD-only) ----
         text = _aggregate_text_parts(parts)
-        # Bridge-level result_parser strips raw JSON envelopes that some
-        # plugins still emit when they hand-craft content.  Best-effort.
+        # Keep the historical aggregate-once cleanup for the model/callback
+        # text. Canonical parts remain untouched for verbatim chat rendering.
         if text:
             try:
                 from utils.result_parser import parse_push_message_content
 
                 text = parse_push_message_content(text)
-            except Exception as e:
-                # Best-effort sanitization — fall back to the raw aggregated
-                # text if the parser misbehaves on this particular shape.
-                logger.debug("parse_push_message_content failed (fallback to raw): {}", e)
-
+            except Exception as exc:
+                logger.debug(
+                    "parse_push_message_content failed (fallback to raw): {}",
+                    exc,
+                )
         media = _media_parts(parts)
         has_ai_payload = bool(text) or bool(media)
 
@@ -318,10 +318,12 @@ class ProactiveBridge:
                 "source_name": str(plugin_id) if plugin_id else "",
                 "timestamp": timestamp,
                 "metadata": metadata,
-                # v2 carries media inline; main_server will base64-decode
-                # and call session.send_media_input before/after the
-                # callback queue depending on ai_behavior.
-                "media_parts": media,
+                # Preserve canonical order until the final consumer.  The
+                # main server derives text/media views for its legacy paths,
+                # but chat rendering must not turn image→caption→image into
+                # caption→image→image.  Carrying one canonical list also
+                # avoids duplicating inline base64 data in this ZMQ frame.
+                "parts": parts,
                 "visibility": list(visibility),
                 "ai_behavior": ai_behavior,
                 "priority": priority,

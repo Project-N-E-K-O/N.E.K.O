@@ -359,8 +359,16 @@
     // ======================== createGeminiBubble（覆盖） ========================
 
     // ---- host 未就绪时的待重发队列 ----
+    var _PENDING_HOST_MESSAGES_MAX = 50;
     var _pendingHostMessages = [];
     var _pendingFlushTimer = null;
+
+    function _queuePendingHostMessage(message) {
+        if (_pendingHostMessages.length >= _PENDING_HOST_MESSAGES_MAX) {
+            _pendingHostMessages.shift();
+        }
+        _pendingHostMessages.push(message);
+    }
 
     function _tryFlushPendingHostMessages() {
         var host = getHost();
@@ -402,6 +410,24 @@
         _pendingHostMessages = _pendingHostMessages.filter(function (m) {
             return !(m && m.id && idSet[m.id]);
         });
+    }
+
+    // 队列里的消息还没进 host，host.updateMessage 够不到它们。turn end 会在
+    // host 挂载前就到（结构化 passthrough 的 blocks 一次性写完，后端紧接着
+    // 发 turn end），此时若不就地改写，flush 出来的就是一个永远转圈的气泡。
+    function _patchPendingHostMessage(messageId, patch) {
+        if (!messageId || _pendingHostMessages.length === 0) return false;
+        for (var i = 0; i < _pendingHostMessages.length; i++) {
+            var pending = _pendingHostMessages[i];
+            if (!pending || pending.id !== messageId) continue;
+            for (var key in patch) {
+                if (Object.prototype.hasOwnProperty.call(patch, key)) {
+                    pending[key] = patch[key];
+                }
+            }
+            return true;
+        }
+        return false;
     }
 
     function _resetReactChatSwitchState() {
@@ -460,7 +486,7 @@
         } else if (msg) {
             // host 尚未初始化，放入待重发队列而非静默丢弃
             console.warn('[ChatAdapter] host not ready, queuing message', msgId);
-            _pendingHostMessages.push(msg);
+            _queuePendingHostMessage(msg);
         }
 
         var ref = createVirtualBubbleRef(msgId);
@@ -623,6 +649,11 @@
     function appendMessage(text, sender, isNewMessage, options) {
         if (typeof isNewMessage === 'undefined') isNewMessage = true;
         options = options || {};
+        var structuredResponseBlocks = Array.isArray(options.blocks)
+            ? options.blocks.filter(function (block) {
+                return block && typeof block === 'object' && typeof block.type === 'string';
+            }).map(function (block) { return Object.assign({}, block); })
+            : [];
 
         var host = getHost();
         var bubbleCountBefore = window.currentTurnGeminiBubbles ? window.currentTurnGeminiBubbles.length : 0;
@@ -698,6 +729,47 @@
                 window.updateSubtitleStreamingText(streamingText);
             }
             emitCompactCaptionUpdate(streamingText);
+        }
+
+        // Plugin chat passthrough can carry an image URL alongside text. It
+        // still participates in the normal assistant turn lifecycle, but the
+        // React host receives the already-structured blocks directly instead
+        // of forcing them through the text sentence/markdown pipeline.
+        if (sender === 'gemini' && structuredResponseBlocks.length > 0) {
+            var structuredMessageId = nextReactMessageId('assistant');
+            var structuredAuthor = getCurrentAssistantName();
+            var structuredMessage = {
+                id: structuredMessageId,
+                role: 'assistant',
+                author: structuredAuthor,
+                time: getCurrentTimeString(),
+                createdAt: Date.now(),
+                turnId: window._nekoAssistantTurnId
+                    ? String(window._nekoAssistantTurnId)
+                    : undefined,
+                avatarLabel: structuredAuthor
+                    ? String(structuredAuthor).trim().slice(0, 1).toUpperCase()
+                    : undefined,
+                avatarUrl: getAssistantAvatarUrl() || undefined,
+                blocks: structuredResponseBlocks,
+                status: 'streaming'
+            };
+            if (host && typeof host.appendMessage === 'function') {
+                _tryFlushPendingHostMessages();
+                if (!appendHostMessageSafely(host, structuredMessage, 'structured_passthrough')) {
+                    return false;
+                }
+                markAssistantVisibleResponseForAchievement();
+            } else {
+                console.warn('[ChatAdapter] host not ready, queuing structured passthrough', structuredMessageId);
+                _queuePendingHostMessage(structuredMessage);
+                _tryFlushPendingHostMessages();
+            }
+            var structuredRef = createVirtualBubbleRef(structuredMessageId);
+            window.currentGeminiMessage = structuredRef;
+            window.currentTurnGeminiBubbles = window.currentTurnGeminiBubbles || [];
+            window.currentTurnGeminiBubbles.push(structuredRef);
+            return true;
         }
 
         // ---------- gemini + realistic 模式 ----------
@@ -853,9 +925,14 @@
 
     function setReactMessageStatus(element, role, status) {
         var host = getHost();
-        if (!host || typeof host.updateMessage !== 'function') return;
         var messageId = element && element.dataset && element.dataset.reactChatMessageId;
         if (!messageId) return;
+        if (!host || typeof host.updateMessage !== 'function') {
+            // host 未挂载时消息还在待发队列里，就地改写；否则 turn end 的
+            // 状态更新会静默丢失（Codex P2）。
+            _patchPendingHostMessage(messageId, { status: status });
+            return;
+        }
         host.updateMessage(messageId, { status: status });
     }
 
@@ -896,6 +973,45 @@
             blocks: blocks,
             status: payload.status ? String(payload.status) : 'sent'
         });
+    }
+
+    function appendReactChatBlocks(payload) {
+        var host = getHost();
+        var blocks = payload && Array.isArray(payload.blocks)
+            ? payload.blocks.filter(function (block) {
+                return block && typeof block === 'object' && typeof block.type === 'string';
+            }).map(function (block) { return Object.assign({}, block); })
+            : [];
+        if (blocks.length === 0) {
+            return false;
+        }
+        var author = getCurrentAssistantName();
+        var messageIdPrefix = payload.request_id
+            ? 'plugin-blocks-' + String(payload.request_id)
+            : 'plugin-blocks';
+        var message = {
+            id: nextReactMessageId(messageIdPrefix),
+            role: 'assistant',
+            author: author,
+            time: getCurrentTimeString(),
+            createdAt: Date.now(),
+            avatarLabel: author ? String(author).trim().slice(0, 1).toUpperCase() : undefined,
+            avatarUrl: getAssistantAvatarUrl() || undefined,
+            blocks: blocks,
+            status: 'sent'
+        };
+        if (host && typeof host.appendMessage === 'function') {
+            _tryFlushPendingHostMessages();
+            if (!appendHostMessageSafely(host, message, 'plugin_chat_blocks')) {
+                return false;
+            }
+            markAssistantVisibleResponseForAchievement();
+        } else {
+            console.warn('[ChatAdapter] host not ready, queuing plugin chat blocks', message.id);
+            _queuePendingHostMessage(message);
+            _tryFlushPendingHostMessages();
+        }
+        return true;
     }
 
     // ======================== appendReactTopicHint（深话题预告气泡） ========================
@@ -970,6 +1086,7 @@
     window._clearPendingHostMessagesByIds = _clearPendingHostMessagesByIds;
     window._resetReactChatSwitchState = _resetReactChatSwitchState;
     window.appendReactTopicHint = appendReactTopicHint;
+    window.appendReactChatBlocks = appendReactChatBlocks;
     window.removeReactTopicHint = removeReactTopicHint;
 
     // 覆盖 appChat 上的方法
@@ -978,6 +1095,7 @@
         window.appChat.createGeminiBubble = createGeminiBubble;
         window.appChat.processRealisticQueue = processRealisticQueue;
         window.appChat.appendReactUserMessage = appendReactUserMessage;
+        window.appChat.appendReactChatBlocks = appendReactChatBlocks;
         window.appChat.appendReactTopicHint = appendReactTopicHint;
         window.appChat.removeReactTopicHint = removeReactTopicHint;
         window.appChat.setReactMessageStatus = setReactMessageStatus;
@@ -987,7 +1105,6 @@
     window.addEventListener('chat-avatar-preview-updated', refreshReactAssistantAvatars);
     window.addEventListener('chat-avatar-preview-cleared', refreshReactAssistantAvatars);
     window.addEventListener('neko:tutorial-chat-identity-changed', refreshReactAssistantAvatars);
-
     // init() 的 chat-avatar-preview-updated 事件可能在本脚本或 reactChatWindowHost 就绪前触发，
     // 延迟到所有同步脚本加载完成后主动刷新一次
     setTimeout(refreshReactAssistantAvatars, 0);

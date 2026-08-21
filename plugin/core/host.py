@@ -418,13 +418,14 @@ async def _handle_config_update_command(
         if config_change_handler:
             logger.debug("[Plugin Process] Triggering config_change lifecycle event")
             try:
-                result = config_change_handler(
-                    old_config=old_config,
-                    new_config=ctx._effective_config,
-                    mode=mode,
-                )
-                if inspect.isawaitable(result):
-                    await result
+                with ctx._handler_scope("lifecycle.config_change"):
+                    result = config_change_handler(
+                        old_config=old_config,
+                        new_config=ctx._effective_config,
+                        mode=mode,
+                    )
+                    if inspect.isawaitable(result):
+                        await result
                 logger.info("[Plugin Process] config_change handler executed successfully")
             except Exception as e:
                 logger.exception("[Plugin Process] config_change handler failed")
@@ -498,6 +499,7 @@ def _plugin_process_runner(
     uplink_endpoint: str,
     stop_event: Any | None = None,
     startup_options: dict[str, object] | None = None,
+    image_uplink_endpoint: str | None = None,
 ) -> None:
     """独立进程中的运行函数。通过 ZMQ 与宿主进程通信。"""
     # 保存进程级 stop event
@@ -515,7 +517,14 @@ def _plugin_process_runner(
         logger.warning("[Plugin Process] Failed to setup logging interception: {}", e)
     
     # ── ZMQ child-side transport ─────────────────────────────────
-    child_transport = ChildTransport(downlink_endpoint, uplink_endpoint)
+    if image_uplink_endpoint:
+        child_transport = ChildTransport(
+            downlink_endpoint,
+            uplink_endpoint,
+            image_uplink_endpoint,
+        )
+    else:
+        child_transport = ChildTransport(downlink_endpoint, uplink_endpoint)
     res_sender = child_transport.channel_sender(CH_RES)
     status_sender = child_transport.channel_sender(CH_STS)
     message_sender = child_transport.channel_sender(CH_MSG)
@@ -559,6 +568,7 @@ def _plugin_process_runner(
             _res_queue=None,
             _response_queue=None,
             _response_pending={},
+            _image_transport=child_transport,
             _entry_map=None,
             _instance=None,
         )
@@ -843,6 +853,16 @@ def _plugin_process_runner(
         _response_inbox: asyncio.Queue = asyncio.Queue()
         ctx._response_queue = _response_inbox
         _startup_pending_downlink: list[tuple[str, dict]] = []
+
+        async def _route_response(msg: Any) -> None:
+            dispatch_direct = getattr(ctx, "_dispatch_direct_response", None)
+            if callable(dispatch_direct):
+                try:
+                    if dispatch_direct(msg):
+                        return
+                except Exception:
+                    logger.exception("Failed to dispatch SDK-owned response")
+            await _response_inbox.put(msg)
 
         async def _startup_downlink_pump(stop_event: asyncio.Event) -> None:
             poll_ms = int(QUEUE_GET_TIMEOUT * 1000)
@@ -1305,9 +1325,10 @@ def _plugin_process_runner(
             on_command_loop_start = getattr(instance, "_on_command_loop_start", None)
             if callable(on_command_loop_start):
                 try:
-                    result = on_command_loop_start()
-                    if inspect.isawaitable(result):
-                        await result
+                    with ctx._handler_scope("lifecycle.command_loop_start"):
+                        result = on_command_loop_start()
+                        if inspect.isawaitable(result):
+                            await result
                 except Exception:
                     logger.exception("[Plugin Process] _on_command_loop_start failed")
 
@@ -1332,7 +1353,7 @@ def _plugin_process_runner(
 
                 # Plugin-to-plugin responses arrive on the downlink tagged CH_RESP
                 if ch == CH_RESP:
-                    await _response_inbox.put(msg)
+                    await _route_response(msg)
                     continue
 
                 if ch != CH_CMD or not isinstance(msg, dict):
@@ -1358,6 +1379,7 @@ def _plugin_process_runner(
                 if msg_type == "FREEZE":
                     req_id = msg.get("req_id", "unknown")
                     logger.info("[Plugin Process] FREEZE req_id={}", req_id)
+                    ctx._image_uploads_blocked = True
                     ret = {"req_id": req_id, "success": False, "data": None, "error": None}
                     try:
                         freeze_fn = lifecycle_events.get("freeze")
@@ -1374,6 +1396,7 @@ def _plugin_process_runner(
                     res_sender.put(ret, timeout=10.0)
                     if ret["success"]:
                         break
+                    ctx._image_uploads_blocked = False
                     continue
 
                 # ── BUS_CHANGE ──
@@ -1566,6 +1589,13 @@ class PluginHost:
                 self._process_stop_event,
                 self._startup_options,
             ),
+            kwargs={
+                "image_uplink_endpoint": getattr(
+                    self.transport,
+                    "image_uplink_endpoint",
+                    None,
+                )
+            },
             # Plugin code may spawn subprocesses/Managers; daemon process would forbid that.
             daemon=False,
         )

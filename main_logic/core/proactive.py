@@ -36,6 +36,7 @@ from main_logic.proactive_delivery import (
     VOICE_DELIVERY_COMMITTED_KEY,
     callback_is_expired,
     resolve_callback_delivery_ack,
+    split_callbacks_by_image_budget,
 )
 from config import ANTI_REPEAT_EXEMPT_SOURCE_TAGS
 from utils.language_utils import normalize_language_code, get_global_language_full
@@ -1001,6 +1002,22 @@ class ProactiveMixin:
                 if not voice_snapshot:
                     self.proactive_manager.release_inflight_noop()
                     return False
+                # Same one-turn image budget as the text path. Trim BEFORE the
+                # commit mark so deferred cbs are never marked committed; they
+                # are still in pending_agent_callbacks (voice prunes only after
+                # a successful inject), so dropping them here re-queues them by
+                # construction — no explicit put-back.
+                _voice_taken, _voice_overflow = split_callbacks_by_image_budget(
+                    voice_snapshot
+                )
+                if _voice_overflow:
+                    voice_snapshot[:] = _voice_taken
+                    logger.info(
+                        "[%s] proactive image budget (voice): streaming %d cb(s), deferring %d to the next turn",
+                        self.lanlan_name,
+                        len(_voice_taken),
+                        len(_voice_overflow),
+                    )
                 self._mark_voice_delivery_committed(voice_snapshot)
                 voice_commit_snapshot = tuple(voice_snapshot)
                 voice_media_events: list[tuple[dict, dict]] = []
@@ -1245,6 +1262,11 @@ class ProactiveMixin:
         ]
 
         delivered = False
+        # Image-budget overflow parked by _deliver_agent_callbacks_text. It is
+        # re-queued in the finally below rather than at the split, so it lands
+        # AFTER the exception path restores callbacks_snapshot and the queue
+        # keeps the order the cues arrived in.
+        self._proactive_image_overflow = []
         try:
             if isinstance(self.session, OmniOfflineClient):
                 delivered = await self._deliver_agent_callbacks_text(callbacks_snapshot)
@@ -1266,6 +1288,12 @@ class ProactiveMixin:
             logger.warning("[%s] trigger_agent_callbacks error: %s", self.lanlan_name, e)
             self.pending_agent_callbacks.extend(callbacks_snapshot)
         finally:
+            # Runs after the except-path restore above, so the deferred tail
+            # lands behind the prefix it was split from either way.
+            _overflow = getattr(self, "_proactive_image_overflow", None)
+            if _overflow:
+                self.pending_agent_callbacks.extend(_overflow)
+            self._proactive_image_overflow = []
             await self.state.fire(SessionEvent.PROACTIVE_DONE)
         if delivered:
             for cb in callbacks_snapshot:
@@ -1420,6 +1448,34 @@ class ProactiveMixin:
             active_callbacks = self.filter_deliverable_callbacks(
                 active_callbacks
             )
+            # One turn's image budget. Every pending proactive callback drains
+            # into this single prompt_ephemeral, so without the split a batch
+            # that accumulated while the user was talking can exceed the
+            # provider's request limit — and the caller's exception path
+            # re-queues the WHOLE snapshot, so an over-limit batch would retry
+            # forever and wedge every later cue behind it.
+            #
+            # Placed ABOVE the topic-hint re-check on purpose: the split can
+            # push a topic hook into the overflow, and that check is what
+            # retracts a teaser whose hook is no longer part of this turn.
+            # Running the split after it would leave the teaser on screen while
+            # the opener it promised got deferred (Codex P2).
+            active_callbacks, _image_overflow = split_callbacks_by_image_budget(
+                active_callbacks
+            )
+            if _image_overflow:
+                # Handed to trigger_agent_callbacks' finally rather than
+                # re-queued here. Its exception path restores the delivered
+                # prefix, so an eager put-back would order the queue
+                # [overflow, prefix] — the reverse of how the cues arrived
+                # (CodeRabbit).
+                self._proactive_image_overflow = list(_image_overflow)
+                logger.info(
+                    "[%s] proactive image budget: delivering %d cb(s), deferring %d to the next turn",
+                    self.lanlan_name,
+                    len(active_callbacks),
+                    len(_image_overflow),
+                )
             callbacks_snapshot[:] = active_callbacks
             if topic_hint_sent and not any(
                 isinstance(cb, dict) and cb.get("channel") == "topic_hook"
@@ -2434,7 +2490,14 @@ class ProactiveMixin:
             #
             # Apply this before either queue is touched so text mode cannot
             # inject a garbage header-only block that voice mode discarded.
-            if not summary and not detail and not error_message and not source_name and status == "completed":
+            if (
+                not summary
+                and not detail
+                and not error_message
+                and not source_name
+                and status == "completed"
+                and (is_passive or not callback.get("media_images"))
+            ):
                 return
             # Stable delivery id so the voice inject success path can
             # precisely drop the matching extras entry from

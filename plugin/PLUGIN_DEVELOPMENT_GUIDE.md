@@ -366,19 +366,38 @@ if not result["submitted"]:
 inline `data: bytes` 由 SDK 自动 base64 编码后随 payload 传出。
 
 > **当前实现限制**（v0.9 移除前会逐步补齐）：
-> - `ai_behavior in ("respond","read")` 时只有 **inline `image` parts** 真正进 LLM
->   上下文（走 `session.stream_image(base64)`）。
-> - `image` 的 `url` 形态会被 main_server warn-drop，避免 event-bus 同步去抓远端
->   导致整路阻塞。需要 URL 形态时请在 plugin 自己 fetch 后回填 `data` 字段。
+> - `ai_behavior in ("respond","read")` 时，inline `image` parts 和
+>   `ctx.images.upload()` 返回的本地临时 URL 都能进入 LLM 上下文（最终走
+>   `session.stream_image(base64)`）。任意外部 URL 仍会被拒绝，避免把远端抓取
+>   引入 agent event 投递路径。单条消息最多向模型注入 8 张、合计 8 MiB 图片；
+>   超出的 image parts 仍可按 `visibility` 显示，但不会进入模型上下文。
+> - `visibility=["chat"]` 可显示 image parts；HUD 通知目前只渲染 text part，
+>   不显示 image part。
 > - `audio` / `video` 当前没有对应的 realtime 注入通道（`stream_audio` 是 PCM 实时
 >   麦克风专用，video 完全没有 API），都会 warn-drop。这两种 type 现阶段只
 >   推荐配合 `ai_behavior="blind"` + `ui_action` 走纯前端展示。
 >
 > **大小限制**：inline part 通过 message_plane 走 ZMQ，整条 payload 上限是
 > `MESSAGE_PLANE_PAYLOAD_MAX_BYTES`（默认 256 KB）。1080p 截图建议先压成
-> JPEG q70 或 256x256 PNG；超过 256KB 的大文件请上传到 BlobStore 再用
-> `parts=[{"type": "image", "url": ...}]` 引用，**注意上一条限制**：当前
-> 只有 inline 形态才进 AI。
+> JPEG q70 或 256x256 PNG。较大图片使用独立的临时图片上传 interface；它会
+> 在线程池中规范化为最长边不超过 2048 的 JPEG，并通过独立 media transport
+> 上传，不占用 `push_message` 的 256 KB payload：
+>
+> ```python
+> image_part = await ctx.images.upload(image_bytes, mime="image/png")
+> ctx.push_message(
+>     visibility=["chat"],
+>     ai_behavior="respond",
+>     parts=[{"type": "text", "text": "看看这张图"}, image_part],
+> )
+> ```
+>
+> `images.upload()` 只准备当前运行期可用的临时资源；它不会显示图片、不会写入
+> 模型上下文，也不会触发回复。投递语义仍完全由 `push_message()` 控制。
+> 请在 plugin entry、timer、message 或 custom event handler 中调用。lifecycle
+> handler（`startup` / `freeze` / `unfreeze` / `shutdown` / `config_change`）
+> 执行时不处理这类 request/response 上传，调用会立即抛出 `RuntimeError`，
+> 而不是等待 timeout。
 
 ##### 常见组合
 
@@ -590,8 +609,9 @@ return await self.finish(
 宿主只允许成功的 `user_plugin task_result` 降级为 `event`，不能把
 `proactive_message` 反向伪装成任务完成。
 
-> `delivery` / `ai_behavior` 只控制时机（立即起 turn / 等下次用户开口 / 完全静默），
-> 不再决定外层 prompt 的措辞。两个轴正交，组合 6 种都合理。
+> `push_message()` 中，`visibility` 控制 parts 向哪些前端目标展示，`ai_behavior`
+> 控制模型是否处理以及何时触发 turn；`delivery` 只是兼容旧调用方的已弃用参数。
+> `result_kind` 与这些投递轴正交，只决定外层 prompt 的措辞。
 
 #### 写"角色感知文本"：`{MASTER_NAME}` / `{LANLAN_NAME}` 占位符
 

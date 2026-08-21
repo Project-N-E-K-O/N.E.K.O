@@ -117,6 +117,51 @@ async def test_passthrough_writes_to_websocket_with_passthrough_metadata():
 
 
 @pytest.mark.unit
+async def test_passthrough_can_carry_structured_image_blocks():
+    ws = _FakeWebsocket(connected=True)
+    mgr = _make_mgr(websocket=ws)
+    blocks = [
+        {"type": "text", "text": "look"},
+        {"type": "image", "url": "http://127.0.0.1:48916/media/example"},
+    ]
+
+    assert await mgr.passthrough_to_chat_bubble("look", blocks=blocks) is True
+
+    payload = ws.send_json.await_args.args[0]
+    assert payload["blocks"] == blocks
+
+
+@pytest.mark.unit
+async def test_passthrough_sends_image_only_blocks_without_text():
+    ws = _FakeWebsocket(connected=True)
+    mgr = _make_mgr(websocket=ws)
+    blocks = [{"type": "image", "url": "http://127.0.0.1:48916/media/example"}]
+
+    assert await mgr.passthrough_to_chat_bubble("", blocks=blocks) is True
+
+    payload = ws.send_json.await_args.args[0]
+    assert payload["text"] == ""
+    assert payload["blocks"] == blocks
+
+
+@pytest.mark.unit
+async def test_render_chat_blocks_uses_a_display_only_websocket_frame():
+    ws = _FakeWebsocket(connected=True)
+    mgr = _make_mgr(websocket=ws)
+    blocks = [{"type": "image", "url": "http://127.0.0.1:48916/media/example"}]
+
+    assert await mgr.render_chat_blocks(blocks, request_id="r", source="plugin") is True
+
+    payload = ws.send_json.await_args.args[0]
+    assert payload == {
+        "type": "chat_blocks",
+        "blocks": blocks,
+        "request_id": "r",
+        "metadata": {"source": "plugin", "passthrough": True},
+    }
+
+
+@pytest.mark.unit
 async def test_passthrough_skips_sync_message_queue():
     """KEY contract: passthrough does NOT enqueue onto sync_message_queue.
 
@@ -334,15 +379,12 @@ async def test_main_server_proactive_chat_blind_preserves_verbatim_whitespace(mo
 
 @pytest.mark.unit
 async def test_main_server_proactive_chat_respond_does_not_invoke_passthrough(monkeypatch):
-    """When ai_behavior != "blind", the passthrough branch must NOT fire
-    even if visibility includes "chat" — non-blind ai_behavior already
-    enqueues the LLM callback, and the AI's own response is what fills
-    the chat bubble.
-    """
+    """Text-only respond keeps the pre-image-feature callback behavior."""
     from app import main_server
 
     fake_mgr = MagicMock()
     fake_mgr.passthrough_to_chat_bubble = AsyncMock()
+    fake_mgr.render_chat_blocks = AsyncMock(return_value=True)
     fake_mgr.enqueue_agent_callback = MagicMock()
     fake_mgr.submit_proactive_callback = MagicMock()
     fake_mgr.trigger_agent_callbacks = AsyncMock()
@@ -369,6 +411,7 @@ async def test_main_server_proactive_chat_respond_does_not_invoke_passthrough(mo
     await main_server._handle_agent_event(event)
 
     fake_mgr.passthrough_to_chat_bubble.assert_not_called()
+    fake_mgr.render_chat_blocks.assert_not_awaited()
     # respond → handed to the proactive delivery manager (which enqueues +
     # triggers at release time, gated on the playback/min-gap pacing).
     fake_mgr.submit_proactive_callback.assert_called_once()
