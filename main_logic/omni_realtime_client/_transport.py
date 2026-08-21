@@ -23,7 +23,6 @@ from ._shared import (
     OMNI_WS_FRAME_LIMIT_BYTES,
     Optional,
     ToolCall,
-    ToolResult,
     TurnDetectionMode,
     VISION_ANALYSIS_MAX_TOKENS,
     _IMAGE_ANALYSIS_PENDING_DESCRIPTION,
@@ -487,7 +486,15 @@ class _TransportMixin:
             logger.warning("⚠️ 图片重压缩失败 type=%s: %s — 丢弃帧", etype, e)
             return None
 
-    async def send_event(self, event, *, raise_on_oversize: bool = False) -> None:
+    async def send_event(
+        self,
+        event,
+        *,
+        raise_on_oversize: bool = False,
+        send_guard: Callable[[], bool] | None = None,
+    ) -> None:
+        if send_guard is not None and not send_guard():
+            raise ConnectionError("realtime event owner is no longer current")
         # 检查是否已发生致命错误，直接跳过发送
         if self._fatal_error_occurred:
             return
@@ -522,6 +529,8 @@ class _TransportMixin:
         event.setdefault('event_id', "event_" + str(int(time.time() * 1000)))
         async with self._send_semaphore:  # 限制并发发送数量
             try:
+                if send_guard is not None and not send_guard():
+                    raise ConnectionError("realtime event owner is no longer current")
                 if not self.ws:
                     return
                 payload = json.dumps(event)
@@ -540,8 +549,18 @@ class _TransportMixin:
                                 "image payload exceeds realtime WebSocket frame limit"
                             )
                         return
-                await self.ws.send(payload)
+                if send_guard is not None and not send_guard():
+                    raise ConnectionError("realtime event owner is no longer current")
+                transport = self.ws
+                if not transport:
+                    return
+                await transport.send(payload)
             except Exception as e:
+                if send_guard is not None and not send_guard():
+                    logger.info(
+                        "Ignoring send failure from a retired realtime connection"
+                    )
+                    return
                 error_msg = str(e)
                 # ── Fatal WebSocket errors ────────────────────────────
                 # 1009 (message too big) / 1006 (abnormal close) /
@@ -1281,14 +1300,15 @@ class _TransportMixin:
         *,
         step_timeout: float | None = None,
         still_ours: Callable[[], bool] | None = None,
+        connection_still_ours: Callable[[], bool] | None = None,
     ) -> None:
         """Tell the host this turn is over.
 
         The two hooks the terminal path fires, in the order it fires them.
 
-        Both keywords belong to the fail-open release path, and both default
-        to the terminal path's behaviour so this stays one implementation
-        rather than two.
+        ``step_timeout`` and ``still_ours`` belong to the fail-open release
+        path, and both default to the terminal path's behaviour so this stays
+        one implementation rather than two.
 
         ``still_ours`` gates the PAIR, once, rather than each hook. They are
         not independent: ``on_response_done`` queues this turn's TTS-done
@@ -1299,6 +1319,13 @@ class _TransportMixin:
         speaks under a closed sid and has its text silently dropped, which is
         the failure this hook exists to prevent. So either the release still
         owns the turn and finishes ending it, or it never started.
+
+        ``connection_still_ours`` is deliberately separate. A replacement
+        connection owns different host state even when the host-turn id is
+        unavailable or unchanged, so it is re-checked after the first hook's
+        await before the old terminal is allowed to rotate the replacement's
+        speech id. This does not change the pair-once semantics of
+        ``still_ours`` within one connection.
 
         ``on_sid_rotate`` gets no step bound of its own, because it is the
         last step — there is nothing behind it for a slow hook to starve. That
@@ -1365,6 +1392,12 @@ class _TransportMixin:
           out from under itself.
         """
 
+        if connection_still_ours is not None and not connection_still_ours():
+            logger.info(
+                "the connection was replaced before its turn could be ended; "
+                "leaving both end-of-turn hooks to the replacement"
+            )
+            return
         if still_ours is not None and not still_ours():
             logger.info(
                 "a new turn started before this one could be ended; leaving "
@@ -1403,6 +1436,12 @@ class _TransportMixin:
                 )
             except Exception as exc:
                 logger.warning("turn-finished notification failed: %s", exc)
+        if connection_still_ours is not None and not connection_still_ours():
+            logger.info(
+                "the connection was replaced while its turn was being closed; "
+                "leaving the replacement's speech id alone"
+            )
+            return
         if not self._host_turn_is_still_ours():
             # Re-read, because the hook above is exactly where the host hangs.
             logger.info(
@@ -1655,8 +1694,14 @@ class _TransportMixin:
             still_ours=_still_ours,
         )
 
-    async def handle_interruption(self):
+    async def handle_interruption(
+        self,
+        *,
+        connection_still_ours: Callable[[], bool] | None = None,
+    ) -> None:
         """Handle user interruption of the current response."""
+        if connection_still_ours is not None and not connection_still_ours():
+            return
         if not self._is_responding:
             return
 
@@ -1672,7 +1717,18 @@ class _TransportMixin:
         # and never send response.cancel, so generation keeps running and the
         # arbiter lane stays held until the provider finishes on its own.
         if self._current_response_id is not None:
-            await self.cancel_response()
+            try:
+                await self.cancel_response(send_guard=connection_still_ours)
+            except ConnectionError:
+                if (
+                    connection_still_ours is not None
+                    and not connection_still_ours()
+                ):
+                    return
+                raise
+
+        if connection_still_ours is not None and not connection_still_ours():
+            return
 
         self._is_responding = False
         # Keep the cancelled response identity until its terminal event arrives.
@@ -1700,14 +1756,27 @@ class _TransportMixin:
                 logger.error("WebSocket connection is not established")
                 return
 
+            def receive_owner_is_current() -> bool:
+                return bool(
+                    message_generation == self._connection_generation
+                    and message_ws is self.ws
+                )
+
+            async def retire_if_replaced() -> bool:
+                if receive_owner_is_current():
+                    return False
+                logger.info(
+                    "Raw receive event retired after a replacement connection attached"
+                )
+                await self._abort_failed_transport(
+                    "retired raw receive event",
+                    message_ws,
+                    message_generation,
+                )
+                return True
+
             async for message in message_ws:
-                if (
-                    not self._still_owns_connection(message_generation)
-                    or self.ws is not message_ws
-                ):
-                    logger.info(
-                        "Ignoring a frame from a retired realtime connection"
-                    )
+                if await retire_if_replaced():
                     return
                 event = json.loads(message)
                 event_type = event.get("type")
@@ -1748,6 +1817,8 @@ class _TransportMixin:
                         # 前2次静默节流，第3次起通知前端
                         if self._server_busy_count >= 3 and self.on_status_message:
                             await self.on_status_message(json.dumps({"code": "SERVER_BUSY_THROTTLE"}))
+                            if await retire_if_replaced():
+                                return
                         continue
 
                     # Idle timeout — Qwen 约 25s 无操作断连
@@ -1755,15 +1826,20 @@ class _TransportMixin:
                         logger.warning("⏰ Idle timeout from API: %s", error_msg)
                         if self.on_connection_error:
                             await self.on_connection_error(json.dumps({"code": "API_IDLE_TIMEOUT", "details": {"msg": error_msg}}))
+                            if await retire_if_replaced():
+                                return
                         await self.close()
-                        continue
+                        return
 
                     if ('欠费' in classify_text or 'standing' in classify_lower or 'time limit' in classify_lower or
                         'policy violation' in classify_lower or '1008' in classify_lower or
                         '429' in classify_lower or 'quota' in classify_lower or 'too many' in classify_lower):
                         if self.on_connection_error:
                             await self.on_connection_error(error_msg)
+                            if await retire_if_replaced():
+                                return
                         await self.close()
+                        return
                     continue
 
                 if event_type in ID_BEARING_RESPONSE_CONTENT_EVENT_TYPES:
@@ -1926,26 +2002,36 @@ class _TransportMixin:
                             "function_call '%s' but no on_tool_call handler bound — replying with error",
                             name,
                         )
-                        result = ToolResult(
-                            call_id=call_id, name=name,
-                            output={"error": "no on_tool_call handler"},
-                            is_error=True, error_message="no on_tool_call handler",
+                        owner = self._capture_tool_task_owner(
+                            message_ws,
+                            connection_generation=message_generation,
                         )
-                        self._fire_task(self._send_tool_result_openai_realtime(result))
+                        self._start_raw_tool_call(
+                            ToolCall(
+                                name=name,
+                                arguments={},
+                                call_id=call_id,
+                                raw_arguments=raw_args,
+                            ),
+                            owner,
+                        )
                     else:
                         # Execute and reply asynchronously — don't block the
                         # message loop. handle_messages stays responsive to
                         # other events while the tool runs.
-                        async def _run_tool(_name=name, _args=raw_args, _cid=call_id):
-                            call = ToolCall(
-                                name=_name,
-                                arguments=parse_arguments_json(_args),
-                                call_id=_cid,
-                                raw_arguments=_args,
-                            )
-                            result = await self._execute_tool_call(call)
-                            await self._send_tool_result_openai_realtime(result)
-                        self._fire_task(_run_tool())
+                        owner = self._capture_tool_task_owner(
+                            message_ws,
+                            connection_generation=message_generation,
+                        )
+                        self._start_raw_tool_call(
+                            ToolCall(
+                                name=name,
+                                arguments=parse_arguments_json(raw_args),
+                                call_id=call_id,
+                                raw_arguments=raw_args,
+                            ),
+                            owner,
+                        )
                 elif event_type == "conversation.item.created":
                     self._response_arbiter.notify_item_created(event)
                 elif event_type == "response.done":
@@ -1963,6 +2049,8 @@ class _TransportMixin:
                     await self._record_response_repetition(
                         self._take_response_transcript()
                     )
+                    if await retire_if_replaced():
+                        return
                     # [有声无字兜底] 部分 provider（如 lanlan.app Gemini 语音代理）只发
                     # response.audio_transcript.delta、从不发 response.audio_transcript.done，
                     # 输出转录全靠下面 streaming 分支（_print_input_transcript=True）实时送出。
@@ -1981,8 +2069,14 @@ class _TransportMixin:
                             "response.done transcript flush failed (%s); continuing",
                             type(exc).__name__,
                         )
+                    if await retire_if_replaced():
+                        return
                     self._reset_per_turn_output_state()
-                    await self._notify_turn_finished()
+                    await self._notify_turn_finished(
+                        connection_still_ours=receive_owner_is_current,
+                    )
+                    if await retire_if_replaced():
+                        return
                 elif event_type == "response.created":
                     confirms_started_owner = (
                         self._response_arbiter.response_created_confirms_started_owner(
@@ -2015,6 +2109,8 @@ class _TransportMixin:
                     logger.info("input_audio_buffer.committed observed (total=%d)", self._input_audio_committed_total)
                 # Handle interruptions
                 elif event_type == "input_audio_buffer.speech_started":
+                    self.note_user_turn_started()
+                    self._raw_speech_started_scope_pending_transcript = True
                     self._speech_started_total += 1
                     logger.info("Speech detected")
                     self._response_arbiter.notify_server_vad_started()
@@ -2028,7 +2124,11 @@ class _TransportMixin:
                     self._user_recent_activity_time = self._last_speech_time
                     if self._is_responding:
                         logger.info("Handling interruption")
-                        await self.handle_interruption()
+                        await self.handle_interruption(
+                            connection_still_ours=receive_owner_is_current,
+                        )
+                        if await retire_if_replaced():
+                            return
                 elif event_type == "input_audio_buffer.speech_stopped":
                     self._speech_stopped_total += 1
                     logger.info("Speech ended")
@@ -2055,17 +2155,29 @@ class _TransportMixin:
                         # loop is blocked in on_new_message. Start the missing-
                         # created backstop only after the loop can read again,
                         # so a slow callback cannot release a real VAD response.
-                        self._response_arbiter.arm_server_vad_response_pending_timeout()
+                        if receive_owner_is_current():
+                            self._response_arbiter.arm_server_vad_response_pending_timeout()
+                    if await retire_if_replaced():
+                        return
                     self._audio_in_buffer = False
                     # Update timestamp so grace period starts from speech end
                     _now = time.time()
                     self._client_vad_last_speech_time = _now
                     self._user_recent_activity_time = _now
                 elif event_type == "conversation.item.input_audio_transcription.completed":
+                    if not self._raw_speech_started_scope_pending_transcript:
+                        # Compatibility proxies may omit both server-VAD
+                        # boundary events. The completed transcript is then the
+                        # first authoritative signal that a new user turn has
+                        # begun, so stale tool work must retire here.
+                        self.note_user_turn_started()
+                    self._raw_speech_started_scope_pending_transcript = False
                     self._print_input_transcript = True
                     transcript = event.get("transcript", "")
                     if self.on_input_transcript:
                         await self.on_input_transcript(transcript)
+                        if await retire_if_replaced():
+                            return
                 elif event_type in ["response.audio_transcript.done", "response.output_audio_transcript.done"]:
                     self._print_input_transcript = False
                     # [ISSUE4b] Voice-without-text fix. Audio deltas and transcript
@@ -2087,6 +2199,8 @@ class _TransportMixin:
                         )
                     ):
                         await self.on_output_transcript(self._output_transcript_buffer, self._is_first_transcript_chunk)
+                        if await retire_if_replaced():
+                            return
                         self._is_first_transcript_chunk = False
                     self._output_transcript_buffer = ""
 
@@ -2096,6 +2210,8 @@ class _TransportMixin:
                             if "glm" not in self._model_lower:
                                 self._ai_recent_activity_time = time.time()
                                 await self.on_text_delta(event["delta"], self._is_first_text_chunk)
+                                if await retire_if_replaced():
+                                    return
                                 self._is_first_text_chunk = False
                     elif event_type in ["response.audio.delta", "response.output_audio.delta"]:
                         self._audio_delta_count += 1
@@ -2107,6 +2223,8 @@ class _TransportMixin:
                             audio_bytes = base64.b64decode(event["delta"])
                             self._ai_recent_activity_time = time.time()
                             await self.on_audio_delta(audio_bytes)
+                            if await retire_if_replaced():
+                                return
                     elif event_type in ["response.audio.done", "response.output_audio.done"]:
                         # 权威的「这一轮音频流已关闭」信号（issue #1566）。前端原本
                         # 靠「四个音频队列当下是否为空」猜本轮放完没，落在音频阵之间
@@ -2124,11 +2242,15 @@ class _TransportMixin:
                         # 通道）。漏发是可接受的降级，前端有 give-up 计时器兜底。
                         if self.on_audio_done:
                             await self.on_audio_done()
+                            if await retire_if_replaced():
+                                return
                     elif event_type in ["response.audio_transcript.done", "response.output_audio_transcript.done"]:
                         if self.on_output_transcript and self._is_first_transcript_chunk:
                             transcript = event.get("transcript", "")
                             if transcript:
                                 await self.on_output_transcript(transcript, True)
+                                if await retire_if_replaced():
+                                    return
                                 self._is_first_transcript_chunk = False
                     elif event_type in ["response.audio_transcript.delta", "response.output_audio_transcript.delta"]:
                         if self.on_output_transcript:
@@ -2141,13 +2263,19 @@ class _TransportMixin:
                                 if self._output_transcript_buffer:
                                     # logger.info(f"{self._output_transcript_buffer} is_first_chunk: True")
                                     await self.on_output_transcript(self._output_transcript_buffer, self._is_first_transcript_chunk)
+                                    if await retire_if_replaced():
+                                        return
                                     self._is_first_transcript_chunk = False
                                     self._output_transcript_buffer = ""
                                 await self.on_output_transcript(delta, self._is_first_transcript_chunk)
+                                if await retire_if_replaced():
+                                    return
                                 self._is_first_transcript_chunk = False
 
                     elif event_type in self.extra_event_handlers:
                         await self.extra_event_handlers[event_type](event)
+                        if await retire_if_replaced():
+                            return
                 else:
                     # 调试日志：text.delta 被 _interrupted/_skip 标志拦截（每个 response 仅记录一次）
                     if event_type in ["response.text.delta", "response.output_text.delta"]:
@@ -2242,6 +2370,24 @@ class _TransportMixin:
         """
 
         self._connection_generation += 1
+        self._advance_tool_scope()
+        self._raw_speech_started_scope_pending_transcript = False
+        # Provider response identity and interruption state belong to the
+        # retired connection. Some raw proxies never announce responses, so a
+        # stale interrupt would mute the replacement for its entire lifetime,
+        # while a stale response id would make its first barge-in cancel a
+        # response that existed only on the old socket. Reuse the turn reset so
+        # transcript/audio state is fresh too; its image branch deliberately
+        # preserves a completed annotation for an unconsumed cached frame.
+        self._clear_turn_response_state()
+        # Keep this separate from the ordinary response.done reset: no-VAD
+        # tool results still need their provider-turn snapshot after done, but
+        # a replacement connection must never inherit the retired snapshot.
+        self._current_turn_host_id = None
+        self._reset_per_turn_output_state()
+        self._current_response_transcript = ""
+        self._is_first_text_chunk = True
+        self._is_first_transcript_chunk = True
         self._close_task = None
         self._failed_transport_close_task = None
         self._gemini_close_task = None
@@ -2425,9 +2571,17 @@ class _TransportMixin:
     def _detach_for_failed_transport(self, reason: str):
         generation = self._connection_generation
         ws, self.ws = self.ws, None
-        return self._close_failed_transport_impl(reason, generation, ws)
+        tool_tasks = self._advance_tool_scope()
+        return self._close_failed_transport_impl(reason, generation, ws, tool_tasks)
 
-    async def _close_failed_transport_impl(self, reason: str, generation, ws) -> None:
+    async def _close_failed_transport_impl(
+        self,
+        reason: str,
+        generation,
+        ws,
+        tool_tasks=(),
+    ) -> None:
+        await self._await_retired_tool_tasks(tool_tasks)
         # The fatal flag is the retired connection's, and the wrapper has
         # already set it. Re-asserting it here would re-condemn a replacement
         # that attached in between — connect() clears the flag on purpose, and
@@ -2457,6 +2611,9 @@ class _TransportMixin:
         strand the manager on a live session over a dead transport.
         """
 
+        if ws is _ATTACHED_TRANSPORT:
+            tool_tasks = self._advance_tool_scope()
+            await self._await_retired_tool_tasks(tool_tasks)
         if generation is None or self._still_owns_connection(generation):
             self._fatal_error_occurred = True
         if ws is _ATTACHED_TRANSPORT:
@@ -2504,8 +2661,14 @@ class _TransportMixin:
         silence_check_task, self._silence_check_task = self._silence_check_task, None
         gemini_context = self._gemini_context_manager
         gemini_close_task = self._gemini_close_task
+        tool_tasks = self._advance_tool_scope()
         return self._close_impl(
-            generation, ws, silence_check_task, gemini_context, gemini_close_task
+            generation,
+            ws,
+            silence_check_task,
+            gemini_context,
+            gemini_close_task,
+            tool_tasks,
         )
 
     async def _close_impl(
@@ -2515,7 +2678,9 @@ class _TransportMixin:
         silence_check_task,
         gemini_context,
         gemini_close_task,
+        tool_tasks=(),
     ) -> None:
+        await self._await_retired_tool_tasks(tool_tasks)
         response_arbiter = getattr(self, "_response_arbiter", None)
         if response_arbiter is not None and self._still_owns_connection(generation):
             # The arbiter is shared across connections, not owned by one. If a

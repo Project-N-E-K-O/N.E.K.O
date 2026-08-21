@@ -736,6 +736,12 @@ async def test_gemini_outcome_ttl_closes_session_before_releasing_token(monkeypa
         rejected.append,
         lambda: None,
     )
+    client._gemini_proactive_outcome_owner = (
+        client._connection_generation,
+        gemini_session,
+        token,
+        context_manager,
+    )
     client._proactive_inject_outcome_token = token
     client._proactive_inject_awaiting_outcome = True
     monkeypatch.setattr(
@@ -758,6 +764,78 @@ async def test_gemini_outcome_ttl_closes_session_before_releasing_token(monkeypa
         "turn_complete": False,
     }
     await client.close()
+
+
+@pytest.mark.unit
+async def test_old_gemini_quarantine_releases_only_its_captured_context(
+    monkeypatch,
+):
+    client = _make_client(api_type="gemini", model="gemini-live")
+    interrupt_started = asyncio.Event()
+    release_interrupt = asyncio.Event()
+
+    async def block_old_interrupt(*, turns, turn_complete):
+        assert turns is None
+        assert turn_complete is False
+        interrupt_started.set()
+        await release_interrupt.wait()
+
+    old_session = AsyncMock()
+    old_session.send_client_content.side_effect = block_old_interrupt
+    old_context = AsyncMock()
+    client._gemini_session = old_session
+    client._gemini_context_manager = old_context
+    client.ws = old_session
+    client._on_connection_attached()
+    old_generation = client._connection_generation
+    old_token = "retired-quarantine"
+    client._gemini_proactive_outcome = (old_token, None, None)
+    client._gemini_proactive_outcome_owner = (
+        old_generation,
+        old_session,
+        old_token,
+        old_context,
+    )
+    monkeypatch.setattr(
+        responses_module,
+        "_GEMINI_PROACTIVE_CANCEL_GRACE_SECONDS",
+        0,
+    )
+
+    quarantine = asyncio.create_task(
+        client._interrupt_and_quarantine_gemini_proactive_outcome(
+            old_token,
+            error_msg="retired",
+        )
+    )
+    await asyncio.wait_for(interrupt_started.wait(), timeout=1)
+
+    replacement_session = AsyncMock()
+    replacement_context = AsyncMock()
+    client._gemini_session = replacement_session
+    client._gemini_context_manager = replacement_context
+    client.ws = replacement_session
+    client._on_connection_attached()
+    replacement_token = "replacement-outcome"
+    client._gemini_proactive_outcome = (replacement_token, None, None)
+    client._gemini_proactive_outcome_owner = (
+        client._connection_generation,
+        replacement_session,
+        replacement_token,
+        replacement_context,
+    )
+    release_interrupt.set()
+    await asyncio.wait_for(quarantine, timeout=1)
+
+    assert old_session.send_client_content.await_count == 1
+    old_context.__aexit__.assert_awaited_once_with(None, None, None)
+    replacement_session.send_client_content.assert_not_awaited()
+    replacement_context.__aexit__.assert_not_awaited()
+    assert client._gemini_session is replacement_session
+    assert client._gemini_context_manager is replacement_context
+    assert client.ws is replacement_session
+    assert client._fatal_error_occurred is False
+    assert client._gemini_proactive_outcome == (replacement_token, None, None)
 
 
 @pytest.mark.unit
@@ -811,6 +889,25 @@ async def test_gemini_cancelled_wait_observes_boundary_completion(monkeypatch):
     assert client._gemini_session.send_client_content.await_count == 1
     assert client._gemini_proactive_outcome is None
     assert client._proactive_inject_awaiting_outcome is False
+    await client.close()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_gemini_cancel_response_honors_send_guard():
+    client = _make_client(api_type="gemini", model="gemini-live")
+    client._gemini_session = AsyncMock()
+
+    await client.cancel_response(send_guard=lambda: False)
+
+    client._gemini_session.send_client_content.assert_not_awaited()
+
+    await client.cancel_response(send_guard=lambda: True)
+
+    client._gemini_session.send_client_content.assert_awaited_once_with(
+        turns=None,
+        turn_complete=False,
+    )
     await client.close()
 
 

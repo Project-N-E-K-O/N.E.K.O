@@ -768,6 +768,7 @@ class ProactiveMixin:
                 proactive_cbs = _active_proactive_callbacks(self.pending_agent_callbacks)
                 if not proactive_cbs:
                     return False
+                tool_turn_busy = voice_sess.has_inflight_tool_turn()
                 # Playback-aware gate: ``_voice_playback_active`` is True
                 # between the FRONTEND's voice_play_start and voice_play_end,
                 # i.e. while buffered audio is still AUDIBLY playing — which
@@ -778,14 +779,16 @@ class ProactiveMixin:
                 if (
                     self.state.phase is not ProactivePhase.IDLE
                     or voice_sess.is_active_response()
+                    or tool_turn_busy
                     or getattr(voice_sess, "_proactive_inject_awaiting_outcome", False)
                     or self._is_voice_playing()
                 ):
                     logger.debug(
-                        "[%s] trigger_agent_callbacks: voice session busy (phase=%s, active_response=%s, playback=%s); deferring proactive (n=%d)",
+                        "[%s] trigger_agent_callbacks: voice session busy (phase=%s, active_response=%s, tool_turn=%s, playback=%s); deferring proactive (n=%d)",
                         self.lanlan_name,
                         self.state.phase.value,
                         voice_sess.is_active_response(),
+                        tool_turn_busy,
                         self._voice_playback_active,
                         len(proactive_cbs),
                     )
@@ -2126,6 +2129,17 @@ class ProactiveMixin:
         except Exception:
             # Read hiccup → treat as not-responding rather than wedging the queue.
             logger.debug("[%s] _can_release_proactive: _is_responding check failed; treating as not-responding", self.lanlan_name)
+        try:
+            if (
+                isinstance(sess, OmniRealtimeClient)
+                and sess.has_inflight_tool_turn()
+            ):
+                return False
+        except Exception:
+            logger.debug(
+                "[%s] _can_release_proactive: tool-turn check failed; treating as idle",
+                self.lanlan_name,
+            )
         return True
 
     def _reset_proactive_gate(self) -> None:

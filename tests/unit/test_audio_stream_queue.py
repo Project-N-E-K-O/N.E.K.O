@@ -4,6 +4,7 @@ import os
 import struct
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -2073,6 +2074,93 @@ async def test_voice_control_status_reaches_the_lease_holding_socket():
     await LLMSessionManager._send_voice_control_status(mgr, '{"code": "Y"}')
     mgr.send_status.assert_awaited_once()
     assert recorder.sent == []
+
+
+async def test_lease_resync_retries_when_display_and_voice_delivery_fail():
+    class _LiveState:
+        CONNECTED = "connected"
+
+        def __eq__(self, other) -> bool:
+            return other == "connected"
+
+    class _Socket:
+        def __init__(self, *, fail: bool) -> None:
+            self.client_state = _LiveState()
+            self.fail = fail
+            self.attempts = 0
+
+        async def send_text(self, _data: str) -> None:
+            self.attempts += 1
+            if self.fail:
+                raise OSError("delivery failed")
+
+    mgr = LLMSessionManager.__new__(LLMSessionManager)
+    mgr.lanlan_name = "Test"
+    mgr._init_asr_runtime_state()
+    mgr._begin_voice_input_connection("socket-a")
+    display = _Socket(fail=True)
+    voice = _Socket(fail=True)
+    mgr.websocket = display
+    mgr.sync_message_queue = SimpleNamespace(put=MagicMock())
+    assert mgr._set_voice_input_websocket("socket-a", voice) is True
+
+    await LLMSessionManager._maybe_signal_voice_lease_resync(mgr)
+
+    assert mgr._voice_lease_resync_signal_state is None
+    assert display.attempts == 1
+    assert voice.attempts == 1
+
+    display.fail = False
+    voice.fail = False
+    await LLMSessionManager._maybe_signal_voice_lease_resync(mgr)
+
+    assert mgr._voice_lease_resync_signal_state is not None
+    assert display.attempts == 2
+    assert voice.attempts == 2
+
+
+async def test_blocked_text_notice_retries_when_only_voice_delivery_fails():
+    class _LiveState:
+        CONNECTED = "connected"
+
+        def __eq__(self, other) -> bool:
+            return other == "connected"
+
+    class _Socket:
+        def __init__(self, *, fail: bool) -> None:
+            self.client_state = _LiveState()
+            self.fail = fail
+            self.attempts = 0
+
+        async def send_text(self, _data: str) -> None:
+            self.attempts += 1
+            if self.fail:
+                raise OSError("delivery failed")
+
+    mgr = LLMSessionManager.__new__(LLMSessionManager)
+    mgr.lanlan_name = "Test"
+    mgr._init_asr_runtime_state()
+    mgr._begin_voice_input_connection("socket-a")
+    mgr.input_mode = "text"
+    mgr._set_microphone_route("blocked")
+    display = _Socket(fail=False)
+    voice = _Socket(fail=True)
+    mgr.websocket = display
+    mgr.sync_message_queue = SimpleNamespace(put=MagicMock())
+    assert mgr._set_voice_input_websocket("socket-a", voice) is True
+
+    await LLMSessionManager._maybe_signal_blocked_text_mode_microphone(mgr)
+
+    assert mgr._blocked_text_mode_microphone_signal_state is None
+    assert display.attempts == 1
+    assert voice.attempts == 1
+
+    voice.fail = False
+    await LLMSessionManager._maybe_signal_blocked_text_mode_microphone(mgr)
+
+    assert mgr._blocked_text_mode_microphone_signal_state is not None
+    assert display.attempts == 2
+    assert voice.attempts == 2
 
 
 async def test_voice_socket_setter_rejects_a_stale_claim():

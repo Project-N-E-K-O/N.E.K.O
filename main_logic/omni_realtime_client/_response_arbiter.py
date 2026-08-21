@@ -152,6 +152,7 @@ class _QueuedResponse:
     source: str = field(compare=False)
     events_before_response: tuple[dict[str, Any], ...] = field(compare=False)
     response_event: dict[str, Any] = field(compare=False)
+    event_sender: SendEvent | None = field(compare=False)
     ack_expected: bool = field(compare=False)
     expected_item_id: str | None = field(compare=False)
     expected_item_role: str | None = field(compare=False)
@@ -321,6 +322,7 @@ class RealtimeResponseArbiter:
         source: str,
         events_before_response: tuple[dict[str, Any], ...] = (),
         response_event: dict[str, Any] | None = None,
+        event_sender: SendEvent | None = None,
         ack_expected: bool = False,
         expected_item_id: str | None = None,
         expected_item_role: str | None = None,
@@ -372,6 +374,7 @@ class RealtimeResponseArbiter:
             source=source,
             events_before_response=events_before_response,
             response_event=create_event,
+            event_sender=event_sender,
             ack_expected=ack_expected,
             expected_item_id=expected_item_id,
             expected_item_role=expected_item_role,
@@ -430,7 +433,7 @@ class RealtimeResponseArbiter:
                 RuntimeError("response dispatch interrupted before response.create"),
             )
         else:
-            await self._send_event({"type": "response.cancel"})
+            await self._send_queued_event(current, {"type": "response.cancel"})
         assert current.completed is not None
         try:
             # The barge-in bound. Every user interruption of a speaking turn
@@ -476,7 +479,7 @@ class RealtimeResponseArbiter:
             and not ticket.sent.cancelled()
             and ticket.sent.exception() is None
         ):
-            await self._send_event({"type": "response.cancel"})
+            await self._send_queued_event(queued, {"type": "response.cancel"})
         if not wait:
             return True
         assert queued.completed is not None
@@ -1153,7 +1156,25 @@ class RealtimeResponseArbiter:
                     # has not done it yet. Remember the outcome so the started
                     # timeout can still claim it once nothing has answered.
                     self._adoptable_terminal_status = response_status or "completed"
-                if never_announced:
+                cancelled_adoption = bool(
+                    owner.interrupted
+                    and response_status in {"canceled", "cancelled"}
+                    and owner.ticket.sent.done()
+                    and not owner.ticket.sent.cancelled()
+                    and owner.ticket.sent.exception() is None
+                    and self._adoptable_id_for(owner) == response_id
+                )
+                if cancelled_adoption:
+                    # A provider that answers the conversation item directly
+                    # can announce before the item-ack barrier installs the
+                    # owner. Once this exact request has sent response.create,
+                    # a barge-in has targeted it, and the sole adoptable
+                    # response acknowledges that cancellation, waiting for the
+                    # longer missing-created timeout is no longer ambiguous.
+                    # Claim it now so cancel_current's shorter terminal bound
+                    # does not tear down a healthy connection first.
+                    self._adopt_announcement(owner, response_id)
+                elif never_announced:
                     # Attribution is one act, not two: the id and the
                     # announcement both belong to the owner now. Resolving
                     # only the terminal would leave the fall-through below to
@@ -1309,7 +1330,10 @@ class RealtimeResponseArbiter:
         target.interrupted = True
         target.interrupt_event.set()
         task = asyncio.create_task(
-            self._send_cancel_best_effort(self._connection_generation)
+            self._send_cancel_best_effort(
+                self._connection_generation,
+                target.event_sender,
+            )
         )
         target.cancel_send_task = task
         self._cancel_send_tasks.add(task)
@@ -1321,13 +1345,17 @@ class RealtimeResponseArbiter:
 
         task.add_done_callback(_finished)
 
-    async def _send_cancel_best_effort(self, generation: int) -> None:
+    async def _send_cancel_best_effort(
+        self,
+        generation: int,
+        event_sender: SendEvent | None = None,
+    ) -> None:
         if generation != self._connection_generation:
             # The connection this cancel was aimed at is gone; sending now
             # would cancel an unrelated response on its replacement.
             return
         try:
-            await self._send_event({"type": "response.cancel"})
+            await (event_sender or self._send_event)({"type": "response.cancel"})
         except Exception as exc:
             # Delivery is best-effort: if the cancel cannot reach the server,
             # the owner's started/terminal timeout still fail-closes the lane.
@@ -1631,7 +1659,18 @@ class RealtimeResponseArbiter:
                     100.0 * elapsed / timeout,
                 )
 
-    async def _worker_send(self, event: dict[str, Any]) -> None:
+    async def _send_queued_event(
+        self,
+        queued: _QueuedResponse,
+        event: dict[str, Any],
+    ) -> None:
+        await (queued.event_sender or self._send_event)(event)
+
+    async def _worker_send(
+        self,
+        queued: _QueuedResponse,
+        event: dict[str, Any],
+    ) -> None:
         """Send from the queue consumer, flagged for the duration of the write.
 
         Only the worker's sends qualify: a caller-task send that blocks hurts
@@ -1642,7 +1681,7 @@ class RealtimeResponseArbiter:
 
         self._worker_send_in_flight = True
         try:
-            await self._send_event(event)
+            await self._send_queued_event(queued, event)
         finally:
             self._worker_send_in_flight = False
 
@@ -1956,7 +1995,7 @@ class RealtimeResponseArbiter:
             for event in queued.events_before_response:
                 if queued.interrupted:
                     raise RuntimeError("response dispatch interrupted")
-                await self._worker_send(event)
+                await self._worker_send(queued, event)
 
             if queued.item_ack is not None:
                 try:
@@ -1996,7 +2035,7 @@ class RealtimeResponseArbiter:
             self._response_owner = queued
             queued.response_send_started = True
             try:
-                await self._worker_send(queued.response_event)
+                await self._worker_send(queued, queued.response_event)
             except Exception:
                 self._detach_response_owner(queued)
                 if not queued.terminal.done():
@@ -2033,7 +2072,10 @@ class RealtimeResponseArbiter:
                 cancel_write_failed = False
                 try:
                     try:
-                        await self._worker_send({"type": "response.cancel"})
+                        await self._worker_send(
+                            queued,
+                            {"type": "response.cancel"},
+                        )
                     except Exception:
                         cancel_write_failed = True
                         raise
@@ -2157,7 +2199,7 @@ class RealtimeResponseArbiter:
         cancel_write_failed = False
         try:
             try:
-                await self._worker_send({"type": "response.cancel"})
+                await self._worker_send(queued, {"type": "response.cancel"})
             except Exception:
                 # ``_worker_send``'s finally has already lowered the in-flight
                 # flag, so without remembering this the escalation below would

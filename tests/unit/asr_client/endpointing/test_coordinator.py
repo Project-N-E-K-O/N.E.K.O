@@ -143,6 +143,34 @@ async def test_cancelled_evaluation_keeps_lane_until_thread_finishes():
     assert predictor.max_active_calls == 1
 
 
+@pytest.mark.asyncio
+async def test_cancelled_close_keeps_cleanup_owned_until_lane_is_drained():
+    predictor = _Predictor()
+    coordinator = TurnCoordinator(predictor, SmartTurnConfig(enabled=True))
+    await coordinator._evaluation_lock.acquire()
+    close_impl_started = asyncio.Event()
+    original_close_impl = coordinator._close_impl
+
+    async def observed_close_impl() -> None:
+        close_impl_started.set()
+        await original_close_impl()
+
+    coordinator._close_impl = observed_close_impl
+
+    close_task = asyncio.create_task(coordinator.close())
+    await close_impl_started.wait()
+    close_task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await close_task
+
+    assert coordinator.state is CoordinatorState.CLOSED
+    assert predictor.closed is False
+
+    coordinator._evaluation_lock.release()
+    await asyncio.wait_for(coordinator._close_task, 1)
+    assert predictor.closed is True
+
+
 class _SlowUnloadPredictor(_Predictor):
     def __init__(self):
         super().__init__()

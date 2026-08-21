@@ -450,6 +450,34 @@ async def test_prepare_rejection_finishes_cancellation_before_same_token_retry()
     chat.on_final.assert_awaited_once_with(event)
 
 
+async def test_cancelled_wait_idle_keeps_cancellation_callback_owned() -> None:
+    registry = VoiceInputRegistry()
+    chat = _consumer()
+    cancellation_started = asyncio.Event()
+    release_cancellation = asyncio.Event()
+
+    async def slow_cancel(_token: VoiceTurnToken, _reason: str) -> None:
+        cancellation_started.set()
+        await release_cancellation.wait()
+
+    chat.on_cancelled.side_effect = slow_cancel
+    registration = _register_chat(registry, chat)
+    registry.activate(registration.handle)
+    turn = _turn()
+    assert registry.begin_utterance(turn)
+    assert registry.invalidate_utterance(turn, reason="cancelled_wait") is True
+
+    wait_task = asyncio.create_task(registry.wait_idle())
+    await cancellation_started.wait()
+    wait_task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await wait_task
+
+    release_cancellation.set()
+    await registry.wait_idle()
+    chat.on_cancelled.assert_awaited_once_with(turn, "cancelled_wait")
+
+
 async def test_empty_final_consumes_route_before_terminal_cancellation() -> None:
     registry = VoiceInputRegistry()
     chat = _consumer()

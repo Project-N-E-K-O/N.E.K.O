@@ -155,6 +155,17 @@ class OmniRealtimeClient(_ToolingMixin, _AudioMixin, _TransportMixin, _ResponseM
         self.get_host_turn_id = get_host_turn_id
         self.extra_event_handlers = extra_event_handlers or {}
         self._bg_tasks: set = set()  # 防止 fire-and-forget 任务被 GC 回收
+        # Tool handlers have narrower ownership than generic background work:
+        # their results belong to one connection and one user-turn scope.
+        self._tool_scope_generation = 0
+        # Some OpenAI-compatible proxies omit speech_started/stopped and only
+        # report the completed input transcript. Track whether server VAD has
+        # already advanced this input's tool scope so the transcript can fill
+        # that gap without advancing a normal provider's turn twice.
+        self._raw_speech_started_scope_pending_transcript = False
+        self._tool_tasks: set[asyncio.Task] = set()
+        self._tool_tasks_by_call_id: Dict[str, set[asyncio.Task]] = {}
+        self._cancelled_tool_call_ids: set[tuple[int, int, str]] = set()
         # Teardown owns the socket it detached, so a cancelled caller cannot
         # strand it. Both close paths run as one task per connection and every
         # caller awaits it through a shield: cancelling the caller stops the
@@ -479,6 +490,7 @@ class OmniRealtimeClient(_ToolingMixin, _AudioMixin, _TransportMixin, _ResponseM
         self._proactive_inject_awaiting_outcome = False
         self._proactive_inject_outcome_token: Optional[str] = None
         self._gemini_proactive_outcome: Optional[tuple] = None
+        self._gemini_proactive_outcome_owner: Optional[tuple] = None
 
     def _create_audio_processor(self) -> AudioProcessor:
         """Create session-owned audio state, including native RNNoise state."""

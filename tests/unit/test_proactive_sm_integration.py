@@ -193,6 +193,8 @@ def _make_voice_sess(*, is_responding=False, inject=None):
     sess._client_vad_active = False
     sess._user_recent_activity_time = 0.0
     sess._ai_recent_activity_time = 0.0
+    sess.tool_turn_busy = False
+    sess.has_inflight_tool_turn = lambda: sess.tool_turn_busy
 
     if inject is None:
         async def _default_inject(
@@ -276,6 +278,45 @@ async def test_voice_gate_sees_arbiter_busyness_not_just_the_responding_flag():
     assert delivered is True
     assert sess.inject_calls == 1
     assert mgr.pending_agent_callbacks == []
+
+
+async def test_voice_gate_defers_plugin_callback_until_tool_turn_finishes():
+    sess = _make_voice_sess()
+    mgr = _make_mgr(session=sess)
+    cb = {
+        "_callback_delivery_id": "id-tool-busy",
+        "status": "completed",
+        "summary": "plugin proactive event",
+    }
+    mgr.pending_agent_callbacks = [cb]
+    sess.tool_turn_busy = True
+
+    delivered = await core_module.LLMSessionManager.trigger_agent_callbacks(mgr)
+
+    assert delivered is False
+    assert sess.inject_calls == 0
+    assert mgr.pending_agent_callbacks == [cb]
+
+    # The tool-result continuation's normal response-complete hook re-enters
+    # this same trigger. Once that exact tool turn is terminal, the retained
+    # callback is delivered rather than silently discarded.
+    sess.tool_turn_busy = False
+    delivered = await core_module.LLMSessionManager.trigger_agent_callbacks(mgr)
+
+    assert delivered is True
+    assert sess.inject_calls == 1
+    assert mgr.pending_agent_callbacks == []
+
+
+def test_manager_release_gate_keeps_callback_order_while_tool_turn_is_busy():
+    sess = _make_voice_sess()
+    mgr = _make_mgr(session=sess)
+    sess.tool_turn_busy = True
+
+    assert core_module.LLMSessionManager._can_release_proactive(mgr) is False
+
+    sess.tool_turn_busy = False
+    assert core_module.LLMSessionManager._can_release_proactive(mgr) is True
 
 
 async def test_voice_nudge_waits_for_callback_inject_lock():

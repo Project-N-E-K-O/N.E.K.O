@@ -12,7 +12,7 @@ import json
 import struct
 import time
 from dataclasses import dataclass, replace
-from typing import Callable, ClassVar, Literal
+from typing import Any, Awaitable, Callable, ClassVar, Literal
 
 from websockets import exceptions as web_exceptions
 
@@ -263,8 +263,15 @@ class AsrRuntimeMixin:
         self._voice_input_audio_pipeline = VoiceInputAudioPipeline(
             nr_enabled=self._voice_input_noise_reduction_enabled,
         )
+        self._core_asr_cleanup_tasks: set[asyncio.Task[Any]] = set()
         self._voice_input_pipeline_failed = False
-        self._blocked_text_mode_microphone_signalled = False
+        self._blocked_text_mode_microphone_signal_state: tuple[
+            int,
+            str,
+            int,
+            int,
+            object,
+        ] | None = None
         # Identity of the independent-ASR turn that owns the frontend's
         # singleton preview bubble, plus its last rendered text. Both are
         # stamped/refreshed from the ordered partial stream so a late final
@@ -347,6 +354,8 @@ class AsrRuntimeMixin:
             self._voice_lease_resync_signal_state = None
         if not hasattr(self, "_voice_input_noise_reduction_enabled"):
             self._voice_input_noise_reduction_enabled = True
+        if not hasattr(self, "_core_asr_cleanup_tasks"):
+            self._core_asr_cleanup_tasks = set()
         if not hasattr(self, "_last_hot_swap_rebind_drop_log_time"):
             self._last_hot_swap_rebind_drop_log_time = 0.0
         if not hasattr(self, "_independent_asr_handshake_override"):
@@ -369,12 +378,71 @@ class AsrRuntimeMixin:
             self._core_asr_preview_text = ""
         if not hasattr(self, "_core_asr_preview_turn_token"):
             self._core_asr_preview_turn_token = None
-        if not hasattr(self, "_blocked_text_mode_microphone_signalled"):
-            self._blocked_text_mode_microphone_signalled = False
+        if not hasattr(self, "_blocked_text_mode_microphone_signal_state"):
+            self._blocked_text_mode_microphone_signal_state = None
         if not hasattr(self, "_voice_input_websocket"):
             self._voice_input_websocket = None
         if not hasattr(self, "_voice_lease_resync_suppressed"):
             self._voice_lease_resync_suppressed = False
+
+    def _schedule_core_asr_cleanup(
+        self,
+        awaitable: Awaitable[Any],
+        *,
+        name: str,
+    ) -> asyncio.Task[Any]:
+        tasks = getattr(self, "_core_asr_cleanup_tasks", None)
+        if tasks is None:
+            tasks = set()
+            self._core_asr_cleanup_tasks = tasks
+        task = asyncio.create_task(awaitable, name=name)
+        tasks.add(task)
+        task.add_done_callback(
+            lambda completed: AsrRuntimeMixin._core_asr_cleanup_done(
+                self,
+                completed,
+            )
+        )
+        return task
+
+    def _core_asr_cleanup_done(self, task: asyncio.Task[Any]) -> None:
+        self._core_asr_cleanup_tasks.discard(task)
+        if task.cancelled():
+            return
+        error = task.exception()
+        if error is not None:
+            logger.error(
+                "[%s] Core ASR cleanup task %s failed error_type=%s",
+                self.lanlan_name,
+                task.get_name(),
+                type(error).__name__,
+            )
+
+    def _replace_voice_input_audio_pipeline(
+        self,
+        *,
+        nr_enabled: bool,
+    ) -> asyncio.Task[Any]:
+        stale_pipeline = self._voice_input_audio_pipeline
+        self._voice_input_audio_pipeline = VoiceInputAudioPipeline(
+            nr_enabled=nr_enabled,
+        )
+        self._voice_input_pipeline_failed = False
+
+        async def close_stale_pipeline() -> None:
+            try:
+                await stale_pipeline.close()
+            except Exception:
+                logger.warning(
+                    "[%s] voice input audio pipeline close failed",
+                    self.lanlan_name,
+                )
+
+        return AsrRuntimeMixin._schedule_core_asr_cleanup(
+            self,
+            close_stale_pipeline(),
+            name="core-voice-input-pipeline-close",
+        )
 
     def _begin_asr_route_operation(self) -> int:
         self._asr_route_operation_generation += 1
@@ -394,7 +462,7 @@ class AsrRuntimeMixin:
         if mode != "blocked":
             # Re-arm the one-shot text-mode notice for the next episode, and
             # the lease-resync signal now that a live route exists again.
-            self._blocked_text_mode_microphone_signalled = False
+            self._blocked_text_mode_microphone_signal_state = None
             self._voice_lease_resync_suppressed = False
         self._asr_route_mode = mode
 
@@ -679,18 +747,11 @@ class AsrRuntimeMixin:
         nr_enabled = settings.get("noiseReductionEnabled", True) is not False
         self._voice_input_noise_reduction_enabled = nr_enabled
         if self._voice_input_audio_pipeline.nr_enabled != nr_enabled:
-            stale_pipeline = self._voice_input_audio_pipeline
-            self._voice_input_audio_pipeline = VoiceInputAudioPipeline(
+            pipeline_cleanup = AsrRuntimeMixin._replace_voice_input_audio_pipeline(
+                self,
                 nr_enabled=nr_enabled,
             )
-            self._voice_input_pipeline_failed = False
-            try:
-                await stale_pipeline.close()
-            except Exception:
-                logger.warning(
-                    "[%s] voice input audio pipeline close failed",
-                    self.lanlan_name,
-                )
+            await asyncio.shield(pipeline_cleanup)
             if not core_start_is_current():
                 return
         # Prefer this operation's own snapshot; a concurrent start_session can
@@ -1026,7 +1087,6 @@ class AsrRuntimeMixin:
         del next_route_mode
         provider = self._independent_asr_provider
         omni_audio_bytes = self._omni_mic_audio_bytes
-        pipeline = self._voice_input_audio_pipeline
         self._set_microphone_route("blocked")
         if not preserve_hot_swap_audio:
             self._invalidate_voice_pcm_sync("independent_asr_close")
@@ -1034,28 +1094,35 @@ class AsrRuntimeMixin:
             self._voice_input_registry.invalidate_utterance(
                 reason="independent_asr_close",
             )
-        await self._voice_input_registry.wait_idle()
-        self._voice_input_audio_pipeline = VoiceInputAudioPipeline(
+        pipeline_cleanup = AsrRuntimeMixin._replace_voice_input_audio_pipeline(
+            self,
             nr_enabled=self._voice_input_noise_reduction_enabled,
         )
-        self._voice_input_pipeline_failed = False
         self._independent_asr_provider = None
         self._independent_asr_route_key = None
-        await self._asr_runtime.close()
-        try:
-            await pipeline.close()
-        except Exception:
-            logger.warning(
-                "[%s] voice input audio pipeline close failed",
-                self.lanlan_name,
-            )
-        if omni_audio_bytes:
-            logger.info(
-                "[%s] microphone route metrics provider=%s omni_mic_audio_bytes=%d",
-                self.lanlan_name,
-                provider or "blocked",
-                omni_audio_bytes,
-            )
+
+        async def finish_close() -> None:
+            await self._voice_input_registry.wait_idle()
+            # A successor start advances the route generation and installs its
+            # own cancellation-safe close before its first suspension. Once
+            # that happens, this retired operation must not re-read the shared
+            # runtime and close the successor it no longer owns.
+            if self._asr_route_operation_matches(operation_generation):
+                await self._asr_runtime.close()
+            await asyncio.shield(pipeline_cleanup)
+            if omni_audio_bytes:
+                logger.info(
+                    "[%s] microphone route metrics provider=%s omni_mic_audio_bytes=%d",
+                    self.lanlan_name,
+                    provider or "blocked",
+                    omni_audio_bytes,
+                )
+
+        close_cleanup = self._schedule_core_asr_cleanup(
+            finish_close(),
+            name="core-independent-asr-close",
+        )
+        await asyncio.shield(close_cleanup)
 
     async def apply_voice_input_noise_reduction(self, enabled: bool) -> bool:
         """Make a mid-session noise-reduction toggle reach the live microphone.
@@ -1086,18 +1153,11 @@ class AsrRuntimeMixin:
         self._voice_input_noise_reduction_enabled = nr_enabled
         if self._voice_input_audio_pipeline.nr_enabled == nr_enabled:
             return False
-        stale_pipeline = self._voice_input_audio_pipeline
-        self._voice_input_audio_pipeline = VoiceInputAudioPipeline(
+        pipeline_cleanup = AsrRuntimeMixin._replace_voice_input_audio_pipeline(
+            self,
             nr_enabled=nr_enabled,
         )
-        self._voice_input_pipeline_failed = False
-        try:
-            await stale_pipeline.close()
-        except Exception:
-            logger.warning(
-                "[%s] voice input audio pipeline close failed",
-                self.lanlan_name,
-            )
+        await asyncio.shield(pipeline_cleanup)
         return True
 
     async def _reconcile_independent_asr_after_core_change(self) -> None:
@@ -1155,7 +1215,7 @@ class AsrRuntimeMixin:
             reason,
         )
 
-    async def _send_voice_control_status(self, message: str) -> None:
+    async def _send_voice_control_status(self, message: str) -> bool:
         """Send a mic control-plane status to the current AND voice sockets.
 
         ``self.websocket`` is the newest socket, which is not necessarily the
@@ -1169,10 +1229,18 @@ class AsrRuntimeMixin:
         tests, and narrow manager doubles do not carry the notify mixin at all.
         """
 
-        await self.send_status(message)
+        display_delivered = bool(await self.send_status(message))
+        voice_owner_resolver = getattr(self, "_voice_owner_socket", None)
+        voice_owner_socket = (
+            voice_owner_resolver() if callable(voice_owner_resolver) else None
+        )
         send_to_voice_owner = getattr(self, "_send_to_voice_owner", None)
-        if callable(send_to_voice_owner):
-            await send_to_voice_owner({"type": "status", "message": message})
+        if voice_owner_socket is None or not callable(send_to_voice_owner):
+            return display_delivered
+        delivered_socket = await send_to_voice_owner(
+            {"type": "status", "message": message}
+        )
+        return delivered_socket is voice_owner_socket
 
     async def _maybe_signal_voice_lease_resync(self) -> None:
         """Nudge a client whose PCM is dropped only because no lease is set.
@@ -1184,6 +1252,33 @@ class AsrRuntimeMixin:
         quiet while every later lease change re-arms it.
         """
 
+        async with self._asr_notification_lock:
+            signal_state = self._voice_lease_resync_episode()
+            if (
+                signal_state is None
+                or signal_state == self._voice_lease_resync_signal_state
+            ):
+                return
+            delivered = await self._send_voice_control_status(
+                json.dumps(
+                    {
+                        "code": "VOICE_INPUT_LEASE_RESYNC_REQUIRED",
+                        "details": {
+                            "reason": (
+                                "lease_unsynchronized"
+                                if not signal_state[2]
+                                else "owner_none"
+                            ),
+                        },
+                    }
+                ),
+            )
+            if delivered and self._voice_lease_resync_episode() == signal_state:
+                self._voice_lease_resync_signal_state = signal_state
+
+    def _voice_lease_resync_episode(
+        self,
+    ) -> tuple[str, int, bool, str] | None:
         if self._voice_lease_resync_suppressed:
             # The backend revoked this lease on purpose (fail-closed route, or
             # a text session took over). Asking the client to resync would make
@@ -1191,37 +1286,20 @@ class AsrRuntimeMixin:
             # exactly the lease we just dropped -- a revoke/resync ping-pong.
             # Deliberately not keyed on route == "blocked": blocked is also the
             # legitimate cold-start placeholder, where the signal IS wanted.
-            return
+            return None
         if (
             self._voice_lease_hard_muted
             or self._voice_lease_focus_suppressed
             or self._voice_lease_owner == "game"
         ):
-            return
+            return None
         if self._voice_lease_synchronized and self._voice_lease_owner != "none":
-            return
-        signal_state = (
+            return None
+        return (
             self._voice_lease_connection_id,
             self._voice_lease_generation,
             self._voice_lease_synchronized,
             self._voice_lease_owner,
-        )
-        if signal_state == self._voice_lease_resync_signal_state:
-            return
-        self._voice_lease_resync_signal_state = signal_state
-        await self._send_voice_control_status(
-            json.dumps(
-                {
-                    "code": "VOICE_INPUT_LEASE_RESYNC_REQUIRED",
-                    "details": {
-                        "reason": (
-                            "lease_unsynchronized"
-                            if not self._voice_lease_synchronized
-                            else "owner_none"
-                        ),
-                    },
-                }
-            ),
         )
 
     async def _maybe_signal_blocked_text_mode_microphone(self) -> None:
@@ -1238,18 +1316,38 @@ class AsrRuntimeMixin:
         cleared whenever the route leaves ``blocked``.
         """
 
-        if str(getattr(self, "input_mode", "audio") or "audio") != "text":
-            return
-        if self._blocked_text_mode_microphone_signalled:
-            return
-        self._blocked_text_mode_microphone_signalled = True
-        await self._send_voice_control_status(
-            json.dumps(
-                {
-                    "code": "VOICE_INPUT_BLOCKED_TEXT_SESSION",
-                    "details": {"reason": "text_session_active"},
-                }
-            ),
+        async with self._asr_notification_lock:
+            signal_state = self._blocked_text_mode_microphone_episode()
+            if (
+                signal_state is None
+                or signal_state == self._blocked_text_mode_microphone_signal_state
+            ):
+                return
+            delivered = await self._send_voice_control_status(
+                json.dumps(
+                    {
+                        "code": "VOICE_INPUT_BLOCKED_TEXT_SESSION",
+                        "details": {"reason": "text_session_active"},
+                    }
+                ),
+            )
+            if delivered and self._blocked_text_mode_microphone_episode() == signal_state:
+                self._blocked_text_mode_microphone_signal_state = signal_state
+
+    def _blocked_text_mode_microphone_episode(
+        self,
+    ) -> tuple[int, str, int, int, object] | None:
+        if (
+            str(getattr(self, "input_mode", "audio") or "audio") != "text"
+            or self._asr_route_mode != "blocked"
+        ):
+            return None
+        return (
+            self._asr_route_operation_generation,
+            self._voice_lease_connection_id,
+            self._voice_lease_generation,
+            self._microphone_route_generation,
+            getattr(self, "session", None),
         )
 
     async def _enqueue_audio_stream_data(self, message: dict) -> None:

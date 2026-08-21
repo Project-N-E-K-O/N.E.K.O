@@ -282,6 +282,20 @@ def split_calibration_holdout(
             "in one label/device/scenario/locale stratum; singleton-only "
             "strata cannot be split without leakage"
         )
+    incomplete_splits = []
+    for split_name, split_clips in (
+        ("calibration", calibration),
+        ("holdout", holdout),
+    ):
+        labels = {bool(clip.label) for clip in split_clips}
+        if labels != {False, True}:
+            missing = "speech" if True not in labels else "negative"
+            incomplete_splits.append(f"{split_name} missing {missing}")
+    if incomplete_splits:
+        raise ValueError(
+            "calibration/holdout split requires speech and negative classes "
+            "in both splits; " + ", ".join(incomplete_splits)
+        )
     return calibration, holdout
 
 

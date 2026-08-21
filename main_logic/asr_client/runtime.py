@@ -147,10 +147,40 @@ class IndependentAsrRuntime:
         return self._callbacks.display_name()
 
     async def close(self) -> None:
-        operation_generation = self._begin_asr_start_operation()
-        await self._close_independent_asr(
-            operation_generation=operation_generation,
-        )
+        self._ensure_asr_runtime_state()
+        close_task = self._asr_runtime_close_task
+        if close_task is None:
+            # Explicit close owns a different operation from start's detached
+            # predecessor cleanup. Invalidate the in-flight start before
+            # awaiting either cleanup, then wait for both under one explicit
+            # close latch so cancellation/retry retains the same owner.
+            operation_generation = self._begin_asr_start_operation()
+            predecessor_cleanups = tuple(self._asr_owned_cleanup_tasks)
+            cleanup = self._detach_independent_asr(
+                operation_generation=operation_generation,
+            )
+            close_task = self._schedule_owned_cleanup(
+                self._finish_explicit_asr_close(
+                    predecessor_cleanups,
+                    cleanup,
+                ),
+                name="independent-asr-close",
+            )
+            self._asr_runtime_close_task = close_task
+        await asyncio.shield(close_task)
+
+    @staticmethod
+    async def _finish_explicit_asr_close(
+        predecessor_cleanups: tuple[asyncio.Task[Any], ...],
+        cleanup: Awaitable[Any] | None,
+    ) -> None:
+        if predecessor_cleanups:
+            await asyncio.gather(
+                *predecessor_cleanups,
+                return_exceptions=True,
+            )
+        if cleanup is not None:
+            await cleanup
 
     def _begin_asr_start_operation(self) -> int:
         self._asr_start_generation += 1
@@ -336,9 +366,13 @@ class IndependentAsrRuntime:
         self._asr_audio_bytes = 0
         self._asr_received_audio = False
         self._asr_close_tasks: set[asyncio.Task[None]] = set()
+        self._asr_owned_cleanup_tasks: set[asyncio.Task[Any]] = set()
+        self._asr_runtime_close_task: asyncio.Task[None] | None = None
         self._asr_lifecycle: VoiceInputLifecycleController | None = None
         self._asr_detector: DetectorRuntime | None = None
         self._asr_smart_turn_lease: SmartTurnLease | None = None
+        self._asr_smart_turn_prepare_lock = asyncio.Lock()
+        self._asr_smart_turn_prepare_scope: tuple[int, int, int] | None = None
         self._asr_session_factory = None
         self._asr_transport_selection = None
         self._asr_transport_task: asyncio.Task[None] | None = None
@@ -376,6 +410,23 @@ class IndependentAsrRuntime:
         self._asr_first_partial_recorded = False
         self._voice_input_resource_optimization_enabled = True
 
+    def _schedule_owned_cleanup(
+        self,
+        awaitable: Awaitable[Any],
+        *,
+        name: str,
+    ) -> asyncio.Task[Any]:
+        """Keep teardown running when its caller is cancelled."""
+
+        task = asyncio.create_task(awaitable, name=name)
+        self._asr_owned_cleanup_tasks.add(task)
+        task.add_done_callback(self._owned_cleanup_done)
+        return task
+
+    def _owned_cleanup_done(self, task: asyncio.Task[Any]) -> None:
+        self._asr_owned_cleanup_tasks.discard(task)
+        self._log_asr_background_task_failure(task)
+
     def _ensure_asr_runtime_state(self) -> None:
         # A number of focused unit tests intentionally construct the manager via
         # __new__. Keep those narrow lifecycle doubles compatible.
@@ -409,6 +460,13 @@ class IndependentAsrRuntime:
             self._asr_start_generation = 0
         if not hasattr(self, "_asr_provider_candidate_fence"):
             self._asr_provider_candidate_fence = None
+        if not hasattr(self, "_asr_owned_cleanup_tasks"):
+            self._asr_owned_cleanup_tasks = set()
+        if not hasattr(self, "_asr_runtime_close_task"):
+            self._asr_runtime_close_task = None
+        if not hasattr(self, "_asr_smart_turn_prepare_lock"):
+            self._asr_smart_turn_prepare_lock = asyncio.Lock()
+            self._asr_smart_turn_prepare_scope = None
 
     def _capture_turn_token(
         self,
@@ -1042,6 +1100,29 @@ class IndependentAsrRuntime:
                 expected_identity=identity,
             )
             return False
+        prepare_scope = (epoch, id(lifecycle), id(detector))
+        if self._asr_smart_turn_prepare_scope != prepare_scope:
+            self._asr_smart_turn_prepare_scope = prepare_scope
+            self._asr_smart_turn_prepare_lock = asyncio.Lock()
+        prepare_lock = self._asr_smart_turn_prepare_lock
+        async with prepare_lock:
+            if not self._runtime_identity_matches(identity):
+                return False
+            return await self._ensure_smart_turn_ready_for_identity(
+                detector,
+                turn_token,
+                identity,
+                epoch=epoch,
+            )
+
+    async def _ensure_smart_turn_ready_for_identity(
+        self,
+        detector: DetectorRuntime,
+        turn_token: VoiceTurnToken,
+        identity: _AsrRuntimeIdentity,
+        *,
+        epoch: int,
+    ) -> bool:
         lease = self._asr_smart_turn_lease
         if (
             lease is not None
@@ -1310,10 +1391,20 @@ class IndependentAsrRuntime:
         """
 
         self._ensure_asr_runtime_state()
+        # A new start owns a new runtime generation. Any predecessor close task
+        # still owns only the resources it already detached; future close calls
+        # must target this start instead of re-awaiting that retired teardown.
+        self._asr_runtime_close_task = None
         operation_generation = self._begin_asr_start_operation()
-        await self._close_independent_asr(
+        cleanup = self._detach_independent_asr(
             operation_generation=operation_generation,
         )
+        if cleanup is not None:
+            cleanup_task = self._schedule_owned_cleanup(
+                cleanup,
+                name="independent-asr-start-predecessor-close",
+            )
+            await asyncio.shield(cleanup_task)
         if not self._asr_start_operation_matches(operation_generation):
             return AsrStartResult(
                 AsrStartStatus.FAILED,
@@ -1774,11 +1865,24 @@ class IndependentAsrRuntime:
     ) -> None:
         """Invalidate callbacks first, then release the detached provider session."""
 
+        cleanup = self._detach_independent_asr(
+            operation_generation=operation_generation,
+        )
+        if cleanup is not None:
+            await cleanup
+
+    def _detach_independent_asr(
+        self,
+        *,
+        operation_generation: int | None = None,
+    ) -> Awaitable[None] | None:
+        """Synchronously seize one generation and return its owned cleanup."""
+
         self._ensure_asr_runtime_state()
         if operation_generation is None:
             operation_generation = self._begin_asr_start_operation()
         elif not self._asr_start_operation_matches(operation_generation):
-            return
+            return None
         self._asr_session_epoch += 1
         self._asr_audio_generation += 1
         transcript_dispatcher = self._asr_transcript_dispatcher
@@ -1822,27 +1926,40 @@ class IndependentAsrRuntime:
         self._reset_asr_turn_state()
         self._asr_session_factory = None
         self._asr_transport_selection = None
-        if detector is not None:
-            await detector.close()
-        if lease is not None:
-            try:
-                await lease.release()
-            except Exception:
-                logger.warning(
-                    "[%s] SmartTurn lease release failed during ASR close",
-                    self.display_name,
-                )
-        if asr_session is not None:
-            try:
-                await asr_session.close()
-            except Exception:
-                logger.warning("[%s] independent ASR close failed", self.display_name)
-        wait_tasks = (*detached_tasks, *close_tasks)
-        if wait_tasks:
-            await asyncio.gather(*wait_tasks, return_exceptions=True)
-        await detector_dispatcher.close()
-        await audio_dispatcher.close()
-        transcript_dispatcher.invalidate_all()
+
+        async def finish_detached_cleanup() -> None:
+            if detector is not None:
+                try:
+                    await detector.close()
+                except Exception:
+                    logger.warning(
+                        "[%s] detector close failed during ASR close",
+                        self.display_name,
+                    )
+            if lease is not None:
+                try:
+                    await lease.release()
+                except Exception:
+                    logger.warning(
+                        "[%s] SmartTurn lease release failed during ASR close",
+                        self.display_name,
+                    )
+            if asr_session is not None:
+                try:
+                    await asr_session.close()
+                except Exception:
+                    logger.warning(
+                        "[%s] independent ASR close failed",
+                        self.display_name,
+                    )
+            wait_tasks = (*detached_tasks, *close_tasks)
+            if wait_tasks:
+                await asyncio.gather(*wait_tasks, return_exceptions=True)
+            await detector_dispatcher.close()
+            await audio_dispatcher.close()
+            transcript_dispatcher.invalidate_all()
+
+        return finish_detached_cleanup()
 
     async def submit(
         self,
@@ -2360,17 +2477,34 @@ class IndependentAsrRuntime:
             )
             lifecycle.invalidate_transport()
         post_detach = self._capture_runtime_identity()
-        if lease is not None:
-            await lease.release()
-        if asr_session is not None:
+
+        async def finish_abort() -> None:
             try:
-                await asr_session.close()
+                if lease is not None:
+                    await lease.release()
+            except asyncio.CancelledError:
+                raise
             except Exception:
                 logger.warning(
-                    "[%s] independent ASR abort failed reason=%s",
+                    "[%s] SmartTurn lease release failed during ASR abort",
                     self.display_name,
-                    reason,
                 )
+            finally:
+                if asr_session is not None:
+                    try:
+                        await asr_session.close()
+                    except Exception:
+                        logger.warning(
+                            "[%s] independent ASR abort failed reason=%s",
+                            self.display_name,
+                            reason,
+                        )
+
+        cleanup_task = self._schedule_owned_cleanup(
+            finish_abort(),
+            name="independent-asr-abort-transport",
+        )
+        await asyncio.shield(cleanup_task)
         return post_detach
 
     async def _close_transport_only(self) -> None:
@@ -2383,6 +2517,21 @@ class IndependentAsrRuntime:
             warm_task.cancel()
         self._asr_warm_expiry_task = None
         asr_session, self._asr_session = self._asr_session, None
+        session_close_task = None
+        if asr_session is not None:
+            async def close_transport() -> None:
+                try:
+                    await asr_session.close()
+                except Exception:
+                    logger.warning(
+                        "[%s] independent ASR transport-only close failed",
+                        self.display_name,
+                    )
+
+            session_close_task = self._schedule_owned_cleanup(
+                close_transport(),
+                name="independent-asr-transport-close",
+            )
         lifecycle = self._asr_lifecycle
         if lifecycle is not None:
             lifecycle.invalidate_transport()
@@ -2398,14 +2547,8 @@ class IndependentAsrRuntime:
                     session_epoch=epoch,
                     expected_identity=identity,
                 )
-        if asr_session is not None:
-            try:
-                await asr_session.close()
-            except Exception:
-                logger.warning(
-                    "[%s] independent ASR transport-only close failed",
-                    self.display_name,
-                )
+        if session_close_task is not None:
+            await asyncio.shield(session_close_task)
 
     def _schedule_transport_warm_expiry(
         self,

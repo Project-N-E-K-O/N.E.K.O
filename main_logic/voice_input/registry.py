@@ -63,6 +63,7 @@ class VoiceInputRegistry:
         self._activation_generation = 0
         self._utterances: dict[VoiceTurnToken, _PinnedUtterance] = {}
         self._background_tasks: set[asyncio.Task[None]] = set()
+        self._wait_idle_task: asyncio.Task[None] | None = None
         self._deferred_cancellations: list[
             tuple[_PinnedUtterance, str]
         ] = []
@@ -247,6 +248,16 @@ class VoiceInputRegistry:
         return bool(tokens)
 
     async def wait_idle(self) -> None:
+        wait_task = self._wait_idle_task
+        if wait_task is None or wait_task.done():
+            wait_task = asyncio.create_task(
+                self._wait_idle_impl(),
+                name="voice-input-registry-wait-idle",
+            )
+            self._wait_idle_task = wait_task
+        await asyncio.shield(wait_task)
+
+    async def _wait_idle_impl(self) -> None:
         while True:
             deferred, self._deferred_cancellations = (
                 self._deferred_cancellations,

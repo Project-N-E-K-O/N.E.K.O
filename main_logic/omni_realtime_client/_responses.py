@@ -171,6 +171,8 @@ class _ResponseMixin:
             logger.info("Skipping empty content in create_response")
             return
 
+        self.note_user_turn_started()
+
         if skipped:
             self._skip_until_next_response = True
 
@@ -238,6 +240,8 @@ class _ResponseMixin:
         stable_turn_id = str(turn_id or "").strip()
         if not stable_turn_id:
             raise ValueError("external ASR turn_id must not be empty")
+
+        self.note_user_turn_started()
 
         event_suffix = uuid.uuid4().hex
         item_id = f"item_neko_{uuid.uuid4().hex}"
@@ -309,6 +313,7 @@ class _ResponseMixin:
         stable_turn_id = str(turn_id or "").strip()
         if not stable_turn_id:
             raise ValueError("external voice turn_id must not be empty")
+        self.note_user_turn_started()
         try:
             if not self._is_gemini:
                 arbiter = self._ensure_response_arbiter()
@@ -411,6 +416,10 @@ class _ResponseMixin:
             raise RuntimeError("realtime session has fatal_error_occurred set")
         if not text or not text.strip():
             return
+        if self.has_inflight_tool_turn():
+            raise RuntimeError(
+                "proactive realtime inject deferred while a tool turn is in flight"
+            )
 
         if self._is_gemini:
             # Symmetric with create_response → _create_response_gemini.
@@ -429,10 +438,19 @@ class _ResponseMixin:
                     on_rejected,
                     on_completed,
                 )
+                self._gemini_proactive_outcome_owner = (
+                    self._connection_generation,
+                    self._gemini_session,
+                    outcome_token,
+                    self._gemini_context_manager,
+                )
                 self._proactive_inject_outcome_token = outcome_token
                 self._proactive_inject_awaiting_outcome = True
             try:
-                await self._gemini_send_user_turn(text)
+                await self._gemini_send_user_turn(
+                    text,
+                    starts_user_turn=False,
+                )
             except asyncio.CancelledError:
                 outcome = getattr(self, "_gemini_proactive_outcome", None)
                 if outcome is not None and outcome[0] == outcome_token:
@@ -462,13 +480,9 @@ class _ResponseMixin:
                     self._expire_gemini_proactive_outcome(outcome_token, 60.0)
                 )
             return
-        # NOTE on Qwen: the Aliyun realtime doc states conversation.item.create
-        # "currently only supports function_call_output items". That is stale
-        # for qwen3.5-omni-flash-realtime — empirically it accepts a
-        # ``role=user`` ``input_text`` message item and responds to it (no
-        # error event), identical to OpenAI / GLM / Step. Verified live against
-        # the dashscope realtime endpoint. So Qwen takes the same path below;
-        # do NOT re-add a Qwen exclusion without re-checking the live API.
+        # Qwen follows the WebSocket path documented above. Its older
+        # function_call_output-only documentation is stale; do not restore a
+        # Qwen exclusion without rechecking the live API.
         if self.ws is None:
             raise RuntimeError("realtime websocket is not connected")
 
@@ -666,13 +680,28 @@ class _ResponseMixin:
         *,
         error_msg: Optional[str] = None,
         notify: bool = True,
+        expected_connection_generation: int | None = None,
+        expected_provider_session: Any = None,
+        expected_outcome_token: str | None = None,
     ) -> None:
         """Settle the one pending Gemini proactive turn at its lifecycle edge."""
         outcome = getattr(self, "_gemini_proactive_outcome", None)
         if outcome is None:
             return
         token, on_rejected, on_completed = outcome
+        if expected_connection_generation is not None:
+            if token != expected_outcome_token:
+                return
+            expected_owner = (
+                expected_connection_generation,
+                expected_provider_session,
+                expected_outcome_token,
+            )
+            owner = getattr(self, "_gemini_proactive_outcome_owner", None)
+            if owner is None or owner[:3] != expected_owner:
+                return
         self._gemini_proactive_outcome = None
+        self._gemini_proactive_outcome_owner = None
         if getattr(self, "_proactive_inject_outcome_token", None) == token:
             self._proactive_inject_outcome_token = None
             self._proactive_inject_awaiting_outcome = False
@@ -715,35 +744,55 @@ class _ResponseMixin:
         outcome = getattr(self, "_gemini_proactive_outcome", None)
         if outcome is None or outcome[0] != token:
             return
+        owner = getattr(self, "_gemini_proactive_outcome_owner", None)
+        if owner is None or owner[2] != token:
+            return
+        connection_generation, provider_session, _, context = owner
         # Gemini lifecycle events are not tagged with a response id. Do not
         # release this token while the original generation can still emit a
         # late terminal: that terminal could otherwise settle a newer retry.
         try:
-            await self.cancel_response()
+            await provider_session.send_client_content(
+                turns=None,
+                turn_complete=False,
+            )
         except Exception as exc:
             logger.warning(
                 "Gemini proactive interrupt failed while quarantining outcome: %s",
                 exc,
             )
         await asyncio.sleep(_GEMINI_PROACTIVE_CANCEL_GRACE_SECONDS)
-        outcome = getattr(self, "_gemini_proactive_outcome", None)
-        if outcome is None or outcome[0] != token:
+        live_owner = getattr(self, "_gemini_proactive_outcome_owner", None)
+        still_current_connection = bool(
+            connection_generation == self._connection_generation
+            and provider_session is self._gemini_session
+        )
+        if still_current_connection and (
+            live_owner is None or live_owner[:3] != owner[:3]
+        ):
             return
 
         # No terminal followed the interrupt. Retire the whole Gemini session
         # before releasing the token so no event from the abandoned turn can
         # cross-talk with a future reconnect/retry.
-        self._fatal_error_occurred = True
+        if still_current_connection:
+            self._fatal_error_occurred = True
         try:
-            await self._close_gemini()
+            if still_current_connection:
+                await self._close_gemini()
+            else:
+                await self._close_gemini_impl(context, provider_session)
         except Exception as exc:
             logger.warning(
                 "Gemini proactive quarantine close failed: %s",
                 exc,
             )
-        outcome = getattr(self, "_gemini_proactive_outcome", None)
-        if outcome is not None and outcome[0] == token:
-            self._settle_gemini_proactive_inject(error_msg=error_msg)
+        self._settle_gemini_proactive_inject(
+            error_msg=error_msg,
+            expected_connection_generation=connection_generation,
+            expected_provider_session=provider_session,
+            expected_outcome_token=token,
+        )
 
     async def _expire_inject_rejection_handler(
         self,
@@ -1329,10 +1378,18 @@ class _ResponseMixin:
         )
         return True
 
-    async def cancel_response(self, *, wait: bool = False, timeout: float = 3.0) -> None:
+    async def cancel_response(
+        self,
+        *,
+        wait: bool = False,
+        timeout: float = 3.0,
+        send_guard: Callable[[], bool] | None = None,
+    ) -> None:
         """Cancel the current response."""
         if self._is_gemini:
             if self._gemini_session is None:
+                return
+            if send_guard is not None and not send_guard():
                 return
             # Gemini Live has no response.cancel event. Any client_content
             # interrupts current generation; leaving turn_complete false avoids
@@ -1345,4 +1402,7 @@ class _ResponseMixin:
         if wait:
             await self._ensure_response_arbiter().cancel_current(timeout)
             return
-        await self.send_event({"type": "response.cancel"})
+        await self.send_event(
+            {"type": "response.cancel"},
+            send_guard=send_guard,
+        )
