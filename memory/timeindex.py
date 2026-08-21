@@ -465,10 +465,15 @@ class TimeIndexedMemory:
                         continue
                 SQLChatMessageHistory._engine_cache.pop(connection_string, None)
         if not (errors and retain_on_failure):
-            self.db_paths.pop(lanlan_name, None)
             self.engines.pop(lanlan_name, None)
             self._engine_readonly_flags.pop(lanlan_name, None)
             self._writable_bootstrapped.discard(lanlan_name)
+            if not errors:
+                self.db_paths.pop(lanlan_name, None)
+            # 失败时保留 db_path：没释放掉的那个 pool 还挂在
+            # ``SQLChatMessageHistory._engine_cache`` 里，而它的 connection string
+            # 只能从 db_path 推出来——丢了它，之后的 /release_character 就再也够
+            # 不到那个 pool。清掉 engines 已足够让就地修复分支落到重建。
         if errors:
             raise errors[0]
         return released

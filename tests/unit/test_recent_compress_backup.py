@@ -914,9 +914,11 @@ def test_engine_repair_branch_self_heals_after_a_failed_disposal(tmp_path):
         with pytest.raises(OSError):
             manager._ensure_engine_exists(name)
 
-        # 簿记必须已经清掉：下一次调用要能走到重建分支，而不是又撞同一个 dispose。
+        # engines 必须清掉：下一次调用要能走到重建分支，而不是又撞同一个 dispose。
         assert name not in manager.engines
-        assert name not in manager.db_paths
+        # 但 db_path 要留着：没释放掉的 pool 还在 _engine_cache 里，它的
+        # connection string 只能从 db_path 推出来，丢了 release 就够不到它。
+        assert manager.db_paths[name] == str(tmp_path / "stale" / "time_indexed.db")
 
         created = MagicMock()
         with patch.object(
@@ -930,6 +932,48 @@ def test_engine_repair_branch_self_heals_after_a_failed_disposal(tmp_path):
             except Exception:
                 pass
     assert stale_engine.dispose.call_count == 1
+
+
+@pytest.mark.unit
+def test_release_can_still_reach_a_pool_a_failed_repair_left_behind(tmp_path):
+    """A repair-mode failure must not orphan the pool it could not dispose.
+
+    The failed pool stays in ``SQLChatMessageHistory._engine_cache``, whose key
+    is derived from ``db_paths``. Dropping that entry would leave the handle
+    unreachable and release would report success while the file stays locked.
+    """
+    from memory.timeindex import SQLChatMessageHistory, TimeIndexedMemory
+
+    name = "修复失败遗留池角色"
+    db_path = tmp_path / "time_indexed.db"
+    manager = TimeIndexedMemory(recent_history_manager=None)
+    manager.engines[name] = MagicMock()
+    manager.db_paths[name] = str(db_path)
+
+    readonly_key, writable_key = _sqlite_cache_keys(manager, db_path)
+    stuck_pool = MagicMock()
+    stuck_pool.dispose.side_effect = OSError("pool busy")
+    cache = SQLChatMessageHistory._engine_cache
+    saved = {key: cache[key] for key in (readonly_key, writable_key) if key in cache}
+    try:
+        cache[writable_key] = stuck_pool
+
+        # 就地修复语义（默认模式）：清 engines 让重建分支能走，但别丢 db_path。
+        with pytest.raises(OSError):
+            manager.dispose_engine(name)
+        assert name not in manager.engines
+        assert manager.db_paths[name] == str(db_path)
+        assert cache.get(writable_key) is stuck_pool
+
+        # 之后的 release 仍然够得到这个 pool 并重试。
+        stuck_pool.dispose.side_effect = None
+        assert manager.dispose_engine(name, retain_on_failure=True) is True
+        assert writable_key not in cache
+        assert name not in manager.db_paths
+    finally:
+        for key in (readonly_key, writable_key):
+            cache.pop(key, None)
+        cache.update(saved)
 
 
 @pytest.mark.unit
