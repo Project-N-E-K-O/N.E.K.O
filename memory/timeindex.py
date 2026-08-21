@@ -423,9 +423,11 @@ class TimeIndexedMemory:
         engine = self.engines.get(lanlan_name)
         released = engine is not None
         errors: list[Exception] = []
+        engine_disposed = engine is None
         if engine:
             try:
                 engine.dispose()
+                engine_disposed = True
                 logger.info(f"[TimeIndexedMemory] 已释放角色 {lanlan_name} 的数据库引擎")
             except Exception as exc:
                 # 继续走下面的 _engine_cache 清理：真正扣着文件句柄的往往是
@@ -439,14 +441,22 @@ class TimeIndexedMemory:
             uri_path = normalized_db_path.replace("\\", "/")
             writable_connection_string = f"sqlite:///{uri_path}"
             for connection_string in {readonly_connection_string, writable_connection_string}:
-                cached_engine = SQLChatMessageHistory._engine_cache.pop(connection_string, None)
-                if cached_engine is not None:
-                    released = True
-                    if cached_engine is not engine:
-                        try:
-                            cached_engine.dispose()
-                        except Exception as exc:
-                            errors.append(exc)
+                # 只在确认释放成功之后才摘缓存条目：先摘后放的话，dispose 一抛
+                # 这个 pool 就再也找不回来，重试摸不到它，句柄会一直扣到进程退出。
+                cached_engine = SQLChatMessageHistory._engine_cache.get(connection_string)
+                if cached_engine is None:
+                    continue
+                released = True
+                if cached_engine is engine:
+                    if not engine_disposed:
+                        continue
+                else:
+                    try:
+                        cached_engine.dispose()
+                    except Exception as exc:
+                        errors.append(exc)
+                        continue
+                SQLChatMessageHistory._engine_cache.pop(connection_string, None)
         if errors:
             raise errors[0]
         self.db_paths.pop(lanlan_name, None)

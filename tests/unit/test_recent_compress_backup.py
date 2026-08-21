@@ -518,6 +518,46 @@ def test_dispose_engine_keeps_bookkeeping_when_disposal_fails(tmp_path):
 
 
 @pytest.mark.unit
+def test_dispose_engine_keeps_the_cached_pool_when_its_disposal_fails(tmp_path):
+    """The cache entry is the only handle on that pool — never drop it unreleased."""
+    from memory.timeindex import SQLChatMessageHistory, TimeIndexedMemory
+
+    name = "缓存池释放失败角色"
+    db_path = tmp_path / "time_indexed.db"
+    manager = TimeIndexedMemory(recent_history_manager=None)
+    manager.db_paths[name] = str(db_path)
+
+    normalized, readonly_connection_string = manager._build_sqlite_connection_string(
+        str(db_path), readonly=True,
+    )
+    writable_connection_string = f"sqlite:///{normalized.replace(chr(92), '/')}"
+    cached_engine = MagicMock()
+    cached_engine.dispose.side_effect = OSError("cached pool busy")
+    cache = SQLChatMessageHistory._engine_cache
+    touched = {readonly_connection_string, writable_connection_string}
+    saved = {key: cache.get(key) for key in touched if key in cache}
+    try:
+        for key in touched:
+            cache[key] = cached_engine
+
+        with pytest.raises(OSError):
+            manager.dispose_engine(name)
+
+        # 缓存条目必须还在，否则重试再也够不到这个 pool。
+        assert all(cache.get(key) is cached_engine for key in touched)
+        assert manager.db_paths[name] == str(db_path)
+
+        cached_engine.dispose.side_effect = None
+        assert manager.dispose_engine(name) is True
+        assert all(key not in cache for key in touched)
+        assert name not in manager.db_paths
+    finally:
+        for key in touched:
+            cache.pop(key, None)
+        cache.update(saved)
+
+
+@pytest.mark.unit
 @pytest.mark.asyncio
 async def test_startup_replay_tasks_join_the_per_character_registry(tmp_path):
     """A long outbox replay must be drainable by a rename/delete that lands on it."""
