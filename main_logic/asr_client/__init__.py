@@ -19,6 +19,7 @@ from __future__ import annotations
 import os
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
+from enum import Enum
 from functools import partial
 from main_logic.voice_turn.contracts import SpeechActivityEvent
 from typing import Literal
@@ -64,9 +65,23 @@ __all__ = [
     "AsrCoreCapabilities",
     "AsrSessionConfig",
     "RealtimeAsrSession",
+    "VoiceIdentityActivationResult",
     "create_asr_session",
     "get_asr_core_capabilities",
 ]
+
+
+class VoiceIdentityActivationResult(Enum):
+    """Outcome of applying a profile to the currently active ASR route."""
+
+    READY = "ready"
+    UNSUPPORTED_ASR_ROUTE = "unsupported_asr_route"
+    RUNTIME_DEGRADED = "runtime_degraded"
+
+    def __bool__(self) -> bool:
+        """Treat a future-route install as applied even when not active yet."""
+
+        return self is not VoiceIdentityActivationResult.RUNTIME_DEGRADED
 
 
 def get_asr_core_capabilities(core_type: str) -> AsrCoreCapabilities | None:
