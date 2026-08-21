@@ -307,6 +307,12 @@ class IndependentAsrRuntime:
         task.add_done_callback(self._reap_rejection_task)
         return True
 
+    def _mark_speaker_verifier_degraded(self) -> None:
+        """Expose Owner verifier health without changing ASR transport flow."""
+
+        self._ensure_asr_runtime_state()
+        self._speaker_verifier_degraded = True
+
     @staticmethod
     def _close_speaker_verifier_factory(factory: SpeakerShadowFactory) -> None:
         close = getattr(factory, "close", None)
@@ -1918,13 +1924,18 @@ class IndependentAsrRuntime:
         try:
             # Model/process creation remains lazy inside the observer's first
             # accepted submission.
-            return factory()
+            shadow = factory()
         except Exception:
+            self._speaker_verifier_degraded = True
             logger.warning(
                 "[%s] speaker shadow factory failed; continuing without observer",
                 self.display_name,
             )
             return None
+        if shadow is None:
+            self._speaker_verifier_degraded = True
+            return None
+        return shadow
 
     @staticmethod
     async def _close_created_speaker_shadow(

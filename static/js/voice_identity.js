@@ -17,7 +17,8 @@
         secure_storage_unavailable: 'voiceIdentity.reasonSecureStorageUnavailable',
         enrollment_active: 'voiceIdentity.reasonEnrollmentActive',
         runtime_degraded: 'voiceIdentity.reasonRuntimeDegraded',
-        unsupported_asr_route: 'voiceIdentity.reasonUnsupportedAsrRoute'
+        unsupported_asr_route: 'voiceIdentity.reasonUnsupportedAsrRoute',
+        shadow_mode: 'voiceIdentity.reasonShadowMode'
     });
     const ENROLLMENT_ERROR_MESSAGES = Object.freeze({
         invalid_pcm: ['voiceIdentity.errorInvalidPcm', '录音格式无效，请重新录入。'],

@@ -8,6 +8,7 @@ import math
 import multiprocessing
 import time
 from collections import OrderedDict
+from collections.abc import Callable
 from dataclasses import dataclass
 from multiprocessing.connection import Connection
 from multiprocessing.process import BaseProcess
@@ -421,9 +422,11 @@ class SpeakerShadowRuntime:
         backend_factory: SpeakerShadowBackendFactory | None,
         config: SpeakerShadowConfig | None = None,
         on_observation: ObservationCallback | None = None,
+        on_backend_degraded: Callable[[], None] | None = None,
     ) -> None:
         self._config = config or SpeakerShadowConfig()
         self._backend_factory = backend_factory
+        self._on_backend_degraded = on_backend_degraded
         if on_observation is not None and not (
             inspect.iscoroutinefunction(on_observation)
             or inspect.iscoroutinefunction(getattr(on_observation, "__call__", None))
@@ -941,6 +944,7 @@ class SpeakerShadowRuntime:
                 self._metrics.stale_result_count += 1
                 return
             if backend_host is None:
+                self._mark_backend_degraded()
                 self._finalize_candidate(candidate, "failed", token=token)
                 return
             started = time.perf_counter()
@@ -961,6 +965,7 @@ class SpeakerShadowRuntime:
                 self._metrics.backend_timeout_count += 1
                 self._discard_backend_host(backend_host)
                 self._metrics.inference_failure_count += 1
+                self._mark_backend_degraded()
                 if self._identity_is_current(generation, candidate, token):
                     self._finalize_candidate(candidate, "failed", token=token)
                 return
@@ -968,6 +973,7 @@ class SpeakerShadowRuntime:
                 if not backend_host.alive:
                     self._discard_backend_host(backend_host)
                 self._metrics.inference_failure_count += 1
+                self._mark_backend_degraded()
                 if self._identity_is_current(generation, candidate, token):
                     self._finalize_candidate(candidate, "failed", token=token)
                 return
@@ -1135,6 +1141,16 @@ class SpeakerShadowRuntime:
             )
         self._next_load_attempt_at = time.monotonic() + retry_seconds
         self._metrics.load_failure_count += 1
+        self._mark_backend_degraded()
+
+    def _mark_backend_degraded(self) -> None:
+        callback = self._on_backend_degraded
+        if callback is None:
+            return
+        try:
+            callback()
+        except Exception:
+            self._metrics.callback_failure_count += 1
 
     async def _unload_backend(self) -> bool:
         host = self._backend_host

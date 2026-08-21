@@ -2798,6 +2798,7 @@
         "reasonEnrollmentActive": "新しい声紋を登録中です。独立 ASR は一時的に通過します",
         "reasonRuntimeDegraded": "声紋機能を一時的に利用できないため、独立 ASR は通常どおり通過します",
         "reasonUnsupportedAsrRoute": "現在の音声ルートは声紋フィルターに対応していません",
+        "reasonShadowMode": "シャドーモードは観測のみで、独立 ASR は通常どおり通過します",
         "enrollmentComplete": "Owner 声紋を保存して有効化しました。",
         "microphoneDenied": "マイクを使用できません。権限とデバイスを確認してください。",
         "requestFailed": "操作に失敗しました。もう一度お試しください。",

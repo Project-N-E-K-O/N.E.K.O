@@ -2798,6 +2798,7 @@
         "reasonEnrollmentActive": "正在录入新声纹，独立 ASR 将暂时放行",
         "reasonRuntimeDegraded": "声纹运行时暂时不可用，独立 ASR 将正常放行",
         "reasonUnsupportedAsrRoute": "当前语音路线不支持声纹过滤",
+        "reasonShadowMode": "影子模式仅观察不拦截，独立 ASR 将正常放行",
         "enrollmentComplete": "Owner 声纹已保存并启用。",
         "microphoneDenied": "无法使用麦克风，请检查权限和设备。",
         "requestFailed": "操作失败，请稍后重试。",

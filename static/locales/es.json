@@ -2798,6 +2798,7 @@
         "reasonEnrollmentActive": "Se está registrando un nuevo perfil; el ASR independiente dejará pasar el audio temporalmente",
         "reasonRuntimeDegraded": "El filtro de voz no está disponible temporalmente; el ASR independiente dejará pasar el audio",
         "reasonUnsupportedAsrRoute": "La ruta de voz actual no admite el filtro de voz",
+        "reasonShadowMode": "El modo sombra solo observa; el ASR independiente dejará pasar el audio",
         "enrollmentComplete": "El perfil de voz del Owner está guardado y activo.",
         "microphoneDenied": "No se puede usar el micrófono. Comprueba el permiso y el dispositivo.",
         "requestFailed": "La operación ha fallado. Inténtalo de nuevo.",

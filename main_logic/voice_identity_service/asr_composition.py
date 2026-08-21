@@ -107,6 +107,7 @@ class OwnerVoiceAsrCompositionFactory:
                 ),
             ),
             on_observation=on_observation,
+            on_backend_degraded=runtime._mark_speaker_verifier_degraded,
         )
 
     def close(self) -> None:

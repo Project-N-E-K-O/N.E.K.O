@@ -2798,6 +2798,7 @@
         "reasonEnrollmentActive": "A new voice profile is being enrolled; independent ASR will temporarily pass through",
         "reasonRuntimeDegraded": "Voice filtering is temporarily unavailable; independent ASR will pass through normally",
         "reasonUnsupportedAsrRoute": "The current voice route does not support voice filtering",
+        "reasonShadowMode": "Shadow mode is observing only; independent ASR will pass through normally",
         "enrollmentComplete": "Owner voice profile is saved and enabled.",
         "microphoneDenied": "The microphone is unavailable. Check your permission and device.",
         "requestFailed": "The operation failed. Please try again.",

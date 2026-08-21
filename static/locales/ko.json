@@ -2798,6 +2798,7 @@
         "reasonEnrollmentActive": "새 음성 지문을 등록하는 동안 독립 ASR이 일시적으로 통과합니다",
         "reasonRuntimeDegraded": "음성 지문 기능을 일시적으로 사용할 수 없어 독립 ASR이 정상적으로 통과합니다",
         "reasonUnsupportedAsrRoute": "현재 음성 경로는 음성 지문 필터를 지원하지 않습니다",
+        "reasonShadowMode": "섀도 모드는 관찰만 수행하며 독립 ASR은 정상적으로 통과합니다",
         "enrollmentComplete": "Owner 음성 지문이 저장되고 활성화되었습니다.",
         "microphoneDenied": "마이크를 사용할 수 없습니다. 권한과 장치를 확인해 주세요.",
         "requestFailed": "작업에 실패했습니다. 다시 시도해 주세요.",

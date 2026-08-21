@@ -332,6 +332,39 @@ async def test_commit_failure_rolls_back_old_activation_and_profile(
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_failed_reenrollment_restores_requested_unsupported_activation(
+    tmp_path: Path,
+) -> None:
+    service, _model, activations, _events = _service(
+        tmp_path,
+        activation_results=[
+            VoiceIdentityActivationResult.UNSUPPORTED_ASR_ROUTE,
+            VoiceIdentityActivationResult.RUNTIME_DEGRADED,
+            VoiceIdentityActivationResult.UNSUPPORTED_ASR_ROUTE,
+        ],
+    )
+    await service.initialize()
+    first = await service.start_enrollment()
+    await service.complete_enrollment(first.enrollment_id, "profile-a", _pcm())
+    second = await service.start_enrollment()
+
+    with pytest.raises(VoiceIdentityServiceError, match="runtime_degraded"):
+        await service.complete_enrollment(second.enrollment_id, "profile-b", _pcm())
+
+    status = service.status()
+    assert status.state.requested_enabled
+    assert not status.state.effective_enabled
+    assert status.state.effective_reason == "unsupported_asr_route"
+    assert status.profile_generation == "profile-a"
+    assert [generation for _profile, generation in activations[-2:]] == [
+        "profile-b",
+        "profile-a",
+    ]
+    await service.close()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_filter_toggle_delete_and_completion_retry(tmp_path: Path) -> None:
     service, _model, activations, _events = _service(tmp_path)
     await service.initialize()
@@ -358,6 +391,42 @@ async def test_filter_toggle_delete_and_completion_retry(tmp_path: Path) -> None
     deleted = await service.delete_profile()
     assert not deleted.state.has_profile
     assert not deleted.state.requested_enabled
+    await service.close()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_status_stays_valid_while_filter_disable_detaches(
+    tmp_path: Path,
+) -> None:
+    service, _model, _activations, _events = _service(tmp_path)
+    await service.initialize()
+    enrollment = await service.start_enrollment()
+    await service.complete_enrollment(enrollment.enrollment_id, "profile-a", _pcm())
+    detach_started = asyncio.Event()
+    detach_release = asyncio.Event()
+
+    async def blocking_activate(
+        profile: SpeakerProfile | None,
+        generation: str,
+    ) -> bool:
+        del generation
+        if profile is None:
+            detach_started.set()
+            await detach_release.wait()
+        return True
+
+    service._activation_callback = blocking_activate  # type: ignore[attr-defined]
+    disable = asyncio.create_task(service.set_filter(False))
+    await asyncio.wait_for(detach_started.wait(), 1.0)
+
+    status = service.status()
+    assert not status.state.requested_enabled
+    assert not status.state.effective_enabled
+    assert status.state.effective_reason == "disabled"
+
+    detach_release.set()
+    await disable
     await service.close()
 
 
@@ -696,6 +765,32 @@ async def test_off_mode_records_profile_without_runtime_activation(
     assert not status.state.effective_enabled
     assert status.state.effective_reason == "runtime_degraded"
     assert activations == []
+    await service.close()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_shadow_mode_records_profile_without_reporting_enforced(
+    tmp_path: Path,
+) -> None:
+    service, _model, activations, _events = _service(
+        tmp_path,
+        runtime_mode="shadow",
+    )
+    await service.initialize()
+    enrollment = await service.start_enrollment()
+
+    status = await service.complete_enrollment(
+        enrollment.enrollment_id,
+        "profile-a",
+        _pcm(),
+    )
+
+    assert status.runtime_mode == "shadow"
+    assert status.state.requested_enabled
+    assert not status.state.effective_enabled
+    assert status.state.effective_reason == "shadow_mode"
+    assert activations[-1][1] == "profile-a"
     await service.close()
 
 
@@ -1071,6 +1166,40 @@ async def test_cancelled_filter_write_reconciles_runtime_and_preference(
     assert status.state.effective_reason == "disabled"
     assert not await preference_store.aload()
     assert activations[-1][0] is None
+    await service.close()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_cancelled_enrollment_cancel_retains_cleanup_to_completion(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service, _model, _activations, _events = _service(tmp_path)
+    await service.initialize()
+    enrollment = await service.start_enrollment()
+    cleanup_started = asyncio.Event()
+    cleanup_release = asyncio.Event()
+    cleanup_completed = False
+
+    async def blocking_cleanup(session) -> bool:
+        nonlocal cleanup_completed
+        cleanup_started.set()
+        await cleanup_release.wait()
+        cleanup_completed = True
+        return True
+
+    monkeypatch.setattr(service, "_cleanup_session", blocking_cleanup)
+    cancellation = asyncio.create_task(service.cancel_enrollment(enrollment.enrollment_id))
+    await asyncio.wait_for(cleanup_started.wait(), 1.0)
+    cancellation.cancel()
+    cleanup_release.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await cancellation
+
+    assert cleanup_completed
+    assert service.status().state.effective_reason == "disabled"
     await service.close()
 
 

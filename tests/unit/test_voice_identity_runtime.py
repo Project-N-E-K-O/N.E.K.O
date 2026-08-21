@@ -59,7 +59,7 @@ class _Manager:
         factory: _Factory | None,
         *,
         activation_generation: str,
-    ) -> bool:
+    ) -> bool | VoiceIdentityActivationResult:
         self.verifier_calls.append((factory, activation_generation))
         outcome = self.verifier_outcomes.pop(0) if self.verifier_outcomes else True
         if isinstance(outcome, BaseException):
@@ -931,6 +931,95 @@ async def test_watchdog_bounds_never_returning_manager_call(
     manager.block_attach = False
     manager.block_restore = False
     manager.block_detach = False
+    await registry.close()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_late_registration_timeout_transfers_to_attach_watchdog() -> None:
+    class BlockingAttachManager(_Manager):
+        async def set_speaker_verifier_factory(
+            self,
+            factory: _Factory | None,
+            *,
+            activation_generation: str,
+        ) -> bool | VoiceIdentityActivationResult:
+            if factory is not None:
+                await asyncio.Event().wait()
+            return await super().set_speaker_verifier_factory(
+                factory,
+                activation_generation=activation_generation,
+            )
+
+    registry = OwnerVoiceRuntimeRegistry(
+        enforce=True,
+        restore_retry_interval_seconds=0.01,
+        restore_retry_timeout_seconds=0.05,
+    )
+    profile = _profile("profile")
+    try:
+        assert await registry.activate(profile, "generation")
+    finally:
+        profile.close()
+    manager = BlockingAttachManager()
+
+    result = await registry.register_manager(manager)
+
+    assert result is VoiceIdentityActivationResult.RUNTIME_DEGRADED
+    assert manager in registry._attach_pending  # type: ignore[attr-defined]
+    assert registry._attach_retry_task is not None  # type: ignore[attr-defined]
+
+    async def verifier_success(
+        factory: _Factory | None,
+        *,
+        activation_generation: str,
+    ) -> bool:
+        del factory, activation_generation
+        return True
+
+    manager.set_speaker_verifier_factory = verifier_success  # type: ignore[method-assign]
+    await registry.close()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_unregister_timeout_transfers_to_detach_watchdog() -> None:
+    class BlockingDetachManager(_Manager):
+        async def set_speaker_verifier_factory(
+            self,
+            factory: _Factory | None,
+            *,
+            activation_generation: str,
+        ) -> bool | VoiceIdentityActivationResult:
+            if factory is None:
+                await asyncio.Event().wait()
+            return await super().set_speaker_verifier_factory(
+                factory,
+                activation_generation=activation_generation,
+            )
+
+    registry = OwnerVoiceRuntimeRegistry(
+        enforce=True,
+        restore_retry_interval_seconds=0.01,
+        restore_retry_timeout_seconds=0.05,
+    )
+    manager = BlockingDetachManager()
+    await registry.register_manager(manager)
+
+    await registry.unregister_manager(manager)
+
+    assert manager in registry._detach_pending  # type: ignore[attr-defined]
+    assert registry._detach_retry_task is not None  # type: ignore[attr-defined]
+
+    async def verifier_success(
+        factory: _Factory | None,
+        *,
+        activation_generation: str,
+    ) -> bool:
+        del factory, activation_generation
+        return True
+
+    manager.set_speaker_verifier_factory = verifier_success  # type: ignore[method-assign]
     await registry.close()
 
 

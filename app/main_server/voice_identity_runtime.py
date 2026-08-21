@@ -121,7 +121,7 @@ class OwnerVoiceRuntimeRegistry:
                     self._attach_pending.discard(manager)
                     return VoiceIdentityActivationResult.READY
                 self._detach_pending.pop(manager, None)
-                result = await self._attach_manager(manager, activation)
+                result = await self._attach_manager_bounded(manager, activation)
                 if result:
                     self._attach_pending.discard(manager)
                     return result
@@ -145,7 +145,7 @@ class OwnerVoiceRuntimeRegistry:
                 activation = self._activation
                 if activation is not None:
                     self._detach_pending.pop(manager, None)
-                    result = await self._attach_manager(manager, activation)
+                    result = await self._attach_manager_bounded(manager, activation)
                     if not result:
                         self._attach_pending.add(manager)
                         self._ensure_attach_watchdog()
@@ -175,10 +175,15 @@ class OwnerVoiceRuntimeRegistry:
             detach_generation = str(uuid.uuid4())
             cancellation: asyncio.CancelledError | None = None
             try:
-                detached = await manager.set_speaker_verifier_factory(
-                    None,
-                    activation_generation=detach_generation,
+                detached = await asyncio.wait_for(
+                    manager.set_speaker_verifier_factory(
+                        None,
+                        activation_generation=detach_generation,
+                    ),
+                    timeout=_WATCHDOG_MANAGER_CALL_TIMEOUT_SECONDS,
                 )
+            except asyncio.TimeoutError:
+                detached = False
             except asyncio.CancelledError as exc:
                 cancellation = exc
                 detached = False
@@ -362,6 +367,24 @@ class OwnerVoiceRuntimeRegistry:
         if isinstance(updated, VoiceIdentityActivationResult):
             return updated
         return VoiceIdentityActivationResult.READY
+
+    @staticmethod
+    async def _attach_manager_bounded(
+        manager,
+        activation: _OwnerActivation,
+    ) -> VoiceIdentityActivationResult:
+        try:
+            return await asyncio.wait_for(
+                OwnerVoiceRuntimeRegistry._attach_manager(manager, activation),
+                timeout=_WATCHDOG_MANAGER_CALL_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            return VoiceIdentityActivationResult.RUNTIME_DEGRADED
+        except asyncio.CancelledError:
+            current = asyncio.current_task()
+            if current is not None and current.cancelling():
+                raise
+            return VoiceIdentityActivationResult.RUNTIME_DEGRADED
 
     def _ensure_attach_watchdog(self) -> None:
         task = self._attach_retry_task

@@ -396,6 +396,9 @@ class VoiceIdentityService:
             old_profile = self._profile
             old_requested = self._requested_enabled
             old_effective = self._effective_enabled
+            old_activation_requested = (
+                old_requested and old_profile is not None and self._runtime_mode != "off"
+            )
             desired_requested = True if old_profile is None else old_requested
             new_profile: SpeakerProfile | None = None
             staged: VoiceIdentityProfileWrite | None = None
@@ -404,7 +407,7 @@ class VoiceIdentityService:
             preference_changed = False
             succeeded = False
             commit_cancellation: asyncio.CancelledError | None = None
-            old_activation_restored = True
+            old_activation_restore_result: VoiceIdentityActivationResult | None = None
             failure_reason = VoiceIdentityEffectiveReason.RUNTIME_DEGRADED
             try:
                 await asyncio.to_thread(validate_enrollment_pcm16, pcm16)
@@ -454,21 +457,30 @@ class VoiceIdentityService:
                 if desired_requested and self._runtime_mode != "off":
                     activation_result = await self._activate(new_profile, profile_id)
                     if not activation_result:
-                        rollback_profile = old_profile if old_effective else None
+                        rollback_profile = (
+                            old_profile if old_activation_requested else None
+                        )
                         rollback_generation = (
                             old_profile.generation
                             if rollback_profile is not None
                             else str(uuid.uuid4())
                         )
-                        old_activation_restored = await self._activate(
+                        old_activation_restore_result = await self._activate(
                             rollback_profile,
                             rollback_generation,
                         )
                         raise VoiceIdentityServiceError("runtime_degraded")
                     activation_changed = True
                 if desired_requested != old_requested:
-                    await self._preference_store.asave(desired_requested)
+                    preference_cancellations: list[asyncio.CancelledError] = []
+                    await _await_cancellation_safe(
+                        self._preference_store.asave(desired_requested),
+                        name="voice-identity-enrollment-preference-save",
+                        cancellations=preference_cancellations,
+                    )
                     preference_changed = True
+                    if preference_cancellations:
+                        raise preference_cancellations[0]
                 commit_task = asyncio.create_task(
                     staged.acommit(),
                     name="voice-identity-profile-commit",
@@ -518,17 +530,19 @@ class VoiceIdentityService:
                         except Exception:
                             pass
                     if activation_changed:
-                        rollback_profile = old_profile if old_effective else None
+                        rollback_profile = (
+                            old_profile if old_activation_requested else None
+                        )
                         rollback_generation = (
                             old_profile.generation
                             if rollback_profile is not None
                             else str(uuid.uuid4())
                         )
-                        old_activation_restored = await self._activate(
+                        old_activation_restore_result = await self._activate(
                             rollback_profile,
                             rollback_generation,
                         )
-                        if not old_activation_restored:
+                        if not old_activation_restore_result:
                             failure_reason = (
                                 VoiceIdentityEffectiveReason.RUNTIME_DEGRADED
                             )
@@ -541,8 +555,16 @@ class VoiceIdentityService:
                             )
                     if new_profile is not None:
                         new_profile.close()
-                    if old_effective and old_activation_restored:
-                        self._set_ready()
+                    if (
+                        old_activation_requested
+                        and old_activation_restore_result is not None
+                        and old_activation_restore_result
+                    ):
+                        self._apply_activation_result(old_activation_restore_result)
+                    elif old_effective:
+                        self._set_ineffective(
+                            VoiceIdentityEffectiveReason.RUNTIME_DEGRADED
+                        )
                     else:
                         self._set_ineffective(failure_reason)
                 cleanup_ok = await self._cleanup_session(session)
@@ -559,13 +581,20 @@ class VoiceIdentityService:
             if enrollment_id is not None and session.enrollment_id != enrollment_id:
                 return False
             self._enrollment = None
-            cleanup_ok = await self._cleanup_session(session)
+            cancellations: list[asyncio.CancelledError] = []
+            cleanup_ok = await _await_cancellation_safe(
+                self._cleanup_session(session),
+                name="voice-identity-cancel-enrollment-cleanup",
+                cancellations=cancellations,
+            )
             if not self._effective_enabled:
                 self._set_ineffective(
                     self._idle_reason()
                     if cleanup_ok
                     else VoiceIdentityEffectiveReason.RUNTIME_DEGRADED
                 )
+            if cancellations:
+                raise cancellations[0]
             return True
 
     async def set_filter(self, enabled: bool) -> VoiceIdentityServiceStatus:
@@ -587,6 +616,7 @@ class VoiceIdentityService:
                 raise VoiceIdentityServiceError("runtime_degraded") from exc
             self._requested_enabled = enabled
             if not enabled:
+                self._set_ineffective(VoiceIdentityEffectiveReason.DISABLED)
                 detached = await _await_cancellation_safe(
                     self._activate(None, str(uuid.uuid4())),
                     name="voice-identity-filter-disable",
@@ -836,6 +866,9 @@ class VoiceIdentityService:
         result: VoiceIdentityActivationResult,
     ) -> None:
         if result is VoiceIdentityActivationResult.READY:
+            if self._runtime_mode == "shadow":
+                self._set_ineffective(VoiceIdentityEffectiveReason.SHADOW_MODE)
+                return
             self._set_ready()
             return
         self._set_ineffective(VoiceIdentityEffectiveReason(result.value))
