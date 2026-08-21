@@ -677,6 +677,7 @@ async def test_failed_reenrollment_marks_degraded_when_old_activation_cannot_res
 @pytest.mark.asyncio
 async def test_timed_out_model_load_is_cancelled_and_model_is_released(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class BlockingModel(_Model):
         def __init__(self) -> None:
@@ -702,11 +703,15 @@ async def test_timed_out_model_load_is_cancelled_and_model_is_released(
             self.close_finished.set()
 
     model = BlockingModel()
+    retry_model = BlockingModel()
+    retry_model.load_release.set()
+    models = iter((model, retry_model))
     service, _selected, _activations, _events = _service(
         tmp_path,
         model=model,
         model_timeout_seconds=0.1,
     )
+    monkeypatch.setattr(service, "_model_factory", lambda: next(models))
     await service.initialize()
 
     with pytest.raises(VoiceIdentityServiceError, match="model_unavailable"):
@@ -716,8 +721,11 @@ async def test_timed_out_model_load_is_cancelled_and_model_is_released(
     assert model.closed
     assert service._model_load_cleanup_task is None  # type: ignore[attr-defined]
     retry = await service.start_enrollment()
-    assert model.load_calls == 2
+    assert model.load_calls == 1
+    assert retry_model.load_calls == 1
+    assert not retry_model.closed
     assert await service.cancel_enrollment(retry.enrollment_id)
+    assert retry_model.closed
     await service.close()
 
 
@@ -727,7 +735,7 @@ async def test_cancelled_expired_completion_retains_cleanup_to_completion(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    service, _model, _activations, _events = _service(tmp_path)
+    service, model, _activations, suppression_events = _service(tmp_path)
     await service.initialize()
     enrollment = await service.start_enrollment()
     session = service._enrollment  # type: ignore[attr-defined]
@@ -736,13 +744,15 @@ async def test_cancelled_expired_completion_retains_cleanup_to_completion(
     cleanup_started = asyncio.Event()
     cleanup_release = asyncio.Event()
     cleanup_completed = False
+    original_cleanup = service._cleanup_session  # type: ignore[attr-defined]
 
-    async def blocking_cleanup(_session) -> bool:
+    async def blocking_cleanup(cleanup_session) -> bool:
         nonlocal cleanup_completed
         cleanup_started.set()
         await cleanup_release.wait()
+        cleanup_ok = await original_cleanup(cleanup_session)
         cleanup_completed = True
-        return True
+        return cleanup_ok
 
     monkeypatch.setattr(service, "_cleanup_session", blocking_cleanup)
     completion = asyncio.create_task(
@@ -756,6 +766,9 @@ async def test_cancelled_expired_completion_retains_cleanup_to_completion(
         await completion
 
     assert cleanup_completed
+    assert model.closed
+    assert suppression_events[-1] == "restore:voice_identity_enrollment"
+    assert not service._suppression_controller.snapshot().active  # type: ignore[attr-defined]
     assert service._enrollment is None  # type: ignore[attr-defined]
     await service.close()
 
