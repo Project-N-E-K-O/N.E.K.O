@@ -485,12 +485,12 @@ def test_study_companion_static_ui8_visual_accessibility_and_csp_contract() -> N
     assert "learning-profile-modal" in style_css
     assert "knowledge-stage-selector" in style_css
     assert "knowledgeMapActiveStage" in knowledge_map_js
-    assert '<link rel="stylesheet" href="./style.css?v=study-knowledge-window-size-20260813" />' in index_html
+    assert '<link rel="stylesheet" href="./style.css?v=study-notebook-comments-20260821" />' in index_html
     assert '<script src="./knowledge-map.js?v=study-knowledge-window-size-20260813"></script>' in index_html
     outcome_formatters_script = (
         '<script src="./outcome-formatters.js?v=study-hotfix-20260812"></script>'
     )
-    main_script = '<script src="./main.js?v=study-ocr-fallback-notice-20260820"></script>'
+    main_script = '<script src="./main.js?v=study-notebook-lifecycle-20260821"></script>'
     assert outcome_formatters_script in index_html
     assert "solution-narration.js" not in index_html
     assert index_html.index(outcome_formatters_script) < index_html.index(main_script)
@@ -551,7 +551,9 @@ def test_study_companion_static_ui_browser_smoke_desktop_reduced_motion() -> Non
     static_files = {
         "index.html": ("text/html", (STATIC_DIR / "index.html").read_text(encoding="utf-8")),
         "style.css": ("text/css", (STATIC_DIR / "style.css").read_text(encoding="utf-8")),
+        "notebook.css": ("text/css", (STATIC_DIR / "notebook.css").read_text(encoding="utf-8")),
         "i18n.js": ("text/javascript", (STATIC_DIR / "i18n.js").read_text(encoding="utf-8")),
+        "notebook-controller.js": ("text/javascript", (STATIC_DIR / "notebook-controller.js").read_text(encoding="utf-8")),
         "surface-panels.js": ("text/javascript", (STATIC_DIR / "surface-panels.js").read_text(encoding="utf-8")),
         "knowledge-map.js": ("text/javascript", (STATIC_DIR / "knowledge-map.js").read_text(encoding="utf-8")),
             "outcome-formatters.js": ("text/javascript", (STATIC_DIR / "outcome-formatters.js").read_text(encoding="utf-8")),

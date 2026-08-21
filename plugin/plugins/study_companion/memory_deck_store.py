@@ -17,7 +17,7 @@ from .memory_candidates import upsert_memory_candidate
 from .memory_compat import compat_card_payload as build_compat_card_payload
 from .memory_imports import import_word_rows, normalize_csv_fieldnames
 from .memory_queries import active_item_card_rows, item_row_by_metadata_value
-from .memory_ratings import normalize_rating, rating_from_recitation_score, rating_from_word_result
+from .memory_ratings import normalize_rating, rating_from_word_result
 from .memory_rows import (
     card_from_joined_row,
     card_from_row,
@@ -25,12 +25,11 @@ from .memory_rows import (
     item_from_joined_row,
     item_from_row,
     memory_counts,
-    recitation_from_row,
     review_from_row,
     safe_int,
 )
 from .memory_schema import ensure_memory_schema, normalize_deck_type, normalize_item_type
-from .memory_text import build_cloze_prompt, diff_recitation, normalize_tags, split_passage_text
+from .memory_text import build_cloze_prompt, normalize_tags, split_passage_text
 from .models import json_copy
 
 
@@ -623,64 +622,6 @@ class MemoryDeckStore:
             REVIEW_IS_DUE_AFTER_KEY: is_due_after,
         }
 
-    def add_recitation_attempt(
-        self,
-        *,
-        item_id: str,
-        user_input_text: str,
-        hint_count: int = 0,
-        elapsed_ms: int | None = None,
-        session_id: str = "",
-    ) -> dict[str, Any]:
-        item = self.get_item(item_id)
-        if item is None:
-            raise ValueError("memory item not found")
-        if str(item.get("item_type") or "") not in {"sentence", "paragraph"}:
-            raise ValueError("recitation is only supported for passage items")
-        expected = str(item.get("answer") or "")[:5000]
-        actual = str(user_input_text or "")[:5000]
-        diff = diff_recitation(
-            expected, actual, hint_count=max(0, int(hint_count or 0))
-        )
-        rating = rating_from_recitation_score(float(diff.get("score") or 0.0))
-        review = self.review_item(
-            item_id=item_id,
-            rating=rating,
-            correct=float(diff.get("score") or 0.0) >= 0.80,
-            error_type="recitation",
-            elapsed_ms=elapsed_ms,
-            session_id=session_id,
-        )
-        review_record = review.get("review_record") or {}
-        with self.store._lock:
-            conn = self.store._require_conn()
-            cursor = conn.execute(
-                """
-                INSERT INTO recitation_attempts (
-                    passage_item_id, review_record_id, user_input_text,
-                    missing_count, extra_count, wrong_order_count, hint_count, score, reviewed_at
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
-                """,
-                (
-                    str(item_id),
-                    int(review_record.get("id") or 0) or None,
-                    actual,
-                    int(diff.get("missing_count") or 0),
-                    int(diff.get("extra_count") or 0),
-                    int(diff.get("wrong_order_count") or 0),
-                    int(diff.get("hint_count") or 0),
-                    float(diff.get("score") or 0.0),
-                ),
-            )
-            conn.commit()
-            attempt_id = int(cursor.lastrowid)
-        return {
-            "attempt": self.get_recitation_attempt(attempt_id),
-            "diff": diff,
-            "review": review,
-        }
-
     def get_review_record(self, review_id: int) -> dict[str, Any] | None:
         with self.store._lock:
             row = (
@@ -692,18 +633,6 @@ class MemoryDeckStore:
                 .fetchone()
             )
         return review_from_row(row)
-
-    def get_recitation_attempt(self, attempt_id: int) -> dict[str, Any] | None:
-        with self.store._lock:
-            row = (
-                self.store._require_conn()
-                .execute(
-                    "SELECT * FROM recitation_attempts WHERE id = ?",
-                    (int(attempt_id or 0),),
-                )
-                .fetchone()
-            )
-        return recitation_from_row(row)
 
     def create_word_draft(self, *, word: str, meaning: str) -> dict[str, Any]:
         word_text = str(word or "").strip()
@@ -733,25 +662,6 @@ class MemoryDeckStore:
             "status": "candidate",
         }
         return upsert_memory_candidate(self.store, "sentence_cloze", payload)
-
-    def create_recitation_error_draft(
-        self, *, expected: str, actual: str
-    ) -> dict[str, Any]:
-        diff = diff_recitation(expected, actual)
-        first_error = next(
-            (item for item in diff["operations"] if item.get("type") != "equal"), {}
-        )
-        explanation = "Review the changed segment and recite it once more."
-        if first_error:
-            explanation = f"Focus on {first_error.get('type')} text: {first_error.get('expected') or first_error.get('actual')}"
-        payload = {
-            "draft_type": "recitation_error",
-            "item_type": "paragraph",
-            "diff": diff,
-            "explanation": explanation,
-            "status": "candidate",
-        }
-        return upsert_memory_candidate(self.store, "recitation_error", payload)
 
     def status_summary(self, *, limit: int = 8) -> dict[str, Any]:
         decks = self.list_decks(limit=limit)

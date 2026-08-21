@@ -129,39 +129,6 @@ class _CommunicationTutorEventsMixin:
             target_lanlan=target_lanlan,
         )
 
-    async def _emit_recitation_answer_event(
-        self, payload: dict[str, Any], *, target_lanlan: str | None = None
-    ) -> None:
-        diff_data = payload.get("diff") or {}
-        review = payload.get("review") or {}
-        item = review.get("item") or {}
-        deck = (
-            await asyncio.to_thread(
-                self._memory_deck_store.get_deck, str(item.get("deck_id") or "")
-            )
-            or {}
-        )
-        score = _event_ratio(diff_data.get("score"))
-        if score >= 0.8:
-            verdict = "correct"
-        elif score >= 0.5:
-            verdict = "partial"
-        else:
-            verdict = "incorrect"
-        attempt = payload.get("attempt") or {}
-        await self._emit_answer_evaluated_event(
-            verdict=verdict,
-            score=score,
-            question_summary=str(item.get("prompt") or item.get("front") or ""),
-            user_answer_summary=str(attempt.get("user_input_text") or ""),
-            correction_hint=(
-                f"Missing: {diff_data.get('missing_count', 0)}, "
-                f"extra: {diff_data.get('extra_count', 0)}"
-            ),
-            topic=str(deck.get("subject") or deck.get("name") or ""),
-            target_lanlan=target_lanlan,
-        )
-
     async def _emit_session_summarized_event(self, payload: dict[str, Any]) -> None:
         bus = self._event_bus
         if bus is None:

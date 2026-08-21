@@ -58,7 +58,7 @@ def _word_count(content_plain: str) -> int:
     return len(words)
 
 
-def _normalize_string_list(value: object, *, limit: int = 50) -> list[str]:
+def _normalize_string_list(value: object, *, limit: int | None = 50) -> list[str]:
     if value is None:
         return []
     if isinstance(value, str):
@@ -75,7 +75,7 @@ def _normalize_string_list(value: object, *, limit: int = 50) -> list[str]:
             continue
         result.append(text)
         seen.add(text)
-        if len(result) >= limit:
+        if limit is not None and len(result) >= limit:
             break
     return result
 
@@ -189,7 +189,7 @@ class NotebookStore:
             )
         return self._notebook_from_row(row)
 
-    def list_notebooks(self, *, limit: int = 100) -> list[NotebookMeta]:
+    def list_notebooks(self, *, limit: int = 100, offset: int = 0) -> list[NotebookMeta]:
         with self.store._lock:
             rows = (
                 self.store._require_conn()
@@ -201,9 +201,9 @@ class NotebookStore:
                     LEFT JOIN notes ON notes.notebook_id = n.id
                     GROUP BY n.id
                     ORDER BY n.sort_order ASC, n.updated_at DESC, n.name ASC
-                    LIMIT ?
+                    LIMIT ? OFFSET ?
                     """,
-                    (max(1, int(limit or 100)),),
+                    (max(1, int(limit or 100)), max(0, int(offset or 0))),
                 )
                 .fetchall()
             )
@@ -323,16 +323,20 @@ class NotebookStore:
         return self._note_from_row(row)
 
     def get_notes_by_ids(self, note_ids: object) -> list[NoteItem]:
-        ids = _normalize_string_list(note_ids, limit=200)
+        ids = _normalize_string_list(note_ids, limit=None)
         if not ids:
             return []
-        placeholders = ",".join("?" for _ in ids)
+        rows = []
         with self.store._lock:
-            rows = (
-                self.store._require_conn()
-                .execute(f"SELECT * FROM notes WHERE id IN ({placeholders})", ids)
-                .fetchall()
-            )
+            conn = self.store._require_conn()
+            for start in range(0, len(ids), 900):
+                chunk = ids[start : start + 900]
+                placeholders = ",".join("?" for _ in chunk)
+                rows.extend(
+                    conn.execute(
+                        f"SELECT * FROM notes WHERE id IN ({placeholders})", chunk
+                    ).fetchall()
+                )
         notes_by_id = {
             note.id: note
             for note in (self._note_from_row(row) for row in rows)
@@ -469,6 +473,7 @@ class NotebookStore:
         tag: str | None = None,
         search_query: str = "",
         limit: int = 50,
+        offset: int = 0,
         include_content: bool = False,
     ) -> list[NoteItem]:
         """List notes.
@@ -483,19 +488,21 @@ class NotebookStore:
         - "unfiled": only notes with notebook_id IS NULL.
         - "specific": notes under notebook_id.
         """
-        safe_limit = max(1, min(5000, int(limit or 50)))
+        safe_limit = max(1, min(5001, int(limit or 50)))
+        safe_offset = max(0, int(offset or 0))
         query = str(search_query or "").strip()
         normalized_filter = self._normalize_notebook_filter(
             notebook_filter, notebook_id
         )
         if query:
+            fetch_limit = safe_offset + safe_limit
             fts_notes = self._list_notes_fts(
                 notebook_filter=normalized_filter,
                 notebook_id=notebook_id,
                 topic_id=topic_id,
                 tag=tag,
                 search_query=query,
-                limit=safe_limit,
+                limit=fetch_limit,
             )
             like_notes = self._list_notes_like(
                 notebook_filter=normalized_filter,
@@ -503,7 +510,7 @@ class NotebookStore:
                 topic_id=topic_id,
                 tag=tag,
                 search_query=query,
-                limit=safe_limit,
+                limit=fetch_limit,
             )
             seen: set[str] = set()
             merged: list[NoteItem] = []
@@ -512,9 +519,9 @@ class NotebookStore:
                     continue
                 merged.append(note)
                 seen.add(note.id)
-                if len(merged) >= safe_limit:
+                if len(merged) >= fetch_limit:
                     break
-            return merged
+            return merged[safe_offset:fetch_limit]
         where, params = self._filter_clauses(
             notebook_filter=normalized_filter,
             notebook_id=notebook_id,
@@ -530,9 +537,9 @@ class NotebookStore:
                     FROM notes
                     {where}
                     ORDER BY updated_at DESC, rowid DESC
-                    LIMIT ?
+                    LIMIT ? OFFSET ?
                     """,
-                    (*params, safe_limit),
+                    (*params, safe_limit, safe_offset),
                 )
                 .fetchall()
             )

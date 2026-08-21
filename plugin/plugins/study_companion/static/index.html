@@ -7,7 +7,8 @@
     <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; style-src-attr 'unsafe-inline'; font-src 'self'; img-src 'self' data: blob:; connect-src 'self'; base-uri 'self'; object-src 'none'" />
     <title>Study Companion</title>
     <link rel="stylesheet" href="./katex.min.css?v=study-hotfix-20260615v" />
-    <link rel="stylesheet" href="./style.css?v=study-knowledge-window-size-20260813" />
+    <link rel="stylesheet" href="./style.css?v=study-notebook-comments-20260821" />
+    <link rel="stylesheet" href="./notebook.css?v=study-notebook-comments-20260821" />
   </head>
   <body>
     <main class="page-shell">
@@ -108,6 +109,13 @@
             <span class="feature-action__copy">
               <strong data-i18n="ui.feature.checkin.title">Check-in</strong>
               <span data-i18n="ui.feature.checkin.body">Track today and daily goals</span>
+            </span>
+          </button>
+          <button class="feature-action" type="button" data-feature-action="notebook" data-open-surface="notebook-panel">
+            <span class="feature-action__icon" aria-hidden="true">▤</span>
+            <span class="feature-action__copy">
+              <strong data-i18n="ui.feature.notebook.title">Notebook</strong>
+              <span data-i18n="ui.feature.notebook.body">Write, search, and export study notes</span>
             </span>
           </button>
           <button class="feature-action" type="button" data-feature-action="export" data-open-surface="note-exporter">
@@ -600,7 +608,8 @@
     <script src="./i18n.js"></script>
     <script src="./katex.min.js?v=study-hotfix-20260615v"></script>
     <script src="./katex-render.js?v=study-hotfix-20260615v"></script>
-    <script src="./surface-panels.js?v=study-pomodoro-progress-20260812"></script>
+    <script src="./notebook-controller.js?v=study-notebook-draft-guard-20260821"></script>
+    <script src="./surface-panels.js?v=study-notebook-draft-guard-20260821"></script>
     <script src="./knowledge-map.js?v=study-knowledge-window-size-20260813"></script>
     <script src="./document-controller.js?v=study-hotfix-20260812"></script>
     <script src="./dependency-controller.js?v=study-ocr-dependencies-20260812"></script>
@@ -608,6 +617,6 @@
     <script src="./outcome-formatters.js?v=study-hotfix-20260812"></script>
     <script src="./model-runtime.js?v=study-provider-gateway-20260813"></script>
     <script src="./request-utils.js?v=study-request-abort-20260819"></script>
-    <script src="./main.js?v=study-ocr-fallback-notice-20260820"></script>
+    <script src="./main.js?v=study-notebook-lifecycle-20260821"></script>
   </body>
 </html>

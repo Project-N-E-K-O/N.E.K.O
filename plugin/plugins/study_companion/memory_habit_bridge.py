@@ -154,25 +154,11 @@ class MemoryHabitBridge:
             deck_id=str((item or {}).get("deck_id") or ""),
             source_type="review_record",
             source_id=str((review or {}).get("id") or ""),
-            unit_deltas={"card": 1.0, "cards": 1.0, "task": 1.0},
-        )
-
-    def apply_recitation_progress(
-        self, payload: dict[str, Any], *, date: str
-    ) -> dict[str, Any]:
-        attempt = payload.get("attempt") if isinstance(payload, dict) else {}
-        review = payload.get("review") if isinstance(payload, dict) else {}
-        item = review.get("item") if isinstance(review, dict) else {}
-        return self._apply_progress(
-            date=date,
-            deck_id=str((item or {}).get("deck_id") or ""),
-            source_type="recitation_attempt",
-            source_id=str((attempt or {}).get("id") or ""),
             unit_deltas={
-                "attempt": 1.0,
-                "attempts": 1.0,
                 "card": 1.0,
                 "cards": 1.0,
+                "attempt": 1.0,
+                "attempts": 1.0,
                 "task": 1.0,
             },
         )
@@ -188,13 +174,6 @@ class MemoryHabitBridge:
             )
             deck["reviewed_items"] += int(row["reviewed_items"] or 0)
             deck["correct_items"] += int(row["correct_items"] or 0)
-        for row in self._recitation_rows(target_date):
-            deck = self._deck_summary_item(
-                decks,
-                str(row["deck_id"] or ""),
-                str(row["deck_name"] or ""),
-            )
-            deck["recitation_attempts"] += int(row["recitation_attempts"] or 0)
         for row in self._focus_rows(target_date):
             deck = self._deck_summary_item(
                 decks,
@@ -226,7 +205,6 @@ class MemoryHabitBridge:
         ordered = sorted(decks.values(), key=lambda item: str(item["name"]))
         reviewed = sum(int(item["reviewed_items"]) for item in ordered)
         correct = sum(int(item["correct_items"]) for item in ordered)
-        recitations = sum(int(item["recitation_attempts"]) for item in ordered)
         focus = sum(float(item["focus_minutes"]) for item in ordered)
         due = sum(int(item["due_remaining"]) for item in ordered)
         return {
@@ -236,7 +214,6 @@ class MemoryHabitBridge:
             "reviewed_items": reviewed,
             "correct_items": correct,
             "correct_rate": correct / reviewed if reviewed else 0.0,
-            "recitation_attempts": recitations,
             "focus_minutes": focus,
             "due_remaining": due,
             "decks": ordered,
@@ -359,24 +336,6 @@ class MemoryHabitBridge:
                 (start_utc, end_utc),
             ).fetchall()
 
-    def _recitation_rows(self, date: str) -> list[Any]:
-        start_utc, end_utc = _date_utc_bounds(date, self._checkin_timezone)
-        with self._store.transaction() as conn:
-            return conn.execute(
-                """
-                    SELECT mi.deck_id,
-                           d.name AS deck_name,
-                           COUNT(ra.id) AS recitation_attempts
-                    FROM recitation_attempts ra
-                    JOIN memory_items mi ON mi.id = ra.passage_item_id
-                    LEFT JOIN decks d ON d.id = mi.deck_id
-                    WHERE datetime(ra.reviewed_at) >= ?
-                      AND datetime(ra.reviewed_at) < ?
-                    GROUP BY mi.deck_id, d.name
-                    """,
-                (start_utc, end_utc),
-            ).fetchall()
-
     def _focus_rows(self, date: str) -> list[Any]:
         with self._store.transaction() as conn:
             return conn.execute(
@@ -455,7 +414,6 @@ class MemoryHabitBridge:
                 "reviewed_items": 0,
                 "correct_items": 0,
                 "correct_rate": 0.0,
-                "recitation_attempts": 0,
                 "focus_minutes": 0.0,
                 "due_remaining": 0,
             }

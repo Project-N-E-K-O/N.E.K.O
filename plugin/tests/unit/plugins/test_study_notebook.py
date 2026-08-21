@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+import re
 from types import SimpleNamespace
 
 import pytest
@@ -162,6 +163,29 @@ def test_notebook_search_all_and_note_id_export(tmp_path) -> None:
         store.close()
 
 
+def test_notebook_selected_note_export_is_not_truncated_to_default_list_limit(
+    tmp_path,
+) -> None:
+    store, notebooks, _logger = _make_store(tmp_path)
+    try:
+        note_ids = [
+            notebooks.create_note(
+                title=f"Note {index:03d}",
+                content=f"body {index:03d}",
+            ).id
+            for index in range(205)
+        ]
+
+        exported = DocExporter(
+            store, config=DocExportConfig(enabled=True)
+        ).export(fmt="markdown", note_ids=note_ids, title="Selected Notes")
+
+        exported_titles = re.findall(r"^## (Note \d{3})$", exported.markdown, re.MULTILINE)
+        assert exported_titles == [f"Note {index:03d}" for index in range(205)]
+    finally:
+        store.close()
+
+
 def test_notebook_list_and_search_omit_full_content(tmp_path) -> None:
     store, notebooks, _logger = _make_store(tmp_path)
     try:
@@ -233,6 +257,85 @@ async def test_notebook_entries_serialize_dataclasses(tmp_path) -> None:
         searched = await harness.study_note_search_all(query="Force")
         assert isinstance(searched, Ok)
         assert searched.value["notes"][0]["title"] == "Force"
+    finally:
+        store.close()
+
+
+@pytest.mark.asyncio
+async def test_notebook_note_list_paginates_without_omitting_notes(tmp_path) -> None:
+    store, notebooks, _logger = _make_store(tmp_path)
+    harness = _EntryHarness(notebooks)
+    try:
+        created_ids = []
+        for index in range(3):
+            saved = await harness.study_note_upsert(
+                title=f"Paged note {index}",
+                content=f"Page body {index}",
+            )
+            assert isinstance(saved, Ok)
+            created_ids.append(saved.value["note"]["id"])
+
+        first = await harness.study_note_list(limit=2, offset=0)
+        assert isinstance(first, Ok)
+        assert len(first.value["notes"]) == 2
+        assert first.value["has_more"] is True
+        assert first.value["next_offset"] == 2
+
+        second = await harness.study_note_list(
+            limit=2, offset=first.value["next_offset"]
+        )
+        assert isinstance(second, Ok)
+        assert len(second.value["notes"]) == 1
+        assert second.value["has_more"] is False
+        assert second.value["next_offset"] is None
+        assert {
+            note["id"] for note in [*first.value["notes"], *second.value["notes"]]
+        } == set(created_ids)
+
+        search_first = await harness.study_note_list(
+            search_query="Paged", limit=2, offset=0
+        )
+        assert isinstance(search_first, Ok)
+        search_second = await harness.study_note_list(
+            search_query="Paged", limit=2, offset=search_first.value["next_offset"]
+        )
+        assert isinstance(search_second, Ok)
+        assert {
+            note["id"]
+            for note in [*search_first.value["notes"], *search_second.value["notes"]]
+        } == set(created_ids)
+    finally:
+        store.close()
+
+
+@pytest.mark.asyncio
+async def test_notebook_list_paginates_without_omitting_notebooks(tmp_path) -> None:
+    store, notebooks, _logger = _make_store(tmp_path)
+    harness = _EntryHarness(notebooks)
+    try:
+        created_ids = []
+        for index in range(3):
+            created = await harness.study_notebook_create(name=f"Paged notebook {index}")
+            assert isinstance(created, Ok)
+            created_ids.append(created.value["notebook"]["id"])
+
+        first = await harness.study_notebook_list(limit=2, offset=0)
+        assert isinstance(first, Ok)
+        assert len(first.value["notebooks"]) == 2
+        assert first.value["has_more"] is True
+        assert first.value["next_offset"] == 2
+
+        second = await harness.study_notebook_list(
+            limit=2, offset=first.value["next_offset"]
+        )
+        assert isinstance(second, Ok)
+        assert len(second.value["notebooks"]) == 1
+        assert second.value["has_more"] is False
+        assert second.value["next_offset"] is None
+        assert {
+            notebook["id"]
+            for notebook in [*first.value["notebooks"], *second.value["notebooks"]]
+        } == set(created_ids)
     finally:
         store.close()
 

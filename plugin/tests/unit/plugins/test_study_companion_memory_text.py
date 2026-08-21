@@ -4,7 +4,6 @@ import pytest
 
 from plugin.plugins.study_companion.memory_text import (
     build_cloze_prompt,
-    diff_recitation,
     normalize_tags,
     split_passage_text,
 )
@@ -41,15 +40,3 @@ def test_build_cloze_prompt_prefers_long_word_and_falls_back_to_character() -> N
     assert word["prompt"].startswith("____ important")
     assert cjk["answer"]
     assert "____" in cjk["prompt"]
-
-
-def test_diff_recitation_counts_missing_extra_wrong_order_and_hints() -> None:
-    diff = diff_recitation("alpha beta gamma", "beta alpha delta", hint_count=-1)
-    hinted = diff_recitation("alpha beta", "alpha", hint_count=2)
-
-    assert diff["missing_count"] > 0
-    assert diff["extra_count"] > 0
-    assert diff["wrong_order_count"] > 0
-    assert diff["hint_count"] == 0
-    assert hinted["hint_count"] == 2
-    assert hinted["score"] < 1.0

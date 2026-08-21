@@ -45,21 +45,11 @@ def memory_counts(conn: Any, *, deck_id: str = "") -> dict[str, int]:
         + ("WHERE mi.deck_id = ?" if deck_id else ""),
         params,
     ).fetchone()["count"]
-    recitation_count = conn.execute(
-        """
-        SELECT COUNT(*) AS count
-        FROM recitation_attempts ra
-        JOIN memory_items mi ON mi.id = ra.passage_item_id
-        """
-        + ("WHERE mi.deck_id = ?" if deck_id else ""),
-        params,
-    ).fetchone()["count"]
     return {
         "deck_count": safe_int(deck_count, 0),
         "item_count": safe_int(item_count, 0),
         "card_count": safe_int(card_count, 0),
         "review_count": safe_int(review_count, 0),
-        "recitation_count": safe_int(recitation_count, 0),
     }
 
 
@@ -159,23 +149,6 @@ def review_from_row(row: Any) -> dict[str, Any] | None:
     }
 
 
-def recitation_from_row(row: Any) -> dict[str, Any] | None:
-    if row is None:
-        return None
-    return {
-        "id": safe_int(row["id"], 0),
-        "passage_item_id": str(row["passage_item_id"] or ""),
-        "review_record_id": safe_int(row["review_record_id"], 0),
-        "user_input_text": str(row["user_input_text"] or ""),
-        "missing_count": safe_int(row["missing_count"], 0),
-        "extra_count": safe_int(row["extra_count"], 0),
-        "wrong_order_count": safe_int(row["wrong_order_count"], 0),
-        "hint_count": safe_int(row["hint_count"], 0),
-        "score": float(row["score"] or 0.0),
-        "reviewed_at": str(row["reviewed_at"] or ""),
-    }
-
-
 def _optional_column(row: Any, column: str, default: Any = None) -> Any:
     try:
         return row[column]
@@ -190,7 +163,6 @@ __all__ = [
     "item_from_joined_row",
     "item_from_row",
     "memory_counts",
-    "recitation_from_row",
     "review_from_row",
     "safe_int",
 ]

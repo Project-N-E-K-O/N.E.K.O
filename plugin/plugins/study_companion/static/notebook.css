@@ -1,0 +1,205 @@
+.surface-shell[data-surface="notebook-panel"] {
+  --surface-accent: #8b5a2b;
+}
+
+.notebook-toolbar {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  align-items: end;
+  padding: 12px;
+  border: 1px solid rgba(31, 41, 36, 0.10);
+  border-radius: var(--radius-sm);
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.notebook-field,
+.notebook-editor__field {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.notebook-field input,
+.notebook-field select,
+.notebook-editor__field input,
+.notebook-editor__field select,
+.notebook-editor__field textarea {
+  width: 100%;
+  min-width: 0;
+  min-height: 40px;
+  padding: 8px 10px;
+  border: 1px solid rgba(31, 41, 36, 0.16);
+  border-radius: var(--radius-sm);
+  background: #ffffff;
+  color: var(--ink);
+  font: inherit;
+}
+
+.notebook-toolbar__actions,
+.notebook-selection__actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 7px;
+}
+
+.notebook-toolbar__actions {
+  grid-column: 1 / -1;
+}
+
+.notebook-selection {
+  display: flex;
+  min-height: 48px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 12px;
+  border: 1px solid color-mix(in srgb, var(--surface-accent) 20%, rgba(31, 41, 36, 0.10));
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--surface-accent) 7%, #ffffff);
+}
+
+.notebook-selection strong {
+  font-size: 13px;
+}
+
+.notebook-workspace {
+  display: grid;
+  grid-template-columns: minmax(220px, 0.72fr) minmax(0, 1.4fr);
+  gap: 12px;
+  min-height: 520px;
+}
+
+.notebook-list,
+.notebook-editor {
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid rgba(31, 41, 36, 0.10);
+  border-radius: var(--radius-sm);
+  background: rgba(255, 255, 255, 0.76);
+}
+
+.notebook-list {
+  display: grid;
+  align-content: start;
+  gap: 7px;
+  max-height: calc(100vh - 350px);
+  overflow-y: auto;
+}
+
+.notebook-note-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 8px;
+  align-items: center;
+  border: 1px solid rgba(31, 41, 36, 0.10);
+  border-left: 3px solid transparent;
+  border-radius: var(--radius-sm);
+  background: #ffffff;
+}
+
+.notebook-note-row[data-selected="true"] {
+  border-left-color: var(--surface-accent);
+  background: color-mix(in srgb, var(--surface-accent) 7%, #ffffff);
+}
+
+.notebook-note-row__check {
+  width: 18px;
+  height: 18px;
+  margin-left: 10px;
+  accent-color: var(--surface-accent);
+}
+
+.notebook-note-row__open {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  min-height: 72px;
+  padding: 9px 10px 9px 4px;
+  border: 0;
+  background: transparent;
+  text-align: left;
+  box-shadow: none;
+}
+
+.notebook-note-row__open:hover {
+  background: transparent;
+  box-shadow: none;
+}
+
+.notebook-note-row__open strong,
+.notebook-note-row__open span,
+.notebook-note-row__open time {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.notebook-note-row__open span,
+.notebook-note-row__open time {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.notebook-list__load-more {
+  width: 100%;
+}
+
+.notebook-editor {
+  display: grid;
+  align-content: start;
+  gap: 12px;
+}
+
+.notebook-editor__fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.notebook-editor__field--wide {
+  grid-column: 1 / -1;
+}
+
+.notebook-editor__content {
+  min-height: 280px !important;
+  resize: vertical;
+  line-height: 1.55;
+}
+
+.notebook-editor__actions {
+  justify-content: flex-end;
+}
+
+@media (max-width: 760px) {
+  .notebook-toolbar,
+  .notebook-workspace,
+  .notebook-editor__fields {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .notebook-toolbar__actions,
+  .notebook-selection,
+  .notebook-selection__actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .notebook-toolbar__actions .button,
+  .notebook-selection__actions .button {
+    width: 100%;
+  }
+
+  .notebook-editor__field--wide {
+    grid-column: auto;
+  }
+
+  .notebook-list {
+    max-height: 300px;
+  }
+}

@@ -38,7 +38,6 @@ export default function SessionSummary(props: PluginSurfaceProps) {
           <div><span>{text(props, 'ui.summary.memory_block_title', 'Memory')}</span><strong>{memory.deck_count || 0}</strong></div>
           <div><span>{text(props, 'ui.summary.memory_reviewed', 'Reviewed')}</span><strong>{memory.reviewed_items || 0}</strong></div>
           <div><span>{text(props, 'ui.summary.memory_correct_rate', 'Correct')}</span><strong>{memoryCorrectPercent}%</strong></div>
-          <div><span>{text(props, 'ui.summary.memory_recitation', 'Recitation')}</span><strong>{memory.recitation_attempts || 0}</strong></div>
           <div><span>{text(props, 'ui.summary.memory_focus_minutes', 'Focus minutes')}</span><strong>{memory.focus_minutes || 0}</strong></div>
           <div><span>{text(props, 'ui.summary.memory_due_remaining', 'Due')}</span><strong>{memory.due_remaining || 0}</strong></div>
         </section>

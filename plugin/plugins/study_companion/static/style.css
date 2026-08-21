@@ -446,9 +446,7 @@ button:disabled {
   transform: none;
 }
 
-button.loading {
-  cursor: wait;
-}
+button.loading { cursor: wait; }
 
 .study-hub {
   display: grid;
@@ -458,7 +456,7 @@ button.loading {
 
 .feature-dock {
   display: grid;
-  grid-template-columns: repeat(6, minmax(0, 1fr));
+  grid-template-columns: repeat(7, minmax(0, 1fr));
   gap: 8px;
   padding: 10px;
   border: 1px solid rgba(31, 41, 36, 0.12);
@@ -470,6 +468,8 @@ button.loading {
     0 1px 0 rgba(255, 255, 255, 0.88) inset,
     0 12px 26px rgba(31, 52, 40, 0.08);
 }
+
+@media (min-width: 981px) and (max-width: 1220px) { .feature-dock { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
 
 .feature-action {
   --feature-color: var(--brand);
@@ -516,6 +516,10 @@ button.loading {
 
 .feature-action[data-feature-action="export"] {
   --feature-color: var(--accent);
+}
+
+.feature-action[data-feature-action="notebook"] {
+  --feature-color: #8b5a2b;
 }
 
 .feature-action:hover {
@@ -1673,11 +1677,7 @@ pre,
   border-bottom: 1px solid rgba(31, 41, 36, 0.10);
 }
 
-.study-panel__title {
-  display: grid;
-  gap: 4px;
-  min-width: 0;
-}
+.study-panel__title { display: grid; gap: 4px; min-width: 0; }
 
 .study-panel__eyebrow {
   color: color-mix(in srgb, var(--surface-accent) 84%, #1f2924);

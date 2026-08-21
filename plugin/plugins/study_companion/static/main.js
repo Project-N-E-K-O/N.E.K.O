@@ -28,6 +28,7 @@ const ENTRY_TIMEOUT_MS = {
   study_memory_card_review: 30000,
   study_memory_review_item: 30000,
   study_export_notes: 90000,
+  study_note_ai_expand: 90000,
 };
 const STUDY_SURFACE_MESSAGE_TYPES = Object.freeze({
   openSurface: 'neko-study-open-surface',
@@ -1353,19 +1354,7 @@ function handleSettingsTabKeydown(event) {
 }
 
 function hostedSurfaceLabel(surfaceId) {
-  const labels = {
-    'due-review-panel': t('ui.feature.review.title', 'Review'),
-    'knowledge-map': t('ui.feature.knowledge.title', 'Knowledge Map'),
-    'pomodoro-panel': t('ui.feature.pomodoro.title', 'Pomodoro'),
-    'habit-dashboard': t('ui.feature.checkin.title', 'Check-in'),
-    'note-exporter': t('ui.feature.export.title', 'Export'),
-    'memory-deck-list': t('ui.button.open_decks', 'Open Decks'),
-    'memory-importer': t('ui.button.import_memory', 'Import Cards'),
-    'knowledge-contribution-settings': t('ui.button.contribution_settings', 'Contribution Settings'),
-    'daily-goal-editor': t('ui.button.edit_daily_goal', 'Edit Daily Goal'),
-    'session-summary': t('ui.button.session_summary', 'Session Summary'),
-  };
-  return labels[surfaceId] || surfaceId;
+  return window.StudyCompanionSurfacePanels.label(surfaceId, t);
 }
 
 function setActiveFeature(action) {
@@ -1385,11 +1374,12 @@ function focusAfterScroll(target, focusTarget) {
 }
 
 function closeSurfaceDrawer() {
-  if (!surfaceDrawer) return;
+  if (!surfaceDrawer) return true;
+  if (window.StudyCompanionSurfacePanels?.close?.() === false) return false;
   mapRequestId += 1;
-  window.StudyCompanionSurfacePanels?.close?.();
   surfaceDrawer.dataset.open = 'false';
   surfaceDrawer.setAttribute('aria-hidden', 'true');
+  return true;
 }
 
 function drawerElement(tag, className = '', text = '') {
@@ -1507,7 +1497,9 @@ function renderSurfaceDrawerBody(surfaceId) {
     tf,
     label: hostedSurfaceLabel,
     callPlugin,
+    openSurface: openSurfaceDrawer,
   });
+  if (hostedPanel === false) return null;
   if (hostedPanel) return hostedPanel;
   if (surfaceId === 'knowledge-map') return renderKnowledgePanel();
   return renderGenericLocalPanel(surfaceId);
@@ -1533,8 +1525,10 @@ async function loadKnowledgeMapIntoDrawer(surfaceId, requestId) {
 
 function openSurfaceDrawer(surfaceId) {
   if (!surfaceDrawer || !surfaceDrawerBody) {
-    return;
+    return false;
   }
+  const drawerBody = renderSurfaceDrawerBody(surfaceId);
+  if (!drawerBody) return false;
   if (surfaceDrawerTitle) {
     surfaceDrawerTitle.textContent = hostedSurfaceLabel(surfaceId);
   }
@@ -1549,7 +1543,7 @@ function openSurfaceDrawer(surfaceId) {
     surfaceDrawer.removeAttribute('aria-modal');
     delete surfaceDrawer.dataset.windowScale;
   }
-  surfaceDrawerBody.replaceChildren(renderSurfaceDrawerBody(surfaceId));
+  surfaceDrawerBody.replaceChildren(drawerBody);
   surfaceDrawer.dataset.open = 'true';
   surfaceDrawer.setAttribute('aria-hidden', 'false');
   if (surfaceId === 'knowledge-map') {
@@ -1558,14 +1552,15 @@ function openSurfaceDrawer(surfaceId) {
     loadKnowledgeMapIntoDrawer(surfaceId, requestId);
   }
   surfaceDrawerCloseBtn?.focus?.();
+  return true;
 }
 
 function openHostedSurface(surfaceId, featureAction = '') {
   if (!surfaceId) {
     return;
   }
+  if (openSurfaceDrawer(surfaceId) === false) return;
   setActiveFeature(featureAction);
-  openSurfaceDrawer(surfaceId);
 }
 
 function openPracticePanel() {
@@ -1575,7 +1570,7 @@ function openPracticePanel() {
 }
 
 function handleFeatureAction(action) {
-  closeSurfaceDrawer();
+  if (closeSurfaceDrawer() === false) return;
   setActiveFeature(action);
   if (action === 'practice') {
     focusAfterScroll(openPracticePanel(), generateQuestionBtn);
@@ -1799,6 +1794,10 @@ async function saveSettingsConfig(statusTarget = settingsConfigStatus) {
     setSettingsConfigStatus('ui.status.config_saved', 'Saved', statusTarget);
     window.parent.postMessage({type: 'neko-plugin-context-invalidated'}, window.location.origin);
     if (surfaceDrawer?.dataset.open === 'true' && surfaceDrawer.dataset.surfaceId === 'note-exporter') {
+      const activeExporter = surfaceDrawerBody?.querySelector('[data-surface="note-exporter"]');
+      if (activeExporter?.dataset.notebookSelection === 'true') {
+        window.StudyCompanionNotebook?.restoreExportSelectionIntent?.();
+      }
       openSurfaceDrawer('note-exporter');
     }
   } catch (error) {

@@ -71,16 +71,35 @@ class _NotebookEntriesMixin:
         ),
         input_schema={
             "type": "object",
-            "properties": {"limit": {"type": "integer", "default": 100}},
+            "properties": {
+                "limit": {"type": "integer", "default": 100},
+                "offset": {"type": "integer", "default": 0},
+            },
         },
-        llm_result_fields=["notebooks"],
+        llm_result_fields=["notebooks", "has_more", "next_offset"],
     )
-    async def study_notebook_list(self, limit: int = 100, **_):
+    async def study_notebook_list(self, limit: int = 100, offset: int = 0, **_):
         try:
+            page_limit = max(1, min(5000, int(limit or 100)))
+            page_offset = max(0, int(offset or 0))
             notebooks = await asyncio.to_thread(
-                self._notebook_store.list_notebooks, limit=limit
+                self._notebook_store.list_notebooks,
+                limit=page_limit + 1,
+                offset=page_offset,
             )
-            return Ok({"notebooks": [_notebook_dict(item) for item in notebooks]})
+            page_notebooks = notebooks[:page_limit]
+            has_more = len(notebooks) > page_limit
+            return Ok(
+                {
+                    "notebooks": [_notebook_dict(item) for item in page_notebooks],
+                    "offset": page_offset,
+                    "limit": page_limit,
+                    "has_more": has_more,
+                    "next_offset": page_offset + len(page_notebooks)
+                    if has_more
+                    else None,
+                }
+            )
         except Exception as exc:
             return _entry_exception_error(self, exc, operation="study_notebook_list")
 
@@ -290,9 +309,10 @@ class _NotebookEntriesMixin:
                 "tag": {"type": "string", "default": ""},
                 "search_query": {"type": "string", "default": ""},
                 "limit": {"type": "integer", "default": 50},
+                "offset": {"type": "integer", "default": 0},
             },
         },
-        llm_result_fields=["notes"],
+        llm_result_fields=["notes", "has_more", "next_offset"],
     )
     async def study_note_list(
         self,
@@ -302,20 +322,34 @@ class _NotebookEntriesMixin:
         tag: str = "",
         search_query: str = "",
         limit: int = 50,
+        offset: int = 0,
         **_,
     ):
         try:
+            page_limit = max(1, min(5000, int(limit or 50)))
+            page_offset = max(0, int(offset or 0))
             kwargs: dict[str, Any] = {
                 "notebook_filter": notebook_filter,
                 "topic_id": topic_id or None,
                 "tag": tag or None,
                 "search_query": search_query,
-                "limit": limit,
+                "limit": page_limit + 1,
+                "offset": page_offset,
             }
             if notebook_id:
                 kwargs["notebook_id"] = notebook_id
             notes = await asyncio.to_thread(self._notebook_store.list_notes, **kwargs)
-            return Ok({"notes": [_note_dict(note) for note in notes]})
+            page_notes = notes[:page_limit]
+            has_more = len(notes) > page_limit
+            return Ok(
+                {
+                    "notes": [_note_dict(note) for note in page_notes],
+                    "offset": page_offset,
+                    "limit": page_limit,
+                    "has_more": has_more,
+                    "next_offset": page_offset + len(page_notes) if has_more else None,
+                }
+            )
         except Exception as exc:
             return _entry_exception_error(self, exc, operation="study_note_list")
 

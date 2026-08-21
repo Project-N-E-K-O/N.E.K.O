@@ -10,7 +10,6 @@ from plugin.plugins.study_companion.memory_rows import (
     deck_from_row,
     item_from_joined_row,
     item_from_row,
-    recitation_from_row,
     review_from_row,
     safe_int,
 )
@@ -30,11 +29,10 @@ def test_memory_row_helpers_handle_missing_rows_defaults_and_bad_ints() -> None:
     assert item_from_row(None, _loads) is None
     assert card_from_row(None, _loads) is None
     assert review_from_row(None) is None
-    assert recitation_from_row(None) is None
     assert safe_int("bad", 7) == 7
 
 
-def test_memory_row_helpers_convert_deck_item_card_review_and_recitation() -> None:
+def test_memory_row_helpers_convert_deck_item_card_and_review() -> None:
     deck = deck_from_row(
         {
             "id": 123,
@@ -85,26 +83,10 @@ def test_memory_row_helpers_convert_deck_item_card_review_and_recitation() -> No
             "session_id": None,
         }
     )
-    recitation = recitation_from_row(
-        {
-            "id": 2,
-            "passage_item_id": 123,
-            "review_record_id": None,
-            "user_input_text": "text",
-            "missing_count": "1",
-            "extra_count": "2",
-            "wrong_order_count": "3",
-            "hint_count": "4",
-            "score": "0.5",
-            "reviewed_at": "r",
-        }
-    )
-
     assert deck is not None and deck["id"] == "123" and deck["item_count"] == 0
     assert item is not None and item["metadata"] == {"tags": ["x"]}
     assert card is not None and card["id"] == 5 and card["next_due"] == ""
     assert review is not None and review["correct"] is True
-    assert recitation is not None and recitation["score"] == 0.5
 
 
 def test_memory_joined_row_helpers_use_join_aliases() -> None:

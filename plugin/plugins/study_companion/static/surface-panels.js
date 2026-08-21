@@ -874,6 +874,11 @@
 
   function renderExporter(ctx, token) {
     const root = panel(ctx, 'note-exporter', t(ctx, 'ui.status.ready', 'Ready'));
+    const useNotebookSelection = window.StudyCompanionNotebook?.consumeExportSelectionIntent?.() === true;
+    const notebookNoteIds = useNotebookSelection
+      ? window.StudyCompanionNotebook?.getSelectedNoteIds?.() || []
+      : [];
+    root.dataset.notebookSelection = notebookNoteIds.length > 0 ? 'true' : 'false';
     let fmt = 'markdown';
     let style = 'neko';
     let markdown = '';
@@ -914,7 +919,12 @@
       status = t(ctx, 'ui.status.exporting', 'Exporting...');
       draw();
       try {
-        const payload = await ctx.callPlugin('study_export_notes', { fmt, style, preview_only: previewOnly });
+        const payload = await ctx.callPlugin('study_export_notes', {
+          fmt,
+          style,
+          preview_only: previewOnly,
+          note_ids: notebookNoteIds,
+        });
         markdown = payload.markdown || '';
         if (!previewOnly) downloadBase64(payload.content_base64, payload.filename, payload.content_type);
         status = payload.filename || t(ctx, 'ui.status.export_ready', 'Export ready');
@@ -930,6 +940,7 @@
       if (!visibleFormats.includes(fmt)) fmt = visibleFormats[0];
       const fmtSelect = select(fmt, visibleFormats.map((value) => [value, formatLabel(ctx, value)]));
       fmtSelect.addEventListener('change', () => { fmt = fmtSelect.value; draw(); });
+      if (notebookNoteIds.length) style = 'neko';
       const styleSelect = select(style, [['neko', exportStyleLabel(ctx, 'neko')], ['academic', exportStyleLabel(ctx, 'academic')], ['compact', exportStyleLabel(ctx, 'compact')]]);
       styleSelect.addEventListener('change', () => { style = styleSelect.value; draw(); });
       const previewButton = button(t(ctx, 'ui.button.preview', 'Preview'), () => exportNotes(true));
@@ -938,7 +949,7 @@
       exportButton.dataset.surfaceAction = 'export-download';
       const controlsDisabled = !availabilityResolved || !exportAvailable;
       fmtSelect.disabled = controlsDisabled;
-      styleSelect.disabled = controlsDisabled;
+      styleSelect.disabled = controlsDisabled || notebookNoteIds.length > 0;
       previewButton.disabled = controlsDisabled;
       exportButton.disabled = controlsDisabled;
       const currentStatus = status || (!availabilityResolved
@@ -950,7 +961,7 @@
         state([
           [t(ctx, 'ui.label.format', 'Format'), formatLabel(ctx, fmt)],
           [t(ctx, 'ui.label.style', 'Style'), exportStyleLabel(ctx, style)],
-          [t(ctx, 'ui.label.reply', 'Reply'), currentStatus],
+          [t(ctx, 'ui.notebook.selected_notes', 'Selected notes'), String(notebookNoteIds.length)],
         ]),
         actions([
           labeled(t(ctx, 'ui.label.format', 'Format'), fmtSelect),
@@ -1041,8 +1052,31 @@
     return root;
   }
 
+  function label(surfaceId, translate) {
+    const labels = {
+      'due-review-panel': translate('ui.feature.review.title', 'Review'),
+      'knowledge-map': translate('ui.feature.knowledge.title', 'Knowledge Map'),
+      'pomodoro-panel': translate('ui.feature.pomodoro.title', 'Pomodoro'),
+      'habit-dashboard': translate('ui.feature.checkin.title', 'Check-in'),
+      'notebook-panel': translate('ui.feature.notebook.title', 'Notebook'),
+      'note-exporter': translate('ui.feature.export.title', 'Export'),
+      'memory-deck-list': translate('ui.button.open_decks', 'Open Decks'),
+      'memory-importer': translate('ui.button.import_memory', 'Import Cards'),
+      'knowledge-contribution-settings': translate('ui.button.contribution_settings', 'Contribution Settings'),
+      'daily-goal-editor': translate('ui.button.edit_daily_goal', 'Edit Daily Goal'),
+      'session-summary': translate('ui.button.session_summary', 'Session Summary'),
+    };
+    return labels[surfaceId] || surfaceId;
+  }
+
   function render(surfaceId, ctx) {
     panelToken += 1;
+    if (window.StudyCompanionNotebook?.close?.() === false) {
+      window.StudyCompanionNotebook?.consumeExportSelectionIntent?.();
+      return false;
+    }
+    const notebookPanel = window.StudyCompanionNotebook?.render?.(surfaceId, ctx);
+    if (notebookPanel) return notebookPanel;
     const token = panelToken;
     if (surfaceId === 'due-review-panel') return renderDueReview(ctx, token);
     if (surfaceId === 'pomodoro-panel') return renderPomodoro(ctx, token);
@@ -1058,10 +1092,13 @@
 
   window.StudyCompanionSurfacePanels = {
     render,
+    label,
     listAllMemoryDecks,
     loadDecks,
     close() {
+      if (window.StudyCompanionNotebook?.close?.() === false) return false;
       panelToken += 1;
+      return true;
     },
   };
 }());
