@@ -457,12 +457,18 @@
         setStatus(t(ctx, 'ui.status.reply_ready', 'Reply ready'));
       }, false, true);
       const deleteButton = commandButton(t(ctx, 'ui.button.delete', 'Delete'), async () => {
-        if (editorDirty && !confirmDiscardDraft()) return;
+        const restoreDirtyDraft = editorDirty;
+        if (restoreDirtyDraft && !confirmDiscardDraft()) return;
         const confirmed = window.confirm(t(ctx, 'ui.notebook.delete_note_confirm', 'Delete this note?'));
         if (!confirmed) return;
         setEditorDirty(false);
         const noteId = selectedNote.id;
-        await ctx.callPlugin('study_note_delete', { note_id: noteId });
+        try {
+          await ctx.callPlugin('study_note_delete', { note_id: noteId });
+        } catch (error) {
+          setEditorDirty(restoreDirtyDraft);
+          throw error;
+        }
         selectedNoteIds.delete(noteId);
         notes = notes.filter((note) => note.id !== noteId);
         selectedNote = null;
@@ -617,10 +623,16 @@
     async function deleteNotebook() {
       const notebookId = currentNotebookId();
       if (!notebookId) return;
+      const restoreDirtyDraft = editorDirty;
       if (!confirmDiscardDraft()) return;
       if (!window.confirm(t(ctx, 'ui.notebook.delete_notebook_confirm', 'Delete this notebook? Its notes will become unfiled.'))) return;
       setEditorDirty(false);
-      await ctx.callPlugin('study_notebook_delete', { notebook_id: notebookId });
+      try {
+        await ctx.callPlugin('study_notebook_delete', { notebook_id: notebookId });
+      } catch (error) {
+        setEditorDirty(restoreDirtyDraft);
+        throw error;
+      }
       notebooks = notebooks.filter((notebook) => notebook.id !== notebookId);
       selectedNotebook = 'all';
       selectedNote = null;

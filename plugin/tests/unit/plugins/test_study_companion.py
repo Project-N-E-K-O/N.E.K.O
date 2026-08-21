@@ -7912,6 +7912,59 @@ async function expectNotebookRefreshFailure(entryId) {
 for (const entryId of ['study_notebook_list', 'study_note_list']) {
   await expectNotebookRefreshFailure(entryId);
 }
+
+const deleteFailurePanel = window.StudyCompanionNotebook.render('notebook-panel', ctx);
+document.body.appendChild(deleteFailurePanel);
+await new Promise((resolve) => setTimeout(resolve, 0));
+await new Promise((resolve) => setTimeout(resolve, 0));
+const deleteFailureNotebookSelect = deleteFailurePanel.querySelector('.notebook-field select');
+deleteFailureNotebookSelect.value = 'book-1';
+deleteFailureNotebookSelect.dispatchEvent(new window.Event('change', { bubbles: true }));
+await new Promise((resolve) => setTimeout(resolve, 0));
+deleteFailurePanel.querySelector('.notebook-note-row__open').click();
+await new Promise((resolve) => setTimeout(resolve, 0));
+
+let deleteFailureContent = deleteFailurePanel.querySelector('.notebook-editor__content');
+deleteFailureContent.value = 'Dirty note deletion draft';
+deleteFailureContent.dispatchEvent(new window.Event('input', { bubbles: true }));
+failureEntry = 'study_note_delete';
+const failedDeleteNoteButton = [...deleteFailurePanel.querySelectorAll('.notebook-editor__actions button')]
+  .find((button) => button.textContent === 'Delete');
+failedDeleteNoteButton.click();
+await new Promise((resolve) => setTimeout(resolve, 0));
+await new Promise((resolve) => setTimeout(resolve, 0));
+if (deleteFailurePanel.querySelector('.notebook-editor__content')?.value !== 'Dirty note deletion draft') {
+  throw new Error('failed note deletion did not preserve the visible draft');
+}
+const failedNoteDeleteUnload = new window.Event('beforeunload', { cancelable: true });
+window.dispatchEvent(failedNoteDeleteUnload);
+if (!failedNoteDeleteUnload.defaultPrevented) {
+  throw new Error('failed note deletion did not restore the dirty draft guard');
+}
+
+const saveAfterDeleteFailure = [...deleteFailurePanel.querySelectorAll('.notebook-editor__actions button')]
+  .find((button) => button.textContent === 'Save');
+saveAfterDeleteFailure.click();
+await new Promise((resolve) => setTimeout(resolve, 0));
+await new Promise((resolve) => setTimeout(resolve, 0));
+await new Promise((resolve) => setTimeout(resolve, 0));
+deleteFailureContent = deleteFailurePanel.querySelector('.notebook-editor__content');
+deleteFailureContent.value = 'Dirty notebook deletion draft';
+deleteFailureContent.dispatchEvent(new window.Event('input', { bubbles: true }));
+failureEntry = 'study_notebook_delete';
+const failedDeleteNotebookButton = [...deleteFailurePanel.querySelectorAll('.notebook-toolbar__actions button')]
+  .find((button) => button.textContent === 'Delete notebook');
+failedDeleteNotebookButton.click();
+await new Promise((resolve) => setTimeout(resolve, 0));
+await new Promise((resolve) => setTimeout(resolve, 0));
+if (deleteFailurePanel.querySelector('.notebook-editor__content')?.value !== 'Dirty notebook deletion draft') {
+  throw new Error('failed notebook deletion did not preserve the visible draft');
+}
+const failedNotebookDeleteUnload = new window.Event('beforeunload', { cancelable: true });
+window.dispatchEvent(failedNotebookDeleteUnload);
+if (!failedNotebookDeleteUnload.defaultPrevented) {
+  throw new Error('failed notebook deletion did not restore the dirty draft guard');
+}
 """
     completed = subprocess.run(
         ["node", "--input-type=module", "-e", script],
