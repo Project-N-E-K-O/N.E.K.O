@@ -7140,7 +7140,12 @@ const notebookListRequests = [];
 const noteListRequests = [];
 let deferNotebookLists = false;
 let deferNoteLists = false;
+let returnSummariesOnly = false;
 let noteListCallCount = 0;
+function noteListPayload() {
+  if (!returnSummariesOnly) return notes;
+  return notes.map(({ content, ...summary }) => summary);
+}
 async function callPlugin(entryId, args = {}) {
   if (entryId === 'study_notebook_list') {
     if (!deferNotebookLists) return { notebooks: [] };
@@ -7148,7 +7153,7 @@ async function callPlugin(entryId, args = {}) {
   }
   if (entryId === 'study_note_list') {
     noteListCallCount += 1;
-    if (!deferNoteLists) return { notes };
+    if (!deferNoteLists) return { notes: noteListPayload() };
     return await new Promise((resolve, reject) => noteListRequests.push({ args, resolve, reject }));
   }
   if (entryId === 'study_note_get') {
@@ -7235,19 +7240,21 @@ refreshDiscardContent.dispatchEvent(new window.Event('input', { bubbles: true })
 window.confirm = () => true;
 notebook.querySelectorAll('.notebook-note-row__open')[0].click();
 await new Promise((resolve) => setTimeout(resolve, 0));
+returnSummariesOnly = true;
 refreshButton.click();
 await new Promise((resolve) => setTimeout(resolve, 0));
 await new Promise((resolve) => setTimeout(resolve, 0));
+returnSummariesOnly = false;
 detailRequests.get('note-1').resolve({ note: { ...notes[0], content: 'Stale after refresh' } });
 await new Promise((resolve) => setTimeout(resolve, 0));
 await new Promise((resolve) => setTimeout(resolve, 0));
-if (notebook.querySelector('.notebook-editor__content')?.value === 'Dirty draft before refresh invalidation') {
-  throw new Error('refresh-invalidated detail response restored a discarded draft');
+if (notebook.querySelector('.notebook-editor__content')?.value !== 'Dirty draft before refresh invalidation') {
+  throw new Error('refresh-invalidated detail response did not restore the pending dirty draft');
 }
 const refreshInvalidatedUnload = new window.Event('beforeunload', { cancelable: true });
 window.dispatchEvent(refreshInvalidatedUnload);
-if (refreshInvalidatedUnload.defaultPrevented) {
-  throw new Error('refresh-invalidated detail response restored the dirty guard');
+if (!refreshInvalidatedUnload.defaultPrevented) {
+  throw new Error('refresh-invalidated detail response lost the pending dirty draft guard');
 }
 
 deferNoteLists = true;

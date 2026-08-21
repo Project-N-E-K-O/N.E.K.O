@@ -608,6 +608,7 @@
         const payload = await ctx.callPlugin('study_note_get', { note_id: noteId });
         if (!isValid() || navigationScope !== noteScopeKey()) return;
         if (requestId !== noteDetailRequest) {
+          restoreSelectedDraft(draftSnapshot, restoreDirtyDraft);
           return;
         }
         if (editorDirty && !confirmDiscardDraft()) return;
