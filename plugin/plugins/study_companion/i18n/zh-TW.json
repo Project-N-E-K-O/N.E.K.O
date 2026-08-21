@@ -464,6 +464,7 @@
     "ui.notebook.selected_count":  "已選取 {count} 則筆記",
     "ui.notebook.selected_notes":  "所選筆記",
     "ui.notebook.no_notes":  "找不到筆記",
+    "ui.notebook.load_more":  "載入更多筆記",
     "ui.notebook.select_note":  "選取 {title}",
     "ui.notebook.empty_note":  "空白筆記",
     "ui.notebook.select_to_edit":  "選取一則筆記進行編輯",

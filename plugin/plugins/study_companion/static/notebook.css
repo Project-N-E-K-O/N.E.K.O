@@ -146,6 +146,10 @@
   font-size: 11px;
 }
 
+.notebook-list__load-more {
+  width: 100%;
+}
+
 .notebook-editor {
   display: grid;
   align-content: start;

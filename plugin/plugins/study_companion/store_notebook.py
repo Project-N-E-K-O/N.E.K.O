@@ -473,6 +473,7 @@ class NotebookStore:
         tag: str | None = None,
         search_query: str = "",
         limit: int = 50,
+        offset: int = 0,
         include_content: bool = False,
     ) -> list[NoteItem]:
         """List notes.
@@ -487,19 +488,21 @@ class NotebookStore:
         - "unfiled": only notes with notebook_id IS NULL.
         - "specific": notes under notebook_id.
         """
-        safe_limit = max(1, min(5000, int(limit or 50)))
+        safe_limit = max(1, min(5001, int(limit or 50)))
+        safe_offset = max(0, int(offset or 0))
         query = str(search_query or "").strip()
         normalized_filter = self._normalize_notebook_filter(
             notebook_filter, notebook_id
         )
         if query:
+            fetch_limit = safe_offset + safe_limit
             fts_notes = self._list_notes_fts(
                 notebook_filter=normalized_filter,
                 notebook_id=notebook_id,
                 topic_id=topic_id,
                 tag=tag,
                 search_query=query,
-                limit=safe_limit,
+                limit=fetch_limit,
             )
             like_notes = self._list_notes_like(
                 notebook_filter=normalized_filter,
@@ -507,7 +510,7 @@ class NotebookStore:
                 topic_id=topic_id,
                 tag=tag,
                 search_query=query,
-                limit=safe_limit,
+                limit=fetch_limit,
             )
             seen: set[str] = set()
             merged: list[NoteItem] = []
@@ -516,9 +519,9 @@ class NotebookStore:
                     continue
                 merged.append(note)
                 seen.add(note.id)
-                if len(merged) >= safe_limit:
+                if len(merged) >= fetch_limit:
                     break
-            return merged
+            return merged[safe_offset:fetch_limit]
         where, params = self._filter_clauses(
             notebook_filter=normalized_filter,
             notebook_id=notebook_id,
@@ -534,9 +537,9 @@ class NotebookStore:
                     FROM notes
                     {where}
                     ORDER BY updated_at DESC, rowid DESC
-                    LIMIT ?
+                    LIMIT ? OFFSET ?
                     """,
-                    (*params, safe_limit),
+                    (*params, safe_limit, safe_offset),
                 )
                 .fetchall()
             )

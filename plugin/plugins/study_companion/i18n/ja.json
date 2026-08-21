@@ -464,6 +464,7 @@
     "ui.notebook.selected_count":  "{count}件のノートを選択中",
     "ui.notebook.selected_notes":  "選択したノート",
     "ui.notebook.no_notes":  "ノートが見つかりません",
+    "ui.notebook.load_more":  "ノートをさらに読み込む",
     "ui.notebook.select_note":  "{title}を選択",
     "ui.notebook.empty_note":  "空のノート",
     "ui.notebook.select_to_edit":  "編集するノートを選択してください",

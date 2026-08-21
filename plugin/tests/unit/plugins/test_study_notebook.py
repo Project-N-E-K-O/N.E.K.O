@@ -261,6 +261,53 @@ async def test_notebook_entries_serialize_dataclasses(tmp_path) -> None:
         store.close()
 
 
+@pytest.mark.asyncio
+async def test_notebook_note_list_paginates_without_omitting_notes(tmp_path) -> None:
+    store, notebooks, _logger = _make_store(tmp_path)
+    harness = _EntryHarness(notebooks)
+    try:
+        created_ids = []
+        for index in range(3):
+            saved = await harness.study_note_upsert(
+                title=f"Paged note {index}",
+                content=f"Page body {index}",
+            )
+            assert isinstance(saved, Ok)
+            created_ids.append(saved.value["note"]["id"])
+
+        first = await harness.study_note_list(limit=2, offset=0)
+        assert isinstance(first, Ok)
+        assert len(first.value["notes"]) == 2
+        assert first.value["has_more"] is True
+        assert first.value["next_offset"] == 2
+
+        second = await harness.study_note_list(
+            limit=2, offset=first.value["next_offset"]
+        )
+        assert isinstance(second, Ok)
+        assert len(second.value["notes"]) == 1
+        assert second.value["has_more"] is False
+        assert second.value["next_offset"] is None
+        assert {
+            note["id"] for note in [*first.value["notes"], *second.value["notes"]]
+        } == set(created_ids)
+
+        search_first = await harness.study_note_list(
+            search_query="Paged", limit=2, offset=0
+        )
+        assert isinstance(search_first, Ok)
+        search_second = await harness.study_note_list(
+            search_query="Paged", limit=2, offset=search_first.value["next_offset"]
+        )
+        assert isinstance(search_second, Ok)
+        assert {
+            note["id"]
+            for note in [*search_first.value["notes"], *search_second.value["notes"]]
+        } == set(created_ids)
+    finally:
+        store.close()
+
+
 def test_notebook_filter_semantics_are_explicit(tmp_path) -> None:
     store, notebooks, _logger = _make_store(tmp_path)
     try:

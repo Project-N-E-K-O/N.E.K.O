@@ -1,4 +1,5 @@
 (function () {
+  const NOTE_PAGE_SIZE = 200;
   let panelToken = 0;
   let activeBeforeClose = null;
   let exportSelectionIntent = false;
@@ -54,6 +55,9 @@
     let selectedNotebook = 'all';
     let selectedNote = null;
     let query = '';
+    let notesHasMore = false;
+    let notesNextOffset = 0;
+    let notesScope = '';
     let searchTimer = 0;
     let notebooksRequest = 0;
     let notesRequest = 0;
@@ -201,19 +205,24 @@
       return selectedNotebook !== 'all' && selectedNotebook !== 'unfiled' ? selectedNotebook : '';
     }
 
-    function noteListArgs() {
+    function noteListArgs(offset = 0, limit = NOTE_PAGE_SIZE) {
       if (selectedNotebook === 'unfiled') {
-        return { notebook_filter: 'unfiled', search_query: query, limit: 200 };
+        return { notebook_filter: 'unfiled', search_query: query, limit, offset };
       }
       if (selectedNotebook === 'all') {
-        return { notebook_filter: 'all', search_query: query, limit: 200 };
+        return { notebook_filter: 'all', search_query: query, limit, offset };
       }
       return {
         notebook_id: selectedNotebook,
         notebook_filter: 'specific',
         search_query: query,
-        limit: 200,
+        limit,
+        offset,
       };
+    }
+
+    function noteScopeKey() {
+      return `${selectedNotebook}\u0000${query}`;
     }
 
     function mergeNoteSummary(current, summary, preserveDraft = false) {
@@ -327,6 +336,14 @@
         row.append(check, openButton);
         list.appendChild(row);
       });
+      if (notesHasMore) {
+        const loadMore = commandButton(
+          t(ctx, 'ui.notebook.load_more', 'Load more notes'),
+          () => loadNotes(true),
+        );
+        loadMore.classList.add('notebook-list__load-more');
+        list.appendChild(loadMore);
+      }
     }
 
     function editorField(labelText, inputNode, wide = false) {
@@ -467,20 +484,37 @@
       drawNotebookOptions();
     }
 
-    async function loadNotes() {
-      captureEditorDraft();
-      const detailRequestAtStart = noteDetailRequest += 1;
+    async function loadNotes(append = false) {
+      const scope = noteScopeKey();
+      const resetPage = scope !== notesScope;
+      const offset = append && !resetPage ? notesNextOffset : 0;
+      const limit = append || resetPage ? NOTE_PAGE_SIZE : Math.max(NOTE_PAGE_SIZE, notes.length);
+      if (!append) captureEditorDraft();
+      const detailRequestAtStart = append ? noteDetailRequest : noteDetailRequest += 1;
       const requestId = notesRequest += 1;
       let payload;
       try {
-        payload = await ctx.callPlugin('study_note_list', noteListArgs());
+        payload = await ctx.callPlugin('study_note_list', noteListArgs(offset, limit));
       } catch (error) {
         if (!isValid() || requestId !== notesRequest) return;
         throw error;
       }
       if (!isValid() || requestId !== notesRequest) return;
-      notes = Array.isArray(payload.notes) ? payload.notes : [];
-      if (selectedNote && detailRequestAtStart === noteDetailRequest) {
+      const pageNotes = Array.isArray(payload.notes) ? payload.notes : [];
+      if (append && !resetPage) {
+        const loadedIds = new Set(notes.map((note) => note.id));
+        notes = [...notes, ...pageNotes.filter((note) => !loadedIds.has(note.id))];
+      } else {
+        notes = pageNotes;
+      }
+      notesScope = scope;
+      notesHasMore = payload.has_more === true;
+      const nextOffset = Number(payload.next_offset);
+      notesNextOffset = Number.isSafeInteger(nextOffset) && nextOffset > offset
+        ? nextOffset
+        : offset + pageNotes.length;
+      if (notesHasMore && notesNextOffset <= offset) notesHasMore = false;
+      if (!append && selectedNote && detailRequestAtStart === noteDetailRequest) {
         const summary = notes.find((note) => note.id === selectedNote.id);
         if (summary) {
           selectedNote = mergeNoteSummary(selectedNote, summary, editorDirty);
@@ -632,6 +666,9 @@
     });
     searchInput.addEventListener('input', () => {
       query = searchInput.value.trim();
+      notesRequest += 1;
+      notesHasMore = false;
+      drawList();
       window.clearTimeout(searchTimer);
       searchTimer = window.setTimeout(() => {
         loadNotes().catch((error) => setStatus(errorText(error)));

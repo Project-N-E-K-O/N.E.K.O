@@ -6920,15 +6920,22 @@ const surfacePanelsJs = fs.readFileSync(path.join(staticDir, 'surface-panels.js'
 const window = new Window({ url: 'http://testserver/plugin/study_companion/ui/' });
 const { document } = window;
 const calls = [];
-const note = {
-  id: 'note-1', notebook_id: 'book-1', title: 'Limits', content: '# Limits',
-  snippet: 'Definition', topic_ids: ['calculus'], tags: ['exam'], updated_at: '2026-08-20T00:00:00Z',
-};
+const notes = Array.from({ length: 201 }, (_, index) => ({
+  id: `note-${index + 1}`, notebook_id: 'book-1', title: `Note ${index + 1}`,
+  content: `Body ${index + 1}`, snippet: `Summary ${index + 1}`,
+  topic_ids: ['calculus'], tags: ['exam'], updated_at: '2026-08-20T00:00:00Z',
+}));
 async function callPlugin(entryId, args = {}) {
   calls.push({ entryId, args });
-  if (entryId === 'study_notebook_list') return { notebooks: [{ id: 'book-1', name: 'Calculus', note_count: 1 }] };
-  if (entryId === 'study_note_list') return { notes: [note] };
-  if (entryId === 'study_note_get') return { note };
+  if (entryId === 'study_notebook_list') return { notebooks: [{ id: 'book-1', name: 'Calculus', note_count: notes.length }] };
+  if (entryId === 'study_note_list') {
+    const offset = Number(args.offset || 0);
+    const limit = Number(args.limit || 200);
+    const page = notes.slice(offset, offset + limit);
+    const hasMore = offset + page.length < notes.length;
+    return { notes: page, has_more: hasMore, next_offset: hasMore ? offset + page.length : null };
+  }
+  if (entryId === 'study_note_get') return { note: notes.find((item) => item.id === args.note_id) };
   if (entryId === 'study_get_settings_config') return { config: { doc_export: { enabled: true, xmind_enabled: false } } };
   if (entryId === 'study_export_notes') return { markdown: '# Limits', filename: 'limits.md' };
   throw new Error(`Unexpected entry: ${entryId}`);
@@ -6949,8 +6956,26 @@ const notebook = window.StudyCompanionNotebook.render('notebook-panel', ctx);
 document.body.appendChild(notebook);
 await new Promise((resolve) => setTimeout(resolve, 0));
 await new Promise((resolve) => setTimeout(resolve, 0));
-const checkbox = notebook.querySelector('.notebook-note-row__check');
-if (!checkbox) throw new Error('notebook note checkbox was not rendered');
+if (notebook.querySelectorAll('.notebook-note-row').length !== 200) {
+  throw new Error('notebook did not render the first 200-note page');
+}
+const loadMoreButton = notebook.querySelector('.notebook-list__load-more');
+if (!loadMoreButton) throw new Error('notebook did not offer the next note page');
+loadMoreButton.click();
+await new Promise((resolve) => setTimeout(resolve, 0));
+await new Promise((resolve) => setTimeout(resolve, 0));
+if (notebook.querySelectorAll('.notebook-note-row').length !== 201) {
+  throw new Error('notebook omitted notes after loading the next page');
+}
+if (notebook.querySelector('.notebook-list__load-more')) {
+  throw new Error('notebook kept a load-more action after the final page');
+}
+const listCalls = calls.filter((call) => call.entryId === 'study_note_list');
+if (listCalls.length !== 2 || listCalls[0].args.offset !== 0 || listCalls[1].args.offset !== 200) {
+  throw new Error(`notebook used invalid page offsets: ${JSON.stringify(listCalls)}`);
+}
+const checkbox = notebook.querySelectorAll('.notebook-note-row__check')[200];
+if (!checkbox) throw new Error('notebook final-page checkbox was not rendered');
 checkbox.checked = true;
 checkbox.dispatchEvent(new window.Event('change', { bubbles: true }));
 const exportSelectedButton = [...notebook.querySelectorAll('.notebook-selection__actions button')]
@@ -6970,7 +6995,7 @@ if (!selectedStyleSelect?.disabled || selectedStyleSelect.value !== 'neko') {
 exporter.querySelector('[data-surface-action="export-preview"]').click();
 await new Promise((resolve) => setTimeout(resolve, 0));
 const exportCall = calls.find((call) => call.entryId === 'study_export_notes');
-if (!exportCall || JSON.stringify(exportCall.args.note_ids) !== JSON.stringify(['note-1'])) {
+if (!exportCall || JSON.stringify(exportCall.args.note_ids) !== JSON.stringify(['note-201'])) {
   throw new Error(`selected notes did not reach export: ${JSON.stringify(exportCall)}`);
 }
 window.StudyCompanionNotebook.restoreExportSelectionIntent();
@@ -6983,7 +7008,7 @@ if (rerenderedExporter.dataset.notebookSelection !== 'true' || !rerenderedExport
 rerenderedExporter.querySelector('[data-surface-action="export-preview"]').click();
 await new Promise((resolve) => setTimeout(resolve, 0));
 const rerenderedExportCall = calls.filter((call) => call.entryId === 'study_export_notes').at(-1);
-if (!rerenderedExportCall || JSON.stringify(rerenderedExportCall.args.note_ids) !== JSON.stringify(['note-1'])) {
+if (!rerenderedExportCall || JSON.stringify(rerenderedExportCall.args.note_ids) !== JSON.stringify(['note-201'])) {
   throw new Error(`rerendered exporter lost selected notes: ${JSON.stringify(rerenderedExportCall)}`);
 }
 const standaloneExporter = window.StudyCompanionSurfacePanels.render('note-exporter', ctx);

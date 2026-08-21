@@ -464,6 +464,7 @@
     "ui.notebook.selected_count":  "{count} notas seleccionadas",
     "ui.notebook.selected_notes":  "Notas seleccionadas",
     "ui.notebook.no_notes":  "No se encontraron notas",
+    "ui.notebook.load_more":  "Cargar más notas",
     "ui.notebook.select_note":  "Seleccionar {title}",
     "ui.notebook.empty_note":  "Nota vacía",
     "ui.notebook.select_to_edit":  "Selecciona una nota para editarla",

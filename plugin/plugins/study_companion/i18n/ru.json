@@ -464,6 +464,7 @@
     "ui.notebook.selected_count":  "Выбрано заметок: {count}",
     "ui.notebook.selected_notes":  "Выбранные заметки",
     "ui.notebook.no_notes":  "Заметки не найдены",
+    "ui.notebook.load_more":  "Загрузить ещё заметки",
     "ui.notebook.select_note":  "Выбрать {title}",
     "ui.notebook.empty_note":  "Пустая заметка",
     "ui.notebook.select_to_edit":  "Выберите заметку для редактирования",
