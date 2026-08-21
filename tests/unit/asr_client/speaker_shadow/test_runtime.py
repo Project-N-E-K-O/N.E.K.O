@@ -473,9 +473,8 @@ async def test_checkpoint_accepts_pcm_while_intermediate_score_is_running() -> N
             stage_started=score_started,
             stage_release=score_release,
         ),
-        config=_config(
-            minimum_audio_ms=1_500,
-            maximum_audio_ms=4_000,
+        config=SpeakerShadowConfig(
+            enabled=True,
             observation_checkpoints_ms=(1_500, 3_000),
         ),
         on_observation=observe,
@@ -488,11 +487,12 @@ async def test_checkpoint_accepts_pcm_while_intermediate_score_is_running() -> N
         candidate=candidate,
     )
     await _wait_until(score_started.is_set)
-    assert runtime.submit(
-        _pcm(1_500),
-        sample_rate_hz=SPEAKER_SHADOW_SAMPLE_RATE_HZ,
-        candidate=candidate,
-    )
+    for _ in range(150):
+        assert runtime.submit(
+            _pcm(10),
+            sample_rate_hz=SPEAKER_SHADOW_SAMPLE_RATE_HZ,
+            candidate=candidate,
+        )
     score_release.set()
     await runtime.wait_idle()
 

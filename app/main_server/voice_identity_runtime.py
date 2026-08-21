@@ -396,6 +396,8 @@ class OwnerVoiceRuntimeRegistry:
 
     @staticmethod
     def _manager_activation_result(manager) -> VoiceIdentityActivationResult:
+        if OwnerVoiceRuntimeRegistry._manager_is_inactive_blocked(manager):
+            return VoiceIdentityActivationResult.READY
         runtime = getattr(manager, "_asr_runtime", None)
         if bool(getattr(runtime, "_speaker_verifier_degraded", False)):
             return VoiceIdentityActivationResult.RUNTIME_DEGRADED

@@ -22,7 +22,7 @@ MAX_SPEAKER_SHADOW_FRAME_AUDIO_MS = MAX_SPEAKER_SHADOW_CANDIDATE_AUDIO_MS
 MAX_SPEAKER_SHADOW_FRAME_PCM_BYTES = MAX_SPEAKER_SHADOW_CANDIDATE_PCM_BYTES
 MAX_SPEAKER_SHADOW_THRESHOLDS = 16
 MAX_SPEAKER_SHADOW_CHECKPOINTS = 16
-MAX_SPEAKER_SHADOW_QUEUE_CAPACITY = 64
+MAX_SPEAKER_SHADOW_QUEUE_CAPACITY = 512
 MAX_SPEAKER_SHADOW_BUFFERED_CANDIDATES = 32
 MAX_SPEAKER_SHADOW_FINALIZED_CANDIDATES = 4_096
 # This independent global budget keeps aggregate retained PCM below 8 MiB even
@@ -90,7 +90,10 @@ class SpeakerShadowConfig:
     maximum_audio_ms: int = 4_000
     observation_checkpoints_ms: tuple[int, ...] | None = None
     idle_unload_seconds: float = 60.0
-    queue_capacity: int = 32
+    # A four-second candidate can contribute roughly 400 ten-millisecond
+    # frames. Keep them queued while a checkpoint waits on a cold backend;
+    # the independent retained-PCM budget remains the memory authority.
+    queue_capacity: int = MAX_SPEAKER_SHADOW_QUEUE_CAPACITY
     buffered_candidate_capacity: int = 32
     finalized_candidate_capacity: int = 1_024
     load_retry_initial_seconds: float = 5.0

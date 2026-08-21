@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import pickle
 import sys
+import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -78,8 +80,9 @@ class _FakeSession:
             }
         )
 
-    def run(self, output_names, inputs):
+    def run(self, output_names, inputs, run_options=None):
         assert output_names == ["embedding"]
+        assert run_options is not None
         self.last_inputs = inputs
         return [self.output]
 
@@ -92,12 +95,16 @@ def _install_fake_onnxruntime(
     class _SessionOptions:
         pass
 
+    class _RunOptions:
+        terminate = False
+
     def create_session(*_args, **_kwargs):
         sessions.append(session)
         return session
 
     fake = SimpleNamespace(
         SessionOptions=_SessionOptions,
+        RunOptions=_RunOptions,
         ExecutionMode=SimpleNamespace(ORT_SEQUENTIAL="sequential"),
         GraphOptimizationLevel=SimpleNamespace(ORT_ENABLE_ALL="all"),
         InferenceSession=create_session,
@@ -213,6 +220,46 @@ def test_embedding_is_finite_l2_normalized_and_uses_expected_tensor(
     assert np.linalg.norm(embedding) == pytest.approx(1.0, abs=1e-6)
     assert session.last_inputs is not None
     assert session.last_inputs["x"].shape == (1, 148, 80)
+    model.close()
+
+
+def test_cancel_inference_terminates_active_onnx_run(tmp_path, monkeypatch) -> None:
+    class BlockingSession(_FakeSession):
+        def __init__(self) -> None:
+            super().__init__(np.ones((1, 192), dtype=np.float32))
+            self.started = threading.Event()
+
+        def run(self, output_names, inputs, run_options=None):
+            assert output_names == ["embedding"]
+            assert run_options is not None
+            self.last_inputs = inputs
+            self.started.set()
+            while not run_options.terminate:
+                time.sleep(0.005)
+            raise RuntimeError("inference_terminated")
+
+    _install_verified_model_path(monkeypatch, tmp_path)
+    session = BlockingSession()
+    _install_fake_onnxruntime(monkeypatch, session, [])
+    model = CampPlusEmbeddingModel(asset_dir=tmp_path)
+    assert model.load()
+    failures: list[BaseException] = []
+
+    def infer() -> None:
+        try:
+            model.embedding_from_pcm16(_pcm16(), sample_rate_hz=16_000)
+        except BaseException as exc:
+            failures.append(exc)
+
+    worker = threading.Thread(target=infer)
+    worker.start()
+    assert session.started.wait(1.0)
+    model.cancel_inference()
+    worker.join(timeout=1.0)
+
+    assert not worker.is_alive()
+    assert len(failures) == 1
+    assert "inference_terminated" in str(failures[0])
     model.close()
 
 

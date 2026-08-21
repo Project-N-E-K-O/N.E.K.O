@@ -55,6 +55,9 @@ class _Model:
         result[0] = 1.0
         return result
 
+    def cancel_inference(self) -> None:
+        return
+
     def close(self) -> None:
         self.closed = True
 
@@ -717,7 +720,7 @@ async def test_timed_out_model_load_is_owned_until_worker_finishes(
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_timed_out_embedding_is_owned_until_worker_finishes(
+async def test_timed_out_embedding_is_cancelled_and_model_is_released(
     tmp_path: Path,
 ) -> None:
     class BlockingModel(_Model):
@@ -746,6 +749,9 @@ async def test_timed_out_embedding_is_owned_until_worker_finishes(
                 sample_rate_hz=sample_rate_hz,
             )
 
+        def cancel_inference(self) -> None:
+            self.embedding_release.set()
+
         def close(self) -> None:
             assert self.embedding_release.is_set()
             super().close()
@@ -767,16 +773,13 @@ async def test_timed_out_embedding_is_owned_until_worker_finishes(
             _pcm(),
         )
     assert await asyncio.to_thread(model.embedding_started.wait, 1.0)
-    assert not model.closed
-    assert suppression_events[-1] == "restore:voice_identity_enrollment"
-
-    with pytest.raises(VoiceIdentityServiceError, match="model_unavailable"):
-        await service.start_enrollment()
-    assert model.load_calls == 1
-
-    model.embedding_release.set()
-    assert await asyncio.to_thread(model.close_finished.wait, 1.0)
     assert model.closed
+    assert suppression_events[-1] == "restore:voice_identity_enrollment"
+    assert await asyncio.to_thread(model.close_finished.wait, 1.0)
+    assert service._model_inference_cleanup_task is None  # type: ignore[attr-defined]
+    retry = await service.start_enrollment()
+    assert model.load_calls == 2
+    assert await service.cancel_enrollment(retry.enrollment_id)
     await service.close()
 
 

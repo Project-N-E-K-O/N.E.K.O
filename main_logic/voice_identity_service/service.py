@@ -54,6 +54,8 @@ class EnrollmentEmbeddingModel(Protocol):
         sample_rate_hz: int,
     ) -> np.ndarray: ...
 
+    def cancel_inference(self) -> None: ...
+
     def close(self) -> None: ...
 
 
@@ -790,11 +792,30 @@ class VoiceIdentityService:
         session.embedding_task = None
         if embedding_task is not None:
             if not embedding_task.done():
-                self._retain_timed_out_model_inference(
-                    session.model,
-                    embedding_task,
-                )
-                return ok
+                try:
+                    session.model.cancel_inference()
+                except Exception:
+                    ok = False
+                try:
+                    await asyncio.wait_for(
+                        asyncio.shield(embedding_task),
+                        timeout=self._model_timeout_seconds,
+                    )
+                except TimeoutError:
+                    self._retain_timed_out_model_inference(
+                        session.model,
+                        embedding_task,
+                    )
+                    return False
+                except asyncio.CancelledError:
+                    if not embedding_task.done():
+                        self._retain_timed_out_model_inference(
+                            session.model,
+                            embedding_task,
+                        )
+                    raise
+                except Exception:
+                    pass
             try:
                 embedding = embedding_task.result()
             except BaseException:

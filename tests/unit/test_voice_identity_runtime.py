@@ -227,6 +227,7 @@ async def test_inactive_blocked_managers_do_not_override_active_route_status() -
     inactive = _Manager()
     inactive.is_active = False  # type: ignore[attr-defined]
     inactive._asr_route_mode = "blocked"  # type: ignore[attr-defined]
+    inactive._asr_runtime = SimpleNamespace(_speaker_verifier_degraded=True)
     await registry.register_manager(active)
     await registry.register_manager(inactive)
     inactive.verifier_outcomes.append(
@@ -244,6 +245,7 @@ async def test_inactive_blocked_managers_do_not_override_active_route_status() -
     late_inactive = _Manager()
     late_inactive.is_active = False  # type: ignore[attr-defined]
     late_inactive._asr_route_mode = "blocked"  # type: ignore[attr-defined]
+    late_inactive._asr_runtime = SimpleNamespace(_speaker_verifier_degraded=True)
     late_inactive.verifier_outcomes.append(
         VoiceIdentityActivationResult.UNSUPPORTED_ASR_ROUTE
     )

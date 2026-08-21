@@ -190,6 +190,7 @@ class CampPlusEmbeddingModel:
     def __init__(self, asset_dir: Path | None = None) -> None:
         self._asset_dir = Path(asset_dir) if asset_dir is not None else None
         self._session: Any | None = None
+        self._active_run_options: Any | None = None
         self._closed = False
 
     @property
@@ -284,8 +285,15 @@ class CampPlusEmbeddingModel:
         raw_embedding: np.ndarray | None = None
         result: np.ndarray | None = None
         outputs: list[Any] | None = None
+        run_options: Any | None = None
         keep_result = False
         try:
+            import onnxruntime as ort
+
+            run_options = ort.RunOptions()
+            if self._active_run_options is not None:
+                raise RuntimeError("model_inference_already_active")
+            self._active_run_options = run_options
             features = compute_campplus_features(
                 pcm16,
                 sample_rate_hz=sample_rate_hz,
@@ -293,6 +301,7 @@ class CampPlusEmbeddingModel:
             outputs = session.run(
                 ["embedding"],
                 {"x": features[np.newaxis, :, :]},
+                run_options,
             )
             if len(outputs) != 1:
                 raise ValueError("onnx_output_count")
@@ -309,6 +318,8 @@ class CampPlusEmbeddingModel:
             keep_result = True
             return result
         finally:
+            if self._active_run_options is run_options:
+                self._active_run_options = None
             _wipe_array(features)
             if outputs is not None:
                 for output in outputs:
@@ -318,10 +329,18 @@ class CampPlusEmbeddingModel:
             if not keep_result:
                 _wipe_array(result)
 
+    def cancel_inference(self) -> None:
+        """Request termination of the active ONNX Runtime call, if any."""
+
+        run_options = self._active_run_options
+        if run_options is not None:
+            run_options.terminate = True
+
     def close(self) -> None:
         if self._closed:
             return
         self._closed = True
+        self.cancel_inference()
         self._session = None
 
 
