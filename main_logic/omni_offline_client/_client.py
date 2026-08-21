@@ -64,9 +64,14 @@ def _same_endpoint(a: str | None, b: str | None) -> bool:
         if '://' not in text:
             text = f'//{text}'
         parts = urlsplit(text)
+        # netloc 整体转小写是错的：它还装着 userinfo（user:pass@），而用户名和
+        # 口令是大小写敏感的。只折叠真正大小写无关的 host，userinfo 与端口原样比。
         return (
             (parts.scheme or '').lower(),
-            (parts.netloc or '').lower(),
+            parts.username,
+            parts.password,
+            (parts.hostname or '').lower(),
+            parts.port,
             (parts.path or '').rstrip('/'),
             parts.query,
         )

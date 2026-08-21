@@ -1214,7 +1214,10 @@ function isProviderCapableForModelType(providerKey, modelType) {
         // Gemini 在核心表里但没有 core_url（作为核心 API 走 SDK，不经这个槽），
         // 选中后 URL 会填成空、自定义三元组凑不齐 → 静默回落。与后端
         // _normalize_realtime_provider 的判据对偶。
-        return !!String(profile.core_url || profile.CORE_URL || '').trim();
+        // 字段名与 getProviderCoreUrl() 保持**完全一致**（都只认 core_url）：
+        // 这里多认一个别名的话，会出现「判定为有能力、但自动填充填不出 URL」
+        // 的不一致 —— 下拉里又多一个选了没用的选项。
+        return !!String(profile.core_url || '').trim();
     }
 
     if (modelType === 'tts') {

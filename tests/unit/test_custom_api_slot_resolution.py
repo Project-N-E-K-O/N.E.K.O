@@ -578,6 +578,19 @@ class TestVisionCredentialBoundary:
         )
 
     @pytest.mark.unit
+    def test_userinfo_case_is_not_folded_away(self):
+        """netloc carries userinfo, and usernames/passwords are case-sensitive."""
+        client = _make_offline_client(
+            base_url='https://User:PASS@api.example.com/v1',
+            vision_base_url='https://user:pass@api.example.com/v1',
+            vision_api_key='',
+        )
+        assert client.vision_api_key is None, (
+            "userinfo 大小写不同就是不同凭据主体，不得继承，实际="
+            f"{client.vision_api_key!r}"
+        )
+
+    @pytest.mark.unit
     def test_host_case_is_still_folded(self):
         """Scheme and host are case-insensitive per RFC 3986."""
         client = _make_offline_client(
