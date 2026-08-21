@@ -162,6 +162,7 @@ build*
 !build_frontend.sh
 !build-desktop*.yml
 !scripts/build-desktop-release.ps1
+!scripts/build_neko_wows_ship_catalog.py
 metadata.package.json
 version_info.txt
 

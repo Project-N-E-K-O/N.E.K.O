@@ -1,0 +1,452 @@
+"""Deterministic facts derived from one frame.
+
+Every value here is either a measurement or `None`. `None` means "not knowable
+from this frame", never "zero" and never "false" -- detectors branch on that
+distinction, and the wording rules downstream depend on it (you cannot claim a
+ship is showing its side if no heading was reported).
+"""
+
+from __future__ import annotations
+
+import math
+from dataclasses import dataclass, field
+
+from .snapshot import (
+    DOMAIN_BALLISTICS,
+    DOMAIN_DAMAGE,
+    DOMAIN_MAP_BOUNDS,
+    DOMAIN_OBJECTS,
+    DOMAIN_ROSTER,
+    DOMAIN_SELF,
+    RELATION_SELF,
+    Ship,
+    WowsSnapshot,
+    alive_from_health,
+    combine_alive_signals,
+    resolve_alive,
+)
+
+
+# Spoken 8-point sectors, indexed from the bow clockwise.
+# 0° = 正前方, 45° = 右前方, … 315° = 左前方.
+_RELATIVE_SECTORS = (
+    "正前方",
+    "右前方",
+    "正右",
+    "右后方",
+    "正后方",
+    "左后方",
+    "正左",
+    "左前方",
+)
+
+
+@dataclass(frozen=True)
+class ThreatBearing:
+    ship: Ship
+    distance_m: float
+    bearing_deg: float
+    # 0 = bow, positive = starboard, negative = port, -180..180.
+    relative_bearing_deg: float | None = None
+    relative_sector: str | None = None
+
+    def direction_fields(self) -> dict[str, object]:
+        """Compass bearing plus bow-relative labels the model may quote."""
+        fields: dict[str, object] = {"bearing_deg": round(self.bearing_deg)}
+        if self.relative_bearing_deg is not None:
+            fields["relative_bearing_deg"] = round(self.relative_bearing_deg)
+        if self.relative_sector:
+            fields["relative_sector"] = self.relative_sector
+        return fields
+
+
+@dataclass(frozen=True)
+class WowsFacts:
+    """One frame's measurements, shared by every detector."""
+
+    seq: int = 0
+    at: float = 0.0
+    battle_id: str | None = None
+
+    own_hp_ratio: float | None = None
+    own_health: float | None = None
+    own_max_health: float | None = None
+    own_alive: bool | None = None
+    own_speed: float | None = None
+    own_heading_deg: float | None = None
+
+    # Upper bounds assembled from the roster and last-known objects. A hull
+    # remains here until telemetry explicitly reports it sunk, so these values
+    # must never be presented as confirmed survivors.
+    allies_not_confirmed_sunk: int | None = None
+    enemies_not_confirmed_sunk: int | None = None
+    # Currently lit hulls with an explicit alive=True flag. Safe for relative
+    # "视野里谁更多" claims; dark last-known positions are excluded.
+    confirmed_visible_allies: int | None = None
+    confirmed_visible_enemies: int | None = None
+    # True when the objects domain is available and our own hull is among the
+    # confirmed-visible ally count. Fog-of-war may hide ships; that must not
+    # block a visible-force claim the way a full-roster lit check would.
+    team_counts_confirmed: bool = False
+    visible_enemies: int | None = None
+
+    nearest_enemy: ThreatBearing | None = None
+    nearest_ally_distance_m: float | None = None
+    threats_in_scan_range: tuple[ThreatBearing, ...] = ()
+    threat_bearing_spread_deg: float | None = None
+
+    distance_to_boundary_m: float | None = None
+    heading_towards_boundary: bool | None = None
+
+    own_broadside_angle_deg: float | None = None
+    own_broadside_threat: ThreatBearing | None = None
+    exposed_target: ThreatBearing | None = None
+    exposed_target_angle_deg: float | None = None
+
+    best_target: ThreatBearing | None = None
+    lowest_hp_target: ThreatBearing | None = None
+
+    damage_inflicted: float | None = None
+    damage_inflicted_by_victim: dict[int, float] = field(default_factory=dict)
+    ammo_type: str | None = None
+    penetration_mm: float | None = None
+
+    # Which domains actually backed these numbers, for the panel timeline.
+    sourced_domains: tuple[str, ...] = ()
+    notes: dict[str, object] = field(default_factory=dict)
+
+
+def _distance(ax: float, az: float, bx: float, bz: float) -> float:
+    return math.hypot(bx - ax, bz - az)
+
+
+def _bearing_deg(from_x: float, from_z: float, to_x: float, to_z: float) -> float:
+    """Compass-style bearing in degrees, 0 = +Z (north), clockwise."""
+    return math.degrees(math.atan2(to_x - from_x, to_z - from_z)) % 360.0
+
+
+def _relative_bearing_deg(
+    target_bearing: float, own_heading: float | None,
+) -> float | None:
+    """Target vs own bow: -180..180, 0 = ahead, positive = starboard."""
+    if own_heading is None:
+        return None
+    return (target_bearing - own_heading + 180.0) % 360.0 - 180.0
+
+
+def _relative_sector(relative: float | None) -> str | None:
+    if relative is None:
+        return None
+    return _RELATIVE_SECTORS[int((relative % 360.0) / 45.0 + 0.5) % 8]
+
+
+def _angle_between(a_deg: float, b_deg: float) -> float:
+    """Smallest absolute separation between two bearings, 0..180."""
+    delta = abs(a_deg - b_deg) % 360.0
+    return 360.0 - delta if delta > 180.0 else delta
+
+
+def _bearing_spread(bearings: tuple[float, ...]) -> float | None:
+    """Widest gap-complement across bearings: how spread out the threats are.
+
+    Sorting the bearings and taking 360 minus the largest empty arc gives the
+    angular width of the cone the threats actually occupy, which is what
+    "coming from several directions" means.
+    """
+    if len(bearings) < 2:
+        return None
+    ordered = sorted(b % 360.0 for b in bearings)
+    largest_gap = (ordered[0] + 360.0) - ordered[-1]
+    for first, second in zip(ordered, ordered[1:]):
+        largest_gap = max(largest_gap, second - first)
+    return 360.0 - largest_gap
+
+
+def _yaw_to_deg(yaw: float | None) -> float | None:
+    if yaw is None:
+        return None
+    return math.degrees(float(yaw)) % 360.0
+
+
+def _broadside_angle(heading_deg: float, bearing_deg: float) -> float:
+    """0 = bow/stern on to the bearing, 90 = fully broadside to it."""
+    offset = _angle_between(heading_deg, bearing_deg)
+    return 90.0 - abs(offset - 90.0) if offset <= 180.0 else 0.0
+
+
+def _own_alive(own, snapshot: WowsSnapshot | None) -> bool | None:
+    """Afloat signal for the player's hull.
+
+    3D `self.health` and the avatar/UI object can disagree for a tick after
+    death. Either source reporting dead wins; a missing reading stays unknown.
+    """
+    if own is None:
+        return None
+    hull = snapshot.own_ship if snapshot is not None else None
+    hull_signal = (
+        resolve_alive(hull.alive, hull.health, hull.hp_ratio)
+        if hull is not None else None
+    )
+    return combine_alive_signals(
+        hull_signal,
+        alive_from_health(own.health, own.hp_ratio),
+    )
+
+
+class FactBuilder:
+    """Turns a snapshot into `WowsFacts`. Pure: no memory between frames."""
+
+    def __init__(self, cfg) -> None:
+        self.cfg = cfg
+
+    def build(self, snapshot: WowsSnapshot) -> WowsFacts:
+        sourced: list[str] = []
+        own = snapshot.self_ship if snapshot.is_available(DOMAIN_SELF) else None
+        if own is not None:
+            sourced.append(DOMAIN_SELF)
+
+        objects_ok = snapshot.is_available(DOMAIN_OBJECTS)
+        roster_ok = snapshot.is_available(DOMAIN_ROSTER)
+        if objects_ok:
+            sourced.append(DOMAIN_OBJECTS)
+        if roster_ok:
+            sourced.append(DOMAIN_ROSTER)
+
+        # Team upper bounds come from objects (incl. last-known) and/or the full
+        # match roster in meta. Force-balance speech uses only hulls that are
+        # explicitly alive and currently visible. Threat geometry stays
+        # visible-only: a dark last-known x/z must not become nearest_enemy.
+        count_ok = objects_ok or roster_ok
+        known_enemies = snapshot.enemies(visible_only=False) if count_ok else ()
+        own_side = snapshot.own_side(visible_only=False) if count_ok else ()
+        visible_enemies = snapshot.enemies(visible_only=True) if objects_ok else ()
+        visible_allies = snapshot.allies(visible_only=True) if objects_ok else ()
+        confirmed_visible_allies = None
+        confirmed_visible_enemies = None
+        if objects_ok:
+            confirmed_visible_allies = sum(
+                1 for ship in snapshot.own_side(visible_only=True)
+                if ship.is_confirmed_alive
+            )
+            confirmed_visible_enemies = sum(
+                1 for ship in visible_enemies if ship.is_confirmed_alive
+            )
+        own_player_id = own.player_id if own is not None else None
+        own_confirmed_visible = bool(
+            own is not None
+            and any(
+                (
+                    ship.player_id == own_player_id
+                    if own_player_id is not None
+                    else ship.relation == RELATION_SELF
+                )
+                and ship.is_confirmed_alive
+                and ship.visible
+                for ship in snapshot.own_side(visible_only=True)
+            )
+        )
+        team_counts_confirmed = bool(
+            objects_ok
+            and own_confirmed_visible
+            and confirmed_visible_allies is not None
+            and confirmed_visible_enemies is not None
+        )
+
+        own_heading = _yaw_to_deg(own.yaw) if own is not None else None
+
+        threats: tuple[ThreatBearing, ...] = ()
+        nearest_enemy: ThreatBearing | None = None
+        nearest_ally_distance: float | None = None
+        own_broadside = None
+        own_broadside_threat = None
+        if own is not None and own.has_position and objects_ok:
+            visible_enemy_bearings = self._enemy_bearings(
+                own, visible_enemies, own_heading)
+            # Exact telemetry covers every visible enemy; only tactical threat
+            # consumers are intentionally capped by the configured scan range.
+            nearest_enemy = (
+                visible_enemy_bearings[0] if visible_enemy_bearings else None
+            )
+            threats = tuple(
+                bearing for bearing in visible_enemy_bearings
+                if bearing.distance_m <= self.cfg.threat_scan_range_m
+            )
+            nearest_ally_distance = self._nearest_ally_distance(own, visible_allies)
+            own_broadside, own_broadside_threat = self._own_broadside(
+                own_heading, visible_enemy_bearings)
+
+        bearings = tuple(t.bearing_deg for t in threats)
+        spread = _bearing_spread(bearings) if len(bearings) >= 2 else None
+
+        boundary_distance, heading_out = self._boundary(snapshot, own, own_heading)
+        if boundary_distance is not None:
+            sourced.append(DOMAIN_MAP_BOUNDS)
+
+        exposed, exposed_angle = self._exposed_target(own, threats)
+
+        damage_available = snapshot.is_available(DOMAIN_DAMAGE)
+        damage = snapshot.damage_inflicted if damage_available else None
+        damage_by_victim = (
+            dict(snapshot.damage_inflicted_by_victim)
+            if damage_available
+            else {}
+        )
+        if damage is not None or damage_by_victim:
+            sourced.append(DOMAIN_DAMAGE)
+
+        ammo_type = None
+        penetration = None
+        if snapshot.is_available(DOMAIN_BALLISTICS):
+            sourced.append(DOMAIN_BALLISTICS)
+            raw_type = snapshot.ballistics.get("ammoType")
+            ammo_type = str(raw_type) if isinstance(raw_type, str) else None
+            raw_pen = snapshot.ballistics.get("penetration")
+            if isinstance(raw_pen, (int, float)) and not isinstance(raw_pen, bool):
+                penetration = float(raw_pen)
+
+        return WowsFacts(
+            seq=snapshot.seq,
+            at=snapshot.received_at,
+            battle_id=snapshot.battle_id,
+            own_hp_ratio=own.hp_ratio if own is not None else None,
+            own_health=own.health if own is not None else None,
+            own_max_health=own.max_health if own is not None else None,
+            own_alive=_own_alive(own, snapshot if objects_ok else None),
+            own_speed=own.speed if own is not None else None,
+            own_heading_deg=own_heading,
+            allies_not_confirmed_sunk=len(own_side) if count_ok else None,
+            enemies_not_confirmed_sunk=len(known_enemies) if count_ok else None,
+            confirmed_visible_allies=confirmed_visible_allies,
+            confirmed_visible_enemies=confirmed_visible_enemies,
+            team_counts_confirmed=team_counts_confirmed,
+            visible_enemies=len(visible_enemies) if objects_ok else None,
+            nearest_enemy=nearest_enemy,
+            nearest_ally_distance_m=nearest_ally_distance,
+            threats_in_scan_range=threats,
+            threat_bearing_spread_deg=spread,
+            distance_to_boundary_m=boundary_distance,
+            heading_towards_boundary=heading_out,
+            own_broadside_angle_deg=own_broadside,
+            own_broadside_threat=own_broadside_threat,
+            exposed_target=exposed,
+            exposed_target_angle_deg=exposed_angle,
+            best_target=self._best_target(threats),
+            lowest_hp_target=self._lowest_hp_target(threats),
+            damage_inflicted=damage,
+            damage_inflicted_by_victim=damage_by_victim,
+            ammo_type=ammo_type,
+            penetration_mm=penetration,
+            sourced_domains=tuple(sourced),
+        )
+
+    # ------------------------------------------------------------------
+    def _enemy_bearings(self, own, enemies, own_heading) -> tuple[ThreatBearing, ...]:
+        """Return every positioned visible enemy, nearest first."""
+        found: list[ThreatBearing] = []
+        for enemy in enemies:
+            if not enemy.has_position:
+                continue
+            distance = _distance(own.x, own.z, enemy.x, enemy.z)
+            bearing = _bearing_deg(own.x, own.z, enemy.x, enemy.z)
+            relative = _relative_bearing_deg(bearing, own_heading)
+            found.append(ThreatBearing(
+                ship=enemy,
+                distance_m=distance,
+                bearing_deg=bearing,
+                relative_bearing_deg=relative,
+                relative_sector=_relative_sector(relative),
+            ))
+        found.sort(key=lambda t: t.distance_m)
+        return tuple(found)
+
+    @staticmethod
+    def _nearest_ally_distance(own, allies) -> float | None:
+        distances = [
+            _distance(own.x, own.z, ally.x, ally.z)
+            for ally in allies
+            if ally.has_position
+            and (own.player_id is None or ally.player_id != own.player_id)
+        ]
+        return min(distances) if distances else None
+
+    def _boundary(self, snapshot, own, own_heading):
+        if snapshot.bounds is None or own is None or not own.has_position:
+            return None, None
+        if not snapshot.is_available(DOMAIN_MAP_BOUNDS):
+            return None, None
+        min_x, max_x, min_z, max_z = snapshot.bounds
+        margins = {
+            0.0: max_z - own.z,      # north edge
+            90.0: max_x - own.x,     # east edge
+            180.0: own.z - min_z,    # south edge
+            270.0: own.x - min_x,    # west edge
+        }
+        distance = min(margins.values())
+        heading_out = None
+        if own_heading is not None:
+            heading_out = any(
+                margin <= self.cfg.boundary_margin_m
+                and _angle_between(own_heading, bearing) <= 60.0
+                for bearing, margin in margins.items()
+            )
+        return max(0.0, distance), heading_out
+
+    def _own_broadside(self, own_heading, bearings):
+        """Largest own-hull exposure among enemies inside close range.
+
+        The nearest hull can be bow-on while another close ship sits on the
+        beam; that second bearing is the one a broadside warning must use.
+        """
+        if own_heading is None:
+            return None, None
+        close = self.cfg.enemy_close_range_m
+        best = None
+        best_angle = None
+        for bearing in bearings:
+            if bearing.distance_m > close:
+                continue
+            angle = _broadside_angle(own_heading, bearing.bearing_deg)
+            if best_angle is None or angle > best_angle:
+                best, best_angle = bearing, angle
+        return best_angle, best
+
+    def _exposed_target(self, own, threats):
+        """The nearest enemy that is currently showing us its side.
+
+        Requires both a heading for the enemy and a position for us, which is why
+        it stays `None` far more often than the distance-only facts.
+        """
+        if own is None or not own.has_position:
+            return None, None
+        best: ThreatBearing | None = None
+        best_angle: float | None = None
+        for threat in threats:
+            enemy_heading = _yaw_to_deg(threat.ship.yaw)
+            if enemy_heading is None:
+                continue
+            # Bearing from the enemy back to us.
+            reverse = (threat.bearing_deg + 180.0) % 360.0
+            angle = _broadside_angle(enemy_heading, reverse)
+            if best_angle is None or angle > best_angle:
+                best, best_angle = threat, angle
+        return best, best_angle
+
+    @staticmethod
+    def _best_target(threats) -> ThreatBearing | None:
+        """Closest low-health enemy first; distance decides ties.
+
+        This is a candidate for the model to mention, not an order: the plugin
+        has no idea what the player's guns are actually doing.
+        """
+        scored = [t for t in threats if t.ship.hp_ratio is not None]
+        if not scored:
+            return threats[0] if threats else None
+        scored.sort(key=lambda t: (t.ship.hp_ratio, t.distance_m))
+        return scored[0]
+
+    @staticmethod
+    def _lowest_hp_target(threats) -> ThreatBearing | None:
+        scored = [t for t in threats if t.ship.hp_ratio is not None]
+        if not scored:
+            return None
+        return min(scored, key=lambda t: t.ship.hp_ratio)

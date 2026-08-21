@@ -1,0 +1,161 @@
+[plugin]
+name = "战舰世界猫娘陪玩"
+description = "World of Warships 猫娘陪玩：只读 8111_for_wows 遥测，把连续快照转成分立战局事件，按优先级仲裁后让猫娘提醒与陪伴。不做外挂、不做自动操作、不读写游戏内存。"
+short_description = "World of Warships catgirl companion: telemetry-only battle call-outs."
+keywords = ["world of warships", "wows", "战舰世界", "海战", "8111", "telemetry", "陪玩"]
+version = "0.1.0"
+id = "neko_wows"
+entry = "plugin.plugins.neko_wows:NekoWowsPlugin"
+# 本插件的入口全部是面板动作，不需要参与 Agent 的插件选择；主动播报走
+# push_message，不受 passive 影响。
+passive = true
+
+[plugin.author]
+name = "0N.E.K"
+
+[plugin.sdk]
+recommended = ">=0.1.0,<0.2.0"
+supported = ">=0.1.0,<0.3.0"
+
+[plugin.i18n]
+default_locale = "zh-CN"
+locales_dir = "i18n"
+
+[plugin.ui]
+enabled = true
+
+[[plugin.ui.panel]]
+id = "main"
+title = "战舰世界猫娘陪玩"
+entry = "ui/panel.tsx"
+context = "dashboard"
+permissions = ["state:read", "action:call"]
+
+[plugin_runtime]
+enabled = true
+auto_start = false
+
+# 运行状态落在 store 里（{runtime_data_root}/plugins/neko_wows/data/store.db），
+# 而不是插件目录：打包安装后插件目录是只读的。
+[plugin.store]
+enabled = true
+
+# ---------------------------------------------------------------------------
+# 运行参数。dry_run 默认关：战斗中会真实投递给猫娘，让她主动搭话。
+# 需要只跑链路、不发言时，可在面板临时打开 dry-run（仅本次运行有效）。
+# ---------------------------------------------------------------------------
+[neko_wows]
+enabled = true
+dry_run = false
+
+# 数据源。service_url 指向 8111_for_wows；serviceId 校验保证不会误连
+# War Thunder 自带的 8111 遥测（同端口、完全不同的协议）。
+# 面板概览页可改 URL / 源码目录 / 游戏目录，并持久化到 store（覆盖此处默认）；
+# 改动后需重连才生效。
+service_url = "http://127.0.0.1:8111"
+service_auto_start = true
+# 8111_for_wows 仓库根目录；留空则不自动拉起，只连已在跑的服务。
+service_source_dir = ""
+# World_of_Warships 安装目录，转交给服务端自动定位 state.json。
+game_dir = ""
+service_startup_timeout_seconds = 10.0
+service_health_timeout_seconds = 1.5
+
+# 传输：优先 WebSocket，失败时 REST 轮询兜底并后台重连。
+transport_prefer_ws = true
+# 多角色同时在线时必须具名，否则宿主会丢掉主动播报。留空则用当前会话
+# 角色，再回退到「当前猫娘」。
+target_lanlan = ""
+rest_poll_interval_seconds = 0.5
+ws_reconnect_min_seconds = 1.0
+ws_reconnect_max_seconds = 15.0
+http_timeout_seconds = 1.5
+
+# 仲裁与限流（草稿值，待真机校准）。
+urgent_ttl_seconds = 12.0
+urgent_min_gap_seconds = 6.0
+normal_ttl_seconds = 30.0
+normal_min_gap_seconds = 18.0
+# dual = base + urgent/normal overlay；single = 只用完整 base。
+channel_mode = "dual"
+
+# 安全门：连续投递失败自动暂停，需面板手动恢复。
+safety_window_seconds = 60.0
+safety_failure_limit = 5
+observability_max_events = 120
+
+# 检测阈值（米）。8111_for_wows 线上坐标是 BigWorld（×30 → 米），
+# schema_adapter 入站时已换算，这里的阈值按米理解。
+low_health_ratios = [0.35, 0.15]
+rapid_damage_ratio = 0.23
+rapid_damage_window_seconds = 3.0
+enemy_close_range_m = 8000.0
+threat_scan_range_m = 12000.0
+multi_direction_spread_deg = 90.0
+isolation_ally_range_m = 6000.0
+isolation_enemy_range_m = 10000.0
+boundary_margin_m = 1500.0
+broadside_angle_deg = 25.0
+low_hp_target_ratio = 0.2
+damage_milestone_step = 50000.0
+# 单目标短时伤害事件；绝对值与百分比为“或”，毁灭打击还要求明确沉没。
+# 击沉敌舰是独立的夸夸事件，可与高伤害/毁灭打击合并进同一轮播报。
+# 夸夸另有最低贡献门槛，避免刮伤助攻也祝贺击沉。
+damage_burst_window_seconds = 5.0
+high_damage_absolute_threshold = 20000.0
+high_damage_ratio_threshold = 0.25
+devastating_strike_ratio_threshold = 0.50
+enemy_sunk_min_absolute_threshold = 3000.0
+enemy_sunk_min_ratio_threshold = 0.05
+outnumbered_margin = 2
+
+# 离线舰船参数目录。安装包不附带生成后的目录，因此默认关闭；启用前请在仓库根目录运行：
+# python scripts/build_neko_wows_ship_catalog.py --revision <40位提交SHA> --output-dir <插件数据目录>/ship_catalog
+# 目录只从插件数据目录读取，绝不因缺船自动联网。
+ship_catalog_enabled = false
+ship_catalog_version_policy = "warn"
+ship_catalog_language = "zh-CN"
+ship_catalog_context_batch_chars = 12000
+
+# 官方查询只作为显式 LLM 工具，默认关闭。面板可改开关 / 区服 / Application ID，
+# 并持久化到插件 store（覆盖此处默认）；明文 key 不会回传到面板状态或日志。
+official_api_enabled = false
+official_api_region = "asia"
+official_api_application_id = ""
+official_api_language = "zh-cn"
+official_api_timeout_seconds = 5.0
+official_api_cache_ttl_seconds = 300.0
+
+# 主动截屏。她可以自己决定何时截取战舰世界画面来判断战局。默认关闭：这个功能
+# 会截取屏幕、把 JPEG 写进插件数据目录、并把画面发给模型厂商。面板可改开关 /
+# 最短间隔 / 保留张数，并持久化到 store（覆盖此处默认）。
+# 命中最短间隔时工具返回 rate_limited，不会硬失败。
+screenshot_enabled = false
+screenshot_min_interval_seconds = 15.0
+screenshot_retain_count = 20
+
+# 复用主对话的屏幕共享画面。默认开启，且与上面的截屏开关无关：它自己不截屏、
+# 不落盘，只是把你已经在共享给猫娘的那一帧接到战报这一轮上，省掉一次工具往返
+# 和一次视觉模型调用。共享没开、画面过期、共享的是摄像头、或者对话模型不支持
+# 原生看图时，自动退回上面的截屏工具。
+live_vision_enabled = true
+
+# 战术文档库。存储配额可以放很大，但排序索引单独设上限：超出后文档仍然可以
+# 按 front matter 标签检索，只是不再参与 BM25 排序，面板会显示索引覆盖率。
+tactics_max_file_bytes = 8388608
+tactics_max_documents = 500
+tactics_max_total_bytes = 134217728
+tactics_chunk_chars = 800
+tactics_chunk_overlap = 100
+tactics_index_chunk_cap = 3000
+tactics_tag_weight = 2.5
+# 无标签命中时，一个段落至少要命中这么多个不同查询词才会被注入。
+tactics_min_term_hits = 2
+
+# 播报偏好。默认静默窗与宿主自己的「用户约 10 秒内活跃就不放行」重叠，
+# 不再额外延长沉默；手动调大时才会继续压住常规播报。时间线会标明来源。
+dialogue_intrusion_mode = "critical_only"
+user_chat_quiet_window_seconds = 10.0
+disabled_categories = []
+disabled_lanes = []
+prompt_revisions_kept = 20

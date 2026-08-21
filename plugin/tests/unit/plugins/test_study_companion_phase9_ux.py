@@ -5,6 +5,7 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
+import tempfile
 
 import pytest
 
@@ -13,6 +14,29 @@ pytestmark = pytest.mark.unit
 PLUGIN_DIR = Path(__file__).resolve().parents[3] / "plugins" / "study_companion"
 I18N_DIR = PLUGIN_DIR / "i18n"
 NODE_SUBPROCESS_TIMEOUT_SECONDS = 30
+
+
+def _run_node_script(script: str) -> str:
+    """Run a Node probe script via a temp file.
+
+    Windows CI has flaked on ``node -e <large katex-render.js>`` with
+    ``TimeoutExpired`` even though the same probes finish in <100ms locally.
+    Avoid embedding multi-KB sources on the process command line.
+    """
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is not available")
+    with tempfile.TemporaryDirectory(prefix="study-math-probe-") as tmp:
+        script_path = Path(tmp) / "probe.js"
+        script_path.write_text(script, encoding="utf-8")
+        result = subprocess.run(
+            [node, str(script_path)],
+            check=True,
+            capture_output=True,
+            encoding="utf-8",
+            timeout=NODE_SUBPROCESS_TIMEOUT_SECONDS,
+        )
+    return result.stdout
 
 
 def test_phase9_static_math_assets_are_local_and_registered() -> None:
@@ -59,9 +83,6 @@ def test_phase9_static_math_assets_are_local_and_registered() -> None:
 
 
 def _split_math_with_node(asset_name: str, text: str) -> list[dict[str, object]]:
-    node = shutil.which("node")
-    if not node:
-        pytest.skip("node is not available")
     source = (PLUGIN_DIR / "static" / asset_name).read_text(encoding="utf-8")
     script = f"""
 global.window = {{}};
@@ -78,20 +99,10 @@ global.document = {{
 const tools = window.__studyCompanionMath || window.__studyCompanionMathParser;
 console.log(JSON.stringify(tools.splitByMath({json.dumps(text)})));
 """
-    result = subprocess.run(
-        [node, "-e", script],
-        check=True,
-        capture_output=True,
-        encoding="utf-8",
-        timeout=NODE_SUBPROCESS_TIMEOUT_SECONDS,
-    )
-    return json.loads(result.stdout)
+    return json.loads(_run_node_script(script))
 
 
 def _render_reply_with_node(text: str) -> str:
-    node = shutil.which("node")
-    if not node:
-        pytest.skip("node is not available")
     source = (PLUGIN_DIR / "static" / "katex-render.js").read_text(encoding="utf-8")
     script = f"""
 global.window = {{
@@ -120,14 +131,7 @@ global.document = {{
 {source}
 console.log(window.renderMathInText({json.dumps(text)}));
 """
-    result = subprocess.run(
-        [node, "-e", script],
-        check=True,
-        capture_output=True,
-        encoding="utf-8",
-        timeout=NODE_SUBPROCESS_TIMEOUT_SECONDS,
-    )
-    return result.stdout.strip()
+    return _run_node_script(script).strip()
 
 
 @pytest.mark.parametrize("asset_name", ["katex-render.js", "math-parser.js"])

@@ -43,6 +43,10 @@ _VOICE_PROACTIVE_ACK_GRACE_S = 0.05
 _TEXT_SESSION_INPUT_TYPES = frozenset({"text", "avatar_drop_image", "user_image"})
 _IMAGE_INPUT_TYPES = frozenset({"screen", "camera", "avatar_drop_image", "user_image"})
 _LIVE_VISION_STREAM_INPUT_TYPES = frozenset({"screen", "camera"})
+# The frontend pushes one live frame per second, so a gap this wide means the
+# stream stopped (window minimized, tab closed, idle release) rather than that
+# a frame ran late. Consumers treat a stale stream as "not sharing".
+_LIVE_VISION_STALE_SECONDS = 5.0
 _CONTEXT_APPEND_DEDUP_TTL_SECONDS = 120.0
 _CONTEXT_APPEND_DEDUP_MAX_ENTRIES = 256
 _CONTEXT_APPEND_READY_FLUSH_MAX_PASSES = 8

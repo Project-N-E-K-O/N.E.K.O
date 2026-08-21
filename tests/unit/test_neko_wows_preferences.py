@@ -1,0 +1,1311 @@
+"""Broadcast preferences: category and lane switches, and the quiet window."""
+
+from __future__ import annotations
+
+import asyncio
+import threading
+
+import pytest
+
+from plugin.sdk.plugin import Err, Ok, SdkError
+from plugin.plugins.neko_wows import NekoWowsPlugin
+from plugin.plugins.neko_wows.detectors._base import GameEvent
+from plugin.plugins.neko_wows.domain.catalog import (
+    DAMAGE_MILESTONE,
+    LOW_HEALTH,
+    OWN_SHIP_SUNK,
+    PRIORITY_TARGET,
+    spec_for,
+)
+from plugin.plugins.neko_wows.domain.contracts import (
+    ALL_CATEGORIES,
+    ALL_INTRUSION_MODES,
+    CATEGORY_PROGRESS,
+    CATEGORY_SURVIVAL,
+    CHANNEL_SINGLE,
+    INTRUSION_ALLOW_INTERRUPT,
+    INTRUSION_CRITICAL_ONLY,
+    INTRUSION_NO_INTERRUPT,
+    LANE_NORMAL,
+    LANE_URGENT,
+    OFFICIAL_API_REGION_EU,
+    NullTacticsRepository,
+    WowsConfig,
+)
+from plugin.plugins.neko_wows import (
+    STORE_CONNECTION_SETTINGS,
+    STORE_LIVE_VISION_ENABLED,
+    STORE_OFFICIAL_API_SETTINGS,
+    STORE_SCREENSHOT_SETTINGS,
+)
+from plugin.plugins.neko_wows.domain.facts import WowsFacts
+from plugin.plugins.neko_wows.policy.arbiter import (
+    Arbiter,
+    REASON_QUIET_WINDOW,
+)
+from plugin.plugins.neko_wows.policy.tactic_policy import (
+    AdviceCandidate,
+    WowsTacticPolicy,
+)
+
+
+def facts(at=100.0):
+    return WowsFacts(seq=1, at=at, battle_id="b-1", own_hp_ratio=0.4)
+
+
+def event(event_id, at=100.0):
+    return GameEvent(
+        event_id=event_id, severity=70, at=at, seq=1, battle_id="b-1", detail={})
+
+
+def candidate(event_id, *, at=100.0, cfg=None):
+    settings = cfg or WowsConfig()
+    spec = spec_for(event_id)
+    return AdviceCandidate(
+        event_id=event_id,
+        lane=spec.lane,
+        priority=spec.priority,
+        severity=70,
+        at=at,
+        seq=1,
+        battle_id="b-1",
+        summary=spec.summary,
+        expires_at=at + settings.ttl_for(spec.lane),
+    )
+
+
+def outcomes(decision, event_id):
+    return [step.outcome for step in decision.chain if step.event_id == event_id]
+
+
+class _ConfigSource:
+    def __init__(self, dry_run, *, screenshot_enabled=False):
+        self.dry_run = dry_run
+        self.screenshot_enabled = screenshot_enabled
+
+    async def dump(self):
+        return {"neko_wows": {
+            "dry_run": self.dry_run,
+            "screenshot_enabled": self.screenshot_enabled,
+        }}
+
+
+class _ReloadTarget:
+    def __init__(
+        self,
+        *,
+        current,
+        configured,
+        current_screenshot_enabled=False,
+        configured_screenshot_enabled=False,
+    ):
+        self.cfg = WowsConfig()
+        self.cfg.dry_run = current
+        self.cfg.screenshot_enabled = current_screenshot_enabled
+        self.config = _ConfigSource(
+            configured,
+            screenshot_enabled=configured_screenshot_enabled,
+        )
+        self._preference_lock = asyncio.Lock()
+        self._pipeline_lock = threading.RLock()
+        self.logger = type("Logger", (), {"warning": lambda *_: None})()
+
+    async def _apply_stored_preferences(self, _cfg):
+        return None
+
+    def _apply_config(self, cfg):
+        self.cfg = cfg
+
+
+def test_startup_config_reload_uses_configured_dry_run():
+    target = _ReloadTarget(current=True, configured=False)
+    cfg = asyncio.run(
+        NekoWowsPlugin._reload_config(target, force_dry_run=True))
+    assert cfg.dry_run is False
+
+
+def test_hot_reload_preserves_the_explicit_session_dry_run_choice():
+    target = _ReloadTarget(current=False, configured=True)
+    cfg = asyncio.run(NekoWowsPlugin._reload_config(target))
+    assert cfg.dry_run is False
+
+
+def test_entering_preview_resets_live_delivery_counters():
+    reset_calls = []
+    target = object.__new__(NekoWowsPlugin)
+    target._pipeline_lock = threading.RLock()
+    target.cfg = WowsConfig(dry_run=False)
+    target.context_injector = type("Context", (), {
+        "restore": lambda _self, *_args, **_kwargs: True,
+    })()
+    target.dispatcher = type("Dispatcher", (), {
+        "reset_counters": lambda _self: reset_calls.append("reset"),
+    })()
+
+    result = asyncio.run(NekoWowsPlugin.set_dry_run(target, True))
+
+    assert result.is_ok()
+    assert target.cfg.dry_run is True
+    assert reset_calls == ["reset"]
+
+
+def test_startup_config_reload_uses_configured_screenshot_enabled():
+    target = _ReloadTarget(
+        current=False,
+        configured=False,
+        current_screenshot_enabled=False,
+        configured_screenshot_enabled=True,
+    )
+    cfg = asyncio.run(
+        NekoWowsPlugin._reload_config(target, force_dry_run=True))
+    assert cfg.screenshot_enabled is True
+
+
+def test_hot_reload_preserves_the_explicit_session_screenshot_choice():
+    target = _ReloadTarget(
+        current=True,
+        configured=True,
+        current_screenshot_enabled=True,
+        configured_screenshot_enabled=False,
+    )
+    cfg = asyncio.run(NekoWowsPlugin._reload_config(target))
+    assert cfg.screenshot_enabled is True
+
+
+# --- category and lane switches ------------------------------------------
+
+def test_every_catalog_category_is_a_known_preference():
+    """A category the panel cannot show is a category nobody can turn off."""
+    from plugin.plugins.neko_wows.domain.catalog import EVENT_CATALOG
+
+    used = {spec.coalesce_key for spec in EVENT_CATALOG.values()}
+    assert used <= set(ALL_CATEGORIES)
+
+
+def test_a_disabled_category_never_becomes_a_candidate():
+    cfg = WowsConfig.from_mapping({"disabled_categories": [CATEGORY_SURVIVAL]})
+    policy = WowsTacticPolicy(cfg)
+    candidates = policy.expand(
+        [event(LOW_HEALTH), event(DAMAGE_MILESTONE)], facts())
+    assert [item.event_id for item in candidates] == [DAMAGE_MILESTONE]
+
+
+def test_disabling_one_category_leaves_the_others_alone():
+    cfg = WowsConfig.from_mapping({"disabled_categories": [CATEGORY_PROGRESS]})
+    candidates = WowsTacticPolicy(cfg).expand(
+        [event(LOW_HEALTH), event(DAMAGE_MILESTONE)], facts())
+    assert [item.event_id for item in candidates] == [LOW_HEALTH]
+
+
+def test_a_disabled_lane_drops_every_event_in_it():
+    cfg = WowsConfig.from_mapping({"disabled_lanes": [LANE_URGENT]})
+    candidates = WowsTacticPolicy(cfg).expand(
+        [event(OWN_SHIP_SUNK), event(LOW_HEALTH), event(PRIORITY_TARGET)], facts())
+    assert [item.event_id for item in candidates] == [PRIORITY_TARGET]
+
+
+def test_disabled_events_do_not_consume_a_cooldown_slot():
+    """Filtering in policy, not delivery, is what makes this true."""
+    cfg = WowsConfig.from_mapping({"disabled_categories": [CATEGORY_SURVIVAL]})
+    policy = WowsTacticPolicy(cfg)
+    arbiter = Arbiter(cfg)
+
+    decision = arbiter.decide(policy.expand([event(LOW_HEALTH)], facts()), 100.0)
+    assert decision.chosen is None
+    assert arbiter.stats()["queued"] == 0
+    assert arbiter.stats()["cooldowns"] == 0
+
+
+def test_unknown_preference_names_are_ignored():
+    cfg = WowsConfig.from_mapping({
+        "disabled_categories": ["not_a_category", CATEGORY_SURVIVAL],
+        "disabled_lanes": ["sideways", LANE_NORMAL],
+    })
+    assert cfg.disabled_categories == (CATEGORY_SURVIVAL,)
+    assert cfg.disabled_lanes == (LANE_NORMAL,)
+
+
+def test_a_non_list_preference_disables_nothing():
+    cfg = WowsConfig.from_mapping({"disabled_categories": "wows_survival"})
+    assert cfg.disabled_categories == ()
+
+
+def test_lane_and_category_helpers_agree_with_the_config():
+    cfg = WowsConfig.from_mapping({
+        "disabled_categories": [CATEGORY_SURVIVAL],
+        "disabled_lanes": [LANE_URGENT],
+    })
+    assert cfg.category_enabled(CATEGORY_SURVIVAL) is False
+    assert cfg.category_enabled(CATEGORY_PROGRESS) is True
+    assert cfg.lane_enabled(LANE_URGENT) is False
+    assert cfg.lane_enabled(LANE_NORMAL) is True
+
+
+# --- intrusion policy ----------------------------------------------------
+
+def test_the_default_policy_is_critical_only():
+    assert WowsConfig().dialogue_intrusion_mode == INTRUSION_CRITICAL_ONLY
+
+
+def test_default_quiet_window_matches_the_host_short_gate():
+    assert WowsConfig().user_chat_quiet_window_seconds == 10.0
+    assert WowsConfig.from_mapping({
+        "dry_run": False,
+    }).user_chat_quiet_window_seconds == 10.0
+
+
+def test_an_unknown_mode_falls_back_to_critical_only():
+    cfg = WowsConfig.from_mapping({"dialogue_intrusion_mode": "whatever"})
+    assert cfg.dialogue_intrusion_mode == INTRUSION_CRITICAL_ONLY
+
+
+def test_all_modes_are_accepted():
+    for mode in ALL_INTRUSION_MODES:
+        cfg = WowsConfig.from_mapping({"dialogue_intrusion_mode": mode})
+        assert cfg.dialogue_intrusion_mode == mode
+
+
+def test_no_interrupt_holds_back_even_an_urgent_call_out():
+    cfg = WowsConfig.from_mapping({
+        "dialogue_intrusion_mode": INTRUSION_NO_INTERRUPT,
+        "user_chat_quiet_window_seconds": 60.0,
+    })
+    arbiter = Arbiter(cfg)
+    arbiter.note_user_activity(100.0)
+
+    decision = arbiter.decide([candidate(OWN_SHIP_SUNK, at=110.0, cfg=cfg)], 110.0)
+    assert decision.chosen is None
+    assert REASON_QUIET_WINDOW in outcomes(decision, OWN_SHIP_SUNK)
+
+
+def test_critical_only_lets_urgent_through_but_holds_normal():
+    cfg = WowsConfig.from_mapping({
+        "dialogue_intrusion_mode": INTRUSION_CRITICAL_ONLY,
+        "user_chat_quiet_window_seconds": 60.0,
+    })
+    arbiter = Arbiter(cfg)
+    arbiter.note_user_activity(100.0)
+
+    normal = arbiter.decide([candidate(DAMAGE_MILESTONE, at=110.0, cfg=cfg)], 110.0)
+    assert normal.chosen is None
+    assert REASON_QUIET_WINDOW in outcomes(normal, DAMAGE_MILESTONE)
+
+    urgent = arbiter.decide([candidate(LOW_HEALTH, at=111.0, cfg=cfg)], 111.0)
+    assert urgent.chosen is not None
+    assert urgent.chosen.lane == LANE_URGENT
+
+
+def test_default_normal_callout_reopens_before_its_ttl_expires():
+    cfg = WowsConfig()
+    arbiter = Arbiter(cfg)
+    arbiter.note_user_activity(100.0)
+
+    held = arbiter.decide([
+        candidate(DAMAGE_MILESTONE, at=101.0, cfg=cfg)
+    ], 101.0)
+    assert held.chosen is None
+    assert REASON_QUIET_WINDOW in outcomes(held, DAMAGE_MILESTONE)
+
+    reopened = arbiter.decide([], 111.0)
+    assert reopened.chosen is not None
+    assert reopened.chosen.event_id == DAMAGE_MILESTONE
+
+
+def test_default_no_interrupt_releases_urgent_before_its_ttl_expires():
+    from plugin.plugins.neko_wows.domain.catalog import ENEMY_CLOSING
+
+    cfg = WowsConfig.from_mapping({
+        "dialogue_intrusion_mode": INTRUSION_NO_INTERRUPT,
+    })
+    arbiter = Arbiter(cfg)
+    arbiter.note_user_activity(100.0)
+
+    held = arbiter.decide([
+        candidate(ENEMY_CLOSING, at=101.0, cfg=cfg),
+    ], 101.0)
+    assert held.chosen is None
+    assert REASON_QUIET_WINDOW in outcomes(held, ENEMY_CLOSING)
+
+    released = arbiter.decide([], 110.0)
+    assert released.chosen is not None
+    assert released.chosen.event_id == ENEMY_CLOSING
+
+
+def test_allow_interrupt_ignores_the_window_entirely():
+    cfg = WowsConfig.from_mapping({
+        "dialogue_intrusion_mode": INTRUSION_ALLOW_INTERRUPT,
+        "user_chat_quiet_window_seconds": 600.0,
+    })
+    arbiter = Arbiter(cfg)
+    arbiter.note_user_activity(100.0)
+    decision = arbiter.decide([candidate(DAMAGE_MILESTONE, at=101.0, cfg=cfg)], 101.0)
+    assert decision.chosen is not None
+
+
+def test_the_window_expires_on_its_own():
+    cfg = WowsConfig.from_mapping({
+        "dialogue_intrusion_mode": INTRUSION_NO_INTERRUPT,
+        "user_chat_quiet_window_seconds": 30.0,
+    })
+    arbiter = Arbiter(cfg)
+    arbiter.note_user_activity(100.0)
+
+    blocked = arbiter.decide([candidate(LOW_HEALTH, at=120.0, cfg=cfg)], 120.0)
+    assert blocked.chosen is None
+
+    later = 100.0 + 31.0
+    reopened = arbiter.decide([candidate(LOW_HEALTH, at=later, cfg=cfg)], later)
+    assert reopened.chosen is not None
+
+
+def test_a_zero_length_window_never_suppresses():
+    cfg = WowsConfig.from_mapping({
+        "dialogue_intrusion_mode": INTRUSION_NO_INTERRUPT,
+        "user_chat_quiet_window_seconds": 0.0,
+    })
+    arbiter = Arbiter(cfg)
+    arbiter.note_user_activity(100.0)
+    assert arbiter.decide(
+        [candidate(LOW_HEALTH, at=100.0, cfg=cfg)], 100.0).chosen is not None
+
+
+def test_the_reason_says_it_was_the_plugin_that_suppressed():
+    """The host has its own gate; the two must be distinguishable."""
+    cfg = WowsConfig.from_mapping({
+        "dialogue_intrusion_mode": INTRUSION_NO_INTERRUPT,
+        "user_chat_quiet_window_seconds": 60.0,
+    })
+    arbiter = Arbiter(cfg)
+    arbiter.note_user_activity(100.0)
+    decision = arbiter.decide([candidate(LOW_HEALTH, at=110.0, cfg=cfg)], 110.0)
+    detail = next(
+        step.detail for step in decision.chain
+        if step.outcome == REASON_QUIET_WINDOW)
+    assert "插件静默窗口" in detail
+    assert INTRUSION_NO_INTERRUPT in detail
+
+
+def test_clearing_the_window_reopens_output_immediately():
+    cfg = WowsConfig.from_mapping({
+        "dialogue_intrusion_mode": INTRUSION_NO_INTERRUPT,
+        "user_chat_quiet_window_seconds": 600.0,
+    })
+    arbiter = Arbiter(cfg)
+    arbiter.note_user_activity(100.0)
+    arbiter.clear_quiet_window()
+    assert arbiter.decide(
+        [candidate(LOW_HEALTH, at=101.0, cfg=cfg)], 101.0).chosen is not None
+
+
+def test_the_window_is_reported_for_the_panel():
+    cfg = WowsConfig.from_mapping({"user_chat_quiet_window_seconds": 45.0})
+    arbiter = Arbiter(cfg)
+    arbiter.note_user_activity(100.0)
+    stats = arbiter.stats()
+    assert stats["quiet_until"] == pytest.approx(145.0)
+    assert stats["intrusion_mode"] == cfg.dialogue_intrusion_mode
+
+
+def test_a_held_candidate_stays_queued_for_when_the_window_closes():
+    """Suppression is not a drop: the queue keeps it until its TTL runs out."""
+    cfg = WowsConfig.from_mapping({
+        "dialogue_intrusion_mode": INTRUSION_NO_INTERRUPT,
+        "user_chat_quiet_window_seconds": 4.0,
+        "urgent_ttl_seconds": 60.0,
+    })
+    arbiter = Arbiter(cfg)
+    arbiter.note_user_activity(100.0)
+
+    held = arbiter.decide([candidate(LOW_HEALTH, at=101.0, cfg=cfg)], 101.0)
+    assert held.chosen is None
+    assert arbiter.stats()["queued"] == 1
+
+    released = arbiter.decide([], 106.0)
+    assert released.chosen is not None
+    assert released.chosen.event_id == LOW_HEALTH
+
+
+# --- timing overrides ----------------------------------------------------
+
+def test_timing_overrides_take_effect_through_the_shared_config():
+    cfg = WowsConfig()
+    arbiter = Arbiter(cfg)
+    first = arbiter.decide([candidate(LOW_HEALTH, at=100.0, cfg=cfg)], 100.0)
+    arbiter.commit(first.chosen, 100.0, outcome_reason="delivered")
+
+    # Default urgent gap is 6s, so this would normally be blocked.
+    cfg.urgent_min_gap_seconds = 0.0
+    arbiter.apply_config(cfg)
+    from plugin.plugins.neko_wows.domain.catalog import ENEMY_CLOSING
+
+    reopened = arbiter.decide([candidate(ENEMY_CLOSING, at=101.0, cfg=cfg)], 101.0)
+    assert reopened.chosen is not None
+
+
+# --- live action atomicity -----------------------------------------------
+
+class _TrackingLock:
+    def __init__(self):
+        self._lock = threading.RLock()
+        self.depth = 0
+
+    @property
+    def held(self):
+        return self.depth > 0
+
+    def __enter__(self):
+        self._lock.acquire()
+        self.depth += 1
+        return self
+
+    def __exit__(self, exc_type, exc, traceback):
+        self.depth -= 1
+        self._lock.release()
+
+
+class _GuardedConfig(WowsConfig):
+    _GUARDED_FIELDS = frozenset({
+        "channel_mode",
+        "dialogue_intrusion_mode",
+        "user_chat_quiet_window_seconds",
+        "disabled_categories",
+        "disabled_lanes",
+        "urgent_ttl_seconds",
+        "urgent_min_gap_seconds",
+        "normal_ttl_seconds",
+        "normal_min_gap_seconds",
+        "official_api_enabled",
+        "official_api_region",
+        "official_api_application_id",
+        "service_url",
+        "service_source_dir",
+        "game_dir",
+        "screenshot_min_interval_seconds",
+        "screenshot_retain_count",
+    })
+
+    def attach_guard(self, lock):
+        self._guard_lock = lock
+
+    def __setattr__(self, name, value):
+        lock = getattr(self, "_guard_lock", None)
+        if lock is not None and name in self._GUARDED_FIELDS:
+            assert lock.held, f"{name} changed outside _pipeline_lock"
+        super().__setattr__(name, value)
+
+
+class _GuardedDependency:
+    def __init__(self, lock, *, enforce=True):
+        self.lock = lock
+        self.enforce = enforce
+        self.calls = []
+
+    def _record(self, name, *args):
+        if self.enforce:
+            assert self.lock.held, f"{name} called outside _pipeline_lock"
+        self.calls.append((name, args))
+
+    def apply_config(self, cfg):
+        self._record("apply_config", cfg)
+
+    def clear(self):
+        self._record("clear")
+        return 3
+
+    def pause(self, *args):
+        self._record("pause", *args)
+
+    def resume(self):
+        self._record("resume")
+
+    def note_user_activity(self, at):
+        self._record("note_user_activity", at)
+
+
+def test_apply_config_updates_ship_catalog_context_under_pipeline_lock():
+    target = object.__new__(NekoWowsPlugin)
+    target._pipeline_lock = _TrackingLock()
+    target._state_lock = threading.RLock()
+    target.cfg = WowsConfig()
+    target.timeline = _GuardedDependency(target._pipeline_lock)
+    target.timeline.resize = lambda *_args: None
+    target.service = _GuardedDependency(target._pipeline_lock)
+    target.policy = _GuardedDependency(target._pipeline_lock)
+    target.arbiter = _GuardedDependency(target._pipeline_lock)
+    target.router = _GuardedDependency(target._pipeline_lock)
+    target.dispatcher = _GuardedDependency(target._pipeline_lock)
+    target.transport = _GuardedDependency(target._pipeline_lock)
+    target.importer = _GuardedDependency(target._pipeline_lock)
+    target.ship_context = _GuardedDependency(target._pipeline_lock)
+    target.official_api = _GuardedDependency(target._pipeline_lock)
+    target.screenshots = _GuardedDependency(target._pipeline_lock)
+    target.tactics = NullTacticsRepository()
+    target._blocked_signature = ()
+    cfg = WowsConfig(ship_catalog_enabled=False)
+
+    NekoWowsPlugin._apply_config(target, cfg)
+
+    assert target.ship_context.calls == [("apply_config", (cfg,))]
+
+
+@pytest.mark.parametrize(("field", "value"), [
+    ("low_health_ratios", (0.45, 0.25)),
+    ("enemy_sunk_min_absolute_threshold", 4_000.0),
+    ("enemy_sunk_min_ratio_threshold", 0.1),
+])
+def test_apply_config_drops_candidates_created_with_old_detection_thresholds(
+    field,
+    value,
+):
+    target = object.__new__(NekoWowsPlugin)
+    target._pipeline_lock = _TrackingLock()
+    target._state_lock = threading.RLock()
+    target.cfg = WowsConfig()
+    target.timeline = _GuardedDependency(target._pipeline_lock)
+    target.timeline.resize = lambda *_args: None
+    target.service = _GuardedDependency(target._pipeline_lock)
+    target.policy = _GuardedDependency(target._pipeline_lock)
+    target.arbiter = Arbiter(target.cfg)
+    target.router = _GuardedDependency(target._pipeline_lock)
+    target.dispatcher = _GuardedDependency(target._pipeline_lock)
+    target.transport = _GuardedDependency(target._pipeline_lock)
+    target.importer = _GuardedDependency(target._pipeline_lock)
+    target.ship_context = _GuardedDependency(target._pipeline_lock)
+    target.official_api = _GuardedDependency(target._pipeline_lock)
+    target.screenshots = _GuardedDependency(target._pipeline_lock)
+    target.tactics = NullTacticsRepository()
+    target._blocked_signature = ()
+
+    target.arbiter.submit([candidate(LOW_HEALTH, cfg=target.cfg)], 100.0)
+    assert target.arbiter.stats()["queued"] == 1
+
+    cfg = WowsConfig()
+    setattr(cfg, field, value)
+    NekoWowsPlugin._apply_config(target, cfg)
+
+    assert target.arbiter.stats()["queued"] == 0
+
+
+class _ActionStore:
+    def __init__(self, outcome=Ok(None), *, raises=None):
+        self.outcome = outcome
+        self.raises = raises
+        self.calls = []
+
+    async def set(self, key, value):
+        self.calls.append((key, value))
+        if self.raises is not None:
+            raise self.raises
+        return self.outcome
+
+
+class _BlockingActionStore:
+    def __init__(self):
+        self.calls = []
+        self.first_started = asyncio.Event()
+        self.second_started = asyncio.Event()
+        self.release_first = asyncio.Event()
+
+    async def set(self, key, value):
+        self.calls.append((key, value))
+        if len(self.calls) == 1:
+            self.first_started.set()
+            await self.release_first.wait()
+        else:
+            self.second_started.set()
+        return Ok(None)
+
+
+class _ActionTimeline:
+    def record(self, *_args, **_kwargs):
+        return None
+
+
+def _action_target(*, guarded=True, store=None):
+    target = object.__new__(NekoWowsPlugin)
+    target._preference_lock = asyncio.Lock()
+    target._pipeline_lock = _TrackingLock()
+    target.cfg = _GuardedConfig() if guarded else WowsConfig()
+    if guarded:
+        target.cfg.attach_guard(target._pipeline_lock)
+    target.router = _GuardedDependency(target._pipeline_lock, enforce=guarded)
+    target.policy = _GuardedDependency(target._pipeline_lock, enforce=guarded)
+    target.arbiter = _GuardedDependency(target._pipeline_lock, enforce=guarded)
+    target.dispatcher = _GuardedDependency(target._pipeline_lock, enforce=guarded)
+    target.service = _GuardedDependency(target._pipeline_lock, enforce=guarded)
+    target.official_api = _GuardedDependency(target._pipeline_lock, enforce=guarded)
+    target.transport = _GuardedDependency(target._pipeline_lock, enforce=guarded)
+    target.screenshots = _GuardedDependency(target._pipeline_lock, enforce=guarded)
+    target.shots = type("Shots", (), {"clear": lambda _self: 3})()
+    target._reconnect_required = False
+    target._state_lock = threading.RLock()
+    target.timeline = _ActionTimeline()
+    target.store = store or _ActionStore()
+    target.logger = type("Logger", (), {"warning": lambda *_args: None})()
+    return target
+
+
+@pytest.mark.parametrize(("action", "kwargs", "expected"), [
+    ("set_channel_mode", {"mode": CHANNEL_SINGLE},
+     {"channel_mode": CHANNEL_SINGLE}),
+    ("set_intrusion_mode", {
+        "mode": INTRUSION_NO_INTERRUPT,
+        "quiet_window_seconds": 25.0,
+    }, {
+        "dialogue_intrusion_mode": INTRUSION_NO_INTERRUPT,
+        "user_chat_quiet_window_seconds": 25.0,
+    }),
+    ("set_category_enabled", {
+        "category": CATEGORY_SURVIVAL,
+        "enabled": False,
+    }, {"disabled_categories": (CATEGORY_SURVIVAL,)}),
+    ("set_lane_enabled", {
+        "lane": LANE_URGENT,
+        "enabled": False,
+    }, {"disabled_lanes": (LANE_URGENT,)}),
+    ("set_lane_timing", {
+        "lane": LANE_URGENT,
+        "ttl_seconds": 15.0,
+        "min_gap_seconds": 3.0,
+    }, {"urgent_ttl_seconds": 15.0, "urgent_min_gap_seconds": 3.0}),
+    ("set_official_api", {
+        "enabled": True,
+        "region": OFFICIAL_API_REGION_EU,
+        "application_id": "demo-app-id",
+    }, {
+        "official_api_enabled": True,
+        "official_api_region": OFFICIAL_API_REGION_EU,
+        "official_api_application_id": "demo-app-id",
+    }),
+    ("set_connection", {
+        "service_url": "http://127.0.0.1:18111",
+        "service_source_dir": "D:/8111_for_wows",
+        "game_dir": "D:/Games/WoWs",
+    }, {
+        "service_url": "http://127.0.0.1:18111",
+        "service_source_dir": "D:/8111_for_wows",
+        "game_dir": "D:/Games/WoWs",
+    }),
+    ("set_screenshot_settings", {
+        "min_interval_seconds": 30.0,
+        "retain_count": 8,
+    }, {
+        "screenshot_min_interval_seconds": 30.0,
+        "screenshot_retain_count": 8,
+    }),
+])
+def test_live_preference_actions_change_runtime_only_under_pipeline_lock(
+    action, kwargs, expected,
+):
+    target = _action_target()
+
+    result = asyncio.run(getattr(target, action)(**kwargs))
+
+    assert result.is_ok()
+    for field, value in expected.items():
+        assert getattr(target.cfg, field) == value
+
+
+@pytest.mark.parametrize(("action", "kwargs", "unchanged"), [
+    ("set_channel_mode", {"mode": CHANNEL_SINGLE},
+     {"channel_mode": "dual"}),
+    ("set_intrusion_mode", {
+        "mode": INTRUSION_NO_INTERRUPT,
+        "quiet_window_seconds": 25.0,
+    }, {
+        "dialogue_intrusion_mode": INTRUSION_CRITICAL_ONLY,
+        "user_chat_quiet_window_seconds": 10.0,
+    }),
+    ("set_category_enabled", {
+        "category": CATEGORY_SURVIVAL,
+        "enabled": False,
+    }, {"disabled_categories": ()}),
+    ("set_lane_enabled", {
+        "lane": LANE_URGENT,
+        "enabled": False,
+    }, {"disabled_lanes": ()}),
+    ("set_official_api", {
+        "enabled": True,
+        "region": OFFICIAL_API_REGION_EU,
+        "application_id": "demo-app-id",
+    }, {
+        "official_api_enabled": False,
+        "official_api_region": "asia",
+        "official_api_application_id": "",
+    }),
+    ("set_connection", {
+        "service_url": "http://127.0.0.1:18111",
+        "service_source_dir": "D:/other_8111",
+        "game_dir": "D:/Games/WoWs",
+    }, {
+        "service_url": "http://127.0.0.1:8111",
+        "service_source_dir": "",
+        "game_dir": "",
+    }),
+    ("set_screenshot_settings", {
+        "min_interval_seconds": 30.0,
+        "retain_count": 8,
+    }, {
+        "screenshot_min_interval_seconds": 15.0,
+        "screenshot_retain_count": 20,
+    }),
+])
+@pytest.mark.parametrize("store", [
+    _ActionStore(Err(SdkError("disk"))),
+    _ActionStore(raises=RuntimeError("disk")),
+])
+def test_persistent_preference_failure_keeps_runtime_unchanged(
+    action, kwargs, unchanged, store,
+):
+    target = _action_target(guarded=False, store=store)
+
+    result = asyncio.run(getattr(target, action)(**kwargs))
+
+    assert result.is_err()
+    for field, value in unchanged.items():
+        assert getattr(target.cfg, field) == value
+
+
+def test_disabling_a_category_drops_queued_callouts_for_that_category():
+    target = _action_target(guarded=False)
+    cfg = WowsConfig.from_mapping({
+        "dialogue_intrusion_mode": INTRUSION_NO_INTERRUPT,
+        "user_chat_quiet_window_seconds": 60.0,
+        "urgent_ttl_seconds": 120.0,
+    })
+    target.cfg = cfg
+    target.policy = WowsTacticPolicy(cfg)
+    target.arbiter = Arbiter(cfg)
+    target.arbiter.note_user_activity(100.0)
+    held = target.arbiter.decide(
+        [candidate(LOW_HEALTH, at=101.0, cfg=cfg)], 101.0)
+    assert held.chosen is None
+    assert target.arbiter.stats()["queued"] == 1
+
+    result = asyncio.run(target.set_category_enabled(
+        category=CATEGORY_SURVIVAL, enabled=False))
+
+    assert result.is_ok()
+    assert target.arbiter.stats()["queued"] == 0
+    assert target.arbiter.decide([], 200.0).chosen is None
+
+
+def test_disabling_a_lane_drops_queued_callouts_on_that_lane():
+    target = _action_target(guarded=False)
+    cfg = WowsConfig.from_mapping({
+        "dialogue_intrusion_mode": INTRUSION_NO_INTERRUPT,
+        "user_chat_quiet_window_seconds": 60.0,
+        "urgent_ttl_seconds": 120.0,
+    })
+    target.cfg = cfg
+    target.policy = WowsTacticPolicy(cfg)
+    target.arbiter = Arbiter(cfg)
+    target.arbiter.note_user_activity(100.0)
+    held = target.arbiter.decide(
+        [candidate(LOW_HEALTH, at=101.0, cfg=cfg)], 101.0)
+    assert held.chosen is None
+    assert target.arbiter.stats()["queued"] == 1
+
+    result = asyncio.run(target.set_lane_enabled(
+        lane=LANE_URGENT, enabled=False))
+
+    assert result.is_ok()
+    assert target.arbiter.stats()["queued"] == 0
+    assert target.arbiter.decide([], 200.0).chosen is None
+
+
+def test_pause_resume_and_chat_activity_are_pipeline_state_transitions():
+    target = _action_target()
+
+    assert asyncio.run(target.pause()).is_ok()
+    assert asyncio.run(target.resume()).is_ok()
+    assert target.on_chat_message().is_ok()
+
+
+def test_persistent_preference_actions_are_serialized():
+    async def scenario():
+        store = _BlockingActionStore()
+        target = _action_target(guarded=False, store=store)
+        first = asyncio.create_task(target.set_category_enabled(
+            category=CATEGORY_SURVIVAL, enabled=False))
+        await asyncio.wait_for(store.first_started.wait(), timeout=1.0)
+
+        second = asyncio.create_task(target.set_lane_enabled(
+            lane=LANE_URGENT, enabled=False))
+        await asyncio.sleep(0)
+        overlapped = store.second_started.is_set()
+
+        store.release_first.set()
+        first_result, second_result = await asyncio.gather(first, second)
+        assert overlapped is False
+        assert first_result.is_ok()
+        assert second_result.is_ok()
+
+    asyncio.run(scenario())
+
+
+def test_intrusion_mode_and_window_are_persisted_as_one_atomic_value():
+    target = _action_target()
+
+    result = asyncio.run(target.set_intrusion_mode(
+        mode=INTRUSION_NO_INTERRUPT, quiet_window_seconds=25.0))
+
+    assert result.is_ok()
+    assert target.store.calls == [(
+        "intrusion_settings",
+        {"mode": INTRUSION_NO_INTERRUPT, "quiet_window_seconds": 25.0},
+    )]
+
+
+def test_atomic_intrusion_preference_takes_precedence_over_legacy_keys():
+    class Target:
+        async def _stored(self, key):
+            values = {
+                "intrusion_settings": {
+                    "mode": INTRUSION_NO_INTERRUPT,
+                    "quiet_window_seconds": 25.0,
+                },
+                "dialogue_intrusion_mode": INTRUSION_ALLOW_INTERRUPT,
+                "user_chat_quiet_window_seconds": 600.0,
+            }
+            return values.get(key)
+
+    cfg = WowsConfig()
+    asyncio.run(NekoWowsPlugin._apply_stored_preferences(Target(), cfg))
+
+    assert cfg.dialogue_intrusion_mode == INTRUSION_NO_INTERRUPT
+    assert cfg.user_chat_quiet_window_seconds == 25.0
+
+
+def test_official_api_settings_are_persisted_atomically():
+    target = _action_target()
+
+    result = asyncio.run(target.set_official_api(
+        enabled=True,
+        region=OFFICIAL_API_REGION_EU,
+        application_id="  secret-key  ",
+    ))
+
+    assert result.is_ok()
+    assert result.unwrap() == {
+        "enabled": True,
+        "region": OFFICIAL_API_REGION_EU,
+        "key_configured": True,
+        "cleared": False,
+    }
+    assert target.store.calls == [(
+        STORE_OFFICIAL_API_SETTINGS,
+        {
+            "enabled": True,
+            "region": OFFICIAL_API_REGION_EU,
+            "application_id": "secret-key",
+        },
+    )]
+    assert target.official_api.calls == [("apply_config", (target.cfg,))]
+
+
+def test_official_api_save_without_new_key_keeps_existing():
+    target = _action_target(guarded=False)
+    target.cfg.official_api_application_id = "kept-key"
+
+    result = asyncio.run(target.set_official_api(
+        enabled=True, region=OFFICIAL_API_REGION_EU))
+
+    assert result.is_ok()
+    assert target.cfg.official_api_application_id == "kept-key"
+    assert target.store.calls[0][1]["application_id"] == "kept-key"
+
+
+def test_official_api_clear_removes_the_stored_key():
+    target = _action_target(guarded=False)
+    target.cfg.official_api_application_id = "kept-key"
+
+    result = asyncio.run(target.set_official_api(
+        enabled=False,
+        region="asia",
+        clear_application_id=True,
+    ))
+
+    assert result.is_ok()
+    assert result.unwrap()["cleared"] is True
+    assert result.unwrap()["key_configured"] is False
+    assert target.cfg.official_api_application_id == ""
+    assert target.store.calls[0][1]["application_id"] == ""
+
+
+def test_stored_official_api_settings_override_toml_defaults():
+    class Target:
+        async def _stored(self, key):
+            if key == STORE_OFFICIAL_API_SETTINGS:
+                return {
+                    "enabled": True,
+                    "region": OFFICIAL_API_REGION_EU,
+                    "application_id": "from-store",
+                }
+            return None
+
+    cfg = WowsConfig()
+    asyncio.run(NekoWowsPlugin._apply_stored_preferences(Target(), cfg))
+
+    assert cfg.official_api_enabled is True
+    assert cfg.official_api_region == OFFICIAL_API_REGION_EU
+    assert cfg.official_api_application_id == "from-store"
+
+
+def test_connection_settings_are_persisted_and_mark_reconnect():
+    target = _action_target()
+
+    result = asyncio.run(target.set_connection(
+        service_url=" http://127.0.0.1:18111/ ",
+        service_source_dir=" D:/8111_for_wows ",
+        game_dir=" D:/Games/WoWs ",
+    ))
+
+    assert result.is_ok()
+    assert result.unwrap()["changed"] is True
+    assert result.unwrap()["reconnect_required"] is True
+    assert target.cfg.service_url == "http://127.0.0.1:18111"
+    assert target.store.calls == [(
+        STORE_CONNECTION_SETTINGS,
+        {
+            "service_url": "http://127.0.0.1:18111",
+            "service_source_dir": "D:/8111_for_wows",
+            "game_dir": "D:/Games/WoWs",
+        },
+    )]
+    assert ("apply_config", (target.cfg,)) in target.service.calls
+    assert ("apply_config", (target.cfg,)) in target.transport.calls
+
+
+def test_empty_service_url_is_rejected():
+    target = _action_target(guarded=False)
+
+    result = asyncio.run(target.set_connection(service_url="   "))
+
+    assert result.is_err()
+    assert target.store.calls == []
+
+
+def test_screenshot_settings_are_persisted():
+    target = _action_target(guarded=False)
+    target.cfg.screenshot_enabled = True
+
+    result = asyncio.run(target.set_screenshot_settings(
+        min_interval_seconds=45.0, retain_count=12))
+
+    assert result.is_ok()
+    assert target.store.calls == [(
+        STORE_SCREENSHOT_SETTINGS,
+        {
+            "enabled": True,
+            "min_interval_seconds": 45.0,
+            "retain_count": 12,
+        },
+    )]
+    assert target.cfg.screenshot_min_interval_seconds == 45.0
+    assert target.cfg.screenshot_retain_count == 12
+    assert target.screenshots.calls == [("apply_config", (target.cfg,))]
+
+
+def test_screenshot_enabled_is_persisted():
+    target = _action_target(guarded=False)
+
+    result = asyncio.run(target.set_screenshot_enabled(True))
+
+    assert result.is_ok()
+    assert result.unwrap() == {
+        "screenshot_enabled": True,
+        "cleared_shots": 0,
+    }
+    assert target.cfg.screenshot_enabled is True
+    assert target.store.calls == [(
+        STORE_SCREENSHOT_SETTINGS,
+        {
+            "enabled": True,
+            "min_interval_seconds": 15.0,
+            "retain_count": 20,
+        },
+    )]
+
+
+def test_disabling_screenshots_clears_frames_and_persists_off():
+    target = _action_target(guarded=False)
+    target.cfg.screenshot_enabled = True
+
+    result = asyncio.run(target.set_screenshot_enabled(False))
+
+    assert result.is_ok()
+    assert result.unwrap()["cleared_shots"] == 3
+    assert target.cfg.screenshot_enabled is False
+    assert target.store.calls[0][1]["enabled"] is False
+
+
+def test_enabling_live_frame_reuse_authorizes_the_current_generation():
+    async def scenario():
+        target = _action_target(guarded=False)
+        target.cfg.live_vision_enabled = False
+        target._live_frame_permission_token = "generation-one"
+        calls: list[dict[str, object]] = []
+
+        async def set_live_frame_permission_async(**kwargs):
+            calls.append(kwargs)
+            return {
+                "ok": True,
+                "source_name": "neko_wows",
+                "token": kwargs["token"],
+                "enabled": kwargs["enabled"],
+            }
+
+        target._host_ctx = type("Host", (), {
+            "set_live_frame_permission_async": staticmethod(
+                set_live_frame_permission_async),
+        })()
+
+        result = await target.set_live_vision_enabled(True)
+
+        assert result.is_ok()
+        assert target.cfg.live_vision_enabled is True
+        assert calls == [{
+            "token": "generation-one",
+            "enabled": True,
+            "timeout": 3.0,
+        }]
+        assert target.store.calls == [(STORE_LIVE_VISION_ENABLED, True)]
+
+    asyncio.run(scenario())
+
+
+def test_startup_reload_authorizes_live_frame_reuse_when_enabled():
+    async def scenario():
+        target = _ReloadTarget(current=True, configured=False)
+        target._live_frame_permission_token = "generation-one"
+        calls: list[dict[str, object]] = []
+
+        async def set_live_frame_permission_async(**kwargs):
+            calls.append(kwargs)
+            return {
+                "ok": True,
+                "token": kwargs["token"],
+                "enabled": kwargs["enabled"],
+            }
+
+        target._host_ctx = type("Host", (), {
+            "set_live_frame_permission_async": staticmethod(
+                set_live_frame_permission_async),
+        })()
+
+        await NekoWowsPlugin._reload_config(target, force_dry_run=True)
+
+        assert calls == [{
+            "token": "generation-one",
+            "enabled": True,
+            "timeout": 3.0,
+        }]
+
+    asyncio.run(scenario())
+
+
+def test_failed_live_frame_registration_clears_runtime_readiness():
+    async def scenario():
+        target = _ReloadTarget(current=True, configured=False)
+        target._live_frame_permission_token = "generation-one"
+        target._live_frame_permission_ready = False
+        fail = False
+
+        async def set_live_frame_permission_async(**kwargs):
+            if fail:
+                raise RuntimeError("host unavailable")
+            return {"ok": True, **kwargs}
+
+        target._host_ctx = type("Host", (), {
+            "set_live_frame_permission_async": staticmethod(
+                set_live_frame_permission_async),
+        })()
+
+        await NekoWowsPlugin._publish_live_frame_permission(
+            target, enabled=True)
+        assert target._live_frame_permission_ready is True
+
+        fail = True
+        with pytest.raises(RuntimeError, match="host unavailable"):
+            await NekoWowsPlugin._publish_live_frame_permission(
+                target,
+                enabled=True,
+            )
+
+        assert target._live_frame_permission_ready is False
+
+    asyncio.run(scenario())
+
+
+def test_disabling_live_frame_reuse_waits_for_host_revocation_ack():
+    async def scenario():
+        target = _action_target(guarded=False)
+        target.cfg.live_vision_enabled = True
+        target._live_frame_permission_token = "generation-one"
+        entered = asyncio.Event()
+        release = asyncio.Event()
+        calls: list[dict[str, object]] = []
+
+        async def set_live_frame_permission_async(**kwargs):
+            calls.append(kwargs)
+            entered.set()
+            await release.wait()
+            return {
+                "ok": True,
+                "source_name": "neko_wows",
+                "token": kwargs["token"],
+                "enabled": kwargs["enabled"],
+            }
+
+        target._host_ctx = type("Host", (), {
+            "set_live_frame_permission_async": staticmethod(
+                set_live_frame_permission_async),
+        })()
+
+        action = asyncio.create_task(target.set_live_vision_enabled(False))
+        await asyncio.sleep(0)
+
+        assert entered.is_set()
+        assert action.done() is False
+        assert target.cfg.live_vision_enabled is False
+        assert target._live_frame_permission_token != "generation-one"
+
+        release.set()
+        result = await action
+
+        assert result.is_ok()
+        assert calls == [{
+            "token": target._live_frame_permission_token,
+            "enabled": False,
+            "timeout": 3.0,
+        }]
+        assert target.store.calls == [(STORE_LIVE_VISION_ENABLED, False)]
+
+    asyncio.run(scenario())
+
+
+def test_enabling_live_frame_reuse_reports_host_failure():
+    async def scenario():
+        target = _action_target(guarded=False)
+        target.cfg.live_vision_enabled = False
+        target._live_frame_permission_token = "generation-one"
+
+        async def set_live_frame_permission_async(**_kwargs):
+            raise RuntimeError("live frame permission update unavailable")
+
+        target._host_ctx = type("Host", (), {
+            "set_live_frame_permission_async": staticmethod(
+                set_live_frame_permission_async),
+        })()
+
+        result = await target.set_live_vision_enabled(True)
+
+        assert result.is_err()
+        assert "unavailable" in str(result.error)
+        assert target.cfg.live_vision_enabled is False
+        assert target._live_frame_permission_token == "generation-one"
+        assert target.store.calls == [
+            (STORE_LIVE_VISION_ENABLED, True),
+            (STORE_LIVE_VISION_ENABLED, False),
+        ]
+
+    asyncio.run(scenario())
+
+
+def test_live_frame_host_failure_reports_persistence_rollback_failure():
+    async def scenario():
+        class _RollbackFailingStore:
+            def __init__(self):
+                self.calls = []
+
+            async def set(self, key, value):
+                self.calls.append((key, value))
+                if len(self.calls) == 1:
+                    return Ok(None)
+                return Err(SdkError("rollback disk failure"))
+
+        warnings = []
+        target = _action_target(
+            guarded=False,
+            store=_RollbackFailingStore(),
+        )
+        target.cfg.live_vision_enabled = False
+        target._live_frame_permission_token = "generation-one"
+        target.logger = type("Logger", (), {
+            "warning": lambda _self, message: warnings.append(message),
+        })()
+
+        async def set_live_frame_permission_async(**_kwargs):
+            raise RuntimeError("host unavailable")
+
+        target._host_ctx = type("Host", (), {
+            "set_live_frame_permission_async": staticmethod(
+                set_live_frame_permission_async),
+        })()
+
+        result = await target.set_live_vision_enabled(True)
+
+        assert result.is_err()
+        assert "preference rollback failed" in str(result.error)
+        assert any("preference rollback failed" in item for item in warnings)
+        assert target.cfg.live_vision_enabled is False
+        assert target._live_frame_permission_token == "generation-one"
+
+    asyncio.run(scenario())
+
+
+def test_disabling_live_frame_reuse_reports_host_failure():
+    async def scenario():
+        target = _action_target(guarded=False)
+        target.cfg.live_vision_enabled = True
+        target._live_frame_permission_token = "generation-one"
+
+        async def set_live_frame_permission_async(**_kwargs):
+            raise RuntimeError("live frame permission update rejected")
+
+        target._host_ctx = type("Host", (), {
+            "set_live_frame_permission_async": staticmethod(
+                set_live_frame_permission_async),
+        })()
+
+        result = await target.set_live_vision_enabled(False)
+
+        assert result.is_err()
+        assert "rejected" in str(result.error)
+        assert target.cfg.live_vision_enabled is True
+        assert target._live_frame_permission_token == "generation-one"
+        assert target.store.calls == [
+            (STORE_LIVE_VISION_ENABLED, False),
+            (STORE_LIVE_VISION_ENABLED, True),
+        ]
+
+    asyncio.run(scenario())
+
+
+def test_stored_connection_and_screenshot_settings_override_toml_defaults():
+    class Target:
+        async def _stored(self, key):
+            values = {
+                STORE_CONNECTION_SETTINGS: {
+                    "service_url": "http://127.0.0.1:18111",
+                    "service_source_dir": "D:/8111",
+                    "game_dir": "D:/WoWs",
+                },
+                STORE_SCREENSHOT_SETTINGS: {
+                    "enabled": True,
+                    "min_interval_seconds": 22.0,
+                    "retain_count": 7,
+                },
+            }
+            return values.get(key)
+
+    cfg = WowsConfig()
+    asyncio.run(NekoWowsPlugin._apply_stored_preferences(Target(), cfg))
+
+    assert cfg.service_url == "http://127.0.0.1:18111"
+    assert cfg.service_source_dir == "D:/8111"
+    assert cfg.game_dir == "D:/WoWs"
+    assert cfg.screenshot_enabled is True
+    assert cfg.screenshot_min_interval_seconds == 22.0
+    assert cfg.screenshot_retain_count == 7

@@ -1,0 +1,798 @@
+"""Battle-frozen ship reference context, counting, batching, and bookkeeping."""
+
+from __future__ import annotations
+
+import hashlib
+import threading
+import time
+import xml.etree.ElementTree as ET
+from collections import Counter
+from collections.abc import Mapping
+from dataclasses import dataclass, replace
+from pathlib import Path
+from typing import Any
+
+from ..adapters.neko_dispatcher import resolve_target_lanlan
+from ..domain.snapshot import (
+    RELATION_ALLY,
+    RELATION_ENEMY,
+    RELATION_SELF,
+    STATUS_LIVE,
+    Ship,
+    WowsSnapshot,
+)
+from .models import CatalogMeta, ShipCounts, ShipResolution
+from .renderer import ShipReferenceRenderer
+from .resolver import ShipResolver, normalize_ship_alias
+from .store import NullCatalogSnapshot
+
+_MAX_GAME_INFO_BYTES = 1024 * 1024
+_MAX_EXPIRY_ATTEMPTS = 3
+_VERSION_TAGS = frozenset({"version", "clientversion", "gameversion"})
+_EXPIRED_SHIP_REFERENCE_TEXT = (
+    "Previously submitted World of Warships ship reference context has "
+    "expired and must not be used for any current or future battle."
+)
+
+
+@dataclass(frozen=True)
+class ShipCatalogEvent:
+    outcome: str
+    detail: Mapping[str, Any]
+
+
+@dataclass(frozen=True)
+class ContextObservation:
+    state: str
+    submitted_ship_ids: tuple[int, ...] = ()
+    updated_ship_ids: tuple[int, ...] = ()
+    pending_ship_ids: tuple[int, ...] = ()
+    preview_batches: tuple[str, ...] = ()
+    unresolved_reasons: Mapping[str, int] | None = None
+    events: tuple[ShipCatalogEvent, ...] = ()
+    error: str = ""
+
+
+@dataclass(frozen=True)
+class _PendingBlock:
+    ship_id: int
+    text: str
+    count_update: bool
+
+
+class BattleShipContextManager:
+    """Pin one catalog per battle and submit exact ship profiles as read context."""
+
+    def __init__(
+        self,
+        plugin: Any,
+        store: Any,
+        cfg: Any,
+        *,
+        renderer: ShipReferenceRenderer | None = None,
+        logger: Any = None,
+        clock=time.monotonic,
+    ) -> None:
+        self._plugin = plugin
+        self._store = store
+        self._cfg = cfg
+        self._renderer = renderer or ShipReferenceRenderer()
+        self._logger = logger
+        self._clock = clock
+        self._lock = threading.RLock()
+
+        self._identity: tuple[str, str | None] | None = None
+        self._catalog: Any = None
+        self._frozen_meta: CatalogMeta | None = None
+        self._state = "idle"
+        self._client_game_version = ""
+        self._version_status = "unknown"
+        self._seen_objects: set[tuple[Any, ...]] = set()
+        # Alias → primary object key. Stubs after an objects flicker may only
+        # keep player_id while the first sighting also had ui_id; membership
+        # checks consult this map, but ``_seen_objects`` stays one entry per hull
+        # so ``observed_objects`` does not inflate.
+        self._object_aliases: dict[tuple[Any, ...], tuple[Any, ...]] = {}
+        # Primary object key -> (resolved ship type, last counted relation).
+        # Relation metadata may arrive after the hull identity, so "seen" is
+        # not enough to keep per-side counts correct across partial frames.
+        self._object_classifications: dict[
+            tuple[Any, ...], tuple[int, int | None]
+        ] = {}
+        self._resolutions: dict[int, ShipResolution] = {}
+        self._counts: dict[int, ShipCounts] = {}
+        self._submitted: set[int] = set()
+        self._submitted_counts: dict[int, ShipCounts] = {}
+        self._unresolved_by_object: dict[tuple[Any, ...], str] = {}
+        self._render_failures: set[int] = set()
+        self._unresolved_reasons: Counter[str] = Counter()
+        self._batch_sequence = 0
+        self._submitted_context_targets: dict[str, str | None] = {}
+        self._expiry_attempts: dict[str, int] = {}
+        self._retry_failures = 0
+        self._retry_after = 0.0
+        self._last_error = ""
+
+    def apply_config(self, cfg: Any) -> None:
+        with self._lock:
+            was_enabled = bool(getattr(self._cfg, "ship_catalog_enabled", True))
+            self._cfg = cfg
+            is_enabled = bool(getattr(cfg, "ship_catalog_enabled", True))
+            if was_enabled and not is_enabled:
+                self._reset_locked("config_disabled")
+
+    def observe(
+        self,
+        snapshot: WowsSnapshot,
+        *,
+        dry_run: bool,
+    ) -> ContextObservation:
+        with self._lock:
+            events: list[ShipCatalogEvent] = []
+            try:
+                return self._observe_locked(snapshot, dry_run=dry_run, events=events)
+            except Exception as exc:
+                self._last_error = "context_observation_failed"
+                self._warn(f"ship catalog observation failed: {type(exc).__name__}")
+                events.append(ShipCatalogEvent(
+                    "observation_failed", {"error": type(exc).__name__}))
+                return self._observation(
+                    events=events, error="context_observation_failed")
+
+    def reset(self, reason: str = "battle_end") -> None:
+        with self._lock:
+            self._reset_locked(str(reason or "battle_end"))
+
+    def stats(self) -> dict[str, Any]:
+        with self._lock:
+            meta = self._frozen_meta
+            active_info: Mapping[str, Any] = {}
+            try:
+                read_active = getattr(self._store, "active_manifest_info", None)
+                candidate = read_active() if callable(read_active) else {}
+                if isinstance(candidate, Mapping):
+                    active_info = candidate
+            except Exception:
+                active_info = {}
+            active_catalog_version = active_info.get("catalog_version")
+            active_game_version = active_info.get("game_version")
+            active_schema_version = active_info.get("schema_version")
+            pending = self._pending_ship_ids()
+            return {
+                "enabled": bool(getattr(
+                    self._cfg, "ship_catalog_enabled", True)),
+                "state": self._state,
+                "active_catalog_version": (
+                    active_catalog_version
+                    if isinstance(active_catalog_version, str) else ""),
+                "frozen_catalog_version": meta.catalog_version if meta else "",
+                "catalog_game_version": (
+                    active_game_version
+                    if isinstance(active_game_version, str) else ""),
+                "client_game_version": self._client_game_version,
+                "version_status": self._version_status,
+                "source_commit": meta.source_commit if meta else "",
+                "schema_version": (
+                    active_schema_version
+                    if type(active_schema_version) is int else None),
+                "observed_objects": (
+                    len(self._seen_objects) + len(self._unresolved_by_object)),
+                "resolved_ship_types": len(self._resolutions),
+                "unresolved_objects": sum(self._unresolved_reasons.values()),
+                "pending_ship_types": len(pending),
+                "submitted_ship_types": len(self._submitted),
+                "unresolved_reasons": dict(sorted(self._unresolved_reasons.items())),
+                "last_error": self._last_error,
+            }
+
+    def _observe_locked(
+        self,
+        snapshot: WowsSnapshot,
+        *,
+        dry_run: bool,
+        events: list[ShipCatalogEvent],
+    ) -> ContextObservation:
+        if not bool(getattr(self._cfg, "ship_catalog_enabled", True)):
+            self._state = "disabled"
+            return self._observation(events=events)
+        if snapshot.status != STATUS_LIVE or not snapshot.active:
+            return self._observation(events=events)
+
+        identity = snapshot.identity
+        if self._identity is not None and identity != self._identity:
+            self._reset_locked("identity_changed")
+            events.append(ShipCatalogEvent(
+                "battle_reset", {"reason": "identity_changed"}))
+        if self._identity is None:
+            self._freeze(snapshot, events)
+
+        if self._state in {"null_catalog", "version_rejected"}:
+            return self._observation(events=events)
+
+        self._observe_ships(snapshot, events)
+        blocks = self._pending_blocks(events)
+        batches = self._pack_batches(blocks)
+        previews = tuple(text for text, _ in batches)
+        if dry_run:
+            for text, batch_blocks in batches:
+                events.append(ShipCatalogEvent("batch_preview", {
+                    "characters": len(text),
+                    "ship_ids": [item.ship_id for item in batch_blocks],
+                }))
+            return self._observation(events=events, preview_batches=previews)
+
+        now = float(self._clock())
+        if blocks and now < self._retry_after:
+            events.append(ShipCatalogEvent("batch_retry_wait", {
+                "retry_in_seconds": round(self._retry_after - now, 3),
+            }))
+            return self._observation(events=events)
+
+        submitted: list[int] = []
+        updated: list[int] = []
+        failed = False
+        push_error = ""
+        for text, batch_blocks in batches:
+            self._batch_sequence += 1
+            batch_id = self._batch_sequence
+            full_ids = tuple(
+                item.ship_id for item in batch_blocks if not item.count_update)
+            update_ids = tuple(
+                item.ship_id for item in batch_blocks if item.count_update)
+            accepted, error = self._push_batch(
+                text,
+                batch_id=batch_id,
+                ship_ids=tuple(item.ship_id for item in batch_blocks),
+                update_ship_ids=update_ids,
+            )
+            if accepted:
+                for ship_id in full_ids:
+                    self._submitted.add(ship_id)
+                    self._submitted_counts[ship_id] = self._counts[ship_id]
+                    submitted.append(ship_id)
+                for ship_id in update_ids:
+                    self._submitted_counts[ship_id] = self._counts[ship_id]
+                    updated.append(ship_id)
+                events.append(ShipCatalogEvent("batch_submitted", {
+                    "batch_id": batch_id,
+                    "ship_ids": list(full_ids),
+                    "count_update_ship_ids": list(update_ids),
+                }))
+            else:
+                failed = True
+                push_error = error or push_error
+                events.append(ShipCatalogEvent("batch_declined", {
+                    "batch_id": batch_id,
+                    "ship_ids": [item.ship_id for item in batch_blocks],
+                    "reason": error or "submission_declined",
+                }))
+                break
+
+        if failed:
+            self._retry_failures += 1
+            delay = min(30.0, 0.5 * (2 ** min(self._retry_failures - 1, 6)))
+            self._retry_after = now + delay
+        elif batches:
+            self._retry_failures = 0
+            self._retry_after = 0.0
+            self._last_error = ""
+        if push_error:
+            self._last_error = push_error
+        return self._observation(
+            events=events,
+            submitted_ship_ids=tuple(sorted(set(submitted))),
+            updated_ship_ids=tuple(sorted(set(updated))),
+            error=push_error,
+        )
+
+    def _freeze(
+        self,
+        snapshot: WowsSnapshot,
+        events: list[ShipCatalogEvent],
+    ) -> None:
+        self._identity = snapshot.identity
+        try:
+            catalog = self._store.snapshot(
+                language=getattr(self._cfg, "ship_catalog_language", None))
+        except Exception as exc:
+            self._warn(f"ship catalog open failed: {type(exc).__name__}")
+            catalog = NullCatalogSnapshot("catalog_open_failed")
+        self._catalog = catalog
+        self._frozen_meta = getattr(catalog, "meta", None)
+        self._client_game_version = self._client_version(snapshot)
+        meta = self._frozen_meta
+        self._version_status = self._compare_versions(
+            self._client_game_version,
+            meta.game_version if meta is not None else "",
+        )
+        if meta is None:
+            self._state = "null_catalog"
+            events.append(ShipCatalogEvent("null_catalog", {
+                "reason": getattr(catalog, "reason", "catalog_unavailable"),
+            }))
+            return
+
+        policy = str(getattr(
+            self._cfg, "ship_catalog_version_policy", "warn"))
+        if policy == "strict" and self._version_status != "match":
+            try:
+                catalog.close()
+            except Exception:
+                pass
+            self._catalog = NullCatalogSnapshot(
+                f"version_{self._version_status}")
+            self._state = "version_rejected"
+            events.append(ShipCatalogEvent("version_rejected", {
+                "version_status": self._version_status,
+            }))
+            return
+
+        self._state = "loaded"
+        events.extend((
+            ShipCatalogEvent("loaded", {
+                "catalog_version": meta.catalog_version,
+            }),
+            ShipCatalogEvent("version_" + self._version_status, {}),
+            ShipCatalogEvent("battle_frozen", {
+                "catalog_version": meta.catalog_version,
+            }),
+        ))
+
+    def _observe_ships(
+        self,
+        snapshot: WowsSnapshot,
+        events: list[ShipCatalogEvent],
+    ) -> None:
+        if self._catalog is None:
+            return
+        resolver = ShipResolver(self._catalog)
+        fallback_occurrences: Counter[tuple[Any, ...]] = Counter()
+        own_player_id = (
+            snapshot.self_ship.player_id
+            if snapshot.self_ship is not None else None
+        )
+        for ship in snapshot.ships:
+            if not isinstance(ship.name, str) or not ship.name.strip():
+                continue
+            object_keys = self._object_keys(ship, fallback_occurrences)
+            if self._object_is_seen(object_keys):
+                # Register any newly observed alias (e.g. stub that only has
+                # player_id after a ui_id flicker) without recounting the hull.
+                primary = self._remember_object_keys(object_keys)
+                self._clear_unresolved_reasons(object_keys)
+                self._reclassify_seen_object(
+                    primary, ship, own_player_id, events)
+                continue
+            resolution = resolver.resolve(
+                ship.name, tier=ship.tier, ship_type=ship.ship_type)
+            if not resolution.resolved or resolution.ship is None:
+                # Keep a single reason on the primary key; clear sibling aliases
+                # so ui-only → player+ui transitions do not double-count.
+                self._clear_unresolved_reasons(object_keys)
+                self._set_unresolved_reason(object_keys[0], resolution.reason)
+                events.append(ShipCatalogEvent("unresolved", {
+                    "reason": resolution.reason,
+                }))
+                continue
+            self._clear_unresolved_reasons(object_keys)
+            primary = self._remember_object_keys(object_keys)
+            ship_id = resolution.ship.ship_id
+            self._resolutions.setdefault(ship_id, resolution)
+            relation = self._effective_relation(ship, own_player_id)
+            self._object_classifications[primary] = (ship_id, relation)
+            self._adjust_count(ship_id, relation, 1)
+            events.append(ShipCatalogEvent("resolved", {"ship_id": ship_id}))
+
+    @staticmethod
+    def _effective_relation(ship: Ship, own_player_id: int | None) -> int | None:
+        if (
+            isinstance(own_player_id, int)
+            and not isinstance(own_player_id, bool)
+            and ship.player_id == own_player_id
+        ):
+            return RELATION_SELF
+        relation = ship.relation
+        if isinstance(relation, bool) or relation not in {
+            RELATION_SELF, RELATION_ALLY, RELATION_ENEMY,
+        }:
+            return None
+        return relation
+
+    def _reclassify_seen_object(
+        self,
+        primary: tuple[Any, ...],
+        ship: Ship,
+        own_player_id: int | None,
+        events: list[ShipCatalogEvent],
+    ) -> None:
+        previous = self._object_classifications.get(primary)
+        if previous is None:
+            return
+        ship_id, old_relation = previous
+        relation = self._effective_relation(ship, own_player_id)
+        # Missing metadata is a less-specific observation, and self identity is
+        # authoritative once known. Neither should downgrade an earlier count.
+        if relation is None or (
+            old_relation == RELATION_SELF and relation != RELATION_SELF
+        ):
+            return
+        if relation == old_relation:
+            return
+        self._adjust_count(ship_id, old_relation, -1)
+        self._adjust_count(ship_id, relation, 1)
+        self._object_classifications[primary] = (ship_id, relation)
+        events.append(ShipCatalogEvent("reclassified", {
+            "ship_id": ship_id,
+            "from_relation": old_relation,
+            "to_relation": relation,
+        }))
+
+    def _adjust_count(
+        self, ship_id: int, relation: int | None, delta: int,
+    ) -> None:
+        counts = self._counts.get(ship_id, ShipCounts())
+        if relation == RELATION_SELF:
+            counts = replace(
+                counts, self_count=max(0, counts.self_count + delta))
+        elif relation == RELATION_ALLY:
+            counts = replace(
+                counts, ally_count=max(0, counts.ally_count + delta))
+        elif relation == RELATION_ENEMY:
+            counts = replace(
+                counts, enemy_count=max(0, counts.enemy_count + delta))
+        self._counts[ship_id] = counts
+
+    def _object_is_seen(self, object_keys: list[tuple[Any, ...]]) -> bool:
+        for key in object_keys:
+            primary = self._object_aliases.get(key, key)
+            if primary in self._seen_objects or key in self._seen_objects:
+                return True
+        return False
+
+    def _remember_object_keys(
+        self,
+        object_keys: list[tuple[Any, ...]],
+    ) -> tuple[Any, ...]:
+        primary = object_keys[0]
+        for key in object_keys:
+            existing = self._object_aliases.get(key)
+            if existing is not None:
+                primary = existing
+                break
+            if key in self._seen_objects:
+                primary = key
+                break
+        for key in object_keys:
+            self._object_aliases[key] = primary
+        self._seen_objects.add(primary)
+        return primary
+
+    def _set_unresolved_reason(
+        self,
+        object_key: tuple[Any, ...],
+        reason: str | None,
+    ) -> None:
+        previous = self._unresolved_by_object.get(object_key)
+        if previous == reason:
+            return
+        if previous is not None:
+            del self._unresolved_by_object[object_key]
+            self._unresolved_reasons[previous] -= 1
+            if self._unresolved_reasons[previous] <= 0:
+                del self._unresolved_reasons[previous]
+        if reason is not None:
+            self._unresolved_by_object[object_key] = reason
+            self._unresolved_reasons[reason] += 1
+
+    def _clear_unresolved_reasons(
+        self,
+        object_keys: list[tuple[Any, ...]],
+    ) -> None:
+        for object_key in object_keys:
+            self._set_unresolved_reason(object_key, None)
+
+    @staticmethod
+    def _object_keys(
+        ship: Ship,
+        fallback_occurrences: Counter[tuple[Any, ...]],
+    ) -> list[tuple[Any, ...]]:
+        """Stable identities for one hull across object/stub frames.
+
+        Prefer ``player_id`` when present: remembered stubs after an objects
+        flicker often keep only that field. Also alias ``ui_id`` so a later
+        full frame of the same ship is recognised.
+        """
+        keys: list[tuple[Any, ...]] = []
+        if isinstance(ship.player_id, int) and not isinstance(ship.player_id, bool):
+            keys.append(("player", ship.player_id))
+        if isinstance(ship.ui_id, int) and not isinstance(ship.ui_id, bool):
+            keys.append(("ui", ship.ui_id))
+        if keys:
+            return keys
+        base = (
+            "fallback",
+            ship.team_id,
+            ship.relation,
+            normalize_ship_alias(ship.name),
+        )
+        ordinal = fallback_occurrences[base]
+        fallback_occurrences[base] += 1
+        return [base + (ordinal,)]
+
+    def _pending_blocks(
+        self,
+        events: list[ShipCatalogEvent],
+    ) -> list[_PendingBlock]:
+        blocks: list[_PendingBlock] = []
+        for ship_id in sorted(self._resolutions):
+            resolution = self._resolutions[ship_id]
+            counts = self._counts.get(ship_id, ShipCounts())
+            try:
+                if ship_id not in self._submitted:
+                    text = self._renderer.render(
+                        resolution, counts, version_status=self._version_status)
+                    blocks.append(_PendingBlock(ship_id, text, False))
+                elif self._submitted_counts.get(ship_id) != counts:
+                    text = self._renderer.render_count_update(
+                        resolution, counts, version_status=self._version_status)
+                    blocks.append(_PendingBlock(ship_id, text, True))
+                    events.append(ShipCatalogEvent(
+                        "count_update", {"ship_id": ship_id}))
+                else:
+                    continue
+                if ship_id in self._render_failures:
+                    self._render_failures.remove(ship_id)
+                    self._unresolved_reasons["render_failed"] -= 1
+                    if self._unresolved_reasons["render_failed"] <= 0:
+                        del self._unresolved_reasons["render_failed"]
+            except Exception as exc:
+                if ship_id not in self._render_failures:
+                    self._render_failures.add(ship_id)
+                    self._unresolved_reasons["render_failed"] += 1
+                self._warn(
+                    f"ship reference render failed: {type(exc).__name__}")
+                events.append(ShipCatalogEvent("unresolved", {
+                    "reason": "render_failed",
+                    "ship_id": ship_id,
+                }))
+        return blocks
+
+    def _pack_batches(
+        self,
+        blocks: list[_PendingBlock],
+    ) -> list[tuple[str, tuple[_PendingBlock, ...]]]:
+        limit = int(getattr(
+            self._cfg, "ship_catalog_context_batch_chars", 12_000))
+        batches: list[tuple[str, tuple[_PendingBlock, ...]]] = []
+        current: list[_PendingBlock] = []
+        current_size = 0
+        for block in blocks:
+            separator_size = 2 if current else 0
+            if current and current_size + separator_size + len(block.text) > limit:
+                batches.append((
+                    "\n\n".join(item.text for item in current),
+                    tuple(current),
+                ))
+                current = []
+                current_size = 0
+                separator_size = 0
+            current.append(block)
+            current_size += separator_size + len(block.text)
+        if current:
+            batches.append((
+                "\n\n".join(item.text for item in current),
+                tuple(current),
+            ))
+        return batches
+
+    def _push_batch(
+        self,
+        text: str,
+        *,
+        batch_id: int,
+        ship_ids: tuple[int, ...],
+        update_ship_ids: tuple[int, ...],
+    ) -> tuple[bool, str]:
+        identity = self._identity or ("", None)
+        battle_key = hashlib.sha256(
+            repr(identity).encode("utf-8", "replace")).hexdigest()[:16]
+        coalesce_key = f"wows_ship_reference:{battle_key}:{batch_id}"
+        target_lanlan = self._current_target_lanlan()
+        meta = self._frozen_meta
+        try:
+            receipt = self._plugin.push_message(
+                source="neko_wows",
+                visibility=[],
+                ai_behavior="read",
+                parts=[{"type": "text", "text": text}],
+                priority=0,
+                coalesce_key=coalesce_key,
+                metadata={
+                    "plugin": "neko_wows",
+                    "kind": "ship_reference",
+                    "battle_identity": list(identity),
+                    "catalog_version": (
+                        meta.catalog_version if meta is not None else ""),
+                    "batch_id": batch_id,
+                    "ship_ids": list(ship_ids),
+                    "count_update_ship_ids": list(update_ship_ids),
+                },
+                target_lanlan=target_lanlan or None,
+            )
+        except Exception as exc:
+            self._warn(f"ship reference push failed: {type(exc).__name__}")
+            return False, "host_push_failed"
+        if isinstance(receipt, Mapping) and receipt.get("submitted") is True:
+            self._submitted_context_targets[coalesce_key] = (
+                target_lanlan or None
+            )
+            return True, ""
+        return False, "submission_declined"
+
+    def _current_target_lanlan(self) -> str:
+        return resolve_target_lanlan(self._plugin)
+
+    def _observation(
+        self,
+        *,
+        events: list[ShipCatalogEvent],
+        submitted_ship_ids: tuple[int, ...] = (),
+        updated_ship_ids: tuple[int, ...] = (),
+        preview_batches: tuple[str, ...] = (),
+        error: str = "",
+    ) -> ContextObservation:
+        return ContextObservation(
+            state=self._state,
+            submitted_ship_ids=submitted_ship_ids,
+            updated_ship_ids=updated_ship_ids,
+            pending_ship_ids=self._pending_ship_ids(),
+            preview_batches=preview_batches,
+            unresolved_reasons=dict(sorted(self._unresolved_reasons.items())),
+            events=tuple(events),
+            error=error,
+        )
+
+    def _pending_ship_ids(self) -> tuple[int, ...]:
+        pending = []
+        for ship_id in self._resolutions:
+            counts = self._counts.get(ship_id, ShipCounts())
+            if (
+                ship_id not in self._submitted
+                or self._submitted_counts.get(ship_id) != counts
+            ):
+                pending.append(ship_id)
+        return tuple(sorted(pending))
+
+    def _expire_submitted_contexts(self, reason: str) -> None:
+        pending = sorted(self._submitted_context_targets.items())
+        for coalesce_key, target_lanlan in pending:
+            attempts = self._expiry_attempts.get(coalesce_key, 0)
+            if attempts >= _MAX_EXPIRY_ATTEMPTS:
+                self._submitted_context_targets.pop(coalesce_key, None)
+                self._expiry_attempts.pop(coalesce_key, None)
+                self._warn(
+                    "ship reference expiry abandoned after "
+                    f"{attempts} attempts ({coalesce_key})")
+                continue
+            self._expiry_attempts[coalesce_key] = attempts + 1
+            try:
+                receipt = self._plugin.push_message(
+                    source="neko_wows",
+                    visibility=[],
+                    ai_behavior="read",
+                    parts=[{
+                        "type": "text",
+                        "text": _EXPIRED_SHIP_REFERENCE_TEXT,
+                    }],
+                    priority=0,
+                    coalesce_key=coalesce_key,
+                    metadata={
+                        "plugin": "neko_wows",
+                        "kind": "ship_reference",
+                        "delivery_intent": "passive_context",
+                        "context_expired": True,
+                        "cleanup_reason": reason,
+                        "ship_ids": [],
+                        "count_update_ship_ids": [],
+                    },
+                    target_lanlan=target_lanlan,
+                )
+                if (
+                    isinstance(receipt, Mapping)
+                    and receipt.get("submitted") is True
+                ):
+                    self._submitted_context_targets.pop(coalesce_key, None)
+                    self._expiry_attempts.pop(coalesce_key, None)
+            except Exception as exc:
+                self._warn(
+                    "ship reference expiry push failed: "
+                    f"{type(exc).__name__}"
+                )
+
+    def _reset_locked(self, reason: str) -> None:
+        self._expire_submitted_contexts(reason)
+        catalog = self._catalog
+        self._catalog = None
+        if catalog is not None:
+            try:
+                catalog.close()
+            except Exception:
+                pass
+        self._identity = None
+        self._frozen_meta = None
+        self._state = "idle"
+        self._client_game_version = ""
+        self._version_status = "unknown"
+        self._seen_objects.clear()
+        self._object_aliases.clear()
+        self._object_classifications.clear()
+        self._resolutions.clear()
+        self._counts.clear()
+        self._submitted.clear()
+        self._submitted_counts.clear()
+        self._unresolved_by_object.clear()
+        self._render_failures.clear()
+        self._unresolved_reasons.clear()
+        self._retry_failures = 0
+        self._retry_after = 0.0
+        self._last_error = ""
+        self._log("debug", f"ship catalog battle context reset ({reason})")
+
+    def _client_version(self, snapshot: WowsSnapshot) -> str:
+        explicit = self._normalize_version(snapshot.game_version)
+        if explicit:
+            return explicit
+        game_dir = str(getattr(self._cfg, "game_dir", "") or "").strip()
+        if not game_dir:
+            return ""
+        path = Path(game_dir) / "game_info.xml"
+        try:
+            if not path.is_file() or path.stat().st_size > _MAX_GAME_INFO_BYTES:
+                return ""
+            root = ET.fromstring(path.read_bytes())
+        except (OSError, ET.ParseError, ValueError):
+            return ""
+        for element in root.iter():
+            local_name = str(element.tag).rsplit("}", 1)[-1].casefold()
+            if local_name in _VERSION_TAGS:
+                normalized = self._normalize_version(element.text)
+                if normalized:
+                    return normalized
+        return ""
+
+    @staticmethod
+    def _normalize_version(value: Any) -> str:
+        if not isinstance(value, str):
+            return ""
+        normalized = value.strip().lstrip("vV").replace(",", ".")
+        normalized = "".join(normalized.split())
+        parts = normalized.split(".")
+        if len(parts) < 2 or any(not part.isdigit() for part in parts):
+            return ""
+        return ".".join(str(int(part)) for part in parts)
+
+    @classmethod
+    def _compare_versions(cls, client: str, catalog: str) -> str:
+        client_version = cls._normalize_version(client)
+        catalog_version = cls._normalize_version(catalog)
+        if not client_version or not catalog_version:
+            return "unknown"
+        return "match" if client_version == catalog_version else "mismatch"
+
+    def _warn(self, message: str) -> None:
+        self._log("warning", message)
+
+    def _log(self, level: str, message: str) -> None:
+        method = getattr(self._logger, level, None)
+        if callable(method):
+            try:
+                method(message)
+            except Exception:
+                pass
+
+
+__all__ = [
+    "BattleShipContextManager",
+    "ContextObservation",
+    "ShipCatalogEvent",
+]

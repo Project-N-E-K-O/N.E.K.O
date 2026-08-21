@@ -16,6 +16,17 @@
 """Session lifecycle, anti-repeat, avatar, omni, and proactive search limits."""
 
 # ---- Main: session / avatar / omni ----
+VOICE_SILENCE_TIMEOUT_SECONDS = 90
+"""Realtime 语音会话静默超时（秒）。
+
+- 用途：``OmniRealtimeClient`` 在长时间无语音输入时自动关麦 / 结束 session
+  （``handle_silence_timeout``）。
+- 生效范围：仅 ``core_api_type`` 为 ``glm`` / ``free``，且非 livestream。
+- ``0`` 或负值：关闭该静默超时（仍可被 livestream 整路跳过）。
+- 无 UI：改此常量后需重启进程生效。
+- 设计依据：原硬编码 90s；做成文件配置方便本地拉长或关掉，避免屏幕共享
+  等长会话被静默拆除。"""
+
 SESSION_ARCHIVE_TRIGGER_TOKENS = 5000
 """会话历史归档触发的累计 token 总量。
 - 用途：core.py 主循环每 turn-end 后检查；超过则置
