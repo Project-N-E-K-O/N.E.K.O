@@ -713,7 +713,12 @@ class OpenFangAdapter:
         # (3) Write config.toml（同步文件 IO，offload 到线程）
         file_written = False
         try:
-            await asyncio.to_thread(self._write_openfang_model_config, api_key, base_url, model)
+            # 把本次已解析好的 pinfo 传下去：落盘路径自己重算的话会漏掉配置层的
+            # provider_type，声明式 anthropic 端点被判成 openai，config.toml 与
+            # 运行时推上去的 provider 分叉。
+            await asyncio.to_thread(
+                self._write_openfang_model_config, api_key, base_url, model, pinfo
+            )
             file_written = True
         except Exception as e:
             logger.debug("[OpenFang] config.toml write failed (non-fatal): %s", e)
@@ -763,7 +768,9 @@ class OpenFangAdapter:
         return ok
 
     @staticmethod
-    def _write_openfang_model_config(api_key: str, base_url: str, model: str) -> None:
+    def _write_openfang_model_config(
+        api_key: str, base_url: str, model: str, pinfo: dict | None = None
+    ) -> None:
         """
         Ensure ~/.openfang/config.toml contains the [default_model] and [provider_urls] config.
         Whether to go through the proxy is decided by the provider type.
@@ -784,12 +791,9 @@ class OpenFangAdapter:
             with open(config_path, "r", encoding="utf-8") as f:
                 content = f.read()
 
-        # 根据 base_url 检测 provider
-        #
-        # 优先复用 sync_config 已经算好的那份（它带上了配置层解析出的 provider_type）。
-        # 落盘这条路自己重算的话，声明式 anthropic 端点会被判成 openai —— 运行时推的
-        # provider 和 config.toml 里写的对不上。
-        pinfo = getattr(self, '_provider_info', None) or _detect_provider_info(base_url, model)
+        # 优先用调用方已解析好的那份（它带上了配置层的 provider_type）；
+        # 没传时才自己按 URL/模型名重算，保住其他调用路径。
+        pinfo = pinfo or _detect_provider_info(base_url, model)
         provider = pinfo["provider"]
         effective_url = pinfo["effective_url"]
         api_key_env = pinfo["api_key_env"]

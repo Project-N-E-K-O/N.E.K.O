@@ -344,3 +344,63 @@ class TestSyncConfigKeyFreeProvider:
         adapter = OpenFangAdapter()
         result = self._run(adapter.sync_config())
         assert result is False
+
+
+# ── _write_openfang_model_config: the persisted config.toml path ──
+
+
+class TestWriteOpenFangModelConfig:
+    """The persisted config.toml must agree with the runtime provider push.
+
+    This path had no coverage at all, which is how a `self` reference slipped
+    into a @staticmethod: nothing ever executed the function.
+    """
+
+    def _write(self, tmp_path, monkeypatch, **kwargs):
+        from brain.openfang_adapter import OpenFangAdapter
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("USERPROFILE", str(tmp_path))
+        OpenFangAdapter._write_openfang_model_config(**kwargs)
+        return (tmp_path / ".openfang" / "config.toml").read_text(encoding="utf-8")
+
+    def test_writes_without_a_bound_instance(self, tmp_path, monkeypatch):
+        """It is a @staticmethod — it must not reach for `self`."""
+        content = self._write(
+            tmp_path, monkeypatch,
+            api_key="sk-x", base_url="https://api.openai.com/v1", model="gpt-5",
+        )
+        assert 'provider = "openai"' in content, f"实际写出=\n{content}"
+
+    def test_caller_supplied_provider_info_wins(self, tmp_path, monkeypatch):
+        """A declared Anthropic endpoint must not be re-detected as openai."""
+        content = self._write(
+            tmp_path, monkeypatch,
+            api_key="sk-x",
+            base_url="https://llm.example.com/anthropic",
+            model="claude-sonnet-4",
+            pinfo={
+                "provider": "anthropic",
+                "needs_proxy": False,
+                "effective_url": "https://llm.example.com/anthropic",
+                "api_key_env": "ANTHROPIC_API_KEY",
+            },
+        )
+        assert 'provider = "anthropic"' in content, f"实际写出=\n{content}"
+        assert 'api_key_env = "ANTHROPIC_API_KEY"' in content
+        assert "https://llm.example.com/anthropic" in content
+
+    def test_falls_back_to_detection_when_not_supplied(self, tmp_path, monkeypatch):
+        """Other call sites that pass no pinfo keep the old behaviour."""
+        content = self._write(
+            tmp_path, monkeypatch,
+            api_key="sk-x", base_url="https://api.kimi.com/coding", model="kimi-for-coding",
+        )
+        assert 'provider = "anthropic"' in content, f"实际写出=\n{content}"
+
+    def test_plaintext_key_is_never_persisted(self, tmp_path, monkeypatch):
+        """Guard the existing invariant while touching this function."""
+        content = self._write(
+            tmp_path, monkeypatch,
+            api_key="sk-super-secret-value", base_url="https://api.openai.com/v1", model="gpt-5",
+        )
+        assert "sk-super-secret-value" not in content, "明文密钥不得落盘"

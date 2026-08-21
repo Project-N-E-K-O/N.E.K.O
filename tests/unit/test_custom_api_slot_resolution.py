@@ -175,6 +175,34 @@ class TestRealtimeApiType:
         assert rt['base_url'] == 'ws://localhost:8000/v1/realtime'
 
     @pytest.mark.unit
+    def test_legacy_hand_typed_endpoint_stays_local(self, config_manager):
+        """Configs predating omniModelProvider keep their previous behaviour.
+
+        Those users typed a realtime endpoint by hand and there is no provider
+        key to read; narrowing 'local' must not change what they get.
+        """
+        _write_core_config(config_manager, _base_config(
+            omniModelId='my-legacy-realtime',
+            omniModelUrl='ws://192.168.1.50:8000/v1/realtime',
+        ))
+        rt = config_manager.get_model_api_config('realtime')
+        assert rt['api_type'] == 'local', (
+            "手填过实时端点的老配置行为必须与改动前一致，"
+            f"实际={rt['api_type']!r}"
+        )
+        assert rt['base_url'] == 'ws://192.168.1.50:8000/v1/realtime'
+
+    @pytest.mark.unit
+    def test_no_saved_omni_url_is_not_treated_as_custom(self, config_manager):
+        """A never-configured omni slot is not a hand-typed endpoint."""
+        _write_core_config(config_manager, _base_config(coreApi='glm', assistApi='glm'))
+        rt = config_manager.get_model_api_config('realtime')
+        assert rt['api_type'] == 'glm', (
+            "没存过 omni URL 的配置不该被当成自配端点，"
+            f"实际={rt['api_type']!r}"
+        )
+
+    @pytest.mark.unit
     def test_named_realtime_provider_keeps_its_identity(self, config_manager):
         """An explicitly picked realtime provider is not flattened to 'local'."""
         _write_core_config(config_manager, _base_config(

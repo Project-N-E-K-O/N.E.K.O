@@ -1254,6 +1254,10 @@ class CoreConfigMixin:
                 if _model_provider_prefix == 'omni'
                 else _raw_provider
             )
+        # omniModelUrl 的**原始存盘值**（不是解析后的 REALTIME_MODEL_URL）：用来区分
+        # 「用户真的手填过一个实时端点」和「URL 只是从 provider profile 默认值填出来的」。
+        # 老配置在 omniModelProvider 这个键存在之前就能手填 URL，那种必须继续按 local 处理。
+        config['omniModelUrl'] = str(core_cfg.get('omniModelUrl', '') or '')
         config['ttsModelUrl'] = str(core_cfg.get('ttsModelUrl', '') or '')
         config['ttsModelId'] = str(core_cfg.get('ttsModelId', '') or '')
         config['ttsVoiceId'] = str(core_cfg.get('ttsVoiceId', '') or '')
@@ -1739,6 +1743,12 @@ class CoreConfigMixin:
                 return 'local'
             if omni_provider and not omni_provider.startswith('follow_'):
                 return omni_provider
+            # 老配置在 omniModelProvider 这个键出现之前就能手填实时端点，那种存量
+            # 没有 provider 值可读，但它确实是自配端点，行为必须与改动前一致。
+            # 判据是「存盘里真有 omniModelUrl」——profile 默认值填出来的 URL 不进
+            # 这个键，所以不会把「什么都没选」误判成自配。
+            if not omni_provider and str(core_config.get('omniModelUrl') or '').strip():
+                return 'local'
             return str(core_config.get('CORE_API_TYPE', '') or '')
 
         if model_type == 'game_main':
