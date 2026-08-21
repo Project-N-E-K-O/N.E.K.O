@@ -6950,7 +6950,7 @@ def test_study_companion_notebook_is_integrated_with_static_exporter() -> None:
     assert "button.disabled = busyCount > 0;" in notebook
     assert "window.StudyCompanionNotebook?.close?.() === false" in exporter
     assert "const drawerBody = renderSurfaceDrawerBody(surfaceId);" in main_js
-    assert "if (!drawerBody) return;" in main_js
+    assert "if (!drawerBody) return false;" in main_js
     assert "${raw.replace(' ', 'T')}Z" in notebook
     assert "getSelectedNoteIds" in exporter
     assert "note_ids: notebookNoteIds" in exporter
