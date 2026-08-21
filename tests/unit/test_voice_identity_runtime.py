@@ -197,6 +197,12 @@ async def test_activation_status_tracks_live_route_and_runtime_degradation() -> 
         profile.close()
 
     assert registry.activation_status() is VoiceIdentityActivationResult.READY
+    registry._restore_pending.add(manager)  # type: ignore[attr-defined]
+    assert (
+        registry.activation_status()
+        is VoiceIdentityActivationResult.RUNTIME_DEGRADED
+    )
+    registry._restore_pending.discard(manager)  # type: ignore[attr-defined]
     manager._asr_route_mode = "native"  # type: ignore[attr-defined]
     assert (
         registry.activation_status()
@@ -665,6 +671,48 @@ async def test_restore_watchdog_retries_pending_manager() -> None:
     assert not registry._restore_pending  # type: ignore[attr-defined]
     assert registry._restore_retry_task is None  # type: ignore[attr-defined]
     await registry.close()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_bounded_restore_allows_second_attempt_within_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        runtime_module,
+        "_WATCHDOG_MANAGER_CALL_TIMEOUT_SECONDS",
+        0.2,
+    )
+
+    class FirstAttemptBlocks(_Manager):
+        def __init__(self) -> None:
+            super().__init__()
+            self.calls = 0
+
+        async def set_voice_input_suppressed(
+            self,
+            reason: str,
+            *,
+            suppressed: bool,
+        ) -> None:
+            self.calls += 1
+            self.suppression_calls.append((reason, suppressed))
+            if self.calls == 1:
+                await asyncio.Event().wait()
+
+    manager = FirstAttemptBlocks()
+
+    restored = await OwnerVoiceRuntimeRegistry._restore_manager_bounded(
+        manager,
+        "voice_identity_enrollment",
+    )
+
+    assert restored
+    assert manager.calls == 2
+    assert manager.suppression_calls == [
+        ("voice_identity_enrollment", False),
+        ("voice_identity_enrollment", False),
+    ]
 
 
 @pytest.mark.unit

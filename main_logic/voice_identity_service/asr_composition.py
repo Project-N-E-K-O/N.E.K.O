@@ -94,6 +94,14 @@ class OwnerVoiceAsrCompositionFactory:
                     activation_generation=generation,
                 )
 
+        def on_backend_degraded() -> None:
+            if runtime._speaker_verifier_activation_generation == generation:
+                runtime._mark_speaker_verifier_degraded()
+
+        def on_backend_recovered() -> None:
+            if runtime._speaker_verifier_activation_generation == generation:
+                runtime._mark_speaker_verifier_healthy()
+
         return SpeakerShadowRuntime(
             backend_factory=backend_factory,
             config=SpeakerShadowConfig(
@@ -107,8 +115,8 @@ class OwnerVoiceAsrCompositionFactory:
                 ),
             ),
             on_observation=on_observation,
-            on_backend_degraded=runtime._mark_speaker_verifier_degraded,
-            on_backend_recovered=runtime._mark_speaker_verifier_healthy,
+            on_backend_degraded=on_backend_degraded,
+            on_backend_recovered=on_backend_recovered,
         )
 
     def close(self) -> None:

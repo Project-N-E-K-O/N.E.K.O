@@ -1301,6 +1301,15 @@ def _cleanup_character_dicts(k: str):
     del role_state[k]
 
 
+async def _unregister_character_voice_identity_manager(k: str) -> None:
+    rs = role_state.get(k)
+    if rs is None or rs.session_manager is None:
+        return
+    from .voice_identity_runtime import unregister_voice_identity_manager
+
+    await unregister_voice_identity_manager(rs.session_manager)
+
+
 async def initialize_character_data():
     """Full refresh: load config + run per-k init for every catgirl + clean up deleted ones.
 
@@ -1347,6 +1356,7 @@ async def initialize_character_data():
     # 线程都已停/超时，再在事件循环里顺序清理 dict —— 这些操作都是纯内存，不需要并行。
     for k in removed_names:
         logger.info(f"清理已删除角色 {k} 的资源")
+        await _unregister_character_voice_identity_manager(k)
         _cleanup_character_dicts(k)
 
     logger.info(f"角色配置加载完成，当前角色: {catgirl_names}，主人: {master_name}")
@@ -1388,6 +1398,7 @@ async def init_one_catgirl(name: str, *, is_new: bool = False):
 async def remove_one_catgirl(name: str):
     """Fast path for deleting a single catgirl: stop the character's thread + clear dicts + refresh globals."""
     await _stop_character_thread(name)
+    await _unregister_character_voice_identity_manager(name)
     _cleanup_character_dicts(name)
     # config 文件已由调用方写入，这里刷新 globals 让 catgirl_names 等反映删除
     await _refresh_character_globals()

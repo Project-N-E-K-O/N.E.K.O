@@ -654,6 +654,98 @@ async def test_character_reload_drops_non_explicit_fallback_locale(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_remove_one_catgirl_unregisters_voice_identity_manager(monkeypatch):
+    from app.main_server import character_runtime, voice_identity_runtime
+
+    name = "NekoVoiceDelete"
+    manager = object()
+    unregistered = []
+
+    async def unregister(target):
+        unregistered.append(target)
+
+    async def refresh_globals():
+        return None
+
+    role = SimpleNamespace(
+        session_manager=manager,
+        sync_task=None,
+        sync_message_queue=SimpleNamespace(empty=lambda: True),
+    )
+    monkeypatch.setitem(character_runtime.role_state, name, role)
+    monkeypatch.setattr(
+        voice_identity_runtime,
+        "unregister_voice_identity_manager",
+        unregister,
+    )
+    monkeypatch.setattr(
+        character_runtime,
+        "_refresh_character_globals",
+        refresh_globals,
+    )
+
+    await character_runtime.remove_one_catgirl(name)
+
+    assert unregistered == [manager]
+    assert name not in character_runtime.role_state
+
+
+@pytest.mark.asyncio
+async def test_initialize_character_data_unregisters_removed_voice_managers(
+    monkeypatch,
+):
+    from app.main_server import character_runtime
+
+    removed_name = "NekoVoiceRemoved"
+    calls = []
+    role = SimpleNamespace(
+        session_manager=object(),
+        sync_task=None,
+        sync_message_queue=SimpleNamespace(empty=lambda: True),
+    )
+    monkeypatch.setitem(character_runtime.role_state, removed_name, role)
+    monkeypatch.setattr(
+        character_runtime._config_manager,
+        "cleanup_invalid_voice_ids",
+        lambda: (False, []),
+    )
+    monkeypatch.setattr(character_runtime, "catgirl_names", [])
+
+    async def refresh_globals():
+        return None
+
+    async def stop_character_thread(name):
+        calls.append(("stop", name))
+
+    async def unregister_character_voice_identity_manager(name):
+        calls.append(("unregister", name))
+
+    monkeypatch.setattr(
+        character_runtime,
+        "_refresh_character_globals",
+        refresh_globals,
+    )
+    monkeypatch.setattr(
+        character_runtime,
+        "_stop_character_thread",
+        stop_character_thread,
+    )
+    monkeypatch.setattr(
+        character_runtime,
+        "_unregister_character_voice_identity_manager",
+        unregister_character_voice_identity_manager,
+    )
+
+    await character_runtime.initialize_character_data()
+
+    assert calls == [
+        ("stop", removed_name),
+        ("unregister", removed_name),
+    ]
+    assert removed_name not in character_runtime.role_state
+
+
+@pytest.mark.asyncio
 async def test_game_archive_writer_forwards_full_session_locale(monkeypatch):
     from main_routers.game_router import archive
     from utils import internal_http_client

@@ -179,6 +179,7 @@ async def test_backend_health_marks_runtime_degraded() -> None:
         enforce=True,
     )
     shadow = factory()
+    runtime._speaker_verifier_activation_generation = "activation-8"
 
     shadow._mark_backend_degraded()
 
@@ -198,12 +199,37 @@ async def test_backend_health_recovery_clears_runtime_degraded() -> None:
         enforce=True,
     )
     shadow = factory()
+    runtime._speaker_verifier_activation_generation = "activation-8"
 
     shadow._mark_backend_degraded()
     assert runtime._speaker_verifier_degraded
     shadow._mark_backend_recovered()
 
     assert not runtime._speaker_verifier_degraded
+    await shadow.close()
+    factory.close()
+    profile.close()
+
+
+async def test_backend_health_ignores_stale_activation_generation() -> None:
+    runtime = _runtime()
+    profile = _profile()
+    factory = OwnerVoiceAsrCompositionFactory(
+        runtime,
+        profile,
+        activation_generation="activation-8",
+        enforce=True,
+    )
+    shadow = factory()
+    runtime._speaker_verifier_activation_generation = "activation-9"
+
+    shadow._mark_backend_degraded()
+    assert not runtime._speaker_verifier_degraded
+
+    runtime._speaker_verifier_degraded = True
+    shadow._mark_backend_recovered()
+    assert runtime._speaker_verifier_degraded
+
     await shadow.close()
     factory.close()
     profile.close()

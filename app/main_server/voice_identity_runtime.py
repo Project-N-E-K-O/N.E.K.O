@@ -373,7 +373,8 @@ class OwnerVoiceRuntimeRegistry:
             return VoiceIdentityActivationResult.RUNTIME_DEGRADED
         managers = tuple(self._managers)
         if self._attach_pending or any(
-            manager in self._detach_pending for manager in managers
+            manager in self._detach_pending or manager in self._restore_pending
+            for manager in managers
         ):
             return VoiceIdentityActivationResult.RUNTIME_DEGRADED
         result = VoiceIdentityActivationResult.READY
@@ -820,14 +821,16 @@ class OwnerVoiceRuntimeRegistry:
     @staticmethod
     async def _restore_manager(manager, reason: str) -> None:
         last_error: BaseException | None = None
-        for _attempt in range(2):
+        attempts = 2
+        attempt_timeout = _WATCHDOG_MANAGER_CALL_TIMEOUT_SECONDS / attempts
+        for _attempt in range(attempts):
             try:
                 await asyncio.wait_for(
                     manager.set_voice_input_suppressed(
                         reason,
                         suppressed=False,
                     ),
-                    timeout=_WATCHDOG_MANAGER_CALL_TIMEOUT_SECONDS,
+                    timeout=attempt_timeout,
                 )
                 return
             except asyncio.CancelledError as exc:
