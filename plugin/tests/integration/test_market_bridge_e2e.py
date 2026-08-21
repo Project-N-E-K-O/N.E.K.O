@@ -1588,25 +1588,43 @@ async def test_proxy_verification_cancellation_removes_temporary_package(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """Cancelling proxy SHA-256 verification removes its downloaded package."""
+    """Cancellation waits for the proxy verifier thread before cleanup."""
     from plugin.server.routes import market_bridge as market_bridge_module
 
     package_path = tmp_path / "proxy.neko-plugin"
     package_path.write_bytes(b"proxy-package")
+    verifier_started = threading.Event()
+    release_verifier = threading.Event()
+    verifier_finished = threading.Event()
 
-    async def cancel_verification(*args: Any, **kwargs: Any) -> Any:
-        raise asyncio.CancelledError
+    def blocking_verifier(path: Path, expected_hash: str) -> str:
+        with path.open("rb"):
+            verifier_started.set()
+            assert release_verifier.wait(2)
+        verifier_finished.set()
+        return "passed"
 
-    monkeypatch.setattr(market_bridge_module.asyncio, "to_thread", cancel_verification)
+    monkeypatch.setattr(market_bridge_module, "_verify_sha256_file", blocking_verifier)
 
-    with pytest.raises(asyncio.CancelledError):
-        await market_bridge_module._verify_downloaded_package_with_fallback(
+    verification = asyncio.create_task(
+        market_bridge_module._verify_downloaded_package_with_fallback(
             "https://cdn.gh-proxy.org/https://github.com/example/plugin/releases/download/v1.0.0/plugin.neko-plugin",
             package_path,
             "a" * 64,
             {},
         )
+    )
+    assert await asyncio.to_thread(verifier_started.wait, 1)
+    verification.cancel()
+    await asyncio.sleep(0)
 
+    assert package_path.exists()
+    assert not verification.done()
+    release_verifier.set()
+    with pytest.raises(asyncio.CancelledError):
+        await verification
+
+    assert verifier_finished.is_set()
     assert not package_path.exists()
 
 
@@ -1616,7 +1634,7 @@ async def test_direct_verification_cancellation_removes_temporary_package(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """Cancelling direct SHA-256 verification removes both temporary packages."""
+    """Cancellation waits for the direct verifier thread before cleanup."""
     from plugin.server.routes import market_bridge as market_bridge_module
 
     direct_url = "https://github.com/example/plugin/releases/download/v1.0.0/plugin.neko-plugin"
@@ -1625,31 +1643,45 @@ async def test_direct_verification_cancellation_removes_temporary_package(
     direct_path = tmp_path / "direct.neko-plugin"
     proxy_path.write_bytes(b"proxy-package")
     direct_path.write_bytes(b"direct-package")
+    verifier_started = threading.Event()
+    release_verifier = threading.Event()
+    verifier_finished = threading.Event()
 
-    async def verify_or_cancel(
-        function: Any,
-        path: Path,
-        expected_hash: str,
-    ) -> str:
+    def verify_or_block(path: Path, expected_hash: str) -> str:
         if path == proxy_path:
             raise ValueError("SHA256 校验失败")
-        raise asyncio.CancelledError
+        with path.open("rb"):
+            verifier_started.set()
+            assert release_verifier.wait(2)
+        verifier_finished.set()
+        return "passed"
 
     async def download_direct(url: str, task: dict[str, Any]) -> Path:
         assert url == direct_url
         return direct_path
 
-    monkeypatch.setattr(market_bridge_module.asyncio, "to_thread", verify_or_cancel)
+    monkeypatch.setattr(market_bridge_module, "_verify_sha256_file", verify_or_block)
     monkeypatch.setattr(market_bridge_module, "_download_package_once", download_direct)
 
-    with pytest.raises(asyncio.CancelledError):
-        await market_bridge_module._verify_downloaded_package_with_fallback(
+    verification = asyncio.create_task(
+        market_bridge_module._verify_downloaded_package_with_fallback(
             proxied_url,
             proxy_path,
             "a" * 64,
             {},
         )
+    )
+    assert await asyncio.to_thread(verifier_started.wait, 1)
+    verification.cancel()
+    await asyncio.sleep(0)
 
+    assert direct_path.exists()
+    assert not verification.done()
+    release_verifier.set()
+    with pytest.raises(asyncio.CancelledError):
+        await verification
+
+    assert verifier_finished.is_set()
     assert not proxy_path.exists()
     assert not direct_path.exists()
 

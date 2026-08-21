@@ -3393,13 +3393,17 @@ async def _verify_downloaded_package_with_fallback(
     """Verify a package and retry one allowlisted proxy mismatch via GitHub."""
 
     expected_hash = _normalize_required_sha256(expected_hash)
-    try:
-        return package_path, await asyncio.to_thread(
+    verification_task = asyncio.create_task(
+        asyncio.to_thread(
             _verify_sha256_file,
             package_path,
             expected_hash,
         )
+    )
+    try:
+        return package_path, await asyncio.shield(verification_task)
     except asyncio.CancelledError:
+        await _wait_for_verification_task(verification_task)
         _cleanup_download_file(package_path)
         raise
     except ValueError:
@@ -3425,19 +3429,44 @@ async def _verify_downloaded_package_with_fallback(
             raise
         except Exception as exc:
             raise _DownloadAttemptError(str(exc)) from exc
-        try:
-            sha_check = await asyncio.to_thread(
+        verification_task = asyncio.create_task(
+            asyncio.to_thread(
                 _verify_sha256_file,
                 direct_path,
                 expected_hash,
             )
+        )
+        try:
+            sha_check = await asyncio.shield(verification_task)
         except asyncio.CancelledError:
+            await _wait_for_verification_task(verification_task)
             _cleanup_download_file(direct_path)
             raise
         except Exception:
             _cleanup_download_file(direct_path)
             raise
         return direct_path, sha_check
+
+
+async def _wait_for_verification_task(verification_task: asyncio.Task[Any]) -> None:
+    """Wait for a cancelled verification worker before deleting its file.
+
+    ``asyncio.to_thread`` cancellation leaves the worker thread running.  The
+    SHA-256 verifier keeps the package file open, so especially on Windows the
+    caller must wait for it to close the handle before unlinking the package.
+    """
+
+    while not verification_task.done():
+        try:
+            await asyncio.shield(verification_task)
+        except asyncio.CancelledError:
+            # Preserve the original cancellation after the worker has exited;
+            # a repeated cancellation must not let cleanup race the file handle.
+            continue
+        except Exception:
+            # The worker is done. Its result is irrelevant because cancellation
+            # takes precedence for the request being cleaned up.
+            break
 
 
 def _download_package_result(
