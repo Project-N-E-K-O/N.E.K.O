@@ -1525,7 +1525,133 @@ async def test_invalid_expected_hash_does_not_trigger_proxy_fallback(
         )
 
     assert fallback_attempted is False
-    assert package_path.exists()
+    assert package_path.read_bytes() == b"valid-package"
+
+
+@pytest.mark.asyncio
+async def test_download_cancellation_removes_temporary_package(
+    bridge_e2e_env: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Cancelling a stream removes the partially created Market package."""
+    from plugin.server.routes import market_bridge as market_bridge_module
+
+    class Response:
+        status_code = 200
+        headers = {"content-length": "14"}
+
+        def raise_for_status(self) -> None:
+            return None
+
+        async def aiter_bytes(self, chunk_size: int) -> Any:
+            yield b"partial-package"
+            raise asyncio.CancelledError
+
+    class Stream:
+        async def __aenter__(self) -> Response:
+            return Response()
+
+        async def __aexit__(self, *args: Any) -> None:
+            return None
+
+    class Client:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            pass
+
+        async def __aenter__(self) -> "Client":
+            return self
+
+        async def __aexit__(self, *args: Any) -> None:
+            return None
+
+        def stream(self, method: str, url: str) -> Stream:
+            assert method == "GET"
+            return Stream()
+
+    monkeypatch.setattr(market_bridge_module.httpx, "AsyncClient", Client)
+    monkeypatch.setattr(
+        market_bridge_module.PluginCliPathPolicy,
+        "from_settings",
+        classmethod(lambda cls: type("Policy", (), {"package_artifacts_root": tmp_path})()),
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await market_bridge_module._download_package_once("https://cdn.test/package", {})
+
+    assert not list((tmp_path / ".downloads").glob("*.neko-plugin"))
+
+
+@pytest.mark.asyncio
+async def test_proxy_verification_cancellation_removes_temporary_package(
+    bridge_e2e_env: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Cancelling proxy SHA-256 verification removes its downloaded package."""
+    from plugin.server.routes import market_bridge as market_bridge_module
+
+    package_path = tmp_path / "proxy.neko-plugin"
+    package_path.write_bytes(b"proxy-package")
+
+    async def cancel_verification(*args: Any, **kwargs: Any) -> Any:
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(market_bridge_module.asyncio, "to_thread", cancel_verification)
+
+    with pytest.raises(asyncio.CancelledError):
+        await market_bridge_module._verify_downloaded_package_with_fallback(
+            "https://cdn.gh-proxy.org/https://github.com/example/plugin/releases/download/v1.0.0/plugin.neko-plugin",
+            package_path,
+            "a" * 64,
+            {},
+        )
+
+    assert not package_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_direct_verification_cancellation_removes_temporary_package(
+    bridge_e2e_env: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Cancelling direct SHA-256 verification removes both temporary packages."""
+    from plugin.server.routes import market_bridge as market_bridge_module
+
+    direct_url = "https://github.com/example/plugin/releases/download/v1.0.0/plugin.neko-plugin"
+    proxied_url = f"https://cdn.gh-proxy.org/{direct_url}"
+    proxy_path = tmp_path / "proxy.neko-plugin"
+    direct_path = tmp_path / "direct.neko-plugin"
+    proxy_path.write_bytes(b"proxy-package")
+    direct_path.write_bytes(b"direct-package")
+
+    async def verify_or_cancel(
+        function: Any,
+        path: Path,
+        expected_hash: str,
+    ) -> str:
+        if path == proxy_path:
+            raise ValueError("SHA256 校验失败")
+        raise asyncio.CancelledError
+
+    async def download_direct(url: str, task: dict[str, Any]) -> Path:
+        assert url == direct_url
+        return direct_path
+
+    monkeypatch.setattr(market_bridge_module.asyncio, "to_thread", verify_or_cancel)
+    monkeypatch.setattr(market_bridge_module, "_download_package_once", download_direct)
+
+    with pytest.raises(asyncio.CancelledError):
+        await market_bridge_module._verify_downloaded_package_with_fallback(
+            proxied_url,
+            proxy_path,
+            "a" * 64,
+            {},
+        )
+
+    assert not proxy_path.exists()
+    assert not direct_path.exists()
 
 
 @pytest.mark.asyncio

@@ -3399,6 +3399,9 @@ async def _verify_downloaded_package_with_fallback(
             package_path,
             expected_hash,
         )
+    except asyncio.CancelledError:
+        _cleanup_download_file(package_path)
+        raise
     except ValueError:
         fallback_url = _direct_github_download_fallback(url)
         if not fallback_url:
@@ -3428,6 +3431,9 @@ async def _verify_downloaded_package_with_fallback(
                 direct_path,
                 expected_hash,
             )
+        except asyncio.CancelledError:
+            _cleanup_download_file(direct_path)
+            raise
         except Exception:
             _cleanup_download_file(direct_path)
             raise
@@ -3531,6 +3537,9 @@ async def _download_package_once(url: str, task: dict[str, Any]) -> Path:
                             )
 
         return package_path
+    except asyncio.CancelledError:
+        _cleanup_download_file(package_path)
+        raise
     except httpx.HTTPStatusError as exc:
         _cleanup_download_file(package_path)
         elapsed_ms = max(0, round((time.monotonic() - started_at) * 1000))
