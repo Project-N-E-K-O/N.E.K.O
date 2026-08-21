@@ -912,6 +912,13 @@ class CoreConfigMixin:
         neither claims a provider identity of its own.
         """
         candidate = (provider or '').strip()
+        # follow_assist 在这个槽上没有独立含义：实时会话跟的是核心 API。前端早就
+        # 这么做了（omni 分支的 follow_assist 取的是**核心** provider 的 url/key），
+        # 只有后端的 Key 派生还在按 assist 走，于是快照里留下一把「assist 的 Key
+        # 配核心的端点」。目前它到不了下游（follow_* 下 REALTIME_MODEL_URL 恒为空，
+        # 自定义三元组凑不齐），但那是个只等一次改动就会点着的陷阱。归一掉。
+        if candidate == 'follow_assist':
+            return 'follow_core'
         if not candidate or candidate == 'custom' or candidate.startswith('follow_'):
             return candidate
         # 落回 follow_core 而不是空串：空串会让下面的 URL/模型/Key 覆盖分支照旧

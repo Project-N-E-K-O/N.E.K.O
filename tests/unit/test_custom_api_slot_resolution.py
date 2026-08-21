@@ -416,6 +416,39 @@ class TestRealtimeApiType:
         )
 
     @pytest.mark.unit
+    def test_follow_assist_on_omni_resolves_against_core(self, config_manager):
+        """The omni slot follows the core API even when set to follow_assist.
+
+        The realtime session, its TTS worker and its credential all belong to
+        the core provider. Deriving this slot's key from the assist provider
+        left an assist credential paired with the core endpoint in the
+        snapshot — currently unreachable (REALTIME_MODEL_URL stays empty under
+        follow_*, so the custom triple never completes), but one change away
+        from going live.
+        """
+        _write_core_config(config_manager, {
+            'coreApi': 'openai',
+            'assistApi': 'qwen',
+            'coreApiKey': 'sk-openai-core',
+            'assistApiKeyOpenai': 'sk-openai-core',
+            'assistApiKeyQwen': 'sk-qwen-assist',
+            'enableCustomApi': True,
+            'omniModelProvider': 'follow_assist',
+        })
+        cfg = config_manager.get_core_config()
+        assert cfg['REALTIME_MODEL_API_KEY'] != 'sk-qwen-assist', (
+            "实时槽的 Key 不该来自辅助 API —— 那会与核心端点配成跨厂商组合，"
+            f"实际={cfg['REALTIME_MODEL_API_KEY']!r}"
+        )
+        assert cfg['REALTIME_MODEL_API_KEY'] == cfg['CORE_API_KEY'], (
+            f"应与核心同源，实际={cfg['REALTIME_MODEL_API_KEY']!r}"
+        )
+        rt = config_manager.get_model_api_config('realtime')
+        assert rt['api_type'] == 'openai'
+        assert rt['api_key'] == cfg['CORE_API_KEY']
+        assert rt['base_url'] == cfg['CORE_URL']
+
+    @pytest.mark.unit
     def test_follow_core_uses_core_api_type(self, config_manager):
         """The default follow_core value keeps tracking the core provider."""
         _write_core_config(config_manager, _base_config(
