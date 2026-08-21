@@ -517,6 +517,15 @@ def test_dispose_engine_keeps_bookkeeping_when_disposal_fails(tmp_path):
     assert name not in manager._writable_bootstrapped
 
 
+def _sqlite_cache_keys(manager, db_path):
+    """The two connection strings ``dispose_engine`` cleans up for one character."""
+    normalized, readonly_connection_string = manager._build_sqlite_connection_string(
+        str(db_path), readonly=True,
+    )
+    writable_connection_string = f"sqlite:///{normalized.replace(chr(92), '/')}"
+    return readonly_connection_string, writable_connection_string
+
+
 @pytest.mark.unit
 def test_dispose_engine_keeps_the_cached_pool_when_its_disposal_fails(tmp_path):
     """The cache entry is the only handle on that pool — never drop it unreleased."""
@@ -527,32 +536,69 @@ def test_dispose_engine_keeps_the_cached_pool_when_its_disposal_fails(tmp_path):
     manager = TimeIndexedMemory(recent_history_manager=None)
     manager.db_paths[name] = str(db_path)
 
-    normalized, readonly_connection_string = manager._build_sqlite_connection_string(
-        str(db_path), readonly=True,
-    )
-    writable_connection_string = f"sqlite:///{normalized.replace(chr(92), '/')}"
+    readonly_key, writable_key = _sqlite_cache_keys(manager, db_path)
     cached_engine = MagicMock()
     cached_engine.dispose.side_effect = OSError("cached pool busy")
     cache = SQLChatMessageHistory._engine_cache
-    touched = {readonly_connection_string, writable_connection_string}
-    saved = {key: cache.get(key) for key in touched if key in cache}
+    saved = {key: cache[key] for key in (readonly_key, writable_key) if key in cache}
     try:
-        for key in touched:
-            cache[key] = cached_engine
+        # 只挂 writable 这一个键：一次调用对同一个池只该释放一次。
+        cache[writable_key] = cached_engine
 
         with pytest.raises(OSError):
             manager.dispose_engine(name)
 
+        assert cached_engine.dispose.call_count == 1
         # 缓存条目必须还在，否则重试再也够不到这个 pool。
-        assert all(cache.get(key) is cached_engine for key in touched)
+        assert cache.get(writable_key) is cached_engine
         assert manager.db_paths[name] == str(db_path)
 
         cached_engine.dispose.side_effect = None
         assert manager.dispose_engine(name) is True
-        assert all(key not in cache for key in touched)
+        assert cached_engine.dispose.call_count == 2
+        assert writable_key not in cache
         assert name not in manager.db_paths
     finally:
-        for key in touched:
+        for key in (readonly_key, writable_key):
+            cache.pop(key, None)
+        cache.update(saved)
+
+
+@pytest.mark.unit
+def test_dispose_engine_keeps_the_cache_entry_when_the_primary_engine_fails(tmp_path):
+    """The cached entry can BE the manager's engine; a failed one must not be dropped."""
+    from memory.timeindex import SQLChatMessageHistory, TimeIndexedMemory
+
+    name = "主引擎释放失败角色"
+    db_path = tmp_path / "time_indexed.db"
+    engine = MagicMock()
+    engine.dispose.side_effect = OSError("primary pool busy")
+    manager = TimeIndexedMemory(recent_history_manager=None)
+    manager.engines[name] = engine
+    manager.db_paths[name] = str(db_path)
+
+    readonly_key, writable_key = _sqlite_cache_keys(manager, db_path)
+    cache = SQLChatMessageHistory._engine_cache
+    saved = {key: cache[key] for key in (readonly_key, writable_key) if key in cache}
+    try:
+        cache[readonly_key] = engine
+
+        with pytest.raises(OSError):
+            manager.dispose_engine(name)
+
+        # 同一个对象在一次调用里只 dispose 一次，且失败后缓存条目要留住。
+        assert engine.dispose.call_count == 1
+        assert cache.get(readonly_key) is engine
+        assert manager.engines[name] is engine
+
+        engine.dispose.side_effect = None
+        assert manager.dispose_engine(name) is True
+        assert engine.dispose.call_count == 2
+        assert readonly_key not in cache
+        assert name not in manager.engines
+        assert name not in manager.db_paths
+    finally:
+        for key in (readonly_key, writable_key):
             cache.pop(key, None)
         cache.update(saved)
 
