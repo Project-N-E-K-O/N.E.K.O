@@ -63,7 +63,7 @@ def test_advanced_settings_exposes_independent_general_narration_control() -> No
     )
 
     assert checkbox is not None
-    assert "const settingsGeneralNarrationEnabled = document.getElementById('settingsGeneralNarrationEnabled');" in source
+    assert "const settingsGeneralNarrationEnabled = $id('settingsGeneralNarrationEnabled');" in source
     assert re.search(
         r"settingsGeneralNarrationEnabled\.checked\s*=\s*"
         r"communication\.general_narration_enabled\s*!==\s*false",
@@ -81,8 +81,8 @@ def test_advanced_settings_exposes_independent_general_narration_control() -> No
 def test_communication_parent_control_uses_formal_settings_response_contract() -> None:
     source = (STATIC_DIR / "main.js").read_text(encoding="utf-8")
 
-    assert "const settingsCommunicationEnabled = document.getElementById('settingsCommunicationEnabled');" in source
-    assert "const settingsCommunicationRuntime = document.getElementById('settingsCommunicationRuntime');" in source
+    assert "const settingsCommunicationEnabled = $id('settingsCommunicationEnabled');" in source
+    assert "const settingsCommunicationRuntime = $id('settingsCommunicationRuntime');" in source
     assert "communication.enabled = settingsCommunicationEnabled" in source
     assert "payload.communication_status || {}" in source
     assert "settingsSolutionNarrationEnabled.disabled =" in source

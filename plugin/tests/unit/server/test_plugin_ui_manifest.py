@@ -16,6 +16,7 @@ def test_normalize_plugin_ui_manifest_panel_and_guide() -> None:
         "plugin": {
             "ui": {
                 "enabled": True,
+                "expose_legacy_static_panel": False,
                 "panel": [
                     {
                         "id": "main",
@@ -38,6 +39,7 @@ def test_normalize_plugin_ui_manifest_panel_and_guide() -> None:
     manifest = normalize_plugin_ui_manifest(conf, plugin_id="demo")
 
     assert manifest is not None
+    assert manifest["expose_legacy_static_panel"] is False
     assert manifest["panel"][0]["kind"] == "panel"
     assert manifest["panel"][0]["permissions"] == ["state:read", "config:read", "action:call"]
     assert manifest["guide"][0]["kind"] == "guide"
@@ -204,6 +206,79 @@ def test_static_compat_surface_is_marked_and_precedes_declared_panels(tmp_path: 
         ("main", True),
         ("dashboard", False),
     ]
+
+
+def test_legacy_static_panel_can_be_hidden_without_losing_open_ui(tmp_path: Path) -> None:
+    plugin_dir = tmp_path / "demo"
+    static_dir = plugin_dir / "static"
+    static_dir.mkdir(parents=True)
+    (static_dir / "index.html").write_text("<html></html>", encoding="utf-8")
+    config_path = plugin_dir / "plugin.toml"
+    config_path.write_text("[plugin]\nid='demo'\n", encoding="utf-8")
+    plugin_ui = normalize_plugin_ui_manifest(
+        {"plugin": {"ui": {"expose_legacy_static_panel": False}}},
+        plugin_id="demo",
+    )
+    meta = {
+        "id": "demo",
+        "config_path": str(config_path),
+        "plugin_ui": plugin_ui,
+    }
+
+    surfaces, warnings = _build_surfaces_sync("demo", meta)
+    actions = _build_plugin_list_actions_from_meta("demo", meta)
+
+    assert warnings == []
+    assert surfaces == []
+    assert actions == [
+        {
+            "id": "open_ui",
+            "kind": "ui",
+            "target": "/plugin/demo/ui/",
+            "open_in": "new_tab",
+        },
+    ]
+
+
+def test_open_ui_uses_legacy_static_root_before_auxiliary_static_surface(tmp_path: Path) -> None:
+    plugin_dir = tmp_path / "demo"
+    static_dir = plugin_dir / "static"
+    docs_dir = plugin_dir / "docs"
+    static_dir.mkdir(parents=True)
+    docs_dir.mkdir()
+    (static_dir / "index.html").write_text("<html></html>", encoding="utf-8")
+    (docs_dir / "guide.html").write_text("<html>guide</html>", encoding="utf-8")
+    config_path = plugin_dir / "plugin.toml"
+    config_path.write_text("[plugin]\nid='demo'\n", encoding="utf-8")
+    plugin_ui = normalize_plugin_ui_manifest(
+        {
+            "plugin": {
+                "ui": {
+                    "expose_legacy_static_panel": False,
+                    "docs": [
+                        {
+                            "id": "guide",
+                            "mode": "static",
+                            "entry": "docs/guide.html",
+                        },
+                    ],
+                }
+            }
+        },
+        plugin_id="demo",
+    )
+    meta = {
+        "id": "demo",
+        "config_path": str(config_path),
+        "plugin_ui": plugin_ui,
+    }
+
+    actions = _build_plugin_list_actions_from_meta("demo", meta)
+
+    open_ui = next(action for action in actions if action["id"] == "open_ui")
+    open_guide = next(action for action in actions if action["id"] == "open_guide")
+    assert open_ui["target"] == "/plugin/demo/ui/"
+    assert open_guide["target"] == "/plugins/demo?tab=guide"
 
 
 def test_unavailable_surfaces_do_not_get_route_actions(tmp_path: Path) -> None:

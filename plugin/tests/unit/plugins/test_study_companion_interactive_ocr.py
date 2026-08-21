@@ -245,6 +245,9 @@ async def test_ocr_entry_falls_back_to_fullscreen_when_interactive_is_unavailabl
 
     assert isinstance(result, Ok)
     assert result.value["text"] == "fullscreen"
+    assert result.value["capture_mode_requested"] == "interactive"
+    assert result.value["capture_mode_used"] == "fullscreen"
+    assert result.value["interactive_fallback_reason"] == error_code
     assert pipeline.fullscreen_calls == 1
 
 
@@ -387,31 +390,78 @@ def test_ocr_entry_and_static_ui_expose_interactive_timeout_contract() -> None:
         "default": "fullscreen",
     }
     assert meta.timeout == 90.0
+    assert set(meta.llm_result_fields or ()) >= {
+        "capture_mode_requested",
+        "capture_mode_used",
+        "interactive_fallback_reason",
+    }
     assert "study_ocr_snapshot: 100000" in main_js
     assert "callPlugin('study_ocr_snapshot', { capture_mode: 'interactive' })" in main_js
     assert "if (data.status === 'canceled')" in main_js
     assert "await refreshStatus({ updateReply: false });" in main_js
     assert "function interactiveOcrErrorMessage(error)" in main_js
+    assert "function interactiveOcrFallbackMessage(reason)" in main_js
     assert "errorText.includes('capture_busy')" in main_js
     assert "errorText.includes('renderer_timeout')" in main_js
     assert "errorText.includes('SCREENSHOT_OVERLAY_SESSION_TIMEOUT')" in main_js
     assert "errorText.includes('no_renderer')" in main_js
+    assert "data.capture_mode_used === 'fullscreen'" in main_js
+    assert "data.interactive_fallback_reason" in main_js
     assert "if (!localizedMessage)" in main_js
     assert "throw error;" in main_js
     run_ocr = main_js[
         main_js.index("async function runOcr(options = {})") : main_js.index(
-            "async function explainText()"
+            "async function explainText(options = {})"
+        )
+    ]
+    explain_text = main_js[
+        main_js.index("async function explainText(options = {})") : main_js.index(
+            "async function generateQuestion()"
+        )
+    ]
+    coach_action = main_js[
+        main_js.index("async function handleNekoCoachAction(action)") : main_js.index(
+            "const documentController ="
+        )
+    ]
+    bind_button = main_js[
+        main_js.index("function bindButton(button, handler)") : main_js.index(
+            "async function handleNekoCoachAction(action)"
         )
     ]
     canceled = run_ocr[
         run_ocr.index("if (data.status === 'canceled')") : run_ocr.index(
-            "setStatus(tf('ui.status.ocr_result'"
+            "const n = data.capture_mode_used === 'fullscreen'"
         )
     ]
     assert "return data;" in canceled
     assert "studyInput.value" not in canceled
     assert "setReply(" not in canceled
     assert "studyInput.value = data.text;" in run_ocr
+    assert "let ocrN = '';" in main_js
+    assert "let ocrT = '';" in main_js
+    assert "ocrN = '';" not in canceled
+    assert "const s = data.status || 'unknown';" in run_ocr
+    assert "['ok', 'empty'].includes(s)" in run_ocr
+    assert "const text = String(data.text || '').trim();" in run_ocr
+    assert "if (text)" in run_ocr
+    assert "ocrN = n;" in run_ocr
+    assert "ocrT = text;" in run_ocr
+    assert "ocrN = ocrT = '';" in run_ocr
+    assert "if (!n) throw error;" in run_ocr
+    assert run_ocr.index("await refreshStatus({ updateReply: false }).catch") < run_ocr.index(
+        "setStatus(n || tf('ui.status.ocr_result'"
+    )
+    assert "{ status: s }" in run_ocr
+    assert "const n = (options.notice || (text === ocrT ? ocrN : '')).trim();" in explain_text
+    assert "studyInput.addEventListener('input', () => { ocrN = ocrT = ''; });" in main_js
+    assert "setReply(n ? `${n}\\n\\n${pending}` : pending);" in explain_text
+    assert "error.n = n;" in explain_text
+    assert "setStatus(data.degraded" in explain_text
+    assert "await refreshStatus({ updateReply: false }).catch((error) => { if (!n) throw error; setStatus(t('ui.status.reply_ready', 'Reply ready')); });" in explain_text
+    assert "[error?.n,formatPluginError(error)].filter(Boolean).join('\\n\\n')" in bind_button
+    assert "await explainText({ notice: ocrN });" in coach_action
+    assert "if (kind === 'study') ocrN = ocrT = '';" in main_js
     assert "generateQuestion()" not in run_ocr
 
 
@@ -419,6 +469,7 @@ def test_interactive_ocr_status_strings_exist_in_all_eight_locales() -> None:
     required = {
         "ui.status.preparing_ocr_selection",
         "ui.status.ocr_canceled",
+        "ui.status.ocr_fallback_fullscreen",
         "ui.error.interactive_ocr_busy",
         "ui.error.interactive_ocr_timeout",
         "ui.error.interactive_ocr_unavailable",

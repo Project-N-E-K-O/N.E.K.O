@@ -997,6 +997,50 @@
     return root;
   }
 
+  function renderKnowledgeContributionSettings(ctx, token) {
+    const root = panel(ctx, 'knowledge-contribution-settings', t(ctx, 'ui.status.loading', 'Loading...'));
+    let optIn = false;
+    let summary = {};
+
+    function draw(subtitle = '') {
+      if (!valid(root, token, true)) return;
+      const toggleButton = button(
+        optIn ? t(ctx, 'ui.button.disable', 'Disable') : t(ctx, 'ui.button.enable', 'Enable'),
+        async () => {
+          try {
+            const payload = await ctx.callPlugin('study_set_knowledge_contribution_opt_in', { opt_in: !optIn });
+            optIn = Boolean(payload?.opt_in);
+            summary = payload?.summary || {};
+            draw();
+          } catch (error) {
+            draw(errText(error));
+          }
+        },
+        true,
+      );
+      toggleButton.dataset.surfaceAction = 'knowledge-contribution-toggle';
+      replace(root, ctx, 'knowledge-contribution-settings', subtitle || (
+        optIn ? t(ctx, 'ui.status.enabled', 'Enabled') : t(ctx, 'ui.status.disabled', 'Disabled')
+      ), [
+        state([
+          [t(ctx, 'ui.label.candidates', 'Candidates'), summary.total || 0],
+          [t(ctx, 'ui.label.queue', 'Queue'), summary.queue_count || 0],
+        ]),
+        actions([toggleButton]),
+      ]);
+    }
+
+    ctx.callPlugin('study_anonymous_knowledge_preview', { limit: 100 })
+      .then((payload) => {
+        if (!valid(root, token)) return;
+        optIn = Boolean(payload?.opt_in);
+        summary = payload?.summary || {};
+        draw();
+      })
+      .catch((error) => replace(root, ctx, 'knowledge-contribution-settings', t(ctx, 'status.state.error', 'Error'), [pre(errText(error))]));
+    return root;
+  }
+
   function render(surfaceId, ctx) {
     panelToken += 1;
     const token = panelToken;
@@ -1008,6 +1052,7 @@
     if (surfaceId === 'memory-importer') return renderMemoryImporter(ctx, token);
     if (surfaceId === 'note-exporter') return renderExporter(ctx, token);
     if (surfaceId === 'session-summary') return renderSessionSummary(ctx, token);
+    if (surfaceId === 'knowledge-contribution-settings') return renderKnowledgeContributionSettings(ctx, token);
     return null;
   }
 

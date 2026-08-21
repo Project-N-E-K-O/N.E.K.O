@@ -237,6 +237,22 @@ def _check_optional_string(table: dict[str, object], key: str, label: str, issue
         issues.append(("error", f"{label} must be a string"))
 
 
+def _check_optional_i18n_string(table: dict[str, object], key: str, label: str, issues: list[tuple[str, str]]) -> None:
+    value = table.get(key)
+    if value is None or isinstance(value, str):
+        return
+    if not isinstance(value, dict):
+        issues.append(("error", f"{label} must be a string or $i18n table"))
+        return
+    _warn_unknown_keys(value, {"$i18n", "default"}, label, issues)
+    ref = value.get("$i18n")
+    if not isinstance(ref, str) or not ref.strip():
+        issues.append(("error", f"{label}.$i18n must be a non-empty string"))
+    default = value.get("default")
+    if default is not None and not isinstance(default, str):
+        issues.append(("error", f"{label}.default must be a string"))
+
+
 def _check_optional_bool(table: dict[str, object], key: str, label: str, issues: list[tuple[str, str]]) -> None:
     value = table.get(key)
     if value is None:
@@ -465,8 +481,19 @@ def _check_ui_table(plugin_dir: Path, value: object, issues: list[tuple[str, str
     if not isinstance(value, dict):
         issues.append(("error", "[plugin.ui] must be a table"))
         return
-    _warn_unknown_keys(value, {"enabled", "panel", "guide", "docs", "warnings"}, "[plugin.ui]", issues)
+    _warn_unknown_keys(
+        value,
+        {"enabled", "expose_legacy_static_panel", "panel", "guide", "docs", "warnings"},
+        "[plugin.ui]",
+        issues,
+    )
     _check_optional_bool(value, "enabled", "[plugin.ui].enabled", issues)
+    _check_optional_bool(
+        value,
+        "expose_legacy_static_panel",
+        "[plugin.ui].expose_legacy_static_panel",
+        issues,
+    )
     for kind in ("panel", "guide", "docs"):
         raw = value.get(kind)
         if raw is None:
@@ -485,7 +512,7 @@ def _check_ui_surface(plugin_dir: Path, value: object, label: str, issues: list[
         return
     _warn_unknown_keys(value, {"id", "title", "entry", "mode", "url", "ui_path", "open_in", "context", "permissions", "available"}, label, issues)
     _check_optional_string(value, "id", f"{label}.id", issues)
-    _check_optional_string(value, "title", f"{label}.title", issues)
+    _check_optional_i18n_string(value, "title", f"{label}.title", issues)
     entry = value.get("entry")
     url = value.get("url")
     if entry and url:

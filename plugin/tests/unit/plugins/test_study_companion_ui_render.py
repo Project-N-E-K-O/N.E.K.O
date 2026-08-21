@@ -447,7 +447,7 @@ def test_study_companion_static_ui8_visual_accessibility_and_csp_contract() -> N
     assert ".finally(() => {" in main_js
     assert "SECURITY: renderMathInText MUST HTML-escape all non-math text." in main_js
     assert "window.location.origin" in main_js
-    assert "const modeSelect = document.getElementById('modeSelect');" in main_js
+    assert "const modeSelect = $id('modeSelect');" in main_js
     assert "function handleModeShortcut(event)" in main_js
     assert "modeSelect.addEventListener('change'" in main_js
     assert "document.addEventListener('keydown', handleModeShortcut);" in main_js
@@ -490,7 +490,7 @@ def test_study_companion_static_ui8_visual_accessibility_and_csp_contract() -> N
     outcome_formatters_script = (
         '<script src="./outcome-formatters.js?v=study-hotfix-20260812"></script>'
     )
-    main_script = '<script src="./main.js?v=study-knowledge-window-size-20260813"></script>'
+    main_script = '<script src="./main.js?v=study-ocr-fallback-notice-20260820"></script>'
     assert outcome_formatters_script in index_html
     assert "solution-narration.js" not in index_html
     assert index_html.index(outcome_formatters_script) < index_html.index(main_script)
@@ -1239,7 +1239,7 @@ def test_study_companion_feature_dock_opens_knowledge_map_in_centered_dialog() -
 
     assert "const surfaceOpenButtons = Array.from(document.querySelectorAll('[data-open-surface]'));" in main_js
     assert "const featureActionButtons = Array.from(document.querySelectorAll('[data-feature-action]'));" in main_js
-    assert "const surfaceDrawerBody = document.getElementById('surfaceDrawerBody');" in main_js
+    assert "const surfaceDrawerBody = $id('surfaceDrawerBody');" in main_js
     assert "renderSurfaceDrawerBody(surfaceId)" in main_js
     assert "surfaceDrawerBody.replaceChildren" in main_js
     assert "StudyCompanionSurfacePanels" in main_js
@@ -1325,6 +1325,104 @@ def test_study_companion_advanced_settings_surface_entries_are_complete() -> Non
         panel_html = panel_match.group("body")
         for surface_id in surface_ids:
             assert f'data-open-surface="{surface_id}"' in panel_html, panel_id
+
+
+def test_static_knowledge_contribution_settings_drawer_toggles_opt_in() -> None:
+    if shutil.which("node") is None:
+        pytest.skip("node is not installed")
+
+    frontend_dir = Path(__file__).resolve().parents[4] / "frontend" / "plugin-manager"
+    if not (frontend_dir / "node_modules" / "happy-dom").is_dir():
+        pytest.skip("frontend/plugin-manager node_modules with happy-dom is not installed")
+
+    script = r"""
+import { Window } from 'happy-dom';
+import fs from 'node:fs';
+import path from 'node:path';
+
+const source = fs.readFileSync(path.join(process.env.STUDY_COMPANION_STATIC_DIR, 'surface-panels.js'), 'utf8');
+const window = new Window({ url: 'http://testserver/plugin/study_companion/ui/?locale=en' });
+const { document } = window;
+const calls = [];
+let rejectToggle = false;
+
+window.eval(source);
+const root = window.StudyCompanionSurfacePanels.render('knowledge-contribution-settings', {
+  t: (_key, fallback) => fallback,
+  label: () => 'Contribution Settings',
+  callPlugin: async (entryId, args = {}) => {
+    calls.push({ entryId, args });
+    if (entryId === 'study_anonymous_knowledge_preview') {
+      return { opt_in: false, summary: { total: 5, queue_count: 2 } };
+    }
+    if (entryId === 'study_set_knowledge_contribution_opt_in') {
+      if (rejectToggle) throw new Error('opt-in persistence failed');
+      return { opt_in: args.opt_in, summary: { total: 6, queue_count: 3 } };
+    }
+    throw new Error(`unexpected entry call: ${entryId}`);
+  },
+});
+document.body.appendChild(root);
+
+for (let attempt = 0; attempt < 20; attempt += 1) {
+  if (calls.some((call) => call.entryId === 'study_anonymous_knowledge_preview')) break;
+  await new Promise((resolve) => window.setTimeout(resolve, 0));
+}
+await new Promise((resolve) => window.setTimeout(resolve, 0));
+
+if (!root.textContent.includes('Disabled') || !root.textContent.includes('5')) {
+  throw new Error(`initial contribution state missing: ${root.textContent}`);
+}
+
+const toggle = root.querySelector('[data-surface-action="knowledge-contribution-toggle"]');
+if (!toggle) {
+  throw new Error(`contribution toggle missing: ${root.outerHTML}`);
+}
+toggle.click();
+for (let attempt = 0; attempt < 20; attempt += 1) {
+  if (calls.some((call) => call.entryId === 'study_set_knowledge_contribution_opt_in')) break;
+  await new Promise((resolve) => window.setTimeout(resolve, 0));
+}
+await new Promise((resolve) => window.setTimeout(resolve, 0));
+
+const toggleCall = calls.find((call) => call.entryId === 'study_set_knowledge_contribution_opt_in');
+if (!toggleCall || toggleCall.args.opt_in !== true) {
+  throw new Error(`toggle call missing opt_in=true: ${JSON.stringify(calls)}`);
+}
+if (!root.textContent.includes('Enabled') || !root.textContent.includes('6')) {
+  throw new Error(`updated contribution state missing: ${root.textContent}`);
+}
+
+rejectToggle = true;
+const retryToggle = root.querySelector('[data-surface-action="knowledge-contribution-toggle"]');
+if (!retryToggle || retryToggle.disabled) {
+  throw new Error(`retry contribution toggle unavailable: ${root.outerHTML}`);
+}
+retryToggle.click();
+for (let attempt = 0; attempt < 20; attempt += 1) {
+  if (root.textContent.includes('opt-in persistence failed')) break;
+  await new Promise((resolve) => window.setTimeout(resolve, 0));
+}
+await new Promise((resolve) => window.setTimeout(resolve, 0));
+
+const recoveredToggle = root.querySelector('[data-surface-action="knowledge-contribution-toggle"]');
+if (!root.textContent.includes('opt-in persistence failed')) {
+  throw new Error(`toggle failure message missing: ${root.textContent}`);
+}
+if (!recoveredToggle || recoveredToggle.disabled) {
+  throw new Error(`toggle did not recover after failure: ${root.outerHTML}`);
+}
+"""
+    completed = subprocess.run(
+        ["node", "--input-type=module", "-e", script],
+        cwd=frontend_dir,
+        env={**os.environ, "STUDY_COMPANION_STATIC_DIR": str(STATIC_DIR)},
+        capture_output=True,
+        text=True,
+        timeout=15,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr or completed.stdout
 
 
 def test_study_companion_brand_variables_stay_in_sync_between_static_and_tsx() -> None:

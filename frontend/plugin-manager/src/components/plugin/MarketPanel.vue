@@ -276,6 +276,19 @@
         </el-button>
       </template>
     </el-dialog>
+
+    <MarketPluginDetailDialog
+      v-if="selectedPlugin"
+      v-model:visible="detailDialogVisible"
+      :plugin="selectedPlugin"
+      :channel="userPref.channel"
+      :installed="isInstalled(selectedPlugin)"
+      :local-version="getLocalInstalledVersion(selectedPlugin)"
+      :installing="installingId === selectedPlugin.id"
+      :upgrading="upgradingId === selectedPlugin.id"
+      @install="handleInstall"
+      @upgrade="handleUpgrade"
+    />
   </div>
 </template>
 
@@ -285,6 +298,7 @@ import { useI18n } from 'vue-i18n'
 import { ElMessage } from 'element-plus'
 import { ShoppingCart, Close, Link, Setting, Loading } from '@element-plus/icons-vue'
 import MarketPluginCard from '@/components/plugin/MarketPluginCard.vue'
+import MarketPluginDetailDialog from '@/components/plugin/MarketPluginDetailDialog.vue'
 import LoadingSpinner from '@/components/common/LoadingSpinner.vue'
 import EmptyState from '@/components/common/EmptyState.vue'
 import WorkbenchFilterBar from '@/components/common/WorkbenchFilterBar.vue'
@@ -343,6 +357,8 @@ const totalCount = ref(0)
 const installingId = ref<string | null>(null)
 const upgradingId = ref<string | number | null>(null)
 const bridgeToken = ref('')
+const detailDialogVisible = ref(false)
+const selectedPlugin = ref<MarketWorkbenchItem | null>(null)
 
 interface MarketInstallTask {
   task_id: string
@@ -921,12 +937,8 @@ function handlePageChange(page: number) {
 }
 
 function handlePluginClick(plugin: MarketWorkbenchItem): void {
-  if (marketBaseUrl.value) {
-    const path = `/#/plugin/${encodeURIComponent(String(plugin.rawId))}`
-    openExternalUrl(`${marketBaseUrl.value}${path}`)
-  } else if (plugin.github_repo) {
-    openExternalUrl(plugin.github_repo)
-  }
+  selectedPlugin.value = plugin
+  detailDialogVisible.value = true
 }
 
 function openMarketExternal() {

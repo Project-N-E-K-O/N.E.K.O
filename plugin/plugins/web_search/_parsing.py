@@ -10,6 +10,7 @@ web_search 插件的解析层：纯函数、不依赖 SDK 和网络，便于单�
 
 from __future__ import annotations
 
+import json
 import math
 import re
 import unicodedata
@@ -246,7 +247,33 @@ def parse_ddg_lite_html(html: str, max_results: int = 8) -> List[Dict[str, str]]
 
 def is_baidu_blocked(html: str) -> bool:
     head = html[:5000]
-    return "百度安全验证" in head or "wappass.baidu.com" in head
+    if "百度安全验证" in head or "wappass.baidu.com" in head:
+        return True
+
+    # Baidu may answer non-browser clients with a tiny JavaScript redirect
+    # document while still returning HTTP 200.  httpx does not execute the
+    # redirect, so treating it as a normal empty result would bypass the
+    # backend cooldown and encourage an immediate retry burst.
+    if len(html) <= 4096 and not re.search(
+        r"id\s*=\s*['\"]content_left['\"]", head, re.I
+    ):
+        if re.search(
+            r"<meta\b[^>]*\bhttp-equiv\s*=\s*['\"]?\s*refresh\b",
+            head,
+            re.I,
+        ):
+            return True
+        compact = re.sub(r"\s+", "", head).casefold()
+        return any(
+            marker in compact
+            for marker in (
+                "location.replace(",
+                "location.assign(",
+                "window.location=",
+                "location.href=",
+            )
+        )
+    return False
 
 
 def parse_baidu_html(html: str, max_results: int = 8) -> List[Dict[str, str]]:
@@ -288,6 +315,60 @@ def parse_baidu_html(html: str, max_results: int = 8) -> List[Dict[str, str]]:
             "url": href,
             "snippet": _clip(snippet, MAX_SNIPPET_LEN),
         })
+        if len(results) >= max_results:
+            break
+
+    return results
+
+
+def parse_baidu_mobile_html(
+    html: str,
+    max_results: int = 8,
+) -> List[Dict[str, str]]:
+    """Parse Baidu's mobile SSR cards without executing page JavaScript."""
+    soup = BeautifulSoup(html, "html.parser")
+    results: List[Dict[str, str]] = []
+    seen_urls: set[str] = set()
+
+    for item in soup.select("div.c-result.result"):
+        try:
+            metadata = json.loads(str(item.get("data-log") or "{}"))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            continue
+        if not isinstance(metadata, dict):
+            continue
+        url = str(metadata.get("mu") or "").strip()
+        if not is_http_url(url) or url in seen_urls:
+            continue
+
+        # Recommendation/search-suggestion cards use Baidu-owned synthetic
+        # targets and are not ordinary web results.
+        host = (urlparse(url).hostname or "").lower()
+        if host.endswith("recommend_list.baidu.com"):
+            continue
+
+        title_tag = item.select_one("h3.cosc-title, h3")
+        if title_tag is None:
+            continue
+        title = sanitize_text(title_tag.get_text(" ", strip=True))
+        if not title:
+            continue
+
+        snippet = ""
+        snippet_tag = item.select_one(
+            "span[class*='summary-text'], div[class*='summary-gap']"
+        )
+        if snippet_tag is not None:
+            snippet = sanitize_text(snippet_tag.get_text(" ", strip=True))
+
+        seen_urls.add(url)
+        results.append(
+            {
+                "title": _clip(title, MAX_TITLE_LEN),
+                "url": url,
+                "snippet": _clip(snippet, MAX_SNIPPET_LEN),
+            }
+        )
         if len(results) >= max_results:
             break
 

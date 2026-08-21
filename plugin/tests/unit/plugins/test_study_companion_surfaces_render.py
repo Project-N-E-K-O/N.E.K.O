@@ -520,23 +520,13 @@ def test_knowledge_guidance_evidence_messages_exist_in_all_locales() -> None:
     )
 
 
-def test_study_companion_registered_surfaces_are_brand_renderable() -> None:
+def test_study_companion_hosted_surface_files_are_brand_renderable() -> None:
     with (PLUGIN_DIR / "plugin.toml").open("rb") as handle:
         config = tomllib.load(handle)
 
-    registered = {
-        item["id"]: Path(item["entry"]).name
-        for item in config["plugin"]["ui"]["panel"]
-    }
-    assert "quickstart" not in registered
+    assert config["plugin"]["ui"].get("panel", []) == []
+    assert config["plugin"]["ui"]["expose_legacy_static_panel"] is False
     assert (SURFACES_DIR / "quickstart.tsx").is_file()
-
-    expected_registered = {
-        surface_id: filename
-        for surface_id, filename in SURFACE_FILES.items()
-        if surface_id != "quickstart"
-    }
-    assert registered == expected_registered
 
     for surface_id, filename in SURFACE_FILES.items():
         source = _read(filename)

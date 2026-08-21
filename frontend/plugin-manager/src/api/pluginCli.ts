@@ -1,6 +1,7 @@
 /**
  * neko-plugin-cli 相关 API
  */
+import type { AxiosRequestConfig } from 'axios'
 import { get, post } from './index'
 import { API_BASE_URL } from '@/utils/constants'
 
@@ -198,8 +199,8 @@ export interface PluginCliLocalPackagesResponse {
 /**
  * 列出当前本地可构建插件
  */
-export function getPluginCliPlugins(): Promise<PluginCliLocalPluginsResponse> {
-  return get('/plugin-cli/plugins')
+export function getPluginCliPlugins(config?: AxiosRequestConfig & { preserveMessagesOn404?: boolean }): Promise<PluginCliLocalPluginsResponse> {
+  return get('/plugin-cli/plugins', config)
 }
 
 /**

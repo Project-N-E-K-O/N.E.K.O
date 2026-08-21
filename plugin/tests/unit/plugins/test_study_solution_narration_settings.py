@@ -250,7 +250,7 @@ def test_static_settings_applies_and_collects_solution_narration_config() -> Non
 
     assert (
         "const settingsSolutionNarrationEnabled = "
-        "document.getElementById('settingsSolutionNarrationEnabled');"
+        "$id('settingsSolutionNarrationEnabled');"
         in source
     )
     assert re.search(r"const communication\s*=\s*config\.communication\s*\|\|\s*\{\};", source)
