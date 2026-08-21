@@ -641,6 +641,17 @@ class TestVisionCredentialBoundary:
         )
 
     @pytest.mark.unit
+    def test_only_one_trailing_slash_is_cosmetic(self):
+        """`/v1/` vs `/v1` is a writing difference; `/v1/` vs `/v1//` is not."""
+        from main_logic.omni_offline_client._client import _same_endpoint
+        assert _same_endpoint(
+            'https://api.example.com/v1', 'https://api.example.com/v1/'
+        ) is True, "单个尾斜杠是写法差异"
+        assert _same_endpoint(
+            'https://api.example.com/v1/', 'https://api.example.com/v1//'
+        ) is False, "重复斜杠是两条不同的 HTTP 路径，不得折平"
+
+    @pytest.mark.unit
     def test_zero_padded_ports_compare_by_value(self):
         """:0443 is port 443, and :08443 is port 8443 — compare numerically."""
         from main_logic.omni_offline_client._client import _same_endpoint
@@ -648,8 +659,14 @@ class TestVisionCredentialBoundary:
             'https://api.example.com/v1', 'https://api.example.com:0443/v1'
         ) is True, "补零的默认端口仍是默认端口"
         assert _same_endpoint(
+            'http://api.example.com/v1', 'http://api.example.com:80/v1'
+        ) is True, "http 的默认端口是 80，不是 443"
+        assert _same_endpoint(
             'http://api.example.com/v1', 'http://api.example.com:00080/v1'
         ) is True, "补零的 http 默认端口同理"
+        assert _same_endpoint(
+            'http://api.example.com/v1', 'http://api.example.com:443/v1'
+        ) is False, "443 不是 http 的默认端口，不该被抹掉"
         assert _same_endpoint(
             'https://api.example.com:8443/v1', 'https://api.example.com:08443/v1'
         ) is True, "非默认端口的前导零也不该造成分歧"

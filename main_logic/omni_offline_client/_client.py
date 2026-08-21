@@ -104,7 +104,10 @@ def _same_endpoint(a: str | None, b: str | None) -> bool:
             userinfo,
             host,
             port,
-            (parts.path or '').rstrip('/'),
+            # 只去掉**一个**尾斜杠：那是配置里会自然攒出来的写法差异。
+            # rstrip('/') 会把 /v1/ 和 /v1// 一起折平，而它们是两条不同的
+            # HTTP 路径 —— 折平就又把凭证送过了边界。
+            (parts.path or '').removesuffix('/'),
             parts.query,
         )
 
