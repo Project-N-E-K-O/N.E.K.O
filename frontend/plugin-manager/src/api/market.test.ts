@@ -13,7 +13,7 @@ vi.mock('axios', () => ({
   },
 }))
 
-import { fetchMarketPlugins, resetMarketClient } from './market'
+import { fetchMarketPlugins, normalizeMarketPlugin, resetMarketClient } from './market'
 
 describe('Market API transport', () => {
   beforeEach(() => {
@@ -69,6 +69,34 @@ describe('Market API transport', () => {
     )
     expect(mocks.marketGet).toHaveBeenCalledWith('/plugins', {
       params: { page: 2 },
+    })
+  })
+
+  it('preserves full-detail fields for the in-app detail dialog', () => {
+    const plugin = normalizeMarketPlugin({
+      id: 7,
+      name: 'Detail plugin',
+      author_name: 'NEKO',
+      description: 'Full description',
+      short_description: 'Short description',
+      readme: '# Setup\nUse this plugin.',
+      rating_count: 9,
+      latest_version: {
+        version: '1.2.3',
+        channel: 'stable',
+        package_url: 'https://example.test/plugin.neko-plugin',
+        package_sha256: 'a'.repeat(64),
+        payload_hash: null,
+        created_at: '2026-01-01T00:00:00Z',
+      },
+      created_at: '2026-01-01T00:00:00Z',
+      updated_at: '2026-01-02T00:00:00Z',
+    })
+
+    expect(plugin).toMatchObject({
+      readme: '# Setup\nUse this plugin.',
+      rating_count: 9,
+      version: '1.2.3',
     })
   })
 })
