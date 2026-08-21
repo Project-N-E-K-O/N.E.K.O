@@ -56,6 +56,7 @@ export default {
     closeMarket: '收起插件市场',
     openInBrowser: '在浏览器打开',
     account: 'Market 账号',
+    pluginDetailTitle: '插件详情',
     accountConnected: '已连接: {name}',
     login: '登录',
     loginStarted: '已为你打开浏览器，请在打开的页面里完成授权登录。',

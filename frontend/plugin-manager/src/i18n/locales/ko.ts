@@ -56,6 +56,7 @@ export default {
     closeMarket: '플러그인 마켓 닫기',
     openInBrowser: '브라우저에서 열기',
     account: 'Market 계정',
+    pluginDetailTitle: '플러그인 상세',
     accountConnected: '연결됨: {name}',
     login: '로그인',
     loginStarted: '브라우저를 열었습니다. 열린 페이지에서 인증 로그인을 마무리해 주세요.',

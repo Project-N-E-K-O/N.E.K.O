@@ -56,6 +56,7 @@ export default {
     closeMarket: 'Close Plugin Market',
     openInBrowser: 'Open in browser',
     account: 'Market account',
+    pluginDetailTitle: 'Plugin details',
     accountConnected: 'Connected: {name}',
     login: 'Login',
     loginStarted: "We've opened your browser. Please finish the authorization login on the page that opened.",

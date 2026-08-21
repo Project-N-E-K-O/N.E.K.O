@@ -1,7 +1,7 @@
 <template>
   <el-dialog
     :model-value="visible"
-    :title="displayPlugin.name"
+    :title="t('market.pluginDetailTitle')"
     width="min(760px, calc(100vw - 32px))"
     top="16px"
     class="market-plugin-detail-dialog"
@@ -228,9 +228,22 @@ function openRepository() {
 
 <style scoped>
 .market-plugin-detail { min-height: 140px; }
-:deep(.market-plugin-detail-dialog) { display: flex; flex-direction: column; max-height: calc(100dvh - 32px); margin-bottom: 0; }
-:deep(.market-plugin-detail-dialog .el-dialog__body) { min-height: 0; overflow-y: auto; }
-:deep(.market-plugin-detail-dialog .el-dialog__footer) { flex: none; }
+:global(.market-plugin-detail-dialog.el-dialog) {
+  display: flex;
+  flex-direction: column;
+  height: calc(100dvh - 32px);
+  max-height: calc(100dvh - 32px);
+  margin: 16px auto !important;
+  overflow: hidden;
+}
+:global(.market-plugin-detail-dialog .el-dialog__body) {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+:global(.market-plugin-detail-dialog .el-dialog__footer) { flex: none; }
 .market-plugin-detail__hero { display: flex; align-items: flex-start; gap: 16px; }
 .market-plugin-detail__title { min-width: 0; flex: 1; }
 .market-plugin-detail__name-row, .market-plugin-detail__meta, .market-plugin-detail__tags { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }

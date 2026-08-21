@@ -56,6 +56,7 @@ export default {
     closeMarket: 'Cerrar mercado',
     openInBrowser: 'Abrir en navegador',
     account: 'Cuenta de Market',
+    pluginDetailTitle: 'Detalles del plugin',
     accountConnected: 'Conectado: {name}',
     login: 'Iniciar sesión',
     loginStarted: 'Hemos abierto el navegador. Termina el inicio de sesión autorizado en la página abierta.',

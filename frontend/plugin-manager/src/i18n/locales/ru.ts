@@ -56,6 +56,7 @@ export default {
     closeMarket: 'Закрыть маркет',
     openInBrowser: 'Открыть в браузере',
     account: 'Аккаунт Market',
+    pluginDetailTitle: 'Сведения о плагине',
     accountConnected: 'Подключено: {name}',
     login: 'Войти',
     loginStarted: 'Браузер открыт. Завершите вход с подтверждением на открывшейся странице.',

@@ -56,6 +56,7 @@ export default {
     closeMarket: '收起外掛市集',
     openInBrowser: '在瀏覽器開啟',
     account: 'Market 帳號',
+    pluginDetailTitle: '外掛詳情',
     accountConnected: '已連線: {name}',
     login: '登入',
     loginStarted: '已為你開啟瀏覽器，請在開啟的頁面完成授權登入。',
