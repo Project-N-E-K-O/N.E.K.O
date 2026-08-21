@@ -17,19 +17,6 @@ initDarkMode()
 initPluginDashboardYuiGuideRuntime()
 
 function initNativeDragGuard() {
-  const markNativeDragSource = (element: HTMLAnchorElement | HTMLImageElement) => {
-    element.draggable = false
-    element.setAttribute('draggable', 'false')
-  }
-
-  const markNativeDragSources = (root: ParentNode | HTMLAnchorElement | HTMLImageElement = document) => {
-    if (root instanceof HTMLAnchorElement || root instanceof HTMLImageElement) {
-      markNativeDragSource(root)
-      return
-    }
-    root.querySelectorAll<HTMLAnchorElement | HTMLImageElement>('a[href], img').forEach(markNativeDragSource)
-  }
-
   const handleDragStart = (event: DragEvent) => {
     const rawTarget = event.target
     let target: Element | null = null
@@ -48,19 +35,7 @@ function initNativeDragGuard() {
     }
   }
 
-  markNativeDragSources(document)
   document.addEventListener('dragstart', handleDragStart, true)
-
-  const observer = new MutationObserver((mutations) => {
-    mutations.forEach((mutation) => {
-      mutation.addedNodes.forEach((node) => {
-        if (node instanceof Element) {
-          markNativeDragSources(node)
-        }
-      })
-    })
-  })
-  observer.observe(document.documentElement, { childList: true, subtree: true })
 }
 
 initNativeDragGuard()

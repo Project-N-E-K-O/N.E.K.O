@@ -89,9 +89,14 @@ body {
 }
 
 img,
-svg {
+svg,
+a[href] {
   -webkit-user-drag: none;
   -khtml-user-drag: none;
+}
+
+img,
+svg {
   -moz-user-select: none;
   -ms-user-select: none;
   user-select: none;
