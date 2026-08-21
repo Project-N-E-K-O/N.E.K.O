@@ -28,6 +28,7 @@ const ENTRY_TIMEOUT_MS = {
   study_memory_card_review: 30000,
   study_memory_review_item: 30000,
   study_export_notes: 90000,
+  study_note_ai_expand: 90000,
 };
 const STUDY_SURFACE_MESSAGE_TYPES = Object.freeze({
   openSurface: 'neko-study-open-surface',

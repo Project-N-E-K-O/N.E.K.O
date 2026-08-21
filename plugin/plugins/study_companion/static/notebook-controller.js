@@ -24,7 +24,7 @@
 
   function listFromCsv(value) {
     return String(value || '')
-      .split(/[,，\s]+/)
+      .split(/[,，]+/)
       .map((item) => item.trim())
       .filter(Boolean);
   }
@@ -34,7 +34,11 @@
   }
 
   function formatDate(value) {
-    const date = new Date(String(value || ''));
+    const raw = String(value || '').trim();
+    const normalized = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(raw)
+      ? `${raw.replace(' ', 'T')}Z`
+      : raw;
+    const date = new Date(normalized);
     return Number.isNaN(date.getTime()) ? '' : date.toLocaleString();
   }
 
@@ -49,9 +53,11 @@
     let selectedNote = null;
     let query = '';
     let searchTimer = 0;
+    let notebooksRequest = 0;
     let notesRequest = 0;
     let noteDetailRequest = 0;
     let busyCount = 0;
+    let editorDirty = false;
 
     const root = el('div', 'study-panel surface-shell notebook-panel');
     root.dataset.surface = 'notebook-panel';
@@ -118,6 +124,9 @@
     function setBusy(active) {
       busyCount = Math.max(0, busyCount + (active ? 1 : -1));
       root.dataset.busy = busyCount > 0 ? 'true' : 'false';
+      editor.querySelectorAll('.notebook-editor__actions button').forEach((button) => {
+        button.disabled = busyCount > 0;
+      });
     }
 
     function commandButton(label, handler, primary = false) {
@@ -134,7 +143,7 @@
         } finally {
           setBusy(false);
           if (isValid()) {
-            button.disabled = false;
+            button.disabled = busyCount > 0;
             updateNotebookActions();
             updateSelectionBar();
           }
@@ -167,6 +176,11 @@
       if (!summary.content && current.content) merged.content = current.content;
       if (!summary.content_plain && current.content_plain) merged.content_plain = current.content_plain;
       return merged;
+    }
+
+    function confirmDiscardDraft() {
+      if (!editorDirty) return true;
+      return window.confirm(t(ctx, 'ui.notebook.discard_draft_confirm', 'Discard unsaved changes?'));
     }
 
     function drawNotebookOptions() {
@@ -234,7 +248,9 @@
           el('span', '', note.snippet || t(ctx, 'ui.notebook.empty_note', 'Empty note')),
           el('time', '', formatDate(note.updated_at)),
         );
-        openButton.addEventListener('click', () => selectNote(note.id));
+        openButton.addEventListener('click', () => {
+          selectNote(note.id).catch((error) => setStatus(errorText(error)));
+        });
         row.append(check, openButton);
         list.appendChild(row);
       });
@@ -273,6 +289,14 @@
       const contentInput = el('textarea', 'notebook-editor__content');
       contentInput.value = selectedNote.content || '';
       contentInput.spellcheck = true;
+      [titleInput, notebookInput, topicsInput, tagsInput, contentInput].forEach((input) => {
+        input.addEventListener('input', () => {
+          editorDirty = true;
+        });
+        input.addEventListener('change', () => {
+          editorDirty = true;
+        });
+      });
 
       const fields = el('div', 'notebook-editor__fields');
       fields.append(
@@ -296,17 +320,26 @@
         });
         if (!isValid() || selectedNote?.id !== noteId) return;
         selectedNote = payload.note || selectedNote;
+        editorDirty = false;
         await refresh();
         setStatus(t(ctx, 'ui.notebook.saved', 'Saved'));
       }, true);
       const expandButton = commandButton(t(ctx, 'ui.notebook.ai_expand', 'AI expand'), async () => {
+        const noteId = selectedNote.id;
         const payload = await ctx.callPlugin('study_note_ai_expand', {
-          note_id: selectedNote.id,
+          note_id: noteId,
           content: contentInput.value,
           topic_context: topicsInput.value,
         });
-        if (!isValid()) return;
-        if (payload.content) contentInput.value = payload.content;
+        if (!isValid() || selectedNote?.id !== noteId) return;
+        if (payload.content) {
+          const currentContentInput = contentInput.isConnected
+            ? contentInput
+            : editor.querySelector('.notebook-editor__content');
+          if (currentContentInput) currentContentInput.value = payload.content;
+          selectedNote = { ...selectedNote, content: payload.content, content_plain: payload.content };
+          editorDirty = true;
+        }
         setStatus(t(ctx, 'ui.status.reply_ready', 'Reply ready'));
       });
       const deleteButton = commandButton(t(ctx, 'ui.button.delete', 'Delete'), async () => {
@@ -323,8 +356,9 @@
     }
 
     async function loadNotebooks() {
+      const requestId = notebooksRequest += 1;
       const payload = await ctx.callPlugin('study_notebook_list', { limit: 100 });
-      if (!isValid()) return;
+      if (!isValid() || requestId !== notebooksRequest) return;
       notebooks = Array.isArray(payload.notebooks) ? payload.notebooks : [];
       drawNotebookOptions();
     }
@@ -351,6 +385,8 @@
     }
 
     async function selectNote(noteId) {
+      if (!confirmDiscardDraft()) return;
+      editorDirty = false;
       const requestId = noteDetailRequest += 1;
       const payload = await ctx.callPlugin('study_note_get', { note_id: noteId });
       if (!isValid() || requestId !== noteDetailRequest) return;
@@ -398,6 +434,8 @@
     }
 
     async function createNote() {
+      if (!confirmDiscardDraft()) return;
+      editorDirty = false;
       const payload = await ctx.callPlugin('study_note_upsert', {
         notebook_id: currentNotebookId(),
         title: t(ctx, 'ui.notebook.new_note', 'New note'),
@@ -423,6 +461,11 @@
     }
 
     notebookSelect.addEventListener('change', () => {
+      if (!confirmDiscardDraft()) {
+        notebookSelect.value = selectedNotebook;
+        return;
+      }
+      editorDirty = false;
       selectedNotebook = notebookSelect.value;
       selectedNote = null;
       updateNotebookActions();

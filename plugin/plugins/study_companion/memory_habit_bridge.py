@@ -154,7 +154,13 @@ class MemoryHabitBridge:
             deck_id=str((item or {}).get("deck_id") or ""),
             source_type="review_record",
             source_id=str((review or {}).get("id") or ""),
-            unit_deltas={"card": 1.0, "cards": 1.0, "task": 1.0},
+            unit_deltas={
+                "card": 1.0,
+                "cards": 1.0,
+                "attempt": 1.0,
+                "attempts": 1.0,
+                "task": 1.0,
+            },
         )
 
     def memory_summary(self, *, date: str) -> dict[str, Any]:

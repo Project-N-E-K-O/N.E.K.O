@@ -6877,6 +6877,13 @@ def test_study_companion_notebook_is_integrated_with_static_exporter() -> None:
     assert "selectedNoteIds" in notebook
     assert "ctx.openSurface('note-exporter')" in notebook
     assert "openSurface: openSurfaceDrawer" in main_js
+    assert "study_note_ai_expand: 90000" in main_js
+    assert "listFromCsv(value)" in notebook
+    assert ".split(/[,，]+/)" in notebook
+    assert "confirmDiscardDraft()" in notebook
+    assert "notebooksRequest" in notebook
+    assert "Discard unsaved changes?" in notebook
+    assert "${raw.replace(' ', 'T')}Z" in notebook
     assert "getSelectedNoteIds" in exporter
     assert "note_ids: noteIds" in exporter
 
@@ -7135,6 +7142,188 @@ await new Promise((resolve) => setTimeout(resolve, 0));
 
 if (notebook.querySelector('.notebook-editor__content')?.value !== 'Saved body') {
   throw new Error('list refresh replaced the saved full note body with a summary row');
+}
+"""
+    completed = subprocess.run(
+        ["node", "--input-type=module", "-e", script],
+        cwd=frontend_dir,
+        env={**os.environ, "STUDY_COMPANION_STATIC_DIR": str(plugin_dir / "static")},
+        capture_output=True,
+        text=True,
+        timeout=15,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr or completed.stdout
+
+
+def test_study_companion_notebook_preserves_tags_and_blocks_concurrent_ai_save() -> None:
+    if shutil.which("node") is None:
+        pytest.skip("node is not installed")
+    plugin_dir = Path(__file__).resolve().parents[3] / "plugins" / "study_companion"
+    frontend_dir = Path(__file__).resolve().parents[4] / "frontend" / "plugin-manager"
+    if not (frontend_dir / "node_modules" / "happy-dom").is_dir():
+        pytest.skip("frontend/plugin-manager node_modules with happy-dom is not installed")
+
+    script = r"""
+import { Window } from 'happy-dom';
+import fs from 'node:fs';
+import path from 'node:path';
+
+const staticDir = process.env.STUDY_COMPANION_STATIC_DIR;
+const notebookJs = fs.readFileSync(path.join(staticDir, 'notebook-controller.js'), 'utf8');
+const window = new Window({ url: 'http://testserver/plugin/study_companion/ui/' });
+const { document } = window;
+let expandResolve;
+const calls = [];
+let note = {
+  id: 'note-1',
+  notebook_id: '',
+  title: 'Original',
+  content: 'Original body',
+  content_plain: 'Original body',
+  snippet: 'Original body',
+  topic_ids: ['machine learning'],
+  tags: ['spaced tag'],
+  updated_at: '2026-08-20T00:00:00Z',
+};
+async function callPlugin(entryId, args = {}) {
+  calls.push({ entryId, args });
+  if (entryId === 'study_notebook_list') return { notebooks: [] };
+  if (entryId === 'study_note_list') return { notes: [note] };
+  if (entryId === 'study_note_get') return { note };
+  if (entryId === 'study_note_upsert') {
+    note = { ...note, ...args, id: args.note_id, updated_at: '2026-08-20T00:01:00Z' };
+    return { note };
+  }
+  if (entryId === 'study_note_ai_expand') {
+    return await new Promise((resolve) => { expandResolve = resolve; });
+  }
+  throw new Error(`Unexpected entry: ${entryId}`);
+}
+const ctx = {
+  t: (_key, fallback) => fallback,
+  tf: (_key, fallback, values) => fallback.replace(/\{([^}]+)\}/g, (_, name) => values[name] ?? ''),
+  label: (surfaceId) => surfaceId,
+  callPlugin,
+  openSurface: () => undefined,
+};
+window.eval(notebookJs);
+const notebook = window.StudyCompanionNotebook.render('notebook-panel', ctx);
+document.body.appendChild(notebook);
+await new Promise((resolve) => setTimeout(resolve, 0));
+await new Promise((resolve) => setTimeout(resolve, 0));
+
+notebook.querySelector('.notebook-note-row__open').click();
+await new Promise((resolve) => setTimeout(resolve, 0));
+const inputs = notebook.querySelectorAll('.notebook-editor input');
+inputs[1].value = 'machine learning, spaced topic';
+inputs[1].dispatchEvent(new window.Event('input', { bubbles: true }));
+inputs[2].value = 'spaced tag, two words';
+inputs[2].dispatchEvent(new window.Event('input', { bubbles: true }));
+let buttons = [...notebook.querySelectorAll('.notebook-editor__actions button')];
+let saveButton = buttons.find((button) => button.textContent === 'Save');
+saveButton.click();
+await new Promise((resolve) => setTimeout(resolve, 0));
+const saveCall = calls.find((call) => call.entryId === 'study_note_upsert');
+if (JSON.stringify(saveCall.args.topic_ids) !== JSON.stringify(['machine learning', 'spaced topic'])) {
+  throw new Error(`topics were split on spaces: ${JSON.stringify(saveCall.args.topic_ids)}`);
+}
+if (JSON.stringify(saveCall.args.tags) !== JSON.stringify(['spaced tag', 'two words'])) {
+  throw new Error(`tags were split on spaces: ${JSON.stringify(saveCall.args.tags)}`);
+}
+
+buttons = [...notebook.querySelectorAll('.notebook-editor__actions button')];
+saveButton = buttons.find((button) => button.textContent === 'Save');
+const expandButton = buttons.find((button) => button.textContent === 'AI expand');
+expandButton.click();
+await new Promise((resolve) => setTimeout(resolve, 0));
+if (!saveButton.disabled || !expandButton.disabled) {
+  throw new Error('editor actions stayed enabled while AI expansion was in flight');
+}
+expandResolve({ content: 'Expanded body' });
+await new Promise((resolve) => setTimeout(resolve, 0));
+if (notebook.querySelector('.notebook-editor__content')?.value !== 'Expanded body') {
+  throw new Error('AI expansion result was not written back to the editor');
+}
+"""
+    completed = subprocess.run(
+        ["node", "--input-type=module", "-e", script],
+        cwd=frontend_dir,
+        env={**os.environ, "STUDY_COMPANION_STATIC_DIR": str(plugin_dir / "static")},
+        capture_output=True,
+        text=True,
+        timeout=15,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr or completed.stdout
+
+
+def test_study_companion_notebook_reports_open_failures_and_confirms_drafts() -> None:
+    if shutil.which("node") is None:
+        pytest.skip("node is not installed")
+    plugin_dir = Path(__file__).resolve().parents[3] / "plugins" / "study_companion"
+    frontend_dir = Path(__file__).resolve().parents[4] / "frontend" / "plugin-manager"
+    if not (frontend_dir / "node_modules" / "happy-dom").is_dir():
+        pytest.skip("frontend/plugin-manager node_modules with happy-dom is not installed")
+
+    script = r"""
+import { Window } from 'happy-dom';
+import fs from 'node:fs';
+import path from 'node:path';
+
+const staticDir = process.env.STUDY_COMPANION_STATIC_DIR;
+const notebookJs = fs.readFileSync(path.join(staticDir, 'notebook-controller.js'), 'utf8');
+const window = new Window({ url: 'http://testserver/plugin/study_companion/ui/' });
+const { document } = window;
+let confirmCount = 0;
+window.confirm = () => {
+  confirmCount += 1;
+  return false;
+};
+const notes = [
+  { id: 'note-1', title: 'First', snippet: 'First summary', content: 'First body', updated_at: '2026-08-20T00:00:00Z' },
+  { id: 'note-2', title: 'Second', snippet: 'Second summary', content: 'Second body', updated_at: '2026-08-20T00:00:00Z' },
+];
+async function callPlugin(entryId, args = {}) {
+  if (entryId === 'study_notebook_list') return { notebooks: [] };
+  if (entryId === 'study_note_list') return { notes };
+  if (entryId === 'study_note_get') {
+    if (args.note_id === 'note-2') throw new Error('detail failed');
+    return { note: notes.find((item) => item.id === args.note_id) };
+  }
+  throw new Error(`Unexpected entry: ${entryId}`);
+}
+const ctx = {
+  t: (_key, fallback) => fallback,
+  tf: (_key, fallback, values) => fallback.replace(/\{([^}]+)\}/g, (_, name) => values[name] ?? ''),
+  label: (surfaceId) => surfaceId,
+  callPlugin,
+  openSurface: () => undefined,
+};
+window.eval(notebookJs);
+const notebook = window.StudyCompanionNotebook.render('notebook-panel', ctx);
+document.body.appendChild(notebook);
+await new Promise((resolve) => setTimeout(resolve, 0));
+await new Promise((resolve) => setTimeout(resolve, 0));
+
+notebook.querySelectorAll('.notebook-note-row__open')[1].click();
+await new Promise((resolve) => setTimeout(resolve, 0));
+if (!notebook.querySelector('.study-panel__status-chip')?.textContent.includes('detail failed')) {
+  throw new Error('open failure was not reported in the notebook status');
+}
+
+notebook.querySelectorAll('.notebook-note-row__open')[0].click();
+await new Promise((resolve) => setTimeout(resolve, 0));
+const titleInput = notebook.querySelector('.notebook-editor input');
+titleInput.value = 'Unsaved title';
+titleInput.dispatchEvent(new window.Event('input', { bubbles: true }));
+notebook.querySelectorAll('.notebook-note-row__open')[1].click();
+await new Promise((resolve) => setTimeout(resolve, 0));
+if (confirmCount !== 1) {
+  throw new Error(`draft switch did not ask for confirmation: ${confirmCount}`);
+}
+if (notebook.querySelector('.notebook-editor input')?.value !== 'Unsaved title') {
+  throw new Error('draft was discarded after canceling confirmation');
 }
 """
     completed = subprocess.run(

@@ -485,12 +485,12 @@ def test_study_companion_static_ui8_visual_accessibility_and_csp_contract() -> N
     assert "learning-profile-modal" in style_css
     assert "knowledge-stage-selector" in style_css
     assert "knowledgeMapActiveStage" in knowledge_map_js
-    assert '<link rel="stylesheet" href="./style.css?v=study-knowledge-window-size-20260813" />' in index_html
+    assert '<link rel="stylesheet" href="./style.css?v=study-notebook-comments-20260821" />' in index_html
     assert '<script src="./knowledge-map.js?v=study-knowledge-window-size-20260813"></script>' in index_html
     outcome_formatters_script = (
         '<script src="./outcome-formatters.js?v=study-hotfix-20260812"></script>'
     )
-    main_script = '<script src="./main.js?v=study-ocr-fallback-notice-20260820"></script>'
+    main_script = '<script src="./main.js?v=study-notebook-comments-20260821"></script>'
     assert outcome_formatters_script in index_html
     assert "solution-narration.js" not in index_html
     assert index_html.index(outcome_formatters_script) < index_html.index(main_script)

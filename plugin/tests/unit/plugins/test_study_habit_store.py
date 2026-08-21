@@ -266,18 +266,27 @@ def test_memory_habit_bridge_updates_deck_goals_idempotently(
             target_amount=2,
             unit="cards",
         )
+        attempts_goal_payload = bridge.create_deck_goal(
+            date="2026-05-24",
+            deck_id=deck["id"],
+            target_amount=2,
+            unit="attempts",
+        )
 
         reviewed = memory.review_item(item_id=word["id"], rating="good")
         progress = bridge.apply_review_progress(reviewed, date="2026-05-24")
         duplicate = bridge.apply_review_progress(reviewed, date="2026-05-24")
         goal = habits.get_goal(goal_payload["goal"]["id"])
+        attempts_goal = habits.get_goal(attempts_goal_payload["goal"]["id"])
 
-        assert progress["applied"] == 1
+        assert progress["applied"] == 2
         assert duplicate["applied"] == 0
         assert goal is not None
+        assert attempts_goal is not None
         assert goal["target_type"] == "deck"
         assert goal["target_id"] == deck["id"]
         assert goal["progress_amount"] == 1
+        assert attempts_goal["progress_amount"] == 1
         assert habits.list_checkins(date="2026-05-24")[0]["source"] == "session_derived"
     finally:
         store.close()

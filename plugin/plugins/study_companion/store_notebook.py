@@ -58,7 +58,7 @@ def _word_count(content_plain: str) -> int:
     return len(words)
 
 
-def _normalize_string_list(value: object, *, limit: int = 50) -> list[str]:
+def _normalize_string_list(value: object, *, limit: int | None = 50) -> list[str]:
     if value is None:
         return []
     if isinstance(value, str):
@@ -75,7 +75,7 @@ def _normalize_string_list(value: object, *, limit: int = 50) -> list[str]:
             continue
         result.append(text)
         seen.add(text)
-        if len(result) >= limit:
+        if limit is not None and len(result) >= limit:
             break
     return result
 
@@ -323,16 +323,20 @@ class NotebookStore:
         return self._note_from_row(row)
 
     def get_notes_by_ids(self, note_ids: object) -> list[NoteItem]:
-        ids = _normalize_string_list(note_ids, limit=200)
+        ids = _normalize_string_list(note_ids, limit=None)
         if not ids:
             return []
-        placeholders = ",".join("?" for _ in ids)
+        rows = []
         with self.store._lock:
-            rows = (
-                self.store._require_conn()
-                .execute(f"SELECT * FROM notes WHERE id IN ({placeholders})", ids)
-                .fetchall()
-            )
+            conn = self.store._require_conn()
+            for start in range(0, len(ids), 900):
+                chunk = ids[start : start + 900]
+                placeholders = ",".join("?" for _ in chunk)
+                rows.extend(
+                    conn.execute(
+                        f"SELECT * FROM notes WHERE id IN ({placeholders})", chunk
+                    ).fetchall()
+                )
         notes_by_id = {
             note.id: note
             for note in (self._note_from_row(row) for row in rows)

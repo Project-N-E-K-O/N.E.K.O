@@ -162,6 +162,30 @@ def test_notebook_search_all_and_note_id_export(tmp_path) -> None:
         store.close()
 
 
+def test_notebook_selected_note_export_is_not_truncated_to_default_list_limit(
+    tmp_path,
+) -> None:
+    store, notebooks, _logger = _make_store(tmp_path)
+    try:
+        note_ids = [
+            notebooks.create_note(
+                title=f"Note {index:03d}",
+                content=f"body {index:03d}",
+            ).id
+            for index in range(205)
+        ]
+
+        exported = DocExporter(
+            store, config=DocExportConfig(enabled=True)
+        ).export(fmt="markdown", note_ids=note_ids, title="Selected Notes")
+
+        assert "## Note 000" in exported.markdown
+        assert "## Note 204" in exported.markdown
+        assert exported.markdown.index("## Note 000") < exported.markdown.index("## Note 204")
+    finally:
+        store.close()
+
+
 def test_notebook_list_and_search_omit_full_content(tmp_path) -> None:
     store, notebooks, _logger = _make_store(tmp_path)
     try:
