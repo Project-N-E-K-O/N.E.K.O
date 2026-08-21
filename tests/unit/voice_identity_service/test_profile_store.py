@@ -28,7 +28,9 @@ class _TestKeyProtector:
 
     def unprotect(self, protected: bytes) -> bytes:
         if not protected.startswith(self._PREFIX):
-            raise SecureStorageUnavailableError("secure_storage_unavailable")
+            raise VoiceIdentityProfileCorruptError(
+                "voice identity profile key could not be unwrapped"
+            )
         return protected[len(self._PREFIX) :]
 
 
@@ -216,7 +218,7 @@ def test_tampered_ciphertext_fails_closed(tmp_path: Path) -> None:
 
 
 @pytest.mark.unit
-def test_wrapped_key_unprotect_failure_is_reported_as_storage_unavailable(
+def test_wrapped_key_unprotect_failure_is_reported_as_corrupt_profile(
     tmp_path: Path,
 ) -> None:
     path = tmp_path / "voice_identity.profile"
@@ -230,7 +232,7 @@ def test_wrapped_key_unprotect_failure_is_reported_as_storage_unavailable(
     envelope["wrapped_key"] = base64.b64encode(b"invalid-prefix").decode("ascii")
     path.write_text(json.dumps(envelope), encoding="ascii")
 
-    with pytest.raises(SecureStorageUnavailableError):
+    with pytest.raises(VoiceIdentityProfileCorruptError):
         store.load()
 
 

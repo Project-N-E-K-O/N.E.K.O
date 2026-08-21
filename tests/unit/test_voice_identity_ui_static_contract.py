@@ -158,6 +158,7 @@ def test_voice_identity_enrollment_focus_target_is_programmatically_focusable() 
 
 def test_browser_capture_is_one_click_audio_worklet_pcm16_and_cancels_on_close() -> None:
     script = (ROOT / "static/js/voice_identity.js").read_text(encoding="utf-8")
+    processor = (ROOT / "static/audio-processor.js").read_text(encoding="utf-8")
 
     for contract in (
         "navigator.mediaDevices.getUserMedia",
@@ -200,6 +201,10 @@ def test_browser_capture_is_one_click_audio_worklet_pcm16_and_cancels_on_close()
     assert "embedding" not in script.lower()
     assert "similarity" not in script.lower()
     assert "window.addEventListener('localechange', render)" in script
+    assert "needsLowPass = this.targetSampleRate < this.originalSampleRate" in processor
+    assert "createLowPassFilter()" in processor
+    assert "applyLowPassFilter(audioData)" in processor
+    assert "const sourceData = this.applyLowPassFilter(audioData)" in processor
 
 
 def test_voice_identity_route_is_reserved_for_character_profiles() -> None:

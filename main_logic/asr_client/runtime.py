@@ -2079,6 +2079,9 @@ class IndependentAsrRuntime:
                 await asr_session.close()
             except Exception:
                 cleanup_degraded = True
+            async with self._asr_final_lock:
+                if self._asr_candidate_rejection is not suppression:
+                    return CandidateRejectionOutcome.APPLIED_CLEANUP_DEGRADED
             try:
                 await detector.reset()
             except Exception:

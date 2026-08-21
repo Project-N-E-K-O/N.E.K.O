@@ -11,6 +11,9 @@ class AudioProcessor extends AudioWorkletProcessor {
         // 计算重采样比率
         this.resampleRatio = this.targetSampleRate / this.originalSampleRate;
         this.needsResampling = this.resampleRatio !== 1.0;
+        this.needsLowPass = this.targetSampleRate < this.originalSampleRate;
+        this.lowPassTaps = this.needsLowPass ? this.createLowPassFilter() : null;
+        this.lowPassHistory = [];
 
         // 缓冲区大小根据目标采样率调整
         // 48kHz: 480 samples (10ms, RNNoise frame size)
@@ -72,9 +75,63 @@ class AudioProcessor extends AudioWorkletProcessor {
         return pcmData;
     }
 
-    // 简单的线性插值重采样
+    createLowPassFilter() {
+        const tapCount = 31;
+        const half = Math.floor(tapCount / 2);
+        const cutoff = Math.min(0.5, this.targetSampleRate / this.originalSampleRate / 2);
+        const taps = new Float32Array(tapCount);
+        let total = 0;
+
+        for (let i = 0; i < tapCount; i++) {
+            const offset = i - half;
+            const sinc = offset === 0
+                ? 2 * cutoff
+                : Math.sin(2 * Math.PI * cutoff * offset) / (Math.PI * offset);
+            const window = 0.54 - 0.46 * Math.cos((2 * Math.PI * i) / (tapCount - 1));
+            const value = sinc * window;
+            taps[i] = value;
+            total += value;
+        }
+
+        for (let i = 0; i < taps.length; i++) {
+            taps[i] /= total;
+        }
+        return taps;
+    }
+
+    applyLowPassFilter(audioData) {
+        if (!this.lowPassTaps) {
+            return audioData;
+        }
+        const taps = this.lowPassTaps;
+        const half = Math.floor(taps.length / 2);
+        const input = Array.from(audioData);
+        const extended = this.lowPassHistory.concat(input);
+        const result = new Float32Array(input.length);
+
+        for (let i = 0; i < input.length; i++) {
+            const center = this.lowPassHistory.length + i;
+            let sample = 0;
+            for (let tap = 0; tap < taps.length; tap++) {
+                let sourceIndex = center + tap - half;
+                if (sourceIndex < 0) {
+                    sourceIndex = 0;
+                } else if (sourceIndex >= extended.length) {
+                    sourceIndex = extended.length - 1;
+                }
+                sample += extended[sourceIndex] * taps[tap];
+            }
+            result[i] = sample;
+        }
+
+        this.lowPassHistory = extended.slice(Math.max(0, extended.length - half));
+        return result;
+    }
+
+    // 低通抗混叠后再做线性插值重采样
     resampleAudio(audioData) {
-        const inputLength = audioData.length;
+        const sourceData = this.applyLowPassFilter(audioData);
+        const inputLength = sourceData.length;
         const outputLength = Math.floor(inputLength * this.resampleRatio);
         const result = new Float32Array(outputLength);
 
@@ -85,9 +142,9 @@ class AudioProcessor extends AudioWorkletProcessor {
 
             // 线性插值
             if (index + 1 < inputLength) {
-                result[i] = audioData[index] * (1 - fraction) + audioData[index + 1] * fraction;
+                result[i] = sourceData[index] * (1 - fraction) + sourceData[index + 1] * fraction;
             } else {
-                result[i] = audioData[index];
+                result[i] = sourceData[index];
             }
         }
 
@@ -96,4 +153,3 @@ class AudioProcessor extends AudioWorkletProcessor {
 }
 
 registerProcessor('audio-processor', AudioProcessor);
-

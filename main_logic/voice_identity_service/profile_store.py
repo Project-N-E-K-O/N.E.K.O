@@ -88,9 +88,13 @@ class WindowsDpapiKeyProtector:
                 _DPAPI_UI_FORBIDDEN,
             )
         except Exception as exc:
-            raise SecureStorageUnavailableError("secure_storage_unavailable") from exc
+            raise VoiceIdentityProfileCorruptError(
+                "voice identity profile key could not be unwrapped"
+            ) from exc
         if type(plaintext) is not bytes or len(plaintext) != _KEY_BYTES:
-            raise SecureStorageUnavailableError("secure_storage_unavailable")
+            raise VoiceIdentityProfileCorruptError(
+                "voice identity profile key could not be unwrapped"
+            )
         return plaintext
 
 
@@ -372,7 +376,7 @@ class VoiceIdentityProfileStore:
             reference.close()
             reference = None
             return profile
-        except SecureStorageUnavailableError:
+        except (SecureStorageUnavailableError, VoiceIdentityProfileCorruptError):
             raise
         except (
             InvalidTag,

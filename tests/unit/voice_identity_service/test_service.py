@@ -1364,6 +1364,49 @@ async def test_cancelled_enrollment_cancel_retains_cleanup_to_completion(
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_cancelled_close_retains_cleanup_to_completion(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service, _model, activations, _events = _service(tmp_path)
+    await service.initialize()
+    first = await service.start_enrollment()
+    await service.complete_enrollment(first.enrollment_id, "profile-a", _pcm())
+    old_profile = service._profile  # type: ignore[attr-defined]
+    assert old_profile is not None
+    await service.start_enrollment()
+    cleanup_started = asyncio.Event()
+    cleanup_release = asyncio.Event()
+    cleanup_completed = False
+
+    async def blocking_cleanup(session) -> bool:
+        nonlocal cleanup_completed
+        cleanup_started.set()
+        await cleanup_release.wait()
+        cleanup_completed = True
+        return True
+
+    monkeypatch.setattr(service, "_cleanup_session", blocking_cleanup)
+    shutdown = asyncio.create_task(service.close())
+    await asyncio.wait_for(cleanup_started.wait(), 1.0)
+    shutdown.cancel()
+    cleanup_release.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await shutdown
+
+    assert cleanup_completed
+    assert service._enrollment is None  # type: ignore[attr-defined]
+    assert old_profile.closed
+    assert activations[-1][0] is None
+    status = service.status()
+    assert not status.state.has_profile
+    assert not status.state.effective_enabled
+    assert status.state.effective_reason == "disabled"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_cancelled_profile_delete_reconciles_memory_and_runtime(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

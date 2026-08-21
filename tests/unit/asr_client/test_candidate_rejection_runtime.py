@@ -401,6 +401,47 @@ async def test_rejection_watchdog_bounds_stuck_recovery_and_resumes_asr(
     await _close_dispatchers(runtime)
 
 
+async def test_late_rejection_cleanup_does_not_reset_recovered_detector(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        runtime_module,
+        "_CANDIDATE_REJECTION_WATCHDOG_SECONDS",
+        0.0,
+    )
+    runtime = IndependentAsrRuntime(_callbacks())
+    detector = _RejectionDetector()
+    session, _lifecycle, _turn_token = _install_active_candidate(runtime, detector)
+    close_started = asyncio.Event()
+    close_release = asyncio.Event()
+
+    async def blocking_close() -> None:
+        close_started.set()
+        await close_release.wait()
+
+    session.close = AsyncMock(side_effect=blocking_close)
+    rejection_task = asyncio.create_task(
+        runtime._reject_speaker_candidate(
+            _shadow_candidate(),
+            activation_generation="profile-generation",
+        )
+    )
+    await asyncio.wait_for(close_started.wait(), 1.0)
+
+    async def wait_until_recovered() -> None:
+        while runtime._asr_candidate_rejection is not None:
+            await asyncio.sleep(0)
+
+    await asyncio.wait_for(wait_until_recovered(), 1.0)
+    close_release.set()
+    outcome = await asyncio.wait_for(rejection_task, 1.0)
+
+    assert outcome is CandidateRejectionOutcome.APPLIED_CLEANUP_DEGRADED
+    assert detector.reset.await_count == 1
+    runtime._ensure_transport_restart_task.assert_called_once_with()
+    await _close_dispatchers(runtime)
+
+
 async def test_close_cancels_and_joins_owned_rejection_task() -> None:
     runtime = IndependentAsrRuntime(_callbacks())
     detector = _RejectionDetector()

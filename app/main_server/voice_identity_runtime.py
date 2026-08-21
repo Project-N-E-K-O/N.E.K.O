@@ -131,10 +131,20 @@ class OwnerVoiceRuntimeRegistry:
             self._managers.add(manager)
             try:
                 if self._suppressed:
-                    await manager.set_voice_input_suppressed(
-                        "voice_identity_enrollment",
-                        suppressed=True,
-                    )
+                    try:
+                        await asyncio.wait_for(
+                            manager.set_voice_input_suppressed(
+                                "voice_identity_enrollment",
+                                suppressed=True,
+                            ),
+                            timeout=_WATCHDOG_MANAGER_CALL_TIMEOUT_SECONDS,
+                        )
+                    except TimeoutError:
+                        self._restore_pending.add(manager)
+                        if self._activation is not None:
+                            self._attach_pending.add(manager)
+                            self._ensure_attach_watchdog()
+                        return VoiceIdentityActivationResult.RUNTIME_DEGRADED
                     self._restore_pending.discard(manager)
                 elif manager in self._restore_pending:
                     await self._restore_manager(
@@ -666,6 +676,32 @@ class OwnerVoiceRuntimeRegistry:
         )
         for task in tasks:
             task.cancel()
+        cleanup_cancellations: list[asyncio.CancelledError] = []
+        cleanup_task = asyncio.create_task(
+            self._finish_close_cleanup(retry_task, attach_task, detach_task),
+            name="voice-identity-registry-close-cleanup",
+        )
+        while not cleanup_task.done():
+            try:
+                await asyncio.shield(cleanup_task)
+            except asyncio.CancelledError as exc:
+                if not cleanup_cancellations:
+                    cleanup_cancellations.append(exc)
+        await cleanup_task
+        if cleanup_cancellations:
+            raise cleanup_cancellations[0]
+
+    async def _finish_close_cleanup(
+        self,
+        retry_task: asyncio.Task[None] | None,
+        attach_task: asyncio.Task[None] | None,
+        detach_task: asyncio.Task[None] | None,
+    ) -> None:
+        tasks = tuple(
+            task
+            for task in (retry_task, attach_task, detach_task)
+            if task is not None
+        )
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
         if self._restore_retry_task is retry_task:

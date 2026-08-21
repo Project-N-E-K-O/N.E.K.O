@@ -734,13 +734,26 @@ class VoiceIdentityService:
             if self._closed:
                 return
             self._closed = True
+            cancellations: list[asyncio.CancelledError] = []
             session = self._enrollment
             self._enrollment = None
             if session is not None:
-                await self._cleanup_session(session)
-            await self._activate(None, str(uuid.uuid4()))
+                await _await_cancellation_safe(
+                    self._cleanup_session(session),
+                    name="voice-identity-close-enrollment-cleanup",
+                    cancellations=cancellations,
+                )
+            await _await_cancellation_safe(
+                self._activate(None, str(uuid.uuid4())),
+                name="voice-identity-close-profile-detach",
+                cancellations=cancellations,
+            )
             try:
-                await self._suppression_controller.close()
+                await _await_cancellation_safe(
+                    self._suppression_controller.close(),
+                    name="voice-identity-close-suppression-controller",
+                    cancellations=cancellations,
+                )
             except Exception:
                 pass
             if self._profile is not None:
@@ -748,6 +761,8 @@ class VoiceIdentityService:
                 self._profile = None
             self._effective_enabled = False
             self._effective_reason = VoiceIdentityEffectiveReason.DISABLED
+            if cancellations:
+                raise cancellations[0]
 
     async def _expire_enrollment(
         self,

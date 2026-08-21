@@ -1164,6 +1164,58 @@ async def test_registration_suppression_failure_keeps_manager_for_retry() -> Non
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_registration_suppression_timeout_keeps_manager_for_retry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        runtime_module,
+        "_WATCHDOG_MANAGER_CALL_TIMEOUT_SECONDS",
+        0.02,
+    )
+    registry = OwnerVoiceRuntimeRegistry(
+        enforce=True,
+        restore_retry_interval_seconds=0.01,
+        restore_retry_timeout_seconds=0.5,
+    )
+    profile = _profile("profile")
+    try:
+        assert await registry.activate(profile, "generation")
+    finally:
+        profile.close()
+    await registry.suppress("voice_identity_enrollment")
+
+    class BlockingSuppressManager(_Manager):
+        async def set_voice_input_suppressed(
+            self,
+            reason: str,
+            *,
+            suppressed: bool,
+        ) -> None:
+            self.suppression_calls.append((reason, suppressed))
+            if suppressed:
+                await asyncio.Event().wait()
+            await super().set_voice_input_suppressed(
+                reason,
+                suppressed=suppressed,
+            )
+
+    manager = BlockingSuppressManager()
+
+    result = await registry.register_manager(manager)
+
+    assert result is VoiceIdentityActivationResult.RUNTIME_DEGRADED
+    assert manager in registry._managers  # type: ignore[attr-defined]
+    assert manager in registry._restore_pending  # type: ignore[attr-defined]
+    assert manager in registry._attach_pending  # type: ignore[attr-defined]
+    assert (
+        registry.activation_status()
+        is VoiceIdentityActivationResult.RUNTIME_DEGRADED
+    )
+    await registry.close()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_cancelled_restore_queues_every_manager_before_retry() -> None:
     registry = OwnerVoiceRuntimeRegistry(
         enforce=True,
@@ -1245,6 +1297,46 @@ async def test_registry_close_propagates_external_cancellation_and_cleans() -> N
 
     assert not registry._managers  # type: ignore[attr-defined]
     assert registry._activation is None  # type: ignore[attr-defined]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_registry_close_cancellation_during_watchdog_join_still_cleans() -> None:
+    registry = OwnerVoiceRuntimeRegistry(enforce=True)
+    manager = _Manager()
+    await registry.register_manager(manager)
+    profile = _profile("profile")
+    try:
+        assert await registry.activate(profile, "generation")
+    finally:
+        profile.close()
+
+    retry_cancelled = asyncio.Event()
+    retry_release = asyncio.Event()
+
+    async def slow_retry_task() -> None:
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            retry_cancelled.set()
+            await retry_release.wait()
+
+    retry_task = asyncio.create_task(slow_retry_task())
+    registry._restore_retry_task = retry_task  # type: ignore[attr-defined]
+    close_task = asyncio.create_task(registry.close())
+    await asyncio.wait_for(retry_cancelled.wait(), 1.0)
+
+    close_task.cancel()
+    await asyncio.sleep(0)
+    assert not close_task.done()
+
+    retry_release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await close_task
+
+    assert not registry._managers  # type: ignore[attr-defined]
+    assert registry._activation is None  # type: ignore[attr-defined]
+    assert registry._restore_retry_task is None  # type: ignore[attr-defined]
 
 
 @pytest.mark.unit
