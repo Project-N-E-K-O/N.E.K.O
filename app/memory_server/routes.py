@@ -3645,7 +3645,13 @@ async def _new_dialog(
                     locale_admission_order=locale_admission_order,
                     op_id=op_id,
                 )
-                runtime._spawn_background_task(operation)
+                # 这个重试活得比 /new_dialog 请求久：不登记的话中间件一放行
+                # 就算排空了，改名/删除之后它还能把 prompt_locale.json 写回去，
+                # 把旧身份的目录重建出来。
+                post_turn._track_character_post_turn_task(
+                    lanlan_name,
+                    runtime._spawn_background_task(operation),
+                )
         else:
             _promote_new_dialog_locale_generation(
                 lanlan_name,

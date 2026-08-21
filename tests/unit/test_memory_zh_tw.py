@@ -221,6 +221,23 @@ def test_summary_prompt_uses_request_scoped_traditional_locale():
     assert "負面回饋" in prompt
 
 
+def _collect_spawned_operation(sink):
+    """Stub for ``runtime._spawn_background_task``.
+
+    Collects the coroutine instead of running it, but still returns a finished
+    awaitable: the call sites register the returned task in the per-character
+    post-turn registry, and a finished future clears itself from it immediately.
+    """
+
+    def _spawn(operation):
+        sink.append(operation)
+        finished = asyncio.get_running_loop().create_future()
+        finished.set_result(None)
+        return finished
+
+    return _spawn
+
+
 @pytest.mark.asyncio
 async def test_compressed_memo_wrapper_keeps_traditional_locale():
     from memory.recent import CompressedRecentHistoryManager
@@ -949,7 +966,7 @@ async def test_new_dialog_defers_locale_write_while_cloudsave_is_fenced(monkeypa
     monkeypatch.setattr(
         runtime,
         "_spawn_background_task",
-        lambda operation: deferred.append(operation),
+        _collect_spawned_operation(deferred),
     )
 
     with pytest.raises(ReachedContextRead):
@@ -1356,7 +1373,7 @@ async def test_new_dialog_generation_follows_admission_not_validation_order(
     monkeypatch.setattr(
         runtime,
         "_spawn_background_task",
-        lambda operation: spawned.append(operation),
+        _collect_spawned_operation(spawned),
     )
     monkeypatch.setattr(runtime, "_get_settle_lock", lambda _name: StopLock())
     routes._new_dialog_locale_generations.pop(name, None)

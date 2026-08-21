@@ -460,6 +460,131 @@ async def test_reflect_auto_promote_task_joins_the_per_character_registry():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_deferred_new_dialog_locale_retry_joins_the_registry():
+    """The deferred locale retry outlives the request; release must drain it."""
+    import contextlib
+
+    from app import memory_server
+    from app.memory_server import routes as routes_module
+
+    name = "延迟locale重试角色"
+    memory_server.post_turn._character_post_turn_tasks.pop(name, None)
+    started = asyncio.Event()
+
+    async def _slow_retry(*_args, **_kwargs):
+        started.set()
+        await asyncio.sleep(30)
+
+    async def _defer_locale_write(*_args, **_kwargs):
+        raise routes_module.MaintenanceModeError("cloud snapshot in progress")
+
+    fake_outbox = MagicMock()
+    fake_outbox.aappend_pending = AsyncMock(return_value="op-1")
+    fake_config = MagicMock()
+    fake_config.aload_characters = AsyncMock(return_value={"猫娘": {name: {}}})
+
+    cancelled = 0
+    try:
+        with patch.object(
+            routes_module, "_write_new_dialog_locale", _defer_locale_write,
+        ), patch.object(
+            routes_module, "_run_durable_new_dialog_locale_retry", _slow_retry,
+        ), patch.object(
+            routes_module, "_promote_new_dialog_locale_generation", MagicMock(),
+        ), patch.object(
+            routes_module.locale_state,
+            "rebase_character_prompt_locale_order",
+            MagicMock(return_value=1),
+        ), patch.object(
+            memory_server.runtime, "outbox", fake_outbox,
+        ), patch.object(
+            memory_server.runtime, "_config_manager", fake_config,
+        ):
+            # 端点后半段要整套 memory 组件；这里只关心「延迟重试有没有被登记」，
+            # 而登记只发生在这条异常分支里，所以断言 registry 有 1 条不会空过。
+            with contextlib.suppress(Exception):
+                await routes_module._new_dialog(name, "zh-TW", None)
+            await asyncio.wait_for(started.wait(), timeout=1)
+
+            assert len(
+                memory_server.post_turn._character_post_turn_tasks.get(name, ())
+            ) == 1
+            cancelled = await memory_server.post_turn.cancel_character_post_turn_tasks(
+                name
+            )
+    finally:
+        memory_server.post_turn._character_post_turn_tasks.pop(name, None)
+
+    assert cancelled == 1
+
+
+@pytest.mark.unit
+def test_every_memory_server_background_spawn_is_drainable():
+    """Per-character background work must be drainable by a character release.
+
+    Every ``_spawn_background_task(...)`` call either goes through the
+    per-character post-turn registry, or is listed here together with the
+    registry (or the reason) that already covers it. Adding a new spawn forces
+    that decision instead of silently escaping the release drain.
+    """
+    import ast
+    from pathlib import Path
+
+    import app.memory_server as memory_server_package
+
+    covered_elsewhere = {
+        # 进程级常驻循环 + embedding bootstrap：不属于任何角色，
+        # release 不该、也不能取消它们。
+        ("runtime.py", "ensure_memory_server_runtime_initialized"),
+        # 按角色登记进 compress_backup_tasks，由 cancel_character_derived_tasks 排空。
+        ("review.py", "_on_compress_done"),
+    }
+
+    def _callee_name(node):
+        func = getattr(node, "func", None)
+        return getattr(func, "attr", None) or getattr(func, "id", None)
+
+    tracked: set[tuple[str, str]] = set()
+    untracked: set[tuple[str, str]] = set()
+    for source_path in sorted(Path(memory_server_package.__file__).parent.glob("*.py")):
+        tree = ast.parse(source_path.read_text(encoding="utf-8"))
+        parents: dict[ast.AST, ast.AST] = {}
+        enclosing: dict[ast.AST, str] = {}
+
+        def _walk(node, function_name):
+            for child in ast.iter_child_nodes(node):
+                parents[child] = node
+                enclosing[child] = function_name
+                _walk(
+                    child,
+                    child.name
+                    if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef))
+                    else function_name,
+                )
+
+        _walk(tree, "<module>")
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            if _callee_name(node) != "_spawn_background_task":
+                continue
+            key = (source_path.name, enclosing.get(node, "<module>"))
+            parent = parents.get(node)
+            if isinstance(parent, ast.Call) and _callee_name(parent) == (
+                "_track_character_post_turn_task"
+            ):
+                tracked.add(key)
+            else:
+                untracked.add(key)
+
+    assert untracked == covered_elsewhere
+    assert ("routes.py", "_new_dialog") in tracked
+    assert ("routes.py", "api_reflect") in tracked
+    assert ("outbox_infra.py", "_replay_pending_outbox") in tracked
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_background_tasks_never_inherit_the_admission_lease():
     """A detached task outlives the request, so release cannot drain it."""
     from app import memory_server
