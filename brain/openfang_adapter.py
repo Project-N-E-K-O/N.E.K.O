@@ -266,7 +266,12 @@ class OpenFangAdapter:
         import hashlib
         cm = get_config_manager()
         agent_cfg = cm.get_model_api_config('agent')
-        key_fields = f"{agent_cfg.get('model', '')}|{agent_cfg.get('base_url', '')}|{agent_cfg.get('api_key', '')}"
+        # provider_type 也要进哈希：它现在参与 provider 探测，只改协议不改
+        # model/url/key 的配置变更否则会被判成「没变」，重新探测永远不触发。
+        key_fields = (
+            f"{agent_cfg.get('model', '')}|{agent_cfg.get('base_url', '')}"
+            f"|{agent_cfg.get('api_key', '')}|{agent_cfg.get('provider_type', '')}"
+        )
         return hashlib.md5(key_fields.encode()).hexdigest()
 
     async def _ensure_config_synced(self) -> None:
@@ -780,7 +785,11 @@ class OpenFangAdapter:
                 content = f.read()
 
         # 根据 base_url 检测 provider
-        pinfo = _detect_provider_info(base_url, model)
+        #
+        # 优先复用 sync_config 已经算好的那份（它带上了配置层解析出的 provider_type）。
+        # 落盘这条路自己重算的话，声明式 anthropic 端点会被判成 openai —— 运行时推的
+        # provider 和 config.toml 里写的对不上。
+        pinfo = getattr(self, '_provider_info', None) or _detect_provider_info(base_url, model)
         provider = pinfo["provider"]
         effective_url = pinfo["effective_url"]
         api_key_env = pinfo["api_key_env"]

@@ -1463,7 +1463,10 @@ class CoreConfigMixin:
                     # 注册表里的 provider）时回落到槽位存储值，保住这些既有路径。
                     cfg_key = core_cfg.get(f'{prefix}ModelApiKey')
                     _book_field = assist_api_key_fields.get(provider) if provider else ''
-                    _book_key = (config.get(_book_field) or '').strip() if _book_field else ''
+                    # core_config.json 是用户可手改的文件，管理簿字段里可能落进任意
+                    # JSON 类型。这里先转字符串再 strip —— 直接 .strip() 会让整个
+                    # get_core_config() 抛 AttributeError，那是启动即崩。
+                    _book_key = str(config.get(_book_field) or '').strip() if _book_field else ''
                     if _book_key:
                         config[apikey_key] = _book_key
                     elif cfg_key is not None:

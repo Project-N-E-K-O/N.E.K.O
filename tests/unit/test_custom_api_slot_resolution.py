@@ -108,6 +108,25 @@ class TestNamedProviderSlotKey:
         )
 
     @pytest.mark.unit
+    def test_non_string_key_book_value_does_not_crash_config_read(self, config_manager):
+        """core_config.json is hand-editable; a non-string key must not kill startup.
+
+        get_core_config() runs on every config read, so an AttributeError here
+        is a crash-on-launch, not a degraded slot.
+        """
+        _write_core_config(config_manager, _base_config(
+            conversationModelProvider='deepseek',
+            conversationModelId='deepseek-v4-flash',
+            conversationModelUrl='https://api.deepseek.com/v1',
+            assistApiKeyDeepseek=12345,
+        ))
+        cfg = config_manager.get_core_config()
+        assert cfg['CONVERSATION_MODEL_API_KEY'] == '12345', (
+            "非字符串管理簿值应被安全转成字符串而不是抛异常，实际="
+            f"{cfg['CONVERSATION_MODEL_API_KEY']!r}"
+        )
+
+    @pytest.mark.unit
     def test_custom_provider_keeps_slot_key(self, config_manager):
         """'custom' is user-typed and must never be redirected to the book."""
         _write_core_config(config_manager, _base_config(
