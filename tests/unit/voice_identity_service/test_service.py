@@ -365,6 +365,51 @@ async def test_failed_reenrollment_restores_requested_unsupported_activation(
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_cancelled_reenrollment_activation_restores_previous_profile(
+    tmp_path: Path,
+) -> None:
+    service, _model, activations, _events = _service(tmp_path)
+    await service.initialize()
+    first = await service.start_enrollment()
+    await service.complete_enrollment(first.enrollment_id, "profile-a", _pcm())
+    second = await service.start_enrollment()
+    activation_started = asyncio.Event()
+    activation_release = asyncio.Event()
+
+    async def blocking_activate(
+        profile: SpeakerProfile | None,
+        generation: str,
+    ) -> bool:
+        activations.append((profile, generation))
+        if generation == "profile-b":
+            activation_started.set()
+            await activation_release.wait()
+        return True
+
+    service._activation_callback = blocking_activate  # type: ignore[attr-defined]
+    completion = asyncio.create_task(
+        service.complete_enrollment(second.enrollment_id, "profile-b", _pcm())
+    )
+    await asyncio.wait_for(activation_started.wait(), 1.0)
+    completion.cancel()
+    activation_release.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await completion
+
+    status = service.status()
+    assert status.state.requested_enabled
+    assert status.state.effective_enabled
+    assert status.profile_generation == "profile-a"
+    assert [generation for _profile, generation in activations[-2:]] == [
+        "profile-b",
+        "profile-a",
+    ]
+    await service.close()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_filter_toggle_delete_and_completion_retry(tmp_path: Path) -> None:
     service, _model, activations, _events = _service(tmp_path)
     await service.initialize()

@@ -455,22 +455,17 @@ class VoiceIdentityService:
                 if staging_cancellations:
                     raise staging_cancellations[0]
                 if desired_requested and self._runtime_mode != "off":
-                    activation_result = await self._activate(new_profile, profile_id)
-                    if not activation_result:
-                        rollback_profile = (
-                            old_profile if old_activation_requested else None
-                        )
-                        rollback_generation = (
-                            old_profile.generation
-                            if rollback_profile is not None
-                            else str(uuid.uuid4())
-                        )
-                        old_activation_restore_result = await self._activate(
-                            rollback_profile,
-                            rollback_generation,
-                        )
-                        raise VoiceIdentityServiceError("runtime_degraded")
+                    activation_cancellations: list[asyncio.CancelledError] = []
+                    activation_result = await _await_cancellation_safe(
+                        self._activate(new_profile, profile_id),
+                        name="voice-identity-enrollment-activation",
+                        cancellations=activation_cancellations,
+                    )
                     activation_changed = True
+                    if activation_cancellations:
+                        raise activation_cancellations[0]
+                    if not activation_result:
+                        raise VoiceIdentityServiceError("runtime_degraded")
                 if desired_requested != old_requested:
                     preference_cancellations: list[asyncio.CancelledError] = []
                     await _await_cancellation_safe(
