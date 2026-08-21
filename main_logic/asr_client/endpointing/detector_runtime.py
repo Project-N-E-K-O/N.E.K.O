@@ -2224,6 +2224,11 @@ class DetectorRuntime:
             self._policy_event_candidate = None
             self._throttle_policy.reset_candidate_activity()
             self._reset_speaker_shadow_identity()
+            if self._speaker_shadow_suppressed_candidate == (
+                self._detector_epoch,
+                "provider_candidate",
+            ):
+                self._speaker_shadow_suppressed_candidate = None
             speaker_shadow = self._speaker_shadow
         await self._reset_speaker_shadow(speaker_shadow)
         return True

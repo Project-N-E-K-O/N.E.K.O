@@ -188,6 +188,27 @@ async def test_backend_health_marks_runtime_degraded() -> None:
     profile.close()
 
 
+async def test_backend_health_recovery_clears_runtime_degraded() -> None:
+    runtime = _runtime()
+    profile = _profile()
+    factory = OwnerVoiceAsrCompositionFactory(
+        runtime,
+        profile,
+        activation_generation="activation-8",
+        enforce=True,
+    )
+    shadow = factory()
+
+    shadow._mark_backend_degraded()
+    assert runtime._speaker_verifier_degraded
+    shadow._mark_backend_recovered()
+
+    assert not runtime._speaker_verifier_degraded
+    await shadow.close()
+    factory.close()
+    profile.close()
+
+
 def test_wrong_model_identity_raises_and_wipes_temporary_reference(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

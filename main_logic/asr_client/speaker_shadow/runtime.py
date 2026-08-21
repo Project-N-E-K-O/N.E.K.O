@@ -423,10 +423,12 @@ class SpeakerShadowRuntime:
         config: SpeakerShadowConfig | None = None,
         on_observation: ObservationCallback | None = None,
         on_backend_degraded: Callable[[], None] | None = None,
+        on_backend_recovered: Callable[[], None] | None = None,
     ) -> None:
         self._config = config or SpeakerShadowConfig()
         self._backend_factory = backend_factory
         self._on_backend_degraded = on_backend_degraded
+        self._on_backend_recovered = on_backend_recovered
         if on_observation is not None and not (
             inspect.iscoroutinefunction(on_observation)
             or inspect.iscoroutinefunction(getattr(on_observation, "__call__", None))
@@ -959,6 +961,7 @@ class SpeakerShadowRuntime:
                     raise ValueError(
                         "speaker cosine similarity must be within [-1, 1]"
                     )
+                self._mark_backend_recovered()
             except asyncio.CancelledError:
                 raise
             except _BackendHostTimeout:
@@ -1127,6 +1130,7 @@ class SpeakerShadowRuntime:
         self._load_failure_streak = 0
         self._next_load_attempt_at = 0.0
         self._metrics.load_count += 1
+        self._mark_backend_recovered()
         return host
 
     def _record_load_failure(self) -> None:
@@ -1145,6 +1149,15 @@ class SpeakerShadowRuntime:
 
     def _mark_backend_degraded(self) -> None:
         callback = self._on_backend_degraded
+        if callback is None:
+            return
+        try:
+            callback()
+        except Exception:
+            self._metrics.callback_failure_count += 1
+
+    def _mark_backend_recovered(self) -> None:
+        callback = self._on_backend_recovered
         if callback is None:
             return
         try:

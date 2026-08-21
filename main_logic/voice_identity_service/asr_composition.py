@@ -108,6 +108,7 @@ class OwnerVoiceAsrCompositionFactory:
             ),
             on_observation=on_observation,
             on_backend_degraded=runtime._mark_speaker_verifier_degraded,
+            on_backend_recovered=runtime._mark_speaker_verifier_healthy,
         )
 
     def close(self) -> None:

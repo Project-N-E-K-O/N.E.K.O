@@ -155,7 +155,6 @@ class OwnerVoiceRuntimeRegistry:
                     return result
                 return VoiceIdentityActivationResult.READY
             except BaseException:
-                self._managers.discard(manager)
                 if self._suppressed:
                     try:
                         await self._restore_manager(
@@ -164,6 +163,9 @@ class OwnerVoiceRuntimeRegistry:
                         )
                     except Exception:
                         self._restore_pending.add(manager)
+                    if self._activation is not None:
+                        self._attach_pending.add(manager)
+                        self._ensure_attach_watchdog()
                 elif manager in self._restore_pending:
                     self._ensure_restore_watchdog("voice_identity_enrollment")
                 raise
@@ -487,9 +489,10 @@ class OwnerVoiceRuntimeRegistry:
                 return
             if not suppressed:
                 targets = tuple(set(self._managers).union(self._restore_pending))
+                for manager in targets:
+                    self._restore_pending.add(manager)
                 try:
                     for manager in targets:
-                        self._restore_pending.add(manager)
                         try:
                             await self._restore_manager(manager, reason)
                         except Exception:
@@ -690,11 +693,14 @@ class OwnerVoiceRuntimeRegistry:
                 except Exception:
                     pass
                 try:
-                    await manager.set_speaker_verifier_factory(
-                        None,
-                        activation_generation=str(uuid.uuid4()),
+                    await asyncio.wait_for(
+                        manager.set_speaker_verifier_factory(
+                            None,
+                            activation_generation=str(uuid.uuid4()),
+                        ),
+                        timeout=_WATCHDOG_MANAGER_CALL_TIMEOUT_SECONDS,
                     )
-                except Exception:
+                except (asyncio.CancelledError, Exception):
                     pass
             self._managers.clear()
             activation = self._activation

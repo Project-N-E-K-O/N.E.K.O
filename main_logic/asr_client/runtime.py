@@ -313,6 +313,12 @@ class IndependentAsrRuntime:
         self._ensure_asr_runtime_state()
         self._speaker_verifier_degraded = True
 
+    def _mark_speaker_verifier_healthy(self) -> None:
+        """Clear transient Owner verifier health degradation after recovery."""
+
+        self._ensure_asr_runtime_state()
+        self._speaker_verifier_degraded = False
+
     @staticmethod
     def _close_speaker_verifier_factory(factory: SpeakerShadowFactory) -> None:
         close = getattr(factory, "close", None)

@@ -64,6 +64,15 @@ def _pcm() -> bytes:
     return samples.tobytes()
 
 
+async def _wait_until(predicate, *, timeout_seconds: float = 1.0) -> None:
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout_seconds
+    while not predicate():
+        if loop.time() >= deadline:
+            raise AssertionError("condition was not satisfied before timeout")
+        await asyncio.sleep(0.005)
+
+
 def _service(
     tmp_path: Path,
     *,
@@ -301,6 +310,74 @@ async def test_session_timeout_releases_model_and_lease(tmp_path: Path) -> None:
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_enrollment_expiry_uses_suppression_lease_deadline(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service, model, _activations, suppression_events = _service(
+        tmp_path,
+        enrollment_ttl_seconds=0.2,
+    )
+    await service.initialize()
+    lease_released = False
+
+    class ShortLease:
+        def __init__(self, expires_at: float) -> None:
+            self.expires_at = expires_at
+
+        async def release(self) -> bool:
+            nonlocal lease_released
+            lease_released = True
+            suppression_events.append("restore:voice_identity_enrollment")
+            return True
+
+    async def slow_acquire(reason: str, *, ttl_seconds: float):
+        del ttl_seconds
+        suppression_events.append(f"suppress:{reason}")
+        expires_at = asyncio.get_running_loop().time() + 0.02
+        await asyncio.sleep(0.05)
+        return ShortLease(expires_at)
+
+    monkeypatch.setattr(service._suppression_controller, "acquire", slow_acquire)  # type: ignore[attr-defined]
+
+    await service.start_enrollment()
+    await _wait_until(
+        lambda: (
+            lease_released
+            and model.closed
+            and service.status().enrollment is None
+        )
+    )
+
+    assert lease_released
+    assert model.closed
+    assert suppression_events[-1] == "restore:voice_identity_enrollment"
+    await service.close()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_expired_enrollment_completion_is_rejected_and_cleaned(
+    tmp_path: Path,
+) -> None:
+    service, model, _activations, suppression_events = _service(tmp_path)
+    await service.initialize()
+    enrollment = await service.start_enrollment()
+    session = service._enrollment  # type: ignore[attr-defined]
+    assert session is not None
+    session.expires_at = asyncio.get_running_loop().time() - 0.001
+
+    with pytest.raises(VoiceIdentityServiceError, match="stale_enrollment"):
+        await service.complete_enrollment(enrollment.enrollment_id, "profile-a", _pcm())
+
+    assert service.status().enrollment is None
+    assert model.closed
+    assert suppression_events[-1] == "restore:voice_identity_enrollment"
+    await service.close()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_commit_failure_rolls_back_old_activation_and_profile(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -472,6 +549,42 @@ async def test_status_stays_valid_while_filter_disable_detaches(
 
     detach_release.set()
     await disable
+    await service.close()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_status_stays_valid_while_profile_delete_detaches(
+    tmp_path: Path,
+) -> None:
+    service, _model, _activations, _events = _service(tmp_path)
+    await service.initialize()
+    enrollment = await service.start_enrollment()
+    await service.complete_enrollment(enrollment.enrollment_id, "profile-a", _pcm())
+    detach_started = asyncio.Event()
+    detach_release = asyncio.Event()
+
+    async def blocking_activate(
+        profile: SpeakerProfile | None,
+        generation: str,
+    ) -> bool:
+        del generation
+        if profile is None:
+            detach_started.set()
+            await detach_release.wait()
+        return True
+
+    service._activation_callback = blocking_activate  # type: ignore[attr-defined]
+    deletion = asyncio.create_task(service.delete_profile())
+    await asyncio.wait_for(detach_started.wait(), 1.0)
+
+    status = service.status()
+    assert not status.state.requested_enabled
+    assert not status.state.effective_enabled
+    assert status.state.effective_reason == "disabled"
+
+    detach_release.set()
+    await deletion
     await service.close()
 
 

@@ -1130,6 +1130,89 @@ async def test_cancelled_inflight_suppression_restores_current_manager() -> None
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_registration_suppression_failure_keeps_manager_for_retry() -> None:
+    registry = OwnerVoiceRuntimeRegistry(
+        enforce=True,
+        restore_retry_interval_seconds=0.01,
+        restore_retry_timeout_seconds=0.2,
+    )
+    profile = _profile("profile")
+    try:
+        assert await registry.activate(profile, "generation")
+    finally:
+        profile.close()
+    await registry.suppress("voice_identity_enrollment")
+    manager = _Manager()
+    manager.suppress_failure = True
+
+    with pytest.raises(RuntimeError, match="suppression failed"):
+        await registry.register_manager(manager)
+
+    assert manager in registry._managers  # type: ignore[attr-defined]
+    assert manager in registry._attach_pending  # type: ignore[attr-defined]
+    assert (
+        registry.activation_status()
+        is VoiceIdentityActivationResult.RUNTIME_DEGRADED
+    )
+    manager.suppress_failure = False
+    await registry.restore("voice_identity_enrollment")
+    await _wait_until(lambda: manager not in registry._attach_pending)  # type: ignore[attr-defined]
+
+    assert registry.activation_status() is VoiceIdentityActivationResult.READY
+    await registry.close()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_cancelled_restore_queues_every_manager_before_retry() -> None:
+    registry = OwnerVoiceRuntimeRegistry(
+        enforce=True,
+        restore_retry_interval_seconds=0.01,
+        restore_retry_timeout_seconds=0.2,
+    )
+    first = _Manager()
+    second = _Manager()
+    await registry.register_manager(first)
+    await registry.register_manager(second)
+    await registry.suppress("voice_identity_enrollment")
+    first.cancel_restore = True
+    second.cancel_restore = True
+
+    with pytest.raises(asyncio.CancelledError):
+        await registry.restore("voice_identity_enrollment")
+
+    assert first in registry._restore_pending  # type: ignore[attr-defined]
+    assert second in registry._restore_pending  # type: ignore[attr-defined]
+    first.cancel_restore = False
+    second.cancel_restore = False
+    await _wait_until(lambda: not registry._restore_pending)  # type: ignore[attr-defined]
+    await registry.close()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_registry_close_bounds_blocking_detach() -> None:
+    registry = OwnerVoiceRuntimeRegistry(enforce=True)
+    manager = _Manager()
+
+    async def never_detach(
+        factory: _Factory | None,
+        *,
+        activation_generation: str,
+    ) -> bool:
+        del activation_generation
+        if factory is None:
+            await asyncio.Event().wait()
+        return True
+
+    await registry.register_manager(manager)
+    manager.set_speaker_verifier_factory = never_detach  # type: ignore[method-assign]
+
+    await asyncio.wait_for(registry.close(), 1.0)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_rejects_unknown_suppression_reason() -> None:
     registry = OwnerVoiceRuntimeRegistry(enforce=True)
     with pytest.raises(ValueError, match="unsupported"):

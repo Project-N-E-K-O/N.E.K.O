@@ -357,10 +357,12 @@ class VoiceIdentityService:
                 raise VoiceIdentityServiceError("runtime_degraded") from exc
 
             enrollment_id = str(uuid.uuid4())
+            loop = asyncio.get_running_loop()
+            expiry_delay = max(0.0, lease.expires_at - loop.time())
             expiry_task = asyncio.create_task(
                 self._expire_enrollment(
                     enrollment_id,
-                    self._enrollment_ttl_seconds,
+                    expiry_delay,
                 ),
                 name="voice-identity-enrollment-expiry",
             )
@@ -389,6 +391,17 @@ class VoiceIdentityService:
                 return self.status()
             session = self._enrollment
             if session is None or session.enrollment_id != enrollment_id:
+                raise VoiceIdentityServiceError("stale_enrollment")
+            if asyncio.get_running_loop().time() >= session.expires_at:
+                self._enrollment = None
+                session.expiry_task.cancel()
+                cleanup_ok = await self._cleanup_session(session)
+                if not self._effective_enabled:
+                    self._set_ineffective(
+                        self._idle_reason()
+                        if cleanup_ok
+                        else VoiceIdentityEffectiveReason.RUNTIME_DEGRADED
+                    )
                 raise VoiceIdentityServiceError("stale_enrollment")
             self._enrollment = None
             session.expiry_task.cancel()
@@ -697,6 +710,7 @@ class VoiceIdentityService:
                     raise cancellations[0]
                 raise VoiceIdentityServiceError("runtime_degraded") from exc
             self._requested_enabled = False
+            self._set_ineffective(VoiceIdentityEffectiveReason.DISABLED)
             detached = await _await_cancellation_safe(
                 self._activate(None, str(uuid.uuid4())),
                 name="voice-identity-delete-profile-detach",

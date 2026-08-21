@@ -525,6 +525,37 @@ async def test_replace_provider_verifier_waits_for_candidate_boundary() -> None:
     assert new_shadow.close_calls == 1
 
 
+async def test_discard_provider_successor_reopens_replaced_verifier() -> None:
+    old_shadow = _SpeakerShadowSpy()
+    new_shadow = _SpeakerShadowSpy()
+    detector = DetectorRuntime(
+        vad=_Vad(),
+        gate=_Gate(),
+        provider_policy=_provider_endpoint_policy(),
+        speaker_shadow=old_shadow,
+    )
+    first_pcm = b"\x01\x00" * 160
+    successor_pcm = b"\x02\x00" * 160
+    next_pcm = b"\x03\x00" * 160
+    detector.observe_provider_audio(first_pcm, sample_rate_hz=16_000)
+    fence = await detector.seal_provider_candidate()
+    assert fence is not None
+    detector.observe_provider_audio(successor_pcm, sample_rate_hz=16_000)
+
+    await detector.replace_speaker_verifier(new_shadow)
+    assert await detector.discard_provider_successor(fence) is True
+    detector.observe_provider_audio(next_pcm, sample_rate_hz=16_000)
+
+    assert new_shadow.frames == [
+        (
+            next_pcm,
+            16_000,
+            SpeakerShadowCandidateKey(0, 3, "provider_candidate"),
+        )
+    ]
+    await detector.close()
+
+
 async def test_replace_smart_turn_verifier_activates_after_turn_boundary() -> None:
     new_shadow = _SpeakerShadowSpy()
     detector = DetectorRuntime(
