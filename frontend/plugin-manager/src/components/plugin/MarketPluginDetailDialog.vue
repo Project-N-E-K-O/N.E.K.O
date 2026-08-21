@@ -38,6 +38,15 @@
           <el-tag v-for="tag in displayPlugin.tags" :key="tag" size="small" effect="plain">{{ tag }}</el-tag>
         </div>
 
+        <el-alert
+          v-if="loadFailed"
+          class="market-plugin-detail__load-error"
+          type="error"
+          :title="t('market.detailLoadFailed')"
+          :closable="false"
+          show-icon
+        />
+
         <el-tabs v-model="activeTab" class="market-plugin-detail__tabs">
           <el-tab-pane label="README" name="readme">
             <!-- README 经过转义后再渲染有限 Markdown，远端内容不能注入 HTML。 -->
@@ -74,7 +83,7 @@
     </div>
 
     <template #footer>
-      <el-button v-if="plugin.github_repo" @click="openRepository">
+      <el-button v-if="actionablePlugin.github_repo" @click="openRepository">
         {{ t('market.detailSource') }}
       </el-button>
       <el-button @click="emit('update:visible', false)">{{ t('common.close') }}</el-button>
@@ -83,13 +92,13 @@
         type="primary"
         :loading="upgrading"
         :disabled="upgrading"
-        @click="emit('upgrade', plugin)"
+        @click="emit('upgrade', actionablePlugin)"
       >
-        {{ upgrading ? t('market.upgrading') : t('market.upgradeTo', { version: plugin.version }) }}
+        {{ upgrading ? t('market.upgrading') : t('market.upgradeTo', { version: actionablePlugin.version }) }}
       </el-button>
       <el-button v-else-if="installed" type="primary" disabled>{{ t('market.installed') }}</el-button>
-      <el-button v-else type="primary" :loading="installing" :disabled="installing || !plugin.has_release" @click="emit('install', plugin)">
-        {{ plugin.has_release ? (installing ? t('market.installing') : t('market.install')) : t('market.noVersionAvailable') }}
+      <el-button v-else type="primary" :loading="installing" :disabled="installing || !actionablePlugin.has_release" @click="emit('install', actionablePlugin)">
+        {{ actionablePlugin.has_release ? (installing ? t('market.installing') : t('market.install')) : t('market.noVersionAvailable') }}
       </el-button>
     </template>
   </el-dialog>
@@ -137,13 +146,26 @@ const emit = defineEmits<{
 }>()
 const { t } = useI18n()
 const loading = ref(false)
+const loadFailed = ref(false)
 const detail = ref<MarketPlugin | null>(null)
 const versions = ref<MarketPluginVersion[]>([])
 const repositoryReadme = ref<MarketPluginReadme | null>(null)
 const activeTab = ref('readme')
 let detailLoadSeq = 0
 const displayPlugin = computed(() => detail.value || props.plugin)
-const readmeSource = computed(() => repositoryReadme.value?.content || displayPlugin.value.readme || '')
+const actionablePlugin = computed<MarketWorkbenchItem>(() => ({
+  ...props.plugin,
+  ...detail.value,
+  id: props.plugin.id,
+  rawId: props.plugin.rawId,
+  searchIndex: props.plugin.searchIndex,
+}))
+const readmeSource = computed(() => {
+  if (repositoryReadme.value) {
+    return repositoryReadme.value.availability === 'available' ? repositoryReadme.value.content || '' : ''
+  }
+  return displayPlugin.value.readme || ''
+})
 const readmeHtml = computed(() => {
   if (!readmeSource.value) return ''
   try {
@@ -152,7 +174,7 @@ const readmeHtml = computed(() => {
       gfm: true,
       breaks: true,
     })
-    return DOMPurify.sanitize(html, {
+    const sanitizedHtml = DOMPurify.sanitize(html, {
       ALLOWED_TAGS: [
         'a', 'blockquote', 'br', 'code', 'del', 'details', 'div', 'em',
         'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'hr', 'img', 'input', 'li',
@@ -164,18 +186,20 @@ const readmeHtml = computed(() => {
         'href', 'open', 'rowspan', 'src', 'start', 'title', 'type', 'width',
       ],
     })
+    return rewriteReadmeUrls(sanitizedHtml)
   } catch {
     return ''
   }
 })
 const showUpgrade = computed(() =>
-  props.installed && !!props.localVersion && !!props.plugin.version && props.plugin.has_release
-    && compareVersion(props.localVersion, props.plugin.version) < 0,
+  props.installed && !!props.localVersion && !!actionablePlugin.value.version && actionablePlugin.value.has_release
+    && compareVersion(props.localVersion, actionablePlugin.value.version) < 0,
 )
 
 async function loadDetail() {
   const requestSeq = ++detailLoadSeq
   loading.value = true
+  loadFailed.value = false
   detail.value = null
   versions.value = []
   repositoryReadme.value = null
@@ -187,9 +211,15 @@ async function loadDetail() {
       fetchMarketPluginReadme(props.plugin.rawId),
     ])
     if (requestSeq !== detailLoadSeq) return
+    if (!pluginDetail) {
+      loadFailed.value = true
+      return
+    }
     detail.value = pluginDetail
     versions.value = versionList || []
     repositoryReadme.value = readme
+  } catch {
+    if (requestSeq === detailLoadSeq) loadFailed.value = true
   } finally {
     if (requestSeq === detailLoadSeq) loading.value = false
   }
@@ -204,6 +234,7 @@ watch(
       // 让关闭时仍在途的请求无法写回状态；下次打开会拥有新的序号。
       detailLoadSeq++
       loading.value = false
+      loadFailed.value = false
     }
   },
   { immediate: true },
@@ -232,13 +263,36 @@ function handleReadmeClick(event: MouseEvent) {
     href,
     repositoryReadme.value?.repository_url || props.plugin.github_repo,
     window.location.origin,
+    { sourceRef: repositoryReadme.value?.source_ref },
   )
   // 不可解析或非 HTTP(S) 链接保持在应用内无操作，绝不让浏览器默认导航。
   if (url) openExternalUrl(url)
 }
 
 function openRepository() {
-  if (props.plugin.github_repo) openExternalUrl(props.plugin.github_repo)
+  if (actionablePlugin.value.github_repo) openExternalUrl(actionablePlugin.value.github_repo)
+}
+
+function rewriteReadmeUrls(html: string): string {
+  if (typeof document === 'undefined') return html
+  const repositoryUrl = repositoryReadme.value?.repository_url || actionablePlugin.value.github_repo
+  const sourceRef = repositoryReadme.value?.source_ref
+  const container = document.createElement('div')
+  container.innerHTML = html
+  for (const anchor of container.querySelectorAll<HTMLAnchorElement>('a[href]')) {
+    const url = resolveMarketReadmeLink(anchor.getAttribute('href') || '', repositoryUrl, window.location.origin, { sourceRef })
+    if (url) anchor.href = url
+    else anchor.removeAttribute('href')
+  }
+  for (const image of container.querySelectorAll<HTMLImageElement>('img[src]')) {
+    const url = resolveMarketReadmeLink(image.getAttribute('src') || '', repositoryUrl, window.location.origin, {
+      sourceRef,
+      resource: 'image',
+    })
+    if (url) image.src = url
+    else image.removeAttribute('src')
+  }
+  return container.innerHTML
 }
 </script>
 
@@ -269,6 +323,7 @@ function openRepository() {
 .market-plugin-detail__meta span { display: inline-flex; align-items: center; gap: 4px; }
 .market-plugin-detail__tags { margin-top: 16px; }
 .market-plugin-detail__tabs { margin-top: 22px; }
+.market-plugin-detail__load-error { margin-top: 16px; }
 .market-plugin-detail__section { margin-top: 18px; }
 .market-plugin-detail__description { margin: 0; white-space: pre-wrap; color: var(--el-text-color-regular); line-height: 1.65; }
 .market-plugin-detail__readme { overflow-wrap: anywhere; color: var(--el-text-color-regular); line-height: 1.7; }

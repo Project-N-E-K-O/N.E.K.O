@@ -124,6 +124,7 @@ export default {
     detailDescription: '플러그인 소개',
     detailReadme: '문서',
     detailReadmeUnavailable: '이 검토된 버전에는 README가 없습니다.',
+    detailLoadFailed: '플러그인 상세를 불러올 수 없습니다. 나중에 다시 시도하세요.',
     detailVersions: '버전 기록',
     detailLatest: '최신',
     detailPublished: '게시일: ',

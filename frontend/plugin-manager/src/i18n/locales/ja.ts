@@ -124,6 +124,7 @@ export default {
     detailDescription: 'プラグインについて',
     detailReadme: 'ドキュメント',
     detailReadmeUnavailable: 'この審査済みバージョンには README がありません。',
+    detailLoadFailed: 'プラグインの詳細を読み込めませんでした。後でもう一度お試しください。',
     detailVersions: 'バージョン履歴',
     detailLatest: '最新',
     detailPublished: '公開日: ',

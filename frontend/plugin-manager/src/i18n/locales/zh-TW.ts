@@ -124,6 +124,7 @@ export default {
     detailDescription: '外掛介紹',
     detailReadme: '使用說明',
     detailReadmeUnavailable: '這個已審核版本沒有提供 README。',
+    detailLoadFailed: '無法載入外掛詳情，請稍後再試。',
     detailVersions: '版本更新',
     detailLatest: '最新',
     detailPublished: '發布於：',

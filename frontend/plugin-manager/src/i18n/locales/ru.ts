@@ -124,6 +124,7 @@ export default {
     detailDescription: 'О плагине',
     detailReadme: 'Документация',
     detailReadmeUnavailable: 'Для этой проверенной версии README недоступен.',
+    detailLoadFailed: 'Не удалось загрузить сведения о плагине. Повторите попытку позже.',
     detailVersions: 'История версий',
     detailLatest: 'Последняя',
     detailPublished: 'Опубликован: ',

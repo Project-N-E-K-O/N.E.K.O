@@ -124,6 +124,7 @@ export default {
     detailDescription: 'About this plugin',
     detailReadme: 'Documentation',
     detailReadmeUnavailable: 'This reviewed version does not provide a README.',
+    detailLoadFailed: 'Unable to load plugin details. Please try again later.',
     detailVersions: 'Version history',
     detailLatest: 'Latest',
     detailPublished: 'Published: ',

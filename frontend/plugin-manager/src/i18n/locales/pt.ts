@@ -124,6 +124,7 @@ export default {
     detailDescription: 'Sobre este plugin',
     detailReadme: 'Documentação',
     detailReadmeUnavailable: 'Esta versão revisada não fornece um README.',
+    detailLoadFailed: 'Não foi possível carregar os detalhes do plugin. Tente novamente mais tarde.',
     detailVersions: 'Histórico de versões',
     detailLatest: 'Mais recente',
     detailPublished: 'Publicado: ',

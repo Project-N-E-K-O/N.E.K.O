@@ -124,6 +124,7 @@ export default {
     detailDescription: '插件介绍',
     detailReadme: '使用说明',
     detailReadmeUnavailable: '这个已审核版本没有提供 README。',
+    detailLoadFailed: '无法加载插件详情，请稍后重试。',
     detailVersions: '版本更新',
     detailLatest: '最新',
     detailPublished: '发布于：',
