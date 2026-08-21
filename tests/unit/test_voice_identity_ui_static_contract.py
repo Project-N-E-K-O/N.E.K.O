@@ -3,7 +3,14 @@ from __future__ import annotations
 import ast
 import json
 import re
+import shutil
+import subprocess
+import textwrap
 from pathlib import Path
+
+import pytest
+
+from tests.node_harness import run_node_script
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -205,9 +212,60 @@ def test_browser_capture_is_one_click_audio_worklet_pcm16_and_cancels_on_close()
     assert "createLowPassFilter()" in processor
     assert "applyLowPassFilter(audioData)" in processor
     assert "const sourceData = this.applyLowPassFilter(audioData)" in processor
-    assert "Array.from(audioData)" not in processor
-    assert ".concat(input)" not in processor
+    assert "Array.from(" not in processor
+    assert ".concat(" not in processor
     assert "extended.slice" not in processor
+    assert "audioData[audioData.length - 1]" not in processor
+
+
+def test_voice_identity_lowpass_is_causal_across_worklet_blocks() -> None:
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node is required for audio processor behavioural contract")
+    script = textwrap.dedent(
+        """
+        const fs = require('fs');
+        global.AudioWorkletProcessor = class {};
+        global.registerProcessor = (_name, processorClass) => {
+          global.AudioProcessor = processorClass;
+        };
+        eval(fs.readFileSync('static/audio-processor.js', 'utf8'));
+
+        const processor = new global.AudioProcessor({
+          processorOptions: {
+            originalSampleRate: 48000,
+            targetSampleRate: 16000,
+          },
+        });
+        processor.lowPassTaps = new Float32Array([0, 0, 1]);
+        processor.lowPassHistory = new Float32Array(2);
+        processor.lowPassHistoryFilled = 0;
+
+        const first = Array.from(
+          processor.applyLowPassFilter(new Float32Array([1, 2]))
+        );
+        const second = Array.from(
+          processor.applyLowPassFilter(new Float32Array([3, 4]))
+        );
+
+        if (JSON.stringify(first) !== JSON.stringify([0, 0])) {
+          throw new Error(`first block used fabricated future samples: ${first}`);
+        }
+        if (JSON.stringify(second) !== JSON.stringify([1, 2])) {
+          throw new Error(`second block did not consume prior history: ${second}`);
+        }
+        """
+    )
+    result: subprocess.CompletedProcess[str] = run_node_script(
+        node,
+        script,
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        timeout=20,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr or result.stdout
 
 
 def test_voice_identity_route_is_reserved_for_character_profiles() -> None:

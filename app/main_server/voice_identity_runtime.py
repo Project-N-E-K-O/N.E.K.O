@@ -723,10 +723,17 @@ class OwnerVoiceRuntimeRegistry:
             try:
                 for manager in managers:
                     try:
-                        await self._restore_manager(
-                            manager,
-                            "voice_identity_enrollment",
+                        await asyncio.wait_for(
+                            self._restore_manager(
+                                manager,
+                                "voice_identity_enrollment",
+                            ),
+                            timeout=_WATCHDOG_MANAGER_CALL_TIMEOUT_SECONDS,
                         )
+                    except asyncio.CancelledError:
+                        current = asyncio.current_task()
+                        if current is not None and current.cancelling():
+                            raise
                     except Exception:
                         pass
                     try:

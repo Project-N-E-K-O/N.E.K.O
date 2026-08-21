@@ -1265,6 +1265,50 @@ async def test_registry_close_bounds_blocking_detach() -> None:
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_registry_close_bounds_blocking_restore_before_detach(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        runtime_module,
+        "_WATCHDOG_MANAGER_CALL_TIMEOUT_SECONDS",
+        0.02,
+    )
+    registry = OwnerVoiceRuntimeRegistry(enforce=True)
+    manager = _Manager()
+    restore_started = asyncio.Event()
+    detach_called = asyncio.Event()
+
+    async def blocking_restore(reason: str, *, suppressed: bool) -> None:
+        manager.suppression_calls.append((reason, suppressed))
+        if not suppressed:
+            restore_started.set()
+            await asyncio.Event().wait()
+
+    async def bounded_detach(
+        factory: _Factory | None,
+        *,
+        activation_generation: str,
+    ) -> bool:
+        del activation_generation
+        if factory is None:
+            detach_called.set()
+        return True
+
+    await registry.register_manager(manager)
+    manager.set_voice_input_suppressed = blocking_restore  # type: ignore[method-assign]
+    manager.set_speaker_verifier_factory = bounded_detach  # type: ignore[method-assign]
+    await registry.suppress("voice_identity_enrollment")
+
+    await asyncio.wait_for(registry.close(), 1.0)
+
+    assert restore_started.is_set()
+    assert detach_called.is_set()
+    assert not registry._managers  # type: ignore[attr-defined]
+    assert registry._activation is None  # type: ignore[attr-defined]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_registry_close_propagates_external_cancellation_and_cleans() -> None:
     registry = OwnerVoiceRuntimeRegistry(enforce=True)
     manager = _Manager()

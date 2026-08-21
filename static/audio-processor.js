@@ -14,7 +14,7 @@ class AudioProcessor extends AudioWorkletProcessor {
         this.needsLowPass = this.targetSampleRate < this.originalSampleRate;
         this.lowPassTaps = this.needsLowPass ? this.createLowPassFilter() : null;
         this.lowPassHistory = this.lowPassTaps
-            ? new Float32Array(Math.floor(this.lowPassTaps.length / 2))
+            ? new Float32Array(this.lowPassTaps.length - 1)
             : null;
         this.lowPassHistoryFilled = 0;
 
@@ -25,8 +25,14 @@ class AudioProcessor extends AudioWorkletProcessor {
         this.buffer = new Float32Array(this.bufferSize);
         this.bufferIndex = 0;
 
-        // 用于重采样的临时缓冲区
-        this.tempBuffer = [];
+        // 用于重采样的固定输入缓冲区
+        this.resampleInputSize = this.needsResampling
+            ? Math.ceil(this.bufferSize / this.resampleRatio)
+            : 0;
+        this.resampleBuffer = this.needsResampling
+            ? new Float32Array(this.resampleInputSize)
+            : null;
+        this.resampleBufferIndex = 0;
 
         console.log(`AudioProcessor初始化: 原始采样率=${this.originalSampleRate}Hz, 目标采样率=${this.targetSampleRate}Hz, 需要重采样=${this.needsResampling}`);
     }
@@ -41,17 +47,14 @@ class AudioProcessor extends AudioWorkletProcessor {
 
         if (this.needsResampling) {
             // 需要重采样的情况（如16kHz目标）
-            this.tempBuffer = this.tempBuffer.concat(Array.from(input));
-
-            const requiredSamples = Math.ceil(this.bufferSize / this.resampleRatio);
-            if (this.tempBuffer.length >= requiredSamples) {
-                const samplesNeeded = Math.min(requiredSamples, this.tempBuffer.length);
-                const samplesToProcess = this.tempBuffer.slice(0, samplesNeeded);
-                this.tempBuffer = this.tempBuffer.slice(samplesNeeded);
-
-                const resampledData = this.resampleAudio(samplesToProcess);
-                const pcmData = this.floatToPcm16(resampledData);
-                this.port.postMessage(pcmData);
+            for (let i = 0; i < input.length; i++) {
+                this.resampleBuffer[this.resampleBufferIndex++] = input[i];
+                if (this.resampleBufferIndex >= this.resampleInputSize) {
+                    const resampledData = this.resampleAudio(this.resampleBuffer);
+                    const pcmData = this.floatToPcm16(resampledData);
+                    this.port.postMessage(pcmData);
+                    this.resampleBufferIndex = 0;
+                }
             }
         } else {
             // 不需要重采样，直接处理（48kHz passthrough）
@@ -107,52 +110,48 @@ class AudioProcessor extends AudioWorkletProcessor {
             return audioData;
         }
         const taps = this.lowPassTaps;
-        const half = Math.floor(taps.length / 2);
         const history = this.lowPassHistory;
         const historyLength = this.lowPassHistoryFilled;
         const inputLength = audioData.length;
         const result = new Float32Array(inputLength);
 
         for (let i = 0; i < inputLength; i++) {
-            const center = historyLength + i;
             let sample = 0;
             for (let tap = 0; tap < taps.length; tap++) {
                 sample += this.lowPassSampleAt(
                     history,
                     historyLength,
                     audioData,
-                    center + tap - half
+                    i - tap
                 ) * taps[tap];
             }
             result[i] = sample;
         }
 
-        this.updateLowPassHistory(history, historyLength, audioData, half);
+        this.updateLowPassHistory(history, historyLength, audioData);
         return result;
     }
 
     lowPassSampleAt(history, historyLength, audioData, index) {
-        if (index < 0) {
-            return historyLength > 0 ? history[0] : audioData[0];
+        if (index >= 0) {
+            return audioData[index];
         }
-        if (index < historyLength) {
-            return history[index];
-        }
-        const offset = index - historyLength;
-        return offset < audioData.length
-            ? audioData[offset]
-            : audioData[audioData.length - 1];
+        const historyIndex = historyLength + index;
+        return historyIndex >= 0 ? history[historyIndex] : 0;
     }
 
-    updateLowPassHistory(history, historyLength, audioData, historyLimit) {
+    updateLowPassHistory(history, historyLength, audioData) {
+        const historyLimit = history.length;
         const combinedLength = historyLength + audioData.length;
         const keep = Math.min(historyLimit, combinedLength);
-        const start = combinedLength - keep;
-        for (let i = 0; i < keep; i++) {
-            const sourceIndex = start + i;
-            history[i] = sourceIndex < historyLength
-                ? history[sourceIndex]
-                : audioData[sourceIndex - historyLength];
+        const inputKeep = Math.min(audioData.length, keep);
+        const historyKeep = keep - inputKeep;
+
+        for (let i = 0; i < historyKeep; i++) {
+            history[i] = history[historyLength - historyKeep + i];
+        }
+        for (let i = 0; i < inputKeep; i++) {
+            history[historyKeep + i] = audioData[audioData.length - inputKeep + i];
         }
         this.lowPassHistoryFilled = keep;
     }
