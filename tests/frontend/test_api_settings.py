@@ -1776,8 +1776,10 @@ def test_capability_dropdowns_hide_providers_with_no_implementation(
     for pk in ('deepseek', 'kimi', 'kimi_code', 'claude', 'openrouter', 'silicon'):
         assert pk not in options['tts'], f"TTS 下拉仍暴露无 TTS 能力的 {pk}"
 
-    # 没有 realtime 端点的厂商不该出现在实时全模态下拉里
-    for pk in ('deepseek', 'kimi', 'claude', 'minimax', 'elevenlabs', 'openrouter'):
+    # 没有 realtime 端点的厂商不该出现在实时全模态下拉里。
+    # gemini 在核心表里但没有 core_url —— 它作为核心 API 走 SDK，这个槽表达不了它，
+    # 选中只会静默回落，所以同样属于伪选项。
+    for pk in ('deepseek', 'kimi', 'claude', 'minimax', 'elevenlabs', 'openrouter', 'gemini'):
         assert pk not in options['omni'], f"实时全模态下拉仍暴露无 realtime 能力的 {pk}"
 
     # 反向断言：真正有能力的项必须还在，避免"全都过滤掉"也能让上面的断言通过

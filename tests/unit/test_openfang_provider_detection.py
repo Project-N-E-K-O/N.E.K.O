@@ -404,3 +404,39 @@ class TestWriteOpenFangModelConfig:
             api_key="sk-super-secret-value", base_url="https://api.openai.com/v1", model="gpt-5",
         )
         assert "sk-super-secret-value" not in content, "明文密钥不得落盘"
+
+
+class TestProviderTypeIsEvidenceOfLastResort:
+    """A declared dialect must not outrank what the URL already proves.
+
+    provider_type is a claim carried by the slot; the host checks above it are
+    evidence. If the claim wins, a residual 'anthropic' on a slot whose URL is
+    really an OpenAI-compatible proxy routes the agent to a direct Anthropic
+    call that cannot succeed.
+    """
+
+    def test_declared_anthropic_does_not_hijack_a_known_openai_host(self):
+        r = _detect_provider_info(
+            "https://api.openai.com/v1", "gpt-5", provider_type="anthropic"
+        )
+        assert r["provider"] == "openai", f"实际={r['provider']!r}"
+
+    def test_declared_anthropic_does_not_hijack_an_openrouter_proxy(self):
+        r = _detect_provider_info(
+            "https://openrouter.ai/api/v1", "some-model", provider_type="anthropic"
+        )
+        assert r["provider"] == "openai", f"实际={r['provider']!r}"
+        assert r["needs_proxy"] is True
+
+    def test_declared_anthropic_does_not_hijack_a_local_ollama(self):
+        r = _detect_provider_info(
+            "http://localhost:11434/v1", "llama3", provider_type="anthropic"
+        )
+        assert r["provider"] == "ollama", f"实际={r['provider']!r}"
+
+    def test_declaration_still_wins_when_nothing_else_matched(self):
+        r = _detect_provider_info(
+            "https://llm.example.com/anthropic", "claude-sonnet-4", provider_type="anthropic"
+        )
+        assert r["provider"] == "anthropic", f"实际={r['provider']!r}"
+        assert r["needs_proxy"] is False

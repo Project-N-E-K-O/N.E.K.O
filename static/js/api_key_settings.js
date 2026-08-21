@@ -1208,7 +1208,13 @@ function isProviderCapableForModelType(providerKey, modelType) {
 
     if (modelType === 'omni') {
         if (!_coreApiProviders || Object.keys(_coreApiProviders).length === 0) return true;
-        return Object.prototype.hasOwnProperty.call(_coreApiProviders, pk);
+        const profile = _coreApiProviders[pk];
+        if (!profile) return false;
+        // 判据是「有没有可直连的 realtime 端点」，不只是「在不在核心表里」：
+        // Gemini 在核心表里但没有 core_url（作为核心 API 走 SDK，不经这个槽），
+        // 选中后 URL 会填成空、自定义三元组凑不齐 → 静默回落。与后端
+        // _normalize_realtime_provider 的判据对偶。
+        return !!String(profile.core_url || profile.CORE_URL || '').trim();
     }
 
     if (modelType === 'tts') {

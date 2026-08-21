@@ -127,6 +127,50 @@ class TestNamedProviderSlotKey:
         )
 
     @pytest.mark.unit
+    def test_core_key_fallback_does_not_override_a_stored_slot_key(self, config_manager):
+        """ASSIST_API_KEY_* is derived from CORE_API_KEY for the active provider.
+
+        That derivation is a default, not a key-book entry, so it must not
+        outrank a key a legacy config stored on the slot itself.
+        """
+        _write_core_config(config_manager, {
+            'coreApi': 'qwen',
+            'assistApi': 'qwen',
+            'coreApiKey': 'sk-core-key',
+            'enableCustomApi': True,
+            'summaryModelProvider': 'qwen',
+            'summaryModelId': 'qwen3.7-plus',
+            'summaryModelUrl': 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+            'summaryModelApiKey': 'sk-slot-specific',
+            # 管理簿里没有 qwen 这一条 —— ASSIST_API_KEY_QWEN 只会是 _fb() 派生值
+        })
+        cfg = config_manager.get_core_config()
+        assert cfg['SUMMARY_MODEL_API_KEY'] == 'sk-slot-specific', (
+            "派生的核心 Key 不该压过槽位存量 Key，实际="
+            f"{cfg['SUMMARY_MODEL_API_KEY']!r}"
+        )
+
+    @pytest.mark.unit
+    def test_explicit_key_book_entry_outranks_the_slot(self, config_manager):
+        """An actually-stored key-book entry is still the truth."""
+        _write_core_config(config_manager, {
+            'coreApi': 'qwen',
+            'assistApi': 'qwen',
+            'coreApiKey': 'sk-core-key',
+            'enableCustomApi': True,
+            'summaryModelProvider': 'qwen',
+            'summaryModelId': 'qwen3.7-plus',
+            'summaryModelUrl': 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+            'summaryModelApiKey': 'sk-stale-slot',
+            'assistApiKeyQwen': 'sk-book-current',
+        })
+        cfg = config_manager.get_core_config()
+        assert cfg['SUMMARY_MODEL_API_KEY'] == 'sk-book-current', (
+            "管理簿里真存的那条必须优先，实际="
+            f"{cfg['SUMMARY_MODEL_API_KEY']!r}"
+        )
+
+    @pytest.mark.unit
     def test_custom_provider_keeps_slot_key(self, config_manager):
         """'custom' is user-typed and must never be redirected to the book."""
         _write_core_config(config_manager, _base_config(
@@ -232,6 +276,36 @@ class TestRealtimeApiType:
         )
         assert 'deepseek' not in (rt['base_url'] or ''), (
             "被忽略的选择不得把自己的 URL 留在实时槽里，"
+            f"实际 base_url={rt['base_url']!r}"
+        )
+
+    @pytest.mark.unit
+    def test_core_provider_without_a_realtime_endpoint_is_ignored(self, config_manager):
+        """Being in the core table is not the same as having a realtime endpoint.
+
+        Gemini is a core provider but owns no CORE_URL — as a core API it goes
+        through the SDK, never through this slot. Honouring it here would give
+        a slot that can never assemble a complete custom triple.
+        """
+        from utils.api_config_loader import get_core_api_profiles
+        assert not (get_core_api_profiles().get('gemini') or {}).get('CORE_URL'), (
+            "本用例的前提是 gemini 没有 CORE_URL；前提变了就要重写判据"
+        )
+        # 带上一条残留 URL（换 provider 时留下的）。没有它，URL 本来就是空的、
+        # 自定义分支根本走不到，改动与否结果都一样 —— 这条残留正是唯一的分界。
+        _write_core_config(config_manager, _base_config(
+            coreApi='qwen',
+            omniModelProvider='gemini',
+            omniModelId='gemini-live',
+            omniModelUrl='wss://open.bigmodel.cn/api/paas/v4/realtime',
+        ))
+        rt = config_manager.get_model_api_config('realtime')
+        assert rt['api_type'] == 'qwen', (
+            "没有 realtime 端点的核心服务商应被忽略并回落核心 API，"
+            f"实际={rt['api_type']!r}"
+        )
+        assert 'bigmodel' not in (rt['base_url'] or ''), (
+            "被忽略的选择不得把残留 URL 留在实时槽里，"
             f"实际 base_url={rt['base_url']!r}"
         )
 

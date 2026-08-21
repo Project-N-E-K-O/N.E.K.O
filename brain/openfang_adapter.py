@@ -83,17 +83,8 @@ def _detect_provider_info(base_url: str, model: str, provider_type: str | None =
             "api_key_env": "OPENAI_API_KEY",
         }
 
-    # Anthropic Messages 协议端点 -- OpenFang 直接支持, 无需 proxy
-    #
-    # 判据复用 utils.llm_client 的 _is_anthropic_endpoint（聊天链路的同一套真相），
-    # 而不是在这里再抄一份域名白名单。原来只认 anthropic.com，于是 #1948 加进来的
-    # kimi_code（api.kimi.com/coding，provider_type=anthropic）落到了末尾的
-    # provider=openai + needs_proxy 兜底，被当成 OpenAI 端点塞进 LLM proxy。
-    from utils.llm_client import _is_anthropic_endpoint
-
-    if _host_matches("anthropic.com", "api.anthropic.com") or _is_anthropic_endpoint(
-        base_url, provider_type
-    ):
+    # Anthropic 原生 API -- OpenFang 直接支持, 无需 proxy
+    if _host_matches("anthropic.com", "api.anthropic.com"):
         return {
             "provider": "anthropic",
             "needs_proxy": False,
@@ -177,6 +168,23 @@ def _detect_provider_info(base_url: str, model: str, provider_type: str | None =
             "needs_proxy": False,
             "effective_url": base_url,
             "api_key_env": "",
+        }
+
+    # 其余 Anthropic Messages 协议端点：kimi_code 的 api.kimi.com/coding，以及
+    # 槽位自己声明了 provider_type=anthropic 的自建端点。判据复用 utils.llm_client
+    # 的 _is_anthropic_endpoint（聊天链路的同一套真相），不在这里另抄一份域名表。
+    #
+    # 位置**故意**排在所有按 URL 认人的分支之后：provider_type 是一个声明，
+    # 而上面那些是证据。声明排前面的话，「槽位残留 anthropic + URL 其实是
+    # lanlan 代理 / deepseek」这种组合会被误判成 Anthropic 直连打死。
+    from utils.llm_client import _is_anthropic_endpoint
+
+    if _is_anthropic_endpoint(base_url, provider_type):
+        return {
+            "provider": "anthropic",
+            "needs_proxy": False,
+            "effective_url": base_url,
+            "api_key_env": "ANTHROPIC_API_KEY",
         }
 
     # OpenRouter / lanlan.app / 其他 OpenAI-compatible 代理

@@ -908,10 +908,18 @@ class CoreConfigMixin:
         candidate = (provider or '').strip()
         if not candidate or candidate == 'custom' or candidate.startswith('follow_'):
             return candidate
+        # 判据是「这家有没有可直连的 realtime 端点」，不只是「在不在核心表里」。
+        # gemini 在核心表里但没有 CORE_URL（它作为核心 API 走 SDK，不经这个槽），
+        # 选中后 URL 会是空串 → 自定义三元组永远凑不齐 → 静默回落。既然槽位覆盖
+        # 表达不了它，就别把它当成一个「选中了就生效」的值。
+        _profile = core_api_profiles.get(candidate)
+        _has_realtime_endpoint = (
+            isinstance(_profile, dict) and str(_profile.get('CORE_URL') or '').strip()
+        )
         # 落回 follow_core 而不是空串：空串会让下面的 URL/模型/Key 覆盖分支照旧
         # 写入前端自动填好的残留值，follow_core 才是「等同于没选」的既有路径
         # （URL 跳过、模型回落 CORE_MODEL、Key 取 CORE_API_KEY）。
-        return candidate if candidate in core_api_profiles else 'follow_core'
+        return candidate if _has_realtime_endpoint else 'follow_core'
 
     def get_core_config(self):
         """Read core config dynamically"""
@@ -1117,6 +1125,19 @@ class CoreConfigMixin:
         core_api_profiles = get_core_api_profiles()
         assist_api_profiles = get_assist_api_profiles()
         assist_api_key_fields = get_assist_api_key_fields()
+        # provider → 管理簿在 core_config.json 里的**原始**字段名（assistApiKeyQwen 之类）。
+        # 用来区分「管理簿里真存了一条」和「ASSIST_API_KEY_* 只是被 _fb() 派生成了
+        # CORE_API_KEY」——后者不该压过用户存在槽位里的 Key。
+        try:
+            from utils.api_config_loader import get_config as _get_api_config
+            _api_key_registry = _get_api_config().get('api_key_registry', {}) or {}
+        except Exception:
+            _api_key_registry = {}
+        assist_api_key_raw_fields = {
+            _pk: _entry.get('config_field', '')
+            for _pk, _entry in _api_key_registry.items()
+            if isinstance(_entry, dict) and _entry.get('config_field')
+        }
 
         # Core API profile
         core_api_value = core_cfg.get('coreApi') or config['CORE_API_TYPE']
@@ -1465,14 +1486,30 @@ class CoreConfigMixin:
                     #   - 不碰哨兵不落盘这条安全不变量。
                     # 管理簿没有该服务商（custom / 老配置的 '' / gptsovits 这类只在 TTS
                     # 注册表里的 provider）时回落到槽位存储值，保住这些既有路径。
+                    # 优先级：管理簿里真存的那条 > 槽位存量值 > 管理簿派生值。
+                    #
+                    # 中间那级不能省：ASSIST_API_KEY_* 对匹配 coreApi/assistApi 的
+                    # 服务商会被 _fb() 派生成 CORE_API_KEY。那是「默认值」不是「用户
+                    # 存过」，拿它压掉老配置里槽位自己的 Key 会把能用的配置改坏。
+                    #
+                    # 三处都先转字符串再 strip：core_config.json 用户可手改，字段里
+                    # 可能落进任意 JSON 类型，直接 .strip() 会让整个 get_core_config()
+                    # 抛 AttributeError —— 那是启动即崩，不是某个槽降级。
                     cfg_key = core_cfg.get(f'{prefix}ModelApiKey')
+                    _raw_book_field = assist_api_key_raw_fields.get(provider, '') if provider else ''
+                    _explicit_book = (
+                        str(core_cfg.get(_raw_book_field) or '').strip() if _raw_book_field else ''
+                    )
                     _book_field = assist_api_key_fields.get(provider) if provider else ''
-                    # core_config.json 是用户可手改的文件，管理簿字段里可能落进任意
-                    # JSON 类型。这里先转字符串再 strip —— 直接 .strip() 会让整个
-                    # get_core_config() 抛 AttributeError，那是启动即崩。
-                    _book_key = str(config.get(_book_field) or '').strip() if _book_field else ''
-                    if _book_key:
-                        config[apikey_key] = _book_key
+                    _derived_book = (
+                        str(config.get(_book_field) or '').strip() if _book_field else ''
+                    )
+                    if _explicit_book:
+                        config[apikey_key] = _explicit_book
+                    elif cfg_key:
+                        config[apikey_key] = cfg_key
+                    elif _derived_book:
+                        config[apikey_key] = _derived_book
                     elif cfg_key is not None:
                         config[apikey_key] = cfg_key
 
