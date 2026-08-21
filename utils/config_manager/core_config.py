@@ -1791,7 +1791,18 @@ class CoreConfigMixin:
                     'api_key': resolved_api_key,
                     'base_url': custom_url,
                     'is_custom': treat_as_custom,
-                    'provider_type': _resolved_provider_type_for_model(model_type),
+                    # 槽位下拉值只在「该槽的自定义配置真的生效」时才代表协议。
+                    # agent 槽是唯一会绕过 treat_as_custom 直接进这个分支的
+                    # （上面的 `if treat_as_custom or model_type == 'agent'`），
+                    # 关掉自定义 API 后它的 URL/Key 已经回落 assist，协议必须跟着回落，
+                    # 否则残留的 claude/kimi_code 会配出「assist 地址 + Anthropic 协议」。
+                    # GSV 那条路 treat_as_custom 为真（= enable_custom_api or gsv_enabled），
+                    # 不受影响。
+                    'provider_type': (
+                        _resolved_provider_type_for_model(model_type)
+                        if treat_as_custom
+                        else _normalize_provider_type_value(core_config.get('PROVIDER_TYPE'))
+                    ),
                     # realtime 的 api_type 必须表达「这个 WebSocket 说的是谁家的方言」。
                     # 原来这里无条件写 'local'，而 'local' 至今没有实现，还会经
                     # lifecycle 的 core_api_type 赋值污染全局（TTS 因此落 dummy）。

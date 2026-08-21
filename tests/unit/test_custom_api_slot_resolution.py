@@ -325,6 +325,42 @@ class TestFallbackProtocolIsSameOrigin:
         )
 
     @pytest.mark.unit
+    def test_agent_slot_drops_residual_dialect_when_custom_api_off(self, config_manager):
+        """The agent slot bypasses the custom-API gate and needs the same rule.
+
+        `if treat_as_custom or model_type == 'agent'` lets agent into the
+        custom branch even with custom API disabled, so the generic fallback
+        fix does not cover it: URL and key come from assist while the residual
+        dropdown still claimed anthropic.
+        """
+        _write_core_config(config_manager, _base_config(
+            enableCustomApi=False,
+            agentModelProvider='claude',
+            agentModelId='claude-sonnet-4',
+            agentModelUrl='https://api.anthropic.com/v1',
+        ))
+        agent = config_manager.get_model_api_config('agent')
+        assert agent['provider_type'] == 'openai_compatible', (
+            "关掉自定义 API 后 agent 槽的地址已回落 assist，协议不能停在 anthropic，"
+            f"实际={agent['provider_type']!r}"
+        )
+
+    @pytest.mark.unit
+    def test_agent_slot_keeps_dialect_when_custom_api_on(self, config_manager):
+        """With custom API on, an explicit agent dialect is still honoured."""
+        _write_core_config(config_manager, _base_config(
+            agentModelProvider='claude',
+            agentModelId='claude-sonnet-4',
+            agentModelUrl='https://api.anthropic.com/v1',
+            assistApiKeyClaude='sk-ant-book',
+        ))
+        agent = config_manager.get_model_api_config('agent')
+        assert agent['provider_type'] == 'anthropic', (
+            "自定义 API 开着时显式选择必须生效，"
+            f"实际={agent['provider_type']!r}"
+        )
+
+    @pytest.mark.unit
     def test_complete_anthropic_slot_still_speaks_anthropic(self, config_manager):
         """A genuinely complete anthropic slot keeps its protocol."""
         _write_core_config(config_manager, _base_config(
