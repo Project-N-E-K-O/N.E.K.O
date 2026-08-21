@@ -605,8 +605,18 @@ class TestVisionCredentialBoundary:
             ('http://api.example.com:99999999/v1', 'http://api.example.com:1/v1'),
             ('http://[::1]:abc/v1', 'http://[::1]:abc/v1'),
             ('::::', 'http://api.example.com/v1'),
+            # urlsplit 自己就会对未闭合的 IPv6 抛 ValueError
+            ('http://[::1', 'http://api.example.com/v1'),
+            ('http://[::1/v1', 'http://[::1/v1'),
         ):
             _same_endpoint(a, b)  # 不抛就是通过
+
+        assert _same_endpoint('http://[::1/v1', 'http://[::1/v1') is True, (
+            "解析不了时按原串比，两个相同的坏 URL 仍是同源"
+        )
+        assert _same_endpoint('http://[::1/v1', 'http://[::2/v1') is False, (
+            "解析不了时两个不同的坏 URL 仍是不同源"
+        )
 
         assert _same_endpoint(
             'http://api.example.com:not-a-port/v1',

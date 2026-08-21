@@ -73,7 +73,13 @@ def _same_endpoint(a: str | None, b: str | None) -> bool:
             return None
         if '://' not in text:
             text = f'//{text}'
-        parts = urlsplit(text)
+        try:
+            parts = urlsplit(text)
+        except ValueError:
+            # 畸形 IPv6（如 http://[::1）会让 urlsplit 自己抛。这段跑在 __init__
+            # 里，抛出去等于客户端构造失败。退回按原串比：判据保持 total，
+            # 两个写法相同的坏 URL 仍算同源，不同的仍算不同源。
+            return ('<unparsed>', text)
         # netloc 整体转小写是错的：它还装着 userinfo（user:pass@），而用户名和
         # 口令是大小写敏感的。拆开 userinfo 与 host:port，只折叠后者的大小写
         # （主机名与数字端口都是大小写无关的）。
