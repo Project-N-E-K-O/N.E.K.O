@@ -308,11 +308,25 @@ class TestRealtimeApiType:
         ))
         rt = config_manager.get_model_api_config('realtime')
         tts = config_manager.get_model_api_config('tts_default')
+        cfg = config_manager.get_core_config()
         assert rt['api_type'] == 'openai', (
             "跨厂商的实时槽覆盖必须被忽略并回落核心 API，"
             f"实际={rt['api_type']!r}"
         )
         assert rt['api_type'] != 'local', "也不能落进未实现的 'local'"
+        # 方言回落还不够：端点和凭证必须**一起**回落。只改方言的话会得到
+        # 「用核心的方言去说另一家的端点」——同样是分裂，只是换了个方向。
+        assert rt['base_url'] == cfg['CORE_URL'], (
+            "实时端点必须跟着方言一起回落核心，"
+            f"实际={rt['base_url']!r}"
+        )
+        assert 'dashscope' not in (rt['base_url'] or ''), (
+            f"被忽略的选择不得把自己的端点留下，实际={rt['base_url']!r}"
+        )
+        assert rt['api_key'] == cfg['CORE_API_KEY'], (
+            "实时凭证同样必须是核心那家的，"
+            f"实际={rt['api_key']!r}"
+        )
         # 派发身份与凭证必须同源：worker 按 api_type 选、凭证走 tts_default
         assert 'dashscope' not in (tts['base_url'] or ''), (
             f"TTS 端点不该被实时槽的选择带偏，实际={tts['base_url']!r}"
