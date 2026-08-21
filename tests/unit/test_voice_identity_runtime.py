@@ -1344,7 +1344,7 @@ async def test_cancelled_registration_keeps_attach_pending_for_retry(
     monkeypatch.setattr(
         runtime_module,
         "_WATCHDOG_MANAGER_CALL_TIMEOUT_SECONDS",
-        0.02,
+        1.0,
     )
     registry = OwnerVoiceRuntimeRegistry(
         enforce=True,
@@ -1417,6 +1417,74 @@ async def test_cancelled_registration_keeps_attach_pending_for_retry(
         and manager not in registry._restore_pending  # type: ignore[attr-defined]
     )
     assert registry.activation_status() is VoiceIdentityActivationResult.READY
+    await registry.close()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_cancelled_registration_keeps_active_suppression_gate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        runtime_module,
+        "_WATCHDOG_MANAGER_CALL_TIMEOUT_SECONDS",
+        1.0,
+    )
+    registry = OwnerVoiceRuntimeRegistry(
+        enforce=True,
+        restore_retry_interval_seconds=1.0,
+        restore_retry_timeout_seconds=2.0,
+    )
+    profile = _profile("profile")
+    try:
+        assert await registry.activate(profile, "generation")
+    finally:
+        profile.close()
+    await registry.suppress("voice_identity_enrollment")
+
+    class BlockingAttachManager(_Manager):
+        def __init__(self) -> None:
+            super().__init__()
+            self.attach_started = asyncio.Event()
+            self.input_suppressed = False
+
+        async def set_voice_input_suppressed(
+            self,
+            reason: str,
+            *,
+            suppressed: bool,
+        ) -> None:
+            self.input_suppressed = suppressed
+            await super().set_voice_input_suppressed(reason, suppressed=suppressed)
+
+        async def set_speaker_verifier_factory(
+            self,
+            factory: _Factory | None,
+            *,
+            activation_generation: str,
+        ) -> bool | VoiceIdentityActivationResult:
+            if factory is not None and not self.attach_started.is_set():
+                self.attach_started.set()
+                await asyncio.Event().wait()
+            return await super().set_speaker_verifier_factory(
+                factory,
+                activation_generation=activation_generation,
+            )
+
+    manager = BlockingAttachManager()
+    task = asyncio.create_task(registry.register_manager(manager))
+    await asyncio.wait_for(manager.attach_started.wait(), 1.0)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert manager.input_suppressed is True
+    assert manager in registry._restore_pending  # type: ignore[attr-defined]
+    assert manager in registry._attach_pending  # type: ignore[attr-defined]
+    assert manager.suppression_calls == [("voice_identity_enrollment", True)]
+
+    await registry.restore("voice_identity_enrollment")
+    assert manager.input_suppressed is False
     await registry.close()
 
 

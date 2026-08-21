@@ -172,22 +172,10 @@ class OwnerVoiceRuntimeRegistry:
             except asyncio.CancelledError:
                 activation = self._activation
                 if self._suppressed:
+                    # The manager belongs to the active enrollment gate. Keep it
+                    # gated until restore() ends the lease; opening it here would
+                    # admit normal PCM while every existing manager is suppressed.
                     self._restore_pending.add(manager)
-                    try:
-                        restored = await self._restore_manager_bounded(
-                            manager,
-                            "voice_identity_enrollment",
-                        )
-                    except asyncio.CancelledError:
-                        self._restore_pending.add(manager)
-                        if activation is not None:
-                            self._attach_pending.add(manager)
-                            self._ensure_attach_watchdog()
-                        raise
-                    if restored:
-                        self._restore_pending.discard(manager)
-                    else:
-                        self._restore_pending.add(manager)
                     if activation is not None:
                         self._attach_pending.add(manager)
                         self._ensure_attach_watchdog()
@@ -203,18 +191,6 @@ class OwnerVoiceRuntimeRegistry:
             except BaseException:
                 if self._suppressed:
                     self._restore_pending.add(manager)
-                    try:
-                        restored = await self._restore_manager_bounded(
-                            manager,
-                            "voice_identity_enrollment",
-                        )
-                    except asyncio.CancelledError:
-                        self._restore_pending.add(manager)
-                        raise
-                    if restored:
-                        self._restore_pending.discard(manager)
-                    else:
-                        self._restore_pending.add(manager)
                     if self._activation is not None:
                         self._attach_pending.add(manager)
                         self._ensure_attach_watchdog()

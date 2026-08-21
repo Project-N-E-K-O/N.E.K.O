@@ -1329,6 +1329,7 @@ async def _unregister_and_cleanup_character_slot(k: str) -> None:
     async with rs.websocket_lock:
         if role_state.get(k) is not rs:
             return
+        await _stop_character_thread(k)
         await _unregister_character_voice_identity_manager_locked(rs)
         _cleanup_character_dicts(k)
 
@@ -1369,17 +1370,19 @@ async def initialize_character_data():
     # 清理已删除角色的资源
     removed_names = [k for k in role_state.keys() if k not in catgirl_names]
 
-    # N 个 join(timeout=3) 串行最坏要 3N 秒；并行化后墙钟 ≈ 3 秒。
-    if removed_names:
-        await asyncio.gather(
-            *[_stop_character_thread(k) for k in removed_names],
-            return_exceptions=True,
-        )
-
-    # 线程都已停/超时，再在事件循环里顺序清理 dict —— 这些操作都是纯内存，不需要并行。
     for k in removed_names:
         logger.info(f"清理已删除角色 {k} 的资源")
-        await _unregister_and_cleanup_character_slot(k)
+
+    # 每个角色在同一 websocket_lock 事务内停止 connector、注销 manager 并删除 slot。
+    # N 个 stop(timeout=3) 并行执行，最坏墙钟仍约为 3 秒。
+    if removed_names:
+        cleanup_results = await asyncio.gather(
+            *[_unregister_and_cleanup_character_slot(k) for k in removed_names],
+            return_exceptions=True,
+        )
+        for k, result in zip(removed_names, cleanup_results):
+            if isinstance(result, BaseException):
+                logger.error(f"❌ 清理已删除角色 {k} 失败: {result}", exc_info=result)
 
     logger.info(f"角色配置加载完成，当前角色: {catgirl_names}，主人: {master_name}")
 
@@ -1419,7 +1422,6 @@ async def init_one_catgirl(name: str, *, is_new: bool = False):
 
 async def remove_one_catgirl(name: str):
     """Fast path for deleting a single catgirl: stop the character's thread + clear dicts + refresh globals."""
-    await _stop_character_thread(name)
     await _unregister_and_cleanup_character_slot(name)
     # config 文件已由调用方写入，这里刷新 globals 让 catgirl_names 等反映删除
     await _refresh_character_globals()

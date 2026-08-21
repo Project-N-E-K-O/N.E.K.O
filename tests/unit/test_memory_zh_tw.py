@@ -751,6 +751,79 @@ async def test_initialize_character_data_unregisters_removed_voice_managers(
 
 
 @pytest.mark.asyncio
+async def test_remove_waiting_for_init_lock_cancels_new_connector(monkeypatch):
+    from app.main_server import character_runtime, voice_identity_runtime
+
+    name = "NekoConcurrentConnectorDelete"
+    register_started = asyncio.Event()
+    allow_register = asyncio.Event()
+    unregistered = []
+
+    class NewManager:
+        websocket = None
+        is_active = False
+        is_starting = False
+
+        def __init__(self, queue, lanlan_name, prompt):
+            self.websocket_lock = None
+
+    async def register(target):
+        register_started.set()
+        await allow_register.wait()
+        return True
+
+    async def unregister(target):
+        unregistered.append(target)
+
+    async def run_connector(*_args, **_kwargs):
+        await asyncio.Event().wait()
+
+    async def refresh_globals():
+        return None
+
+    role = SimpleNamespace(
+        websocket_lock=asyncio.Lock(),
+        session_manager=None,
+        sync_task=None,
+        sync_message_queue=SimpleNamespace(empty=lambda: True),
+    )
+    monkeypatch.setitem(character_runtime.role_state, name, role)
+    monkeypatch.setattr(character_runtime, "lanlan_prompt", {name: "prompt"})
+    monkeypatch.setattr(character_runtime, "master_name", "Master")
+    monkeypatch.setattr(character_runtime.core, "LLMSessionManager", NewManager)
+    monkeypatch.setattr(
+        character_runtime.cross_server,
+        "run_sync_connector",
+        run_connector,
+    )
+    monkeypatch.setattr(character_runtime, "_refresh_character_globals", refresh_globals)
+    monkeypatch.setattr(voice_identity_runtime, "register_voice_identity_manager", register)
+    monkeypatch.setattr(
+        voice_identity_runtime,
+        "unregister_voice_identity_manager",
+        unregister,
+    )
+
+    init_task = asyncio.create_task(
+        character_runtime._init_character_resources(name, False)
+    )
+    await asyncio.wait_for(register_started.wait(), 1.0)
+    remove_task = asyncio.create_task(character_runtime.remove_one_catgirl(name))
+    await asyncio.sleep(0)
+    assert not remove_task.done()
+
+    allow_register.set()
+    await init_task
+    connector_task = role.sync_task
+    assert connector_task is not None
+    await remove_task
+
+    assert connector_task.cancelled()
+    assert unregistered == [role.session_manager]
+    assert name not in character_runtime.role_state
+
+
+@pytest.mark.asyncio
 async def test_character_init_skips_slot_removed_while_waiting_for_lock(
     monkeypatch,
 ):
