@@ -30,6 +30,38 @@ class TestDetectProviderInfo:
         assert r["needs_proxy"] is False
         assert r["api_key_env"] == "ANTHROPIC_API_KEY"
 
+    def test_kimi_code_is_anthropic_not_an_openai_proxy(self):
+        """kimi_code speaks Anthropic Messages; it must not fall to the proxy.
+
+        The provider was added in #1948 with provider_type=anthropic, but the
+        detector only knew anthropic.com, so an agent slot pinned to kimi_code
+        landed in the openai + needs_proxy catch-all.
+        """
+        r = _detect_provider_info("https://api.kimi.com/coding", "kimi-for-coding")
+        assert r["provider"] == "anthropic", f"实际={r['provider']!r}"
+        assert r["needs_proxy"] is False, "Anthropic 方言端点不应绕 LLM proxy"
+        assert r["effective_url"] == "https://api.kimi.com/coding"
+        assert r["api_key_env"] == "ANTHROPIC_API_KEY"
+
+    def test_declared_anthropic_provider_type_wins_over_unknown_host(self):
+        """A self-hosted Anthropic endpoint is honoured when the slot says so."""
+        r = _detect_provider_info(
+            "https://llm.example.com/anthropic",
+            "claude-sonnet-4",
+            provider_type="anthropic",
+        )
+        assert r["provider"] == "anthropic", f"实际={r['provider']!r}"
+        assert r["needs_proxy"] is False
+
+    def test_openai_compatible_provider_type_is_not_forced_to_anthropic(self):
+        """The new parameter must not hijack ordinary OpenAI-compatible slots."""
+        r = _detect_provider_info(
+            "https://api.deepseek.com/v1",
+            "deepseek-chat",
+            provider_type="openai_compatible",
+        )
+        assert r["provider"] == "deepseek", f"实际={r['provider']!r}"
+
     def test_openai_by_url(self):
         r = _detect_provider_info("https://api.openai.com/v1", "gpt-4.1")
         assert r["provider"] == "openai"

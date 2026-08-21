@@ -115,9 +115,19 @@ class OmniOfflineClient(_ToolingMixin, _GenaiMixin, _StreamingMixin, _MediaMixin
         self.api_key = api_key if api_key and api_key != '' else None
         self.model = model
         self.vision_model = vision_model  # Store vision model for temporary switching
-        # 视觉模型独立配置（如果未指定则回退到主配置）
-        self.vision_base_url = vision_base_url if vision_base_url else base_url
-        self.vision_api_key = vision_api_key if vision_api_key else api_key
+        # 视觉模型独立配置：URL 与 Key 必须**成对**回退。
+        #
+        # 这两行原本各自独立判空，于是「视觉槽填了自己的 URL、Key 留空」时
+        # URL 停在视觉那一家的域名、Key 却继承了对话 provider 的凭证 —— 把用户
+        # 的付费 Key 发给了另一个厂商，既是路由错误也是凭证越界。留空 Key 让请求
+        # 不带 Authorization：本地无鉴权端点本就该如此，付费端点则会直接 401
+        # 报错，比静默把凭证送出去可诊断得多。
+        _vision_url = vision_base_url or base_url
+        self.vision_base_url = _vision_url
+        if _vision_url != base_url:
+            self.vision_api_key = vision_api_key if vision_api_key else None
+        else:
+            self.vision_api_key = vision_api_key if vision_api_key else api_key
         self.provider_type = provider_type
         self.vision_provider_type = vision_provider_type or provider_type
         self._model_switch_lock = asyncio.Lock()

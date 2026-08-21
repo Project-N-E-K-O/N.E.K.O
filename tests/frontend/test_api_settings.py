@@ -1745,3 +1745,49 @@ def test_switching_tts_provider_away_from_vllm_clears_fallback_voice(mock_page: 
     """)
 
     assert values == {"vllmVoice": "default", "followVoice": ""}
+
+
+@pytest.mark.frontend
+def test_capability_dropdowns_hide_providers_with_no_implementation(
+    mock_page: Page, running_server: str
+):
+    """TTS / realtime dropdowns must only offer providers the backend implements.
+
+    Both dropdowns used to be filled from the assist (text-LLM) table, so they
+    listed providers that own no TTS worker / no realtime endpoint at all.
+    Picking one was silently ignored downstream while its auto-filled URL and
+    key polluted that slot's credentials.
+    """
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
+    mock_page.goto(f"{running_server}/api_key")
+    expect(mock_page.locator("#loading-overlay")).to_be_hidden(timeout=15000)
+    mock_page.wait_for_selector("#ttsModelProvider option[value='vllm_omni']", state="attached", timeout=10000)
+
+    options = mock_page.evaluate("""
+        () => {
+            const read = id => Array.from(
+                document.getElementById(id).options
+            ).map(o => o.value);
+            return { tts: read('ttsModelProvider'), omni: read('omniModelProvider') };
+        }
+    """)
+
+    # 纯文本 LLM 厂商没有任何 TTS worker，不该出现在 TTS 下拉里
+    for pk in ('deepseek', 'kimi', 'kimi_code', 'claude', 'openrouter', 'silicon'):
+        assert pk not in options['tts'], f"TTS 下拉仍暴露无 TTS 能力的 {pk}"
+
+    # 没有 realtime 端点的厂商不该出现在实时全模态下拉里
+    for pk in ('deepseek', 'kimi', 'claude', 'minimax', 'elevenlabs', 'openrouter'):
+        assert pk not in options['omni'], f"实时全模态下拉仍暴露无 realtime 能力的 {pk}"
+
+    # 反向断言：真正有能力的项必须还在，避免"全都过滤掉"也能让上面的断言通过
+    assert 'gptsovits' in options['tts'], "GPT-SoVITS 被误过滤"
+    assert 'vllm_omni' in options['tts'], "vLLM-Omni 被误过滤"
+    assert 'custom' in options['tts'], "自定义 TTS 被误过滤"
+    assert 'qwen' in options['omni'], "Qwen 实时被误过滤"
+    assert 'glm' in options['omni'], "GLM 实时被误过滤"
+    assert 'custom' in options['omni'], "自定义实时端点被误过滤"
+    for sel in ('tts', 'omni'):
+        assert 'follow_core' in options[sel] and 'follow_assist' in options[sel], (
+            f"{sel} 下拉丢了跟随项"
+        )

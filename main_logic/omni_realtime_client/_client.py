@@ -33,6 +33,7 @@ from ._shared import (
 
 
 
+from ._shared import canonical_realtime_dialect
 from ._tools import _ToolingMixin
 from ._audio import _AudioMixin
 from ._transport import _TransportMixin
@@ -451,7 +452,12 @@ class OmniRealtimeClient(_ToolingMixin, _AudioMixin, _TransportMixin, _ResponseM
         #   qwen  → no custom tool calling per Aliyun docs (only enable_search)
         #   gemini → genai SDK config.tools, response.tool_call.function_calls
         # The provider-side flags below let event handlers cheaply route.
-        self._supports_tools_wire = self._api_type.lower() in ('gpt', 'glm', 'qwen', 'step', 'free', 'gemini', 'grok')
+        # 与 apply_tools_to_session 共用同一套方言词表：这里原来直接比 api_type，
+        # 而 'gpt' 从来不是 api_type 的合法取值（真实值是 'openai'），'qwen_intl'
+        # 也进不了 'qwen'。该字段当前没有读者，但错的判据留着迟早被人接上。
+        self._supports_tools_wire = canonical_realtime_dialect(self._api_type) in (
+            'gpt', 'glm', 'qwen', 'step', 'free', 'gemini', 'grok'
+        )
         # Per-call accumulator for OpenAI-Realtime / StepFun delta arguments
         # keyed by call_id. cleared on response.done.
         self._inflight_tool_args: Dict[str, Dict[str, Any]] = {}

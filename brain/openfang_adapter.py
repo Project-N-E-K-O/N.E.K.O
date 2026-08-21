@@ -42,9 +42,13 @@ logger = logging.getLogger("openfang_adapter")
 # OpenFang 原生支持多种 provider: anthropic, openai, groq, gemini, deepseek, ollama 等
 # 根据用户配置的 agent API base_url 推断最合适的 provider 和是否需要 proxy
 
-def _detect_provider_info(base_url: str, model: str) -> dict:
+def _detect_provider_info(base_url: str, model: str, provider_type: str | None = None) -> dict:
     """
     Infer the OpenFang provider and whether an LLM proxy is needed from the user-configured agent API.
+
+    ``provider_type`` is the dialect the config layer already resolved for this
+    slot; pass it when available so an Anthropic-Messages endpoint is routed as
+    Anthropic even when its hostname is not a known one.
 
     Returns:
         {
@@ -79,8 +83,17 @@ def _detect_provider_info(base_url: str, model: str) -> dict:
             "api_key_env": "OPENAI_API_KEY",
         }
 
-    # Anthropic 原生 API -- OpenFang 直接支持, 无需 proxy
-    if _host_matches("anthropic.com", "api.anthropic.com"):
+    # Anthropic Messages 协议端点 -- OpenFang 直接支持, 无需 proxy
+    #
+    # 判据复用 utils.llm_client 的 _is_anthropic_endpoint（聊天链路的同一套真相），
+    # 而不是在这里再抄一份域名白名单。原来只认 anthropic.com，于是 #1948 加进来的
+    # kimi_code（api.kimi.com/coding，provider_type=anthropic）落到了末尾的
+    # provider=openai + needs_proxy 兜底，被当成 OpenAI 端点塞进 LLM proxy。
+    from utils.llm_client import _is_anthropic_endpoint
+
+    if _host_matches("anthropic.com", "api.anthropic.com") or _is_anthropic_endpoint(
+        base_url, provider_type
+    ):
         return {
             "provider": "anthropic",
             "needs_proxy": False,
@@ -595,7 +608,9 @@ class OpenFangAdapter:
 
         # 先检测 provider，再决定是否需要 api_key
         # Ollama 等本地 provider 不需要 api_key（api_key_env 为空串）
-        pinfo = _detect_provider_info(base_url, model)
+        pinfo = _detect_provider_info(
+            base_url, model, provider_type=agent_cfg.get("provider_type")
+        )
         if not api_key and pinfo.get("api_key_env"):
             # 云端 provider 缺少 api_key，跳过同步
             logger.warning("[OpenFang] Agent API key 未配置 (provider=%s), 跳过同步",
