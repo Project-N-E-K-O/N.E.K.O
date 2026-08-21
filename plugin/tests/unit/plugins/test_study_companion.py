@@ -7181,6 +7181,38 @@ if (notebook.querySelector('.notebook-note-row strong')?.textContent !== 'Second
   throw new Error('a superseded search rejection replaced the current results');
 }
 
+window.confirm = () => true;
+notebook.querySelector('.notebook-note-row__open').click();
+await new Promise((resolve) => setTimeout(resolve, 0));
+detailRequests.get('note-2').resolve({ note: notes[1] });
+await new Promise((resolve) => setTimeout(resolve, 0));
+const scopeDirtyContent = notebook.querySelector('.notebook-editor__content');
+scopeDirtyContent.value = 'Dirty draft before scope change';
+scopeDirtyContent.dispatchEvent(new window.Event('input', { bubbles: true }));
+notebook.querySelector('.notebook-note-row__open').click();
+await new Promise((resolve) => setTimeout(resolve, 0));
+searchInput.value = 'scope-miss';
+searchInput.dispatchEvent(new window.Event('input', { bubbles: true }));
+await new Promise((resolve) => setTimeout(resolve, 300));
+const scopeSearch = noteListRequests.shift();
+if (scopeSearch.args.search_query !== 'scope-miss') {
+  throw new Error('scope-change search was not captured');
+}
+scopeSearch.resolve({ notes: [] });
+await new Promise((resolve) => setTimeout(resolve, 0));
+await new Promise((resolve) => setTimeout(resolve, 0));
+detailRequests.get('note-2').resolve({ note: { ...notes[1], content: 'Stale scope body' } });
+await new Promise((resolve) => setTimeout(resolve, 0));
+await new Promise((resolve) => setTimeout(resolve, 0));
+if (notebook.querySelector('.notebook-editor__content')) {
+  throw new Error('stale detail response restored a discarded draft after scope change');
+}
+const scopeChangedUnload = new window.Event('beforeunload', { cancelable: true });
+window.dispatchEvent(scopeChangedUnload);
+if (scopeChangedUnload.defaultPrevented) {
+  throw new Error('stale detail response restored the dirty guard after scope change');
+}
+
 deferNotebookLists = true;
 deferNoteLists = false;
 const noteListCallsBeforeOverlap = noteListCallCount;

@@ -591,13 +591,14 @@
       const restoreDirtyDraft = editorDirty;
       if (!confirmDiscardDraft()) return;
       const draftSnapshot = restoreDirtyDraft ? selectedNoteSnapshot() : null;
+      const navigationScope = noteScopeKey();
       setEditorDirty(false);
       const navigationId = noteNavigationRequest += 1;
       const requestId = noteDetailRequest += 1;
       setBusy(true);
       try {
         const payload = await ctx.callPlugin('study_note_get', { note_id: noteId });
-        if (!isValid()) return;
+        if (!isValid() || navigationScope !== noteScopeKey()) return;
         if (requestId !== noteDetailRequest) {
           if (navigationId === noteNavigationRequest) {
             restoreSelectedDraft(draftSnapshot, restoreDirtyDraft);
@@ -610,7 +611,7 @@
         drawList();
         drawEditor();
       } catch (error) {
-        if (isValid() && navigationId === noteNavigationRequest) {
+        if (isValid() && navigationScope === noteScopeKey() && navigationId === noteNavigationRequest) {
           restoreSelectedDraft(draftSnapshot, restoreDirtyDraft);
           setStatus(errorText(error));
         }
