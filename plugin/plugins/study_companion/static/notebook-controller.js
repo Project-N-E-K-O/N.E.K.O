@@ -150,6 +150,8 @@
     }
 
     function setListLocked(locked) {
+      notebookSelect.disabled = locked;
+      searchInput.disabled = locked;
       list.querySelectorAll('.notebook-note-row__open').forEach((button) => {
         button.disabled = locked;
       });
@@ -562,18 +564,24 @@
     }
 
     async function createNote() {
+      const restoreDirtyDraft = editorDirty;
       if (!confirmDiscardDraft()) return;
       setEditorDirty(false);
-      const payload = await ctx.callPlugin('study_note_upsert', {
-        notebook_id: currentNotebookId(),
-        title: t(ctx, 'ui.notebook.new_note', 'New note'),
-        content: '',
-      });
-      if (!isValid()) return;
-      selectedNote = payload.note || null;
-      await refresh();
-      if (payload.note?.id) await selectNote(payload.note.id);
-      setStatus(t(ctx, 'ui.notebook.saved', 'Saved'));
+      try {
+        const payload = await ctx.callPlugin('study_note_upsert', {
+          notebook_id: currentNotebookId(),
+          title: t(ctx, 'ui.notebook.new_note', 'New note'),
+          content: '',
+        });
+        if (!isValid()) return;
+        await refresh();
+        if (!isValid()) return;
+        if (payload.note?.id) await selectNote(payload.note.id);
+        setStatus(t(ctx, 'ui.notebook.saved', 'Saved'));
+      } catch (error) {
+        setEditorDirty(restoreDirtyDraft);
+        throw error;
+      }
     }
 
     function clearSelection() {
@@ -631,6 +639,9 @@
     clearSelectedNoteIds() {
       selectedNoteIds.clear();
       exportSelectionIntent = false;
+    },
+    restoreExportSelectionIntent() {
+      exportSelectionIntent = selectedNoteIds.size > 0;
     },
     consumeExportSelectionIntent() {
       const shouldUseSelection = exportSelectionIntent;

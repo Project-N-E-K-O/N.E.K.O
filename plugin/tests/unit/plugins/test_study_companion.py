@@ -6888,6 +6888,7 @@ def test_study_companion_notebook_is_integrated_with_static_exporter() -> None:
     assert "captureEditorDraft()" in notebook
     assert "setEditorLocked" in notebook
     assert "consumeExportSelectionIntent" in notebook
+    assert "restoreExportSelectionIntent" in notebook
     assert "contentSnapshot" in notebook
     assert "button.disabled = busyCount > 0;" in notebook
     assert "window.StudyCompanionNotebook?.close?.() === false" in exporter
@@ -6896,6 +6897,8 @@ def test_study_companion_notebook_is_integrated_with_static_exporter() -> None:
     assert "${raw.replace(' ', 'T')}Z" in notebook
     assert "getSelectedNoteIds" in exporter
     assert "note_ids: notebookNoteIds" in exporter
+    assert "dataset.notebookSelection" in exporter
+    assert "restoreExportSelectionIntent?.();" in main_js
 
 
 def test_study_companion_selected_notebooks_reach_export_entry() -> None:
@@ -6957,6 +6960,9 @@ await new Promise((resolve) => setTimeout(resolve, 0));
 const exporter = document.querySelector('[data-surface="note-exporter"]');
 if (!exporter) throw new Error('notebook export action did not open the exporter');
 await new Promise((resolve) => setTimeout(resolve, 0));
+if (exporter.dataset.notebookSelection !== 'true') {
+  throw new Error('selected-note exporter did not expose its active scope');
+}
 const selectedStyleSelect = exporter.querySelectorAll('select')[1];
 if (!selectedStyleSelect?.disabled || selectedStyleSelect.value !== 'neko') {
   throw new Error('selected-note exporter did not disable the unused style picker');
@@ -6966,6 +6972,19 @@ await new Promise((resolve) => setTimeout(resolve, 0));
 const exportCall = calls.find((call) => call.entryId === 'study_export_notes');
 if (!exportCall || JSON.stringify(exportCall.args.note_ids) !== JSON.stringify(['note-1'])) {
   throw new Error(`selected notes did not reach export: ${JSON.stringify(exportCall)}`);
+}
+window.StudyCompanionNotebook.restoreExportSelectionIntent();
+const rerenderedExporter = window.StudyCompanionSurfacePanels.render('note-exporter', ctx);
+document.body.appendChild(rerenderedExporter);
+await new Promise((resolve) => setTimeout(resolve, 0));
+if (rerenderedExporter.dataset.notebookSelection !== 'true' || !rerenderedExporter.querySelectorAll('select')[1]?.disabled) {
+  throw new Error('settings-style rerender did not preserve selected-note scope');
+}
+rerenderedExporter.querySelector('[data-surface-action="export-preview"]').click();
+await new Promise((resolve) => setTimeout(resolve, 0));
+const rerenderedExportCall = calls.filter((call) => call.entryId === 'study_export_notes').at(-1);
+if (!rerenderedExportCall || JSON.stringify(rerenderedExportCall.args.note_ids) !== JSON.stringify(['note-1'])) {
+  throw new Error(`rerendered exporter lost selected notes: ${JSON.stringify(rerenderedExportCall)}`);
 }
 const standaloneExporter = window.StudyCompanionSurfacePanels.render('note-exporter', ctx);
 document.body.appendChild(standaloneExporter);
@@ -7395,6 +7414,9 @@ const openButtonDuringDelete = notebook.querySelector('.notebook-note-row__open'
 if (!openButtonDuringDelete?.disabled) {
   throw new Error('existing note open action stayed enabled during notebook deletion');
 }
+if (!notebookFilter.disabled || !notebook.querySelector('input[type="search"]')?.disabled) {
+  throw new Error('notebook filter navigation stayed enabled during notebook deletion');
+}
 refreshButtonDuringDelete.click();
 await new Promise((resolve) => setTimeout(resolve, 0));
 await new Promise((resolve) => setTimeout(resolve, 0));
@@ -7572,7 +7594,7 @@ async function callPlugin(entryId, args = {}) {
   if (entryId === 'study_note_get') return { note: notes.find((item) => item.id === args.note_id) };
   if (entryId === 'study_notebook_create') return { notebook: { id: 'book-2', name: args.name, note_count: 0 } };
   if (entryId === 'study_note_upsert') {
-    return { note: { ...notes[0], ...args, id: args.note_id } };
+    return { note: { ...notes[0], ...args, id: args.note_id || 'note-new' } };
   }
   throw new Error(`Unexpected entry: ${entryId}`);
 }
@@ -7685,6 +7707,46 @@ async function expectCreateFailure(entryId) {
 
 for (const entryId of ['study_notebook_create', 'study_notebook_list', 'study_note_list']) {
   await expectCreateFailure(entryId);
+}
+
+async function expectNewNoteRefreshFailure(entryId) {
+  const draft = `Draft retained after new note ${entryId}`;
+  const editorContent = notebook.querySelector('.notebook-editor__content');
+  editorContent.value = draft;
+  editorContent.dispatchEvent(new window.Event('input', { bubbles: true }));
+  failureEntry = entryId;
+  const savesBefore = calls.filter((call) => call.entryId === 'study_note_upsert' && call.args.note_id).length;
+  const newNoteButton = [...notebook.querySelectorAll('.notebook-toolbar__actions button')]
+    .find((button) => button.textContent === 'New note');
+  newNoteButton.click();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  if (!notebook.querySelector('.study-panel__status-chip')?.textContent.includes(`forced ${entryId} failure`)) {
+    throw new Error(`new-note ${entryId} failure was not reported`);
+  }
+  if (notebook.querySelector('.notebook-editor__content')?.value !== draft) {
+    throw new Error(`new-note ${entryId} failure did not preserve the previous editor`);
+  }
+  const failedUnload = new window.Event('beforeunload', { cancelable: true });
+  window.dispatchEvent(failedUnload);
+  if (!failedUnload.defaultPrevented) {
+    throw new Error(`new-note ${entryId} failure did not restore the dirty draft guard`);
+  }
+  const saveButton = [...notebook.querySelectorAll('.notebook-editor__actions button')]
+    .find((button) => button.textContent === 'Save');
+  saveButton.click();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  const saves = calls.filter((call) => call.entryId === 'study_note_upsert' && call.args.note_id);
+  if (saves.length !== savesBefore + 1 || saves.at(-1).args.note_id !== 'note-1') {
+    throw new Error(`new-note ${entryId} failure detached the visible editor from its note`);
+  }
+}
+
+for (const entryId of ['study_notebook_list', 'study_note_list']) {
+  await expectNewNoteRefreshFailure(entryId);
 }
 """
     completed = subprocess.run(

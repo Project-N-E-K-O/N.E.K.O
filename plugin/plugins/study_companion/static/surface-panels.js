@@ -878,6 +878,7 @@
     const notebookNoteIds = useNotebookSelection
       ? window.StudyCompanionNotebook?.getSelectedNoteIds?.() || []
       : [];
+    root.dataset.notebookSelection = notebookNoteIds.length > 0 ? 'true' : 'false';
     let fmt = 'markdown';
     let style = 'neko';
     let markdown = '';
