@@ -6856,6 +6856,7 @@ def test_study_companion_static_knowledge_map_groups_by_base_library_hierarchy()
 def test_study_companion_notebook_is_integrated_with_static_exporter() -> None:
     plugin_dir = Path(__file__).resolve().parents[3] / "plugins" / "study_companion"
     index_html = (plugin_dir / "static" / "index.html").read_text(encoding="utf-8")
+    main_js = (plugin_dir / "static" / "main.js").read_text(encoding="utf-8")
     notebook = (plugin_dir / "static" / "notebook-controller.js").read_text(encoding="utf-8")
     exporter = (plugin_dir / "static" / "surface-panels.js").read_text(encoding="utf-8")
 
@@ -6875,6 +6876,7 @@ def test_study_companion_notebook_is_integrated_with_static_exporter() -> None:
         assert entry_id in notebook
     assert "selectedNoteIds" in notebook
     assert "ctx.openSurface('note-exporter')" in notebook
+    assert "openSurface: openSurfaceDrawer" in main_js
     assert "getSelectedNoteIds" in exporter
     assert "note_ids: noteIds" in exporter
 
@@ -7031,6 +7033,108 @@ noteListResolvers.shift()({ notes });
 await new Promise((resolve) => setTimeout(resolve, 0));
 if (notebook.querySelector('.notebook-editor__content')?.value !== 'Latest First body') {
   throw new Error('an older note-list response replaced the latest note detail');
+}
+"""
+    completed = subprocess.run(
+        ["node", "--input-type=module", "-e", script],
+        cwd=frontend_dir,
+        env={**os.environ, "STUDY_COMPANION_STATIC_DIR": str(plugin_dir / "static")},
+        capture_output=True,
+        text=True,
+        timeout=15,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr or completed.stdout
+
+
+def test_study_companion_notebook_keeps_saved_note_body_after_list_refresh() -> None:
+    if shutil.which("node") is None:
+        pytest.skip("node is not installed")
+    plugin_dir = Path(__file__).resolve().parents[3] / "plugins" / "study_companion"
+    frontend_dir = Path(__file__).resolve().parents[4] / "frontend" / "plugin-manager"
+    if not (frontend_dir / "node_modules" / "happy-dom").is_dir():
+        pytest.skip("frontend/plugin-manager node_modules with happy-dom is not installed")
+
+    script = r"""
+import { Window } from 'happy-dom';
+import fs from 'node:fs';
+import path from 'node:path';
+
+const staticDir = process.env.STUDY_COMPANION_STATIC_DIR;
+const notebookJs = fs.readFileSync(path.join(staticDir, 'notebook-controller.js'), 'utf8');
+const window = new Window({ url: 'http://testserver/plugin/study_companion/ui/' });
+const { document } = window;
+let fullNote = {
+  id: 'note-1',
+  notebook_id: 'book-1',
+  title: 'Original',
+  content: 'Original body',
+  content_plain: 'Original body',
+  snippet: 'Original body',
+  topic_ids: [],
+  tags: [],
+  updated_at: '2026-08-20T00:00:00Z',
+};
+function noteSummary() {
+  return {
+    id: fullNote.id,
+    notebook_id: fullNote.notebook_id,
+    title: fullNote.title,
+    content: '',
+    content_plain: '',
+    snippet: fullNote.content.slice(0, 80),
+    topic_ids: fullNote.topic_ids,
+    tags: fullNote.tags,
+    updated_at: fullNote.updated_at,
+  };
+}
+async function callPlugin(entryId, args = {}) {
+  if (entryId === 'study_notebook_list') return { notebooks: [{ id: 'book-1', name: 'Book', note_count: 1 }] };
+  if (entryId === 'study_note_list') return { notes: [noteSummary()] };
+  if (entryId === 'study_note_get') return { note: { ...fullNote } };
+  if (entryId === 'study_note_upsert') {
+    fullNote = {
+      ...fullNote,
+      id: args.note_id,
+      notebook_id: args.notebook_id,
+      title: args.title,
+      content: args.content,
+      content_plain: args.content,
+      snippet: args.content.slice(0, 80),
+      topic_ids: args.topic_ids,
+      tags: args.tags,
+      updated_at: '2026-08-20T00:01:00Z',
+    };
+    return { note: { ...fullNote } };
+  }
+  throw new Error(`Unexpected entry: ${entryId}`);
+}
+const ctx = {
+  t: (_key, fallback) => fallback,
+  tf: (_key, fallback, values) => fallback.replace(/\{([^}]+)\}/g, (_, name) => values[name] ?? ''),
+  label: (surfaceId) => surfaceId,
+  callPlugin,
+  openSurface: () => undefined,
+};
+window.eval(notebookJs);
+const notebook = window.StudyCompanionNotebook.render('notebook-panel', ctx);
+document.body.appendChild(notebook);
+await new Promise((resolve) => setTimeout(resolve, 0));
+await new Promise((resolve) => setTimeout(resolve, 0));
+
+notebook.querySelector('.notebook-note-row__open').click();
+await new Promise((resolve) => setTimeout(resolve, 0));
+const contentInput = notebook.querySelector('.notebook-editor__content');
+contentInput.value = 'Saved body';
+const saveButton = [...notebook.querySelectorAll('.notebook-editor__actions button')]
+  .find((button) => button.textContent === 'Save');
+saveButton.click();
+await new Promise((resolve) => setTimeout(resolve, 0));
+await new Promise((resolve) => setTimeout(resolve, 0));
+await new Promise((resolve) => setTimeout(resolve, 0));
+
+if (notebook.querySelector('.notebook-editor__content')?.value !== 'Saved body') {
+  throw new Error('list refresh replaced the saved full note body with a summary row');
 }
 """
     completed = subprocess.run(

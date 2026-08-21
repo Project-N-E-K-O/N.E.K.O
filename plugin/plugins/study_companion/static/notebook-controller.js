@@ -162,6 +162,13 @@
       };
     }
 
+    function mergeNoteSummary(current, summary) {
+      const merged = { ...current, ...summary };
+      if (!summary.content && current.content) merged.content = current.content;
+      if (!summary.content_plain && current.content_plain) merged.content_plain = current.content_plain;
+      return merged;
+    }
+
     function drawNotebookOptions() {
       const previous = selectedNotebook;
       notebookSelect.replaceChildren();
@@ -329,7 +336,8 @@
       if (!isValid() || requestId !== notesRequest) return;
       notes = Array.isArray(payload.notes) ? payload.notes : [];
       if (selectedNote && detailRequestAtStart === noteDetailRequest) {
-        selectedNote = notes.find((note) => note.id === selectedNote.id) || null;
+        const summary = notes.find((note) => note.id === selectedNote.id);
+        selectedNote = summary ? mergeNoteSummary(selectedNote, summary) : null;
       }
       drawList();
       if (detailRequestAtStart === noteDetailRequest) drawEditor();

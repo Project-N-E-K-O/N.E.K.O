@@ -172,12 +172,6 @@
   justify-content: flex-end;
 }
 
-@media (min-width: 981px) and (max-width: 1220px) {
-  .feature-dock {
-    grid-template-columns: repeat(4, minmax(0, 1fr));
-  }
-}
-
 @media (max-width: 760px) {
   .notebook-toolbar,
   .notebook-workspace,

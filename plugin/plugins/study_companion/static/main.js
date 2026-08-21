@@ -1495,6 +1495,7 @@ function renderSurfaceDrawerBody(surfaceId) {
     tf,
     label: hostedSurfaceLabel,
     callPlugin,
+    openSurface: openSurfaceDrawer,
   });
   if (hostedPanel) return hostedPanel;
   if (surfaceId === 'knowledge-map') return renderKnowledgePanel();
