@@ -2924,7 +2924,7 @@
             "tokens": "詞元",
             "textGuardUnlimitedWarning": "可能導致貓娘出現嚴重問題，非必要不建議無限制",
             "textGuardHighWarning": "設定過大可能導致貓娘記憶和語言混亂，建議 1000 詞元以內",
-            "textGuardNote": "依 tiktoken 統計；僅對文字回覆有效，不影響語音對話"
+            "textGuardNote": "僅對文字回覆有效，不影響語音對話"
         }
     },
     "openclawGuide": {

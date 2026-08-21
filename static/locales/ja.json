@@ -2924,7 +2924,7 @@
             "tokens": "トークン",
             "textGuardUnlimitedWarning": "猫娘に深刻な問題が発生する可能性があり、必要な場合を除き無制限は推奨されません",
             "textGuardHighWarning": "設定が大きすぎると猫娘の記憶と言語が混乱する可能性があります。1000 トークン以内を推奨します",
-            "textGuardNote": "tiktoken で計測。テキスト返信にのみ適用され、音声セッションには影響しません"
+            "textGuardNote": "テキスト返信にのみ適用され、音声セッションには影響しません"
         }
     },
     "openclawGuide": {
