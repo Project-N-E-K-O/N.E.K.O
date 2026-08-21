@@ -587,8 +587,8 @@ async def test_cancelled_detach_defers_current_and_remaining_managers() -> None:
     await asyncio.wait_for(ordered[0].detach_started.wait(), 1.0)
     detach_task.cancel()
 
-    result = await asyncio.wait_for(detach_task, 1.0)
-    assert result is VoiceIdentityActivationResult.RUNTIME_DEGRADED
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(detach_task, 1.0)
     assert not ordered[1].detach_started.is_set()
     assert registry._detach_pending == {  # type: ignore[attr-defined]
         ordered[0]: "detach-generation",
@@ -768,6 +768,42 @@ async def test_unregister_bounds_pending_restore_and_starts_retry(
 
     await asyncio.wait_for(registry.unregister_manager(manager), timeout=0.2)
 
+    assert restore_started.is_set()
+    assert manager in registry._restore_pending  # type: ignore[attr-defined]
+    assert registry._restore_retry_task is not None  # type: ignore[attr-defined]
+    await registry.close()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_register_bounds_pending_restore_and_starts_retry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        runtime_module,
+        "_WATCHDOG_MANAGER_CALL_TIMEOUT_SECONDS",
+        0.02,
+    )
+    registry = OwnerVoiceRuntimeRegistry(
+        enforce=True,
+        restore_retry_interval_seconds=0.5,
+        restore_retry_timeout_seconds=1.0,
+    )
+    manager = _Manager()
+    registry._restore_pending.add(manager)  # type: ignore[attr-defined]
+    restore_started = asyncio.Event()
+
+    async def never_restore(reason: str, *, suppressed: bool) -> None:
+        manager.suppression_calls.append((reason, suppressed))
+        if not suppressed:
+            restore_started.set()
+            await asyncio.Event().wait()
+
+    manager.set_voice_input_suppressed = never_restore  # type: ignore[method-assign]
+
+    result = await asyncio.wait_for(registry.register_manager(manager), timeout=0.2)
+
+    assert result is VoiceIdentityActivationResult.RUNTIME_DEGRADED
     assert restore_started.is_set()
     assert manager in registry._restore_pending  # type: ignore[attr-defined]
     assert registry._restore_retry_task is not None  # type: ignore[attr-defined]

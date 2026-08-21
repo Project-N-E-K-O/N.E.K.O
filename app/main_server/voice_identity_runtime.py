@@ -147,11 +147,16 @@ class OwnerVoiceRuntimeRegistry:
                         return VoiceIdentityActivationResult.RUNTIME_DEGRADED
                     self._restore_pending.discard(manager)
                 elif manager in self._restore_pending:
-                    await self._restore_manager(
+                    if await self._restore_manager_bounded(
                         manager,
                         "voice_identity_enrollment",
-                    )
-                    self._restore_pending.discard(manager)
+                    ):
+                        self._restore_pending.discard(manager)
+                    else:
+                        self._ensure_restore_watchdog(
+                            "voice_identity_enrollment"
+                        )
+                        return VoiceIdentityActivationResult.RUNTIME_DEGRADED
                 activation = self._activation
                 if activation is not None:
                     self._detach_pending.pop(manager, None)
@@ -166,12 +171,18 @@ class OwnerVoiceRuntimeRegistry:
                 return VoiceIdentityActivationResult.READY
             except BaseException:
                 if self._suppressed:
+                    self._restore_pending.add(manager)
                     try:
-                        await self._restore_manager(
+                        restored = await self._restore_manager_bounded(
                             manager,
                             "voice_identity_enrollment",
                         )
-                    except Exception:
+                    except asyncio.CancelledError:
+                        self._restore_pending.add(manager)
+                        raise
+                    if restored:
+                        self._restore_pending.discard(manager)
+                    else:
                         self._restore_pending.add(manager)
                     if self._activation is not None:
                         self._attach_pending.add(manager)
@@ -208,29 +219,25 @@ class OwnerVoiceRuntimeRegistry:
                 self._ensure_detach_watchdog()
             if self._suppressed or manager in self._restore_pending:
                 try:
-                    await asyncio.wait_for(
-                        self._restore_manager(
-                            manager,
-                            "voice_identity_enrollment",
-                        ),
-                        timeout=_WATCHDOG_MANAGER_CALL_TIMEOUT_SECONDS,
+                    restored = await self._restore_manager_bounded(
+                        manager,
+                        "voice_identity_enrollment",
                     )
-                except TimeoutError:
-                    self._restore_pending.add(manager)
-                    if not self._suppressed:
-                        self._ensure_restore_watchdog("voice_identity_enrollment")
                 except asyncio.CancelledError as exc:
                     self._restore_pending.add(manager)
                     if not self._suppressed:
                         self._ensure_restore_watchdog("voice_identity_enrollment")
                     if cancellation is None:
                         cancellation = exc
-                except Exception:
-                    self._restore_pending.add(manager)
-                    if not self._suppressed:
-                        self._ensure_restore_watchdog("voice_identity_enrollment")
                 else:
-                    self._restore_pending.discard(manager)
+                    if restored:
+                        self._restore_pending.discard(manager)
+                    else:
+                        self._restore_pending.add(manager)
+                        if not self._suppressed:
+                            self._ensure_restore_watchdog(
+                                "voice_identity_enrollment"
+                            )
             if cancellation is not None:
                 raise cancellation
 
@@ -264,20 +271,29 @@ class OwnerVoiceRuntimeRegistry:
                 self._activation = None
                 self._attach_pending.clear()
                 if old_activation is not None:
+                    # Installed factories own profile clones; this releases only
+                    # the registry's retired activation material.
                     old_activation.close()
                 all_detached = True
                 managers = tuple(self._managers)
                 for index, manager in enumerate(managers):
                     try:
-                        detached = await manager.set_speaker_verifier_factory(
-                            None,
-                            activation_generation=generation,
+                        detached = await asyncio.wait_for(
+                            manager.set_speaker_verifier_factory(
+                                None,
+                                activation_generation=generation,
+                            ),
+                            timeout=_WATCHDOG_MANAGER_CALL_TIMEOUT_SECONDS,
                         )
+                    except asyncio.TimeoutError:
+                        detached = False
                     except asyncio.CancelledError:
                         all_detached = False
                         for pending_manager in managers[index:]:
                             self._detach_pending[pending_manager] = generation
                         self._ensure_detach_watchdog()
+                        if self._current_task_is_cancelling():
+                            raise
                         return VoiceIdentityActivationResult.RUNTIME_DEGRADED
                     except Exception:
                         detached = False
@@ -300,10 +316,18 @@ class OwnerVoiceRuntimeRegistry:
                     factory = next_activation.factory_for(manager)
                     changed.append(manager)
                     try:
-                        updated = await manager.set_speaker_verifier_factory(
-                            factory,
-                            activation_generation=generation,
+                        updated = await asyncio.wait_for(
+                            manager.set_speaker_verifier_factory(
+                                factory,
+                                activation_generation=generation,
+                            ),
+                            timeout=_WATCHDOG_MANAGER_CALL_TIMEOUT_SECONDS,
                         )
+                    except asyncio.CancelledError:
+                        factory.close()
+                        if self._current_task_is_cancelling():
+                            raise
+                        raise RuntimeError("speaker verifier activation cancelled")
                     except BaseException:
                         factory.close()
                         raise
@@ -319,15 +343,28 @@ class OwnerVoiceRuntimeRegistry:
                         )
                     self._attach_pending.discard(manager)
                     self._detach_pending.pop(manager, None)
+            except asyncio.CancelledError:
+                self._rollback_activation(changed, old_activation)
+                if next_activation is not None:
+                    # Managers that accepted the new factory hold a cloned
+                    # profile through that factory, not this activation copy.
+                    next_activation.close()
+                if self._current_task_is_cancelling():
+                    raise
+                return VoiceIdentityActivationResult.RUNTIME_DEGRADED
             except BaseException:
                 self._rollback_activation(changed, old_activation)
                 if next_activation is not None:
+                    # Managers that accepted the new factory hold a cloned
+                    # profile through that factory, not this activation copy.
                     next_activation.close()
                 return VoiceIdentityActivationResult.RUNTIME_DEGRADED
 
             self._activation = next_activation
             self._attach_pending.clear()
             if old_activation is not None:
+                # Installed factories own profile clones; this releases only
+                # the registry's retired activation material.
                 old_activation.close()
             return activation_result
 
@@ -359,6 +396,11 @@ class OwnerVoiceRuntimeRegistry:
         return VoiceIdentityActivationResult.READY
 
     @staticmethod
+    def _current_task_is_cancelling() -> bool:
+        current = asyncio.current_task()
+        return current is not None and current.cancelling() > 0
+
+    @staticmethod
     async def _attach_manager(
         manager,
         activation: _OwnerActivation,
@@ -366,9 +408,12 @@ class OwnerVoiceRuntimeRegistry:
         factory: OwnerVoiceAsrCompositionFactory | None = None
         try:
             factory = activation.factory_for(manager)
-            updated = await manager.set_speaker_verifier_factory(
-                factory,
-                activation_generation=activation.generation,
+            updated = await asyncio.wait_for(
+                manager.set_speaker_verifier_factory(
+                    factory,
+                    activation_generation=activation.generation,
+                ),
+                timeout=_WATCHDOG_MANAGER_CALL_TIMEOUT_SECONDS,
             )
         except asyncio.CancelledError:
             if factory is not None:
@@ -398,8 +443,7 @@ class OwnerVoiceRuntimeRegistry:
         except asyncio.TimeoutError:
             return VoiceIdentityActivationResult.RUNTIME_DEGRADED
         except asyncio.CancelledError:
-            current = asyncio.current_task()
-            if current is not None and current.cancelling():
+            if OwnerVoiceRuntimeRegistry._current_task_is_cancelling():
                 raise
             return VoiceIdentityActivationResult.RUNTIME_DEGRADED
 
@@ -531,18 +575,29 @@ class OwnerVoiceRuntimeRegistry:
                     # so cancellation may leave work incomplete but must still
                     # trigger a restore attempt.
                     changed.append(manager)
-                    await manager.set_voice_input_suppressed(
-                        reason,
-                        suppressed=suppressed,
+                    await asyncio.wait_for(
+                        manager.set_voice_input_suppressed(
+                            reason,
+                            suppressed=suppressed,
+                        ),
+                        timeout=_WATCHDOG_MANAGER_CALL_TIMEOUT_SECONDS,
                     )
             except BaseException:
-                for manager in reversed(changed):
-                    try:
-                        await self._restore_manager(manager, reason)
-                    except Exception:
-                        self._restore_pending.add(manager)
-                if self._restore_pending:
-                    self._ensure_restore_watchdog(reason)
+                for manager in changed:
+                    self._restore_pending.add(manager)
+                try:
+                    for manager in reversed(changed):
+                        try:
+                            await self._restore_manager(manager, reason)
+                        except asyncio.CancelledError:
+                            raise
+                        except Exception:
+                            continue
+                        else:
+                            self._restore_pending.discard(manager)
+                finally:
+                    if self._restore_pending:
+                        self._ensure_restore_watchdog(reason)
                 raise
             for manager in changed:
                 self._restore_pending.discard(manager)
@@ -764,19 +819,42 @@ class OwnerVoiceRuntimeRegistry:
 
     @staticmethod
     async def _restore_manager(manager, reason: str) -> None:
-        last_error: Exception | None = None
+        last_error: BaseException | None = None
         for _attempt in range(2):
             try:
-                await manager.set_voice_input_suppressed(
-                    reason,
-                    suppressed=False,
+                await asyncio.wait_for(
+                    manager.set_voice_input_suppressed(
+                        reason,
+                        suppressed=False,
+                    ),
+                    timeout=_WATCHDOG_MANAGER_CALL_TIMEOUT_SECONDS,
                 )
                 return
+            except asyncio.CancelledError as exc:
+                if OwnerVoiceRuntimeRegistry._current_task_is_cancelling():
+                    raise
+                last_error = exc
+                await asyncio.sleep(0)
             except Exception as exc:
                 last_error = exc
                 await asyncio.sleep(0)
         assert last_error is not None
         raise last_error
+
+    @staticmethod
+    async def _restore_manager_bounded(manager, reason: str) -> bool:
+        try:
+            await asyncio.wait_for(
+                OwnerVoiceRuntimeRegistry._restore_manager(manager, reason),
+                timeout=_WATCHDOG_MANAGER_CALL_TIMEOUT_SECONDS,
+            )
+        except asyncio.CancelledError:
+            if OwnerVoiceRuntimeRegistry._current_task_is_cancelling():
+                raise
+            return False
+        except Exception:
+            return False
+        return True
 
 
 _runtime_registry: OwnerVoiceRuntimeRegistry | None = None
