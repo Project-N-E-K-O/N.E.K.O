@@ -718,7 +718,10 @@ async def release_character_resources(
         return await _fail_release(
             "timed out draining admitted character writes", 503,
         )
-    if not await _acquire_within_deadline(_get_settle_lock(lanlan_name), deadline):
+    # 绑定同一个对象：`_get_settle_lock` 是函数，acquire / release 各调一次会有
+    # 拿到不同实例的风险（测试里就有把它 patch 成每次返回新锁的写法）。
+    settle_lock = _get_settle_lock(lanlan_name)
+    if not await _acquire_within_deadline(settle_lock, deadline):
         return await _fail_release("timed out acquiring the settle lock", 503)
     try:
         if not await _acquire_within_deadline(_reload_lock, deadline):
@@ -773,7 +776,7 @@ async def release_character_resources(
         finally:
             _reload_lock.release()
     finally:
-        _get_settle_lock(lanlan_name).release()
+        settle_lock.release()
 
 
 # 全局变量用于控制服务器关闭
