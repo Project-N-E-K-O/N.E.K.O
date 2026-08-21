@@ -346,7 +346,8 @@ async def test_enrollment_expiry_uses_suppression_lease_deadline(
             lease_released
             and model.closed
             and service.status().enrollment is None
-        )
+        ),
+        timeout_seconds=0.1,
     )
 
     assert lease_released

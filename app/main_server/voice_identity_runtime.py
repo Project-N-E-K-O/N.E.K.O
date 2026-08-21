@@ -684,29 +684,35 @@ class OwnerVoiceRuntimeRegistry:
             self._restore_pending.clear()
             self._attach_pending.clear()
             self._detach_pending.clear()
-            for manager in managers:
-                try:
-                    await self._restore_manager(
-                        manager,
-                        "voice_identity_enrollment",
-                    )
-                except Exception:
-                    pass
-                try:
-                    await asyncio.wait_for(
-                        manager.set_speaker_verifier_factory(
-                            None,
-                            activation_generation=str(uuid.uuid4()),
-                        ),
-                        timeout=_WATCHDOG_MANAGER_CALL_TIMEOUT_SECONDS,
-                    )
-                except (asyncio.CancelledError, Exception):
-                    pass
-            self._managers.clear()
-            activation = self._activation
-            self._activation = None
-            if activation is not None:
-                activation.close()
+            try:
+                for manager in managers:
+                    try:
+                        await self._restore_manager(
+                            manager,
+                            "voice_identity_enrollment",
+                        )
+                    except Exception:
+                        pass
+                    try:
+                        await asyncio.wait_for(
+                            manager.set_speaker_verifier_factory(
+                                None,
+                                activation_generation=str(uuid.uuid4()),
+                            ),
+                            timeout=_WATCHDOG_MANAGER_CALL_TIMEOUT_SECONDS,
+                        )
+                    except asyncio.CancelledError:
+                        current = asyncio.current_task()
+                        if current is not None and current.cancelling():
+                            raise
+                    except Exception:
+                        pass
+            finally:
+                self._managers.clear()
+                activation = self._activation
+                self._activation = None
+                if activation is not None:
+                    activation.close()
 
     @staticmethod
     async def _restore_manager(manager, reason: str) -> None:

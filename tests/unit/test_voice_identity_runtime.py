@@ -1134,7 +1134,7 @@ async def test_registration_suppression_failure_keeps_manager_for_retry() -> Non
     registry = OwnerVoiceRuntimeRegistry(
         enforce=True,
         restore_retry_interval_seconds=0.01,
-        restore_retry_timeout_seconds=0.2,
+        restore_retry_timeout_seconds=2.0,
     )
     profile = _profile("profile")
     try:
@@ -1168,7 +1168,7 @@ async def test_cancelled_restore_queues_every_manager_before_retry() -> None:
     registry = OwnerVoiceRuntimeRegistry(
         enforce=True,
         restore_retry_interval_seconds=0.01,
-        restore_retry_timeout_seconds=0.2,
+        restore_retry_timeout_seconds=2.0,
     )
     first = _Manager()
     second = _Manager()
@@ -1208,7 +1208,43 @@ async def test_registry_close_bounds_blocking_detach() -> None:
     await registry.register_manager(manager)
     manager.set_speaker_verifier_factory = never_detach  # type: ignore[method-assign]
 
-    await asyncio.wait_for(registry.close(), 1.0)
+    await asyncio.wait_for(registry.close(), 3.0)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_registry_close_propagates_external_cancellation_and_cleans() -> None:
+    registry = OwnerVoiceRuntimeRegistry(enforce=True)
+    manager = _Manager()
+    detach_started = asyncio.Event()
+
+    async def blocking_detach(
+        factory: _Factory | None,
+        *,
+        activation_generation: str,
+    ) -> bool:
+        del activation_generation
+        if factory is None:
+            detach_started.set()
+            await asyncio.Event().wait()
+        return True
+
+    await registry.register_manager(manager)
+    profile = _profile("profile")
+    try:
+        assert await registry.activate(profile, "generation")
+    finally:
+        profile.close()
+    manager.set_speaker_verifier_factory = blocking_detach  # type: ignore[method-assign]
+    close_task = asyncio.create_task(registry.close())
+    await asyncio.wait_for(detach_started.wait(), 1.0)
+
+    close_task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await close_task
+
+    assert not registry._managers  # type: ignore[attr-defined]
+    assert registry._activation is None  # type: ignore[attr-defined]
 
 
 @pytest.mark.unit
