@@ -1,6 +1,7 @@
 {
     "ui.status.preparing_ocr_selection": "请切换到学习材料页面，2 秒后开始屏幕选区...",
     "ui.status.ocr_canceled": "已取消屏幕选区",
+    "ui.status.ocr_fallback_fullscreen": "屏幕选区不可用，已改用全屏 OCR。",
     "ui.error.interactive_ocr_busy": "已有屏幕选区正在进行，请先完成或取消后再试。",
     "ui.error.interactive_ocr_timeout": "屏幕选区已超时，请点击 OCR 重试。",
     "ui.error.interactive_ocr_unavailable": "屏幕选区需要连接 N.E.K.O 桌面端。",
@@ -18,6 +19,7 @@
     "plugin.name":  "猫娘伴学",
     "plugin.description":  "通过 OCR 读取学习内容，并使用已配置的 LLM 解释概念的伴学插件。",
     "plugin.short_description":  "用于学习场景的 OCR 与概念解释助手。",
+    "docs.onboarding.title":  "猫娘伴学入门",
     "entries.open_ui.name":  "打开伴学界面",
     "entries.open_ui.description":  "返回 study_companion 面板页面的访问路径。",
     "entries.status.name":  "伴学状态",

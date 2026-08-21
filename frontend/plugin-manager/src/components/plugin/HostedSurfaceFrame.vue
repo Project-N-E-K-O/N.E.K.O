@@ -459,6 +459,7 @@ async function loadHostedTsx() {
     const response = await getPluginHostedSurfaceSource(props.pluginId, {
       kind: props.surface.kind,
       id: props.surface.id,
+      locale: String(locale.value),
     })
     if (loadId !== currentLoadId) return
     if (props.surface.mode === 'markdown') {
@@ -758,7 +759,17 @@ watch(
 )
 
 watch(
-  () => [props.pluginId, props.surface.kind, props.surface.id, props.surface.mode, props.surface.entry, props.surface.available, surfaceUrl.value, locale.value],
+  () => [
+    props.pluginId,
+    props.surface.kind,
+    props.surface.id,
+    props.surface.mode,
+    props.surface.entry,
+    props.surface.available,
+    surfaceUrl.value,
+    locale.value,
+    props.surface.mode === 'markdown' ? surfaceTitle.value : undefined,
+  ],
   () => {
     hostedRequestGeneration += 1
     abortAllHostedRequests('surface-changed')

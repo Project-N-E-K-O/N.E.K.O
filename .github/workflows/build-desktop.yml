@@ -706,17 +706,13 @@ jobs:
             # identifier and the whole bundle then fails to seal. The payload is
             # downloaded, so scripts/check_no_nonascii_asset_names.py structurally
             # cannot see it — the only place to look is right here, before the copy.
-            .venv/bin/python -c "
-            import sys
-            from pathlib import Path
             # Files only: a CJK *directory* holding ASCII files seals fine
             # (verified against a real Developer ID cert; see the checker's
             # module docstring), and failing on it would block the build for nothing.
-            bad = [str(p) for p in Path('playwright_browsers').rglob('*')
-                   if p.is_file() and not p.name.isascii()]
-            if bad:
-                sys.exit('non-ASCII name(s) in playwright_browsers, which break macOS signing: ' + repr(bad[:10]))
-            "
+            # One physical line on purpose: `python -c` rejects a first line that
+            # starts with whitespace, and a YAML block scalar cannot carry the
+            # column-0 lines a multi-line form would need.
+            .venv/bin/python -c "import sys; from pathlib import Path; bad = [str(p) for p in Path('playwright_browsers').rglob('*') if p.is_file() and not p.name.isascii()]; sys.exit('non-ASCII name(s) in playwright_browsers, which break macOS signing: ' + repr(bad[:10])) if bad else None"
             cp -R playwright_browsers "$RUNTIME_DIR/playwright_browsers"
             echo "Copied playwright_browsers into $RUNTIME_DIR/"
           fi
@@ -896,7 +892,18 @@ jobs:
 
       - name: Install npm dependencies
         working-directory: electron-app
-        run: npm ci || npm install
+        shell: bash
+        run: |
+          npm ci || npm install
+          # The electron repo's own `dist*` scripts go through `npm run`, so its
+          # scripts/build-electron-distribution.js can spawn a bare
+          # `electron-builder` and let npm's PATH injection find it. We invoke
+          # that script with plain `node`, which gets no such PATH — the spawn
+          # then dies with ENOENT. Put the local bin dir on PATH ourselves so
+          # every call site in this job resolves the same binary npm would.
+          # Not $PWD: on the Windows runner bash reports a /d/a/... MSYS path,
+          # which the runner cannot put on the process PATH.
+          echo "$GITHUB_WORKSPACE/electron-app/node_modules/.bin" >> "$GITHUB_PATH"
 
       - name: Update version in package.json
         working-directory: electron-app

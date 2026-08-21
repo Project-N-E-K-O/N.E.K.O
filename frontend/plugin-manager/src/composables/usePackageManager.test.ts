@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { usePackageManager } from './usePackageManager'
 import {
   getPluginCliPackages,
+  getPluginCliPlugins,
   installPluginPackage,
   planPluginInstall,
   type PluginCliInstallPlanResponse,
@@ -43,6 +44,8 @@ vi.mock('@/api/pluginCli', () => ({
   verifyPluginPackage: vi.fn(),
 }))
 
+const syncRegistryAndFetch = vi.hoisted(() => vi.fn(async () => ({})))
+
 vi.mock('@/stores/plugin', () => ({
   usePluginStore: () => ({
     pluginsWithStatus: [
@@ -54,7 +57,7 @@ vi.mock('@/stores/plugin', () => ({
         type: 'plugin',
       },
     ],
-    syncRegistryAndFetch: vi.fn(async () => ({})),
+    syncRegistryAndFetch,
   }),
 }))
 
@@ -106,6 +109,12 @@ const installResponse: PluginCliInstallResponse = {
 
 beforeEach(() => {
   vi.clearAllMocks()
+  syncRegistryAndFetch.mockResolvedValue({})
+  vi.mocked(getPluginCliPlugins).mockResolvedValue({
+    count: 1,
+    plugins: [],
+    plugin_refs: [pluginRef],
+  })
 })
 
 describe('usePackageManager external plugin selection', () => {
@@ -193,6 +202,76 @@ describe('usePackageManager safe installation flow', () => {
     expect(installPluginPackage).toHaveBeenCalledWith(
       expect.not.objectContaining({ confirmation_token: expect.anything() }),
     )
+  })
+
+  it('does not duplicate interceptor errors when refreshing plugin sources fails', async () => {
+    const manager = usePackageManager()
+    vi.mocked(getPluginCliPlugins).mockRejectedValue(new Error('offline'))
+
+    await manager.refreshPluginSources()
+
+    expect(ElMessage.warning).not.toHaveBeenCalled()
+  })
+
+  it('uses a fallback warning for refresh status errors hidden by the interceptor', async () => {
+    const manager = usePackageManager()
+    vi.mocked(getPluginCliPlugins).mockRejectedValue({ response: { status: 404 } })
+
+    await manager.refreshPluginSources()
+
+    expect(ElMessage.warning).toHaveBeenCalledWith('messages.pluginListRefreshFailed')
+  })
+
+  it('does not duplicate warnings when registry and plugin source both return 404', async () => {
+    const manager = usePackageManager()
+    syncRegistryAndFetch.mockResolvedValue({
+      registryRefreshed: false,
+      warningMessage: 'messages.resourceNotFound',
+    })
+    vi.mocked(getPluginCliPlugins).mockRejectedValue({ response: { status: 404 } })
+
+    await manager.refreshPluginSources()
+
+    expect(ElMessage.warning).toHaveBeenCalledTimes(1)
+    expect(ElMessage.warning).toHaveBeenCalledWith('messages.resourceNotFound')
+  })
+
+  it('still reports a plugin source failure after a partial registry refresh warning', async () => {
+    const manager = usePackageManager()
+    syncRegistryAndFetch.mockResolvedValue({
+      registryRefreshed: true,
+      warningMessage: 'messages.pluginListRefreshPartial',
+    })
+    vi.mocked(getPluginCliPlugins).mockRejectedValue({ response: { status: 404 } })
+
+    await manager.refreshPluginSources()
+
+    expect(ElMessage.warning).toHaveBeenCalledTimes(2)
+    expect(ElMessage.warning).toHaveBeenNthCalledWith(1, 'messages.pluginListRefreshPartial')
+    expect(ElMessage.warning).toHaveBeenNthCalledWith(2, 'messages.pluginListRefreshFailed')
+  })
+
+  it('reports install success before a registry refresh warning', async () => {
+    const manager = usePackageManager()
+    manager.installForm.value.package = 'demo.neko-plugin'
+    vi.mocked(planPluginInstall).mockResolvedValue({
+      ...upgradePlan,
+      action: 'install',
+      current_version: '',
+      target_version: '1.0.0',
+      confirmation_token: '',
+    })
+    vi.mocked(installPluginPackage).mockResolvedValue(installResponse)
+    syncRegistryAndFetch.mockResolvedValue({
+      warningMessage: '插件列表刷新存在失败项: broken_plugin',
+    })
+
+    await manager.handleInstall()
+
+    expect(ElMessage.success).toHaveBeenCalledWith('安装完成，处理了 1 个插件')
+    expect(ElMessage.warning).toHaveBeenCalledWith('插件列表刷新存在失败项: broken_plugin')
+    expect(vi.mocked(ElMessage.success).mock.invocationCallOrder[0]!)
+      .toBeLessThan(vi.mocked(ElMessage.warning).mock.invocationCallOrder[0]!)
   })
 
   it('does not install when the user cancels an upgrade', async () => {

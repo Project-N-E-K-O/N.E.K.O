@@ -55,7 +55,7 @@ def test_phase6_config_parses_habit_defaults_and_clamps_ranges() -> None:
     assert config.checkin.auto_derive_from_session is False
 
 
-def test_phase6_ui_panels_are_registered() -> None:
+def test_phase6_manager_panels_are_not_exposed() -> None:
     plugin_dir = Path(__file__).resolve().parents[3] / "plugins" / "study_companion"
     with (plugin_dir / "plugin.toml").open("rb") as handle:
         config = tomllib.load(handle)
@@ -72,13 +72,9 @@ def test_phase6_ui_panels_are_registered() -> None:
     )
 
     assert warnings == []
+    assert plugin_ui["expose_legacy_static_panel"] is False
     surface_ids = {surface["id"] for surface in surfaces if surface["available"]}
-    assert {
-        "habit-dashboard",
-        "pomodoro-panel",
-        "daily-goal-editor",
-        "session-summary",
-    }.issubset(surface_ids)
+    assert surface_ids == {"onboarding"}
 
 
 def test_phase6_ui_payload_builders_shape_dashboard_and_pomodoro_status() -> None:

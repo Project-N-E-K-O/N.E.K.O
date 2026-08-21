@@ -1,6 +1,7 @@
 {
     "ui.status.preparing_ocr_selection": "Cambia al material de estudio. La selección de pantalla se abrirá en 2 segundos...",
     "ui.status.ocr_canceled": "Selección de pantalla cancelada",
+    "ui.status.ocr_fallback_fullscreen": "La selección de pantalla no está disponible; se usó OCR de pantalla completa.",
     "ui.error.interactive_ocr_busy": "Ya hay otra selección de pantalla activa. Complétala o cancélala y vuelve a intentarlo.",
     "ui.error.interactive_ocr_timeout": "Se agotó el tiempo de selección de pantalla. Pulsa OCR para volver a intentarlo.",
     "ui.error.interactive_ocr_unavailable": "La selección de pantalla requiere que la aplicación de escritorio N.E.K.O esté conectada.",
@@ -18,6 +19,7 @@
     "plugin.name":  "Study Companion",
     "plugin.description":  "Compañero de estudio que lee material con OCR y explica conceptos usando el LLM configurado.",
     "plugin.short_description":  "OCR y explicación de conceptos para sesiones de estudio.",
+    "docs.onboarding.title":  "Introducción a Study Companion",
     "entries.open_ui.name":  "Abrir interfaz de Study Companion",
     "entries.open_ui.description":  "Devuelve la ruta de la página de panel de study_companion.",
     "entries.status.name":  "Estado de Study Companion",

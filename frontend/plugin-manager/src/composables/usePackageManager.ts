@@ -51,6 +51,11 @@ export type PackageResultRecord = {
   summaryWarnings: string[]
 }
 
+function shouldShowRefreshFallback(error: unknown): boolean {
+  const status = (error as { response?: { status?: unknown } } | null)?.response?.status
+  return status === 401 || status === 403 || status === 404
+}
+
 export function usePackageManager(options: UsePackageManagerOptions = {}) {
   const pluginStore = usePluginStore()
   // PR #1480 review-fix 1.31 (Phase 7): summary labels and the createdAt
@@ -497,9 +502,16 @@ export function usePackageManager(options: UsePackageManagerOptions = {}) {
 
   async function refreshPluginSources() {
     pluginsLoading.value = true
+    let warningShown = false
     try {
-      const syncResult = await pluginStore.syncRegistryAndFetch()
-      const response = await getPluginCliPlugins()
+      const syncResult = await pluginStore.syncRegistryAndFetch({ preserveMessagesOn404: true })
+      if (syncResult.warningMessage) {
+        ElMessage.warning(syncResult.warningMessage)
+        // 只有注册表请求本身失败（401/403/404）时，后续插件源请求的同类失败才算重复提示；
+        // 注册表已刷新但存在失败项属于另一个问题，不能吞掉插件源的失败反馈
+        warningShown = !syncResult.registryRefreshed
+      }
+      const response = await getPluginCliPlugins({ preserveMessagesOn404: true })
       const refs = response.plugin_refs || []
       localPluginRefs.value = refs
       localPluginIds.value = refs.length > 0 ? refs.map((ref) => pluginRefKey(ref)) : response.plugins
@@ -509,11 +521,11 @@ export function usePackageManager(options: UsePackageManagerOptions = {}) {
       } else {
         setSelectedPluginIds(selectedPluginIds.value.filter((pluginId) => availableIds.has(pluginId)))
       }
-      if (syncResult.warningMessage) {
-        ElMessage.warning(syncResult.warningMessage)
-      }
     } catch (error) {
       console.error('Failed to refresh plugin sources:', error)
+      if (!warningShown && shouldShowRefreshFallback(error)) {
+        ElMessage.warning(t('messages.pluginListRefreshFailed'))
+      }
     } finally {
       pluginsLoading.value = false
     }
@@ -744,7 +756,6 @@ export function usePackageManager(options: UsePackageManagerOptions = {}) {
       return
     }
     setResult('install', response)
-    await refreshPluginSources()
     if (response.operation === 'upgrade') {
       const plan = installPlan.value
       ElMessage.success(t('package.install.upgradeSucceeded', {
@@ -753,6 +764,7 @@ export function usePackageManager(options: UsePackageManagerOptions = {}) {
     } else {
       ElMessage.success(`安装完成，处理了 ${response.installed_plugin_count} 个插件`)
     }
+    await refreshPluginSources()
   }
 
   async function handleAnalyze() {

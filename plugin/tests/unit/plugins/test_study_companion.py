@@ -60,7 +60,10 @@ except ModuleNotFoundError:  # pragma: no cover - Python < 3.11
 
 from tests.fake_clock import patch_module_clock
 
-from plugin.core.ui_manifest import normalize_plugin_ui_manifest
+from plugin.core.ui_manifest import (
+    normalize_plugin_ui_manifest,
+    resolve_localized_surface_entry_path,
+)
 from plugin.plugins import study_companion as study_companion_module
 from plugin.plugins.study_companion import StudyCompanionPlugin
 from plugin.plugins.study_companion._event_bus import StudyEvent
@@ -142,7 +145,10 @@ from plugin.plugins.study_companion.ui_api import (
     build_knowledge_map_payload,
     build_open_ui_payload,
 )
-from plugin.server.application.plugins.ui_query_service import _build_surfaces_sync
+from plugin.server.application.plugins.ui_query_service import (
+    _build_plugin_list_actions_from_meta,
+    _build_surfaces_sync,
+)
 from plugin.sdk.plugin import Err, Ok, OsActivitySnapshot
 from plugin.sdk.shared.constants import EVENT_META_ATTR
 
@@ -5413,6 +5419,7 @@ def test_study_companion_i18n_bundles_are_present() -> None:
         assert "status.mode.teaching" in bundle
         assert "ui.status.mode_switching" in bundle
         assert "ui.error.mode_switch_failed" in bundle
+        assert "docs.onboarding.title" in bundle
         assert "entries.knowledge_map.name" in bundle
         assert "entries.set_knowledge_contribution_opt_in.name" in bundle
         assert "entries.export_notes.name" in bundle
@@ -5430,6 +5437,8 @@ def test_study_companion_i18n_bundles_are_present() -> None:
     assert bundles["ja"]["entries.open_ui.name"] != en_bundle["entries.open_ui.name"]
     assert bundles["zh-CN"]["ui.profile.stage.cross_stage"] == "跨学段"
     assert bundles["en"]["ui.profile.stage.cross_stage"] == "Cross-stage"
+    assert bundles["zh-CN"]["docs.onboarding.title"] == "猫娘伴学入门"
+    assert bundles["en"]["docs.onboarding.title"] == "Study Companion Onboarding"
     assert (
         bundles["ja"]["entries.download_rapidocr_models.description"]
         != en_bundle["entries.download_rapidocr_models.description"]
@@ -5445,30 +5454,86 @@ def test_study_companion_i18n_bundles_are_present() -> None:
         "plugin_ui": plugin_ui,
         "i18n": config["plugin"]["i18n"],
     }
-    surfaces, warnings = _build_surfaces_sync("study_companion", meta)
+    surfaces, warnings = _build_surfaces_sync("study_companion", meta, locale="en")
+    zh_surfaces, zh_warnings = _build_surfaces_sync(
+        "study_companion",
+        meta,
+        locale="zh-CN",
+    )
+    actions = _build_plugin_list_actions_from_meta("study_companion", meta)
     assert warnings == []
-    assert any(
-        surface["id"] == "study-panel" and surface["available"] is True
+    assert zh_warnings == []
+    assert plugin_ui["expose_legacy_static_panel"] is False
+    assert not any(surface["kind"] == "panel" for surface in surfaces)
+    onboarding_surface = next(
+        surface
         for surface in surfaces
+        if surface["id"] == "onboarding" and surface["kind"] == "docs"
     )
-    study_panel_surface = next(
-        surface for surface in surfaces if surface["id"] == "study-panel"
+    zh_onboarding_surface = next(
+        surface
+        for surface in zh_surfaces
+        if surface["id"] == "onboarding" and surface["kind"] == "docs"
     )
-    assert "action:call" in study_panel_surface["permissions"]
-    assert any(
-        surface["id"] == "knowledge-map" and surface["available"] is True
-        for surface in surfaces
+    assert onboarding_surface["available"] is True
+    assert onboarding_surface["title"] == bundles["en"]["docs.onboarding.title"]
+    assert zh_onboarding_surface["available"] is True
+    assert zh_onboarding_surface["title"] == bundles["zh-CN"]["docs.onboarding.title"]
+    assert actions == [
+        {
+            "id": "open_ui",
+            "kind": "ui",
+            "target": "/plugin/study_companion/ui/",
+            "open_in": "new_tab",
+        },
+        {
+            "id": "open_guide",
+            "kind": "route",
+            "target": "/plugins/study_companion?tab=guide",
+        },
+    ]
+    zh_doc_path, zh_doc_locale = resolve_localized_surface_entry_path(
+        meta,
+        "onboarding.md",
+        "zh-CN",
     )
-    assert any(
-        surface["id"] == "knowledge-contribution-settings"
-        and surface["available"] is True
-        for surface in surfaces
+    en_doc_path, en_doc_locale = resolve_localized_surface_entry_path(
+        meta,
+        "onboarding.md",
+        "en",
     )
-    assert any(
-        surface["id"] == "note-exporter" and surface["available"] is True
-        for surface in surfaces
+    zh_tw_doc_path, zh_tw_doc_locale = resolve_localized_surface_entry_path(
+        meta,
+        "onboarding.md",
+        "zh-TW",
     )
-    assert not any(surface["id"] == "quickstart" for surface in surfaces)
+    pt_doc_path, pt_doc_locale = resolve_localized_surface_entry_path(
+        meta,
+        "onboarding.md",
+        "pt",
+    )
+    ru_doc_path, ru_doc_locale = resolve_localized_surface_entry_path(
+        meta,
+        "onboarding.md",
+        "ru",
+    )
+    assert zh_doc_path == plugin_dir / "onboarding.md"
+    assert zh_doc_locale is None
+    assert en_doc_path == plugin_dir / "onboarding.en.md"
+    assert en_doc_locale == "en"
+    assert zh_tw_doc_path == plugin_dir / "onboarding.zh-TW.md"
+    assert zh_tw_doc_locale == "zh-TW"
+    assert pt_doc_path == plugin_dir / "onboarding.en.md"
+    assert pt_doc_locale == "en"
+    assert ru_doc_path == plugin_dir / "onboarding.en.md"
+    assert ru_doc_locale == "en"
+    for doc_path in [zh_doc_path, en_doc_path, zh_tw_doc_path]:
+        assert doc_path is not None
+        doc_text = doc_path.read_text(encoding="utf-8").lstrip()
+        assert not doc_text.startswith("# ")
+    assert "选择学习模式" in zh_doc_path.read_text(encoding="utf-8")
+    assert "Choose A Mode" in en_doc_path.read_text(encoding="utf-8")
+    assert "選擇學習模式" in zh_tw_doc_path.read_text(encoding="utf-8")
 
     index_html = (plugin_dir / "static" / "index.html").read_text(encoding="utf-8")
     main_js = (plugin_dir / "static" / "main.js").read_text(encoding="utf-8")
@@ -5484,11 +5549,10 @@ def test_study_companion_ui7_surfaces_use_brand_css_and_quickstart_is_removed() 
 
     with (plugin_dir / "plugin.toml").open("rb") as handle:
         config = tomllib.load(handle)
-    panel_ids = {surface["id"] for surface in config["plugin"]["ui"]["panel"]}
-    assert "quickstart" not in panel_ids
+    panel_ids = {surface["id"] for surface in config["plugin"]["ui"].get("panel", [])}
+    assert panel_ids == set()
+    assert config["plugin"]["ui"]["expose_legacy_static_panel"] is False
     assert not config["plugin"]["ui"].get("guide")
-    assert "study-panel" in panel_ids
-    assert "memory-deck-list" in panel_ids
 
     quickstart_path = plugin_dir / "surfaces" / "quickstart.tsx"
     assert quickstart_path.exists()
@@ -5563,7 +5627,7 @@ def test_study_companion_ui_refactor_static_and_hosted_contracts() -> None:
     assert "@media (prefers-reduced-motion: reduce)" in style_css
     assert "clip-path: inset(50%);" in style_css
 
-    assert "const modeSwitch = document.getElementById('modeSwitch');" in main_js
+    assert "const modeSwitch = $id('modeSwitch');" in main_js
     assert "function updateModeIndicator()" in main_js
     assert "modeSwitch.dataset.active = currentMode" in main_js
     assert "modeSwitch.offsetParent === null" in main_js
@@ -6562,9 +6626,8 @@ def test_study_companion_hosted_surface_actions_are_bridge_authorized() -> None:
 
     with (plugin_dir / "plugin.toml").open("rb") as handle:
         config = tomllib.load(handle)
-    for surface in config["plugin"]["ui"]["panel"]:
-        assert surface["context"] == "study", surface["id"]
-        assert "action:call" in surface["permissions"], surface["id"]
+    assert config["plugin"]["ui"].get("panel", []) == []
+    assert config["plugin"]["ui"]["expose_legacy_static_panel"] is False
 
     for action_id in HOSTED_SURFACE_ACTION_IDS:
         assert re.search(
@@ -6703,10 +6766,8 @@ def test_study_companion_static_ui_supports_image_paste_contract() -> None:
     assert "answerInput.addEventListener('paste', createImagePasteHandler({" in source
     assert "args.vision_image_base64 = studyInputImageValue;" in source
     assert "t('ui.status.solving_problem'" in source
-    assert (
-        "setReply(studyInputImageValue ? t('ui.status.solving_problem', 'Solving problem...') : t('ui.status.explaining', 'Explaining...'));"
-        in source
-    )
+    assert "const pending = studyInputImageValue" in source
+    assert "setReply(n ? `${n}\\n\\n${pending}` : pending);" in source
     assert "function scrollReplyIntoView()" in source
     assert "replyPanel.scrollIntoView({ block: 'start', behavior: 'smooth' });" in source
     assert "scrollReplyIntoView();" in source
@@ -6814,20 +6875,19 @@ def test_study_companion_note_exporter_uses_backend_export_poll_budget() -> None
     assert "for (let i = 0; i < 40; i += 1)" not in source
 
 
-def test_study_companion_note_exporter_can_read_live_export_config() -> None:
+def test_study_companion_note_exporter_is_not_exposed_as_manager_panel() -> None:
     import tomllib
 
     plugin_dir = Path(__file__).resolve().parents[3] / "plugins" / "study_companion"
     manifest = tomllib.loads(
         (plugin_dir / "plugin.toml").read_text(encoding="utf-8")
     )
-    note_exporter = next(
-        panel
-        for panel in manifest["plugin"]["ui"]["panel"]
-        if panel["id"] == "note-exporter"
-    )
 
-    assert "config:read" in note_exporter["permissions"]
+    assert all(
+        panel["id"] != "note-exporter"
+        for panel in manifest["plugin"]["ui"].get("panel", [])
+    )
+    assert (plugin_dir / "surfaces" / "note_exporter.tsx").is_file()
 
 
 def test_study_companion_ui_export_failures_are_not_silent_successes() -> None:

@@ -1,6 +1,7 @@
 {
     "ui.status.preparing_ocr_selection": "Переключитесь на учебный материал. Выбор области экрана откроется через 2 секунды...",
     "ui.status.ocr_canceled": "Выбор области экрана отменён",
+    "ui.status.ocr_fallback_fullscreen": "Выбор области экрана недоступен; использовано OCR всего экрана.",
     "ui.error.interactive_ocr_busy": "Уже выполняется другой выбор области экрана. Завершите или отмените его и повторите попытку.",
     "ui.error.interactive_ocr_timeout": "Время выбора области экрана истекло. Нажмите OCR, чтобы повторить попытку.",
     "ui.error.interactive_ocr_unavailable": "Для выбора области экрана необходимо подключение к приложению N.E.K.O для компьютера.",
@@ -18,6 +19,7 @@
     "plugin.name":  "Study Companion",
     "plugin.description":  "Учебный помощник: читает материалы через OCR и объясняет понятия с помощью настроенной LLM.",
     "plugin.short_description":  "OCR и объяснение понятий для учебных сессий.",
+    "docs.onboarding.title":  "Введение в Study Companion",
     "entries.open_ui.name":  "Открыть интерфейс Study Companion",
     "entries.open_ui.description":  "Вернуть путь к странице панели study_companion.",
     "entries.status.name":  "Статус Study Companion",

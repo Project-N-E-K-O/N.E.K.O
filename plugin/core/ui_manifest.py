@@ -69,6 +69,11 @@ def normalize_plugin_ui_manifest(conf: Mapping[str, Any], *, plugin_id: str = ""
     result: dict[str, Any] = {
         "enabled": parse_bool_config(ui_section.get("enabled"), default=True),
     }
+    if "expose_legacy_static_panel" in ui_section:
+        result["expose_legacy_static_panel"] = parse_bool_config(
+            ui_section.get("expose_legacy_static_panel"),
+            default=True,
+        )
     warnings: list[dict[str, str]] = []
 
     for kind in ("panel", "guide", "docs"):

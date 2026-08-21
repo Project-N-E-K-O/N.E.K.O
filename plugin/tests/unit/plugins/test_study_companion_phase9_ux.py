@@ -31,7 +31,7 @@ def test_phase9_static_math_assets_are_local_and_registered() -> None:
     outcome_formatters_script = (
         '<script src="./outcome-formatters.js?v=study-hotfix-20260812"></script>'
     )
-    main_script = '<script src="./main.js?v=study-knowledge-window-size-20260813"></script>'
+    main_script = '<script src="./main.js?v=study-ocr-fallback-notice-20260820"></script>'
     assert outcome_formatters_script in index
     assert main_script in index
     assert "solution-narration.js" not in index

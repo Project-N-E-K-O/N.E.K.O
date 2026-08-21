@@ -327,6 +327,38 @@ def _build_static_compat_surface(plugin_id: str, plugin_meta: Mapping[str, objec
     ).model_dump(exclude_none=True)
 
 
+def _legacy_static_panel_enabled(plugin_meta: Mapping[str, object]) -> bool:
+    plugin_ui = _get_plugin_ui_config_from_meta(plugin_meta)
+    if not isinstance(plugin_ui, Mapping):
+        return True
+    return _to_bool(plugin_ui.get("expose_legacy_static_panel"), default=True)
+
+
+def _static_ui_action_target(plugin_id: str, plugin_meta: Mapping[str, object]) -> str | None:
+    static_ui_config = _get_static_ui_config_from_meta(plugin_meta)
+    if static_ui_config is not None:
+        static_dir = _resolve_static_dir(static_ui_config)
+        if static_dir is not None and (static_dir / "index.html").exists():
+            return f"/plugin/{plugin_id}/ui/"
+
+    static_surface = next(
+        (
+            surface
+            for surface in _build_manifest_surfaces(plugin_id, plugin_meta)
+            if surface.get("mode") == "static"
+            and surface.get("kind") == "panel"
+            and surface.get("available") is not False
+            and isinstance(surface.get("ui_path") or surface.get("url"), str)
+            and str(surface.get("ui_path") or surface.get("url")).strip()
+        ),
+        None,
+    )
+    if static_surface is not None:
+        return str(static_surface.get("ui_path") or static_surface.get("url")).strip()
+
+    return None
+
+
 def _build_surfaces_sync(
     plugin_id: str,
     plugin_meta: Mapping[str, object],
@@ -338,7 +370,11 @@ def _build_surfaces_sync(
     for surface in surfaces:
         surface_warnings = surface.pop("_warnings", None)
         warnings.extend(normalize_warnings(surface_warnings))
-    static_surface = _build_static_compat_surface(plugin_id, plugin_meta)
+    static_surface = (
+        _build_static_compat_surface(plugin_id, plugin_meta)
+        if _legacy_static_panel_enabled(plugin_meta)
+        else None
+    )
     # An unavailable or ``auto`` main panel cannot replace static/index.html:
     # the former has no usable entry and the latter has no frontend renderer.
     # Keep the compatibility surface in those cases so legacy UI remains
@@ -1305,22 +1341,8 @@ def _build_plugin_list_actions_from_meta(
             seen_ids.add(action_id)
 
     if "open_ui" not in seen_ids:
-        surfaces, _warnings = _build_surfaces_sync(plugin_id, plugin_meta)
-        static_surface = next(
-            (
-                surface
-                for surface in surfaces
-                if surface.get("mode") == "static"
-                and surface.get("available") is not False
-                and isinstance(surface.get("ui_path") or surface.get("url"), str)
-                and str(surface.get("ui_path") or surface.get("url")).strip()
-            ),
-            None,
-        )
-        if static_surface is not None:
-            target = str(
-                static_surface.get("ui_path") or static_surface.get("url")
-            ).strip()
+        target = _static_ui_action_target(plugin_id, plugin_meta)
+        if target is not None:
             actions.append({
                 "id": "open_ui",
                 "kind": "ui",

@@ -702,4 +702,58 @@ describe('HostedSurfaceFrame automatic startup retry', () => {
       context: nextContext,
     }, '*')
   })
+
+  it('passes the active locale when loading hosted source', async () => {
+    apiMocks.getPluginHostedSurfaceSource.mockResolvedValue({
+      source: 'Localized guide',
+      dependencies: [],
+    })
+    const frame = await mountFrame({
+      ...makeSurface('onboarding'),
+      kind: 'docs',
+      mode: 'markdown',
+      url: undefined,
+    } as PluginUiSurface)
+    await flushPromises()
+
+    expect(apiMocks.getPluginHostedSurfaceSource).toHaveBeenCalledWith(
+      'study_companion',
+      {
+        kind: 'docs',
+        id: 'onboarding',
+        locale: 'zh-CN',
+      },
+    )
+    frame.unmount()
+  })
+
+  it('rebuilds markdown when the localized surface title arrives later', async () => {
+    apiMocks.getPluginHostedSurfaceSource.mockResolvedValue({
+      source: 'Localized guide body',
+      dependencies: [],
+    })
+    const frame = await mountFrame({
+      ...makeSurface('onboarding'),
+      kind: 'docs',
+      mode: 'markdown',
+      title: 'Study Companion Onboarding',
+      url: undefined,
+    } as PluginUiSurface)
+    await flushPromises()
+
+    expect(frame.iframe()?.getAttribute('srcdoc')).toContain('Study Companion Onboarding')
+
+    await frame.setSurface({
+      ...makeSurface('onboarding'),
+      kind: 'docs',
+      mode: 'markdown',
+      title: '伴学入门',
+      url: undefined,
+    } as PluginUiSurface)
+    await flushPromises()
+
+    expect(apiMocks.getPluginHostedSurfaceSource).toHaveBeenCalledTimes(2)
+    expect(frame.iframe()?.getAttribute('srcdoc')).toContain('伴学入门')
+    frame.unmount()
+  })
 })
