@@ -227,6 +227,110 @@ async def test_publication_guard_rejects_new_write_with_non_success_status():
         memory_server.review._publication_held_derived_task_names.discard(name)
 
 
+def _memory_server_request(path: str):
+    """Build the minimal ASGI scope the publication guard reads."""
+    from starlette.requests import Request
+
+    return Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "scheme": "http",
+            "path": path,
+            "raw_path": path.encode(),
+            "query_string": b"",
+            "headers": [],
+            "server": ("127.0.0.1", 48912),
+            "client": ("127.0.0.1", 1),
+        }
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_publication_guard_normalizes_the_path_name_like_the_endpoint():
+    """The endpoint strips the name; admission must key on the same value."""
+    from app import memory_server
+
+    name = "两端归一角色"
+    memory_server.review._publication_held_derived_task_names.add(name)
+    call_next = AsyncMock(side_effect=AssertionError("fenced request reached endpoint"))
+    try:
+        response = await memory_server.runtime.character_publication_guard(
+            _memory_server_request(f"/process/  {name} "),
+            call_next,
+        )
+        assert response.status_code == 409
+        call_next.assert_not_awaited()
+    finally:
+        memory_server.review._publication_held_derived_task_names.discard(name)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_publication_guard_covers_group_memory_scoped_writes():
+    """Scoped writes reach the same SQLite index, so they must be fenced+drained."""
+    from starlette.responses import JSONResponse as StarletteJSONResponse
+
+    from app import memory_server
+
+    name = "群记忆写入角色"
+    memory_server.review._publication_held_derived_task_names.discard(name)
+    observed_active: list[int] = []
+
+    async def _call_next(_request):
+        observed_active.append(
+            memory_server.runtime._active_character_requests.get(name, 0)
+        )
+        return StarletteJSONResponse({"status": "ok"})
+
+    admitted = await memory_server.runtime.character_publication_guard(
+        _memory_server_request(f"/internal/memory/{name}/scoped_facts"),
+        _call_next,
+    )
+    assert admitted.status_code == 200
+    # 排空账本必须看得见它，否则 release 会在它写到一半时 dispose。
+    assert observed_active == [1]
+    assert memory_server.runtime._active_character_requests.get(name, 0) == 0
+
+    memory_server.review._publication_held_derived_task_names.add(name)
+    blocked = AsyncMock(side_effect=AssertionError("fenced request reached endpoint"))
+    try:
+        response = await memory_server.runtime.character_publication_guard(
+            _memory_server_request(f"/internal/memory/{name}/scoped_history"),
+            blocked,
+        )
+        assert response.status_code == 409
+        blocked.assert_not_awaited()
+
+        # 只读的 scoped_context 不进围栏（读路径由引擎准入检查兜底）。
+        read_next = AsyncMock(return_value=StarletteJSONResponse({"status": "ok"}))
+        read_response = await memory_server.runtime.character_publication_guard(
+            _memory_server_request(f"/internal/memory/{name}/scoped_context"),
+            read_next,
+        )
+        assert read_response.status_code == 200
+        read_next.assert_awaited_once()
+    finally:
+        memory_server.review._publication_held_derived_task_names.discard(name)
+
+
+@pytest.mark.unit
+def test_release_drain_budget_stays_under_the_tightest_caller_timeout():
+    """A caller that gives up first starts deleting files while the drain runs."""
+    import inspect
+
+    from app import memory_server
+    from main_routers.workshop_router import unsubscribe
+
+    parameters = inspect.signature(
+        unsubscribe._release_workshop_character_handles
+    ).parameters
+    drain_budget = memory_server.runtime._CHARACTER_REQUEST_DRAIN_TIMEOUT_SECONDS
+    assert drain_budget < parameters["per_call_timeout"].default
+    assert drain_budget < parameters["overall_timeout"].default
+
+
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_release_cancels_tracked_post_turn_task():

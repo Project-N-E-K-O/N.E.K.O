@@ -76,15 +76,28 @@ class ContinueStorageStartupRequest(BaseModel):
 
 app = FastAPI()
 _CHARACTER_WRITE_PATH_PREFIXES = ("/cache/", "/process/", "/renew/", "/settle/")
+# 群记忆写端点走 /internal/memory/{lanlan_name}/<op>，最终同样落到该角色的
+# FactStore / TimeIndexedMemory。围栏漏掉它们的话，删除窗口里这些请求既不会被
+# 拒绝也不会被排空，仍能带着已 checkout 的 SQLite 连接跨过 dispose。
+# scoped_context 是只读的，不进这里——读路径由引擎准入检查兜底。
+_CHARACTER_SCOPED_WRITE_PATH_PREFIX = "/internal/memory/"
+_CHARACTER_SCOPED_WRITE_OPS = frozenset({
+    "scoped_facts",
+    "scoped_history",
+    "scoped_forget",
+    "scoped_mentions",
+})
 _admitted_character_context: ContextVar[frozenset[str]] = ContextVar(
     "admitted_character_context",
     default=frozenset(),
 )
 _active_character_requests: dict[str, int] = {}
 _active_character_request_events: dict[str, asyncio.Event] = {}
-# 调用方 release_memory_server_character() 的 HTTP 超时是 5s；排空留在它里面，
-# 剩下的时间给 dispose 和响应。
-_CHARACTER_REQUEST_DRAIN_TIMEOUT_SECONDS = 3.0
+# 排空预算必须小于**最紧**的调用方超时，否则调用方会先放弃、然后照样往下删文件，
+# 而这个 handler 还在排空/dispose——正好撞出这个 PR 要修的 Windows 占用失败。
+# 最紧的是取消订阅：_release_workshop_character_handles 的 per_call_timeout=2.5s
+# （改名/删除走 release_memory_server_character()，5s）。
+_CHARACTER_REQUEST_DRAIN_TIMEOUT_SECONDS = 2.0
 _STORAGE_LIMITED_MODE_ALLOWED_PATHS = {
     "/health",
     "/shutdown",
@@ -94,12 +107,26 @@ _STORAGE_LIMITED_MODE_ALLOWED_PATHS = {
 
 
 def _character_write_name_from_path(path: str) -> str | None:
+    raw_name = None
     for prefix in _CHARACTER_WRITE_PATH_PREFIXES:
         if path.startswith(prefix):
-            lanlan_name = path[len(prefix):]
-            if lanlan_name and "/" not in lanlan_name:
-                return lanlan_name
-    return None
+            candidate = path[len(prefix):]
+            if candidate and "/" not in candidate:
+                raw_name = candidate
+            break
+    if raw_name is None and path.startswith(_CHARACTER_SCOPED_WRITE_PATH_PREFIX):
+        segments = path[len(_CHARACTER_SCOPED_WRITE_PATH_PREFIX):].split("/")
+        if len(segments) == 2 and segments[1] in _CHARACTER_SCOPED_WRITE_OPS:
+            raw_name = segments[0]
+    if not raw_name:
+        return None
+    # 端点自己会 validate_lanlan_name 归一化后才读写角色目录；准入登记必须用
+    # 同一个键，否则 "/process/ Alice " 既躲开 " Alice " 之外的所有围栏，
+    # 请求租约也对不上引擎实际用的 "Alice"。
+    try:
+        return validate_lanlan_name(raw_name)
+    except HTTPException:
+        return None
 
 
 def _begin_character_request(
