@@ -1492,6 +1492,43 @@ async def test_direct_download_hash_mismatch_does_not_retry_github_again(
 
 
 @pytest.mark.asyncio
+async def test_invalid_expected_hash_does_not_trigger_proxy_fallback(
+    bridge_e2e_env: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Invalid Market metadata is rejected before retrying a proxy download."""
+    from plugin.server.routes import market_bridge as market_bridge_module
+
+    direct_url = (
+        "https://github.com/example/plugin/releases/download/v1.0.0/"
+        "plugin.neko-plugin"
+    )
+    proxied_url = f"https://cdn.gh-proxy.org/{direct_url}"
+    package_path = tmp_path / "proxy.neko-plugin"
+    package_path.write_bytes(b"valid-package")
+    fallback_attempted = False
+
+    async def unexpected_download(url: str, task: dict[str, Any]) -> Path:
+        nonlocal fallback_attempted
+        fallback_attempted = True
+        raise AssertionError(f"unexpected fallback download: {url}")
+
+    monkeypatch.setattr(market_bridge_module, "_download_package_once", unexpected_download)
+
+    with pytest.raises(ValueError, match="SHA256"):
+        await market_bridge_module._verify_downloaded_package_with_fallback(
+            proxied_url,
+            package_path,
+            "a" * 63,
+            {},
+        )
+
+    assert fallback_attempted is False
+    assert package_path.exists()
+
+
+@pytest.mark.asyncio
 async def test_hash_mismatch_retries_allowlisted_proxy_via_github_direct(
     bridge_e2e_env: dict[str, Any],
     monkeypatch: pytest.MonkeyPatch,

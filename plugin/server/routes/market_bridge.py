@@ -3392,6 +3392,7 @@ async def _verify_downloaded_package_with_fallback(
 ) -> tuple[Path, Literal["passed", "mismatch"]]:
     """Verify a package and retry one allowlisted proxy mismatch via GitHub."""
 
+    expected_hash = _normalize_required_sha256(expected_hash)
     try:
         return package_path, await asyncio.to_thread(
             _verify_sha256_file,
