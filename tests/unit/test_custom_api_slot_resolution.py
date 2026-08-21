@@ -214,6 +214,41 @@ class TestNamedProviderSlotKey:
         )
 
     @pytest.mark.unit
+    @pytest.mark.parametrize('provider', ['minimax', 'minimax_intl', 'elevenlabs', 'deepseek'])
+    def test_tts_slot_never_resolves_a_key_from_the_key_book(self, config_manager, provider):
+        """The TTS slot must not pull a vendor key out of the API key book.
+
+        Several entries reachable from the TTS dropdown are selected by voice
+        metadata, not by ttsModelProvider, so dispatch keeps using the core
+        provider's worker. Resolving the picked vendor's real key into
+        TTS_MODEL_API_KEY therefore handed one vendor's credential to another's
+        TTS endpoint. TTS credentials live on the slot field and each
+        provider's own resolution path; this pins that boundary.
+        """
+        _write_core_config(config_manager, {
+            'coreApi': 'step',
+            'assistApi': 'step',
+            'coreApiKey': 'sk-step-core',
+            'assistApiKeyStep': 'sk-step-core',
+            'assistApiKeyMinimax': 'MINIMAX-REAL-KEY',
+            'assistApiKeyMinimaxIntl': 'MINIMAX-INTL-REAL-KEY',
+            'assistApiKeyElevenlabs': 'ELEVEN-REAL-KEY',
+            'assistApiKeyDeepseek': 'DEEPSEEK-REAL-KEY',
+            'enableCustomApi': True,
+            'ttsModelProvider': provider,
+            'ttsModelId': 'some-tts-model',
+            'ttsModelUrl': 'https://api.minimaxi.com/v1',
+        })
+        cfg = config_manager.get_core_config()
+        resolved = cfg['TTS_MODEL_API_KEY']
+        for leaked in ('MINIMAX-REAL-KEY', 'MINIMAX-INTL-REAL-KEY',
+                       'ELEVEN-REAL-KEY', 'DEEPSEEK-REAL-KEY'):
+            assert resolved != leaked, (
+                f"TTS 槽把 {provider} 的管理簿 Key 解析了出来，它会被送给核心厂商的 "
+                f"TTS 端点，实际={resolved!r}"
+            )
+
+    @pytest.mark.unit
     def test_custom_provider_keeps_slot_key(self, config_manager):
         """'custom' is user-typed and must never be redirected to the book."""
         _write_core_config(config_manager, _base_config(
