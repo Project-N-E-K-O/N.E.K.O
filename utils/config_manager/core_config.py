@@ -1797,7 +1797,7 @@ class CoreConfigMixin:
             silence, plus one vendor's credential sent to another. The audio
             stack has exactly one provider identity; a per-slot override cannot
             express a second one, so it is not offered (the omni dropdown lists
-            only follow_* and 自定义) and not honoured here.
+            only the follow options and the custom entry) and not honoured here.
             """
             omni_provider = str(core_config.get('omniModelProvider') or '').strip()
             if omni_provider == 'custom':

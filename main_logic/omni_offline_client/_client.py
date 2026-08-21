@@ -79,7 +79,11 @@ def _same_endpoint(a: str | None, b: str | None) -> bool:
             # 畸形 IPv6（如 http://[::1）会让 urlsplit 自己抛。这段跑在 __init__
             # 里，抛出去等于客户端构造失败。退回按原串比：判据保持 total，
             # 两个写法相同的坏 URL 仍算同源，不同的仍算不同源。
-            return ('<unparsed>', text)
+            #
+            # 两个分支返回**同样长度**的元组，首位是「解析成功与否」：长度不同
+            # 的元组比起来虽然也恒不相等，但那是靠巧合而不是靠判据，静态分析
+            # 也会（合理地）报出来。
+            return (False, text, '', '', '', '', '')
         # netloc 整体转小写是错的：它还装着 userinfo（user:pass@），而用户名和
         # 口令是大小写敏感的。拆开 userinfo 与 host:port，只折叠后者的大小写
         # （主机名与数字端口都是大小写无关的）。
@@ -100,6 +104,7 @@ def _same_endpoint(a: str | None, b: str | None) -> bool:
         if port and port == _DEFAULT_PORTS.get(scheme):
             port = ''
         return (
+            True,
             scheme,
             userinfo,
             host,
