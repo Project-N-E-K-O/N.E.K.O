@@ -111,6 +111,7 @@ import {
 } from '@/api/market'
 import type { MarketWorkbenchItem } from '@/composables/useMarketWorkbench'
 import { openExternalUrl } from '@/utils/openExternal'
+import { resolveMarketReadmeLink } from '@/utils/marketReadmeLink'
 import { compareVersion } from '@/utils/version'
 
 interface Props {
@@ -140,6 +141,7 @@ const detail = ref<MarketPlugin | null>(null)
 const versions = ref<MarketPluginVersion[]>([])
 const repositoryReadme = ref<MarketPluginReadme | null>(null)
 const activeTab = ref('readme')
+let detailLoadSeq = 0
 const displayPlugin = computed(() => detail.value || props.plugin)
 const readmeSource = computed(() => repositoryReadme.value?.content || displayPlugin.value.readme || '')
 const readmeHtml = computed(() => {
@@ -172,29 +174,37 @@ const showUpgrade = computed(() =>
 )
 
 async function loadDetail() {
+  const requestSeq = ++detailLoadSeq
   loading.value = true
-    detail.value = null
-    versions.value = []
-    repositoryReadme.value = null
-    activeTab.value = 'readme'
+  detail.value = null
+  versions.value = []
+  repositoryReadme.value = null
+  activeTab.value = 'readme'
   try {
     const [pluginDetail, versionList, readme] = await Promise.all([
       fetchMarketPlugin(props.plugin.rawId),
       fetchMarketPluginVersions(props.plugin.rawId, { channel: props.channel }),
       fetchMarketPluginReadme(props.plugin.rawId),
     ])
+    if (requestSeq !== detailLoadSeq) return
     detail.value = pluginDetail
     versions.value = versionList || []
     repositoryReadme.value = readme
   } finally {
-    loading.value = false
+    if (requestSeq === detailLoadSeq) loading.value = false
   }
 }
 
 watch(
   () => [props.visible, props.plugin.rawId, props.channel] as const,
   ([visible]) => {
-    if (visible) void loadDetail()
+    if (visible) {
+      void loadDetail()
+    } else {
+      // 让关闭时仍在途的请求无法写回状态；下次打开会拥有新的序号。
+      detailLoadSeq++
+      loading.value = false
+    }
   },
   { immediate: true },
 )
@@ -215,10 +225,16 @@ function formatDate(value?: string): string {
 
 function handleReadmeClick(event: MouseEvent) {
   const anchor = (event.target as Element | null)?.closest('a[href]')
-  const href = anchor?.getAttribute('href') || ''
-  if (!/^https?:\/\//i.test(href)) return
+  if (!anchor) return
   event.preventDefault()
-  openExternalUrl(href)
+  const href = anchor.getAttribute('href') || ''
+  const url = resolveMarketReadmeLink(
+    href,
+    repositoryReadme.value?.repository_url || props.plugin.github_repo,
+    window.location.origin,
+  )
+  // 不可解析或非 HTTP(S) 链接保持在应用内无操作，绝不让浏览器默认导航。
+  if (url) openExternalUrl(url)
 }
 
 function openRepository() {
