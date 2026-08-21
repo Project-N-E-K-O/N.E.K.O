@@ -40,6 +40,24 @@ def _split_hostinfo(hostinfo: str) -> tuple[str, str]:
     return hostinfo[:idx], hostinfo[idx + 1:]
 
 
+def _canonical_host(host: str) -> str:
+    """Collapse an IPv6 literal to its canonical form; pass anything else through.
+
+    ``[2001:0db8:0:0:0:0:0:1]`` and ``[2001:db8::1]`` are the same address, so
+    they must yield the same identity. A literal that does not parse keeps its
+    original text — callers need this to stay total, and an unparseable host
+    still compares equal to an identically-written one.
+    """
+    if not (host.startswith('[') and host.endswith(']')):
+        return host
+    import ipaddress
+
+    try:
+        return f'[{ipaddress.IPv6Address(host[1:-1]).compressed}]'
+    except ValueError:
+        return host
+
+
 def endpoint_identity(raw: str | None):
     """A comparable identity for a configured base URL, or None when blank.
 
@@ -77,6 +95,7 @@ def endpoint_identity(raw: str | None):
     userinfo, _, hostinfo = (parts.netloc or '').rpartition('@')
     scheme = (parts.scheme or '').lower()
     host, port = _split_hostinfo(hostinfo.lower())
+    host = _canonical_host(host)
     if port.isdigit():
         port = str(int(port))
     if port and port == _DEFAULT_PORTS.get(scheme):
