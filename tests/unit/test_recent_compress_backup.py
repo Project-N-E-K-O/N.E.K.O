@@ -398,6 +398,11 @@ def test_every_character_scoped_route_is_classified_for_the_fence():
         # 渲染型读取；顺带刷新 suppress 冷却是 best-effort，而且它本身对
         # 「角色已不在配置中」有短路分支，不值得为它换来发布窗口里的 409。
         ("/get_settings/{lanlan_name}", "GET"),
+        # 会话开场读取。三个调用方（lifecycle 起会话、lifecycle 热切换、
+        # 主动搭话）都把非 2xx 直接变成 ConnectionError 让会话启动失败，
+        # 而它那点 locale 落盘本来就有 outbox durable 重试兜底——为可延迟的
+        # 写去换用户可见的启动硬失败不划算。归入 JSON 侧写入那条 follow-up。
+        ("/new_dialog/{lanlan_name}", "GET"),
         # 只取消任务，不写角色文件——删除期间恰恰需要它还能用。
         ("/cancel_correction/{lanlan_name}", "POST"),
         # 围栏本身就是它设的，自己不能被自己拦。
@@ -420,7 +425,6 @@ def test_every_character_scoped_route_is_classified_for_the_fence():
     assert unfenced == unfenced_by_design
     assert ("/cache/{lanlan_name}", "POST") in fenced
     assert ("/record_surfaced/{lanlan_name}", "POST") in fenced
-    assert ("/new_dialog/{lanlan_name}", "GET") in fenced
     assert ("/prompt-locale/{lanlan_name}", "PUT") in fenced
 
 
@@ -773,6 +777,28 @@ async def test_startup_replay_tasks_join_the_per_character_registry(tmp_path):
         for task in spawned:
             await _cleanup_task(task)
         memory_server.post_turn._character_post_turn_tasks.pop(name, None)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_publication_guard_releases_the_slot_when_the_endpoint_raises():
+    """A leaked slot would make every later release for this character time out."""
+    from app import memory_server
+
+    name = "端点抛错角色"
+    memory_server.review._publication_held_derived_task_names.discard(name)
+    boom = AsyncMock(side_effect=RuntimeError("endpoint exploded"))
+
+    with pytest.raises(RuntimeError):
+        await memory_server.runtime.character_publication_guard(
+            _memory_server_request(f"/cache/{name}"),
+            boom,
+        )
+
+    assert memory_server.runtime._active_character_requests.get(name, 0) == 0
+    assert name not in memory_server.runtime._admitted_character_context.get()
+    # 账本干净 → 后续 release 能立刻排空。
+    assert await memory_server.runtime._wait_for_character_requests(name, 0.05) is True
 
 
 @pytest.mark.unit

@@ -86,8 +86,8 @@ _CHARACTER_WRITE_ROUTES: tuple[tuple[str, frozenset[str]], ...] = (
     # surfaced.json，删除后落盘会把旧身份的目录重建出来。
     ("/reflect/", frozenset({"POST"})),
     ("/record_surfaced/", frozenset({"POST"})),
-    # GET，但显式带语言的请求会落盘 prompt_locale.json。
-    ("/new_dialog/", frozenset({"GET"})),
+    # 只有 PUT 是写；GET 只读 sidecar，不进围栏。
+    # 409 对它的调用方是既有的可重试失败（云存档维护围栏也会给 409）。
     ("/prompt-locale/", frozenset({"PUT"})),
 )
 # 群记忆写端点走 /internal/memory/{lanlan_name}/<op>，最终同样落到该角色的
