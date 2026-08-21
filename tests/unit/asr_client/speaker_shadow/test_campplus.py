@@ -251,16 +251,65 @@ def test_cancel_inference_terminates_active_onnx_run(tmp_path, monkeypatch) -> N
         except BaseException as exc:
             failures.append(exc)
 
-    worker = threading.Thread(target=infer)
-    worker.start()
-    assert session.started.wait(1.0)
-    model.cancel_inference()
-    worker.join(timeout=1.0)
+    worker = threading.Thread(target=infer, daemon=True)
+    try:
+        worker.start()
+        assert session.started.wait(1.0)
+        model.cancel_inference()
+        worker.join(timeout=1.0)
 
-    assert not worker.is_alive()
-    assert len(failures) == 1
-    assert "inference_terminated" in str(failures[0])
-    model.close()
+        assert not worker.is_alive()
+        assert len(failures) == 1
+        assert "inference_terminated" in str(failures[0])
+    finally:
+        model.cancel_inference()
+        worker.join(timeout=1.0)
+        model.close()
+
+
+def test_cancel_load_terminates_active_onnx_session_construction(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    started = threading.Event()
+
+    class CancellableSessionOptions:
+        def __init__(self) -> None:
+            self.cancelled = False
+
+        def set_load_cancellation_flag(self, value: bool) -> None:
+            self.cancelled = value
+
+    def create_session(*_args, sess_options, **_kwargs):
+        started.set()
+        while not sess_options.cancelled:
+            time.sleep(0.005)
+        raise RuntimeError("load_cancelled")
+
+    _install_verified_model_path(monkeypatch, tmp_path)
+    fake = SimpleNamespace(
+        SessionOptions=CancellableSessionOptions,
+        ExecutionMode=SimpleNamespace(ORT_SEQUENTIAL="sequential"),
+        GraphOptimizationLevel=SimpleNamespace(ORT_ENABLE_ALL="all"),
+        InferenceSession=create_session,
+    )
+    monkeypatch.setitem(sys.modules, "onnxruntime", fake)
+    model = CampPlusEmbeddingModel(asset_dir=tmp_path)
+    results: list[bool] = []
+    worker = threading.Thread(target=lambda: results.append(model.load()), daemon=True)
+    try:
+        worker.start()
+        assert started.wait(1.0)
+        model.cancel_load()
+        worker.join(timeout=1.0)
+
+        assert not worker.is_alive()
+        assert results == [False]
+        assert not model.is_ready
+    finally:
+        model.cancel_load()
+        worker.join(timeout=1.0)
+        model.close()
 
 
 @pytest.mark.parametrize("case", ["empty", "odd", "wrong-rate", "too-short"])

@@ -487,7 +487,7 @@ async def test_checkpoint_accepts_pcm_while_intermediate_score_is_running() -> N
         candidate=candidate,
     )
     await _wait_until(score_started.is_set)
-    for _ in range(150):
+    for _ in range(250):
         assert runtime.submit(
             _pcm(10),
             sample_rate_hz=SPEAKER_SHADOW_SAMPLE_RATE_HZ,
@@ -498,6 +498,7 @@ async def test_checkpoint_accepts_pcm_while_intermediate_score_is_running() -> N
 
     assert [item.checkpoint_ms for item in observations] == [1_500, 3_000]
     assert runtime.snapshot()["scored_candidate_count"] == 1
+    assert runtime.snapshot()["submitted_audio_ms"] == 4_000
     await runtime.close()
 
 

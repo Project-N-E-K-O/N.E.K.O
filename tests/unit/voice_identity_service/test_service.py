@@ -43,6 +43,9 @@ class _Model:
     def load(self) -> bool:
         return self.loads
 
+    def cancel_load(self) -> None:
+        return
+
     def embedding_from_pcm16(
         self,
         pcm16: bytes,
@@ -672,7 +675,7 @@ async def test_failed_reenrollment_marks_degraded_when_old_activation_cannot_res
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_timed_out_model_load_is_owned_until_worker_finishes(
+async def test_timed_out_model_load_is_cancelled_and_model_is_released(
     tmp_path: Path,
 ) -> None:
     class BlockingModel(_Model):
@@ -690,6 +693,9 @@ async def test_timed_out_model_load_is_owned_until_worker_finishes(
                 raise TimeoutError("test did not release model load")
             return True
 
+        def cancel_load(self) -> None:
+            self.load_release.set()
+
         def close(self) -> None:
             assert self.load_release.is_set()
             super().close()
@@ -706,15 +712,51 @@ async def test_timed_out_model_load_is_owned_until_worker_finishes(
     with pytest.raises(VoiceIdentityServiceError, match="model_unavailable"):
         await service.start_enrollment()
     assert await asyncio.to_thread(model.load_started.wait, 1.0)
-    assert not model.closed
-
-    with pytest.raises(VoiceIdentityServiceError, match="model_unavailable"):
-        await service.start_enrollment()
-    assert model.load_calls == 1
-
-    model.load_release.set()
     assert await asyncio.to_thread(model.close_finished.wait, 1.0)
     assert model.closed
+    assert service._model_load_cleanup_task is None  # type: ignore[attr-defined]
+    retry = await service.start_enrollment()
+    assert model.load_calls == 2
+    assert await service.cancel_enrollment(retry.enrollment_id)
+    await service.close()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_cancelled_expired_completion_retains_cleanup_to_completion(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service, _model, _activations, _events = _service(tmp_path)
+    await service.initialize()
+    enrollment = await service.start_enrollment()
+    session = service._enrollment  # type: ignore[attr-defined]
+    assert session is not None
+    session.expires_at = asyncio.get_running_loop().time() - 1.0
+    cleanup_started = asyncio.Event()
+    cleanup_release = asyncio.Event()
+    cleanup_completed = False
+
+    async def blocking_cleanup(_session) -> bool:
+        nonlocal cleanup_completed
+        cleanup_started.set()
+        await cleanup_release.wait()
+        cleanup_completed = True
+        return True
+
+    monkeypatch.setattr(service, "_cleanup_session", blocking_cleanup)
+    completion = asyncio.create_task(
+        service.complete_enrollment(enrollment.enrollment_id, "profile", _pcm())
+    )
+    await asyncio.wait_for(cleanup_started.wait(), 1.0)
+    completion.cancel()
+    cleanup_release.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await completion
+
+    assert cleanup_completed
+    assert service._enrollment is None  # type: ignore[attr-defined]
     await service.close()
 
 

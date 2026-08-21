@@ -47,6 +47,8 @@ class EnrollmentEmbeddingModel(Protocol):
 
     def load(self) -> bool: ...
 
+    def cancel_load(self) -> None: ...
+
     def embedding_from_pcm16(
         self,
         pcm16: bytes,
@@ -327,10 +329,31 @@ class VoiceIdentityService:
                     )
                 )
             except TimeoutError:
-                self._retain_timed_out_model_load(model, load_task)
+                try:
+                    model.cancel_load()
+                except Exception:
+                    pass
+                try:
+                    await asyncio.wait_for(
+                        asyncio.shield(load_task),
+                        timeout=self._model_timeout_seconds,
+                    )
+                except TimeoutError:
+                    self._retain_timed_out_model_load(model, load_task)
+                except asyncio.CancelledError:
+                    self._retain_timed_out_model_load(model, load_task)
+                    raise
+                except Exception:
+                    await self._close_model(model)
+                else:
+                    await self._close_model(model)
                 self._record_failure(VoiceIdentityEffectiveReason.MODEL_UNAVAILABLE)
                 raise VoiceIdentityServiceError("model_unavailable")
             except asyncio.CancelledError:
+                try:
+                    model.cancel_load()
+                except Exception:
+                    pass
                 self._retain_timed_out_model_load(model, load_task)
                 raise
             except Exception:
@@ -397,13 +420,20 @@ class VoiceIdentityService:
             if asyncio.get_running_loop().time() >= session.expires_at:
                 self._enrollment = None
                 session.expiry_task.cancel()
-                cleanup_ok = await self._cleanup_session(session)
+                cancellations: list[asyncio.CancelledError] = []
+                cleanup_ok = await _await_cancellation_safe(
+                    self._cleanup_session(session),
+                    name="voice-identity-expired-enrollment-cleanup",
+                    cancellations=cancellations,
+                )
                 if not self._effective_enabled:
                     self._set_ineffective(
                         self._idle_reason()
                         if cleanup_ok
                         else VoiceIdentityEffectiveReason.RUNTIME_DEGRADED
                     )
+                if cancellations:
+                    raise cancellations[0]
                 raise VoiceIdentityServiceError("stale_enrollment")
             self._enrollment = None
             session.expiry_task.cancel()
