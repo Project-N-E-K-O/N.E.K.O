@@ -1065,6 +1065,9 @@ async def _init_character_resources(k: str, is_new_character: bool):
     # 更新或创建session manager（使用最新的prompt）
     # 使用锁保护websocket的preserve/restore操作，防止与cleanup()竞争
     async with rs.websocket_lock:
+        if role_state.get(k) is not rs:
+            logger.info(f"{k} 的角色资源已被并发删除，跳过初始化")
+            return
         # 如果已存在且已有websocket连接，保留websocket引用
         old_websocket = None
         if rs.session_manager is not None and rs.session_manager.websocket:
@@ -1303,11 +1306,31 @@ def _cleanup_character_dicts(k: str):
 
 async def _unregister_character_voice_identity_manager(k: str) -> None:
     rs = role_state.get(k)
-    if rs is None or rs.session_manager is None:
+    if rs is None:
+        return
+    async with rs.websocket_lock:
+        if role_state.get(k) is not rs:
+            return
+        await _unregister_character_voice_identity_manager_locked(rs)
+
+
+async def _unregister_character_voice_identity_manager_locked(rs) -> None:
+    if rs.session_manager is None:
         return
     from .voice_identity_runtime import unregister_voice_identity_manager
 
     await unregister_voice_identity_manager(rs.session_manager)
+
+
+async def _unregister_and_cleanup_character_slot(k: str) -> None:
+    rs = role_state.get(k)
+    if rs is None:
+        return
+    async with rs.websocket_lock:
+        if role_state.get(k) is not rs:
+            return
+        await _unregister_character_voice_identity_manager_locked(rs)
+        _cleanup_character_dicts(k)
 
 
 async def initialize_character_data():
@@ -1356,8 +1379,7 @@ async def initialize_character_data():
     # 线程都已停/超时，再在事件循环里顺序清理 dict —— 这些操作都是纯内存，不需要并行。
     for k in removed_names:
         logger.info(f"清理已删除角色 {k} 的资源")
-        await _unregister_character_voice_identity_manager(k)
-        _cleanup_character_dicts(k)
+        await _unregister_and_cleanup_character_slot(k)
 
     logger.info(f"角色配置加载完成，当前角色: {catgirl_names}，主人: {master_name}")
 
@@ -1398,8 +1420,7 @@ async def init_one_catgirl(name: str, *, is_new: bool = False):
 async def remove_one_catgirl(name: str):
     """Fast path for deleting a single catgirl: stop the character's thread + clear dicts + refresh globals."""
     await _stop_character_thread(name)
-    await _unregister_character_voice_identity_manager(name)
-    _cleanup_character_dicts(name)
+    await _unregister_and_cleanup_character_slot(name)
     # config 文件已由调用方写入，这里刷新 globals 让 catgirl_names 等反映删除
     await _refresh_character_globals()
     logger.info(f"[fast-remove] 已移除角色 {name}")

@@ -668,6 +668,7 @@ async def test_remove_one_catgirl_unregisters_voice_identity_manager(monkeypatch
         return None
 
     role = SimpleNamespace(
+        websocket_lock=asyncio.Lock(),
         session_manager=manager,
         sync_task=None,
         sync_message_queue=SimpleNamespace(empty=lambda: True),
@@ -687,6 +688,7 @@ async def test_remove_one_catgirl_unregisters_voice_identity_manager(monkeypatch
     await character_runtime.remove_one_catgirl(name)
 
     assert unregistered == [manager]
+    assert role.websocket_lock.locked() is False
     assert name not in character_runtime.role_state
 
 
@@ -699,11 +701,22 @@ async def test_initialize_character_data_unregisters_removed_voice_managers(
     removed_name = "NekoVoiceRemoved"
     calls = []
     role = SimpleNamespace(
+        websocket_lock=asyncio.Lock(),
         session_manager=object(),
         sync_task=None,
         sync_message_queue=SimpleNamespace(empty=lambda: True),
     )
     monkeypatch.setitem(character_runtime.role_state, removed_name, role)
+    from app.main_server import voice_identity_runtime
+
+    async def unregister(target):
+        calls.append(("unregister", target))
+
+    monkeypatch.setattr(
+        voice_identity_runtime,
+        "unregister_voice_identity_manager",
+        unregister,
+    )
     monkeypatch.setattr(
         character_runtime._config_manager,
         "cleanup_invalid_voice_ids",
@@ -717,9 +730,6 @@ async def test_initialize_character_data_unregisters_removed_voice_managers(
     async def stop_character_thread(name):
         calls.append(("stop", name))
 
-    async def unregister_character_voice_identity_manager(name):
-        calls.append(("unregister", name))
-
     monkeypatch.setattr(
         character_runtime,
         "_refresh_character_globals",
@@ -730,19 +740,67 @@ async def test_initialize_character_data_unregisters_removed_voice_managers(
         "_stop_character_thread",
         stop_character_thread,
     )
-    monkeypatch.setattr(
-        character_runtime,
-        "_unregister_character_voice_identity_manager",
-        unregister_character_voice_identity_manager,
-    )
 
     await character_runtime.initialize_character_data()
 
     assert calls == [
         ("stop", removed_name),
-        ("unregister", removed_name),
+        ("unregister", role.session_manager),
     ]
     assert removed_name not in character_runtime.role_state
+
+
+@pytest.mark.asyncio
+async def test_character_init_skips_slot_removed_while_waiting_for_lock(
+    monkeypatch,
+):
+    from app.main_server import character_runtime, voice_identity_runtime
+
+    name = "NekoConcurrentDelete"
+    registered = []
+
+    async def register(target):
+        registered.append(target)
+        return True
+
+    class NewManager:
+        websocket = None
+        is_active = False
+        is_starting = False
+
+        def __init__(self, queue, lanlan_name, prompt):
+            self.queue = queue
+            self.lanlan_name = lanlan_name
+            self.prompt = prompt
+            self.websocket_lock = None
+
+    role = SimpleNamespace(
+        websocket_lock=asyncio.Lock(),
+        session_manager=None,
+        sync_message_queue=object(),
+        sync_task=SimpleNamespace(done=lambda: False),
+    )
+    monkeypatch.setitem(character_runtime.role_state, name, role)
+    monkeypatch.setattr(character_runtime, "lanlan_prompt", {name: "prompt"})
+    monkeypatch.setattr(character_runtime, "master_name", "Master")
+    monkeypatch.setattr(character_runtime.core, "LLMSessionManager", NewManager)
+    monkeypatch.setattr(
+        voice_identity_runtime,
+        "register_voice_identity_manager",
+        register,
+    )
+
+    await role.websocket_lock.acquire()
+    init_task = asyncio.create_task(
+        character_runtime._init_character_resources(name, False)
+    )
+    await asyncio.sleep(0)
+    del character_runtime.role_state[name]
+    role.websocket_lock.release()
+    await init_task
+
+    assert registered == []
+    assert name not in character_runtime.role_state
 
 
 @pytest.mark.asyncio

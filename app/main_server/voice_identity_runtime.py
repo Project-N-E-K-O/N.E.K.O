@@ -169,6 +169,37 @@ class OwnerVoiceRuntimeRegistry:
                     self._detach_pending.pop(manager, None)
                     return result
                 return VoiceIdentityActivationResult.READY
+            except asyncio.CancelledError:
+                activation = self._activation
+                if self._suppressed:
+                    self._restore_pending.add(manager)
+                    try:
+                        restored = await self._restore_manager_bounded(
+                            manager,
+                            "voice_identity_enrollment",
+                        )
+                    except asyncio.CancelledError:
+                        self._restore_pending.add(manager)
+                        if activation is not None:
+                            self._attach_pending.add(manager)
+                            self._ensure_attach_watchdog()
+                        raise
+                    if restored:
+                        self._restore_pending.discard(manager)
+                    else:
+                        self._restore_pending.add(manager)
+                    if activation is not None:
+                        self._attach_pending.add(manager)
+                        self._ensure_attach_watchdog()
+                elif manager in self._restore_pending:
+                    self._ensure_restore_watchdog("voice_identity_enrollment")
+                    if activation is not None:
+                        self._attach_pending.add(manager)
+                        self._ensure_attach_watchdog()
+                elif activation is not None and manager in self._managers:
+                    self._attach_pending.add(manager)
+                    self._ensure_attach_watchdog()
+                raise
             except BaseException:
                 if self._suppressed:
                     self._restore_pending.add(manager)
