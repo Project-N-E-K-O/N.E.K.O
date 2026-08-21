@@ -7146,6 +7146,27 @@ if (notebook.querySelector('.notebook-editor input')?.value !== 'Second') {
   throw new Error('a detail response survived a note-list refresh');
 }
 
+const refreshDiscardContent = notebook.querySelector('.notebook-editor__content');
+refreshDiscardContent.value = 'Dirty draft before refresh invalidation';
+refreshDiscardContent.dispatchEvent(new window.Event('input', { bubbles: true }));
+window.confirm = () => true;
+notebook.querySelectorAll('.notebook-note-row__open')[0].click();
+await new Promise((resolve) => setTimeout(resolve, 0));
+refreshButton.click();
+await new Promise((resolve) => setTimeout(resolve, 0));
+await new Promise((resolve) => setTimeout(resolve, 0));
+detailRequests.get('note-1').resolve({ note: { ...notes[0], content: 'Stale after refresh' } });
+await new Promise((resolve) => setTimeout(resolve, 0));
+await new Promise((resolve) => setTimeout(resolve, 0));
+if (notebook.querySelector('.notebook-editor__content')?.value === 'Dirty draft before refresh invalidation') {
+  throw new Error('refresh-invalidated detail response restored a discarded draft');
+}
+const refreshInvalidatedUnload = new window.Event('beforeunload', { cancelable: true });
+window.dispatchEvent(refreshInvalidatedUnload);
+if (refreshInvalidatedUnload.defaultPrevented) {
+  throw new Error('refresh-invalidated detail response restored the dirty guard');
+}
+
 deferNoteLists = true;
 refreshButton.click();
 await new Promise((resolve) => setTimeout(resolve, 0));
@@ -7384,6 +7405,7 @@ let expandResolve;
 let saveResolve;
 let deleteNotebookResolve;
 let failNotebookList = false;
+let exportOpenCount = 0;
 const calls = [];
 let note = {
   id: 'note-1',
@@ -7427,7 +7449,7 @@ const ctx = {
   tf: (_key, fallback, values) => fallback.replace(/\{([^}]+)\}/g, (_, name) => values[name] ?? ''),
   label: (surfaceId) => surfaceId,
   callPlugin,
-  openSurface: () => undefined,
+  openSurface: () => { exportOpenCount += 1; },
 };
 window.eval(notebookJs);
 const notebook = window.StudyCompanionNotebook.render('notebook-panel', ctx);
@@ -7437,6 +7459,9 @@ await new Promise((resolve) => setTimeout(resolve, 0));
 
 notebook.querySelector('.notebook-note-row__open').click();
 await new Promise((resolve) => setTimeout(resolve, 0));
+const rowCheckbox = notebook.querySelector('.notebook-note-row__check');
+rowCheckbox.checked = true;
+rowCheckbox.dispatchEvent(new window.Event('change', { bubbles: true }));
 const inputs = notebook.querySelectorAll('.notebook-editor input');
 inputs[1].value = 'machine learning, spaced topic';
 inputs[1].dispatchEvent(new window.Event('input', { bubbles: true }));
@@ -7461,6 +7486,15 @@ buttons = [...notebook.querySelectorAll('.notebook-editor__actions button')];
 saveButton = buttons.find((button) => button.textContent === 'Save');
 saveButton.click();
 await new Promise((resolve) => setTimeout(resolve, 0));
+const exportSelectedButtonDuringSave = [...notebook.querySelectorAll('.notebook-selection__actions button')]
+  .find((button) => button.textContent === 'Export selected');
+if (!exportSelectedButtonDuringSave?.disabled) {
+  throw new Error('selected-note export stayed enabled while save was in flight');
+}
+exportSelectedButtonDuringSave.click();
+if (exportOpenCount !== 0) {
+  throw new Error('selected-note export opened during an in-flight save');
+}
 const refreshButton = [...notebook.querySelectorAll('.notebook-toolbar__actions button')]
   .find((button) => button.textContent === 'Refresh');
 refreshButton.click();
@@ -7531,6 +7565,15 @@ const newNoteButtonDuringDelete = toolbarButtons.find((button) => button.textCon
 const upsertsBeforeDelete = calls.filter((call) => call.entryId === 'study_note_upsert').length;
 deleteNotebookButton.click();
 await new Promise((resolve) => setTimeout(resolve, 0));
+const exportSelectedButtonDuringDelete = [...notebook.querySelectorAll('.notebook-selection__actions button')]
+  .find((button) => button.textContent === 'Export selected');
+if (!exportSelectedButtonDuringDelete?.disabled) {
+  throw new Error('selected-note export stayed enabled while notebook deletion was in flight');
+}
+exportSelectedButtonDuringDelete.click();
+if (exportOpenCount !== 0) {
+  throw new Error('selected-note export opened during notebook deletion');
+}
 for (const label of ['Create notebook', 'Rename', 'Delete notebook', 'New note']) {
   const button = toolbarButtons.find((item) => item.textContent === label);
   if (!button?.disabled) throw new Error(`${label} stayed enabled during notebook deletion`);
@@ -7571,6 +7614,9 @@ if (notebook.querySelector('.notebook-editor__actions')) {
 }
 if (!notebook.querySelector('.notebook-editor')?.textContent.includes('Select a note to edit')) {
   throw new Error('deleted notebook editor was not cleared before refresh failure');
+}
+if (notebook.querySelector('.notebook-note-row') || notebook.querySelector('.notebook-list__load-more')) {
+  throw new Error('deleted notebook left stale notes or pagination visible after refresh failure');
 }
 """
     completed = subprocess.run(

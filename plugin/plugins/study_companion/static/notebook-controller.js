@@ -170,6 +170,7 @@
       setEditorLocked(busyCount > 0);
       setListLocked(mutationBusyCount > 0);
       updateNotebookActions();
+      updateSelectionBar();
       if (busyCount === 0) {
         root.querySelectorAll('button').forEach((button) => {
           button.disabled = false;
@@ -319,7 +320,7 @@
         count: selectedNoteIds.size,
       });
       clearSelectionButton.disabled = selectedNoteIds.size === 0;
-      exportSelectionButton.disabled = selectedNoteIds.size === 0;
+      exportSelectionButton.disabled = mutationBusyCount > 0 || selectedNoteIds.size === 0;
     }
 
     function drawList() {
@@ -600,9 +601,6 @@
         const payload = await ctx.callPlugin('study_note_get', { note_id: noteId });
         if (!isValid() || navigationScope !== noteScopeKey()) return;
         if (requestId !== noteDetailRequest) {
-          if (navigationId === noteNavigationRequest) {
-            restoreSelectedDraft(draftSnapshot, restoreDirtyDraft);
-          }
           return;
         }
         if (editorDirty && !confirmDiscardDraft()) return;
@@ -611,7 +609,12 @@
         drawList();
         drawEditor();
       } catch (error) {
-        if (isValid() && navigationScope === noteScopeKey() && navigationId === noteNavigationRequest) {
+        if (
+          isValid()
+          && requestId === noteDetailRequest
+          && navigationScope === noteScopeKey()
+          && navigationId === noteNavigationRequest
+        ) {
           restoreSelectedDraft(draftSnapshot, restoreDirtyDraft);
           setStatus(errorText(error));
         }
@@ -692,6 +695,10 @@
       notebooks = notebooks.filter((notebook) => notebook.id !== notebookId);
       selectedNotebook = 'all';
       selectedNote = null;
+      notes = [];
+      notesScope = '';
+      notesHasMore = false;
+      notesNextOffset = 0;
       drawNotebookOptions();
       drawList();
       drawEditor();
