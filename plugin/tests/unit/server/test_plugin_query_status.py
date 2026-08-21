@@ -113,6 +113,27 @@ def test_build_plugin_list_reports_source_missing_status(monkeypatch: pytest.Mon
     ]
 
 
+def test_build_plugin_list_omits_internal_entries_preview(monkeypatch: pytest.MonkeyPatch) -> None:
+    registry_meta = {
+        "id": "demo",
+        "name": "Demo",
+        "entries_preview": [{"id": "ping", "name": "Ping"}],
+    }
+    monkeypatch.setattr(
+        query_module.state,
+        "get_plugins_snapshot_cached",
+        lambda timeout=2.0: {"demo": registry_meta},
+    )
+    monkeypatch.setattr(query_module.state, "get_plugin_hosts_snapshot_cached", lambda timeout=2.0: {})
+    monkeypatch.setattr(query_module.state, "get_event_handlers_snapshot_cached", lambda timeout=2.0: {})
+
+    results = query_module._build_plugin_list_sync()
+
+    assert "entries_preview" in registry_meta
+    assert "entries_preview" not in results[0]
+    assert [entry["id"] for entry in results[0]["entries"]] == ["ping"]
+
+
 def test_resolve_plugin_display_fields_preserves_empty_description_without_translation() -> None:
     plugin_info: dict[str, object] = {
         "id": "empty_description_plugin",
