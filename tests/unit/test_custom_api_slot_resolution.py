@@ -290,17 +290,36 @@ class TestRealtimeApiType:
         )
 
     @pytest.mark.unit
-    def test_named_realtime_provider_keeps_its_identity(self, config_manager):
-        """An explicitly picked realtime provider is not flattened to 'local'."""
+    def test_named_realtime_provider_never_diverges_from_core(self, config_manager):
+        """A per-slot realtime provider must not split the audio stack.
+
+        api_type becomes the process-wide core api type, which also selects the
+        TTS worker and the audio credential. Honouring a divergent pick gave a
+        Qwen TTS worker holding the OpenAI core key: silent, and one vendor's
+        credential sent to another. One identity only.
+        """
         _write_core_config(config_manager, _base_config(
-            omniModelProvider='glm',
-            omniModelId='glm-realtime-air',
-            omniModelUrl='wss://open.bigmodel.cn/api/paas/v4/realtime',
+            coreApi='openai',
+            assistApi='openai',
+            assistApiKeyQwen='sk-qwen-book',
+            omniModelProvider='qwen',
+            omniModelId='qwen3.5-omni-flash-realtime',
+            omniModelUrl='wss://dashscope.aliyuncs.com/api-ws/v1/realtime',
         ))
         rt = config_manager.get_model_api_config('realtime')
-        assert rt['api_type'] == 'glm', (
-            "显式选中的实时服务商必须保住身份，不能变成未实现的 'local'，"
+        tts = config_manager.get_model_api_config('tts_default')
+        assert rt['api_type'] == 'openai', (
+            "跨厂商的实时槽覆盖必须被忽略并回落核心 API，"
             f"实际={rt['api_type']!r}"
+        )
+        assert rt['api_type'] != 'local', "也不能落进未实现的 'local'"
+        # 派发身份与凭证必须同源：worker 按 api_type 选、凭证走 tts_default
+        assert 'dashscope' not in (tts['base_url'] or ''), (
+            f"TTS 端点不该被实时槽的选择带偏，实际={tts['base_url']!r}"
+        )
+        assert tts['api_key'] == rt['api_key'], (
+            "实时与 TTS 的凭证必须来自同一家，"
+            f"realtime={rt['api_key']!r} tts={tts['api_key']!r}"
         )
 
     @pytest.mark.unit
@@ -323,17 +342,12 @@ class TestRealtimeApiType:
         )
 
     @pytest.mark.unit
-    def test_core_provider_without_a_realtime_endpoint_is_ignored(self, config_manager):
-        """Being in the core table is not the same as having a realtime endpoint.
+    def test_core_provider_pick_is_ignored_too(self, config_manager):
+        """Even a real core provider is ignored in this slot.
 
-        Gemini is a core provider but owns no CORE_URL — as a core API it goes
-        through the SDK, never through this slot. Honouring it here would give
-        a slot that can never assemble a complete custom triple.
+        Being a valid core API says nothing about whether this slot can express
+        it: the whole audio stack carries one provider identity.
         """
-        from utils.api_config_loader import get_core_api_profiles
-        assert not (get_core_api_profiles().get('gemini') or {}).get('CORE_URL'), (
-            "本用例的前提是 gemini 没有 CORE_URL；前提变了就要重写判据"
-        )
         # 带上一条残留 URL（换 provider 时留下的）。没有它，URL 本来就是空的、
         # 自定义分支根本走不到，改动与否结果都一样 —— 这条残留正是唯一的分界。
         _write_core_config(config_manager, _base_config(

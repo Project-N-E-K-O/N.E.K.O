@@ -1776,18 +1776,19 @@ def test_capability_dropdowns_hide_providers_with_no_implementation(
     for pk in ('deepseek', 'kimi', 'kimi_code', 'claude', 'openrouter', 'silicon'):
         assert pk not in options['tts'], f"TTS 下拉仍暴露无 TTS 能力的 {pk}"
 
-    # 没有 realtime 端点的厂商不该出现在实时全模态下拉里。
-    # gemini 在核心表里但没有 core_url —— 它作为核心 API 走 SDK，这个槽表达不了它，
-    # 选中只会静默回落，所以同样属于伪选项。
-    for pk in ('deepseek', 'kimi', 'claude', 'minimax', 'elevenlabs', 'openrouter', 'gemini'):
-        assert pk not in options['omni'], f"实时全模态下拉仍暴露无 realtime 能力的 {pk}"
+    # 实时全模态下拉不提供**任何**具名服务商。这个槽的取值会变成进程级的
+    # core api type，而那个身份同时决定 TTS worker / 原生音色 / 音频凭证——
+    # 它们都跟着核心 API 走。选一个与核心不同的厂商会把音频链路撕成两半
+    # （Qwen TTS worker 拿着 OpenAI 的 key），所以连真正有 realtime 端点的
+    # qwen / glm 也不摆出来。
+    for pk in ('deepseek', 'kimi', 'claude', 'minimax', 'elevenlabs', 'openrouter',
+               'gemini', 'qwen', 'glm', 'step', 'grok', 'openai'):
+        assert pk not in options['omni'], f"实时全模态下拉不该暴露具名服务商 {pk}"
 
     # 反向断言：真正有能力的项必须还在，避免"全都过滤掉"也能让上面的断言通过
     assert 'gptsovits' in options['tts'], "GPT-SoVITS 被误过滤"
     assert 'vllm_omni' in options['tts'], "vLLM-Omni 被误过滤"
     assert 'custom' in options['tts'], "自定义 TTS 被误过滤"
-    assert 'qwen' in options['omni'], "Qwen 实时被误过滤"
-    assert 'glm' in options['omni'], "GLM 实时被误过滤"
     assert 'custom' in options['omni'], "自定义实时端点被误过滤"
     for sel in ('tts', 'omni'):
         assert 'follow_core' in options[sel] and 'follow_assist' in options[sel], (

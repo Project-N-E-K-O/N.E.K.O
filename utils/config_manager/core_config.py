@@ -890,36 +890,34 @@ class CoreConfigMixin:
         return saved_url if saved_url in candidates else ''
 
     @staticmethod
-    def _normalize_realtime_provider(provider: str, core_api_profiles: dict) -> str:
-        """Drop an omni-slot provider that has no realtime implementation.
+    def _normalize_realtime_provider(provider: str) -> str:
+        """Drop a named provider from the omni slot.
 
-        The omni dropdown is filled from the assist (text-LLM) provider table,
-        so it offers providers that own no realtime endpoint at all.  Picking
-        one used to be honoured downstream: the frontend auto-fills the slot
-        URL, ``get_model_api_config`` then sees a complete custom triple and
-        stamps ``api_type='local'`` — a branch that was never implemented, and
-        which leaks into the global core api type.  Treating such a pick as
-        "not selected" makes it fall back to the core API, which is what the
-        user already gets today minus the broken realtime session.
+        The omni dropdown used to be filled from the assist (text-LLM) provider
+        table, so it offered a per-slot realtime provider. Picking one was then
+        honoured downstream: the frontend auto-fills the slot URL,
+        ``get_model_api_config`` sees a complete custom triple and stamps an
+        ``api_type`` that becomes the process-wide core api type — which also
+        drives TTS worker selection, native-voice routing and the audio
+        credential. Those follow the core provider, so a divergent pick tore
+        the audio stack in half (see ``_resolved_realtime_api_type``).
 
-        ``follow_*``, ``custom`` and the empty legacy value pass through: they
-        are not claims about a named provider's realtime support.
+        The audio stack carries exactly one provider identity, so this slot
+        cannot express a second one. A named pick is therefore treated as "not
+        selected" and falls back to the core API — which is what the user
+        effectively got before, minus the broken realtime session and the
+        cross-vendor credential.
+
+        ``follow_*``, ``custom`` and the empty legacy value pass through:
+        neither claims a provider identity of its own.
         """
         candidate = (provider or '').strip()
         if not candidate or candidate == 'custom' or candidate.startswith('follow_'):
             return candidate
-        # 判据是「这家有没有可直连的 realtime 端点」，不只是「在不在核心表里」。
-        # gemini 在核心表里但没有 CORE_URL（它作为核心 API 走 SDK，不经这个槽），
-        # 选中后 URL 会是空串 → 自定义三元组永远凑不齐 → 静默回落。既然槽位覆盖
-        # 表达不了它，就别把它当成一个「选中了就生效」的值。
-        _profile = core_api_profiles.get(candidate)
-        _has_realtime_endpoint = (
-            isinstance(_profile, dict) and str(_profile.get('CORE_URL') or '').strip()
-        )
         # 落回 follow_core 而不是空串：空串会让下面的 URL/模型/Key 覆盖分支照旧
         # 写入前端自动填好的残留值，follow_core 才是「等同于没选」的既有路径
         # （URL 跳过、模型回落 CORE_MODEL、Key 取 CORE_API_KEY）。
-        return candidate if _has_realtime_endpoint else 'follow_core'
+        return 'follow_core'
 
     def get_core_config(self):
         """Read core config dynamically"""
@@ -1271,7 +1269,7 @@ class CoreConfigMixin:
                 core_cfg.get(f'{_model_provider_prefix}ModelProvider', '') or ''
             )
             config[f'{_model_provider_prefix}ModelProvider'] = (
-                self._normalize_realtime_provider(_raw_provider, core_api_profiles)
+                self._normalize_realtime_provider(_raw_provider)
                 if _model_provider_prefix == 'omni'
                 else _raw_provider
             )
@@ -1503,7 +1501,15 @@ class CoreConfigMixin:
                     # voice_storage.get_tts_api_key('doubao_tts') 槽位优先、管理簿兜底，
                     # POST 侧的仲裁也刻意保住「只存在 ttsModelApiKey 的 legacy key」。
                     # 这里跟着走管理簿优先就会让同一份凭证出现两条反向的解析路径。
-                    _uses_key_book = bool(provider) and provider != 'doubao_tts'
+                    # TTS 槽整体不走管理簿改道。这个槽的下拉里有一批「注册表认得、
+                    # 但派发根本不读 ttsModelProvider」的伪选项（minimax / elevenlabs /
+                    # cosyvoice…），选中它们时 worker 仍由核心 API 决定；一旦这里把
+                    # 该厂商的真实 Key 解析进 TTS_MODEL_API_KEY，那把 Key 就会被送给
+                    # 核心厂商的 TTS 端点——又一次跨厂商凭证外发。
+                    # TTS 的凭证真相本来就在槽位字段与各 provider 自己的解析路径上
+                    # （voice_storage.get_tts_api_key / workers 直接读 raw ttsModelApiKey），
+                    # 保持原样即可。
+                    _uses_key_book = bool(provider) and prefix != 'tts'
                     _raw_book_field = (
                         assist_api_key_raw_fields.get(provider, '') if _uses_key_book else ''
                     )
@@ -1778,18 +1784,24 @@ class CoreConfigMixin:
         def _resolved_realtime_api_type() -> str:
             """Wire dialect for a custom-configured realtime session.
 
-            ``local`` is reserved for an endpoint the user typed themselves; a
-            named provider keeps its own identity so the session speaks that
-            provider's realtime dialect instead of an unimplemented one.
-            ``get_core_config`` has already dropped names with no realtime
-            implementation, so anything reaching here is either genuine or a
-            follow value.
+            Only two answers are coherent here. ``local`` means an endpoint the
+            user typed themselves. Everything else follows the core provider —
+            including an explicitly named one.
+
+            Returning a named provider's own identity looks like honouring the
+            user's pick, but this value is not just the realtime dialect: it
+            becomes the process-wide core api type, which also selects the TTS
+            worker, the native-voice catalog and the audio credential. Those
+            still resolve against the core provider, so a divergent pick
+            produced e.g. a Qwen TTS worker holding the OpenAI core key —
+            silence, plus one vendor's credential sent to another. The audio
+            stack has exactly one provider identity; a per-slot override cannot
+            express a second one, so it is not offered (the omni dropdown lists
+            only follow_* and 自定义) and not honoured here.
             """
             omni_provider = str(core_config.get('omniModelProvider') or '').strip()
             if omni_provider == 'custom':
                 return 'local'
-            if omni_provider and not omni_provider.startswith('follow_'):
-                return omni_provider
             # 老配置在 omniModelProvider 这个键出现之前就能手填实时端点，那种存量
             # 没有 provider 值可读，但它确实是自配端点，行为必须与改动前一致。
             # 判据是「存盘里真有 omniModelUrl」——profile 默认值填出来的 URL 不进

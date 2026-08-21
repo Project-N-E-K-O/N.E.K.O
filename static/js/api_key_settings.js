@@ -1207,17 +1207,15 @@ function isProviderCapableForModelType(providerKey, modelType) {
     if (!pk || pk === 'custom' || pk.startsWith('follow_')) return true;
 
     if (modelType === 'omni') {
-        if (!_coreApiProviders || Object.keys(_coreApiProviders).length === 0) return true;
-        const profile = _coreApiProviders[pk];
-        if (!profile) return false;
-        // 判据是「有没有可直连的 realtime 端点」，不只是「在不在核心表里」：
-        // Gemini 在核心表里但没有 core_url（作为核心 API 走 SDK，不经这个槽），
-        // 选中后 URL 会填成空、自定义三元组凑不齐 → 静默回落。与后端
-        // _normalize_realtime_provider 的判据对偶。
-        // 字段名与 getProviderCoreUrl() 保持**完全一致**（都只认 core_url）：
-        // 这里多认一个别名的话，会出现「判定为有能力、但自动填充填不出 URL」
-        // 的不一致 —— 下拉里又多一个选了没用的选项。
-        return !!String(profile.core_url || '').trim();
+        // 实时全模态槽不提供任何具名服务商，只留「跟随」与「自定义」。
+        //
+        // 这个槽的取值最终会变成进程级的 core api type，而那个身份**同时**决定
+        // TTS worker、原生音色目录和音频凭证——它们都跟着核心 API 走。选一个与
+        // 核心不同的厂商会把音频链路撕成两半（实测过：核心 OpenAI + 本槽选 Qwen
+        // → 启动 Qwen TTS worker 却拿着 OpenAI 的 key，既无声又把一家的凭证发给
+        // 另一家）。整条音频链路只有一个 provider 身份，这个槽表达不了第二个，
+        // 所以干脆不摆出来。与后端 _normalize_realtime_provider 对偶。
+        return false;
     }
 
     if (modelType === 'tts') {
