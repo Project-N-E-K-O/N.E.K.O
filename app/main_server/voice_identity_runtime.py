@@ -208,12 +208,17 @@ class OwnerVoiceRuntimeRegistry:
                 self._ensure_detach_watchdog()
             if self._suppressed or manager in self._restore_pending:
                 try:
-                    await asyncio.shield(
+                    await asyncio.wait_for(
                         self._restore_manager(
                             manager,
                             "voice_identity_enrollment",
-                        )
+                        ),
+                        timeout=_WATCHDOG_MANAGER_CALL_TIMEOUT_SECONDS,
                     )
+                except TimeoutError:
+                    self._restore_pending.add(manager)
+                    if not self._suppressed:
+                        self._ensure_restore_watchdog("voice_identity_enrollment")
                 except asyncio.CancelledError as exc:
                     self._restore_pending.add(manager)
                     if not self._suppressed:

@@ -740,6 +740,42 @@ async def test_unregister_cancellation_records_cleanup_before_propagating() -> N
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_unregister_bounds_pending_restore_and_starts_retry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        runtime_module,
+        "_WATCHDOG_MANAGER_CALL_TIMEOUT_SECONDS",
+        0.02,
+    )
+    registry = OwnerVoiceRuntimeRegistry(
+        enforce=True,
+        restore_retry_interval_seconds=0.5,
+        restore_retry_timeout_seconds=1.0,
+    )
+    manager = _Manager()
+    await registry.register_manager(manager)
+    registry._restore_pending.add(manager)  # type: ignore[attr-defined]
+    restore_started = asyncio.Event()
+
+    async def never_restore(reason: str, *, suppressed: bool) -> None:
+        manager.suppression_calls.append((reason, suppressed))
+        if not suppressed:
+            restore_started.set()
+            await asyncio.Event().wait()
+
+    manager.set_voice_input_suppressed = never_restore  # type: ignore[method-assign]
+
+    await asyncio.wait_for(registry.unregister_manager(manager), timeout=0.2)
+
+    assert restore_started.is_set()
+    assert manager in registry._restore_pending  # type: ignore[attr-defined]
+    assert registry._restore_retry_task is not None  # type: ignore[attr-defined]
+    await registry.close()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_attach_failure_keeps_manager_registered_for_recovery() -> None:
     registry = OwnerVoiceRuntimeRegistry(enforce=True)
     active_profile = _profile("profile")
