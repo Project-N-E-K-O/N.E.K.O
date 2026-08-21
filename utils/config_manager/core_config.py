@@ -1807,6 +1807,42 @@ class CoreConfigMixin:
                 return _provider_type_from_core_key(core_config.get('CORE_API_TYPE', ''))
             if provider == 'follow_assist':
                 return _normalize_provider_type_value(core_config.get('PROVIDER_TYPE'))
+            def _fallback_provider_type() -> str:
+                """Protocol of whatever this slot actually falls back to."""
+                fallback_type = model_type_mapping.get(target_model_type, {}).get('fallback_type')
+                if fallback_type == 'core':
+                    return _provider_type_from_core_key(core_config.get('CORE_API_TYPE', ''))
+                if fallback_type == 'conversation':
+                    return _resolved_provider_type_for_model('conversation', seen)
+                if fallback_type == 'summary':
+                    return _resolved_provider_type_for_model('summary', seen)
+                return _normalize_provider_type_value(core_config.get('PROVIDER_TYPE'))
+
+            # 具名服务商的**协议**同样只在「这个槽的 URL 确实属于它」时才成立。
+            # 槽位没填完时上游会把 URL 回填成 assist 的地址（AGENT_MODEL_URL 尤其
+            # 明显：它有一条 VISION → OPENROUTER 的兜底链），此时仍按下拉值取协议，
+            # 就造出「assist 地址 + Anthropic 协议」——这正是 Fix D 要消灭的错配，
+            # 只是从「关掉自定义 API」换成了「开着但槽位没填完」这条入口。
+            #
+            # 判据与凭证那一处共用（same_endpoint + provider 候选集）：协议和凭证
+            # 要么一起给、要么一起不给，不会出现「按 A 家协议、拿 B 家的 key」。
+            if provider:
+                _slot_url = str(
+                    core_config.get(
+                        model_type_mapping.get(target_model_type, {}).get('custom_url', '')
+                    ) or ''
+                ).strip()
+                if _slot_url:
+                    _profile = get_assist_api_profiles().get(provider)
+                    _candidates = (
+                        self._provider_url_candidates(
+                            _profile, 'OPENROUTER_URL', 'OPENROUTER_URLS'
+                        )
+                        if isinstance(_profile, dict)
+                        else []
+                    )
+                    if not any(same_endpoint(_slot_url, c) for c in _candidates):
+                        return _fallback_provider_type()
             if not provider:
                 fallback_type = model_type_mapping.get(target_model_type, {}).get('fallback_type')
                 if fallback_type == 'core':

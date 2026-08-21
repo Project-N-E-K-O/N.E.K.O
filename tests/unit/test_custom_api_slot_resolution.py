@@ -649,6 +649,48 @@ class TestFallbackProtocolIsSameOrigin:
         )
 
     @pytest.mark.unit
+    def test_incomplete_named_slot_drops_the_dialect_even_with_custom_api_on(self, config_manager):
+        """A back-filled URL must not keep the dropdown's protocol.
+
+        Gating on ENABLE_CUSTOM_API is not enough: with it on but the slot left
+        incomplete, upstream fills AGENT_MODEL_URL from the assist endpoint
+        (it has a VISION → OPENROUTER fallback chain), the custom branch then
+        accepts the triple as complete, and the residual dropdown value still
+        claimed anthropic — an assist address wearing another vendor's protocol.
+        """
+        _write_core_config(config_manager, _base_config(
+            agentModelProvider='claude',
+            agentModelId='claude-sonnet-4',
+            agentModelUrl='',  # 没填完 → 上游回填成 assist 地址
+            assistApiKeyClaude='sk-ant-book',
+        ))
+        cfg = config_manager.get_core_config()
+        agent = config_manager.get_model_api_config('agent')
+        assert agent['base_url'] == cfg['OPENROUTER_URL'], (
+            f"前提：URL 被回填成了 assist 地址，实际={agent['base_url']!r}"
+        )
+        assert agent['provider_type'] == 'openai_compatible', (
+            "地址来自 assist 时协议必须跟着 assist，"
+            f"实际={agent['provider_type']!r}"
+        )
+
+    @pytest.mark.unit
+    def test_complete_named_slot_keeps_its_dialect(self, config_manager):
+        """The guard must not strip the dialect from a genuinely complete slot."""
+        _write_core_config(config_manager, _base_config(
+            agentModelProvider='claude',
+            agentModelId='claude-sonnet-4',
+            agentModelUrl='https://api.anthropic.com/v1',
+            assistApiKeyClaude='sk-ant-book',
+        ))
+        agent = config_manager.get_model_api_config('agent')
+        assert agent['provider_type'] == 'anthropic', (
+            "填了该服务商自己的地址时协议必须生效，"
+            f"实际={agent['provider_type']!r}"
+        )
+        assert agent['api_key'] == 'sk-ant-book'
+
+    @pytest.mark.unit
     def test_complete_anthropic_slot_still_speaks_anthropic(self, config_manager):
         """A genuinely complete anthropic slot keeps its protocol."""
         _write_core_config(config_manager, _base_config(
