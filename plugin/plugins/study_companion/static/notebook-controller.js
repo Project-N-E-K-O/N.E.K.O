@@ -124,6 +124,19 @@
       if (isValid()) statusChip.textContent = String(value || t(ctx, 'ui.status.ready', 'Ready'));
     }
 
+    function preventDirtyUnload(event) {
+      event.preventDefault();
+      event.returnValue = true;
+    }
+
+    function setEditorDirty(dirty) {
+      const nextDirty = Boolean(dirty);
+      if (editorDirty === nextDirty) return;
+      editorDirty = nextDirty;
+      if (editorDirty) window.addEventListener('beforeunload', preventDirtyUnload);
+      else window.removeEventListener('beforeunload', preventDirtyUnload);
+    }
+
     function setEditorLocked(locked) {
       if (currentEditor) {
         currentEditor.inputs.forEach((input) => {
@@ -353,11 +366,11 @@
       };
       [titleInput, notebookInput, topicsInput, tagsInput, contentInput].forEach((input) => {
         input.addEventListener('input', () => {
-          editorDirty = true;
+          setEditorDirty(true);
           captureEditorDraft();
         });
         input.addEventListener('change', () => {
-          editorDirty = true;
+          setEditorDirty(true);
           captureEditorDraft();
         });
       });
@@ -385,7 +398,7 @@
         });
         if (!isValid() || selectedNote?.id !== noteId) return;
         selectedNote = payload.note || selectedNote;
-        editorDirty = false;
+        setEditorDirty(false);
         await refresh();
         setStatus(t(ctx, 'ui.notebook.saved', 'Saved'));
       }, true);
@@ -406,7 +419,7 @@
           if (!currentContentInput || currentContentInput.value !== contentSnapshot) return;
           if (currentContentInput) currentContentInput.value = payload.content;
           selectedNote = { ...selectedNote, content: payload.content, content_plain: payload.content };
-          editorDirty = true;
+          setEditorDirty(true);
         }
         setStatus(t(ctx, 'ui.status.reply_ready', 'Reply ready'));
       });
@@ -414,7 +427,7 @@
         if (editorDirty && !confirmDiscardDraft()) return;
         const confirmed = window.confirm(t(ctx, 'ui.notebook.delete_note_confirm', 'Delete this note?'));
         if (!confirmed) return;
-        editorDirty = false;
+        setEditorDirty(false);
         const noteId = selectedNote.id;
         await ctx.callPlugin('study_note_delete', { note_id: noteId });
         selectedNoteIds.delete(noteId);
@@ -438,7 +451,13 @@
       captureEditorDraft();
       const detailRequestAtStart = noteDetailRequest += 1;
       const requestId = notesRequest += 1;
-      const payload = await ctx.callPlugin('study_note_list', noteListArgs());
+      let payload;
+      try {
+        payload = await ctx.callPlugin('study_note_list', noteListArgs());
+      } catch (error) {
+        if (!isValid() || requestId !== notesRequest) return;
+        throw error;
+      }
       if (!isValid() || requestId !== notesRequest) return;
       notes = Array.isArray(payload.notes) ? payload.notes : [];
       if (selectedNote && detailRequestAtStart === noteDetailRequest) {
@@ -462,14 +481,14 @@
 
     async function selectNote(noteId) {
       if (!confirmDiscardDraft()) return;
-      editorDirty = false;
+      setEditorDirty(false);
       const requestId = noteDetailRequest += 1;
       setBusy(true);
       try {
         const payload = await ctx.callPlugin('study_note_get', { note_id: noteId });
         if (!isValid() || requestId !== noteDetailRequest) return;
         if (editorDirty && !confirmDiscardDraft()) return;
-        editorDirty = false;
+        setEditorDirty(false);
         selectedNote = payload.note || null;
         drawList();
         drawEditor();
@@ -487,7 +506,7 @@
         return;
       }
       if (!confirmDiscardDraft()) return;
-      editorDirty = false;
+      setEditorDirty(false);
       selectedNote = null;
       const payload = await ctx.callPlugin('study_notebook_create', { name });
       newNotebookInput.value = '';
@@ -516,7 +535,7 @@
       if (!notebookId) return;
       if (!confirmDiscardDraft()) return;
       if (!window.confirm(t(ctx, 'ui.notebook.delete_notebook_confirm', 'Delete this notebook? Its notes will become unfiled.'))) return;
-      editorDirty = false;
+      setEditorDirty(false);
       await ctx.callPlugin('study_notebook_delete', { notebook_id: notebookId });
       selectedNotebook = 'all';
       selectedNote = null;
@@ -525,7 +544,7 @@
 
     async function createNote() {
       if (!confirmDiscardDraft()) return;
-      editorDirty = false;
+      setEditorDirty(false);
       const payload = await ctx.callPlugin('study_note_upsert', {
         notebook_id: currentNotebookId(),
         title: t(ctx, 'ui.notebook.new_note', 'New note'),
@@ -556,7 +575,7 @@
         notebookSelect.value = selectedNotebook;
         return;
       }
-      editorDirty = false;
+      setEditorDirty(false);
       selectedNotebook = notebookSelect.value;
       selectedNote = null;
       drawList();
@@ -578,7 +597,7 @@
     updateSelectionBar();
     activeBeforeClose = () => {
       if (!confirmDiscardDraft()) return false;
-      editorDirty = false;
+      setEditorDirty(false);
       return true;
     };
     refresh().catch((error) => setStatus(errorText(error)));

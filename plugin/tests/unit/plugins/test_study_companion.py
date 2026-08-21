@@ -7015,13 +7015,13 @@ const notes = [
   { id: 'note-2', title: 'Second', snippet: 'Second summary', content: 'Second body', updated_at: '2026-08-20T00:00:00Z' },
 ];
 const detailRequests = new Map();
-const noteListResolvers = [];
+const noteListRequests = [];
 let deferNoteLists = false;
 async function callPlugin(entryId, args = {}) {
   if (entryId === 'study_notebook_list') return { notebooks: [] };
   if (entryId === 'study_note_list') {
     if (!deferNoteLists) return { notes };
-    return await new Promise((resolve) => noteListResolvers.push(resolve));
+    return await new Promise((resolve, reject) => noteListRequests.push({ args, resolve, reject }));
   }
   if (entryId === 'study_note_get') {
     return await new Promise((resolve, reject) => detailRequests.set(args.note_id, { resolve, reject }));
@@ -7081,10 +7081,33 @@ await new Promise((resolve) => setTimeout(resolve, 0));
 notebook.querySelectorAll('.notebook-note-row__open')[0].click();
 detailRequests.get('note-1').resolve({ note: { ...notes[0], content: 'Latest First body' } });
 await new Promise((resolve) => setTimeout(resolve, 0));
-noteListResolvers.shift()({ notes });
+noteListRequests.shift().resolve({ notes });
 await new Promise((resolve) => setTimeout(resolve, 0));
 if (notebook.querySelector('.notebook-editor__content')?.value !== 'Latest First body') {
   throw new Error('an older note-list response replaced the latest note detail');
+}
+
+const searchInput = notebook.querySelector('input[type="search"]');
+searchInput.value = 'obsolete';
+searchInput.dispatchEvent(new window.Event('input', { bubbles: true }));
+await new Promise((resolve) => setTimeout(resolve, 300));
+searchInput.value = 'current';
+searchInput.dispatchEvent(new window.Event('input', { bubbles: true }));
+await new Promise((resolve) => setTimeout(resolve, 300));
+const obsoleteSearch = noteListRequests.shift();
+const currentSearch = noteListRequests.shift();
+if (obsoleteSearch.args.search_query !== 'obsolete' || currentSearch.args.search_query !== 'current') {
+  throw new Error('overlapping searches were not captured in request order');
+}
+currentSearch.resolve({ notes: [notes[1]] });
+await new Promise((resolve) => setTimeout(resolve, 0));
+obsoleteSearch.reject(new Error('stale search failed'));
+await new Promise((resolve) => setTimeout(resolve, 0));
+if (notebook.querySelector('.study-panel__status-chip')?.textContent.includes('stale search failed')) {
+  throw new Error('a superseded search rejection overwrote the current status');
+}
+if (notebook.querySelector('.notebook-note-row strong')?.textContent !== 'Second') {
+  throw new Error('a superseded search rejection replaced the current results');
 }
 """
     completed = subprocess.run(
@@ -7178,6 +7201,12 @@ notebook.querySelector('.notebook-note-row__open').click();
 await new Promise((resolve) => setTimeout(resolve, 0));
 const contentInput = notebook.querySelector('.notebook-editor__content');
 contentInput.value = 'Saved body';
+contentInput.dispatchEvent(new window.Event('input', { bubbles: true }));
+const dirtyUnload = new window.Event('beforeunload', { cancelable: true });
+window.dispatchEvent(dirtyUnload);
+if (!dirtyUnload.defaultPrevented) {
+  throw new Error('dirty editor did not register a page-unload guard');
+}
 const saveButton = [...notebook.querySelectorAll('.notebook-editor__actions button')]
   .find((button) => button.textContent === 'Save');
 saveButton.click();
@@ -7187,6 +7216,11 @@ await new Promise((resolve) => setTimeout(resolve, 0));
 
 if (notebook.querySelector('.notebook-editor__content')?.value !== 'Saved body') {
   throw new Error('list refresh replaced the saved full note body with a summary row');
+}
+const savedUnload = new window.Event('beforeunload', { cancelable: true });
+window.dispatchEvent(savedUnload);
+if (savedUnload.defaultPrevented) {
+  throw new Error('saved editor kept the page-unload guard registered');
 }
 """
     completed = subprocess.run(
@@ -7398,6 +7432,11 @@ await new Promise((resolve) => setTimeout(resolve, 0));
 const titleInput = notebook.querySelector('.notebook-editor input');
 titleInput.value = 'Unsaved title';
 titleInput.dispatchEvent(new window.Event('input', { bubbles: true }));
+const dirtyUnload = new window.Event('beforeunload', { cancelable: true });
+window.dispatchEvent(dirtyUnload);
+if (!dirtyUnload.defaultPrevented) {
+  throw new Error('dirty editor did not guard page unload');
+}
 notebook.querySelectorAll('.notebook-note-row__open')[1].click();
 await new Promise((resolve) => setTimeout(resolve, 0));
 if (confirmCount !== 1) {
@@ -7408,6 +7447,20 @@ if (notebook.querySelector('.notebook-editor input')?.value !== 'Unsaved title')
 }
 if (window.StudyCompanionNotebook.close() !== false) {
   throw new Error('dirty notebook close did not respect canceled confirmation');
+}
+const canceledCloseUnload = new window.Event('beforeunload', { cancelable: true });
+window.dispatchEvent(canceledCloseUnload);
+if (!canceledCloseUnload.defaultPrevented) {
+  throw new Error('canceled notebook close removed the page-unload guard');
+}
+window.confirm = () => true;
+if (window.StudyCompanionNotebook.close() !== true) {
+  throw new Error('confirmed notebook close did not complete');
+}
+const closedUnload = new window.Event('beforeunload', { cancelable: true });
+window.dispatchEvent(closedUnload);
+if (closedUnload.defaultPrevented) {
+  throw new Error('closed notebook kept the page-unload guard registered');
 }
 """
     completed = subprocess.run(
