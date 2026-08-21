@@ -82,6 +82,9 @@ _admitted_character_context: ContextVar[frozenset[str]] = ContextVar(
 )
 _active_character_requests: dict[str, int] = {}
 _active_character_request_events: dict[str, asyncio.Event] = {}
+# 调用方 release_memory_server_character() 的 HTTP 超时是 5s；排空留在它里面，
+# 剩下的时间给 dispose 和响应。
+_CHARACTER_REQUEST_DRAIN_TIMEOUT_SECONDS = 3.0
 _STORAGE_LIMITED_MODE_ALLOWED_PATHS = {
     "/health",
     "/shutdown",
@@ -128,15 +131,37 @@ def _end_character_request(
         event.set()
 
 
-async def _wait_for_character_requests(lanlan_name: str) -> None:
+async def _wait_for_character_requests(
+    lanlan_name: str,
+    timeout: float | None = None,
+) -> bool:
+    """Drain admitted foreground writes; report whether they all finished.
+
+    The caller (``release_memory_server_character``) gives up after 5s and
+    compensates by reopening admission. An unbounded wait here would keep this
+    handler running past that point and dispose engines behind the caller's
+    back, so the drain stays strictly inside the caller's window.
+    """
+    if timeout is None:
+        timeout = _CHARACTER_REQUEST_DRAIN_TIMEOUT_SECONDS
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
     while _active_character_requests.get(lanlan_name, 0):
+        remaining = deadline - loop.time()
+        if remaining <= 0:
+            return False
         event = _active_character_request_events.setdefault(
             lanlan_name,
             asyncio.Event(),
         )
         event.clear()
-        if _active_character_requests.get(lanlan_name, 0):
-            await event.wait()
+        if not _active_character_requests.get(lanlan_name, 0):
+            break
+        try:
+            await asyncio.wait_for(event.wait(), timeout=remaining)
+        except asyncio.TimeoutError:
+            return False
+    return True
 
 
 @app.middleware("http")
@@ -584,12 +609,52 @@ async def release_character_resources(
     # drain them and their spawned post-turn tasks before disposing any manager.
     from . import post_turn
 
-    await _wait_for_character_requests(lanlan_name)
+    # post-turn task 不持有前台准入 lease，等前台排空期间它仍会给旧名字写
+    # fact / mention / reflection。先取消当前已登记的，再排空前台请求，
+    # 最后补一次——排空窗口里已准入的请求还会派新的 post-turn task。
     cancelled_post_turn_tasks = await post_turn.cancel_character_post_turn_tasks(
         lanlan_name
     )
+    drained = await _wait_for_character_requests(lanlan_name)
+    cancelled_post_turn_tasks += await post_turn.cancel_character_post_turn_tasks(
+        lanlan_name
+    )
+    if not drained:
+        await review.release_character_derived_task_admission_claim(
+            lanlan_name,
+            derived_task_claim_token,
+        )
+        logger.warning(
+            "[MemoryServer] 等待角色 %s 的在途写入超时，未释放 SQLite 引擎",
+            lanlan_name,
+        )
+        return JSONResponse(
+            {
+                "status": "error",
+                "character_name": lanlan_name,
+                "message": "timed out draining admitted character writes",
+            },
+            status_code=503,
+        )
     async with _get_settle_lock(lanlan_name):
         async with _reload_lock:
+            # 排空和拿锁都可能久到调用方超时；那时主进程已经补偿性地释放了
+            # 本次 claim 并重新开放准入，这里不能再背着它 dispose。
+            if not review.is_character_derived_task_claim_active(
+                lanlan_name, derived_task_claim_token,
+            ):
+                logger.warning(
+                    "[MemoryServer] 角色 %s 的释放声明已被撤回，跳过 dispose",
+                    lanlan_name,
+                )
+                return JSONResponse(
+                    {
+                        "status": "cancelled",
+                        "character_name": lanlan_name,
+                        "message": "release claim was withdrawn while draining",
+                    },
+                    status_code=409,
+                )
             try:
                 scanned_managers, released_managers = (
                     _dispose_character_engines_across_generations(lanlan_name)

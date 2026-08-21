@@ -71,6 +71,14 @@ def is_character_publication_held(lanlan_name: str) -> bool:
     return lanlan_name in _publication_held_derived_task_names
 
 
+def is_character_derived_task_claim_active(
+    lanlan_name: str, claim_token: str,
+) -> bool:
+    """Return whether one lifecycle operation still owns its admission claim."""
+    claims = _derived_task_admission_claims.get(lanlan_name)
+    return bool(claims and claim_token in claims)
+
+
 def _capture_character_admission_generation(lanlan_name: str) -> int | None:
     """Return the main-process identity generation for one character path."""
     config_manager = getattr(runtime, "_config_manager", None)

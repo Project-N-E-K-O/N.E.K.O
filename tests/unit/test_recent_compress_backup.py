@@ -244,6 +244,210 @@ async def test_release_cancels_tracked_post_turn_task():
 
 
 @pytest.mark.unit
+@pytest.mark.asyncio
+async def test_release_cancels_post_turn_tasks_before_draining_requests():
+    """Post-turn work holds no admission lease, so it must die before the drain."""
+    from app import memory_server
+
+    name = "排空前取消后台角色"
+    claim_token = "cancel-before-drain-claim"
+    memory_server.review._retired_derived_task_names.discard(name)
+    memory_server.review._publication_held_derived_task_names.discard(name)
+    post_turn_task = asyncio.create_task(asyncio.sleep(30))
+    memory_server.post_turn._track_character_post_turn_task(name, post_turn_task)
+    fake_time_manager = MagicMock()
+    fake_time_manager.dispose_engine.return_value = True
+
+    context_token = memory_server.runtime._begin_character_request(name)
+    assert context_token is not None
+    release_task = None
+    try:
+        with patch.object(memory_server.runtime, "time_manager", fake_time_manager), patch.object(
+            memory_server.runtime, "_deferred_time_managers", [],
+        ):
+            release_task = asyncio.create_task(
+                memory_server.runtime.release_character_resources(
+                    name,
+                    hold_derived_task_admission=True,
+                    derived_task_claim_token=claim_token,
+                    derived_task_claim_generation=0,
+                )
+            )
+
+            async def _wait_for_post_turn_cancel():
+                while not post_turn_task.cancelled():
+                    await asyncio.sleep(0)
+
+            await asyncio.wait_for(_wait_for_post_turn_cancel(), timeout=1)
+            # 后台任务已经死了，但前台写入还在跑、引擎也还没释放。
+            assert memory_server.runtime._active_character_requests.get(name) == 1
+            fake_time_manager.dispose_engine.assert_not_called()
+
+            memory_server.runtime._end_character_request(name, context_token)
+            context_token = None
+            result = await asyncio.wait_for(release_task, timeout=2)
+            release_task = None
+
+        assert result["status"] == "success"
+        fake_time_manager.dispose_engine.assert_called_once_with(name)
+    finally:
+        if context_token is not None:
+            memory_server.runtime._end_character_request(name, context_token)
+        await _cleanup_task(release_task)
+        await _cleanup_task(post_turn_task)
+        await memory_server.review.release_character_derived_task_admission_claim(
+            name, claim_token,
+        )
+        memory_server.review._retired_derived_task_names.discard(name)
+        memory_server.review._publication_held_derived_task_names.discard(name)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_release_gives_up_instead_of_disposing_after_the_caller_timeout():
+    """An undrainable write must fail the release, not dispose behind the caller."""
+    from app import memory_server
+
+    name = "排空超时角色"
+    claim_token = "drain-timeout-claim"
+    memory_server.review._retired_derived_task_names.discard(name)
+    memory_server.review._publication_held_derived_task_names.discard(name)
+    fake_time_manager = MagicMock()
+    fake_time_manager.dispose_engine.return_value = True
+
+    context_token = memory_server.runtime._begin_character_request(name)
+    assert context_token is not None
+    try:
+        with patch.object(memory_server.runtime, "time_manager", fake_time_manager), patch.object(
+            memory_server.runtime, "_deferred_time_managers", [],
+        ), patch.object(
+            memory_server.runtime, "_CHARACTER_REQUEST_DRAIN_TIMEOUT_SECONDS", 0.05,
+        ):
+            result = await asyncio.wait_for(
+                memory_server.runtime.release_character_resources(
+                    name,
+                    hold_derived_task_admission=True,
+                    derived_task_claim_token=claim_token,
+                    derived_task_claim_generation=0,
+                ),
+                timeout=2,
+            )
+    finally:
+        memory_server.runtime._end_character_request(name, context_token)
+
+    assert result.status_code == 503
+    fake_time_manager.dispose_engine.assert_not_called()
+    # 声明已归还：主进程补偿后新写入必须能重新准入。
+    assert not memory_server.review.is_character_derived_task_claim_active(
+        name, claim_token,
+    )
+    assert memory_server.runtime._is_character_publication_admitted(name)
+    memory_server.review._retired_derived_task_names.discard(name)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_release_skips_dispose_when_claim_withdrawn_while_draining():
+    """The caller's timeout compensation wins; a late dispose must not race it."""
+    from app import memory_server
+
+    name = "补偿撤回角色"
+    claim_token = "withdrawn-while-draining-claim"
+    memory_server.review._retired_derived_task_names.discard(name)
+    memory_server.review._publication_held_derived_task_names.discard(name)
+    fake_time_manager = MagicMock()
+    fake_time_manager.dispose_engine.return_value = True
+
+    context_token = memory_server.runtime._begin_character_request(name)
+    assert context_token is not None
+    release_task = None
+    try:
+        with patch.object(memory_server.runtime, "time_manager", fake_time_manager), patch.object(
+            memory_server.runtime, "_deferred_time_managers", [],
+        ):
+            release_task = asyncio.create_task(
+                memory_server.runtime.release_character_resources(
+                    name,
+                    hold_derived_task_admission=True,
+                    derived_task_claim_token=claim_token,
+                    derived_task_claim_generation=0,
+                )
+            )
+
+            async def _wait_for_hold():
+                while not memory_server.review.is_character_publication_held(name):
+                    await asyncio.sleep(0)
+
+            await asyncio.wait_for(_wait_for_hold(), timeout=1)
+            # 主进程 5s 超时后的补偿：撤回声明并重新开放准入。
+            await memory_server.review.release_character_derived_task_admission_claim(
+                name, claim_token,
+            )
+            memory_server.runtime._end_character_request(name, context_token)
+            context_token = None
+            result = await asyncio.wait_for(release_task, timeout=2)
+            release_task = None
+
+        assert result.status_code == 409
+        assert json.loads(result.body)["status"] == "cancelled"
+        fake_time_manager.dispose_engine.assert_not_called()
+    finally:
+        if context_token is not None:
+            memory_server.runtime._end_character_request(name, context_token)
+        await _cleanup_task(release_task)
+        memory_server.review._retired_derived_task_names.discard(name)
+        memory_server.review._publication_held_derived_task_names.discard(name)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_negative_keyword_hook_task_is_tracked_as_post_turn_work():
+    """The nested hook task must be cancellable through the per-character registry."""
+    from app import memory_server
+    from app.memory_server import post_turn as post_turn_module
+
+    name = "负面关键词后台角色"
+    memory_server.post_turn._character_post_turn_tasks.pop(name, None)
+    hook_started = asyncio.Event()
+
+    async def _hook(*_args, **_kwargs):
+        hook_started.set()
+        await asyncio.sleep(30)
+
+    fake_reflection = MagicMock()
+    fake_reflection.arecord_mentions = AsyncMock(return_value=None)
+    fake_reflection.aload_surfaced = AsyncMock(return_value=[])
+    fake_persona = MagicMock()
+    fake_persona.arecord_mentions = AsyncMock(return_value=None)
+
+    with patch.object(
+        post_turn_module.gates, "_ais_powerful_memory_enabled", AsyncMock(return_value=True),
+    ), patch.object(
+        post_turn_module.signal_extraction, "_signal_check_record_turn", MagicMock(),
+    ), patch.object(
+        post_turn_module.signal_extraction,
+        "_amaybe_trigger_negative_keyword_hook",
+        MagicMock(side_effect=_hook),
+    ), patch.object(
+        post_turn_module.runtime, "reflection_engine", fake_reflection,
+    ), patch.object(
+        post_turn_module.runtime, "persona_manager", fake_persona,
+    ), patch.object(
+        post_turn_module, "_resolve_corrections_with_subject_locale", AsyncMock(return_value=0),
+    ):
+        await post_turn_module._run_post_turn_signals(
+            [HumanMessage(content="你好喵")], name,
+        )
+        await asyncio.wait_for(hook_started.wait(), timeout=1)
+
+        assert len(memory_server.post_turn._character_post_turn_tasks.get(name, ())) == 1
+        cancelled = await memory_server.post_turn.cancel_character_post_turn_tasks(name)
+
+    assert cancelled == 1
+    assert name not in memory_server.post_turn._character_post_turn_tasks
+
+
+@pytest.mark.unit
 def test_cross_generation_release_closes_real_sqlite_pool(tmp_path):
     """The deferred generation must stop holding the database file on Windows."""
     from sqlalchemy import create_engine, text

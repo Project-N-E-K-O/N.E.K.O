@@ -498,10 +498,17 @@ async def _run_post_turn_signals(
             # 强力记忆关 → 整段不跑（这是 evidence-RFC 引入的额外 LLM 路径）
             if user_msgs:
                 from utils.language_utils import get_global_language_full
-                runtime._spawn_background_task(
-                    signal_extraction._amaybe_trigger_negative_keyword_hook(
-                        lanlan_name, user_msgs, get_global_language_full(),
-                    )
+                # 这个子任务由 post-turn 派生，同样按角色登记：
+                # release 只取消父任务的话，它会在 hold 之后继续给旧名字写
+                # disputation / reflection 状态。
+                _track_character_post_turn_task(
+                    lanlan_name,
+                    runtime._spawn_background_task(
+                        signal_extraction._amaybe_trigger_negative_keyword_hook(
+                            lanlan_name, user_msgs, get_global_language_full(),
+                        ),
+                        inherit_character_admission=False,
+                    ),
                 )
         except Exception as e:
             logger.debug(f"[MemoryServer] 负面关键词 hook 派发失败: {e}")
