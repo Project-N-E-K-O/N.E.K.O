@@ -149,11 +149,18 @@
       });
     }
 
+    function setListLocked(locked) {
+      list.querySelectorAll('.notebook-note-row__open').forEach((button) => {
+        button.disabled = locked;
+      });
+    }
+
     function setBusy(active, mutation = false) {
       busyCount = Math.max(0, busyCount + (active ? 1 : -1));
       if (mutation) mutationBusyCount = Math.max(0, mutationBusyCount + (active ? 1 : -1));
       root.dataset.busy = busyCount > 0 ? 'true' : 'false';
       setEditorLocked(busyCount > 0);
+      setListLocked(mutationBusyCount > 0);
       updateNotebookActions();
       if (busyCount === 0) {
         root.querySelectorAll('button').forEach((button) => {
@@ -306,6 +313,7 @@
         });
         const openButton = el('button', 'notebook-note-row__open');
         openButton.type = 'button';
+        openButton.disabled = mutationBusyCount > 0;
         openButton.append(
           el('strong', '', note.title || t(ctx, 'ui.notebook.untitled', 'Untitled')),
           el('span', '', note.snippet || t(ctx, 'ui.notebook.empty_note', 'Empty note')),

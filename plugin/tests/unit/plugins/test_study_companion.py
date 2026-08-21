@@ -7390,8 +7390,24 @@ for (const label of ['Create notebook', 'Rename', 'Delete notebook', 'New note']
 if (refreshButtonDuringDelete?.disabled) {
   throw new Error('read-only refresh was blocked during notebook deletion');
 }
+const detailCallsBeforeDelete = calls.filter((call) => call.entryId === 'study_note_get').length;
+const openButtonDuringDelete = notebook.querySelector('.notebook-note-row__open');
+if (!openButtonDuringDelete?.disabled) {
+  throw new Error('existing note open action stayed enabled during notebook deletion');
+}
+refreshButtonDuringDelete.click();
+await new Promise((resolve) => setTimeout(resolve, 0));
+await new Promise((resolve) => setTimeout(resolve, 0));
+const redrawnOpenButtonDuringDelete = notebook.querySelector('.notebook-note-row__open');
+if (!redrawnOpenButtonDuringDelete?.disabled) {
+  throw new Error('redrawn note open action ignored the notebook mutation lock');
+}
+redrawnOpenButtonDuringDelete.click();
 newNoteButtonDuringDelete.click();
 await new Promise((resolve) => setTimeout(resolve, 0));
+if (calls.filter((call) => call.entryId === 'study_note_get').length !== detailCallsBeforeDelete) {
+  throw new Error('note open action ran concurrently with notebook deletion');
+}
 if (calls.filter((call) => call.entryId === 'study_note_upsert').length !== upsertsBeforeDelete) {
   throw new Error('new note mutation ran concurrently with notebook deletion');
 }
