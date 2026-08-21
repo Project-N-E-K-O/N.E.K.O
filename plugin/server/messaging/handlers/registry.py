@@ -21,6 +21,7 @@ def build_request_handlers() -> dict[str, RequestHandler]:
     from plugin.server.messaging.handlers.live_vision import (
         handle_live_frame_permission_set,
         handle_live_vision_get,
+        handle_plugin_delivery_permission_set,
     )
     from plugin.server.messaging.handlers.export import handle_export_push
     from plugin.server.messaging.handlers.run_update import handle_run_update
@@ -51,6 +52,7 @@ def build_request_handlers() -> dict[str, RequestHandler]:
         "USER_CONTEXT_GET": handle_user_context_get,
         "LIVE_VISION_GET": handle_live_vision_get,
         "LIVE_FRAME_PERMISSION_SET": handle_live_frame_permission_set,
+        "PLUGIN_DELIVERY_PERMISSION_SET": handle_plugin_delivery_permission_set,
         "EXPORT_PUSH": handle_export_push,
         "RUN_UPDATE": handle_run_update,
         "EVENT_GET": handle_event_get,

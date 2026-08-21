@@ -285,6 +285,14 @@ def test_live_sharing_wins_over_the_screenshot_switch():
     assert context_instructions(
         screenshot_enabled=True, live_vision_active=True
     ) == WOWS_CONTEXT_WITH_LIVE_VISION_INSTRUCTIONS
+    # The probe can be cold while the request still asks the host to attach.
+    # Scene wording has to follow that ask, or the first cue still mandates
+    # wows_look_at_battle on a turn that may already carry the shared frame.
+    assert context_instructions(
+        screenshot_enabled=True,
+        live_vision_active=False,
+        live_vision_enabled=True,
+    ) == WOWS_CONTEXT_WITH_LIVE_VISION_INSTRUCTIONS
 
 
 def test_the_live_context_carries_the_reading_guide_it_inherited():
@@ -383,6 +391,20 @@ def test_the_permission_generation_rides_with_the_attachment_request():
     assert request.metadata["live_frame_permission_token"] == "generation-one"
 
 
+def test_the_delivery_generation_rides_with_the_call_out():
+    assert "plugin_delivery_token" in PromptProfile.__dataclass_fields__
+    request = WowsPromptRouter(WowsConfig()).build(
+        _candidate(),
+        PromptProfile(
+            channel_mode="dual",
+            dry_run=True,
+            plugin_delivery_token="queued-generation",
+        ),
+    )
+
+    assert request.metadata["plugin_delivery_token"] == "queued-generation"
+
+
 def test_the_ask_survives_a_probe_that_has_not_caught_up_yet():
     """The switch is on but the probe is cold or 2s behind, as it is for every
     call-out in the seconds after sharing starts. Gating the ask on that cache
@@ -392,8 +414,22 @@ def test_the_ask_survives_a_probe_that_has_not_caught_up_yet():
         screenshot_enabled=True, live_vision_active=False, live_vision_enabled=True)
 
     assert request.metadata["attach_live_frame"] is True
-    # The wording still follows what she can actually be told right now.
-    assert VISION_LOOK_BEFORE_SPEAK.strip() in request.text
+    # The host may attach a fresh frame at delivery. Mandating the screenshot
+    # tool on that same turn recaptures a picture she was just handed.
+    assert LIVE_VISION_SPEAK_HINT.strip() in request.text
+    assert VISION_LOOK_BEFORE_SPEAK.strip() not in request.text
+
+
+def test_a_cold_probe_does_not_claim_a_frame_when_screenshots_are_off():
+    """Asking is free; claiming the picture arrived is not. Without the
+    screenshot switch there is no redundant capture to prevent, so a stale
+    probe must not pretend this turn already carries the shared screen."""
+    request = _request(
+        screenshot_enabled=False, live_vision_active=False, live_vision_enabled=True)
+
+    assert request.metadata["attach_live_frame"] is True
+    assert LIVE_VISION_SPEAK_HINT.strip() not in request.text
+    assert VISION_LOOK_BEFORE_SPEAK.strip() not in request.text
 
 
 def test_the_switch_off_never_asks():

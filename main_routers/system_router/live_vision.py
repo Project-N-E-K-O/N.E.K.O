@@ -28,7 +28,10 @@ gated on ``verify_local_access`` and the frame itself is opt-in.
 from fastapi import Depends, Request
 from fastapi.responses import Response
 
-from main_logic.core.live_frame_permissions import set_live_frame_permission
+from main_logic.core.live_frame_permissions import (
+    set_live_frame_permission,
+    set_plugin_delivery_permission,
+)
 from main_routers.cookies_login_router import verify_local_access
 
 from ..shared_state import get_session_manager
@@ -147,3 +150,48 @@ async def set_live_frame_attachment_permission(
         str(payload.get("token") or ""),
         enabled=bool(payload.get("enabled")),
     )
+
+
+def _retract_plugin_deliveries(source_name: str) -> None:
+    try:
+        managers = get_session_manager()
+    except Exception as exc:
+        logger.debug("plugin-delivery retract: session_manager unavailable: %s", exc)
+        return
+    if not isinstance(managers, dict):
+        return
+    for mgr in managers.values():
+        retract = getattr(mgr, "retract_callbacks_from_source", None)
+        if callable(retract):
+            try:
+                retract(source_name)
+            except Exception as exc:
+                logger.debug("plugin-delivery retract failed: %s", exc)
+
+
+@router.post(
+    "/system/plugin-callbacks/delivery-permission",
+    dependencies=[Depends(verify_local_access)],
+)
+async def set_plugin_callback_delivery_permission(
+    request: Request,
+    response: Response,
+):
+    """Install a plugin's spoken-cue generation, then retract queued ones."""
+    _set_no_store_headers(response)
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+    result = set_plugin_delivery_permission(
+        str(payload.get("source_name") or ""),
+        str(payload.get("token") or ""),
+        enabled=bool(payload.get("enabled")),
+    )
+    source = str(result.get("source_name") or "")
+    token = str(result.get("token") or "")
+    if source and token and not result["enabled"]:
+        _retract_plugin_deliveries(source)
+    return result

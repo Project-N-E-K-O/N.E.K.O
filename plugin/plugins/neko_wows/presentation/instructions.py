@@ -242,16 +242,44 @@ def instructions_for(lane: str, channel_mode: str) -> str:
     return DEFAULT_BUNDLE.instructions_for(lane, channel_mode)
 
 
+def live_vision_wording_applies(
+    *,
+    screenshot_enabled: bool,
+    live_vision_enabled: bool = False,
+    live_vision_active: bool = False,
+) -> bool:
+    """Whether this turn's text should treat the shared frame as already coming.
+
+    The probe cache is not the last word. When screenshots and live share are
+    both on, a cold or TTL-expired probe still sets ``attach_live_frame``, and
+    the host may attach a fresh frame at delivery. Mandating
+    ``wows_look_at_battle`` on that turn recaptures a picture she was handed.
+    Without the screenshot switch there is no such recapture, so a stale probe
+    must not pretend the picture already arrived.
+    """
+    return bool(
+        live_vision_active
+        or (live_vision_enabled and screenshot_enabled)
+    )
+
+
 def context_instructions(
-    *, screenshot_enabled: bool, live_vision_active: bool = False
+    *,
+    screenshot_enabled: bool,
+    live_vision_active: bool = False,
+    live_vision_enabled: bool = False,
 ) -> str:
     """Pick the scene-setting block that matches how she can see the battle.
 
-    Live sharing wins over the screenshot switch: when the frame is already
-    coming to her every turn, telling her to call the tool first would spend a
-    round trip to arrive at a picture she was handed anyway.
+    Live sharing wins over the screenshot switch: when this turn is requesting
+    the shared frame, telling her to call the tool first would spend a round
+    trip to arrive at a picture she was handed anyway.
     """
-    if live_vision_active:
+    if live_vision_wording_applies(
+        screenshot_enabled=screenshot_enabled,
+        live_vision_enabled=live_vision_enabled,
+        live_vision_active=live_vision_active,
+    ):
         return WOWS_CONTEXT_WITH_LIVE_VISION_INSTRUCTIONS
     if screenshot_enabled:
         return WOWS_CONTEXT_WITH_VISION_INSTRUCTIONS
@@ -278,5 +306,6 @@ __all__ = [
     "bundle_from_revision",
     "context_instructions",
     "instructions_for",
+    "live_vision_wording_applies",
     "validate_sections",
 ]

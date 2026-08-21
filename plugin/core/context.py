@@ -1984,6 +1984,27 @@ class PluginContext:
             error_log_template=None,
         )
 
+    async def set_plugin_delivery_permission_async(
+        self,
+        *,
+        token: str,
+        enabled: bool,
+        timeout: float = 3.0,
+    ) -> Dict[str, Any]:
+        if not isinstance(enabled, bool):
+            raise TypeError("enabled must be a bool")
+        return await self._send_request_and_wait_async(
+            method_name="set_plugin_delivery_permission",
+            request_type="PLUGIN_DELIVERY_PERMISSION_SET",
+            request_data={
+                "token": token,
+                "enabled": enabled,
+            },
+            timeout=timeout,
+            wrap_result=True,
+            error_log_template=None,
+        )
+
     def query_memory_sync(self, lanlan_name: str, query: str, timeout: float = 5.0) -> Dict[str, Any]:
         """同步版本:查询内存数据"""
         try:

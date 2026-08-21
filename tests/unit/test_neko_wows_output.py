@@ -473,6 +473,104 @@ def test_shutdown_stops_workers_outside_pipeline_lock_and_cleans_up_inside_it():
     ]
 
 
+def _disable_runtime_plugin(*, delivery_raises=False, live_frame_raises=False):
+    delivery_calls = []
+    live_frame_calls = []
+    plugin = object.__new__(NekoWowsPlugin)
+    plugin._state_lock = threading.RLock()
+    plugin._pipeline_lock = threading.Lock()
+    plugin._running = True
+    plugin._reconnect_required = False
+    plugin._latest = ("live-frame",)
+    plugin._previous = ("previous-frame",)
+    plugin._plugin_delivery_token = "queued-generation"
+    plugin._live_frame_permission_token = "frame-generation"
+    plugin._live_frame_permission_ready = True
+    plugin.cfg = WowsConfig()
+
+    async def set_plugin_delivery_permission_async(**kwargs):
+        delivery_calls.append(kwargs)
+        if delivery_raises:
+            raise RuntimeError("plugin delivery permission update unavailable")
+        return {"ok": True, **kwargs}
+
+    async def set_live_frame_permission_async(**kwargs):
+        live_frame_calls.append(kwargs)
+        if live_frame_raises:
+            raise RuntimeError("live frame permission update unavailable")
+        return {"ok": True, **kwargs}
+
+    plugin._host_ctx = SimpleNamespace(
+        set_plugin_delivery_permission_async=(
+            set_plugin_delivery_permission_async),
+        set_live_frame_permission_async=set_live_frame_permission_async,
+    )
+    plugin.transport = SimpleNamespace(stop=lambda: None)
+    plugin.service = SimpleNamespace(stop=lambda: None)
+    plugin.dispatcher = SimpleNamespace(pause=lambda _reason: None)
+    plugin.arbiter = SimpleNamespace(pause=lambda: None)
+    plugin.context_injector = SimpleNamespace(restore=lambda *_a, **_k: None)
+    plugin.ship_context = SimpleNamespace(reset=lambda _reason: None)
+    plugin.timeline = SimpleNamespace(record=lambda *_a, **_k: None)
+    plugin.logger = SimpleNamespace(
+        info=lambda _message: None,
+        warning=lambda _message: None,
+    )
+    plugin.shots = SimpleNamespace(clear=lambda: None)
+    plugin.knowledge = SimpleNamespace(close=lambda: None)
+    return plugin, delivery_calls, live_frame_calls
+
+
+def test_disabling_the_plugin_invalidates_queued_host_deliveries():
+    """A cue the host already accepted must not outlive `[neko_wows].enabled`.
+
+    Stopping transport and pausing the local dispatcher leaves the proactive
+    manager holding the callback for the rest of its TTL. Disable must tell the
+    host that the already-stamped generation is off *before* minting a new
+    one, so a still-queued battle message cannot be spoken after the UI says
+    disabled.
+    """
+    async def scenario():
+        plugin, delivery_calls, _live_frame_calls = _disable_runtime_plugin()
+
+        await NekoWowsPlugin._stop_runtime_output(plugin)
+
+        assert delivery_calls == [{
+            "token": "queued-generation",
+            "enabled": False,
+            "timeout": 3.0,
+        }]
+        assert plugin._plugin_delivery_token != "queued-generation"
+        assert plugin._plugin_delivery_token
+
+    asyncio.run(scenario())
+
+
+def test_disabling_does_not_claim_success_when_host_delivery_revoke_fails():
+    """A failed host update must not look like disable succeeded.
+
+    Local output still has to stop so new call-outs are not stamped with the
+    still-enabled generation. The caller must see the failure so the panel
+    does not report disabled while queued cues can still speak.
+    """
+    async def scenario():
+        plugin, delivery_calls, _live_frame_calls = _disable_runtime_plugin(
+            delivery_raises=True)
+
+        with pytest.raises(RuntimeError, match="unavailable"):
+            await NekoWowsPlugin._stop_runtime_output(plugin)
+
+        assert delivery_calls == [{
+            "token": "queued-generation",
+            "enabled": False,
+            "timeout": 3.0,
+        }]
+        assert plugin._running is False
+        assert plugin._plugin_delivery_token != "queued-generation"
+
+    asyncio.run(scenario())
+
+
 def test_shutdown_revokes_the_live_frame_permission_generation():
     async def scenario():
         calls = []
@@ -505,13 +603,31 @@ def test_shutdown_revokes_the_live_frame_permission_generation():
         result = await NekoWowsPlugin.shutdown(plugin)
 
         assert result.is_ok()
-        assert plugin._live_frame_permission_token != "active-generation"
-        assert plugin._live_frame_permission_ready is False
         assert calls == [{
-            "token": plugin._live_frame_permission_token,
+            "token": "active-generation",
             "enabled": False,
             "timeout": 3.0,
         }]
+        assert plugin._live_frame_permission_token != "active-generation"
+        assert plugin._live_frame_permission_ready is False
+
+    asyncio.run(scenario())
+
+
+def test_shutdown_reports_delivery_permission_failure():
+    async def scenario():
+        plugin, _delivery_calls, _live_frame_calls = _disable_runtime_plugin(
+            delivery_raises=True)
+        plugin._live_frame_permission_token = "active-generation"
+        status = SimpleNamespace(as_dict=lambda: {"mode": "stopped"})
+        plugin.service = SimpleNamespace(stop=lambda: status)
+
+        result = await NekoWowsPlugin.shutdown(plugin)
+
+        assert result.is_err()
+        message = str(result.error)
+        assert "delivery" in message.lower()
+        assert "live frame" not in message.lower()
 
     asyncio.run(scenario())
 
@@ -778,6 +894,22 @@ def test_callout_profile_stamps_the_live_frame_permission_generation():
     assert captured["token"] == "generation-one"
 
 
+def test_callout_profile_stamps_the_plugin_delivery_generation():
+    plugin, snapshot, _calls = _catalog_order_target()
+    plugin._plugin_delivery_token = "queued-generation"
+    captured = {}
+
+    def build(_candidates, profile, _excerpts=()):
+        captured["token"] = profile.plugin_delivery_token
+        return SimpleNamespace(text="respond", event_id="battle_started")
+
+    plugin.router = SimpleNamespace(build=build)
+
+    NekoWowsPlugin._evaluate_locked(plugin, snapshot)
+
+    assert captured["token"] == "queued-generation"
+
+
 def test_callout_profile_disables_live_vision_until_permission_is_ready():
     plugin, snapshot, _calls = _catalog_order_target()
     plugin.cfg.live_vision_enabled = True
@@ -798,6 +930,34 @@ def test_callout_profile_disables_live_vision_until_permission_is_ready():
     assert captured["enabled"] is False
     assert captured["active"] is False
     assert captured["scene_context"] == WOWS_CONTEXT_INSTRUCTIONS
+
+
+def test_callout_scene_follows_the_attachment_request_when_the_probe_is_cold():
+    """Both switches on, probe empty: the cue still asks the host to attach,
+    so it must not also mandate wows_look_at_battle."""
+    plugin, snapshot, _calls = _catalog_order_target()
+    plugin.cfg.screenshot_enabled = True
+    plugin.cfg.live_vision_enabled = True
+    plugin._live_frame_permission_ready = True
+    plugin.live_vision = SimpleNamespace(is_active=lambda **_kwargs: False)
+    captured = {}
+
+    def build(_candidates, profile, _excerpts=()):
+        captured["enabled"] = profile.live_vision_enabled
+        captured["active"] = profile.live_vision_active
+        captured["screenshot"] = profile.screenshot_enabled
+        captured["scene_context"] = profile.scene_context
+        return SimpleNamespace(text="respond", event_id="battle_started")
+
+    plugin.router = SimpleNamespace(build=build)
+
+    NekoWowsPlugin._evaluate_locked(plugin, snapshot)
+
+    assert captured["enabled"] is True
+    assert captured["active"] is False
+    assert captured["screenshot"] is True
+    assert captured["scene_context"] == WOWS_CONTEXT_WITH_LIVE_VISION_INSTRUCTIONS
+    assert "wows_look_at_battle" not in captured["scene_context"]
 
 
 def test_callout_profile_carries_scene_context_into_the_proactive_response():

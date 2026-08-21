@@ -557,6 +557,58 @@ def test_config_change_stops_output_when_the_plugin_is_disabled():
     assert result.unwrap()["status"] == "disabled"
 
 
+def test_config_change_does_not_report_disabled_when_host_revoke_fails():
+    from types import SimpleNamespace
+
+    plugin = object.__new__(NekoWowsPlugin)
+    plugin._state_lock = threading.RLock()
+    plugin._pipeline_lock = threading.Lock()
+    plugin._running = True
+    plugin._reconnect_required = False
+    plugin._latest = ("live-frame",)
+    plugin._previous = ("previous-frame",)
+    plugin._plugin_delivery_token = "queued-generation"
+    plugin._live_frame_permission_token = "frame-generation"
+    plugin._live_frame_permission_ready = True
+    plugin.cfg = WowsConfig()
+    plugin.logger = SimpleNamespace(
+        info=lambda _message: None,
+        warning=lambda _message: None,
+    )
+
+    async def reload_config():
+        cfg = WowsConfig()
+        cfg.enabled = False
+        plugin.cfg = cfg
+        return cfg
+
+    async def set_plugin_delivery_permission_async(**_kwargs):
+        raise RuntimeError("plugin delivery permission update unavailable")
+
+    async def set_live_frame_permission_async(**kwargs):
+        return {"ok": True, **kwargs}
+
+    plugin._reload_config = reload_config
+    plugin._host_ctx = SimpleNamespace(
+        set_plugin_delivery_permission_async=(
+            set_plugin_delivery_permission_async),
+        set_live_frame_permission_async=set_live_frame_permission_async,
+    )
+    plugin.transport = SimpleNamespace(stop=lambda: None)
+    plugin.service = SimpleNamespace(stop=lambda: None)
+    plugin.dispatcher = SimpleNamespace(pause=lambda _reason: None)
+    plugin.arbiter = SimpleNamespace(pause=lambda: None)
+    plugin.context_injector = SimpleNamespace(restore=lambda *_a, **_k: None)
+    plugin.ship_context = SimpleNamespace(reset=lambda _reason: None)
+    plugin.timeline = SimpleNamespace(record=lambda *_a, **_k: None)
+
+    result = asyncio.run(NekoWowsPlugin.on_config_change(plugin))
+
+    assert result.is_err()
+    assert "delivery" in str(result.error).lower()
+    assert plugin._running is False
+
+
 def test_config_change_restarts_output_when_the_plugin_is_re_enabled():
     calls = []
     plugin = object.__new__(NekoWowsPlugin)

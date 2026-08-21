@@ -1109,16 +1109,24 @@ def test_failed_live_frame_registration_clears_runtime_readiness():
     async def scenario():
         target = _ReloadTarget(current=True, configured=False)
         target._live_frame_permission_token = "generation-one"
-        target._live_frame_permission_ready = True
+        target._live_frame_permission_ready = False
+        fail = False
 
-        async def set_live_frame_permission_async(**_kwargs):
-            raise RuntimeError("host unavailable")
+        async def set_live_frame_permission_async(**kwargs):
+            if fail:
+                raise RuntimeError("host unavailable")
+            return {"ok": True, **kwargs}
 
         target._host_ctx = type("Host", (), {
             "set_live_frame_permission_async": staticmethod(
                 set_live_frame_permission_async),
         })()
 
+        await NekoWowsPlugin._publish_live_frame_permission(
+            target, enabled=True)
+        assert target._live_frame_permission_ready is True
+
+        fail = True
         with pytest.raises(RuntimeError, match="host unavailable"):
             await NekoWowsPlugin._publish_live_frame_permission(
                 target,

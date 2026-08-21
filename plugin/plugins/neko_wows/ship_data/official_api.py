@@ -10,6 +10,7 @@ import threading
 import time
 from collections import OrderedDict
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 from urllib.error import HTTPError, URLError
@@ -57,6 +58,15 @@ class _ResponseTooLarge(ValueError):
 
 class _InvalidOfficialResponse(ValueError):
     pass
+
+
+@dataclass(frozen=True, slots=True)
+class _OfficialApiConfig:
+    generation: int
+    application_id: str
+    region: str
+    timeout_seconds: float
+    cache_ttl_seconds: float
 
 
 def official_error(code: str) -> dict[str, Any]:
@@ -147,11 +157,12 @@ class OfficialWowsApiClient:
         self._transport = transport or self._default_transport
         self._clock = clock
         self._lock = threading.RLock()
+        self._config_generation = 0
         self._cache: OrderedDict[
-            tuple[str, str, int, str], tuple[float, dict[str, Any]]
+            tuple[int, str, str, int, str], tuple[float, dict[str, Any]]
         ] = OrderedDict()
         self._name_index: OrderedDict[
-            tuple[str, str], tuple[float, dict[str, tuple[int, ...]]]
+            tuple[int, str, str], tuple[float, dict[str, tuple[int, ...]]]
         ] = OrderedDict()
         self._cache_hits = 0
         self._cache_misses = 0
@@ -179,8 +190,19 @@ class OfficialWowsApiClient:
                 self.cache_ttl_seconds,
             )
             if after != before:
+                self._config_generation += 1
                 self._cache.clear()
                 self._name_index.clear()
+
+    def _config_snapshot(self) -> _OfficialApiConfig:
+        with self._lock:
+            return _OfficialApiConfig(
+                generation=self._config_generation,
+                application_id=self.application_id,
+                region=self.region,
+                timeout_seconds=self.timeout_seconds,
+                cache_ttl_seconds=self.cache_ttl_seconds,
+            )
 
     def query_ship(
         self,
@@ -190,29 +212,45 @@ class OfficialWowsApiClient:
         language: str = "en",
     ) -> dict[str, Any]:
         """Resolve one exact official display name, never a fuzzy match."""
+        client_config = self._config_snapshot()
         if isinstance(ship, str) and ship.strip().isdigit():
-            return self.query_ship_id(
-                int(ship.strip()), configuration=configuration, language=language)
-        error = self._validate(configuration, language)
+            return self._query_ship_id(
+                int(ship.strip()),
+                configuration=configuration,
+                language=language,
+                client_config=client_config,
+            )
+        error = self._validate(
+            configuration, language, client_config=client_config)
         if error:
             return official_error(error)
         wanted = _text(ship).casefold()
         if not wanted:
             return official_error("ship_not_found")
         language = language.casefold()
-        index, code = self._name_index_for(language)
+        index, code = self._name_index_for(language, client_config)
         if code:
             return official_error(code)
         matches = index.get(wanted, ())
         if len(matches) != 1:
             return official_error("ship_not_found")
-        return self.query_ship_id(
-            matches[0], configuration=configuration, language=language)
+        return self._query_ship_id(
+            matches[0],
+            configuration=configuration,
+            language=language,
+            client_config=client_config,
+        )
 
     def _name_index_for(
-        self, language: str,
+        self,
+        language: str,
+        client_config: _OfficialApiConfig,
     ) -> tuple[dict[str, tuple[int, ...]], str]:
-        key = (self.region, language)
+        key = (
+            client_config.generation,
+            client_config.region,
+            language,
+        )
         now = float(self._clock())
         with self._lock:
             self._purge_expired(now)
@@ -223,18 +261,22 @@ class OfficialWowsApiClient:
                     self._name_index.move_to_end(key)
                     return value, ""
                 self._name_index.pop(key, None)
-        index, code = self._fetch_name_index(language)
+        index, code = self._fetch_name_index(language, client_config)
         if code:
             return {}, code
-        if self.cache_ttl_seconds > 0:
-            expires_at = float(self._clock()) + self.cache_ttl_seconds
+        if client_config.cache_ttl_seconds > 0:
+            expires_at = (
+                float(self._clock()) + client_config.cache_ttl_seconds)
             with self._lock:
-                self._name_index[key] = (expires_at, index)
-                self._name_index.move_to_end(key)
+                if client_config.generation == self._config_generation:
+                    self._name_index[key] = (expires_at, index)
+                    self._name_index.move_to_end(key)
         return index, ""
 
     def _fetch_name_index(
-        self, language: str,
+        self,
+        language: str,
+        client_config: _OfficialApiConfig,
     ) -> tuple[dict[str, tuple[int, ...]], str]:
         names: dict[str, list[int]] = {}
         page_total: int | None = None
@@ -247,6 +289,7 @@ class OfficialWowsApiClient:
                     "limit": 100,
                     "page_no": page_no,
                 },
+                client_config,
             )
             if code:
                 return {}, code
@@ -287,7 +330,23 @@ class OfficialWowsApiClient:
         configuration: str = "top",
         language: str = "en",
     ) -> dict[str, Any]:
-        error = self._validate(configuration, language)
+        return self._query_ship_id(
+            ship_id,
+            configuration=configuration,
+            language=language,
+            client_config=self._config_snapshot(),
+        )
+
+    def _query_ship_id(
+        self,
+        ship_id: int,
+        *,
+        configuration: str,
+        language: str,
+        client_config: _OfficialApiConfig,
+    ) -> dict[str, Any]:
+        error = self._validate(
+            configuration, language, client_config=client_config)
         if error:
             return official_error(error)
         if (
@@ -298,7 +357,13 @@ class OfficialWowsApiClient:
             return official_error("ship_not_found")
 
         language = language.casefold()
-        cache_key = (self.region, language, ship_id, configuration)
+        cache_key = (
+            client_config.generation,
+            client_config.region,
+            language,
+            ship_id,
+            configuration,
+        )
         cached = self._cache_get(cache_key)
         if cached is not None:
             return cached
@@ -306,6 +371,7 @@ class OfficialWowsApiClient:
         ship_payload, code = self._request(
             "/wows/encyclopedia/ships/",
             {"language": language, "ship_id": ship_id},
+            client_config,
         )
         if code:
             return official_error(code)
@@ -322,7 +388,10 @@ class OfficialWowsApiClient:
             **modules,
         }
         profile_payload, code = self._request(
-            "/wows/encyclopedia/shipprofile/", profile_params)
+            "/wows/encyclopedia/shipprofile/",
+            profile_params,
+            client_config,
+        )
         if code:
             return official_error(code)
         profile_data = self._data_item(profile_payload, ship_id)
@@ -335,7 +404,7 @@ class OfficialWowsApiClient:
                 "configuration": "top",
                 "modules": modules,
                 "profile": self._normalize_profile(profile_data),
-                "region": self.region,
+                "region": client_config.region,
                 "language": language,
                 "queried_at_utc": datetime.now(timezone.utc).isoformat().replace(
                     "+00:00", "Z"),
@@ -348,7 +417,7 @@ class OfficialWowsApiClient:
             "data": normalized,
             "source": SOURCE_NAME,
         }
-        self._cache_put(cache_key, result)
+        self._cache_put(cache_key, result, client_config)
         return copy.deepcopy(result)
 
     def stats(self) -> dict[str, Any]:
@@ -361,14 +430,22 @@ class OfficialWowsApiClient:
                 "cache_misses": self._cache_misses,
             }
 
-    def _validate(self, configuration: str, language: str) -> str:
-        if self.region not in REGION_ORIGINS:
+    def _validate(
+        self,
+        configuration: str,
+        language: str,
+        *,
+        client_config: _OfficialApiConfig | None = None,
+    ) -> str:
+        if client_config is None:
+            client_config = self._config_snapshot()
+        if client_config.region not in REGION_ORIGINS:
             return "invalid_region"
         if configuration != "top":
             return "invalid_configuration"
         if not isinstance(language, str) or language.casefold() not in OFFICIAL_LANGUAGES:
             return "invalid_language"
-        if not self.application_id:
+        if not client_config.application_id:
             return "missing_application_id"
         return ""
 
@@ -376,18 +453,19 @@ class OfficialWowsApiClient:
         self,
         path: str,
         params: Mapping[str, Any],
+        client_config: _OfficialApiConfig,
     ) -> tuple[Mapping[str, Any], str]:
-        origin = REGION_ORIGINS.get(self.region)
+        origin = REGION_ORIGINS.get(client_config.region)
         if origin is None:
             return {}, "invalid_region"
         query = urlencode({
-            "application_id": self.application_id,
+            "application_id": client_config.application_id,
             **params,
         })
         url = f"{origin}{path}?{query}"
         try:
             status, body = self._transport(
-                url, self.timeout_seconds, MAX_RESPONSE_BYTES)
+                url, client_config.timeout_seconds, MAX_RESPONSE_BYTES)
             if not isinstance(body, (bytes, bytearray)):
                 return {}, "invalid_response"
             if len(body) > MAX_RESPONSE_BYTES:
@@ -653,7 +731,7 @@ class OfficialWowsApiClient:
 
     def _cache_get(
         self,
-        key: tuple[str, str, int, str],
+        key: tuple[int, str, str, int, str],
     ) -> dict[str, Any] | None:
         now = float(self._clock())
         with self._lock:
@@ -673,13 +751,16 @@ class OfficialWowsApiClient:
 
     def _cache_put(
         self,
-        key: tuple[str, str, int, str],
+        key: tuple[int, str, str, int, str],
         value: dict[str, Any],
+        client_config: _OfficialApiConfig,
     ) -> None:
-        if self.cache_ttl_seconds <= 0:
+        if client_config.cache_ttl_seconds <= 0:
             return
-        expires_at = float(self._clock()) + self.cache_ttl_seconds
+        expires_at = float(self._clock()) + client_config.cache_ttl_seconds
         with self._lock:
+            if client_config.generation != self._config_generation:
+                return
             self._cache[key] = (expires_at, copy.deepcopy(value))
             self._cache.move_to_end(key)
             while len(self._cache) > self.cache_size:

@@ -71,3 +71,34 @@ async def handle_live_frame_permission_set(
             str(error) or "Internal server error",
             timeout=timeout,
         )
+
+
+async def handle_plugin_delivery_permission_set(
+    request: dict[str, object], send_response: SendResponse,
+) -> None:
+    common_fields = resolve_common_fields(request, timeout_default=10.0)
+    if common_fields is None:
+        return
+
+    from_plugin, request_id, timeout = common_fields
+    try:
+        payload = await live_vision_query_service.set_plugin_delivery_permission(
+            source_name=from_plugin,
+            token=request.get("token"),
+            enabled=coerce_bool(request.get("enabled"), default=False),
+            timeout=timeout,
+        )
+        send_response(from_plugin, request_id, payload, None, timeout=timeout)
+    except _RUNTIME_ERRORS as error:
+        logger.error(
+            "PLUGIN_DELIVERY_PERMISSION_SET unexpected failure: err_type={}, err={}",
+            type(error).__name__,
+            str(error),
+        )
+        send_response(
+            from_plugin,
+            request_id,
+            None,
+            str(error) or "Internal server error",
+            timeout=timeout,
+        )

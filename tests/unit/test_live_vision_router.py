@@ -199,13 +199,16 @@ def _isolated_live_frame_permissions():
     try:
         from main_logic.core.live_frame_permissions import (
             clear_live_frame_permissions,
+            clear_plugin_delivery_permissions,
         )
     except ImportError:
         yield
         return
     clear_live_frame_permissions()
+    clear_plugin_delivery_permissions()
     yield
     clear_live_frame_permissions()
+    clear_plugin_delivery_permissions()
 
 
 def test_a_local_permission_update_is_installed_before_it_is_acknowledged(
@@ -288,3 +291,74 @@ def test_the_permission_route_is_not_reachable_from_another_machine(monkeypatch)
             "enabled": False,
         },
     ).status_code == 403
+
+
+DELIVERY_ENDPOINT = "/api/system/plugin-callbacks/delivery-permission"
+
+
+def test_disabling_delivery_permission_replaces_the_generation_and_retracts(
+    monkeypatch,
+):
+    from main_logic.core.live_frame_permissions import allows_plugin_delivery
+
+    retracted = []
+
+    class _Session:
+        def retract_callbacks_from_source(self, source_name):
+            retracted.append(source_name)
+
+    client = _client({"lanlan": _Session()}, monkeypatch)
+    client.post(
+        DELIVERY_ENDPOINT,
+        json={
+            "source_name": "neko_wows",
+            "token": "generation-one",
+            "enabled": True,
+        },
+    )
+    response = client.post(
+        DELIVERY_ENDPOINT,
+        json={
+            "source_name": "neko_wows",
+            "token": "generation-two",
+            "enabled": False,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["enabled"] is False
+    assert allows_plugin_delivery("neko_wows", "generation-one") is False
+    assert allows_plugin_delivery("neko_wows", "generation-two") is False
+    assert retracted == ["neko_wows"]
+
+
+def test_an_empty_delivery_token_does_not_retract(monkeypatch):
+    from main_logic.core.live_frame_permissions import allows_plugin_delivery
+
+    retracted = []
+
+    class _Session:
+        def retract_callbacks_from_source(self, source_name):
+            retracted.append(source_name)
+
+    client = _client({"lanlan": _Session()}, monkeypatch)
+    client.post(
+        DELIVERY_ENDPOINT,
+        json={
+            "source_name": "neko_wows",
+            "token": "generation-one",
+            "enabled": True,
+        },
+    )
+    response = client.post(
+        DELIVERY_ENDPOINT,
+        json={
+            "source_name": "neko_wows",
+            "token": "",
+            "enabled": False,
+        },
+    )
+
+    assert response.status_code == 200
+    assert allows_plugin_delivery("neko_wows", "generation-one") is True
+    assert retracted == []

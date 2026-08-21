@@ -1,8 +1,9 @@
 """Turning a window (or the whole screen) into a 720p JPEG.
 
-Win32 ``PrintWindow`` asks a specific window to paint itself. ``mss`` is used
-only for an explicit full-screen capture because it reads whatever is
-physically on the desktop, including applications overlapping the game.
+Two backends, in order: Win32 ``PrintWindow`` asks the window to paint itself,
+then ``mss`` may fall back to the window rectangle while the game is the
+foreground window. ``mss`` reads whatever is physically on screen, so using it
+for a background game could capture another application that overlaps it.
 
 Compression goes through ``utils.screenshot_utils.compress_screenshot`` so a
 battle frame is the same 720p JPEG q80 as every other screenshot in the app.
@@ -95,6 +96,16 @@ def _grab_with_printwindow(window: GameWindow):
             pass
 
 
+def _window_is_foreground(window: GameWindow) -> bool:
+    """Fail closed when desktop pixels might belong to another application."""
+    try:
+        import win32gui
+
+        return int(win32gui.GetForegroundWindow()) == window.hwnd
+    except Exception:
+        return False
+
+
 def _is_obviously_blank(image) -> bool:
     """Detect the solid bitmaps PrintWindow can return for DirectX clients."""
     try:
@@ -114,7 +125,7 @@ def _is_obviously_blank(image) -> bool:
 def capture_jpeg(window: GameWindow | None) -> bytes | None:
     """Capture ``window``, or the primary monitor when it is ``None``.
 
-    Returns ``None`` when the selected backend failed, so the caller can report a
+    Returns ``None`` when every backend failed, so the caller can report a
     reason to the model instead of raising mid tool-call.
     """
     if window is None:
@@ -125,7 +136,25 @@ def capture_jpeg(window: GameWindow | None) -> bytes | None:
 
     try:
         image = _grab_with_printwindow(window)
-        if _is_obviously_blank(image):
+    except Exception:
+        image = None
+    else:
+        if not _is_obviously_blank(image):
+            try:
+                return _to_jpeg(image)
+            except Exception:
+                return None
+
+    if not _window_is_foreground(window):
+        return None
+    try:
+        image = _grab_with_mss({
+            "left": window.left,
+            "top": window.top,
+            "width": window.width,
+            "height": window.height,
+        })
+        if not _window_is_foreground(window):
             return None
         return _to_jpeg(image)
     except Exception:

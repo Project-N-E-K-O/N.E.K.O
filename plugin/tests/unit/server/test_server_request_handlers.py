@@ -277,6 +277,52 @@ async def test_live_frame_permission_handler_uses_authenticated_plugin_source(
 
 
 @pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_plugin_delivery_permission_handler_uses_authenticated_plugin_source(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    send = _Recorder()
+    seen: list[dict[str, object]] = []
+
+    async def _set_permission(**kwargs) -> dict[str, object]:
+        seen.append(kwargs)
+        return {
+            "ok": True,
+            "source_name": kwargs["source_name"],
+            "token": kwargs["token"],
+            "enabled": kwargs["enabled"],
+        }
+
+    handler = getattr(
+        live_vision_module, "handle_plugin_delivery_permission_set", None)
+    assert callable(handler)
+    monkeypatch.setattr(
+        live_vision_module.live_vision_query_service,
+        "set_plugin_delivery_permission",
+        _set_permission,
+    )
+    await handler(
+        {
+            "type": "PLUGIN_DELIVERY_PERMISSION_SET",
+            "from_plugin": "neko_wows",
+            "request_id": "permission-1",
+            "source_name": "forged-plugin",
+            "token": "queued-generation",
+            "enabled": False,
+        },
+        send,
+    )
+
+    assert seen == [{
+        "source_name": "neko_wows",
+        "token": "queued-generation",
+        "enabled": False,
+        "timeout": 10.0,
+    }]
+    assert send.calls[-1][3] is None
+
+
+@pytest.mark.plugin_unit
 def test_registry_build_request_handlers_and_messages_module() -> None:
     handlers = registry_module.build_request_handlers()
     required = {
@@ -289,6 +335,7 @@ def test_registry_build_request_handlers_and_messages_module() -> None:
         "USER_CONTEXT_GET",
         "LIVE_VISION_GET",
         "LIVE_FRAME_PERMISSION_SET",
+        "PLUGIN_DELIVERY_PERMISSION_SET",
         "EXPORT_PUSH",
         "RUN_UPDATE",
         "EVENT_GET",

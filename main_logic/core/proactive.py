@@ -48,7 +48,15 @@ from ._shared import (
     FreshScreenshot,
 )
 from .callback_render import _build_callback_instruction, _select_callbacks_within_token_budget
-from .live_frame_permissions import allows_live_frame
+from .live_frame_permissions import allows_live_frame, allows_plugin_delivery
+
+
+def _plugin_delivery_token(callback: dict) -> str:
+    metadata = callback.get("metadata")
+    if not isinstance(metadata, dict):
+        return ""
+    raw = metadata.get("plugin_delivery_token")
+    return str(raw) if raw else ""
 
 
 class ProactiveMixin:
@@ -608,6 +616,11 @@ class ProactiveMixin:
                 continue
             if callback_is_expired(callback):
                 callback[DELIVERY_RETRACTED_KEY] = True
+            elif not allows_plugin_delivery(
+                str(callback.get("source_name") or ""),
+                _plugin_delivery_token(callback),
+            ):
+                callback[DELIVERY_RETRACTED_KEY] = True
             if callback.get(DELIVERY_RETRACTED_KEY):
                 dropped.append(callback)
             else:
@@ -657,6 +670,29 @@ class ProactiveMixin:
             )
         ]
         return deliverable
+
+    def retract_callbacks_from_source(self, source_name: str) -> int:
+        """Cancel queued host deliveries that still belong to ``source_name``."""
+        source = str(source_name or "").strip()
+        if not source:
+            return 0
+        matching = []
+        for callback in list(getattr(self, "pending_agent_callbacks", None) or []):
+            if (
+                isinstance(callback, dict)
+                and str(callback.get("source_name") or "").strip() == source
+                and not callback.get(VOICE_DELIVERY_COMMITTED_KEY)
+                and not callback.get(SWAP_PRIME_DELIVERY_CLAIM_KEY)
+            ):
+                callback[DELIVERY_RETRACTED_KEY] = True
+                matching.append(callback)
+        manager = getattr(self, "proactive_manager", None)
+        retract = getattr(manager, "retract_from_source", None)
+        if callable(retract):
+            retract(source)
+        if matching:
+            self.filter_deliverable_callbacks(matching)
+        return len(matching)
 
     def _purge_undeliverable_callbacks(self) -> None:
         callbacks = [

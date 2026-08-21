@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import json
 import socket
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import SimpleNamespace
 from urllib.parse import parse_qs, urlparse
@@ -137,6 +139,20 @@ class ScriptedTransport:
         return item
 
 
+class BlockingFirstTransport(ScriptedTransport):
+    def __init__(self, script) -> None:
+        super().__init__(script)
+        self.started = threading.Event()
+        self.release = threading.Event()
+
+    def __call__(self, url: str, timeout: float, max_bytes: int):
+        if not self.calls:
+            self.started.set()
+            if not self.release.wait(timeout=5.0):
+                raise TimeoutError("test transport was not released")
+        return super().__call__(url, timeout, max_bytes)
+
+
 def make_client(
     script=None,
     *,
@@ -185,6 +201,92 @@ def test_apply_config_strips_region_like_the_constructor():
 
     assert client.region == "asia"
     assert client._validate("top", "zh-cn") == ""
+
+
+@pytest.mark.parametrize("lookup_kind", ["id", "name"])
+@pytest.mark.parametrize(("new_region", "new_application_id"), [
+    ("eu", "old-app-id"),
+    ("asia", "new-app-id"),
+])
+def test_inflight_lookup_uses_one_config_snapshot_and_drops_stale_cache(
+    lookup_kind,
+    new_region,
+    new_application_id,
+):
+    listing = (200, response({
+        "status": "ok",
+        "meta": {"page_total": 1},
+        "data": {
+            str(SHIP_ID): {"ship_id": SHIP_ID, "name": "Yamato"},
+        },
+    }))
+    request_script = [
+        (200, response(ship_envelope())),
+        (200, response(profile_envelope())),
+    ]
+    if lookup_kind == "name":
+        request_script.insert(0, listing)
+    request_count = len(request_script)
+    transport = BlockingFirstTransport(request_script * 2)
+    client = OfficialWowsApiClient(
+        application_id="old-app-id",
+        region="asia",
+        timeout_seconds=3.0,
+        cache_ttl_seconds=300.0,
+        transport=transport,
+        clock=lambda: 100.0,
+    )
+    def lookup():
+        if lookup_kind == "id":
+            return client.query_ship_id(SHIP_ID, language="en")
+        return client.query_ship("Yamato", language="en")
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(lookup)
+        try:
+            assert transport.started.wait(timeout=2.0)
+            client.apply_config(SimpleNamespace(
+                official_api_application_id=new_application_id,
+                official_api_region=new_region,
+                official_api_timeout_seconds=3.0,
+                official_api_cache_ttl_seconds=300.0,
+            ))
+        finally:
+            transport.release.set()
+        first = future.result(timeout=5.0)
+
+    assert first["ok"] is True
+    assert first["data"]["region"] == "asia"
+    assert len(transport.calls) == request_count
+    for url, timeout, _max_bytes in transport.calls:
+        parsed = urlparse(url)
+        assert parsed.hostname == "api.worldofwarships.asia"
+        assert parse_qs(parsed.query)["application_id"] == ["old-app-id"]
+        assert timeout == 3.0
+    assert client.stats()["cache_entries"] == 0
+    if lookup_kind == "name":
+        assert not client._name_index
+
+    second = (
+        client.query_ship_id(SHIP_ID, language="en")
+        if lookup_kind == "id"
+        else client.query_ship("Yamato", language="en")
+    )
+
+    expected_hostname = (
+        "api.worldofwarships.eu"
+        if new_region == "eu"
+        else "api.worldofwarships.asia"
+    )
+    assert second["ok"] is True
+    assert second["data"]["region"] == new_region
+    assert len(transport.calls) == request_count * 2
+    for url, timeout, _max_bytes in transport.calls[request_count:]:
+        parsed = urlparse(url)
+        assert parsed.hostname == expected_hostname
+        assert parse_qs(parsed.query)["application_id"] == [
+            new_application_id]
+        assert timeout == 3.0
 
 
 def test_official_name_lookup_pages_without_unsupported_search_parameter():

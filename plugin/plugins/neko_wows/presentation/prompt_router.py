@@ -21,6 +21,7 @@ from .instructions import (
     LIVE_VISION_SPEAK_HINT,
     VISION_LOOK_BEFORE_SPEAK,
     PromptBundle,
+    live_vision_wording_applies,
 )
 
 REFERENCE_OPEN = "<<<UNTRUSTED_TACTICAL_REFERENCE>>>"
@@ -74,13 +75,17 @@ class PromptProfile:
     # switch alone, deliberately: whether a frame actually exists is a fact the
     # host establishes when it delivers, and asking is free when it does not.
     live_vision_enabled: bool = False
-    # What the probe believed when the call-out was built, which is the best we
-    # can do for the *wording* -- the text has to be written before delivery.
-    # It only picks a sentence; it never decides whether a frame is attached.
+    # What the probe believed when the call-out was built. Combined with the
+    # attachment request when screenshots are also on, so a cold probe cannot
+    # mandate wows_look_at_battle on a turn the host may already be attaching.
     live_vision_active: bool = False
     # Host generation for this attachment request. Delivery re-checks it so
     # turning the panel switch off can retract a cue the host already queued.
     live_frame_permission_token: str = ""
+    # Host generation for the spoken cue itself. Delivery re-checks it so
+    # turning `[neko_wows].enabled` off can retract a callback the host
+    # already queued, instead of letting it speak for the rest of its TTL.
+    plugin_delivery_token: str = ""
     # Passive/read context is not committed before an unsolicited response.
     # Carry the standing scene in the response callback too, so a battle that
     # starts before the user's next turn still has its telemetry/vision rules.
@@ -136,8 +141,14 @@ class WowsPromptRouter:
         sections.append(bundle.instructions_for(primary.lane, profile.channel_mode))
         # Only ever one of the two. Telling her to call the screenshot tool on a
         # turn that already carries the shared frame would buy the same picture
-        # twice, once at the price this whole path exists to avoid.
-        if profile.live_vision_active:
+        # twice, once at the price this whole path exists to avoid. Follow the
+        # attachment request, not just the probe: a cold cache can still have
+        # the host attach a fresh frame at delivery.
+        if live_vision_wording_applies(
+            screenshot_enabled=profile.screenshot_enabled,
+            live_vision_enabled=profile.live_vision_enabled,
+            live_vision_active=profile.live_vision_active,
+        ):
             sections.append(LIVE_VISION_SPEAK_HINT.strip())
         elif profile.screenshot_enabled:
             sections.append(VISION_LOOK_BEFORE_SPEAK.strip())
@@ -190,6 +201,7 @@ class WowsPromptRouter:
                 # cold start, when that cache is still empty.
                 "attach_live_frame": bool(profile.live_vision_enabled),
                 "live_frame_permission_token": profile.live_frame_permission_token,
+                "plugin_delivery_token": profile.plugin_delivery_token,
                 # Stamped so the timeline can attribute every call-out to the
                 # exact prompt revision that produced it.
                 "prompt_revision": bundle.revision_id,

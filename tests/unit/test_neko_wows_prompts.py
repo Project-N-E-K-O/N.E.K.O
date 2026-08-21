@@ -373,6 +373,11 @@ def _every_scene_block():
         context_instructions(screenshot_enabled=False),
         context_instructions(screenshot_enabled=True),
         context_instructions(screenshot_enabled=False, live_vision_active=True),
+        context_instructions(
+            screenshot_enabled=True,
+            live_vision_active=False,
+            live_vision_enabled=True,
+        ),
     ]
 
 

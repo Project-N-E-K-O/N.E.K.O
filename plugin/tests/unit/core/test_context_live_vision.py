@@ -76,3 +76,47 @@ async def test_set_live_frame_permission_async_rejects_non_boolean_enabled(
             token="generation-two",
             enabled="false",  # type: ignore[arg-type]
         )
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_set_plugin_delivery_permission_async_sends_authenticated_plugin_request(
+    tmp_path: Path,
+) -> None:
+    ctx = PluginContext(
+        plugin_id="neko_wows",
+        config_path=tmp_path / "neko_wows" / "plugin.toml",
+        logger=_Logger(),  # type: ignore[arg-type]
+        status_queue=None,
+    )
+    seen: list[dict[str, object]] = []
+
+    async def _send(**kwargs: object) -> dict[str, object]:
+        seen.append(kwargs)
+        return {
+            "ok": True,
+            "source_name": "neko_wows",
+            "token": "queued-generation",
+            "enabled": False,
+        }
+
+    ctx._send_request_and_wait_async = _send  # type: ignore[method-assign]
+
+    payload = await ctx.set_plugin_delivery_permission_async(
+        token="queued-generation",
+        enabled=False,
+        timeout=3.0,
+    )
+
+    assert payload["ok"] is True
+    assert seen == [{
+        "method_name": "set_plugin_delivery_permission",
+        "request_type": "PLUGIN_DELIVERY_PERMISSION_SET",
+        "request_data": {
+            "token": "queued-generation",
+            "enabled": False,
+        },
+        "timeout": 3.0,
+        "wrap_result": True,
+        "error_log_template": None,
+    }]
