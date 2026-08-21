@@ -28,7 +28,7 @@
               <span><el-icon><User /></el-icon>{{ displayPlugin.author.name || t('market.unknownAuthor') }}</span>
               <span><el-icon><Download /></el-icon>{{ formatCount(displayPlugin.downloads) }}</span>
               <span v-if="displayPlugin.rating_average !== undefined"><el-icon><Star /></el-icon>{{ formatRating(displayPlugin.rating_average) }}</span>
-              <span v-if="displayPlugin.version">v{{ displayPlugin.version }}</span>
+              <span v-if="actionablePlugin.version">v{{ actionablePlugin.version }}</span>
             </div>
           </div>
         </header>
@@ -48,13 +48,14 @@
         />
 
         <el-tabs v-model="activeTab" class="market-plugin-detail__tabs">
-          <el-tab-pane label="README" name="readme">
+          <el-tab-pane :label="t('market.detailReadme')" name="readme">
             <!-- README 经过转义后再渲染有限 Markdown，远端内容不能注入 HTML。 -->
             <div
               v-if="readmeSource"
               class="market-plugin-detail__readme markdown-body"
               v-html="readmeHtml"
               @click="handleReadmeClick"
+              @auxclick.middle="handleReadmeClick"
             />
             <el-empty v-else :description="t('market.detailReadmeUnavailable')" :image-size="72" />
           </el-tab-pane>
@@ -159,6 +160,15 @@ const actionablePlugin = computed<MarketWorkbenchItem>(() => ({
   id: props.plugin.id,
   rawId: props.plugin.rawId,
   searchIndex: props.plugin.searchIndex,
+  // 列表请求已按当前 channel 选出可安装版本；详情接口不带 channel
+  // 参数，因此不能用其默认 release 覆盖用户选定的版本。
+  version: props.plugin.version,
+  download_url: props.plugin.download_url,
+  latest_channel: props.plugin.latest_channel,
+  latest_package_sha256: props.plugin.latest_package_sha256,
+  latest_payload_hash: props.plugin.latest_payload_hash,
+  latest_published_at: props.plugin.latest_published_at,
+  has_release: props.plugin.has_release,
 }))
 const readmeSource = computed(() => {
   if (repositoryReadme.value) {
