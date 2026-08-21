@@ -31,7 +31,11 @@ from main_logic.omni_realtime_client import OmniRealtimeClient
 from main_logic.omni_offline_client import OmniOfflineClient
 from utils.llm_client import AIMessage
 from main_logic.session_state import SessionEvent
-from main_logic.agent_event_bus import dispatch_user_utterance
+from main_logic.agent_event_bus import (
+    USER_UTTERANCE_CONTENT_MAX_CHARS,
+    USER_UTTERANCE_LANLAN_MAX_CHARS,
+    dispatch_user_utterance,
+)
 from config import SESSION_ARCHIVE_TRIGGER_TOKENS, SESSION_TURN_THRESHOLD
 from uuid import uuid4
 import numpy as np
@@ -815,43 +819,70 @@ class TurnMixin:
     def _publish_user_utterance_to_plugin_bus(
         self, text: Optional[str], *, is_voice_source: bool
     ) -> None:
-        """Publish one verbatim user utterance to the plugin bus's user-context bucket.
+        """Mirror and asynchronously relay one bounded user utterance.
 
-        Plugins read it via ``ctx.bus.memory.get(bucket_id=...)``. Written to two
-        buckets at once: ``"default"`` (matching the protocols.py doc example,
-        globally readable) and ``self.lanlan_name`` (character-scoped) — but if the
-        two names collide it is written only once, so the same utterance isn't
-        consumed twice.
+        The synchronous dispatch keeps the Main-process compatibility mirror.
+        A single best-effort session event relays the same observation to the
+        Agent process, whose plugin runtime serves ``ctx.bus.memory.get``.
 
-        Why: before this, the whole ``state.add_user_context_event`` chain was dead
-        infrastructure — server, handler, and plugin SDK were all in place, but
-        nothing ever wrote, so plugins always read empty. This is the first
-        gateway where verbatim user input enters the system (voice transcription +
-        text input), making it the most faithful place to publish "the user's
-        actual words".
+        Content is capped at ``USER_UTTERANCE_CONTENT_MAX_CHARS`` so this
+        fire-and-forget telemetry cannot put an unbounded payload on ZMQ.
         """
         if not isinstance(text, str):
             return
         cleaned = text.strip()
         if not cleaned:
             return
+        cleaned = cleaned[:USER_UTTERANCE_CONTENT_MAX_CHARS]
+
+        raw_lanlan_name = getattr(self, "lanlan_name", "")
+        lanlan_name = (
+            raw_lanlan_name.strip()
+            if isinstance(raw_lanlan_name, str)
+            else ""
+        )
+        lanlan_name = (
+            lanlan_name[:USER_UTTERANCE_LANLAN_MAX_CHARS] or "default"
+        )
+        event_id = uuid4().hex
+        timestamp = time.time()
         event = {
             "type": "user_message",
             "content": cleaned,
-            "lanlan": self.lanlan_name,
+            "lanlan": lanlan_name,
             "is_voice": bool(is_voice_source),
             "source": "main_logic.core",
+            "_event_id": event_id,
         }
-        # dict.fromkeys 保留顺序的同时去重：lanlan_name == "default" 或为空
-        # 时不会重复写入 default bucket。
-        for bucket in dict.fromkeys(("default", self.lanlan_name)):
-            if not isinstance(bucket, str) or not bucket:
-                continue
-            # dispatch_user_utterance fans out to every sink (plugin runtime
-            # registers ``plugin.core.state.add_user_context_event`` at app
-            # startup via app/runtime_bindings.py). Per-sink errors are
-            # swallowed inside the dispatcher.
+        # Preserve the local compatibility mirror. In a split deployment this
+        # is Main-process state, not the Agent-owned plugin runtime.
+        for bucket in dict.fromkeys(("default", lanlan_name)):
             dispatch_user_utterance(bucket, event)
+
+        fire_task = getattr(self, "_fire_task", None)
+        if not callable(fire_task):
+            return
+
+        publish_coro = None
+        try:
+            publish_coro = _core_facade.publish_user_utterance_observed(
+                event_id=event_id,
+                timestamp=timestamp,
+                lanlan_name=lanlan_name,
+                content=cleaned,
+                is_voice=bool(is_voice_source),
+            )
+            fire_task(publish_coro)
+        except Exception as exc:
+            if publish_coro is not None:
+                close = getattr(publish_coro, "close", None)
+                if callable(close):
+                    close()
+            logger.debug(
+                "[%s] failed to schedule user utterance relay: %s",
+                lanlan_name,
+                exc,
+            )
 
     def _clean_frontend_memory_text(self, value: Any) -> str:
         if not isinstance(value, str):

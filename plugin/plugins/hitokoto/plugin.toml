@@ -1,0 +1,52 @@
+[plugin]
+id = "hitokoto"
+name = "一言 · Hitokoto"
+description = "从 Hitokoto 获取随机一言与每日一句，支持分类筛选、每日首次聊天分享和可视化设置面板。"
+short_description = "Random and daily quotes from Hitokoto, with categories, daily greeting, caching, and a settings panel."
+keywords = [
+    "一言", "每日一言", "今日一言", "来一句", "来句诗", "诗词", "动漫台词",
+    "哲学", "毒鸡汤", "语录", "hitokoto", "quote", "daily quote", "anime quote",
+    "quotation", "名言", "句子", "ひとこと", "名言", "오늘의 문장", "인용문",
+]
+version = "0.1.0"
+type = "plugin"
+entry = "plugin.plugins.hitokoto:HitokotoPlugin"
+
+[plugin.author]
+name = "Alumin-Hydro"
+
+[plugin.sdk]
+recommended = ">=0.1.0,<0.2.0"
+supported = ">=0.1.0,<0.3.0"
+
+[plugin.i18n]
+default_locale = "zh-CN"
+locales_dir = "i18n"
+
+[plugin.store]
+enabled = true
+
+[plugin.ui]
+enabled = true
+
+[[plugin.ui.panel]]
+id = "main"
+title = "Hitokoto Quotes · 一言"
+entry = "static/index.html"
+mode = "static"
+permissions = [
+    "state:read",
+    "action:call",
+    "runs:read",
+]
+
+[plugin_runtime]
+enabled = true
+auto_start = true
+
+[hitokoto]
+timeout_seconds = 10.0
+default_category = ""
+max_length = 80
+daily_cache = true
+daily_greeting = true
