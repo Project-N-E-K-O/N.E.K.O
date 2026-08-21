@@ -129,6 +129,44 @@ class TestNamedProviderSlotKey:
         )
 
     @pytest.mark.unit
+    def test_path_case_makes_the_url_foreign(self, config_manager):
+        """`/V1` is not `/v1` — HTTP paths are case-sensitive.
+
+        The first version of this guard lowercased the whole URL, which let a
+        case-swapped path pass as one of the provider's candidates.
+        """
+        _write_core_config(config_manager, _base_config(
+            conversationModelProvider='deepseek',
+            conversationModelId='deepseek-v4-flash',
+            conversationModelUrl='https://api.deepseek.com/V1',
+            assistApiKeyDeepseek='DEEPSEEK-REAL-KEY',
+        ))
+        conv = config_manager.get_model_api_config('conversation')
+        assert conv['api_key'] != 'DEEPSEEK-REAL-KEY', (
+            "path 大小写不同就是另一条路由，不该被当成该服务商的候选端点，"
+            f"实际={conv['api_key']!r}"
+        )
+
+    @pytest.mark.unit
+    def test_explicit_default_port_still_matches_the_provider(self, config_manager):
+        """`:443` on https is the default port — still the provider's own URL.
+
+        The first version compared raw strings, so writing the default port out
+        rejected a legitimate endpoint and dropped the key.
+        """
+        _write_core_config(config_manager, _base_config(
+            conversationModelProvider='deepseek',
+            conversationModelId='deepseek-v4-flash',
+            conversationModelUrl='https://api.deepseek.com:443/v1',
+            assistApiKeyDeepseek='DEEPSEEK-REAL-KEY',
+        ))
+        conv = config_manager.get_model_api_config('conversation')
+        assert conv['api_key'] == 'DEEPSEEK-REAL-KEY', (
+            "写出默认端口仍是同一个端点，不该因此拒发管理簿 Key，"
+            f"实际={conv['api_key']!r}"
+        )
+
+    @pytest.mark.unit
     def test_legacy_slot_key_survives_when_key_book_empty(self, config_manager):
         """Key-book-less legacy configs keep using the stored slot key."""
         _write_core_config(config_manager, _base_config(

@@ -80,6 +80,8 @@ _OPENCLAW_MIGRATION_ATTEMPTS = 3
 _OPENCLAW_MIGRATION_RETRY_DELAY_S = 0.1
 
 
+from utils.http.url import same_endpoint
+
 class CoreConfigMixin:
     """Core config snapshot, geo checks and model API resolution."""
 
@@ -1545,11 +1547,12 @@ class CoreConfigMixin:
                             if isinstance(_profile, dict)
                             else []
                         )
-
-                        def _norm_url(value: str) -> str:
-                            return str(value or '').strip().rstrip('/').lower()
-
-                        if _norm_url(_slot_url) not in {_norm_url(c) for c in _candidates}:
+                        # 同源判据用 utils.http.url.same_endpoint，不在这里另搓一份：
+                        # 视觉槽的凭证继承已经为这件事打磨过六轮（尾斜杠 / path 大小写 /
+                        # userinfo / 畸形端口 / 默认端口 / 畸形 IPv6），本地再写一个
+                        # 「转小写去尾斜杠」只会把同样的坑重踩一遍——事实上第一版就
+                        # 踩了：把 /V1 当成 /v1，也认不出显式写出的 :443。
+                        if not any(same_endpoint(_slot_url, c) for c in _candidates):
                             # 端点不是这家的 → 不交出这家的 Key。回落到槽位存量值，
                             # 请求不带（或带旧的）凭证会 401，比静默发错家可诊断。
                             _explicit_book = ''

@@ -40,84 +40,14 @@ from ._streaming import _StreamingMixin
 from ._media import _MediaMixin
 from ._lifecycle import _LifecycleMixin
 
+from utils.http.url import same_endpoint
 
-def _same_endpoint(a: str | None, b: str | None) -> bool:
-    """Whether two configured base URLs address the same endpoint.
 
-    Used to decide whether the vision slot may inherit the chat credential, so
-    it has to be wrong in the safe direction: only the parts of a URL that are
-    genuinely case-insensitive get folded.
-
-    Scheme and host are case-insensitive per RFC 3986, and a trailing slash on
-    the path is cosmetic — those differences accumulate in saved configs and
-    must not read as "a different provider" (that would drop a key that used to
-    work). Path and query are case-SENSITIVE: two routes or tenants can differ
-    by case alone, and treating those as the same endpoint would hand one
-    provider's credential to another.
-    """
-    from urllib.parse import urlsplit
-
-    # 该 scheme 下可以省略的默认端口：写与不写是同一个端点。
-    _DEFAULT_PORTS = {'http': '80', 'https': '443', 'ws': '80', 'wss': '443'}
-
-    def _split_hostinfo(hostinfo: str) -> tuple[str, str]:
-        """Split ``host[:port]`` without tripping over IPv6 brackets."""
-        idx = hostinfo.rfind(':')
-        if idx == -1 or hostinfo.rfind(']') > idx:
-            return hostinfo, ''
-        return hostinfo[:idx], hostinfo[idx + 1:]
-
-    def _key(raw: str | None):
-        text = (raw or '').strip()
-        if not text:
-            return None
-        if '://' not in text:
-            text = f'//{text}'
-        try:
-            parts = urlsplit(text)
-        except ValueError:
-            # 畸形 IPv6（如 http://[::1）会让 urlsplit 自己抛。这段跑在 __init__
-            # 里，抛出去等于客户端构造失败。退回按原串比：判据保持 total，
-            # 两个写法相同的坏 URL 仍算同源，不同的仍算不同源。
-            #
-            # 两个分支返回**同样长度**的元组，首位是「解析成功与否」：长度不同
-            # 的元组比起来虽然也恒不相等，但那是靠巧合而不是靠判据，静态分析
-            # 也会（合理地）报出来。
-            return (False, text, '', '', '', '', '')
-        # netloc 整体转小写是错的：它还装着 userinfo（user:pass@），而用户名和
-        # 口令是大小写敏感的。拆开 userinfo 与 host:port，只折叠后者的大小写
-        # （主机名与数字端口都是大小写无关的）。
-        #
-        # 刻意不碰 parts.port：它对非法端口（非数字/越界）会抛 ValueError，而这
-        # 段代码跑在 __init__ 里 —— 一个写坏的 URL 会让整个客户端构造失败，
-        # 连一次请求都发不出去。自己按文本拆既不会抛，也够用。
-        userinfo, _, hostinfo = (parts.netloc or '').rpartition('@')
-        scheme = (parts.scheme or '').lower()
-        host, port = _split_hostinfo(hostinfo.lower())
-        # 端口按**数值**归一化，不是按字符串：:0443 和 :443 是同一个端口，
-        # :08443 和 :8443 也是。用字符串比会把它们判成不同端点，进而掐掉本该
-        # 继承的凭证 → 付费端点 401。非全数字的（畸形端口）原样留着比。
-        if port.isdigit():
-            port = str(int(port))
-        # 显式写出的默认端口同样要归一化掉：https://h/v1 与 https://h:443/v1
-        # 是同一个端点。
-        if port and port == _DEFAULT_PORTS.get(scheme):
-            port = ''
-        return (
-            True,
-            scheme,
-            userinfo,
-            host,
-            port,
-            # 只去掉**一个**尾斜杠：那是配置里会自然攒出来的写法差异。
-            # rstrip('/') 会把 /v1/ 和 /v1// 一起折平，而它们是两条不同的
-            # HTTP 路径 —— 折平就又把凭证送过了边界。
-            (parts.path or '').removesuffix('/'),
-            parts.query,
-        )
-
-    key_a, key_b = _key(a), _key(b)
-    return key_a is not None and key_a == key_b
+# 端点同源判据收口到 utils.http.url：视觉槽的凭证继承与配置层「管理簿 Key 只能
+# 配该服务商自己的端点」问的是同一个问题。这里曾经手搓过一份，前后被评审挑出
+# 尾斜杠 / path 大小写 / userinfo / 畸形端口 / 默认端口 / 畸形 IPv6 六类边界；
+# 配置层后来又独立搓了第二份、把同样的坑重踩一遍。共用一份才是解法。
+_same_endpoint = same_endpoint
 
 
 class OmniOfflineClient(_ToolingMixin, _GenaiMixin, _StreamingMixin, _MediaMixin, _LifecycleMixin):
