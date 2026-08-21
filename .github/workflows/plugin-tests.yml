@@ -21,6 +21,8 @@ on:
       # PR skips the gate and the breakage surfaces on the next plugin PR.
       - 'pyproject.toml'
       - 'uv.lock'
+      - 'frontend/plugin-manager/package.json'
+      - 'frontend/plugin-manager/package-lock.json'
   pull_request:
     branches: [main]
     paths:
@@ -28,6 +30,8 @@ on:
       - '.github/workflows/plugin-tests.yml'
       - 'pyproject.toml'
       - 'uv.lock'
+      - 'frontend/plugin-manager/package.json'
+      - 'frontend/plugin-manager/package-lock.json'
   workflow_dispatch:
 
 # The test job only needs to read the checked-out source.
