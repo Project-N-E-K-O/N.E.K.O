@@ -618,6 +618,42 @@ class TestVisionCredentialBoundary:
         ) is False, "端口串不同就是不同端点"
 
     @pytest.mark.unit
+    def test_explicit_default_port_is_same_endpoint(self):
+        """https://h/v1 and https://h:443/v1 are the same endpoint."""
+        client = _make_offline_client(
+            base_url='https://api.example.com/v1',
+            vision_base_url='https://api.example.com:443/v1',
+            vision_api_key='',
+        )
+        assert client.vision_api_key == 'sk-conversation', (
+            "写出默认端口不该被当成换了一家，实际="
+            f"{client.vision_api_key!r}"
+        )
+
+    @pytest.mark.unit
+    def test_non_default_port_is_a_different_endpoint(self):
+        """A real port difference still separates the credentials."""
+        client = _make_offline_client(
+            base_url='https://api.example.com/v1',
+            vision_base_url='https://api.example.com:8443/v1',
+            vision_api_key='',
+        )
+        assert client.vision_api_key is None, (
+            "非默认端口是不同端点，实际="
+            f"{client.vision_api_key!r}"
+        )
+
+    @pytest.mark.unit
+    def test_missing_credentials_are_normalised_to_none(self):
+        """Absent credentials use one representation, not '' on one side."""
+        client = _make_offline_client(api_key='', vision_api_key='')
+        assert client.api_key is None
+        assert client.vision_api_key is None, (
+            "无凭证应统一表示成 None，实际="
+            f"{client.vision_api_key!r}"
+        )
+
+    @pytest.mark.unit
     def test_host_case_is_still_folded(self):
         """Scheme and host are case-insensitive per RFC 3986."""
         client = _make_offline_client(

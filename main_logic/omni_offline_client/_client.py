@@ -57,6 +57,16 @@ def _same_endpoint(a: str | None, b: str | None) -> bool:
     """
     from urllib.parse import urlsplit
 
+    # 该 scheme 下可以省略的默认端口：写与不写是同一个端点。
+    _DEFAULT_PORTS = {'http': '80', 'https': '443', 'ws': '80', 'wss': '443'}
+
+    def _split_hostinfo(hostinfo: str) -> tuple[str, str]:
+        """Split ``host[:port]`` without tripping over IPv6 brackets."""
+        idx = hostinfo.rfind(':')
+        if idx == -1 or hostinfo.rfind(']') > idx:
+            return hostinfo, ''
+        return hostinfo[:idx], hostinfo[idx + 1:]
+
     def _key(raw: str | None):
         text = (raw or '').strip()
         if not text:
@@ -70,12 +80,19 @@ def _same_endpoint(a: str | None, b: str | None) -> bool:
         #
         # 刻意不碰 parts.port：它对非法端口（非数字/越界）会抛 ValueError，而这
         # 段代码跑在 __init__ 里 —— 一个写坏的 URL 会让整个客户端构造失败，
-        # 连一次请求都发不出去。按 host:port 原串比较既不会抛，也够用。
+        # 连一次请求都发不出去。自己按文本拆既不会抛，也够用。
         userinfo, _, hostinfo = (parts.netloc or '').rpartition('@')
+        scheme = (parts.scheme or '').lower()
+        host, port = _split_hostinfo(hostinfo.lower())
+        # 显式写出的默认端口要归一化掉：https://h/v1 与 https://h:443/v1 是同一个
+        # 端点，判成不同会把本该继承的凭证掐掉 → 付费端点 401。
+        if port and port == _DEFAULT_PORTS.get(scheme):
+            port = ''
         return (
-            (parts.scheme or '').lower(),
+            scheme,
             userinfo,
-            hostinfo.lower(),
+            host,
+            port,
             (parts.path or '').rstrip('/'),
             parts.query,
         )
@@ -169,10 +186,12 @@ class OmniOfflineClient(_ToolingMixin, _GenaiMixin, _StreamingMixin, _MediaMixin
         # 大小写差异不该被当成「换了一家」而把继承掐掉（那会让原本能用的配置开始 401）。
         _vision_url = vision_base_url or base_url
         self.vision_base_url = _vision_url
+        # 「无凭证」统一表示成 None，与上面 self.api_key 的归一化对齐——
+        # 否则视觉侧会出现 '' 而主侧是 None，同一个状态两种写法。
         if _same_endpoint(_vision_url, base_url):
-            self.vision_api_key = vision_api_key if vision_api_key else api_key
+            self.vision_api_key = (vision_api_key or None) or self.api_key
         else:
-            self.vision_api_key = vision_api_key if vision_api_key else None
+            self.vision_api_key = vision_api_key or None
         self.provider_type = provider_type
         self.vision_provider_type = vision_provider_type or provider_type
         self._model_switch_lock = asyncio.Lock()
