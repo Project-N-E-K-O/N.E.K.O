@@ -51,14 +51,6 @@ from .callback_render import _build_callback_instruction, _select_callbacks_with
 from .live_frame_permissions import allows_live_frame, allows_plugin_delivery
 
 
-def _plugin_delivery_token(callback: dict) -> str:
-    metadata = callback.get("metadata")
-    if not isinstance(metadata, dict):
-        return ""
-    raw = metadata.get("plugin_delivery_token")
-    return str(raw) if raw else ""
-
-
 class ProactiveMixin:
     """Proactive delivery methods (see module docstring)."""
 
@@ -606,6 +598,14 @@ class ProactiveMixin:
         print(f"[{self.lanlan_name}] Proactive stream delivered: {(full_text or '')[:40]}…")
         return True
 
+    @staticmethod
+    def _plugin_delivery_token(callback: dict) -> str:
+        metadata = callback.get("metadata")
+        if not isinstance(metadata, dict):
+            return ""
+        raw = metadata.get("plugin_delivery_token")
+        return str(raw) if raw else ""
+
     def filter_deliverable_callbacks(self, callbacks: list) -> list:
         """Drop undeliverable callbacks and their paired voice mirrors."""
         deliverable = []
@@ -618,7 +618,7 @@ class ProactiveMixin:
                 callback[DELIVERY_RETRACTED_KEY] = True
             elif not allows_plugin_delivery(
                 str(callback.get("source_name") or ""),
-                _plugin_delivery_token(callback),
+                self._plugin_delivery_token(callback),
             ):
                 callback[DELIVERY_RETRACTED_KEY] = True
             if callback.get(DELIVERY_RETRACTED_KEY):
