@@ -101,8 +101,9 @@ def _detect_provider_info(base_url: str, model: str, provider_type: str | None =
             "api_key_env": "OPENAI_API_KEY",
         }
 
-    # Groq
-    if _host_matches("groq.com", "api.groq.com") or "groq" in model_lower:
+    # Groq -- 主机证据这一半留在前面；纯按模型名猜的那一半挪到声明式判据之后
+    # （见下面 "其余 Anthropic Messages 协议端点" 处的次序说明）。
+    if _host_matches("groq.com", "api.groq.com"):
         return {
             "provider": "groq",
             "needs_proxy": False,
@@ -136,8 +137,8 @@ def _detect_provider_info(base_url: str, model: str, provider_type: str | None =
             "api_key_env": "GEMINI_API_KEY",
         }
 
-    # DeepSeek
-    if _host_matches("deepseek.com", "api.deepseek.com") or "deepseek" in model_lower:
+    # DeepSeek -- 同 Groq，主机证据留前，模型名猜测挪后
+    if _host_matches("deepseek.com", "api.deepseek.com"):
         return {
             "provider": "deepseek",
             "needs_proxy": False,
@@ -174,9 +175,13 @@ def _detect_provider_info(base_url: str, model: str, provider_type: str | None =
     # 槽位自己声明了 provider_type=anthropic 的自建端点。判据复用 utils.llm_client
     # 的 _is_anthropic_endpoint（聊天链路的同一套真相），不在这里另抄一份域名表。
     #
-    # 位置**故意**排在所有按 URL 认人的分支之后：provider_type 是一个声明，
-    # 而上面那些是证据。声明排前面的话，「槽位残留 anthropic + URL 其实是
-    # lanlan 代理 / deepseek」这种组合会被误判成 Anthropic 直连打死。
+    # 次序是三档：**主机/端口/路径证据 > 声明 > 纯模型名猜测**。
+    #   - 排在所有 URL 分支之后：provider_type 只是槽位携带的一个声明，而上面那些
+    #     是证据。声明排前面的话，「槽位残留 anthropic + URL 其实是 lanlan 代理 /
+    #     deepseek / 本机 ollama」会被误判成 Anthropic 直连打死。
+    #   - 但排在 groq / deepseek 的**模型名**猜测之前：那两条只是看模型名里有没有
+    #     厂商字样，比一个显式声明弱。否则自建 Anthropic 网关只要服务一个名字里带
+    #     deepseek 的模型，就会被按 DeepSeek 协议和 Key 环境变量发出去。
     from utils.llm_client import _is_anthropic_endpoint
 
     if _is_anthropic_endpoint(base_url, provider_type):
@@ -185,6 +190,22 @@ def _detect_provider_info(base_url: str, model: str, provider_type: str | None =
             "needs_proxy": False,
             "effective_url": base_url,
             "api_key_env": "ANTHROPIC_API_KEY",
+        }
+
+    # 纯模型名启发式：证据用尽、也没有声明时才据此猜厂商。
+    if "groq" in model_lower:
+        return {
+            "provider": "groq",
+            "needs_proxy": False,
+            "effective_url": base_url,
+            "api_key_env": "GROQ_API_KEY",
+        }
+    if "deepseek" in model_lower:
+        return {
+            "provider": "deepseek",
+            "needs_proxy": False,
+            "effective_url": base_url,
+            "api_key_env": "DEEPSEEK_API_KEY",
         }
 
     # OpenRouter / lanlan.app / 其他 OpenAI-compatible 代理

@@ -440,3 +440,45 @@ class TestProviderTypeIsEvidenceOfLastResort:
         )
         assert r["provider"] == "anthropic", f"实际={r['provider']!r}"
         assert r["needs_proxy"] is False
+
+
+class TestEvidenceOutranksDeclarationOutranksModelName:
+    """The routing order is host/port/path evidence > declaration > model-name guess.
+
+    The middle rung is what makes a self-hosted Anthropic gateway usable: its
+    model IDs are arbitrary, so a name containing another vendor's word must
+    not outrank the slot's explicit protocol declaration.
+    """
+
+    def test_declared_anthropic_beats_a_deepseek_model_name(self):
+        r = _detect_provider_info(
+            "https://llm.example.com/anthropic", "deepseek-r1", provider_type="anthropic"
+        )
+        assert r["provider"] == "anthropic", f"实际={r['provider']!r}"
+        assert r["api_key_env"] == "ANTHROPIC_API_KEY"
+
+    def test_declared_anthropic_beats_a_groq_model_name(self):
+        r = _detect_provider_info(
+            "https://llm.example.com/anthropic", "groq-llama-70b", provider_type="anthropic"
+        )
+        assert r["provider"] == "anthropic", f"实际={r['provider']!r}"
+
+    def test_host_evidence_still_beats_the_declaration(self):
+        """Splitting the branches must not let the declaration climb over hosts."""
+        for url, expected in (
+            ("https://api.groq.com/openai/v1", "groq"),
+            ("https://api.deepseek.com/v1", "deepseek"),
+            ("https://api.openai.com/v1", "openai"),
+            ("http://localhost:11434/v1", "ollama"),
+        ):
+            r = _detect_provider_info(url, "some-model", provider_type="anthropic")
+            assert r["provider"] == expected, f"{url} 实际={r['provider']!r}"
+
+    def test_model_name_guess_still_works_without_a_declaration(self):
+        """The relocated heuristics keep their old behaviour when nothing declares."""
+        assert _detect_provider_info(
+            "https://custom-endpoint.example.com/v1", "groq-llama-70b"
+        )["provider"] == "groq"
+        assert _detect_provider_info(
+            "https://custom.example.com/v1", "deepseek-r1"
+        )["provider"] == "deepseek"
