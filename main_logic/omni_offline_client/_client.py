@@ -41,6 +41,17 @@ from ._media import _MediaMixin
 from ._lifecycle import _LifecycleMixin
 
 
+def _same_endpoint(a: str | None, b: str | None) -> bool:
+    """Whether two configured base URLs address the same endpoint.
+
+    Used to decide whether the vision slot may inherit the chat credential.
+    Compared after trimming and dropping a trailing slash so the cosmetic
+    differences that accumulate in saved configs do not read as a different
+    provider — a false "different" would drop a key that used to work.
+    """
+    return (a or '').strip().rstrip('/').lower() == (b or '').strip().rstrip('/').lower()
+
+
 class OmniOfflineClient(_ToolingMixin, _GenaiMixin, _StreamingMixin, _MediaMixin, _LifecycleMixin):
     """
     A client for text-based chat that mimics the interface of OmniRealtimeClient.
@@ -122,12 +133,14 @@ class OmniOfflineClient(_ToolingMixin, _GenaiMixin, _StreamingMixin, _MediaMixin
         # 的付费 Key 发给了另一个厂商，既是路由错误也是凭证越界。留空 Key 让请求
         # 不带 Authorization：本地无鉴权端点本就该如此，付费端点则会直接 401
         # 报错，比静默把凭证送出去可诊断得多。
+        # 同源判定按归一化后的 URL 比：两个槽都指向同一家时，配置里常见的尾斜杠 /
+        # 大小写差异不该被当成「换了一家」而把继承掐掉（那会让原本能用的配置开始 401）。
         _vision_url = vision_base_url or base_url
         self.vision_base_url = _vision_url
-        if _vision_url != base_url:
-            self.vision_api_key = vision_api_key if vision_api_key else None
-        else:
+        if _same_endpoint(_vision_url, base_url):
             self.vision_api_key = vision_api_key if vision_api_key else api_key
+        else:
+            self.vision_api_key = vision_api_key if vision_api_key else None
         self.provider_type = provider_type
         self.vision_provider_type = vision_provider_type or provider_type
         self._model_switch_lock = asyncio.Lock()

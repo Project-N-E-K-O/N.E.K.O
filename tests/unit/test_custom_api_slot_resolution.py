@@ -346,6 +346,18 @@ class TestVisionCredentialBoundary:
         assert client.vision_api_key == 'sk-conversation'
 
     @pytest.mark.unit
+    def test_cosmetic_url_difference_is_still_same_origin(self):
+        """A trailing slash must not read as 'a different provider'."""
+        client = _make_offline_client(
+            vision_base_url='https://api.deepseek.com/v1/',
+            vision_api_key='',
+        )
+        assert client.vision_api_key == 'sk-conversation', (
+            "尾斜杠差异不该被当成换了一家而掐掉继承，实际="
+            f"{client.vision_api_key!r}"
+        )
+
+    @pytest.mark.unit
     def test_explicit_vision_key_is_used(self):
         """An explicitly configured vision key is used on its own endpoint."""
         client = _make_offline_client(
