@@ -177,9 +177,27 @@ def _end_character_request(
         event.set()
 
 
+async def _acquire_within_deadline(lock: asyncio.Lock, deadline: float) -> bool:
+    """Take one lock without outliving the release budget.
+
+    ``/new_dialog`` and the background review hold the per-character settle lock
+    across whole prompt assemblies, and they are deliberately not fenced. An
+    unbounded acquire here would keep this handler running long after the caller
+    gave up, so a lock that cannot be taken in time fails the release instead.
+    """
+    remaining = deadline - asyncio.get_running_loop().time()
+    if remaining <= 0:
+        return False
+    try:
+        await asyncio.wait_for(lock.acquire(), timeout=remaining)
+    except asyncio.TimeoutError:
+        return False
+    return True
+
+
 async def _wait_for_character_requests(
     lanlan_name: str,
-    timeout: float | None = None,
+    deadline: float | None = None,
 ) -> bool:
     """Drain admitted foreground writes; report whether they all finished.
 
@@ -188,10 +206,9 @@ async def _wait_for_character_requests(
     handler running past that point and dispose engines behind the caller's
     back, so the drain stays strictly inside the caller's window.
     """
-    if timeout is None:
-        timeout = _CHARACTER_REQUEST_DRAIN_TIMEOUT_SECONDS
     loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
+    if deadline is None:
+        deadline = loop.time() + _CHARACTER_REQUEST_DRAIN_TIMEOUT_SECONDS
     while _active_character_requests.get(lanlan_name, 0):
         remaining = deadline - loop.time()
         if remaining <= 0:
@@ -430,7 +447,7 @@ def _dispose_character_engines_across_generations(
     errors: list[tuple[int, Exception]] = []
     for index, manager in enumerate(managers):
         try:
-            if manager.dispose_engine(lanlan_name):
+            if manager.dispose_engine(lanlan_name, retain_on_failure=True):
                 released_count += 1
         except Exception as exc:
             # Continue so one broken generation cannot hide the manager that
@@ -657,41 +674,56 @@ async def release_character_resources(
     # drain them and their spawned post-turn tasks before disposing any manager.
     from . import post_turn
 
-    # post-turn task 不持有前台准入 lease，等前台排空期间它仍会给旧名字写
-    # fact / mention / reflection。先取消当前已登记的，再排空前台请求，
-    # 最后补一次——排空窗口里已准入的请求还会派新的 post-turn task。
-    cancelled_post_turn_tasks = await post_turn.cancel_character_post_turn_tasks(
-        lanlan_name
+    # 整个释放流程共用一个预算：排空 + 两把锁的等待加起来都不能超出调用方的
+    # 超时窗口，否则调用方已经放弃并补偿了，这个 handler 还在背后 dispose。
+    deadline = (
+        asyncio.get_running_loop().time()
+        + _CHARACTER_REQUEST_DRAIN_TIMEOUT_SECONDS
     )
-    # 排空的前提是 publication hold 已经挡住新准入，计数才会单调降到 0。
-    # 不取 hold 的调用方（云存档下载、取消订阅）随时还会有新请求进来，等下去
-    # 只会等到超时——那等于把这两条路径从「立刻释放句柄」变成「永远释放不掉」。
-    # 它们的保护仍是原来那套（清理侧的 PermissionError 重试）。
+    # 排空和取消 post-turn 的前提都是 publication hold 已经挡住新准入。
+    # 不取 hold 的调用方（云存档下载、取消订阅）角色事后还活着：排空等不到
+    # 计数归零（新请求随时进来），取消也留不住（下一毫秒就能派新的），
+    # 净效果只是白白打断在途的 outbox op。这两条路径保持本 PR 之前的语义。
+    holding_publication = review.is_character_publication_held(lanlan_name)
+    cancelled_post_turn_tasks = 0
     drained = True
-    if review.is_character_publication_held(lanlan_name):
-        drained = await _wait_for_character_requests(lanlan_name)
-    cancelled_post_turn_tasks += await post_turn.cancel_character_post_turn_tasks(
-        lanlan_name
-    )
-    if not drained:
+    if holding_publication:
+        # post-turn task 不持有前台准入 lease，等前台排空期间它仍会给旧名字写
+        # fact / mention / reflection。先取消当前已登记的，再排空前台请求，
+        # 最后补一次——排空窗口里已准入的请求还会派新的 post-turn task。
+        cancelled_post_turn_tasks = await post_turn.cancel_character_post_turn_tasks(
+            lanlan_name
+        )
+        drained = await _wait_for_character_requests(lanlan_name, deadline)
+        cancelled_post_turn_tasks += (
+            await post_turn.cancel_character_post_turn_tasks(lanlan_name)
+        )
+
+    async def _fail_release(message: str, status_code: int):
         await review.release_character_derived_task_admission_claim(
             lanlan_name,
             derived_task_claim_token,
         )
-        logger.warning(
-            "[MemoryServer] 等待角色 %s 的在途写入超时，未释放 SQLite 引擎",
-            lanlan_name,
-        )
+        logger.warning("[MemoryServer] 释放角色 %s 中止：%s", lanlan_name, message)
         return JSONResponse(
             {
                 "status": "error",
                 "character_name": lanlan_name,
-                "message": "timed out draining admitted character writes",
+                "message": message,
             },
-            status_code=503,
+            status_code=status_code,
         )
-    async with _get_settle_lock(lanlan_name):
-        async with _reload_lock:
+
+    if not drained:
+        return await _fail_release(
+            "timed out draining admitted character writes", 503,
+        )
+    if not await _acquire_within_deadline(_get_settle_lock(lanlan_name), deadline):
+        return await _fail_release("timed out acquiring the settle lock", 503)
+    try:
+        if not await _acquire_within_deadline(_reload_lock, deadline):
+            return await _fail_release("timed out acquiring the reload lock", 503)
+        try:
             # 排空和拿锁都可能久到调用方超时；那时主进程已经补偿性地释放了
             # 本次 claim 并重新开放准入，这里不能再背着它 dispose。
             if not review.is_character_derived_task_claim_active(
@@ -738,6 +770,10 @@ async def release_character_resources(
                     {"status": "error", "character_name": lanlan_name, "message": str(exc)},
                     status_code=500,
                 )
+        finally:
+            _reload_lock.release()
+    finally:
+        _get_settle_lock(lanlan_name).release()
 
 
 # 全局变量用于控制服务器关闭

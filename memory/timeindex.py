@@ -411,13 +411,20 @@ class TimeIndexedMemory:
         """
         return await asyncio.to_thread(self._ensure_engine_exists, lanlan_name, db_path)
 
-    def dispose_engine(self, lanlan_name: str) -> bool:
+    def dispose_engine(
+        self, lanlan_name: str, *, retain_on_failure: bool = False,
+    ) -> bool:
         """Dispose one character's cached engines and report whether any were known.
 
-        Bookkeeping is only cleared once every disposal succeeded: a caller that
-        retries after a failure must still find this generation, otherwise the
-        pool that caused the failure keeps the database file locked until the
-        process exits.
+        ``retain_on_failure`` keeps the bookkeeping when a disposal raised, so a
+        caller that retries can still reach this generation instead of losing the
+        pool that holds the file. It is for the character-release path only.
+
+        The default clears the bookkeeping either way, which is what the in-place
+        repair branches of ``_ensure_engine_exists`` (db_path drift, readonly →
+        writable switch) rely on: they dispose and then fall through to the
+        rebuild branch, so a transient disposal failure must not pin this
+        character to the same failing branch forever.
         """
         db_path = self.db_paths.get(lanlan_name)
         engine = self.engines.get(lanlan_name)
@@ -457,12 +464,13 @@ class TimeIndexedMemory:
                         errors.append(exc)
                         continue
                 SQLChatMessageHistory._engine_cache.pop(connection_string, None)
+        if not (errors and retain_on_failure):
+            self.db_paths.pop(lanlan_name, None)
+            self.engines.pop(lanlan_name, None)
+            self._engine_readonly_flags.pop(lanlan_name, None)
+            self._writable_bootstrapped.discard(lanlan_name)
         if errors:
             raise errors[0]
-        self.db_paths.pop(lanlan_name, None)
-        self.engines.pop(lanlan_name, None)
-        self._engine_readonly_flags.pop(lanlan_name, None)
-        self._writable_bootstrapped.discard(lanlan_name)
         return released
 
     def cleanup(self):

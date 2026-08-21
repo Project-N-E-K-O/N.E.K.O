@@ -66,7 +66,7 @@ async def test_release_character_drains_old_identity_review_and_backup_tasks():
     assert name not in memory_server.review.correction_tasks
     assert name not in memory_server.review.compress_backup_tasks
     assert name not in memory_server.review.compress_backup_task_generations
-    fake_time_manager.dispose_engine.assert_called_once_with(name)
+    fake_time_manager.dispose_engine.assert_called_once_with(name, retain_on_failure=True)
     memory_server.review._retired_derived_task_names.discard(name)
 
 
@@ -97,9 +97,9 @@ async def test_release_character_disposes_current_and_deferred_time_managers_onc
         assert memory_server.runtime._deferred_time_managers == deferred
 
     assert result["status"] == "success"
-    current_manager.dispose_engine.assert_called_once_with(name)
-    old_manager.dispose_engine.assert_called_once_with(name)
-    other_old_manager.dispose_engine.assert_called_once_with(name)
+    current_manager.dispose_engine.assert_called_once_with(name, retain_on_failure=True)
+    old_manager.dispose_engine.assert_called_once_with(name, retain_on_failure=True)
+    other_old_manager.dispose_engine.assert_called_once_with(name, retain_on_failure=True)
     memory_server.review._retired_derived_task_names.discard(name)
 
 
@@ -123,7 +123,7 @@ async def test_release_drains_inflight_process_and_fences_engine_recreation():
 
     fake_time_manager = MagicMock()
     fake_time_manager.astore_conversation = AsyncMock(side_effect=_astore)
-    fake_time_manager.dispose_engine.side_effect = lambda _name: order.append("disposed") or True
+    fake_time_manager.dispose_engine.side_effect = lambda _name, **_kw: order.append("disposed") or True
     fake_recent = MagicMock()
     fake_recent.update_history = AsyncMock(return_value=None)
     fake_config = MagicMock()
@@ -634,13 +634,13 @@ def test_dispose_engine_keeps_bookkeeping_when_disposal_fails(tmp_path):
     manager._writable_bootstrapped.add(name)
 
     with pytest.raises(OSError):
-        manager.dispose_engine(name)
+        manager.dispose_engine(name, retain_on_failure=True)
 
     assert manager.engines[name] is engine
     assert manager.db_paths[name] == str(db_path)
 
     engine.dispose.side_effect = None
-    assert manager.dispose_engine(name) is True
+    assert manager.dispose_engine(name, retain_on_failure=True) is True
     assert name not in manager.engines
     assert name not in manager.db_paths
     assert name not in manager._writable_bootstrapped
@@ -675,7 +675,7 @@ def test_dispose_engine_keeps_the_cached_pool_when_its_disposal_fails(tmp_path):
         cache[writable_key] = cached_engine
 
         with pytest.raises(OSError):
-            manager.dispose_engine(name)
+            manager.dispose_engine(name, retain_on_failure=True)
 
         assert cached_engine.dispose.call_count == 1
         # 缓存条目必须还在，否则重试再也够不到这个 pool。
@@ -683,7 +683,7 @@ def test_dispose_engine_keeps_the_cached_pool_when_its_disposal_fails(tmp_path):
         assert manager.db_paths[name] == str(db_path)
 
         cached_engine.dispose.side_effect = None
-        assert manager.dispose_engine(name) is True
+        assert manager.dispose_engine(name, retain_on_failure=True) is True
         assert cached_engine.dispose.call_count == 2
         assert writable_key not in cache
         assert name not in manager.db_paths
@@ -713,7 +713,7 @@ def test_dispose_engine_keeps_the_cache_entry_when_the_primary_engine_fails(tmp_
         cache[readonly_key] = engine
 
         with pytest.raises(OSError):
-            manager.dispose_engine(name)
+            manager.dispose_engine(name, retain_on_failure=True)
 
         # 同一个对象在一次调用里只 dispose 一次，且失败后缓存条目要留住。
         assert engine.dispose.call_count == 1
@@ -721,7 +721,7 @@ def test_dispose_engine_keeps_the_cache_entry_when_the_primary_engine_fails(tmp_
         assert manager.engines[name] is engine
 
         engine.dispose.side_effect = None
-        assert manager.dispose_engine(name) is True
+        assert manager.dispose_engine(name, retain_on_failure=True) is True
         assert engine.dispose.call_count == 2
         assert readonly_key not in cache
         assert name not in manager.engines
@@ -802,6 +802,137 @@ async def test_publication_guard_releases_the_slot_when_the_endpoint_raises():
 
 
 @pytest.mark.unit
+@pytest.mark.asyncio
+async def test_release_gives_up_when_the_settle_lock_is_held_too_long():
+    """/new_dialog holds the settle lock and is deliberately unfenced.
+
+    Blocking on it without a bound would keep this handler running past the
+    caller's timeout, and the caller reports the delete as refused.
+    """
+    from app import memory_server
+
+    name = "结算锁被占角色"
+    claim_token = "settle-lock-timeout-claim"
+    memory_server.review._retired_derived_task_names.discard(name)
+    memory_server.review._publication_held_derived_task_names.discard(name)
+    fake_time_manager = MagicMock()
+    fake_time_manager.dispose_engine.return_value = True
+
+    settle_lock = memory_server.runtime._get_settle_lock(name)
+    await settle_lock.acquire()
+    try:
+        with patch.object(memory_server.runtime, "time_manager", fake_time_manager), patch.object(
+            memory_server.runtime, "_deferred_time_managers", [],
+        ), patch.object(
+            memory_server.runtime, "_CHARACTER_REQUEST_DRAIN_TIMEOUT_SECONDS", 0.05,
+        ):
+            result = await asyncio.wait_for(
+                memory_server.runtime.release_character_resources(
+                    name,
+                    hold_derived_task_admission=True,
+                    derived_task_claim_token=claim_token,
+                    derived_task_claim_generation=0,
+                ),
+                timeout=2,
+            )
+    finally:
+        settle_lock.release()
+
+    assert result.status_code == 503
+    fake_time_manager.dispose_engine.assert_not_called()
+    # 声明已归还，主进程补偿后新写入能重新准入。
+    assert memory_server.runtime._is_character_publication_admitted(name)
+    memory_server.review._retired_derived_task_names.discard(name)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_release_without_a_hold_keeps_post_turn_work_alive():
+    """Cloudsave / unsubscribe leave the character alive and take no hold.
+
+    Cancelling its background work there buys nothing (nothing stops the next
+    one from spawning) and can cut an outbox op short before its done marker.
+    """
+    from app import memory_server
+
+    name = "无围栏保留后台角色"
+    claim_token = "no-hold-keeps-tasks-claim"
+    memory_server.review._retired_derived_task_names.discard(name)
+    memory_server.review._publication_held_derived_task_names.discard(name)
+    memory_server.post_turn._character_post_turn_tasks.pop(name, None)
+    post_turn_task = asyncio.create_task(asyncio.sleep(30))
+    memory_server.post_turn._track_character_post_turn_task(name, post_turn_task)
+    fake_time_manager = MagicMock()
+    fake_time_manager.dispose_engine.return_value = True
+
+    try:
+        with patch.object(memory_server.runtime, "time_manager", fake_time_manager), patch.object(
+            memory_server.runtime, "_deferred_time_managers", [],
+        ):
+            result = await asyncio.wait_for(
+                memory_server.runtime.release_character_resources(
+                    name,
+                    hold_derived_task_admission=False,
+                    derived_task_claim_token=claim_token,
+                    derived_task_claim_generation=0,
+                ),
+                timeout=2,
+            )
+
+        assert result["status"] == "success"
+        assert not post_turn_task.done()
+    finally:
+        await _cleanup_task(post_turn_task)
+        memory_server.post_turn._character_post_turn_tasks.pop(name, None)
+        await memory_server.review.release_character_derived_task_admission_claim(
+            name, claim_token,
+        )
+        memory_server.review._retired_derived_task_names.discard(name)
+
+
+@pytest.mark.unit
+def test_engine_repair_branch_self_heals_after_a_failed_disposal(tmp_path):
+    """The db_path-drift branch disposes and falls through to the rebuild.
+
+    Pinning the bookkeeping there would trap the character on the same failing
+    branch forever, so only the release path may retain it.
+    """
+    from memory.timeindex import TimeIndexedMemory
+
+    name = "漂移自愈角色"
+    stale_engine = MagicMock()
+    stale_engine.dispose.side_effect = OSError("busy")
+    manager = TimeIndexedMemory(recent_history_manager=None)
+    manager.engines[name] = stale_engine
+    manager.db_paths[name] = str(tmp_path / "stale" / "time_indexed.db")
+    manager._engine_readonly_flags[name] = False
+    expected = str(tmp_path / "fresh" / "time_indexed.db")
+
+    with patch.object(
+        manager, "_resolve_expected_db_path", return_value=expected,
+    ), patch.object(manager, "_assert_timeindex_writable", MagicMock()):
+        with pytest.raises(OSError):
+            manager._ensure_engine_exists(name)
+
+        # 簿记必须已经清掉：下一次调用要能走到重建分支，而不是又撞同一个 dispose。
+        assert name not in manager.engines
+        assert name not in manager.db_paths
+
+        created = MagicMock()
+        with patch.object(
+            manager, "_create_engine_for", create=True, return_value=created,
+        ):
+            # 重建分支的细节各版本不同，这里只断言「不再重复抛同一个 dispose 错误」。
+            try:
+                manager._ensure_engine_exists(name, expected)
+            except OSError as exc:  # pragma: no cover - 只在回归时触发
+                pytest.fail(f"repair branch did not self-heal: {exc}")
+            except Exception:
+                pass
+    assert stale_engine.dispose.call_count == 1
+
+
+@pytest.mark.unit
 def test_release_drain_budget_stays_under_the_tightest_caller_timeout():
     """A caller that gives up first starts deleting files while the drain runs."""
     import inspect
@@ -879,7 +1010,7 @@ async def test_release_cancels_post_turn_tasks_before_draining_requests():
             release_task = None
 
         assert result["status"] == "success"
-        fake_time_manager.dispose_engine.assert_called_once_with(name)
+        fake_time_manager.dispose_engine.assert_called_once_with(name, retain_on_failure=True)
     finally:
         if context_token is not None:
             memory_server.runtime._end_character_request(name, context_token)
@@ -973,7 +1104,7 @@ async def test_release_without_a_publication_hold_never_waits_for_new_writes():
         memory_server.runtime._end_character_request(name, context_token)
 
     assert result["status"] == "success"
-    fake_time_manager.dispose_engine.assert_called_once_with(name)
+    fake_time_manager.dispose_engine.assert_called_once_with(name, retain_on_failure=True)
     memory_server.review._retired_derived_task_names.discard(name)
     await memory_server.review.release_character_derived_task_admission_claim(
         name, "no-hold-claim",
@@ -1144,7 +1275,7 @@ async def test_release_failure_restores_derived_task_admission():
         )
 
     assert result.status_code == 500
-    deferred_manager.dispose_engine.assert_called_once_with(name)
+    deferred_manager.dispose_engine.assert_called_once_with(name, retain_on_failure=True)
     assert name not in memory_server.review._retired_derived_task_names
     assert name not in memory_server.review._publication_held_derived_task_names
 
