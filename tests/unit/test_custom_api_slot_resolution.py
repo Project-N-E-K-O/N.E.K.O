@@ -641,6 +641,23 @@ class TestVisionCredentialBoundary:
         )
 
     @pytest.mark.unit
+    def test_zero_padded_ports_compare_by_value(self):
+        """:0443 is port 443, and :08443 is port 8443 — compare numerically."""
+        from main_logic.omni_offline_client._client import _same_endpoint
+        assert _same_endpoint(
+            'https://api.example.com/v1', 'https://api.example.com:0443/v1'
+        ) is True, "补零的默认端口仍是默认端口"
+        assert _same_endpoint(
+            'http://api.example.com/v1', 'http://api.example.com:00080/v1'
+        ) is True, "补零的 http 默认端口同理"
+        assert _same_endpoint(
+            'https://api.example.com:8443/v1', 'https://api.example.com:08443/v1'
+        ) is True, "非默认端口的前导零也不该造成分歧"
+        assert _same_endpoint(
+            'https://api.example.com:8443/v1', 'https://api.example.com:9443/v1'
+        ) is False, "真正不同的端口仍是不同端点"
+
+    @pytest.mark.unit
     def test_non_default_port_is_a_different_endpoint(self):
         """A real port difference still separates the credentials."""
         client = _make_offline_client(

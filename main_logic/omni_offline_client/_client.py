@@ -90,8 +90,13 @@ def _same_endpoint(a: str | None, b: str | None) -> bool:
         userinfo, _, hostinfo = (parts.netloc or '').rpartition('@')
         scheme = (parts.scheme or '').lower()
         host, port = _split_hostinfo(hostinfo.lower())
-        # 显式写出的默认端口要归一化掉：https://h/v1 与 https://h:443/v1 是同一个
-        # 端点，判成不同会把本该继承的凭证掐掉 → 付费端点 401。
+        # 端口按**数值**归一化，不是按字符串：:0443 和 :443 是同一个端口，
+        # :08443 和 :8443 也是。用字符串比会把它们判成不同端点，进而掐掉本该
+        # 继承的凭证 → 付费端点 401。非全数字的（畸形端口）原样留着比。
+        if port.isdigit():
+            port = str(int(port))
+        # 显式写出的默认端口同样要归一化掉：https://h/v1 与 https://h:443/v1
+        # 是同一个端点。
         if port and port == _DEFAULT_PORTS.get(scheme):
             port = ''
         return (
