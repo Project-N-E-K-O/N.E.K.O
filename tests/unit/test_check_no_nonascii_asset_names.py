@@ -187,6 +187,33 @@ def test_include_untracked_respects_plugin_staging_filter(tmp_path: Path) -> Non
 
 
 @pytest.mark.unit
+def test_include_untracked_applies_plugin_stage_filter(tmp_path: Path) -> None:
+    """On-disk plugin files that staging drops must not become false positives."""
+    module = _load_script_module()
+    _init_repo(tmp_path)
+    (tmp_path / ".gitignore").write_text("plugin/plugins/demo/\n", encoding="utf-8")
+    plugin_dir = tmp_path / "plugin" / "plugins" / "demo"
+    plugin_dir.mkdir(parents=True)
+    (plugin_dir / "pyproject.toml").write_text(
+        '[tool.neko.build]\nexclude_dirs = ["local_logs"]\n',
+        encoding="utf-8",
+    )
+    for relative in (
+        ".vscode/settings",
+        ".idea/workspace",
+        "local_logs/private",
+        "assets/visible",
+    ):
+        path = plugin_dir / f"{relative}-{CJK_NAME}"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"x")
+
+    offenders, _ = module.collect_offenders(tmp_path, include_untracked=True)
+
+    assert offenders == {f"plugin/plugins/demo/assets/visible-{CJK_NAME}"}
+
+
+@pytest.mark.unit
 def test_collects_offender_inside_unpacked_archives(tmp_path: Path) -> None:
     """Members of assets/*.tar.gz and pngtuber-packs/*.zip count as bundled.
 

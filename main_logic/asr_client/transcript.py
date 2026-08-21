@@ -205,6 +205,16 @@ class TranscriptDispatcher:
         self._idle = asyncio.Event()
         self._idle.set()
 
+    @property
+    def has_pending_delivery(self) -> bool:
+        """Return whether an accepted final still owns delivery priority."""
+
+        return bool(
+            self._reservations
+            or not self._queue.empty()
+            or self._active is not None
+        )
+
     def try_reserve(self, key: FinalKey) -> bool:
         if key in self._reservations:
             return True

@@ -191,6 +191,151 @@ async def test_response_arbiter_holds_lane_until_response_done():
 
 
 @pytest.mark.asyncio
+async def test_response_arbiter_rejects_cancelled_admission_before_item_send():
+    sent = []
+
+    async def send(event):
+        sent.append(dict(event))
+
+    arbiter = RealtimeResponseArbiter(send)
+    ticket = await arbiter.enqueue(
+        source="external_asr",
+        events_before_response=(
+            {
+                "type": "conversation.item.create",
+                "item": {"role": "user", "content": []},
+            },
+        ),
+        admission_check=lambda: False,
+    )
+
+    with pytest.raises(RuntimeError, match="admission rejected"):
+        await asyncio.wait_for(ticket.sent, 0.2)
+    with pytest.raises(RuntimeError, match="admission rejected"):
+        await asyncio.wait_for(ticket.done, 0.2)
+    assert sent == []
+    await arbiter.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_response_arbiter_deletes_committed_item_after_admission_invalidates():
+    sent = []
+    item_write_started = asyncio.Event()
+    release_item_write = asyncio.Event()
+    admitted = True
+    arbiter = None
+
+    async def send(event):
+        sent.append(dict(event))
+        if event["type"] == "conversation.item.create":
+            item_write_started.set()
+            await release_item_write.wait()
+            arbiter.notify_item_created(
+                {
+                    "type": "conversation.item.created",
+                    "item": {"id": "committed-item", "role": "user"},
+                }
+            )
+        elif event["type"] == "response.create":
+            arbiter.notify_response_created(
+                {"type": "response.created", "response": {"id": "resp-1"}}
+            )
+            arbiter.notify_response_terminal(
+                {
+                    "type": "response.done",
+                    "response": {"id": "resp-1", "status": "completed"},
+                }
+            )
+
+    arbiter = RealtimeResponseArbiter(send)
+    ticket = await arbiter.enqueue(
+        source="external_asr",
+        events_before_response=(
+            {
+                "type": "conversation.item.create",
+                "item": {
+                    "id": "committed-item",
+                    "role": "user",
+                    "content": [],
+                },
+            },
+        ),
+        response_event={"type": "response.create"},
+        ack_expected=True,
+        expected_item_id="committed-item",
+        expected_item_role="user",
+        admission_check=lambda: admitted,
+    )
+    await item_write_started.wait()
+    admitted = False
+    release_item_write.set()
+
+    with pytest.raises(RuntimeError, match="interrupted"):
+        await asyncio.wait_for(ticket.done, 0.2)
+    assert [event["type"] for event in sent] == [
+        "conversation.item.create",
+        "conversation.item.delete",
+    ]
+    await arbiter.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_response_arbiter_deletes_all_committed_prefix_items_after_invalidation():
+    sent = []
+    first_item_started = asyncio.Event()
+    release_first_item = asyncio.Event()
+    admitted = True
+    arbiter = None
+
+    async def send(event):
+        sent.append(dict(event))
+        if event["type"] == "conversation.item.create":
+            item_id = event["item"]["id"]
+            if item_id == "visual-item":
+                first_item_started.set()
+                await release_first_item.wait()
+            arbiter.notify_item_created(
+                {"item": {"id": item_id, "role": "user"}}
+            )
+
+    arbiter = RealtimeResponseArbiter(send)
+    ticket = await arbiter.enqueue(
+        source="proactive",
+        events_before_response=(
+            {
+                "type": "conversation.item.create",
+                "item": {"id": "visual-item", "role": "user", "content": []},
+            },
+            {
+                "type": "conversation.item.create",
+                "item": {"id": "text-item", "role": "user", "content": []},
+            },
+        ),
+        response_event={"type": "response.create"},
+        ack_expected=True,
+        expected_item_id="text-item",
+        expected_item_role="user",
+        admission_check=lambda: admitted,
+    )
+    await first_item_started.wait()
+    admitted = False
+    release_first_item.set()
+
+    with pytest.raises(RuntimeError, match="interrupted"):
+        await asyncio.wait_for(ticket.done, 0.2)
+    assert [event["type"] for event in sent] == [
+        "conversation.item.create",
+        "conversation.item.delete",
+    ]
+    assert [
+        event["item_id"]
+        for event in sent
+        if event["type"] == "conversation.item.delete"
+    ] == ["visual-item"]
+    await arbiter.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_cancel_ticket_after_terminal_does_not_cancel_new_server_response():
     sent = []
     arbiter = None
@@ -3006,6 +3151,55 @@ async def test_cancel_during_item_ack_does_not_send_response_create():
 
 
 @pytest.mark.asyncio
+async def test_cancel_after_response_create_still_sends_response_cancel():
+    sent = []
+    arbiter = None
+
+    async def send(event):
+        sent.append(dict(event))
+        if event["type"] == "conversation.item.create":
+            arbiter.notify_item_created(
+                {"item": {"id": "item-cancel-after-create", "role": "user"}}
+            )
+        elif event["type"] == "response.create":
+            arbiter.notify_response_created(
+                {"type": "response.created", "response": {"id": "resp-1"}}
+            )
+        elif event["type"] == "response.cancel":
+            arbiter.notify_response_terminal(
+                {"type": "response.cancelled", "response": {"id": "resp-1"}}
+            )
+
+    arbiter = RealtimeResponseArbiter(send)
+    ticket = await arbiter.enqueue(
+        source="external_asr",
+        events_before_response=(
+            {
+                "type": "conversation.item.create",
+                "item": {
+                    "id": "item-cancel-after-create",
+                    "role": "user",
+                    "content": [],
+                },
+            },
+        ),
+        response_event={"type": "response.create"},
+        ack_expected=True,
+        expected_item_id="item-cancel-after-create",
+        expected_item_role="user",
+    )
+    await ticket.sent
+    await arbiter.cancel_current(timeout=0.2)
+
+    assert [event["type"] for event in sent] == [
+        "conversation.item.create",
+        "response.create",
+        "response.cancel",
+    ]
+    await arbiter.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_image_description_item_cannot_ack_external_asr_item():
     response_sent = asyncio.Event()
     arbiter = None
@@ -3049,6 +3243,7 @@ async def test_prepare_external_voice_turn_failure_reopens_dispatch_gate():
 
     client = OmniRealtimeClient.__new__(OmniRealtimeClient)
     client._is_gemini = False
+    client._connection_generation = 0
     client._response_arbiter = RealtimeResponseArbiter(send)
     client.handle_interruption = AsyncMock(side_effect=RuntimeError("interrupt failed"))
 

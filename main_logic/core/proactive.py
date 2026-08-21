@@ -52,6 +52,14 @@ from .callback_render import _build_callback_instruction, _select_callbacks_with
 class ProactiveMixin:
     """Proactive delivery methods (see module docstring)."""
 
+    @staticmethod
+    def _terminal_callback_image_rejections() -> frozenset[str]:
+        return frozenset({
+            "analysis_empty",
+            "invalid_payload",
+            "payload_too_large",
+        })
+
     def note_user_engagement(self, *, at: float | None = None) -> None:
         """Record a genuine user interaction for silence-aware proactive guards."""
         engagement_at = float(time.time() if at is None else at)
@@ -137,7 +145,11 @@ class ProactiveMixin:
                 language or self.user_language,
                 format='full',
             ) or 'en'
-            delivered = await session.prompt_ephemeral(language=_lang)
+            delivered = await session.prompt_ephemeral(
+                language=_lang,
+                user_turn_active=self._independent_asr_user_turn_active,
+                session_owned=lambda: self.is_active and self.session is session,
+            )
         if delivered:
             logger.info("[%s] voice proactive nudge delivered (%s)", self.lanlan_name, _lang)
         else:
@@ -775,11 +787,17 @@ class ProactiveMixin:
                 # Injecting then makes her interrupt herself, so defer; the
                 # voice_play_end signal re-fires this and the manager releases
                 # the next cue only once she has truly stopped talking.
+                recent_activity_remaining = (
+                    getattr(voice_sess, "_user_recent_activity_time", 0.0)
+                    + getattr(voice_sess, "_user_recent_activity_window", 8.0)
+                    - time.time()
+                )
                 if (
                     self.state.phase is not ProactivePhase.IDLE
                     or voice_sess.is_active_response()
                     or getattr(voice_sess, "_proactive_inject_awaiting_outcome", False)
                     or self._is_voice_playing()
+                    or recent_activity_remaining > 0.0
                 ):
                     logger.debug(
                         "[%s] trigger_agent_callbacks: voice session busy (phase=%s, active_response=%s, playback=%s); deferring proactive (n=%d)",
@@ -789,6 +807,15 @@ class ProactiveMixin:
                         self._voice_playback_active,
                         len(proactive_cbs),
                     )
+                    if recent_activity_remaining > 0.0:
+                        # Recent PCM can arrive without ever producing
+                        # response.done / voice_play_end (noise, partial ASR,
+                        # cancelled turn). The callback has already left the
+                        # pacing manager, so arm its own wake-up at the exact
+                        # activity-window boundary instead of waiting forever.
+                        self._schedule_proactive_retry(
+                            recent_activity_remaining
+                        )
                     return False
 
                 # ⚠️ 不能砍成短码：_build_callback_instruction 的模板有 zh-TW 行，
@@ -959,6 +986,33 @@ class ProactiveMixin:
                 # callback media, then re-check activity: a server-VAD turn can
                 # start while the rotation callback is suspended, and that
                 # user turn must keep priority over this proactive callback.
+                def _voice_activity_since(started_at: float) -> bool:
+                    independent_asr_active = getattr(
+                        self,
+                        "_independent_asr_user_turn_active",
+                        None,
+                    )
+                    return bool(
+                        voice_sess.is_active_response()
+                        or getattr(voice_sess, "_client_vad_active", False)
+                        or (
+                            callable(independent_asr_active)
+                            and independent_asr_active()
+                        )
+                        or getattr(
+                            voice_sess,
+                            "_user_recent_activity_time",
+                            0.0,
+                        )
+                        > started_at
+                        or getattr(
+                            voice_sess,
+                            "_ai_recent_activity_time",
+                            0.0,
+                        )
+                        > started_at
+                    )
+
                 rotation_started_at = time.time()
                 if voice_sess.on_sid_rotate is not None:
                     try:
@@ -977,17 +1031,13 @@ class ProactiveMixin:
                             self.proactive_manager.min_gap_s
                         )
                         return False
-                if (
-                    voice_sess.is_active_response()
-                    or getattr(voice_sess, "_client_vad_active", False)
-                    or getattr(voice_sess, "_user_recent_activity_time", 0.0)
-                    > rotation_started_at
-                    or getattr(voice_sess, "_ai_recent_activity_time", 0.0)
-                    > rotation_started_at
-                ):
+                if _voice_activity_since(rotation_started_at):
                     logger.info(
                         "[%s] trigger_agent_callbacks: activity started during SID rotation; deferring callback delivery",
                         self.lanlan_name,
+                    )
+                    self._schedule_proactive_retry(
+                        self.proactive_manager.min_gap_s
                     )
                     return False
                 # Rotation awaited outside the media-commit boundary. A newer
@@ -1004,18 +1054,65 @@ class ProactiveMixin:
                 self._mark_voice_delivery_committed(voice_snapshot)
                 voice_commit_snapshot = tuple(voice_snapshot)
                 voice_media_events: list[tuple[dict, dict]] = []
+                media_session_unsafe = False
+                native_media_prefix_committed = False
+
+                def _mark_media_session_unsafe() -> None:
+                    nonlocal media_session_unsafe
+                    media_session_unsafe = True
+
+                def _mark_native_media_prefix_committed() -> None:
+                    nonlocal native_media_prefix_committed
+                    native_media_prefix_committed = True
+
+                async def _retire_unsafe_media_session() -> None:
+                    # A native callback image is already persistent provider
+                    # context, but its paired callback text will not be sent.
+                    # Fence the client before the shared admission lock is
+                    # released, then tear down the exact manager-owned session
+                    # so the next user/ASR turn cannot consume the unlabelled
+                    # prefix.
+                    voice_sess._fatal_error_occurred = True
+                    try:
+                        await voice_sess.close()
+                    except Exception as exc:
+                        logger.warning(
+                            "[%s] failed to close realtime session after "
+                            "partial proactive media delivery: %s",
+                            self.lanlan_name,
+                            exc,
+                        )
+                    if self.session is voice_sess:
+                        # Full manager cleanup can wait on ASR registry work
+                        # whose turn is queued behind this same admission lock.
+                        # Start it now, but do not await it until the callback
+                        # transaction releases the lock.
+                        self._fire_task(
+                            self.end_session(
+                                by_server=True,
+                                expected_session=voice_sess,
+                            )
+                        )
+
+                media_started_at = time.time()
                 try:
                     media_ok = await self._stream_cb_media(
                         voice_snapshot,
                         voice_sess,
                         on_rejected=_on_voice_media_rejected,
                         events_before_text=voice_media_events,
+                        on_session_unsafe=_mark_media_session_unsafe,
+                        on_native_prefix_committed=(
+                            _mark_native_media_prefix_committed
+                        ),
                     )
                 except BaseException:
                     self._clear_voice_delivery_committed(voice_commit_snapshot)
                     raise
                 if not media_ok:
                     self._clear_voice_delivery_committed(voice_commit_snapshot)
+                    if media_session_unsafe:
+                        await _retire_unsafe_media_session()
                     # A media stream failed — DEFER the whole inject so this cb
                     # retries WITH its image rather than being delivered
                     # text-only and pruned (which would lose the retained
@@ -1031,6 +1128,54 @@ class ProactiveMixin:
                         self.lanlan_name, len(voice_snapshot),
                     )
                     self._schedule_proactive_retry(self.proactive_manager.min_gap_s)
+                    return False
+                # Vision analysis can yield long enough for a hot swap to
+                # retire the captured realtime session.  Activity checks on
+                # the old session are insufficient: never inject callback
+                # text into a session that is no longer manager-owned.
+                if self.session is not voice_sess:
+                    self._clear_voice_delivery_committed(voice_commit_snapshot)
+                    for _owner_cb, event in voice_media_events:
+                        voice_sess._inject_rejection_handlers.pop(
+                            event.get("event_id"),
+                            None,
+                        )
+                    logger.info(
+                        "[%s] trigger_agent_callbacks: voice session changed "
+                        "during callback media analysis; deferring callback",
+                        self.lanlan_name,
+                    )
+                    self._schedule_proactive_retry(
+                        self.proactive_manager.min_gap_s
+                    )
+                    return False
+                # External descriptions are still local at this point; unlike
+                # native images, nothing has been persisted to the provider.
+                # If a user turn won the slow vision-model await, discard the
+                # unsent description events and let that user turn keep
+                # priority. The callback remains queued for a later retry.
+                if _voice_activity_since(media_started_at):
+                    self._clear_voice_delivery_committed(voice_commit_snapshot)
+                    if voice_media_events:
+                        for _owner_cb, event in voice_media_events:
+                            voice_sess._inject_rejection_handlers.pop(
+                                event.get("event_id"),
+                                None,
+                            )
+                    if native_media_prefix_committed:
+                        _mark_media_session_unsafe()
+                        await _retire_unsafe_media_session()
+                    logger.info(
+                        "[%s] trigger_agent_callbacks: activity started during "
+                        "callback media delivery; deferring callback delivery",
+                        self.lanlan_name,
+                    )
+                    # The winning ASR turn may end without a final transcript
+                    # or response lifecycle event. Re-arm independently so the
+                    # retained callback cannot wait forever for response.done.
+                    self._schedule_proactive_retry(
+                        self.proactive_manager.min_gap_s
+                    )
                     return False
                 if _reject_state["rejected"]:
                     self._clear_voice_delivery_committed(voice_commit_snapshot)
@@ -1868,6 +2013,8 @@ class ProactiveMixin:
         *,
         on_rejected=None,
         events_before_text: list[tuple[dict, dict]] | None = None,
+        on_session_unsafe=None,
+        on_native_prefix_committed=None,
     ) -> bool:
         """Stream images carried by proactive callbacks (push_message
         media_parts with ai_behavior="respond") into ``session`` right before
@@ -1903,15 +2050,26 @@ class ProactiveMixin:
         kept (not just the tail): a stream failure usually means the session is
         closing, so the retry lands on a new session that has none of the
         earlier images — re-streaming everything is correct (Codex P2).
-        A payload proven permanently too large after recompression is the sole
-        exception: that exact image is dropped so it cannot wedge callback text
-        delivery in an endless retry loop.
+        A payload proven permanently too large after recompression, or an image
+        whose external analysis terminally produced no description, is dropped
+        so it cannot wedge callback text delivery in an endless retry loop.
         """
         si = getattr(session, "stream_image", None)
         if si is None:
             return True
         all_ok = True
         registered_description_event_ids: list[str] = []
+        native_prefix_committed = False
+        session_unsafe_reported = False
+
+        def _mark_session_unsafe() -> None:
+            nonlocal session_unsafe_reported
+            if session_unsafe_reported:
+                return
+            session_unsafe_reported = True
+            if callable(on_session_unsafe):
+                on_session_unsafe()
+
         for cb in callbacks:
             if not isinstance(cb, dict):
                 continue
@@ -1920,17 +2078,112 @@ class ProactiveMixin:
                 continue
             streamed = 0
             for b64 in list(images):
+                explicit_rejection = False
+                attempted_websocket_native_delivery = bool(
+                    isinstance(session, OmniRealtimeClient)
+                    and not getattr(session, "_is_gemini", False)
+                    and getattr(session, "_supports_native_image", False)
+                    and getattr(
+                        getattr(session, "_visual_delivery_mode", "native"),
+                        "value",
+                        getattr(session, "_visual_delivery_mode", "native"),
+                    )
+                    == "native"
+                )
                 try:
                     # Deliberate cue image: bypass the native-vision frame-rate
                     # throttle so it isn't silently dropped behind a recent
                     # high-frequency screen/camera frame (Codex P2).
-                    description = await si(
-                        b64,
-                        bypass_rate_limit=True,
-                        cache_latest=False,
-                        on_rejected=on_rejected,
-                    )
-                    if not getattr(session, "_supports_native_image", True):
+                    try:
+                        stage_result = await si(
+                            b64,
+                            bypass_rate_limit=True,
+                            cache_latest=False,
+                            source="callback",
+                            request_id=cb.get("_callback_delivery_id"),
+                            on_rejected=on_rejected,
+                        )
+                    except TypeError as exc:
+                        # Compatibility for older session doubles/clients that
+                        # predate source metadata. The current Realtime client
+                        # accepts both fields, so production never takes this
+                        # fallback after the contract lands.
+                        if "unexpected keyword argument" not in str(exc):
+                            raise
+                        stage_result = await si(
+                            b64,
+                            bypass_rate_limit=True,
+                            cache_latest=False,
+                            on_rejected=on_rejected,
+                        )
+                    # New Realtime sessions return a structured staging result.
+                    # Keep the legacy string/None interpretation temporarily so
+                    # native provider behavior and older test doubles remain
+                    # unchanged while routing decisions move away from provider
+                    # capability checks.
+                    structured_result = hasattr(stage_result, "accepted")
+                    if structured_result:
+                        accepted = bool(stage_result.accepted)
+                        raw_mode = getattr(stage_result, "mode", None)
+                        delivery_mode = getattr(raw_mode, "value", raw_mode)
+                        description = getattr(stage_result, "description", None)
+                    else:
+                        accepted = True
+                        delivery_mode = (
+                            "external_description"
+                            if isinstance(stage_result, str)
+                            else "native"
+                        )
+                        description = (
+                            stage_result if isinstance(stage_result, str) else None
+                        )
+                    if not accepted:
+                        explicit_rejection = True
+                        rejection_reason = getattr(
+                            stage_result,
+                            "rejection_reason",
+                            None,
+                        )
+                        if (
+                            native_prefix_committed
+                            and rejection_reason
+                            not in self._terminal_callback_image_rejections()
+                        ):
+                            # The callback transaction already persisted a raw
+                            # image, but this attempt cannot reach its paired
+                            # text. Retryable rejection (including a native raw
+                            # fence) therefore makes the session unsafe. A
+                            # terminally invalid image remains droppable because
+                            # this same transaction can still send the callback
+                            # text and consume the accepted native prefix.
+                            _mark_session_unsafe()
+                            raise RuntimeError(
+                                "callback visual route changed after native prefix"
+                            )
+                        if rejection_reason == "payload_too_large":
+                            raise RealtimeImagePayloadTooLargeError(
+                                "callback image exceeds the external visual payload limit"
+                            )
+                        if rejection_reason in {
+                            "analysis_empty",
+                            "invalid_payload",
+                        }:
+                            images.remove(b64)
+                            if not images:
+                                cb.pop("media_images", None)
+                            logger.warning(
+                                "[%s] dropping terminally rejected proactive "
+                                "image (%s)",
+                                self.lanlan_name,
+                                rejection_reason,
+                            )
+                            continue
+                        raise RuntimeError("callback image was not accepted")
+                    if delivery_mode == "native":
+                        native_prefix_committed = True
+                        if callable(on_native_prefix_committed):
+                            on_native_prefix_committed()
+                    if delivery_mode == "external_description":
                         if not isinstance(description, str) or not description.strip():
                             raise RuntimeError(
                                 "callback image analysis produced no description"
@@ -1961,13 +2214,21 @@ class ProactiveMixin:
                                 "type": "conversation.item.create",
                                 "event_id": description_event_id,
                                 "item": {
+                                    "id": (
+                                        f"item_neko_callback_visual_{uuid4().hex}"
+                                    ),
                                     "type": "message",
                                     "role": "user",
                                     "content": [{
                                         "type": "input_text",
                                         "text": (
-                                            "[实时屏幕截图或相机画面]: "
-                                            f"{description.strip()}"
+                                            (
+                                                "[系统视觉感知结果，不是用户陈述]\n"
+                                                "当前画面："
+                                                if structured_result
+                                                else "[实时屏幕截图或相机画面]: "
+                                            )
+                                            + description.strip()
                                         ),
                                     }],
                                 },
@@ -1989,6 +2250,16 @@ class ProactiveMixin:
                     )
                     continue
                 except Exception as e:
+                    if native_prefix_committed or (
+                        attempted_websocket_native_delivery
+                        and not explicit_rejection
+                    ):
+                        # A completed native prefix is irreversible. A first
+                        # WebSocket-native exception is also ambiguous because
+                        # bytes may have crossed the transport before the await
+                        # raised. Explicit accepted=False for image zero proves
+                        # no prefix and remains an ordinary retry.
+                        _mark_session_unsafe()
                     # Keep the FULL media set (do NOT trim already-streamed
                     # ones): a voice stream_image failure almost always means
                     # the session is closing, so the retry runs on a NEW session
@@ -2013,6 +2284,246 @@ class ProactiveMixin:
             for event_id in registered_description_event_ids:
                 session._inject_rejection_handlers.pop(event_id, None)
         return all_ok
+
+    @staticmethod
+    def _session_media_identity(session: object) -> str | None:
+        """Return an object-lifetime-stable identity for media ownership."""
+
+        if session is None:
+            return None
+        identity = getattr(session, "_passive_media_identity", None)
+        if identity is not None:
+            return str(identity)
+        identity = uuid4().hex
+        try:
+            setattr(session, "_passive_media_identity", identity)
+        except Exception:
+            return None
+        return identity
+
+    def _callback_media_ready_for_session(
+        self,
+        callback: dict,
+        session: object,
+    ) -> bool:
+        """Return whether callback media is already owned by ``session``."""
+
+        images = callback.get("media_images")
+        session_identity = self._session_media_identity(session)
+        return not images or (
+            session_identity is not None
+            and callback.get("_passive_media_session_id") == session_identity
+            and int(
+                callback.get("_passive_media_staged_count", 0) or 0
+            )
+            >= len(images)
+        )
+
+    async def _stage_passive_callback_media(
+        self,
+        callbacks: list,
+        session: object,
+    ) -> dict[str, object]:
+        """Stage retained callback images before a natural-turn consumer.
+
+        Passive consumers remove callbacks after rendering their text. Media
+        therefore needs an explicit ownership handoff first: native/offline
+        images are staged into the exact session that will consume the prompt,
+        while external visual descriptions are folded into the callback body.
+        A transient rejection leaves the callback unready and queued.  The
+        returned live outcome also covers WebSocket-native rejection events
+        that can arrive after ``stream_image`` has returned; the hot-swap
+        owner keeps it until the later session-update barrier proves that the
+        Provider processed the preceding image and callback-context writes.
+        """
+
+        outcome = {
+            "safe_to_continue": True,
+            "native_prefix_committed": False,
+            "native_rejection_pending": False,
+            "rejected": False,
+            "settled": False,
+            "rejection_observed": asyncio.Event(),
+        }
+
+        stream_image = getattr(session, "stream_image", None)
+        if session is None or not callable(stream_image):
+            return outcome
+        session_id = self._session_media_identity(session)
+        if session_id is None:
+            return outcome
+        realtime_session = isinstance(session, OmniRealtimeClient)
+        websocket_native_session = realtime_session and not getattr(
+            session,
+            "_is_gemini",
+            False,
+        )
+        raw_visual_mode = getattr(session, "_visual_delivery_mode", "native")
+        websocket_native_delivery = (
+            websocket_native_session
+            and bool(getattr(session, "_supports_native_image", False))
+            and getattr(raw_visual_mode, "value", raw_visual_mode) == "native"
+        )
+        for callback in callbacks:
+            if not isinstance(callback, dict):
+                continue
+            images = list(callback.get("media_images") or [])
+            if not images:
+                callback.pop("_passive_media_session_id", None)
+                callback.pop("_passive_media_staged_count", None)
+                continue
+            if self._callback_media_ready_for_session(callback, session):
+                continue
+            pending_images = getattr(session, "_pending_images", None)
+            pending_images_snapshot = (
+                list(pending_images) if isinstance(pending_images, list) else None
+            )
+            staged_count = 0
+            if callback.get("_passive_media_session_id") == session_id:
+                staged_count = int(
+                    callback.get("_passive_media_staged_count", 0) or 0
+                )
+            else:
+                callback["_passive_media_session_id"] = session_id
+                callback["_passive_media_staged_count"] = 0
+
+            index = staged_count
+            while index < len(images):
+                image_b64 = images[index]
+
+                def _on_passive_media_rejected(
+                    _error_msg: str,
+                    *,
+                    _callback=callback,
+                ) -> None:
+                    if outcome["settled"]:
+                        return
+                    outcome["rejected"] = True
+                    outcome["safe_to_continue"] = False
+                    outcome["rejection_observed"].set()
+                    _callback["_passive_media_staged_count"] = 0
+
+                try:
+                    try:
+                        stage_result = await stream_image(
+                            image_b64,
+                            bypass_rate_limit=True,
+                            cache_latest=False,
+                            source="callback",
+                            request_id=callback.get("_callback_delivery_id"),
+                            on_rejected=_on_passive_media_rejected,
+                        )
+                    except TypeError as exc:
+                        if "unexpected keyword argument" not in str(exc):
+                            raise
+                        stage_result = await stream_image(
+                            image_b64,
+                            bypass_rate_limit=True,
+                        )
+                except Exception as exc:
+                    logger.warning(
+                        "[%s] passive callback media staging failed; keeping callback queued: %s",
+                        self.lanlan_name,
+                        exc,
+                    )
+                    callback["media_images"] = images
+                    if pending_images_snapshot is not None:
+                        # Offline images are only an in-memory queue. Restore
+                        # the exact pre-callback state so a later user prompt
+                        # cannot consume a successfully staged prefix without
+                        # this callback's text.
+                        pending_images[:] = pending_images_snapshot
+                        callback["_passive_media_staged_count"] = staged_count
+                    else:
+                        callback["_passive_media_staged_count"] = index
+                        if websocket_native_delivery or (
+                            realtime_session and index > 0
+                        ):
+                            # A WebSocket send exception does not prove that no
+                            # bytes crossed the transport boundary. Even image
+                            # zero may therefore already be irreversible. SDK
+                            # realtime sessions have a stronger boundary for a
+                            # completed send, but once any earlier image was
+                            # accepted their prefix is equally irreversible.
+                            # Retire either session instead of promoting
+                            # ambiguous, unlabelled visual context.
+                            outcome["safe_to_continue"] = False
+                    break
+
+                structured = hasattr(stage_result, "accepted")
+                accepted = (
+                    bool(stage_result.accepted) if structured else True
+                )
+                raw_mode = getattr(stage_result, "mode", None)
+                mode = getattr(raw_mode, "value", raw_mode)
+                description = getattr(stage_result, "description", None)
+                if not structured and isinstance(stage_result, str):
+                    mode = "external_description"
+                    description = stage_result
+                if not accepted:
+                    reason = getattr(stage_result, "rejection_reason", None)
+                    if reason not in self._terminal_callback_image_rejections():
+                        callback["media_images"] = images
+                        if pending_images_snapshot is not None:
+                            pending_images[:] = pending_images_snapshot
+                            callback["_passive_media_staged_count"] = staged_count
+                        else:
+                            callback["_passive_media_staged_count"] = index
+                            if realtime_session and index > 0:
+                                outcome["safe_to_continue"] = False
+                        break
+                    images.pop(index)
+                    callback["media_images"] = images
+                    logger.warning(
+                        "[%s] dropping permanently rejected passive callback image (%s)",
+                        self.lanlan_name,
+                        reason,
+                    )
+                    continue
+                if mode == "external_description":
+                    clean_description = str(description or "").strip()
+                    if not clean_description:
+                        images.pop(index)
+                        callback["media_images"] = images
+                        continue
+                    existing = str(
+                        callback.get("detail")
+                        or callback.get("summary")
+                        or ""
+                    ).strip()
+                    visual_context = (
+                        "[系统视觉感知结果，不是用户陈述]\n"
+                        f"当前画面：{clean_description}"
+                    )
+                    combined = (
+                        f"{existing}\n{visual_context}"
+                        if existing
+                        else visual_context
+                    )
+                    callback["detail"] = self._normalize_context_text_for_source(
+                        callback.get("source_kind") or "unknown",
+                        combined,
+                    )
+                    images.pop(index)
+                    callback["media_images"] = images
+                    continue
+                if mode == "native" and realtime_session:
+                    outcome["native_prefix_committed"] = True
+                    if websocket_native_session:
+                        outcome["native_rejection_pending"] = True
+                index += 1
+                callback["_passive_media_staged_count"] = index
+            else:
+                if images:
+                    callback["media_images"] = images
+                    callback["_passive_media_session_id"] = session_id
+                    callback["_passive_media_staged_count"] = len(images)
+                else:
+                    callback.pop("media_images", None)
+                    callback.pop("_passive_media_session_id", None)
+                    callback.pop("_passive_media_staged_count", None)
+
+        return outcome
 
     def on_voice_playback_signal(self, *, playing: bool, **meta) -> None:
         """Handle a FRONTEND-reported audio playback boundary.
@@ -2246,6 +2757,7 @@ class ProactiveMixin:
                 isinstance(cb, dict)
                 and cb.get("channel") == "topic_hook"
                 and not cb.get(DELIVERY_RETRACTED_KEY)
+                and not cb.get(SWAP_PRIME_DELIVERY_CLAIM_KEY)
                 and not self._topic_hook_release_allowed(cb)
             ):
                 resolve_callback_delivery_ack(cb, False)
@@ -2417,6 +2929,7 @@ class ProactiveMixin:
             callback["detail"] = detail
             error_message = str(callback.get("error_message") or "").strip()
             source_name = str(callback.get("source_name") or "").strip()
+            media_images = callback.get("media_images")
             status = callback.get("status") or "completed"
             origin = callback.get("origin")
             if origin not in ("task_result", "event"):
@@ -2434,7 +2947,14 @@ class ProactiveMixin:
             #
             # Apply this before either queue is touched so text mode cannot
             # inject a garbage header-only block that voice mode discarded.
-            if not summary and not detail and not error_message and not source_name and status == "completed":
+            if (
+                not summary
+                and not detail
+                and not error_message
+                and not source_name
+                and not media_images
+                and status == "completed"
+            ):
                 return
             # Stable delivery id so the voice inject success path can
             # precisely drop the matching extras entry from
@@ -2629,7 +3149,51 @@ class ProactiveMixin:
             # Pruning is best-effort housekeeping — never let it break callback bookkeeping.
             pass
 
-    def drain_agent_callbacks_for_llm(self) -> str:
+    def _claim_agent_callbacks_for_llm(self) -> list:
+        """Select and fence the exact callback snapshot for one text prompt.
+
+        Selection intentionally happens before any callback-media await. The
+        existing swap-prime claim is the shared provider-ownership fence: once
+        selected, coalescing/flood/topic cleanup cannot retract text whose
+        media may already have crossed into the target session.
+        """
+        self._purge_undeliverable_callbacks()
+        if not self.pending_agent_callbacks:
+            return []
+        candidate_callbacks = list(self.pending_agent_callbacks)
+        if self._retract_unavailable_topic_hook_snapshots(candidate_callbacks):
+            logger.info(
+                "[%s] drain_agent_callbacks_for_llm: topic hook dropped before passive drain — delivery gate closed",
+                self.lanlan_name,
+            )
+        self._retract_stale_coalesced(candidate_callbacks)
+        active_callbacks = [
+            callback
+            for callback in self.filter_deliverable_callbacks(candidate_callbacks)
+            if not callback.get(SWAP_PRIME_DELIVERY_CLAIM_KEY)
+        ]
+        if not active_callbacks:
+            return []
+        from config import AGENT_CALLBACK_TOTAL_MAX_TOKENS
+
+        callbacks_snapshot, _deferred = _select_callbacks_within_token_budget(
+            active_callbacks,
+            AGENT_CALLBACK_TOTAL_MAX_TOKENS,
+        )
+        for callback in callbacks_snapshot:
+            callback[SWAP_PRIME_DELIVERY_CLAIM_KEY] = True
+        return callbacks_snapshot
+
+    @staticmethod
+    def _release_agent_callback_prompt_claims(callbacks: list) -> None:
+        for callback in callbacks or []:
+            if isinstance(callback, dict):
+                callback.pop(SWAP_PRIME_DELIVERY_CLAIM_KEY, None)
+
+    def drain_agent_callbacks_for_llm(
+        self,
+        callbacks_snapshot: list | None = None,
+    ) -> str:
         """Drain pending_agent_callbacks and format as a system context string.
 
         Clears pending_agent_callbacks (NOT pending_extra_replies, which is
@@ -2643,34 +3207,23 @@ class ProactiveMixin:
         ended up here because the SM denied the claim earlier). The caller
         therefore should NOT prepend an additional notification template.
         """
-        self._purge_undeliverable_callbacks()
-        if not self.pending_agent_callbacks:
-            return ""
-        candidate_callbacks = list(self.pending_agent_callbacks)
-        if self._retract_unavailable_topic_hook_snapshots(candidate_callbacks):
-            logger.info(
-                "[%s] drain_agent_callbacks_for_llm: topic hook dropped before passive drain — delivery gate closed",
-                self.lanlan_name,
-            )
-        # Pull-model staleness: uniform with the voice/text/hot-swap delivery
-        # points — a cue restored from a failed proactive attempt (or any path
-        # that re-appends without the push-side scan) must not deliver once a
-        # newer same-coalesce_key cue exists.
-        self._retract_stale_coalesced(candidate_callbacks)
+        if callbacks_snapshot is None:
+            callbacks_snapshot = self._claim_agent_callbacks_for_llm()
+        callbacks_snapshot = list(callbacks_snapshot or [])
+        queued_obj_ids = {id(callback) for callback in self.pending_agent_callbacks}
         active_callbacks = [
             callback
-            for callback in self.filter_deliverable_callbacks(candidate_callbacks)
-            if not callback.get(SWAP_PRIME_DELIVERY_CLAIM_KEY)
+            for callback in callbacks_snapshot
+            if id(callback) in queued_obj_ids
+            and not callback.get(DELIVERY_RETRACTED_KEY)
+            and self._callback_media_ready_for_session(
+                callback,
+                getattr(self, "session", None),
+            )
         ]
         if not active_callbacks:
+            self._release_agent_callback_prompt_claims(callbacks_snapshot)
             return ""
-        from config import AGENT_CALLBACK_TOTAL_MAX_TOKENS
-        # Budget-aware selection: render (and ack) only the callbacks that fit
-        # the total budget this turn; defer the rest to the next drain instead
-        # of acking them as delivered while their text falls off the cap.
-        callbacks_snapshot, _deferred = _select_callbacks_within_token_budget(
-            active_callbacks, AGENT_CALLBACK_TOTAL_MAX_TOKENS
-        )
         delivered_to_prompt = False
         try:
             # 同上；user_language 为空时才回落全局语言（此前回落的是短码）。
@@ -2678,7 +3231,7 @@ class ProactiveMixin:
                 getattr(self, 'user_language', '') or get_global_language_full(), format='full'
             )
             rendered = _build_callback_instruction(
-                callbacks_snapshot,
+                active_callbacks,
                 lang=_lang,
                 lanlan_name=getattr(self, "lanlan_name", "") or "",
                 master_name=getattr(self, "master_name", "") or "",
@@ -2688,12 +3241,13 @@ class ProactiveMixin:
             return rendered
         finally:
             if delivered_to_prompt:
-                for cb in callbacks_snapshot:
+                for cb in active_callbacks:
                     resolve_callback_delivery_ack(cb, True)
             # Keep claimed and over-budget callbacks in their original order;
             # only the entries actually rendered by this drain leave the queue.
-            delivered_obj_ids = {id(cb) for cb in callbacks_snapshot}
+            delivered_obj_ids = {id(cb) for cb in active_callbacks}
             self.pending_agent_callbacks = [
                 cb for cb in self.pending_agent_callbacks
                 if id(cb) not in delivered_obj_ids
             ]
+            self._release_agent_callback_prompt_claims(callbacks_snapshot)

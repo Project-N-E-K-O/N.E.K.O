@@ -575,9 +575,12 @@ async def _handle_agent_event(event: dict):
             # by the manager — the eventual proactive response would then lack
             # its matching visual context.
             deferred_proactive_images: list[str] = []
+            # Passive/read images stay attached to the callback until the next
+            # natural text/hot-swap consumer selects that exact callback. This
+            # keeps native provider context from receiving an unlabeled image
+            # before the matching passive text is eligible for delivery.
+            deferred_callback_images: list[str] = []
             if media_parts and ai_behavior_v2 in ("respond", "read"):
-                sess = getattr(mgr, "session", None)
-                stream_image = getattr(sess, "stream_image", None) if sess else None
                 for mp in media_parts:
                     if not isinstance(mp, dict):
                         continue
@@ -597,35 +600,14 @@ async def _handle_agent_event(event: dict):
                         )
                         continue
                     if isinstance(b64, str) and b64:
-                        if ai_behavior_v2 == "respond" and text:
+                        if ai_behavior_v2 == "respond":
                             # Defer: stream when the manager releases this cue so
                             # the image shares the proactive response's context.
-                            # (Only when there's text — the callback that carries
-                            # these images is built in the ``if text:`` block.)
+                            # Image-only respond is still a real proactive turn;
+                            # the callback's source header supplies the text cue.
                             deferred_proactive_images.append(b64)
                             continue
-                        # read (passive), OR image-only respond with no text to
-                        # carry it through the pacing manager: inject now so it
-                        # isn't lost (image-only respond has no text cue to drive
-                        # a proactive turn anyway).
-                        if stream_image is None:
-                            logger.debug(
-                                "[EventBus] image media_part dropped: session=%s has no stream_image",
-                                type(sess).__name__ if sess else "None",
-                            )
-                            continue
-                        # ``stream_image`` takes a base64 STRING (not bytes); pass through
-                        try:
-                            await stream_image(b64)
-                            logger.debug(
-                                "[EventBus] image media_part injected (base64 len=%d, mime=%s)",
-                                len(b64),
-                                mime,
-                            )
-                        except Exception as e:
-                            logger.warning(
-                                "[EventBus] image media_part stream_image failed: %s", e
-                            )
+                        deferred_callback_images.append(b64)
                     elif isinstance(url, str) and url:
                         # TODO(v0.9): fetch URL → bytes → base64 → stream_image.
                         # Until then plugin authors should inline-encode small
@@ -637,8 +619,12 @@ async def _handle_agent_event(event: dict):
                         )
                     # else: malformed part, silently skip
 
-            if text:
-                if event.get("direct_reply"):
+            if (
+                text
+                or deferred_proactive_images
+                or deferred_callback_images
+            ):
+                if text and event.get("direct_reply"):
                     detail_text = (event.get("detail") or text).strip()
                     # Plugin-supplied direct_reply text bypasses the LLM and
                     # speaks/types verbatim. Plugin authors may write
@@ -748,6 +734,8 @@ async def _handle_agent_event(event: dict):
                 cb_coalesce_key = event.get("coalesce_key")
                 if not isinstance(cb_coalesce_key, str):
                     cb_coalesce_key = ""
+                callback_summary = event.get("summary") or text
+                callback_detail = event.get("detail") or text
                 callback = {
                     "event": "agent_task_callback",
                     "origin": origin,
@@ -755,17 +743,19 @@ async def _handle_agent_event(event: dict):
                     "channel": _channel,
                     "status": cb_status,
                     "success": bool(event.get("success", True)),
-                    "summary": event.get("summary") or text,
-                    "detail": event.get("detail") or text,
+                    "summary": callback_summary,
+                    "detail": callback_detail,
                     "error_message": event.get("error_message") or "",
                     "source_kind": source_kind,
                     "source_name": source_name,
                     "delivery_mode": delivery_mode,
                     "priority": cb_priority,
                     "coalesce_key": cb_coalesce_key,
-                    # Images to stream at manager-release time (respond only;
-                    # empty for read, which already streamed above).
-                    "media_images": deferred_proactive_images,
+                    # Both respond and read images cross the provider boundary
+                    # only at their callback's actual delivery point.
+                    "media_images": (
+                        deferred_proactive_images + deferred_callback_images
+                    ),
                     "timestamp": event.get("timestamp") or "",
                     "metadata": event_metadata,
                     "context_type": event_metadata.get("context_type") or "",

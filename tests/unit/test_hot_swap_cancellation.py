@@ -38,12 +38,13 @@ its cancel set; ``assert not swap_task.cancelled()`` pins that guard.
 """
 import asyncio
 import time
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 import main_logic.core as core_module
 from main_logic.omni_offline_client import OmniOfflineClient
-from main_logic.omni_realtime_client import OmniRealtimeClient
+from main_logic.omni_realtime_client import ImageStageResult, OmniRealtimeClient
 from main_logic.proactive_delivery import (
     CALLBACK_EXPIRES_AT_KEY,
     DELIVERY_ACK_FUTURE_KEY,
@@ -431,6 +432,21 @@ def _passive_callback(summary, *, coalesce_key=""):
     }
 
 
+def test_swap_prime_render_excludes_retracted_claimed_callback():
+    mgr = _make_swap_manager()
+    callback = _passive_callback("expired during media staging")
+    callback[SWAP_PRIME_DELIVERY_CLAIM_KEY] = True
+    callback[DELIVERY_RETRACTED_KEY] = True
+
+    ready, rendered = mgr._render_claimed_passive_callbacks_for_swap_prime(
+        [callback]
+    )
+
+    assert ready == []
+    assert rendered == ""
+    assert SWAP_PRIME_DELIVERY_CLAIM_KEY not in callback
+
+
 def _install_passive_prime_barrier(session, *, expected_text):
     prime_entered = asyncio.Event()
     allow_prime = asyncio.Event()
@@ -618,6 +634,42 @@ async def test_final_swap_passive_prime_failure_aborts_pending_session():
     assert mgr.pending_agent_callbacks == [callback]
     assert SWAP_PRIME_DELIVERY_CLAIM_KEY not in callback
     assert not delivery_ack.done()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("is_gemini", [False, True])
+async def test_final_swap_native_media_retraction_before_text_aborts_pending(
+    is_gemini,
+):
+    mgr = _make_swap_manager()
+    old_session = _FakeSession("old")
+    new_session = _make_fake_realtime_session("pending")
+    new_session._is_gemini = is_gemini
+    mgr.session = old_session
+    mgr.pending_session = new_session
+    mgr.is_hot_swap_imminent = True
+    callback = _passive_callback("retracted after native staging")
+    callback[DELIVERY_RETRACTED_KEY] = True
+    mgr.pending_agent_callbacks = [callback]
+    mgr._select_passive_callbacks_for_swap_prime = (
+        lambda **_kwargs: ([callback], "")
+    )
+    mgr._stage_passive_callback_media = AsyncMock(return_value={
+        "safe_to_continue": True,
+        "native_prefix_committed": True,
+        "native_rejection_pending": not is_gemini,
+        "rejected": False,
+    })
+    mgr._render_claimed_passive_callbacks_for_swap_prime = MagicMock(
+        return_value=([], "")
+    )
+
+    swap_task = await _run_swap_as_final_swap_task(mgr)
+
+    assert not swap_task.cancelled()
+    assert mgr.session is old_session
+    assert new_session.closed is True
+    assert mgr.pending_agent_callbacks == []
 
 
 @pytest.mark.asyncio
@@ -1455,3 +1507,169 @@ async def test_prime_dispatch_failure_on_the_skipped_branch_takes_the_targeted_a
     assert mgr.pending_session is None
     assert mgr.is_hot_swap_imminent is False
     assert not any("INTERNAL_UPDATE_FAILED" in s for s in statuses)
+
+
+@pytest.mark.asyncio
+async def test_passive_native_rejection_retires_replacement_before_callback_ack():
+    mgr = _make_swap_manager()
+    statuses = []
+    cleanup_steps = []
+
+    def _record_status(status):
+        statuses.append(status)
+        cleanup_steps.append("status")
+
+    mgr._close_independent_asr = AsyncMock(
+        side_effect=lambda **_kwargs: cleanup_steps.append("asr")
+    )
+    mgr.send_status = AsyncMock(side_effect=_record_status)
+    mgr.send_session_ended_by_server = AsyncMock(
+        side_effect=lambda: cleanup_steps.append("ended")
+    )
+    old_session = _FakeSession("old")
+    new_session = OmniRealtimeClient.__new__(OmniRealtimeClient)
+    new_session.ws = object()
+    new_session._fatal_error_occurred = False
+    new_session._is_gemini = False
+    new_session._session_update_ack_waiters = []
+    new_session.instructions = "initial instructions"
+    new_session.closed = False
+    new_session.prime_calls = []
+    rejection_handler = None
+
+    async def prime_context(text, *, skipped=False):
+        new_session.prime_calls.append((text, skipped))
+        new_session.instructions += "\n" + text
+
+    async def stream_image(_image_b64, *, on_rejected=None, **_kwargs):
+        nonlocal rejection_handler
+        rejection_handler = on_rejected
+        return ImageStageResult(accepted=True, mode="native")
+
+    async def handle_messages():
+        assert rejection_handler is not None
+        # Longer than the removed 50ms grace period: the transaction must stay
+        # uncommitted until a real Provider acknowledgement or rejection.
+        await asyncio.sleep(0.08)
+        rejection_handler("provider rejected passive image")
+        await asyncio.Event().wait()
+
+    async def close():
+        new_session.closed = True
+        new_session.ws = None
+
+    new_session.prime_context = prime_context
+    new_session.stream_image = stream_image
+    new_session.handle_messages = handle_messages
+    new_session.close = close
+
+    callback_ack = asyncio.get_running_loop().create_future()
+    callback = {
+        "_callback_delivery_id": "id-passive-native-reject",
+        "status": "completed",
+        "summary": "inspect this native image",
+        "delivery_mode": "passive",
+        "origin": "event",
+        "media_images": ["callback-image"],
+        DELIVERY_ACK_FUTURE_KEY: callback_ack,
+    }
+    mgr.session = old_session
+    mgr.pending_session = new_session
+    mgr.pending_agent_callbacks = [callback]
+    mgr.pending_extra_replies = []
+    mgr.is_active = True
+    mgr.is_hot_swap_imminent = True
+    mgr._select_passive_callbacks_for_swap_prime = (
+        lambda **_kwargs: ([callback], "")
+    )
+    mgr._render_claimed_passive_callbacks_for_swap_prime = (
+        lambda selected: (selected, "passive callback text")
+    )
+    mgr._purge_undeliverable_callbacks = lambda: None
+
+    await mgr._perform_final_swap_sequence()
+
+    assert old_session.closed is True
+    assert new_session.closed is True
+    assert mgr.session is None
+    mgr._close_independent_asr.assert_awaited_once_with(
+        next_route_mode="blocked",
+    )
+    assert any("INTERNAL_UPDATE_FAILED" in status for status in statuses)
+    mgr.send_session_ended_by_server.assert_awaited_once_with()
+    assert cleanup_steps == ["asr", "status", "ended"]
+    assert mgr.pending_agent_callbacks == [callback]
+    assert callback_ack.done() is False
+
+
+@pytest.mark.asyncio
+async def test_passive_native_session_update_ack_commits_callback():
+    mgr = _make_swap_manager()
+    old_session = _FakeSession("old")
+    new_session = OmniRealtimeClient.__new__(OmniRealtimeClient)
+    new_session.ws = object()
+    new_session._fatal_error_occurred = False
+    new_session._is_gemini = False
+    new_session._session_update_ack_waiters = []
+    new_session.instructions = "initial instructions"
+    new_session.closed = False
+    new_session.prime_calls = []
+
+    async def prime_context(text, *, skipped=False):
+        new_session.prime_calls.append((text, skipped))
+        new_session.instructions += "\n" + text
+
+    async def stream_image(_image_b64, **_kwargs):
+        return ImageStageResult(accepted=True, mode="native")
+
+    async def handle_messages():
+        # A stale setup acknowledgement must not settle the media handoff.
+        new_session._notify_session_updated(
+            {"session": {"instructions": "initial instructions"}}
+        )
+        await asyncio.sleep(0)
+        new_session._notify_session_updated(
+            {"session": {"instructions": new_session.instructions}}
+        )
+        await asyncio.Event().wait()
+
+    async def close():
+        new_session.closed = True
+        new_session.ws = None
+
+    new_session.prime_context = prime_context
+    new_session.stream_image = stream_image
+    new_session.handle_messages = handle_messages
+    new_session.close = close
+
+    callback_ack = asyncio.get_running_loop().create_future()
+    callback = {
+        "_callback_delivery_id": "id-passive-native-ack",
+        "status": "completed",
+        "summary": "inspect this native image",
+        "delivery_mode": "passive",
+        "origin": "event",
+        "media_images": ["callback-image"],
+        DELIVERY_ACK_FUTURE_KEY: callback_ack,
+    }
+    mgr.session = old_session
+    mgr.pending_session = new_session
+    mgr.pending_agent_callbacks = [callback]
+    mgr.pending_extra_replies = []
+    mgr.is_active = True
+    mgr.is_hot_swap_imminent = True
+    mgr._select_passive_callbacks_for_swap_prime = (
+        lambda **_kwargs: ([callback], "")
+    )
+    mgr._render_claimed_passive_callbacks_for_swap_prime = (
+        lambda selected: (selected, "passive callback text")
+    )
+    mgr._purge_undeliverable_callbacks = lambda: None
+
+    await mgr._perform_final_swap_sequence()
+
+    assert old_session.closed is True
+    assert new_session.closed is False
+    assert mgr.session is new_session
+    assert mgr.pending_agent_callbacks == []
+    assert callback_ack.result() is True

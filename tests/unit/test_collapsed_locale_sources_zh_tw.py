@@ -9,7 +9,7 @@ earlier and ``full`` merely re-expanded ``zh`` into ``zh-CN``:
 * ``_shared._get_chat_locale_text`` — reads ``static/locales/*.json`` (``zh-CN`` /
   ``zh-TW`` keys), fell back to ``get_global_language()``.
 * ``conversation_turns.normalize_turn_language`` — same shape.
-* ``callback_render._build_callback_instruction`` — four call sites, all shortening
+* ``callback_render._build_callback_instruction`` — five call sites, all shortening
   to ``zh`` before handing the locale over.
 
 ⚠️ These are *not* fixed by changing the ``format`` argument. ``format='full'``
@@ -241,7 +241,7 @@ def test_the_callback_call_site_walk_finds_something(module_name):
     assert _functions_rendering_callbacks(tree), f"{module_name} 里没定位到渲染函数"
 
 
-def test_all_four_callback_call_sites_are_accounted_for():
+def test_all_five_callback_call_sites_are_accounted_for():
     total = sum(
         len(
             [
@@ -253,7 +253,7 @@ def test_all_four_callback_call_sites_are_accounted_for():
         )
         for m in CALLBACK_MODULES
     )
-    assert total == 4, f"调用点数量变了（{total}），复核一遍是不是有新路径漏了归一化"
+    assert total == 5, f"调用点数量变了（{total}），复核一遍是不是有新路径漏了归一化"
 
 
 @pytest.mark.parametrize("module_name", CALLBACK_MODULES)

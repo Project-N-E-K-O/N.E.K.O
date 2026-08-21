@@ -52,6 +52,7 @@ from ._shared import (
     _HANDSHAKE_OVERRIDE_UNSET,
     _START_LLM_CONCURRENT_ABORTED,
     _ORPHAN_SESSION_REAPER_TASKS,
+    _PASSIVE_MEDIA_SESSION_UPDATE_ACK_TIMEOUT_S,
 )
 from .callback_render import (
     _build_callback_instruction,
@@ -357,6 +358,42 @@ class LifecycleMixin:
             async def on_silence_timeout(session_ref=session):
                 await self.handle_silence_timeout(expected_session=session_ref)
             session.on_silence_timeout = on_silence_timeout
+
+    async def _restart_message_handler_after_session_reconnect(
+        self,
+        session_ref,
+    ) -> bool:
+        """Replace the receive task after an in-place Provider reconnect.
+
+        Gemini quarantine reconnects the same ``OmniRealtimeClient`` object,
+        while its existing handler remains bound to the retired SDK session.
+        Keep task ownership in Core and use the manager/session identity as the
+        CAS fence so a concurrent end-session or hot swap cannot resurrect a
+        listener for a session it already replaced.
+        """
+
+        if session_ref is not self.session or not self.is_active:
+            return False
+        previous_task = self.message_handler_task
+        if previous_task is not None and previous_task is not asyncio.current_task():
+            if not previous_task.done():
+                previous_task.cancel()
+            await asyncio.gather(previous_task, return_exceptions=True)
+
+        async with self.lock:
+            if session_ref is not self.session or not self.is_active:
+                return False
+            current_task = self.message_handler_task
+            if (
+                current_task is not None
+                and current_task is not previous_task
+                and not current_task.done()
+            ):
+                return True
+            self.message_handler_task = asyncio.create_task(
+                session_ref.handle_messages()
+            )
+        return True
 
     async def _teardown_pending_session_from_lifecycle_callback(self, expected_session, message=None):
         """Handle lifecycle callback (connection_error / silence_timeout) fired
@@ -1595,6 +1632,7 @@ class LifecycleMixin:
                 tool_definitions=_initial_tool_defs,
                 livestream_mode=self._is_livestream_active(),
                 noise_reduction_enabled=nr_enabled,
+                turn_admission_lock=self._voice_proactive_inject_lock,
             )
             # Apply user's noise reduction preference to the AudioProcessor
             if hasattr(new_session, '_audio_processor') and new_session._audio_processor:
@@ -1906,6 +1944,7 @@ class LifecycleMixin:
                     tool_definitions=_pending_tool_defs,
                     livestream_mode=self._is_livestream_active(),
                     noise_reduction_enabled=nr_enabled,
+                    turn_admission_lock=self._voice_proactive_inject_lock,
                 )
                 # Apply user's noise reduction preference to the AudioProcessor
                 if hasattr(self.pending_session, '_audio_processor') and self.pending_session._audio_processor:
@@ -2080,7 +2119,13 @@ class LifecycleMixin:
             # 塞回是尽力而为：绝不能让队列簿记反过来打断中止清理流程。
             logger.warning(f"Final Swap Sequence: failed to restore undelivered extras: {e}")
 
-    def _select_passive_callbacks_for_swap_prime(self, extras_selected: list = None) -> tuple:
+    def _select_passive_callbacks_for_swap_prime(
+        self,
+        extras_selected: list = None,
+        *,
+        require_media_ready: bool = True,
+        render: bool = True,
+    ) -> tuple:
         """[Hot-swap related] Pick queued passive callbacks to ride the swap prime.
 
         Passive (``delivery_mode="passive"`` / ai_behavior="read") callbacks
@@ -2121,12 +2166,22 @@ class LifecycleMixin:
         """
         try:
             candidates = [
-                cb for cb in (self.pending_agent_callbacks or [])
+                cb
+                for cb in (
+                    getattr(self, "pending_agent_callbacks", []) or []
+                )
                 if isinstance(cb, dict)
                 and cb.get("delivery_mode") == "passive"
                 and not cb.get(DELIVERY_RETRACTED_KEY)
                 and not cb.get(SWAP_PRIME_DELIVERY_CLAIM_KEY)
                 and cb.get("channel") != "topic_hook"
+                and (
+                    not require_media_ready
+                    or self._callback_media_ready_for_session(
+                        cb,
+                        getattr(self, "pending_session", None),
+                    )
+                )
             ]
             if not candidates:
                 return [], ""
@@ -2148,15 +2203,17 @@ class LifecycleMixin:
             selected = selected_all[len(_extras):]
             if not selected:
                 return [], ""
-            # 与 proactive 三条投递路径同口径：字形留到渲染函数再归一化。
-            _lang = normalize_language_code(self.user_language, format='full')
-            rendered = _build_callback_instruction(
-                selected,
-                lang=_lang,
-                lanlan_name=getattr(self, "lanlan_name", "") or "",
-                master_name=getattr(self, "master_name", "") or "",
-                passive=True,
-            )
+            rendered = ""
+            if render:
+                # 与 proactive 三条投递路径同口径：字形留到渲染函数再归一化。
+                _lang = normalize_language_code(self.user_language, format='full')
+                rendered = _build_callback_instruction(
+                    selected,
+                    lang=_lang,
+                    lanlan_name=getattr(self, "lanlan_name", "") or "",
+                    master_name=getattr(self, "master_name", "") or "",
+                    passive=True,
+                )
             # No await exists between selection and this ownership claim. From
             # here until promote/abort, every queue mutation sees the same
             # provider-owned boundary as the swap sequence.
@@ -2167,6 +2224,35 @@ class LifecycleMixin:
             # 选取/渲染失败绝不能打断 swap：这批 passive 留在队列等下一轮。
             logger.warning(f"Final Swap Sequence: passive callback selection failed: {e}")
             return [], ""
+
+    def _render_claimed_passive_callbacks_for_swap_prime(
+        self,
+        selected: list,
+    ) -> tuple:
+        """Render the media-ready subset of one pre-staging swap snapshot."""
+        ready = [
+            callback
+            for callback in selected
+            if not callback.get(DELIVERY_RETRACTED_KEY)
+            and self._callback_media_ready_for_session(
+                callback,
+                getattr(self, "pending_session", None),
+            )
+        ]
+        ready_obj_ids = {id(callback) for callback in ready}
+        self._release_swap_prime_passive_claims(
+            [callback for callback in selected if id(callback) not in ready_obj_ids]
+        )
+        if not ready:
+            return [], ""
+        _lang = normalize_language_code(self.user_language, format='full')
+        return ready, _build_callback_instruction(
+            ready,
+            lang=_lang,
+            lanlan_name=getattr(self, "lanlan_name", "") or "",
+            master_name=getattr(self, "master_name", "") or "",
+            passive=True,
+        )
 
     @staticmethod
     def _release_swap_prime_passive_claims(selected: list) -> None:
@@ -2297,6 +2383,7 @@ class LifecycleMixin:
             _passive_sel: list = []
             _passive_swap_text = ""
             _extras_for_budget: list = []
+            _passive_media_outcome: dict[str, bool] | None = None
 
             def _abort_if_passive_claim_retracted(stage: str) -> None:
                 if any(cb.get(DELIVERY_RETRACTED_KEY)
@@ -2306,6 +2393,25 @@ class LifecycleMixin:
                         stage,
                     )
                     raise asyncio.CancelledError()
+
+            async def _abort_if_native_prefix_lost_its_text(
+                outcome: dict | None,
+                rendered_text: str,
+                stage: str,
+            ) -> bool:
+                if rendered_text or not (
+                    outcome and outcome.get("native_prefix_committed")
+                ):
+                    return False
+                logger.warning(
+                    "Final Swap Sequence: passive native media lost its "
+                    "callback text %s; abandoning pending session",
+                    stage,
+                )
+                await self._cleanup_pending_session_resources()
+                await self._reset_preparation_state(clear_main_cache=True)
+                self.is_hot_swap_imminent = False
+                return True
 
             next_session_context_messages = getattr(self, "next_session_context_messages", []) or []
             incremental_next_session_context = next_session_context_messages[
@@ -2413,9 +2519,35 @@ class LifecycleMixin:
                 # skip-guard 丢弃、内容留在上下文，read 语义不变。
                 if (isinstance(self.pending_session, OmniRealtimeClient)
                         and getattr(self.pending_session, "_is_gemini", False)):
-                    _passive_sel, _passive_swap_text = (
-                        self._select_passive_callbacks_for_swap_prime()
+                    _passive_sel, _ = (
+                        self._select_passive_callbacks_for_swap_prime(
+                            require_media_ready=False,
+                            render=False,
+                        )
                     )
+                    _passive_media_outcome = await self._stage_passive_callback_media(
+                        _passive_sel,
+                        self.pending_session,
+                    )
+                    if not _passive_media_outcome["safe_to_continue"]:
+                        logger.warning(
+                            "Final Swap Sequence: passive native media staging became partial/rejected; abandoning pending session"
+                        )
+                        await self._cleanup_pending_session_resources()
+                        await self._reset_preparation_state(clear_main_cache=True)
+                        self.is_hot_swap_imminent = False
+                        return
+                    _passive_sel, _passive_swap_text = (
+                        self._render_claimed_passive_callbacks_for_swap_prime(
+                            _passive_sel
+                        )
+                    )
+                    if await _abort_if_native_prefix_lost_its_text(
+                        _passive_media_outcome,
+                        _passive_swap_text,
+                        "after Gemini media staging",
+                    ):
+                        return
                     if _passive_swap_text:
                         final_prime_text += "\n" + _passive_swap_text
                 try:
@@ -2452,11 +2584,36 @@ class LifecycleMixin:
             # 不能继续 promote 后又把 cue 留队造成未来重试/双投。
             if (isinstance(self.pending_session, OmniRealtimeClient)
                     and not getattr(self.pending_session, "_is_gemini", False)):
-                _passive_sel, _passive_swap_text = (
+                _passive_sel, _ = (
                     self._select_passive_callbacks_for_swap_prime(
                         extras_selected=_extras_for_budget,
+                        require_media_ready=False,
+                        render=False,
                     )
                 )
+                _passive_media_outcome = await self._stage_passive_callback_media(
+                    _passive_sel,
+                    self.pending_session,
+                )
+                if not _passive_media_outcome["safe_to_continue"]:
+                    logger.warning(
+                        "Final Swap Sequence: passive native media staging became partial/rejected; abandoning pending session"
+                    )
+                    await self._cleanup_pending_session_resources()
+                    await self._reset_preparation_state(clear_main_cache=True)
+                    self.is_hot_swap_imminent = False
+                    return
+                _passive_sel, _passive_swap_text = (
+                    self._render_claimed_passive_callbacks_for_swap_prime(
+                        _passive_sel
+                    )
+                )
+                if await _abort_if_native_prefix_lost_its_text(
+                    _passive_media_outcome,
+                    _passive_swap_text,
+                    "after media staging",
+                ):
+                    return
                 if _passive_swap_text:
                     try:
                         await self.pending_session.prime_context(_passive_swap_text, skipped=True)
@@ -2574,6 +2731,83 @@ class LifecycleMixin:
                 # 队列没动过：已注入 new_session 的 _selected 仍在队列里，随
                 # 接管方纪元的下一次 hot-swap 照常投递（与 _deferred 一致）。
                 return
+
+            # WebSocket-native image writes are only provisionally accepted.
+            # The passive text prime sends a session.update after those writes;
+            # its matching session.updated snapshot is the ordered Provider
+            # boundary proving that the entire media+text prefix was processed.
+            # Do not replace this with a timing grace period: an image error can
+            # legitimately arrive later than a local sleep.
+            if (
+                _passive_media_outcome is not None
+                and _passive_media_outcome["native_rejection_pending"]
+            ):
+                session_update_ack = new_session.expect_session_update_ack(
+                    new_session.instructions
+                )
+                self.message_handler_task = asyncio.create_task(
+                    new_session.handle_messages()
+                )
+                rejection_wait = asyncio.create_task(
+                    _passive_media_outcome["rejection_observed"].wait()
+                )
+                try:
+                    done, _pending = await asyncio.wait(
+                        {session_update_ack, rejection_wait},
+                        timeout=_PASSIVE_MEDIA_SESSION_UPDATE_ACK_TIMEOUT_S,
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
+                finally:
+                    _passive_media_outcome["settled"] = True
+                    new_session.discard_session_update_ack(session_update_ack)
+                    if not rejection_wait.done():
+                        rejection_wait.cancel()
+                    await asyncio.gather(rejection_wait, return_exceptions=True)
+                media_prefix_committed = (
+                    session_update_ack in done
+                    and not session_update_ack.cancelled()
+                    and session_update_ack.exception() is None
+                    and not _passive_media_outcome["rejected"]
+                )
+                if not media_prefix_committed:
+                    logger.warning(
+                        "Final Swap Sequence: passive native media was rejected or its session-update barrier timed out; retiring promoted replacement before callback ACK"
+                    )
+                    replacement_listener = self.message_handler_task
+                    if replacement_listener and not replacement_listener.done():
+                        replacement_listener.cancel()
+                        await asyncio.gather(
+                            replacement_listener,
+                            return_exceptions=True,
+                        )
+                    self.message_handler_task = None
+                    try:
+                        await new_session.close()
+                    except Exception as close_err:
+                        logger.debug(
+                            "Final Swap Sequence: rejected passive media replacement close failed: %s",
+                            close_err,
+                        )
+                    if self.session is new_session:
+                        self.session = None
+                    self.is_active = False
+                    await self._close_independent_asr(
+                        next_route_mode="blocked",
+                    )
+                    await self.send_status(json.dumps({
+                        "code": "INTERNAL_UPDATE_FAILED",
+                        "details": {
+                            "error": (
+                                "passive media session-update barrier failed"
+                            ),
+                        },
+                    }))
+                    await self.send_session_ended_by_server()
+                    await self._reset_preparation_state(
+                        clear_main_cache=True,
+                        from_final_swap=True,
+                    )
+                    return
             # promote 成功：被注入的 session 已成为活跃会话，注入内容必随其下一
             # 轮回复送达——此刻才把 _selected 从队列移除。按对象身份移除：窗口期
             # 内被并发路径（语音投递清除/retraction/清扫/cap）先行移除的条目在此
@@ -2647,7 +2881,14 @@ class LifecycleMixin:
             )
 
             # ── 步骤 4：启动新 listener ───────────────────────────────────────────
-            if self.session and hasattr(self.session, 'handle_messages'):
+            if (
+                self.session
+                and hasattr(self.session, 'handle_messages')
+                and (
+                    not self.message_handler_task
+                    or self.message_handler_task.done()
+                )
+            ):
                 self.message_handler_task = asyncio.create_task(self.session.handle_messages())
 
             # ── 步骤 5：flush 热切换音频缓存到新 session ─────────────────────────

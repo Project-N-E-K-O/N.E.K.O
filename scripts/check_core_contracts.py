@@ -3299,6 +3299,7 @@ def run(root: Path) -> list[Violation]:
                 "resume",
                 "abort",
                 "wait_transcript_idle",
+                "has_pending_transcript_delivery",
                 "start",
                 "submit",
             }

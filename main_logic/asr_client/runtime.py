@@ -326,6 +326,11 @@ class IndependentAsrRuntime:
     async def wait_transcript_idle(self) -> None:
         await self._asr_transcript_dispatcher.wait_idle()
 
+    def has_pending_transcript_delivery(self) -> bool:
+        """Return whether an accepted final has not finished Core dispatch."""
+
+        return self._asr_transcript_dispatcher.has_pending_delivery
+
     def _init_asr_runtime_state(self) -> None:
         self._asr_session = None
         self._asr_session_epoch = 0

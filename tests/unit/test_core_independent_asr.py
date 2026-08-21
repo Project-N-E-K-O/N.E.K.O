@@ -127,6 +127,21 @@ class _TestSmartTurnLease:
         self.released = True
 
 
+async def test_independent_asr_activity_probe_is_provider_neutral() -> None:
+    runtime = _Runtime()
+    _install_ready_lifecycle(runtime, "qwen")
+
+    assert runtime._independent_asr_user_turn_active() is False
+
+    runtime._asr_lifecycle.transition(VoiceLifecycleEvent.SOFT_WAKE)
+    runtime._asr_lifecycle.transition(VoiceLifecycleEvent.SPEECH_CONFIRMED)
+    assert runtime._asr_lifecycle.snapshot.state is VoiceLifecycleState.ACTIVE
+    assert runtime._independent_asr_user_turn_active() is True
+
+    runtime._asr_route_mode = "native"
+    assert runtime._independent_asr_user_turn_active() is False
+
+
 class _ReadyDetector:
     def __init__(self, feed_result: DetectorFeedResult | None = None) -> None:
         self.detector_epoch = 1
@@ -339,6 +354,52 @@ async def _start_and_seal_turn(
         runtime._asr_session_epoch,
     )
     await runtime._handle_independent_asr_endpoint(runtime._asr_session_epoch)
+
+
+async def test_activity_probe_tracks_accepted_final_until_dispatch_completes() -> None:
+    runtime = _Runtime()
+    await _start_and_seal_turn(runtime, "qwen")
+    sealed_token = runtime._asr_sealed_turn_token
+    assert sealed_token is not None
+    release_started = asyncio.Event()
+    release_lease = asyncio.Event()
+    dispatch_started = asyncio.Event()
+    release_dispatch = asyncio.Event()
+
+    class _BlockingLease:
+        token = sealed_token.turn
+
+        async def release(self) -> None:
+            release_started.set()
+            await release_lease.wait()
+
+    async def block_dispatch(*_args, **_kwargs) -> bool:
+        dispatch_started.set()
+        await release_dispatch.wait()
+        return True
+
+    runtime._asr_smart_turn_lease = _BlockingLease()
+    runtime.handle_input_transcript.side_effect = block_dispatch
+    final_task = asyncio.create_task(
+        runtime._handle_independent_asr_final(
+            "短语音",
+            runtime._asr_session_epoch,
+            "qwen",
+        )
+    )
+
+    await release_started.wait()
+    assert runtime._asr_lifecycle.snapshot.state is VoiceLifecycleState.WARM_IDLE
+    assert runtime._independent_asr_user_turn_active() is True
+
+    release_lease.set()
+    await dispatch_started.wait()
+    assert runtime._independent_asr_user_turn_active() is True
+
+    release_dispatch.set()
+    await final_task
+    await runtime._wait_asr_transcript_dispatch_idle()
+    assert runtime._independent_asr_user_turn_active() is False
 
 
 async def test_independent_route_sends_pcm_to_asr_only() -> None:
@@ -1045,6 +1106,7 @@ async def test_game_consumer_accepts_real_pcm_through_pipeline(
             "data": [1] * 160,
         },
         ingress_token=token,
+        captured_at=1234.5,
     )
 
     runtime._voice_input_audio_pipeline.process.assert_awaited_once()
@@ -1055,6 +1117,7 @@ async def test_game_consumer_accepts_real_pcm_through_pipeline(
         rnnoise_available=processed.rnnoise_available,
         rnnoise_evidence=evidence,
         ingress_token=token,
+        captured_at=1234.5,
     )
 
 
@@ -1130,6 +1193,7 @@ async def test_hot_swap_cache_replay_preserves_rnnoise_evidence() -> None:
             "data": [1] * 160,
         },
         ingress_token=token,
+        captured_at=2345.6,
     )
 
     assert len(runtime.hot_swap_audio_cache) == 1
@@ -1144,6 +1208,7 @@ async def test_hot_swap_cache_replay_preserves_rnnoise_evidence() -> None:
         rnnoise_available=processed.rnnoise_available,
         rnnoise_evidence=evidence,
         ingress_token=token,
+        captured_at=2345.6,
     )
 
 
@@ -1368,6 +1433,61 @@ async def test_speech_started_prepares_external_voice_turn() -> None:
         turn_id=f"asr-{runtime._asr_session_epoch}-1"
     )
     runtime.handle_new_message.assert_awaited_once_with()
+
+
+async def test_gemini_prepare_reconnect_replaces_core_receive_task() -> None:
+    runtime = _Runtime()
+    _install_ready_lifecycle(runtime)
+    runtime.session.prepare_external_voice_turn = AsyncMock(return_value=True)
+    runtime._restart_message_handler_after_session_reconnect = AsyncMock(
+        return_value=True
+    )
+
+    await runtime._handle_independent_asr_activity(
+        SpeechActivityEvent.SPEECH_STARTED,
+        runtime._asr_session_epoch,
+    )
+
+    runtime._restart_message_handler_after_session_reconnect.assert_awaited_once_with(
+        runtime.session
+    )
+    runtime.handle_new_message.assert_awaited_once_with()
+
+
+async def test_reconnect_listener_replacement_cancels_retired_receive_task() -> None:
+    manager = LLMSessionManager.__new__(LLMSessionManager)
+    manager.lock = asyncio.Lock()
+    manager.is_active = True
+    replacement_started = asyncio.Event()
+
+    class Session:
+        async def handle_messages(self):
+            replacement_started.set()
+            await asyncio.Event().wait()
+
+    session = Session()
+    manager.session = session
+    retired_cancelled = asyncio.Event()
+
+    async def retired_receive_loop():
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            retired_cancelled.set()
+            raise
+
+    retired_task = asyncio.create_task(retired_receive_loop())
+    manager.message_handler_task = retired_task
+    await asyncio.sleep(0)
+
+    assert await manager._restart_message_handler_after_session_reconnect(session)
+    await asyncio.wait_for(replacement_started.wait(), 1)
+
+    assert retired_cancelled.is_set()
+    assert retired_task.done()
+    assert manager.message_handler_task is not retired_task
+    manager.message_handler_task.cancel()
+    await asyncio.gather(manager.message_handler_task, return_exceptions=True)
 
 
 async def test_game_takeover_during_core_prepare_drops_stale_message() -> None:
@@ -4971,8 +5091,17 @@ async def test_qwen_core_starts_independent_asr_with_external_turn_support(
 
     runtime = _Runtime()
     runtime.core_api_type = core_type
+    runtime.session.set_visual_delivery_mode = MagicMock()
     asr = type("Asr", (), {})()
-    asr.connect = AsyncMock()
+
+    async def connect_after_visual_fail_closed() -> None:
+        delivered_modes = [
+            getattr(call.args[0], "value", call.args[0])
+            for call in runtime.session.set_visual_delivery_mode.call_args_list
+        ]
+        assert delivered_modes[-1:] == ["external_description"]
+
+    asr.connect = AsyncMock(side_effect=connect_after_visual_fail_closed)
     asr.close = AsyncMock()
     factory = MagicMock(return_value=asr)
     monkeypatch.setattr(
@@ -4998,6 +5127,60 @@ async def test_qwen_core_starts_independent_asr_with_external_turn_support(
     assert runtime._asr_route_mode == "independent"
     assert runtime._asr_session is asr
     assert runtime._asr_provider == "qwen"
+
+
+async def test_stale_settings_failure_cannot_refence_replacement_session(
+    monkeypatch,
+) -> None:
+    runtime = _Runtime()
+    runtime.core_api_type = "qwen"
+    settings_read_started = asyncio.Event()
+    release_stale_read = asyncio.Event()
+    read_count = 0
+
+    async def load_settings(*, strict: bool = False) -> dict:
+        nonlocal read_count
+        assert strict is True
+        read_count += 1
+        if read_count == 1:
+            settings_read_started.set()
+            await release_stale_read.wait()
+            raise OSError("stale settings read failed")
+        return {"independentAsrEnabled": False}
+
+    monkeypatch.setattr(
+        core_module,
+        "aload_global_conversation_settings",
+        load_settings,
+    )
+    stale_start = asyncio.create_task(
+        runtime._start_independent_asr_if_enabled(
+            "audio",
+            handshake_override=True,
+        )
+    )
+    await settings_read_started.wait()
+
+    replacement_session = MagicMock()
+    replacement_session.set_visual_delivery_mode = MagicMock()
+    replacement_session.block_raw_visual_delivery = MagicMock()
+    runtime.session = replacement_session
+    runtime.core_api_type = "gemini"
+    await runtime._start_independent_asr_if_enabled(
+        "audio",
+        handshake_override=False,
+    )
+    assert runtime._asr_route_mode == "native"
+
+    release_stale_read.set()
+    await stale_start
+
+    delivered_modes = [
+        getattr(call.args[0], "value", call.args[0])
+        for call in replacement_session.set_visual_delivery_mode.call_args_list
+    ]
+    assert delivered_modes
+    assert set(delivered_modes) == {"native"}
 
 
 async def test_websocket_core_submits_one_external_turn_after_local_history() -> None:
@@ -5255,6 +5438,68 @@ async def test_hot_swap_does_not_retry_failed_same_core_route() -> None:
     runtime._start_independent_asr_if_enabled.assert_not_awaited()
 
 
+@pytest.mark.parametrize(
+    ("route_mode", "expected_visual_mode"),
+    [
+        ("independent", "external_description"),
+        ("native", "native"),
+    ],
+)
+async def test_same_core_session_promotion_resyncs_visual_delivery_mode(
+    route_mode: str,
+    expected_visual_mode: str,
+) -> None:
+    """A promoted session inherits the live route even when provider key is unchanged."""
+    runtime = _Runtime()
+    runtime.core_api_type = "qwen"
+    runtime.input_mode = "audio"
+    runtime._asr_route_mode = route_mode
+    runtime._independent_asr_route_key = "qwen"
+    runtime._start_independent_asr_if_enabled = AsyncMock()
+    replacement_session = type("ReplacementOmni", (), {})()
+    replacement_session._supports_native_image = True
+    replacement_session.set_visual_delivery_mode = MagicMock()
+    runtime.session = replacement_session
+
+    await runtime._reconcile_independent_asr_after_core_change()
+
+    replacement_session.set_visual_delivery_mode.assert_called_once()
+    delivered_mode = replacement_session.set_visual_delivery_mode.call_args.args[0]
+    assert getattr(delivered_mode, "value", delivered_mode) == expected_visual_mode
+    runtime._start_independent_asr_if_enabled.assert_not_awaited()
+
+
+async def test_blocked_replacement_session_preserves_external_visual_policy_and_fence() -> None:
+    runtime = _Runtime()
+    runtime._set_microphone_route("independent")
+    runtime._set_microphone_route("blocked")
+    replacement_session = type("ReplacementOmni", (), {})()
+    replacement_session.set_visual_delivery_mode = MagicMock()
+    replacement_session.block_raw_visual_delivery = MagicMock()
+    runtime.session = replacement_session
+
+    runtime._set_microphone_route("blocked")
+
+    replacement_session.set_visual_delivery_mode.assert_called_once_with(
+        "external_description"
+    )
+    replacement_session.block_raw_visual_delivery.assert_called()
+
+
+async def test_native_to_blocked_fences_raw_frames_during_route_reconciliation() -> None:
+    runtime = _Runtime()
+    runtime._set_microphone_route("native")
+    replacement_session = type("ReplacementOmni", (), {})()
+    replacement_session.set_visual_delivery_mode = MagicMock()
+    replacement_session.block_raw_visual_delivery = MagicMock()
+    runtime.session = replacement_session
+
+    runtime._set_microphone_route("blocked")
+
+    replacement_session.set_visual_delivery_mode.assert_called_once_with("native")
+    replacement_session.block_raw_visual_delivery.assert_called_once_with()
+
+
 async def test_disabled_native_route_key_prevents_same_core_reconcile(
     monkeypatch,
 ) -> None:
@@ -5394,6 +5639,36 @@ async def test_core_passes_only_configured_speaker_shadow_factory(
 
     assert start_mock.await_args.kwargs["speaker_shadow_factory"] is factory
     factory.assert_not_called()
+
+
+async def test_failed_independent_start_preserves_external_visual_route_memory(
+    monkeypatch,
+) -> None:
+    runtime = _Runtime()
+    runtime.core_api_type = "gemini"
+    runtime.session.set_visual_delivery_mode = MagicMock()
+    monkeypatch.setattr(
+        core_module,
+        "aload_global_conversation_settings",
+        AsyncMock(return_value={"independentAsrEnabled": True}),
+    )
+    start_mock = AsyncMock(
+        return_value=AsrStartResult(
+            status=AsrStartStatus.FAILED,
+            failure_code="ASR_CONNECT_FAILED",
+        )
+    )
+    monkeypatch.setattr(runtime._asr_runtime, "start", start_mock)
+
+    await runtime._start_independent_asr_if_enabled("audio")
+
+    assert runtime._asr_route_mode == "blocked"
+    assert runtime._visual_route_mode == "independent"
+    delivered_modes = [
+        getattr(call.args[0], "value", call.args[0])
+        for call in runtime.session.set_visual_delivery_mode.call_args_list
+    ]
+    assert delivered_modes[-1:] == ["external_description"]
 
 
 async def test_connect_budget_does_not_block_a_free_native_route(
@@ -6546,6 +6821,31 @@ async def test_free_core_uses_native_asr_when_preferences_are_unreadable(
     assert runtime._asr_route_mode == "native"
     start_mock.assert_not_awaited()
     assert "ASR_INDEPENDENT_DISABLED" in runtime.send_status.await_args.args[0]
+
+
+async def test_unreadable_independent_setting_preserves_visual_route_on_hot_swap(
+    monkeypatch,
+) -> None:
+    runtime = _Runtime()
+    runtime.core_api_type = "gemini"
+    runtime.session.set_visual_delivery_mode = MagicMock()
+    monkeypatch.setattr(
+        core_module,
+        "aload_global_conversation_settings",
+        AsyncMock(side_effect=OSError("preferences unavailable")),
+    )
+    runtime.set_independent_asr_handshake(True)
+
+    await runtime._start_independent_asr_if_enabled("audio")
+    await runtime._reconcile_independent_asr_after_core_change()
+
+    assert runtime._asr_route_mode == "blocked"
+    assert runtime._visual_route_mode == "independent"
+    delivered_modes = [
+        getattr(call.args[0], "value", call.args[0])
+        for call in runtime.session.set_visual_delivery_mode.call_args_list
+    ]
+    assert delivered_modes[-1:] == ["external_description"]
 
 
 async def test_unknown_core_capability_remains_fail_closed(monkeypatch) -> None:
@@ -8880,3 +9180,84 @@ async def test_speaker_shadow_abba_cannot_change_provider_authority(
     assert disabled_a["provider_connect_count"] == 1
     assert disabled_a["provider_close_count"] == 1
     assert len(disabled_a["finals"]) == 1
+
+
+@pytest.mark.unit
+async def test_microphone_route_syncs_provider_neutral_visual_delivery_mode() -> None:
+    """Independent ASR must fail closed for raw vision during every route state."""
+    runtime = _Runtime()
+    runtime.session._supports_native_image = True
+    runtime.session.set_visual_delivery_mode = MagicMock()
+
+    runtime._set_microphone_route("independent")
+    runtime._set_microphone_route("blocked")
+    runtime._set_microphone_route("native")
+
+    delivered_modes = [
+        getattr(item.args[0], "value", item.args[0])
+        for item in runtime.session.set_visual_delivery_mode.call_args_list
+    ]
+    assert delivered_modes == [
+        "external_description",
+        "external_description",
+        "native",
+    ]
+
+
+@pytest.mark.unit
+async def test_native_route_leaves_provider_capability_routing_inside_session() -> None:
+    """Core selects the ASR strategy, while session capability keeps legacy behavior."""
+    runtime = _Runtime()
+    runtime.session._supports_native_image = False
+    runtime.session.set_visual_delivery_mode = MagicMock()
+
+    runtime._set_microphone_route("native")
+
+    delivered_mode = runtime.session.set_visual_delivery_mode.call_args.args[0]
+    assert getattr(delivered_mode, "value", delivered_mode) == "native"
+
+
+@pytest.mark.unit
+async def test_independent_visual_sync_failure_blocks_raw_images_without_stopping_asr() -> None:
+    runtime = _Runtime()
+    call_order: list[str] = []
+
+    def block_raw_visual_delivery() -> None:
+        call_order.append("block")
+
+    def fail_visual_mode_sync(_mode: str) -> None:
+        call_order.append("sync")
+        raise RuntimeError("stale realtime session")
+
+    runtime.session.block_raw_visual_delivery = block_raw_visual_delivery
+    runtime.session.set_visual_delivery_mode = fail_visual_mode_sync
+
+    runtime._set_microphone_route("independent")
+
+    assert runtime._asr_route_mode == "independent"
+    assert call_order == ["block", "sync"]
+
+
+@pytest.mark.unit
+async def test_native_visual_sync_failure_keeps_raw_images_blocked() -> None:
+    runtime = _Runtime()
+    call_order: list[str] = []
+
+    def allow_raw_visual_delivery() -> None:
+        call_order.append("allow")
+
+    def block_raw_visual_delivery() -> None:
+        call_order.append("block")
+
+    def fail_visual_mode_sync(_mode: str) -> None:
+        call_order.append("sync")
+        raise RuntimeError("stale realtime session")
+
+    runtime.session.allow_raw_visual_delivery = allow_raw_visual_delivery
+    runtime.session.block_raw_visual_delivery = block_raw_visual_delivery
+    runtime.session.set_visual_delivery_mode = fail_visual_mode_sync
+
+    runtime._set_microphone_route("native")
+
+    assert runtime._asr_route_mode == "native"
+    assert call_order == ["sync", "block"]

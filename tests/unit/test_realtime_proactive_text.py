@@ -567,6 +567,39 @@ async def test_prompt_rechecks_arbiter_after_visual_await():
 
 
 @pytest.mark.unit
+async def test_prompt_rechecks_session_ownership_after_visual_await():
+    client = _make_client()
+    client._latest_image_b64 = DUMMY_IMAGE_B64
+    client._proactive_image_consumed = False
+    client.on_sid_rotate = AsyncMock()
+    visual_started = asyncio.Event()
+    release_visual = asyncio.Event()
+    ownership = {"current": True}
+
+    async def delayed_stream_image(*_args, **_kwargs):
+        visual_started.set()
+        await release_visual.wait()
+
+    client.stream_image = delayed_stream_image
+    task = asyncio.create_task(
+        client.prompt_ephemeral(
+            "do not inject into a retired session",
+            session_owned=lambda: ownership["current"],
+        )
+    )
+    await visual_started.wait()
+    ownership["current"] = False
+    release_visual.set()
+
+    assert await task is False
+    assert not any(
+        event.get("type") == "response.create"
+        for event in _sent_events(client)
+    )
+    await client.close()
+
+
+@pytest.mark.unit
 async def test_prompt_rechecks_activity_after_sid_rotation_await():
     client = _make_client()
     client._latest_image_b64 = DUMMY_IMAGE_B64
@@ -862,6 +895,80 @@ async def test_gemini_cancelled_send_quarantines_until_terminal():
     assert client._gemini_proactive_outcome is None
     assert client._proactive_inject_outcome_token is None
     assert client._proactive_inject_awaiting_outcome is False
+    await client.close()
+
+
+@pytest.mark.unit
+async def test_cancelled_prepare_preserves_quarantine_for_next_external_turn():
+    client = _make_client(api_type="gemini", model="gemini-live")
+    client._gemini_session = AsyncMock()
+    quarantine_started = asyncio.Event()
+    release_quarantine = asyncio.Event()
+
+    async def quarantine():
+        quarantine_started.set()
+        await release_quarantine.wait()
+
+    quarantine_task = asyncio.create_task(quarantine())
+    client._gemini_proactive_quarantine_task = quarantine_task
+
+    first_prepare = asyncio.create_task(
+        client.prepare_external_voice_turn(turn_id="cancelled-prepare")
+    )
+    await quarantine_started.wait()
+    first_prepare.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await first_prepare
+
+    assert client._gemini_proactive_quarantine_task is quarantine_task
+    assert not quarantine_task.done()
+
+    next_prepare = asyncio.create_task(
+        client.prepare_external_voice_turn(turn_id="next-prepare")
+    )
+    await asyncio.sleep(0)
+    assert not next_prepare.done()
+
+    release_quarantine.set()
+    await next_prepare
+    assert client._gemini_proactive_quarantine_task is None
+    await client.close()
+
+
+@pytest.mark.unit
+async def test_gemini_send_conflict_cannot_clear_another_inject_outcome():
+    client = _make_client(api_type="gemini", model="gemini-live")
+    client._gemini_session = AsyncMock()
+    send_started = asyncio.Event()
+    release_send = asyncio.Event()
+
+    async def blocked_send(*_args, **kwargs):
+        if kwargs.get("turns") is not None:
+            send_started.set()
+            await release_send.wait()
+
+    client._gemini_session.send_client_content.side_effect = blocked_send
+    owner_task = asyncio.create_task(
+        client.inject_text_and_request_response(
+            "owner inject",
+            on_rejected=lambda _message: None,
+            on_completed=lambda: None,
+        )
+    )
+    await send_started.wait()
+    owner_outcome = client._gemini_proactive_outcome
+
+    with pytest.raises(
+        RuntimeError,
+        match="another Gemini proactive SDK send is pending",
+    ):
+        await client.inject_text_and_request_response("competing inject")
+
+    assert client._gemini_proactive_outcome is owner_outcome
+    assert client._proactive_inject_awaiting_outcome is True
+    release_send.set()
+    await owner_task
+    client._settle_gemini_proactive_inject(notify=False)
     await client.close()
 
 

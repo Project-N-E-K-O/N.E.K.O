@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import os
 import sys
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -375,6 +376,168 @@ async def test_main_server_proactive_chat_respond_does_not_invoke_passthrough(mo
     # And NOT the old direct path — guards against a future double-dispatch
     # regression (manager + direct enqueue both firing).
     fake_mgr.enqueue_agent_callback.assert_not_called()
+
+
+@pytest.mark.unit
+async def test_image_only_respond_defers_callback_owned_media(monkeypatch):
+    from app import main_server
+
+    fake_mgr = MagicMock()
+    fake_mgr.session = MagicMock()
+    fake_mgr.session.stream_image = AsyncMock()
+    fake_mgr.enqueue_agent_callback = MagicMock()
+    fake_mgr.submit_proactive_callback = MagicMock()
+    fake_mgr.websocket = None
+    fake_mgr._pending_agent_callback_task = None
+    monkeypatch.setattr(
+        "app.main_server.character_runtime._get_session_manager",
+        lambda _name: fake_mgr,
+    )
+    monkeypatch.setattr(
+        "app.main_server.character_runtime._is_websocket_connected",
+        lambda _ws: False,
+    )
+
+    await main_server._handle_agent_event(
+        {
+            "event_type": "proactive_message",
+            "lanlan_name": "Test",
+            "text": "",
+            "channel": "plugin:camera",
+            "task_id": "image-only-respond",
+            "delivery_mode": "proactive",
+            "ai_behavior": "respond",
+            "visibility": [],
+            "source_kind": "plugin",
+            "source_name": "camera",
+            "media_parts": [
+                {
+                    "type": "image",
+                    "binary_base64": "respond-image-b64",
+                    "mime": "image/png",
+                }
+            ],
+        }
+    )
+
+    fake_mgr.session.stream_image.assert_not_awaited()
+    fake_mgr.submit_proactive_callback.assert_called_once()
+    callback = fake_mgr.submit_proactive_callback.call_args.args[0]
+    assert callback["media_images"] == ["respond-image-b64"]
+    fake_mgr.enqueue_agent_callback.assert_not_called()
+
+
+@pytest.mark.unit
+async def test_read_image_defers_media_until_passive_callback_consumption(
+    monkeypatch,
+):
+    from app import main_server
+
+    fake_mgr = MagicMock()
+    fake_mgr.session = MagicMock()
+    fake_mgr.session.stream_image = AsyncMock(
+        return_value=SimpleNamespace(
+            accepted=True,
+            mode="external_description",
+            description="桌面上有一本打开的书。",
+        )
+    )
+    fake_mgr.enqueue_agent_callback = MagicMock()
+    fake_mgr.submit_proactive_callback = MagicMock()
+    fake_mgr.websocket = None
+    fake_mgr._pending_agent_callback_task = None
+    monkeypatch.setattr(
+        "app.main_server.character_runtime._get_session_manager",
+        lambda _name: fake_mgr,
+    )
+    monkeypatch.setattr(
+        "app.main_server.character_runtime._is_websocket_connected",
+        lambda _ws: False,
+    )
+
+    await main_server._handle_agent_event(
+        {
+            "event_type": "proactive_message",
+            "lanlan_name": "Test",
+            "text": "学习状态更新",
+            "channel": "plugin:study",
+            "task_id": "passive-image-read",
+            "delivery_mode": "passive",
+            "ai_behavior": "read",
+            "visibility": [],
+            "source_kind": "plugin",
+            "source_name": "study",
+            "media_parts": [
+                {
+                    "type": "image",
+                    "binary_base64": "read-image-b64",
+                    "mime": "image/png",
+                }
+            ],
+        }
+    )
+
+    fake_mgr.session.stream_image.assert_not_awaited()
+    fake_mgr.enqueue_agent_callback.assert_called_once()
+    callback = fake_mgr.enqueue_agent_callback.call_args.args[0]
+    assert callback["media_images"] == ["read-image-b64"]
+    assert callback["detail"] == "学习状态更新"
+    fake_mgr.submit_proactive_callback.assert_not_called()
+
+
+@pytest.mark.unit
+async def test_read_image_does_not_probe_current_session_before_enqueue(monkeypatch):
+    from app import main_server
+
+    fake_mgr = MagicMock()
+    fake_mgr.session = MagicMock()
+    fake_mgr.session.stream_image = AsyncMock(
+        return_value=SimpleNamespace(
+            accepted=False,
+            mode="native",
+            rejection_reason="raw_visual_delivery_blocked",
+        )
+    )
+    fake_mgr.enqueue_agent_callback = MagicMock()
+    fake_mgr.submit_proactive_callback = MagicMock()
+    fake_mgr.websocket = None
+    fake_mgr._pending_agent_callback_task = None
+    monkeypatch.setattr(
+        "app.main_server.character_runtime._get_session_manager",
+        lambda _name: fake_mgr,
+    )
+    monkeypatch.setattr(
+        "app.main_server.character_runtime._is_websocket_connected",
+        lambda _ws: False,
+    )
+
+    await main_server._handle_agent_event(
+        {
+            "event_type": "proactive_message",
+            "lanlan_name": "Test",
+            "text": "",
+            "channel": "plugin:camera",
+            "task_id": "passive-image-retry",
+            "delivery_mode": "passive",
+            "ai_behavior": "read",
+            "visibility": [],
+            "source_kind": "plugin",
+            "source_name": "camera",
+            "media_parts": [
+                {
+                    "type": "image",
+                    "binary_base64": "retry-image-b64",
+                    "mime": "image/png",
+                }
+            ],
+        }
+    )
+
+    fake_mgr.enqueue_agent_callback.assert_called_once()
+    fake_mgr.session.stream_image.assert_not_awaited()
+    callback = fake_mgr.enqueue_agent_callback.call_args.args[0]
+    assert callback["media_images"] == ["retry-image-b64"]
+    fake_mgr.submit_proactive_callback.assert_not_called()
 
 
 @pytest.mark.unit

@@ -328,6 +328,9 @@ class LLMSessionManager(
         self._context_append_inflight_results: dict[tuple[Any, ...], asyncio.Future[ContextAppendResult]] = {}
         self._require_context_append_current_delivery = False
         self.input_cache_lock = asyncio.Lock()  # 保护输入缓存的锁
+        # Serialize pending-input replay with live input dispatch. The cache
+        # lock cannot span awaits because attachment handoff reacquires it.
+        self._pending_input_flush_active = False
         
         # 用户活动时间戳：用于主动搭话检测最近是否有用户输入
         self.last_user_activity_time = None  # float timestamp or None

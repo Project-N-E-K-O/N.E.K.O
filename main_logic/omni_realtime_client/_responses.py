@@ -19,6 +19,7 @@ from ._shared import (
     Callable,
     Dict,
     Optional,
+    VisualDeliveryMode,
     asyncio,
     logger,
     response_arbiter_fail_open_enabled,
@@ -44,6 +45,8 @@ from ._protocol_capabilities import STRICT_REALTIME_PROTOCOL_CAPABILITIES
 _PROACTIVE_INJECT_DELIVERY_TIMEOUT_SECONDS = 30.0
 _GEMINI_PROACTIVE_CANCEL_GRACE_SECONDS = 3.0
 _PROACTIVE_TICKET_CANCEL_OBSERVE_TIMEOUT_SECONDS = 0.5
+_GEMINI_PROACTIVE_SESSION_CLOSE_CANCEL = "Gemini session is closing"
+_GEMINI_PROACTIVE_TASK_UNSET = object()
 
 
 def _proactive_text_instruction(language: str, *, has_vision: bool) -> str:
@@ -239,16 +242,34 @@ class _ResponseMixin:
         if not stable_turn_id:
             raise ValueError("external ASR turn_id must not be empty")
 
+        visual_record = getattr(self, "_external_visual_turns", {}).get(
+            stable_turn_id
+        )
+        visual_description = await self._resolve_external_visual_turn(
+            stable_turn_id
+        )
+
         event_suffix = uuid.uuid4().hex
         item_id = f"item_neko_{uuid.uuid4().hex}"
         expected_item_id = item_id
+        item_text = clean
+        if visual_description:
+            # Persist the observation and its owning transcript atomically. A
+            # barge-in can now keep both or neither, never an orphaned visual
+            # item that leaks into the next voice turn.
+            item_text = (
+                "[系统视觉感知结果，不是用户陈述]\n"
+                f"当前画面：{visual_description}\n"
+                "[用户语音转写]\n"
+                f"{clean}"
+            )
         item_event = {
             "type": "conversation.item.create",
             "event_id": f"event_asr_item_{event_suffix}",
             "item": {
                 "type": "message",
                 "role": "user",
-                "content": [{"type": "input_text", "text": clean}],
+                "content": [{"type": "input_text", "text": item_text}],
             },
         }
         if expected_item_id is not None:
@@ -265,15 +286,39 @@ class _ResponseMixin:
             text_hash,
         )
         arbiter = self._ensure_response_arbiter()
-        ticket = await arbiter.enqueue(
-            source="external_asr",
-            events_before_response=(item_event,),
-            response_event=response_event,
-            ack_expected=True,
-            expected_item_id=expected_item_id,
-            expected_item_role="user",
-            priority=0,
-        )
+        try:
+            admission_check = None
+            if visual_record is not None:
+                admission_check = (
+                    lambda: self._external_visual_turns.get(stable_turn_id)
+                    is visual_record
+                )
+            ticket = await arbiter.enqueue(
+                source="external_asr",
+                events_before_response=(item_event,),
+                response_event=response_event,
+                ack_expected=True,
+                expected_item_id=expected_item_id,
+                expected_item_role="user",
+                priority=0,
+                admission_check=admission_check,
+            )
+        except BaseException:
+            if (
+                visual_record is not None
+                and self._external_visual_turns.get(stable_turn_id)
+                is visual_record
+            ):
+                self._external_visual_turns.pop(stable_turn_id, None)
+            raise
+        if visual_record is not None:
+            if (
+                self._external_visual_turns.get(stable_turn_id)
+                is not visual_record
+            ):
+                await arbiter.cancel_ticket(ticket)
+                raise asyncio.CancelledError
+            visual_record["ticket"] = ticket
         # Speech-start pauses dispatch. Resume only after this priority-0 user
         # turn is present, so queued proactive work cannot win the race. An
         # older completed turn may still be ahead of a newer paused turn in
@@ -288,6 +333,9 @@ class _ResponseMixin:
         arbiter.resume_dispatch()
         try:
             await ticket.sent
+        except asyncio.CancelledError:
+            await arbiter.cancel_ticket(ticket)
+            raise
         finally:
             # Re-arm the newer turn's pause on the failure path too: a
             # transport error (or a newer prepare's cancel_current) can fail
@@ -301,28 +349,229 @@ class _ResponseMixin:
                 == active_pause_id
             ):
                 arbiter.pause_dispatch()
+            if (
+                visual_record is not None
+                and self._external_visual_turns.get(stable_turn_id)
+                is visual_record
+            ):
+                self._external_visual_turns.pop(stable_turn_id, None)
         return ticket
 
-    async def prepare_external_voice_turn(self, *, turn_id: str) -> None:
-        """Prepare the active Provider session for one external ASR turn."""
+    async def _cancel_gemini_proactive_submit(
+        self,
+        *,
+        session_closing: bool = False,
+        submit_task: Any = _GEMINI_PROACTIVE_TASK_UNSET,
+    ) -> None:
+        """Cancel and join the task parked in Gemini's proactive SDK send."""
+
+        if submit_task is _GEMINI_PROACTIVE_TASK_UNSET:
+            submit_task = getattr(self, "_gemini_proactive_submit_task", None)
+        if submit_task is None:
+            return
+        if submit_task is asyncio.current_task():
+            return
+        if not submit_task.done():
+            if session_closing:
+                submit_task.cancel(_GEMINI_PROACTIVE_SESSION_CLOSE_CANCEL)
+            else:
+                submit_task.cancel()
+            await asyncio.gather(submit_task, return_exceptions=True)
+        if getattr(self, "_gemini_proactive_submit_task", None) is submit_task:
+            self._gemini_proactive_submit_task = None
+
+    async def prepare_external_voice_turn(self, *, turn_id: str) -> bool:
+        """Prepare one external ASR turn; report an in-place reconnect.
+
+        Gemini quarantine may retire and replace the SDK connection on this
+        same client instance.  The Core owner uses the returned flag to replace
+        the receive task that captured the retired session.
+        """
 
         stable_turn_id = str(turn_id or "").strip()
         if not stable_turn_id:
             raise ValueError("external voice turn_id must not be empty")
+        connection_generation = self._connection_generation
+        async with self._ensure_turn_admission_lock():
+            if self._is_gemini:
+                self._start_gemini_external_submit_quarantine()
+                await self._await_gemini_external_quarantine()
+                await self._cancel_gemini_proactive_submit()
+                proactive_outcome = getattr(
+                    self,
+                    "_gemini_proactive_outcome",
+                    None,
+                )
+                proactive_quarantine = getattr(
+                    self,
+                    "_gemini_proactive_quarantine_task",
+                    None,
+                )
+                if (
+                    proactive_outcome is not None
+                    and (
+                        proactive_quarantine is None
+                        or proactive_quarantine.done()
+                    )
+                ):
+                    # SDK-send completion is not a Gemini lifecycle terminal.
+                    # Until first content / turn_complete / interrupted arrives,
+                    # the accepted proactive turn still owns this unscoped SDK
+                    # session. Quarantine that outcome before admitting an
+                    # external-ASR successor, just as the in-flight cancellation
+                    # path does.
+                    proactive_quarantine = self._fire_task(
+                        self._interrupt_and_quarantine_gemini_proactive_outcome(
+                            proactive_outcome[0],
+                            error_msg=(
+                                "Gemini proactive turn was superseded by "
+                                "external voice input"
+                            ),
+                        )
+                    )
+                    self._gemini_proactive_quarantine_task = proactive_quarantine
+                await self._await_gemini_proactive_quarantine()
+            self._begin_external_visual_turn(stable_turn_id)
+            try:
+                if not self._is_gemini:
+                    arbiter = self._ensure_response_arbiter()
+                    self._external_voice_turn_pause_id = stable_turn_id
+                    arbiter.pause_dispatch()
+                    await arbiter.cancel_current()
+                await self.handle_interruption()
+            except BaseException:
+                self.abandon_external_voice_turn(stable_turn_id)
+                raise
+        return self._connection_generation != connection_generation
+
+    def _settle_gemini_external_turn(self, token: object | None = None) -> None:
+        """Release accepted external-ASR ownership at its terminal edge."""
+
+        current = getattr(self, "_gemini_external_outcome_token", None)
+        if token is not None and current is not token:
+            return
+        self._gemini_external_outcome_token = None
+
+    def _start_gemini_external_submit_quarantine(
+        self,
+        submit_task: Optional[asyncio.Task] = None,
+    ) -> None:
+        """Retire a Gemini session whose external turn send was cancelled."""
+
+        if submit_task is None:
+            submit_task = getattr(self, "_gemini_external_submit_task", None)
+        outcome_token = getattr(self, "_gemini_external_outcome_token", None)
+        if (
+            (submit_task is None or submit_task.done())
+            and outcome_token is None
+        ):
+            return
+        if submit_task is asyncio.current_task():
+            return
+        quarantine_task = getattr(
+            self,
+            "_gemini_external_quarantine_task",
+            None,
+        )
+        if quarantine_task is not None and not quarantine_task.done():
+            return
+        self._gemini_external_quarantine_task = self._fire_task(
+            self._quarantine_gemini_external_submit(submit_task, outcome_token)
+        )
+
+    async def _quarantine_gemini_external_submit(
+        self,
+        submit_task: Optional[asyncio.Task],
+        outcome_token: object | None,
+    ) -> None:
+        """Join a cancelled SDK send, then close the ambiguous connection."""
+
+        submit_was_inflight = submit_task is not None and not submit_task.done()
+        if submit_was_inflight:
+            submit_task.cancel()
+            await asyncio.gather(submit_task, return_exceptions=True)
+        if (
+            submit_task is not None
+            and getattr(self, "_gemini_external_submit_task", None) is submit_task
+        ):
+            self._gemini_external_submit_task = None
+        if (
+            not submit_was_inflight
+            and outcome_token is not None
+            and getattr(self, "_gemini_external_outcome_token", None)
+            is not outcome_token
+        ):
+            # Its terminal event won the race with quarantine startup, so the
+            # session no longer contains an ambiguous accepted turn.
+            return
+        self._settle_gemini_external_turn(outcome_token)
+        # Cancellation only ends our await; Gemini may already have accepted
+        # the turn. The connection is the smallest scope that can prove no late
+        # transcript/response from that turn can cross into its successor.
+        self._fatal_error_occurred = True
+        await self._close_gemini()
+
+    async def _await_gemini_external_quarantine(self) -> None:
+        """Join external-submit quarantine and reconnect before a new turn."""
+
+        quarantine_task = getattr(
+            self,
+            "_gemini_external_quarantine_task",
+            None,
+        )
+        if quarantine_task is not None and quarantine_task is not asyncio.current_task():
+            await asyncio.shield(quarantine_task)
+            if (
+                quarantine_task.done()
+                and getattr(self, "_gemini_external_quarantine_task", None)
+                is quarantine_task
+            ):
+                self._gemini_external_quarantine_task = None
+        if getattr(self, "_gemini_session", None) is None:
+            instructions = str(getattr(self, "instructions", "") or "")
+            if instructions:
+                await self.connect(
+                    instructions,
+                    native_audio=getattr(self, "_native_audio", True),
+                )
+
+    async def _await_gemini_proactive_quarantine(self) -> None:
+        """Join stale Gemini proactive quarantine before opening a user turn."""
+
+        quarantine_task = getattr(self, "_gemini_proactive_quarantine_task", None)
+        if (
+            quarantine_task is None
+            or quarantine_task is asyncio.current_task()
+        ):
+            return
         try:
-            if not self._is_gemini:
-                arbiter = self._ensure_response_arbiter()
-                self._external_voice_turn_pause_id = stable_turn_id
-                arbiter.pause_dispatch()
-                await arbiter.cancel_current()
-            await self.handle_interruption()
-        except BaseException:
-            self.abandon_external_voice_turn(stable_turn_id)
-            raise
+            await asyncio.shield(quarantine_task)
+        except asyncio.CancelledError:
+            if not quarantine_task.cancelled():
+                raise
+        finally:
+            if (
+                quarantine_task.done()
+                and getattr(self, "_gemini_proactive_quarantine_task", None)
+                is quarantine_task
+            ):
+                self._gemini_proactive_quarantine_task = None
+
+        # A quarantine with no terminal lifecycle retires the old Gemini
+        # session. Reconnect before admitting the user's turn so its transcript
+        # cannot race the retired SDK context.
+        if getattr(self, "_gemini_session", None) is None:
+            instructions = str(getattr(self, "instructions", "") or "")
+            if instructions:
+                await self.connect(
+                    instructions,
+                    native_audio=getattr(self, "_native_audio", True),
+                )
 
     def abandon_external_voice_turn(self, turn_id: str | None = None) -> None:
         """Release an external-ASR dispatch pause, optionally by turn key."""
 
+        self._abandon_external_visual_turn(turn_id)
         if self._is_gemini:
             return
         current_turn_id = getattr(self, "_external_voice_turn_pause_id", None)
@@ -340,7 +589,55 @@ class _ResponseMixin:
         """Submit external ASR text through the Provider-appropriate path."""
 
         if self._is_gemini:
-            await self.create_response(text)
+            clean = str(text or "").strip()
+            if not clean:
+                raise ValueError("external ASR turn must not be empty")
+            if len(clean) > 8_000:
+                raise ValueError("external ASR turn exceeds the 8000 character budget")
+            stable_turn_id = str(turn_id or "").strip()
+            if not stable_turn_id:
+                raise ValueError("external voice turn_id must not be empty")
+            visual_record = getattr(self, "_external_visual_turns", {}).get(
+                stable_turn_id
+            )
+            visual_description = await self._resolve_external_visual_turn(
+                stable_turn_id
+            )
+            if (
+                visual_record is not None
+                and self._external_visual_turns.get(stable_turn_id)
+                is not visual_record
+            ):
+                raise asyncio.CancelledError
+            item_text = clean
+            if visual_description:
+                item_text = (
+                    "[系统视觉感知结果，不是用户陈述]\n"
+                    f"当前画面：{visual_description}\n"
+                    "[用户语音转写]\n"
+                    f"{clean}"
+                )
+            if visual_record is not None:
+                visual_record["submit_task"] = asyncio.current_task()
+            submit_task = asyncio.current_task()
+            outcome_token = object()
+            self._gemini_external_submit_task = submit_task
+            self._gemini_external_outcome_token = outcome_token
+            accepted = False
+            try:
+                await self.create_response(item_text)
+                accepted = True
+            finally:
+                if getattr(self, "_gemini_external_submit_task", None) is submit_task:
+                    self._gemini_external_submit_task = None
+                if not accepted:
+                    self._settle_gemini_external_turn(outcome_token)
+                if (
+                    visual_record is not None
+                    and self._external_visual_turns.get(stable_turn_id)
+                    is visual_record
+                ):
+                    self._external_visual_turns.pop(stable_turn_id, None)
             return
         await self.submit_external_text_turn(text, turn_id=turn_id)
 
@@ -420,6 +717,24 @@ class _ResponseMixin:
             # SDK-send success alone is not response completion.
             if self._gemini_session is None:
                 raise RuntimeError("Gemini session not available for proactive inject")
+            gemini_text_parts: list[str] = []
+            for event in events_before_text:
+                if event.get("type") != "conversation.item.create":
+                    raise ValueError("Gemini proactive prefix must be a text item")
+                item = event.get("item")
+                if not isinstance(item, dict) or item.get("role") != "user":
+                    raise ValueError("Gemini proactive prefix must use user role")
+                content = item.get("content")
+                if not isinstance(content, list):
+                    raise ValueError("Gemini proactive prefix content must be a list")
+                for part in content:
+                    if not isinstance(part, dict) or part.get("type") != "input_text":
+                        raise ValueError("Gemini proactive prefix must contain input_text")
+                    prefix_text = str(part.get("text") or "").strip()
+                    if prefix_text:
+                        gemini_text_parts.append(prefix_text)
+            gemini_text_parts.append(text.strip())
+            gemini_text = "\n".join(gemini_text_parts)
             outcome_token = f"gemini_inject_{uuid.uuid4().hex}"
             if on_rejected is not None or on_completed is not None:
                 if getattr(self, "_gemini_proactive_outcome", None) is not None:
@@ -431,32 +746,65 @@ class _ResponseMixin:
                 )
                 self._proactive_inject_outcome_token = outcome_token
                 self._proactive_inject_awaiting_outcome = True
-            try:
-                await self._gemini_send_user_turn(text)
-            except asyncio.CancelledError:
+            submit_task = asyncio.current_task()
+            existing_submit_task = getattr(
+                self,
+                "_gemini_proactive_submit_task",
+                None,
+            )
+            if (
+                existing_submit_task is not None
+                and existing_submit_task is not submit_task
+                and not existing_submit_task.done()
+            ):
                 outcome = getattr(self, "_gemini_proactive_outcome", None)
                 if outcome is not None and outcome[0] == outcome_token:
-                    # Cancellation can arrive after the SDK accepted the
-                    # unscoped turn but before its await resumes. Suppress the
-                    # abandoned caller's callbacks, retain its token, and
-                    # interrupt/quarantine the generation until a terminal (or
-                    # fail-closed session retirement) makes retry correlation
-                    # safe again.
-                    self._gemini_proactive_outcome = (
-                        outcome_token,
-                        None,
-                        None,
-                    )
-                    self._fire_task(
-                        self._interrupt_and_quarantine_gemini_proactive_outcome(
+                    self._settle_gemini_proactive_inject(notify=False)
+                raise RuntimeError("another Gemini proactive SDK send is pending")
+            self._gemini_proactive_submit_task = submit_task
+            try:
+                await self._gemini_send_user_turn(gemini_text)
+            except asyncio.CancelledError as exc:
+                outcome = getattr(self, "_gemini_proactive_outcome", None)
+                if outcome is not None and outcome[0] == outcome_token:
+                    if (
+                        exc.args
+                        and exc.args[0]
+                        == _GEMINI_PROACTIVE_SESSION_CLOSE_CANCEL
+                    ):
+                        # The owning SDK session is being retired immediately;
+                        # no delayed quarantine may survive this close and later
+                        # seize a replacement connection.
+                        self._settle_gemini_proactive_inject(notify=False)
+                    else:
+                        # Cancellation can arrive after the SDK accepted the
+                        # unscoped turn but before its await resumes. Suppress
+                        # callbacks and quarantine until a terminal (or session
+                        # retirement) makes retry correlation safe again.
+                        self._gemini_proactive_outcome = (
                             outcome_token,
-                            error_msg="Gemini proactive SDK send was cancelled",
+                            None,
+                            None,
                         )
-                    )
+                        quarantine_task = self._fire_task(
+                            self._interrupt_and_quarantine_gemini_proactive_outcome(
+                                outcome_token,
+                                error_msg="Gemini proactive SDK send was cancelled",
+                            )
+                        )
+                        self._gemini_proactive_quarantine_task = quarantine_task
                 raise
             except Exception:
-                self._settle_gemini_proactive_inject(notify=False)
+                outcome = getattr(self, "_gemini_proactive_outcome", None)
+                if outcome is not None and outcome[0] == outcome_token:
+                    self._settle_gemini_proactive_inject(notify=False)
                 raise
+            finally:
+                if (
+                    getattr(self, "_gemini_proactive_submit_task", None)
+                    is submit_task
+                ):
+                    self._gemini_proactive_submit_task = None
             if on_rejected is not None or on_completed is not None:
                 self._fire_task(
                     self._expire_gemini_proactive_outcome(outcome_token, 60.0)
@@ -673,6 +1021,19 @@ class _ResponseMixin:
             return
         token, on_rejected, on_completed = outcome
         self._gemini_proactive_outcome = None
+        quarantine_task = getattr(self, "_gemini_proactive_quarantine_task", None)
+        if (
+            quarantine_task is not None
+            and quarantine_task is not asyncio.current_task()
+            and not quarantine_task.done()
+        ):
+            quarantine_task.cancel()
+        if (
+            quarantine_task is not None
+            and quarantine_task is not asyncio.current_task()
+            and quarantine_task.done()
+        ):
+            self._gemini_proactive_quarantine_task = None
         if getattr(self, "_proactive_inject_outcome_token", None) == token:
             self._proactive_inject_outcome_token = None
             self._proactive_inject_awaiting_outcome = False
@@ -861,6 +1222,8 @@ class _ResponseMixin:
         instruction: str = "",
         *,
         language: str = "zh",
+        user_turn_active: Optional[Callable[[], bool]] = None,
+        session_owned: Optional[Callable[[], bool]] = None,
     ) -> bool:
         """Inject a text turn and explicitly request proactive speech.
 
@@ -927,6 +1290,11 @@ class _ResponseMixin:
             if _now - self._client_vad_last_speech_time < self._client_vad_grace_period:
                 logger.debug("prompt_ephemeral: skipped — VAD grace period")
                 return False
+        if callable(user_turn_active) and user_turn_active():
+            logger.debug(
+                "prompt_ephemeral: skipped — external user turn is active"
+            )
+            return False
 
         outcome_observed = asyncio.Event()
         delivery_rejected = False
@@ -934,6 +1302,11 @@ class _ResponseMixin:
         rejection_message = ""
         visual_event_id: str | None = None
         events_before_text: tuple[Dict[str, Any], ...] = ()
+        external_visual_delivery = getattr(
+            self,
+            "_visual_delivery_mode",
+            VisualDeliveryMode.NATIVE,
+        ) == VisualDeliveryMode.EXTERNAL_DESCRIPTION
 
         def _on_rejected(error_msg: str) -> None:
             nonlocal delivery_rejected, rejection_message
@@ -984,6 +1357,7 @@ class _ResponseMixin:
         )
         if (
             has_pending_frame
+            and not external_visual_delivery
             and not self._supports_native_image
             and not self._image_recognized_this_turn
         ):
@@ -992,7 +1366,8 @@ class _ResponseMixin:
             )
             return False
         has_vision = self._image_recognized_this_turn or (
-            self._supports_native_image and has_pending_frame
+            (self._supports_native_image or external_visual_delivery)
+            and has_pending_frame
         )
         # Snapshot the current image so concurrent stream_image() calls don't
         # cause us to mark a newer frame as consumed.
@@ -1034,6 +1409,7 @@ class _ResponseMixin:
             if (
                 self.is_active_response()
                 or self._client_vad_active
+                or (callable(user_turn_active) and user_turn_active())
                 or self._user_recent_activity_time > _now
                 or self._ai_recent_activity_time > _now
             ):
@@ -1042,9 +1418,27 @@ class _ResponseMixin:
                 )
                 return False
 
+            # SID rotation can yield long enough for Core to reconcile an
+            # independent/blocked visual route. A snapshot captured under the
+            # old mode must not cross that boundary into a different ASR turn;
+            # retry from the new route instead of sending it as either raw
+            # media or an external description.
+            current_external_visual_delivery = getattr(
+                self,
+                "_visual_delivery_mode",
+                VisualDeliveryMode.NATIVE,
+            ) == VisualDeliveryMode.EXTERNAL_DESCRIPTION
+            if current_external_visual_delivery != external_visual_delivery:
+                logger.info(
+                    "prompt_ephemeral: skipped — visual route changed during SID rotation"
+                )
+                return False
+            external_visual_delivery = current_external_visual_delivery
+
         if (
             has_vision
             and not self._is_gemini
+            and not external_visual_delivery
             and (
                 (self._supports_native_image and snapshot_image_b64)
                 or (
@@ -1065,12 +1459,17 @@ class _ResponseMixin:
                 self._expire_inject_rejection_handler(visual_event_id, 60.0)
             )
 
-        if has_vision and self._supports_native_image and snapshot_image_b64:
+        if (
+            has_vision
+            and not external_visual_delivery
+            and self._supports_native_image
+            and snapshot_image_b64
+        ):
             # ``bypass_rate_limit`` identifies this as one deliberate cue image.
             # stream_image also owns the provider-specific wire event, including
             # the dedicated free-service input_image_buffer.append route.
             try:
-                await self.stream_image(
+                stage_result = await self.stream_image(
                     snapshot_image_b64,
                     bypass_rate_limit=True,
                     cache_latest=False,
@@ -1086,12 +1485,82 @@ class _ResponseMixin:
                     exc,
                 )
                 return False
+            if hasattr(stage_result, "accepted"):
+                raw_stage_mode = getattr(stage_result, "mode", None)
+                stage_mode = getattr(raw_stage_mode, "value", raw_stage_mode)
+                if not bool(stage_result.accepted) or stage_mode != "native":
+                    _remove_visual_rejection_handler()
+                    logger.info(
+                        "prompt_ephemeral: visual route changed during native image staging; keeping snapshot for retry"
+                    )
+                    return False
             if delivery_rejected:
                 _remove_visual_rejection_handler()
                 logger.info(
                     "prompt_ephemeral: native image rejected before proactive text inject"
                 )
                 return False
+        elif has_vision and external_visual_delivery and snapshot_image_b64:
+            try:
+                stage_result = await self.stream_image(
+                    snapshot_image_b64,
+                    source="proactive",
+                    request_id=f"proactive-{snapshot_image_generation}",
+                    bypass_rate_limit=True,
+                    cache_latest=False,
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.warning(
+                    "prompt_ephemeral: external visual analysis failed: %s",
+                    exc,
+                )
+                # A transient analysis failure is retryable. Keep the exact
+                # generation unconsumed and do not downgrade this attempt to a
+                # text-only nudge. Only an explicit empty analysis result below
+                # is terminal for the selected frame.
+                return False
+            external_description = str(
+                getattr(stage_result, "description", "") or ""
+            ).strip()
+            if external_description:
+                if not self._is_gemini:
+                    visual_event_id = f"event_inject_image_{uuid.uuid4().hex}"
+                    self._inject_rejection_handlers[
+                        visual_event_id
+                    ] = _on_visual_rejected
+                    self._fire_task(
+                        self._expire_inject_rejection_handler(
+                            visual_event_id,
+                            60.0,
+                        )
+                    )
+                visual_event = {
+                    "type": "conversation.item.create",
+                    "item": {
+                        "id": f"item_neko_visual_{uuid.uuid4().hex}",
+                        "type": "message",
+                        "role": "user",
+                        "content": [{
+                            "type": "input_text",
+                            "text": (
+                                "[系统视觉感知结果，不是用户陈述]\n"
+                                f"当前画面：{external_description}"
+                            ),
+                        }],
+                    },
+                }
+                if visual_event_id is not None:
+                    visual_event["event_id"] = visual_event_id
+                events_before_text = (visual_event,)
+            else:
+                # The selected generation reached a terminal empty/error
+                # analysis result. Retire that exact snapshot so a proactive
+                # retry cannot repeatedly spend vision calls on the same stale
+                # frame; the generation fence preserves any newer arrival.
+                _mark_snapshot_consumed_if_current()
+                has_vision = False
         elif (
             has_vision
             and self._image_recognized_this_turn
@@ -1105,6 +1574,7 @@ class _ResponseMixin:
                 "type": "conversation.item.create",
                 "event_id": visual_event_id,
                 "item": {
+                    "id": f"item_neko_visual_{uuid.uuid4().hex}",
                     "type": "message",
                     "role": "user",
                     "content": [{"type": "input_text", "text": self._image_description}],
@@ -1113,12 +1583,26 @@ class _ResponseMixin:
 
         # Re-check activity after any image await. A user or AI turn that won
         # during the visual send must preempt this proactive response.create.
+        # The manager can also replace this client during the await; a retired
+        # session must never receive a nudge whose result would be discarded.
+        if callable(session_owned) and not session_owned():
+            _remove_visual_rejection_handler()
+            logger.info(
+                "prompt_ephemeral: skipped — session ownership changed during visual inject"
+            )
+            return False
         if (
             self.is_active_response()
+            or (callable(user_turn_active) and user_turn_active())
             or self._user_recent_activity_time > _now
             or self._ai_recent_activity_time > _now
         ):
-            if has_vision and self._supports_native_image and snapshot_image_b64:
+            if (
+                has_vision
+                and not external_visual_delivery
+                and self._supports_native_image
+                and snapshot_image_b64
+            ):
                 # The raw frame is already persistent provider context and may
                 # be consumed by the turn that won this race. Account for it
                 # now to avoid resending duplicate/stale visual context. Keep

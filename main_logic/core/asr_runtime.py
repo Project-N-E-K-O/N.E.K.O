@@ -24,6 +24,7 @@ from main_logic.asr_client.runtime import (
     IndependentAsrRuntime,
     SpeakerShadowFactory,
 )
+from main_logic.asr_client.lifecycle import VoiceLifecycleState
 from main_logic.voice_input import (
     BuiltinVoiceInputConsumer,
     VoiceInputConsumerCapabilities,
@@ -70,6 +71,7 @@ class _QueuedMicFrame:
     source_rate_hz: int
     token: VoiceIngressToken
     received_at: float
+    captured_at: float
     audio_stream_epoch: int = 0
     ingress_sequence: int = 0
 
@@ -80,6 +82,7 @@ class _QueuedMicFrame:
         *,
         token: VoiceIngressToken,
         received_at: float | None = None,
+        captured_at: float | None = None,
         audio_stream_epoch: int = 0,
         ingress_sequence: int = 0,
     ) -> "_QueuedMicFrame":
@@ -108,6 +111,7 @@ class _QueuedMicFrame:
             source_rate_hz=source_rate_hz,
             token=token,
             received_at=time.monotonic() if received_at is None else received_at,
+            captured_at=time.time() if captured_at is None else captured_at,
             audio_stream_epoch=audio_stream_epoch,
             ingress_sequence=ingress_sequence,
         )
@@ -161,6 +165,7 @@ class _AudioDurationQueue:
 class _HotSwapAudioFrame:
     pcm16: bytes
     token: VoiceIngressToken
+    captured_at: float = 0.0
     speech_probability: float | None = None
     rnnoise_available: bool = False
     rnnoise_evidence: RnnoiseEvidence | None = None
@@ -245,6 +250,7 @@ class AsrRuntimeMixin:
         self._hot_swap_sequence_progress.set()
         self._omni_mic_audio_bytes = 0
         self._asr_route_mode = "blocked"
+        self._visual_route_mode: Literal["native", "independent"] = "native"
         self._microphone_route_generation = 0
         self._asr_route_operation_generation = 0
         self._asr_notification_lock = asyncio.Lock()
@@ -335,6 +341,12 @@ class AsrRuntimeMixin:
         self._init_voice_input_registry()
         if not hasattr(self, "_asr_route_operation_generation"):
             self._asr_route_operation_generation = 0
+        if not hasattr(self, "_visual_route_mode"):
+            self._visual_route_mode = (
+                "independent"
+                if getattr(self, "_asr_route_mode", "blocked") == "independent"
+                else "native"
+            )
         if not hasattr(self, "_asr_notification_lock"):
             self._asr_notification_lock = asyncio.Lock()
         if not hasattr(self, "_core_voice_session_swap_lock"):
@@ -397,6 +409,84 @@ class AsrRuntimeMixin:
             self._blocked_text_mode_microphone_signalled = False
             self._voice_lease_resync_suppressed = False
         self._asr_route_mode = mode
+
+        if mode != "blocked":
+            self._visual_route_mode = mode
+        visual_route_mode = self._visual_route_mode
+        self._sync_realtime_visual_delivery_mode(visual_route_mode)
+        if mode == "blocked" and visual_route_mode != "independent":
+            # A blocked route is unresolved, not permission to fall back to raw
+            # provider vision. Native mode clears the session fence, so re-arm
+            # it after restoring the remembered policy on a replacement session.
+            self._block_realtime_raw_visual_delivery()
+
+    def _block_realtime_raw_visual_delivery(self) -> None:
+        session = getattr(self, "session", None)
+        block_raw_visual_delivery = getattr(
+            session,
+            "block_raw_visual_delivery",
+            None,
+        )
+        if not callable(block_raw_visual_delivery):
+            return
+        try:
+            block_raw_visual_delivery()
+        except Exception as exc:
+            logger.warning(
+                "[%s] raw visual delivery fence failed: %s",
+                self.lanlan_name,
+                exc,
+            )
+
+    def _sync_realtime_visual_delivery_mode(
+        self,
+        route_mode: Literal["native", "independent", "blocked"],
+    ) -> None:
+        """Apply the ASR strategy to the session's provider-neutral visual policy."""
+
+        # Keep microphone ownership and visual delivery as separate contracts.
+        # Independent ASR never authorizes raw frames to ride the Realtime
+        # provider connection. Native audio keeps the session's established
+        # capability routing (raw native vision or its legacy fallback).
+        session = getattr(self, "session", None)
+        set_visual_delivery_mode = getattr(
+            session,
+            "set_visual_delivery_mode",
+            None,
+        )
+        if not callable(set_visual_delivery_mode):
+            return
+        visual_mode: str | None
+        if route_mode == "independent":
+            visual_mode = "external_description"
+        elif route_mode == "native":
+            visual_mode = "native"
+        else:
+            visual_mode = None
+        if visual_mode is None:
+            return
+        try:
+            if route_mode == "independent":
+                self._block_realtime_raw_visual_delivery()
+            set_visual_delivery_mode(visual_mode)
+            if route_mode == "native":
+                allow_raw_visual_delivery = getattr(
+                    session,
+                    "allow_raw_visual_delivery",
+                    None,
+                )
+                if callable(allow_raw_visual_delivery):
+                    allow_raw_visual_delivery()
+        except Exception as exc:
+            # This setter only updates local session policy. A broken or stale
+            # session must not take the independent-ASR microphone route down.
+            if route_mode == "native":
+                self._block_realtime_raw_visual_delivery()
+            logger.warning(
+                "[%s] visual delivery mode sync failed: %s",
+                self.lanlan_name,
+                exc,
+            )
 
     def _capture_ingress_token(self, _lifecycle=None) -> VoiceIngressToken:
         return self._asr_runtime.capture_ingress_token(
@@ -663,6 +753,13 @@ class AsrRuntimeMixin:
                     )
                 )
                 return
+            # The persisted choice cannot be read, but the handshake still
+            # requires independent ASR. Fail closed for raw visual delivery
+            # before any later failure handling or callback can run.
+            if not core_start_is_current():
+                return
+            self._visual_route_mode = "independent"
+            self._sync_realtime_visual_delivery_mode("independent")
             await self._fail_closed_voice_route(
                 "asr_settings_unreadable",
                 operation_generation=operation_generation,
@@ -750,6 +847,11 @@ class AsrRuntimeMixin:
                 )
             )
             return
+        # Close the raw-image path as soon as the independent-ASR choice is
+        # authoritative. Provider connection may take seconds or fail; neither
+        # window may let screen/camera or callback images reach Realtime raw.
+        self._visual_route_mode = "independent"
+        self._sync_realtime_visual_delivery_mode("independent")
         if (
             connect_budget_seconds is not None
             and connect_budget_seconds < ASR_CONNECT_TOTAL_BUDGET_SECONDS
@@ -1104,6 +1206,11 @@ class AsrRuntimeMixin:
         self._ensure_asr_runtime_state()
         core_type = str(getattr(self, "core_api_type", "") or "").strip().lower()
         if core_type == self._independent_asr_route_key:
+            # A same-provider hot swap can promote a fresh Realtime session
+            # while the microphone route key remains unchanged. Reapply the
+            # current abstract route so the replacement inherits the visual
+            # delivery policy without restarting ASR or touching PCM routing.
+            self._set_microphone_route(self._asr_route_mode)
             return
         await self._start_independent_asr_if_enabled(
             str(getattr(self, "input_mode", "audio") or "audio"),
@@ -1352,6 +1459,7 @@ class AsrRuntimeMixin:
                     ingress_token=token,
                     audio_stream_epoch=frame.audio_stream_epoch,
                     ingress_sequence=frame.ingress_sequence,
+                    captured_at=frame.captured_at,
                 )
             except asyncio.CancelledError:
                 raise
@@ -1493,6 +1601,7 @@ class AsrRuntimeMixin:
         ingress_token: VoiceIngressToken,
         audio_stream_epoch: int | None = None,
         ingress_sequence: int | None = None,
+        captured_at: float | None = None,
     ) -> None:
         sequence_owned = ingress_sequence is None
         if ingress_sequence is None:
@@ -1551,6 +1660,11 @@ class AsrRuntimeMixin:
                 return
             if not processed_frame.pcm16:
                 return
+            audio_captured_at = (
+                float(captured_at)
+                if isinstance(captured_at, (int, float)) and captured_at > 0
+                else time.time()
+            )
             if (
                 not self.is_active
                 or self._audio_stream_epoch != audio_epoch
@@ -1588,6 +1702,7 @@ class AsrRuntimeMixin:
                             rnnoise_evidence=processed_frame.rnnoise_evidence,
                             audio_stream_epoch=audio_epoch,
                             ingress_sequence=ingress_sequence,
+                            captured_at=audio_captured_at,
                         )
                     )
             if cache_for_hot_swap:
@@ -1611,6 +1726,7 @@ class AsrRuntimeMixin:
                 rnnoise_available=processed_frame.rnnoise_available,
                 rnnoise_evidence=processed_frame.rnnoise_evidence,
                 ingress_token=ingress_token,
+                captured_at=audio_captured_at,
             )
         except struct.error:
             logger.error("Microphone input rejected: invalid PCM samples")
@@ -1631,6 +1747,7 @@ class AsrRuntimeMixin:
         rnnoise_available: bool | None = None,
         rnnoise_evidence: RnnoiseEvidence | None = None,
         ingress_token: VoiceIngressToken | None = None,
+        captured_at: float | None = None,
     ) -> bool:
         route_mode = self._asr_route_mode
         if not self._voice_input_accepts_pcm():
@@ -1671,7 +1788,10 @@ class AsrRuntimeMixin:
                     self.last_audio_send_error_time = now
                 return True
             try:
-                await stream_audio(pcm16)
+                if isinstance(session_ref, _core_facade.OmniRealtimeClient):
+                    await stream_audio(pcm16, captured_at=captured_at)
+                else:
+                    await stream_audio(pcm16)
                 if not native_send_is_current():
                     return True
                 self._record_omni_microphone_audio(len(pcm16))
@@ -1855,6 +1975,7 @@ class AsrRuntimeMixin:
                             rnnoise_available=frame.rnnoise_available,
                             rnnoise_evidence=frame.rnnoise_evidence,
                             ingress_token=token,
+                            captured_at=audio_frames[batch_end - 1].captured_at,
                         )
                     except asyncio.CancelledError:
                         damaged_frames.extend(audio_frames[index:])
@@ -2309,6 +2430,29 @@ class AsrRuntimeMixin:
         )
         await self._voice_input_registry.wait_idle()
 
+    def _independent_asr_user_turn_active(self) -> bool:
+        """Expose a provider-neutral user-turn gate to Core collaborators."""
+        if getattr(self, "_asr_route_mode", "blocked") != "independent":
+            return False
+        runtime = getattr(self, "_asr_runtime", None)
+        lifecycle = getattr(runtime, "_asr_lifecycle", None)
+        state = getattr(getattr(lifecycle, "snapshot", None), "state", None)
+        pending_delivery = getattr(
+            runtime,
+            "has_pending_transcript_delivery",
+            None,
+        )
+        return (
+            state
+            in {
+                VoiceLifecycleState.PREWARMING,
+                VoiceLifecycleState.ACTIVE,
+                VoiceLifecycleState.DRAINING,
+            }
+            or callable(pending_delivery)
+            and pending_delivery()
+        )
+
     async def _prepare_voice_input_turn(self, token: VoiceTurnToken) -> bool:
         self._ensure_asr_runtime_state()
         # A lease transition activates its next consumer before waiting for
@@ -2409,7 +2553,18 @@ class AsrRuntimeMixin:
         preparation_succeeded = False
         try:
             if callable(prepare):
-                await prepare(turn_id=external_turn_id)
+                reconnected = await prepare(turn_id=external_turn_id)
+                if reconnected is True and not await (
+                    self._restart_message_handler_after_session_reconnect(
+                        session_ref
+                    )
+                ):
+                    if abandon_on_failure:
+                        self._abandon_core_voice_turn(
+                            external_turn_id,
+                            session_ref=session_ref,
+                        )
+                    return False
             else:
                 interrupt = getattr(session_ref, "handle_interruption", None)
                 if callable(interrupt):
@@ -2602,7 +2757,13 @@ class AsrRuntimeMixin:
                         None,
                     )
                     if callable(prepare):
-                        await prepare(turn_id=external_turn_id)
+                        reconnected = await prepare(turn_id=external_turn_id)
+                        if reconnected is True and not await (
+                            self._restart_message_handler_after_session_reconnect(
+                                session_ref
+                            )
+                        ):
+                            return
                     if not route_still_core() or self.session is not session_ref:
                         return
                 await self._submit_core_voice_turn(

@@ -411,7 +411,11 @@ class _GeminiMixin:
         genuinely be cancelled: besides ``close()``, the Gemini proactive
         quarantine in ``_responses.py`` calls this from a fired task.
         """
-        if not self._gemini_context_manager:
+        if (
+            not self._gemini_context_manager
+            and getattr(self, "_gemini_proactive_submit_task", None) is None
+            and getattr(self, "_gemini_external_submit_task", None) is None
+        ):
             return
         await self._own_teardown("_gemini_close_task", self._detach_for_gemini_close)
 
@@ -419,10 +423,30 @@ class _GeminiMixin:
         """Seize the context to exit, synchronously (see ``_own_teardown``)."""
 
         return self._close_gemini_impl(
-            self._gemini_context_manager, self._gemini_session
+            self._gemini_context_manager,
+            self._gemini_session,
+            getattr(self, "_gemini_proactive_submit_task", None),
+            getattr(self, "_gemini_external_submit_task", None),
         )
 
-    async def _close_gemini_impl(self, context, session) -> None:
+    async def _close_gemini_impl(
+        self,
+        context,
+        session,
+        proactive_submit_task=None,
+        external_submit_task=None,
+    ) -> None:
+        await self._cancel_gemini_proactive_submit(
+            session_closing=True,
+            submit_task=proactive_submit_task,
+        )
+        if (
+            external_submit_task is not None
+            and external_submit_task is not asyncio.current_task()
+            and not external_submit_task.done()
+        ):
+            external_submit_task.cancel()
+            await asyncio.gather(external_submit_task, return_exceptions=True)
         if context is None:
             return
         try:
@@ -468,17 +492,22 @@ class _GeminiMixin:
 
     async def _handle_messages_gemini(self) -> None:
         """Handle messages from Gemini Live API."""
-        if not self._gemini_session:
+        session = self._gemini_session
+        if not session:
             logger.error("Gemini session not established")
             return
+        connection_generation = self._connection_generation
 
         try:
             while not self._fatal_error_occurred:
                 try:
                     # 接收响应流
-                    turn = self._gemini_session.receive()
+                    turn = session.receive()
                     async for response in turn:
-                        await self._process_gemini_response(response)
+                        await self._process_gemini_response(
+                            response,
+                            connection_generation=connection_generation,
+                        )
                     # receive() 是 session 级 async generator，仅在连接断开时退出；
                     # 正常会话期间此行不会执行。缺失 turn_complete 的兜底已移至
                     # _process_gemini_response 中基于 model_turn 时间间隔的检测。
@@ -500,12 +529,34 @@ class _GeminiMixin:
         except Exception as e:
             logger.error(f"Gemini message handler error: {e}")
         finally:
-            self._settle_gemini_proactive_inject(
-                error_msg="Gemini realtime message loop ended"
-            )
+            if self._still_owns_connection(connection_generation):
+                self._settle_gemini_proactive_inject(
+                    error_msg="Gemini realtime message loop ended"
+                )
+                outcome_token = getattr(
+                    self,
+                    "_gemini_external_outcome_token",
+                    None,
+                )
+                if outcome_token is not None:
+                    self._settle_gemini_external_turn(outcome_token)
 
-    async def _process_gemini_response(self, response) -> None:
+    async def _process_gemini_response(
+        self,
+        response,
+        *,
+        connection_generation: int | None = None,
+    ) -> None:
         """Process a single Gemini response event."""
+        if connection_generation is None:
+            connection_generation = self._connection_generation
+        if not self._still_owns_connection(connection_generation):
+            return
+        external_outcome_token = getattr(
+            self,
+            "_gemini_external_outcome_token",
+            None,
+        )
         try:
             # 处理工具调用 —— 将 function_calls 中每一个调用都派给
             # ``on_tool_call``，结果通过 ``send_tool_response`` 一次性回写
@@ -686,7 +737,17 @@ class _GeminiMixin:
                     except Exception:
                         pass
                     self._is_responding = False
-                    if not was_interrupted:
+                    if (
+                        external_outcome_token is not None
+                        and self._still_owns_connection(connection_generation)
+                    ):
+                        self._settle_gemini_external_turn(
+                            external_outcome_token
+                        )
+                    if (
+                        not was_interrupted
+                        and self._still_owns_connection(connection_generation)
+                    ):
                         self._settle_gemini_proactive_inject()
                     if self._skip_until_next_response:
                         self._skip_until_next_response = False
@@ -696,9 +757,17 @@ class _GeminiMixin:
 
                 # 检查是否被中断
                 if was_interrupted:
-                    self._settle_gemini_proactive_inject(
-                        error_msg="Gemini proactive response interrupted"
-                    )
+                    if (
+                        external_outcome_token is not None
+                        and self._still_owns_connection(connection_generation)
+                    ):
+                        self._settle_gemini_external_turn(
+                            external_outcome_token
+                        )
+                    if self._still_owns_connection(connection_generation):
+                        self._settle_gemini_proactive_inject(
+                            error_msg="Gemini proactive response interrupted"
+                        )
                     if self._skip_until_next_response:
                         self._skip_until_next_response = False
                         logger.info("Gemini: skipped response interrupted, reset skip flag")
