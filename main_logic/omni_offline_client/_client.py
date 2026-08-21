@@ -65,13 +65,17 @@ def _same_endpoint(a: str | None, b: str | None) -> bool:
             text = f'//{text}'
         parts = urlsplit(text)
         # netloc 整体转小写是错的：它还装着 userinfo（user:pass@），而用户名和
-        # 口令是大小写敏感的。只折叠真正大小写无关的 host，userinfo 与端口原样比。
+        # 口令是大小写敏感的。拆开 userinfo 与 host:port，只折叠后者的大小写
+        # （主机名与数字端口都是大小写无关的）。
+        #
+        # 刻意不碰 parts.port：它对非法端口（非数字/越界）会抛 ValueError，而这
+        # 段代码跑在 __init__ 里 —— 一个写坏的 URL 会让整个客户端构造失败，
+        # 连一次请求都发不出去。按 host:port 原串比较既不会抛，也够用。
+        userinfo, _, hostinfo = (parts.netloc or '').rpartition('@')
         return (
             (parts.scheme or '').lower(),
-            parts.username,
-            parts.password,
-            (parts.hostname or '').lower(),
-            parts.port,
+            userinfo,
+            hostinfo.lower(),
             (parts.path or '').rstrip('/'),
             parts.query,
         )

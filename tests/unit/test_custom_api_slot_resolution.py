@@ -591,6 +591,33 @@ class TestVisionCredentialBoundary:
         )
 
     @pytest.mark.unit
+    def test_same_endpoint_is_total_on_malformed_urls(self):
+        """The predicate must never raise — it runs inside __init__.
+
+        urlsplit defers malformed-port errors to the moment ``.port`` is read,
+        so reading it here would turn a broken URL into a ValueError during
+        construction. (httpx rejects such a URL a moment later anyway, so this
+        is about keeping the predicate total, not about rescuing the config.)
+        """
+        from main_logic.omni_offline_client._client import _same_endpoint
+        for a, b in (
+            ('http://api.example.com:not-a-port/v1', 'http://api.example.com:not-a-port/v1'),
+            ('http://api.example.com:99999999/v1', 'http://api.example.com:1/v1'),
+            ('http://[::1]:abc/v1', 'http://[::1]:abc/v1'),
+            ('::::', 'http://api.example.com/v1'),
+        ):
+            _same_endpoint(a, b)  # 不抛就是通过
+
+        assert _same_endpoint(
+            'http://api.example.com:not-a-port/v1',
+            'http://API.example.com:not-a-port/v1',
+        ) is True, "host 大小写仍应折叠"
+        assert _same_endpoint(
+            'http://api.example.com:99999999/v1',
+            'http://api.example.com:1/v1',
+        ) is False, "端口串不同就是不同端点"
+
+    @pytest.mark.unit
     def test_host_case_is_still_folded(self):
         """Scheme and host are case-insensitive per RFC 3986."""
         client = _make_offline_client(
