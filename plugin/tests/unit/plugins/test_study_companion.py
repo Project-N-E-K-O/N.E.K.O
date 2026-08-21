@@ -7171,24 +7171,50 @@ await new Promise((resolve) => setTimeout(resolve, 0));
 
 const noteButtons = notebook.querySelectorAll('.notebook-note-row__open');
 noteButtons[0].click();
-noteButtons[1].click();
-detailRequests.get('note-2').resolve({ note: notes[1] });
 await new Promise((resolve) => setTimeout(resolve, 0));
 detailRequests.get('note-1').resolve({ note: notes[0] });
 await new Promise((resolve) => setTimeout(resolve, 0));
-if (notebook.querySelector('.notebook-editor input')?.value !== 'Second') {
-  throw new Error('an older detail response replaced the latest note selection');
+if (notebook.querySelector('.notebook-editor input')?.value !== 'First') {
+  throw new Error('the first note detail did not open');
 }
 
-noteButtons[0].click();
-await new Promise((resolve) => setTimeout(resolve, 0));
+const dirtyContentBeforeOverlap = notebook.querySelector('.notebook-editor__content');
+dirtyContentBeforeOverlap.value = 'Dirty draft before overlapping selection';
+dirtyContentBeforeOverlap.dispatchEvent(new window.Event('input', { bubbles: true }));
+window.confirm = () => true;
 notebook.querySelectorAll('.notebook-note-row__open')[1].click();
+await new Promise((resolve) => setTimeout(resolve, 0));
+const lockedOpenButtons = notebook.querySelectorAll('.notebook-note-row__open');
+if (![...lockedOpenButtons].every((button) => button.disabled)) {
+  throw new Error('note open buttons stayed enabled during a detail request');
+}
+const previousFirstDetailRequest = detailRequests.get('note-1');
+lockedOpenButtons[0].click();
+await new Promise((resolve) => setTimeout(resolve, 0));
+if (detailRequests.get('note-1') !== previousFirstDetailRequest) {
+  throw new Error('a disabled note open button started an overlapping detail request');
+}
+detailRequests.get('note-2').reject(new Error('detail failed after dirty draft'));
+await new Promise((resolve) => setTimeout(resolve, 0));
+if (notebook.querySelector('.notebook-editor__content')?.value !== 'Dirty draft before overlapping selection') {
+  throw new Error('failed detail request did not restore the original dirty draft');
+}
+const restoredUnload = new window.Event('beforeunload', { cancelable: true });
+window.dispatchEvent(restoredUnload);
+if (!restoredUnload.defaultPrevented) {
+  throw new Error('failed detail request lost the restored dirty draft guard');
+}
+const restoredOpenButtons = notebook.querySelectorAll('.notebook-note-row__open');
+if ([...restoredOpenButtons].some((button) => button.disabled)) {
+  throw new Error('note open buttons stayed disabled after a detail request failed');
+}
+window.confirm = () => true;
+restoredOpenButtons[1].click();
+await new Promise((resolve) => setTimeout(resolve, 0));
 detailRequests.get('note-2').resolve({ note: notes[1] });
 await new Promise((resolve) => setTimeout(resolve, 0));
-detailRequests.get('note-1').reject(new Error('stale detail failed'));
-await new Promise((resolve) => setTimeout(resolve, 0));
-if (notebook.querySelector('.study-panel__status-chip')?.textContent.includes('stale detail failed')) {
-  throw new Error('a superseded note-detail rejection overwrote the current status');
+if (notebook.querySelector('.notebook-editor input')?.value !== 'Second') {
+  throw new Error('the second note detail did not open after the failed navigation');
 }
 
 notebook.querySelectorAll('.notebook-note-row__open')[0].click();

@@ -66,6 +66,7 @@
     let noteNavigationRequest = 0;
     let busyCount = 0;
     let mutationBusyCount = 0;
+    let noteDetailBusyCount = 0;
     let editorDirty = false;
     let currentEditor = null;
 
@@ -155,11 +156,13 @@
       });
     }
 
-    function setListLocked(locked) {
-      notebookSelect.disabled = locked;
-      searchInput.disabled = locked;
+    function updateListLocks() {
+      const mutationsLocked = mutationBusyCount > 0;
+      const noteOpeningLocked = mutationsLocked || noteDetailBusyCount > 0;
+      notebookSelect.disabled = mutationsLocked;
+      searchInput.disabled = mutationsLocked;
       list.querySelectorAll('.notebook-note-row__open').forEach((button) => {
-        button.disabled = locked;
+        button.disabled = noteOpeningLocked;
       });
     }
 
@@ -168,13 +171,14 @@
       if (mutation) mutationBusyCount = Math.max(0, mutationBusyCount + (active ? 1 : -1));
       root.dataset.busy = busyCount > 0 ? 'true' : 'false';
       setEditorLocked(busyCount > 0);
-      setListLocked(mutationBusyCount > 0);
+      updateListLocks();
       updateNotebookActions();
       updateSelectionBar();
       if (busyCount === 0) {
         root.querySelectorAll('button').forEach((button) => {
           button.disabled = false;
         });
+        updateListLocks();
         updateNotebookActions();
         updateSelectionBar();
       }
@@ -345,7 +349,7 @@
         });
         const openButton = el('button', 'notebook-note-row__open');
         openButton.type = 'button';
-        openButton.disabled = mutationBusyCount > 0;
+        openButton.disabled = mutationBusyCount > 0 || noteDetailBusyCount > 0;
         openButton.append(
           el('strong', '', note.title || t(ctx, 'ui.notebook.untitled', 'Untitled')),
           el('span', '', note.snippet || t(ctx, 'ui.notebook.empty_note', 'Empty note')),
@@ -597,6 +601,8 @@
       setEditorDirty(false);
       const navigationId = noteNavigationRequest += 1;
       const requestId = noteDetailRequest += 1;
+      noteDetailBusyCount += 1;
+      updateListLocks();
       setBusy(true);
       try {
         const payload = await ctx.callPlugin('study_note_get', { note_id: noteId });
@@ -621,6 +627,8 @@
         }
       } finally {
         setBusy(false);
+        noteDetailBusyCount = Math.max(0, noteDetailBusyCount - 1);
+        updateListLocks();
       }
     }
 
