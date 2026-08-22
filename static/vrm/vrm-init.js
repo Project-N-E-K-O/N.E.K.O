@@ -24,6 +24,7 @@
             '/static/vrm/vrm-orientation.js',
             '/static/vrm/vrm-core.js',
             '/static/vrm/vrm-expression.js',
+            '/static/vrm/vrm-lipsync-formant.js',
             '/static/vrm/vrm-animation.js',
             ...(!lightweightEmbed ? [
                 '/static/vrm/vrm-interaction.js',

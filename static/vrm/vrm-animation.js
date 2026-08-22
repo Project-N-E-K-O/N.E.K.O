@@ -45,6 +45,10 @@ class VRMAnimation {
         this.mouthExpressions = { 'aa': null, 'ih': null, 'ou': null, 'ee': null, 'oh': null };
         this.currentMouthWeight = 0;
         this.frequencyData = null;
+        // 五元音共振峰口型分析器（FormantLipSyncAnalyzer）。startLipSync 时按 analyser
+        // 惰性实例化；构造期不引用 window.FormantLipSyncAnalyzer，因为 vrm-init.js 的
+        // 并行模块加载顺序不保证，运行期才安全。
+        this._lipSyncAnalyzer = null;
         // _updateLipSync 每帧调 setValue，失败时用 console.warn 会刷屏。
         // 用 Set 记住已告警过的表情名，同名失败只打一次。
         this._lipSyncWarnedNames = new Set();
@@ -842,6 +846,18 @@ class VRMAnimation {
         // 清空一次性告警记录：换模型或重新开始 lip sync 时，允许新会话重新告警一次。
         this._lipSyncWarnedNames.clear();
         this.updateMouthExpressionMapping();
+        // 惰性实例化共振峰分析器；类缺失（旧缓存页面未加载新脚本）时降级为 null，
+        // _updateLipSync 会回退到旧的单通道音量驱动，保证向后兼容。
+        if (analyser && typeof window !== 'undefined' && typeof window.FormantLipSyncAnalyzer === 'function') {
+            if (!this._lipSyncAnalyzer) {
+                this._lipSyncAnalyzer = new window.FormantLipSyncAnalyzer(analyser);
+            } else {
+                this._lipSyncAnalyzer.attach(analyser);
+                this._lipSyncAnalyzer.reset();
+            }
+        } else {
+            this._lipSyncAnalyzer = null;
+        }
         if (this.analyser) {
             this.frequencyData = new Uint8Array(this.analyser.frequencyBinCount);
         } else {
@@ -852,6 +868,9 @@ class VRMAnimation {
         this.lipSyncActive = false;
         this.resetMouthExpressions();
         this.analyser = null;
+        if (this._lipSyncAnalyzer) {
+            this._lipSyncAnalyzer.reset();
+        }
         this.currentMouthWeight = 0;
     }
     updateMouthExpressionMapping() {
@@ -893,6 +912,16 @@ class VRMAnimation {
         if (!this.manager.currentModel?.vrm?.expressionManager) return;
         if (!this.analyser) return;
 
+        const expressionManager = this.manager.currentModel.vrm.expressionManager;
+
+        // 优先走五元音共振峰路径：分析器可用时，嘴不仅会"开多大"还会"开成什么形状"。
+        if (this._lipSyncAnalyzer) {
+            this._updateLipSyncFormant(expressionManager, delta);
+            return;
+        }
+
+        // ---- 回退路径：旧的单通道音量驱动（仅写 aa）----
+        // 当 FormantLipSyncAnalyzer 未加载（旧缓存页面）时保持原有行为，保证向后兼容。
         if (!this.frequencyData || this.frequencyData.length !== this.analyser.frequencyBinCount) {
             this.frequencyData = new Uint8Array(this.analyser.frequencyBinCount);
         }
@@ -916,8 +945,6 @@ class VRMAnimation {
         const finalWeight = Math.max(0, this.currentMouthWeight);
         const mouthOpenName = this.mouthExpressions.aa || 'aa';
 
-        const expressionManager = this.manager.currentModel.vrm.expressionManager;
-
         // 待机 VRMA 的 mixer.update 可能在本帧已写入 ih/ou/ee/oh 等口型轨道；
         // _updateLipSync 在 mixer 之后执行，但只覆盖 aa，剩余四个元音残留会与 aa
         // 叠加成混合口型。这里在写入 aa 之前先把其他口型表情置 0，确保语音口型同步
@@ -940,6 +967,32 @@ class VRMAnimation {
             if (!this._lipSyncWarnedNames.has(mouthOpenName)) {
                 this._lipSyncWarnedNames.add(mouthOpenName);
                 console.warn(`[VRM LipSync] 设置表情失败: ${mouthOpenName}`, e);
+            }
+        }
+    }
+
+    /**
+     * 五元音共振峰口型驱动。由 FormantLipSyncAnalyzer 产出限幅、平滑后的
+     * 五元音目标权重，这里负责写入对应 blendshape。
+     *
+     * 与旧单通道路径不同，这里五个元音每帧都被显式写入（含 0），因此天然
+     * 覆盖了待机 VRMA 可能残留的口型轨道，无需单独的"先清零"步骤——
+     * 未激活的元音本帧目标就是 0。
+     */
+    _updateLipSyncFormant(expressionManager, delta) {
+        const weights = this._lipSyncAnalyzer.update(delta);
+
+        for (const [vowel, name] of Object.entries(this.mouthExpressions)) {
+            const target = weights[vowel] ?? 0;
+            // 该模型未提供此元音表情时跳过（保持与旧路径一致的容错）。
+            if (!name) continue;
+            try {
+                expressionManager.setValue(name, target);
+            } catch (e) {
+                if (!this._lipSyncWarnedNames.has(name)) {
+                    this._lipSyncWarnedNames.add(name);
+                    console.warn(`[VRM LipSync] 设置口型表情失败: ${name}`, e);
+                }
             }
         }
     }

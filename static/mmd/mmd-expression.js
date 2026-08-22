@@ -291,14 +291,51 @@ class MMDExpression {
         }
     }
 
+    /**
+     * 统一重置全部五元音口型 morph 为 0。
+     * stopLipSync / 切换表情时调用，防止 formant 模式下
+     * い/う/え 等 morph 残留（setMouth(0) 只清 あ + お×0.3）。
+     */
+    resetAllLipMorphs() {
+        for (const vowel of Object.keys(this.lipMorphNames)) {
+            for (const name of (this.lipMorphNames[vowel] || [])) {
+                this.setMorphWeight(name, 0);
+            }
+        }
+    }
+
     // ═══════════════════ 帧更新 ═══════════════════
+
+    // 分析器输出的 VRM blendshape 键 → MMD 五元音 morph 键（lipMorphNames 的键）
+    static get FORMANT_TO_MMD_VOWEL() {
+        return { aa: 'a', ih: 'i', ou: 'u', ee: 'e', oh: 'o' };
+    }
 
     update(delta) {
         this.updateBlink(delta);
 
         // 口型同步（如果动画模块有音频分析）
-        if (this.manager.animationModule && this.manager.animationModule._lipSyncEnabled) {
-            const lipValue = this.manager.animationModule.getLipSyncValue();
+        const anim = this.manager.animationModule;
+        if (anim && anim._lipSyncEnabled) {
+            if (anim._formantAnalyzer) {
+                // 五元音共振峰路径：每帧产出 {aa,ee,ih,oh,ou} 连续权重，映射到
+                // あ/い/う/え/お morph 全显式写入（含 0）。五元音全覆盖天然覆盖
+                // 待机 VMD 可能残留的口型轨道，无需单独清零步骤。
+                const weights = anim._formantAnalyzer.update(
+                    Number.isFinite(delta) ? Math.max(0, delta) : 0.016
+                );
+                const map = this.constructor.FORMANT_TO_MMD_VOWEL;
+                for (const formantKey of Object.keys(map)) {
+                    const vowel = map[formantKey];
+                    const target = weights[formantKey] ?? 0;
+                    for (const name of (this.lipMorphNames[vowel] || [])) {
+                        this.setMorphWeight(name, target);
+                    }
+                }
+                return;
+            }
+            // 旧单通道路径（FormantLipSyncAnalyzer 未加载时回退）
+            const lipValue = anim.getLipSyncValue();
             if (window.DEBUG_AUDIO) {
                 console.log('[MMD Expression] 口型同步检测:', { 
                     lipValue, 
