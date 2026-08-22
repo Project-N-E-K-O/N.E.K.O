@@ -2844,11 +2844,11 @@
             "visionInterval": "感知间隔"
         },
         "widgetMode": {
-            "enabledNotice": "贴边探身已开启。",
-            "disabledNotice": "贴边探身已关闭。Live2D 已恢复可见和可拖动状态。",
+            "enabledNotice": "贴边探身 Beta 已开启。",
+            "disabledNotice": "贴边探身 Beta 已关闭。Live2D 已恢复可见和可拖动状态。",
             "stealthEnabledNotice": "隐身模式已开启。",
             "stealthDisabledNotice": "隐身模式已关闭，Yui 将保持贴边探身。",
-            "toggleFailed": "贴边探身切换失败，请稍后重试。"
+            "toggleFailed": "贴边探身 Beta 切换失败，请稍后重试。"
         },
         "toggles": {
             "allowInterrupt": "允许打断",

@@ -2844,11 +2844,11 @@
             "visionInterval": "Intervalo de percepción"
         },
         "widgetMode": {
-            "enabledNotice": "Asomarse por el borde está activado.",
-            "disabledNotice": "Asomarse por el borde está desactivado. Live2D vuelve a estar visible y se puede arrastrar.",
+            "enabledNotice": "Asomarse por el borde Beta está activado.",
+            "disabledNotice": "Asomarse por el borde Beta está desactivado. Live2D vuelve a estar visible y se puede arrastrar.",
             "stealthEnabledNotice": "El modo oculto está activado.",
             "stealthDisabledNotice": "El modo oculto está desactivado. Yui seguirá asomándose por el borde.",
-            "toggleFailed": "No se pudo cambiar Asomarse por el borde. Inténtalo de nuevo más tarde."
+            "toggleFailed": "No se pudo cambiar Asomarse por el borde Beta. Inténtalo de nuevo más tarde."
         },
         "toggles": {
             "allowInterrupt": "Permitir interrupción",

@@ -2844,11 +2844,11 @@
             "visionInterval": "Intervalo de Percepção"
         },
         "widgetMode": {
-            "enabledNotice": "Espiar pela borda está ativo.",
-            "disabledNotice": "Espiar pela borda está desativado. O Live2D voltou a ficar visível e arrastável.",
+            "enabledNotice": "Espiar pela borda Beta está ativo.",
+            "disabledNotice": "Espiar pela borda Beta está desativado. O Live2D voltou a ficar visível e arrastável.",
             "stealthEnabledNotice": "O modo oculto está ativo.",
             "stealthDisabledNotice": "O modo oculto está desativado. Yui continuará espiando pela borda.",
-            "toggleFailed": "Não foi possível alternar Espiar pela borda. Tente novamente mais tarde."
+            "toggleFailed": "Não foi possível alternar Espiar pela borda Beta. Tente novamente mais tarde."
         },
         "toggles": {
             "allowInterrupt": "Permitir interrupção",

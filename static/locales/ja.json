@@ -2844,11 +2844,11 @@
             "visionInterval": "感知間隔"
         },
         "widgetMode": {
-            "enabledNotice": "エッジ覗きを有効にしました。",
-            "disabledNotice": "エッジ覗きを無効にしました。Live2D は再び表示され、ドラッグできます。",
+            "enabledNotice": "エッジのぞき Beta を有効にしました。",
+            "disabledNotice": "エッジのぞき Beta を無効にしました。Live2D は再び表示され、ドラッグできます。",
             "stealthEnabledNotice": "ステルスモードを有効にしました。",
             "stealthDisabledNotice": "ステルスモードを無効にしました。Yui はエッジから覗いた状態を保ちます。",
-            "toggleFailed": "エッジ覗きを切り替えられませんでした。しばらくしてから再試行してください。"
+            "toggleFailed": "エッジのぞき Beta を切り替えられませんでした。しばらくしてから再試行してください。"
         },
         "toggles": {
             "allowInterrupt": "割り込み許可",

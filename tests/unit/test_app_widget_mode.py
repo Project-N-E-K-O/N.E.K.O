@@ -61,6 +61,7 @@ def test_widget_mode_browser_client_syncs_minimal_state_and_event() -> None:
             for (const callback of listeners.get(event.type) || []) callback(event);
           }},
           showStatusToast(message) {{ notices.push(message); }},
+          t(key) {{ return key; }},
           nekoLocalMutationSecurity: {{
             peekCachedToken() {{ return 'csrf-token'; }},
           }},
@@ -146,7 +147,11 @@ def test_widget_mode_browser_client_syncs_minimal_state_and_event() -> None:
               || !stateEvents.some((state) => state.enabled === true)) {{
             throw new Error('state event did not cover both states');
           }}
-          if (notices.length !== 2) throw new Error('toggle notices missing');
+          if (notices.length !== 2
+              || notices[0] !== '贴边探身 Beta 已开启。'
+              || notices[1] !== '隐身模式已开启。') {{
+            throw new Error('toggle notices did not use the local fallbacks');
+          }}
           console.log('Widget Mode minimal browser client passed');
         }})().catch((error) => {{
           console.error(error && error.stack ? error.stack : error);
@@ -209,6 +214,49 @@ def test_widget_mode_status_keys_are_removed_from_all_web_locales() -> None:
         assert "disabledNotice" in widget_mode
         assert "widgetMode" not in payload["settings"]["toggles"]
         assert "widgetModeTooltip" not in payload["settings"]["toggles"]
+
+
+def test_widget_mode_uses_approved_localized_names_and_fallbacks() -> None:
+    expected_names = {
+        "en": "Widget Mode Beta",
+        "ja": "エッジのぞき Beta",
+        "ko": "가장자리 내다보기 Beta",
+        "zh-CN": "贴边探身 Beta",
+        "zh-TW": "貼邊探身 Beta",
+        "ru": "Выглядывание из-за края Beta",
+        "pt": "Espiar pela borda Beta",
+        "es": "Asomarse por el borde Beta",
+    }
+    legacy_names = {
+        "en": "Edge Dock Mode",
+        "ja": "エッジドックモード",
+        "ko": "가장자리 도킹 모드",
+        "zh-CN": "挂边模式",
+        "zh-TW": "掛邊模式",
+        "ru": "Режим крепления к краю",
+        "pt": "Modo de encaixe na borda",
+        "es": "Modo de acoplamiento al borde",
+    }
+
+    for locale, expected_name in expected_names.items():
+        payload = json.loads(
+            (PROJECT_ROOT / "static" / "locales" / f"{locale}.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        widget_mode = payload["settings"]["widgetMode"]
+        visible_copy = json.dumps(widget_mode, ensure_ascii=False)
+
+        assert expected_name in widget_mode["enabledNotice"]
+        assert expected_name in widget_mode["disabledNotice"]
+        assert expected_name in widget_mode["toggleFailed"]
+        assert legacy_names[locale] not in visible_copy
+
+    app_source = APP_WIDGET_MODE_PATH.read_text(encoding="utf-8")
+    assert "贴边探身 Beta 已开启。" in app_source
+    assert "贴边探身 Beta 已关闭。" in app_source
+    assert "贴边探身 Beta 切换失败，请稍后重试。" in app_source
+    assert "挂边模式" not in app_source
 
 
 def test_widget_mode_has_no_web_settings_control_or_dom_sync() -> None:
