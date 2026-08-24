@@ -782,6 +782,31 @@ describe('useAvatarToolRuntime press lifecycle', () => {
     expect(screen.getByRole('status', { name: 'active tool' })).toHaveTextContent(LOCAL_TOOL_ID);
   });
 
+  it('selects a local tool first loaded after the runtime mounted', async () => {
+    const prepareVisuals = vi.fn(() => undefined);
+    const providers = createProviders({ prepareVisuals });
+    const view = render(
+      <Harness
+        onInteraction={vi.fn()}
+        providers={providers}
+        registry={BUILT_IN_AVATAR_TOOL_REGISTRY}
+      />,
+    );
+
+    view.rerender(
+      <Harness
+        onInteraction={vi.fn()}
+        providers={providers}
+        toolId={LOCAL_TOOL_ID}
+        registry={localToolRegistry(1)}
+      />,
+    );
+    selectTool();
+
+    await waitFor(() => expect(prepareVisuals).toHaveBeenCalledWith(LOCAL_TOOL_ID));
+    expect(screen.getByRole('status', { name: 'active tool' })).toHaveTextContent(LOCAL_TOOL_ID);
+  });
+
   it('publishes the new desktop descriptor without deactivating the selected same-id tool', async () => {
     (window as Window & { __NEKO_MULTI_WINDOW__?: boolean }).__NEKO_MULTI_WINDOW__ = true;
     const onStateChange = vi.fn<(payload: AvatarToolStatePayload) => void>();

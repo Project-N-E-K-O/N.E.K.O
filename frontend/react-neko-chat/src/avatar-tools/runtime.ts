@@ -816,7 +816,7 @@ export function useAvatarToolRuntime({
       resumeRoundChoiceCycle(session);
       if (session.roundChoice.rawHitActive) startRoundChoiceAvatarGesture(session);
     }
-  }, [destroySession, prepareVisuals, resumeRoundChoiceCycle, startRoundChoiceAvatarGesture]);
+  }, [destroySession, prepareVisuals, registry, resumeRoundChoiceCycle, startRoundChoiceAvatarGesture]);
 
   const clearTool = useCallback((options?: { insideHostWindow?: boolean }) => {
     destroySession();
