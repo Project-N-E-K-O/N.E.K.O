@@ -1,0 +1,11 @@
+[project]
+name = "neko-plugin-testbench"
+version = "0.2.0"
+description = "Driver plugin for N.E.K.O. Testbench (FastAPI + preferred WebView shell)"
+requires-python = ">=3.11"
+# Prefer host-provided stacks; add via `neko-plugin add` when packaging for machines
+# that lack fastapi/uvicorn/jinja2/pywebview.
+dependencies = []
+
+[tool.neko-plugin]
+# Vendor only gaps not present in the NEKO host environment.

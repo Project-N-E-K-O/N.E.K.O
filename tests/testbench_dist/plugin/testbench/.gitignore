@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+store.db
+runtime/
+bundled/
+vendor/
+*.neko-plugin

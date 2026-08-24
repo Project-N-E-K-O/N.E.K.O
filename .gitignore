@@ -117,7 +117,9 @@ Thumbs.db
 ehthumbs.db
 desktop.ini
 
-# 忽略静态资源
+# Accidental neko-plugin install / build output — source lives in tests/testbench_dist/plugin/
+plugin/plugins/testbench/
+
 static/ziraitikuwa/*
 static/neko/*
 static/kemomimi/*
@@ -130,6 +132,7 @@ build*
 !build_frontend.bat
 !build_frontend.sh
 !build-desktop*.yml
+!tests/testbench_dist/scripts/build*
 metadata.package.json
 version_info.txt
 

@@ -1,0 +1,7 @@
+staging/
+output/
+**/__pycache__/
+*.pyc
+plugin/testbench/runtime/
+plugin/testbench/bundled/
+plugin/testbench/vendor/

@@ -1,0 +1,31 @@
+# Minimal dependency set for standalone Testbench packaging.
+# Build in an isolated venv; do NOT install the full N.E.K.O pyproject.
+
+fastapi~=0.115.9
+uvicorn~=0.34.0
+jinja2
+python-multipart
+numpy~=1.26.4
+onnxruntime
+tokenizers
+tiktoken>=0.7.0
+openai
+anthropic
+google-genai>=1.56.0
+httpx[socks]>=0.28.1
+requests>=2.32.5
+pydantic
+pillow
+regex
+backoff
+toml
+tomli>=2.3.0
+tomli-w>=1.2.0
+orjson>=3.11.8
+cachetools>=5.3
+scikit-learn>=1.4
+umap-learn>=0.5.5
+pywebview>=5.0
+pyinstaller==6.12.0
+# Windows WebView2 / COM helpers often pulled transitively; keep explicit on Win:
+# pythonnet / clr — pywebview selects backend per OS.
