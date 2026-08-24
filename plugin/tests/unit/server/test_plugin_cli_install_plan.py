@@ -175,7 +175,11 @@ def test_plan_rejects_package_local_entries_for_builtin_override(
 
 @pytest.mark.parametrize(
     "entry",
-    ["plugins.demo..escape:Plugin", "demo...escape:Plugin"],
+    [
+        "plugins.demo.:Plugin",
+        "plugins.demo..escape:Plugin",
+        "demo...escape:Plugin",
+    ],
 )
 def test_plan_rejects_malformed_supported_entry_namespace_paths(
     tmp_path: Path,

@@ -390,6 +390,8 @@ def _packaged_entry_is_valid(
         relative_module = ""
     elif module_name.startswith(runtime_prefix + "."):
         relative_module = module_name[len(runtime_prefix) + 1 :]
+        if not relative_module:
+            return False
     else:
         return False
 
