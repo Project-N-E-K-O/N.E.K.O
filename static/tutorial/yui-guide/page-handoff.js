@@ -40,7 +40,7 @@
 
         if (typeof window.handleShowMainUI === 'function') {
             try {
-                window.handleShowMainUI();
+                window.handleShowMainUI({ owner: 'yui-page-handoff' });
             } catch (_) {}
         }
     }
@@ -97,12 +97,14 @@
         }
         window._openedWindows[fullName] = childWin;
 
-        try {
-            childWin.focus();
-        } catch (_) {}
+        if (!isModelManagerPageUrl(targetUrl)) {
+            try {
+                childWin.focus();
+            } catch (_) {}
+        }
 
         if (!normalizedOptions.keepMainUIVisible && typeof window.handleHideMainUI === 'function') {
-            window.handleHideMainUI();
+            window.handleHideMainUI({ owner: 'yui-page-handoff' });
         }
 
         return Promise.resolve(childWin);
@@ -859,7 +861,8 @@
 
     function isModelManagerPageUrl(openUrl) {
         try {
-            return new URL(openUrl, window.location.origin).pathname === '/model_manager';
+            var pathname = new URL(openUrl, window.location.origin).pathname;
+            return pathname === '/model_manager' || pathname === '/l2d';
         } catch (_) {
             return false;
         }
@@ -992,6 +995,54 @@
         }, POPUP_OPEN_ANIMATION_MS + 500).then(function (opened) {
             if (!opened) return false;
             return waitForPopupPositioned('agent', prefix);
+        });
+    }
+
+    /**
+     * 打开语音聊天弹层，并渲染语音设置侧边栏内容。
+     *
+     * @returns {Promise<boolean>} 弹层及其内容是否成功打开
+     */
+    function openMicPanel() {
+        var prefix = getPrefix();
+        var manager = getManager(prefix);
+        var popup = getPopup('mic', prefix);
+        var trigger = document.querySelector('.' + prefix + '-trigger-btn');
+
+        if (!manager || !popup || !trigger || typeof manager.showPopup !== 'function') {
+            console.warn('[YuiGuideHandoff] openMicPanel: manager/popup/trigger 不可用');
+            return Promise.resolve(false);
+        }
+
+        var renderMicPanel = function () {
+            return new Promise(function (resolve) {
+                window.requestAnimationFrame(function () {
+                    window.requestAnimationFrame(resolve);
+                });
+            }).then(function () {
+                if (typeof window.renderFloatingMicList !== 'function') {
+                    return false;
+                }
+                return Promise.resolve(window.renderFloatingMicList(popup));
+            });
+        };
+
+        if (popup.style.display === 'flex') {
+            return renderMicPanel().then(function (rendered) {
+                return rendered ? waitForPopupPositioned('mic', prefix) : false;
+            });
+        }
+
+        dispatchSyntheticPress(trigger);
+        manager.showPopup('mic', popup);
+
+        return waitFor(function () {
+            return popup.style.display === 'flex' ? true : null;
+        }, POPUP_OPEN_ANIMATION_MS + 500).then(function (opened) {
+            if (!opened) return false;
+            return renderMicPanel().then(function (rendered) {
+                return rendered ? waitForPopupPositioned('mic', prefix) : false;
+            });
         });
     }
 
@@ -1443,6 +1494,7 @@
         openSettingsPanel: openSettingsPanel,
         closeSettingsPanel: closeSettingsPanel,
         openAgentPanel: openAgentPanel,
+        openMicPanel: openMicPanel,
         closeAgentPanel: closeAgentPanel,
         ensureSettingsMenuVisible: ensureSettingsMenuVisible,
         triggerGoodbye: triggerGoodbye,

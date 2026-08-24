@@ -108,12 +108,23 @@ class RadioCommandDetector(DiscreteDetector):
     """Promote own fixed radio messages into safe player-command events."""
 
     id = "player_radio_command"
+    dead_state_policy = "consume"  # chat feed 整局持久，重置游标会重播旧口令
 
     def __init__(self) -> None:
         self._last_id: int = -1
 
     def reset(self) -> None:
         self._last_id = -1
+
+    def consume(self, prev: BattleState, cur: BattleState) -> None:
+        items = _chat_items(cur)
+        if not items:
+            return
+        ids = [_chat_id(item, index + 1) for index, item in enumerate(items)]
+        max_id = max(ids, default=-1)
+        if max_id < self._last_id:
+            self._last_id = -1
+        self._last_id = max(self._last_id, max_id)
 
     def detect(self, prev: BattleState, cur: BattleState) -> BattleEvent | None:
         if not cur.is_alive():

@@ -11,13 +11,24 @@ class PermissionManager:
     """权限管理器"""
 
     VALID_LEVELS = {"admin", "trusted", "normal"}
+    NICKNAME_MAX_CHARS = 64
+    _NICKNAME_FORBIDDEN_CHARS = frozenset("[]|")
+    _NICKNAME_ALLOWED_FORMAT_CHARS = frozenset({"\u200d"})
 
-    def __init__(self, trusted_users: List[Dict[str, Any]] = None):
+    def __init__(
+        self,
+        trusted_users: List[Dict[str, Any]] = None,
+    ):
         """
         初始化权限管理器
 
         Args:
             trusted_users: 信任用户列表，格式: [{"qq": "123456", "level": "admin", "nickname": "小明"}, ...]
+
+        信赖度（speaker_trust）已上移到 memory_server 的全局池，本类只负责
+        名册与权限档位：插件的唯一职责是**上报档位**（wire 上的
+        `speaker_tier`），分数由服务端按 account 全局计算。磁盘上的
+        `speaker_trust_profiles` 键原样保留，只做一次性迁移源。
         """
         self._users: Dict[str, Dict[str, Any]] = {}  # {qq: {level, nickname?, normal_relay_probability?}}
 
@@ -55,6 +66,42 @@ class PermissionManager:
             return None
         return normalized
 
+    @classmethod
+    def validate_nickname(cls, nickname: str) -> Optional[str]:
+        """校验昵称是否可写。合法返回 None；否则返回原因键（``too_long`` /
+        ``control_char``），供上层在提交前区分「昵称非法」与其它失败。
+
+        与 ``_normalize_nickname_for_write`` 同一套规则：超长、含控制字符或
+        不可见字符（除允许的格式字符）均判非法。
+        """
+        raw = str(nickname or "")
+        normalized = raw.strip()
+        if len(normalized) > cls.NICKNAME_MAX_CHARS:
+            return "too_long"
+        for char in raw:
+            if char in cls._NICKNAME_FORBIDDEN_CHARS or (
+                not char.isprintable()
+                and char not in cls._NICKNAME_ALLOWED_FORMAT_CHARS
+            ):
+                return "control_char"
+        return None
+
+    def _normalize_nickname_for_write(cls, nickname: str) -> Optional[str]:
+        raw = str(nickname or "")
+        normalized = raw.strip()
+        if len(normalized) > cls.NICKNAME_MAX_CHARS:
+            return None
+        if any(
+            char in cls._NICKNAME_FORBIDDEN_CHARS
+            or (
+                not char.isprintable()
+                and char not in cls._NICKNAME_ALLOWED_FORMAT_CHARS
+            )
+            for char in raw
+        ):
+            return None
+        return normalized
+
     def add_user(self, qq_number: str, level: str = "trusted", nickname: str = "", normal_relay_probability: Any = None):
         """
         添加用户
@@ -66,12 +113,20 @@ class PermissionManager:
         """
         qq_str = self._normalize_qq(qq_number)
         if not qq_str:
-            return
+            return False
+        normalized_level = self._normalize_level(level)
+        normalized_nickname = (
+            "" if normalized_level == "admin"
+            else self._normalize_nickname_for_write(nickname)
+        )
+        if normalized_nickname is None:
+            return False
         self._users[qq_str] = {
-            "level": self._normalize_level(level),
-            "nickname": str(nickname or "").strip(),
+            "level": normalized_level,
+            "nickname": normalized_nickname,
             "normal_relay_probability": self._normalize_probability(normal_relay_probability),
         }
+        return True
 
     def remove_user(self, qq_number: str):
         """移除用户"""
@@ -120,10 +175,13 @@ class PermissionManager:
     def set_nickname(self, qq_number: str, nickname: str):
         """设置用户昵称"""
         qq_str = self._normalize_qq(qq_number)
-        if qq_str in self._users:
-            self._users[qq_str]["nickname"] = str(nickname or "").strip()
-            return True
-        return False
+        if qq_str not in self._users:
+            return False
+        normalized = self._normalize_nickname_for_write(nickname)
+        if normalized is None:
+            return False
+        self._users[qq_str]["nickname"] = normalized
+        return True
 
     def find_users_by_nickname(self, nickname: str) -> List[Dict[str, Any]]:
         """按配置昵称查找用户（精确匹配）"""

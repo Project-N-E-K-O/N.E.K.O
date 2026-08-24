@@ -570,6 +570,40 @@ def test_review_queue_considers_due_cards_beyond_first_1000_fsrs_rows(
         store.close()
 
 
+def test_review_queue_filters_fsrs_rows_and_reuses_scoped_topics(
+    tmp_path: Path,
+) -> None:
+    store = _store(tmp_path)
+    try:
+        tracker = KnowledgeTracker(store)
+        inside_topic_id = "inside_scope"
+        outside_topic_id = "outside_scope"
+        for topic_id in (inside_topic_id, outside_topic_id):
+            store.ensure_topic(topic_id=topic_id, name=topic_id)
+            card = tracker.fsrs.new_knowledge_card(topic_id).to_dict()
+            store.upsert_fsrs_card(topic_id=topic_id, card=card, last_rating=3)
+
+        rows = store.list_fsrs_cards(topic_ids={inside_topic_id})
+        assert [row["topic_id"] for row in rows] == [inside_topic_id]
+
+        def fail_get_topic(_topic_id: str):
+            raise AssertionError("scoped topic metadata should be reused")
+
+        store.get_topic = fail_get_topic  # type: ignore[method-assign]
+        queue = tracker.get_review_queue(
+            limit=10,
+            topic_ids={inside_topic_id},
+            topics_by_id={
+                inside_topic_id: {"id": inside_topic_id, "name": "Inside"}
+            },
+        )
+
+        assert [item["topic_id"] for item in queue] == [inside_topic_id]
+        assert queue[0]["topic"]["name"] == "Inside"
+    finally:
+        store.close()
+
+
 def test_memory_card_deck_create_list_and_review_cycle(tmp_path: Path) -> None:
     store = _store(tmp_path)
     try:

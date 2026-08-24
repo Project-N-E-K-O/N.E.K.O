@@ -194,9 +194,15 @@ async def test_plugin_config_update_returns_memory_only_payload_before_persisten
     send = _Recorder()
     started = asyncio.Event()
 
-    async def _stuck_update(*, plugin_id: str, updates: object) -> dict[str, object]:
+    async def _stuck_update(
+        *,
+        plugin_id: str,
+        updates: object,
+        commit_guard: object,
+    ) -> dict[str, object]:
         assert plugin_id == "p1"
         assert updates == {"feature": {"enabled": True}}
+        assert commit_guard is not None
         started.set()
         await asyncio.sleep(10)
         return {"config": {"feature": {"enabled": True}}}
@@ -234,3 +240,40 @@ async def test_plugin_config_update_returns_memory_only_payload_before_persisten
         "persisted": False,
         "message": "Config persistence timed out; update is applied in plugin memory only",
     }
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_plugin_config_replace_uses_replace_command(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    send = _Recorder()
+
+    async def _replace(
+        *,
+        plugin_id: str,
+        config: object,
+        commit_guard: object,
+    ) -> dict[str, object]:
+        assert plugin_id == "p1"
+        assert config == {"replacement": {"enabled": True}}
+        assert commit_guard is not None
+        return {"config": config}
+
+    monkeypatch.setattr(
+        plugin_config_module.config_command_service,
+        "replace_plugin_config",
+        _replace,
+    )
+
+    await plugin_config_module.handle_plugin_config_replace(
+        {
+            "from_plugin": "p1",
+            "request_id": "r-replace",
+            "config": {"replacement": {"enabled": True}},
+        },
+        send,
+    )
+
+    assert send.calls[-1][2] == {"config": {"replacement": {"enabled": True}}}
+    assert send.calls[-1][3] is None

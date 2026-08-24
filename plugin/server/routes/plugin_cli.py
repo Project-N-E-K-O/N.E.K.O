@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Literal
+
 from fastapi import APIRouter, File, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field, model_validator
@@ -56,7 +58,28 @@ class PluginCliInstallRequest(BaseModel):
     package: str
     plugins_root: str | None = None
     profiles_root: str | None = None
-    on_conflict: str = Field(default="rename", pattern="^(rename|fail)$")
+    on_conflict: str = Field(default="fail", pattern="^fail$")
+    install_source: Literal["imported"] | None = None
+    confirm_upgrade: bool = False
+    confirmation_token: str | None = None
+
+
+class PluginCliInstallPlanRequest(BaseModel):
+    package: str
+    plugins_root: str | None = None
+    profiles_root: str | None = None
+
+
+class PluginCliInstallPlanResponse(BaseModel):
+    action: str = Field(pattern="^(install|upgrade|blocked)$")
+    package_type: str = Field(pattern="^(plugin|bundle)$")
+    plugin_id: str
+    directory_name: str
+    current_version: str = ""
+    target_version: str = ""
+    confirmation_token: str = ""
+    reason: str = ""
+    legacy_plugin_ids: list[str] = Field(default_factory=list)
 
 
 class PluginCliAnalyzeRequest(BaseModel):
@@ -179,6 +202,10 @@ class PluginCliInstallResponse(BaseModel):
     payload_hash_verified: bool | None = None
     conflict_strategy: str
     installed_plugin_count: int
+    operation: str = "install"
+    restarted: bool = False
+    rollback_status: str = "not_needed"
+    install_source_warning: str | None = None
 
 
 class PluginCliSharedDependencyResponse(BaseModel):
@@ -292,6 +319,28 @@ async def plugin_cli_install(
             plugins_root=payload.plugins_root,
             profiles_root=payload.profiles_root,
             on_conflict=payload.on_conflict,
+            install_source=payload.install_source,
+            confirm_upgrade=payload.confirm_upgrade,
+            confirmation_token=payload.confirmation_token,
+        )
+    except ServerDomainError as error:
+        raise_http_from_domain(
+            error,
+            logger=logger,
+            include_details=error.code == "PLUGIN_UPGRADE_ROLLED_BACK",
+        )
+
+
+@router.post("/plugin-cli/install-plan", response_model=PluginCliInstallPlanResponse)
+async def plugin_cli_install_plan(
+    payload: PluginCliInstallPlanRequest,
+    _: str = require_admin,
+) -> dict[str, object]:
+    try:
+        return await service.plan_install(
+            package=payload.package,
+            plugins_root=payload.plugins_root,
+            profiles_root=payload.profiles_root,
         )
     except ServerDomainError as error:
         raise_http_from_domain(error, logger=logger)
@@ -326,10 +375,10 @@ async def plugin_cli_upload(
     passed to ``/plugin-cli/install`` or ``/plugin-cli/inspect``.
     """
     try:
-        content = await file.read()
-        return await service.save_uploaded_package(
+        await file.seek(0)
+        return await service.save_uploaded_file(
             filename=file.filename or "unknown.neko-plugin",
-            content=content,
+            source_file=file.file,
         )
     except ServerDomainError as error:
         raise_http_from_domain(error, logger=logger)
@@ -341,7 +390,7 @@ async def plugin_cli_upload(
 @router.post("/plugin-cli/upload-and-install", response_model=PluginCliUploadAndInstallResponse)
 async def plugin_cli_upload_and_install(
     file: UploadFile = File(...),
-    on_conflict: str = Query(default="rename", pattern="^(rename|fail)$"),
+    on_conflict: str = Query(default="fail", pattern="^fail$"),
     _: str = require_admin,
 ) -> dict[str, object]:
     """Upload a plugin package and immediately install it.
@@ -349,10 +398,14 @@ async def plugin_cli_upload_and_install(
     Combines upload + install into a single request for convenience.
     """
     try:
-        content = await file.read()
-        return await service.upload_and_install(
+        await file.seek(0)
+        uploaded = await service.save_uploaded_file(
             filename=file.filename or "unknown.neko-plugin",
-            content=content,
+            source_file=file.file,
+        )
+        return await service.upload_and_install(
+            filename=str(uploaded["name"]),
+            package_path=str(uploaded["path"]),
             on_conflict=on_conflict,
         )
     except ServerDomainError as error:
@@ -421,7 +474,7 @@ async def plugin_cli_unpack_legacy(
 @router.post("/plugin-cli/upload-and-unpack", include_in_schema=False)
 async def plugin_cli_upload_and_unpack_legacy(
     file: UploadFile = File(...),
-    on_conflict: str = Query(default="rename", pattern="^(rename|fail)$"),
+    on_conflict: str = Query(default="fail", pattern="^fail$"),
     _: str = require_admin,
 ) -> dict[str, object]:
     """Legacy alias for /plugin-cli/upload-and-install. Translates response keys."""

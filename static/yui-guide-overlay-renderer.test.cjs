@@ -649,7 +649,7 @@ test('PC overlay complete state store composes full visual payloads', () => {
         petal: { id: 'petal-a' }
     });
     assert.deepEqual(suppressedPayload.spotlights, [{ id: 'spotlight-b' }]);
-    assert.equal(Object.prototype.hasOwnProperty.call(suppressedPayload, 'cursor'), false);
+    assert.equal(suppressedPayload.cursor.effect, 'click');
     assert.equal(suppressedPayload.petal.id, 'petal-a');
 
     now = 1200;
@@ -693,7 +693,13 @@ test('PC overlay complete state store owns cursor cache clearing', () => {
     assert.deepEqual(store.applyPatch({
         spotlights: [{ id: 'spotlight-a' }]
     }), {
-        spotlights: [{ id: 'spotlight-a' }]
+        spotlights: [{ id: 'spotlight-a' }],
+        cursor: {
+            visible: true,
+            x: 10,
+            y: 20,
+            effect: 'click'
+        }
     });
 
     store.clearCursorCache();
@@ -702,6 +708,56 @@ test('PC overlay complete state store owns cursor cache clearing', () => {
     }), {
         spotlights: [{ id: 'spotlight-b' }]
     });
+});
+
+test('PC overlay complete state stores preserve shared skip control across renderers', () => {
+    const { createPcOverlayCompleteStateStore } = require('./tutorial/visual/overlay-renderer.js');
+    const values = new Map();
+    const storage = {
+        getItem(key) {
+            return values.has(key) ? values.get(key) : null;
+        },
+        setItem(key, value) {
+            values.set(key, String(value));
+        },
+        removeItem(key) {
+            values.delete(key);
+        }
+    };
+    const skipOwner = createPcOverlayCompleteStateStore({ storage });
+    const homeRenderer = createPcOverlayCompleteStateStore({ storage });
+
+    const skipPayload = skipOwner.applyPatch({
+        skipControl: {
+            visible: true,
+            label: 'Skip tutorial',
+            dark: true
+        }
+    });
+    assert.deepEqual(skipPayload.skipControl, {
+        visible: true,
+        label: 'Skip tutorial',
+        dark: true
+    });
+
+    const scenePayload = homeRenderer.applyPatch({
+        spotlights: [{ id: 'home-scene' }]
+    });
+    assert.deepEqual(scenePayload.skipControl, skipPayload.skipControl);
+
+    skipOwner.reset();
+    const resetPayload = homeRenderer.applyPatch({
+        petal: { id: 'next-scene' }
+    });
+    assert.equal(resetPayload.skipControl, null);
+    assert.equal(values.has('yuiGuidePcOverlaySkipControl'), false);
+
+    skipOwner.applyPatch({ skipControl: skipPayload.skipControl });
+    skipOwner.applyPatch({ skipControl: null });
+    const clearedPayload = homeRenderer.applyPatch({
+        cursor: { visible: true, x: 10, y: 20 }
+    });
+    assert.equal(clearedPayload.skipControl, null);
 });
 
 test('PC overlay complete state store omits empty spotlights for cursor-only patches', () => {

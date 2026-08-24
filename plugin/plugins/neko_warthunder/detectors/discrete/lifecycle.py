@@ -11,16 +11,18 @@ from __future__ import annotations
 
 from typing import Any
 
-from ...core.contracts import BattleEvent, BattleState
+from ...core.contracts import (
+    BattleEvent,
+    BattleState,
+    classify_battle_result,
+    is_battle_end_status,
+)
 from .._base import DiscreteDetector
 from .free_text import FreeTextActivityDetector
 from .notices import HudNoticeDetector
 from .proximity import ProximityDetector
 from .radio import RadioCommandDetector
 from .situation import AirSituationDetector, GroundTargetDetector
-
-_END_STATUSES = frozenset({"win", "won", "victory", "fail", "failed", "lost", "defeat", "left", "ended", "finished"})
-
 
 def _alive(s: BattleState) -> bool:
     return s.is_alive()
@@ -38,6 +40,7 @@ class SpawnDetector(DiscreteDetector):
                     "vehicle_type": cur.vehicle_type,
                     "domain": cur.domain,
                     "domain_label": cur.domain_label,
+                    "respawn": bool(prev.dead),
                 },
                 ts=cur.timestamp or 0.0,
                 level="warning",
@@ -70,17 +73,24 @@ class DeathDetector(DiscreteDetector):
     def __init__(self) -> None:
         self._last_seen_id: int = -1
         self._emitted_ids: set[int] = set()
+        self._dead_edge_emitted = False
+
+    def reset(self) -> None:
+        self._last_seen_id = -1
+        self._emitted_ids.clear()
+        self._dead_edge_emitted = False
 
     def detect(self, prev: BattleState, cur: BattleState) -> BattleEvent | None:
+        if not cur.dead:
+            self._dead_edge_emitted = False
         feed = _feed_items(cur)
         ids = _feed_ids(feed)
-        if not ids:
-            return None
-        max_id = max(ids)
-        if max_id < self._last_seen_id:
-            self._last_seen_id = -1
-            self._emitted_ids.clear()
-        self._last_seen_id = max(self._last_seen_id, max_id)
+        if ids:
+            max_id = max(ids)
+            if max_id < self._last_seen_id:
+                self._last_seen_id = -1
+                self._emitted_ids.clear()
+            self._last_seen_id = max(self._last_seen_id, max_id)
 
         newest: dict[str, Any] | None = None
         for item in feed:
@@ -93,38 +103,60 @@ class DeathDetector(DiscreteDetector):
             if item.get("is_my_death") is True:
                 if newest is None or eid > int(newest.get("id")):
                     newest = item
-        if newest is None:
-            return None
-        for item in feed:
-            try:
-                eid = int(item.get("id"))
-            except (TypeError, ValueError):
-                continue
-            if item.get("is_my_death") is True:
-                self._emitted_ids.add(eid)
+        if newest is not None:
+            for item in feed:
+                try:
+                    eid = int(item.get("id"))
+                except (TypeError, ValueError):
+                    continue
+                if item.get("is_my_death") is True:
+                    self._emitted_ids.add(eid)
+            if self._dead_edge_emitted and cur.dead:
+                return None
+            self._dead_edge_emitted = True
+            return BattleEvent(
+                "you_died",
+                payload={
+                    "killer_name": newest.get("killer"),
+                    "killer_vehicle": newest.get("killer_vehicle"),
+                    "cause": newest.get("action") or "unknown",
+                    "domain": cur.domain,
+                },
+                ts=cur.timestamp or 0.0,
+                level="critical",
+            )
 
-        return BattleEvent(
-            "you_died",
-            payload={
-                "killer_name": newest.get("killer"),
-                "killer_vehicle": newest.get("killer_vehicle"),
-                "cause": newest.get("action") or "unknown",
-                "domain": cur.domain,
-            },
-            ts=cur.timestamp or 0.0,
-            level="critical",
-        )
+        # HUD 在部分陆战模式不提供本人死亡事件；数据层的 ground_crew 仅在
+        # crew_total>=2 且 crew_current<=1 时产生，可以安全作为一次通用阵亡边沿。
+        if (
+            cur.dead
+            and not prev.dead
+            and cur.dead_source == "ground_crew"
+            and not self._dead_edge_emitted
+        ):
+            self._dead_edge_emitted = True
+            return BattleEvent(
+                "you_died",
+                payload={"cause": "ground_crew", "domain": cur.domain},
+                ts=cur.timestamp or 0.0,
+                level="critical",
+            )
+        return None
 
 
 class BattleEndDetector(DiscreteDetector):
     id = "battle_end"
 
     def _ended(self, s: BattleState) -> bool:
-        return (s.mission_status or "").lower() in _END_STATUSES
+        return is_battle_end_status(s.mission_status)
 
     def detect(self, prev: BattleState, cur: BattleState) -> BattleEvent | None:
         if self._ended(cur) and not self._ended(prev):
-            payload: dict[str, Any] = {"result": cur.mission_status, "domain": cur.domain}
+            payload: dict[str, Any] = {
+                "result": cur.mission_status,
+                "result_kind": classify_battle_result(cur.mission_status),
+                "domain": cur.domain,
+            }
             my = cur.combat.get("my") if isinstance(cur.combat, dict) else None
             if isinstance(my, dict):
                 payload["result"] = f"{cur.mission_status}, K{my.get('kills', 0)}/D{my.get('deaths', 0)}"
@@ -136,11 +168,19 @@ class KillDetector(DiscreteDetector):
     """Kill events come from data-layer combat.feed[].is_my_kill."""
 
     id = "you_killed"
+    # 延迟到账的同归于尽/航弹战果必须进入 Arbiter 的 DEAD 场景交易击杀路径；
+    # detector 自身仍推进并记录 feed id，因此重生后不会补播同一条。
+    dead_state_policy = "allow"
 
-    def __init__(self, player_name: str) -> None:
-        self.player_name = (player_name or "").strip()
+    def __init__(self) -> None:
+        # 刻意不接收 player_name：归属完全由数据层的 is_my_kill 判定，插件侧不做
+        # 本地名字比对。曾经保存过该字段但从未读取，容易让人误以为还有第二条归属路径。
         self._last_seen_id: int = -1
         self._emitted_ids: set[int] = set()
+
+    def reset(self) -> None:
+        self._last_seen_id = -1
+        self._emitted_ids.clear()
 
     def detect(self, prev: BattleState, cur: BattleState) -> BattleEvent | None:
         feed = _feed_items(cur)
@@ -181,12 +221,18 @@ class KillDetector(DiscreteDetector):
         )
 
 
-def build_discrete_detectors(player_name: str) -> list[DiscreteDetector]:
+def build_discrete_detectors(player_name: str = "") -> list[DiscreteDetector]:
+    """构造离散检测器。
+
+    ``player_name`` 不再传给任何检测器——击杀/阵亡归属由数据层的 is_my_kill /
+    is_my_death 给出。保留该形参是因为调用方用"昵称变化"作为重建引擎的信号
+    （见 NekoWarthunderPlugin._apply_config：身份变了就要清空 id 游标）。
+    """
     return [
         SpawnDetector(),
         DeathDetector(),
         BattleEndDetector(),
-        KillDetector(player_name),
+        KillDetector(),
         HudNoticeDetector(),
         RadioCommandDetector(),
         FreeTextActivityDetector(),

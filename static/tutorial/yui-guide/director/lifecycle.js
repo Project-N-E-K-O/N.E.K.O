@@ -319,7 +319,7 @@
             this.closePluginDashboardWindowIfCreatedByGuide('销毁');
             if (typeof window.handleShowMainUI === 'function') {
                 try {
-                    window.handleShowMainUI();
+                    window.handleShowMainUI({ owner: 'yui-page-handoff' });
                 } catch (error) {
                     console.warn('[YuiGuide] 销毁时恢复主界面失败:', error);
                 }

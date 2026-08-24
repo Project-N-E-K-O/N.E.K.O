@@ -20,6 +20,11 @@ The main frame is always English; only the localized fragments inside it switch 
 Supported languages: zh / zh-TW / en / ja / ko / ru / es / pt
 """
 
+# Safe as a top-level import: config.prompts._locale is a dependency-free pure
+# function module, unlike config._runtime (mutable global state, registration
+# order matters) which this file deliberately imports lazily inside functions.
+from config.prompts._locale import normalize_prompt_locale
+
 # ============================================================================
 # 语言本地化片段
 # ============================================================================
@@ -126,26 +131,7 @@ Users interacting with {LANLAN_NAME} are already reminded that she is a purely f
 
 def _normalize_lang(lang: str) -> str:
     """Normalize a language code to a supported key (zh/zh-TW/en/ja/ko/ru/es/pt)"""
-    if not lang:
-        return 'en'
-    lang_lower = lang.lower()
-    if lang_lower.startswith('zh'):
-        if 'tw' in lang_lower or 'hant' in lang_lower or 'hk' in lang_lower:
-            return 'zh-TW'
-        return 'zh'
-    if lang_lower.startswith('ja'):
-        return 'ja'
-    if lang_lower.startswith('en'):
-        return 'en'
-    if lang_lower.startswith('ko'):
-        return 'ko'
-    if lang_lower.startswith('ru'):
-        return 'ru'
-    if lang_lower.startswith('es'):
-        return 'es'
-    if lang_lower.startswith('pt'):
-        return 'pt'
-    return 'en'
+    return normalize_prompt_locale(lang, default='en', simplified='zh', keep_traditional=True)
 
 
 def _build_lanlan_prompt(lang: str) -> str:

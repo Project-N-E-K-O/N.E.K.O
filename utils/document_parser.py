@@ -359,6 +359,14 @@ def _open_checked_zip(data: bytes, document_type: str) -> zipfile.ZipFile:
             raise DocumentParseError("zip_too_many_entries")
         total_size = 0
         for info in archive.infolist():
+            # Some ZIP writers preserve a Windows separator in member names.
+            # A backslash path is otherwise invalid, but a vbaProject member is
+            # semantically a macro payload and must keep the stronger macro
+            # rejection code used by the UI/security policy.
+            if "\\" in info.filename and info.filename.replace("\\", "/").lower().endswith(
+                "/vbaproject.bin"
+            ):
+                raise DocumentParseError("macro_document_unsupported")
             _validate_zip_member_name(info.filename)
             total_size += max(0, int(info.file_size or 0))
             if total_size > MAX_ZIP_UNCOMPRESSED_BYTES:

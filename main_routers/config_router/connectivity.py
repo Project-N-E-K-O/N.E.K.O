@@ -56,9 +56,10 @@ class ConnectivityTestRequest(BaseModel):
     api_key: Optional[str] = ""
     model: Optional[str] = ""
     provider_type: Optional[str] = "openai_compatible"
-    # Currently the only recognized value is 'vllm_omni_tts'; vLLM-Omni's WebSocket
-    # speech endpoint does NOT speak the OpenAI Realtime protocol (no session.update),
-    # so it requires a handshake-only probe instead of _test_websocket. (#1764 review 第六轮)
+    # Recognized TTS values are 'openai_tts' for HTTP(S) /audio/speech and
+    # 'vllm_omni_tts' for the vLLM-Omni WebSocket speech endpoint. The latter
+    # does not speak the OpenAI Realtime protocol (no session.update), so it
+    # requires a handshake-only probe instead of _test_websocket.
     sub_type: Optional[str] = ""
     voice_id: Optional[str] = ""
     is_free: Optional[bool] = False
@@ -435,6 +436,63 @@ async def _test_doubao_tts_connectivity(url: str, api_key: str, model: str = "",
         return {"success": False, "error": str(exc), "error_code": "unknown"}
 
 
+async def _test_openai_tts_connectivity(
+    url: str,
+    api_key: str,
+    model: str = "",
+    voice_id: str = "",
+) -> dict:
+    """Probe the speech endpoint instead of an unrelated chat completion."""
+
+    import httpx
+    from utils.openai_tts import (
+        OpenAITtsConfigError,
+        build_openai_tts_payload,
+        openai_tts_extra_body,
+        openai_tts_headers,
+        openai_tts_speech_url,
+    )
+
+    try:
+        endpoint = openai_tts_speech_url(url)
+        payload = build_openai_tts_payload("测试", model, voice_id)
+        payload.update(openai_tts_extra_body(url))
+    except OpenAITtsConfigError as exc:
+        return {"success": False, "error": str(exc), "error_code": "missing_params"}
+
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            response = await client.post(
+                endpoint,
+                headers=openai_tts_headers(api_key),
+                json=payload,
+            )
+        if response.status_code in (401, 403):
+            return {"success": False, "error": "API Key无效或已过期", "error_code": "auth_failed"}
+        if response.status_code == 429:
+            return {"success": True}
+        if response.status_code < 200 or response.status_code >= 300:
+            return {"success": False, "error": f"HTTP {response.status_code}", "error_code": "unknown"}
+        if not response.content:
+            return {
+                "success": False,
+                "error": "OpenAI-compatible TTS 未返回音频数据",
+                "error_code": "empty_response",
+            }
+        return {"success": True}
+    except httpx.TimeoutException:
+        return {"success": False, "error": "请求超时（15秒）", "error_code": "timeout"}
+    except httpx.ConnectError as exc:
+        err_str = str(exc).lower()
+        if "getaddrinfo" in err_str or "name or service" in err_str or "nodename" in err_str:
+            return {"success": False, "error": "域名解析失败", "error_code": "dns_error"}
+        return {"success": False, "error": "无法连接到目标服务器", "error_code": "connection_refused"}
+    except ssl.SSLError:
+        return {"success": False, "error": "SSL证书验证失败", "error_code": "ssl_error"}
+    except Exception as exc:
+        return {"success": False, "error": str(exc), "error_code": "unknown"}
+
+
 def _normalize_provider_url_candidates(profile: dict[str, Any], primary_field: str) -> list[str]:
     """Read the provider's primary URL and candidate URLs, removing blanks and duplicates while preserving order."""
     raw_candidates: list[Any] = [profile.get(primary_field)]
@@ -505,13 +563,23 @@ async def _test_connectivity_candidates(
                 result = await _test_vllm_omni_ws_handshake(candidate_url, api_key)
             else:
                 result = await _test_websocket(candidate_url, api_key, model=model)
-        elif provider_type == "tts" and sub_type == "doubao_tts":
-            result = await _test_doubao_tts_connectivity(
-                candidate_url,
-                api_key,
-                model=model,
-                voice_id=voice_id,
-            )
+        elif provider_type == "tts":
+            if sub_type == "doubao_tts":
+                result = await _test_doubao_tts_connectivity(
+                    candidate_url,
+                    api_key,
+                    model=model,
+                    voice_id=voice_id,
+                )
+            elif sub_type == "openai_tts":
+                result = await _test_openai_tts_connectivity(
+                    candidate_url,
+                    api_key,
+                    model=model,
+                    voice_id=voice_id,
+                )
+            else:
+                result = {"success": False, "error": "不支持的 TTS 探测协议", "error_code": "unsupported"}
         elif provider_type == "anthropic":
             result = await _test_anthropic(candidate_url, api_key, model=model, is_free=is_free)
         else:

@@ -49,6 +49,7 @@ from __future__ import annotations
 _INSTALLED: dict[str, bool] = {
     "config_runtime": False,
     "user_directives_sink": False,
+    "quota_hooks": False,
 }
 
 
@@ -162,4 +163,42 @@ def install_runtime_bindings() -> None:
                     # Logger 本身不可用（极早期 import / 配置坏）；同
                     # config_runtime block 的策略——咽掉避免 startup 二次崩，
                     # caller (app/__init__) 已经印过 stderr 面包屑。
+                    pass
+
+    # ---- main_logic.agent_event_bus ← main_logic.quota dropper -----------
+    # N.E.K.O.Servers 社交平台配额掉落 hooks（M2-j）。挂载本身不依赖环境变量，
+    # 是否真触发取决于 dropper._enabled()（要求 NEKO_QUOTA_DROPPER_ENABLED=1
+    # + NEKO_SOCIAL_BASE_URL 已配）。默认 noop，挂着也无害。
+    if not _INSTALLED["quota_hooks"]:
+        try:
+            from main_logic.agent_event_bus import (
+                register_text_user_message_hook,
+                register_user_utterance_sink,
+            )
+            from main_logic.quota import on_text_message, on_utterance
+
+            # text-message hook 是 first-hit-wins，dropper 已确保返回 None
+            register_text_user_message_hook(on_text_message)
+            register_user_utterance_sink(on_utterance)
+            _INSTALLED["quota_hooks"] = True
+        except Exception as exc:
+            _expected_absent = {
+                "main_logic",
+                "main_logic.agent_event_bus",
+                "main_logic.quota",
+                "main_logic.quota.dropper",
+                "yaml",  # PyYAML 缺失也算预期场景（memory-only worker）
+            }
+            _is_expected_absent = (
+                isinstance(exc, ModuleNotFoundError)
+                and getattr(exc, "name", None) in _expected_absent
+            )
+            if not _is_expected_absent:
+                try:
+                    from utils.logger_config import get_module_logger
+                    get_module_logger(__name__, "App").warning(
+                        "install_runtime_bindings(quota_hooks) failed unexpectedly",
+                        exc_info=True,
+                    )
+                except Exception:
                     pass

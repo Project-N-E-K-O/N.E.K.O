@@ -50,6 +50,7 @@ VRMManager.prototype.setupFloatingButtons = function() {
     const prefix = this._avatarPrefix;
 
     const applyResponsiveFloatingLayout = () => {
+        this.syncResponsiveButtonVisibility(buttonsContainer);
         if (isYuiGuideFloatingToolbarSuppressed()) {
             buttonsContainer.style.display = 'none';
             buttonsContainer.style.visibility = 'hidden';
@@ -194,6 +195,11 @@ VRMManager.prototype.setupFloatingButtons = function() {
                 window.dispatchEvent(new CustomEvent('live2d-goodbye-click'));
                 return;
             }
+            else if (config.id === 'social') {
+                // 与 Live2D 共用 opener（app-ui.js 监听 live2d-social-click）
+                window.dispatchEvent(new CustomEvent('live2d-social-click'));
+                return;
+            }
 
             btn.style.background = targetActive ? 'var(--neko-btn-bg-active, rgba(255,255,255,0.75))' : 'var(--neko-btn-bg-hover, rgba(255,255,255,0.8))';
         });
@@ -201,9 +207,9 @@ VRMManager.prototype.setupFloatingButtons = function() {
         // 先将主按钮添加到包装器（所有按钮都需要）
         btnWrapper.appendChild(btn);
 
-        // 麦克风静音按钮（仅非手机模式下的麦克风按钮）
+        // 语音会话快捷控制（仅非手机模式下的麦克风按钮）
         if (config.id === 'mic' && config.hasPopup && config.separatePopupTrigger && !window.isMobileWidth()) {
-            this.createMicMuteButton(btnWrapper);
+            this.createVoiceSessionQuickControls(btnWrapper);
         }
 
         // 处理弹窗
@@ -367,6 +373,7 @@ VRMManager.prototype.setupFloatingButtons = function() {
             triggerImg: (config.hasPopup && config.separatePopupTrigger && !window.isMobileWidth()) ? triggerImg : null
         };
     });
+    applyResponsiveFloatingLayout();
 
     // 处理"请她离开"事件
     // 注意：返回按钮的位置、显示、以及浮动按钮的隐藏均由 app-ui 统一处理，
@@ -525,7 +532,8 @@ VRMManager.prototype._startUIUpdateLoop = function() {
 
     const getVisibleButtonCount = () => {
         const mobile = window.isMobileWidth && window.isMobileWidth();
-        return [{ id: 'mic' }, { id: 'screen' }, { id: 'agent' }, { id: 'settings' }, { id: 'goodbye' }]
+        return [{ id: 'mic' }, { id: 'screen', mobileOnly: true }, { id: 'agent' }, { id: 'social' }, { id: 'settings' }, { id: 'goodbye' }]
+            .filter(c => !(c.mobileOnly && !mobile))
             .filter(c => !(mobile && (c.id === 'agent' || c.id === 'goodbye'))).length;
     };
     const baseButtonSize = 48;
@@ -533,29 +541,40 @@ VRMManager.prototype._startUIUpdateLoop = function() {
     let lastMobileUpdate = 0;
     const MOBILE_UPDATE_INTERVAL = 100;
 
+    // 空闲低频模式下改用 ~33ms 定时器转一次性 rAF：一次性 rAF 不形成连续
+    // vsync 链，Blink 主帧调度随渲染循环一起降到地板频率。否则本循环单独
+    // 就能把 BeginMainFrame 顶回显示器刷新率，渲染侧的空闲化收益归零。
+    const scheduleNext = () => {
+        if (this._uiUpdateLoopId === null || this._uiUpdateLoopId === undefined) return;
+        if (this._idleTickMode) {
+            if (this._uiLoopIdleTimeout) clearTimeout(this._uiLoopIdleTimeout);
+            this._uiLoopIdleTimeout = setTimeout(() => {
+                this._uiLoopIdleTimeout = null;
+                if (this._uiUpdateLoopId === null || this._uiUpdateLoopId === undefined) return;
+                this._uiUpdateLoopId = requestAnimationFrame(update);
+            }, 33);
+            return;
+        }
+        this._uiUpdateLoopId = requestAnimationFrame(update);
+    };
+
     const update = () => {
         if (this._uiUpdateLoopId === null || this._uiUpdateLoopId === undefined) return;
 
         if (!this.currentModel || !this.currentModel.scene) {
-            if (this._uiUpdateLoopId !== null && this._uiUpdateLoopId !== undefined) {
-                this._uiUpdateLoopId = requestAnimationFrame(update);
-            }
+            scheduleNext();
             return;
         }
 
         if (this._isInReturnState) {
-            if (this._uiUpdateLoopId !== null && this._uiUpdateLoopId !== undefined) {
-                this._uiUpdateLoopId = requestAnimationFrame(update);
-            }
+            scheduleNext();
             return;
         }
 
         if (window.isMobileWidth && window.isMobileWidth()) {
             const now = performance.now();
             if (now - lastMobileUpdate < MOBILE_UPDATE_INTERVAL) {
-                if (this._uiUpdateLoopId !== null && this._uiUpdateLoopId !== undefined) {
-                    this._uiUpdateLoopId = requestAnimationFrame(update);
-                }
+                scheduleNext();
                 return;
             }
             lastMobileUpdate = now;
@@ -565,9 +584,7 @@ VRMManager.prototype._startUIUpdateLoop = function() {
         const lockIcon = this._vrmLockIcon;
 
         if (!this.camera || !this.renderer) {
-            if (this._uiUpdateLoopId !== null && this._uiUpdateLoopId !== undefined) {
-                this._uiUpdateLoopId = requestAnimationFrame(update);
-            }
+            scheduleNext();
             return;
         }
 
@@ -593,9 +610,7 @@ VRMManager.prototype._startUIUpdateLoop = function() {
                         lockIcon.style.opacity = '0';
                     }
                 }
-                if (this._uiUpdateLoopId !== null && this._uiUpdateLoopId !== undefined) {
-                    this._uiUpdateLoopId = requestAnimationFrame(update);
-                }
+                scheduleNext();
                 return;
             }
 
@@ -738,23 +753,35 @@ VRMManager.prototype._startUIUpdateLoop = function() {
                         lockIcon.style.visibility = shouldShowLock ? 'visible' : 'hidden';
                         lockIcon.style.opacity = shouldShowLock ? '' : '0';
 
+                    }
+                }
+                if (lockIcon) {
+                    const isLockVisible = !this._isInReturnState &&
+                        lockIcon.style.display !== 'none' && lockIcon.style.visibility !== 'hidden';
+                    if (isLockVisible) {
                         const lockRect = lockIcon.getBoundingClientRect();
-                        let isLockOverlapped = false;
-                        document.querySelectorAll('[id^="vrm-popup-"]').forEach(popup => {
-                            if (popup.style.display === 'flex' && popup.style.opacity === '1') {
-                                const popupRect = popup.getBoundingClientRect();
-                                if (lockRect.right > popupRect.left && lockRect.left < popupRect.right &&
-                                    lockRect.bottom > popupRect.top && lockRect.top < popupRect.bottom) {
-                                    isLockOverlapped = true;
-                                }
-                            }
-                        });
+                        const popupUi = window.AvatarPopupUI || null;
+                        const isLockOverlapped = popupUi && typeof popupUi.isRectOverlappedByVisibleOverlay === 'function'
+                            ? popupUi.isRectOverlappedByVisibleOverlay(lockRect, 'vrm')
+                            : Array.from(document.querySelectorAll('[id^="vrm-popup-"], [data-neko-sidepanel-owner^="vrm-popup-"]')).some(element => {
+                                const style = window.getComputedStyle(element);
+                                const computedOpacity = Number.parseFloat(style.opacity || '1');
+                                const targetOpacity = Number.parseFloat(element.style.opacity || style.opacity || '1');
+                                if (style.display === 'none' || style.visibility === 'hidden' ||
+                                    (computedOpacity <= 0 && targetOpacity <= 0)) return false;
+                                const overlayRect = element.getBoundingClientRect();
+                                return lockRect.right > overlayRect.left && lockRect.left < overlayRect.right &&
+                                    lockRect.bottom > overlayRect.top && lockRect.top < overlayRect.bottom;
+                            });
                         // 与角色形象半透明状态完全同步：容器淡化(opacity<1)时锁图标镜像同一透明度
                         const vrmFadeContainer = document.getElementById('vrm-container');
                         const vrmFadeOpacity = vrmFadeContainer ? parseFloat(vrmFadeContainer.style.opacity) : NaN;
                         lockIcon.style.opacity = (Number.isFinite(vrmFadeOpacity) && vrmFadeOpacity < 1)
                             ? String(vrmFadeOpacity)
                             : (isLockOverlapped ? '0.3' : '');
+                        lockIcon.style.pointerEvents = isLockOverlapped ? 'none' : 'auto';
+                    } else {
+                        lockIcon.style.pointerEvents = 'none';
                     }
                 }
                 buttonsContainer.style.transform = `scale(${scale})`;
@@ -763,14 +790,17 @@ VRMManager.prototype._startUIUpdateLoop = function() {
             if (window.DEBUG_MODE) console.debug('[VRM UI] 更新循环单帧异常:', error);
         }
 
-        if (this._uiUpdateLoopId !== null && this._uiUpdateLoopId !== undefined) {
-            this._uiUpdateLoopId = requestAnimationFrame(update);
-        }
+        scheduleNext();
     };
 
     this._updateFloatingButtonsPositionNow = () => {
         if (this._uiUpdateLoopId === null || this._uiUpdateLoopId === undefined) return;
         cancelAnimationFrame(this._uiUpdateLoopId);
+        // 同步 flush 前清掉空闲模式的 pending 再入定时器，防止分叉双链
+        if (this._uiLoopIdleTimeout) {
+            clearTimeout(this._uiLoopIdleTimeout);
+            this._uiLoopIdleTimeout = null;
+        }
         this._uiUpdateLoopId = 0;
         update();
     };
@@ -786,6 +816,7 @@ VRMManager.prototype._setupReturnButtonDrag = function (returnButtonContainer) {
         document.removeEventListener('mouseup', this._returnButtonDragHandlers.mouseUp);
         document.removeEventListener('touchmove', this._returnButtonDragHandlers.touchMove);
         document.removeEventListener('touchend', this._returnButtonDragHandlers.touchEnd);
+        document.removeEventListener('touchcancel', this._returnButtonDragHandlers.touchCancel);
         this._returnButtonDragHandlers = null;
     }
 
@@ -800,8 +831,66 @@ VRMManager.prototype._setupReturnButtonDrag = function (returnButtonContainer) {
     let pendingClientX = 0;
     let pendingClientY = 0;
     let dragActiveDispatched = false;
+    let dragActivitySequence = 0;
+    let dragActivity = null;
+
+    const startDragActivity = (left, top) => {
+        const startedAt = Date.now();
+        dragActivitySequence += 1;
+        dragActivity = {
+            activityId: `return-cat-drag-vrm:${startedAt}:${dragActivitySequence}`,
+            startedAt: startedAt,
+            startX: left,
+            startY: top,
+            lastX: left,
+            lastY: top,
+            pathDistancePx: 0,
+            terminalReported: false
+        };
+    };
+
+    const recordDragActivityPoint = (left, top) => {
+        if (!dragActivity || dragActivity.terminalReported ||
+            !Number.isFinite(left) || !Number.isFinite(top)) {
+            return;
+        }
+        dragActivity.pathDistancePx += Math.hypot(
+            left - dragActivity.lastX,
+            top - dragActivity.lastY
+        );
+        dragActivity.lastX = left;
+        dragActivity.lastY = top;
+    };
+
+    const finishDragActivity = () => {
+        if (!dragActivity || dragActivity.terminalReported) return null;
+        dragActivity.terminalReported = true;
+        return {
+            activityId: dragActivity.activityId,
+            pathDistancePx: Math.max(0, dragActivity.pathDistancePx),
+            displacementPx: Math.hypot(
+                dragActivity.lastX - dragActivity.startX,
+                dragActivity.lastY - dragActivity.startY
+            ),
+            durationMs: Math.max(0, Date.now() - dragActivity.startedAt)
+        };
+    };
+
+    const dispatchDragTerminal = (reason, extraDetail) => {
+        if (typeof _dispatchNekoIdleReturnBallManualMove === 'function') {
+            _dispatchNekoIdleReturnBallManualMove(returnButtonContainer, reason, extraDetail);
+            return;
+        }
+        window.dispatchEvent(new CustomEvent('neko:return-ball-manual-move', {
+            detail: Object.assign({
+                reason: reason,
+                container: returnButtonContainer
+            }, extraDetail)
+        }));
+    };
 
     const handleStart = (clientX, clientY) => {
+        if (isDragging) return;
         window.dispatchEvent(new CustomEvent('neko:return-ball-manual-move', {
             detail: {
                 reason: 'return-ball-drag-start',
@@ -821,6 +910,7 @@ VRMManager.prototype._setupReturnButtonDrag = function (returnButtonContainer) {
         const rect = returnButtonContainer.getBoundingClientRect();
         containerStartX = rect.left;
         containerStartY = rect.top;
+        startDragActivity(containerStartX, containerStartY);
 
         // 在拖拽开始时缓存尺寸，避免每帧读取触发 layout
         cachedContainerWidth = rect.width || 64;
@@ -863,6 +953,7 @@ VRMManager.prototype._setupReturnButtonDrag = function (returnButtonContainer) {
         }
         const newX = Math.max(0, Math.min(containerStartX + deltaX, window.innerWidth - cachedContainerWidth));
         const newY = Math.max(0, Math.min(containerStartY + deltaY, window.innerHeight - cachedContainerHeight));
+        recordDragActivityPoint(newX, newY);
 
         // 使用 transform 移动，仅走 GPU 合成，跳过 layout + paint
         const tx = newX - containerStartX;
@@ -888,6 +979,7 @@ VRMManager.prototype._setupReturnButtonDrag = function (returnButtonContainer) {
         }
         const newX = Math.max(0, Math.min(containerStartX + deltaX, window.innerWidth - cachedContainerWidth));
         const newY = Math.max(0, Math.min(containerStartY + deltaY, window.innerHeight - cachedContainerHeight));
+        recordDragActivityPoint(newX, newY);
         returnButtonContainer.style.transform = '';
         returnButtonContainer.style.left = `${newX}px`;
         returnButtonContainer.style.top = `${newY}px`;
@@ -903,7 +995,7 @@ VRMManager.prototype._setupReturnButtonDrag = function (returnButtonContainer) {
         }
     };
 
-    const handleEnd = () => {
+    const handleEnd = (cancelled = false) => {
         if (isDragging) {
             // 取消待执行的 RAF，将 transform 落实到 left/top
             if (dragRAFId) {
@@ -913,19 +1005,21 @@ VRMManager.prototype._setupReturnButtonDrag = function (returnButtonContainer) {
             commitDragPosition();
             const moved = returnButtonContainer.getAttribute('data-dragging') === 'true';
             const movedDistancePx = Math.hypot(pendingClientX - dragStartX, pendingClientY - dragStartY);
+            const dragActivityFacts = finishDragActivity();
 
             setTimeout(() => returnButtonContainer.setAttribute('data-dragging', 'false'), 10);
             isDragging = false;
             dragActiveDispatched = false;
             returnButtonContainer.style.cursor = 'grab';
-            if (moved) {
-                window.dispatchEvent(new CustomEvent('neko:return-ball-manual-move', {
-                    detail: {
-                        reason: 'return-ball-drag-end',
-                        container: returnButtonContainer,
-                        movedDistancePx: movedDistancePx
-                    }
-                }));
+            if (dragActivityFacts) {
+                const dragCancelled = cancelled || !moved;
+                dispatchDragTerminal(
+                    dragCancelled ? 'return-ball-drag-cancel' : 'return-ball-drag-end',
+                    Object.assign({
+                        movedDistancePx: moved ? movedDistancePx : 0,
+                        dragCancelled: dragCancelled
+                    }, dragActivityFacts)
+                );
             }
 
             // 恢复拖拽期间禁用的视觉效果
@@ -953,11 +1047,12 @@ VRMManager.prototype._setupReturnButtonDrag = function (returnButtonContainer) {
     // 保存 document 级别的事件监听器引用，以便后续清理
     this._returnButtonDragHandlers = {
         mouseMove: (e) => handleMove(e.clientX, e.clientY),
-        mouseUp: handleEnd,
+        mouseUp: () => handleEnd(false),
         touchMove: (e) => {
             if (isDragging) { e.preventDefault(); const touch = e.touches[0]; handleMove(touch.clientX, touch.clientY); }
         },
-        touchEnd: handleEnd
+        touchEnd: () => handleEnd(false),
+        touchCancel: () => handleEnd(true)
     };
 
     document.addEventListener('mousemove', this._returnButtonDragHandlers.mouseMove);
@@ -970,6 +1065,7 @@ VRMManager.prototype._setupReturnButtonDrag = function (returnButtonContainer) {
     });
     document.addEventListener('touchmove', this._returnButtonDragHandlers.touchMove, { passive: false });
     document.addEventListener('touchend', this._returnButtonDragHandlers.touchEnd);
+    document.addEventListener('touchcancel', this._returnButtonDragHandlers.touchCancel);
     returnButtonContainer.style.cursor = 'grab';
 };
 

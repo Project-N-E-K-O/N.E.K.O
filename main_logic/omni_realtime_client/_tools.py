@@ -22,6 +22,7 @@ from ._shared import (
     ToolCall,
     ToolDefinition,
     ToolResult,
+    canonical_realtime_dialect,
     logger,
     time,
 )
@@ -70,7 +71,7 @@ class _ToolingMixin:
             # tool list is fixed at connect time. Log + ignore.
             logger.info("apply_tools_to_session: Gemini Live does not support mid-session tools update — ignoring")
             return
-        api = self._api_type.lower()
+        api = canonical_realtime_dialect(self._api_type)
         if api == 'step' or api == 'free':
             # stepaudio-2.5-realtime 不再支持内置 web_search，与
             # update_session 初始化路径保持一致：只发 caller 注册的
@@ -187,8 +188,14 @@ class _ToolingMixin:
             pass
         elif result.call_id:
             item["call_id"] = result.call_id
-        await self.send_event({
+        item_event = {
             "type": "conversation.item.create",
             "item": item,
-        })
-        await self.send_event({"type": "response.create"})
+        }
+        ticket = await self._ensure_response_arbiter().enqueue(
+            source="tool_result",
+            events_before_response=(item_event,),
+            response_event={"type": "response.create"},
+            priority=5,
+        )
+        await ticket.sent

@@ -130,10 +130,6 @@ function init_app() {
         window.appButtons.init();
     }
 
-    if (window.appTutorialPrompt && window.appTutorialPrompt.init) {
-        window.appTutorialPrompt.init();
-    }
-
     if (window.appAutostartPrompt && window.appAutostartPrompt.init) {
         window.appAutostartPrompt.init();
     }
@@ -282,12 +278,83 @@ window.addEventListener('load', async () => {
 
     // 拉取待弹重要通知 + 版本更新日志（chat 独立窗口跳过）
     // 同一个 modal 队列；按 changelog（背景）→ pending notices（行动召唤）顺序入队。
-    // 启动 gate：先等存档迁移/位置选择 + tutorial/初始人设走完，最多 15s 兜底防 hang。
+    // 启动 gate：先等存档迁移/位置选择 + tutorial/初始人设走完；15s 只兜底教程模块未加载。
     (async () => {
         if (_isChatPage) return;
         if (typeof window.showProminentNotice !== 'function') return;
 
         const NOTICE_GATE_FALLBACK_MS = 15000;
+        const TUTORIAL_GATE_QUIET_MS = 200;
+        const waitForTutorialStartupBarrier = () => new Promise((resolve) => {
+            let moduleUnavailableFallbackExpired = false;
+            let quietSince = 0;
+            let pollTimer = null;
+            let fallbackTimer = null;
+            let done = false;
+
+            const hasTutorialSurface = () => !!document.querySelector([
+                '.yui-guide-overlay',
+                '.yui-guide-stage',
+                '.driver-overlay',
+                '.driver-popover',
+                '#neko-day1-systray-intro-modal',
+            ].join(', '));
+            const hasActiveTutorial = () => {
+                const manager = window.universalTutorialManager || null;
+                return window.isNekoHomeTutorialPending === true
+                    || window.isInTutorial === true
+                    || !!(manager && (
+                        manager.isTutorialRunning
+                        || manager.activeAvatarFloatingGuideRound
+                        || manager._pendingI18nStart
+                        || manager._teardownPromise
+                    ))
+                    || hasTutorialSurface();
+            };
+            const finish = () => {
+                if (done) return;
+                done = true;
+                clearInterval(pollTimer);
+                clearTimeout(fallbackTimer);
+                window.removeEventListener('neko:startup-greeting-release', check);
+                window.removeEventListener('neko:day1-systray-intro-closed', check);
+                resolve();
+            };
+            const check = () => {
+                if (done) return;
+                const startupState = window.__NEKO_TUTORIAL_STARTUP_SETTLED__;
+                const tutorialModuleLoaded = typeof startupState === 'boolean';
+                const tutorialDecisionPending = tutorialModuleLoaded
+                    ? startupState !== true
+                    : !moduleUnavailableFallbackExpired;
+                if (tutorialDecisionPending || hasActiveTutorial()) {
+                    quietSince = 0;
+                    return;
+                }
+                const now = Date.now();
+                if (!quietSince) {
+                    quietSince = now;
+                    return;
+                }
+                if (now - quietSince >= TUTORIAL_GATE_QUIET_MS) {
+                    finish();
+                }
+            };
+
+            window.addEventListener('neko:startup-greeting-release', check);
+            window.addEventListener('neko:day1-systray-intro-closed', check);
+            pollTimer = setInterval(check, 50);
+            fallbackTimer = setTimeout(() => {
+                // 仅在教程脚本完全没有建立状态标记时 fail-open。模块已加载但仍在等待
+                // 存储、模型或自动轮次判定时不能按时间放行，否则教程可能晚于更新日志启动。
+                moduleUnavailableFallbackExpired = true;
+                check();
+            }, NOTICE_GATE_FALLBACK_MS);
+            check();
+        });
+        // Register before awaiting the other startup gates so a fast tutorial
+        // release cannot be missed while storage/personality setup is pending.
+        const tutorialStartupBarrier = waitForTutorialStartupBarrier();
         try {
             if (typeof window.waitForStorageLocationStartupBarrier === 'function') {
                 await window.waitForStorageLocationStartupBarrier();
@@ -309,6 +376,7 @@ window.addEventListener('load', async () => {
                 }
             }
         } catch (_) { }
+        await tutorialStartupBarrier;
 
         // 更新日志/问卷要把 UI 语言传给后端做本地化下发。坑：本启动流程可能早于 i18next
         // init 完成就跑到这（init 内部要先 await 一次 Steam 语言查询），此时 window.i18next

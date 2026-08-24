@@ -157,7 +157,10 @@ _QUESTION_MARKS: tuple[str, ...] = ('?', '？')
 # Sentence-final particles in CJK that imply a question even without a
 # punctuation mark. Checked against the trailing few chars (after
 # stripping trailing whitespace and one optional punctuation).
-_CN_QUESTION_PARTICLES: tuple[str, ...] = ('吗', '呢', '么', '吧')
+# ⚠️ 只补「嗎」。呢/吧 简繁同形，所以繁中侧原本只漏这一个。
+# **不要**顺手补「麼」：判据是 trail[-1]（末位字符），而「什麼 / 怎麼」是极常见
+# 的非句末用法，收了会把「我不知道該說什麼」误判成问句。
+_CN_QUESTION_PARTICLES: tuple[str, ...] = ('吗', '嗎', '呢', '么', '吧')
 
 
 def _strip_emotion_tags(text: str) -> str:

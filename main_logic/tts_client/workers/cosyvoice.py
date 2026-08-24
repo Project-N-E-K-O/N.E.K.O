@@ -17,14 +17,25 @@
 import time
 
 from utils.config_manager import get_config_manager
-from utils.dashscope_region import DASHSCOPE_GLOBAL_LOCK, configure_dashscope_sdk_urls
+from utils.dashscope_region import (
+    DASHSCOPE_GLOBAL_LOCK,
+    configure_dashscope_sdk_urls,
+    prefer_dashscope_websocket_ipv4,
+)
 
-from .._infra import TTS_SHUTDOWN_SENTINEL, _enqueue_error
+from .._infra import AudioDoneEmitter, TTS_SHUTDOWN_SENTINEL, _enqueue_error
 from .._telemetry import _record_tts_telemetry
 from .dummy import dummy_tts_worker
 from utils.logger_config import get_module_logger
 
 logger = get_module_logger(__name__, "Main")
+
+
+def _get_enrolled_model(voice_meta):
+    if not voice_meta:
+        return None
+    return voice_meta.get('design_model') or voice_meta.get('clone_model')
+
 
 def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_id):
     """
@@ -46,7 +57,7 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
 
     # 从 voice 元数据中读取注册时使用的模型和地域 URL，缺失时回退到全局配置
     _voice_meta = _get_voice_meta(voice_id)
-    _enrolled_model = _voice_meta.get('clone_model') if _voice_meta else None
+    _enrolled_model = _get_enrolled_model(_voice_meta)
     _voice_provider = _voice_meta.get('provider') if _voice_meta else None
 
     # dashscope.api_key 和 dashscope.base_*_api_url 是模块级全局状态，同一进程内
@@ -91,10 +102,21 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
     current_speech_id = None
 
     class Callback(ResultCallback):
-        def __init__(self, response_queue):
+        def __init__(self, response_queue, audio_done):
             self.response_queue = response_queue
+            self.audio_done = audio_done
             self.connection_lost = False
             self._muted = False
+            # 只有主循环已经对这一轮发过 FINISH，on_complete 才代表"音频真的产完了"。
+            # 重连路径也会 close 旧 synthesizer 触发 on_complete，那时本轮还没结束，
+            # 此刻发 audio_done 就是早发。
+            self.finish_requested_speech_id = None
+            # 最新一代 synthesizer 的代号，由 _SynthCallback 构造时盖章。
+            # SDK 的 on_complete 不带任何 synthesizer 标识，而这个 callback 跨轮次
+            # 和重连共享：连切两轮时，旧 synthesizer 迟到的完成通知会读到新一轮的
+            # _active_sid 和 FINISH 标记，把还在说话的那一轮判成放完（早发），
+            # 顺带还把它的聚合缓冲清掉。迟到的旧回调据此认出自己已经过期。
+            self.current_generation = None
             # 当前允许投递的 speech_id（由 worker 在回合边界显式设置）
             # 不能在 on_data 时动态读取 current_speech_id，否则旧流尾包可能被错标到新流。
             self.accepted_speech_id = None
@@ -116,14 +138,24 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
             self._bootstrap_buffer.clear()
             self._bootstrap_sent = False
             self._agg_buffer.clear()
-            
+            self.finish_requested_speech_id = None
+
         def on_open(self): 
             self.connection_lost = False
             self._muted = False
             elapsed = time.time() - self.construct_start_time if hasattr(self, 'construct_start_time') else -1
             logger.debug(f"TTS 连接已建立 (构造到open耗时: {elapsed:.2f}s)")
             
-        def on_complete(self): 
+        def on_complete(self, generation=None):
+            # 过期的 synthesizer（连切两轮 / 轮内重连时被 close 掉的那个）迟到的完成
+            # 通知：它描述的是上一代的流，而这个 callback 的状态早已换成当前轮的。
+            # 整个早退——不冲刷（缓冲里是别人的数据）、不发信号（会把还在说话的这轮
+            # 判成放完）、也不 reset（那会把当前轮的聚合缓冲和 FINISH 标记一起抹掉，
+            # 让本轮真正的收尾无从判断）。
+            if generation is not None and generation != self.current_generation:
+                logger.debug("CosyVoice 忽略过期 synthesizer 的 on_complete (gen=%s, 当前 gen=%s)",
+                             generation, self.current_generation)
+                return
             # 短句可能在首包聚合阈值前就结束，完成时强制冲刷缓冲，避免整句静音。
             # 若已静音（打断/回合切换），跳过投递，避免旧流尾包进入新回合的 response_queue。
             try:
@@ -133,6 +165,11 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
                         self.response_queue.put(("__audio__", sid, bytes(self._bootstrap_buffer)))
                     if self._agg_buffer:
                         self.response_queue.put(("__audio__", sid, bytes(self._agg_buffer)))
+                    # 本轮发过 FINISH（且早退已经保证打来这通回调的就是当代
+                    # synthesizer；每条重建路径都会清掉 FINISH 标记）。
+                    if sid == self.finish_requested_speech_id:
+                        # 尾包已经投进队列，本轮音频流到此关闭
+                        self.audio_done.emit(sid)
             finally:
                 self.reset_bootstrap_state()
                 
@@ -180,7 +217,45 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
                 self.response_queue.put(("__audio__", sid, bytes(self._agg_buffer)))
                 self._agg_buffer.clear()
             
-    callback = Callback(response_queue)
+    class _SynthCallback(ResultCallback):
+        """Per-synthesizer view over the shared Callback.
+
+        The DashScope SDK hands back no reference to the synthesizer that fired,
+        and one Callback instance is shared across turns and reconnects. Stamping
+        a generation at construction time is what lets on_complete tell "my
+        synthesizer finished" apart from "a previous synthesizer's completion
+        arrived late" -- the latter reads as the current turn finishing early,
+        which is the defect the audio-done signal exists to remove. Everything
+        else delegates untouched so the shared buffering/mute semantics stay put.
+        """
+
+        def __init__(self, inner, generation):
+            self._inner = inner
+            self._generation = generation
+            # 建出来的这一代就是最新的一代
+            inner.current_generation = generation
+
+        def on_open(self):
+            self._inner.on_open()
+
+        def on_complete(self):
+            self._inner.on_complete(generation=self._generation)
+
+        def on_error(self, message: str):
+            self._inner.on_error(message)
+
+        def on_close(self):
+            self._inner.on_close()
+
+        def on_event(self, message):
+            self._inner.on_event(message)
+
+        def on_data(self, data: bytes) -> None:
+            self._inner.on_data(data)
+
+    audio_done = AudioDoneEmitter(response_queue)
+    callback = Callback(response_queue, audio_done)
+    synth_generation = 0
     synthesizer = None
     char_buffer = ""
     detected_lang = None
@@ -195,14 +270,17 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
             cosyvoice_model_supports_language_hints,
             get_cosyvoice_clone_model,
         )
-        nonlocal last_streaming_call_time
+        nonlocal last_streaming_call_time, synth_generation
         clone_model = _enrolled_model or get_cosyvoice_clone_model(_voice_provider)
+        synth_generation += 1
         kwargs = dict(
             model=clone_model,
             voice=voice_id,
             speech_rate=1.05,
             format=AudioFormat.OGG_OPUS_48KHZ_MONO_64KBPS,
-            callback=callback,
+            # 钉上这一代的代号：旧 synthesizer 迟到的 on_complete 才认得出自己
+            # 已经过期，不会把新一轮当成放完了。
+            callback=_SynthCallback(callback, synth_generation),
         )
         if lang_hint and cosyvoice_model_supports_language_hints(clone_model):
             kwargs["language_hints"] = [lang_hint]
@@ -230,15 +308,22 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
         if synthesizer is None:
             synthesizer = _create_synthesizer(detected_lang)
             callback.accepted_speech_id = current_speech_id
-        synthesizer.streaming_call(char_buffer)
+        with prefer_dashscope_websocket_ipv4():
+            synthesizer.streaming_call(char_buffer)
         _record_tts_telemetry("cosyvoice", len(char_buffer))
         last_streaming_call_time = time.time()
         char_buffer = ""
 
-    def _do_streaming_complete():
+    def _do_streaming_complete(*, round_end: bool):
         """Non-blockingly notify the server that all text has been sent.
         Only sends the FINISHED signal without waiting for server confirmation. Audio keeps streaming to the frontend via the on_data callback.
         The synthesizer stays open and is closed at the next speech_id switch.
+
+        ``round_end`` says whether this FINISH really terminates the utterance.
+        The idle keep-alive caller passes False: it finishes the synthesizer only
+        to beat the server's socket timeout, and more text of the same speech can
+        still follow, so the resulting ``on_complete`` must not be reported as the
+        end of the audio stream.
         """
         nonlocal synthesizer, last_streaming_call_time
         if synthesizer is None:
@@ -255,10 +340,20 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
             last_streaming_call_time = None
             return
 
+        # 标记必须在 send 之前武装：SDK 的接收线程可能在 send 返回前就把
+        # on_complete 打回来（短句尤其快），标记晚一步就等于本轮白白漏发一次
+        # audio_done、退化到前端 700ms give-up。
+        # 本轮已经发过 FINISH：后续的 on_complete 才是真正的音频收尾。
+        # 空闲保活的 FINISH 不算：本轮还可能继续来文本（届时会新建 synthesizer），
+        # 那次 on_complete 发 audio_done 就是早发，前端会提前收尾。
+        callback.finish_requested_speech_id = current_speech_id if round_end else None
         try:
             synthesizer.ws.send(synthesizer.request.getFinishRequest())
         except Exception as e:
             logger.warning(f"发送TTS完成信号失败: {e}")
+            # FINISH 没发出去，服务端不会给这一轮的完成通知；撤回标记，
+            # 免得后面某个别的完成通知被当成本轮收尾（早发）。
+            callback.finish_requested_speech_id = None
         last_streaming_call_time = None
         # 这里不能立刻清 accepted_speech_id/bootstrap。
         # FINISH 发出后，服务端仍可能继续回传尾包；应由 on_complete 或后续中断/切换来收口状态。
@@ -272,7 +367,7 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
                     and last_streaming_call_time is not None
                     and time.time() - last_streaming_call_time > IDLE_AUTO_COMPLETE_SECONDS):
                 logger.debug(f"CosyVoice 空闲 >{IDLE_AUTO_COMPLETE_SECONDS}s，主动 streaming_complete")
-                _do_streaming_complete()
+                _do_streaming_complete(round_end=False)
             time.sleep(0.01)
             continue
 
@@ -285,19 +380,29 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
             # 打断：立即静音回调 → 关闭 synthesizer → 清理状态
             # 先 mute 再 close，确保旧 SDK websocket 线程不再往 response_queue 灌数据
             callback._muted = True
-            if synthesizer is not None:
-                try:
-                    synthesizer.close()
-                except Exception:
-                    pass
-            synthesizer = None
-            last_streaming_call_time = None
-            current_speech_id = None
-            char_buffer = ""
-            detected_lang = None
-            callback.connection_lost = False
-            callback.accepted_speech_id = None
-            callback.reset_bootstrap_state()
+            audio_done.begin_interrupt()  # 打断轮不发 audio_done（走独立 cancel 通道）
+            # try/finally 与 step/qwen/grok/elevenlabs/gptsovits 对偶：拆卸段里任何
+            # 意外抛出都不能把 emitter 永久停在 interrupted 上，否则本会话之后所有轮
+            # 都静默漏发 audio_done。
+            try:
+                if synthesizer is not None:
+                    try:
+                        synthesizer.close()
+                    except Exception:
+                        # 打断拆卸：连接反正要丢弃，close 失败也得继续往下清状态，
+                        # 抛上去只会把打断本身打断（回调已 _muted，不会再灌数据）。
+                        pass
+                synthesizer = None
+                last_streaming_call_time = None
+                current_speech_id = None
+                char_buffer = ""
+                detected_lang = None
+                callback.connection_lost = False
+                callback.accepted_speech_id = None
+                callback.reset_bootstrap_state()
+                audio_done.reset()
+            finally:
+                audio_done.end_interrupt()
             continue
 
         if sid is None:
@@ -306,7 +411,7 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
                 _flush_buffer()
             except Exception as e:
                 logger.warning(f"TTS flush buffer 失败: {e}")
-            _do_streaming_complete()
+            _do_streaming_complete(round_end=True)
             # 不清 current_speech_id / synthesizer：
             # 音频继续流到前端，由下次 speech_id 切换时打断
             char_buffer = ""
@@ -335,7 +440,8 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
             # 导致 _agg_buffer 带着旧数据进入新回合。此处提前清理消除该竞态。
             callback.reset_bootstrap_state()
             callback.accepted_speech_id = sid
-            
+            audio_done.reset()  # 新轮次重置 audio_done 去重标记
+
         if tts_text is None or not tts_text.strip():
             time.sleep(0.01)
             continue
@@ -353,7 +459,8 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
                     logger.info(f"CosyVoice 语言提示: {detected_lang}")
                 synthesizer = _create_synthesizer(detected_lang)
                 callback.accepted_speech_id = current_speech_id
-                synthesizer.streaming_call(char_buffer)
+                with prefer_dashscope_websocket_ipv4():
+                    synthesizer.streaming_call(char_buffer)
                 _record_tts_telemetry("cosyvoice", len(char_buffer))
                 last_streaming_call_time = time.time()
                 char_buffer = ""
@@ -370,21 +477,33 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
                 continue
         else:
             try:
-                synthesizer.streaming_call(tts_text)
+                with prefer_dashscope_websocket_ipv4():
+                    synthesizer.streaming_call(tts_text)
                 last_streaming_call_time = time.time()
             except Exception:
                 if synthesizer is not None:
+                    # 本轮还要继续产音频，先撤掉 FINISH 标记：close() 触发的
+                    # on_complete 不是本轮收尾，emit 会早发。
+                    callback.finish_requested_speech_id = None
                     try:
                         synthesizer.close()
                     except Exception:
                         pass
                     synthesizer = None
                     last_streaming_call_time = None
+                    # 旧流留在共享缓冲里的半包必须就地清掉。重连沿用同一个
+                    # speech_id，on_data 只在 sid 变化时才重置缓冲，所以这些
+                    # 半包会和新流的数据拼在一起变成坏音频。以前是靠旧
+                    # synthesizer 迟到的 on_complete 顺手 reset，现在那条回调
+                    # 认出自己过期就整个早退了（正是为了不动当前轮的状态），
+                    # 清理只能由这里做。
+                    callback.reset_bootstrap_state()
 
                 try:
                     synthesizer = _create_synthesizer(detected_lang)
                     callback.accepted_speech_id = current_speech_id
-                    synthesizer.streaming_call(tts_text)
+                    with prefer_dashscope_websocket_ipv4():
+                        synthesizer.streaming_call(tts_text)
                     last_streaming_call_time = time.time()
                 except Exception as reconnect_error:
                     logger.error(f"TTS Reconnect Error: {reconnect_error}")

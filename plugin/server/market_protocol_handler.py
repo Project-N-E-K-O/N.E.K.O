@@ -131,7 +131,7 @@ def _handle_install(params: dict) -> int:
     published_at = params.get("published_at")
     expected_plugin_toml_id = params.get("expected_plugin_toml_id")
     mode = params.get("mode", "install")
-    on_conflict = params.get("on_conflict", "rename")
+    on_conflict = params.get("on_conflict", "fail")
 
     logger.info("Protocol install: plugin={} version={} url={}", plugin_id, version, url)
 
@@ -234,8 +234,22 @@ async def _call_local_install(
                     logger.error("Install failed: {}", error)
                     _show_notification(f"插件安装失败: {error}", "N.E.K.O")
                     return 1
+                elif status == "canceled":
+                    # Cancellation is a terminal state the user asked for, not a
+                    # failure — stop polling and exit cleanly instead of waiting
+                    # out the timeout with no notification.
+                    logger.info("Install canceled: {}", plugin_id)
+                    _show_notification(f"已取消安装插件 {plugin_id}", "N.E.K.O")
+                    return 0
 
+            # Timing out here means we stopped watching, not that the install
+            # failed — it is still running in the app. Say so instead of
+            # exiting silently.
             logger.error("Install timed out")
+            _show_notification(
+                f"插件 {plugin_id} 安装仍在进行中，请回到 N.E.K.O 查看进度",
+                "N.E.K.O",
+            )
             return 1
 
     except httpx.ConnectError:

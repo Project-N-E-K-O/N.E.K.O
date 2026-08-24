@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 from pathlib import Path
 from typing import Any
 
@@ -102,21 +101,18 @@ def _read_disk(file_path: str) -> list:
 
 
 @pytest.fixture(autouse=True)
-def _patch_cloudsave_and_aget(monkeypatch):
-    """Stub out cloudsave gate and replace aget_recent_history with a
-    file-only reader so we don't need a real ConfigManager."""
+def _patch_cloudsave(monkeypatch):
+    """Stub out the cloudsave gate so we don't need a real ConfigManager.
+
+    The old ``aget_recent_history`` stub here is gone on purpose: the review
+    commit now reads the file directly inside its critical section, so the stub
+    was no longer on the code path and would have read as "this fixture controls
+    ``current``" while controlling nothing.
+    """
     monkeypatch.setattr(
         "memory.recent.assert_cloudsave_writable",
         lambda *a, **kw: None,
     )
-
-    async def _fake_aget(self, lanlan_name):
-        fp = self.log_file_path[lanlan_name]
-        if os.path.exists(fp):
-            self.user_histories[lanlan_name] = _read_disk(fp)
-        return self.user_histories.get(lanlan_name, [])
-
-    monkeypatch.setattr(CompressedRecentHistoryManager, "aget_recent_history", _fake_aget)
 
 
 def _run(coro):

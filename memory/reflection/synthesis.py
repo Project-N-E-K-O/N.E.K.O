@@ -34,6 +34,10 @@ from utils.file_utils import (
 
 
 from utils.token_tracker import set_call_type
+from utils.language_utils import (
+    detect_prompt_language_with_ascii_fallback,
+    get_global_language_full,
+)
 
 
 
@@ -54,8 +58,122 @@ from ._shared import (
     REFLECTION_COOLDOWN_MINUTES,
 )
 
+
+def _detect_synthesis_prompt_language(text: str) -> str:
+    return detect_prompt_language_with_ascii_fallback(
+        text,
+        ui_language=get_global_language_full(),
+    )
+
+
 class SynthesisMixin:
-    async def synthesize_reflections(self, lanlan_name: str) -> list[dict]:
+    @staticmethod
+    def _synthesis_locale_text(facts: list[dict]) -> str:
+        """Return raw fact text without importance labels or watermarks."""
+        return "\n".join(
+            str(fact.get('text', ''))
+            for fact in facts
+            if fact.get('text')
+        )
+
+    async def synthesize_scoped_reflections(
+        self,
+        lanlan_name: str,
+        *,
+        max_subjects: int = 1,
+        subject_locale_resolver=None,
+    ) -> list[dict]:
+        """Synthesize a bounded number of ready non-legacy subjects.
+
+        Group traffic can create many independent subjects. Processing at most
+        one ready subject per maintenance tick keeps the expensive reflection
+        path proportional and prevents a busy group fleet from monopolizing the
+        summary model.
+        """
+        if max_subjects <= 0:
+            return []
+        from memory.facts import safe_importance
+        from memory.scopes import subject_from_entry
+
+        facts = await self._fact_store.aload_facts(lanlan_name)
+        grouped: dict[tuple[str, str], dict] = {}
+        for fact in facts or []:
+            if not isinstance(fact, dict):
+                # load_facts preserves legacy/hand-edited non-dict rows; one
+                # such row must not disable scoped synthesis for the whole
+                # character (the maintenance tick retries and re-raises
+                # forever). Recall and dedup already skip them.
+                continue
+            if fact.get('absorbed') or safe_importance(fact, 0) < 5:
+                continue
+            if not fact.get('id'):
+                # Hand-edited rows without a stable id pass the dict guard
+                # but synthesize_reflections sorts on f['id'] — one such row
+                # would keep the whole character's scoped synthesis failing.
+                continue
+            subject = subject_from_entry(fact)
+            if subject is None:
+                continue
+            bucket = grouped.setdefault(
+                (subject.key, subject.scope),
+                {'subject': subject, 'facts': []},
+            )
+            bucket['facts'].append(fact)
+
+        ready = [
+            bucket for bucket in grouped.values()
+            if len(bucket['facts']) >= MIN_FACTS_FOR_REFLECTION
+        ]
+        if not ready:
+            return []
+        # 轮转游标（进程内即可，重启从头轮）：从上次服务过的 subject 之后
+        # 继续，无论本次成功与否都推进。oldest-first 的问题是一个 dead-letter
+        # / 反复失败的 bucket 会每 tick 占住唯一名额，把其他 subject 饿死；
+        # 失败退避（synthesize_reflections 内部 backoff）只省 LLM 调用，
+        # 不让出名额。
+        ready.sort(key=lambda bucket: (
+            bucket['subject'].key, bucket['subject'].scope,
+        ))
+        cursors = getattr(self, '_scoped_synth_cursor', None)
+        if cursors is None:
+            cursors = {}
+            self._scoped_synth_cursor = cursors
+        last_served = cursors.get(lanlan_name)
+        start = 0
+        if last_served is not None:
+            for i, bucket in enumerate(ready):
+                if (bucket['subject'].key, bucket['subject'].scope) > last_served:
+                    start = i
+                    break
+        created: list[dict] = []
+        for offset in range(min(max_subjects, len(ready))):
+            bucket = ready[(start + offset) % len(ready)]
+            cursors[lanlan_name] = (
+                bucket['subject'].key, bucket['subject'].scope,
+            )
+            selected_locale = None
+            if subject_locale_resolver is not None:
+                try:
+                    selected_locale = await subject_locale_resolver(
+                        lanlan_name,
+                        bucket['subject'],
+                    )
+                except Exception as locale_error:  # noqa: BLE001
+                    logger.warning(
+                        f"[ReflectionSynth] {lanlan_name}/"
+                        f"{bucket['subject'].key}: scoped prompt locale "
+                        f"解析失败，使用角色 locale: {locale_error}"
+                    )
+            from utils.language_utils import language_context
+            with language_context(selected_locale):
+                created.extend(await self.synthesize_reflections(
+                    lanlan_name, subject=bucket['subject'],
+                ))
+        return created
+
+    async def synthesize_reflections(
+        self, lanlan_name: str, *, subject=None,
+    ) -> list[dict]:
         """Synthesize pending reflections from accumulated unabsorbed facts.
 
         Called during proactive chat. Returns newly created reflections.
@@ -84,10 +202,20 @@ class SynthesisMixin:
             losing side returns [] without polluting the caller's view.
         """
         from config.prompts.prompts_memory import get_reflection_prompt
-        from utils.language_utils import get_global_language
         from utils.llm_client import create_chat_llm_async
 
-        unabsorbed = await self._fact_store.aget_unabsorbed_facts(lanlan_name)
+        from memory.scopes import coerce_subject
+        memory_subject = coerce_subject(subject)
+        forget_epoch = (
+            self._subject_forget_epoch(lanlan_name, memory_subject)
+            if memory_subject is not None else None
+        )
+        if memory_subject is None:
+            unabsorbed = await self._fact_store.aget_unabsorbed_facts(lanlan_name)
+        else:
+            unabsorbed = await self._fact_store.aget_unabsorbed_facts(
+                lanlan_name, subject=memory_subject,
+            )
         if len(unabsorbed) < MIN_FACTS_FOR_REFLECTION:
             return []
 
@@ -156,11 +284,27 @@ class SynthesisMixin:
             return []
 
         _, _, _, _, name_mapping, _, _, _, _ = await self._config_manager.aget_character_data()
-        master_name = name_mapping.get('human', '主人')
+        if memory_subject is not None:
+            # scoped 合成绝不能把私聊主人名注入 prompt：legacy 反思模板的
+            # {MASTER_NAME} 框架会指示模型"产出关于主人的洞察"，把已正确
+            # 归属的成员事实改写成关于私聊主人的反思（对偶提取侧的
+            # speaker_label 修复）。用 subject.key 作机械描述符——fact 文本
+            # 本身已带成员可读标签，模型锚定不受影响。
+            master_name = memory_subject.key
+        else:
+            master_name = name_mapping.get('human', '主人')
 
+        prompt_lang = _detect_synthesis_prompt_language(
+            self._synthesis_locale_text(unabsorbed),
+        )
         facts_text = "\n".join(f"- {f['text']} (importance: {f.get('importance', 5)})" for f in unabsorbed)
-        related_block = await self._build_related_context_block(lanlan_name, unabsorbed)
-        reflection_prompt = get_reflection_prompt(get_global_language())
+        related_block = await self._build_related_context_block(
+            lanlan_name,
+            unabsorbed,
+            subject=memory_subject,
+            prompt_lang=prompt_lang,
+        )
+        reflection_prompt = get_reflection_prompt(prompt_lang)
         prompt = reflection_prompt.replace('{RELATED_CONTEXT_BLOCK}', related_block)
         prompt = prompt.replace('{FACTS}', facts_text)
         prompt = prompt.replace('{LANLAN_NAME}', lanlan_name)
@@ -168,7 +312,7 @@ class SynthesisMixin:
 
         try:
             set_call_type("memory_reflection")
-            api_config = self._config_manager.get_model_api_config('summary')
+            api_config = await self._config_manager.aget_model_api_config('summary')
             # timeout: 见 MEMORY_LLM_HARD_TIMEOUT_SECONDS 注释（上游转发
             # 120s hard cap，client 必须 ≤110s）。开 thinking 后输出多字段
             # JSON ontology 比简单分类长，吃满 110 也算合理。LLM 在锁外
@@ -204,9 +348,13 @@ class SynthesisMixin:
                 await self._abump_synth_backoff(lanlan_name, backoff_key, "reflection field non-str")
                 return []
             reflection_text = reflection_text.strip()
-            reflection_entity = result.get('entity', 'relationship')
-            if reflection_entity not in ('master', 'neko', 'relationship'):
-                reflection_entity = 'relationship'
+            semantic_entity = result.get('entity', 'relationship')
+            if semantic_entity not in ('master', 'neko', 'relationship'):
+                semantic_entity = 'relationship'
+            reflection_entity = (
+                memory_subject.kind if memory_subject is not None
+                else semantic_entity
+            )
 
             # Ontology fields (RFC §3). Missing fields are tolerated — we
             # only enforce consistency when the LLM does fill them in, so
@@ -228,7 +376,7 @@ class SynthesisMixin:
             event_when_raw = _norm_when(result.get('event_when'))
 
             ok, reason = _validate_reflection_ontology(
-                reflection_entity, rel_type, temporal, reflection_text,
+                semantic_entity, rel_type, temporal, reflection_text,
             )
             if not ok:
                 logger.info(
@@ -305,9 +453,51 @@ class SynthesisMixin:
             'event_end_at': event_end_at,
             'schema_version': _SCHEMA_V,
         })
+        from memory.speaker_trust import provenance_of_entries
+        reflection.update(provenance_of_entries(unabsorbed))
+        if memory_subject is not None:
+            reflection.update(memory_subject.as_entry_fields())
+            # 简化群记忆管线：scoped reflection 不走 evidence 确认。群/成员
+            # subject 没有 user-confirm（surfacing 默认 legacy-only）也没有
+            # Stage-2 信号（scoped facts 写盘即 signal_processed=True），
+            # pending 态对它们是永久死路。合成本身（≥MIN_FACTS_FOR_REFLECTION
+            # 条事实聚合）就是质量闸，直接落 confirmed；后续生命周期走零 LLM
+            # 成本的 time-driven 尾程（aauto_promote_time_driven 的 scoped
+            # pass：按年龄 confirmed→promoted 合入 scoped persona）。
+            reflection['status'] = 'confirmed'
+            reflection['confirmed_at'] = now_iso
+            reflection['auto_confirmed'] = True
+            # confirmed 渲染门（_filter_active_confirmed）要求 evidence_score
+            # 严格 > 0，而 scoped 永远没有 evidence 信号来抬分：importance≤6
+            # 的批次 importance 种子为 0.0，会让这条反思在 time-driven 晋升
+            # 进 persona 之前对群上下文（/scoped_context）完全隐身。给最小
+            # 正种子保证 confirmed 即可见（指数衰减不会归零）。
+            if float(reflection.get('reinforcement') or 0.0) <= 0.0:
+                reflection['reinforcement'] = 0.1
+                reflection['rein_last_signal_at'] = now_iso
 
         # ── LOCK 仅护住 re-load + dedup append + save ──
         async with self._get_alock(lanlan_name):
+            if (
+                memory_subject is not None
+                and (
+                    self._subject_forget_is_active(
+                        lanlan_name, memory_subject,
+                    )
+                    or self._subject_forget_epoch(
+                        lanlan_name, memory_subject,
+                    ) != forget_epoch
+                )
+            ):
+                # The source facts were erased while the LLM was in flight.
+                # A late result must not recreate an immediately recallable
+                # scoped reflection after the forget response.
+                logger.info(
+                    f"[Reflection] {lanlan_name}: subject forget overlapped "
+                    f"synthesis for {memory_subject.key}/"
+                    f"{memory_subject.scope}; dropping late result"
+                )
+                return []
             # 再次 load：LLM 调用期间可能有并发 synth；用最新 list 做 id dedup 追加
             reflections = await self.aload_reflections(lanlan_name)
             created = False
@@ -334,13 +524,21 @@ class SynthesisMixin:
             # 未持久化、可能与磁盘版文本不同的"幽灵反思"，违反"返回值
             # = 本调用真正新建的反思"语义。
             return []
-        # reflection 原文不写 logger（隐私）；本地 print 兜底
+        # reflection 原文不写 logger（隐私）；本地 print 兜底——但 scoped
+        # 反思（群/成员）原文一个字符都不出 stdout：部署环境 stdout 常被
+        # 采集为应用日志，等于把成员隐私带出 scoped 存储。
         logger.info(f"[Reflection] {lanlan_name}: 合成了新反思 {rid} (len={len(reflection_text)} chars)")
-        print(f"[Reflection] {lanlan_name}: 新反思 {rid}: {reflection_text[:50]}...")
+        if memory_subject is None:
+            print(f"[Reflection] {lanlan_name}: 新反思 {rid}: {reflection_text[:50]}...")
         return [reflection]
 
     async def _build_related_context_block(
-        self, lanlan_name: str, unabsorbed: list[dict]
+        self,
+        lanlan_name: str,
+        unabsorbed: list[dict],
+        *,
+        subject=None,
+        prompt_lang: str = "zh",
     ) -> str:
         """When embeddings are available, recall absorbed facts as RELATED_CONTEXT;
         unavailable / empty recall → return an empty string (the
@@ -377,6 +575,12 @@ class SynthesisMixin:
             logger.warning(f"[Reflection] related context load_facts 失败: {e}")
             return ""
 
+        from memory.scopes import filter_entries_for_subjects
+        all_facts = filter_entries_for_subjects(
+            all_facts,
+            [subject] if subject is not None else None,
+        )
+
         # Codex P2 #1392：必须 pre-filter 出有 valid embedding 的 fact 才能
         # 进 reranker。fact 没 evidence `score` 字段，若放进 rerank=False 的
         # coarse_rank 而 embedding 又是 stale/missing（model-id 切换后 / backfill
@@ -387,6 +591,12 @@ class SynthesisMixin:
             f for f in all_facts
             if f.get('absorbed')
             and f.get('id') not in unabsorbed_ids
+            # subject 时间归档的行（subject_archived_at 标记）不进合成
+            # 背景：它们已退出召回与渲染，复活后的新一轮合成若把归档内
+            # 容当 RELATED_CONTEXT 会把它重新洗进活跃 reflection——归档
+            # 语义就被这条侧路悄悄绕开了。
+            and not f.get('subject_archived_at')
+            and not f.get('arbitration_archived_at')
             and is_cached_embedding_valid(f, f.get('text', ''), model_id)
         ]
         if not absorbed_pool:
@@ -424,14 +634,15 @@ class SynthesisMixin:
             f"- {f.get('text', '')} (importance: {f.get('importance', 5)})"
             for f in related
         )
+        from config.prompts.prompts_memory import get_reflection_related_context_note
         return (
             "======以下为相关历史背景======\n"
             f"{related_text}\n"
-            "（仅供参考，本轮不要为它们单独产出 reflection）\n"
+            f"（{get_reflection_related_context_note(prompt_lang)}）\n"
             "======以上为相关历史背景======\n\n"
         )
 
-    async def reflect(self, lanlan_name: str) -> dict | None:
+    async def reflect(self, lanlan_name: str, *, subject=None) -> dict | None:
         """Alias for synthesize_reflections. Returns first reflection or None."""
-        results = await self.synthesize_reflections(lanlan_name)
+        results = await self.synthesize_reflections(lanlan_name, subject=subject)
         return results[0] if results else None

@@ -13,6 +13,21 @@ const STANDALONE_HUD_POSITION = Object.freeze({
     transform: 'none'
 });
 const AGENT_TASK_HUD_COLLAPSED_KEY = 'agent-task-hud-collapsed-v2';
+const AGENT_TASK_HUD_VISIBLE_KEY = 'neko-agent-taskhud-visible';
+
+function isAgentTaskHudVisiblePreferenceEnabled() {
+    try {
+        return localStorage.getItem(AGENT_TASK_HUD_VISIBLE_KEY) !== 'false';
+    } catch (_) {
+        return true;
+    }
+}
+
+function setAgentTaskHudVisiblePreferenceEnabled(enabled) {
+    try {
+        localStorage.setItem(AGENT_TASK_HUD_VISIBLE_KEY, enabled ? 'true' : 'false');
+    } catch (_) {}
+}
 
 function appendPluginDashboardOpenerOrigin(url) {
     const target = new URL(url, document.baseURI || window.location.href);
@@ -309,56 +324,95 @@ window.AgentHUD._createAgentPopupContent = function (popup) {
     statusDiv.setAttribute('data-i18n', 'settings.toggles.checking');
     popup.appendChild(statusDiv);
 
-    // 【状态机严格控制】所有 agent 开关默认禁用，title显示查询中
-    // 只有状态机检测到可用性后才逐个恢复交互
+    // 【状态机严格控制】Agent 能力开关默认禁用，title显示查询中
+    // 只有状态机检测到可用性后才逐个恢复交互；悬浮窗显示偏好不依赖后端状态。
     const agentToggles = [
         {
             id: 'agent-master',
             label: window.t ? window.t('settings.toggles.agentMaster') : 'Agent总开关',
             labelKey: 'settings.toggles.agentMaster',
             initialDisabled: true,
-            initialTitle: window.t ? window.t('settings.toggles.checking') : '查询中...'
+            initialTitle: window.t ? window.t('settings.toggles.checking') : '查询中...',
+            controlStyle: 'slider'
+        },
+        {
+            id: 'agent-taskhud',
+            label: window.t ? window.t('settings.toggles.showTaskHud') : '显示悬浮窗',
+            labelKey: 'settings.toggles.showTaskHud',
+            initialDisabled: false,
+            controlStyle: 'slider',
+            separatorAfter: true
         },
         {
             id: 'agent-keyboard',
             label: window.t ? window.t('settings.toggles.keyboardControl') : '键鼠控制',
             labelKey: 'settings.toggles.keyboardControl',
             initialDisabled: true,
-            initialTitle: window.t ? window.t('settings.toggles.checking') : '查询中...'
+            initialTitle: window.t ? window.t('settings.toggles.checking') : '查询中...',
+            controlStyle: 'slider'
         },
         {
             id: 'agent-browser',
             label: window.t ? window.t('settings.toggles.browserUse') : 'Browser Control',
             labelKey: 'settings.toggles.browserUse',
             initialDisabled: true,
-            initialTitle: window.t ? window.t('settings.toggles.checking') : '查询中...'
+            initialTitle: window.t ? window.t('settings.toggles.checking') : '查询中...',
+            controlStyle: 'slider'
         },
         {
             id: 'agent-openfang',
             label: window.t ? window.t('settings.toggles.openfang') : '专属桌面',
             labelKey: 'settings.toggles.openfang',
             initialDisabled: true,
-            initialTitle: window.t ? window.t('settings.toggles.checking') : '查询中...'
+            initialTitle: window.t ? window.t('settings.toggles.checking') : '查询中...',
+            controlStyle: 'slider'
         },
         {
             id: 'agent-user-plugin',
             label: window.t ? window.t('settings.toggles.userPlugin') : '用户插件',
             labelKey: 'settings.toggles.userPlugin',
             initialDisabled: true,
-            initialTitle: window.t ? window.t('settings.toggles.checking') : '查询中...'
+            initialTitle: window.t ? window.t('settings.toggles.checking') : '查询中...',
+            controlStyle: 'slider'
         },
         {
             id: 'agent-openclaw',
             label: window.t ? window.t('settings.toggles.openclawConnect') : 'OpenClaw',
             labelKey: 'settings.toggles.openclawConnect',
             initialDisabled: true,
-            initialTitle: window.t ? window.t('settings.toggles.checking') : '查询中...'
+            initialTitle: window.t ? window.t('settings.toggles.checking') : '查询中...',
+            controlStyle: 'slider'
         }
     ];
 
     agentToggles.forEach(toggle => {
         const toggleItem = this._createToggleItem(toggle, popup);
         popup.appendChild(toggleItem);
+
+        if (toggle.id === 'agent-taskhud') {
+            const taskHudCheckbox = toggleItem.querySelector(`#${avatarPrefix}-agent-taskhud`);
+            if (taskHudCheckbox) {
+                taskHudCheckbox.checked = isAgentTaskHudVisiblePreferenceEnabled();
+                if (typeof taskHudCheckbox._updateStyle === 'function') {
+                    taskHudCheckbox._updateStyle();
+                }
+                taskHudCheckbox.addEventListener('change', (event) => {
+                    setAgentTaskHudVisiblePreferenceEnabled(taskHudCheckbox.checked);
+                    if (typeof window.checkAndToggleTaskHUD === 'function') {
+                        window.checkAndToggleTaskHUD(event);
+                    } else if (!taskHudCheckbox.checked && typeof this.hideAgentTaskHUD === 'function') {
+                        this.hideAgentTaskHUD();
+                    }
+                });
+            }
+        }
+
+        if (toggle.separatorAfter) {
+            const separator = document.createElement('div');
+            separator.className = `${avatarPrefix}-settings-separator`;
+            separator.setAttribute('aria-hidden', 'true');
+            popup.appendChild(separator);
+        }
 
         // 侧边快捷入口（用户插件管理面板 / OpenClaw 接入教程）
         if ((toggle.id === 'agent-user-plugin' || toggle.id === 'agent-openclaw') && typeof this._createSidePanelContainer === 'function') {
@@ -840,9 +894,10 @@ window.AgentHUD._setupCollapseFunctionality = function (emptyState, collapseButt
 };
 
 // 显示任务 HUD
-window.AgentHUD.showAgentTaskHUD = function () {
+window.AgentHUD.showAgentTaskHUD = function (options = {}) {
+    const ignoreVisibilityPreference = options.ignoreVisibilityPreference === true;
     console.log('[AgentHUD][TimeoutTrace] showAgentTaskHUD called. Current timeout ID:', this._hideTimeout);
-    if (isAgentHudSuppressedByGoodbye()) {
+    if (isAgentHudSuppressedByGoodbye() || (!ignoreVisibilityPreference && !isAgentTaskHudVisiblePreferenceEnabled())) {
         this.hideAgentTaskHUD();
         return;
     }

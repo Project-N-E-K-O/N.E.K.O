@@ -20,7 +20,7 @@ Implementation presence is not a guarantee that every provider, platform, or dis
 
 Use, in order:
 
-1. accepted GitHub issues and linked design records;
+1. accepted GitHub issues and linked [project records](/records/);
 2. the current milestone/project board, when maintained;
 3. merged PRs and release notes for completed work;
 4. the code and tests for actual current behavior.

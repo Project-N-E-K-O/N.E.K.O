@@ -75,8 +75,6 @@ from .models import (
     STORE_CHARACTER_MODE,
     STORE_CHARACTER_PROFILE_VERSION,
     STORE_CHARACTER_PROFILES,
-    STORE_DEDUPE_WINDOW,
-    STORE_CROSS_SCENE_MEMORY,
     STORE_EVENTS_BYTE_OFFSET,
     STORE_EVENTS_FILE_SIZE,
     STORE_LAST_ERROR,
@@ -110,7 +108,18 @@ from .dependency_status import (
 )
 from plugin.plugins._shared.rapidocr.rapidocr_support import inspect_rapidocr_installation
 from .dxcam_support import inspect_dxcam_installation
-from .reader import tail_events_jsonl, warmup_replay_events
+from .reader import (
+    read_stream_checkpoint,
+    snapshot_events_boundary,
+    tail_events_jsonl,
+    warmup_replay_events,
+)
+from .session_lifecycle import (
+    SESSION_ORIGIN_PREEXISTING,
+    classify_session_origin,
+    event_releases_empty_snapshot_gate,
+    session_identity_key,
+)
 from .service import (
     apply_event_to_histories,
     apply_event_to_snapshot,
@@ -168,6 +177,7 @@ from .plugin_constants import (
 
 _BACKGROUND_BRIDGE_POLL_MIN_STALE_SECONDS = 45.0
 _BRIDGE_TICK_INTERVAL_SECONDS = 1.0
+_PREEXISTING_SESSION_STATE_LIMIT = 16
 # Foreground refresh TTL: repeated calls within two seconds return early so
 # bridge_tick, advance monitor, and status payload refreshes stay idempotent.
 _OCR_FOREGROUND_REFRESH_TTL_SECONDS = 2.0
@@ -313,6 +323,16 @@ class GalgamePlugin(
         self.file_logger = self.enable_file_logging(log_level="INFO")
         self.logger = self.file_logger
         self._state_lock = threading.Lock()
+        self._plugin_run_started_at = 0.0
+        self._startup_existing_session_ids: set[tuple[str, str, str]] | None = None
+        self._startup_preexisting_session_states: dict[
+            tuple[str, str, str],
+            dict[str, Any],
+        ] = {}
+        self._active_stream_checkpoint_identity: tuple[str, str, str] | None = None
+        self._active_stream_checkpoint_offset = 0
+        self._active_stream_checkpoint = ""
+        self._announced_stream_reset_identity: tuple[str, str, str] | None = None
         self._poll_bridge_locks: dict[int, asyncio.Lock] = {}
         self._poll_bridge_thread_lock = threading.Lock()
         self._bridge_poll_task_lock = threading.RLock()
@@ -653,7 +673,6 @@ class GalgamePlugin(
                 "character_mode": state.character_mode,
                 "character_fixed_name": state.character_fixed_name,
                 "character_mode_stale": state.character_mode_stale,
-                "cross_scene_memory": dict(state.cross_scene_memory),
                 "character_runtime_state": dict(state.character_runtime_state),
                 "last_push_seq": state.last_push_seq,
                 "plugin_error": state.plugin_error,
@@ -709,7 +728,6 @@ class GalgamePlugin(
             "character_mode": raw["character_mode"],
             "character_fixed_name": raw["character_fixed_name"],
             "character_mode_stale": raw["character_mode_stale"],
-            "cross_scene_memory": json_copy(raw["cross_scene_memory"]),
             "character_runtime_state": json_copy(raw["character_runtime_state"]),
             "last_push_seq": raw["last_push_seq"],
             "plugin_error": raw["plugin_error"],
@@ -1366,7 +1384,6 @@ class GalgamePlugin(
         return runtime
 
     def _commit_state(self, payload: dict[str, Any]) -> None:
-        cross_scene_memory_to_persist: dict[str, Any] | None = None
         character_runtime_state_to_persist: dict[str, Any] | None = None
         copy_json = _package_json_copy
         with self._state_lock:
@@ -1454,15 +1471,6 @@ class GalgamePlugin(
                 "character_mode_stale",
                 bool(payload.get("character_mode_stale", state.character_mode_stale)),
             )
-            if not live_changed_since_snapshot("cross_scene_memory"):
-                cross_scene_memory_value = payload.get(
-                    "cross_scene_memory",
-                    state.cross_scene_memory,
-                )
-                if state.cross_scene_memory != cross_scene_memory_value:
-                    cross_scene_memory_to_persist = copy_json(cross_scene_memory_value)
-                    state.cross_scene_memory = copy_json(cross_scene_memory_to_persist)
-                    changed = True
             if not live_changed_since_snapshot("character_runtime_state"):
                 character_runtime_state_value = payload.get(
                     "character_runtime_state",
@@ -1544,18 +1552,6 @@ class GalgamePlugin(
             if changed:
                 self._state_dirty = True
                 self._cached_snapshot = None
-        if cross_scene_memory_to_persist is not None:
-            try:
-                self._persist.persist_config_override(
-                    STORE_CROSS_SCENE_MEMORY,
-                    cross_scene_memory_to_persist,
-                )
-            except Exception:  # noqa: BLE001
-                self.logger.warning(
-                    "failed to persist galgame strategy memory state key=%s",
-                    STORE_CROSS_SCENE_MEMORY,
-                    exc_info=True,
-                )
         if character_runtime_state_to_persist is not None:
             try:
                 self._persist.persist_config_override(
@@ -2414,7 +2410,7 @@ class GalgamePlugin(
             self._state.events_byte_offset = int(restored.get(STORE_EVENTS_BYTE_OFFSET, 0))
             self._state.events_file_size = int(restored.get(STORE_EVENTS_FILE_SIZE, 0))
             self._state.last_seq = int(restored.get(STORE_LAST_SEQ, 0))
-            self._state.dedupe_window = json_copy(restored.get(STORE_DEDUPE_WINDOW, []))
+            self._state.dedupe_window = []
             self._state.last_error = json_copy(restored.get(STORE_LAST_ERROR, {}))
             self._state.active_data_source = DATA_SOURCE_NONE
             self._state.memory_reader_runtime = {}
@@ -2435,7 +2431,6 @@ class GalgamePlugin(
             self._state.character_fixed_name = str(
                 restored.get(STORE_CHARACTER_FIXED_NAME, "")
             )
-            self._state.cross_scene_memory = json_copy(restored.get(STORE_CROSS_SCENE_MEMORY, {}))
             self._state.character_runtime_state = json_copy(
                 restored.get(STORE_CHARACTER_RUNTIME_STATE, {})
             )
@@ -3181,6 +3176,13 @@ class GalgamePlugin(
 
     @lifecycle(id="startup")
     async def startup(self, **_):
+        self._plugin_run_started_at = time.time()
+        self._startup_existing_session_ids = None
+        self._startup_preexisting_session_states.clear()
+        self._active_stream_checkpoint_identity = None
+        self._active_stream_checkpoint_offset = 0
+        self._active_stream_checkpoint = ""
+        self._announced_stream_reset_identity = None
         try:
             await self._load_config()
         except Exception as exc:
@@ -3257,7 +3259,6 @@ class GalgamePlugin(
                     exc,
                 )
 
-        await self._poll_bridge(force=True)
         self._start_ocr_fast_loop()
         await self._ensure_ocr_foreground_advance_monitor()
         return Ok({"status": "ready", "result": await self._build_status_payload_async()})
@@ -3268,6 +3269,7 @@ class GalgamePlugin(
         await self._cancel_ocr_fast_loop()
         await self._cancel_ocr_foreground_advance_monitor()
         await self._cancel_background_bridge_poll()
+        cancelled: asyncio.CancelledError | None = None
         if self._memory_reader_manager is not None:
             try:
                 await self._memory_reader_manager.shutdown()
@@ -3281,6 +3283,8 @@ class GalgamePlugin(
         if self._ocr_reader_manager is not None:
             try:
                 await self._ocr_reader_manager.shutdown()
+            except asyncio.CancelledError as exc:
+                cancelled = exc
             except Exception as exc:
                 _log_plugin_noncritical(
                     self.logger,
@@ -3328,6 +3332,8 @@ class GalgamePlugin(
                 "galgame store shutdown failed: {}",
                 exc,
             )
+        if cancelled is not None:
+            raise cancelled
         return Ok({"status": "stopped"})
 
     @timer_interval(id="bridge_tick", seconds=1, auto_start=True)
@@ -3365,6 +3371,22 @@ class GalgamePlugin(
                         )
                     )
             self._start_background_bridge_poll()
+            vision_initializer = getattr(
+                self._ocr_reader_manager,
+                "initialize_vision_classifier_if_needed",
+                None,
+            )
+            vision_initialization_pending = getattr(
+                self._ocr_reader_manager,
+                "vision_classifier_initialization_pending",
+                None,
+            )
+            should_initialize_vision = (
+                not callable(vision_initialization_pending)
+                or vision_initialization_pending()
+            )
+            if callable(vision_initializer) and should_initialize_vision:
+                await asyncio.to_thread(vision_initializer)
             self._start_ocr_fast_loop()
             await asyncio.sleep(0)
             return Ok({"status": "tick"})
@@ -3754,7 +3776,13 @@ class GalgamePlugin(
                 ocr_reader_stable_event_emitted,
                 warnings,
             )
-        if self._ocr_fast_loop_should_run() and not force:
+        fast_loop_snapshot = dict(local)
+        fast_loop_snapshot["ocr_reader_runtime"] = json_copy(ocr_reader_runtime or {})
+        if (
+            self._ocr_fast_loop_should_run()
+            and not force
+            and self._ocr_fast_loop_capture_allowed_snapshot(fast_loop_snapshot)
+        ):
             self._start_ocr_fast_loop()
             ocr_reader_runtime = json_copy(ocr_reader_runtime or {})
             tick_execution_diagnostics.update(
@@ -3987,6 +4015,59 @@ class GalgamePlugin(
                 )
             )
 
+    def _remember_active_preexisting_session_state(
+        self,
+        local: dict[str, Any],
+    ) -> None:
+        session_id = str(local.get("active_session_id") or "")
+        if not session_id or not self._startup_existing_session_ids:
+            return
+        session_identity = session_identity_key(
+            data_source=str(local.get("active_data_source") or ""),
+            game_id=str(local.get("active_game_id") or ""),
+            session_id=session_id,
+        )
+        if session_identity not in self._startup_existing_session_ids:
+            return
+        cached_state = self._startup_preexisting_session_states.pop(
+            session_identity,
+            {},
+        )
+        self._startup_preexisting_session_states[session_identity] = {
+            "history_events": json_copy(local.get("history_events") or []),
+            "history_lines": json_copy(local.get("history_lines") or []),
+            "history_observed_lines": json_copy(
+                local.get("history_observed_lines") or []
+            ),
+            "history_choices": json_copy(local.get("history_choices") or []),
+            "dedupe_window": json_copy(local.get("dedupe_window") or []),
+            "latest_snapshot": json_copy(local.get("latest_snapshot") or {}),
+            "events_byte_offset": int(local.get("events_byte_offset") or 0),
+            "events_file_size": int(local.get("events_file_size") or 0),
+            "last_seq": int(local.get("last_seq") or 0),
+            "line_buffer": bytes(local.get("line_buffer") or b""),
+            "stream_reset_pending": bool(local.get("stream_reset_pending")),
+            "warmup_session_id": str(
+                local.get("warmup_session_id") or session_id
+            ),
+            "last_seen_data_monotonic": float(
+                local.get("last_seen_data_monotonic") or 0.0
+            ),
+            "stream_checkpoint": str(
+                cached_state.get("stream_checkpoint") or ""
+            ),
+            "stream_checkpoint_offset": int(
+                cached_state.get("stream_checkpoint_offset") or 0
+            ),
+        }
+        while (
+            len(self._startup_preexisting_session_states)
+            > _PREEXISTING_SESSION_STATE_LIMIT
+        ):
+            oldest_identity = next(iter(self._startup_preexisting_session_states))
+            self._startup_preexisting_session_states.pop(oldest_identity, None)
+            self._startup_existing_session_ids.discard(oldest_identity)
+
     async def _apply_bridge_candidate_session(
         self,
         *,
@@ -4000,22 +4081,194 @@ class GalgamePlugin(
 
         session = candidate.session
         session_id = str(session.get("session_id") or "")
-        session_changed = (
-            candidate.game_id != local["active_game_id"]
-            or session_id != local["active_session_id"]
+        attachment_checkpoint = ""
+        attachment_checkpoint_offset = 0
+        session_state = session.get("state")
+        session_state_obj = session_state if isinstance(session_state, dict) else {}
+        candidate_session_identity = session_identity_key(
+            data_source=candidate.data_source,
+            game_id=candidate.game_id,
+            session_id=session_id,
         )
+        active_session_identity = session_identity_key(
+            data_source=str(local.get("active_data_source") or ""),
+            game_id=str(local.get("active_game_id") or ""),
+            session_id=str(local.get("active_session_id") or ""),
+        )
+        preexisting_snapshot_identity = {
+            "scene_id": str(session_state_obj.get("scene_id") or ""),
+            "route_id": str(session_state_obj.get("route_id") or ""),
+            "line_id": str(session_state_obj.get("line_id") or ""),
+        }
+        session_changed = candidate_session_identity != active_session_identity
+        if session_changed:
+            self._announced_stream_reset_identity = None
+        previous_session_id = str(local.get("active_session_id") or "")
+        if session_changed and previous_session_id:
+            self._remember_active_preexisting_session_state(local)
         restore_cursor = (
             not session_changed
             and local["events_byte_offset"] > 0
             and local["active_session_id"] == session_id
         )
         warmup_needed = session_id != local["warmup_session_id"] or session_changed
+        session_origin = classify_session_origin(
+            data_source=candidate.data_source,
+            game_id=candidate.game_id,
+            session_id=session_id,
+            started_at=str(session.get("started_at") or ""),
+            plugin_run_started_at=self._plugin_run_started_at,
+            memory_reader_session_id=str(
+                (local.get("memory_reader_runtime") or {}).get("session_id") or ""
+            ),
+            ocr_reader_session_id=str(
+                (local.get("ocr_reader_runtime") or {}).get("session_id") or ""
+            ),
+            startup_existing_session_ids=self._startup_existing_session_ids,
+        )
+        preexisting_session = session_origin == SESSION_ORIGIN_PREEXISTING
+        if preexisting_session:
+            if self._startup_existing_session_ids is None:
+                self._startup_existing_session_ids = set()
+            self._startup_existing_session_ids.add(candidate_session_identity)
+            while (
+                len(self._startup_existing_session_ids)
+                > _PREEXISTING_SESSION_STATE_LIMIT
+            ):
+                oldest_identity = next(
+                    (
+                        identity
+                        for identity in self._startup_preexisting_session_states
+                        if identity != candidate_session_identity
+                    ),
+                    next(
+                        identity
+                        for identity in self._startup_existing_session_ids
+                        if identity != candidate_session_identity
+                    ),
+                )
+                self._startup_existing_session_ids.discard(oldest_identity)
+                self._startup_preexisting_session_states.pop(oldest_identity, None)
+        saved_preexisting_state = (
+            self._startup_preexisting_session_states.get(
+                candidate_session_identity
+            )
+            if session_changed and preexisting_session
+            else None
+        )
+        resume_preexisting_session = isinstance(saved_preexisting_state, dict)
+        previous_session_meta = local.get("active_session_meta")
+        previous_session_meta_obj = (
+            previous_session_meta if isinstance(previous_session_meta, dict) else {}
+        )
+        previous_stream_generation = (
+            max(0, int(previous_session_meta_obj.get("stream_generation") or 0))
+            if not session_changed
+            else 0
+        )
 
         local["active_game_id"] = candidate.game_id
         local["active_session_id"] = session_id
         local["active_session_meta"] = build_active_session_meta(candidate)
+        local["active_session_meta"]["stream_generation"] = (
+            previous_stream_generation
+        )
         local["active_data_source"] = candidate.data_source
-        local["latest_snapshot"] = json_copy(session.get("state", {}))
+        if resume_preexisting_session:
+            assert saved_preexisting_state is not None
+            for field in (
+                "history_events",
+                "history_lines",
+                "history_observed_lines",
+                "history_choices",
+                "dedupe_window",
+            ):
+                local[field] = json_copy(saved_preexisting_state.get(field) or [])
+            local["latest_snapshot"] = json_copy(
+                saved_preexisting_state.get("latest_snapshot") or {}
+            )
+            local["events_byte_offset"] = int(
+                saved_preexisting_state.get("events_byte_offset") or 0
+            )
+            local["events_file_size"] = int(
+                saved_preexisting_state.get("events_file_size") or 0
+            )
+            local["last_seq"] = int(saved_preexisting_state.get("last_seq") or 0)
+            local["line_buffer"] = bytes(
+                saved_preexisting_state.get("line_buffer") or b""
+            )
+            local["stream_reset_pending"] = bool(
+                saved_preexisting_state.get("stream_reset_pending")
+            )
+            local["warmup_session_id"] = session_id
+            local["last_seen_data_monotonic"] = float(
+                saved_preexisting_state.get("last_seen_data_monotonic") or 0.0
+            )
+            saved_offset = int(local["events_byte_offset"])
+            saved_checkpoint = str(
+                saved_preexisting_state.get("stream_checkpoint") or ""
+            )
+            checkpoint_offset = int(
+                saved_preexisting_state.get("stream_checkpoint_offset") or 0
+            )
+            try:
+                current_file_size = await asyncio.to_thread(
+                    lambda: candidate.events_path.stat().st_size
+                )
+            except OSError:
+                current_file_size = None
+            cursor_invalid = (
+                current_file_size is not None
+                and saved_offset > current_file_size
+            )
+            if (
+                not cursor_invalid
+                and saved_checkpoint
+                and checkpoint_offset == saved_offset
+            ):
+                current_checkpoint = await asyncio.to_thread(
+                    read_stream_checkpoint,
+                    candidate.events_path,
+                    offset=saved_offset,
+                )
+                cursor_invalid = current_checkpoint != saved_checkpoint
+                if not cursor_invalid:
+                    attachment_checkpoint = saved_checkpoint
+                    attachment_checkpoint_offset = saved_offset
+            if cursor_invalid:
+                for field in (
+                    "history_events",
+                    "history_lines",
+                    "history_observed_lines",
+                    "history_choices",
+                    "dedupe_window",
+                ):
+                    local[field] = []
+                local["latest_snapshot"] = {}
+                local["events_byte_offset"] = 0
+                local["events_file_size"] = int(current_file_size or 0)
+                local["last_seq"] = 0
+                local["line_buffer"] = b""
+                local["stream_reset_pending"] = True
+        elif not preexisting_session:
+            refreshed_snapshot = json_copy(session_state_obj)
+            current_snapshot = local.get("latest_snapshot")
+            current_save_boundary = (
+                current_snapshot.get("save_boundary")
+                if not session_changed and isinstance(current_snapshot, dict)
+                else None
+            )
+            if (
+                isinstance(current_save_boundary, dict)
+                and current_save_boundary
+                and not refreshed_snapshot.get("save_boundary")
+            ):
+                refreshed_snapshot["save_boundary"] = json_copy(
+                    current_save_boundary
+                )
+            local["latest_snapshot"] = refreshed_snapshot
+        elif warmup_needed:
+            local["latest_snapshot"] = {}
         if self._context_snapshot_needs_reload(
             local.get("context_snapshot"),
             current_game_id=candidate.game_id,
@@ -4025,7 +4278,34 @@ class GalgamePlugin(
                 candidate.game_id,
             )
 
-        if warmup_needed:
+        if warmup_needed and preexisting_session and not resume_preexisting_session:
+            local["history_events"] = []
+            local["history_lines"] = []
+            local["history_observed_lines"] = []
+            local["history_choices"] = []
+            local["dedupe_window"] = []
+            local["line_buffer"] = b""
+            boundary = await asyncio.to_thread(
+                snapshot_events_boundary,
+                candidate.events_path,
+                session_id=session_id,
+                last_seq=int(session.get("last_seq") or 0),
+                bytes_limit=self._cfg.warmup_replay_bytes_limit,
+                events_limit=self._cfg.warmup_replay_events_limit,
+                snapshot_file_size=int(candidate.events_file_size or 0),
+            )
+            if boundary.error:
+                warnings.append(boundary.error)
+                return
+            local["events_byte_offset"] = boundary.offset
+            local["events_file_size"] = boundary.file_size
+            local["last_seq"] = int(boundary.last_seq or 0)
+            attachment_checkpoint = str(boundary.checkpoint or "")
+            attachment_checkpoint_offset = int(boundary.offset or 0)
+            local["stream_reset_pending"] = False
+            local["warmup_session_id"] = session_id
+
+        elif warmup_needed and not preexisting_session:
             end_offset = int(local["events_byte_offset"]) if restore_cursor else None
             warmup_events = await asyncio.to_thread(
                 warmup_replay_events,
@@ -4034,6 +4314,11 @@ class GalgamePlugin(
                 events_limit=self._cfg.warmup_replay_events_limit,
                 end_offset=end_offset,
             )
+            warmup_events = [
+                event
+                for event in warmup_events
+                if str(event.get("session_id") or "") == session_id
+            ]
             base_dedupe = list(local["dedupe_window"]) if restore_cursor else []
             (
                 local["history_events"],
@@ -4073,18 +4358,63 @@ class GalgamePlugin(
 
         read_offset = 0 if local["stream_reset_pending"] else int(local["events_byte_offset"])
         read_buffer = b"" if local["stream_reset_pending"] else bytes(local["line_buffer"])
+        expected_checkpoint = ""
+        if (
+            attachment_checkpoint
+            and attachment_checkpoint_offset == read_offset
+        ):
+            expected_checkpoint = attachment_checkpoint
+        elif (
+            not session_changed
+            and self._active_stream_checkpoint_identity == candidate_session_identity
+            and self._active_stream_checkpoint_offset == read_offset
+        ):
+            expected_checkpoint = self._active_stream_checkpoint
         tail = await asyncio.to_thread(
             tail_events_jsonl,
             candidate.events_path,
             offset=read_offset,
             line_buffer=read_buffer,
+            expected_checkpoint=expected_checkpoint,
         )
         warnings.extend(tail.errors)
 
         if tail.reset_detected:
+            if tail.file_size == 0 and read_offset == 0 and int(local["last_seq"]) == 0:
+                local["stream_reset_pending"] = False
+                local["line_buffer"] = b""
+                local["events_byte_offset"] = 0
+                local["events_file_size"] = 0
+                self._announced_stream_reset_identity = None
+                return
             local["stream_reset_pending"] = True
+            if not session_changed:
+                if (
+                    self._announced_stream_reset_identity
+                    != candidate_session_identity
+                ):
+                    local["active_session_meta"]["stream_generation"] = (
+                        previous_stream_generation + 1
+                    )
+                    self._announced_stream_reset_identity = (
+                        candidate_session_identity
+                    )
+            if not session_changed or resume_preexisting_session:
+                local["latest_snapshot"] = {}
+                for field in (
+                    "history_events",
+                    "history_lines",
+                    "history_observed_lines",
+                    "history_choices",
+                    "dedupe_window",
+                ):
+                    local[field] = []
             local["line_buffer"] = b""
+            local["events_byte_offset"] = 0
             local["events_file_size"] = tail.file_size
+            self._active_stream_checkpoint_identity = candidate_session_identity
+            self._active_stream_checkpoint_offset = 0
+            self._active_stream_checkpoint = ""
             return
 
         confirm_reset = False
@@ -4098,6 +4428,11 @@ class GalgamePlugin(
             )
 
         if confirm_reset:
+            if self._announced_stream_reset_identity != candidate_session_identity:
+                local["active_session_meta"]["stream_generation"] = (
+                    previous_stream_generation + 1
+                )
+            self._announced_stream_reset_identity = None
             local["history_events"] = []
             local["history_lines"] = []
             local["history_observed_lines"] = []
@@ -4107,6 +4442,12 @@ class GalgamePlugin(
             local["events_byte_offset"] = 0
             local["last_seq"] = 0
             local["stream_reset_pending"] = False
+        elif local["stream_reset_pending"] and tail.events:
+            # A rotated stream may preserve the session and continue seq
+            # numbers.  Rebase at byte zero, then let last_seq discard any
+            # overlap instead of waiting forever for a new seq=1 marker.
+            local["stream_reset_pending"] = False
+            self._announced_stream_reset_identity = None
 
         if local["stream_reset_pending"]:
             return
@@ -4127,15 +4468,44 @@ class GalgamePlugin(
                 config=self._cfg,
                 game_id=candidate.game_id,
             )
-            local["latest_snapshot"] = apply_event_to_snapshot(
-                local["latest_snapshot"], event
-            )
+            if local["latest_snapshot"] or event_releases_empty_snapshot_gate(event):
+                snapshot_baseline = local["latest_snapshot"]
+                if not snapshot_baseline and preexisting_session:
+                    # A pre-start snapshot is not publishable content, but its
+                    # source-owned identity remains the inheritance boundary
+                    # for the first post-start state event.  Deliberately omit
+                    # speaker/text/choices so old gameplay never crosses the
+                    # empty-snapshot gate.
+                    snapshot_baseline = preexisting_snapshot_identity
+                local["latest_snapshot"] = apply_event_to_snapshot(
+                    snapshot_baseline, event
+                )
             local["last_seq"] = seq
             local["last_seen_data_monotonic"] = now_monotonic
 
         local["events_byte_offset"] = tail.next_offset
         local["events_file_size"] = tail.file_size
         local["line_buffer"] = tail.line_buffer
+        self._active_stream_checkpoint_identity = candidate_session_identity
+        self._active_stream_checkpoint_offset = tail.next_offset
+        self._active_stream_checkpoint = tail.checkpoint
+        if preexisting_session and tail.next_offset > 0:
+            checkpoint_state = self._startup_preexisting_session_states.setdefault(
+                candidate_session_identity,
+                {},
+            )
+            checkpoint_offset = int(
+                checkpoint_state.get("stream_checkpoint_offset") or 0
+            )
+            if checkpoint_offset != tail.next_offset:
+                stream_checkpoint = await asyncio.to_thread(
+                    read_stream_checkpoint,
+                    candidate.events_path,
+                    offset=tail.next_offset,
+                )
+                if stream_checkpoint:
+                    checkpoint_state["stream_checkpoint"] = stream_checkpoint
+                    checkpoint_state["stream_checkpoint_offset"] = tail.next_offset
 
     def _clear_bridge_candidate_session(
         self,
@@ -4146,6 +4516,7 @@ class GalgamePlugin(
         ocr_reader_allowed: bool,
         memory_reader_candidate_available: bool,
     ) -> None:
+        self._remember_active_preexisting_session_state(local)
         local["active_data_source"] = _pending_data_source_for_reader_mode(
             reader_mode,
             memory_reader_allowed=memory_reader_allowed,
@@ -4174,7 +4545,6 @@ class GalgamePlugin(
             "character_fixed_name": str(local.get("character_fixed_name") or ""),
             "character_profiles": json_copy(local.get("character_profiles") or {}),
             "character_runtime_state": json_copy(local.get("character_runtime_state") or {}),
-            "cross_scene_memory": json_copy(local.get("cross_scene_memory") or {}),
             "last_push_seq": int(local.get("last_push_seq") or 0),
             "ocr_capture_profiles": json_copy(local.get("ocr_capture_profiles") or {}),
             "ocr_window_target": json_copy(local.get("ocr_window_target") or {}),
@@ -4219,6 +4589,29 @@ class GalgamePlugin(
                 exc=exc,
             )
             return
+
+        if self._startup_existing_session_ids is None:
+            startup_existing_session_ids = [
+                session_identity_key(
+                    data_source=candidate.data_source,
+                    game_id=candidate.game_id,
+                    session_id=normalized_session_id,
+                )
+                for candidate in raw_candidates.values()
+                if (normalized_session_id := str(candidate.session_id or "").strip())
+                and classify_session_origin(
+                    data_source=candidate.data_source,
+                    game_id=candidate.game_id,
+                    session_id=normalized_session_id,
+                    started_at=str(candidate.session.get("started_at") or ""),
+                    plugin_run_started_at=self._plugin_run_started_at,
+                    startup_existing_session_ids=None,
+                )
+                == SESSION_ORIGIN_PREEXISTING
+            ]
+            self._startup_existing_session_ids = set(
+                startup_existing_session_ids[-_PREEXISTING_SESSION_STATE_LIMIT:]
+            )
 
         memory_reader_candidate_available = any(
             candidate.data_source == DATA_SOURCE_MEMORY_READER
@@ -4763,15 +5156,21 @@ class GalgamePlugin(
         if not normalized_summary:
             return
         normalized_scene_id = str(scene_id or "").strip()
+        normalized_route_id = str(route_id or "").strip()
         scenes = self._layer1_scene_summaries()
         merged: list[dict[str, Any]] = []
         replaced = False
         for entry in scenes:
             item = dict(entry)
-            if normalized_scene_id and str(item.get("scene_id") or "") == normalized_scene_id:
+            if (
+                normalized_scene_id
+                and str(item.get("scene_id") or "").strip()
+                == normalized_scene_id
+                and str(item.get("route_id") or "").strip()
+                == normalized_route_id
+            ):
                 item["summary"] = normalized_summary
-                if route_id:
-                    item["route_id"] = str(route_id or "")
+                item["route_id"] = normalized_route_id
                 try:
                     existing_push_seq = int(item.get("push_seq") or 0)
                 except (TypeError, ValueError):
@@ -4783,7 +5182,7 @@ class GalgamePlugin(
             merged.append(
                 {
                     "scene_id": normalized_scene_id,
-                    "route_id": str(route_id or ""),
+                    "route_id": normalized_route_id,
                     "summary": normalized_summary,
                     "push_seq": int(push_seq or 0),
                 }

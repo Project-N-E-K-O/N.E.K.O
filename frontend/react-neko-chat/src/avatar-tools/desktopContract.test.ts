@@ -44,7 +44,7 @@ afterEach(() => {
 });
 
 describe('desktop avatar tool contract', () => {
-  it('projects inactive and all three active definitions with strict JSON round trips', () => {
+  it('projects inactive and all four active definitions with strict JSON round trips', () => {
     const inactive = buildDesktopAvatarToolContract(null);
     expect(Object.keys(inactive).sort()).toEqual(['definition', 'runtimePolicy', 'wireVersion']);
     expect(inactive).toEqual({ wireVersion: 1, definition: null, runtimePolicy: null });
@@ -120,6 +120,45 @@ describe('desktop avatar tool contract', () => {
       ],
       easterEgg: { scale: 5, anchorOffset: { x: 322.11, y: 259.27 } },
     });
+
+    const rps = buildDesktopAvatarToolContract('rps');
+    expect(rps.definition?.visual?.presentation).toMatchObject({
+      inRangeVariantSource: 'range',
+      outsideVariantSource: 'range',
+    });
+    expect(rps.definition?.interaction).toEqual(expect.objectContaining({
+      profile: {
+        kind: 'round-choice',
+        choices: [
+          { gesture: 'rock', variant: 'primary' },
+          { gesture: 'scissors', variant: 'secondary' },
+          { gesture: 'paper', variant: 'tertiary' },
+        ],
+        cycle: { outsideIntervalMs: 240, rangeIntervalMs: 720 },
+        confirmation: { sound: 'rps-confirm' },
+        reveal: {
+          effect: 'rps-round-reveal',
+          userWinSound: 'rps-user-win',
+          otherResultSound: 'rps-other-result',
+        },
+      },
+      sounds: [
+        expect.objectContaining({ id: 'rps-confirm' }),
+        expect.objectContaining({ id: 'rps-user-win' }),
+        expect.objectContaining({ id: 'rps-other-result' }),
+      ],
+      effects: [expect.objectContaining({
+        id: 'rps-round-reveal',
+        kind: 'round-reveal',
+        timeline: [
+          { phase: 'approach', delayMs: 0 },
+          { phase: 'impact', delayMs: 520 },
+          { phase: 'result', delayMs: 760 },
+          { phase: 'recover', delayMs: 3160 },
+          { phase: 'idle', delayMs: 3340 },
+        ],
+      })],
+    }));
   });
 
   it('preserves a tool-specific touch-zone subset in the desktop contract', () => {
@@ -131,6 +170,21 @@ describe('desktop avatar tool contract', () => {
 
     expect(contract.definition?.interaction?.profile).toMatchObject({ touchZones: ['head'] });
     expect(() => desktopAvatarToolContractSchema.parse(contract)).not.toThrow();
+  });
+
+  it('rejects an empty effect list when the selected profile references an effect', () => {
+    const contract = cloneJson(buildDesktopAvatarToolContract('rps'));
+    if (!contract.definition?.interaction) throw new Error('invalid fixture');
+    contract.definition.interaction.effects = [];
+
+    const parsed = desktopAvatarToolContractSchema.safeParse(contract);
+
+    expect(parsed.success).toBe(false);
+    if (!parsed.success) {
+      expect(parsed.error.issues).toEqual(expect.arrayContaining([
+        expect.objectContaining({ message: 'missing referenced effect rps-round-reveal' }),
+      ]));
+    }
   });
 
   it('versions only declared asset paths exactly once and preserves referenced resources only', () => {

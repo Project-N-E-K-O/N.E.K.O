@@ -1,0 +1,206 @@
+# Smart Turn v3 provider-neutral backend
+
+This backend supersedes the implementation approach in PR #2187. It is built
+from the current package-based `main` layout and intentionally does not connect
+directly to Omni Realtime, Core, an ASR provider, or a user-visible setting.
+Phase 3 integrates it through the production voice-input runtime for ASR
+providers that need a complete audio segment before transcription. Streaming
+providers with a native endpoint do not load Smart Turn. Direct use of the
+lower-level `RealtimeAsrSession` is not a supported product voice-input path.
+
+Provider-neutral voice facts and interfaces remain in `main_logic/voice_turn`.
+The local Silero/Smart Turn implementation, detector coordination, ONNX
+runtime, and pinned model assets are owned by
+`main_logic/asr_client/endpointing`. Provider workers do not import those
+implementation modules directly.
+
+## Endpoint authority
+
+- Streaming ASR uses the provider's native endpoint as the logical-turn
+  authority. This includes Qwen and OpenAI `server_vad`, Soniox `<end>`, and
+  the provider endpoint modes implemented by Grok and Step.
+- Segmented ASR uses Smart Turn to seal one logical turn before the session
+  commits one or more bounded physical requests. GLM and Gemini use this path.
+- OpenAI uses provider `server_vad`, rejects client-side manual commits, and
+  does not load N.E.K.O SmartTurn.
+- RNNoise and Silero may suppress idle uploads and wake a streaming transport,
+  but neither decides the logical end of a provider-endpointed turn.
+- Provider buffer commit, hard timeout, maximum turn duration, and manual
+  commit remain responsibilities of the ASR session/controller layer.
+
+VAD emits only speech start, resumed speech, and candidate pause events. It is
+also suitable for barge-in and connection lifecycle gating, but it never emits
+`TURN_COMPLETE` or `FORCE_COMMIT`.
+
+## Consumer-neutral voice input
+
+`VoiceInputRegistry` owns the high-level transcript boundary used by ordinary
+Core chat, the active game route, and a future trusted plugin bridge. MicLease
+remains the sole microphone-ownership authority; the Registry never receives
+PCM and cannot select a provider or endpoint.
+
+- `owner=core` activates the built-in `core_chat` consumer, which accepts
+  identified partials and non-empty finals.
+- `owner=game` activates the built-in `game` consumer, which accepts only
+  non-empty finals while `is_game_route_active(lanlan_name)` is true. An
+  unavailable game route stays fail-closed and never falls back to chat.
+- Every route is pinned by its full `VoiceTurnToken`. Consumer switches,
+  unregistration, lease changes, PCM holes, aborts, and session teardown
+  terminate the old route instead of transferring it to the new consumer.
+- Final delivery consumes the route before calling business code. A duplicate,
+  late event, callback failure, or empty final cannot restore or redirect it.
+- Empty finals are terminal cleanup events, not transcripts. They reach neither
+  Core injection nor the game route.
+- `core_chat` captures the prepared session and external turn id, so
+  cancellation after a hot swap abandons the precise original session turn.
+- Plugin registration is namespace-bound and exposes no Registry, MicLease,
+  provider, PCM, process-management, or routing authority.
+
+Provider-native and Smart Turn-sealed finals therefore share one controlled
+Core-side routing contract while provider selection remains centralized below
+the independent-ASR runtime boundary.
+
+## Audio contract
+
+The package accepts a continuous stream of signed 16-bit little-endian, mono,
+16 kHz PCM. It does not resample. Callers with 48 kHz capture must use the
+project's stateful streaming resampler before this boundary; independently
+resampling each capture chunk can create endpoint artifacts.
+
+Smart Turn receives at most the trailing eight seconds. Short inputs are
+left-padded. Whisper-compatible preprocessing is implemented with NumPy and is
+golden-tested against the reviewed 80-bin mel bank and synthetic feature
+statistics.
+
+## Asynchronous detector and ordering contract
+
+Production microphone ingestion never waits for Silero callbacks or Smart Turn
+inference. Normalized PCM enters a queue bounded by both one second of audio
+and 128 frames. Audio cannot consume the reserved control lane. Overflow
+invalidates the complete candidate or active turn; it never drops a middle
+frame and continues toward a partial transcript.
+
+When that ingress queue is full, Core rejects the current frame, clears every
+pending frame, and invokes the identity-scoped backpressure handler. The
+handler invalidates the candidate or active turn and its audio generation
+before another frame can be routed. A separate overflow inside the detector's
+adapter queue clears candidate bindings and installs a serialized reset
+barrier; every submission returns `BACKPRESSURE` until that reset completes.
+Only a frame carrying the then-current ingress identity may start the next
+candidate. Boundary coverage lives in
+`test_audio_stream_queue_clears_whole_candidate_when_full`,
+`test_active_audio_queue_overflow_aborts_turn_then_resumes_local_listen`, and
+`test_overflow_reset_rejects_audio_until_barrier_finishes`.
+
+Silero remains serial, while Smart Turn evaluation uses one in-flight task and
+at most one coalesced retry. Evaluation results re-enter the ordered detector
+lane behind PCM that arrived before inference completed. A resumed-speech
+activity revision therefore makes an older COMPLETE result stale.
+
+Core handles identity-scoped detector events through its own serial dispatcher.
+Provider commands use one independent-ASR dispatcher with one of these orders:
+
+```text
+streaming: pre-roll / pending-connect -> real-time PCM -> provider endpoint/final
+segmented: pre-roll / pending-connect -> real-time PCM -> Smart Turn seal -> commit
+```
+
+Hard mute, Focus suppression, game takeover, stop, route swap, and abort first
+invalidate the ingress/turn identity. Queued writes then fail validation before
+they can start. A write already in progress may finish, but no later write or
+seal from that identity can begin.
+
+These rules are safety contracts rather than resource optimizations. Disabling
+`voice_input_resource_optimization_enabled` keeps the independent ASR
+continuously active but does not permit microphone PCM to enter Core/Omni. On a
+segmented route, Smart Turn not READY implies zero provider wire audio. On a
+streaming route, Smart Turn readiness is irrelevant and provider endpointing
+continues to own the turn boundary.
+
+## Assets and lifecycle
+
+`main_logic/asr_client/endpointing/models/manifest.json` pins model revisions,
+authoritative URLs, licenses, and SHA-256 digests. Run:
+
+```text
+uv run python scripts/prepare_voice_turn_assets.py
+```
+
+The runtime is lazy and is loaded on the first candidate turn only for a
+Smart Turn endpointed route. Concurrent loads are single-flight.
+Missing/corrupt assets produce
+`UNAVAILABLE`, which is distinct from a semantic `INCOMPLETE` result. Repeated
+inference failures open a per-instance circuit breaker; constructing a new
+instance permits recovery. Closing or failing the ASR session unloads its
+Adapter and releases the corresponding runtime resources.
+
+## Current verification
+
+- Hermetic unit/concurrency/build-contract tests cover buffer bounds, model
+  lifecycle, Silero state/context, stale results, candidate coalescing, close,
+  asset SHA checks, and the Soniox-like capability path.
+- Phase 3 additionally covers non-blocking detector submission, Smart Turn
+  single-flight/coalescing, candidate rotation, pre-roll ordering, seal
+  ordering, abort barriers, overflow recovery, and stale detector identities.
+- Every Core routing safety test keeps `omni_mic_audio_bytes == 0`; consumers
+  receive only the logical final authorized by the selected route.
+- The pinned real models load successfully. One second of synthetic silence
+  stays below Silero speech probability 0.05. Smart Turn golden outputs are
+  checked for silence and a synthetic tone.
+- On the Windows development machine, Smart Turn with two CPU threads and the
+  CPU memory arena disabled measured about 26 ms P95 after warm-up. This is a
+  local inference measurement, not ASR/network latency.
+
+## Outstanding real-service acceptance
+
+- Grok's provider-endpoint worker is `implemented` after valid-credential
+  single-turn, reconnecting multi-turn, and continuous multi-turn WSS acceptance.
+  Provider-native Smart Turn remains an optional later quality evaluation and
+  does not load N.E.K.O SmartTurn.
+- Qwen Intl uses its own credential slot, but permission/scope validation with
+  a real international credential is still pending.
+- Soniox still needs the overseas real-speech language/noise matrix and the
+  Electron interaction pass. Domestic preference must be decided from measured
+  end-to-end latency; it is not inferred from a synthetic RTT estimate.
+- Gemini's higher mainland-China latency is treated as a regional network
+  characteristic; prior pressure runs reached 9/10 and must not be represented
+  as a Smart Turn regression.
+
+## Accuracy gate and known limitation
+
+Synthetic fixtures validate the implementation contract, not conversational
+accuracy. No product-quality claim is made for Chinese, English, or Japanese.
+Existing human-speech tests show that English and Japanese sentence-internal
+pauses still need tuning. The current acceptance target is reliable recovery;
+it does not claim to eliminate every roughly 500 ms premature split.
+Before treating the integrated routes as product-quality, maintainers must run
+`scripts/evaluate_smart_turn_v3.py` on an authorized labelled set that
+includes sentence-internal pauses, hesitation followed by continuation,
+complete turns, keyboard noise, and barge-in. The report always includes all
+four confusion-matrix cells and per-case probabilities, but those case rates
+are descriptive only. The registered gate uses each speaker's any-error result
+over a fixed scenario-by-label matrix and speaker-level Wilson intervals. The
+versioned, privacy-minimizing manifest, pre-registered checkpoint gate,
+multilingual collection matrix, opt-in runtime diagnostics, and separate
+Electron live-route procedure are specified in
+[`smart-turn-v3-human-electron-validation.md`](smart-turn-v3-human-electron-validation.md).
+
+The direct evaluator is checkpoint replay only. It does not exercise Electron,
+Silero candidate timing, coordinator retries, provider commit, or ASR network
+behavior. Even a passing checkpoint gate therefore leaves product-quality
+approval blocked until the registered live Electron route matrix passes.
+
+The deployed model decision threshold is fixed at `0.5`, and the evaluator
+rejects criteria that substitute another threshold. No numeric
+product-quality bounds have been approved yet. Before any future approval run,
+the product owner must freeze the complete manifest digest and pre-register,
+for every language, the exact speaker count and opaque-roster digest, minimum
+devices, the exact per-speaker
+scenario-by-label matrix, permitted
+speaker-level any-premature-split and any-missed-endpoint counts, Wilson upper
+bounds, and confidence level. Missing or matrix-noncompliant evidence blocks
+the checkpoint gate; a registered miss fails it. Either result produces a
+nonzero evaluator exit when criteria were supplied, and even a checkpoint pass
+leaves product approval blocked until the complete live Electron route matrix
+passes. Remediation must preserve fail-closed behavior and rerun the complete
+registered matrix; a partial rerun cannot clear the gate.

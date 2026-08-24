@@ -19,6 +19,7 @@ Method-only mixin: every instance attribute is assigned in
 ``LLMSessionManager.__init__`` (``main_logic.core.manager``).
 """
 
+import asyncio
 import os
 from main_logic.omni_realtime_client import OmniRealtimeClient
 from main_logic.tool_calling import ToolCall, ToolDefinition, ToolResult
@@ -30,8 +31,8 @@ from config.prompts.prompts_memory import (
     RECALL_MEMORY_TOOL_NO_RESULT,
     RECALL_MEMORY_TOOL_NO_RESULT_LOOSEN,
     RECALL_MEMORY_TOOL_FOUND_HEADER,
+    _normalize_memory_prompt_lang,
 )
-from utils.language_utils import normalize_language_code
 from ._shared import logger
 
 
@@ -140,7 +141,7 @@ class ToolCallingMixin:
                 "[builtin tools] NEKO_DISABLE_BUILTIN_TOOLS set — skipping recall_memory registration"
             )
             return
-        _lang = normalize_language_code(self.user_language, format='short') or 'en'
+        _lang = _normalize_memory_prompt_lang(self.user_language)
         recall_tool = ToolDefinition(
             name="recall_memory",
             description=_loc(RECALL_MEMORY_TOOL_DESCRIPTION, _lang),
@@ -187,7 +188,7 @@ class ToolCallingMixin:
         conversation flow. Never raise to the upstream wire, or one failed tool
         call would stall the model's whole turn.
         """
-        _lang = normalize_language_code(self.user_language, format='short') or 'en'
+        _lang = _normalize_memory_prompt_lang(self.user_language)
         args_dict = arguments if isinstance(arguments, dict) else {}
         query = ""
         raw_query = args_dict.get("query")
@@ -214,7 +215,7 @@ class ToolCallingMixin:
         # —— 下游路由：query + time → hybrid_recall(query, time_window=...) 做
         # "语义 + 时间"联合检索（窗口内按 query 排序，语义匹配保留）；只有 time
         # → 纯时间邻近回溯；time 解析失败还要靠 query 回落语义检索。
-        post_body = {"query": query}
+        post_body = {"query": query, "language": self.user_language}
         if time_arg:
             post_body["time"] = time_arg
         result_payload: dict = {}
@@ -280,54 +281,50 @@ class ToolCallingMixin:
                 return _loc(RECALL_MEMORY_TOOL_NO_RESULT_LOOSEN, _lang).format(query=query)
             return _loc(RECALL_MEMORY_TOOL_NO_RESULT, _lang)
 
-        # 渲染：首行 i18n 总览 + 每条 markdown bullet
-        # 格式: ``1. [tier/entity] text  (2026-05-01, 23 天前)``
-        # tier/entity 是英文 enum 不翻译；text 是原始记忆原文不翻译
-        # （按用户拍板）。时间锚点优先取事件真正发生时间 event_end_at →
-        # event_start_at → created_at（与 persona 过时 block / temporal
-        # _past_anchor 同口径），让模型看到的是"事件什么时候发生"而不是
-        # "记忆什么时候写下"；再附一个本地化相对标签（X 天/周/月前）。
-        from memory.temporal import (
-            time_since_label as _time_label,
-            _parse_iso_safe,
-            to_naive_local,
+        # 整段渲染扔进 worker 线程：truncate_to_tokens 编码的是**截断前**的
+        # 原文，而这条链路存在的理由正是"上游可能返回一条超长的合并
+        # reflection"。tiktoken 对切不开的超长 chunk 是二次退化，同步跑在
+        # 事件循环上会连带卡住语音会话。渲染本身保持同步函数（与插件侧
+        # memory_bridge.render_relevant_memory 同构、测试可直调），offload
+        # 放在这个唯一的 async 调用点。
+        return await asyncio.to_thread(self._render_recall_block, results, _lang)
+
+    @staticmethod
+    def _render_recall_block(results: list, _lang: str) -> str:
+        """Render recall hits through the shared entry point, with a header.
+
+        Format: ``1. [事实/关于用户] text  (2026-05-01, 23 天前)``, under an
+        i18n overview line.
+
+        No line building happens here. ``memory.recall_render`` is the one
+        place recall results become prompt text — it owns the label table,
+        the time anchor and the token budgets, and it owns them once so
+        this side and the QQ plugin's ``render_relevant_memory`` cannot
+        drift apart (issue #2588; the two used to be hand-written twins).
+        This method supplies the locale and the overview line, which the
+        entry point charges to the same budget because it lands in the same
+        string the model reads.
+
+        Entry count here comes from hybrid_recall's fusion cap rather than
+        the plugin's limit=5, so this is the side where the block cap
+        actually binds.
+
+        Deliberately synchronous, and called through ``asyncio.to_thread``
+        — see the caller.
+        """  # noqa: DOCSTRING_CJK
+        from config import RECALL_RENDER_TOTAL_MAX_TOKENS
+        from memory.recall_render import render_recall_block
+
+        block = render_recall_block(
+            results, _lang,
+            header_template=_loc(RECALL_MEMORY_TOOL_FOUND_HEADER, _lang),
         )
-        lines = [_loc(RECALL_MEMORY_TOOL_FOUND_HEADER, _lang).format(n=len(results))]
-        for i, r in enumerate(results, start=1):
-            tier = r.get("tier") or "?"
-            entity = r.get("entity") or "-"
-            # str() coerce 防 malformed memory entry：facts/reflections.json
-            # 走 JSON 序列化往返，理论上 text / 时间字段应是 str，但 manual
-            # edit / 老格式残留 / 迁移 bug 都可能让它们变 list / int 等
-            # truthy non-string（时间戳尤其常见，老数据可能存 epoch int）。
-            # codex review (2 轮): 不 coerce → .strip() / [:10] crash → 整条
-            # tool call 翻 is_error，模型反而不能正常走。
-            text = str(r.get("text") or "").strip()
-            # 锚点取 event_end_at → event_start_at → created_at 里**第一个能
-            # 解析出来**的（不是第一个 truthy 的）：manual edit / 迁移可能让
-            # 高优先级字段是个非空但解析不了的脏值，按 truthiness 选会卡住、
-            # 把本可用的低优先级字段挡掉，渲染出乱码日期（Codex）。
-            # _parse_iso_safe 对 None / int / list 等都安全返回 None。
-            # date_part 和 rel 都从同一个归一后的 datetime 出，口径一致。
-            anchor_dt = None
-            for _cand in (
-                r.get("event_end_at"),
-                r.get("event_start_at"),
-                r.get("created_at"),
-            ):
-                anchor_dt = to_naive_local(_parse_iso_safe(_cand))
-                if anchor_dt is not None:
-                    break
-            date_part = anchor_dt.strftime("%Y-%m-%d") if anchor_dt else ""
-            rel = _time_label(anchor_dt.isoformat(), lang=_lang) if anchor_dt else ""
-            if date_part and rel:
-                time_suffix = f"  ({date_part}, {rel})"
-            elif date_part:
-                time_suffix = f"  ({date_part})"
-            else:
-                time_suffix = ""
-            lines.append(f"{i}. [{tier}/{entity}] {text}{time_suffix}")
-        return "\n".join(lines)
+        if block.dropped:
+            logger.info(
+                "[recall_memory] rendered block over %d tok budget; dropped "
+                "trailing %d entries", RECALL_RENDER_TOTAL_MAX_TOKENS, block.dropped,
+            )
+        return block.text
 
     async def _sync_tools_to_active_session(self, *, raise_on_failure: bool = False) -> None:
         """Sync the registry's current state to all active clients.

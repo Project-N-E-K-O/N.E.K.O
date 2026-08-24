@@ -310,12 +310,23 @@ def test_proactive_openclaw_dispatch_uses_default_sender(monkeypatch):
         {"role": "assistant", "content": "我帮你查下天气"},
     ]
 
+    async def _settle_dispatch(task_id):
+        # 不能靠固定 sleep 收尾 run_instruction：Windows 事件循环时钟精度 15.625ms，
+        # 循环里还挂着这个后台任务时 sleep(0.02) 会被提前弹出、实测等于零等待，任务就
+        # 留到 asyncio.run 关闭时才被取消 —— 取消分支会往真实的 _task_tracker 写一条
+        # cancelled 记录，污染进程内共享状态。dispatch 自己把句柄登记在
+        # task_async_handles 里，直接等它才是确定的同步点（已跑完则 done_callback
+        # 已把句柄摘掉，取不到即代表已收尾）。
+        handle = oc._shared.Modules.task_async_handles.get(task_id)
+        if handle is not None:
+            await asyncio.gather(handle, return_exceptions=True)
+
     async def _drive():
         await oc.dispatch(
             _Result(), messages=msgs, lanlan_name="lan",
             conversation_id="c", trigger_user_msg_sig=None, proactive=True,
         )
-        await asyncio.sleep(0.02)  # let the spawned run_instruction task settle
+        await _settle_dispatch(_Result.task_id)
 
     asyncio.run(_drive())
     assert captured.get("sender_id") == "DEFAULT_SENDER"
@@ -328,7 +339,7 @@ def test_proactive_openclaw_dispatch_uses_default_sender(monkeypatch):
             _Result(), messages=msgs, lanlan_name="lan",
             conversation_id="c", trigger_user_msg_sig=None, proactive=False,
         )
-        await asyncio.sleep(0.02)
+        await _settle_dispatch(_Result.task_id)
 
     asyncio.run(_drive_user())
     assert captured.get("sender_id") == "USER_A"

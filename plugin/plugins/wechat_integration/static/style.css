@@ -10,13 +10,14 @@ body, html { margin: 0; padding: 0; font-family: -apple-system, sans-serif; back
 .config-section { background: var(--card-bg); border-radius: var(--radius-lg); padding: 24px; border: 2px solid var(--border); }
 
 /* ---------- buttons (same structure as qq_auto_reply, green theme) ---------- */
-.btn-next, .primary-action, .secondary-action, .ghost-action { padding: 14px 18px; border: none; border-radius: 18px; font-weight: 800; font-size: 14px; cursor: pointer; transition: transform 0.15s ease, box-shadow 0.15s ease, background 0.15s ease, color 0.15s ease; }
+.btn-next, .primary-action, .secondary-action, .ghost-action, .danger-action { padding: 14px 18px; border: none; border-radius: 18px; font-weight: 800; font-size: 14px; cursor: pointer; transition: transform 0.15s ease, box-shadow 0.15s ease, background 0.15s ease, color 0.15s ease; }
 .btn-next, .primary-action { background: var(--primary); color: white; box-shadow: 0 8px 0 var(--primary-dark); }
 .secondary-action { background: var(--primary-light); color: var(--primary); box-shadow: inset 0 0 0 2px var(--border); }
 .ghost-action { background: white; color: var(--secondary); box-shadow: inset 0 0 0 2px var(--border); }
+.danger-action { background: #fff; color: #dc2626; box-shadow: inset 0 0 0 2px #fecaca; }
 .btn-next:active, .primary-action:active { transform: translateY(4px); box-shadow: 0 4px 0 var(--primary-dark); }
-.secondary-action:active, .ghost-action:active { transform: translateY(2px); }
-.btn-next:disabled, .primary-action:disabled, .secondary-action:disabled, .ghost-action:disabled { opacity: 0.6; cursor: not-allowed; box-shadow: none; transform: none; }
+.secondary-action:active, .ghost-action:active, .danger-action:active { transform: translateY(2px); }
+.btn-next:disabled, .primary-action:disabled, .secondary-action:disabled, .ghost-action:disabled, .danger-action:disabled { opacity: 0.6; cursor: not-allowed; box-shadow: none; transform: none; }
 
 .btn-add-entity { padding: 14px 18px; background: var(--primary); color: white; border: none; border-radius: 18px; font-weight: 800; font-size: 14px; cursor: pointer; box-shadow: 0 8px 0 var(--primary-dark); transition: transform 0.15s ease, box-shadow 0.15s ease; }
 .btn-add-entity:active { transform: translateY(4px); box-shadow: 0 4px 0 var(--primary-dark); }

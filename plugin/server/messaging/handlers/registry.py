@@ -12,6 +12,7 @@ def build_request_handlers() -> dict[str, RequestHandler]:
         handle_plugin_config_get,
         handle_plugin_config_profile_get,
         handle_plugin_config_profiles_get,
+        handle_plugin_config_replace,
         handle_plugin_config_update,
     )
     from plugin.server.messaging.handlers.system_config import handle_plugin_system_config_get
@@ -40,6 +41,7 @@ def build_request_handlers() -> dict[str, RequestHandler]:
         "PLUGIN_CONFIG_PROFILE_GET": handle_plugin_config_profile_get,
         "PLUGIN_CONFIG_EFFECTIVE_GET": handle_plugin_config_effective_get,
         "PLUGIN_CONFIG_UPDATE": handle_plugin_config_update,
+        "PLUGIN_CONFIG_REPLACE": handle_plugin_config_replace,
         "PLUGIN_SYSTEM_CONFIG_GET": handle_plugin_system_config_get,
         "MEMORY_QUERY": handle_memory_query,
         "USER_CONTEXT_GET": handle_user_context_get,

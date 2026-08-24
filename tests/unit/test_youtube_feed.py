@@ -15,6 +15,16 @@ from utils.web_scraper import trending_content
 from utils.web_scraper import youtube_feed
 
 
+def _enable_web_scraper_caplog(monkeypatch, caplog, level):
+    """Let caplog observe app-namespaced logs regardless of suite order."""
+    current_logger = youtube_feed.logger
+    root_logger = logging.getLogger()
+    while current_logger is not None and current_logger is not root_logger:
+        monkeypatch.setattr(current_logger, "propagate", True)
+        current_logger = current_logger.parent
+    caplog.set_level(level, logger=youtube_feed.logger.name)
+
+
 def test_extract_ytcfg_merges_bootstrap_objects():
     html = """
     <script>ytcfg.set({"INNERTUBE_API_KEY":"key-1"});</script>
@@ -199,7 +209,7 @@ async def test_fetch_youtube_home_feed_falls_back_when_home_is_empty(monkeypatch
 
 @pytest.mark.asyncio
 async def test_authenticated_feed_uses_and_closes_isolated_client(monkeypatch, caplog):
-    caplog.set_level(logging.INFO)
+    _enable_web_scraper_caplog(monkeypatch, caplog, logging.INFO)
 
     class FakeResponse:
         def __init__(self, *, text="", payload=None):
@@ -265,7 +275,7 @@ async def test_authenticated_feed_uses_and_closes_isolated_client(monkeypatch, c
 
 @pytest.mark.asyncio
 async def test_logged_out_response_is_not_reported_as_authenticated(monkeypatch, caplog):
-    caplog.set_level(logging.INFO)
+    _enable_web_scraper_caplog(monkeypatch, caplog, logging.INFO)
 
     class FakeResponse:
         def __init__(self, *, text="", payload=None):
@@ -389,7 +399,7 @@ async def test_expired_credentials_retry_anonymous_home(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_authenticated_empty_home_uses_anonymous_public_discovery(monkeypatch, caplog):
-    caplog.set_level(logging.INFO)
+    _enable_web_scraper_caplog(monkeypatch, caplog, logging.INFO)
 
     class FakeCookieJar:
         def __init__(self):
@@ -472,18 +482,22 @@ async def test_fetch_youtube_home_feed_formats_empty_timeout_error(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_video_region_route_uses_youtube_outside_china(monkeypatch):
+async def test_video_region_route_combines_youtube_with_twitch_outside_china(monkeypatch):
     async def fake_youtube(limit):
         return {"success": True, "source": "youtube", "videos": [{"title": str(limit)}]}
 
+    async def fake_twitch(limit):
+        return {"success": True, "source": "twitch", "videos": [{"title": f"live-{limit}"}]}
+
     monkeypatch.setattr(trending_content, "is_china_region", lambda: False)
+    monkeypatch.setattr(trending_content, "fetch_twitch_live_streams", fake_twitch)
     monkeypatch.setattr(trending_content, "fetch_youtube_home_feed", fake_youtube)
 
     result = await trending_content.fetch_video_content(limit=7)
 
     assert result["region"] == "non-china"
-    assert result["video"]["source"] == "youtube"
-    assert result["video"]["videos"][0]["title"] == "7"
+    assert result["video"]["source"] == "mixed"
+    assert [item["title"] for item in result["video"]["videos"]] == ["live-7", "7"]
 
 
 @pytest.mark.asyncio
@@ -491,13 +505,17 @@ async def test_video_region_route_always_propagates_failure_error(monkeypatch):
     async def fake_youtube(_limit):
         return {"success": False, "source": "youtube", "videos": []}
 
+    async def fake_twitch(_limit):
+        return {"success": False, "source": "twitch", "videos": []}
+
     monkeypatch.setattr(trending_content, "is_china_region", lambda: False)
+    monkeypatch.setattr(trending_content, "fetch_twitch_live_streams", fake_twitch)
     monkeypatch.setattr(trending_content, "fetch_youtube_home_feed", fake_youtube)
 
     result = await trending_content.fetch_video_content(limit=7)
 
     assert result["success"] is False
-    assert result["error"] == "youtube 获取失败（无错误详情）"
+    assert result["error"] == "Twitch 与 YouTube 获取失败（无错误详情）"
 
 
 def test_youtube_video_format_and_source_links():
@@ -563,13 +581,28 @@ def test_youtube_cookie_i18n_contract_is_complete_for_all_locales():
         assert cookies_login_i18n["fields"]["youtubeCookie"]["label"]
         assert cookies_login_i18n["fields"]["youtubeCookie"]["desc"]
 
+        # 结构化步骤是语言无关的契约：只钉死 zh-CN 的话，别的语言包
+        # 悄悄退回旧的纯文本格式这条用例照样绿。
+        youtube_instruction = cookies_login_i18n["instructions"]["youtube"]
+        for marker in (
+            '<ol class="instruction-steps">',
+            "<b>F12</b>",
+            "<b>Network</b>",
+            "youtubei/v1/browse",
+            "<b>Request Headers</b>",
+        ):
+            assert marker in youtube_instruction, f"{locale_path.name}: {marker}"
+
     zh_instruction = json.loads(
         (locale_dir / "zh-CN.json").read_text(encoding="utf-8")
     )["cookiesLogin"]["instructions"]["youtube"]
-    assert "1. 获取 Cookie" in zh_instruction
-    assert "F12 → Network" in zh_instruction
+    assert "<b>获取 Cookie</b>" in zh_instruction
+    assert "<ol class=\"instruction-steps\">" in zh_instruction
+    assert "1. 获取 Cookie" not in zh_instruction
+    assert "<b>F12</b>" in zh_instruction
+    assert "<b>Network</b>" in zh_instruction
     assert "youtubei/v1/browse" in zh_instruction
-    assert "Request Headers 中复制完整的 Cookie 值" in zh_instruction
+    assert "<b>Request Headers</b> 中复制完整的 Cookie 值" in zh_instruction
 
 
 @pytest.mark.parametrize(

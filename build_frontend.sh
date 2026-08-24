@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build all frontend projects.
+# Build frontend projects shipped with production distributions.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -9,30 +9,45 @@ if ! command -v npm &> /dev/null; then
   exit 1
 fi
 
-# --- 0. yui-origin Live2D model (unpack from assets/) ---
-YUI_ARCHIVE="$SCRIPT_DIR/assets/yui-origin.tar.gz"
-YUI_DIR="$SCRIPT_DIR/static/yui-origin"
-YUI_MARKER="$YUI_DIR/yui-origin.moc3"
-
-if [ ! -f "$YUI_ARCHIVE" ]; then
-  echo "[build_frontend] yui-origin archive missing: $YUI_ARCHIVE" >&2
+if ! command -v uv &> /dev/null; then
+  echo "[build_frontend] uv not found, please install uv" >&2
   exit 1
 fi
 
-if [ ! -f "$YUI_MARKER" ] || [ "$YUI_ARCHIVE" -nt "$YUI_MARKER" ]; then
-  echo "[build_frontend] unpacking yui-origin..."
-  rm -rf "$YUI_DIR"
-  tar -xzmf "$YUI_ARCHIVE" -C "$SCRIPT_DIR/static"
-  if [ ! -f "$YUI_MARKER" ]; then
-    echo "[build_frontend] yui-origin marker missing after unpack: $YUI_MARKER" >&2
+# --- 0. Built-in PNGTuber models ---
+uv run --no-sync python "$SCRIPT_DIR/scripts/unpack_builtin_pngtuber.py"
+
+# --- 1. Built-in Live2D models (unpack from assets/) ---
+# 每个模型都是 assets/<name>.tar.gz，解到 static/<name>/，marker 是 <name>.moc3。
+unpack_live2d_model() {
+  local model="$1"
+  local archive="$SCRIPT_DIR/assets/$model.tar.gz"
+  local dir="$SCRIPT_DIR/static/$model"
+  local marker="$dir/$model.moc3"
+
+  if [ ! -f "$archive" ]; then
+    echo "[build_frontend] $model archive missing: $archive" >&2
     exit 1
   fi
-  echo "[build_frontend] yui-origin done: $YUI_DIR"
-else
-  echo "[build_frontend] yui-origin up to date, skip"
-fi
 
-# --- 1. Plugin Manager (Vue) ---
+  if [ ! -f "$marker" ] || [ "$archive" -nt "$marker" ]; then
+    echo "[build_frontend] unpacking $model..."
+    rm -rf "$dir"
+    tar -xzmf "$archive" -C "$SCRIPT_DIR/static"
+    if [ ! -f "$marker" ]; then
+      echo "[build_frontend] $model marker missing after unpack: $marker" >&2
+      exit 1
+    fi
+    echo "[build_frontend] $model done: $dir"
+  else
+    echo "[build_frontend] $model up to date, skip"
+  fi
+}
+
+unpack_live2d_model yui-origin
+unpack_live2d_model yui-lolita
+
+# --- 2. Plugin Manager (Vue) ---
 PM_DIR="$SCRIPT_DIR/frontend/plugin-manager"
 PM_DIST="$PM_DIR/dist"
 
@@ -54,7 +69,7 @@ if [ ! -f "$PM_DIST/index.html" ]; then
 fi
 echo "[build_frontend] plugin-manager done: $PM_DIST"
 
-# --- 2. React Neko Chat ---
+# --- 3. React Neko Chat ---
 RC_DIR="$SCRIPT_DIR/frontend/react-neko-chat"
 RC_DIST="$SCRIPT_DIR/static/react/neko-chat"
 
@@ -77,4 +92,4 @@ fi
 echo "[build_frontend] react-neko-chat done: $RC_DIST"
 
 echo ""
-echo "[build_frontend] all frontend projects built successfully."
+echo "[build_frontend] all production frontend projects built successfully."

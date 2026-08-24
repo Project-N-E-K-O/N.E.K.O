@@ -168,12 +168,13 @@
                   />
                 </el-form-item>
 
-                <el-form-item label="冲突策略">
-                  <el-radio-group v-model="installForm.on_conflict">
-                    <el-radio-button label="rename">rename</el-radio-button>
-                    <el-radio-button label="fail">fail</el-radio-button>
-                  </el-radio-group>
-                </el-form-item>
+                <el-alert
+                  class="install-safety-note"
+                  :title="t('package.install.safeUpgradeHint')"
+                  type="info"
+                  :closable="false"
+                  show-icon
+                />
 
                 <div class="action-row">
                   <el-button type="warning" :loading="installing" @click="handleInstall">
@@ -246,6 +247,7 @@
 
 <script setup lang="ts">
 import { Close } from '@element-plus/icons-vue'
+import { useI18n } from 'vue-i18n'
 import PackageArchiveListPanel from '@/components/plugin/PackageArchiveListPanel.vue'
 import PackageResultPanel from '@/components/plugin/PackageResultPanel.vue'
 import PluginSelectorPanel from '@/components/plugin/PluginSelectorPanel.vue'
@@ -261,6 +263,8 @@ const props = withDefaults(
     externalSelectedPluginIds: undefined,
   },
 )
+
+const { t } = useI18n()
 
 defineEmits<{
   close: []
@@ -370,7 +374,11 @@ const {
   padding: 14px 16px;
   border-radius: 18px;
   background:
-    linear-gradient(135deg, color-mix(in srgb, var(--el-color-primary) 10%, white), color-mix(in srgb, var(--el-color-info) 9%, white));
+    linear-gradient(
+      135deg,
+      color-mix(in srgb, var(--el-color-primary) 10%, var(--el-bg-color)),
+      color-mix(in srgb, var(--el-color-info) 9%, var(--el-bg-color))
+    );
   border: 1px solid color-mix(in srgb, var(--el-color-primary) 12%, var(--el-border-color));
 }
 
@@ -405,7 +413,7 @@ const {
   flex-wrap: wrap;
   padding: 12px 14px;
   border-radius: 16px;
-  background: color-mix(in srgb, var(--el-fill-color-light) 78%, white);
+  background: color-mix(in srgb, var(--el-fill-color-light) 78%, var(--el-bg-color));
   border: 1px solid color-mix(in srgb, var(--el-color-info) 10%, var(--el-border-color));
 }
 
@@ -443,6 +451,10 @@ const {
 
 .hint-row {
   margin: 6px 0 4px;
+}
+
+.install-safety-note {
+  margin-bottom: 14px;
 }
 
 /* ── Tab content transition ── */

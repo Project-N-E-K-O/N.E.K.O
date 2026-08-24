@@ -7,6 +7,18 @@ import pytest
 
 import main_logic.cross_server as cross_server_module
 import main_logic.core as core_module
+import main_logic.core.streaming as streaming_module
+import main_logic.core.tts_runtime as tts_runtime_module
+import main_logic.core.turn as turn_module
+from tests.fake_clock import patch_module_clock
+
+# 假时钟一律打到「真正读 time.time() 的那个模块」上，而不是 core_module
+# （main_logic.core 是门面包，自身不读时钟）。本文件里三类被测方法分别落在：
+#   - main_logic.core.turn      转写 / send_lanlan_response / 语音回声缓存
+#   - main_logic.core.streaming 输入 ingress 时间戳（_stream_data_now 等）
+#   - main_logic.core.tts_runtime  TTS 响应处理与管线清理
+# 旧写法 `setattr(core_module.time, "time", ...)` 其实换掉了整个 stdlib time
+# 模块，靠全局副作用才恰好覆盖到这些模块。
 
 
 FIXED_TS = 1_700_000_000.0
@@ -175,6 +187,7 @@ def _make_manager():
     mgr.user_activity = []
     mgr.last_user_activity_time = None
     mgr.last_user_message_time = None
+    mgr.last_user_engagement_time = None
 
     async def send_user_activity(interrupted_speech_id):
         mgr.user_activity.append(interrupted_speech_id)
@@ -187,6 +200,11 @@ def _make_manager():
             "metadata": metadata,
             "request_id": _kwargs.get("request_id"),
         })
+        # 真实实现在 track_ai_turn 为真时同步累加 AI turn buffer（turn end 时
+        # 交给 activity tracker）。stub 不照做的话，凡是断言 buffer 内容的用例
+        # 都会对"send 到底 track 了没有"失明。
+        if _kwargs.get("track_ai_turn", True):
+            mgr._current_ai_turn_text += text
 
     async def ensure_tts_pipeline_alive():
         return None
@@ -355,6 +373,7 @@ async def test_takeover_dispatcher_handles_voice_transcript_and_skips_ordinary_u
     assert mgr._activity_tracker.voice_rms_count == 1
     assert mgr._activity_tracker.user_messages == []
     assert mgr._session_turn_count == 0
+    assert mgr.last_user_engagement_time is not None
     mgr._publish_user_utterance_to_plugin_bus.assert_not_called()
     assert mgr.sync_message_queue.messages == []
 
@@ -364,7 +383,7 @@ async def test_takeover_dispatcher_handles_voice_transcript_and_skips_ordinary_u
 async def test_takeover_dispatcher_receives_voice_echo_match_before_suppression(monkeypatch):
     mgr = _make_transcript_manager()
     monkeypatch.setattr(core_module, "HIDE_DIRTY_VOICE_TRANSCRIPTS", True)
-    monkeypatch.setattr(core_module.time, "time", lambda: FIXED_TS)
+    patch_module_clock(monkeypatch, turn_module, time=lambda: FIXED_TS)
     mgr._recent_ai_voice_echo_text = "开始比赛吧朋友"
     mgr._recent_ai_voice_echo_at = FIXED_TS
     routed = []
@@ -387,6 +406,7 @@ async def test_takeover_dispatcher_receives_voice_echo_match_before_suppression(
     assert mgr._activity_tracker.voice_rms_count == 1
     assert mgr._activity_tracker.user_messages == []
     assert mgr._session_turn_count == 0
+    assert mgr.last_user_engagement_time == FIXED_TS
     mgr._publish_user_utterance_to_plugin_bus.assert_not_called()
     assert mgr.sync_message_queue.messages == []
 
@@ -644,8 +664,12 @@ async def test_text_input_transcript_callback_uses_non_voice_path(monkeypatch):
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_text_mode_image_input_is_mirrored_to_analyzer_queue(monkeypatch):
-    """Text-mode screenshots must stay available to turn-end analysis."""
+@pytest.mark.parametrize("input_type", ["screen", "camera"])
+async def test_text_mode_live_vision_input_is_mirrored_without_engagement(
+    monkeypatch,
+    input_type,
+):
+    """Automatic vision frames remain analyzable but are not user engagement."""
     mgr = _make_manager()
     mgr.session = object.__new__(core_module.OmniOfflineClient)
     mgr.session.stream_image = AsyncMock()
@@ -657,19 +681,167 @@ async def test_text_mode_image_input_is_mirrored_to_analyzer_queue(monkeypatch):
 
     await core_module.LLMSessionManager._process_stream_data_internal(
         mgr,
-        {"input_type": "screen", "data": "raw-image"},
+        {"input_type": input_type, "data": "raw-image"},
     )
 
     mgr.session.stream_image.assert_awaited_once_with("img-b64")
     assert mgr.sync_message_queue.messages == [{
         "type": "user",
         "data": {
-            "input_type": "screen",
+            "input_type": input_type,
             "data": "data:image/jpeg;base64,img-b64",
             "has_image": True,
             "mime_type": "image/jpeg",
         },
     }]
+    assert mgr.last_user_engagement_time is None
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("input_type", ["avatar_drop_image", "user_image"])
+async def test_one_shot_user_image_records_engagement(
+    monkeypatch,
+    input_type,
+):
+    """Accepted user images preserve arrival time across asynchronous staging."""
+    mgr = _make_manager()
+    mgr.session = object.__new__(core_module.OmniOfflineClient)
+    mgr.session.stream_image = AsyncMock()
+    mgr.is_active = True
+    mgr._starting_session_count = 0
+    mgr._session_start_circuit_open = False
+    mgr._emit_cooldown_turn_end_if_needed = Mock(return_value=False)
+    clock = {"now": FIXED_TS + 25.0}
+
+    async def _process_after_clock_advance(_data):
+        clock["now"] = FIXED_TS + 50.0
+        return "img-b64"
+
+    monkeypatch.setattr(core_module, "process_screen_data", _process_after_clock_advance)
+    # ingress 时间戳取自 main_logic.core.streaming._user_input_ingress_time，
+    # 门面 core_module 自己不读时钟。
+    patch_module_clock(monkeypatch, streaming_module, time=lambda: clock["now"])
+
+    await core_module.LLMSessionManager._process_stream_data_internal(
+        mgr,
+        {
+            "input_type": input_type,
+            "data": "raw-image",
+            "_user_input_ingress_time": FIXED_TS,
+        },
+    )
+
+    mgr.session.stream_image.assert_awaited_once_with("img-b64")
+    assert mgr.last_user_engagement_time == FIXED_TS
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("input_type", ["avatar_drop_image", "user_image"])
+async def test_cached_user_image_preserves_server_ingress_time(
+    monkeypatch,
+    input_type,
+):
+    """Session-start caching must preserve a user image's server arrival time."""
+    mgr = _make_manager()
+    mgr.session = object.__new__(core_module.OmniOfflineClient)
+    mgr.session.stream_image = AsyncMock()
+    mgr.is_active = True
+    mgr.session_ready = False
+    mgr._starting_session_count = 1
+    mgr.input_cache_lock = asyncio.Lock()
+    mgr.pending_input_data = []
+    mgr._session_start_circuit_open = False
+    mgr._emit_cooldown_turn_end_if_needed = Mock(return_value=False)
+    clock = {"now": FIXED_TS}
+    # 同上：ingress 时间戳来自 main_logic.core.streaming。
+    patch_module_clock(monkeypatch, streaming_module, time=lambda: clock["now"])
+    monkeypatch.setattr(
+        core_module,
+        "process_screen_data",
+        AsyncMock(return_value="img-b64"),
+    )
+
+    await core_module.LLMSessionManager._stream_data_now(
+        mgr,
+        {"input_type": input_type, "data": "raw-image"},
+    )
+
+    assert mgr.pending_input_data[0]["_user_input_ingress_time"] == FIXED_TS
+    clock["now"] = FIXED_TS + 50.0
+    mgr._starting_session_count = 0
+    mgr.session_ready = True
+    await core_module.LLMSessionManager._flush_pending_input_data(mgr)
+
+    mgr.session.stream_image.assert_awaited_once_with("img-b64")
+    assert mgr.last_user_engagement_time == FIXED_TS
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_stream_data_preserves_router_stamped_text_ingress(monkeypatch):
+    """Task startup must not overwrite the timestamp sampled by the WS router."""
+    mgr = _make_manager()
+    mgr.session_ready = False
+    mgr._starting_session_count = 1
+    mgr.input_cache_lock = asyncio.Lock()
+    mgr.pending_input_data = []
+    # _stream_data_now 的 fallback 采样点在 main_logic.core.streaming。
+    patch_module_clock(
+        monkeypatch,
+        streaming_module,
+        time=lambda: FIXED_TS + 50.0,
+    )
+
+    await core_module.LLMSessionManager._stream_data_now(
+        mgr,
+        {
+            "input_type": "text",
+            "data": "arrived before task start",
+            "_user_input_ingress_time": FIXED_TS,
+        },
+    )
+
+    assert mgr.pending_input_data[0]["_user_input_ingress_time"] == FIXED_TS
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("input_type", "data"),
+    [
+        ("text", "arrived while startup is circuit-broken"),
+        ("avatar_drop_image", "raw-image"),
+        ("user_image", "raw-image"),
+    ],
+)
+async def test_one_shot_input_records_engagement_before_startup_failure(
+    input_type,
+    data,
+):
+    """Fallible session startup cannot erase genuine input engagement."""
+    mgr = _make_transcript_manager()
+    mgr.session = None
+    mgr.is_active = False
+    mgr.session_ready = False
+    mgr._starting_session_count = 0
+    mgr.input_cache_lock = asyncio.Lock()
+    mgr.pending_input_data = []
+    mgr._session_start_circuit_open = True
+    mgr._emit_cooldown_turn_end_if_needed = Mock(return_value=False)
+    mgr.last_user_engagement_time = None
+
+    await core_module.LLMSessionManager._stream_data_now(
+        mgr,
+        {
+            "input_type": input_type,
+            "data": data,
+            "_user_input_ingress_time": FIXED_TS,
+        },
+    )
+
+    assert mgr.last_user_engagement_time == FIXED_TS
 
 
 @pytest.mark.unit
@@ -732,6 +904,116 @@ async def test_non_voice_transcript_reuse_preserves_avatar_drop_source():
             "metadata": {"source": "avatar-drop"},
         },
     }]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_cached_text_preserves_server_ingress_time(monkeypatch):
+    """Session-start caching must not move engagement past later proactive output."""
+    mgr = _make_transcript_manager()
+    mgr.session = object.__new__(core_module.OmniOfflineClient)
+    mgr.session._pending_images = []
+    mgr.session.update_max_response_length = Mock()
+    mgr.session.stream_text = AsyncMock()
+    mgr.is_active = True
+    mgr.session_ready = False
+    mgr._starting_session_count = 1
+    mgr.input_cache_lock = asyncio.Lock()
+    mgr.pending_input_data = []
+    mgr._session_start_circuit_open = False
+    mgr._emit_cooldown_turn_end_if_needed = Mock(return_value=False)
+    mgr._is_agent_enabled = Mock(return_value=True)
+    mgr.agent_flags = {"openclaw_enabled": True, "openclaw_ready": False}
+    mgr.pending_agent_callbacks = []
+    mgr._fire_task = Mock()
+    clock = {"now": FIXED_TS}
+    # 同上：文本 ingress / last_user_*_time 都在 main_logic.core.streaming 采样。
+    patch_module_clock(monkeypatch, streaming_module, time=lambda: clock["now"])
+    monkeypatch.setattr(
+        core_module,
+        "dispatch_text_user_message",
+        lambda name, text: None,
+    )
+
+    await core_module.LLMSessionManager._stream_data_now(
+        mgr,
+        {"input_type": "text", "data": "/openclaw stop", "request_id": "req-1"},
+    )
+
+    assert mgr.pending_input_data[0]["_user_input_ingress_time"] == FIXED_TS
+    clock["now"] = FIXED_TS + 50.0
+    mgr._starting_session_count = 0
+    mgr.session_ready = True
+    await core_module.LLMSessionManager._flush_pending_input_data(mgr)
+
+    assert mgr.last_user_activity_time == FIXED_TS
+    assert mgr.last_user_message_time == FIXED_TS
+    assert mgr.last_user_engagement_time == FIXED_TS
+
+    mgr.last_user_activity_time = FIXED_TS + 100.0
+    mgr.last_user_message_time = FIXED_TS + 100.0
+    mgr.last_user_engagement_time = FIXED_TS + 100.0
+    await core_module.LLMSessionManager._process_stream_data_internal(
+        mgr,
+        {
+            "input_type": "text",
+            "data": "older request resumed",
+            "_user_input_ingress_time": FIXED_TS,
+        },
+    )
+
+    assert mgr.last_user_activity_time == FIXED_TS + 100.0
+    assert mgr.last_user_message_time == FIXED_TS + 100.0
+    assert mgr.last_user_engagement_time == FIXED_TS + 100.0
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_cached_text_dropped_for_voice_still_records_engagement():
+    """A typed response remains engagement even when voice startup discards it."""
+    mgr = _make_transcript_manager()
+    mgr.session = object.__new__(core_module.OmniRealtimeClient)
+    mgr.is_active = True
+    mgr.input_cache_lock = asyncio.Lock()
+    mgr.pending_input_data = [
+        {
+            "input_type": "text",
+            "data": "我在这里",
+            "_user_input_ingress_time": FIXED_TS,
+        }
+    ]
+    mgr.last_user_engagement_time = None
+
+    await core_module.LLMSessionManager._flush_pending_input_data(mgr)
+
+    assert mgr.pending_input_data == []
+    assert mgr.last_user_engagement_time == FIXED_TS
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("input_type", ["avatar_drop_image", "user_image"])
+async def test_cached_user_image_dropped_for_voice_still_records_engagement(
+    input_type,
+):
+    """A submitted image remains engagement when voice startup discards it."""
+    mgr = _make_transcript_manager()
+    mgr.session = object.__new__(core_module.OmniRealtimeClient)
+    mgr.is_active = True
+    mgr.input_cache_lock = asyncio.Lock()
+    mgr.pending_input_data = [
+        {
+            "input_type": input_type,
+            "data": "raw-image",
+            "_user_input_ingress_time": FIXED_TS,
+        }
+    ]
+    mgr.last_user_engagement_time = None
+
+    await core_module.LLMSessionManager._flush_pending_input_data(mgr)
+
+    assert mgr.pending_input_data == []
+    assert mgr.last_user_engagement_time == FIXED_TS
 
 
 @pytest.mark.unit
@@ -814,6 +1096,207 @@ async def test_openclaw_magic_command_falls_back_when_openclaw_not_ready(monkeyp
 
     mgr._fire_task.assert_not_called()
     mgr.session.stream_text.assert_awaited_once()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_text_stream_discard_callback_keeps_original_request_owner(monkeypatch):
+    """A late discard from request A must not clear request B's frontend output."""
+    mgr = _make_transcript_manager()
+    mgr.session = object.__new__(core_module.OmniOfflineClient)
+    mgr.session._pending_images = []
+    mgr.session.update_max_response_length = Mock()
+    mgr.session.stream_text = AsyncMock()
+    mgr.is_active = True
+    mgr._starting_session_count = 0
+    mgr._session_start_circuit_open = False
+    mgr._emit_cooldown_turn_end_if_needed = Mock(return_value=False)
+    mgr._is_agent_enabled = Mock(return_value=False)
+    mgr.agent_flags = {}
+    mgr.pending_agent_callbacks = []
+    mgr._fire_task = Mock()
+    monkeypatch.setattr(core_module, "dispatch_text_user_message", lambda name, text: None)
+
+    await core_module.LLMSessionManager._process_stream_data_internal(
+        mgr,
+        {"input_type": "text", "data": "request A", "request_id": "req-A"},
+    )
+
+    discard_callback = mgr.session.stream_text.await_args.kwargs["response_discarded_callback"]
+    mgr._active_text_request_id = "req-B"
+    mgr.websocket = _FakeConnectedWebSocket()
+    mgr._clear_tts_pipeline = AsyncMock()
+
+    await discard_callback("guard", 1, 3, False, None)
+
+    assert mgr.websocket.sent == []
+    assert mgr._active_text_request_id == "req-B"
+    mgr._clear_tts_pipeline.assert_not_awaited()
+    assert {
+        "type": "system",
+        "data": "response_discarded_clear",
+    } not in mgr.sync_message_queue.messages
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_stale_truncated_recovery_does_not_mutate_newer_request_state():
+    """Request A's late recovery must not emit or consume request B's turn state.
+
+    Session-level wrap-up is deliberately NOT behind that ownership gate: A's turn
+    really did end, and skipping its archive/prewarm accounting is exactly what
+    re-opens the "context grows -> keeps truncating and recovering" loop.
+    """
+    mgr = _make_manager()
+    mgr.websocket = _FakeConnectedWebSocket()
+    mgr.session = MagicMock()
+    mgr.session._conversation_history = ["request-B-history"]
+    mgr._active_text_request_id = "req-B"
+    mgr.current_speech_id = "speech-B"
+    mgr._pending_turn_meta = {"kind": "text", "request_id": "req-B"}
+    mgr._clear_tts_pipeline = AsyncMock()
+    mgr._emit_turn_end = AsyncMock()
+    mgr._finalize_turn_after_emit = AsyncMock()
+
+    await core_module.LLMSessionManager.handle_response_discarded(
+        mgr,
+        "guard",
+        3,
+        3,
+        False,
+        '{"code":"RESPONSE_LENGTH_TRUNCATED","text":"stale response A"}',
+        request_id="req-A",
+    )
+
+    assert mgr._active_text_request_id == "req-B"
+    assert mgr.current_speech_id == "speech-B"
+    assert mgr._pending_turn_meta == {"kind": "text", "request_id": "req-B"}
+    assert mgr.session._conversation_history == ["request-B-history"]
+    assert mgr.sent_responses == []
+    mgr._clear_tts_pipeline.assert_not_awaited()
+    mgr._emit_turn_end.assert_not_awaited()
+    assert mgr.websocket.sent == []
+    # Shared-output writes are suppressed, session accounting still runs.
+    mgr._finalize_turn_after_emit.assert_awaited_once()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_truncated_recovery_stops_when_new_request_starts_during_ui_send():
+    """Request A must re-check ownership after yielding to its recovery UI send.
+
+    Losing ownership mid-sequence stops the remaining shared-output steps, but the
+    session-level wrap-up still runs — see the sibling stale-recovery test.
+    """
+    mgr = _make_manager()
+    mgr.websocket = _FakeConnectedWebSocket()
+    mgr.session = MagicMock()
+    mgr.session._conversation_history = ["history-before-A"]
+    mgr._active_text_request_id = "req-A"
+    mgr.current_speech_id = "speech-A"
+    mgr._pending_turn_meta = {"kind": "text", "request_id": "req-A"}
+    mgr._clear_tts_pipeline = AsyncMock()
+    mgr._emit_turn_end = AsyncMock()
+    mgr._finalize_turn_after_emit = AsyncMock()
+
+    async def send_recovery_then_start_request_b(
+        text,
+        is_first_chunk=False,
+        turn_id=None,
+        metadata=None,
+        **kwargs,
+    ):
+        mgr.sent_responses.append({
+            "text": text,
+            "is_first_chunk": is_first_chunk,
+            "turn_id": turn_id,
+            "metadata": metadata,
+            "request_id": kwargs.get("request_id"),
+        })
+        mgr._active_text_request_id = "req-B"
+        mgr.current_speech_id = "speech-B"
+        mgr._pending_turn_meta = {"kind": "text", "request_id": "req-B"}
+        mgr.session._conversation_history.append("request-B-history")
+
+    mgr.send_lanlan_response = send_recovery_then_start_request_b
+
+    await core_module.LLMSessionManager.handle_response_discarded(
+        mgr,
+        "guard",
+        3,
+        3,
+        False,
+        '{"code":"RESPONSE_LENGTH_TRUNCATED","text":"recovery response A"}',
+        request_id="req-A",
+    )
+
+    assert mgr._active_text_request_id == "req-B"
+    assert mgr.current_speech_id == "speech-B"
+    assert mgr._pending_turn_meta == {"kind": "text", "request_id": "req-B"}
+    assert mgr.session._conversation_history == [
+        "history-before-A",
+        "request-B-history",
+    ]
+    assert mgr.sent_responses == [{
+        "text": "recovery response A",
+        "is_first_chunk": True,
+        "turn_id": "speech-A",
+        "metadata": None,
+        "request_id": "req-A",
+    }]
+    mgr._emit_turn_end.assert_not_awaited()
+    # Shared-output writes stop at the ownership loss, session accounting still runs.
+    mgr._finalize_turn_after_emit.assert_awaited_once()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_owned_truncated_recovery_still_finalizes_when_owner_stays_current():
+    """Dynamic ownership checks must not suppress A's normal turn finalization."""
+    mgr = _make_manager()
+    mgr.session = MagicMock()
+    mgr.session._conversation_history = []
+    mgr._active_text_request_id = "req-A"
+    mgr._clear_tts_pipeline = AsyncMock()
+    mgr._emit_turn_end = AsyncMock()
+    mgr._finalize_turn_after_emit = AsyncMock()
+
+    await core_module.LLMSessionManager.handle_response_discarded(
+        mgr,
+        "guard",
+        3,
+        3,
+        False,
+        '{"code":"RESPONSE_LENGTH_TRUNCATED","text":"recovery response A"}',
+        request_id="req-A",
+    )
+
+    mgr._emit_turn_end.assert_awaited_once_with("req-A")
+    mgr._finalize_turn_after_emit.assert_awaited_once()
+    assert mgr._active_text_request_id is None
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_unowned_discard_callback_keeps_global_clear_behavior():
+    """Legacy/proactive discard callbacks still clear shared output globally."""
+    mgr = _make_manager()
+    mgr._active_text_request_id = "req-current"
+    mgr._clear_tts_pipeline = AsyncMock()
+
+    await core_module.LLMSessionManager.handle_response_discarded(
+        mgr,
+        "guard",
+        1,
+        3,
+        True,
+    )
+
+    mgr._clear_tts_pipeline.assert_awaited_once()
+    assert {
+        "type": "system",
+        "data": "response_discarded_clear",
+    } in mgr.sync_message_queue.messages
 
 
 @pytest.mark.unit
@@ -1220,7 +1703,7 @@ async def test_genuine_voice_transcript_stamps_last_user_message_time(monkeypatc
     """真实非空语音消息既刷 last_user_activity_time 也刷 last_user_message_time。
     后者喂给 mini-game 邀请隐式 dismiss，必须只反映真用户输入。"""
     mgr = _make_transcript_manager()
-    monkeypatch.setattr(core_module.time, "time", lambda: FIXED_TS)
+    patch_module_clock(monkeypatch, turn_module, time=lambda: FIXED_TS)
 
     await core_module.LLMSessionManager.handle_input_transcript(
         mgr, "今天天气不错", is_voice_source=True,
@@ -1228,18 +1711,16 @@ async def test_genuine_voice_transcript_stamps_last_user_message_time(monkeypatc
 
     assert mgr.last_user_activity_time == FIXED_TS
     assert mgr.last_user_message_time == FIXED_TS
+    assert mgr.last_user_engagement_time == FIXED_TS
 
 
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_ai_echo_transcript_does_not_stamp_last_user_message_time(monkeypatch):
-    """关键回归：AI 念邀请台词被麦克风录回的回声会刷 last_user_activity_time
-    （顶部无条件），但**不能**刷 last_user_message_time——否则语音模式下用户还
-    没点「现在不想玩」按钮，隐式 dismiss 就因回声误判用户已回应、把 pending 邀请
-    清掉撤按钮，用户随后点击落到 expired、邀请 5min 后反复重来。"""
+    """An AI voice echo is activity, but never a genuine user response."""
     mgr = _make_transcript_manager()
     monkeypatch.setattr(core_module, "HIDE_DIRTY_VOICE_TRANSCRIPTS", True)
-    monkeypatch.setattr(core_module.time, "time", lambda: FIXED_TS)
+    patch_module_clock(monkeypatch, turn_module, time=lambda: FIXED_TS)
     mgr._recent_ai_voice_echo_text = "要不要现在跟我一起踢一会儿足球小游戏？"
     mgr._recent_ai_voice_echo_at = FIXED_TS
 
@@ -1251,14 +1732,15 @@ async def test_ai_echo_transcript_does_not_stamp_last_user_message_time(monkeypa
     assert mgr.last_user_activity_time == FIXED_TS
     # 但真消息时间戳保持干净
     assert mgr.last_user_message_time is None
+    assert mgr.last_user_engagement_time is None
 
 
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_empty_voice_transcript_does_not_stamp_last_user_message_time(monkeypatch):
-    """空转录（VAD 误触发 / 转录失败）刷 activity 但不刷真消息时间戳。"""
+    """An empty voice transcript is activity, but not a genuine user response."""
     mgr = _make_transcript_manager()
-    monkeypatch.setattr(core_module.time, "time", lambda: FIXED_TS)
+    patch_module_clock(monkeypatch, turn_module, time=lambda: FIXED_TS)
 
     await core_module.LLMSessionManager.handle_input_transcript(
         mgr, "   ", is_voice_source=True,
@@ -1266,15 +1748,18 @@ async def test_empty_voice_transcript_does_not_stamp_last_user_message_time(monk
 
     assert mgr.last_user_activity_time == FIXED_TS
     assert mgr.last_user_message_time is None
+    assert mgr.last_user_engagement_time is None
 
 
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_last_user_message_time_uses_transcript_arrival_not_post_await(monkeypatch):
-    """takeover dispatcher 注册但未消费该转写时，last_user_message_time 必须用转写
-    到达时刻（await 之前），不能用 await 之后的 time.time()——否则 await 期间投递的
-    invite 会把 invite 之前的发言误记成之后的回应、提前清掉 pending invite（codex
-    P2）。time.time() 每次递增，断言两个时间戳都锁在首次（到达）取值 101。"""
+    """Use transcript arrival time without regressing newer engagement.
+
+    A takeover dispatcher may delay normal transcript processing. The message
+    timestamp must retain the pre-await arrival time, while a newer interaction
+    recorded during that await must remain the latest engagement signal.
+    """
     mgr = _make_transcript_manager()
     calls = {"n": 0}
 
@@ -1282,11 +1767,16 @@ async def test_last_user_message_time_uses_transcript_arrival_not_post_await(mon
         calls["n"] += 1
         return 100.0 + calls["n"]
 
-    monkeypatch.setattr(core_module.time, "time", _ticking_time)
+    # 打到真正读时钟的模块上：转写到达时刻取自 main_logic.core.turn 的
+    # time.time()，core_module（main_logic.core 门面）自己不读。此前那版
+    # `setattr(core_module.time, "time", ...)` 之所以生效，靠的正是它其实
+    # replace 了整个 stdlib time 模块——即这条用例一直依赖的是全局副作用。
+    patch_module_clock(monkeypatch, turn_module, time=_ticking_time)
     monkeypatch.setattr(core_module, "dispatch_text_user_message", lambda name, text: None)
 
     async def _dispatcher(name, text, request_id=None):
-        core_module.time.time()  # 模拟 await 期间时钟流逝
+        turn_module.time.time()  # 模拟 await 期间时钟流逝
+        mgr.note_user_engagement(at=200.0)
         return False             # 未处理 → 继续普通流程走到真消息块
 
     mgr._takeover_input_dispatcher = _dispatcher
@@ -1298,6 +1788,7 @@ async def test_last_user_message_time_uses_transcript_arrival_not_post_await(mon
 
     assert mgr.last_user_activity_time == 101.0
     assert mgr.last_user_message_time == 101.0
+    assert mgr.last_user_engagement_time == 200.0
 
 
 @pytest.mark.unit
@@ -1305,7 +1796,7 @@ async def test_last_user_message_time_uses_transcript_arrival_not_post_await(mon
 async def test_likely_ai_echo_voice_transcript_is_suppressed(monkeypatch):
     mgr = _make_transcript_manager()
     monkeypatch.setattr(core_module, "HIDE_DIRTY_VOICE_TRANSCRIPTS", True)
-    monkeypatch.setattr(core_module.time, "time", lambda: FIXED_TS)
+    patch_module_clock(monkeypatch, turn_module, time=lambda: FIXED_TS)
     mgr._recent_ai_voice_echo_text = "刚才我主动说了一句：要不要休息一下喝点水。"
     mgr._recent_ai_voice_echo_at = FIXED_TS
 
@@ -1323,7 +1814,7 @@ async def test_likely_ai_echo_voice_transcript_is_suppressed(monkeypatch):
 async def test_ai_echo_voice_transcript_switch_can_disable_suppression(monkeypatch):
     mgr = _make_transcript_manager()
     monkeypatch.setattr(core_module, "HIDE_DIRTY_VOICE_TRANSCRIPTS", False)
-    monkeypatch.setattr(core_module.time, "time", lambda: FIXED_TS)
+    patch_module_clock(monkeypatch, turn_module, time=lambda: FIXED_TS)
     mgr._recent_ai_voice_echo_text = "刚才我主动说了一句：要不要休息一下喝点水。"
     mgr._recent_ai_voice_echo_at = FIXED_TS
 
@@ -1347,7 +1838,7 @@ async def test_ai_echo_voice_transcript_switch_can_disable_suppression(monkeypat
 async def test_stale_ai_echo_voice_transcript_is_not_suppressed(monkeypatch):
     mgr = _make_transcript_manager()
     monkeypatch.setattr(core_module, "HIDE_DIRTY_VOICE_TRANSCRIPTS", True)
-    monkeypatch.setattr(core_module.time, "time", lambda: FIXED_TS)
+    patch_module_clock(monkeypatch, turn_module, time=lambda: FIXED_TS)
     mgr._recent_ai_voice_echo_text = "刚才我主动说了一句：要不要休息一下喝点水。"
     mgr._recent_ai_voice_echo_at = FIXED_TS - 25
 
@@ -1371,7 +1862,7 @@ async def test_stale_ai_echo_voice_transcript_is_not_suppressed(monkeypatch):
 async def test_user_barge_in_different_from_recent_ai_text_is_not_suppressed(monkeypatch):
     mgr = _make_transcript_manager()
     monkeypatch.setattr(core_module, "HIDE_DIRTY_VOICE_TRANSCRIPTS", True)
-    monkeypatch.setattr(core_module.time, "time", lambda: FIXED_TS)
+    patch_module_clock(monkeypatch, turn_module, time=lambda: FIXED_TS)
     mgr._recent_ai_voice_echo_text = "刚才我主动说了一句：要不要休息一下喝点水。"
     mgr._recent_ai_voice_echo_at = FIXED_TS
 
@@ -1395,7 +1886,7 @@ async def test_user_barge_in_different_from_recent_ai_text_is_not_suppressed(mon
 async def test_short_keyword_barge_in_from_recent_ai_text_is_not_suppressed(monkeypatch):
     mgr = _make_transcript_manager()
     monkeypatch.setattr(core_module, "HIDE_DIRTY_VOICE_TRANSCRIPTS", True)
-    monkeypatch.setattr(core_module.time, "time", lambda: FIXED_TS)
+    patch_module_clock(monkeypatch, turn_module, time=lambda: FIXED_TS)
     mgr._recent_ai_voice_echo_text = "Do you want tea or coffee?"
     mgr._recent_ai_voice_echo_at = FIXED_TS
 
@@ -1437,7 +1928,7 @@ def test_voice_echo_suppression_cache_reset_clears_cross_session_state():
 async def test_send_lanlan_response_defaults_to_skip_display_echo_cache(monkeypatch):
     mgr = _make_manager()
     mgr.use_tts = True
-    monkeypatch.setattr(core_module.time, "time", lambda: FIXED_TS)
+    patch_module_clock(monkeypatch, turn_module, time=lambda: FIXED_TS)
 
     await core_module.LLMSessionManager.send_lanlan_response(mgr, "显示文本（括号也显示）")
 
@@ -1450,7 +1941,7 @@ async def test_send_lanlan_response_defaults_to_skip_display_echo_cache(monkeypa
 @pytest.mark.asyncio
 async def test_send_lanlan_response_can_explicitly_remember_voice_echo_with_tts(monkeypatch):
     mgr = _make_manager()
-    monkeypatch.setattr(core_module.time, "time", lambda: FIXED_TS)
+    patch_module_clock(monkeypatch, turn_module, time=lambda: FIXED_TS)
     mgr.use_tts = True
 
     await core_module.LLMSessionManager.send_lanlan_response(
@@ -1465,9 +1956,78 @@ async def test_send_lanlan_response_can_explicitly_remember_voice_echo_with_tts(
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_send_lanlan_response_reports_sync_publication_time(monkeypatch):
+    """The publication timestamp is sampled at the sync queue boundary."""
+    mgr = _make_manager()
+    patch_module_clock(monkeypatch, turn_module, time=lambda: FIXED_TS)
+    publication_times = []
+
+    await core_module.LLMSessionManager.send_lanlan_response(
+        mgr,
+        "published before websocket await",
+        on_published=publication_times.append,
+    )
+
+    assert publication_times == [FIXED_TS]
+    queued = mgr.sync_message_queue.get_nowait()
+    assert queued["data"]["text"] == "published before websocket await"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_send_lanlan_response_rejects_before_stale_focus_cleanup():
+    """A replaced proactive turn cannot hide the new user's thinking bubble."""
+    mgr = _make_manager()
+    mgr.current_speech_id = "s-user"
+    mgr.last_user_engagement_time = FIXED_TS + 1.0
+    mgr._push_focus_thinking = AsyncMock()
+
+    published = await core_module.LLMSessionManager.send_lanlan_response(
+        mgr,
+        "stale proactive",
+        is_first_chunk=True,
+        expected_speech_id="s-proactive",
+        expected_user_engagement_time=FIXED_TS,
+    )
+
+    assert published is None
+    mgr._push_focus_thinking.assert_not_awaited()
+    assert mgr.sync_message_queue.empty()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_send_lanlan_response_guard_rechecks_after_focus_cleanup():
+    """A guarded proactive bubble must not publish after engagement in its last await."""
+    mgr = _make_manager()
+    mgr.current_speech_id = "s-proactive"
+    mgr.last_user_engagement_time = FIXED_TS
+
+    async def engage_during_focus_cleanup(_active):
+        mgr.last_user_engagement_time = FIXED_TS + 1.0
+
+    mgr._push_focus_thinking = AsyncMock(
+        side_effect=engage_during_focus_cleanup,
+    )
+
+    published = await core_module.LLMSessionManager.send_lanlan_response(
+        mgr,
+        "stale proactive",
+        is_first_chunk=True,
+        expected_speech_id="s-proactive",
+        expected_user_engagement_time=FIXED_TS,
+    )
+
+    assert published is None
+    assert mgr.sync_message_queue.empty()
+    assert mgr._current_ai_turn_text == ""
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_mirror_assistant_speech_confirms_audio_echo_after_tts_audio(monkeypatch):
     mgr = _make_manager()
-    monkeypatch.setattr(core_module.time, "time", lambda: FIXED_TS)
+    patch_module_clock(monkeypatch, turn_module, time=lambda: FIXED_TS)
     mgr.tts_thread = _FakeAliveThread()
     mgr.tts_ready = True
     mgr.tts_request_queue = _FakeQueue()
@@ -1507,7 +2067,7 @@ async def test_mirror_assistant_speech_confirms_audio_echo_after_tts_audio(monke
 @pytest.mark.unit
 def test_confirm_pending_ai_voice_echo_promotes_only_next_played_chunk(monkeypatch):
     mgr = _make_manager()
-    monkeypatch.setattr(core_module.time, "time", lambda: FIXED_TS)
+    patch_module_clock(monkeypatch, turn_module, time=lambda: FIXED_TS)
 
     core_module.LLMSessionManager._remember_pending_ai_voice_echo(mgr, "speech-1", "已经发出音频的第一句")
     core_module.LLMSessionManager._remember_pending_ai_voice_echo(mgr, "speech-1", "还在队列里的第二句")
@@ -1523,7 +2083,7 @@ def test_confirm_pending_ai_voice_echo_promotes_only_next_played_chunk(monkeypat
 @pytest.mark.unit
 def test_confirm_pending_ai_voice_echo_skips_sidless_confirmation(monkeypatch):
     mgr = _make_manager()
-    monkeypatch.setattr(core_module.time, "time", lambda: FIXED_TS)
+    patch_module_clock(monkeypatch, turn_module, time=lambda: FIXED_TS)
 
     core_module.LLMSessionManager._remember_pending_ai_voice_echo(mgr, "speech-1", "无法确认归属的文本")
 
@@ -1539,7 +2099,7 @@ def test_confirm_pending_ai_voice_echo_skips_sidless_confirmation(monkeypatch):
 @pytest.mark.unit
 def test_confirm_pending_ai_voice_echo_promotes_once_per_speech_id(monkeypatch):
     mgr = _make_manager()
-    monkeypatch.setattr(core_module.time, "time", lambda: FIXED_TS)
+    patch_module_clock(monkeypatch, turn_module, time=lambda: FIXED_TS)
 
     core_module.LLMSessionManager._remember_pending_ai_voice_echo(mgr, "speech-1", "第一段文本")
     core_module.LLMSessionManager._remember_pending_ai_voice_echo(mgr, "speech-1", "第二段未播文本")
@@ -1555,7 +2115,7 @@ def test_confirm_pending_ai_voice_echo_promotes_once_per_speech_id(monkeypatch):
 @pytest.mark.unit
 def test_confirm_pending_ai_voice_echo_ignores_late_old_speech_id_for_new_pending(monkeypatch):
     mgr = _make_manager()
-    monkeypatch.setattr(core_module.time, "time", lambda: FIXED_TS)
+    patch_module_clock(monkeypatch, turn_module, time=lambda: FIXED_TS)
 
     core_module.LLMSessionManager._remember_pending_ai_voice_echo(mgr, "new-speech", "new turn pending text")
 
@@ -1580,7 +2140,7 @@ def test_confirm_pending_ai_voice_echo_ignores_late_old_speech_id_for_new_pendin
 @pytest.mark.asyncio
 async def test_text_first_chunk_drops_stale_pending_echo_before_new_tts(monkeypatch):
     mgr = _make_manager()
-    monkeypatch.setattr(core_module.time, "time", lambda: FIXED_TS)
+    patch_module_clock(monkeypatch, turn_module, time=lambda: FIXED_TS)
     mgr.use_tts = True
     mgr.tts_ready = True
     mgr.tts_thread = _FakeAliveThread()
@@ -1610,7 +2170,8 @@ async def test_text_first_chunk_drops_stale_pending_echo_before_new_tts(monkeypa
 @pytest.mark.asyncio
 async def test_sidless_tts_audio_discards_pending_echo(monkeypatch):
     mgr = _make_manager()
-    monkeypatch.setattr(core_module.time, "time", lambda: FIXED_TS)
+    # tts_response_handler 定义在 main_logic.core.tts_runtime，读时钟的也是它。
+    patch_module_clock(monkeypatch, tts_runtime_module, time=lambda: FIXED_TS)
     mgr.tts_response_queue = queue.Queue()
     mgr.tts_response_queue.put(b"sidless-audio")
     mgr.current_speech_id = "new-turn"
@@ -1642,7 +2203,8 @@ async def test_sidless_tts_audio_discards_pending_echo(monkeypatch):
 @pytest.mark.asyncio
 async def test_failed_tts_audio_send_drops_unplayed_pending_echo(monkeypatch):
     mgr = _make_manager()
-    monkeypatch.setattr(core_module.time, "time", lambda: FIXED_TS)
+    # 同上：tts_response_handler 在 main_logic.core.tts_runtime。
+    patch_module_clock(monkeypatch, tts_runtime_module, time=lambda: FIXED_TS)
     mgr.tts_response_queue = queue.Queue()
     mgr.tts_response_queue.put(("__audio__", "speech-1", b"failed-audio"))
     send_called = asyncio.Event()
@@ -1673,7 +2235,8 @@ async def test_failed_tts_audio_send_drops_unplayed_pending_echo(monkeypatch):
 @pytest.mark.asyncio
 async def test_clear_tts_pipeline_drops_only_unplayed_echo_cache(monkeypatch):
     mgr = _make_manager()
-    monkeypatch.setattr(core_module.time, "time", lambda: FIXED_TS)
+    # _clear_tts_pipeline 在 main_logic.core.tts_runtime。
+    patch_module_clock(monkeypatch, tts_runtime_module, time=lambda: FIXED_TS)
     mgr.tts_thread = _FakeAliveThread()
     mgr._recent_ai_voice_echo_text = "已经播出的尾音"
     mgr._recent_ai_voice_echo_at = FIXED_TS
@@ -1780,3 +2343,113 @@ async def test_takeover_response_complete_clears_interrupted_ordinary_turn():
     assert mgr._current_ai_turn_text == ""
     assert mgr.tts_pending_chunks == []
     assert mgr.sync_message_queue.messages == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_handle_input_transcript_reports_acceptance_for_asr_bridge():
+    ordinary = _make_transcript_manager()
+    assert await core_module.LLMSessionManager.handle_input_transcript(
+        ordinary,
+        "ordinary voice input",
+        is_voice_source=True,
+    ) is True
+
+    empty = _make_transcript_manager()
+    assert await core_module.LLMSessionManager.handle_input_transcript(
+        empty,
+        "   ",
+        is_voice_source=True,
+    ) is False
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_discarded_retry_drops_stream_text_from_activity_buffer():
+    """A discarded reply must not stay queued for the tracker across the retry."""
+    mgr = _make_manager()
+    # 流式阶段每个 chunk 都走 send_lanlan_response，默认 track_ai_turn=True，
+    # 所以被丢弃的那版正文此刻还躺在 buffer 里。
+    mgr._current_ai_turn_text = "discarded stream body"
+
+    await core_module.LLMSessionManager.handle_response_discarded(
+        mgr,
+        "guard",
+        1,
+        3,
+        True,
+    )
+
+    assert mgr._current_ai_turn_text == ""
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_truncated_recovery_flushes_only_recovery_body_to_tracker():
+    """Turn end must see the recovery body alone, not the discarded draft too."""
+    mgr = _make_manager()
+    mgr._current_ai_turn_text = "discarded stream body"
+    mgr.session = MagicMock()
+    mgr.session._conversation_history = []
+    mgr._finalize_turn_after_emit = AsyncMock()
+
+    # fixture 的 send_lanlan_response stub 已经照真实实现按 track_ai_turn 累加；
+    # recovery 路径显式传 track_ai_turn=False，改由 _track_recovery_ai_turn_text
+    # 在 turn end 前一步补记。
+    #
+    # _flush_ai_turn_text_to_tracker 由 _emit_turn_end 调用，捕获调用当刻的 buffer。
+    buffer_at_turn_end = []
+
+    async def capture_emit(request_id):
+        buffer_at_turn_end.append(mgr._current_ai_turn_text)
+
+    mgr._emit_turn_end = capture_emit
+
+    await core_module.LLMSessionManager.handle_response_discarded(
+        mgr,
+        "guard",
+        3,
+        3,
+        False,
+        '{"code":"RESPONSE_LENGTH_TRUNCATED","text":"recovered body"}',
+    )
+
+    assert buffer_at_turn_end == ["recovered body"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_recovery_losing_ownership_mid_tts_leaves_no_tracker_text_for_b():
+    """A's recovery body must not survive into B's tracker turn.
+
+    Ownership can be lost inside any recovery step's await. The AI-turn text is
+    therefore recorded in a synchronous step right before turn end, so an earlier
+    break leaves the shared buffer untouched.
+    """
+    mgr = _make_manager()
+    mgr.use_tts = True
+    mgr.session = MagicMock()
+    mgr.session._conversation_history = []
+    mgr._active_text_request_id = "req-A"
+    mgr._clear_tts_pipeline = AsyncMock()
+    mgr._emit_turn_end = AsyncMock()
+    mgr._finalize_turn_after_emit = AsyncMock()
+    mgr._request_tts_done_for_turn = AsyncMock()
+
+    async def feed_then_start_request_b(text, expected_speech_id=None):
+        mgr._active_text_request_id = "req-B"
+
+    mgr.feed_tts_chunk = feed_then_start_request_b
+
+    await core_module.LLMSessionManager.handle_response_discarded(
+        mgr,
+        "guard",
+        3,
+        3,
+        False,
+        '{"code":"RESPONSE_LENGTH_TRUNCATED","text":"recovered body"}',
+        request_id="req-A",
+    )
+
+    assert mgr._current_ai_turn_text == ""
+    mgr._emit_turn_end.assert_not_awaited()

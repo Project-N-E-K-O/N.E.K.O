@@ -146,12 +146,12 @@ DEFAULT_ASSIST_API_PROFILES = {
     },
     'step': {
         'OPENROUTER_URL': "https://api.stepfun.com/v1",
-        'CONVERSATION_MODEL' : "step-2-mini",
-        'SUMMARY_MODEL': "step-2-mini",
-        'CORRECTION_MODEL': "step-2-mini",
-        'EMOTION_MODEL': "step-2-mini",
+        'CONVERSATION_MODEL' : "step-1o-turbo-vision",
+        'SUMMARY_MODEL': "step-1o-turbo-vision",
+        'CORRECTION_MODEL': "step-1o-turbo-vision",
+        'EMOTION_MODEL': "step-1o-turbo-vision",
         'VISION_MODEL': "step-1o-turbo-vision",
-        'AGENT_MODEL': "step-2-mini",
+        'AGENT_MODEL': "step-3.7-flash",
     },
     'silicon': {
         'OPENROUTER_URL': "https://api.siliconflow.cn/v1",
@@ -262,17 +262,9 @@ DEFAULT_ASSIST_API_KEY_FIELDS = {
     'doubao': 'ASSIST_API_KEY_DOUBAO',
 }
 
-DEFAULT_TUTORIAL_PROMPT_CONFIG = {
-    'min_prompt_foreground_ms': 15 * 1000,
-    'later_cooldown_ms': 24 * 60 * 60 * 1000,
-    'failure_cooldown_ms': 2 * 60 * 60 * 1000,
-    'max_prompt_shows': 2,
-}
-
 DEFAULT_CONFIG_DATA = {
     'characters.json': DEFAULT_CHARACTERS_CONFIG,
     'core_config.json': DEFAULT_CORE_CONFIG,
-    'tutorial_prompt_config.json': DEFAULT_TUTORIAL_PROMPT_CONFIG,
     'user_preferences.json': DEFAULT_USER_PREFERENCES,
     'voice_storage.json': DEFAULT_VOICE_STORAGE,
 }

@@ -21,6 +21,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.fake_clock import patch_module_clock
+
 
 _SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "prepare_embedding_model.py"
 
@@ -31,7 +33,9 @@ def prep(monkeypatch):
     spec = importlib.util.spec_from_file_location("prepare_embedding_model", _SCRIPT)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    monkeypatch.setattr(module.time, "sleep", lambda *_: None)
+    # The backoff sleep lives in prepare_embedding_model._download_one itself
+    # (`time.sleep(delay)`), so the fake belongs on this module and nowhere else.
+    patch_module_clock(monkeypatch, module, sleep=lambda *_: None)
     # Default env: tests opt into HF_ENDPOINT(S) explicitly where relevant.
     monkeypatch.delenv("HF_ENDPOINTS", raising=False)
     monkeypatch.delenv("HF_ENDPOINT", raising=False)

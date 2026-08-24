@@ -38,6 +38,32 @@ def _build_history_request_payload(messages: list[dict]) -> str:
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_cache_assigns_locale_order_before_thread_offload():
+    """The event-loop admission order must not depend on worker scheduling."""
+    from app import memory_server
+    from app.memory_server import routes as memory_routes
+
+    allocated = MagicMock(return_value=314)
+    real_to_thread = memory_routes.asyncio.to_thread
+
+    async def reject_threaded_allocation(func, *args, **kwargs):
+        assert func is not allocated
+        return await real_to_thread(func, *args, **kwargs)
+
+    request = memory_server.HistoryRequest(input_history="[]", language="zh-TW")
+    with patch.object(
+        memory_server.locale_state,
+        "allocate_character_prompt_locale_order",
+        allocated,
+    ), patch.object(memory_routes.asyncio, "to_thread", reject_threaded_allocation):
+        result = await memory_server.cache_conversation(request, "测试角色")
+
+    assert result == {"status": "cached", "count": 0}
+    allocated.assert_called_once_with("测试角色")
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_cache_endpoint_writes_time_indexed_db():
     """/cache 端点必须把消息落到 ``time_indexed.db``（通过 astore_conversation）。
 
@@ -46,31 +72,94 @@ async def test_cache_endpoint_writes_time_indexed_db():
     """
     from app import memory_server
 
+    events = []
+    allocate_locale_order = MagicMock(
+        side_effect=lambda _name: events.append("allocate") or 314
+    )
     fake_time_manager = MagicMock()
-    fake_time_manager.astore_conversation = AsyncMock(return_value=None)
+    fake_time_manager.astore_conversation = AsyncMock(
+        side_effect=lambda *_args: events.append("time-indexed")
+    )
     fake_recent_history_manager = MagicMock()
-    fake_recent_history_manager.update_history = AsyncMock(return_value=None)
+    fake_recent_history_manager.update_history = AsyncMock(
+        side_effect=lambda *_args, **_kwargs: events.append("recent")
+    )
     fake_spawn_outbox = AsyncMock(return_value=None)
 
     payload = _build_history_request_payload([
         {"role": "human", "content": "你好"},
         {"role": "ai", "content": "你好喵~"},
     ])
-    request = memory_server.HistoryRequest(input_history=payload)
+    request = memory_server.HistoryRequest(input_history=payload, language="zh-CN")
 
     with patch.object(memory_server.runtime, "time_manager", fake_time_manager), \
          patch.object(memory_server.runtime, "recent_history_manager", fake_recent_history_manager), \
          patch.object(memory_server.post_turn, "_spawn_outbox_post_turn_signals", fake_spawn_outbox), \
+         patch.object(memory_server.locale_state, "allocate_character_prompt_locale_order", allocate_locale_order), \
          patch.object(memory_server.gates, "_aclear_review_clean", AsyncMock(return_value=None)):
         result = await memory_server.cache_conversation(request, "测试角色")
 
     assert result["status"] == "cached"
     assert result["count"] == 2
+    assert events == ["allocate", "recent", "time-indexed"]
     fake_time_manager.astore_conversation.assert_awaited_once()
     awaited_args = fake_time_manager.astore_conversation.await_args
     # astore_conversation(uid, messages, lanlan_name) — 顺序由 store_conversation 签名定
     assert awaited_args.args[2] == "测试角色"
     assert len(awaited_args.args[1]) == 2
+    assert fake_spawn_outbox.await_args.kwargs["locale_admission_order"] == 314
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "endpoint_name",
+    [
+        "cache_conversation",
+        "process_conversation",
+        "process_conversation_for_renew",
+    ],
+)
+async def test_stale_recent_identity_aborts_downstream_persistence(endpoint_name):
+    """A stale recent append must not reach time-indexed or outbox storage."""
+    from app import memory_server
+    from utils.recent_file import RecentFileDeletedError
+
+    fake_config = MagicMock()
+    fake_config.aload_characters = AsyncMock(return_value={"猫娘": {"测试角色": {}}})
+    fake_recent_history_manager = MagicMock()
+    fake_recent_history_manager.update_history = AsyncMock(
+        side_effect=RecentFileDeletedError("identity replaced")
+    )
+    fake_time_manager = MagicMock()
+    fake_time_manager.astore_conversation = AsyncMock(return_value=None)
+    fake_spawn_outbox = AsyncMock(return_value=None)
+    payload = _build_history_request_payload([
+        {"role": "human", "content": "stale turn"},
+    ])
+    request = memory_server.HistoryRequest(input_history=payload)
+
+    with patch.object(memory_server.runtime, "_config_manager", fake_config), \
+         patch.object(memory_server.runtime, "embedding_warmup_worker", None), \
+         patch.object(memory_server.runtime, "time_manager", fake_time_manager), \
+         patch.object(
+             memory_server.runtime,
+             "recent_history_manager",
+             fake_recent_history_manager,
+         ), patch.object(
+             memory_server.post_turn,
+             "_spawn_outbox_post_turn_signals",
+             fake_spawn_outbox,
+         ), patch.object(
+             memory_server.gates,
+             "_aclear_review_clean",
+             AsyncMock(return_value=None),
+         ):
+        result = await getattr(memory_server, endpoint_name)(request, "测试角色")
+
+    assert result["status"] == "error"
+    fake_time_manager.astore_conversation.assert_not_awaited()
+    fake_spawn_outbox.assert_not_awaited()
 
 
 @pytest.mark.unit
@@ -99,7 +188,7 @@ async def test_cache_endpoint_spawns_outbox_post_turn_signals():
         {"role": "human", "content": "我喜欢吃草莓"},
         {"role": "ai", "content": "记下来啦~"},
     ])
-    request = memory_server.HistoryRequest(input_history=payload)
+    request = memory_server.HistoryRequest(input_history=payload, language="zh-CN")
 
     with patch.object(memory_server.runtime, "time_manager", fake_time_manager), \
          patch.object(memory_server.runtime, "recent_history_manager", fake_recent_history_manager), \
@@ -111,6 +200,7 @@ async def test_cache_endpoint_spawns_outbox_post_turn_signals():
     spawn_args = fake_spawn_outbox.await_args
     assert spawn_args.args[0] == "测试角色"
     assert len(spawn_args.args[1]) == 2
+    assert spawn_args.kwargs["language"] == "zh-CN"
 
 
 @pytest.mark.unit
@@ -324,3 +414,45 @@ async def test_settle_endpoint_msgs_zero_still_runs_review():
     fake_time_manager.astore_conversation.assert_not_awaited()
     fake_spawn_outbox.assert_not_awaited()
     fake_maybe_spawn_review.assert_awaited_once_with("测试角色")
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_settle_empty_payload_persists_explicit_locale():
+    from app import memory_server
+
+    fake_recent_history_manager = MagicMock()
+    fake_recent_history_manager.update_history = AsyncMock(return_value=None)
+    fake_spawn_outbox = AsyncMock(return_value=None)
+    request = memory_server.HistoryRequest(
+        input_history=json.dumps([]),
+        language="zh-TW",
+    )
+
+    with patch.object(
+        memory_server.runtime,
+        "recent_history_manager",
+        fake_recent_history_manager,
+    ), patch.object(
+        memory_server.post_turn,
+        "_spawn_outbox_post_turn_signals",
+        fake_spawn_outbox,
+    ), patch.object(
+        memory_server.review,
+        "maybe_spawn_review",
+        AsyncMock(return_value=None),
+    ), patch.object(
+        memory_server.locale_state,
+        "allocate_character_prompt_locale_order",
+        MagicMock(return_value=314),
+    ):
+        result = await memory_server.settle_conversation(request, "测试角色")
+
+    assert result == {"status": "settled"}
+    fake_spawn_outbox.assert_awaited_once_with(
+        "测试角色",
+        [],
+        language="zh-TW",
+        render_language=None,
+        locale_admission_order=314,
+    )

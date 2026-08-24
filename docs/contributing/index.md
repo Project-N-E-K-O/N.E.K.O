@@ -19,7 +19,11 @@ All Python commands use `uv run`. User-visible i18n changes update all eight loc
 - A PR with more than 20 counted files requires a non-empty no-split rationale. New files, recognized test files, and synchronized i18n locale groups are excluded by that gate's rules.
 - Static analysis and plugin tests are defined by current workflows, not by an old checklist.
 
-Read [Testing](./testing), [Code Style](./code-style), and [Nuitka Packaging](./nuitka-packaging) before changing their areas.
+Read [Testing](./testing), [Code Style](./code-style), [Documentation Maintenance](./documentation), and [Nuitka Packaging](./nuitka-packaging) before changing their areas.
+
+Maintainer-only content tools have their own safety contracts. The [natural-expression candidate miner](./natural-expression-candidate-miner) accepts only explicitly supplied local data and never promotes runtime rules automatically.
+
+The [DataForSEO SEO Monitoring](./dataforseo-seo-monitoring) tool is also maintainer-only. It validates request volume in a zero-cost dry run, keeps credentials outside the VitePress bundle, and requires an explicit manual action before any paid API call.
 
 ## Reports and community
 

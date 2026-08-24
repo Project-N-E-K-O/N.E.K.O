@@ -378,12 +378,21 @@
 
     function normalizeNekoScreenRect(rect) {
         if (!rect) return null;
-        const left = Number(rect.left);
-        const top = Number(rect.top);
+        const readFinite = (value) => (
+            value !== null && value !== undefined && Number.isFinite(Number(value))
+                ? Number(value)
+                : NaN
+        );
+        const normalizedLeft = readFinite(rect.left);
+        const normalizedTop = readFinite(rect.top);
+        const left = Number.isFinite(normalizedLeft) ? normalizedLeft : readFinite(rect.x);
+        const top = Number.isFinite(normalizedTop) ? normalizedTop : readFinite(rect.y);
         const width = Number(rect.width);
         const height = Number(rect.height);
-        const right = Number.isFinite(Number(rect.right)) ? Number(rect.right) : left + width;
-        const bottom = Number.isFinite(Number(rect.bottom)) ? Number(rect.bottom) : top + height;
+        const normalizedRight = readFinite(rect.right);
+        const normalizedBottom = readFinite(rect.bottom);
+        const right = Number.isFinite(normalizedRight) ? normalizedRight : left + width;
+        const bottom = Number.isFinite(normalizedBottom) ? normalizedBottom : top + height;
         const normalizedWidth = Number.isFinite(width) && width > 0 ? width : right - left;
         const normalizedHeight = Number.isFinite(height) && height > 0 ? height : bottom - top;
         if (![left, top, normalizedWidth, normalizedHeight].every(Number.isFinite)) return null;
@@ -398,18 +407,74 @@
         };
     }
 
-    function getModelRectFromManager(manager) {
+    I.toNekoVirtualTransitionRect = function toNekoVirtualTransitionRect(rect) {
+        const normalizedRect = normalizeNekoScreenRect(rect);
+        if (!normalizedRect) return null;
+        try {
+            const cropApi = window.__nekoNiriPetPhysicalCrop;
+            if (!cropApi || typeof cropApi.toVirtualRect !== 'function') {
+                return normalizedRect;
+            }
+            const virtualRect = cropApi.toVirtualRect({
+                x: normalizedRect.left,
+                y: normalizedRect.top,
+                width: normalizedRect.width,
+                height: normalizedRect.height
+            });
+            return normalizeNekoScreenRect(virtualRect) || normalizedRect;
+        } catch (_) {
+            return normalizedRect;
+        }
+    };
+
+    // `coordinateSpace` describes the source space of `rect`: virtual input is
+    // already aligned, while client input must be projected into virtual space.
+    function getNekoTransitionRect(rect, coordinateSpace = 'client') {
+        return coordinateSpace === 'virtual'
+            ? normalizeNekoScreenRect(rect)
+            : I.toNekoVirtualTransitionRect(rect);
+    }
+
+    function getNekoTransitionVirtualViewportSize() {
+        try {
+            const cropApi = window.__nekoNiriPetPhysicalCrop;
+            const cropState = cropApi && typeof cropApi.getState === 'function'
+                ? cropApi.getState()
+                : null;
+            const virtualBounds = cropState && cropState.enabled === true
+                ? cropState.virtualBounds
+                : null;
+            const width = Number(virtualBounds && virtualBounds.width);
+            const height = Number(virtualBounds && virtualBounds.height);
+            if (Number.isFinite(width) && width > 0 && Number.isFinite(height) && height > 0) {
+                return { width, height };
+            }
+        } catch (_) {}
+        return {
+            width: Math.max(1, Number(window.innerWidth) || 1),
+            height: Math.max(1, Number(window.innerHeight) || 1)
+        };
+    }
+
+    function getModelRectFromManager(manager, options = {}) {
         if (!manager) return null;
+        const screenBoundsSpace = options.screenBoundsSpace || 'client';
+        const modelBoundsSpace = options.modelBoundsSpace || screenBoundsSpace;
         if (typeof manager.getModelScreenBounds === 'function') {
             try {
-                const rect = normalizeNekoScreenRect(manager.getModelScreenBounds());
+                const rect = getNekoTransitionRect(
+                    manager.getModelScreenBounds(),
+                    screenBoundsSpace
+                );
                 if (rect) return rect;
             } catch (_) {}
         }
 
         if (manager.image && typeof manager.image.getBoundingClientRect === 'function') {
             try {
-                const rect = normalizeNekoScreenRect(manager.image.getBoundingClientRect());
+                // DOMRect is always relative to the physically cropped renderer
+                // viewport, regardless of the manager's own coordinate contract.
+                const rect = I.toNekoVirtualTransitionRect(manager.image.getBoundingClientRect());
                 if (rect) return rect;
             } catch (_) {}
         }
@@ -419,7 +484,7 @@
             : manager.currentModel;
         if (model && typeof model.getBounds === 'function') {
             try {
-                const rect = normalizeNekoScreenRect(model.getBounds());
+                const rect = getNekoTransitionRect(model.getBounds(), modelBoundsSpace);
                 if (rect) return rect;
             } catch (_) {}
         }
@@ -436,15 +501,38 @@
         const isPngtuberModelActive = (window.lanlan_config?.model_type || '').toLowerCase() === 'pngtuber'
             && isModelContainerActive('pngtuber-container');
         const candidates = [
-            { active: isPngtuberModelActive, manager: window.pngtuberManager },
-            { active: isModelContainerActive('mmd-container'), manager: window.mmdManager },
-            { active: isModelContainerActive('vrm-container'), manager: window.vrmManager },
-            { active: true, manager: window.live2dManager }
+            {
+                active: isPngtuberModelActive,
+                manager: window.pngtuberManager,
+                screenBoundsSpace: 'client',
+                modelBoundsSpace: 'client'
+            },
+            {
+                active: isModelContainerActive('mmd-container'),
+                manager: window.mmdManager,
+                screenBoundsSpace: 'client',
+                modelBoundsSpace: 'client'
+            },
+            {
+                active: isModelContainerActive('vrm-container'),
+                manager: window.vrmManager,
+                screenBoundsSpace: 'client',
+                modelBoundsSpace: 'client'
+            },
+            {
+                active: true,
+                manager: window.live2dManager,
+                // PIXI getBounds/getModelScreenBounds are measured in the
+                // virtual renderer canvas. Converting them as DOM client rects
+                // applies the Niri crop offset twice.
+                screenBoundsSpace: 'virtual',
+                modelBoundsSpace: 'virtual'
+            }
         ];
 
         for (const candidate of candidates) {
             if (!candidate.active) continue;
-            const rect = getModelRectFromManager(candidate.manager);
+            const rect = getModelRectFromManager(candidate.manager, candidate);
             if (rect) return rect;
         }
         return null;
@@ -1104,7 +1192,53 @@
 
     window.hideNekoReturnBallContainer = I.hideReturnBallContainer;
 
-    function positionReturnBallContainer(container, anchorRect) {
+    const NEKO_LIVE2D_PEEK_RETURN_EDGE_ANCHORS = [
+        'left',
+        'right',
+        'top-left',
+        'top-right',
+        'bottom-left',
+        'bottom-right'
+    ];
+
+    function clearLive2DPeekReturnBallEdgeAnchor(container) {
+        if (!container) return;
+        container.removeAttribute('data-neko-live2d-peek-anchor');
+        container.__nekoLive2DPeekEdgeAnchor = null;
+    }
+
+    function positionLive2DPeekReturnBallAtEdge(container, edgeAnchor) {
+        if (!container || !edgeAnchor || edgeAnchor.kind !== 'live2d-edge-peek') return false;
+        const edge = String(edgeAnchor.edge || edgeAnchor.side || '');
+        if (!NEKO_LIVE2D_PEEK_RETURN_EDGE_ANCHORS.includes(edge)) return false;
+
+        const width = Math.round(container.offsetWidth) || 64;
+        const height = Math.round(container.offsetHeight) || 64;
+        const virtualViewport = getNekoTransitionVirtualViewportSize();
+        const viewportWidth = Math.max(width, virtualViewport.width);
+        const viewportHeight = Math.max(height, virtualViewport.height);
+        const hiddenX = width * 0.4;
+        const hiddenY = height * 0.4;
+        const ratio = Math.max(0, Math.min(1, Number(edgeAnchor.edgeAnchorRatio) || 0.5));
+        let left = Math.round((viewportWidth - width) / 2);
+        let top = Math.round((viewportHeight - height) * ratio);
+
+        if (edge.endsWith('left') || edge === 'left') left = Math.round(-hiddenX);
+        if (edge.endsWith('right') || edge === 'right') left = Math.round(viewportWidth - width + hiddenX);
+        if (edge.startsWith('top-')) top = Math.round(-hiddenY);
+        if (edge.startsWith('bottom-')) top = Math.round(viewportHeight - height + hiddenY);
+
+        container.setAttribute('data-neko-live2d-peek-anchor', edge);
+        container.__nekoLive2DPeekEdgeAnchor = Object.assign({}, edgeAnchor, { edge });
+        container.style.left = `${left}px`;
+        container.style.top = `${top}px`;
+        container.style.right = '';
+        container.style.bottom = '';
+        container.style.transform = 'none';
+        return true;
+    }
+
+    function positionReturnBallContainer(container, anchorRect, edgeAnchor = null) {
         if (!container) return;
 
         container.style.left = '';
@@ -1113,11 +1247,15 @@
         container.style.bottom = '';
         container.style.transform = 'none';
 
+        if (positionLive2DPeekReturnBallAtEdge(container, edgeAnchor)) return;
+        clearLive2DPeekReturnBallEdgeAnchor(container);
+
         if (anchorRect) {
             const containerWidth = Math.round(container.offsetWidth) || 64;
             const containerHeight = Math.round(container.offsetHeight) || 64;
-            const maxLeft = Math.max(0, window.innerWidth - containerWidth);
-            const maxTop = Math.max(0, window.innerHeight - containerHeight);
+            const virtualViewport = getNekoTransitionVirtualViewportSize();
+            const maxLeft = Math.max(0, virtualViewport.width - containerWidth);
+            const maxTop = Math.max(0, virtualViewport.height - containerHeight);
             const left = Math.round(anchorRect.left + (anchorRect.width - containerWidth) / 2);
             const top = Math.round(anchorRect.top + (anchorRect.height - containerHeight) / 2);
             container.style.left = `${Math.max(0, Math.min(left, maxLeft))}px`;
@@ -1151,7 +1289,7 @@
         container.style.visibility = 'hidden';
         container.style.pointerEvents = 'none';
         I.applyGoodbyeIdleAppearanceToReturnButton(container);
-        positionReturnBallContainer(container, anchorRect);
+        positionReturnBallContainer(container, anchorRect, options.edgeAnchor);
         container.style.opacity = '0';
         container.style.transform = 'translate3d(0, 8px, 0) scale(0.94)';
         container.style.transition = 'opacity 325ms cubic-bezier(0.22, 1, 0.36, 1), transform 400ms cubic-bezier(0.22, 1, 0.36, 1)';
@@ -1317,15 +1455,34 @@
     }
 
     window.addEventListener('neko:return-ball-manual-move', (event) => {
+        const detail = event && event.detail;
+        // 只有真正发生位移（超过点击阈值）才清除贴边探身锚点：无移动的普通点击
+        // 也会先经过 mousedown 的 drag-start，若在这里清掉，return 时锚点已为空，
+        // 贴边探身态将无法恢复。drag-active 表示用户确实在拖 return-ball，
+        // 此时尊重新位置，不再自动恢复探身。
+        if (detail && detail.reason === 'return-ball-drag-active' && detail.container) {
+            clearLive2DPeekReturnBallEdgeAnchor(detail.container);
+        }
         syncIdleReturnBallDesktopStateFromManualMove(event && event.detail);
     });
 
     window.addEventListener('neko:auto-goodbye:state-change', (event) => {
         const detail = event && event.detail && typeof event.detail === 'object' ? event.detail : null;
         if (!detail || detail.type !== 'visual-tier') return;
+        const container = I.getVisibleIdleReturnBallContainer();
         if (getNekoGoodbyeIdleAppearance() === I.NEKO_GOODBYE_IDLE_APPEARANCE_BALL) {
             syncGoodbyeIdleAppearanceForReturnButtons('goodbye-idle-appearance-visual-tier');
+            if (container && container.__nekoLive2DPeekEdgeAnchor) {
+                requestAnimationFrame(() => {
+                    positionLive2DPeekReturnBallAtEdge(container, container.__nekoLive2DPeekEdgeAnchor);
+                });
+            }
             return;
+        }
+        if (container && container.__nekoLive2DPeekEdgeAnchor) {
+            requestAnimationFrame(() => {
+                positionLive2DPeekReturnBallAtEdge(container, container.__nekoLive2DPeekEdgeAnchor);
+            });
         }
         I.scheduleIdleReturnBallDesktopBridge(
             detail.source === 'return-ball-drag-demotion' ? 'return-ball-drag-demotion' : 'visual-tier'
@@ -1339,8 +1496,49 @@
         syncGoodbyeIdleAppearanceForReturnButtons(
             detail && detail.reason ? `goodbye-idle-appearance-${detail.reason}` : 'goodbye-idle-appearance'
         );
+        if (I.nekoGoodbyeIdleAppearance === I.NEKO_GOODBYE_IDLE_APPEARANCE_BALL) {
+            I.publishCatLocalActive(false, {
+                source: 'goodbye-idle-appearance',
+                reason: detail && detail.reason ? detail.reason : 'appearance-change',
+                appearance: I.NEKO_GOODBYE_IDLE_APPEARANCE_BALL,
+                mode: mode,
+                timestamp: detail && detail.timestamp
+            });
+            return;
+        }
+        const visibleContainer = I.getVisibleIdleReturnBallContainer();
+        if (visibleContainer) {
+            const actualAppearance = I.getReturnButtonAppearance(visibleContainer);
+            let autoGoodbye = false;
+            let visualTier = '';
+            try {
+                const autoGoodbyeState = window.nekoAutoGoodbye && typeof window.nekoAutoGoodbye.getState === 'function'
+                    ? window.nekoAutoGoodbye.getState()
+                    : null;
+                autoGoodbye = !!(autoGoodbyeState && autoGoodbyeState.autoGoodbyeTriggered);
+                visualTier = autoGoodbyeState && typeof autoGoodbyeState.visualTier === 'string'
+                    ? autoGoodbyeState.visualTier
+                    : '';
+            } catch (_) {}
+            I.publishCatLocalActive(
+                actualAppearance === I.NEKO_GOODBYE_IDLE_APPEARANCE_CAT,
+                {
+                    source: 'goodbye-idle-appearance',
+                    reason: detail && detail.reason ? detail.reason : 'appearance-change',
+                    appearance: actualAppearance,
+                    mode: mode,
+                    autoGoodbye: autoGoodbye,
+                    tier: visualTier,
+                    timestamp: detail && detail.timestamp
+                }
+            );
+        }
     });
     window.addEventListener('resize', () => {
+        const container = I.getVisibleIdleReturnBallContainer();
+        if (container && container.__nekoLive2DPeekEdgeAnchor) {
+            positionLive2DPeekReturnBallAtEdge(container, container.__nekoLive2DPeekEdgeAnchor);
+        }
         I.scheduleIdleReturnBallDesktopBridge('viewport-resize');
     });
 
@@ -1501,12 +1699,20 @@
         const w = container.offsetWidth || 64;
         const h = container.offsetHeight || 64;
         const rect = container.getBoundingClientRect && container.getBoundingClientRect();
+        const virtualRect = rect ? I.toNekoVirtualTransitionRect(rect) : null;
         const rawLeft = parseFloat(container.style.left);
         const rawTop = parseFloat(container.style.top);
-        const currentLeft = Number.isFinite(rawLeft) ? rawLeft : (rect ? rect.left : 0);
-        const currentTop = Number.isFinite(rawTop) ? rawTop : (rect ? rect.top : 0);
-        container.style.left = `${Math.round(clampNekoIdleCat1EdgePeekCoordinate(currentLeft, 0, (window.innerWidth || w) - w))}px`;
-        container.style.top = `${Math.round(clampNekoIdleCat1EdgePeekCoordinate(currentTop, 0, (window.innerHeight || h) - h))}px`;
+        const currentLeft = Number.isFinite(rawLeft)
+            ? rawLeft
+            : (virtualRect ? virtualRect.left : (rect ? rect.left : 0));
+        const currentTop = Number.isFinite(rawTop)
+            ? rawTop
+            : (virtualRect ? virtualRect.top : (rect ? rect.top : 0));
+        const virtualViewport = getNekoTransitionVirtualViewportSize();
+        const viewportWidth = Math.max(w, virtualViewport.width);
+        const viewportHeight = Math.max(h, virtualViewport.height);
+        container.style.left = `${Math.round(clampNekoIdleCat1EdgePeekCoordinate(currentLeft, 0, viewportWidth - w))}px`;
+        container.style.top = `${Math.round(clampNekoIdleCat1EdgePeekCoordinate(currentTop, 0, viewportHeight - h))}px`;
         container.style.right = '';
         container.style.bottom = '';
         container.style.transform = 'none';

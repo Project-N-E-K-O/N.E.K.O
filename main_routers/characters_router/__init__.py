@@ -46,6 +46,7 @@ from ._shared import (  # noqa: F401
     _read_limited_stream,
 )
 from .notify import (  # noqa: F401
+    create_derived_task_claim_token,
     _resolve_reload_page_notice_code,
     send_reload_page_notice,
     notify_memory_server_reload,
@@ -83,18 +84,12 @@ from .direct_link import (  # noqa: F401
 )
 from .voice_providers import (  # noqa: F401
     ElevenLabsUpstreamError,
-    _build_minimax_request_prefix,
     _get_elevenlabs_base_url,
     _config_value_is_enabled,
     _prefixed_elevenlabs_voice_id,
     _raw_elevenlabs_voice_id,
     _raise_for_elevenlabs_response,
     _elevenlabs_clone_voice,
-    ELEVENLABS_VOICE_DESIGN_DESC_MIN,
-    ELEVENLABS_VOICE_DESIGN_DESC_MAX,
-    ELEVENLABS_VOICE_DESIGN_PREVIEW_TEXT,
-    _elevenlabs_design_previews,
-    _elevenlabs_create_voice_from_preview,
     _is_local_voice_clone_tts_config,
     _local_voice_clone_tts_base_url,
     _elevenlabs_synthesize_preview,
@@ -130,6 +125,13 @@ from .persona import (  # noqa: F401
     get_character_persona_selection,
     update_character_persona_selection,
     clear_character_persona_selection,
+)
+from .language_preference import (  # noqa: F401
+    LanguagePreferenceConflictError,
+    _request_memory_prompt_locale,
+    apply_character_language_preference,
+    get_character_language_preference,
+    set_character_language_preference,
 )
 from .crud import (  # noqa: F401
     DEFAULT_NEW_CATGIRL_FREE_VOICE_ID,
@@ -180,6 +182,7 @@ from .voice_registry import (  # noqa: F401
     delete_voice,
 )
 from .voice_preview import (  # noqa: F401
+    VOICE_PREVIEW_TEXTS,
     _normalize_voice_preview_language,
     _get_voice_preview_language,
     _is_free_preset_voice_id,
@@ -202,11 +205,9 @@ from .voice_cloning import (  # noqa: F401
     get_trim_progress,
     cancel_trim_task,
     voice_clone,
-    _validate_voice_design_description,
-    voice_design_preview,
-    voice_design_create,
     voice_clone_direct,
 )
+from . import voice_design as _voice_design  # noqa: F401 - register Voice Design routes
 from .cards import (  # noqa: F401
     _embed_zip_in_png_chunk,
     get_character_cards,

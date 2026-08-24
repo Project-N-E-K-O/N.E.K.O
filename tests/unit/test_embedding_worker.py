@@ -159,7 +159,7 @@ class _FactStub:
 
 def _build_worker(
     *, service, persona, reflection, fact, names=("小天",), warmup_delay=0.01,
-    dedup_resolver=None,
+    dedup_resolver=None, sweep_barrier=None,
 ) -> EmbeddingWarmupWorker:
     w = EmbeddingWarmupWorker(
         get_persona_manager=lambda: persona,
@@ -168,6 +168,7 @@ def _build_worker(
         get_character_names=lambda: list(names),
         warmup_delay_seconds=warmup_delay,
         get_dedup_resolver=(lambda: dedup_resolver) if dedup_resolver is not None else None,
+        get_sweep_barrier=(lambda: sweep_barrier) if sweep_barrier is not None else None,
     )
     # Hand the stub in by replacement — get_embedding_service() was
     # called in __init__, so we override the attribute directly.
@@ -720,3 +721,52 @@ async def test_dedup_resolver_observed_via_live_getter():
     # The NEW resolver got the enqueue, not the old one.
     assert len(new_resolver.calls) >= 1
     assert len(original_resolver.calls) == 1  # unchanged after reload
+
+
+@pytest.mark.asyncio
+async def test_sweep_barrier_drains_pre_reload_save_before_erasure():
+    """A reload/forget cannot erase first and then lose to an old save."""
+    embedding_started = asyncio.Event()
+    release_embedding = asyncio.Event()
+    order: list[str] = []
+
+    class _BlockingService(_FakeService):
+        async def embed_batch(self, texts):
+            embedding_started.set()
+            await release_embedding.wait()
+            return await super().embed_batch(texts)
+
+    class _OrderedFact(_FactStub):
+        async def asave_facts(self, name: str) -> None:
+            order.append("old-save")
+            await super().asave_facts(name)
+
+    barrier = asyncio.Lock()
+    old_fact = _OrderedFact()
+    old_fact.store["小天"] = [{
+        "id": "old", "text": "pre-reload",
+        "embedding": None, "embedding_text_sha256": None,
+        "embedding_model_id": None,
+    }]
+    worker = _build_worker(
+        service=_BlockingService(), persona=_PersonaStub(),
+        reflection=_ReflectionStub(), fact=old_fact,
+        sweep_barrier=barrier,
+    )
+
+    sweep_task = asyncio.create_task(worker._sweep_once())
+    await embedding_started.wait()
+
+    async def _reload_then_erase() -> None:
+        async with barrier:
+            order.append("erase")
+
+    erase_task = asyncio.create_task(_reload_then_erase())
+    await asyncio.sleep(0)
+    assert not erase_task.done()
+
+    release_embedding.set()
+    await sweep_task
+    await erase_task
+
+    assert order == ["old-save", "erase"]

@@ -29,6 +29,11 @@ N.E.K.O/
 
 `launcher.py` delegates to `launcher_core/`。`utils/config_manager/` owns writable config、`config/` owns bundled defaults。`react-neko-chat/` is the only real chat UI and is mounted by `index.html` / `chat.html`; legacy `#chat-container` is deprecated.
 
-`main_logic/core/` is protected by structural CI checks. Docker files are under `docker/`. Dependency contract is `pyproject.toml` + `uv.lock`, not a manual `requirements.txt` install.
+`main_logic/core/` is protected by structural CI checks。
+`main_logic/voice_turn/` owns only provider-neutral voice contracts; the local
+Silero/Smart Turn implementation and model assets live under
+`main_logic/asr_client/endpointing/`。Docker files are under `docker/`。
+Dependency contract is `pyproject.toml` + `uv.lock`, not a manual
+`requirements.txt` install.
 
 Use `rg`, imports, routes to find the current owner; historical files may now be packages.

@@ -668,6 +668,9 @@ def build_config(raw_config: dict[str, Any]) -> GalgameConfig:
         scene_change_cooldown_seconds=_coerce_float(
             galgame_obj.get("scene_change_cooldown_seconds"), 15.0, minimum=0.0
         ),
+        scene_summary_repeat_guard_enabled=_coerce_bool(
+            galgame_obj.get("scene_summary_repeat_guard_enabled"), True
+        ),
         scene_push_half_threshold=max(1, int(galgame_obj.get("scene_push_half_threshold") or 4)),
         scene_push_time_fallback_seconds=_coerce_float(
             galgame_obj.get("scene_push_time_fallback_seconds"), 120.0, minimum=10.0
@@ -994,6 +997,10 @@ def scan_session_candidates(bridge_root: Path) -> tuple[list[str], dict[str, Ses
         available_game_ids.append(game_id)
         session_path = child / "session.json"
         events_path = child / "events.jsonl"
+        try:
+            events_file_size = events_path.stat().st_size
+        except OSError:
+            events_file_size = 0
         session_result = read_session_json(session_path)
         if session_result.error:
             warnings.append(f"{game_id}: {session_result.error}")
@@ -1009,6 +1016,7 @@ def scan_session_candidates(bridge_root: Path) -> tuple[list[str], dict[str, Ses
             events_path=events_path,
             session=session,
             data_source=data_source,
+            events_file_size=events_file_size,
         )
 
     return available_game_ids, candidates, warnings
@@ -2027,9 +2035,16 @@ def _append_limited(items: list[dict[str, Any]], item: dict[str, Any], limit: in
         del items[:-limit]
 
 
-def _line_fingerprint(game_id: str, line_id: str, text: str) -> dict[str, str]:
+def _line_fingerprint(
+    game_id: str,
+    line_id: str,
+    text: str,
+    *,
+    scene_id: str = "",
+) -> dict[str, str]:
     return {
         "game_id": game_id,
+        "scene_id": scene_id,
         "line_id": line_id,
         "normalized_text": normalize_text(text),
     }
@@ -2060,9 +2075,15 @@ def _append_observed_line(
     scene_id = str(item.get("scene_id") or "")
     for index in range(len(history_observed_lines) - 1, -1, -1):
         existing = history_observed_lines[index]
-        same_line = line_id and line_id == str(existing.get("line_id") or "")
+        same_scene = scene_id == str(existing.get("scene_id") or "")
+        same_line = (
+            bool(line_id)
+            and same_scene
+            and line_id == str(existing.get("line_id") or "")
+        )
         same_text = (
-            text == normalize_text(str(existing.get("text") or ""))
+            bool(scene_id)
+            and text == normalize_text(str(existing.get("text") or ""))
             and scene_id == str(existing.get("scene_id") or "")
         )
         if same_line or same_text:
@@ -2071,6 +2092,32 @@ def _append_observed_line(
                 del history_observed_lines[:-limit]
             return
     _append_limited(history_observed_lines, item, limit)
+
+
+def _remove_observed_line(
+    history_observed_lines: list[dict[str, Any]],
+    item: dict[str, Any],
+) -> None:
+    text = normalize_text(str(item.get("text") or ""))
+    line_id = str(item.get("line_id") or "")
+    scene_id = str(item.get("scene_id") or "")
+    history_observed_lines[:] = [
+        existing
+        for existing in history_observed_lines
+        if not (
+            (
+                line_id
+                and scene_id == str(existing.get("scene_id") or "")
+                and line_id == str(existing.get("line_id") or "")
+            )
+            or (
+                text
+                and scene_id
+                and text == normalize_text(str(existing.get("text") or ""))
+                and scene_id == str(existing.get("scene_id") or "")
+            )
+        )
+    ]
 
 
 def _update_dedupe_window(
@@ -2201,7 +2248,16 @@ def apply_event_to_snapshot(snapshot: dict[str, Any], event: dict[str, Any]) -> 
         next_snapshot["scene_id"] = str(payload_obj.get("scene_id") or next_snapshot.get("scene_id") or "")
         next_snapshot["line_id"] = str(payload_obj.get("line_id") or "")
         next_snapshot["route_id"] = str(payload_obj.get("route_id") or next_snapshot.get("route_id") or "")
-        next_snapshot["save_context"] = sanitize_save_context(payload_obj.get("save_context"))
+        save_context = sanitize_save_context(payload_obj.get("save_context"))
+        reason = str(payload_obj.get("reason") or "").strip().lower()
+        if save_context.get("kind") == "unknown" and reason in {"load", "rollback"}:
+            save_context["kind"] = reason
+        next_snapshot["save_context"] = save_context
+        next_snapshot["save_boundary"] = {
+            "kind": str(save_context.get("kind") or "").strip().lower(),
+            "seq": max(0, int(event.get("seq") or 0)),
+            "ts": event_ts,
+        }
         next_snapshot["choices"] = []
         next_snapshot["is_menu_open"] = False
         next_snapshot["ts"] = event_ts
@@ -2252,6 +2308,7 @@ def apply_event_to_histories(
             game_id,
             str(payload_obj.get("line_id") or ""),
             str(payload_obj.get("text") or ""),
+            scene_id=str(payload_obj.get("scene_id") or ""),
         )
         duplicate = _update_dedupe_window(
             dedupe_window, fingerprint, config.dedupe_window_limit
@@ -2264,10 +2321,9 @@ def apply_event_to_histories(
             config.history_lines_limit,
         )
         if history_observed_lines is not None:
-            _append_observed_line(
+            _remove_observed_line(
                 history_observed_lines,
                 _line_history_entry(payload_obj, ts=event_ts, stability="stable"),
-                limit=config.history_lines_limit,
             )
         return
 
@@ -2329,7 +2385,7 @@ def rebuild_histories_from_events(
     history_lines: list[dict[str, Any]] = []
     history_observed_lines: list[dict[str, Any]] = []
     history_choices: list[dict[str, Any]] = []
-    working_window = [dict(item) for item in dedupe_window]
+    replay_window: list[dict[str, str]] = []
     working_snapshot = sanitize_snapshot_state(snapshot)
 
     for event in events:
@@ -2338,19 +2394,27 @@ def rebuild_histories_from_events(
             history_lines=history_lines,
             history_observed_lines=history_observed_lines,
             history_choices=history_choices,
-            dedupe_window=working_window,
+            dedupe_window=replay_window,
             event=event,
             config=config,
             game_id=game_id,
         )
         working_snapshot = apply_event_to_snapshot(working_snapshot, event)
 
+    retained_window = [dict(item) for item in dedupe_window]
+    for fingerprint in replay_window:
+        _update_dedupe_window(
+            retained_window,
+            fingerprint,
+            config.dedupe_window_limit,
+        )
+
     return (
         history_events,
         history_lines,
         history_observed_lines,
         history_choices,
-        working_window,
+        retained_window,
         working_snapshot,
     )
 

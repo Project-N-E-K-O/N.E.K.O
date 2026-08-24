@@ -23,7 +23,13 @@ import asyncio
 
 from utils.tts.native_voice_registry import make_native_tts_resolver, register_tts_worker_resolver
 
-from .._infra import TTS_SHUTDOWN_SENTINEL, _resample_audio, make_audio_jitter_buffer, _enqueue_error
+from .._infra import (
+    AudioDoneEmitter,
+    TTS_SHUTDOWN_SENTINEL,
+    _resample_audio,
+    make_audio_jitter_buffer,
+    _enqueue_error,
+)
 from .._telemetry import _record_tts_telemetry
 from utils.logger_config import get_module_logger
 
@@ -93,6 +99,16 @@ def grok_streaming_tts_worker(request_queue, response_queue, audio_api_key, voic
         # 与 step/qwen 对偶：xAI 流式音频首包后第一个 inter-chunk gap 偏大，用共享
         # jitter buffer 攒首包领先量盖过开头几个字的 jitter。
         audio_jitter = make_audio_jitter_buffer(response_queue)
+        # audio.done = 本轮音频流关闭。bound_speech_id 在建任务时钉死本轮 sid，
+        # 避免 sid 切换后旧 receive 任务读到迟到的 audio.done 错标到新一轮。
+        # 再压一道 text_done_sent 闸：只有本轮已经发过 text.done，audio.done 才
+        # 可能是整轮收尾；上游若按 delta 发 audio.done，没这道闸就是早发。
+        audio_done = AudioDoneEmitter(response_queue)
+
+        def _emit_audio_done(bound_speech_id) -> None:
+            """Signal end-of-stream once the round's terminal text was sent."""
+            if text_done_sent:
+                audio_done.emit(bound_speech_id)
         # 当 reconnect 失败时缓冲尚未发出的文本 chunks（同一 utterance）。下一次
         # 同 sid chunk 到达并 reconnect 成功后，缓冲内容会拼到第一条 text.delta
         # 前一起发送 —— 避免触发 reconnect 的那一条 chunk 在 continue 后丢失，
@@ -104,7 +120,7 @@ def grok_streaming_tts_worker(request_queue, response_queue, audio_api_key, voic
         pending_text: list[str] = []
         pending_text_sid: str | None = None
 
-        async def receive_messages():
+        async def receive_messages(bound_speech_id):
             # xAI 实际可能发 binary frame（raw PCM）或 JSON-wrapped base64 audio.delta，
             # 文档未明确给出，两路径都保留。字段名走 'delta'（OpenAI Realtime 标准）
             # 但保留 'audio' 作为兜底，未来如果 xAI 改名也不会立刻挂。
@@ -139,6 +155,8 @@ def grok_streaming_tts_worker(request_queue, response_queue, audio_api_key, voic
                     elif event_type == "audio.done":
                         # 本轮音频结束，放掉缓冲区里不足 steady 阈值的尾音
                         audio_jitter.flush()
+                        # flush 已经把尾音投进队列，此刻本轮音频流才真正关闭
+                        _emit_audio_done(bound_speech_id)
                     elif event_type == "error":
                         logger.error(f"xAI TTS server error: {event}")
                         _enqueue_error(response_queue, event)
@@ -164,7 +182,8 @@ def grok_streaming_tts_worker(request_queue, response_queue, audio_api_key, voic
             # close_timeout=0.5：上限 close handshake 等待，避免半开连接在 sid 切换
             # 路径 / interrupt / finally 清理时阻塞主循环数秒，伤后续 TTS 响应。
             ws = await websockets.connect(tts_url, additional_headers=headers, close_timeout=0.5)
-            receive_task = asyncio.create_task(receive_messages())
+            # 预热连接不承载任何 speech（首个真实 sid 一定先走切换重连分支），绑 None。
+            receive_task = asyncio.create_task(receive_messages(current_speech_id))
 
             logger.info("xAI Grok TTS 已就绪，发送就绪信号")
             response_queue.put(("__ready__", True))
@@ -181,6 +200,7 @@ def grok_streaming_tts_worker(request_queue, response_queue, audio_api_key, voic
 
                 if sid == "__interrupt__":
                     audio_jitter.begin_interrupt()
+                    audio_done.begin_interrupt()  # 打断轮不发 audio_done（走独立 cancel 通道）
                     try:
                         if receive_task and not receive_task.done():
                             receive_task.cancel()
@@ -205,6 +225,8 @@ def grok_streaming_tts_worker(request_queue, response_queue, audio_api_key, voic
                         pending_text_sid = None
                         audio_jitter.reset()  # 打断：丢弃未放出的缓冲音频
                         audio_jitter.end_interrupt()
+                        audio_done.reset()
+                        audio_done.end_interrupt()
                     continue
 
                 if sid is None:
@@ -216,7 +238,8 @@ def grok_streaming_tts_worker(request_queue, response_queue, audio_api_key, voic
                     if ws is None and pending_text and pending_text_sid is not None:
                         try:
                             ws = await websockets.connect(tts_url, additional_headers=headers, close_timeout=0.5)
-                            receive_task = asyncio.create_task(receive_messages())
+                            # 绑 pending_text_sid：current_speech_id 下一行才补上
+                            receive_task = asyncio.create_task(receive_messages(pending_text_sid))
                             current_speech_id = pending_text_sid
                             text_done_sent = False
                             resampler.clear()
@@ -248,7 +271,7 @@ def grok_streaming_tts_worker(request_queue, response_queue, audio_api_key, voic
                                         pass
                                 try:
                                     ws = await websockets.connect(tts_url, additional_headers=headers, close_timeout=0.5)
-                                    receive_task = asyncio.create_task(receive_messages())
+                                    receive_task = asyncio.create_task(receive_messages(current_speech_id))
                                     # 换了新 receive_task：与 last-chance reconnect 一致，reset 掉旧连接
                                     # 里未 flush 的残留音频，避免拼到重试音频前面（ws 原本存活、上一轮
                                     # 已 append 过的路径才会非空；走过 last-chance 的路径 buffer 已空）。
@@ -293,7 +316,8 @@ def grok_streaming_tts_worker(request_queue, response_queue, audio_api_key, voic
                         receive_task = None
                     try:
                         ws = await websockets.connect(tts_url, additional_headers=headers, close_timeout=0.5)
-                        receive_task = asyncio.create_task(receive_messages())
+                        # 绑 sid：current_speech_id 要等 connect 成功后才 commit
+                        receive_task = asyncio.create_task(receive_messages(sid))
                     except Exception as e:
                         logger.error(f"xAI TTS 重连失败: {e}")
                         if 'HTTP 503' in str(e):
@@ -317,6 +341,7 @@ def grok_streaming_tts_worker(request_queue, response_queue, audio_api_key, voic
                     text_done_sent = False
                     resampler.clear()
                     audio_jitter.reset()  # 新轮次重置 jitter buffer 领先量
+                    audio_done.reset()  # 新轮次重置 audio_done 去重标记
 
                 if not tts_text or not tts_text.strip():
                     continue

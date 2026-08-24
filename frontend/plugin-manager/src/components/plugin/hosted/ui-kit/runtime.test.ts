@@ -21,6 +21,7 @@ function installRuntime() {
   })
   window.__NEKO_PAYLOAD = {
     locale: 'en',
+    host: { origin: 'https://host.example' },
     i18n: {
       locale: 'en',
       default_locale: 'en',
@@ -51,6 +52,301 @@ describe('hosted ui runtime', () => {
     document.body.appendChild(root)
   })
 
+  it.each([
+    ['click', 'button', 'onClick'],
+    ['submit', 'form', 'onSubmit'],
+    ['keydown', 'input', 'onKeyDown'],
+    ['change', 'select', 'onChange'],
+    ['input', 'input', 'onInput'],
+    ['drop', 'div', 'onDrop'],
+    ['paste', 'textarea', 'onPaste'],
+  ])('marks hosted action calls triggered by a trusted iframe %s as user initiated', (eventName, tagName, propName) => {
+    let requestMessage: any
+    Object.defineProperty(window, 'parent', {
+      value: {
+        postMessage(message: any) {
+          requestMessage = message
+          window.dispatchEvent(new MessageEvent('message', {
+            data: { type: 'neko-hosted-surface-response', requestId: message.requestId, ok: true, result: {} },
+          }))
+        },
+      },
+      configurable: true,
+    })
+    const handler = (event: Event) => {
+      event.preventDefault()
+      void ui.api.call('save')
+    }
+    ui.render(ui.h(tagName, { [propName]: handler }), root)
+    const target = root.firstElementChild!
+    const event = new Event(eventName, { bubbles: true, cancelable: true })
+    Object.defineProperty(event, 'isTrusted', { value: true })
+    fireEvent(target, event)
+
+    expect(requestMessage).toMatchObject({
+      type: 'neko-hosted-surface-request',
+      method: 'call',
+      userInitiated: true,
+    })
+  })
+
+  it('posts a File through the structured-clone bridge for document parsing', async () => {
+    let requestMessage: any
+    Object.defineProperty(window, 'parent', {
+      value: {
+        postMessage(message: any) {
+          requestMessage = message
+          window.dispatchEvent(new MessageEvent('message', {
+            data: {
+              type: 'neko-hosted-surface-response',
+              requestId: message.requestId,
+              ok: true,
+              result: { name: 'notes.pdf', sourceType: 'pdf', content: 'notes' },
+            },
+          }))
+        },
+      },
+      configurable: true,
+    })
+    const file = new File(['pdf'], 'notes.pdf', { type: 'application/pdf' })
+    let result: any
+    ui.render(ui.h('input', {
+      onChange: () => {
+        void ui.api.parseDocument(file, { timeoutMs: 4321 }).then((value: any) => { result = value })
+      },
+    }), root)
+    const event = new Event('change', { bubbles: true })
+    Object.defineProperty(event, 'isTrusted', { value: true })
+    fireEvent(root.querySelector('input')!, event)
+    await flushMicrotasks()
+
+    expect(requestMessage).toMatchObject({
+      method: 'parseDocument',
+      payload: { file },
+      timeoutMs: 4321,
+      userInitiated: true,
+    })
+    expect(result).toMatchObject({ name: 'notes.pdf', sourceType: 'pdf' })
+  })
+
+  it('rejects a non-File parseDocument argument without messaging the host', async () => {
+    const postMessage = vi.fn()
+    Object.defineProperty(window, 'parent', { value: { postMessage }, configurable: true })
+
+    await expect(ui.api.parseDocument('notes.pdf')).rejects.toMatchObject({
+      code: 'unsupported_document',
+    })
+    expect(postMessage).not.toHaveBeenCalled()
+  })
+
+  it('uses the document timeout error contract when the host does not respond', async () => {
+    vi.useFakeTimers()
+    Object.defineProperty(window, 'parent', {
+      value: { postMessage: vi.fn() },
+      configurable: true,
+    })
+    const promise = ui.api.parseDocument(
+      new File(['pdf'], 'notes.pdf', { type: 'application/pdf' }),
+      { timeoutMs: 100 },
+    )
+    const rejection = expect(promise).rejects.toMatchObject({ code: 'document_parse_timeout' })
+
+    await vi.advanceTimersByTimeAsync(100)
+    await rejection
+    vi.useRealTimers()
+  })
+
+  it('cancels the matching host request when api.call is aborted', async () => {
+    const messages: any[] = []
+    Object.defineProperty(window, 'parent', {
+      value: { postMessage: (message: any) => messages.push(message) },
+      configurable: true,
+    })
+    const controller = new AbortController()
+    const promise = ui.api.call('study_generate_question', {}, { signal: controller.signal })
+    const requestId = messages[0]?.requestId
+
+    controller.abort()
+
+    await expect(promise).rejects.toMatchObject({ name: 'AbortError' })
+    expect(messages).toContainEqual({
+      type: 'neko-hosted-surface-cancel',
+      requestId,
+    })
+  })
+
+  it('cancels the matching host request when parseDocument is aborted', async () => {
+    vi.useFakeTimers()
+    const messages: any[] = []
+    Object.defineProperty(window, 'parent', {
+      value: { postMessage: (message: any) => messages.push(message) },
+      configurable: true,
+    })
+    const controller = new AbortController()
+    const promise = ui.api.parseDocument(
+      new File(['pdf'], 'notes.pdf', { type: 'application/pdf' }),
+      { timeoutMs: 100, signal: controller.signal },
+    )
+    const requestId = messages[0]?.requestId
+
+    controller.abort()
+    const rejection = expect(promise).rejects.toMatchObject({ name: 'AbortError' })
+    await vi.advanceTimersByTimeAsync(100)
+    await rejection
+
+    expect(messages).toContainEqual({
+      type: 'neko-hosted-surface-cancel',
+      requestId,
+    })
+    vi.useRealTimers()
+  })
+
+  it('accepts context updates only from the initial parent and host origin', () => {
+    const refreshHostedPayload = vi.fn()
+    ;(window as any).__NekoRefreshHostedPayload = refreshHostedPayload
+    const context = { entries: [{ id: 'study_export_notes' }] }
+    const trustedParent = window.parent
+
+    window.dispatchEvent(new MessageEvent('message', {
+      data: { type: 'neko-hosted-surface-context', context: { host: { origin: 'https://attacker.example' } } },
+      origin: 'https://host.example',
+      source: {} as Window,
+    }))
+    window.dispatchEvent(new MessageEvent('message', {
+      data: { type: 'neko-hosted-surface-context', context: { host: { origin: 'https://attacker.example' } } },
+      origin: 'https://attacker.example',
+      source: trustedParent,
+    }))
+
+    expect(refreshHostedPayload).not.toHaveBeenCalled()
+
+    window.dispatchEvent(new MessageEvent('message', {
+      data: { type: 'neko-hosted-surface-context', context },
+      origin: 'https://host.example',
+      source: trustedParent,
+    }))
+
+    expect(refreshHostedPayload).toHaveBeenCalledWith(context)
+  })
+
+  it('does not attribute a later automatic call to an earlier iframe interaction', () => {
+    const requestMessages: any[] = []
+    Object.defineProperty(window, 'parent', {
+      value: {
+        postMessage(message: any) {
+          requestMessages.push(message)
+          window.dispatchEvent(new MessageEvent('message', {
+            data: { type: 'neko-hosted-surface-response', requestId: message.requestId, ok: true, result: {} },
+          }))
+        },
+      },
+      configurable: true,
+    })
+    ui.render(ui.h('button', { onClick: () => undefined }), root)
+    const event = new Event('click', { bubbles: true })
+    Object.defineProperty(event, 'isTrusted', { value: true })
+    fireEvent(root.querySelector('button')!, event)
+
+    void ui.api.call('background-refresh')
+
+    expect(requestMessages.at(-1)).toMatchObject({
+      method: 'call',
+      userInitiated: false,
+    })
+  })
+
+  it('preserves explicit user attribution after an async handler awaits', async () => {
+    let requestMessage: any
+    Object.defineProperty(window, 'parent', {
+      value: {
+        postMessage(message: any) {
+          requestMessage = message
+          window.dispatchEvent(new MessageEvent('message', {
+            data: { type: 'neko-hosted-surface-response', requestId: message.requestId, ok: true, result: {} },
+          }))
+        },
+      },
+      configurable: true,
+    })
+    ui.render(ui.h('button', {
+      onClick: async () => {
+        await Promise.resolve()
+        void ui.api.call('save', {}, { userInitiated: true })
+      },
+    }), root)
+    const event = new Event('click', { bubbles: true })
+    Object.defineProperty(event, 'isTrusted', { value: true })
+    fireEvent(root.querySelector('button')!, event)
+    await flushMicrotasks()
+
+    expect(requestMessage).toMatchObject({
+      method: 'call',
+      userInitiated: true,
+    })
+  })
+
+  it('preserves user attribution for the action immediately following useConfirm', async () => {
+    const requestMessages: any[] = []
+    Object.defineProperty(window, 'parent', {
+      value: {
+        postMessage(message: any) {
+          requestMessages.push(message)
+          window.dispatchEvent(new MessageEvent('message', {
+            data: { type: 'neko-hosted-surface-response', requestId: message.requestId, ok: true, result: {} },
+          }))
+        },
+      },
+      configurable: true,
+    })
+    function App() {
+      const confirm = ui.useConfirm()
+      return ui.h('button', {
+        onClick: async () => {
+          if (await confirm('Run this action?')) void ui.api.call('save')
+        },
+      }, 'Open confirmation')
+    }
+    ui.render(ui.h(App, null), root)
+    const click = (target: Element) => {
+      const event = new Event('click', { bubbles: true })
+      Object.defineProperty(event, 'isTrusted', { value: true })
+      fireEvent(target, event)
+    }
+    click(root.querySelector('button')!)
+    click(Array.from(document.querySelectorAll('button')).find((button) => button.textContent === 'Confirm')!)
+    await flushMicrotasks()
+
+    expect(requestMessages.at(-1)).toMatchObject({
+      method: 'call',
+      userInitiated: true,
+    })
+  })
+
+  it('keeps synthetic ActionButton clicks automatic', async () => {
+    const requestMessages: any[] = []
+    Object.defineProperty(window, 'parent', {
+      value: {
+        postMessage(message: any) {
+          requestMessages.push(message)
+          window.dispatchEvent(new MessageEvent('message', {
+            data: { type: 'neko-hosted-surface-response', requestId: message.requestId, ok: true, result: {} },
+          }))
+        },
+      },
+      configurable: true,
+    })
+    ui.render(ui.h(ui.ActionButton, { actionId: 'save' }), root)
+    const event = new Event('click', { bubbles: true })
+    Object.defineProperty(event, 'isTrusted', { value: false })
+    fireEvent(root.querySelector('button')!, event)
+    await flushMicrotasks()
+
+    expect(requestMessages.find((message) => message.method === 'call')).toMatchObject({
+      method: 'call',
+      userInitiated: false,
+    })
+  })
+
   it('runs hooks inside function components', async () => {
     function Counter() {
       const [count, setCount] = ui.useState(0)
@@ -64,6 +360,42 @@ describe('hosted ui runtime', () => {
     fireEvent.click(button)
     await flushMicrotasks()
     expect(root.querySelector('#counter')?.textContent).toBe('1')
+  })
+
+  it('applies a controlled Select value after mounting its options', () => {
+    ui.render(
+      ui.h(ui.Select, {
+        value: 'solo_stream',
+        options: [
+          { value: 'co_stream', label: 'Co-stream' },
+          { value: 'solo_stream', label: 'Solo stream' },
+        ],
+      }),
+      root,
+    )
+
+    expect(root.querySelector<HTMLSelectElement>('select')?.value).toBe('solo_stream')
+  })
+
+  it('forwards disabled state to hosted form controls', () => {
+    ui.render(
+      ui.h(
+        'section',
+        null,
+        ui.h(ui.Input, { disabled: true, value: 'locked' }),
+        ui.h(ui.Textarea, { disabled: true, value: 'locked' }),
+        ui.h(ui.Select, {
+          disabled: true,
+          value: 'locked',
+          options: [{ value: 'locked', label: 'Locked' }],
+        }),
+      ),
+      root,
+    )
+
+    expect(root.querySelector<HTMLInputElement>('input')?.disabled).toBe(true)
+    expect(root.querySelector<HTMLTextAreaElement>('textarea')?.disabled).toBe(true)
+    expect(root.querySelector<HTMLSelectElement>('select')?.disabled).toBe(true)
   })
 
   it('renders high-value layout primitives with stable CSS variables', () => {

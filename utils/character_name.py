@@ -51,6 +51,7 @@ RESERVED_ROUTE_NAMES = frozenset({
     "vrm_emotion_manager",
     "mmd_emotion_manager",
     "voice_clone",
+    "voice_identity",
     "api_key",
     "character_card_manager",
     "cloudsave_manager",

@@ -109,6 +109,7 @@ from .api_shared import (  # noqa: F401
     _redact_cancelled_user_turns,
     _repo_root,
     _resolve_delivery_mode,
+    _resolve_plugin_result_contract,
     _resolve_openclaw_sender_id,
     _rewire_computer_use_dependents,
     _rp_lang,
@@ -231,7 +232,40 @@ async def _handle_voice_transcript_request(event: Dict[str, Any]) -> None:
         )
 
 
-def _handle_proactive_analyze(messages, lanlan_name, lanlan_key, conversation_id) -> None:
+def _resolve_analyze_lang(session_language: Optional[str]) -> str:
+    """Language for the analyzer's prompts: session locale first, process global as fallback.
+
+    ``session_language`` rides the analyze_request event (see
+    ``main_logic/agent_event_bus.publish_analyze_request_reliably``) and carries the
+    frontend i18n truth as a full code (``zh-CN`` / ``zh-TW`` / ``ja`` …). It wins
+    because this process cannot see it any other way: agent_server talks to
+    main_server over ZeroMQ and its own ``get_global_language()`` only derives
+    NEKO_LANGUAGE / Steam / system locale, which is simply wrong whenever the user's
+    UI language differs from the machine's.
+
+    Unvalidated input is fenced out first: ``normalize_language_code`` silently maps
+    anything unrecognized to ``'en'``, so a garbage value would look like a
+    deliberate English choice and beat the (correct) fallback.
+
+    Returns a SHORT code. Every agent prompt dict in ``config/prompts/prompts_agent.py``
+    is keyed by ``zh / en / ja / ko / ru / es / pt`` plus ``zh-TW``; a full ``zh-CN``
+    has no key there and would take ``_loc``'s fallback path with a warning. Traditional
+    Chinese therefore resolves to ``zh`` here, matching every other subsystem that reads
+    ``get_global_language()`` — switching the agent prompts to full codes belongs to the
+    zh-TW migration (issue #2500).
+    """
+    if session_language:
+        try:
+            from utils.language_utils import is_supported_language_code, normalize_language_code
+            if is_supported_language_code(session_language):
+                return normalize_language_code(str(session_language), format='short')
+            logger.debug("[AgentAnalyze] ignoring unsupported session language: %r", session_language)
+        except Exception:
+            logger.debug("[AgentAnalyze] session language normalize failed", exc_info=True)
+    return _rp_lang(None)
+
+
+def _handle_proactive_analyze(messages, lanlan_name, lanlan_key, conversation_id, session_language=None) -> None:
     """Throttled proactive-analyze path controlled by AGENT_PROACTIVE_ANALYZE_ENABLED.
 
     A proactive turn has no new user input, so the ordinary user-turn dedupe
@@ -269,7 +303,7 @@ def _handle_proactive_analyze(messages, lanlan_name, lanlan_key, conversation_id
     logger.info("[AgentAnalyze] proactive analyze accepted (%d/%d, lanlan=%s)", used + 1, cap, lanlan_name)
     _create_tracked_task(_background_analyze_and_plan(
         messages, lanlan_name, conversation_id=conversation_id,
-        external_intent=None, proactive=True,
+        external_intent=None, proactive=True, session_language=session_language,
     ))
 
 
@@ -317,13 +351,19 @@ async def _on_session_event(event: Dict[str, Any]) -> None:
         if isinstance(messages, list) and messages:
             lanlan_key = _normalize_lanlan_key(lanlan_name)
             conversation_id = event.get("conversation_id")
+            # Live session locale from main_server (full code, e.g. 'zh-TW').
+            # Absent → _resolve_analyze_lang falls back to this process's global.
+            session_language = event.get("language")
             # Proactive (self-initiated, no fresh user input) turn: opt-in,
             # separate throttled path. The ordinary user-turn dedupe below would
             # always drop these (the latest user message is a stale prior turn,
             # so its fingerprint matches), so proactive routing is mandatory, not
             # an optimization.
             if event.get("proactive"):
-                _handle_proactive_analyze(messages, lanlan_name, lanlan_key, conversation_id)
+                _handle_proactive_analyze(
+                    messages, lanlan_name, lanlan_key, conversation_id,
+                    session_language=session_language,
+                )
                 return
             # Consume only new user turn. Assistant turn_end without new user input should be ignored.
             fp = _build_analyze_event_fingerprint(event)
@@ -344,11 +384,11 @@ async def _on_session_event(event: Dict[str, Any]) -> None:
             external_intent = event.get("external_intent")
             _create_tracked_task(_background_analyze_and_plan(
                 messages, lanlan_name, conversation_id=conversation_id,
-                external_intent=external_intent,
+                external_intent=external_intent, session_language=session_language,
             ))
 
 
-async def _background_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Optional[str], conversation_id: Optional[str] = None, external_intent: Optional[float] = None, proactive: bool = False):
+async def _background_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Optional[str], conversation_id: Optional[str] = None, external_intent: Optional[float] = None, proactive: bool = False, session_language: Optional[str] = None):
     """
     [Simplified] Uses DirectTaskExecutor to do everything in one step: analyze the conversation + decide the execution method + execute the task
 
@@ -374,10 +414,10 @@ async def _background_analyze_and_plan(messages: list[dict[str, Any]], lanlan_na
         Modules.analyze_lock = asyncio.Lock()
 
     async with Modules.analyze_lock:
-        await _do_analyze_and_plan(messages, lanlan_name, conversation_id=conversation_id, external_intent=external_intent, proactive=proactive)
+        await _do_analyze_and_plan(messages, lanlan_name, conversation_id=conversation_id, external_intent=external_intent, proactive=proactive, session_language=session_language)
 
 
-async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Optional[str], conversation_id: Optional[str] = None, external_intent: Optional[float] = None, proactive: bool = False):
+async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Optional[str], conversation_id: Optional[str] = None, external_intent: Optional[float] = None, proactive: bool = False, session_language: Optional[str] = None):
     """Inner implementation, always called under analyze_lock."""
     try:
         if not Modules.analyzer_enabled:
@@ -410,11 +450,19 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
         enriched_messages = _task_tracker.inject(redacted_messages, lanlan_name)
 
         # 一步完成：分析 + 执行
+        #
+        # lang 必须显式传：analyzer 的全部频道描述和系统提示都走 _loc(..., lang)
+        # （task_executor 里的 _assess_unified_channels / _assess_user_plugin /
+        # _stage1_llm_coarse_screen），漏传会落到 analyze_and_execute 的默认值
+        # "en"，让日/韩/俄/西/葡/中文用户全都拿到英文 prompt。
+        # 取值优先 session locale（随 analyze_request 事件从 main_server 带过来的
+        # 前端 i18n 真值），取不到才回落本进程全局值——见 _resolve_analyze_lang。
         result = await Modules.task_executor.analyze_and_execute(
             messages=enriched_messages,
             lanlan_name=lanlan_name,
             agent_flags=Modules.agent_flags,
             conversation_id=conversation_id,
+            lang=_resolve_analyze_lang(session_language),
             external_intent=external_intent,
             proactive=proactive,
         )
@@ -541,6 +589,20 @@ async def startup():
         browser_use=None,
         openclaw=Modules.openclaw,
     )
+    # TaskDeduper 在 __init__ 里就把 summary 路由的 base_url 定死并缓存 client，整
+    # 个进程生命周期不再复议。agent_server 作为独立进程跑时不经过 main_server 的
+    # GeoIP 预热，海外用户于是被那一瞬的大陆兜底钉住——而 summary 是区域敏感路由
+    # （不同于有意豁免改写的 agent 专用 URL）。构造前先落定。
+    try:
+        from utils.config_manager import get_config_manager as _get_cm
+        # 用启动预热原语而不是会话级 aensure：上面 ComputerUseAdapter 构造时已读过
+        # 配置、起了探测，首探在网络未就绪时快速失败进 30s 退避——aensure 不 kick、
+        # 不穿退避（1.5s 也短于单次 3s 请求），撞上退避就放弃；awarmup 会催醒退避
+        # 并用启动级窗口等结论，与 main_server / memory_server 的启动路径对偶。
+        if not await _get_cm().awarmup_region_check():
+            logger.warning("[GeoIP] Agent 去重器构造前区域判定仍未落定，本进程按大陆线路构造")
+    except Exception as e:
+        logger.warning(f"[GeoIP] Agent 去重器构造前区域落定失败，按当前配置继续: {e}")
     Modules.deduper = TaskDeduper()
     Modules.throttled_logger = ThrottledLogger(logger, interval=30.0)
     _rewire_computer_use_dependents()
@@ -568,6 +630,7 @@ async def startup():
             if not adapter.init_ok:
                 logger.warning("[OpenFang] not reachable after 30s")
                 _set_capability("openfang", False, "OPENFANG_DAEMON_UNREACHABLE")
+                await _emit_agent_status_update()
                 return
 
             # 同步 API Key + 写 config.toml（允许失败 — 用户可能尚未配置 Key）
@@ -613,9 +676,11 @@ async def startup():
             _set_capability("openfang", True, "")
             logger.info("[OpenFang] Ready (init_ok=%s, agent=%s, tools=%d)",
                         adapter.init_ok, agent_id, adapter._cached_tools_count or 0)
+            await _emit_agent_status_update()
         except Exception as exc:
             logger.error("[OpenFang] background init failed: %s", exc)
             _set_capability("openfang", False, str(exc))
+            await _emit_agent_status_update()
 
     # BrowserUse stays unloaded until its toggle, availability endpoint, or
     # direct run is requested.  OpenFang remains an independent background
@@ -1000,7 +1065,7 @@ async def plugin_execute_direct(payload: Dict[str, Any]):
             try:
                 run_data = res.result.get("run_data") if isinstance(res.result, dict) else None
                 run_error = res.result.get("run_error") if isinstance(res.result, dict) else None
-                _llm_fields = _lookup_llm_result_fields(plugin_id, entry_id)
+                _llm_fields = _lookup_llm_result_fields(plugin_id, res.entry_id)
                 _plugin_msg = str(res.result.get("message") or "") if isinstance(res.result, dict) else ""
                 _error_to_pass = (run_error or res.error) if not res.success else None
                 detail = parse_plugin_result(
@@ -1010,6 +1075,11 @@ async def plugin_execute_direct(payload: Dict[str, Any]):
                     error=_error_to_pass,
                 )
                 _delivery_mode = _resolve_delivery_mode(res.result if isinstance(res.result, dict) else None)
+                _result_kind, _expires_in_s = _resolve_plugin_result_contract(
+                    plugin_id,
+                    res.entry_id,
+                    res.result if isinstance(res.result, dict) else None,
+                )
                 _suppress_reply = _delivery_mode == "silent"
                 _terminal_status = _plugin_terminal_status(res.success, run_data)
                 info["status"] = _terminal_status
@@ -1049,6 +1119,8 @@ async def plugin_execute_direct(payload: Dict[str, Any]):
                         source_kind="plugin",
                         source_name=display_id,
                         delivery_mode=_delivery_mode,
+                        result_kind=_result_kind if _completed else "task_result",
+                        expires_in_s=_expires_in_s if _completed else None,
                     )
                 elif not _completed:
                     info["error"] = _tt((detail or str(res.error or "")), TASK_ERROR_MAX_TOKENS)

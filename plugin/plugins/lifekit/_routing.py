@@ -2,15 +2,21 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
-import math
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Protocol
 
 import httpx
 
+from ._advice_policy import DEFAULT_ADVICE_POLICY
+from ._coordinates import wgs84_to_gcj02
+from ._geodesy import haversine_km
+from ._hedged import ordered_hedged_first
 
 logger = logging.getLogger(__name__)
+ROUTING_TOTAL_TIMEOUT_SECONDS = 8.0
+ROUTING_PROVIDER_HEDGE_SECONDS = 0.1
 
 
 # ── 数据模型 ─────────────────────────────────────────────────────
@@ -78,15 +84,6 @@ class RoutingProvider(Protocol):
 
 # ── 工具函数 ─────────────────────────────────────────────────────
 
-def haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-    """两点间直线距离（公里）。"""
-    R = 6371.0
-    dlat = math.radians(lat2 - lat1)
-    dlon = math.radians(lon2 - lon1)
-    a = math.sin(dlat / 2) ** 2 + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlon / 2) ** 2
-    return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
-
-
 def format_duration(seconds: float) -> str:
     m = int(seconds / 60)
     if m < 60:
@@ -101,18 +98,18 @@ def format_distance(meters: float) -> str:
     return f"{meters / 1000:.1f}km"
 
 
+def _transit_mode(provider_type: object) -> str:
+    token = str(provider_type or "").strip().casefold()
+    if token in {"subway", "metro", "underground"}:
+        return "subway"
+    if token in {"bus", "coach"}:
+        return "bus"
+    return "transit"
+
+
 def suggest_modes(distance_km: float) -> List[str]:
     """根据距离建议合理的出行方式。"""
-    modes = []
-    if distance_km <= 2:
-        modes.append("walking")
-    if distance_km <= 10:
-        modes.append("bicycling")
-    if distance_km >= 2:
-        modes.append("transit")
-    if distance_km >= 5:
-        modes.append("driving")
-    return modes or ["transit", "driving"]
+    return list(DEFAULT_ADVICE_POLICY.route_modes(distance_km))
 
 
 # ── 高德地图 Provider ────────────────────────────────────────────
@@ -131,9 +128,11 @@ class AMapProvider:
         dest_lat: float, dest_lon: float,
         mode: str, timeout: float = 10.0,
     ) -> List[Route]:
-        # 高德坐标格式: lon,lat
-        origin = f"{origin_lon:.6f},{origin_lat:.6f}"
-        dest = f"{dest_lon:.6f},{dest_lat:.6f}"
+        # 高德 API expects GCJ-02 while LifeKit's location boundary is WGS84.
+        origin_gcj_lat, origin_gcj_lon = wgs84_to_gcj02(origin_lat, origin_lon)
+        dest_gcj_lat, dest_gcj_lon = wgs84_to_gcj02(dest_lat, dest_lon)
+        origin = f"{origin_gcj_lon:.6f},{origin_gcj_lat:.6f}"
+        dest = f"{dest_gcj_lon:.6f},{dest_gcj_lat:.6f}"
 
         if mode == "transit":
             return await self._transit(origin, dest, timeout)
@@ -168,24 +167,21 @@ class AMapProvider:
                         wd = float(walking.get("distance", 0))
                         wt = float(walking.get("duration", 0))
                         if wd > 30:
-                            steps.append(RouteStep(instruction=f"步行 {format_distance(wd)}", distance_m=wd, duration_s=wt, mode="walk"))
+                            steps.append(RouteStep(instruction="", distance_m=wd, duration_s=wt, mode="walk"))
                     # 公交/地铁段
                     bus = seg.get("bus", {})
                     buslines = bus.get("buslines") or []
                     for bl in buslines[:1]:
                         name = bl.get("name", "")
-                        via = bl.get("via_num", 0)
                         bd = float(bl.get("distance", 0))
                         bt = float(bl.get("duration", 0))
-                        is_subway = "地铁" in name or "号线" in name
-                        m = "subway" if is_subway else "bus"
-                        instr = f"乘坐 {name}" + (f" {via}站" if via else "")
-                        steps.append(RouteStep(instruction=instr, distance_m=bd, duration_s=bt, mode=m, line_name=name))
+                        m = _transit_mode(bl.get("type"))
+                        steps.append(RouteStep(instruction="", distance_m=bd, duration_s=bt, mode=m, line_name=name))
                         line_names.append(name)
                 dist = float(transit.get("distance", 0))
                 dur = float(transit.get("duration", 0))
                 cost = transit.get("cost", "")
-                summary = " → ".join(line_names[:4]) if line_names else "公交"
+                summary = " → ".join(line_names[:4])
                 routes.append(Route(mode="transit", distance_m=dist, duration_s=dur, steps=steps, summary=summary, cost=str(cost)))
             return routes
         except RoutingProviderError:
@@ -306,13 +302,13 @@ class BaiduMapProvider:
                             if name:
                                 line_names.append(name)
                                 steps.append(RouteStep(
-                                    instruction=f"乘坐 {name}",
+                                    instruction="",
                                     distance_m=float(item.get("distance", 0)),
                                     duration_s=float(item.get("duration", 0)),
-                                    mode="subway" if "地铁" in name else "bus",
+                                    mode=_transit_mode(veh.get("type")),
                                     line_name=name,
                                 ))
-                    summary = " → ".join(line_names[:4]) if line_names else "公交"
+                    summary = " → ".join(line_names[:4])
                     routes.append(Route(mode="transit", distance_m=dist, duration_s=dur, steps=steps, summary=summary, cost=str(price)))
                 return routes
             else:
@@ -335,8 +331,14 @@ class OSRMProvider:
     """OSRM 公共实例（驾车/步行/骑行，无公交）。"""
     name = "osrm"
     supports_transit = False
+    _DEFAULT_BASE_URL = "https://router.project-osrm.org"
+    _PUBLIC_MODE_BASES = {
+        "driving": _DEFAULT_BASE_URL,
+        "walking": "https://routing.openstreetmap.de/routed-foot",
+        "bicycling": "https://routing.openstreetmap.de/routed-bike",
+    }
 
-    def __init__(self, base_url: str = "https://router.project-osrm.org"):
+    def __init__(self, base_url: str = _DEFAULT_BASE_URL):
         self.base_url = base_url.rstrip("/")
 
     async def plan_route(
@@ -346,14 +348,19 @@ class OSRMProvider:
     ) -> List[Route]:
         if mode == "transit":
             return []  # OSRM 不支持公交
-        # 注意：公共实例 router.project-osrm.org 的路径是 /route/v1/{driving|foot|bike}/...
-        # 而本地/自建 osrm-backend 默认 profile 叫 car；这里优先匹配公共实例（用户无 key
-        # 时走的就是公共实例），自建实例可以通过 base_url 搭配 car profile 改写——不过
-        # 这已经超出默认 fallback 的需求范围喵
-        profile_map = {"driving": "driving", "bicycling": "bike", "walking": "foot"}
-        profile = profile_map.get(mode, "driving")
+        # OSRM's profile segment names the server's loaded dataset, not a
+        # universal travel mode. The default car demo cannot produce honest
+        # foot/bike routes, so use the OSM.de mode-specific public instances.
+        if self.base_url == self._DEFAULT_BASE_URL:
+            base_url = self._PUBLIC_MODE_BASES.get(mode, self._DEFAULT_BASE_URL)
+            profile = "driving"
+        else:
+            base_url = self.base_url
+            profile = {"driving": "driving", "bicycling": "bike", "walking": "foot"}.get(
+                mode, "driving",
+            )
         coords = f"{origin_lon},{origin_lat};{dest_lon},{dest_lat}"
-        url = f"{self.base_url}/route/v1/{profile}/{coords}"
+        url = f"{base_url}/route/v1/{profile}/{coords}"
         params = {"overview": "false", "steps": "true"}
         try:
             async with httpx.AsyncClient(timeout=timeout) as c:
@@ -395,7 +402,7 @@ class RoutingService:
     """根据配置选择 provider，规划多种出行方式。"""
 
     def __init__(self, cfg: Dict[str, Any]):
-        self._providers: List[Any] = []
+        self._providers: List[RoutingProvider] = []
         # 高德
         amap_key = str(cfg.get("amap_key", "")).strip()
         if amap_key:
@@ -418,29 +425,83 @@ class RoutingService:
         modes: Optional[List[str]] = None,
     ) -> RoutingResult:
         dist_km = haversine_km(origin_lat, origin_lon, dest_lat, dest_lon)
-        if modes is None:
+        if not modes:
             modes = suggest_modes(dist_km)
 
-        result = RoutingResult(origin_name="", destination_name="")
-        errors: list[str] = []
-        for mode in modes:
-            for provider in self._providers:
-                if mode == "transit" and not getattr(provider, "supports_transit", False):
-                    continue
+        async def plan_mode(mode: str) -> tuple[list[Route], str, list[str]]:
+            providers = [
+                provider
+                for provider in self._providers
+                if mode != "transit" or provider.supports_transit
+            ]
+            errors: list[str] = []
+            if not providers:
+                return [], "", [f"no_provider:{mode}"]
+
+            async def call_provider(
+                provider: RoutingProvider,
+            ) -> tuple[RoutingProvider, list[Route], str]:
                 try:
-                    routes = await provider.plan_route(origin_lat, origin_lon, dest_lat, dest_lon, mode)
-                    if routes:
-                        result.routes.extend(routes)
-                        result.provider = provider.name
-                        break
+                    routes = await provider.plan_route(
+                        origin_lat,
+                        origin_lon,
+                        dest_lat,
+                        dest_lon,
+                        mode,
+                        timeout=ROUTING_TOTAL_TIMEOUT_SECONDS,
+                    )
+                    return provider, routes, ""
                 except RoutingProviderError as exc:
-                    errors.append(f"{exc.provider}:{mode}:{exc.detail}")
                     logger.debug("Routing provider failed: provider=%s mode=%s detail=%s", exc.provider, mode, exc.detail, exc_info=True)
+                    return provider, [], f"{exc.provider}:{mode}:{exc.detail}"
+
+            outcome = await ordered_hedged_first(
+                tuple(
+                    lambda provider=provider: call_provider(provider)
+                    for provider in providers
+                ),
+                accept=lambda value: bool(value[1]),
+                hedge_delay=ROUTING_PROVIDER_HEDGE_SECONDS,
+                total_timeout=ROUTING_TOTAL_TIMEOUT_SECONDS,
+            )
+            if outcome.winner is not None:
+                provider, routes, _ = outcome.winner
+                return routes, provider.name, errors
+            for _, (_, _, error) in outcome.completed:
+                if error:
+                    errors.append(error)
+            errors.extend(
+                f"{providers[index].name}:{mode}:timeout"
+                for index in outcome.timed_out_indices
+            )
+            return [], "", errors
+
+        result = RoutingResult(origin_name="", destination_name="")
+        tasks = [asyncio.create_task(plan_mode(mode)) for mode in modes]
+        done: set[asyncio.Task[tuple[list[Route], str, list[str]]]] = set()
+        pending: set[asyncio.Task[tuple[list[Route], str, list[str]]]] = set(tasks)
+        try:
+            done, pending = await asyncio.wait(
+                tasks,
+                timeout=ROUTING_TOTAL_TIMEOUT_SECONDS,
+            )
+            errors: list[str] = []
+            providers: list[str] = []
+            for task in tasks:
+                if task not in done:
                     continue
-                except Exception:
-                    errors.append(f"{provider.name}:{mode}:provider error")
-                    logger.debug("Routing provider failed: provider=%s mode=%s", provider.name, mode, exc_info=True)
-                    continue
-        if not result.routes and errors:
-            result.error = f"provider_error:{','.join(errors)}"
+                routes, provider_name, mode_errors = task.result()
+                result.routes.extend(routes)
+                errors.extend(mode_errors)
+                if provider_name and provider_name not in providers:
+                    providers.append(provider_name)
+            result.provider = ",".join(providers)
+            if pending and not result.routes:
+                result.error = "timeout:routing budget exceeded"
+            elif not result.routes and errors:
+                result.error = f"provider_error:{','.join(errors)}"
+        finally:
+            for task in pending:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
         return result

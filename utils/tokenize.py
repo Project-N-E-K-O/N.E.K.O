@@ -36,8 +36,6 @@ import logging
 import math
 
 from config import PERSONA_RENDER_ENCODING
-from utils.cjk import count_cjk_chars, is_cjk_char
-
 logger = logging.getLogger(__name__)
 
 # Encoder cache keyed by encoding name (e.g. "o200k_base"). Values are
@@ -56,7 +54,7 @@ _FALLBACK_WARNED = False
 # invalidate old heuristic-cached counts. tiktoken identity is keyed by
 # the `tiktoken:<encoding>` pair, which already changes automatically if
 # someone flips PERSONA_RENDER_ENCODING.
-_HEURISTIC_VERSION = "v1"
+_HEURISTIC_VERSION = "v2"
 
 
 def _get_encoder(encoding: str):
@@ -95,9 +93,11 @@ def _count_tokens_heuristic(text: str) -> int:
     render budget is a soft cap and rendering a few entries less is
     preferable to silently exceeding the model context window.
 
-    - CJK (Han / Kana / Hangul) → 1.5 tokens / char
-    - Other (latin / digits / punct) → 0.25 tokens / char (≈ 4 char per
-      token, matches GPT tokenizer ballpark on English prose)
+    Every character is weighted by its UTF-8 byte length. The tokenizer's
+    byte-level fallback vocabulary means this is a conservative upper bound:
+    merges can reduce token count, but cannot require more tokens than input
+    bytes. This intentionally favors safety over prompt utilization in the
+    exceptional no-tiktoken mode.
     """
     if not text:
         # Empty stays 0 — both for math sanity and because callers
@@ -105,13 +105,15 @@ def _count_tokens_heuristic(text: str) -> int:
         # Defensive double-check kept here so direct callers of the
         # heuristic (tests, future callsites) get the same contract.
         return 0
-    cjk = count_cjk_chars(text)
-    non_cjk = len(text) - cjk
     # Floor of 1 for non-empty text: int() truncated short latin strings
     # (e.g. "ok" → 0.5 → 0), which made score-trim treat them as free
     # and bypass the budget. ceil + clamp avoids that without
     # under-counting longer text.
-    return max(1, math.ceil(cjk * 1.5 + non_cjk * 0.25))
+    return max(1, math.ceil(sum(_heuristic_char_weight(c) for c in text)))
+
+
+def _heuristic_char_weight(char: str) -> float:
+    return float(len(char.encode("utf-8", errors="surrogatepass")))
 
 
 def count_tokens(text: str, encoding: str = PERSONA_RENDER_ENCODING) -> int:
@@ -183,6 +185,50 @@ async def atruncate_to_tokens(
     return await asyncio.to_thread(truncate_to_tokens, text, max_tokens, encoding)
 
 
+def take_lines_within_token_budget(
+    lines: list[str],
+    max_tokens: int,
+    encoding: str = PERSONA_RENDER_ENCODING,
+    separator: str = "\n",
+) -> tuple[list[str], int]:
+    """Greedy prefix of ``lines`` whose token sum stays within budget.
+
+    Returns ``(kept, dropped_count)``. The budget covers what the caller
+    will actually emit — ``separator.join(kept)`` — so the joiner is
+    charged too. Counting bare lines undercounts by one token per gap
+    (a newline usually costs one; occasionally BPE merges it into the
+    neighbouring text and it is free, which is the safe direction). Small,
+    but budgets that quietly run over are how this whole area got its
+    reputation: pass the separator you are going to join with.
+
+    Always keeps the first line even when it alone exceeds the budget, so
+    a caller that ranked its input by relevance still emits its single
+    best item instead of an empty block (same forward-progress rule as
+    ``main_logic.core.callback_render._select_callbacks_within_token_budget``);
+    per-item truncation is the caller's job and is what actually bounds
+    that first line.
+
+    Prefix, not skip-and-continue: unlike the persona score-trim, the
+    callers here hand over a relevance-ranked list where a line that does
+    not fit means the budget is spent, and letting a shorter lower-ranked
+    line jump the queue would reorder recall results by length.
+
+    Shared by the two recall renderers (the QQ plugin's
+    ``render_relevant_memory`` and the main app's ``recall_memory`` tool
+    handler) so their budgets cannot drift apart.
+    """
+    separator_cost = count_tokens(separator, encoding)
+    kept: list[str] = []
+    used = 0
+    for index, line in enumerate(lines):
+        cost = count_tokens(line, encoding) + (separator_cost if kept else 0)
+        if kept and used + cost > max_tokens:
+            return kept, len(lines) - index
+        kept.append(line)
+        used += cost
+    return kept, 0
+
+
 _SENTENCE_END_CHARS = '.!?。！？…\n'
 """Sentence-final terminators for `truncate_to_last_sentence_end`. Commas
 and other mid-sentence punctuation are intentionally excluded — keeping
@@ -246,13 +292,27 @@ def truncate_head_tail_tokens(
     total = head_tokens + tail_tokens
     if total <= 0:
         return ""
-    if count_tokens(text, encoding) <= total:
-        return text
+    enc = _get_encoder(encoding)
+    tokens = None
+    if enc is None:
+        if _count_tokens_heuristic(text) <= total:
+            return text
+    else:
+        tokens = enc.encode(text, disallowed_special=())
+        if len(tokens) <= total:
+            return text
     # Reserve room for the separator out of head/tail so the final
     # `head + sep + tail` never exceeds `total`. Bias the deduction
     # toward `head` first (head_alloc shrinks first, then tail) — keeps
     # tail (last sentence / question) intact when budgets are tight.
-    sep_tokens = count_tokens(separator, encoding) if separator else 0
+    if separator:
+        sep_tokens = (
+            _count_tokens_heuristic(separator)
+            if enc is None
+            else len(enc.encode(separator, disallowed_special=()))
+        )
+    else:
+        sep_tokens = 0
     if sep_tokens >= total:
         # Pathological: budget can't even fit the separator. Degrade to
         # a plain head-only truncation (better than returning sep alone).
@@ -263,7 +323,6 @@ def truncate_head_tail_tokens(
         # Sanity: head_alloc was already shaved; if rounding misbehaved
         # take the rest from tail.
         tail_alloc = max(0, total - head_alloc - sep_tokens)
-    enc = _get_encoder(encoding)
     if enc is None:
         # Heuristic fallback: cut by char position using same weighting
         # as `_count_tokens_heuristic`. Approximate but bounded.
@@ -278,7 +337,7 @@ def truncate_head_tail_tokens(
         else:
             running = 0.0
             for i in range(len(text) - 1, -1, -1):
-                weight = 1.5 if is_cjk_char(text[i]) else 0.25
+                weight = _heuristic_char_weight(text[i])
                 if math.ceil(running + weight) > tail_alloc:
                     cut_idx = i + 1
                     break
@@ -289,7 +348,7 @@ def truncate_head_tail_tokens(
         if not head_str and not tail_str:
             return ""
         return f"{head_str}{separator}{tail_str}"
-    tokens = enc.encode(text, disallowed_special=())
+    assert tokens is not None
     head_tok = tokens[:head_alloc] if head_alloc else []
     tail_tok = tokens[-tail_alloc:] if tail_alloc > 0 else []
     head_str = enc.decode(head_tok) if head_tok else ""
@@ -320,11 +379,11 @@ async def atruncate_head_tail_tokens(
 
 def _truncate_to_tokens_heuristic(text: str, max_tokens: int) -> str:
     """Heuristic prefix scan that mirrors `_count_tokens_heuristic`'s
-    weighting (CJK 1.5 / non-CJK 0.25). Walks the string once and stops
-    just before the running estimate would exceed `max_tokens`."""
+    character-class weighting. Walks the string once and stops just before
+    the running estimate would exceed `max_tokens`."""
     running = 0.0
     for i, c in enumerate(text):
-        weight = 1.5 if is_cjk_char(c) else 0.25
+        weight = _heuristic_char_weight(c)
         if math.ceil(running + weight) > max_tokens:
             return text[:i]
         running += weight

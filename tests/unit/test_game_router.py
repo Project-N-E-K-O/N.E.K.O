@@ -2,7 +2,7 @@ import asyncio
 import json
 import sqlite3
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from fastapi import HTTPException
@@ -26,6 +26,7 @@ from main_routers.game_router import runtime as gr_runtime
 from main_routers.game_router import visible_events as gr_visible_events
 from main_routers.system_router import AUTOSTART_CSRF_TOKEN
 from main_logic.core import LLMSessionManager
+from tests.fake_clock import patch_module_clock
 from utils import game_log
 from utils.llm_client import AIMessage, HumanMessage
 
@@ -45,6 +46,19 @@ class _FakeRequest:
 
     async def json(self):
         return self._payload
+
+
+class _LocaleTrackingManager:
+    def __init__(self, language="en", *, explicit=False, render_language="en"):
+        self.user_language = language
+        self._user_language_explicit = explicit
+        self._conversation_render_language = render_language
+        self.language_updates = []
+
+    def set_user_language(self, language):
+        self.language_updates.append(language)
+        self.user_language = language
+        self._user_language_explicit = True
 
 
 def _assert_not_icebreaker_game_route_error(exc: HTTPException, expected_route: str) -> None:
@@ -105,12 +119,78 @@ def test_badminton_removed_modes_are_not_public_or_scored():
 
 
 @pytest.mark.unit
+def test_game_prompt_locale_preserves_session_zh_tw(monkeypatch):
+    manager = SimpleNamespace(user_language="zh-TW")
+    monkeypatch.setattr(
+        gr_char_info,
+        "get_session_manager",
+        lambda: {"Lan": manager},
+    )
+    monkeypatch.setattr(
+        gr_char_info,
+        "get_global_language_full",
+        lambda: "zh-CN",
+    )
+
+    assert gr_char_info._resolve_game_prompt_locale("Lan") == "zh-TW"
+    assert gr_char_info._resolve_game_prompt_language("Lan") == "zh"
+
+
+@pytest.mark.unit
+def test_game_request_marks_matching_seeded_locale_explicit(monkeypatch):
+    manager = SimpleNamespace(
+        user_language="en",
+        _user_language_explicit=False,
+        set_user_language=MagicMock(),
+    )
+    monkeypatch.setattr(
+        gr_char_info,
+        "get_session_manager",
+        lambda: {"Lan": manager},
+    )
+
+    assert gr_char_info._absorb_request_language({"language": "en"}, "Lan") == "en"
+    manager.set_user_language.assert_called_once_with("en")
+
+
+@pytest.mark.unit
+def test_game_render_language_selects_template_without_marking_session_explicit(monkeypatch):
+    manager = SimpleNamespace(
+        user_language="en",
+        _user_language_explicit=False,
+        set_user_language=MagicMock(),
+    )
+    monkeypatch.setattr(
+        gr_char_info,
+        "get_session_manager",
+        lambda: {"Lan": manager},
+    )
+
+    payload = {"render_language": "ja"}
+    assert gr_char_info._resolve_game_prompt_locale("Lan", payload) == "ja"
+    assert gr_char_info._resolve_game_prompt_language("Lan", payload) == "ja"
+    assert gr_char_info._absorb_request_language(payload, "Lan") is None
+    manager.set_user_language.assert_not_called()
+
+
+@pytest.mark.unit
+def test_game_archive_does_not_persist_render_only_language():
+    archive = {
+        "lanlan_name": "Lan",
+        "user_language": "ja",
+        "user_language_source": "render",
+    }
+    assert gr_archive._archive_memory_language(archive) is None
+
+
+@pytest.mark.unit
 @pytest.mark.asyncio
 async def test_badminton_route_start_accepts_direct_debug_session(monkeypatch):
     _gr_patch_all(monkeypatch, "get_session_manager", lambda: {})
 
     async def fake_pregame_context(**kwargs):
         assert kwargs["neko_initiated"] is False
+        assert kwargs["prompt_locale"] == "zh-TW"
         return gr_pregame._default_badminton_pregame_context(mode="duel"), "lightweight", ""
 
     _gr_patch_all(monkeypatch, "_build_badminton_pregame_context", fake_pregame_context)
@@ -118,7 +198,12 @@ async def test_badminton_route_start_accepts_direct_debug_session(monkeypatch):
     with reset_game_route_state():
         result = await gr_runtime.game_route_start(
             "badminton",
-            _FakeRequest({"lanlan_name": "Lan", "session_id": "debug-badminton", "mode": "duel"}),
+            _FakeRequest({
+                "lanlan_name": "Lan",
+                "session_id": "debug-badminton",
+                "mode": "duel",
+                "i18n_language": "zh-TW",
+            }),
         )
 
         assert result["ok"] is True
@@ -138,6 +223,7 @@ async def test_soccer_route_start_auto_enables_session_debug_log(monkeypatch):
 
     async def fake_pregame_context(**kwargs):
         assert kwargs["game_type"] == "soccer"
+        assert kwargs["prompt_locale"] == "zh-TW"
         return gr_pregame._default_soccer_pregame_context(initial_difficulty="lv2"), "lightweight", ""
 
     _gr_patch_all(monkeypatch, "_build_soccer_pregame_context", fake_pregame_context)
@@ -145,7 +231,11 @@ async def test_soccer_route_start_auto_enables_session_debug_log(monkeypatch):
     with reset_game_route_state():
         result = await gr_runtime.game_route_start(
             "soccer",
-            _FakeRequest({"lanlan_name": "Lan", "session_id": "soccer-auto-log"}),
+            _FakeRequest({
+                "lanlan_name": "Lan",
+                "session_id": "soccer-auto-log",
+                "i18n_language": "zh-TW",
+            }),
         )
 
     assert result["ok"] is True
@@ -1217,14 +1307,14 @@ def test_badminton_template_contract():
     assert "live3d_sub_type" in html
     assert "async function initVRMAvatar(vrmPath)" in html
     assert "async function initMMDAvatar(mmdPath)" in html
-    assert "var live2dPath = charData.live2d_path || '/static/yui-origin/yui-origin.model3.json';" in html
+    assert "var live2dPath = charData.live2d_path || '/static/yui-lolita/yui-lolita.model3.json';" in html
     assert "window.lanlan_config.model_type = 'live2d';" in html
     assert "window.lanlan_config.live3d_sub_type = '';" in html
     assert "await initLive2DAvatar(live2dPath);" in html
     assert "await initVRMAvatar(vrmPath);" not in html
     assert "initPIXI('neko-l2d-canvas', 'neko-l2d-container'" in html
     assert "loadModel(modelPath)" in html
-    assert "var modelPath = live2dPath || '/static/yui-origin/yui-origin.model3.json'" in html
+    assert "var modelPath = live2dPath || '/static/yui-lolita/yui-lolita.model3.json'" in html
     assert "当前 Live2D 路径缺失" in html
     assert "角色接口不可用或未返回 model_type" not in html
     assert "modelType === 'live3d' && subType === 'vrm'" not in html
@@ -1310,8 +1400,9 @@ def test_badminton_template_contract():
     assert "latestShooterRating" not in html
     assert "控拍评级" not in html
     assert "function getRequestLanguage()" in html
-    assert "i18n_language: getRequestLanguage()" in html
-    assert "function applyCharacterIdentity(charData)" in html
+    assert "function getConversationLanguagePayload(renderLanguage)" in html
+    assert "i18n_language: getRequestLanguage()" not in html
+    assert "function applyCharacterIdentity(charData, languageRevision)" in html
     assert "function applyResolvedLanlanName(resolvedName)" in html
     assert "function applyRouteIdentity(state)" in html
     assert "lanlanName = resolvedName" in html
@@ -1325,9 +1416,16 @@ def test_badminton_template_contract():
     assert "lanlan_name: lanlanName, source: 'badminton_demo'" not in html
     assert "initNekoAvatar().finally(function () { startRoute(); })" not in html
     assert "var badmintonCharacterPromise = null;" in html
-    assert "loadBadmintonCharacter().finally(function () { return startRoute(); });" in html
-    startup = html[html.rindex("startRouteAfterCharacterReady();"):]
-    assert startup.index("startRouteAfterCharacterReady();") < startup.index("initNekoAvatar();")
+    assert "var badmintonCharacterLanguagePreferenceResolved = false;" in html
+    assert "if (!badmintonCharacterLanguagePreferenceResolved)" in html
+    assert "charData && charData.language_preference_resolved === true" in html
+    assert "badmintonCharacterExplicitLanguage = normalizeBadmintonExplicitLanguage(" in html
+    assert "badmintonCharacterLanguageRevision === languageRevision" in html
+    assert html.count("badmintonCharacterLanguageRevision += 1;") == 4
+    assert html.count("badmintonCharacterLanguagePreferenceResolved = true;") == 3
+    assert "if (!currentCharacterName)" in html
+    assert "payload.i18n_language = badmintonCharacterExplicitLanguage" in html
+    assert "window.hydrateExplicitConversationLanguagePreference" not in html
     assert "voiceArbiter" in html
     assert "mirror_text: false" in html
     assert "post('/mirror-assistant'" in html
@@ -1335,6 +1433,27 @@ def test_badminton_template_contract():
     assert "if (pending && pending.priority <= entry.priority) return" in html
     assert "if (voiceArbiter.pending.priority <= entry.priority) return" in html
     assert "label: shooter === 'neko' ? 'neko_duel_shot' : 'player_duel_shot'" in html
+
+
+@pytest.mark.unit
+def test_badminton_direct_open_language_clear_invalidates_character_response():
+    from pathlib import Path
+
+    html = Path(__file__).resolve().parents[2].joinpath(
+        "templates/badminton_demo.html"
+    ).read_text(encoding="utf-8")
+    listener = html[html.index("function updateBadmintonCharacterExplicitLanguage"):
+                    html.index("function api(path)")]
+    apply_identity = html[html.index("function applyCharacterIdentity"):
+                          html.index("function applyRouteIdentity")]
+
+    assert "if (!currentCharacterName)" in listener
+    assert "if (eventCharacterName) badmintonCharacterLanguageRevision += 1;" in listener
+    assert "updateBadmintonCharacterExplicitLanguage(event, true);" in listener
+    assert "badmintonCharacterLanguagePreferenceResolved = true;" not in listener.split(
+        "if (!currentCharacterName)", 1
+    )[1].split("return;", 1)[0]
+    assert "badmintonCharacterLanguageRevision === languageRevision" in apply_identity
 
 
 @pytest.mark.unit
@@ -2006,11 +2125,33 @@ def _characters_with_avatar(name, avatar):
     }
 
 
+@pytest.fixture
+def game_character_locale_loader(monkeypatch):
+    loader = AsyncMock(return_value=("", True))
+    monkeypatch.setattr(gr_runtime, "_load_game_character_prompt_locale", loader)
+    return loader
+
+
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_game_character_returns_live2d_path(monkeypatch):
+@pytest.mark.parametrize(
+    ("loaded_locale", "expected_language", "expected_resolved"),
+    [
+        (("ja", True), "ja", True),
+        (("", True), "", True),
+        (("", False), "", False),
+    ],
+)
+async def test_game_character_returns_live2d_path(
+    monkeypatch,
+    game_character_locale_loader,
+    loaded_locale,
+    expected_language,
+    expected_resolved,
+):
     import main_routers.characters_router as characters_router
 
+    game_character_locale_loader.return_value = loaded_locale
     _gr_patch_all(monkeypatch, "get_config_manager", lambda: _FakeConfigManager(
         _characters_with_avatar("Lan", {
             "model_type": "live2d",
@@ -2027,13 +2168,20 @@ async def test_game_character_returns_live2d_path(monkeypatch):
     result = await gr_runtime.game_character("badminton")
 
     assert result["lanlan_name"] == "Lan"
+    assert result["language"] == expected_language
+    assert result["language_preference_resolved"] is expected_resolved
     assert result["model_type"] == "live2d"
     assert result["live2d_path"] == "/user_live2d/Lan/model.model3.json"
+    game_character_locale_loader.assert_awaited_once_with("Lan")
 
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_game_character_returns_vrm_path_for_live3d_vrm(monkeypatch, tmp_path):
+async def test_game_character_returns_vrm_path_for_live3d_vrm(
+    monkeypatch,
+    tmp_path,
+    game_character_locale_loader,
+):
     static_vrm = tmp_path / "static" / "vrm" / "hero.vrm"
     static_vrm.parent.mkdir(parents=True)
     static_vrm.write_text("vrm", encoding="utf-8")
@@ -2059,7 +2207,11 @@ async def test_game_character_returns_vrm_path_for_live3d_vrm(monkeypatch, tmp_p
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_game_character_returns_mmd_path_for_live3d_mmd(monkeypatch, tmp_path):
+async def test_game_character_returns_mmd_path_for_live3d_mmd(
+    monkeypatch,
+    tmp_path,
+    game_character_locale_loader,
+):
     user_vrm = tmp_path / "user_vrm" / "ignored-but-direct.vrm"
     user_vrm.parent.mkdir(parents=True)
     user_vrm.write_text("vrm", encoding="utf-8")
@@ -2082,6 +2234,45 @@ async def test_game_character_returns_mmd_path_for_live3d_mmd(monkeypatch, tmp_p
     assert result["live3d_sub_type"] == "mmd"
     assert result["mmd_path"] == "/static/mmd/Miku/Miku.pmx"
     assert result["vrm_path"] == "/user_vrm/ignored-but-direct.vrm"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("response_or_error", "expected"),
+    [
+        (
+            {"success": True, "language": "zh-tw", "effective_language": "en"},
+            ("zh-TW", True),
+        ),
+        ({"success": True, "language": None, "effective_language": "ja"}, ("", True)),
+        ({"success": True, "language": "", "effective_language": "ja"}, ("", True)),
+        ({"success": False, "language": "ko", "effective_language": "ko"}, ("", False)),
+        ({"success": True, "effective_language": "ko"}, ("", False)),
+        ({"success": True, "language": "unsupported"}, ("", False)),
+        (OSError("offline"), ("", False)),
+    ],
+)
+async def test_game_character_prompt_locale_uses_only_durable_language(
+    monkeypatch,
+    response_or_error,
+    expected,
+):
+    from utils import internal_http_client
+
+    if isinstance(response_or_error, Exception):
+        get = AsyncMock(side_effect=response_or_error)
+    else:
+        get = AsyncMock(return_value=SimpleNamespace(
+            raise_for_status=lambda: None,
+            json=lambda: response_or_error,
+        ))
+    client = SimpleNamespace(get=get)
+    monkeypatch.setattr(internal_http_client, "get_internal_http_client", lambda: client)
+
+    assert await gr_runtime._load_game_character_prompt_locale("Mimi") == expected
+    assert get.await_args.args[0].endswith("/prompt-locale/Mimi")
+    assert get.await_args.kwargs["timeout"] == 2.5
 
 
 @pytest.mark.unit
@@ -2332,9 +2523,12 @@ async def test_build_pregame_context_uses_empty_history_fallback(monkeypatch):
         "base_url": "http://fake",
         "api_type": "local",
         "api_key": "key",
+        "user_language": "zh",
+        "user_language_full": "zh-TW",
     })
 
-    async def fake_fetch(_lanlan_name):
+    async def fake_fetch(_lanlan_name, *, language=None):
+        assert language == "zh-TW"
         return "", "recent_history_failed"
 
     async def fake_ai(**kwargs):
@@ -2364,6 +2558,75 @@ async def test_build_pregame_context_uses_empty_history_fallback(monkeypatch):
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_soccer_pregame_uses_request_prompt_locale(monkeypatch):
+    _gr_patch_all(monkeypatch, "_get_current_character_info", lambda: {
+        "lanlan_name": "Lan",
+        "master_name": "玩家",
+        "lanlan_prompt": "喜欢踢球。",
+        "user_language": "zh",
+        "user_language_full": "zh-CN",
+    })
+
+    async def fake_fetch(_lanlan_name, *, language=None):
+        assert language == "zh-TW"
+        return "", ""
+
+    async def fake_ai(**kwargs):
+        assert kwargs["prompt_locale"] == "zh-TW"
+        return {"gameStance": "neutral_play"}
+
+    _gr_patch_all(monkeypatch, "_fetch_recent_history_for_pregame", fake_fetch)
+    _gr_patch_all(monkeypatch, "_run_soccer_pregame_context_ai", fake_ai)
+
+    await gr_pregame._build_soccer_pregame_context(
+        game_type="soccer",
+        session_id="match_locale",
+        lanlan_name="Lan",
+        neko_initiated=False,
+        neko_invite_text="",
+        prompt_locale="zh-TW",
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_badminton_pregame_uses_request_prompt_locale(monkeypatch):
+    _gr_patch_all(monkeypatch, "_get_current_character_info", lambda: {
+        "lanlan_name": "Lan",
+        "master_name": "玩家",
+        "lanlan_prompt": "喜欢打球。",
+        "user_language": "zh",
+        "user_language_full": "zh-CN",
+    })
+
+    async def fake_fetch(_lanlan_name, *, language=None):
+        assert language == "zh-TW"
+        return "", ""
+
+    async def fake_ai(**kwargs):
+        assert kwargs["prompt_template"] == "traditional-template"
+        return {"gameStance": "neutral_play"}
+
+    def fake_prompt(language):
+        assert language == "zh-TW"
+        return "traditional-template"
+
+    _gr_patch_all(monkeypatch, "_fetch_recent_history_for_pregame", fake_fetch)
+    _gr_patch_all(monkeypatch, "_run_pregame_context_ai", fake_ai)
+    _gr_patch_all(monkeypatch, "get_badminton_pregame_context_prompt", fake_prompt)
+
+    await gr_pregame._build_badminton_pregame_context(
+        game_type="badminton",
+        session_id="match_locale",
+        lanlan_name="Lan",
+        neko_initiated=False,
+        neko_invite_text="",
+        prompt_locale="zh-TW",
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_build_pregame_context_invalid_json_falls_back(monkeypatch):
     _gr_patch_all(monkeypatch, "_get_current_character_info", lambda: {
         "lanlan_name": "Lan",
@@ -2375,7 +2638,7 @@ async def test_build_pregame_context_invalid_json_falls_back(monkeypatch):
         "api_key": "key",
     })
 
-    async def fake_fetch(_lanlan_name):
+    async def fake_fetch(_lanlan_name, **_kwargs):
         return "玩家 | 来踢球", ""
 
     async def fake_ai(**_kwargs):
@@ -2411,7 +2674,7 @@ async def test_build_pregame_context_partial_invalid_fields(monkeypatch):
         "api_key": "key",
     })
 
-    async def fake_fetch(_lanlan_name):
+    async def fake_fetch(_lanlan_name, **_kwargs):
         return "玩家 | 你这个笨蛋！", ""
 
     async def fake_ai(**_kwargs):
@@ -2448,6 +2711,7 @@ def test_game_archive_memory_payload_uses_system_note_shape():
         "game_type": "soccer",
         "session_id": "match_1",
         "lanlan_name": "Lan",
+        "user_language": "zh-CN",
         "summary": "soccer 小游戏结束。最终/最近比分：玩家 1 : 4 Lan。",
         "game_memory_tail_count": 2,
         "soccer_game_memory_enabled": True,
@@ -2501,6 +2765,7 @@ def test_game_archive_memory_tail_uses_game_dialog_order_without_event_labels():
         "game_type": "soccer",
         "session_id": "match_1",
         "lanlan_name": "Lan",
+        "user_language": "zh-CN",
         "summary": "soccer 小游戏结束。",
         "game_memory_tail_count": 4,
         "soccer_game_memory_enabled": True,
@@ -2538,6 +2803,7 @@ def test_game_archive_memory_prefers_final_score_over_oral_concession_text():
         "game_type": "soccer",
         "session_id": "match_1",
         "lanlan_name": "Lan",
+        "user_language": "zh-CN",
         "summary": "soccer 小游戏结束。",
         "finalScore": {"player": 9, "ai": 20},
         "last_state": {"score": {"player": 99, "ai": 0}},
@@ -2567,6 +2833,7 @@ def test_game_archive_memory_prefers_explicit_score_text_for_horse_results():
         "game_type": "badminton",
         "session_id": "horse_1",
         "lanlan_name": "Neko",
+        "user_language": "zh-CN",
         "summary": "badminton 小游戏结束。",
         "finalScore": {
             "player": 3,
@@ -2688,6 +2955,7 @@ def test_memory_highlight_source_explains_game_event_text_is_not_user_speech():
         "game_type": "soccer",
         "session_id": "match_1",
         "lanlan_name": "Lan",
+        "user_language": "zh-CN",
         "last_state": {"score": {"player": 1, "ai": 2}},
         "soccer_game_memory_enabled": True,
         "soccer_game_memory_player_interaction_enabled": True,
@@ -2802,6 +3070,7 @@ def test_memory_highlight_prompt_rejects_bare_or_reversed_scores(monkeypatch):
         "game_type": "soccer",
         "session_id": "match_1",
         "lanlan_name": "Lan",
+        "user_language": "zh-CN",
         "last_state": {"score": {"player": 0, "ai": 10}},
         "full_dialogues": [],
     }))
@@ -3255,19 +3524,23 @@ async def test_run_game_chat_sends_filtered_llm_visible_event(monkeypatch):
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_badminton_game_chat_rejects_stale_session_before_llm(monkeypatch):
+    manager = _LocaleTrackingManager()
     async def fake_run_game_chat(*_args, **_kwargs):
         raise AssertionError("stale badminton chat should not start an LLM session")
 
     _gr_patch_all(monkeypatch, "_run_game_chat", fake_run_game_chat)
-    _gr_patch_all(monkeypatch, "get_session_manager", lambda: {})
+    _gr_patch_all(monkeypatch, "get_session_manager", lambda: {"Lan": manager})
 
     with reset_game_route_state():
         state = gr_runtime._activate_game_route("badminton", "fresh-session", "Lan")
         state["mode"] = "duel"
+        state["user_language"] = "en"
+        state["user_language_source"] = "render"
 
         result = await gr_runtime.game_chat("badminton", _FakeRequest({
             "session_id": "old-session",
             "lanlan_name": "Lan",
+            "i18n_language": "ja",
             "event": {"kind": "shot_missed", "mode": "duel"},
         }))
 
@@ -3276,21 +3549,26 @@ async def test_badminton_game_chat_rejects_stale_session_before_llm(monkeypatch)
     assert result["reason"] == "session_id_mismatch"
     assert result["line"] == ""
     assert result["control"] == {}
+    assert manager.language_updates == []
+    assert state["user_language"] == "en"
+    assert state["user_language_source"] == "render"
 
 
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_badminton_game_chat_rejects_missing_route_before_llm(monkeypatch):
+    manager = _LocaleTrackingManager()
     async def fake_run_game_chat(*_args, **_kwargs):
         raise AssertionError("inactive badminton chat should not start an LLM session")
 
     _gr_patch_all(monkeypatch, "_run_game_chat", fake_run_game_chat)
-    _gr_patch_all(monkeypatch, "get_session_manager", lambda: {})
+    _gr_patch_all(monkeypatch, "get_session_manager", lambda: {"Lan": manager})
 
     with reset_game_route_state():
         result = await gr_runtime.game_chat("badminton", _FakeRequest({
             "session_id": "old-session",
             "lanlan_name": "Lan",
+            "i18n_language": "ja",
             "event": {"kind": "shot_missed", "mode": "duel"},
         }))
 
@@ -3304,6 +3582,88 @@ async def test_badminton_game_chat_rejects_missing_route_before_llm(monkeypatch)
         "lanlan_name": "Lan",
         "method": "game_chat",
     }
+    assert manager.language_updates == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_badminton_game_chat_rate_limit_does_not_refresh_route_locale(monkeypatch):
+    manager = _LocaleTrackingManager()
+
+    async def fake_run_game_chat(*_args, **_kwargs):
+        raise AssertionError("rate-limited badminton chat should not start an LLM session")
+
+    _gr_patch_all(monkeypatch, "_run_game_chat", fake_run_game_chat)
+    _gr_patch_all(monkeypatch, "_check_badminton_chat_rate", lambda *_args: False)
+    _gr_patch_all(monkeypatch, "get_session_manager", lambda: {"Lan": manager})
+
+    with reset_game_route_state():
+        state = gr_runtime._activate_game_route("badminton", "duel-session", "Lan")
+        state["mode"] = "duel"
+        state["user_language"] = "en"
+        state["user_language_source"] = "render"
+
+        result = await gr_runtime.game_chat("badminton", _FakeRequest({
+            "session_id": "duel-session",
+            "lanlan_name": "Lan",
+            "i18n_language": "ja",
+            "render_language": "ko",
+            "event": {"kind": "shot_missed", "mode": "duel"},
+        }))
+
+    assert result == {
+        "error": "rate_limited",
+        "line": "",
+        "control": {},
+        "retry_after": 2,
+    }
+    assert manager.language_updates == []
+    assert state["user_language"] == "en"
+    assert state["user_language_source"] == "render"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_game_chat_refreshes_matching_route_locale_with_live_precedence(monkeypatch):
+    manager = _LocaleTrackingManager()
+    prompt_locales = []
+
+    async def fake_run_game_chat(_game_type, _session_id, _event, *, prompt_locale=None):
+        prompt_locales.append(prompt_locale)
+        return {"line": "ok", "control": {}}
+
+    _gr_patch_all(monkeypatch, "_run_game_chat", fake_run_game_chat)
+    _gr_patch_all(monkeypatch, "get_session_manager", lambda: {"Lan": manager})
+
+    with reset_game_route_state():
+        state = gr_runtime._activate_game_route("soccer", "match-session", "Lan")
+        state["user_language"] = "en"
+        state["user_language_source"] = "render"
+        cases = [
+            ("en", False, {"render_language": "ja"}, "ja", ("ja", "render")),
+            ("zh-TW", True, {"render_language": "pt"}, "zh-TW", ("zh-TW", "session")),
+            (
+                "zh-TW", True,
+                {"i18n_language": "ko", "render_language": "pt"},
+                "ko", ("ko", "request"),
+            ),
+            (
+                "en", False,
+                {"session_id": "stale-session", "render_language": "es"},
+                "es", ("ko", "request"),
+            ),
+        ]
+        for manager_language, explicit, payload, prompt, route_locale in cases:
+            manager.user_language = manager_language
+            manager._user_language_explicit = explicit
+            await gr_runtime.game_chat("soccer", _FakeRequest({
+                "session_id": "match-session",
+                "lanlan_name": "Lan",
+                "event": {"kind": "round_end"},
+                **payload,
+            }))
+            assert prompt_locales[-1] == prompt
+            assert (state["user_language"], state["user_language_source"]) == route_locale
 
 
 @pytest.mark.unit
@@ -3715,11 +4075,15 @@ class _FakeGameRouteManager:
         self.user_activity_count = 0
         self._takeover_active = False
         self._takeover_input_dispatcher = None
+        self.render_language_at_mirror = []
 
     async def mirror_user_input(self, text, **kwargs):
         self.mirrored.append((text, kwargs))
 
     async def mirror_assistant_output(self, text, **kwargs):
+        self.render_language_at_mirror.append(
+            getattr(self, "_conversation_render_language", None)
+        )
         self.assistant_mirrored.append((text, kwargs))
         return {"ok": True, "mirrored": True, "method": "project_text_mirror"}
 
@@ -3727,6 +4091,9 @@ class _FakeGameRouteManager:
         self.user_activity_count += 1
 
     async def mirror_assistant_speech(self, line, **kwargs):
+        self.render_language_at_mirror.append(
+            getattr(self, "_conversation_render_language", None)
+        )
         self.spoken.append((line, kwargs))
         return {
             "ok": True,
@@ -3735,6 +4102,9 @@ class _FakeGameRouteManager:
             "audio_sent": True,
             "voice_source": {"provider": "project_tts"},
         }
+
+    def set_render_language(self, language):
+        self._conversation_render_language = language
 
     async def send_status(self, message):
         self.statuses.append(message)
@@ -3779,6 +4149,41 @@ async def test_route_start_activates_stt_gate_when_audio_already_active(monkeypa
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_route_start_prefers_explicit_manager_locale_over_render_fallback(monkeypatch):
+    mgr = _FakeGameRouteManager()
+    mgr.user_language = "zh-TW"
+    mgr._user_language_explicit = True
+    _gr_patch_all(monkeypatch, "get_session_manager", lambda: {"Lan": mgr})
+    prompt_locales = []
+
+    async def fake_pregame_context(**kwargs):
+        prompt_locales.append(kwargs["prompt_locale"])
+        return (
+            gr_pregame._default_soccer_pregame_context(initial_difficulty="lv2"),
+            "fallback",
+            "",
+        )
+
+    _gr_patch_all(monkeypatch, "_build_soccer_pregame_context", fake_pregame_context)
+
+    with reset_game_route_state():
+        result = await gr_runtime.game_route_start(
+            "soccer",
+            _FakeRequest({
+                "lanlan_name": "Lan",
+                "session_id": "match-explicit-locale",
+                "render_language": "ja",
+            }),
+        )
+
+        assert result["ok"] is True
+        assert prompt_locales == ["zh-TW"]
+        assert result["state"]["user_language"] == "zh-TW"
+        assert result["state"]["user_language_source"] == "session"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_route_start_accepts_neko_invite_context(monkeypatch):
     _gr_patch_all(monkeypatch, "get_session_manager", lambda: {})
 
@@ -3805,6 +4210,7 @@ async def test_route_start_accepts_neko_invite_context(monkeypatch):
             "nekoInitiated": True,
             "nekoInviteText": "来踢球吧，玩家。",
             "gameMemoryTailCount": 3,
+            "i18n_language": "zh-TW",
         }),
     )
 
@@ -3824,6 +4230,8 @@ async def test_route_start_accepts_neko_invite_context(monkeypatch):
     assert state["soccer_game_memory_archive_enabled"] is False
     assert state["soccer_game_memory_postgame_context_enabled"] is False
     assert state["game_memory_enabled"] is False
+    assert state["user_language"] == "zh-TW"
+    assert gr_archive._build_game_archive(state)["user_language"] == "zh-TW"
 
 
 @pytest.mark.unit
@@ -3976,10 +4384,13 @@ async def test_route_external_text_to_game_llm_defers_voice_to_frontend_arbiter(
         "difficulty": "lv2",
         "score": {"player": 1, "ai": 4},
     }
+    state["user_language"] = "zh-TW"
+    state["user_language_source"] = "render"
 
-    async def fake_run_game_chat(game_type, session_id, event):
+    async def fake_run_game_chat(game_type, session_id, event, *, prompt_locale=None):
         assert game_type == "soccer"
         assert session_id == "match_1"
+        assert prompt_locale == "zh-TW"
         assert event["kind"] == "user-text"
         assert event["userText"] == "你是不是在放水？"
         assert event["scoreDiff"] == 3
@@ -4022,6 +4433,62 @@ async def test_route_external_text_to_game_llm_defers_voice_to_frontend_arbiter(
     assert state["pending_outputs"][1]["meta"]["voiceAlreadyHandled"] is False
     assert state["pending_outputs"][1]["result"]["line"] == "才没有放水呢。"
     assert [item["type"] for item in state["game_dialog_log"]] == ["user", "assistant"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("input_kind", "explicit", "expected_locale", "expected_source"),
+    [("text", False, "ja", "render"), ("voice", True, "zh-TW", "session")],
+)
+async def test_external_route_refreshes_live_locale_before_prompt(
+    monkeypatch,
+    input_kind,
+    explicit,
+    expected_locale,
+    expected_source,
+):
+    mgr = _FakeGameRouteManager()
+    mgr.user_language = expected_locale
+    mgr._user_language_explicit = explicit
+    mgr._conversation_render_language = "ja"
+    _gr_patch_all(monkeypatch, "get_session_manager", lambda: {"Lan": mgr})
+
+    with reset_game_route_state():
+        state = gr_runtime._activate_game_route("soccer", "match_1", "Lan")
+        state["user_language"] = "en"
+        state["user_language_source"] = "render"
+        prompt_locales = []
+
+        async def fake_run_game_chat(
+            game_type,
+            session_id,
+            event,
+            *,
+            prompt_locale=None,
+        ):
+            prompt_locales.append(prompt_locale)
+            return {"line": "localized", "control": {}, "llm_source": {"provider": "fake"}}
+
+        _gr_patch_all(monkeypatch, "_run_game_chat", fake_run_game_chat)
+
+        if input_kind == "text":
+            handled = await gr_runtime.route_external_stream_message(
+                "Lan",
+                {"input_type": "text", "data": "localized", "request_id": "locale-refresh"},
+            )
+        else:
+            handled = await gr_runtime.route_external_voice_transcript(
+                "Lan", "localized", request_id="locale-refresh",
+                game_type="soccer", session_id="match_1",
+            )
+
+        assert handled is True
+        assert prompt_locales == [expected_locale]
+        assert (state["user_language"], state["user_language_source"]) == (
+            expected_locale,
+            expected_source,
+        )
 
 
 @pytest.mark.unit
@@ -4069,6 +4536,7 @@ async def test_route_external_text_uses_no_memory_input_type_when_game_memory_di
 @pytest.mark.asyncio
 async def test_route_external_audio_activates_game_stt_gate(monkeypatch):
     mgr = _FakeGameRouteManager()
+    mgr._suspend_independent_voice_input_for_game = AsyncMock()
     _gr_patch_all(monkeypatch, "get_session_manager", lambda: {"Lan": mgr})
     state = gr_runtime._activate_game_route("soccer", "match_1", "Lan")
 
@@ -4091,6 +4559,7 @@ async def test_route_external_audio_activates_game_stt_gate(monkeypatch):
     assert state["game_input_activation_log"][0]["source"] == "external_voice_hijacked_by_game"
     assert state["game_input_activation_log"][0]["mode"] == "voice"
     assert state["game_input_activation_log"][0]["detail"] == {}
+    mgr._suspend_independent_voice_input_for_game.assert_not_awaited()
 
 
 @pytest.mark.unit
@@ -4099,10 +4568,13 @@ async def test_route_external_voice_transcript_to_game_llm(monkeypatch):
     mgr = _FakeGameRouteManager()
     _gr_patch_all(monkeypatch, "get_session_manager", lambda: {"Lan": mgr})
     state = gr_runtime._activate_game_route("soccer", "match_1", "Lan")
+    state["user_language"] = "zh-TW"
+    state["user_language_source"] = "session"
 
-    async def fake_run_game_chat(game_type, session_id, event):
+    async def fake_run_game_chat(game_type, session_id, event, *, prompt_locale=None):
         assert game_type == "soccer"
         assert session_id == "match_1"
+        assert prompt_locale == "zh-TW"
         assert event["kind"] == "user-voice"
         assert event["userVoiceText"] == "我马上要进球了"
         return {
@@ -4209,7 +4681,10 @@ async def test_route_external_voice_transcript_dedup_ttl_evicts(monkeypatch):
     _gr_patch_all(monkeypatch, "_run_game_chat", fake_run_game_chat)
 
     fake_now = {"t": 10_000.0}
-    monkeypatch.setattr(gr_runtime.time, "time", lambda: fake_now["t"])
+    # The dedup TTL bookkeeping this test drives lives in
+    # main_routers.game_router.runtime (_route_external_transcript_to_game), so
+    # the fake clock belongs on that module.
+    patch_module_clock(monkeypatch, gr_runtime, time=lambda: fake_now["t"])
 
     h1 = await gr_runtime.route_external_voice_transcript(
         "Lan", "射门", request_id="voice-x", game_type="soccer", session_id="match_1",
@@ -4288,7 +4763,10 @@ async def test_route_external_voice_transcript_dedup_no_request_id_fallback_wind
     _gr_patch_all(monkeypatch, "_run_game_chat", fake_run_game_chat)
 
     fake_now = {"t": 1000.95}
-    monkeypatch.setattr(gr_runtime.time, "time", lambda: fake_now["t"])
+    # Same as the TTL test above: the no-request_id 1.0s window is computed in
+    # main_routers.game_router.runtime (_route_external_transcript_to_game), so
+    # scope the fake clock there.
+    patch_module_clock(monkeypatch, gr_runtime, time=lambda: fake_now["t"])
 
     h1 = await gr_runtime.route_external_voice_transcript(
         "Lan", "再来", request_id=None,
@@ -4336,6 +4814,51 @@ async def test_route_heartbeat_refreshes_last_state(monkeypatch):
     assert state["visibility_state"] == "visible"
     assert state["game_started"] is True
     assert state["game_started_elapsed_ms"] == 15_000
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("route_input", ["heartbeat", "voice"])
+async def test_route_inputs_refresh_render_locale_without_overriding_explicit(
+    monkeypatch,
+    route_input,
+):
+    manager = _LocaleTrackingManager()
+    _gr_patch_all(monkeypatch, "get_session_manager", lambda: {"Lan": manager})
+    voice_router = AsyncMock(return_value=True)
+    if route_input == "voice":
+        _gr_patch_all(monkeypatch, "route_external_voice_transcript", voice_router)
+
+    with reset_game_route_state():
+        state = gr_runtime._activate_game_route("soccer", "match_1", "Lan")
+        state["user_language"] = "en"
+        state["user_language_source"] = "render"
+        cases = [
+            ({"render_language": "ja"}, ("ja", "render"), []),
+            (
+                {"i18n_language": "zh-TW", "render_language": "ko"},
+                ("zh-TW", "request"), ["zh-TW"],
+            ),
+            ({"render_language": "pt"}, ("zh-TW", "session"), ["zh-TW"]),
+        ]
+        for index, (languages, route_locale, updates) in enumerate(cases):
+            payload = {"lanlan_name": "Lan", "session_id": "match_1", **languages}
+            if route_input == "voice":
+                payload.update(request_id=f"voice-{index}", transcript="localized")
+                result = await gr_runtime.game_route_voice_transcript(
+                    "soccer", _FakeRequest(payload),
+                )
+                assert result["handled"] is True
+            else:
+                result = await gr_runtime.game_route_heartbeat(
+                    "soccer", _FakeRequest(payload),
+                )
+                assert result["active"] is True
+            assert (state["user_language"], state["user_language_source"]) == route_locale
+            assert manager.language_updates == updates
+
+    if route_input == "voice":
+        assert voice_router.await_count == 3
 
 
 @pytest.mark.unit
@@ -4443,6 +4966,144 @@ async def test_heartbeat_timeout_finalize_archives_and_closes_session(monkeypatc
     assert debug_log["status"] == "ended"
     assert [item["event"] for item in debug_log["entries"]] == ["session_ended"]
     fake_session.close.assert_awaited_once()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_finalize_continues_when_voice_input_resume_fails(monkeypatch):
+    mgr = _FakeGameRouteManager()
+    mgr._resume_independent_voice_input_after_game = AsyncMock(
+        side_effect=RuntimeError("resume failed")
+    )
+    _gr_patch_all(monkeypatch, "get_session_manager", lambda: {"Lan": mgr})
+    _gr_patch_all(
+        monkeypatch,
+        "_submit_game_archive_to_memory",
+        AsyncMock(return_value={"ok": True, "status": "cached"}),
+    )
+    state = gr_runtime._activate_game_route("soccer", "match_1", "Lan")
+    _set_soccer_game_memory_policy(state, enabled=True)
+    _mark_game_started(state)
+
+    result = await gr_runtime._finalize_game_route_state(
+        state,
+        reason="route_end",
+        close_game_session=False,
+    )
+
+    assert result["archive_memory"] == {"ok": True, "status": "cached"}
+    assert result["realtime_restore"] == {
+        "attempted": True,
+        "ok": False,
+        "reason": "voice_input_resume_failed",
+    }
+    status = json.loads(mgr.statuses[-1])
+    assert status["code"] == "GAME_ROUTE_ENDED"
+    assert status["details"]["realtime_restore"] == result["realtime_restore"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_finalize_skips_voice_resume_when_lease_stayed_with_core(monkeypatch):
+    # realtime-STT 游戏：前端保持普通麦克风上传，租约 owner 全程停留在
+    # core。退出时不得调用 resume——core->core 空转换会 bump transition
+    # generation 并清空在途麦克风 PCM（codex P2）。
+    mgr = _FakeGameRouteManager()
+    mgr._voice_lease_owner = "core"
+    mgr._resume_independent_voice_input_after_game = AsyncMock()
+    _gr_patch_all(monkeypatch, "get_session_manager", lambda: {"Lan": mgr})
+    _gr_patch_all(
+        monkeypatch,
+        "_submit_game_archive_to_memory",
+        AsyncMock(return_value={"ok": True, "status": "cached"}),
+    )
+    state = gr_runtime._activate_game_route("soccer", "match_1", "Lan")
+    _set_soccer_game_memory_policy(state, enabled=True)
+    _mark_game_started(state)
+
+    result = await gr_runtime._finalize_game_route_state(
+        state,
+        reason="route_end",
+        close_game_session=False,
+    )
+
+    mgr._resume_independent_voice_input_after_game.assert_not_awaited()
+    assert result["realtime_restore"] == {
+        "attempted": False,
+        "ok": True,
+        "reason": "voice_lease_not_taken",
+    }
+    status = json.loads(mgr.statuses[-1])
+    assert status["code"] == "GAME_ROUTE_ENDED"
+    assert status["details"]["realtime_restore"] == result["realtime_restore"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("lease_owner", ["game", "none"])
+async def test_finalize_resumes_voice_when_lease_left_core(monkeypatch, lease_owner):
+    # 浏览器 STT gate 游戏：租约被游戏接管（或接管后玩家中途关麦变 none）。
+    # 只有 game_release 能把 SUSPENDED 的 runtime 拉回来，退出时必须 resume。
+    mgr = _FakeGameRouteManager()
+    mgr._voice_lease_owner = lease_owner
+    mgr._resume_independent_voice_input_after_game = AsyncMock()
+    _gr_patch_all(monkeypatch, "get_session_manager", lambda: {"Lan": mgr})
+    _gr_patch_all(
+        monkeypatch,
+        "_submit_game_archive_to_memory",
+        AsyncMock(return_value={"ok": True, "status": "cached"}),
+    )
+    state = gr_runtime._activate_game_route("soccer", "match_1", "Lan")
+    _set_soccer_game_memory_policy(state, enabled=True)
+    _mark_game_started(state)
+
+    result = await gr_runtime._finalize_game_route_state(
+        state,
+        reason="route_end",
+        close_game_session=False,
+    )
+
+    mgr._resume_independent_voice_input_after_game.assert_awaited_once()
+    assert result["realtime_restore"] == {
+        "attempted": True,
+        "ok": True,
+        "reason": "voice_input_resumed",
+    }
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_finalize_resumes_voice_when_core_owner_but_lifecycle_suspended(monkeypatch):
+    # 边界：浏览器 STT gate 中途失败回退普通麦克风，owner 已回 core 但
+    # lifecycle 仍卡在 SUSPENDED（lease_sync 不触发 resume）。退出时仍要
+    # 补一次 game_release，否则本会话语音永久失效。
+    mgr = _FakeGameRouteManager()
+    mgr._voice_lease_owner = "core"
+    mgr._asr_runtime = SimpleNamespace(
+        _asr_lifecycle=SimpleNamespace(
+            snapshot=SimpleNamespace(state=SimpleNamespace(value="suspended")),
+        ),
+    )
+    mgr._resume_independent_voice_input_after_game = AsyncMock()
+    _gr_patch_all(monkeypatch, "get_session_manager", lambda: {"Lan": mgr})
+    _gr_patch_all(
+        monkeypatch,
+        "_submit_game_archive_to_memory",
+        AsyncMock(return_value={"ok": True, "status": "cached"}),
+    )
+    state = gr_runtime._activate_game_route("soccer", "match_1", "Lan")
+    _set_soccer_game_memory_policy(state, enabled=True)
+    _mark_game_started(state)
+
+    result = await gr_runtime._finalize_game_route_state(
+        state,
+        reason="route_end",
+        close_game_session=False,
+    )
+
+    mgr._resume_independent_voice_input_after_game.assert_awaited_once()
+    assert result["realtime_restore"]["attempted"] is True
+    assert result["realtime_restore"]["reason"] == "voice_input_resumed"
 
 
 @pytest.mark.unit
@@ -4565,12 +5226,18 @@ async def test_project_speak_uses_manager_project_tts(monkeypatch):
 
     result = await gr_runtime.game_project_speak(
         "soccer",
-        _FakeRequest({"line": "换我进攻了", "session_id": "match_1", "request_id": "req-2"}),
+        _FakeRequest({
+            "line": "换我进攻了",
+            "session_id": "match_1",
+            "request_id": "req-2",
+            "render_language": "ja",
+        }),
     )
 
     assert result["ok"] is True
     assert result["method"] == "project_tts"
     assert result["voice_source"]["provider"] == "project_tts"
+    assert mgr.render_language_at_mirror == ["ja"]
     assert mgr.spoken == [("换我进攻了", {
         "metadata": {
             "source": "game_route",
@@ -4657,6 +5324,7 @@ async def test_project_speak_forwards_interrupt_audio(monkeypatch):
 async def test_project_speak_rejects_stale_route_session(monkeypatch):
     with reset_game_route_state():
         mgr = _FakeGameRouteManager()
+        mgr._conversation_render_language = "en"
         _gr_patch_all(monkeypatch, "get_session_manager", lambda: {"Lan": mgr})
         state = gr_runtime._activate_game_route("soccer", "match_new", "Lan")
 
@@ -4667,6 +5335,7 @@ async def test_project_speak_rejects_stale_route_session(monkeypatch):
                 "session_id": "match_old",
                 "lanlan_name": "Lan",
                 "request_id": "req-stale-speak",
+                "render_language": "ja",
             }),
         )
 
@@ -4678,6 +5347,7 @@ async def test_project_speak_rejects_stale_route_session(monkeypatch):
         assert result["audio_sent"] is False
         assert result["state"]["session_id"] == "match_new"
         assert mgr.spoken == []
+        assert mgr._conversation_render_language == "en"
         assert state["game_route_active"] is True
 
 
@@ -4724,11 +5394,13 @@ async def test_project_mirror_assistant_uses_text_only_mirror(monkeypatch):
             "request_id": "req-mirror",
             "turn_id": "turn-mirror",
             "source": "game-llm-result",
+            "render_language": "ja",
         }),
     )
 
     assert result["ok"] is True
     assert result["method"] == "project_text_mirror"
+    assert mgr.render_language_at_mirror == ["ja"]
     assert mgr.assistant_mirrored == [("文字先进入主聊天窗", {
         "metadata": {
             "source": "game-llm-result",
@@ -5078,7 +5750,7 @@ async def test_game_end_injects_postgame_context_into_active_realtime(monkeypatc
     await asyncio.wait_for(mgr.voice_nudge_event.wait(), timeout=1.0)
     assert mgr.voice_nudge_calls == 1
     # qwen_manual_commit/instruction surface was removed; the postgame nudge
-    # now relies on plain prompt_ephemeral (server VAD + WAV nudge). The
+    # now relies on plain prompt_ephemeral (guarded realtime text injection). The
     # postgame instruction reaches the model via prime_context (assert below).
     assert session.prime_context_calls
     assert mgr.append_context_calls[0]["source"] == "game.postgame"
@@ -5203,6 +5875,8 @@ async def test_game_end_uses_direct_response_for_gemini_postgame(monkeypatch, _f
     mgr = _FakeRealtimeManager(session)
     _gr_patch_all(monkeypatch, "get_session_manager", lambda: {"Lan": mgr})
     state = gr_runtime._activate_game_route("soccer", "match_1", "Lan")
+    state["user_language"] = "en"
+    state["user_language_source"] = "request"
     _set_soccer_game_memory_policy(state, enabled=True)
     _mark_game_started(state)
     state["last_state"] = {"score": {"player": 3, "ai": 14}}
@@ -5236,7 +5910,7 @@ async def test_game_end_uses_direct_response_for_gemini_postgame(monkeypatch, _f
     assert len(session.create_response_calls) == 1
     assert "[Game Module Postgame Context]" in session.create_response_calls[0]
     assert "[Game Module Postgame Proactive Greeting]" in session.create_response_calls[0]
-    assert "不要继续扮演游戏仍在进行" in session.create_response_calls[0]
+    assert "do not keep acting as if the game is still in progress" in session.create_response_calls[0]
 
 
 class _FakePostgameState:
@@ -5325,9 +5999,7 @@ async def test_game_end_delivers_one_shot_postgame_text_bubble(monkeypatch):
     assert any(getattr(event, "name", "") == "PROACTIVE_DONE" for event, _ in mgr.state.events)
 
 
-@pytest.mark.unit
-@pytest.mark.asyncio
-async def test_route_end_uses_full_game_end_contract(monkeypatch):
+async def _assert_route_end_uses_full_game_end_contract(monkeypatch):
     mgr = _FakePostgameTextManager()
     fake_session = type("FakeSession", (), {"close": AsyncMock()})()
     gr_runtime._game_sessions[gr_runtime._game_session_key("Lan", "soccer", "match_1")] = {
@@ -5338,6 +6010,8 @@ async def test_route_end_uses_full_game_end_contract(monkeypatch):
     }
     _gr_patch_all(monkeypatch, "get_session_manager", lambda: {"Lan": mgr})
     state = gr_runtime._activate_game_route("soccer", "match_1", "Lan")
+    state["user_language"] = "en"
+    state["user_language_source"] = "render"
     _set_soccer_game_memory_policy(state, enabled=True)
     _mark_game_started(state)
     state["last_state"] = {"score": {"player": 1, "ai": 2}}
@@ -5356,6 +6030,7 @@ async def test_route_end_uses_full_game_end_contract(monkeypatch):
         assert event["kind"] == "postgame"
         assert event["lastUserText"] == "再来一球就追上了。"
         assert kwargs.get("allow_postgame") is True
+        assert kwargs.get("prompt_locale") == "ja"
         return {"line": "刚才那脚挺像样的。", "llm_source": {"provider": "fake"}}
 
     _gr_patch_all(monkeypatch, "_submit_game_archive_to_memory", fake_submit)
@@ -5363,13 +6038,19 @@ async def test_route_end_uses_full_game_end_contract(monkeypatch):
 
     result = await gr_runtime.game_route_end(
         "soccer",
-        _FakeRequest({"session_id": "match_1", "lanlan_name": "Lan"}),
+        _FakeRequest({
+            "session_id": "match_1",
+            "lanlan_name": "Lan",
+            "render_language": "ja",
+        }),
     )
 
     assert result["ok"] is True
     assert result["closed"] is True
     assert result["route_closed"] is True
     assert result["archive"]["exit_reason"] == "route_end"
+    assert result["archive"]["user_language"] == "ja"
+    assert result["archive"]["user_language_source"] == "render"
     assert result["archive_memory"] == {"ok": True, "status": "cached", "count": 1}
     assert result["postgame"]["mode"] == "text"
     assert result["postgame"]["action"] == "chat"
@@ -5380,6 +6061,45 @@ async def test_route_end_uses_full_game_end_contract(monkeypatch):
     fake_session.close.assert_awaited_once()
     assert state["game_route_active"] is False
     assert state["exit_reason"] == "route_end"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_route_end_uses_full_game_end_contract(monkeypatch):
+    with reset_game_route_state():
+        await _assert_route_end_uses_full_game_end_contract(monkeypatch)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_stale_route_end_does_not_refresh_active_route_locale(monkeypatch):
+    manager = _LocaleTrackingManager()
+    close_session = AsyncMock(return_value=False)
+    _gr_patch_all(monkeypatch, "get_session_manager", lambda: {"Lan": manager})
+    _gr_patch_all(monkeypatch, "_close_and_remove_session", close_session)
+
+    with reset_game_route_state():
+        state = gr_runtime._activate_game_route("soccer", "fresh-session", "Lan")
+        state["user_language"] = "en"
+        state["user_language_source"] = "render"
+
+        result = await gr_runtime.game_route_end(
+            "soccer",
+            _FakeRequest({
+                "session_id": "stale-session",
+                "lanlan_name": "Lan",
+                "i18n_language": "ja",
+                "render_language": "ko",
+            }),
+        )
+
+        assert result["route_closed"] is False
+        assert state["game_route_active"] is True
+        assert state["user_language"] == "en"
+        assert state["user_language_source"] == "render"
+
+    assert manager.language_updates == []
+    close_session.assert_awaited_once_with("soccer", "stale-session", "Lan")
 
 
 @pytest.mark.unit

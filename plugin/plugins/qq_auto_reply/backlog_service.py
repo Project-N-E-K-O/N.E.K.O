@@ -105,6 +105,17 @@ class QQBacklogService:
             group_level=group_level,
             is_at_bot=bool(message.get("is_at_bot")),
             category=category,
+            group_memory_enabled_at_receipt=bool(
+                message.get("_group_memory_at_receipt")
+                if isinstance(message, dict)
+                and message.get("_group_memory_at_receipt") is not None
+                else (getattr(self.plugin, "_qq_settings", {}) or {}).get(
+                    "group_memory_enabled", False,
+                )
+            ),
+            # 合成事件（如入群通知）的名义 sender 没有真的说话：标记落进
+            # backlog，读侧"最近发言人"名单据此排除事件关联用户。
+            synthetic_source=str(message.get("_synthetic_source") or ""),
             raw=dict(message.get("raw") or {}),
         )
         display_name = self.plugin.permission_mgr.get_nickname(sender_id) if self.plugin.permission_mgr else None

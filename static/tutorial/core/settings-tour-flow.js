@@ -32,7 +32,12 @@
             panelMinDurationMs: 4200,
             openWithSettingsCursor: true,
             settingsCursorIdSuffix: '_settings_button',
-            settingsCursorMoveDurationMs: 560,
+            // 修改原因：第 4 天这句旁白需要让用户看清“移动到设置并点击”，但整段动作不能拖过旁白。
+            settingsCursorStartDelayMs: 300,
+            settingsCursorMoveDurationMs: 760,
+            settingsCursorClickDurationMs: 520,
+            // 修改原因：该场景的时长已经按旁白重新编排，禁止通用光标逻辑额外放慢动画。
+            exactCursorDuration: true,
             openFailureMessage: '[YuiGuide] 第4天对话设置打开设置面板失败:'
         }),
         day4_model_behavior: Object.freeze({
@@ -44,6 +49,8 @@
             cursorMoveDurationMs: 620,
             collapseBeforeAnchorHighlight: true,
             openWithAnchorCursor: true,
+            // 修改原因：设置弹窗切换过程中锚点可能已经创建但还没有有效坐标，需等到可见后再接管光标。
+            waitForVisibleAnchor: true,
             panelEllipseDurationMs: 3200,
             panelMinDurationMs: 3200
         })
@@ -186,9 +193,25 @@
                     primary: settingsButton
                 });
             }
-            const anchorButton = sidePanel && sidePanel._anchorElement
+            let anchorButton = sidePanel && sidePanel._anchorElement
                 ? sidePanel._anchorElement
                 : null;
+            if (normalizedSchema.waitForVisibleAnchor) {
+                anchorButton = await director.waitForElement(() => {
+                    const currentPanel = director.getAvatarFloatingSidePanel(panelId) || sidePanel;
+                    const candidate = currentPanel && currentPanel._anchorElement
+                        ? currentPanel._anchorElement
+                        : null;
+                    if (!candidate || !director.getElementRect(candidate)) {
+                        return null;
+                    }
+                    sidePanel = currentPanel;
+                    return candidate;
+                }, 1200);
+                if (this.isSceneStale(sceneRunId)) {
+                    return false;
+                }
+            }
             if (normalizedSchema.collapseBeforeAnchorHighlight) {
                 director.collapseAvatarFloatingSidePanelsExcept(null);
             }
@@ -205,7 +228,10 @@
                 minDurationMs: normalizedSchema.panelMinDurationMs
             });
 
-            await director.waitForSceneDelay(220);
+            const settingsCursorStartDelayMs = Number.isFinite(normalizedSchema.settingsCursorStartDelayMs)
+                ? Math.max(0, Math.floor(normalizedSchema.settingsCursorStartDelayMs))
+                : 220;
+            await director.waitForSceneDelay(settingsCursorStartDelayMs);
             if (this.isSceneStale(sceneRunId)) {
                 return false;
             }
@@ -214,8 +240,10 @@
                 await director.moveAvatarFloatingCursor({
                     id: scene.id + normalizedSchema.settingsCursorIdSuffix,
                     cursorAction: 'click',
-                    cursorMoveDurationMs: normalizedSchema.settingsCursorMoveDurationMs
+                    cursorMoveDurationMs: normalizedSchema.settingsCursorMoveDurationMs,
+                    cursorClickDurationMs: normalizedSchema.settingsCursorClickDurationMs
                 }, settingsButton, null, previousSceneId, {
+                    exactDuration: normalizedSchema.exactCursorDuration === true,
                     onClickStart: () => director.openSettingsPanel().catch((error) => {
                         console.warn(normalizedSchema.openFailureMessage, error);
                     })
@@ -263,7 +291,11 @@
                     persistent: settingsButton || null,
                     primary: resolvedAnchorButton
                 });
-                await director.moveCursorToElement(resolvedAnchorButton, normalizedSchema.cursorMoveDurationMs);
+                await director.moveCursorToElement(
+                    resolvedAnchorButton,
+                    normalizedSchema.cursorMoveDurationMs,
+                    { exactDuration: normalizedSchema.exactCursorDuration === true }
+                );
             }
             if (this.isSceneStale(sceneRunId)) {
                 return false;
@@ -782,8 +814,8 @@
                 await Promise.race([narrationSettledPromise, delayPromise]);
             };
             const ellipsePromise = (async () => {
-                if (typeof director.setHomePcCursorOutputSuppressedForExternalizedChat === 'function') {
-                    director.setHomePcCursorOutputSuppressedForExternalizedChat(false);
+                if (typeof director.releaseExternalizedChatCursorToHome === 'function') {
+                    director.releaseExternalizedChatCursorToHome();
                 }
                 while (!isPanelFlowStale() && !narrationDone) {
                     const moved = await director.cursor.runPauseAwareEllipse(

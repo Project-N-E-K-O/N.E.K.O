@@ -240,12 +240,16 @@ def resolve_group_config(session: Session, group: GroupKey) -> ModelGroupConfig:
 #   + API key; 免费 Lanlan 预设仅对 NEKO 主程序自身可用。
 #   (绝大多数 smoke 用 mock, 不受影响; 仅真实对话/记忆/评分的手测需要可用 key。)
 
-_LANLAN_FREE_BLOCKED_HOSTS: tuple[str, ...] = (
-    "www.lanlan.tech",
-    "lanlan.tech",
-    "www.lanlan.app",
-)
-_LANLAN_FREE_OPEN_HOST = "lanlan.app"
+# 2026-08-01: 裸 `lanlan.app` 已**下线** (维护者确认), 不只是像 6 月那样被反滥
+#   用校验拦掉。旁路目标不复存在, 所以旁路本身必须停用: 继续重写只会把一个能
+#   给出 "STOP ABUSE THE API" 的 400 (它至少说明了原因) 换成一个 DNS/连接失败
+#   (它什么也不说明), 诊断信息只会更差。
+#
+#   保留常量而非删除函数: 它记录了这条路曾经存在、为何存在、以及为何不再可用,
+#   而空元组让重写循环自然成为 no-op —— base_url 原样交给下游, 免费预设在
+#   testbench 里以服务端自己的话失败。
+_LANLAN_FREE_BLOCKED_HOSTS: tuple[str, ...] = ()
+_LANLAN_FREE_OPEN_HOST = ""
 
 
 def _rewrite_lanlan_free_base_url(cfg: ModelGroupConfig) -> ModelGroupConfig:

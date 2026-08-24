@@ -10,9 +10,11 @@ web_search 插件的解析层：纯函数、不依赖 SDK 和网络，便于单�
 
 from __future__ import annotations
 
+import json
+import math
 import re
 import unicodedata
-from typing import Dict, List
+from typing import Dict, List, Optional
 from urllib.parse import unquote, urlparse
 
 from bs4 import BeautifulSoup  # type: ignore[import-untyped]
@@ -27,10 +29,23 @@ _META_CHARSET_RE = re.compile(
 )
 # gb2312/gbk 解码器会在合法页面的少数扩展字符上报错，统一升级到超集 gb18030
 _ENCODING_ALIASES = {"gb2312": "gb18030", "gbk": "gb18030"}
-
-
 class SearchBlockedError(RuntimeError):
     """搜索引擎返回了反爬验证页，而不是结果页。"""
+
+    is_search_block = True
+
+    def __init__(
+        self, message: str, *, retry_after_seconds: Optional[float] = None
+    ) -> None:
+        super().__init__(message)
+        delay = None if retry_after_seconds is None else float(retry_after_seconds)
+        self.retry_after_seconds = (
+            max(0.0, delay) if delay is not None and math.isfinite(delay) else None
+        )
+
+
+class SearchResponseError(RuntimeError):
+    """A search response could not be interpreted as a usable result page."""
 
 
 def sanitize_text(text: str) -> str:
@@ -112,6 +127,51 @@ def is_ddg_ad_url(url: str) -> bool:
     return is_ddg_host and parsed.path == "/y.js"
 
 
+def is_ddg_blocked(html: str) -> bool:
+    """Detect known DuckDuckGo challenge pages returned with a 2xx status."""
+    soup = BeautifulSoup(html[:20000], "html.parser")
+    if soup.select_one("form#anomaly-modal") is not None:
+        return True
+
+    for tag, attribute in (("form", "action"), ("script", "src")):
+        for node in soup.find_all(tag):
+            url = str(node.get(attribute, "")).strip()
+            if not url:
+                continue
+            parsed = urlparse(url)
+            host = (parsed.hostname or "").lower()
+            if parsed.path == "/anomaly.js" and (
+                not host or host == "duckduckgo.com" or host.endswith(".duckduckgo.com")
+            ):
+                return True
+    return False
+
+
+def is_ddg_no_results(html: str) -> bool:
+    """Detect DuckDuckGo's explicit empty-results container."""
+    soup = BeautifulSoup(html, "html.parser")
+    return soup.select_one(".no-results, #no-results") is not None
+
+
+def is_baidu_no_results(html: str) -> bool:
+    """Detect Baidu's explicit empty-results response."""
+    soup = BeautifulSoup(html, "html.parser")
+    container = soup.select_one("#content_left")
+    if container is None:
+        return False
+    if container.select_one(".nors") is not None:
+        return True
+    text = sanitize_text(container.get_text(" ", strip=True))
+    return any(
+        marker in text
+        for marker in (
+            "抱歉，没有找到与",
+            "抱歉没有找到与",
+            "没有找到与您查询的",
+        )
+    )
+
+
 def parse_ddg_html(html: str, max_results: int = 8) -> List[Dict[str, str]]:
     soup = BeautifulSoup(html, "html.parser")
     results: List[Dict[str, str]] = []
@@ -187,7 +247,33 @@ def parse_ddg_lite_html(html: str, max_results: int = 8) -> List[Dict[str, str]]
 
 def is_baidu_blocked(html: str) -> bool:
     head = html[:5000]
-    return "百度安全验证" in head or "wappass.baidu.com" in head
+    if "百度安全验证" in head or "wappass.baidu.com" in head:
+        return True
+
+    # Baidu may answer non-browser clients with a tiny JavaScript redirect
+    # document while still returning HTTP 200.  httpx does not execute the
+    # redirect, so treating it as a normal empty result would bypass the
+    # backend cooldown and encourage an immediate retry burst.
+    if len(html) <= 4096 and not re.search(
+        r"id\s*=\s*['\"]content_left['\"]", head, re.I
+    ):
+        if re.search(
+            r"<meta\b[^>]*\bhttp-equiv\s*=\s*['\"]?\s*refresh\b",
+            head,
+            re.I,
+        ):
+            return True
+        compact = re.sub(r"\s+", "", head).casefold()
+        return any(
+            marker in compact
+            for marker in (
+                "location.replace(",
+                "location.assign(",
+                "window.location=",
+                "location.href=",
+            )
+        )
+    return False
 
 
 def parse_baidu_html(html: str, max_results: int = 8) -> List[Dict[str, str]]:
@@ -229,6 +315,60 @@ def parse_baidu_html(html: str, max_results: int = 8) -> List[Dict[str, str]]:
             "url": href,
             "snippet": _clip(snippet, MAX_SNIPPET_LEN),
         })
+        if len(results) >= max_results:
+            break
+
+    return results
+
+
+def parse_baidu_mobile_html(
+    html: str,
+    max_results: int = 8,
+) -> List[Dict[str, str]]:
+    """Parse Baidu's mobile SSR cards without executing page JavaScript."""
+    soup = BeautifulSoup(html, "html.parser")
+    results: List[Dict[str, str]] = []
+    seen_urls: set[str] = set()
+
+    for item in soup.select("div.c-result.result"):
+        try:
+            metadata = json.loads(str(item.get("data-log") or "{}"))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            continue
+        if not isinstance(metadata, dict):
+            continue
+        url = str(metadata.get("mu") or "").strip()
+        if not is_http_url(url) or url in seen_urls:
+            continue
+
+        # Recommendation/search-suggestion cards use Baidu-owned synthetic
+        # targets and are not ordinary web results.
+        host = (urlparse(url).hostname or "").lower()
+        if host.endswith("recommend_list.baidu.com"):
+            continue
+
+        title_tag = item.select_one("h3.cosc-title, h3")
+        if title_tag is None:
+            continue
+        title = sanitize_text(title_tag.get_text(" ", strip=True))
+        if not title:
+            continue
+
+        snippet = ""
+        snippet_tag = item.select_one(
+            "span[class*='summary-text'], div[class*='summary-gap']"
+        )
+        if snippet_tag is not None:
+            snippet = sanitize_text(snippet_tag.get_text(" ", strip=True))
+
+        seen_urls.add(url)
+        results.append(
+            {
+                "title": _clip(title, MAX_TITLE_LEN),
+                "url": url,
+                "snippet": _clip(snippet, MAX_SNIPPET_LEN),
+            }
+        )
         if len(results) >= max_results:
             break
 

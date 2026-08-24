@@ -70,24 +70,22 @@ from .yui_handoff import (  # noqa: F401
     consume_yui_guide_handoff,
 )
 from .status import (  # noqa: F401
+    _DEFAULT_NEKO_SOCIAL_BASE_URL,
     _derive_system_lifecycle_state,
+    get_system_client_id,
+    get_system_social_config,
     get_system_status,
     get_token_usage,
     get_pending_notices,
     ack_pending_notices,
 )
 from .prompt_flows import (  # noqa: F401
-    get_tutorial_prompt_state,
-    post_tutorial_prompt_heartbeat,
-    post_tutorial_prompt_shown,
-    post_tutorial_prompt_decision,
-    post_tutorial_prompt_reset,
+    get_seven_day_tutorial_state,
+    put_seven_day_tutorial_state,
     get_autostart_prompt_state,
     post_autostart_prompt_heartbeat,
     post_autostart_prompt_shown,
     post_autostart_prompt_decision,
-    post_tutorial_started,
-    post_tutorial_completed,
 )
 from .changelog_survey import (  # noqa: F401
     get_changelog,
@@ -175,6 +173,7 @@ from .activity_signal import (  # noqa: F401
     _activity_signal_validate_str,
     push_activity_signal,
 )
+from . import proactive_history as _proactive_history_module
 from .proactive_history import (  # noqa: F401
     _proactive_chat_history,
     _proactive_material_history,
@@ -184,7 +183,6 @@ from .proactive_history import (  # noqa: F401
     _proactive_chat_totals,
     _invite_ever_delivered,
     _proactive_chat_totals_lock,
-    _proactive_chat_totals_loaded,
     _RECENT_CHAT_MAX_AGE_SECONDS,
     _PROACTIVE_SIMILARITY_THRESHOLD,
     _format_recent_proactive_chats,
@@ -208,12 +206,12 @@ from .proactive_history import (  # noqa: F401
     _normalize_text_for_similarity,
     _is_similar_to_recent_proactive_chat,
 )
+from . import proactive_sources as _proactive_sources_module
 from .proactive_sources import (  # noqa: F401
     _SOURCE_HISTORY_FILENAME,
     _SOURCE_HISTORY_SCHEMA_VERSION,
     _source_history,
     _source_history_lock,
-    _source_history_loaded,
     _source_history_path,
     _source_hash,
     _half_life_for,
@@ -331,3 +329,12 @@ from .mini_game_invite import (  # noqa: F401
 from .translate import (  # noqa: F401
     translate_text_api,
 )
+
+
+def __getattr__(name: str):
+    """Keep immutable compatibility flags synchronized with their owners."""
+    if name == "_proactive_chat_totals_loaded":
+        return _proactive_history_module._proactive_chat_totals_loaded
+    if name == "_source_history_loaded":
+        return _proactive_sources_module._source_history_loaded
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

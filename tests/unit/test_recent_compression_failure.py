@@ -57,6 +57,22 @@ class _FakeConfig:
         )
 
 
+class _FakeModelConfig:
+    """Serves the official DeepSeek V4 endpoint and records which feature asked."""
+
+    def __init__(self):
+        self.features: list[str] = []
+
+    def get_model_api_config(self, feature: str) -> dict[str, Any]:
+        self.features.append(feature)
+        return {
+            "model": "deepseek-v4-pro",
+            "base_url": "https://api.deepseek.com/v1",
+            "api_key": "test-key",
+            "provider_type": None,
+        }
+
+
 @pytest.fixture(autouse=True)
 def _patch_cloudsave(monkeypatch):
     monkeypatch.setattr(
@@ -112,6 +128,26 @@ def test_compress_history_returns_none_when_summary_llm_keeps_failing(tmp_path):
 
     assert result is None
     assert fake_llm.calls == 3
+
+
+def test_deepseek_thinking_is_disabled_only_for_memory_compression():
+    """Compression must run thinking-off; review keeps the model's native thinking.
+
+    Deliberately goes through the real ``create_chat_llm`` instead of stubbing it:
+    thinking-off is resolved by the factory from the model name, so a stub would
+    only show what ``_get_llm`` passed (nothing) and prove nothing about what the
+    client ends up sending.
+    """
+    mgr = object.__new__(CompressedRecentHistoryManager)
+    mgr._config_manager = _FakeModelConfig()
+
+    compression = mgr._get_llm()
+    review = mgr._get_review_llm()
+
+    assert mgr._config_manager.features == ["summary", "correction"]
+    assert compression.extra_body == {"thinking": {"type": "disabled"}}
+    # 记忆整理显式 extra_body=None，压过工厂的自动解析，保持模型原生思考行为。
+    assert review.extra_body == {}
 
 
 def test_update_history_preserves_existing_memo_when_compression_fails(tmp_path):
@@ -213,12 +249,13 @@ def test_enforce_hard_cap_drops_oldest_keeps_memo_and_recent(tmp_path, monkeypat
     monkeypatch.setattr("memory.recent.RECENT_HARD_CAP_TOKENS", 20)
     memo = SystemMessage(content="先前对话的备忘录: 长期记忆。")
     body = [HumanMessage(content=f"original message {i} with some length") for i in range(12)]
-    mgr.user_histories[name] = [memo] + body
+    _write_recent(mgr.log_file_path[name], [memo] + body)
 
     _run(mgr.enforce_hard_cap(name))
 
     kept = mgr.user_histories[name]
-    assert kept[0] is memo  # 备忘录（已压缩长期记忆）保留
+    assert isinstance(kept[0], SystemMessage)  # 备忘录（已压缩长期记忆）保留
+    assert kept[0].content == memo.content
     assert len(kept) < 1 + len(body)  # 丢了最旧的原文
     assert len(kept) >= 1 + mgr.max_history_length  # 至少保留近期 max_history_length 条
     assert kept[-1].content == body[-1].content  # 保留的是最新的
@@ -227,7 +264,7 @@ def test_enforce_hard_cap_drops_oldest_keeps_memo_and_recent(tmp_path, monkeypat
 def test_enforce_hard_cap_noop_when_under_budget(tmp_path):
     mgr, name = _make_manager(tmp_path)
     history = [SystemMessage(content="memo")] + [HumanMessage(content=f"m{i}") for i in range(8)]
-    mgr.user_histories[name] = list(history)
+    _write_recent(mgr.log_file_path[name], history)
     _run(mgr.enforce_hard_cap(name))
     assert mgr.user_histories[name] == history  # 未超大上限，不动
 
@@ -239,7 +276,7 @@ def test_merge_backup_memo_merges_when_batch_present(tmp_path):
         HumanMessage(content="u2"), AIMessage(content="a2"),
     ]
     new_during = [HumanMessage(content="during1"), AIMessage(content="during2")]
-    mgr.user_histories[name] = list(batch) + list(new_during)
+    _write_recent(mgr.log_file_path[name], list(batch) + list(new_during))
     memo = SystemMessage(content="先前对话的备忘录: 压缩结果。")
 
     status = _run(mgr.merge_backup_memo(name, list(batch), memo))
@@ -254,7 +291,8 @@ def test_merge_backup_memo_moot_when_batch_gone(tmp_path):
     mgr, name = _make_manager(tmp_path)
     batch = [HumanMessage(content="u1"), AIMessage(content="a1"), HumanMessage(content="u2")]
     # current 已被主路径压成 memo + 近期，batch 不在头部
-    mgr.user_histories[name] = [SystemMessage(content="已压缩"), HumanMessage(content="recent")]
+    current = [SystemMessage(content="已压缩"), HumanMessage(content="recent")]
+    _write_recent(mgr.log_file_path[name], current)
 
     status = _run(mgr.merge_backup_memo(name, list(batch), SystemMessage(content="memo")))
 
@@ -273,7 +311,7 @@ def test_update_history_callback_ok_false_on_failure(tmp_path):
 
     calls = []
 
-    async def _cb(ln, snap, ok, detailed):
+    async def _cb(ln, snap, ok, detailed, admission_generation):
         calls.append((ln, ok))
 
     _run(mgr.update_history([HumanMessage(content="new")], name, on_compress_done=_cb))
@@ -291,7 +329,7 @@ def test_update_history_callback_ok_true_on_success(tmp_path):
 
     calls = []
 
-    async def _cb(ln, snap, ok, detailed):
+    async def _cb(ln, snap, ok, detailed, admission_generation):
         calls.append((ln, ok))
 
     _run(mgr.update_history([HumanMessage(content="new")], name, on_compress_done=_cb))
@@ -301,12 +339,13 @@ def test_update_history_callback_ok_true_on_success(tmp_path):
 def test_merge_backup_memo_reports_failed_on_write_error(tmp_path, monkeypatch):
     mgr, name = _make_manager(tmp_path)
     batch = [HumanMessage(content="u1"), AIMessage(content="a1"), HumanMessage(content="u2")]
-    mgr.user_histories[name] = list(batch)
+    _write_recent(mgr.log_file_path[name], batch)
 
-    async def _boom(*a, **k):
+    def _boom(*a, **k):
         raise OSError("disk full")
 
-    monkeypatch.setattr("memory.recent.atomic_write_json_async", _boom)
+    # 落盘现在收口到 utils.recent_file 的加锁写入口，patch 点跟着走。
+    monkeypatch.setattr("utils.recent_file.atomic_write_json", _boom)
 
     status = _run(mgr.merge_backup_memo(name, list(batch), SystemMessage(content="memo")))
     assert status == "failed"  # 落盘失败必须报 failed，不能谎报 merged

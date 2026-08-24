@@ -501,17 +501,19 @@ def test_minimax_worker_incremental_synthesis_on_punctuation(monkeypatch):
     )
     assert audio_item[1] == "speech-1"
 
+    # 第二次合成由 worker 线程在收到 (None, None) 后发起，跨线程边界，睡固定时长
+    # 在 Windows 上等于抛硬币（时钟精度 15.6ms，忙循环里 sleep 可能等于零等待）。
+    # close() 的停止哨兵是 put 到 FIFO 队尾的，先前的 (None, None) 必然先被处理完，
+    # 所以 join 返回即代表两次合成都已发出——这是确定性的收尾点。
+    request_queue.close()
+    thread.join(timeout=3.0)
+    assert not thread.is_alive()
+
     # 应该有两个合成请求：一个是句号切分的，一个是 flush 的
-    # 等待 flush 合成也完成（第二个音频块）
-    time.sleep(0.5)
     synth_requests = [r for r in transport.requests if r.get("stream")]
     assert len(synth_requests) == 2
     assert synth_requests[0]["text"] == "你好世界。"
     assert synth_requests[1]["text"] == "今天天气"
-
-    request_queue.close()
-    thread.join(timeout=3.0)
-    assert not thread.is_alive()
 
 
 # ---------------------------------------------------------------------------

@@ -16,9 +16,11 @@
 from __future__ import annotations
 
 import asyncio
+from copy import deepcopy
 import httpx
 import random
 import re
+import time
 from typing import TYPE_CHECKING, Dict, Any, Optional
 import os
 
@@ -29,17 +31,31 @@ if TYPE_CHECKING:
 import json
 
 from ._shared import get_random_user_agent, is_china_region, logger
-from .platform_helpers import _get_bilibili_credential, _get_platform_cookies
+from .platform_helpers import (
+    _bilibili_account_cache_key,
+    _get_bilibili_credential,
+    _get_platform_cookies,
+)
 from .trending_content import _format_score
 
-async def fetch_bilibili_personal_dynamic(limit: int = 10) -> Dict[str, Any]:
+_BILIBILI_DYNAMIC_TTL_SECONDS = 2 * 60
+_BILIBILI_DYNAMIC_STALE_SECONDS = 30 * 60
+_BILIBILI_DYNAMIC_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
+_BILIBILI_DYNAMIC_LOCKS: dict[str, asyncio.Lock] = {}
+
+
+async def _fetch_bilibili_personal_dynamic_uncached(limit: int = 10) -> Dict[str, Any]:
     """
     Fetch Bilibili push feed updates
     """
     try:
         credential = _get_bilibili_credential()
         if not credential: 
-            return {'success': False, 'error': '未提供Bilibili认证信息'}
+            return {
+                'success': False,
+                'status': 'auth_unavailable',
+                'error': '未提供Bilibili认证信息',
+            }
 
         url = "https://api.bilibili.com/x/polymer/web-dynamic/v1/feed/all"
         headers = {"User-Agent": get_random_user_agent(), "Referer": "https://t.bilibili.com/"}
@@ -54,7 +70,11 @@ async def fetch_bilibili_personal_dynamic(limit: int = 10) -> Dict[str, Any]:
 
         if not isinstance(data, dict) or data.get("code") != 0:
             logger.error(f"获取B站动态失败，API返回: {data}")
-            return {'success': False, 'error': "API请求失败"}
+            return {
+                'success': False,
+                'status': 'auth_failed',
+                'error': "Bilibili关注动态认证或API请求失败",
+            }
 
         def safe_dict(d: Any, key: str) -> dict:
             if not isinstance(d, dict):
@@ -84,6 +104,13 @@ async def fetch_bilibili_personal_dynamic(limit: int = 10) -> Dict[str, Any]:
                 
                 modules = safe_dict(item, "modules")
                 module_author = safe_dict(modules, "module_author")
+                # The endpoint normally returns only followed authors, but it
+                # exposes an explicit flag. Reject promoted/non-followed items
+                # when Bilibili marks one as such; a missing flag remains
+                # compatible with older payloads.
+                following = module_author.get("following")
+                if following is not None and not bool(following):
+                    continue
                 
                 # 获取到了作者名
                 author = module_author.get("name") or "未知UP主"
@@ -98,15 +125,22 @@ async def fetch_bilibili_personal_dynamic(limit: int = 10) -> Dict[str, Any]:
                 
                 content = ""
                 specific_url = f"https://t.bilibili.com/{dynamic_id}"  # 默认动态页面URL
+                bvid = ""
+                title = ""
+                description_hint = raw_text
+                kind = "dynamic"
                 
                 match major_type:
                     case "MAJOR_TYPE_ARCHIVE": 
                         # 视频动态：添加视频链接
                         archive = safe_dict(major, "archive")
                         bvid = archive.get("bvid", "")
+                        title = str(archive.get('title') or '')
+                        description_hint = str(archive.get('desc') or raw_text or '')
+                        kind = "video"
                         if bvid:
                             specific_url = f"https://www.bilibili.com/video/{bvid}"
-                        content = f"[发布了新视频] {archive.get('title', '')}"
+                        content = f"[发布了新视频] {title}"
                         
                     case "MAJOR_TYPE_DRAW": 
                         # 图文动态：保持动态页面链接
@@ -119,13 +153,16 @@ async def fetch_bilibili_personal_dynamic(limit: int = 10) -> Dict[str, Any]:
                         # 专栏文章：添加文章链接
                         article = safe_dict(major, "article")
                         article_id = article.get("id", "")
+                        title = str(article.get('title') or '')
+                        kind = "article"
                         if article_id:
                             specific_url = f"https://www.bilibili.com/read/cv{article_id}"
-                        content = f"[发布了专栏文章] {article.get('title', '')}"
+                        content = f"[发布了专栏文章] {title}"
                         
                     case "MAJOR_TYPE_LIVE_RCMD":
                         # 直播动态：添加直播间链接
                         live_title = raw_text
+                        kind = "live"
                         try:
                             live_rcmd = major.get("live_rcmd") or major.get("live")
                             if isinstance(live_rcmd, dict):
@@ -146,11 +183,14 @@ async def fetch_bilibili_personal_dynamic(limit: int = 10) -> Dict[str, Any]:
                             # Optional live metadata must not discard the dynamic item.
                             pass
                         content = f"[正在直播] {live_title or '快来我的直播间看看吧！'}"
+                        title = str(live_title or '正在直播')
                         
                     case _:
                         if dynamic_type == "DYNAMIC_TYPE_LIVE_RCMD":
                             # 直播开播推送：添加直播间链接
                             content = f"[正在直播] {raw_text or '快来我的直播间看看吧！'}"
+                            title = str(raw_text or '正在直播')
+                            kind = "live"
                             # 尝试从描述中提取直播间ID
                             room_match = re.search(r'直播间：(\d+)', raw_text)
                             if room_match:
@@ -170,11 +210,28 @@ async def fetch_bilibili_personal_dynamic(limit: int = 10) -> Dict[str, Any]:
 
                 final_content = f"UP主【{author}】: {content}"
 
+                try:
+                    published_at = int(module_author.get("pub_ts") or 0)
+                except (TypeError, ValueError):
+                    published_at = 0
+                resource_id = str(bvid or dynamic_id)
+
                 dynamic_list.append({
                     'dynamic_id': dynamic_id, 'type': dynamic_type, 'timestamp': pub_time,
                     'author': author, 'content': final_content,  # 存入拼接好的完整字符串
                     'url': specific_url,  # 使用具体类型的URL
-                    'base_url': f"https://t.bilibili.com/{dynamic_id}"  # 保留原始动态页面链接
+                    'base_url': f"https://t.bilibili.com/{dynamic_id}",  # 保留原始动态页面链接
+                    'platform': 'bilibili',
+                    'lane': 'following',
+                    'kind': kind,
+                    'resource_id': resource_id,
+                    'bvid': str(bvid or ''),
+                    'title': title or content,
+                    'reason': '关注UP更新',
+                    'description_hint': re.sub(r'\s+', ' ', description_hint).strip(),
+                    'published_at': published_at,
+                    'native_rank': len(dynamic_list) + 1,
+                    'authenticated': True,
                 })
                 if len(dynamic_list) >= limit:
                     break
@@ -183,11 +240,57 @@ async def fetch_bilibili_personal_dynamic(limit: int = 10) -> Dict[str, Any]:
 
         if dynamic_list:
             logger.info(f"✅ 成功获取到 {len(dynamic_list)} 条你关注的UP主动态消息")
-        return {'success': True, 'dynamics': dynamic_list}
+        return {'success': True, 'status': 'ok', 'dynamics': dynamic_list}
 
     except Exception as e:
         logger.error(f"获取B站动态消息失败: {e}")
-        return {'success': False, 'error': str(e)}
+        return {'success': False, 'status': 'fetch_failed', 'error': str(e)}
+
+
+async def fetch_bilibili_personal_dynamic(limit: int = 10) -> Dict[str, Any]:
+    """Fetch and briefly cache the authenticated Bilibili following feed."""
+
+    credential = _get_bilibili_credential()
+    if not credential:
+        return {
+            'success': False,
+            'status': 'auth_unavailable',
+            'error': '未提供Bilibili认证信息',
+        }
+    normalized_limit = max(1, min(int(limit), 20))
+    account_key = _bilibili_account_cache_key(credential)
+    if account_key is None:
+        return await _fetch_bilibili_personal_dynamic_uncached(normalized_limit)
+    cache_key = f"{account_key}:{normalized_limit}"
+    now = time.monotonic()
+    cached = _BILIBILI_DYNAMIC_CACHE.get(cache_key)
+    if cached and now - cached[0] <= _BILIBILI_DYNAMIC_TTL_SECONDS:
+        result = deepcopy(cached[1])
+        result['cached'] = True
+        return result
+
+    lock = _BILIBILI_DYNAMIC_LOCKS.setdefault(cache_key, asyncio.Lock())
+    async with lock:
+        now = time.monotonic()
+        cached = _BILIBILI_DYNAMIC_CACHE.get(cache_key)
+        if cached and now - cached[0] <= _BILIBILI_DYNAMIC_TTL_SECONDS:
+            result = deepcopy(cached[1])
+            result['cached'] = True
+            return result
+
+        result = await _fetch_bilibili_personal_dynamic_uncached(normalized_limit)
+        if result.get('success'):
+            _BILIBILI_DYNAMIC_CACHE[cache_key] = (now, deepcopy(result))
+            return result
+        if (
+            result.get('status') == 'fetch_failed'
+            and cached
+            and now - cached[0] <= _BILIBILI_DYNAMIC_STALE_SECONDS
+        ):
+            stale = deepcopy(cached[1])
+            stale.update({'cached': True, 'stale': True, 'warning': result.get('error', '')})
+            return stale
+        return result
 
 async def fetch_douyin_personal_dynamic(limit: int = 10) -> Dict[str, Any]:
     """

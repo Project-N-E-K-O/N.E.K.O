@@ -104,6 +104,7 @@ from config import (  # noqa: F401  (tail entries keep facade parity with the ol
     AGENT_PROACTIVE_ANALYZE_MAX_PER_SESSION,
 )
 from utils.config_manager import get_config_manager
+from utils.host_origin_guard import HostOriginGuardMiddleware
 from utils.tokenize import truncate_to_tokens as _tt
 
 from .tracker import (  # noqa: F401
@@ -191,9 +192,11 @@ from .channels.openfang import (  # noqa: F401
 from .channels.user_plugin import (  # noqa: F401
     _plugin_terminal_status,
     _resolve_delivery_mode,
+    _resolve_plugin_result_contract,
     _lookup_llm_result_fields,
     _is_reply_suppressed,
 )
 
 
 app = FastAPI(title="N.E.K.O Tool Server")
+app.add_middleware(HostOriginGuardMiddleware)

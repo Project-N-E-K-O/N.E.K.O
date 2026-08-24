@@ -10,6 +10,8 @@
 现改为后端在唯一卡点直接按 code 触发节流通知 → status toast，不再依赖脆弱的文本匹配。
 """
 
+from datetime import date
+import json
 import time
 
 import pytest
@@ -109,3 +111,36 @@ def test_consume_non_free_agent_model_never_notifies(tmp_path, monkeypatch):
 
     assert ok is True, "自费/自定义 agent model 应放行"
     assert calls == [], "非 free-agent-model 不应触发通知器"
+
+
+def test_reserve_agent_quota_atomically_keeps_required_final_unit(
+    tmp_path, monkeypatch
+):
+    cm = ConfigManager.__new__(ConfigManager)
+    cm.config_dir = tmp_path
+    cm.project_config_dir = tmp_path
+    cm.app_name = "N.E.K.O"
+    cm._verbose = False
+    monkeypatch.setattr(
+        cm, "get_model_api_config", lambda model_type: {"model": "free-agent-model"}
+    )
+    monkeypatch.setattr(cm, "ensure_config_directory", lambda: None)
+    monkeypatch.setattr(ConfigManager, "_free_agent_daily_limit", 2)
+    (tmp_path / "agent_quota.json").write_text(
+        json.dumps({"date": date.today().isoformat(), "used": 1}),
+        encoding="utf-8",
+    )
+
+    reserved, info = cm.reserve_agent_daily_quota(
+        source="study_companion:knowledge_semantic_route",
+        units=2,
+        minimum_units=1,
+    )
+
+    assert reserved == 1
+    assert info["used"] == 2
+    assert info["remaining"] == 0
+    persisted = json.loads(
+        (tmp_path / "agent_quota.json").read_text(encoding="utf-8")
+    )
+    assert persisted == {"date": date.today().isoformat(), "used": 2}

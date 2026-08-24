@@ -13,6 +13,8 @@
  *     opts.recaptureFn: async () => dataUrl  (called by "隐藏NEKO" tab)
  *     opts.rightClickCancelsAll: true  (system-style overlay: right click exits immediately)
  *     opts.allowPin: true  (show the desktop pin action in a PC-owned overlay)
+ *     opts.selectionOnly: true  (hide annotation/save/pin controls)
+ *     opts.copyToClipboard: false  (return the crop without replacing clipboard contents)
  */
 (function () {
     'use strict';
@@ -33,6 +35,8 @@
     var onRecaptureImageReady = null;
     var rightClickCancelsAll = false;
     var allowPin = false;
+    var selectionOnly = false;
+    var copyCropToClipboard = true;
     var selectionBox = null;
     var selectionBadge = null;
     var crosshairX = null;
@@ -94,6 +98,7 @@
     var textEditor = null;      // 文字工具的 <textarea> DOM
     var workspaceEl = null;     // .crop-workspace 容器（textarea 挂这里）
     var toolbarEl = null;       // 标注工具栏 DOM
+    var annotationToolbarGroups = [];
     var pinBtn = null;          // PC 独立截图层才显示的“贴图”动作
     var optionsBarEl = null;    // 上下文选项条 DOM（随当前工具刷新内容）
     var toolBtns = {};          // name -> button，用于切换 active 态
@@ -1042,7 +1047,8 @@
             toolGrp.appendChild(b);
         });
         bar.appendChild(toolGrp);
-        bar.appendChild(divider());
+        var toolDivider = divider();
+        bar.appendChild(toolDivider);
 
         // 调色板
         var colGrp = document.createElement('div');
@@ -1079,7 +1085,8 @@
             wGrp.appendChild(b);
         });
         bar.appendChild(wGrp);
-        bar.appendChild(divider());
+        var widthDivider = divider();
+        bar.appendChild(widthDivider);
 
         // 撤销 / 重做 / 保存
         var actGrp = document.createElement('div');
@@ -1091,7 +1098,8 @@
         actGrp.appendChild(redoBtn);
         actGrp.appendChild(saveBtn);
         bar.appendChild(actGrp);
-        bar.appendChild(divider());
+        var actionDivider = divider();
+        bar.appendChild(actionDivider);
 
         // 取消选区 / 贴图 / 确认
         var endGrp = document.createElement('div');
@@ -1110,6 +1118,10 @@
         endGrp.appendChild(pinBtn);
         endGrp.appendChild(confirmBtn);
         bar.appendChild(endGrp);
+
+        annotationToolbarGroups = [
+            toolGrp, toolDivider, colGrp, wGrp, widthDivider, actGrp, actionDivider
+        ];
 
         toolbarEl = bar;
         toolBtns.select.classList.add('is-active');
@@ -1258,6 +1270,9 @@
 
     function positionToolbar(cs) {
         if (!toolbarEl) return;
+        annotationToolbarGroups.forEach(function (group) {
+            group.style.display = selectionOnly ? 'none' : '';
+        });
         toolbarEl.style.display = 'flex';
         var placedToolbar = placeFloatingPanel(toolbarEl, cs, 360, 44);
         positionOptionsBar(placedToolbar);
@@ -1873,7 +1888,7 @@
 
     function confirmCrop() {
         var result = cropToDataUrl();
-        if (result) {
+        if (result && copyCropToClipboard) {
             copyToClipboard(result);
         }
         close(result);
@@ -1904,6 +1919,8 @@
         onRecaptureImageReady = null;
         rightClickCancelsAll = false;
         allowPin = false;
+        selectionOnly = false;
+        copyCropToClipboard = true;
         if (pinBtn) pinBtn.style.display = 'none';
         activeTab = 'screenshot';
         pointerPos = null;
@@ -1984,7 +2001,9 @@
             recaptureFn = (opts && opts.recaptureFn) || null;
             onRecaptureImageReady = (opts && opts.onRecaptureImageReady) || null;
             rightClickCancelsAll = !!(opts && opts.rightClickCancelsAll);
-            allowPin = !!(opts && opts.allowPin);
+            selectionOnly = !!(opts && opts.selectionOnly);
+            copyCropToClipboard = !(opts && opts.copyToClipboard === false);
+            allowPin = !selectionOnly && !!(opts && opts.allowPin);
 
             // Reset state
             sel = null;

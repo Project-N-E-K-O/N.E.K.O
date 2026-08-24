@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any
 
 from .contracts import (
@@ -16,8 +17,17 @@ from .contracts import (
     broadcast_category_enabled,
     broadcast_frequency_multiplier,
     category_allowed,
+    event_max_age_seconds,
 )
 from .safety_guard import SafetyGuard
+
+
+@dataclass(frozen=True)
+class ArbiterCheckpoint:
+    """Snapshot delivery accounting before a host delivery attempt."""
+
+    last_fired: dict[str, tuple[float, str]]
+
 
 class Arbiter:
     def __init__(self, safety: SafetyGuard) -> None:
@@ -27,13 +37,21 @@ class Arbiter:
         self._kill_window: BattleEvent | None = None
         self._kill_window_first_at: float = 0.0
         self._kill_window_started_at: float = 0.0
+        self._kill_window_waiting_for_death: bool = False
+        self._kill_window_dead_since: float = 0.0
 
     def reset(self) -> None:
         self._last_fired.clear()
         self._window_best = None
-        self._kill_window = None
-        self._kill_window_first_at = 0.0
-        self._kill_window_started_at = 0.0
+        self._clear_kill_window()
+
+    def checkpoint(self) -> ArbiterCheckpoint:
+        """Capture cooldown bookkeeping that commits only after delivery."""
+        return ArbiterCheckpoint(last_fired=dict(self._last_fired))
+
+    def restore(self, checkpoint: ArbiterCheckpoint) -> None:
+        """Roll back cooldown bookkeeping without resurrecting consumed buffers."""
+        self._last_fired = dict(checkpoint.last_fired)
 
     def decide(self, candidates: list[BattleEvent], scenario: str, now: float) -> tuple[BattleEvent | None, list[dict[str, Any]]]:
         chain: list[dict[str, Any]] = []
@@ -45,6 +63,17 @@ class Arbiter:
 
         # [1] Scenario 门控 + [2] cooldown 去重
         kill_coalesce_window = self.safety.config.kill_coalesce_window_seconds
+        if self._kill_window is not None and scenario == DEAD:
+            self._mark_kill_waiting_for_death(now)
+        if self._kill_window_waiting_for_death:
+            if scenario != DEAD:
+                chain.append(_rec(self._kill_window, "dropped", "stale_kill_after_dead_state_exit"))
+                self._clear_kill_window()
+            elif now - self._kill_window_dead_since > _death_trade_grace_seconds(kill_coalesce_window):
+                chain.append(
+                    _rec(self._kill_window, "dropped", "stale_kill_after_dead_timeout")
+                )
+                self._clear_kill_window()
         survivors: list[BattleEvent] = []
         for c in candidates:
             if not broadcast_category_enabled(self.safety.config, c.event_id, c.category, c.level):
@@ -60,6 +89,7 @@ class Arbiter:
                         chain.append(_rec(c, "spoken", "trade_kill_after_death"))
                         return trade_kill, chain
                     self._buffer_kill(c, now)
+                    self._mark_kill_waiting_for_death(now)
                     chain.append(_rec(c, "buffered", "kill_deferred_dead"))
                     continue
                 if c.event_id == "you_killed" and scenario == CRITICAL_RISK and kill_coalesce_window > 0:
@@ -73,7 +103,8 @@ class Arbiter:
                 cd *= broadcast_frequency_multiplier(self.safety.config.broadcast_frequency)
             last_at, last_level = self._last_fired.get(c.event_id, (-1e9, ""))
             critical_upgrade = c.level == "critical" and last_level != "critical"
-            if cd > 0 and (now - last_at) < cd and not critical_upgrade:
+            coalesced_kill = c.event_id == "you_killed" and kill_coalesce_window > 0
+            if cd > 0 and (now - last_at) < cd and not critical_upgrade and not coalesced_kill:
                 chain.append(_rec(c, "dropped", "cooldown"))
                 continue
             survivors.append(c)
@@ -96,15 +127,11 @@ class Arbiter:
                 if trade_kill is not None:
                     self._fire(trade_kill, now, critical=False)
                     chain.append(_rec(self._kill_window, "spoken", "trade_kill_preempt"))
-                    self._kill_window = None
-                    self._kill_window_first_at = 0.0
-                    self._kill_window_started_at = 0.0
+                    self._clear_kill_window()
                     return trade_kill, chain
                 if self._kill_window is not None:
                     chain.append(_rec(self._kill_window, "dropped", "lost_to_preempt"))
-                    self._kill_window = None
-                    self._kill_window_first_at = 0.0
-                    self._kill_window_started_at = 0.0
+                    self._clear_kill_window()
                 chain.append(_rec(best, "spoken", "preempt"))
                 for c in survivors:
                     if c is not best:
@@ -119,15 +146,26 @@ class Arbiter:
                 self._buffer_kill(c, now)
                 chain.append(_rec(c, "buffered", "kill_coalescing"))
 
-        if normal:
-            best = _top(normal)
-            if self._window_best is None or _rank(best) > _rank(self._window_best):
-                self._window_best = best
-            for c in normal:
-                if c is not best:
-                    chain.append(_rec(c, "dropped", "lost_in_window"))
-
         rate_remaining = self.safety.rate_limit_remaining(now)
+
+        if normal:
+            # 单槽窗口只该留还能活到 flush 的候选。全局限流(默认 12s)常常大于事件的
+            # 新鲜度窗(接近类 3s、低空 4s)，注定过期的事件一旦占住这个槽，既发不出去
+            # 又把更新鲜的低优先级候选挤成 lost_in_window——两条都没播。
+            deliverable = []
+            for c in normal:
+                if self._expires_before_flush(c, now, rate_remaining):
+                    chain.append(_rec(c, "dropped", "expired_before_flush"))
+                    continue
+                deliverable.append(c)
+            if deliverable:
+                best = _top(deliverable)
+                if self._window_best is None or _rank(best) > _rank(self._window_best):
+                    self._window_best = best
+                for c in deliverable:
+                    if c is not best:
+                        chain.append(_rec(c, "dropped", "lost_in_window"))
+
         effective_kill_window = _kill_coalesce_window_for(self._kill_window, kill_coalesce_window)
         kill_max_hold_reached = (
             self._kill_window is not None
@@ -145,22 +183,19 @@ class Arbiter:
         ):
             chosen = self._kill_window
             if not broadcast_category_enabled(self.safety.config, chosen.event_id, chosen.category, chosen.level):
-                self._kill_window = None
-                self._kill_window_first_at = 0.0
-                self._kill_window_started_at = 0.0
+                self._clear_kill_window()
                 chain.append(_rec(chosen, "dropped", "broadcast_category_disabled_on_flush"))
                 return None, chain
             allowed, gate_reason = _event_allowed(chosen, scenario)
             if not allowed:
                 if chosen.event_id == "you_killed" and scenario == DEAD:
+                    self._mark_kill_waiting_for_death(now)
                     chain.append(_rec(chosen, "buffered", "scenario_gated_deferred(DEAD)"))
                     return None, chain
                 if chosen.event_id == "you_killed" and scenario == CRITICAL_RISK:
                     chain.append(_rec(chosen, "buffered", "scenario_gated_deferred(CRITICAL_RISK)"))
                     return None, chain
-                self._kill_window = None
-                self._kill_window_first_at = 0.0
-                self._kill_window_started_at = 0.0
+                self._clear_kill_window()
                 chain.append(_rec(chosen, "dropped", gate_reason.replace("scenario_gated", "scenario_gated_on_flush", 1)))
                 return None, chain
             if (
@@ -171,9 +206,7 @@ class Arbiter:
             ):
                 chain.append(_rec(chosen, "buffered", "scenario_gated_deferred(COMBAT_STRESS)"))
                 return None, chain
-            self._kill_window = None
-            self._kill_window_first_at = 0.0
-            self._kill_window_started_at = 0.0
+            self._clear_kill_window()
             self._fire(chosen, now, critical=False)
             chain.append(_rec(chosen, "spoken", "kill_coalesced"))
             return chosen, chain
@@ -197,6 +230,17 @@ class Arbiter:
             chain.append(_rec(self._window_best, "buffered", f"rate_limited({rate_remaining:.1f}s)"))
         return None, chain
 
+    def _expires_before_flush(self, event: BattleEvent, now: float, rate_remaining: float) -> bool:
+        """该候选能否活到最早的 flush 时刻。
+
+        只用于非抢占通道：危急事件走抢占，不进这个单槽窗口，因此不受影响。
+        max_age<=0（关闭新鲜度门控）或 ts<=0（无时间戳）时一律认为可投递。
+        """
+        max_age = event_max_age_seconds(event.event_id, self.safety.config.output_event_max_age_seconds)
+        if max_age <= 0 or event.ts <= 0:
+            return False
+        return (now + max(0.0, rate_remaining)) - event.ts > max_age
+
     def _fire(self, event: BattleEvent, now: float, *, critical: bool) -> None:
         self._last_fired[event.event_id] = (now, event.level)
         self.safety.mark_output(critical=critical, now=now)
@@ -214,6 +258,8 @@ class Arbiter:
             )
             self._kill_window_first_at = now
             self._kill_window_started_at = now
+            self._kill_window_waiting_for_death = False
+            self._kill_window_dead_since = 0.0
             return
 
         payload = dict(self._kill_window.payload)
@@ -232,6 +278,19 @@ class Arbiter:
             level=self._kill_window.level,
         )
         self._kill_window_started_at = now
+
+    def _mark_kill_waiting_for_death(self, now: float) -> None:
+        if self._kill_window is None or self._kill_window_waiting_for_death:
+            return
+        self._kill_window_waiting_for_death = True
+        self._kill_window_dead_since = now
+
+    def _clear_kill_window(self) -> None:
+        self._kill_window = None
+        self._kill_window_first_at = 0.0
+        self._kill_window_started_at = 0.0
+        self._kill_window_waiting_for_death = False
+        self._kill_window_dead_since = 0.0
 
 
 def _rank(e: BattleEvent) -> tuple[int, int, float]:
@@ -261,8 +320,12 @@ def _trade_kill_event(kill_event: BattleEvent, death_event: BattleEvent, now: fl
 
 def _recent_death_preempt(last_fired: dict[str, tuple[float, str]], now: float, window_seconds: float) -> bool:
     last_at, _last_level = last_fired.get("you_died", (-1e9, ""))
-    grace = max(window_seconds * 2.0, 4.0)
+    grace = _death_trade_grace_seconds(window_seconds)
     return now - last_at <= grace
+
+
+def _death_trade_grace_seconds(window_seconds: float) -> float:
+    return max(window_seconds * 2.0, 4.0)
 
 
 def _kill_coalesce_max_hold_seconds(window_seconds: float) -> float:

@@ -2,43 +2,22 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta
-from typing import Any, Dict, Optional
+from datetime import date, datetime
+from typing import Optional
 
-from plugin.sdk.plugin import plugin_entry, quick_action, Ok, Err, SdkError
+from plugin.sdk.plugin import Err, Ok, SdkError, plugin_entry, quick_action, tr
 from plugin.sdk.shared.core.router import PluginRouter
 
 from .._chat import push_lifekit_content
 from .._contracts import CountdownParams, DateDetailResult, DaysBetweenParams
+from .._holiday import HolidayResolution, HolidayResolver, default_saved_country
 
-# 常见节日/节气（公历固定日期）
-_KNOWN_DATES: Dict[str, tuple[int, int]] = {
-    "元旦": (1, 1), "new year": (1, 1),
-    "情人节": (2, 14), "valentine": (2, 14),
-    "妇女节": (3, 8), "women's day": (3, 8),
-    "愚人节": (4, 1), "april fools": (4, 1),
-    "劳动节": (5, 1), "labor day": (5, 1),
-    "儿童节": (6, 1), "children's day": (6, 1),
-    "国庆节": (10, 1), "national day": (10, 1),
-    "万圣节": (10, 31), "halloween": (10, 31),
-    "平安夜": (12, 24), "christmas eve": (12, 24),
-    "圣诞节": (12, 25), "christmas": (12, 25),
-    "跨年": (12, 31), "new year's eve": (12, 31),
-}
+_HOLIDAYS = HolidayResolver()
 
 
-def _parse_date(text: str) -> Optional[date]:
-    """尝试解析日期字符串。支持 YYYY-MM-DD、MM-DD、自然语言节日名。"""
+def _parse_numeric_date(text: str) -> Optional[date]:
+    """Parse YYYY-MM-DD or MM-DD without applying regional assumptions."""
     t = text.strip().lower()
-
-    # 已知节日
-    if t in _KNOWN_DATES:
-        m, d = _KNOWN_DATES[t]
-        today = date.today()
-        target = date(today.year, m, d)
-        if target < today:
-            target = date(today.year + 1, m, d)
-        return target
 
     # YYYY-MM-DD
     for fmt in ("%Y-%m-%d", "%Y/%m/%d", "%Y.%m.%d"):
@@ -62,6 +41,23 @@ def _parse_date(text: str) -> Optional[date]:
     return None
 
 
+def _holiday_note(i18n, event: str, resolution: HolidayResolution) -> str:
+    if not resolution.assumed_country:
+        return event
+    if not resolution.alternatives:
+        return f"{event} ({resolution.assumed_country})"
+    alternatives = ", ".join(
+        f"{item.country} {item.target.isoformat()}"
+        for item in resolution.alternatives
+    )
+    return i18n.t(
+        "date.holiday_alternatives",
+        event=event,
+        country=resolution.assumed_country,
+        alternatives=alternatives,
+    )
+
+
 class CountdownRouter(PluginRouter):
     """countdown + days_between entries。"""
 
@@ -70,12 +66,8 @@ class CountdownRouter(PluginRouter):
 
     @plugin_entry(
         id="countdown",
-        name="倒计时",
-        description=(
-            "计算距离某个日期还有多少天。"
-            "支持具体日期(2025-10-01)、月日(10-01)、节日名(圣诞节/国庆节/元旦)。"
-            "适合回答「距离国庆还有几天」「离圣诞节还有多久」。"
-        ),
+        name=tr("entries.countdown.name", default="Countdown"),
+        description=tr("entries.countdown.description", default="Count days to a date, month-day, or supported holiday name."),
         params=CountdownParams,
         llm_result_model=DateDetailResult,
     )
@@ -85,45 +77,70 @@ class CountdownRouter(PluginRouter):
         params: CountdownParams | None = None,
         target_date: str = "",
         label: str = "",
+        country_hint: str = "",
         **_,
     ):
         if params is not None:
             target_date = params.target_date
             label = params.label
+            country_hint = params.country_hint
+
+        plugin = self.main_plugin
+        plugin._resolve_locale()
+        i18n = plugin._i18n
 
         if not target_date.strip():
-            return Err(SdkError("请指定目标日期"))
+            return Err(SdkError(i18n.t("date.target_required")))
 
-        parsed = _parse_date(target_date)
+        holiday = _HOLIDAYS.resolve(
+            target_date,
+            country_hint=country_hint,
+        )
+        if holiday.alternatives and not country_hint:
+            default_country = await default_saved_country(plugin)
+            if default_country:
+                holiday = _HOLIDAYS.resolve(
+                    target_date,
+                    country_hint=default_country,
+                )
+        parsed = holiday.target or _parse_numeric_date(target_date)
         if parsed is None:
-            return Err(SdkError(f"无法识别日期「{target_date}」，请用 YYYY-MM-DD 格式或节日名"))
+            return Err(SdkError(i18n.t("date.invalid", value=target_date)))
 
         today = date.today()
         delta = (parsed - today).days
         event = label.strip() or target_date.strip()
+        event = _holiday_note(i18n, event, holiday)
 
         if delta > 0:
-            summary = f"距离 {event} 还有 {delta} 天 ({parsed.isoformat()})"
+            summary = i18n.t("date.future", event=event, days=delta, date=parsed.isoformat())
             emoji = "⏳"
         elif delta == 0:
-            summary = f"🎉 今天就是 {event}！"
+            summary = i18n.t("date.today", event=event)
             emoji = "🎉"
         else:
-            summary = f"{event} 已经过去 {abs(delta)} 天 ({parsed.isoformat()})"
+            summary = i18n.t("date.past", event=event, days=abs(delta), date=parsed.isoformat())
             emoji = "📅"
 
         weeks = abs(delta) // 7
+        weekdays = i18n.value("date.weekdays")
+        if not isinstance(weekdays, list) or len(weekdays) != 7:
+            weekdays = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
         detail = {
             "target": parsed.isoformat(),
             "days": delta,
             "weeks": weeks,
-            "weekday": ["周一", "周二", "周三", "周四", "周五", "周六", "周日"][parsed.weekday()],
+            "weekday": weekdays[parsed.weekday()],
+            "assumed_country": holiday.assumed_country,
+            "holiday_alternatives": [
+                item.as_dict() for item in holiday.alternatives
+            ],
         }
 
         # 推送卡片
         blocks = [{"type": "text", "text": f"{emoji} {summary}"}]
         if abs(delta) > 7:
-            blocks.append({"type": "text", "text": f"约 {weeks} 周 | {detail['weekday']}"})
+            blocks.append({"type": "text", "text": i18n.t("date.weeks", weeks=weeks, weekday=detail["weekday"])})
 
         push_lifekit_content(self.main_plugin, blocks)
 
@@ -131,11 +148,8 @@ class CountdownRouter(PluginRouter):
 
     @plugin_entry(
         id="days_between",
-        name="日期间隔",
-        description=(
-            "计算两个日期之间相隔多少天。"
-            "适合回答「我们认识多少天了」「从某天到某天有多久」。"
-        ),
+        name=tr("entries.daysBetween.name", default="Days between dates"),
+        description=tr("entries.daysBetween.description", default="Calculate the number of days between two dates."),
         params=DaysBetweenParams,
         llm_result_model=DateDetailResult,
     )
@@ -144,35 +158,97 @@ class CountdownRouter(PluginRouter):
         params: DaysBetweenParams | None = None,
         start_date: str = "",
         end_date: str = "",
+        country_hint: str = "",
         **_,
     ):
         if params is not None:
             start_date = params.start_date
             end_date = params.end_date
+            country_hint = params.country_hint
+
+        plugin = self.main_plugin
+        plugin._resolve_locale()
+        i18n = plugin._i18n
 
         today = date.today()
-        d1 = _parse_date(start_date) if start_date.strip() else today
-        d2 = _parse_date(end_date) if end_date.strip() else today
+        start_holiday = _HOLIDAYS.resolve(
+            start_date,
+            country_hint=country_hint,
+        )
+        end_holiday = _HOLIDAYS.resolve(
+            end_date,
+            country_hint=country_hint,
+        )
+        if (
+            not country_hint
+            and (start_holiday.alternatives or end_holiday.alternatives)
+        ):
+            default_country = await default_saved_country(plugin)
+            if default_country:
+                start_holiday = _HOLIDAYS.resolve(
+                    start_date,
+                    country_hint=default_country,
+                )
+                end_holiday = _HOLIDAYS.resolve(
+                    end_date,
+                    country_hint=default_country,
+                )
+        d1 = (
+            start_holiday.target or _parse_numeric_date(start_date)
+            if start_date.strip()
+            else today
+        )
+        d2 = (
+            end_holiday.target or _parse_numeric_date(end_date)
+            if end_date.strip()
+            else today
+        )
 
         if d1 is None:
-            return Err(SdkError(f"无法识别起始日期「{start_date}」"))
+            return Err(SdkError(i18n.t("date.invalid_start", value=start_date)))
         if d2 is None:
-            return Err(SdkError(f"无法识别结束日期「{end_date}」"))
+            return Err(SdkError(i18n.t("date.invalid_end", value=end_date)))
 
         delta = abs((d2 - d1).days)
         years = delta // 365
         months = (delta % 365) // 30
         weeks = delta // 7
 
-        summary = f"{d1.isoformat()} → {d2.isoformat()}：共 {delta} 天"
-        detail = {"start": d1.isoformat(), "end": d2.isoformat(), "days": delta, "weeks": weeks, "years": years, "months_approx": months}
+        summary = i18n.t("date.between", start=d1.isoformat(), end=d2.isoformat(), days=delta)
+        holiday_notes = [
+            _holiday_note(i18n, text, resolution)
+            for text, resolution in (
+                (start_date, start_holiday),
+                (end_date, end_holiday),
+            )
+            if resolution.assumed_country
+        ]
+        if holiday_notes:
+            summary = f"{summary} | {'; '.join(holiday_notes)}"
+        holiday_alternatives = [
+            item.as_dict()
+            for resolution in (start_holiday, end_holiday)
+            for item in resolution.alternatives
+        ]
+        detail = {
+            "start": d1.isoformat(),
+            "end": d2.isoformat(),
+            "days": delta,
+            "weeks": weeks,
+            "years": years,
+            "months_approx": months,
+            "assumed_country": (
+                start_holiday.assumed_country or end_holiday.assumed_country
+            ),
+            "holiday_alternatives": holiday_alternatives,
+        }
 
         parts = []
         if years > 0:
-            parts.append(f"{years} 年")
+            parts.append(i18n.t("date.years", value=years))
         if months > 0:
-            parts.append(f"{months} 个月")
-        parts.append(f"{delta} 天")
+            parts.append(i18n.t("date.months", value=months))
+        parts.append(i18n.t("date.days", value=delta))
 
         push_lifekit_content(self.main_plugin, [
             {"type": "text", "text": f"📅 {d1} → {d2}"},

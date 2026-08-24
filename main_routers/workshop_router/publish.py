@@ -21,10 +21,16 @@ Split out of the former monolithic ``main_routers/workshop_router.py``.
 
 from ._shared import logger, router
 from .config_files import _assert_under_base
+from .content_gate import (
+    CLEANUP_PURPOSE,
+    PUBLISH_PURPOSE,
+    ContentFolderBusy,
+    claim_content_folder,
+)
 from .meta import calculate_content_hash, read_workshop_meta, write_workshop_meta
 from .preview_cards import find_preview_image_in_folder
 from .ugc import get_subscribed_workshop_items
-from .voice_manifest import _resolve_workshop_voice_reference
+from .voice_manifest import resolve_voice_reference_serialized
 
 import os
 import sys
@@ -38,7 +44,7 @@ from fastapi.responses import JSONResponse
 from ..shared_state import ensure_steamworks as get_steamworks, get_config_manager
 from utils.file_utils import atomic_write_json_async, read_json_async
 from utils.workshop_utils import (
-    get_workshop_path,
+    get_workshop_path_async,
 )
 
 
@@ -57,7 +63,9 @@ async def check_upload_status(item_path: str = None):
             }, status_code=400)
         
         # 安全检查：使用get_workshop_path()作为基础目录
-        base_workshop_folder = os.path.abspath(os.path.normpath(get_workshop_path()))
+        base_workshop_folder = os.path.abspath(
+            os.path.normpath(await get_workshop_path_async())
+        )
         
         # Windows路径处理：确保路径分隔符正确
         if os.name == 'nt':  # Windows系统
@@ -193,7 +201,7 @@ async def prepare_workshop_upload(request: Request):
                 }, status_code=400)
         
         # 获取workshop基础路径
-        base_workshop_path = get_workshop_path()
+        base_workshop_path = await get_workshop_path_async()
         workshop_export_dir = os.path.join(base_workshop_path, 'WorkshopExport')
         
         # 确保WorkshopExport目录存在
@@ -384,13 +392,20 @@ async def prepare_workshop_upload(request: Request):
         }, status_code=500)
 
 
+def _delete_content_folder(temp_folder: str) -> None:
+    """Delete a temp folder only when no publisher or pair writer owns it."""
+    import shutil
+
+    with claim_content_folder(temp_folder, purpose=CLEANUP_PURPOSE):
+        shutil.rmtree(temp_folder, ignore_errors=True)
+
+
 @router.post('/cleanup-temp-folder')
 async def cleanup_temp_folder(request: Request):
     """
     Clean up the temporary upload directory.
     """
     try:
-        import shutil
         data = await request.json()
         temp_folder = data.get('temp_folder')
         
@@ -401,7 +416,7 @@ async def cleanup_temp_folder(request: Request):
             }, status_code=400)
         
         # 安全检查：确保临时目录在WorkshopExport下
-        base_workshop_path = get_workshop_path()
+        base_workshop_path = await get_workshop_path_async()
         workshop_export_dir = os.path.join(base_workshop_path, 'WorkshopExport')
         
         # 规范化路径（使用realpath处理符号链接和相对路径）
@@ -425,7 +440,7 @@ async def cleanup_temp_folder(request: Request):
         
         # 删除临时目录
         if os.path.exists(temp_folder):
-            await asyncio.to_thread(shutil.rmtree, temp_folder, ignore_errors=True)
+            await asyncio.to_thread(_delete_content_folder, temp_folder)
             logger.info(f"临时目录已删除: {temp_folder}")
             return JSONResponse({
                 "success": True,
@@ -437,6 +452,12 @@ async def cleanup_temp_folder(request: Request):
                 "error": "临时目录不存在"
             }, status_code=404)
             
+    except ContentFolderBusy as e:
+        logger.warning(f"临时目录正被占用，拒绝删除: {e}")
+        return JSONResponse({
+            "success": False,
+            "error": str(e)
+        }, status_code=409)
     except Exception as e:
         logger.error(f"清理临时目录失败: {e}")
         return JSONResponse({
@@ -481,7 +502,9 @@ async def publish_to_workshop(request: Request):
         content_folder = unquote(content_folder)
         # 安全检查：验证content_folder是否在允许的范围内
         try:
-            content_folder = _assert_under_base(content_folder, get_workshop_path())
+            content_folder = _assert_under_base(
+                content_folder, await get_workshop_path_async()
+            )
         except PermissionError:
             return JSONResponse(content={
                 "success": False,
@@ -602,17 +625,6 @@ async def publish_to_workshop(request: Request):
                             # 如果重命名失败，继续使用原始路径
                             logger.warning(f'继续使用原始预览图片路径: {preview_image}')
 
-        try:
-            voice_ref = await asyncio.to_thread(_resolve_workshop_voice_reference, content_folder)
-            if voice_ref:
-                logger.info(f"检测到参考语音清单: {voice_ref['manifest']['reference_audio']}")
-        except (ValueError, FileNotFoundError) as e:
-            return JSONResponse(content={
-                "success": False,
-                "error": "参考语音清单无效",
-                "message": str(e)
-            }, status_code=400)
-        
         # 记录将要上传的内容信息
         logger.info(f"准备发布创意工坊物品: {title}")
         logger.info(f"内容文件夹: {content_folder}")
@@ -634,13 +646,26 @@ async def publish_to_workshop(request: Request):
         
         # 使用线程池执行Steamworks API调用（因为这些是阻塞操作）
         loop = asyncio.get_event_loop()
-        published_file_id = await loop.run_in_executor(
-            None, 
-            lambda: _publish_workshop_item(
-                steamworks, title, description, content_folder, 
-                preview_image, visibility, tags, change_note, character_card_name
+        try:
+            published_file_id = await loop.run_in_executor(
+                None,
+                lambda: _preflight_and_publish(
+                    steamworks, title, description, content_folder,
+                    preview_image, visibility, tags, change_note, character_card_name
+                )
             )
-        )
+        except _VoicePreflightError as e:
+            return JSONResponse(content={
+                "success": False,
+                "error": "参考语音清单无效",
+                "message": str(e)
+            }, status_code=400)
+        except ContentFolderBusy as e:
+            return JSONResponse(content={
+                "success": False,
+                "error": "内容目录正被占用",
+                "message": str(e)
+            }, status_code=409)
         
         logger.info(f"成功发布创意工坊物品，ID: {published_file_id}")
         
@@ -714,6 +739,44 @@ async def publish_to_workshop(request: Request):
     except Exception as e:
         logger.error(f"发布到创意工坊失败: {e}")
         return JSONResponse(content={"success": False, "error": str(e)}, status_code=500)
+
+
+class _VoicePreflightError(Exception):
+    """The reference pair is invalid, so publishing must not start."""
+
+
+def _preflight_and_publish(
+    steamworks,
+    title,
+    description,
+    content_folder,
+    preview_image,
+    visibility,
+    tags,
+    change_note,
+    character_card_name=None,
+):
+    """Validate and publish one immutable view of the content directory."""
+    with claim_content_folder(content_folder, purpose=PUBLISH_PURPOSE):
+        try:
+            voice_ref = resolve_voice_reference_serialized(content_folder)
+        except (ValueError, FileNotFoundError) as e:
+            raise _VoicePreflightError(str(e)) from e
+        if voice_ref:
+            logger.info(
+                f"检测到参考语音清单: {voice_ref['manifest']['reference_audio']}"
+            )
+        return _publish_workshop_item(
+            steamworks,
+            title,
+            description,
+            content_folder,
+            preview_image,
+            visibility,
+            tags,
+            change_note,
+            character_card_name,
+        )
 
 
 def _publish_workshop_item(steamworks, title, description, content_folder, preview_image, visibility, tags, change_note, character_card_name=None):

@@ -32,16 +32,49 @@ class TaskDeduper:
     """
 
     def __init__(self):
-        config_manager = get_config_manager()
-        api_config = config_manager.get_model_api_config('summary')
+        # (route, client) 收在**一个**元组里原子发布，不拆成两个属性——拆开的
+        # 两次赋值在并发刷新时会交错出「旧 client 配新 route 指纹」，之后每次
+        # 调用都把那个旧 client 误判为最新，钉死错误端点直到路由再次变化。
+        self._llm_cache = None
+        # 构造时先建一次，保持原有「启动即就绪」的行为；真正的权威判定在 _get_llm。
+        self._get_llm()
+
+    def _get_llm(self):
+        """Return the summary LLM, rebuilding it if its route changed.
+
+        ``summary`` is a region-dependent route, and the region verdict is not
+        final at construction time: a Steam answer is deliberately treated as a
+        usable-but-not-latched vote, so the authoritative IP probe can still
+        overturn it seconds later. Freezing the client in ``__init__`` would pin
+        every later dedup call to whichever endpoint happened to be selected in
+        that instant, for the lifetime of the process. Comparing the resolved
+        route on each use costs a string compare and also makes an ordinary
+        config change take effect without a restart.
+
+        The (route, client) pair is published as ONE tuple assignment on
+        purpose: two judges racing a route change with two separate attribute
+        writes can interleave into "old client tagged with the new route",
+        which every later call would trust as current — pinned to the wrong
+        regional endpoint until the route changes again. With the tuple swap a
+        concurrent rebuild merely wastes one client object (last writer wins);
+        the pair can never disagree.
+        """
+        api_config = get_config_manager().get_model_api_config('summary')
+        route = (api_config.get('base_url'), api_config.get('model'),
+                 api_config.get('api_key'), api_config.get('provider_type'))
+        cached = self._llm_cache
+        if cached is not None and cached[0] == route:
+            return cached[1]
         from config import LLM_OUTPUT_GUARD_MAX_TOKENS
-        self.llm = create_chat_llm(
+        llm = create_chat_llm(
             api_config['model'], api_config['base_url'],
             api_config['api_key'], temperature=0, max_retries=0,
             timeout=30,
             max_completion_tokens=LLM_OUTPUT_GUARD_MAX_TOKENS,  # runaway guard; tiny JSON normally, but a thinking model's reasoning is covered too
             provider_type=api_config.get('provider_type'),
         )
+        self._llm_cache = (route, llm)
+        return llm
 
     def _build_prompt(self, new_task: str, candidates: List[Tuple[str, str]]) -> str:
         # Input budget: cap each component so the dedup prompt can't blow up on a
@@ -83,15 +116,22 @@ class TaskDeduper:
             return {"duplicate": False, "matched_id": None}
 
         prompt = self._build_prompt(new_task, candidates)
-        
+
+        # 路由复查 offload 出事件循环：_get_llm 内部走 get_model_api_config →
+        # get_core_config，是同步的 open()+json.load() 磁盘读——agent_server 的
+        # 事件循环被三个子系统共享，慢盘/杀软下同步读会卡住所有并发请求（与
+        # aget_core_config 必须 offload 同一条理由）。每次 judge 复查一次就够：
+        # 单次 judge 内部的重试没必要各自重读路由。
+        llm = await asyncio.to_thread(self._get_llm)
+
         # Retry策略：重试2次，间隔1秒、2秒
         max_retries = 3
         retry_delays = [1, 2]
-        
+
         for attempt in range(max_retries):
             try:
                 set_call_type("dedup")
-                resp = await self.llm.ainvoke([  # noqa: LLM_INPUT_BUDGET  # each prompt component truncated to TASK_SUMMARY/DETAIL_MAX_TOKENS in _build_prompt (truncation lives in the builder, not here).
+                resp = await llm.ainvoke([  # noqa: LLM_INPUT_BUDGET  # each prompt component truncated to TASK_SUMMARY/DETAIL_MAX_TOKENS in _build_prompt (truncation lives in the builder, not here).
                     {"role": "system", "content": "You are a careful deduplication judge."},
                     {"role": "user", "content": prompt},
                 ])

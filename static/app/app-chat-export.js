@@ -17,7 +17,19 @@
 
     var MAX_EXPORT_SELECTION = 100;
     var DEFAULT_USER_EXPORT_AVATAR = '/static/icons/avatar/master-avatar.png';
+    var MUSIC_EXPORT_PLACEHOLDER_COVER = '/static/assets/music/music-cover-placeholder.png';
     var EXPORT_PREVIEW_SHELL_URL = '/static/chat-export-preview-shell.html';
+    var exportPreviewWindowSequence = 0;
+    var exportPreviewAssetVersion = getCurrentExportAssetVersion();
+
+    function getExportPreviewWindowName(kind) {
+        exportPreviewWindowSequence += 1;
+        var prefix = kind === 'child'
+            ? 'neko_chat_export_preview_child_'
+            : 'neko_chat_export_preview_main_';
+        return prefix
+            + Date.now().toString(36) + '_' + exportPreviewWindowSequence.toString(36);
+    }
 
     // ======================== State ========================
 
@@ -66,12 +78,33 @@
         return translateText(key, fallback);
     }
 
+    function getCurrentExportAssetVersion() {
+        try {
+            var script = document.currentScript;
+            if (!script || !script.src) {
+                script = document.querySelector('script[src*="/static/app/app-chat-export.js"]');
+            }
+            if (!script || !script.src) return '';
+            return new URL(script.src, window.location.href).searchParams.get('v') || '';
+        } catch (_) {
+            return '';
+        }
+    }
+
+    function getVersionedExportAssetUrl(path) {
+        if (!exportPreviewAssetVersion) return path;
+        return path + (path.indexOf('?') === -1 ? '?' : '&')
+            + 'v=' + encodeURIComponent(exportPreviewAssetVersion);
+    }
+
     function buildWindowControlCssHtml() {
-        return '<link rel="stylesheet" href="/static/css/window_controls.css">';
+        return '<link rel="stylesheet" href="'
+            + getVersionedExportAssetUrl('/static/css/window_controls.css') + '">';
     }
 
     function buildWindowControlScriptHtml() {
-        return '<script src="/static/js/window_controls.js" defer data-neko-window-controls="1"></script>';
+        return '<script src="' + getVersionedExportAssetUrl('/static/js/window_controls.js')
+            + '" defer data-neko-window-controls="1"></script>';
     }
 
     function buildWindowControlAssetsHtml() {
@@ -85,6 +118,20 @@
         button.setAttribute('data-i18n-aria', key);
         button.setAttribute('title', label);
         button.setAttribute('aria-label', label);
+    }
+
+    function syncPinButtonLocale(button) {
+        if (!button) return;
+        var pinLabel = translateLabel('common.pinWindow', 'Pin Window');
+        var unpinLabel = translateLabel('common.unpinWindow', 'Unpin Window');
+        button.setAttribute('data-neko-pin-label', pinLabel);
+        button.setAttribute('data-neko-unpin-label', unpinLabel);
+        var isPinned = button.getAttribute('aria-pressed') === 'true';
+        setWindowControlButtonLabel(
+            button,
+            isPinned ? 'common.unpinWindow' : 'common.pinWindow',
+            isPinned ? unpinLabel : pinLabel
+        );
     }
 
     function createWindowControlButton(doc, control, key, fallback, iconClass) {
@@ -108,7 +155,7 @@
         }
         if (doc.querySelector('script[data-neko-window-controls="1"]')) return;
         var script = doc.createElement('script');
-        script.src = '/static/js/window_controls.js';
+        script.src = getVersionedExportAssetUrl('/static/js/window_controls.js');
         script.defer = true;
         script.setAttribute('data-neko-window-controls', '1');
         script.addEventListener('load', function () {
@@ -400,24 +447,62 @@
         return '';
     }
 
-    function extractBlocksPlainText(blocks) {
+    function isMemeExportMessage(message) {
+        if (!message) return false;
+        if (String(message.id || '').startsWith('meme-')) return true;
+        return Array.isArray(message.blocks) && message.blocks.some(function (block) {
+            return block && block.type === 'image'
+                && String(block.url || '').startsWith('/api/meme/proxy-image');
+        });
+    }
+
+    function isMusicExportBlock(message, block) {
+        if (!block || block.type !== 'link') return false;
+        if (String((message && message.id) || '').startsWith('music-')) return true;
+        return /^\/api\/music\/play\//.test(String(block.url || ''));
+    }
+
+    function isMusicExportMessage(message) {
+        return !!(message && Array.isArray(message.blocks) && message.blocks.some(function (block) {
+            return isMusicExportBlock(message, block);
+        }));
+    }
+
+    function getMusicExportCover(block) {
+        return String((block && block.thumbnailUrl) || MUSIC_EXPORT_PLACEHOLDER_COVER);
+    }
+
+    function extractBlocksPlainText(message) {
+        var blocks = message && message.blocks;
         if (!Array.isArray(blocks)) return '';
+        var memeOnly = isMemeExportMessage(message);
+        var musicOnly = isMusicExportMessage(message);
         var parts = [];
         blocks.forEach(function (block) {
             if (!block || typeof block !== 'object') return;
+            if (memeOnly && block.type !== 'image') return;
+            if (musicOnly && !isMusicExportBlock(message, block)) return;
             if (block.type === 'text') {
                 if (block.text) parts.push(String(block.text));
                 return;
             }
             if (block.type === 'image') {
+                if (memeOnly) return;
                 var alt = block.alt ? String(block.alt) : '';
                 parts.push('[' + translateLabel('chat.exportImageLabel', 'Image')
                     + (alt ? ': ' + alt : '') + ']');
                 return;
             }
             if (block.type === 'link') {
+                if (isMusicExportBlock(message, block)) {
+                    if (block.title) parts.push(String(block.title));
+                    if (block.description) parts.push(String(block.description));
+                    return;
+                }
                 var title = block.title ? String(block.title) : String(block.url || '');
-                parts.push(title + ' (' + String(block.url || '') + ')');
+                var url = String(block.url || '');
+                if (title && url) parts.push(title + ' (' + url + ')');
+                else if (title) parts.push(title);
                 return;
             }
             if (block.type === 'status') {
@@ -434,11 +519,16 @@
         return parts.join('\n').trim();
     }
 
-    function blocksToMarkdown(blocks) {
+    function blocksToMarkdown(message) {
+        var blocks = message && message.blocks;
         if (!Array.isArray(blocks)) return '';
+        var memeOnly = isMemeExportMessage(message);
+        var musicOnly = isMusicExportMessage(message);
         var lines = [];
         blocks.forEach(function (block) {
             if (!block || typeof block !== 'object') return;
+            if (memeOnly && block.type !== 'image') return;
+            if (musicOnly && !isMusicExportBlock(message, block)) return;
             if (block.type === 'text') {
                 if (block.text) lines.push(String(block.text));
                 return;
@@ -450,6 +540,14 @@
                 return;
             }
             if (block.type === 'link') {
+                if (isMusicExportBlock(message, block)) {
+                    var musicTitle = block.title ? String(block.title).replace(/\]/g, ' ') : '';
+                    var musicArtist = block.description ? String(block.description) : '';
+                    lines.push('![' + musicTitle + '](' + getMusicExportCover(block) + ')');
+                    if (musicTitle) lines.push(musicTitle);
+                    if (musicArtist) lines.push(musicArtist);
+                    return;
+                }
                 var title = block.title ? String(block.title).replace(/\]/g, ' ') : String(block.url || '');
                 lines.push('[' + title + '](' + String(block.url || '') + ')');
                 if (block.description) lines.push('> ' + String(block.description));
@@ -469,7 +567,8 @@
         return lines.join('\n\n').trim();
     }
 
-    function collectImageDescriptors(blocks) {
+    function collectImageDescriptors(message) {
+        var blocks = message && message.blocks;
         if (!Array.isArray(blocks)) return [];
         var result = [];
         blocks.forEach(function (block) {
@@ -481,6 +580,20 @@
                 });
             }
         });
+        if (result.length === 0) {
+            blocks.some(function (block) {
+                if (!isMusicExportBlock(message, block)) return false;
+                var title = block.title ? String(block.title) : '';
+                var artist = block.description ? String(block.description) : '';
+                result.push({
+                    type: 'image',
+                    source: getMusicExportCover(block),
+                    fallbackSource: MUSIC_EXPORT_PLACEHOLDER_COVER,
+                    alt: title + (artist ? ' — ' + artist : '')
+                });
+                return true;
+            });
+        }
         return result;
     }
 
@@ -506,9 +619,9 @@
             rawRole: message.role,
             avatarUrl: avatarUrl,
             avatarLabel: avatarLabel,
-            textContent: extractBlocksPlainText(message.blocks),
-            markdownContent: blocksToMarkdown(message.blocks),
-            mediaDescriptors: collectImageDescriptors(message.blocks),
+            textContent: extractBlocksPlainText(message),
+            markdownContent: blocksToMarkdown(message),
+            mediaDescriptors: collectImageDescriptors(message),
             blocks: message.blocks
         };
     }
@@ -820,6 +933,16 @@
         }
     }
 
+    function loadExportImageDescriptor(descriptor) {
+        return inlineImageSourceToDataUrl(descriptor.source)
+            .then(loadImageElement)
+            .catch(function (error) {
+                var fallbackSource = descriptor.fallbackSource;
+                if (!fallbackSource || fallbackSource === descriptor.source) throw error;
+                return inlineImageSourceToDataUrl(fallbackSource).then(loadImageElement);
+            });
+    }
+
     async function resolveImageEntryMedia(entries) {
         var cache = new Map();
         var resolved = [];
@@ -847,8 +970,7 @@
                 var key = descriptor.source || descriptor.alt || ('image-' + i + '-' + j);
                 var promise = cache.get(key);
                 if (!promise) {
-                    promise = inlineImageSourceToDataUrl(descriptor.source)
-                        .then(loadImageElement)
+                    promise = loadExportImageDescriptor(descriptor)
                         .catch(function (error) {
                             logExportError('resolveImageEntryMedia', error);
                             return null;
@@ -2148,25 +2270,31 @@
             measureCtx.font = isAssistant ? lyricAssistantFont : lyricUserFont;
             var lyricLines = entry.textContent ? wrapTextLines(measureCtx, entry.textContent, textMaxWidth) : [];
             var noteLines = [];
+            var images = [];
             if (entry.media && entry.media.length > 0) {
                 measureCtx.font = noteFont;
                 entry.media.forEach(function (m) {
                     if (m.type === 'note' && m.text) {
                         noteLines = noteLines.concat(wrapTextLines(measureCtx, m.text, textMaxWidth));
                     } else if (m.type === 'image') {
-                        noteLines.push('[' + translateLabel('chat.exportImageLabel', 'Image')
-                            + (m.alt ? ': ' + m.alt : '') + ']');
+                        var size = fitImageToWidth(m.image, textMaxWidth, 300);
+                        images.push({ image: m.image, width: size.width, height: size.height });
                     }
                 });
             }
+            var imagesHeight = images.reduce(function (sum, image) {
+                return sum + image.height + 12;
+            }, 0);
             var blockHeight = 24  // role
                 + lyricLines.length * lyricLineHeight
+                + imagesHeight
                 + noteLines.length * noteLineHeight + (noteLines.length > 0 ? 8 : 0)
                 + 12;  // bottom gap
             return {
                 entry: entry,
                 isAssistant: isAssistant,
                 lyricLines: lyricLines,
+                images: images,
                 noteLines: noteLines,
                 blockHeight: blockHeight
             };
@@ -2265,6 +2393,11 @@
             ctx.fillStyle = isAssistant ? theme.lyricAssistant : theme.lyricUser;
             drawWrappedText(ctx, m.lyricLines, textX, y, lyricLineHeight);
             y += m.lyricLines.length * lyricLineHeight;
+
+            m.images.forEach(function (image) {
+                ctx.drawImage(image.image, textX, y, image.width, image.height);
+                y += image.height + 12;
+            });
 
             if (m.noteLines.length > 0) {
                 ctx.font = noteFont;
@@ -2542,11 +2675,22 @@
 
         var isStandaloneWindow = !!(doc.body && doc.body.classList.contains('chat-export-window'));
         var windowControls = null;
+        var pinButton = null;
         var minimizeButton = null;
         var maximizeButton = null;
         if (isStandaloneWindow) {
             windowControls = doc.createElement('div');
             windowControls.className = 'neko-window-controls chat-export-preview-window-controls';
+            pinButton = createWindowControlButton(
+                doc,
+                'pin',
+                'common.pinWindow',
+                'Pin Window',
+                'neko-window-pin-icon'
+            );
+            pinButton.hidden = true;
+            pinButton.setAttribute('aria-pressed', 'false');
+            syncPinButtonLocale(pinButton);
             minimizeButton = createWindowControlButton(
                 doc,
                 'minimize',
@@ -2561,6 +2705,7 @@
                 'Maximize',
                 'neko-window-maximize-icon'
             );
+            windowControls.appendChild(pinButton);
             windowControls.appendChild(minimizeButton);
             windowControls.appendChild(maximizeButton);
         }
@@ -2689,6 +2834,7 @@
             panel: panel,
             title: title,
             summary: summary,
+            pinButton: pinButton,
             minimizeButton: minimizeButton,
             maximizeButton: maximizeButton,
             closeButton: closeButton,
@@ -2763,6 +2909,7 @@
         // 应用语言变化时同步预览窗口文案
         var localeHandler = function () {
             closeButton.setAttribute('aria-label', translateLabel('common.close', 'Close'));
+            syncPinButtonLocale(pinButton);
             setWindowControlButtonLabel(minimizeButton, 'common.minimize', 'Minimize');
             title.textContent = translateLabel('chat.exportPreviewTitle', 'Export Preview');
             title.setAttribute('data-text', title.textContent);
@@ -2942,7 +3089,7 @@
 
             var preview = doc.createElement('div');
             preview.className = 'chat-export-selection-preview';
-            var previewText = extractBlocksPlainText(message.blocks);
+            var previewText = extractBlocksPlainText(message);
             preview.textContent = previewText.length > 160
                 ? previewText.slice(0, 160) + '…'
                 : previewText;
@@ -3129,7 +3276,7 @@
         var isExistingWindow = !!existingPreviewWindow;
         var previewWindow = isExistingWindow
             ? existingPreviewWindow
-            : window.open('', '_blank', buildExportWindowFeatures());
+            : window.open('', getExportPreviewWindowName('main'), buildExportWindowFeatures());
         if (!previewWindow) return null;
         if (isCurrentChatWindowHandle(previewWindow)) {
             console.warn('[ChatExport] export preview window resolved to the current chat window; aborting.');
@@ -3234,6 +3381,11 @@
                 modal.selectInvertButton.textContent = translateLabel('chat.exportSelectInvert', 'Invert');
                 modal.copyButton.textContent = translateLabel('chat.copyToClipboard', 'Copy to Clipboard');
                 modal.openWindowButton.textContent = translateLabel('chat.previewOpenWindow', 'Open In Window');
+                syncPinButtonLocale(modal.pinButton);
+                var view = modal.panel.ownerDocument.defaultView || null;
+                if (view && view.nekoWindowControls && typeof view.nekoWindowControls.refresh === 'function') {
+                    view.nekoWindowControls.refresh();
+                }
             };
             window.addEventListener('localechange', localeHandler);
             modal._localeHandler = localeHandler;
@@ -3469,6 +3621,8 @@
     /** 构建无边框 Electron 窗口使用的自绘标题栏。 */
     function buildWindowChromeHtml(title) {
         var closeLabel = escapeHtml(translateLabel('chat.previewClose', 'Close'));
+        var pinLabel = escapeHtml(translateLabel('common.pinWindow', 'Pin Window'));
+        var unpinLabel = escapeHtml(translateLabel('common.unpinWindow', 'Unpin Window'));
         var scrollbarCss = '<style>'
             + '::-webkit-scrollbar{width:8px;height:8px;}'
             + '::-webkit-scrollbar-track{background:transparent;}'
@@ -3486,10 +3640,16 @@
             + 'padding:0 8px;user-select:none;backdrop-filter:blur(6px);">'
             + '<span style="color:#ccc;font-size:13px;margin-left:8px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'
             + escapeHtml(title) + '</span>'
+            + '<div class="neko-window-controls" style="margin-left:auto;gap:4px;">'
+            + '<button type="button" class="neko-window-control-btn" data-neko-window-control="pin" hidden '
+            + 'data-i18n-title="common.pinWindow" data-i18n-aria="common.pinWindow" '
+            + 'data-neko-pin-label="' + pinLabel + '" data-neko-unpin-label="' + unpinLabel + '" title="' + pinLabel
+            + '" aria-label="' + pinLabel + '" aria-pressed="false"><span class="neko-window-pin-icon" aria-hidden="true"></span></button>'
             + '<button onclick="window.close()" title="' + closeLabel + '" style="-webkit-app-region:no-drag;'
             + 'background:none;border:none;color:#fff;font-size:20px;cursor:pointer;width:36px;height:36px;'
             + 'display:flex;align-items:center;justify-content:center;border-radius:4px;flex-shrink:0;" '
             + 'onmouseover="this.style.background=\'#e81123\'" onmouseout="this.style.background=\'none\'">&times;</button>'
+            + '</div>'
             + '</div>';
     }
 
@@ -3509,14 +3669,15 @@
                     showToast('chat.previewOpenFailed', 'The preview URL uses an unsupported protocol.', 4000);
                     return;
                 }
-                var imgWin = window.open('', '_blank');
+                var imgWin = window.open('', getExportPreviewWindowName('child'));
                 if (!imgWin) {
                     showToast('chat.previewOpenBlocked', 'Unable to open a new preview window.', 4000);
                     return;
                 }
                 imgWin.document.write('<!DOCTYPE html><html><head><title>'
                     + escapeHtml(previewTitle)
-                    + '</title></head><body style="margin:0;background:#111;display:flex;align-items:center;justify-content:center;min-height:100vh;padding-top:36px;">'
+                    + '</title>' + buildWindowControlAssetsHtml()
+                    + '</head><body style="margin:0;background:#111;display:flex;align-items:center;justify-content:center;min-height:100vh;padding-top:36px;">'
                     + chromeHtml
                     + '<img src="' + escapeHtml(imgUrl) + '" style="max-width:100%;max-height:calc(100vh - 36px);"/></body></html>');
                 imgWin.document.close();
@@ -3525,10 +3686,11 @@
             var doc = payload.previewDocument;
             // 写入新窗口前先清理不安全协议
             doc = sanitizeHtmlUrls(doc);
+            doc = doc.replace(/<\/head>/i, buildWindowControlAssetsHtml() + '</head>');
             // 注入自绘标题栏并给正文留出顶部空间
             doc = doc.replace(/(<body[^>]*>)/, '$1' + chromeHtml + '<div style="padding-top:36px;">');
             doc = doc.replace(/<\/body>/, '</div></body>');
-            var win = window.open('', '_blank');
+            var win = window.open('', getExportPreviewWindowName('child'));
             if (!win) {
                 showToast('chat.previewOpenBlocked', 'Unable to open a new preview window.', 4000);
                 return;

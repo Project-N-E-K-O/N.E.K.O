@@ -1,0 +1,893 @@
+# -*- coding: utf-8 -*-
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""Proactive-chat state, history, deduplication and persistent counters."""
+
+import asyncio
+import difflib
+import hashlib
+import re
+import time
+from contextlib import suppress
+from collections import deque
+from pathlib import Path
+from typing import Any
+
+from config import (
+    PROACTIVE_CHAT_HISTORY_MAX,
+    PROACTIVE_SOURCE_FORGET_P,
+    PROACTIVE_SOURCE_HALF_LIFE_BY_KIND,
+    PROACTIVE_SOURCE_HALF_LIFE_DEFAULT,
+    PROACTIVE_SOURCE_HARD_SKIP_SECONDS,
+)
+from config.prompts.prompts_proactive import (
+    RECENT_PROACTIVE_CHANNEL_LABELS,
+    RECENT_PROACTIVE_CHATS_FOOTER,
+    RECENT_PROACTIVE_CHATS_HEADER,
+    RECENT_PROACTIVE_TIME_LABELS,
+)
+from config.prompts.prompts_sys import _loc
+from utils.config_manager import get_config_manager
+from utils.file_utils import atomic_write_json_async, read_json
+from utils.logger_config import get_module_logger
+
+logger = get_module_logger(__name__, "Main")
+
+
+# --- Global source decay history (cross-character, persisted) ---
+_SOURCE_HISTORY_FILENAME = "proactive_source_history.json"
+_SOURCE_HISTORY_SCHEMA_VERSION = 1
+_source_history: dict[str, dict[str, Any]] = {}
+_source_history_lock = asyncio.Lock()
+_source_history_loaded = False
+_source_history_loaded_path: Path | None = None
+# 内存里那份能不能被**读路径**当权威。跟 _source_history_loaded 不是一回事：
+# 后者说的是「内存代表 _source_history_loaded_path 那个根」，而这个说的是「内存代表
+# 刚才那次请求要的那个根」。两者只在「换了根、而新根读失败」时分叉——那时内存里装的
+# 还是上一个根的历史，写侧靠返回值挡住了，读侧（_should_skip_source）却会拿 A 的
+# 历史去压 B 的候选，表现为她对这个角色明明没聊过的素材闭口不谈。
+# 读侧宁可漏抑制（顶多把某个素材再聊一遍）也不能跨根抑制，所以这里 fail-open。
+_source_history_authoritative = False
+# 连续失败计数，只用于给日志降频。一次性的读失败和「永久停摆」在单条 warning 里
+# 长得一模一样，靠的就是这两个累计数把它们区分开。任何一次成功都清零。
+_source_history_read_failures = 0
+_source_history_skipped_records = 0
+
+
+def _should_log_repeated_failure(count: int) -> bool:
+    """Report the first few consecutive failures, then back off to every 50th."""
+    # 永久性读失败（比如文件的读 ACL 坏了但目录仍可写，os.replace 照样成功）会让每
+    # 一次记录都走到失败/跳过分支。每次刷一条 warning 只会变成噪音，把「她已经不再
+    # 记录用过的素材了」这件事本身淹掉。前几次照报（偶发时看得见），之后按 50 次一报
+    # 并带上累计数——一条日志就能分辨这是抖了一下还是彻底停摆。
+    return count <= 3 or count % 50 == 0
+
+
+def _resolve_memory_dir(memory_dir: str | Path | None) -> Path:
+    """Resolve the persistence root while preserving the legacy singleton fallback."""
+    if memory_dir is None:
+        memory_dir = get_config_manager().memory_dir
+    return Path(memory_dir)
+
+
+def _source_history_path(*, memory_dir: str | Path | None = None) -> Path:
+    return _resolve_memory_dir(memory_dir) / _SOURCE_HISTORY_FILENAME
+
+
+def _source_hash(url: str = '', fallback_title: str = '') -> str:
+    """Return a stable URL hash, falling back to a normalized title."""
+    norm = (url or '').strip().lower().rstrip('/')
+    if norm:
+        return hashlib.sha256(norm.encode('utf-8')).hexdigest()
+    title_norm = re.sub(r'\s+', ' ', (fallback_title or '').strip().lower())
+    if title_norm:
+        return hashlib.sha256(('t::' + title_norm).encode('utf-8')).hexdigest()
+    return ''
+
+
+def _half_life_for(kind: str) -> float:
+    return PROACTIVE_SOURCE_HALF_LIFE_BY_KIND.get(
+        kind,
+        PROACTIVE_SOURCE_HALF_LIFE_DEFAULT,
+    )
+
+
+def _source_skip_probability(age: float, half_life: float) -> float:
+    if age < PROACTIVE_SOURCE_HARD_SKIP_SECONDS:
+        return 1.0
+    decay_age = age - PROACTIVE_SOURCE_HARD_SKIP_SECONDS
+    return 0.5 ** (decay_age / half_life)
+
+
+def _get_source_history_entry(url_hash: str) -> dict[str, Any] | None:
+    """Return the in-memory source record, or None when it is not authoritative."""
+    if not url_hash:
+        return None
+    if not _source_history_authoritative:
+        # 上一次加载失败过，内存里可能装着**别的根**的历史。签名里没有 memory_dir，
+        # 加一个要串 _should_skip_source → candidate_selection / decisions /
+        # service 两处 / system_router 再导出，共五个调用点，为一条 fail-open 的
+        # 判据不值得。改成让加载侧把结论落在这个标记上，读侧只查标记。
+        return None
+    return _source_history.get(url_hash)
+
+
+async def _ensure_source_history_loaded(
+    *, memory_dir: str | Path | None = None
+) -> bool:
+    """Load source history once without blocking the event loop.
+
+    Returns whether the in-memory history is authoritative for *memory_dir*.
+    A false return means the read failed and nothing may be overwritten yet.
+    """
+    # 返回值不是装饰：_record_source_used 是**全量覆盖写**（entries 就是整个
+    # _source_history）。读盘失败时内存里要么是空的、要么装着上一个 root 的东西，
+    # 无论哪种，被当成「已加载」都会让下一次记录把盘上整段历史截掉或换掉。所以
+    # 「内存现在能不能代表 memory_dir 那份」必须是这个函数说了算，而不是让调用方去猜。
+    global _source_history_loaded, _source_history_loaded_path
+    global _source_history_read_failures, _source_history_authoritative
+    path = _source_history_path(memory_dir=memory_dir)
+    if _source_history_loaded and _source_history_loaded_path == path:
+        _source_history_authoritative = True
+        return True
+    async with _source_history_lock:
+        if _source_history_loaded and _source_history_loaded_path == path:
+            _source_history_authoritative = True
+            return True
+        # 全程解析进这个局部 dict，只有走到函数末尾才整体换入 _source_history。
+        # 这样「异常 / 取消」与「全局状态」彻底解耦：
+        #   * 取消（唯一挂起点是下面那次 to_thread，CancelledError 是 BaseException，
+        #     两个 except 都接不住）不再留下「flag=True、path=旧 root、内存空」——
+        #     那正是这次要消灭的状态，之后一次完全正常的记录就会拿空内存全量覆盖写。
+        #   * 读失败时旧 root 的内存原样保留，仍然与 flag/path 自洽，不用清标记。
+        # 换句话说：全局三件套（flag / path / 内存）要么一起前进，要么一动不动。
+        loaded: dict[str, dict[str, Any]] = {}
+        try:
+            data = await asyncio.to_thread(read_json, path)
+        except FileNotFoundError:
+            # 文件本来就不存在（首启 / 被清理过）= 正常的空历史，不是失败。
+            # 照旧标记已加载，下一次记录会把文件创建出来。
+            data = None
+        except (ValueError, TypeError, RecursionError) as exc:
+            # 整个文件读不成结构（JSONDecodeError / UnicodeDecodeError 都是 ValueError
+            # 子类）：盘上那份已经不是可用的历史了，没有值得保护的东西，而且重试永远
+            # 失败。按空历史起步、让后续覆盖写自愈——否则一个坏文件会让「我用过这个
+            # 素材」永久停止记录。
+            #
+            # RecursionError 也归这里：json 解码器对足够深的嵌套（`[[[[...]]]]`）抛的
+            # 是它，而它既不是 ValueError 也不是 OSError。落到下面那个「瞬时失败」分支
+            # 就成了最坏的组合——由内容导致、因而**永远**失败的东西被当成「下次重试」，
+            # 于是记录永久停摆，而这正是自愈路径本来要消灭的状态。
+            logger.warning(
+                "%s 内容损坏，按空历史起步并等待覆盖重建: %s: %s",
+                _SOURCE_HISTORY_FILENAME,
+                type(exc).__name__,
+                exc,
+            )
+            data = None
+        except Exception as exc:
+            # 真正的读失败（IO / 权限 / 文件被杀软或索引器短暂占住）：盘上那份大概率
+            # 还是完整的，只是这一刻读不到。绝不能标记「已加载」——那会让空内存冒充
+            # 权威，下一次全量覆盖写直接把整段历史截掉。什么都不动，让下次调用重试。
+            #
+            # 每次调用都会重来一遍，所以永久性失败在这里同样会刷屏，跟着连续计数降频。
+            _source_history_read_failures += 1
+            if _should_log_repeated_failure(_source_history_read_failures):
+                logger.warning(
+                    "加载 %s 失败，本次不视为已加载（下次重试）: %s: %s，连续失败 %d 次",
+                    _SOURCE_HISTORY_FILENAME,
+                    type(exc).__name__,
+                    exc,
+                    _source_history_read_failures,
+                )
+            # 内存原样保留（清掉会让「flag=已加载 / path=旧根 / 内存空」这个状态复活，
+            # 下一次针对旧根的记录就会拿空内存全量覆盖写），但读侧从这一刻起不许再用它，
+            # 否则旧根的历史会去压新根的候选。
+            _source_history_authoritative = False
+            return False
+        entries = data.get('entries') if isinstance(data, dict) else None
+        if isinstance(entries, dict):
+            now = time.time()
+            damaged = 0
+            for source_hash, entry in entries.items():
+                if not isinstance(entry, dict):
+                    continue
+                try:
+                    age = now - float(entry.get('ts', 0.0) or 0.0)
+                    probability = _source_skip_probability(
+                        age,
+                        _half_life_for(entry.get('kind', 'web')),
+                    )
+                except (ValueError, TypeError, OverflowError):
+                    # 逐条跳过而不是整份作废：ts 是字符串抛 ValueError、kind 不可 hash
+                    # 抛 TypeError、ts 是个几百位的大整数 float() 抛 OverflowError
+                    # （它是 ArithmeticError 而不是 ValueError 的子类，漏掉就会一路
+                    # 逃出本函数，让每一次主动搭话都炸），都只说明**这一条**坏了。半损坏（几百条里坏一条）
+                    # 比整份 JSON 坏掉常见得多，把其余合法条目一起丢掉就是白白让她把
+                    # 那些素材再聊一遍。坏的那条本来就该被遗忘，丢掉它没有代价。
+                    damaged += 1
+                    continue
+                if probability >= PROACTIVE_SOURCE_FORGET_P:
+                    loaded[source_hash] = entry
+            if damaged:
+                # 一次加载只汇总一条，别按条刷屏。
+                logger.warning(
+                    "%s 有 %d 条记录无法解析，已跳过（其余 %d 条正常载入）",
+                    _SOURCE_HISTORY_FILENAME,
+                    damaged,
+                    len(loaded),
+                )
+        _source_history.clear()
+        _source_history.update(loaded)
+        _source_history_loaded = True
+        _source_history_loaded_path = path
+        _source_history_read_failures = 0
+        _source_history_authoritative = True
+        return True
+
+
+async def _persist_source_history_unlocked(
+    *, memory_dir: str | Path | None = None
+) -> None:
+    """Persist the in-memory source history. The caller must hold _source_history_lock."""
+    # 快照故意在这里、在锁内自己取，而不是由调用方传进来：调用方取完快照再到锁外落盘，
+    # 两次投递抵达 os.replace 的顺序可以和取快照的顺序反过来，把新历史写回旧值；
+    # Windows 上两个并发 os.replace 打同一个目标还会互相 PermissionError(WinError 5)。
+    # 不接 snapshot 参数，这个反转窗口就从代码里消失，而不是靠调用约定维持。
+    try:
+        await atomic_write_json_async(
+            _source_history_path(memory_dir=memory_dir),
+            {
+                "v": _SOURCE_HISTORY_SCHEMA_VERSION,
+                "entries": dict(_source_history),
+            },
+        )
+    except Exception as exc:
+        logger.warning(
+            "落盘 %s 失败: %s: %s",
+            _SOURCE_HISTORY_FILENAME,
+            type(exc).__name__,
+            exc,
+        )
+
+
+async def _record_source_used(
+    *,
+    url: str,
+    kind: str,
+    title: str = '',
+    memory_dir: str | Path | None = None,
+) -> None:
+    """Update, prune and persist one consumed source record."""
+    global _source_history_skipped_records
+    source_hash = _source_hash(url, title)
+    if not source_hash:
+        return
+    # 加载放在进锁之前：_ensure_source_history_loaded 自己要取同一把
+    # _source_history_lock，锁内再调必定自锁。已加载时它只是一次 flag+path 比较，
+    # 代价可忽略。
+    #
+    # 为什么要在这里再加载一次：「记录之前一定先加载过」此前只由
+    # handle_proactive_chat 里的语句顺序维持——加载在 try-body 第 53 条，两处记录在
+    # 第 115/170 条，中间隔着上千行和几十个 await。谁把某个投递分支提前一点，就会
+    # 拿空内存做全量覆盖写、静默抹掉整段历史，而且没有任何测试会红。把不变量收进
+    # 函数自己，行号就不再是它的唯一保障。
+    # memory_dir 原样往下传，加载与落盘都经 _source_history_path(memory_dir=...)
+    # 解析，两边用的一定是同一个根。
+    if not await _ensure_source_history_loaded(memory_dir=memory_dir):
+        # 读不出来就不写。本函数是全量覆盖写，拿一份空内存去写等于把盘上整段历史
+        # 截成 1 条。丢这一次记录的代价是这条素材以后可能被再聊一遍；截库的代价是
+        # 所有素材都可能被再聊一遍——量级差着整个清单。
+        #
+        # 这不会变成「读不出来就再也不记录了」：加载在每次调用时都重试，盘一恢复
+        # 就继续记；而「内容坏掉」那类永久性失败已经在加载侧按空历史放行，由覆盖
+        # 写自愈，不会落到这个分支里。
+        #
+        # 但「盘永远读不回来」这种情况确实存在（读 ACL 坏了而目录可写），那时记录就
+        # 永久停摆，而且对用户只表现为她反复聊同一个东西。日志是这件事唯一的出口，
+        # 所以带上累计次数并降频——既不刷屏，也不让停摆无声无息。
+        _source_history_skipped_records += 1
+        if _should_log_repeated_failure(_source_history_skipped_records):
+            logger.warning(
+                "%s 未能加载，跳过本次 source 记录以免覆盖写截断盘上历史: "
+                "kind=%s, 连续跳过 %d 次",
+                _SOURCE_HISTORY_FILENAME,
+                kind,
+                _source_history_skipped_records,
+            )
+        return
+    # 加载成功就把连跳计数清零：降频只针对「连续失败」，偶发的一两次不该攒起来
+    # 把后面真正的停摆推到 50 次之后才第一次报出来。
+    _source_history_skipped_records = 0
+    async with _source_history_lock:
+        # 护栏判定在锁外（_ensure 自己要取这把锁，锁内再调必定自锁），覆盖写在锁内，
+        # 中间隔着一个窗口：_ensure 走 IO 分支时是持锁 await 的，它放锁之后、本协程
+        # 拿到锁之前，另一个 root 的 _ensure 能插进来把内存整个换掉。这里再做一次纯
+        # 内存复核——不调 _ensure（不会自锁、不产生额外 IO），只确认此刻内存仍然代表
+        # 本次要写的那个 root。不等就什么都不写：拿 root_b 的内容去全量覆盖 root_a 的
+        # 文件，比漏记一条严重得多。
+        if not (
+            _source_history_loaded
+            and _source_history_loaded_path
+            == _source_history_path(memory_dir=memory_dir)
+        ):
+            logger.warning(
+                "%s 在加载与写入之间被换成了别的根，跳过本次 source 记录: kind=%s",
+                _SOURCE_HISTORY_FILENAME,
+                kind,
+            )
+            return
+        _source_history[source_hash] = {
+            "ts": time.time(),
+            "kind": kind,
+            "title": (title or '')[:80],
+        }
+        now = time.time()
+        forgotten = [
+            existing_hash
+            for existing_hash, entry in _source_history.items()
+            if _source_skip_probability(
+                now - float(entry.get('ts', 0.0) or 0.0),
+                _half_life_for(entry.get('kind', 'web')),
+            )
+            < PROACTIVE_SOURCE_FORGET_P
+        ]
+        for existing_hash in forgotten:
+            _source_history.pop(existing_hash, None)
+        # 落盘也在锁内，对偶于 _increment_proactive_chat_total 调 _persist_totals_unlocked：
+        # 这是个跨角色的单文件，多个投递并发时锁只盖内存不盖落盘等于没盖。
+        # 写本身仍在 to_thread 里跑（atomic_write_json_async 内部），持的是 asyncio.Lock
+        # 不是 threading.Lock，所以事件循环在等待期间照样服务别的请求。
+        #
+        # to_thread 一旦交出去就取消不掉 —— 线程会一直跑到 os.replace 结束。所以不能直接
+        # await：这里被 cancel（退出时最常见）时 async with 会在 CancelledError 穿过的
+        # 一刻就把锁放掉，而那次 os.replace 还在飞，「写在锁内」的不变量就破了。shield 让
+        # 取消落在外层、写盘任务照跑；再显式等它收尾之后才让 CancelledError 继续往上走。
+        writer = asyncio.ensure_future(
+            _persist_source_history_unlocked(memory_dir=memory_dir)
+        )
+        try:
+            await asyncio.shield(writer)
+        except asyncio.CancelledError:
+            # 循环而不是等一次：第二次取消（退出时最常见）会把这次 asyncio.wait 本身也
+            # 打断，锁又提前放了。writer 是 to_thread，线程一定会跑完，循环必然终止。
+            while not writer.done():
+                with suppress(asyncio.CancelledError):
+                    await asyncio.wait({writer})
+            raise
+
+
+# --- 主动搭话近期记录暂存区 ---
+# {lanlan_name: deque([(timestamp, message), ...], maxlen=10)}
+_proactive_chat_history: dict[str, deque] = {}
+
+
+# --- 主动搭话"素材标识"近期去重暂存区（ANTI_REPEAT_EXEMPT_SOURCE_TAGS 用）---
+# {lanlan_name: {source_tag: deque([(timestamp, material_key), ...], maxlen=N)}}
+# 素材推送类 channel（MUSIC/MEME）豁免台词级复读判定，改按"素材本身"去重：
+# MUSIC 看曲目（title|artist），MEME 看搜索关键词。本轮素材与近期不雷同就放行；
+# 雷同才回落到台词判定。进程内、重启清零——短期复读保护，与 _proactive_chat_
+# history / _mini_game_invite_state 同样是内存态即可。
+_proactive_material_history: dict[str, dict[str, deque]] = {}
+
+
+_PROACTIVE_MATERIAL_HISTORY_MAX = 10
+
+
+# --- 持久化"该角色累计成功投递的主动搭话次数 + 是否曾被邀请过"---
+# 单文件 schema：
+#   {"version": 2,
+#    "totals": {<lanlan_name>: <int>, ...},
+#    "ever_delivered": {<lanlan_name>: true, ...}}
+# 跨进程重启保留。两份数据合一个文件方便维护。
+#
+# - totals: 「新用户第 N 次主动搭话强制走 mini-game 邀请」(N=NEW_USER_FORCE_AT)
+#   必须依赖跨重启的累计计数——否则用户每次重启 app，force-trigger 会反复触发，
+#   体感邀请密度抖。计数语义与 _record_proactive_chat 对齐：仅在「成功投递给
+#   用户」时 +1，PASS 不算（spec 上"第 N 次主动搭话"指用户实际收到的）。
+# - ever_delivered: 「该角色是否曾经被发过 mini-game 邀请」一次性 true 标记，
+#   force-first 的 "is new user" 判定基础。和 in-memory 的 ``state.delivered_at``
+#   不同：后者跟随 PR-B 的 D2「回头再说」会被 reset，但 ever_delivered 一旦置
+#   True 就不再翻——「曾经被邀请过」是历史事实，不能被反悔。codex review (P1)
+#   指出，没这条 force-first 在重启后会把已邀请过的用户当新用户重新强制邀请。
+_PROACTIVE_CHAT_TOTALS_FILENAME = "proactive_chat_totals.json"
+
+
+_PROACTIVE_CHAT_TOTALS_SCHEMA_VERSION = 2
+
+
+_proactive_chat_totals: dict[str, int] = {}
+
+
+_invite_ever_delivered: dict[str, bool] = {}
+
+
+_proactive_chat_totals_lock = asyncio.Lock()
+
+
+_proactive_chat_totals_loaded = False
+_proactive_chat_totals_loaded_path: Path | None = None
+
+
+_RECENT_CHAT_MAX_AGE_SECONDS = 3600  # 1小时内的搭话记录
+
+
+_PROACTIVE_SIMILARITY_THRESHOLD = 0.90  # 保守硬拦截阈值：90% 以上重复直接放弃本轮
+
+
+def _recent_proactive_chat_entries(lanlan_name: str) -> tuple[tuple, ...]:
+    """Return an immutable snapshot of one character's recent chat records."""
+    history = _proactive_chat_history.get(lanlan_name)
+    return tuple(history) if history else ()
+
+
+def _format_recent_proactive_chats(lanlan_name: str, lang: str = 'zh') -> str:
+    """
+    Format recent proactive-chat records into a text block injectable into the prompt (with relative time and source channel).
+    Logic:
+    - fetch the given model's proactive-chat records from _proactive_chat_history
+    - filter to records within the last _RECENT_CHAT_MAX_AGE_SECONDS seconds
+    - format the time label according to lang ('zh', 'en', 'ja', 'ko')
+    - format the source channel label ('vision', 'web')
+    """
+    history = _proactive_chat_history.get(lanlan_name)
+    if not history:
+        return ""
+    now = time.time()
+    recent = [entry for entry in history if now - entry[0] < _RECENT_CHAT_MAX_AGE_SECONDS]
+    if not recent:
+        return ""
+
+    tl = RECENT_PROACTIVE_TIME_LABELS.get(lang, RECENT_PROACTIVE_TIME_LABELS['en'])
+    cl = RECENT_PROACTIVE_CHANNEL_LABELS.get(lang, RECENT_PROACTIVE_CHANNEL_LABELS['en'])
+
+    def _rel(ts):
+        """
+        Format the time label.
+        args:
+        - ts: timestamp (seconds)
+        returns:
+        - str: formatted time label
+        """
+        d = int(now - ts)
+        if d < 60:
+            return tl[0]
+        m = d // 60
+        if m < 60:
+            return tl['m'].format(m)
+        return tl['h'].format(m // 60)
+
+    header = _loc(RECENT_PROACTIVE_CHATS_HEADER, lang)
+    footer = _loc(RECENT_PROACTIVE_CHATS_FOOTER, lang)
+    lines = []
+    for entry in recent:
+        ts, msg = entry[0], entry[1]
+        ch = entry[2] if len(entry) > 2 else ''
+        # 过滤掉 vision 通道的记录，避免 AI 引用已过期的屏幕内容产生幻觉
+        if ch == 'vision':
+            continue
+        tag = _rel(ts)
+        if ch:
+            tag += f"·{cl.get(ch, ch)}"
+        lines.append(f"- [{tag}] {msg}")
+    if not lines:
+        return ""
+    return f"\n{header}\n" + "\n".join(lines) + f"\n{footer}\n"
+
+
+# Reminiscence usage buffer — separate from _proactive_chat_history because
+# the latter feeds dedup / similarity checks (_format_recent_proactive_chats /
+# _is_similar_to_recent_proactive_chat) and any double-recording there would
+# inflate similarity scores against its own message. This buffer is read
+# only by _compute_source_weights to factor reminiscence into channel
+# weight decay alongside web/news/etc.
+#
+# Why 50 (not tied to PROACTIVE_CHAT_HISTORY_MAX=10): the two buffers serve
+# opposite sizing constraints. PROACTIVE_CHAT_HISTORY_MAX bounds *dedup*
+# memory (1h text-similarity check, 10 entries are plenty). This buffer
+# bounds *decay-signal completeness* — _compute_source_weights walks every
+# timestamp inside the _SOURCE_WEIGHT_WINDOW (=1h) for the exponential
+# decay sum, so the maxlen MUST be larger than the worst-case usage count
+# in that window or oldest entries get evicted and the channel under-
+# counts. 50 leaves ~5× safety margin for high-cadence proactive cycles.
+# Kept as a private module constant alongside the other _SOURCE_WEIGHT_*
+# tunables (_SOURCE_WEIGHT_DECAY_LAMBDA / _K / _FLOOR / _WINDOW) — it's
+# tied to that model's calibration, not a user-facing config knob.
+_REMINISCENCE_USAGE_MAX = 50
+
+
+_reminiscence_usage_history: dict[str, deque[float]] = {}
+
+
+def _reminiscence_usage_entries(lanlan_name: str) -> tuple[float, ...]:
+    """Return an immutable snapshot of reminiscence usage timestamps."""
+    history = _reminiscence_usage_history.get(lanlan_name)
+    return tuple(history) if history else ()
+
+
+def _record_reminiscence_usage(lanlan_name: str) -> None:
+    """Record one reminiscence usage timestamp for source-weight decay.
+
+    Kept separate from ``_record_proactive_chat`` to avoid polluting
+    the dedup / similarity history (which compares the proactive
+    response text against past entries by channel-agnostic match).
+    """
+    if lanlan_name not in _reminiscence_usage_history:
+        _reminiscence_usage_history[lanlan_name] = deque(maxlen=_REMINISCENCE_USAGE_MAX)
+    _reminiscence_usage_history[lanlan_name].append(time.time())
+
+
+def _record_proactive_chat(lanlan_name: str, message: str, channel: str = ''):
+    """
+    Record one successful proactive chat (with its source channel).
+    Logic:
+    - get the current timestamp
+    - append the record (timestamp, message content, channel) to the given model's queue in _proactive_chat_history
+    - if the queue is full, the oldest record is popped automatically, keeping the length within maxlen (default 10)
+    args:
+    - lanlan_name: model name
+    - message: chat content
+    - channel: source channel (optional, default '')
+    """
+    if lanlan_name not in _proactive_chat_history:
+        _proactive_chat_history[lanlan_name] = deque(maxlen=PROACTIVE_CHAT_HISTORY_MAX)
+    _proactive_chat_history[lanlan_name].append((time.time(), message, channel))
+
+    # Telemetry：主动搭话实际投递。channel 是低基数 enum（vision/news/video/
+    # personal/music/meme/mini_game/...），截断防意外高基数。配合 settings_state
+    # 的 proactive 配置档，能看深度用户每天实际被主动搭话几次。
+    #
+    # 不在这里做 responded 回应率配对：这会要求 core turn 与主动搭话状态共享
+    # “上次投递时刻”，扩大两个生命周期之间的耦合。回应率先由 server 端使用
+    # proactive_fired 时刻与用户消息活动 timestamp 关联粗估；精确配对另行设计。
+    try:
+        from utils.instrument import counter as _instr_counter
+        _instr_counter("proactive_fired", channel=(str(channel) or "default")[:24])
+    except Exception:
+        # 埋点失败不能影响主动搭话投递
+        pass
+
+
+def _normalize_material_key(raw: str) -> str:
+    """Normalize a material identity string for exact-match dedup (lowercase + collapse whitespace)."""
+    s = (raw or "").strip().lower()
+    return re.sub(r'\s+', ' ', s)
+
+
+def _proactive_material_key(
+    source_tag: str | None,
+    selected_music_link: dict | None,
+    meme_content: dict | None,
+) -> str:
+    """Compute the dedup identity of the material this round pushes.
+
+    - MUSIC → the picked track (title|artist); two different songs never collide
+    - MEME → the **search keyword** (not the image): same keyword reused soon is a
+      repeat, a fresh keyword is not. Random hot-word fallback has an empty keyword
+      → empty key → treated as "never a repeat" (each random fetch is varied)
+
+    Empty/unknown → "" (caller treats as non-repeat, i.e. always exempt).
+    """
+    if source_tag == 'MUSIC' and selected_music_link:
+        title = (selected_music_link.get('title') or '').strip()
+        artist = (selected_music_link.get('artist') or '').strip()
+        return _normalize_material_key(f"{title}|{artist}") if (title or artist) else ""
+    if source_tag == 'MEME' and meme_content:
+        return _normalize_material_key(meme_content.get('keyword') or '')
+    return ""
+
+
+def _is_recent_proactive_material(lanlan_name: str, source_tag: str, key: str) -> bool:
+    """Whether *key* was pushed for *source_tag* within the recent window (exact match).
+
+    Empty key → never a repeat (no material identity to compare on).
+    """
+    if not key:
+        return False
+    bucket = _proactive_material_history.get(lanlan_name, {}).get(source_tag)
+    if not bucket:
+        return False
+    now = time.time()
+    return any(
+        k == key and now - ts < _RECENT_CHAT_MAX_AGE_SECONDS
+        for ts, k in bucket
+    )
+
+
+def _record_proactive_material(lanlan_name: str, source_tag: str, key: str) -> None:
+    """Record one successfully delivered material identity (skip empty keys)."""
+    if not key:
+        return
+    per_tag = _proactive_material_history.setdefault(lanlan_name, {})
+    if source_tag not in per_tag:
+        per_tag[source_tag] = deque(maxlen=_PROACTIVE_MATERIAL_HISTORY_MAX)
+    per_tag[source_tag].append((time.time(), key))
+
+
+def _proactive_turn_still_owned(mgr: Any, proactive_sid: Any) -> bool:
+    """Whether cleanup may still target the rejected proactive turn safely."""
+    return (
+        mgr.current_speech_id == proactive_sid
+        and not mgr.state.is_proactive_preempted(proactive_sid)
+    )
+
+
+async def _enter_proactive_phase2(
+    mgr: Any,
+    proactive_sid: Any,
+    *,
+    log: Any = None,
+) -> bool:
+    """Enter Phase 2 only if user engagement stays unchanged across the await."""
+    from main_logic.session_state import SessionEvent
+
+    active_logger = log or logger
+    expected_user_engagement_time = getattr(
+        mgr,
+        "last_user_engagement_time",
+        None,
+    )
+    await mgr.state.fire(SessionEvent.PROACTIVE_PHASE2)
+    if (
+        mgr.state.is_proactive_preempted(proactive_sid)
+        or getattr(mgr, "last_user_engagement_time", None)
+        != expected_user_engagement_time
+    ):
+        active_logger.info(
+            "proactive Phase 2 abandoned: user engaged during transition"
+        )
+        if _proactive_turn_still_owned(mgr, proactive_sid):
+            await mgr.handle_new_message()
+        return False
+    return True
+
+
+def _proactive_feed_rejected_for_takeover(
+    mgr: Any,
+    proactive_sid: Any,
+    expected_user_engagement_time: Any,
+) -> bool:
+    """Distinguish a guarded-feed rejection from a local TTS enqueue failure."""
+    return (
+        not _proactive_turn_still_owned(mgr, proactive_sid)
+        or getattr(mgr, "last_user_engagement_time", None)
+        != expected_user_engagement_time
+    )
+
+
+def _proactive_chat_totals_path(
+    *, memory_dir: str | Path | None = None
+) -> Path:
+    return _resolve_memory_dir(memory_dir) / _PROACTIVE_CHAT_TOTALS_FILENAME
+
+
+async def _ensure_proactive_chat_totals_loaded(
+    *, memory_dir: str | Path | None = None
+) -> None:
+    """Lazy-load the persisted cumulative counters + ever_delivered. Idempotent. File reads go to the thread pool.
+
+    schema: {"version": 2,
+             "totals": {<lanlan_name>: <int>, ...},
+             "ever_delivered": {<lanlan_name>: true, ...}}
+
+    A missing file / corrupted JSON is not fatal — start from empty, and the next
+    increment writes a fresh file. The old schema v1 has no ever_delivered field,
+    so it loads as an empty dict — after upgrading, the first proactive chat will
+    "force-first re-deliver once" for existing users (at most once, because
+    ever_delivered is set True and persisted immediately after delivery); this is
+    a one-off v1→v2 migration cost and needs no dedicated migration script."""
+    global _proactive_chat_totals_loaded, _proactive_chat_totals_loaded_path
+    path = _proactive_chat_totals_path(memory_dir=memory_dir)
+    if (
+        _proactive_chat_totals_loaded
+        and _proactive_chat_totals_loaded_path == path
+    ):
+        return
+    async with _proactive_chat_totals_lock:
+        if (
+            _proactive_chat_totals_loaded
+            and _proactive_chat_totals_loaded_path == path
+        ):
+            return
+        _proactive_chat_totals.clear()
+        _invite_ever_delivered.clear()
+        try:
+            data = await asyncio.to_thread(read_json, path)
+            totals = data.get('totals') if isinstance(data, dict) else None
+            if isinstance(totals, dict):
+                for k, v in totals.items():
+                    if isinstance(k, str) and isinstance(v, (int, float)):
+                        _proactive_chat_totals[k] = int(v)
+            ever = data.get('ever_delivered') if isinstance(data, dict) else None
+            if isinstance(ever, dict):
+                for k, v in ever.items():
+                    if isinstance(k, str) and bool(v):
+                        _invite_ever_delivered[k] = True
+        except FileNotFoundError:
+            # 首次启动 / cleanup 后没文件——按全空起步，下次 increment 会创建。
+            # 不是异常，不打 warning。
+            pass
+        except Exception as exc:
+            logger.warning("proactive_chat_totals load failed: %s", exc)
+        _proactive_chat_totals_loaded = True
+        _proactive_chat_totals_loaded_path = path
+
+
+def _get_proactive_chat_total(lanlan_name: str) -> int:
+    """Synchronous read of cached counter. 0 if loaded-but-unset or not loaded yet.
+
+    `_maybe_deliver_mini_game_invite` calls this after the caller has already
+    awaited `_ensure_proactive_chat_totals_loaded()`, so there is no await here."""
+    return int(_proactive_chat_totals.get(lanlan_name, 0))
+
+
+def _was_invite_ever_delivered(lanlan_name: str) -> bool:
+    """Synchronous read of ever-delivered flag.
+
+    The caller must await ``_ensure_proactive_chat_totals_loaded()`` first."""
+    return bool(_invite_ever_delivered.get(lanlan_name, False))
+
+
+async def _persist_totals_unlocked(
+    *, memory_dir: str | Path | None = None
+) -> None:
+    """Persist totals + ever_delivered to disk. The caller must hold _proactive_chat_totals_lock."""
+    try:
+        await atomic_write_json_async(
+            _proactive_chat_totals_path(memory_dir=memory_dir),
+            {
+                'version': _PROACTIVE_CHAT_TOTALS_SCHEMA_VERSION,
+                'totals': dict(_proactive_chat_totals),
+                'ever_delivered': dict(_invite_ever_delivered),
+            },
+            indent=2,
+            ensure_ascii=False,
+        )
+    except Exception as exc:
+        logger.warning(
+            "proactive_chat_totals persist failed (in-memory still up-to-date): %s",
+            exc,
+        )
+
+
+async def _increment_proactive_chat_total(
+    lanlan_name: str, *, memory_dir: str | Path | None = None
+) -> int:
+    """+1 cached counter and persist atomically. Returns new value.
+
+    Serialization is guaranteed by ``_proactive_chat_totals_lock``: concurrent
+    proactive_chat calls each await a serial update, so no increment is lost.
+    Persistence failures are not raised to the caller — the counter is
+    best-effort; losing one +1 is not fatal, but the log line is kept."""
+    await _ensure_proactive_chat_totals_loaded(memory_dir=memory_dir)
+    async with _proactive_chat_totals_lock:
+        new_value = _proactive_chat_totals.get(lanlan_name, 0) + 1
+        _proactive_chat_totals[lanlan_name] = new_value
+        await _persist_totals_unlocked(memory_dir=memory_dir)
+    return new_value
+
+
+async def _mark_invite_ever_delivered(
+    lanlan_name: str, *, memory_dir: str | Path | None = None
+) -> None:
+    """One-shot set-True + persist. Skips the disk write when already True to save IO.
+
+    Shares ``_proactive_chat_totals_lock`` with ``_increment_proactive_chat_total``
+    so concurrent updates write totals + ever_delivered together atomically.
+
+    ⚠️ The invite delivery path must not call ``_increment_proactive_chat_total +
+    _mark_invite_ever_delivered`` separately — the lock is released between the
+    two awaits, and a process dying in between leaves a ``totals: N+1,
+    ever_delivered: stale`` half-state on disk, making force-first fire once more
+    after restart. Use ``_record_invite_delivery_persistent`` for one atomic
+    write under a single lock."""
+    await _ensure_proactive_chat_totals_loaded(memory_dir=memory_dir)
+    async with _proactive_chat_totals_lock:
+        if _invite_ever_delivered.get(lanlan_name):
+            return
+        _invite_ever_delivered[lanlan_name] = True
+        await _persist_totals_unlocked(memory_dir=memory_dir)
+
+
+async def _record_invite_delivery_persistent(
+    lanlan_name: str, *, memory_dir: str | Path | None = None
+) -> int:
+    """Atomic persistent record of one successfully delivered mini-game invite:
+    counter +1 + ever_delivered=True written to disk once under one lock.
+    Returns the new total.
+
+    Reason to exist: doing +1 then mark as two separate awaits releases the lock
+    in between; a process crash / coroutine cancel can leave a ``totals: N+1,
+    ever_delivered: stale`` half-state on disk — after restart
+    ``_was_invite_ever_delivered`` sees the stale false and force-first fires
+    again. Pointed out by CodeRabbit Major review."""
+    await _ensure_proactive_chat_totals_loaded(memory_dir=memory_dir)
+    async with _proactive_chat_totals_lock:
+        new_value = _proactive_chat_totals.get(lanlan_name, 0) + 1
+        _proactive_chat_totals[lanlan_name] = new_value
+        _invite_ever_delivered[lanlan_name] = True
+        await _persist_totals_unlocked(memory_dir=memory_dir)
+    return new_value
+
+
+def _clear_channel_from_proactive_history(lanlan_name: str, channel: str) -> int:
+    """Blank out the channel mark of the given channel's entries in _proactive_chat_history.
+
+    Purpose: when the user gives strong positive feedback (e.g. a recommended
+    song played all the way through), that amounts to explicitly accepting this
+    channel's recent output, so _compute_source_weights should no longer
+    penalize the channel for "just used". Clearing the channel field stops
+    raw_score from accumulating those entries, while the message text stays in
+    the deque for dedup / similarity / format_recent_proactive_chats reuse.
+
+    Returns the number of entries cleared.
+    """
+    history = _proactive_chat_history.get(lanlan_name)
+    if not history:
+        return 0
+    rewritten: list[tuple] = []
+    cleared = 0
+    for entry in history:
+        if len(entry) >= 3 and entry[2] == channel:
+            rewritten.append((entry[0], entry[1], ''))
+            cleared += 1
+        else:
+            rewritten.append(entry)
+    if cleared == 0:
+        return 0
+    history.clear()
+    history.extend(rewritten)
+    return cleared
+
+
+def _normalize_text_for_similarity(text: str) -> str:
+    """
+    Text normalization (conservative strategy):
+    - lowercase
+    - collapse consecutive whitespace
+    Only light normalization, to avoid false kills from over-cleaning.
+    """
+    text = (text or "").strip().lower()
+    return re.sub(r'\s+', ' ', text)
+
+
+def _is_similar_to_recent_proactive_chat(lanlan_name: str, message: str) -> tuple[bool, float]:
+    """
+    Check whether message is highly similar to recent proactive chats (high threshold against false kills).
+    Returns (is_duplicate, best_score).
+    """
+    history = _proactive_chat_history.get(lanlan_name)
+    if not history or not message.strip():
+        return False, 0.0
+
+    now = time.time()
+    current = _normalize_text_for_similarity(message)
+    if not current:
+        return False, 0.0
+
+    best = 0.0
+    for entry in history:
+        ts, old_msg = entry[0], entry[1]
+        if now - ts >= _RECENT_CHAT_MAX_AGE_SECONDS:
+            continue
+        old_norm = _normalize_text_for_similarity(old_msg)
+        if not old_norm:
+            continue
+        score = difflib.SequenceMatcher(None, current, old_norm).ratio()
+        if score > best:
+            best = score
+        if score >= _PROACTIVE_SIMILARITY_THRESHOLD:
+            return True, score
+    return False, best

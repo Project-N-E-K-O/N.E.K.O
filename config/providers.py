@@ -40,6 +40,21 @@ from typing import Any
 EXTRA_BODY_OPENAI = {"enable_thinking": False}
 EXTRA_BODY_OPENAI_THINKING = {"enable_thinking": True}
 
+# ⚠️ 上面那个 OPENAI 指的是「OpenAI-compatible 形状」—— enable_thinking 是 DashScope /
+# Silicon 这类兼容网关的方言，OpenAI 自己不认。下面这两组才是 api.openai.com 原生的。
+# 实测（2026-08-07，Chat Completions）：
+#   - 嵌套 {"reasoning": {"effort": ...}} 是 OpenRouter / Responses API 的形状，Chat
+#     Completions 直接 400 Unknown parameter: 'reasoning'；原生只收顶层 reasoning_effort。
+#   - 档位按模型分裂，没有一个全家通用的「最低档」：
+#       gpt-5.6-luna / gpt-5.6-terra → none / low / medium / high / xhigh（无 minimal）
+#       gpt-5-nano                   → minimal / low / medium / high（无 none）
+#     所以关思考要分两组常量，凝神侧都收敛到 low（两家都支持）。
+EXTRA_BODY_OPENAI_NATIVE = {"reasoning_effort": "none"}
+EXTRA_BODY_OPENAI_NATIVE_THINKING = {"reasoning_effort": "low"}
+
+EXTRA_BODY_OPENAI_NATIVE_MINIMAL = {"reasoning_effort": "minimal"}
+EXTRA_BODY_OPENAI_NATIVE_MINIMAL_THINKING = {"reasoning_effort": "low"}
+
 EXTRA_BODY_CLAUDE = {"thinking": {"type": "disabled"}}
 EXTRA_BODY_CLAUDE_THINKING = {"thinking": {"type": "enabled"}}
 
@@ -77,6 +92,11 @@ AGENT_USE_EXTRA_BODY = True
 
 # 模型到 extra_body 的映射
 MODELS_EXTRA_BODY_MAP: dict[str, dict] = {
+    # OpenAI 原生系列 —— 走顶层 reasoning_effort，别拿 EXTRA_BODY_OPENAI /
+    # EXTRA_BODY_OPENROUTER 来填，那两个形状都会被 400（见常量处的实测记录）。
+    "gpt-5.6-luna": EXTRA_BODY_OPENAI_NATIVE,
+    "gpt-5.6-terra": EXTRA_BODY_OPENAI_NATIVE,
+    "gpt-5-nano": EXTRA_BODY_OPENAI_NATIVE_MINIMAL,
     # Qwen 系列
     "qwen-flash": EXTRA_BODY_OPENAI,
     "qwen3.6-flash": EXTRA_BODY_OPENAI,
@@ -91,6 +111,8 @@ MODELS_EXTRA_BODY_MAP: dict[str, dict] = {
     "qwen3.7-plus-2026-05-26": EXTRA_BODY_OPENAI,
     "qwen3.7-plus": EXTRA_BODY_OPENAI,
     "qwen3.7-max": EXTRA_BODY_OPENAI,
+    "qwen3.7-flash": EXTRA_BODY_OPENAI,
+    "qwen3.7-flash-2026-07-15": EXTRA_BODY_OPENAI,
     # GLM 系列
     "glm-4.5-air": EXTRA_BODY_CLAUDE,
     "glm-4.6v-flash": EXTRA_BODY_CLAUDE,
@@ -103,6 +125,7 @@ MODELS_EXTRA_BODY_MAP: dict[str, dict] = {
     "kimi-k2-0905-preview": EXTRA_BODY_CLAUDE,
     "kimi-k2.5": EXTRA_BODY_CLAUDE,
     "kimi-k2.6": EXTRA_BODY_CLAUDE,
+    "kimi-k3": EXTRA_BODY_CLAUDE,
     # MiniMax系列
     "MiniMax-M2.5": EXTRA_BODY_MINIMAX,
     "MiniMax-M2.7": EXTRA_BODY_MINIMAX,
@@ -113,12 +136,20 @@ MODELS_EXTRA_BODY_MAP: dict[str, dict] = {
     "deepseek-ai/DeepSeek-V3.2": EXTRA_BODY_OPENAI,
     "deepseek-ai/DeepSeek-V4-Flash": EXTRA_BODY_OPENAI,
     "Qwen/Qwen3.5-397B-A17B": EXTRA_BODY_OPENAI,
+    # DeepSeek 官方（api.deepseek.com）：V4 默认开思考，且用的是 thinking.type 方言，
+    # 跟 GLM/Kimi/Doubao 同形状，直接复用 EXTRA_BODY_CLAUDE。转售同款的网关是另外的
+    # 键名（SiliconFlow 的 deepseek-ai/…、OpenRouter 的 deepseek/…），各走各的方言，
+    # 不会被这几行波及。vision-exp 是同端口同代的视觉版，方言一致。
+    "deepseek-v4-flash": EXTRA_BODY_CLAUDE,
+    "deepseek-v4-flash-vision-exp": EXTRA_BODY_CLAUDE,
+    "deepseek-v4-pro": EXTRA_BODY_CLAUDE,
     # Step
     "step-2-mini": {"tools": [{"type": "web_search", "function": {"description": "这个web_search用来搜索互联网的信息"}}]},
     # 免费版（lanlan.tech / lanlan.app，模型名固定 free-model）：用 thinking.type 风格，
     # 平时下发 disabled、凝神由 focus_extra_body flip 成 enabled。
     "free-model": EXTRA_BODY_CLAUDE,
     # Claude 系列（Anthropic 原生：enable 须用 adaptive，本 PR 暂不翻，见 EXTRA_BODY_ANTHROPIC）
+    "claude-sonnet-5": EXTRA_BODY_ANTHROPIC,
     "claude-sonnet-4-6": EXTRA_BODY_ANTHROPIC,
     "claude-haiku-4-5-20251001": EXTRA_BODY_ANTHROPIC,
     "claude-opus-4-7": EXTRA_BODY_ANTHROPIC,
@@ -171,6 +202,8 @@ def get_agent_extra_body(model: str) -> dict | None:
 # MODELS_FOCUS_EXTRA_BODY_MAP 里回退为原值、原样保留。
 _THINKING_ENABLE_FORM: dict[int, dict] = {
     id(EXTRA_BODY_OPENAI): EXTRA_BODY_OPENAI_THINKING,
+    id(EXTRA_BODY_OPENAI_NATIVE): EXTRA_BODY_OPENAI_NATIVE_THINKING,
+    id(EXTRA_BODY_OPENAI_NATIVE_MINIMAL): EXTRA_BODY_OPENAI_NATIVE_MINIMAL_THINKING,
     id(EXTRA_BODY_CLAUDE): EXTRA_BODY_CLAUDE_THINKING,
     id(EXTRA_BODY_GEMINI): EXTRA_BODY_GEMINI_THINKING,
     id(EXTRA_BODY_GEMINI_3): EXTRA_BODY_GEMINI_3_THINKING,
@@ -199,6 +232,8 @@ def focus_extra_body(model: str) -> dict | None:
       - thinking_budget: 0 -> 800 (low fixed budget)    (Gemini 2.5)
       - thinking_level low (kept minimal), include_thoughts->True (Gemini 3)
       - reasoning.effort: none -> low                   (OpenRouter)
+      - reasoning_effort: none|minimal -> low           (OpenAI native; the
+        floor differs per model, low is the one both generations accept)
 
     Provider extras that are NOT thinking knobs (e.g. ``step-2-mini``'s built-in
     ``web_search`` tools, or MiniMax's reasoning_split) are preserved unchanged.

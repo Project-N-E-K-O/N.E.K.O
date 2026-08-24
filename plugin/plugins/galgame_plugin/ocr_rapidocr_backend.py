@@ -25,6 +25,30 @@ from plugin.plugins._shared.rapidocr.rapidocr_support import (
 
 __all__ = ["RapidOcrBackend"]
 
+
+def _align_rapidocr_classifier_input_shape(runtime: Any) -> None:
+    """Align this plugin's classifier preprocessor with its loaded ONNX model."""
+    classifier = getattr(runtime, "text_cls", None)
+    infer = getattr(classifier, "infer", None)
+    session = getattr(infer, "session", None)
+    get_inputs = getattr(session, "get_inputs", None)
+    if not callable(get_inputs):
+        return
+    try:
+        model_inputs = list(get_inputs() or [])
+        model_shape = list(getattr(model_inputs[0], "shape", []) or [])
+    except Exception:
+        return
+    if len(model_shape) != 4:
+        return
+    classifier_shape = model_shape[1:]
+    if not all(isinstance(value, int) and value > 0 for value in classifier_shape):
+        return
+    if list(getattr(classifier, "cls_image_shape", []) or []) == classifier_shape:
+        return
+    classifier.cls_image_shape = classifier_shape
+
+
 class RapidOcrBackend:
     def __init__(
         self,
@@ -103,7 +127,10 @@ class RapidOcrBackend:
                         ocr_version=self._ocr_version,
                         plugin_id="galgame_plugin",
                     )
+                    _align_rapidocr_classifier_input_shape(runtime)
                     _store_rapidocr_runtime_cache(key, runtime, now=now)
+                else:
+                    _align_rapidocr_classifier_input_shape(runtime)
                 _acquire_rapidocr_runtime_cache(key)
             self._runtime = runtime
             self._runtime_cache_acquired = True

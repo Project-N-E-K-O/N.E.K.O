@@ -15,6 +15,7 @@
 
 from ._shared import (
     Any,
+    Callable,
     Dict,
     IMAGE_IDLE_RATE_MULTIPLIER,
     List,
@@ -35,8 +36,92 @@ from ._shared import (
     np,
     parse_arguments_json,
     time,
+    uuid,
     websockets,
 )
+from main_logic.provider_failure_signals import (
+    CODES_REQUIRING_MSG_DETAIL,
+    classify_provider_failure_text,
+)
+from ._protocol_capabilities import (
+    ID_BEARING_RESPONSE_CONTENT_EVENT_TYPES,
+    _response_id_text,
+)
+
+
+_ATTACHED_TRANSPORT = object()
+
+# Ceiling on each host step inside a fail-open release that may be cut short.
+# The arbiter bounds the WHOLE notification with one shared budget
+# (_STUCK_RELEASE_NOTIFY_TIMEOUT, 2.0s); without a per-step ceiling the first
+# await consumes it and everything after it is cancelled where it stands.
+# Three bounded steps x 0.5s leaves the rest of the arbiter's budget for the
+# speech-id rotation, which gets no ceiling of its own because it is last —
+# nothing behind it can be starved. That is a necessary condition, not a
+# guarantee: asyncio.wait_for bounds when the cancellation is DELIVERED, not
+# when the coroutine returns, and the outer budget still reaches the rotation.
+_STUCK_RELEASE_STEP_TIMEOUT = 0.5
+
+# How many finished response ids to remember for usage deduplication. A repeat
+# arrives right behind its original, so this only has to outlive the events
+# interleaved between them; it is a leak guard, not a history.
+_USAGE_RECORDED_ID_LIMIT = 32
+
+# `error` 事件的致命性判定是一串子串匹配（'429' / '1008' / '503' / 'quota' ...）。它
+# 过去匹配在 `str(event['error'])` 上，也就是整个 dict 的 repr —— 里面回显着我们自己
+# 生成的客户端相关性 id（`event_user_item_<uuid4().hex>` 之类）。hex 的字符集是
+# 0-9a-f，'429' 这三个字符全在里面：32 位 hex 串里随机出现 '429' 的概率约 0.7%，
+# '1008' 约 0.04%，'503' 约 0.7%。撞上一次，一次普通的「这条事件被拒」就被误判成配额 /
+# 策略致命错误，直接 close() 掉整条 realtime 连接 —— 用户话说到一半，连接没了，而且
+# 无法复现。id 只是相关性标识，不携带任何分类信息，所以分类前先把它们剔干净。
+#
+# 只剔 id 字段，不动 message / code / type / param：`code: 1008`、`"HTTP 429"` 这些
+# 真信号一个不少。剔掉的字段照样进日志和 on_connection_error，诊断信息没有损失。
+def _is_correlation_key(key: str) -> bool:
+    lowered = key.lower()
+    return lowered == "id" or lowered.endswith("_id")
+
+
+def _error_classification_text(error: Any) -> str:
+    """Build the keyword-matching text for an ``error`` event, minus correlation ids."""
+    if isinstance(error, dict):
+        return " ".join(
+            str(value)
+            for key, value in error.items()
+            if value is not None and not _is_correlation_key(str(key))
+        )
+    return str(error or "")
+
+
+def _peer_close_descriptor(received_code) -> str:
+    """Name a peer close by its code alone, never by its reason text."""
+
+    if received_code is None:
+        return "WebSocket closed without a close code"
+    return f"WebSocket close code {received_code}"
+
+
+def _classify_peer_close(received_code, received_reason) -> tuple[str, dict[str, str] | None]:
+    """Map a peer close to existing stable UI codes without exposing its reason."""
+
+    code = classify_provider_failure_text(received_reason)
+    if code is None and received_code == 1008:
+        # The reason said nothing, but the close code alone is a policy
+        # signal on every provider that sends it.
+        code = "API_1008_FALLBACK"
+    if code is None:
+        return "CHARACTER_DISCONNECTED", None
+    if code in CODES_REQUIRING_MSG_DETAIL:
+        # The reason string is peer-controlled and deliberately withheld, but
+        # these codes' i18n strings interpolate {{msg}} — emitting them with
+        # no msg renders the raw placeholder to the user. Substitute the close
+        # code, which is ours to disclose and is what a bug report needs.
+        return code, {"msg": _peer_close_descriptor(received_code)}
+    return code, None
+
+
+class RealtimeImagePayloadTooLargeError(RuntimeError):
+    """A callback image cannot fit the provider's WebSocket frame limit."""
 
 
 
@@ -57,6 +142,22 @@ class _TransportMixin:
         # provider branch so it covers both Gemini and the WS providers.
         self._recent_tool_call_times = []
 
+        # Same reason, same lifetime: response ids are scoped to a connection,
+        # so a provider that restarts its numbering (or simply reuses an id)
+        # after a reconnect would otherwise have the new session's first turns
+        # suppressed as already-billed duplicates.
+        self._usage_recorded_ids = []
+        # Same lifetime as the id bookkeeping above, and for the same
+        # reason: a reconnect may reach a different upstream.
+        self._announces_responses = False
+        # Same lifetime, same reason: the quarantine is lowered only by a
+        # response.created on THIS socket, so a replacement connection to a
+        # never-announcing upstream would never clear it. Unreachable today
+        # (connect() swaps self.ws before any of this can matter, so the old
+        # response's events cannot arrive on the new socket) — reset anyway,
+        # because 'connection-scoped' should be true by construction.
+        self._idless_quarantine = False
+
         # ``close()`` releases RNNoise/soxr state. The client object is reused
         # across sessions, so recreate that session-owned processor on demand.
         if self._audio_processor is None:
@@ -65,6 +166,7 @@ class _TransportMixin:
         # Gemini uses google-genai SDK, not raw WebSocket
         if self._is_gemini:
             await self._connect_gemini(instructions, native_audio)
+            self._response_arbiter.reset_connection_state()
             return
 
         # 确保开始新连接时状态完全重置
@@ -88,14 +190,25 @@ class _TransportMixin:
         headers = {
             "Authorization": f"Bearer {self.api_key}"
         }
-        # close_timeout=0.5 缩短 close handshake 的等待上限：默认 10s 会把
-        # end_session 协程挂住数百毫秒~数秒（Qwen 回 CLOSE 帧偶尔很慢），
-        # 超时后 websockets 内部会 transport.abort() 强制关闭。
-        self.ws = await websockets.connect(url, additional_headers=headers, close_timeout=0.5)
+        # Give proxies and cross-region free routes enough time to complete the
+        # close handshake without restoring websockets' 10s default. A peer
+        # that never answers is still force-aborted after this bounded wait.
+        self.ws = await websockets.connect(url, additional_headers=headers, close_timeout=2.0)
+        self._on_connection_attached()
+        # Do not reopen the arbiter until the replacement transport exists.
+        # A failed reconnect must leave the prior shutdown state intact.
+        self._response_arbiter.reset_connection_state()
         # Clear fatal flag so send_event/update_session work on this new
         # connection (flag may be leftover from a previous failed session
         # when the same OmniRealtimeClient instance is reused).
         self._fatal_error_occurred = False
+        capabilities = self._realtime_protocol_capabilities
+        logger.info(
+            "Realtime protocol profile resolved "
+            "(route=%s response_start_evidence=%s)",
+            capabilities.route_key,
+            capabilities.response_start_evidence.value,
+        )
 
         # 启动静默检测任务（只在启用时）
         self._last_speech_time = time.time()
@@ -374,7 +487,7 @@ class _TransportMixin:
             logger.warning("⚠️ 图片重压缩失败 type=%s: %s — 丢弃帧", etype, e)
             return None
 
-    async def send_event(self, event) -> None:
+    async def send_event(self, event, *, raise_on_oversize: bool = False) -> None:
         # 检查是否已发生致命错误，直接跳过发送
         if self._fatal_error_occurred:
             return
@@ -422,6 +535,10 @@ class _TransportMixin:
                         self._try_shrink_image_payload, event, payload
                     )
                     if payload is None:
+                        if raise_on_oversize:
+                            raise RealtimeImagePayloadTooLargeError(
+                                "image payload exceeds realtime WebSocket frame limit"
+                            )
                         return
                 await self.ws.send(payload)
             except Exception as e:
@@ -528,7 +645,7 @@ class _TransportMixin:
                 if audio_processor.speech_probability > 0.4:
                     # B: 单帧 RNNoise 判定为语音就立即打点，独立于 sustain。
                     # _client_vad_active 仍需 500ms sustain，_user_recent_activity
-                    # 只看"最近是否发声"，fudge guard 用它兜住首 500ms 和停顿缝隙。
+                    # 只看"最近是否发声"，主动搭话 guard 用它兜住首 500ms 和停顿缝隙。
                     self._user_recent_activity_time = current_time
                     if self._speech_detect_start == 0.0:
                         self._speech_detect_start = current_time
@@ -549,10 +666,6 @@ class _TransportMixin:
                         # RMS 是唯一信号，也喂给 B 兜底。阈值已经是 500（较高），
                         # 一般环境噪音达不到。
                         self._user_recent_activity_time = current_time
-
-        # Suppress mic → server during proactive nudge injection (VAD above still updates)
-        if self._proactive_injecting:
-            return
 
         # 静音清 buffer：有 RNNoise 以 RNNoise 为准，否则 VAD + 连续本地静音（见 _should_clear_audio_buffer_on_silence）
         if self._should_clear_audio_buffer_on_silence(current_time, use_rnnoise_path):
@@ -579,8 +692,18 @@ class _TransportMixin:
         }
         await self.send_event(append_event)
 
-    async def _analyze_image_with_vision_model(self, image_b64: str) -> str:
-        """Use VISION_MODEL to analyze image and return description."""
+    async def _analyze_image_with_vision_model(
+        self,
+        image_b64: str,
+        *,
+        update_turn_state: bool = True,
+    ) -> str:
+        """Use VISION_MODEL to analyze an image and return its description.
+
+        Callback-owned images pass ``update_turn_state=False`` because their
+        description is delivered in the callback's exact arbiter ticket. They
+        must not overwrite or consume the ambient screen/camera snapshot state.
+        """
         try:
             # 使用统一的视觉分析函数
             from utils.screenshot_utils import analyze_image_with_vision_model
@@ -591,24 +714,29 @@ class _TransportMixin:
             )
 
             if description:
-                self._image_description = f"[实时屏幕截图或相机画面]: {description}"
+                if update_turn_state:
+                    self._image_description = (
+                        f"[实时屏幕截图或相机画面]: {description}"
+                    )
+                    self._image_recognized_this_turn = True
                 logger.info("✅ Image analysis complete.")
-                self._image_recognized_this_turn = True
                 return description
             else:
                 logger.warning("VISION_MODEL not configured or analysis failed")
-                self._image_description = _IMAGE_ANALYSIS_PENDING_DESCRIPTION
-                self._image_recognized_this_turn = False
-                self._latest_image_b64 = None
-                self._proactive_image_consumed = True
+                if update_turn_state:
+                    self._image_description = _IMAGE_ANALYSIS_PENDING_DESCRIPTION
+                    self._image_recognized_this_turn = False
+                    self._latest_image_b64 = None
+                    self._proactive_image_consumed = True
                 return ""
 
         except Exception as e:
             logger.error(f"Error analyzing image with vision model: {e}")
-            self._image_recognized_this_turn = False
-            self._image_description = _IMAGE_ANALYSIS_PENDING_DESCRIPTION
-            self._latest_image_b64 = None
-            self._proactive_image_consumed = True
+            if update_turn_state:
+                self._image_recognized_this_turn = False
+                self._image_description = _IMAGE_ANALYSIS_PENDING_DESCRIPTION
+                self._latest_image_b64 = None
+                self._proactive_image_consumed = True
             # 检测内容审查错误并发送中文提示到前端（不关闭session）
             error_str = str(e)
             if 'censorship' in error_str:
@@ -616,9 +744,18 @@ class _TransportMixin:
                     await self.on_status_message(json.dumps({"code": "IMAGE_BLOCKED"}))
             return ""
         finally:
-            self._image_being_analyzed = False
+            if update_turn_state:
+                self._image_being_analyzed = False
 
-    async def stream_image(self, image_b64: str, *, bypass_rate_limit: bool = False) -> None:
+    async def stream_image(
+        self,
+        image_b64: str,
+        *,
+        bypass_rate_limit: bool = False,
+        cache_latest: bool = True,
+        event_id: str | None = None,
+        on_rejected: Optional[Callable[[str], None]] = None,
+    ) -> str | None:
         """Stream raw image data to the API.
 
         ``bypass_rate_limit=True`` skips the native-vision frame-rate throttle
@@ -626,21 +763,67 @@ class _TransportMixin:
         screenshot) so it isn't silently dropped just because a high-frequency
         screen/camera frame was streamed within NATIVE_IMAGE_MIN_INTERVAL
         (Codex P2). It's one intentional image, not a stream, so it won't flood.
-        """
-        # Cache latest frame for proactive injection
-        self._latest_image_b64 = image_b64
-        self._proactive_image_consumed = False
 
+        WebSocket-native callback images may pass ``on_rejected`` to correlate
+        a later provider ``error.event_id`` with the callback delivery that
+        owns the image. The handler is registered before send so an immediate
+        asynchronous rejection cannot outrun it.
+
+        ``cache_latest=False`` sends an already-cached proactive snapshot
+        without treating that resend as a newly captured frame generation.
+        For a non-native callback image it returns the callback-owned
+        VISION_MODEL description instead, without changing ambient frame state.
+        """
+        rejection_event_id: str | None = None
         try:
-            # Models without native vision (step, free on lanlan.tech) — first frame triggers VISION_MODEL analysis
+            if not self._supports_native_image and not cache_latest:
+                return await self._analyze_image_with_vision_model(
+                    image_b64,
+                    update_turn_state=False,
+                )
+
+            # Standard StepFun is the only realtime provider without native
+            # vision; its first frame triggers VISION_MODEL analysis.
             if '实时屏幕截图或相机画面正在分析中' in self._image_description and not self._supports_native_image:
                 # 非原生视觉后端只需要本轮第一帧做分析；后续高频帧直接丢弃，避免并发刷爆 VISION_MODEL。
                 async with self._image_lock:
                     if self._image_recognized_this_turn or self._image_being_analyzed:
                         return
                     self._image_being_analyzed = True
+                if cache_latest:
+                    # Bind the cached generation to the frame that actually
+                    # owns this analysis. Concurrent frames rejected by the
+                    # gate above must not replace it and later receive the
+                    # first frame's description.
+                    self._latest_image_generation = (
+                        getattr(self, "_latest_image_generation", 0) + 1
+                    )
+                    self._latest_image_b64 = image_b64
+                    self._proactive_image_consumed = False
                 await self._analyze_image_with_vision_model(image_b64)
                 return
+
+            preserve_cached_step_frame = (
+                cache_latest
+                and not self._supports_native_image
+                and self._image_recognized_this_turn
+                and self._latest_image_b64 is not None
+                and not self._proactive_image_consumed
+            )
+            # A completed Step annotation remains bound to its still-pending
+            # cached frame. Do not replace that generation with a newer frame
+            # carrying no matching analysis. Still continue so an active user
+            # turn can receive the completed description through the normal
+            # _image_sent_this_turn path.
+
+            if cache_latest and not preserve_cached_step_frame:
+                # A monotonic generation distinguishes separately captured frames
+                # even when their JPEG payloads are byte-for-byte identical.
+                self._latest_image_generation = (
+                    getattr(self, "_latest_image_generation", 0) + 1
+                )
+                self._latest_image_b64 = image_b64
+                self._proactive_image_consumed = False
 
             # Rate limiting for native image input (with VAD-based throttling).
             # A deliberate cue image (bypass_rate_limit) skips the interval check
@@ -672,17 +855,31 @@ class _TransportMixin:
                         logger.error(f"Error sending image to Gemini: {e}")
                         if "closed" in str(e).lower():
                             self._fatal_error_occurred = True
+                        raise
                 return
 
-            if self._is_free_proxy:
+            if on_rejected is not None and self._supports_native_image:
+                event_id = event_id or f"event_callback_image_{uuid.uuid4().hex}"
+                rejection_event_id = event_id
+                self._inject_rejection_handlers[event_id] = on_rejected
+                self._fire_task(
+                    self._expire_inject_rejection_handler(event_id, 60.0)
+                )
+
+            if self._is_free_provider:
                 append_event = {
                     "type": "input_image_buffer.append" ,
                     "image": image_b64
                 }
-                await self.send_event(append_event)
+                if event_id is not None:
+                    append_event["event_id"] = event_id
+                await self.send_event(
+                    append_event,
+                    raise_on_oversize=bypass_rate_limit,
+                )
                 return
 
-            if self._audio_in_buffer:
+            if self._audio_in_buffer or bypass_rate_limit:
                 if "qwen" in self._model_lower:
                     append_event = {
                         "type": "input_image_buffer.append" ,
@@ -749,12 +946,26 @@ class _TransportMixin:
                             await self.send_event(text_event)
                     return
 
-                await self.send_event(append_event)
+                if event_id is not None:
+                    append_event["event_id"] = event_id
+                await self.send_event(
+                    append_event,
+                    raise_on_oversize=bypass_rate_limit,
+                )
+            return None
+        except asyncio.CancelledError:
+            if rejection_event_id is not None:
+                self._inject_rejection_handlers.pop(rejection_event_id, None)
+            raise
         except Exception as e:
+            if rejection_event_id is not None:
+                self._inject_rejection_handlers.pop(rejection_event_id, None)
             logger.error(f"Error streaming image: {e}")
             raise e
 
-    async def _check_repetition(self, response: str) -> bool:
+    async def _check_repetition(
+        self, response: str, should_recover: Callable[[], bool] | None = None
+    ) -> bool:
         """
         Check whether the reply is highly repetitive of recent replies.
         Returns True and triggers the callback if 3 consecutive turns are highly repetitive.
@@ -780,12 +991,669 @@ class _TransportMixin:
             self._recent_responses.clear()
 
             # 触发回调
+            if should_recover is not None and not should_recover():
+                # Recording history is about the text this turn produced and
+                # lands nowhere else. The RECOVERY is not: the host clears the
+                # focus state, resets the emotion scorer and warns the user, so
+                # firing it once a new turn has started applies a dead turn's
+                # remedy to a live one. Checked here rather than at the caller
+                # because ``wait_for`` yields before this body runs.
+                logger.info(
+                    "repetition detected on a turn that is no longer current; "
+                    "recording it but skipping the recovery"
+                )
+                return True
             if self.on_repetition_detected:
                 await self.on_repetition_detected()
 
             return True
 
         return False
+
+    def _reset_per_turn_output_state(self) -> None:
+        """Clear the transport state scoped to one response.
+
+        Extracted from the ``response.done`` handler so any future path that
+        ends a turn without its terminal event has one place to call rather
+        than a list to re-derive. Every field here leaks into the NEXT turn if
+        it is missed: a stale ``_image_sent_this_turn`` makes ``stream_image``
+        withhold that turn's visual context for its whole duration, a stale
+        transcript buffer is flushed against the wrong turn, and
+        ``_audio_delta_count`` drives the "did this turn actually speak"
+        checks.
+
+        Behaviour is unchanged — this is the same block, in the same order,
+        with the same conditions.
+        """
+
+        self._audio_delta_count = 0
+        # 确保 buffer 被清空
+        self._output_transcript_buffer = ""
+        self._print_input_transcript = False
+        if self._supports_native_image:
+            self._image_recognized_this_turn = False
+        elif (
+            self._latest_image_b64 is None
+            or self._proactive_image_consumed
+        ):
+            # Standard StepFun analyzes only while this sentinel is
+            # present. Rearm after a consumed/absent frame, but keep
+            # a completed annotation generation-bound to an
+            # unconsumed cached frame across unrelated responses.
+            self._image_recognized_this_turn = False
+            self._image_description = _IMAGE_ANALYSIS_PENDING_DESCRIPTION
+        self._image_sent_this_turn = False
+
+    async def _flush_pending_output_transcript(self) -> None:
+        """Forward transcript text this turn produced but never flushed.
+
+        Some providers (the lanlan.app Gemini proxy among them) emit
+        ``response.audio_transcript.delta`` and no transcript-done event, so
+        the buffer is normally drained by the streaming branch. In a turn that
+        used tools, the tool round's terminal clears
+        ``_print_input_transcript``, and the real reply's transcript then
+        accumulates in the buffer with nothing left to flush it — resetting
+        per-turn state would drop it and the frontend shows audio with no text.
+
+        Fires only when this turn actually spoke, so a normal turn is a no-op
+        and nothing is sent twice. Must run BEFORE the per-turn reset, which
+        is what clears the buffer.
+        """
+
+        await self._emit_pending_output_transcript(
+            self._take_pending_output_transcript()
+        )
+
+    def _record_response_usage(self, resp_data: Any) -> None:
+        """Book the provider's token counts for one finished response, once.
+
+        Shared by the terminal path and the stale-terminal path, because a
+        response's cost does not depend on whose turn the host thinks is
+        current when its ``response.done`` finally arrives.
+
+        Which is exactly why it has to deduplicate. The transport already
+        tolerates a repeated ``response.done`` without finalizing the turn
+        twice — and a repeat necessarily takes the stale branch, because the
+        first one cleared ``_current_response_id`` — so counting on both paths
+        without a guard would overstate usage for a case the transport
+        supports on purpose. Keyed by response id.
+
+        The last sentence of this docstring used to read "a terminal with no
+        id never reaches the stale branch, so it can only be counted once
+        anyway." That is backwards. An id-less terminal never reaches the
+        stale branch precisely BECAUSE the filter needs an id — so a repeat of
+        it takes the ordinary terminal path both times, and the guard below,
+        keyed on an id it does not have, does not fire for either. Two copies
+        book twice; measured.
+
+        Left unfixed on purpose. A latch would have to be reset per turn, and
+        the provider class that omits a terminal id is the same one that omits
+        ``response.created`` — on such a connection there is no reset point at
+        all, so the latch would swallow every turn after the first. That trades
+        an accounting error no measured provider can produce for a real missed
+        bill. If a provider ever does repeat an id-less terminal, the fix
+        belongs at the terminal dispatch as a "this turn is already finalized"
+        latch, not here.
+        """
+
+        if not isinstance(resp_data, dict):
+            return
+        try:
+            usage = resp_data.get("usage")
+            if not usage:
+                return
+            response_id = resp_data.get("id")
+            if response_id is not None:
+                if response_id in self._usage_recorded_ids:
+                    return
+                self._usage_recorded_ids.append(response_id)
+                if len(self._usage_recorded_ids) > _USAGE_RECORDED_ID_LIMIT:
+                    self._usage_recorded_ids.pop(0)
+            from utils.token_tracker import TokenTracker
+
+            TokenTracker.get_instance().record(
+                model=resp_data.get("model", self.model or "realtime"),
+                prompt_tokens=usage.get("input_tokens", 0),
+                completion_tokens=usage.get("output_tokens", 0),
+                total_tokens=usage.get("total_tokens", 0),
+                call_type="conversation_realtime",
+                source="main_logic/omni_realtime_client",
+            )
+        except Exception as exc:
+            # Accounting is bookkeeping, and it runs on the receive loop. A
+            # tracker that is unavailable, or a provider whose usage payload
+            # has an unexpected shape, must not take the voice session down
+            # with it — the turn itself already happened either way.
+            logger.debug("realtime usage accounting skipped: %s", exc)
+
+    def _take_response_transcript(self) -> str:
+        """Close the books on what this turn actually said.
+
+        Split from the repetition check that consumes it for the same reason
+        as the output-transcript pair below: the release path has to commit
+        every synchronous write before its first await, or a cancellation
+        strands this turn's state for the next one to inherit.
+
+        Reads ``_audio_delta_count`` for its log line, so it must run BEFORE
+        the per-turn reset zeroes it.
+        """
+
+        transcript = self._current_response_transcript
+        if transcript:
+            self._last_response_transcript = transcript
+            print(
+                f"OmniRealtimeClient: response.done - 当前转录: "
+                f"'{transcript[:50]}...' | audio_deltas={self._audio_delta_count}"
+            )
+            self._current_response_transcript = ""
+        else:
+            self._last_response_transcript = ""
+            print(
+                "OmniRealtimeClient: response.done - 没有转录文本 | "
+                f"audio_deltas={self._audio_delta_count}"
+            )
+        return transcript
+
+    async def _record_response_repetition(
+        self, transcript: str, should_recover: Callable[[], bool] | None = None
+    ) -> None:
+        """Add what this turn said to the repetition history.
+
+        Ending a turn has to do this on EVERY path, not just the terminal one.
+        A provider that repeatedly loses its ``response.done`` — the case the
+        fail-open hatch exists for — would otherwise never contribute an
+        audible reply to ``_recent_responses``, so three identical turns in a
+        row could not trigger ``on_repetition_detected`` at all.
+
+        The history is recorded before ``_check_repetition``'s only await, so
+        a bounded caller that cuts the host callback short still keeps it.
+        """
+
+        if transcript:
+            await self._check_repetition(transcript, should_recover)
+
+    def _take_pending_output_transcript(self) -> tuple[str, bool] | None:
+        """Decide what the fallback flush owes the host, and settle the state.
+
+        Split from the sending half so a caller that must not be interrupted
+        mid-cleanup can commit every synchronous write first, then await. The
+        turn's remaining state is consistent the moment this returns, whether
+        or not the emit that follows ever completes.
+        """
+
+        if not (
+            self._output_transcript_buffer
+            and self.on_output_transcript
+            and self._audio_delta_count > 0
+        ):
+            return None
+        # 「有声无字」是反复出现的问题（见 ISSUE4b），留一条 debug 日志方便下次
+        # 诊断时确认是这条兜底生效、还是 streaming/transcript.done 路径生效。
+        # audio_delta_count 此处尚未清零，记录的是本轮真实值。
+        logger.debug(
+            "turn-end 兜底 flush 输出转录: buffer_len=%d audio_deltas=%d is_first=%s",
+            len(self._output_transcript_buffer),
+            self._audio_delta_count,
+            self._is_first_transcript_chunk,
+        )
+        pending = (self._output_transcript_buffer, self._is_first_transcript_chunk)
+        self._is_first_transcript_chunk = False
+        return pending
+
+    async def _emit_pending_output_transcript(
+        self, pending: tuple[str, bool] | None
+    ) -> None:
+        """Send what ``_take_pending_output_transcript`` decided was owed."""
+
+        if pending is None or not self.on_output_transcript:
+            return
+        text, is_first = pending
+        await self.on_output_transcript(text, is_first)
+
+    def _clear_turn_response_state(self) -> None:
+        """Drop the flags that say "a response is in progress".
+
+        Extracted from the ``response.done`` handler alongside
+        ``_notify_turn_finished`` so that ending a turn is one implementation
+        rather than a sequence any second caller has to reproduce. Behaviour
+        is unchanged — same assignments, same order.
+        """
+
+        self._is_responding = False
+        self._current_response_id = None
+        self._current_item_id = None
+        self._skip_until_next_response = False
+        # 确保中断标志在响应结束时清除，防止阻塞下一轮 text.delta
+        self._interrupted = False
+
+    def _begin_response_lifecycle(self, response_id: Any) -> None:
+        """Apply the host-side state shared by all accepted start evidence."""
+
+        self._current_response_id = response_id
+        self._is_responding = True
+        self._turn_epoch += 1
+        self._current_turn_epoch = self._turn_epoch
+        self._current_turn_host_id = self._read_host_turn_id()
+        self._interrupted = False
+        # A stable successor id also closes the id-less quarantine opened by
+        # a fail-open release; ordered socket delivery puts this evidence
+        # before any later id-less event from the successor.
+        self._idless_quarantine = False
+        self._is_first_text_chunk = self._is_first_transcript_chunk = True
+        self._output_transcript_buffer = ""
+        self._current_response_transcript = ""
+
+    def _read_host_turn_id(self) -> str | None:
+        """Sample the host's live speech id, or None for "no answer".
+
+        No answer covers both an unwired client and a host that raised, and
+        ``_host_turn_is_still_ours`` treats it as "still ours" either way —
+        which restores the pre-#2612 behaviour rather than inverting it.
+        """
+
+        if self.get_host_turn_id is None:
+            return None
+        try:
+            return self.get_host_turn_id()
+        except Exception as exc:
+            logger.warning("host turn id unreadable (%s); turn guard is off", exc)
+            return None
+
+    def _host_turn_is_still_ours(self) -> bool:
+        """Has the host started a turn of its own since this one began?
+
+        Both "no answer" cases resolve to yes, and for the same reason in each
+        direction: withholding the end of a turn is the worse failure, so a
+        host that cannot be read disables the guard rather than the hooks.
+        Unreadable is NOT "a different turn" — reading it as one would make an
+        unwired or mid-teardown host silently stop ending turns at all.
+        """
+
+        if self._current_turn_host_id is None:
+            return True
+        live = self._read_host_turn_id()
+        if live is None:
+            return True
+        return live == self._current_turn_host_id
+
+    async def _notify_turn_finished(
+        self,
+        *,
+        step_timeout: float | None = None,
+        still_ours: Callable[[], bool] | None = None,
+    ) -> None:
+        """Tell the host this turn is over.
+
+        The two hooks the terminal path fires, in the order it fires them.
+
+        Both keywords belong to the fail-open release path, and both default
+        to the terminal path's behaviour so this stays one implementation
+        rather than two.
+
+        ``still_ours`` gates the PAIR, once, rather than each hook. They are
+        not independent: ``on_response_done`` queues this turn's TTS-done
+        sentinel, which closes its speech id, and ``on_sid_rotate`` is what
+        hands out the next one. Re-checking between them lets a turn that
+        starts mid-notification split the pair — the old sid closed, no new
+        one issued — and on a provider without server VAD the successor then
+        speaks under a closed sid and has its text silently dropped, which is
+        the failure this hook exists to prevent. So either the release still
+        owns the turn and finishes ending it, or it never started.
+
+        ``on_sid_rotate`` gets no step bound of its own, because it is the
+        last step — there is nothing behind it for a slow hook to starve. That
+        is NOT the same as being uncancellable, and an earlier version of this
+        comment claimed it was: the arbiter bounds the whole notification, so
+        the rotation can be cancelled. What it cannot do is land half-applied.
+        Its only await is taking the session lock, and no holder of that lock
+        suspends while holding it, so the lock is never observed held and that
+        acquire always takes the uncontended fast path without yielding — the
+        cancellation therefore arrives before the rotation is entered or after
+        it has returned. A second version of this comment claimed the opposite
+        (TTS flags saying a fresh turn while the speech id still said the old
+        one); measured, that state is not reachable while the lock invariant
+        holds, and the invariant is now enforced by CORE_LOCK_NO_AWAIT in
+        ``scripts/check_core_contracts.py`` rather than left to convention
+        (#2619).
+
+        This still is not the path to shield the rotation from. The rotation
+        has two other callers cancelled just as ordinarily and with no escape
+        hatch involved
+        ([_responses.py](main_logic/omni_realtime_client/_responses.py) and
+        [proactive.py](main_logic/core/proactive.py), both inside
+        fire-and-forget tasks), and shielding here measurably reopens the hole
+        ``_turn_epoch`` closed: a detached rotation takes the lock after the
+        epoch has already moved and overwrites the new session's speech id,
+        which ``lifecycle.py``'s lock-free write cannot be FIFO-ordered
+        against.
+
+        ``on_sid_rotate`` is conditional because providers WITH server VAD
+        rotate the speech id from ``speech_stopped`` instead; firing here too
+        would be a second, unpaired rotation on a live turn. Providers without
+        it never emit ``speech_stopped`` (the Gemini proxy: lanlan.app+free,
+        and livestream), so this is their only rotation point — and without it
+        TTS upstream silently drops every later turn's text once the first
+        ``tts.response.done`` closes the initial sid. The lightweight
+        rotate-only path is deliberate: a full ``handle_new_message`` would
+        clip trailing TTS audio and mis-fire USER_INPUT, since no user input
+        actually happened.
+
+        Each hook is awaited independently so a host that raises while closing
+        the turn cannot skip the rotation that follows it.
+
+        The host-side turn check (#2612) is a SEPARATE condition from
+        ``still_ours``, and unlike it, is re-read before each hook. Two reasons
+        the pair-once rule does not apply to it:
+
+        - It is the only condition that sees a turn the host started on its
+          own. ``still_ours`` compares turn epochs, and the epoch only counts
+          turn starts this transport observes; a text input or an independent
+          ASR utterance goes straight to ``handle_new_message``, which takes a
+          fresh speech id without this side ever hearing about it. On a
+          provider without server VAD that is the whole failure: the host hangs
+          in ``on_response_done``, the user starts a turn during the hang, and
+          ``on_sid_rotate`` then throws away the speech id that turn is
+          speaking under — after which TTS upstream drops every later turn's
+          text for the life of the connection.
+        - Splitting the pair is what the pair-once rule protects against —
+          "old sid closed, no new one issued". This condition cannot produce
+          that state: it is true precisely BECAUSE the host issued a new speech
+          id, and every writer of it also resets the per-turn TTS flags. So
+          standing down here leaves the successor whole, while proceeding
+          closes the successor's own sid (``on_response_done`` requests the
+          TTS-done sentinel against whatever sid is live) and then rotates it
+          out from under itself.
+        """
+
+        if still_ours is not None and not still_ours():
+            logger.info(
+                "a new turn started before this one could be ended; leaving "
+                "both end-of-turn hooks to it"
+            )
+            return
+        if not self._host_turn_is_still_ours():
+            logger.info(
+                "the host is already on a new turn (%s); leaving both "
+                "end-of-turn hooks to it",
+                self._current_turn_host_id,
+            )
+            return
+        if self.on_response_done:
+            try:
+                if step_timeout is None:
+                    await self.on_response_done()
+                else:
+                    await asyncio.wait_for(self.on_response_done(), step_timeout)
+            except asyncio.CancelledError:
+                raise
+            except asyncio.TimeoutError:
+                # Kept ahead of the bare Exception arm even though TimeoutError
+                # is one: "took too long" and "raised" are different diagnoses.
+                #
+                # ``%s``, not ``%.1f``: the terminal path calls in with
+                # ``step_timeout=None`` and awaits the hook directly, so this
+                # arm is also how a TimeoutError raised BY the host surfaces
+                # there. Formatting None with %.1f raises inside logging and
+                # destroys the record — the one diagnosis this arm exists to
+                # give.
+                logger.warning(
+                    "turn-finished notification exceeded its %ss step bound; "
+                    "rotating anyway",
+                    step_timeout,
+                )
+            except Exception as exc:
+                logger.warning("turn-finished notification failed: %s", exc)
+        if not self._host_turn_is_still_ours():
+            # Re-read, because the hook above is exactly where the host hangs.
+            logger.info(
+                "the host started a new turn while this one was being closed "
+                "(%s); leaving its speech id alone",
+                self._current_turn_host_id,
+            )
+            return
+        if not self._has_server_vad and self.on_sid_rotate:
+            try:
+                await self.on_sid_rotate()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.warning("turn-finished speech-id rotation failed: %s", exc)
+
+    async def _on_arbiter_stuck_release(
+        self, reason: str, response_id: str | None = None
+    ) -> None:
+        """End a turn the arbiter gave up on, exactly as its terminal would.
+
+        The same three steps ``response.done`` runs, in the same order. That
+        is the entire point: a second way to end a turn is a second thing to
+        keep correct, and the withdrawn #2592 spent seven review rounds
+        discovering, one at a time, which parts its own version had left out.
+
+        Clearing the identity here is what quarantines the abandoned
+        response's later events — the stale-event filter then routes its
+        terminal to the arbiter alone, so the lane still releases but nothing
+        finalizes a second time. Note this is the opposite of what
+        ``handle_interruption`` wants, which keeps the identity precisely so
+        the cancelled response's own terminal still ends the turn.
+
+        ``response_id`` names the response the arbiter abandoned, and this
+        finalizes only that one. The turn being tracked here is not always it:
+        an owned response can overlap a server-initiated one, and it is the
+        server response's ``response.created`` that last wrote
+        ``_current_response_id``. Ending "the current turn" would then close a
+        response that is still streaming, and its own terminal would find
+        nothing left to close. A ``None`` id means the arbiter had nothing to
+        name — it never learned one — and the tracked turn is finalized as
+        before.
+
+        A tracked id of ``None`` is not a wildcard either. ``response_id``
+        comes from the owner's own ``response.created`` — the event that wrote
+        ``_current_response_id`` three lines later in the same handler — so a
+        named release implies the host once tracked that exact id. Seeing
+        ``None`` now means a later, id-less ``response.created`` overwrote it:
+        an overlapping response that is still streaming, and not this
+        release's to end.
+
+        The synchronous state is settled before the first await on purpose.
+        Both remaining awaits reach host code that can block past the
+        arbiter's notification bound, and being cancelled there must not leave
+        this turn's flags half-cleared for the next turn to inherit.
+
+        Identity has to survive those awaits, not merely precede them. The
+        lane can reopen mid-notification — the abandoned response's own
+        terminal can land and release it — and the next turn can be live
+        before the transcript flush returns. The arbiter cannot prevent that
+        from its side (the user's own turn starts through
+        ``handle_new_message``, which never consults the lane), so the check
+        lives here: the release captures ``_turn_epoch`` and abandons the rest
+        of its work the moment a new turn has started. The rotation it skips
+        is deferred rather than lost — the turn that took over ends through
+        its own terminal, which rotates.
+        """
+
+        tracked_id = self._current_response_id
+        # Compared as text on both sides. The arbiter normalises ids through
+        # `_event_response_id` (`str(...)`), while this side stores whatever
+        # the JSON carried — so a provider using a numeric id made every
+        # comparison here false ("123" != 123) and the release silently
+        # finalized and quarantined nothing, on every turn.
+        if response_id is not None and (
+            tracked_id is None or str(tracked_id) != str(response_id)
+        ):
+            if tracked_id is None:
+                # Nothing is tracked, so nothing id-less arriving before the
+                # next response.created can belong to a live turn — the
+                # released response is the only candidate, and its tool calls
+                # are what the quarantine exists to stop.
+                #
+                # Deliberately NOT raised when tracked_id names a different,
+                # LIVE response: that one has already announced, so the
+                # window's "closes at the next response.created" bound would
+                # fall after its own id-less tool calls and suppress them
+                # instead. Containing an abandoned turn must not mute a live
+                # one.
+                self._idless_quarantine = True
+            logger.info(
+                "Arbiter released %s but this turn is tracking %s; leaving it "
+                "alone",
+                response_id,
+                tracked_id,
+            )
+            return
+        if not self._is_responding and self._current_response_id is None:
+            return
+        # The epoch this response began in, not the one the callback happens to
+        # find. Between them a barge-in can have advanced _turn_epoch at
+        # speech_stopped — which does not clear _current_response_id, so the id
+        # guard above still passes — and reading the live value here would make
+        # the check compare the successor's epoch with itself.
+        released_epoch = self._current_turn_epoch
+
+        def _still_ours() -> bool:
+            return self._turn_epoch == released_epoch
+
+        if not _still_ours():
+            # A turn already started before this release even ran, so NOTHING
+            # here belongs to it — not the awaited hooks, and not the
+            # synchronous cleanup ahead of them either. Both have side effects
+            # on the live turn: `_clear_turn_response_state` resets
+            # `_interrupted`, which on a provider whose late deltas carry no id
+            # is the only thing keeping the abandoned response's audio out of
+            # the new turn; and `_check_repetition` can fire
+            # `on_repetition_detected`, whose host resets the shared focus
+            # scorer and emotion state rather than merely recording history.
+            #
+            # Leaving this turn's per-turn flags for the successor's own
+            # terminal to clear is the lesser harm, and the successor's
+            # `response.created` overwrites the identity fields regardless.
+            # One thing does still have to happen: give up the identity. The
+            # stale-event filter keys on `_current_response_id`, so leaving it
+            # naming the abandoned response makes that response's LATER
+            # id-bearing events match and pass — a delayed
+            # `function_call_arguments.done` would execute its tool, and its
+            # `response.done` would run a full finalization against the user's
+            # new turn. Clearing it is what quarantines them, and it is the one
+            # piece of `_clear_turn_response_state` that belongs to the dead
+            # turn rather than the live one: `_is_responding`, `_interrupted`
+            # and the per-turn flags are the successor's now.
+            logger.info(
+                "a turn already started before this release ran (%s); "
+                "quarantining %s and leaving the rest of the host alone",
+                reason,
+                self._current_response_id,
+            )
+            self._current_response_id = None
+            self._current_item_id = None
+            # The per-response output accounting belongs to the dead turn as
+            # well, and nothing else will clear it: `response.created` resets
+            # the transcript buffers but not `_image_sent_this_turn` or
+            # `_audio_delta_count`, so a successor would spend its whole
+            # duration withholding its own visual context and counting the
+            # previous turn's audio. Safe here because reaching this line
+            # means the tracked id still named the abandoned response — the
+            # successor has not announced itself yet, so it has produced no
+            # output of its own to erase.
+            self._reset_per_turn_output_state()
+            # `_skip_until_next_response` is deliberately NOT touched here,
+            # and neither leaving it nor clearing it is right — which is the
+            # actual finding.
+            #
+            # Leaving it mutes the successor: `_interrupted` may be left for
+            # the next turn because `response.created` resets it, and this flag
+            # has no such reset, so the successor's every delta stays
+            # suppressed until its own terminal. But clearing it is not the
+            # answer either, because the flag may already belong to the
+            # successor: `create_response(skipped=True)` raises it BEFORE it
+            # enqueues (`_responses.py`), so a request queued behind the
+            # abandoned one owns it while it waits for the lane. Clearing would
+            # then un-skip a turn the caller explicitly asked to suppress.
+            #
+            # A flag with no owner cannot be correctly cleared or correctly
+            # left; picking a side is arbitrary. The fix is to give output
+            # suppression a per-turn identity, which is issue #2594. Until
+            # then this stays as it shipped rather than trading one wrong
+            # behaviour for another — the whole state is unreachable today
+            # (nothing on the WebSocket path passes `skipped=True`), so there
+            # is nothing to buy by guessing.
+            # Both release paths raise it: the abandoned response may still be
+            # streaming, and from here until the next response.created nothing
+            # id-less can be attributed. Clearing _current_response_id above
+            # quarantines its ID-BEARING events; this covers the rest.
+            self._idless_quarantine = True
+            return
+        logger.info("Ending abandoned turn after arbiter release: %s", reason)
+        # Both release paths raise it: the abandoned response may still be
+        # streaming, and from here until the next response.created nothing
+        # id-less can be attributed. Clearing _current_response_id above
+        # quarantines its ID-BEARING events; this covers the rest.
+        self._idless_quarantine = True
+
+        # Captured before the reset, which is what clears the buffer: a stalled
+        # lifecycle is exactly the case where the terminal that would normally
+        # flush it never arrives.
+        pending_transcript = self._take_pending_output_transcript()
+        pending_response = self._take_response_transcript()
+        self._clear_turn_response_state()
+        self._reset_per_turn_output_state()
+        # Same order the terminal path uses: repetition history first, then
+        # the fallback transcript flush.
+        try:
+            await asyncio.wait_for(
+                self._record_response_repetition(pending_response, _still_ours),
+                _STUCK_RELEASE_STEP_TIMEOUT,
+            )
+        except asyncio.CancelledError:
+            raise
+        except asyncio.TimeoutError:
+            logger.warning(
+                "stuck-release repetition check exceeded %.1fs; ending the "
+                "turn anyway",
+                _STUCK_RELEASE_STEP_TIMEOUT,
+            )
+        except Exception as exc:
+            logger.warning("stuck-release repetition check failed: %s", exc)
+        # Epoch-guarded, unlike the repetition check above it. That one is
+        # bookkeeping about the released turn's own text and lands nowhere
+        # else; this one goes out through ``handle_output_transcript``, which
+        # publishes and queues TTS under whatever speech id is CURRENT — so
+        # once a successor has started, flushing here speaks the abandoned
+        # turn's half-sentence as part of the successor's. The released turn's
+        # trailing text is worth losing to prevent that; it is the same
+        # "lands on that turn or not at all" rule the end-of-turn hooks follow.
+        #
+        # The repetition check ahead of it can yield (on_repetition_detected),
+        # which is what makes this reachable — an earlier version of this
+        # comment said the flush was the first await and therefore safe, and
+        # inserting that step in front of it quietly made that false.
+        #
+        # Best-effort besides: a host that blocks or raises while taking the
+        # last half-sentence must not take the rotation behind it down too.
+        if _still_ours():
+            try:
+                await asyncio.wait_for(
+                    self._emit_pending_output_transcript(pending_transcript),
+                    _STUCK_RELEASE_STEP_TIMEOUT,
+                )
+            except asyncio.CancelledError:
+                raise
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "stuck-release transcript flush exceeded %.1fs; ending the "
+                    "turn anyway",
+                    _STUCK_RELEASE_STEP_TIMEOUT,
+                )
+            except Exception as exc:
+                logger.warning("stuck-release transcript flush failed: %s", exc)
+        elif pending_transcript is not None:
+            logger.info(
+                "a new turn started before the abandoned turn's trailing "
+                "transcript could be sent; dropping it rather than speaking "
+                "it as the new turn's"
+            )
+        await self._notify_turn_finished(
+            step_timeout=_STUCK_RELEASE_STEP_TIMEOUT,
+            still_ours=_still_ours,
+        )
 
     async def handle_interruption(self):
         """Handle user interruption of the current response."""
@@ -798,11 +1666,22 @@ class _TransportMixin:
         self._interrupted = True
 
         # 1. Cancel the current response
-        if self._current_response_id:
+        # Presence, not truthiness — the third site in this file where a
+        # numeric id of 0 would have read as "no response". Here the cost is
+        # the worst of the three: the barge-in would mark the turn interrupted
+        # and never send response.cancel, so generation keeps running and the
+        # arbiter lane stays held until the provider finishes on its own.
+        if self._current_response_id is not None:
             await self.cancel_response()
 
         self._is_responding = False
-        self._current_response_id = None
+        # Keep the cancelled response identity until its terminal event arrives.
+        # Clearing it here makes the stale-event filter classify that
+        # response.done as stale. The filter still forwards stale terminals to
+        # the arbiter (the lane would reopen either way), but the rest of the
+        # done handling is skipped for the turn: the done counters and usage
+        # recording, the _interrupted reset, the transcript flush and the
+        # on_response_done callback all silently miss one turn.
         self._current_item_id = None
         # 清空转录buffer和重置标志，防止打断后的错位
         self._output_transcript_buffer = ""
@@ -815,11 +1694,21 @@ class _TransportMixin:
             return
 
         try:
-            if not self.ws:
+            message_ws = self.ws
+            message_generation = self._connection_generation
+            if not message_ws:
                 logger.error("WebSocket connection is not established")
                 return
 
-            async for message in self.ws:
+            async for message in message_ws:
+                if (
+                    not self._still_owns_connection(message_generation)
+                    or self.ws is not message_ws
+                ):
+                    logger.info(
+                        "Ignoring a frame from a retired realtime connection"
+                    )
+                    return
                 event = json.loads(message)
                 event_type = event.get("type")
 
@@ -842,9 +1731,16 @@ class _TransportMixin:
                     err_obj = event.get('error') if isinstance(event.get('error'), dict) else {}
                     err_event_id = err_obj.get('event_id') or event.get('event_id')
                     self._route_inject_rejection(err_event_id, error_msg)
+                    self._response_arbiter.notify_error(err_event_id, error_msg)
+
+                    # 致命性判定只看语义字段，绝不看回显的 event_id（见
+                    # _error_classification_text 的注释）。日志、路由和
+                    # on_connection_error 继续用完整的 error_msg。
+                    classify_text = _error_classification_text(event.get('error'))
+                    classify_lower = classify_text.lower()
 
                     # 检测503过载错误，触发backpressure节流
-                    if '503' in error_msg or 'overloaded' in error_msg.lower():
+                    if '503' in classify_text or 'overloaded' in classify_lower:
                         self._is_throttled = True
                         self._throttle_until = time.time() + self._throttle_duration
                         self._server_busy_count += 1
@@ -854,23 +1750,104 @@ class _TransportMixin:
                             await self.on_status_message(json.dumps({"code": "SERVER_BUSY_THROTTLE"}))
                         continue
 
-                    error_msg_lower = error_msg.lower()
-
                     # Idle timeout — Qwen 约 25s 无操作断连
-                    if 'too long without operation' in error_msg_lower or 'idle' in error_msg_lower:
+                    if 'too long without operation' in classify_lower or 'idle' in classify_lower:
                         logger.warning("⏰ Idle timeout from API: %s", error_msg)
                         if self.on_connection_error:
                             await self.on_connection_error(json.dumps({"code": "API_IDLE_TIMEOUT", "details": {"msg": error_msg}}))
                         await self.close()
                         continue
 
-                    if ('欠费' in error_msg or 'standing' in error_msg_lower or 'time limit' in error_msg_lower or
-                        'policy violation' in error_msg_lower or '1008' in error_msg_lower or
-                        '429' in error_msg_lower or 'quota' in error_msg_lower or 'too many' in error_msg_lower):
+                    if ('欠费' in classify_text or 'standing' in classify_lower or 'time limit' in classify_lower or
+                        'policy violation' in classify_lower or '1008' in classify_lower or
+                        '429' in classify_lower or 'quota' in classify_lower or 'too many' in classify_lower):
                         if self.on_connection_error:
                             await self.on_connection_error(error_msg)
                         await self.close()
                     continue
+
+                if event_type in ID_BEARING_RESPONSE_CONTENT_EVENT_TYPES:
+                    content_started = self._response_arbiter.notify_response_content(
+                        event
+                    )
+                    if content_started:
+                        self._begin_response_lifecycle(
+                            _response_id_text(event.get("response_id"))
+                        )
+
+                # A cancelled response can still emit buffered events after a
+                # replacement response has become current.  Providers that
+                # include response identity let us reject those late events
+                # without changing the legacy behaviour of id-less proxies.
+                if event_type != "response.created":
+                    # Presence, not truthiness, on both reads — the same
+                    # correction the arbiter's `_event_response_id` gets in this
+                    # PR, and useless without it. A provider numbering from zero
+                    # would have response `0`'s late deltas, tool events and
+                    # terminal slip past this filter once a successor is
+                    # current, and a late terminal would then run the ordinary
+                    # host finalization against that successor.
+                    event_response_id = _response_id_text(event.get("response_id"))
+                    if event_response_id is None and event_type == "response.done":
+                        response = event.get("response")
+                        if isinstance(response, dict):
+                            event_response_id = _response_id_text(response.get("id"))
+                    tracked = self._current_response_id
+                    tracked_text = None if tracked is None else str(tracked)
+                    if (
+                        event_response_id is not None
+                        and event_response_id != tracked_text
+                        # ...unless this connection has never announced a
+                        # response at all. A provider that omits
+                        # response.created never writes _current_response_id,
+                        # so its id-bearing terminal looks stale against a
+                        # permanently-None tracked id and the whole turn
+                        # finalization below is skipped: no transcript flush,
+                        # no on_response_done, and — on exactly those routes,
+                        # which have no server VAD — no speech-id rotation,
+                        # which is what silences every turn after the first.
+                        #
+                        # Same reasoning as the arbiter's: a terminal for an id
+                        # this connection has never seen announced cannot be
+                        # another response's, because there is no other
+                        # response to have announced it. The latch is per
+                        # connection and set only by response.created, so on
+                        # any announcing provider this condition is false from
+                        # its first turn onward and the stale filter behaves
+                        # exactly as before.
+                        and self._announces_responses
+                    ):
+                        if event_type == "response.done":
+                            # A terminal event must reach the arbiter even when
+                            # a newer response has become current (crossed
+                            # response.created events): the arbiter tracks every
+                            # live server response id, and an undelivered
+                            # terminal would hold the lane closed until its
+                            # staleness timer. The arbiter attributes terminals
+                            # by response id, so a mismatched id releases only
+                            # that response and never completes the current
+                            # owner. Content of the stale response stays
+                            # filtered below.
+                            self._response_arbiter.notify_response_terminal(event)
+                            # The tokens were spent whoever the turn belonged
+                            # to, and this is the ONLY path a fail-open
+                            # released turn's terminal can take: the release
+                            # clears _current_response_id on purpose, so its
+                            # real terminal always lands here. Quarantining
+                            # the host finalization must not also quarantine
+                            # the accounting, or every recovered turn vanishes
+                            # from usage stats even though the provider sent
+                            # exact counts. Counted here and only here — the
+                            # branch continues, so nothing double-counts.
+                            self._response_done_total += 1
+                            self._record_response_usage(event.get("response"))
+                        logger.info(
+                            "Dropping stale response event type=%s response_id=%s current_response_id=%s",
+                            event_type,
+                            event_response_id,
+                            self._current_response_id,
+                        )
+                        continue
                 # ── Tool calling events ────────────────────────────
                 # Three providers, three flavours of the same idea:
                 #   - OpenAI Realtime (gpt): the canonical event is the
@@ -887,7 +1864,7 @@ class _TransportMixin:
                 # All three return results via conversation.item.create
                 # of type function_call_output + response.create, handled
                 # by ``_send_tool_result_openai_realtime``.
-                elif event_type == "response.function_call_arguments.delta":
+                if event_type == "response.function_call_arguments.delta":
                     call_id = event.get("call_id") or ""
                     if call_id:
                         slot = self._inflight_tool_args.setdefault(call_id, {
@@ -900,6 +1877,30 @@ class _TransportMixin:
                         if delta:
                             slot["arguments"] += delta
                 elif event_type == "response.function_call_arguments.done":
+                    if self._idless_quarantine and not event.get("response_id"):
+                        # A fail-open release abandoned a turn, and this event
+                        # names no response — so it cannot be told apart from
+                        # the successor's. Content that leaks is a wrong
+                        # sentence; a tool call that leaks is a side effect
+                        # executed on behalf of a turn nobody is having.
+                        #
+                        # Bounded, not blanket: the window closes at the next
+                        # response.created (see below), which on the only
+                        # providers that can reach here is guaranteed to carry
+                        # an id — a release requires the abandoned response to
+                        # have had one, and ids are written only from
+                        # response.created. The successor's announcement
+                        # therefore always precedes its own id-less events on
+                        # this single ordered socket, so nothing of the
+                        # successor's is ever suppressed.
+                        logger.warning(
+                            "quarantined an id-less tool call arriving after a "
+                            "stuck-turn release (call_id=%s name=%s)",
+                            event.get("call_id") or "?",
+                            event.get("name") or "?",
+                        )
+                        self._inflight_tool_args.pop(event.get("call_id") or "", None)
+                        continue
                     name = event.get("name") or ""
                     raw_args = event.get("arguments") or ""
                     call_id = event.get("call_id") or ""
@@ -945,44 +1946,23 @@ class _TransportMixin:
                             result = await self._execute_tool_call(call)
                             await self._send_tool_result_openai_realtime(result)
                         self._fire_task(_run_tool())
+                elif event_type == "conversation.item.created":
+                    self._response_arbiter.notify_item_created(event)
                 elif event_type == "response.done":
+                    finalize_response = (
+                        self._response_arbiter.notify_response_terminal(event)
+                    )
                     self._response_done_total += 1
                     self._last_response_done_time = time.time()
-                    # Lifecycle cleanup of proactive inject rejection handlers
-                    # (see _sweep_inject_rejection_handlers): any pending
-                    # rejection has already fired by now, so the remaining
-                    # entries belong to injects that succeeded — reap them.
-                    self._sweep_inject_rejection_handlers()
                     # 解析实时 API 返回的 token 用量
-                    try:
-                        resp_data = event.get("response", {})
-                        _rt_usage = resp_data.get("usage")
-                        if _rt_usage:
-                            from utils.token_tracker import TokenTracker
-                            TokenTracker.get_instance().record(
-                                model=resp_data.get("model", self.model or "realtime"),
-                                prompt_tokens=_rt_usage.get("input_tokens", 0),
-                                completion_tokens=_rt_usage.get("output_tokens", 0),
-                                total_tokens=_rt_usage.get("total_tokens", 0),
-                                call_type="conversation_realtime",
-                                source="main_logic/omni_realtime_client",
-                            )
-                    except Exception:
-                        pass
-                    self._is_responding = False
-                    self._current_response_id = None
-                    self._current_item_id = None
-                    self._skip_until_next_response = False
-                    self._interrupted = False  # 确保中断标志在响应结束时清除，防止阻塞下一轮 text.delta
+                    self._record_response_usage(event.get("response"))
+                    if finalize_response is False:
+                        continue
+                    self._clear_turn_response_state()
                     # 响应完成，检测重复度
-                    if self._current_response_transcript:
-                        self._last_response_transcript = self._current_response_transcript
-                        print(f"OmniRealtimeClient: response.done - 当前转录: '{self._current_response_transcript[:50]}...' | audio_deltas={self._audio_delta_count}")
-                        await self._check_repetition(self._current_response_transcript)
-                        self._current_response_transcript = ""
-                    else:
-                        self._last_response_transcript = ""
-                        print(f"OmniRealtimeClient: response.done - 没有转录文本 | audio_deltas={self._audio_delta_count}")
+                    await self._record_response_repetition(
+                        self._take_response_transcript()
+                    )
                     # [有声无字兜底] 部分 provider（如 lanlan.app Gemini 语音代理）只发
                     # response.audio_transcript.delta、从不发 response.audio_transcript.done，
                     # 输出转录全靠下面 streaming 分支（_print_input_transcript=True）实时送出。
@@ -992,61 +1972,41 @@ class _TransportMixin:
                     # 就在这里被直接清空 → 前端有声无字。这里在清空前补一次 flush：只要本轮真
                     # 出过声（audio_delta_count>0）且 buffer 仍有残留就补发。streaming 分支每次都
                     # 会清空 buffer，故正常轮此处为 no-op，不会重复发送。
-                    if (
-                        self._output_transcript_buffer
-                        and self.on_output_transcript
-                        and self._audio_delta_count > 0
-                    ):
-                        # 「有声无字」是反复出现的问题（见上方 ISSUE4b），留一条 debug
-                        # 日志方便下次诊断时确认是这条兜底生效、还是 streaming/transcript.done
-                        # 路径生效。audio_delta_count 此处尚未清零，记录的是本轮真实值。
-                        logger.debug(
-                            "response.done 兜底 flush 输出转录: buffer_len=%d audio_deltas=%d is_first=%s",
-                            len(self._output_transcript_buffer),
-                            self._audio_delta_count,
-                            self._is_first_transcript_chunk,
+                    try:
+                        await self._flush_pending_output_transcript()
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as exc:
+                        logger.warning(
+                            "response.done transcript flush failed (%s); continuing",
+                            type(exc).__name__,
                         )
-                        await self.on_output_transcript(
-                            self._output_transcript_buffer, self._is_first_transcript_chunk
-                        )
-                        self._is_first_transcript_chunk = False
-                    self._audio_delta_count = 0
-                    # 确保 buffer 被清空
-                    self._output_transcript_buffer = ""
-                    self._print_input_transcript = False
-                    self._image_recognized_this_turn = False
-                    self._image_sent_this_turn = False
-                    if self.on_response_done:
-                        await self.on_response_done()
-                    # No-server-VAD providers (Gemini-proxy: lanlan.app+free /
-                    # livestream) never emit input_audio_buffer.speech_stopped,
-                    # so handle_messages' on_new_message path on speech_stopped
-                    # never fires and current_speech_id never rotates between
-                    # turns. Without rotation, TTS upstream silently drops text
-                    # after the first tts.response.done closes the initial sid.
-                    # Hook here at response.done (Gemini's turn_complete, the
-                    # only reliable end-of-AI-turn signal in those proxies) and
-                    # call the lightweight rotate-only path — full
-                    # handle_new_message would clip trailing TTS audio and
-                    # mis-fire USER_INPUT (no user input actually happened).
-                    if not self._has_server_vad and self.on_sid_rotate:
-                        await self.on_sid_rotate()
+                    self._reset_per_turn_output_state()
+                    await self._notify_turn_finished()
                 elif event_type == "response.created":
+                    confirms_started_owner = (
+                        self._response_arbiter.response_created_confirms_started_owner(
+                            event
+                        )
+                    )
+                    expose_response = self._response_arbiter.notify_response_created(event)
                     self._response_created_total += 1
                     self._last_response_created_time = time.time()
-                    # A response started — our proactive inject's response.create
-                    # was either accepted (this IS its response) or a different
-                    # response is now active; either way close the no-id
-                    # content-fallback window so a later unrelated no-id
-                    # conflict can't fire a lingering (accepted) inject handler.
-                    self._proactive_inject_awaiting_outcome = False
-                    self._current_response_id = event.get("response", {}).get("id")
-                    self._is_responding = True
-                    self._interrupted = False  # Clear interruption flag on new response
-                    self._is_first_text_chunk = self._is_first_transcript_chunk = True
-                    # 清空转录 buffer，防止累积旧内容
-                    self._output_transcript_buffer = ""
-                    self._current_response_transcript = ""  # 重置当前回复转录
+                    if not expose_response:
+                        # A delayed announcement for a content-started owner is
+                        # consumed without beginning host lifecycle twice, but
+                        # still proves that this connection announces.
+                        if confirms_started_owner:
+                            self._announces_responses = True
+                        continue
+                    self._announces_responses = True
+                    self._begin_response_lifecycle(
+                        _response_id_text(
+                            (event.get("response") or {}).get("id")
+                            if isinstance(event.get("response"), dict)
+                            else None
+                        )
+                    )
                 elif event_type == "response.output_item.added":
                     self._current_item_id = event.get("item", {}).get("id")
                 elif event_type == "input_audio_buffer.committed":
@@ -1057,6 +2017,7 @@ class _TransportMixin:
                 elif event_type == "input_audio_buffer.speech_started":
                     self._speech_started_total += 1
                     logger.info("Speech detected")
+                    self._response_arbiter.notify_server_vad_started()
                     self._audio_in_buffer = True
                     # 重置静默计时器
                     self._last_speech_time = time.time()
@@ -1064,28 +2025,42 @@ class _TransportMixin:
                     self._client_vad_active = True
                     self._client_vad_last_speech_time = self._last_speech_time
                     # B: server-VAD 也喂给 _user_recent_activity，保持各 VAD 源对称。
-                    # 但 fudge 注入期间 server 会对我们自己 append 的 fudge 音频
-                    # 回 speech_started —— 这不是真用户活动，若打点 prompt_ephemeral
-                    # 循环会检测到 _user_recent_activity_time > _inject_start 而自 abort，
-                    # 并在之后 8s 内阻塞下一次 fudge（入口 guard 一起被污染）。
-                    if not self._proactive_injecting:
-                        self._user_recent_activity_time = self._last_speech_time
+                    self._user_recent_activity_time = self._last_speech_time
                     if self._is_responding:
                         logger.info("Handling interruption")
                         await self.handle_interruption()
                 elif event_type == "input_audio_buffer.speech_stopped":
                     self._speech_stopped_total += 1
                     logger.info("Speech ended")
-                    if self.on_new_message:
-                        await self.on_new_message()
+                    # Only an ended utterance can causally create the automatic
+                    # server-VAD response.  Marking this at speech_started can
+                    # steal an explicit response.created whose create was
+                    # already accepted but whose echo is still in flight.
+                    self._response_arbiter.notify_server_vad_response_pending(
+                        arm_timeout=False
+                    )
+                    # The user's turn starts HERE on a server-VAD provider, not
+                    # at response.created: on_new_message assigns the new
+                    # speech id and fires USER_INPUT, and the provider's
+                    # response.created only follows some time later. A release
+                    # suspended in a host callback would otherwise resume in
+                    # that gap, still believe the turn is its own, and finalize
+                    # against the speech id this user turn just took.
+                    self._turn_epoch += 1
+                    try:
+                        if self.on_new_message:
+                            await self.on_new_message()
+                    finally:
+                        # response.created cannot be observed while this receive
+                        # loop is blocked in on_new_message. Start the missing-
+                        # created backstop only after the loop can read again,
+                        # so a slow callback cannot release a real VAD response.
+                        self._response_arbiter.arm_server_vad_response_pending_timeout()
                     self._audio_in_buffer = False
                     # Update timestamp so grace period starts from speech end
                     _now = time.time()
                     self._client_vad_last_speech_time = _now
-                    # 同 speech_started：fudge 自己的音频结束时 server 也会 emit
-                    # speech_stopped，不能当成真用户活动打点。
-                    if not self._proactive_injecting:
-                        self._user_recent_activity_time = _now
+                    self._user_recent_activity_time = _now
                 elif event_type == "conversation.item.input_audio_transcription.completed":
                     self._print_input_transcript = True
                     transcript = event.get("transcript", "")
@@ -1132,6 +2107,23 @@ class _TransportMixin:
                             audio_bytes = base64.b64decode(event["delta"])
                             self._ai_recent_activity_time = time.time()
                             await self.on_audio_delta(audio_bytes)
+                    elif event_type in ["response.audio.done", "response.output_audio.done"]:
+                        # 权威的「这一轮音频流已关闭」信号（issue #1566）。前端原本
+                        # 靠「四个音频队列当下是否为空」猜本轮放完没，落在音频阵之间
+                        # 的空档就会提前收尾（口型停一下又重启、尾音孤儿）。
+                        #
+                        # ⚠️ 时序：必须在这里 await 触发，绝不能 _fire_task /
+                        # create_task。本接收循环是顺序的，走到这条事件时该轮所有
+                        # audio.delta 的 ``await self.on_audio_delta(...)`` 都已经
+                        # 返回，因此完结信号天然排在最后一块音频之后。改成
+                        # fire-and-forget 会让它插到音频前面，前端提前收尾 —— 那正是
+                        # 这个 issue 本身。
+                        #
+                        # 放在 _skip_until_next_response / _interrupted 守卫内，与
+                        # audio.delta 同门：被打断的一轮不发（打断有独立的 cancel
+                        # 通道）。漏发是可接受的降级，前端有 give-up 计时器兜底。
+                        if self.on_audio_done:
+                            await self.on_audio_done()
                     elif event_type in ["response.audio_transcript.done", "response.output_audio_transcript.done"]:
                         if self.on_output_transcript and self._is_first_transcript_chunk:
                             transcript = event.get("transcript", "")
@@ -1167,38 +2159,393 @@ class _TransportMixin:
                             )
 
         except websockets.exceptions.ConnectionClosedOK:
-            logger.info("Connection closed as expected")
-            self._fatal_error_occurred = True
-            self.ws = None
+            recovered = await self._recover_receive_loop_disconnect(
+                message_ws,
+                message_generation,
+                "realtime connection closed",
+                status_code="CHARACTER_DISCONNECTED",
+            )
+            if recovered:
+                logger.info("Realtime connection was closed by the peer")
         except websockets.exceptions.ConnectionClosedError as e:
-            error_msg = str(e)
-            logger.error(f"Connection closed with error: {error_msg}")
-            self._fatal_error_occurred = True
-            self.ws = None
-            if self.on_connection_error:
-                await self.on_connection_error(error_msg)
+            received_code = getattr(getattr(e, "rcvd", None), "code", None)
+            received_reason = getattr(getattr(e, "rcvd", None), "reason", None)
+            sent_code = getattr(getattr(e, "sent", None), "code", None)
+            status_code, status_details = _classify_peer_close(
+                received_code,
+                received_reason,
+            )
+            recovered = await self._recover_receive_loop_disconnect(
+                message_ws,
+                message_generation,
+                "realtime connection closed unexpectedly",
+                status_code=status_code,
+                status_details=status_details,
+            )
+            if recovered:
+                logger.warning(
+                    "Realtime connection closed unexpectedly "
+                    "(received_code=%s sent_code=%s)",
+                    received_code,
+                    sent_code,
+                )
         except asyncio.TimeoutError:
-            if self.ws:
-                await self.ws.close()
-            if self.on_connection_error:
-                await self.on_connection_error(json.dumps({"code": "CONNECTION_TIMEOUT"}))
+            await self._recover_receive_loop_disconnect(
+                message_ws,
+                message_generation,
+                "realtime connection timeout",
+                status_code="CONNECTION_TIMEOUT",
+            )
         except Exception as e:
+            if (
+                not self._still_owns_connection(message_generation)
+                or self.ws is not message_ws
+            ):
+                logger.info(
+                    "Retired realtime receive loop failed after replacement; "
+                    "ignoring its handler exception"
+                )
+                return
+            await self._close_failed_transport(
+                f"realtime message handling failed: {type(e).__name__}"
+            )
             logger.error(f"Error in message handling: {str(e)}")
-            raise e
+            raise
+        else:
+            await self._recover_receive_loop_disconnect(
+                message_ws,
+                message_generation,
+                "realtime message stream ended",
+                status_code="CHARACTER_DISCONNECTED",
+            )
+
+    def _on_connection_attached(self) -> None:
+        """Mark a replacement connection as live and hand it the teardown latches.
+
+        A close task closes the socket it detached, so it is finished with the
+        previous connection's socket the moment a replacement is installed —
+        and a latched finished task would make the new connection's close a
+        no-op. This has to happen where the socket is assigned, not at the top
+        of connect(): a close landing in the connect await window would
+        otherwise run to completion against no socket at all, and the
+        replacement would attach behind an already-finished latch that every
+        later close() just re-awaits. No await between the assignment and this
+        call, so no third party can observe the pair half-applied.
+
+        The generation bump is the other half. An unfinished predecessor is not
+        cancelled — it owns the retired socket and must finish closing it — but
+        everything else it would touch (the silence scalars connect() just
+        primed, the shared audio processor, the Gemini session) is client-wide
+        state that now belongs to the replacement. Teardowns compare the
+        generation after each await and keep their hands off what is no longer
+        theirs.
+        """
+
+        self._connection_generation += 1
+        self._close_task = None
+        self._failed_transport_close_task = None
+        self._gemini_close_task = None
+        # A predecessor's unclaimed abort is not the replacement's to report.
+        # The generation stamp already refuses it; dropping it here keeps the
+        # latch from outliving the connection it describes.
+        self._local_failure_recovery = None
+
+    def _still_owns_connection(self, generation) -> bool:
+        """Whether the connection a teardown seized is still the client's.
+
+        The rule this expresses has to hold at EVERY await boundary inside a
+        teardown, not just the first: the teardown outlives its caller by
+        design, so a replacement can attach during any one of them, and from
+        that moment the client's shared state (the arbiter, the fatal flag, the
+        silence scalars, the audio processor, the Gemini session) is the
+        replacement's. What the teardown seized up front stays its own to
+        release; everything else it must leave alone. Any await added below is
+        a new place to ask this.
+        """
+
+        return self._connection_generation == generation
+
+    async def _recover_receive_loop_disconnect(
+        self,
+        message_ws,
+        generation,
+        reason: str,
+        *,
+        status_code: str,
+        status_details: dict[str, Any] | None = None,
+    ) -> bool:
+        """Retire a peer-failed connection and request the existing recovery.
+
+        ``close()`` detaches its socket synchronously before awaiting the close
+        handshake. Therefore an ending receive loop still owns ``self.ws`` only
+        when the peer (or the network) ended the live connection first. An old
+        loop ending after a manager close or replacement attach must be silent:
+        reporting it as a fresh provider failure would tear down the successor.
+        """
+
+        if not self._still_owns_connection(generation) or self.ws is not message_ws:
+            local_failure = self._consume_local_failure_recovery(generation)
+            if local_failure is None:
+                logger.info(
+                    "Realtime receive loop ended after its transport was already "
+                    "closed or replaced; no connection error will be reported"
+                )
+                return False
+            # A local component (the arbiter's fail-close, a fatal send) tore
+            # this transport down and nobody told the manager. Finish the host
+            # cleanup the aborting caller could not do from its own stack, and
+            # route it through the ordinary disconnect recovery. Deliberately
+            # NOT reclassified from the local close result: the primary cause
+            # is the reason the aborting caller already logged, and the CLOSE
+            # 1000 handshake outcome must not be shown as a provider API error.
+            logger.warning(
+                "Realtime transport was aborted locally (%s); requesting "
+                "session recovery",
+                local_failure,
+            )
+            await self._close_failed_transport(local_failure)
+            if not self._still_owns_connection(generation):
+                return False
+            self._schedule_connection_error(
+                "CHARACTER_DISCONNECTED",
+                generation,
+            )
+            return True
+
+        await self._close_failed_transport(reason)
+        if not self._still_owns_connection(generation):
+            return False
+        self._schedule_connection_error(
+            status_code,
+            generation,
+            status_details=status_details,
+        )
+        return True
+
+    def _consume_local_failure_recovery(self, generation) -> str | None:
+        """Take the pending local-abort reason, if it belongs to ``generation``.
+
+        One-shot on purpose: the receive loop that owned the aborted socket is
+        the only party that may act on it, and a retired loop or a replacement
+        connection must not inherit a predecessor's failure.
+        """
+
+        pending = getattr(self, "_local_failure_recovery", None)
+        if pending is None:
+            return None
+        pending_generation, reason = pending
+        if pending_generation != generation:
+            return None
+        self._local_failure_recovery = None
+        return reason
+
+    def _schedule_connection_error(
+        self,
+        status_code: str,
+        generation,
+        *,
+        status_details: dict[str, Any] | None = None,
+    ) -> None:
+        """Run manager recovery outside the receive loop that it must cancel."""
+
+        callback = self.on_connection_error
+        if callback is None:
+            return
+
+        async def _notify() -> None:
+            if not self._still_owns_connection(generation):
+                return
+            try:
+                details = dict(status_details or {})
+                details["connection_generation"] = generation
+                await callback(
+                    json.dumps(
+                        {
+                            "code": status_code,
+                            "details": details,
+                        }
+                    )
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.error(
+                    "Realtime connection recovery callback failed: %s",
+                    type(exc).__name__,
+                )
+
+        self._fire_task(_notify())
+
+    async def _own_teardown(self, slot: str, detach):
+        """Await a teardown that this client owns, not the caller.
+
+        Both close paths detach ``self.ws`` first and only then await the
+        arbiter shutdown — deliberately, so no ticket can outlive the socket.
+        That ordering also means a cancel landing in the middle takes the only
+        reference to a still-open socket with it: ``self.ws`` is already None,
+        so a retry closes nothing and reports success. Every real canceller is
+        internal (a hot-swap final task cancelled by a concurrent
+        start/end_session), so this is reachable without anyone injecting one.
+
+        Running the teardown as a task the client holds, and awaiting it
+        through ``shield``, separates the two: the caller's cancel stops the
+        waiting, the closing continues, and a later caller awaits the same
+        task rather than a fresh one against an emptied field.
+
+        ``detach`` is a plain function — called HERE, synchronously, before the
+        task exists. A coroutine's body does not run at ``create_task`` time,
+        so a detach written inside the teardown would be scheduled, not
+        performed: a connect() parked one await away can attach its
+        replacement and clear the latch first, and the teardown then wakes up
+        and closes the brand-new socket it finds in ``self.ws``. Detaching in
+        the caller's own step keeps the seizure exactly where it used to be,
+        back when close() was an ordinary coroutine. ``detach`` returns the
+        coroutine to run, with everything it seized already bound.
+        """
+
+        task = getattr(self, slot, None)
+        if task is None:
+            task = asyncio.create_task(detach())
+            setattr(self, slot, task)
+        await asyncio.shield(task)
+
+    async def _close_failed_transport(self, reason: str) -> None:
+        """Fail response tickets and atomically detach the failed socket."""
+
+        # Latched before the task starts: callers check this flag to stop
+        # sending on a socket that is on its way out, and a scheduling gap
+        # before the task's first line must not be a window where they still
+        # think the transport is healthy.
+        self._fatal_error_occurred = True
+        await self._own_teardown(
+            "_failed_transport_close_task",
+            lambda: self._detach_for_failed_transport(reason),
+        )
+
+    def _detach_for_failed_transport(self, reason: str):
+        generation = self._connection_generation
+        ws, self.ws = self.ws, None
+        return self._close_failed_transport_impl(reason, generation, ws)
+
+    async def _close_failed_transport_impl(self, reason: str, generation, ws) -> None:
+        # The fatal flag is the retired connection's, and the wrapper has
+        # already set it. Re-asserting it here would re-condemn a replacement
+        # that attached in between — connect() clears the flag on purpose, and
+        # a live connection marked fatal rejects every later send.
+        if self._still_owns_connection(generation):
+            response_arbiter = getattr(self, "_response_arbiter", None)
+            if response_arbiter is not None:
+                # Shared across connections, and connect() has already reopened
+                # it for the replacement. Shutting it down now would fail the
+                # new connection's tickets over a socket that is fine.
+                await response_arbiter.shutdown(reason)
+        await self._abort_failed_transport(reason, ws, generation)
+
+    async def _abort_failed_transport(
+        self,
+        reason: str,
+        ws=_ATTACHED_TRANSPORT,
+        generation=None,
+    ) -> None:
+        """Detach, when needed, and physically close a failed raw WebSocket.
+
+        The sentinel ``ws`` marks the arbiter's own entry point: it seizes the
+        attached socket itself, where ``_close_failed_transport_impl`` hands
+        over a socket it already seized. Only the former leaves nobody holding
+        the failure — the receive loop is about to wake up on a socket it no
+        longer owns and, without the latch armed here, would exit silently and
+        strand the manager on a live session over a dead transport.
+        """
+
+        if generation is None or self._still_owns_connection(generation):
+            self._fatal_error_occurred = True
+        if ws is _ATTACHED_TRANSPORT:
+            # getattr, because this path is reachable on a client shell built
+            # without __init__ (abort is deliberately the one teardown that
+            # needs nothing but a socket) — and a shell has no receive loop to
+            # claim the latch anyway.
+            self._local_failure_recovery = (
+                getattr(self, "_connection_generation", 0),
+                reason,
+            )
+            ws, self.ws = self.ws, None
+        if ws is not None:
+            try:
+                await ws.close()
+            except Exception as exc:
+                logger.debug(
+                    "failed transport close also failed (%s): %s",
+                    reason,
+                    type(exc).__name__,
+                )
 
     async def close(self) -> None:
         """Close the WebSocket connection."""
+        await self._own_teardown("_close_task", self._detach_for_close)
+
+    def _detach_for_close(self):
+        """Seize this connection's resources, then hand them to the teardown.
+
+        Synchronous on purpose (see ``_own_teardown``), and it takes everything
+        the teardown will release in one uninterrupted step: the teardown
+        outlives its caller by design, so connect() is free to attach a
+        replacement while it is parked in the arbiter shutdown, and anything
+        re-read off the client after that point can already be the
+        replacement's. The Gemini context comes along for the same reason —
+        ``_connect_gemini()`` overwrites the field, and the retired SDK
+        connection would have no one left to exit it.
+        """
+
+        generation = self._connection_generation
+        ws, self.ws = self.ws, None
+        # The manager is the one closing, so it already knows this session is
+        # over: an abort latched just before this must not also fire recovery.
+        self._local_failure_recovery = None
+        silence_check_task, self._silence_check_task = self._silence_check_task, None
+        gemini_context = self._gemini_context_manager
+        gemini_close_task = self._gemini_close_task
+        return self._close_impl(
+            generation, ws, silence_check_task, gemini_context, gemini_close_task
+        )
+
+    async def _close_impl(
+        self,
+        generation,
+        ws,
+        silence_check_task,
+        gemini_context,
+        gemini_close_task,
+    ) -> None:
+        response_arbiter = getattr(self, "_response_arbiter", None)
+        if response_arbiter is not None and self._still_owns_connection(generation):
+            # The arbiter is shared across connections, not owned by one. If a
+            # replacement attached between the caller's seizure and this task's
+            # first line, connect() has already reopened it — shutting it down
+            # here would fail the live connection's tickets while its socket
+            # stays perfectly healthy.
+            await response_arbiter.shutdown("realtime client closed")
+
         # 取消静默检测任务
-        if self._silence_check_task:
-            self._silence_check_task.cancel()
+        if silence_check_task:
+            silence_check_task.cancel()
             try:
-                await self._silence_check_task
+                await silence_check_task
             except asyncio.CancelledError:
                 pass
             except Exception as e:
                 logger.error(f"Error cancelling silence check task: {e}")
-            finally:
-                self._silence_check_task = None
+
+        if not self._still_owns_connection(generation):
+            # A replacement attached while this teardown ran. Everything below
+            # is client-wide — the silence scalars connect() has just primed,
+            # the audio processor the new connection is already feeding, the
+            # Gemini session it installed — and none of it is ours to release.
+            # What we seized still is.
+            logger.info(
+                "Realtime close: a replacement connection attached; releasing only the retired connection"
+            )
+            await self._release_retired_connection(ws, gemini_context, gemini_close_task)
+            return
 
         # 重置静默超时相关状态
         self._silence_timeout_triggered = False
@@ -1215,23 +2562,58 @@ class _TransportMixin:
 
         # Wait for any executor-owned chunk to finish before releasing the
         # session's RNNoise native state and soxr streaming buffers.
-        await self._close_audio_processor()
+        await self._close_audio_processor(generation)
+
+        if not self._still_owns_connection(generation):
+            # Waiting for the audio lock is an await like any other, and this
+            # is the last one before the release below reads the client again:
+            # ``_close_gemini()`` would exit the replacement's context — the
+            # session a successful reconnect just installed.
+            logger.info(
+                "Realtime close: a replacement connection attached; releasing only the retired connection"
+            )
+            await self._release_retired_connection(ws, gemini_context, gemini_close_task)
+            return
 
         # Gemini uses different cleanup
         if self._is_gemini:
             await self._close_gemini()
             return
 
-        if self.ws:
+        await self._release_retired_connection(ws, gemini_context, gemini_close_task)
+
+    async def _release_retired_connection(
+        self,
+        ws,
+        gemini_context=None,
+        gemini_close_task=None,
+    ) -> None:
+        """Physically release the connection a teardown seized."""
+
+        if self._is_gemini:
+            # A Gemini session is released through the context manager that
+            # opened it, not by closing a socket. On the replacement path that
+            # context is no longer reachable from the client — connect()
+            # overwrote the field — so the reference we seized is the only one
+            # left, and dropping it would leave the SDK connection open with
+            # nobody to exit it.
+            if gemini_close_task is not None:
+                # Already being exited by an in-flight teardown of its own
+                # (the proactive quarantine close); awaiting it is how we avoid
+                # a second __aexit__ on the same one-shot context.
+                await asyncio.shield(gemini_close_task)
+            elif gemini_context is not None:
+                await self._close_gemini_impl(gemini_context, ws)
+            return
+        if ws:
             try:
-                # 连接时已设 close_timeout=0.5s：远端超时未回 CLOSE 帧时，
+                # 连接时已设 close_timeout=2s：远端超时未回 CLOSE 帧时，
                 # websockets 内部会自行 abort transport 强制关闭，
-                # 保证 end_session 快速返回、主事件循环心跳不受影响。
-                await self.ws.close()
+                # 在兼容慢代理的同时保持清理等待有界。
+                await ws.close()
             except Exception as e:
                 logger.error(f"Error closing websocket: {e}")
             finally:
-                self.ws = None  # 清空引用，防止后续误用
                 logger.info("WebSocket connection closed")
         else:
             logger.warning("WebSocket connection is already closed or None")

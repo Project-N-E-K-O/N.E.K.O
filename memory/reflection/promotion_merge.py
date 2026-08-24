@@ -57,7 +57,26 @@ from ._shared import (
     logger,
 )
 
+
+def _detect_promotion_prompt_language(text: str) -> str:
+    from utils.language_utils import (
+        detect_prompt_language_with_ascii_fallback,
+        get_global_language_full,
+    )
+
+    return detect_prompt_language_with_ascii_fallback(
+        text,
+        ui_language=get_global_language_full(),
+    )
+
 class PromotionMergeMixin:
+    @staticmethod
+    def _promotion_locale_text(
+        reflection: dict,
+    ) -> str:
+        """Use the promoted reflection as locale evidence, not the old pool."""
+        return str(reflection.get('text', '') or '')
+
     @staticmethod
     def _compute_merged_evidence(
         target: dict, reflection: dict,
@@ -335,24 +354,30 @@ class PromotionMergeMixin:
         skip_retry_pending per §3.9.4.
         """
         from config.prompts.prompts_memory import get_promotion_merge_prompt
-        from utils.language_utils import get_global_language
         from utils.llm_client import create_chat_llm_async
 
         now = datetime.now()
         # Build the impression pool block with stable ordering — protected
         # persona entries first, then non-protected by score DESC, then
         # confirmed/promoted reflections by score DESC.
-        pool_lines: list[str] = []
+        pool_rows: list[tuple[str, str, int]] = []
         for ek, e in persona_pool:
-            pool_lines.append(
-                f"[persona.{ek}.{e.get('id')}] \"{e.get('text', '')}\""
+            raw_text = str(e.get('text', '') or '')
+            prefix = f"[persona.{ek}.{e.get('id')}] \""
+            line = (
+                f"{prefix}{raw_text}\""
                 f" (evidence_score={evidence_score(e, now):.2f})"
             )
+            pool_rows.append((line, raw_text, len(prefix)))
         for r in reflection_pool:
-            pool_lines.append(
-                f"[reflection.{r.get('id')}] \"{r.get('text', '')}\""
+            raw_text = str(r.get('text', '') or '')
+            prefix = f"[reflection.{r.get('id')}] \""
+            line = (
+                f"{prefix}{raw_text}\""
                 f" (evidence_score={evidence_score(r, now):.2f})"
             )
+            pool_rows.append((line, raw_text, len(prefix)))
+        pool_lines = [line for line, _raw_text, _text_offset in pool_rows]
         pool_text = "\n".join(pool_lines) if pool_lines else "(印象池为空)"
         # Cap the impression pool at PERSONA_MERGE_POOL_MAX_TOKENS — same
         # entity 长期累积下来 persona+reflection 池可能超 8k tokens；
@@ -361,7 +386,11 @@ class PromotionMergeMixin:
         from utils.tokenize import truncate_to_tokens
         pool_text = truncate_to_tokens(pool_text, PERSONA_MERGE_POOL_MAX_TOKENS)
 
-        prompt = get_promotion_merge_prompt(get_global_language()).format(
+        prompt = get_promotion_merge_prompt(
+            _detect_promotion_prompt_language(
+                self._promotion_locale_text(R)
+            )
+        ).format(
             AI_NAME=lanlan_name,
             MASTER_NAME=master_name,
             R_TEXT=R.get('text', ''),
@@ -370,7 +399,7 @@ class PromotionMergeMixin:
         )
 
         set_call_type("memory_promote_merge")
-        api_config = self._config_manager.get_model_api_config(
+        api_config = await self._config_manager.aget_model_api_config(
             EVIDENCE_PROMOTION_MERGE_MODEL_TIER,
         )
         # timeout=90: 开 thinking 后 promote merge 决策（merge_into / promote_fresh /
@@ -506,17 +535,36 @@ class PromotionMergeMixin:
         # suboptimal merge decision, not correctness.
         persona_view = await self._persona_manager.aget_persona(lanlan_name)
         target_entity = R.get('entity')
+        from memory.scopes import entry_matches_subject, subject_from_entry
+        memory_subject = subject_from_entry(R)
+        promotion_forget_epoch = (
+            self._subject_forget_epoch(lanlan_name, memory_subject)
+            if memory_subject is not None else None
+        )
+        target_section = (
+            memory_subject.persona_section_key
+            if memory_subject is not None else target_entity
+        )
         same_entity_persona: list[tuple[str, dict]] = []
-        if target_entity and isinstance(persona_view, dict):
-            section = persona_view.get(target_entity)
+        if target_section and isinstance(persona_view, dict):
+            section = persona_view.get(target_section)
             if isinstance(section, dict):
                 for e in section.get('facts', []):
-                    if isinstance(e, dict) and not e.get('protected'):
-                        same_entity_persona.append((target_entity, e))
+                    if (
+                        isinstance(e, dict)
+                        and not e.get('protected')
+                        and entry_matches_subject(e, memory_subject)
+                    ):
+                        # 同 section 可能混不同 scope 的条目（section key 不含
+                        # scope）：候选只取本 subject 域，跨域条目不得进
+                        # merge prompt。legacy（memory_subject=None）只匹配
+                        # 无戳的 legacy 条目，双向 fail-closed。
+                        same_entity_persona.append((target_section, e))
         all_reflections = await self._aload_reflections_full(lanlan_name)
         same_entity_reflections = [
             r for r in all_reflections
             if r.get('entity') == target_entity
+            and entry_matches_subject(r, memory_subject)
             and r.get('status') in ('confirmed', 'promoted')
             and r.get('id') != R.get('id')
         ]
@@ -564,6 +612,22 @@ class PromotionMergeMixin:
                     f"discarding LLM decision={action!r} without persona write"
                 )
                 return 'no_longer_eligible'
+            if (
+                memory_subject is not None
+                and (
+                    self._subject_forget_is_active(
+                        lanlan_name, memory_subject,
+                    )
+                    or self._subject_forget_epoch(
+                        lanlan_name, memory_subject,
+                    ) != promotion_forget_epoch
+                )
+            ):
+                logger.info(
+                    f"[Promote] {lanlan_name}/{R['id']}: scoped forget "
+                    "overlapped promotion; discarding LLM decision"
+                )
+                return 'no_longer_eligible'
             if evidence_score(current2, datetime.now()) < EVIDENCE_PROMOTED_THRESHOLD:
                 logger.info(
                     f"[Promote] {lanlan_name}/{R['id']}: evidence_score "
@@ -576,11 +640,43 @@ class PromotionMergeMixin:
             R = current2
 
         if action == 'promote_fresh':
-            result = await self._persona_manager.aadd_fact(
-                lanlan_name, R.get('text', ''),
-                entity=target_entity or 'master',
-                source='reflection', source_id=R['id'],
+            from memory.scopes import subject_from_entry
+            promote_subject = subject_from_entry(R)
+            promote_kwargs = (
+                {'subject': promote_subject}
+                if promote_subject is not None else {}
             )
+            # Keep the reflection lock through the persona mutation. The
+            # scoped-forget route opens its tombstone under this same lock, so
+            # it either deletes this write afterwards or makes us reject it;
+            # there is no gap in which the route can return before a stale
+            # promotion recreates persona data.
+            async with self._get_alock(lanlan_name):
+                current_list3 = await self._aload_reflections_full(lanlan_name)
+                current3 = self._find_reflection_in_list(current_list3, R['id'])
+                if (
+                    current3 is None
+                    or current3.get('status') != 'confirmed'
+                    or (
+                        memory_subject is not None
+                        and (
+                            self._subject_forget_is_active(
+                                lanlan_name, memory_subject,
+                            )
+                            or self._subject_forget_epoch(
+                                lanlan_name, memory_subject,
+                            ) != promotion_forget_epoch
+                        )
+                    )
+                ):
+                    return 'no_longer_eligible'
+                result = await self._persona_manager.aadd_fact(
+                    lanlan_name, current3.get('text', ''),
+                    entity=target_entity or 'master',
+                    source='reflection', source_id=current3['id'],
+                    speaker_provenance=current3,
+                    **promote_kwargs,
+                )
             if result == self._persona_manager.FACT_ADDED:
                 await self._arecord_state_change(
                     lanlan_name, R['id'], 'confirmed', 'promoted',
@@ -660,16 +756,49 @@ class PromotionMergeMixin:
                     f"{target_entry_id} not found in persona; skip"
                 )
                 return 'invalid_target'
+            if not entry_matches_subject(target_entry, memory_subject):
+                # LLM 可能幻觉出他域 entry id（全局 id 查找不设界）：合并
+                # 会用本域文本覆写他域条目，跨隔离边界——复验后拒绝。
+                logger.warning(
+                    f"[Promote] {lanlan_name}/{R['id']}: merge target "
+                    f"{target_entry_id} belongs to a different isolation "
+                    f"domain; refuse"
+                )
+                return 'invalid_target'
 
-            merge_outcome = await self._persona_manager.amerge_into(
-                lanlan_name, target_entry_id, merged_text,
-                reflection_evidence={
-                    'reinforcement': float(R.get('reinforcement', 0.0) or 0.0),
-                    'disputation': float(R.get('disputation', 0.0) or 0.0),
-                },
-                source_reflection_id=R['id'],
-                merged_from_ids=[R['id']],
-            )
+            async with self._get_alock(lanlan_name):
+                current_list3 = await self._aload_reflections_full(lanlan_name)
+                current3 = self._find_reflection_in_list(current_list3, R['id'])
+                if (
+                    current3 is None
+                    or current3.get('status') != 'confirmed'
+                    or (
+                        memory_subject is not None
+                        and (
+                            self._subject_forget_is_active(
+                                lanlan_name, memory_subject,
+                            )
+                            or self._subject_forget_epoch(
+                                lanlan_name, memory_subject,
+                            ) != promotion_forget_epoch
+                        )
+                    )
+                ):
+                    return 'no_longer_eligible'
+                merge_outcome = await self._persona_manager.amerge_into(
+                    lanlan_name, target_entry_id, merged_text,
+                    reflection_evidence={
+                        'reinforcement': float(
+                            current3.get('reinforcement', 0.0) or 0.0
+                        ),
+                        'disputation': float(
+                            current3.get('disputation', 0.0) or 0.0
+                        ),
+                    },
+                    source_reflection_id=current3['id'],
+                    merged_from_ids=[current3['id']],
+                    source_provenance=current3,
+                )
             if merge_outcome == 'not_found':
                 logger.warning(
                     f"[Promote] {lanlan_name}/{R['id']}: amerge_into reported "

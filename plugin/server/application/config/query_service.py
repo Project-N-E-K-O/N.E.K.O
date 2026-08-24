@@ -23,6 +23,9 @@ from plugin.server.infrastructure.config_queries import (
     load_plugin_config as infrastructure_load_plugin_config,
 )
 from plugin.server.infrastructure.config_queries import (
+    load_plugin_effective_base_config as infrastructure_load_plugin_effective_base_config,
+)
+from plugin.server.infrastructure.config_queries import (
     load_plugin_config_toml as infrastructure_load_plugin_config_toml,
 )
 from plugin.server.infrastructure.config_queries import (
@@ -188,6 +191,30 @@ class ConfigQueryService:
                 details={"plugin_id": plugin_id, "error_type": type(exc).__name__},
             ) from exc
 
+    async def get_plugin_effective_base_config(self, *, plugin_id: str) -> dict[str, object]:
+        try:
+            payload = await asyncio.to_thread(infrastructure_load_plugin_effective_base_config, plugin_id)
+            return _normalize_payload(payload, context="load_plugin_effective_base_config")
+        except HTTPException as exc:
+            raise _from_http_exception(
+                exc,
+                code="PLUGIN_EFFECTIVE_BASE_CONFIG_QUERY_FAILED",
+                fallback_message="Failed to load plugin effective base config",
+            ) from exc
+        except RUNTIME_ERRORS as exc:
+            logger.error(
+                "get_plugin_effective_base_config failed: plugin_id={}, err_type={}, err={}",
+                plugin_id,
+                type(exc).__name__,
+                str(exc),
+            )
+            raise ServerDomainError(
+                code="PLUGIN_EFFECTIVE_BASE_CONFIG_QUERY_FAILED",
+                message="Failed to load plugin effective base config",
+                status_code=500,
+                details={"plugin_id": plugin_id, "error_type": type(exc).__name__},
+            ) from exc
+
     async def parse_toml_to_config(self, *, plugin_id: str, toml: str) -> dict[str, object]:
         try:
             payload = await asyncio.to_thread(infrastructure_parse_toml_to_config, plugin_id, toml)
@@ -321,7 +348,7 @@ class ConfigQueryService:
             return await self.get_plugin_config(plugin_id=plugin_id)
 
         normalized_profile_name = _normalize_profile_name(profile_name)
-        base_payload = await self.get_plugin_base_config(plugin_id=plugin_id)
+        base_payload = await self.get_plugin_effective_base_config(plugin_id=plugin_id)
         overlay_payload = await self.get_plugin_profile_config(
             plugin_id=plugin_id,
             profile_name=normalized_profile_name,

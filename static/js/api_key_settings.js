@@ -30,12 +30,20 @@ let _apiSaveInProgress = false;
 const _aliyunUsApiWarningShownKeys = new Set();
 
 // 所有模型类型
-const MODEL_TYPES = ['conversation', 'summary', 'gameMain', 'gameSummary', 'correction', 'emotion', 'vision', 'agent', 'omni', 'tts'];
+const MODEL_TYPES = ['conversation', 'vision', 'summary', 'correction', 'emotion', 'omni', 'agent', 'tts', 'gameMain', 'gameSummary'];
 // Model types that support connectivity testing.
 // All model types including TTS are testable — TTS follows the same
 // provider resolution logic (follow_core/follow_assist/custom).
 // Future: GPT-SoVITS custom TTS may need dedicated WebSocket test path.
 const CONNECTIVITY_TESTABLE_TYPES = MODEL_TYPES;
+// 后端用于表示“密钥已配置但不下发明文”的保留值。该值可以原样 POST 回去，
+// 由后端保留原密钥；绝不能当作真实凭据展示或用于连通性测试。
+const MASKED_SECRET_SENTINEL = '__NEKO_SECRET_MASKED__';
+const MASKED_SECRET_DISPLAY = '••••••••••••';
+// POST 成功后的紧随其后的配置重载中，后端会只返回密钥哨兵。此 Map 只在
+// 当前页面、当前次重载期间保存用户刚输入密钥的“局部遮罩值”（非明文），用于继续
+// 显示局部遮蔽；绝不写入 localStorage、不会发送到后端，也不会让后端 GET 回显明文。
+let _secretDisplayCache = null;
 const MIMO_TOKEN_PLAN_PROVIDER_KEY = 'mimo_token_plan';
 const MIMO_TOKEN_PLAN_OPENROUTER_URLS = [
     'https://token-plan-cn.xiaomimimo.com/v1',
@@ -46,6 +54,18 @@ const MODEL_DEFAULT_PROVIDER = {
     omni: 'follow_core',
     gameMain: 'follow_conversation',
     gameSummary: 'follow_summary',
+};
+const MODEL_CONFIG_EXPANSION_PATHS = {
+    conversation: ['conversation'],
+    summary: ['summary'],
+    gameMain: ['game', 'game-main'],
+    gameSummary: ['game', 'game-summary'],
+    correction: ['correction'],
+    emotion: ['emotion'],
+    vision: ['vision'],
+    agent: ['agent'],
+    omni: ['omni'],
+    tts: ['tts'],
 };
 const MODEL_PROVIDER_FIELD_BY_TYPE = {
     conversation: 'conversation_model',
@@ -358,44 +378,118 @@ function rememberResolvedProviderUrl(scope, providerKey, resolvedUrl) {
  */
 function maskApiKey(key) {
     if (!key || typeof key !== 'string') return key;
-    if (key.length < 14) return key;
-    const midLen = key.length - 12;
-    return key.slice(0, 6) + '*'.repeat(midLen) + key.slice(-6);
+    if (isMaskedSecretValue(key)) return MASKED_SECRET_DISPLAY;
+    // 与后端 mask_core_config_secret_for_display 对齐：短密钥直接全圆点，避免完整暴露。
+    if (key.length < 9) return MASKED_SECRET_DISPLAY;
+    const prefix = key.slice(0, 3);
+    const suffix = key.slice(-3);
+    if (prefix.includes('*') || suffix.includes('*')) return MASKED_SECRET_DISPLAY;
+    return prefix + '*'.repeat(key.length - 6) + suffix;
+}
+
+/**
+ * 判断后端保留哨兵、通用圆点遮罩（含非空残片）或旧版遮罩。旧值只接受
+ * 全星号，或 maskApiKey 生成的“前后各 3 或 6 个非星号字符 + 至少 3 个星号”
+ * 对称形状，避免把任意内部含星号的用户输入误判成遮罩。
+ */
+function isMaskedSecretValue(value) {
+    if (typeof value !== 'string') return false;
+    const normalized = value.trim();
+    return normalized === MASKED_SECRET_SENTINEL
+        || normalized === MASKED_SECRET_DISPLAY
+        || /^•+$/.test(normalized)
+        || /^\*{3,}$/.test(normalized)
+        || /^(?:[^*]{3}\*{3,}[^*]{3}|[^*]{6}\*{3,}[^*]{6})$/.test(normalized);
+}
+
+function getPartialMaskedSecretDisplay(value) {
+    const normalized = typeof value === 'string' ? value.trim() : '';
+    return /^(?:[^*]{3}\*{3,}[^*]{3}|[^*]{6}\*{3,}[^*]{6})$/.test(normalized) ? normalized : '';
 }
 
 /**
  * 将真实 key 写入 input 的 dataset，输入框显示遮蔽值。
  */
-function setMaskedInput(input, realKey) {
+function setMaskedInput(input, realKey, displayMask = '') {
     if (!input) return;
     if (!realKey) {
         input.dataset.realKey = '';
+        delete input.dataset.maskedSecret;
+        delete input.dataset.maskedDisplay;
         input.value = '';
         return;
     }
+    if (isMaskedSecretValue(realKey)) {
+        const cachedMask = _secretDisplayCache && _secretDisplayCache.get(input.id);
+        if (cachedMask && getPartialMaskedSecretDisplay(cachedMask)) {
+            // 保存后读取到的只是哨兵；同一次页面会话内沿用本地缓存的“遮罩值”
+            // （非明文）继续显示局部遮蔽，避免从“前后可见”退化为全圆点。
+            input.dataset.realKey = '';
+            input.dataset.maskedSecret = 'true';
+            input.dataset.maskedDisplay = cachedMask;
+            input.value = cachedMask;
+            return;
+        }
+        // 只保留“后端已有密钥”这一状态，不把哨兵伪装成真实 key 放进 DOM。
+        input.dataset.realKey = '';
+        input.dataset.maskedSecret = 'true';
+        input.dataset.maskedDisplay = getPartialMaskedSecretDisplay(displayMask) || MASKED_SECRET_DISPLAY;
+        input.value = input.dataset.maskedDisplay;
+        return;
+    }
+    delete input.dataset.maskedSecret;
+    delete input.dataset.maskedDisplay;
     input.dataset.realKey = realKey;
     input.value = maskApiKey(realKey);
 }
 
 /**
+ * 记录本页已输入密钥的“局部遮罩值”（非明文），以便保存成功后的单次配置重载
+ * 继续显示局部遮蔽。绝不缓存明文：遮罩值不可逆，DOM / 内存里都不保留真实 key。
+ */
+function cacheCurrentSecretDisplays() {
+    const cache = new Map();
+    document.querySelectorAll('input').forEach(input => {
+        if (input.dataset.maskAttached !== 'true' || !input.id) return;
+        const realKey = getRealKey(input);
+        if (realKey && !isMaskedSecretValue(realKey)) {
+            cache.set(input.id, maskApiKey(realKey));
+        }
+    });
+    _secretDisplayCache = cache;
+}
+
+function setSecretInputValue(elementId, value) {
+    const input = document.getElementById(elementId);
+    if (!input) return;
+    attachMaskBehavior(input);
+    setMaskedInput(input, typeof value === 'string' ? value : '');
+}
+
+/**
  * ⚠️ 重要：所有需要读取 API Key 真实值的地方，必须使用 getRealKey(input)
  * 而不是 input.value。因为 input.value 可能是遮蔽后的值（如 sk-a04****6b53）。
- * 真实 key 存储在 input.dataset.realKey 中，由 setMaskedInput() 写入。
+ * 用户新输入的真实 key 存储在 input.dataset.realKey 中；后端遮罩值只保存
+ * dataset.maskedSecret 状态，不会作为真实 key 放进 DOM。
  * 新增读取 key 的代码时请务必使用此函数。
  */
 function getRealKey(input) {
     if (!input) return '';
+    if (input.dataset.maskedSecret === 'true') {
+        return MASKED_SECRET_SENTINEL;
+    }
     // 聚焦中：用户可能正在编辑，优先使用当前 value
     if (input === document.activeElement) {
-        return input.value.trim();
+        const focusedValue = input.value.trim();
+        return isMaskedSecretValue(focusedValue) ? MASKED_SECRET_SENTINEL : focusedValue;
     }
     // 非聚焦：优先使用存储的真实 key（value 可能是遮蔽值）
     if (input.dataset.realKey) {
         return input.dataset.realKey;
     }
-    // 防御：如果 value 全是星号，说明是遮蔽残留，返回空
+    // 兼容旧遮罩：全星号表示后端已有密钥，应回传统一哨兵以便保留。
     const val = input.value.trim();
-    if (/\*{3,}/.test(val)) return '';
+    if (isMaskedSecretValue(val)) return MASKED_SECRET_SENTINEL;
     return val;
 }
 
@@ -406,17 +500,53 @@ function attachMaskBehavior(input) {
     if (!input || input.dataset.maskAttached) return;
     input.dataset.maskAttached = 'true';
     input.addEventListener('focus', () => {
+        if (input.dataset.maskedSecret === 'true') {
+            // 无明文可显示；若后端提供了局部掩码，则保持该掩码。
+            input.value = input.dataset.maskedDisplay || MASKED_SECRET_DISPLAY;
+            input.select();
+            return;
+        }
         const real = input.dataset.realKey;
         if (real) input.value = real;
     });
+    input.addEventListener('beforeinput', () => {
+        if (input.dataset.maskedSecret !== 'true') return;
+        // 用户开始编辑时才丢弃“保留旧值”状态；单纯聚焦/失焦不会清空密钥。
+        delete input.dataset.maskedSecret;
+        delete input.dataset.maskedDisplay;
+        input.dataset.realKey = '';
+        input.value = '';
+    });
+    input.addEventListener('input', () => {
+        if (input.dataset.maskedSecret === 'true' && input.value !== (input.dataset.maskedDisplay || MASKED_SECRET_DISPLAY)) {
+            // 兼容脚本赋值后派发 input（以及不支持 beforeinput 的浏览器）。
+            delete input.dataset.maskedSecret;
+            delete input.dataset.maskedDisplay;
+            input.dataset.realKey = '';
+        }
+    });
     input.addEventListener('blur', () => {
+        if (input.dataset.maskedSecret === 'true') {
+            input.dataset.realKey = '';
+            input.value = input.dataset.maskedDisplay || MASKED_SECRET_DISPLAY;
+            return;
+        }
         // 用户可能编辑了 value，同步回 realKey
         const current = input.value.trim();
         if (current) {
+            if (isMaskedSecretValue(current)) {
+                input.dataset.realKey = '';
+                input.dataset.maskedSecret = 'true';
+                input.dataset.maskedDisplay = getPartialMaskedSecretDisplay(current) || MASKED_SECRET_DISPLAY;
+                input.value = input.dataset.maskedDisplay;
+                return;
+            }
             input.dataset.realKey = current;
             input.value = maskApiKey(current);
         } else {
             input.dataset.realKey = '';
+            delete input.dataset.maskedSecret;
+            delete input.dataset.maskedDisplay;
         }
     });
 }
@@ -518,8 +648,8 @@ function showCurrentApiKey(message, rawKey = '', hasKey = false) {
     const textNode = document.createTextNode(message);
     currentApiKeyDiv.appendChild(textNode);
 
-    // 存储状态到 dataset
-    currentApiKeyDiv.dataset.apiKey = rawKey;
+    // 这里只需要“是否已配置”状态；不要把凭据复制到无用途的 DOM dataset。
+    currentApiKeyDiv.dataset.apiKey = '';
     currentApiKeyDiv.dataset.hasKey = hasKey ? 'true' : 'false';
 
     currentApiKeyDiv.style.display = 'flex';
@@ -928,11 +1058,23 @@ function expandAndScrollToKeyBook(options = {}) {
     }
 
     const section = document.getElementById('key-book-section');
-    if (section) {
-        section.scrollIntoView({
+    const providerKey = typeof options.providerKey === 'string' ? options.providerKey : '';
+    const targetInputId = providerKey === MIMO_TOKEN_PLAN_PROVIDER_KEY
+        ? 'mimoTokenPlanKeyInput'
+        : (providerKey ? `keyBookInput_${providerKey}` : '');
+    const targetInput = targetInputId ? document.getElementById(targetInputId) : null;
+    const scrollTarget = targetInput?.closest('.key-book-row, .field-row') || section;
+
+    if (scrollTarget) {
+        scrollTarget.scrollIntoView({
             behavior: options.instant ? 'auto' : 'smooth',
             block: 'center'
         });
+    }
+
+    if (targetInput) {
+        targetInput.focus({ preventScroll: true });
+        targetInput.select();
     }
 }
 
@@ -966,7 +1108,14 @@ function syncKeyToBook(providerKey, keyValue, sourceInput = null) {
         if (input !== sourceInput) {
             setMaskedInput(input, keyValue || '');
         } else {
-            input.dataset.realKey = (keyValue || '').trim();
+            const normalizedKey = (keyValue || '').trim();
+            if (isMaskedSecretValue(normalizedKey)) {
+                input.dataset.realKey = '';
+                input.dataset.maskedSecret = 'true';
+            } else {
+                input.dataset.realKey = normalizedKey;
+                delete input.dataset.maskedSecret;
+            }
         }
         attachMaskBehavior(input);
     }
@@ -1039,6 +1188,48 @@ function getTtsProviderMeta(pk) {
         };
     }
     return null;
+}
+
+/**
+ * 该 provider 是否真的具备某个槽位所需的能力。
+ *
+ * TTS 与「实时全模态」两个下拉原本把辅助 LLM 全表无差别铺开，于是列出了一堆后端
+ * 根本没有对应实现的服务商：选中后 TTS 仍由核心 API 决定 worker、实时全模态则落进
+ * 未实现的 api_type='local' 或被静默忽略，而下拉自动填进去的 URL/Key 还会污染该槽
+ * 的凭证。能力真相各有单一来源——实时全模态是 core_api_providers（后端按它分流），
+ * TTS 是后端 tts_provider_registry——这里据此过滤，前端不硬编码任何 provider key。
+ *
+ * 两处都 fail-open：元数据没取到（/api_providers 失败）时不过滤，宁可多列几项，
+ * 也不要把用户正在用的服务商从下拉里藏掉。
+ */
+function isProviderCapableForModelType(providerKey, modelType) {
+    const pk = String(providerKey || '').trim();
+    if (!pk || pk === 'custom' || pk.startsWith('follow_')) return true;
+
+    if (modelType === 'omni') {
+        // 实时全模态槽不提供任何具名服务商，只留「跟随」与「自定义」。
+        //
+        // 这个槽的取值最终会变成进程级的 core api type，而那个身份**同时**决定
+        // TTS worker、原生音色目录和音频凭证——它们都跟着核心 API 走。选一个与
+        // 核心不同的厂商会把音频链路撕成两半（实测过：核心 OpenAI + 本槽选 Qwen
+        // → 启动 Qwen TTS worker 却拿着 OpenAI 的 key，既无声又把一家的凭证发给
+        // 另一家）。整条音频链路只有一个 provider 身份，这个槽表达不了第二个，
+        // 所以干脆不摆出来。与后端 _normalize_realtime_provider 对偶。
+        return false;
+    }
+
+    if (modelType === 'tts') {
+        if (!_ttsProviders || Object.keys(_ttsProviders).length === 0) return true;
+        if (getTtsProviderMeta(pk)) return true;
+        // 注册表用 aliases 表达同一家的多地域入口（如 minimax_intl → minimax），
+        // 只按 key 查会把这些别名误判成无能力。
+        return Object.keys(_ttsProviders).some(k => {
+            const aliases = _ttsProviders[k] && _ttsProviders[k].aliases;
+            return Array.isArray(aliases) && aliases.includes(pk);
+        });
+    }
+
+    return true;
 }
 
 /**
@@ -1191,6 +1382,8 @@ function populateModelProviderDropdowns() {
             const _spFilter = getTtsProviderMeta(pk);
             if (mt === 'tts' && !isTtsProviderVisibleInModelConfig(pk, _spFilter)) return;
             if (_spFilter && _spFilter.tts_dropdown_only && mt !== 'tts') return;
+            // 该槽位没有这家的实现就不要摆出来（伪选项 → 静默 fallback）。
+            if (!isProviderCapableForModelType(pk, mt)) return;
             const pInfo = _assistApiProviders[pk];
             const opt = document.createElement('option');
             opt.value = pk;
@@ -1278,12 +1471,12 @@ function onCustomModelProviderChange(modelType) {
     /**
      * 将 key 输入框设为 readonly 并显示管理簿提示 + 快捷跳转按钮
      */
-    const setKeyReadonly = (input, value) => {
+    const setKeyReadonly = (input, value, providerKey = '') => {
         if (!input) return;
         setMaskedInput(input, value || '');
         input.setAttribute('readonly', 'readonly');
         input.placeholder = window.t ? window.t('api.keyAutoFilledFromKeyBook') : 'Key从API管理簿自动填充';
-        ensureKeyBookLink(input);
+        ensureKeyBookLink(input, providerKey);
     };
 
     /**
@@ -1295,6 +1488,7 @@ function onCustomModelProviderChange(modelType) {
         if (_isLoadingSavedConfig) return;
         // 清除残留的遮蔽状态和遮蔽值，让用户从空白开始输入
         input.dataset.realKey = '';
+        delete input.dataset.maskedSecret;
         input.value = '';
         // 恢复原始 placeholder
         const origPlaceholder = input.getAttribute('data-i18n-placeholder');
@@ -1350,7 +1544,7 @@ function onCustomModelProviderChange(modelType) {
                     urlInput.setAttribute('readonly', 'readonly');
                 }
                 const coreBookKey = syncKeyFromBook(coreProviderKey);
-                setKeyReadonly(keyInput, coreBookKey);
+                setKeyReadonly(keyInput, coreBookKey, coreProviderKey);
             } else {
                 const pInfo = getProviderInfo(sourceProviderKey);
                 if (urlInput) {
@@ -1358,7 +1552,11 @@ function onCustomModelProviderChange(modelType) {
                     urlInput.setAttribute('readonly', 'readonly');
                 }
                 const bookKey = getEffectiveAssistKey(sourceProviderKey);
-                setKeyReadonly(keyInput, bookKey);
+                setKeyReadonly(
+                    keyInput,
+                    bookKey,
+                    getEffectiveAssistProviderKey(sourceProviderKey)
+                );
             }
         } else {
             // free or empty
@@ -1423,7 +1621,7 @@ function onCustomModelProviderChange(modelType) {
             }
         }
         const bookKey = getEffectiveAssistKey(provider, null, { useTokenPlan: false });
-        setKeyReadonly(keyInput, bookKey);
+        setKeyReadonly(keyInput, bookKey, provider);
     }
     if (modelType === 'tts') {
         updateTtsProviderFieldVisibility(provider);
@@ -1443,6 +1641,31 @@ function updateTtsProviderFieldVisibility(provider) {
     if (standardFields) standardFields.style.display = isGsv ? 'none' : '';
     if (gsvFields) gsvFields.style.display = isGsv ? 'block' : 'none';
     if (isGsv) updateGptSovitsTutorialLink();
+    updateTtsProtocolHint(provider);
+}
+
+function updateTtsProtocolHint(provider) {
+    const hint = document.getElementById('tts-protocol-hint');
+    if (!hint) return;
+    const keyByProvider = {
+        custom: 'api.ttsProtocolHintOpenAI',
+        vllm_omni: 'api.ttsProtocolHintVllmOmni',
+    };
+    const fallbackByProvider = {
+        custom: 'OpenAI-compatible: HTTP(S) POST /v1/audio/speech，完整文本请求、流式音频响应。',
+        vllm_omni: 'vLLM-Omni: WS(S) /v1/audio/speech/stream，文本与音频双向流式传输。',
+    };
+    const key = keyByProvider[provider];
+    if (!key) {
+        hint.style.display = 'none';
+        hint.removeAttribute('data-i18n');
+        hint.textContent = '';
+        return;
+    }
+    hint.setAttribute('data-i18n', key);
+    const translated = window.t ? window.t(key) : '';
+    hint.textContent = translated && translated !== key ? translated : fallbackByProvider[provider];
+    hint.style.display = 'block';
 }
 
 /**
@@ -1461,27 +1684,40 @@ function updateGptSovitsTutorialLink() {
 
 // 语言切换时同步更新教程文档链接（中文↔其它语言走不同文档）
 window.addEventListener('localechange', updateGptSovitsTutorialLink);
+window.addEventListener('localechange', () => {
+    updateTtsProtocolHint(document.getElementById('ttsModelProvider')?.value || '');
+});
 
 /**
  * 在 key 输入框旁添加"前往管理簿"快捷按钮（如果还没有）
  */
-function ensureKeyBookLink(input) {
+function ensureKeyBookLink(input, providerKey = '') {
     if (!input) return;
     const parent = input.parentElement;
     if (!parent) return;
-    if (parent.querySelector('.key-book-shortcut')) return;
+    const shortcutScope = input.closest('.field-row') || parent;
+    const existingLinks = Array.from(shortcutScope.querySelectorAll('.key-book-shortcut'));
 
-    const link = document.createElement('a');
-    link.href = 'javascript:void(0)';
-    link.className = 'key-book-shortcut';
-    link.setAttribute('data-i18n', 'api.goToKeyBook');
-    link.textContent = window.t ? window.t('api.goToKeyBook') : '前往管理簿';
-    link.style.cssText = 'font-size: 0.85em; color: #40C5F1; cursor: pointer; margin-left: 8px; white-space: nowrap;';
-    link.addEventListener('click', (e) => {
-        e.preventDefault();
-        expandAndScrollToKeyBook();
-    });
-    parent.appendChild(link);
+    let link = existingLinks.shift() || null;
+    existingLinks.forEach(extraLink => extraLink.remove());
+    if (!link) {
+        link = document.createElement('a');
+        link.href = 'javascript:void(0)';
+        link.className = 'key-book-shortcut';
+        link.setAttribute('data-i18n', 'api.goToKeyBook');
+        link.textContent = window.t ? window.t('api.goToKeyBook') : '前往管理簿';
+        link.style.cssText = 'font-size: 0.85em; color: #40C5F1; cursor: pointer; margin-left: 8px; white-space: nowrap;';
+        link.addEventListener('click', (e) => {
+            e.preventDefault();
+            expandAndScrollToKeyBook({ providerKey: link.dataset.providerKey || '' });
+        });
+    }
+
+    link.dataset.providerKey = providerKey || '';
+    link.dataset.sourceInputId = input.id || '';
+    if (link.parentElement !== parent) {
+        parent.appendChild(link);
+    }
 }
 
 /**
@@ -1491,8 +1727,8 @@ function removeKeyBookLink(input) {
     if (!input) return;
     const parent = input.parentElement;
     if (!parent) return;
-    const link = parent.querySelector('.key-book-shortcut');
-    if (link) link.remove();
+    const shortcutScope = input.closest('.field-row') || parent;
+    shortcutScope.querySelectorAll('.key-book-shortcut').forEach(link => link.remove());
 }
 
 // ==================== 加载API服务商选项 ====================
@@ -1646,7 +1882,7 @@ async function loadCurrentApiKey() {
     _ttsConfigDirty = false;
 
     if (apiKeyInput) {
-        apiKeyInput.value = '';
+        setMaskedInput(apiKeyInput, '');
     }
     if (coreApiSelect) {
         coreApiSelect.value = '';
@@ -1655,7 +1891,7 @@ async function loadCurrentApiKey() {
         assistApiSelect.value = '';
     }
     if (assistApiKeyInput) {
-        assistApiKeyInput.value = '';
+        setMaskedInput(assistApiKeyInput, '');
     }
 
     syncProviderSelectDropdowns();
@@ -1699,7 +1935,7 @@ async function loadCurrentApiKey() {
                     apiKeyInput.value = window.t ? window.t('api.freeVersionNoApiKey') : '免费版无需API Key';
                 } else if (data.api_key) {
                     // 有API Key时设置
-                    setMaskedInput(apiKeyInput, data.api_key);
+                    setMaskedInput(apiKeyInput, data.api_key, data.api_key_display);
                     attachMaskBehavior(apiKeyInput);
                 }
                 // autoFillCoreApiKey 将在 coreApiSelect.value 设置后调用
@@ -1748,9 +1984,8 @@ async function loadCurrentApiKey() {
                 useMimoTokenPlanToggle.checked = data.useMimoTokenPlan === true;
             }
             const mimoTokenPlanKeyInput = document.getElementById('mimoTokenPlanKeyInput');
-            if (mimoTokenPlanKeyInput && data.assistApiKeyMimoTokenPlan) {
-                setMaskedInput(mimoTokenPlanKeyInput, data.assistApiKeyMimoTokenPlan);
-                attachMaskBehavior(mimoTokenPlanKeyInput);
+            if (mimoTokenPlanKeyInput) {
+                setSecretInputValue('mimoTokenPlanKeyInput', data.assistApiKeyMimoTokenPlan);
             }
             updateMimoTokenPlanControls();
 
@@ -1794,7 +2029,11 @@ async function loadCurrentApiKey() {
                 const assistKeyFromData = assistDataField ? (data[assistDataField] || '') : '';
                 if (assistApiKeyInput) {
                     if (assistKeyFromData) {
-                        setMaskedInput(assistApiKeyInput, assistKeyFromData);
+                        setMaskedInput(
+                            assistApiKeyInput,
+                            assistKeyFromData,
+                            data.assist_api_key_display
+                        );
                         attachMaskBehavior(assistApiKeyInput);
                     } else {
                         // 后端无辅助Key时，尝试从管理簿读取（兼容旧数据迁移）
@@ -1812,42 +2051,42 @@ async function loadCurrentApiKey() {
             // 加载用户自定义API配置
             setInputValue('conversationModelUrl', data.conversationModelUrl);
             setInputValue('conversationModelId', data.conversationModelId);
-            setInputValue('conversationModelApiKey', data.conversationModelApiKey);
+            setSecretInputValue('conversationModelApiKey', data.conversationModelApiKey);
 
             setInputValue('summaryModelUrl', data.summaryModelUrl);
             setInputValue('summaryModelId', data.summaryModelId);
-            setInputValue('summaryModelApiKey', data.summaryModelApiKey);
+            setSecretInputValue('summaryModelApiKey', data.summaryModelApiKey);
 
             setInputValue('gameMainModelUrl', data.gameMainModelUrl);
             setInputValue('gameMainModelId', data.gameMainModelId);
-            setInputValue('gameMainModelApiKey', data.gameMainModelApiKey);
+            setSecretInputValue('gameMainModelApiKey', data.gameMainModelApiKey);
 
             setInputValue('gameSummaryModelUrl', data.gameSummaryModelUrl);
             setInputValue('gameSummaryModelId', data.gameSummaryModelId);
-            setInputValue('gameSummaryModelApiKey', data.gameSummaryModelApiKey);
+            setSecretInputValue('gameSummaryModelApiKey', data.gameSummaryModelApiKey);
 
             setInputValue('correctionModelUrl', data.correctionModelUrl);
             setInputValue('correctionModelId', data.correctionModelId);
-            setInputValue('correctionModelApiKey', data.correctionModelApiKey);
+            setSecretInputValue('correctionModelApiKey', data.correctionModelApiKey);
 
             setInputValue('emotionModelUrl', data.emotionModelUrl);
             setInputValue('emotionModelId', data.emotionModelId);
-            setInputValue('emotionModelApiKey', data.emotionModelApiKey);
+            setSecretInputValue('emotionModelApiKey', data.emotionModelApiKey);
 
             setInputValue('visionModelUrl', data.visionModelUrl);
             setInputValue('visionModelId', data.visionModelId);
-            setInputValue('visionModelApiKey', data.visionModelApiKey);
+            setSecretInputValue('visionModelApiKey', data.visionModelApiKey);
             setInputValue('agentModelUrl', data.agentModelUrl);
             setInputValue('agentModelId', data.agentModelId);
-            setInputValue('agentModelApiKey', data.agentModelApiKey);
+            setSecretInputValue('agentModelApiKey', data.agentModelApiKey);
 
             setInputValue('omniModelUrl', data.omniModelUrl);
             setInputValue('omniModelId', data.omniModelId);
-            setInputValue('omniModelApiKey', data.omniModelApiKey);
+            setSecretInputValue('omniModelApiKey', data.omniModelApiKey);
 
             setInputValue('ttsModelUrl', data.ttsModelUrl);
             setInputValue('ttsModelId', data.ttsModelId);
-            setInputValue('ttsModelApiKey', data.ttsModelApiKey);
+            setSecretInputValue('ttsModelApiKey', data.ttsModelApiKey);
             setInputValue('ttsVoiceId', data.ttsVoiceId);
 
             // 加载 GPT-SoVITS 配置：启用状态以 ttsModelProvider 下拉为准，
@@ -1862,7 +2101,7 @@ async function loadCurrentApiKey() {
             );
 
             // 加载MCPR_TOKEN
-            setInputValue('mcpTokenInput', data.mcpToken);
+            setSecretInputValue('mcpTokenInput', data.mcpToken);
 
             // Load *ModelProvider for each model type and apply
             _isLoadingSavedConfig = true;
@@ -1877,6 +2116,19 @@ async function loadCurrentApiKey() {
                 // 覆盖「有 URL 但无 provider → custom」的旧回退，保证存量配置正确回填。
                 if (mt === 'tts' && _loadedGptSovitsState === 'enabled') {
                     sel.value = 'gptsovits';
+                    onCustomModelProviderChange(mt);
+                    return;
+                }
+                if (data[providerField] && !isProviderCapableForModelType(data[providerField], mt)) {
+                    // 存量配置里选中了一个该槽根本没有实现的服务商（TTS / 实时全模态
+                    // 下拉曾把辅助 LLM 全表铺开）。这个选择在后端从来没有生效过，但它
+                    // 自动填进去的 URL/Key 会污染该槽凭证，是「界面绿灯、实际无声」的来源。
+                    //
+                    // 必须落回该槽默认值，**不能**走下面那条 'custom' 兜底：那会把一个
+                    // LLM 端点坐实成用户自配的 TTS/实时端点，反而让原本只是空转的配置
+                    // 真的被拿去请求。落回 follow_* 后 onCustomModelProviderChange 会用
+                    // 被跟随方的值重写 URL/Key，残留污染一并清掉。
+                    sel.value = getDefaultProviderForModelType(mt);
                     onCustomModelProviderChange(mt);
                     return;
                 }
@@ -1925,6 +2177,8 @@ async function loadCurrentApiKey() {
         showCurrentApiKey(window.t ? window.t('api.errorGettingCurrentApiKey') : '获取当前API Key时出错', '', false);
     } finally {
         _isLoadingSavedConfig = false;
+        // 缓存仅覆盖保存成功后的这一次重载。页面刷新或后续普通加载仍绝不回显密钥。
+        _secretDisplayCache = null;
     }
 }
 
@@ -2181,6 +2435,7 @@ function updateAssistApiKeyInputAvailability() {
         const freeText = window.t ? window.t('api.freeVersionNoApiKey') : '免费版无需API Key';
         assistApiKeyInput.placeholder = freeText;
         assistApiKeyInput.dataset.realKey = '';
+        delete assistApiKeyInput.dataset.maskedSecret;
         assistApiKeyInput.value = freeText;
         attachMaskBehavior(assistApiKeyInput);
         updateMimoTokenPlanControls();
@@ -2215,7 +2470,7 @@ function toggleCustomApi(skipAutoFill) {
     const customApiContainer = document.getElementById('custom-api-container');
     if (customApiContainer) {
         if (isCustomEnabled) {
-            customApiContainer.style.display = 'block';
+            customApiContainer.style.display = 'grid';
             // 展开所有模型配置
             const modelContainers = document.querySelectorAll('.model-config-container');
             modelContainers.forEach(container => {
@@ -2297,7 +2552,7 @@ function confirmClearCustomApi() {
             // 清除遮蔽状态（如果有）
             if (keyEl.dataset) {
                 delete keyEl.dataset.realKey;
-                delete keyEl.dataset.masked;
+                delete keyEl.dataset.maskedSecret;
             }
         }
         // 重置 Provider 下拉为默认值并同步联动状态
@@ -2369,8 +2624,30 @@ document.addEventListener('DOMContentLoaded', function () {
 
 
 });
+function resolveCoreApiKeyForSave(coreApi, inputKey, allBookKeys, inputDirty) {
+    if (coreApi === 'free') return 'free-access';
+    const hasSelectedBookKey = !!(
+        coreApi
+        && Object.prototype.hasOwnProperty.call(allBookKeys, coreApi)
+    );
+    if (!inputDirty && hasSelectedBookKey) {
+        return allBookKeys[coreApi];
+    }
+    return inputKey;
+}
 
-
+function buildKeyBookSecretPayload(allBookKeys, registry) {
+    const payload = {};
+    Object.keys(allBookKeys).forEach(providerKey => {
+        const field = (registry[providerKey] || {}).config_field;
+        if (!field) return;
+        const value = allBookKeys[providerKey];
+        if (!Object.prototype.hasOwnProperty.call(payload, field) || value || !payload[field]) {
+            payload[field] = value;
+        }
+    });
+    return payload;
+}
 
 async function save_button_down(e) {
 
@@ -2538,20 +2815,11 @@ async function save_button_down(e) {
     // ttsVoiceId 直接用标准字段值，不再把旧 GSV 配置冻进 voice_id（旧前缀仍由
     // loadGptSovitsConfig 读路径兼容解析，只是不再写出）。
 
-    const mcpToken = getVal('mcpTokenInput');
+    const mcpToken = getKeyVal('mcpTokenInput');
 
-    const hasCoreBookKeyForSave = !!(
-        coreApi
-        && coreApi !== 'free'
-        && Object.prototype.hasOwnProperty.call(allBookKeys, coreApi)
-    );
-    const coreBookKeyForSave = hasCoreBookKeyForSave ? allBookKeys[coreApi] : '';
-    const effectiveCoreApiKeyForSave = (!_coreApiKeyInputDirty && hasCoreBookKeyForSave)
-        ? coreBookKeyForSave
-        : apiKey;
     // coreApiKey 只看 core 自己：assist=free 与付费 core 组合时，付费 core 仍需要真实 Key，
     // 不能被 free-access 覆盖。
-    const apiKeyForSave = coreApi === 'free' ? 'free-access' : effectiveCoreApiKeyForSave;
+    const apiKeyForSave = resolveCoreApiKeyForSave(coreApi, apiKey, allBookKeys, _coreApiKeyInputDirty);
 
     // 免费版和启用自定义API时不需要API Key检查
     if (!enableCustomApi && coreApi !== 'free' && !apiKeyForSave) {
@@ -2571,16 +2839,7 @@ async function save_button_down(e) {
 
     // Build payload — map book keys to config field names via registry.
     // Only include providers present in allBookKeys (skips restricted/hidden ones).
-    const bookPayload = {};
-    Object.keys(allBookKeys).forEach(pk => {
-        const field = (_apiKeyRegistry[pk] || {}).config_field;
-        if (field) {
-            const value = allBookKeys[pk];
-            if (!Object.prototype.hasOwnProperty.call(bookPayload, field) || value || !bookPayload[field]) {
-                bookPayload[field] = value;
-            }
-        }
-    });
+    const bookPayload = buildKeyBookSecretPayload(allBookKeys, _apiKeyRegistry);
 
     const payload = {
         apiKey: apiKeyForSave, coreApi, assistApi,
@@ -2818,6 +3077,10 @@ async function saveApiKey(params) {
         if (response.ok) {
             const result = await response.json();
             if (result.success) {
+                // 后端的 GET 响应不会回传密钥明文。先保留当前页面已有值，供下面
+                // loadCurrentApiKey() 在收到哨兵时显示为“前后部分可见”的遮蔽形式；
+                // 其余密钥继续用这一轮临时缓存维持显示。
+                cacheCurrentSecretDisplays();
                 let statusMessage;
                 if (result.sessions_ended && result.sessions_ended > 0) {
                     statusMessage = window.t ? window.t('api.saveSuccessWithReset', { count: result.sessions_ended }) : `API Key保存成功！已重置 ${result.sessions_ended} 个活跃对话，对话页面将自动刷新。`;
@@ -2825,7 +3088,6 @@ async function saveApiKey(params) {
                     statusMessage = window.t ? window.t('api.saveSuccessReload') : 'API Key保存成功！配置已重新加载，新配置将在下次对话时生效。';
                 }
                 showStatus(statusMessage, 'success');
-                setMaskedInput(document.getElementById('apiKeyInput'), '');
 
                 // 清除本地Voice ID记录
                 await clearVoiceIds();
@@ -3119,6 +3381,37 @@ function positionTooltip(iconElement, tooltipElement) {
     tooltipElement.style.setProperty('--arrow-left', arrowLeft + 'px');
 }
 
+const MODEL_CONFIG_ROW_PAIRS = Object.freeze({
+    conversation: 'vision',
+    vision: 'conversation',
+    summary: 'correction',
+    correction: 'summary',
+    emotion: 'omni',
+    omni: 'emotion',
+    agent: 'tts',
+    tts: 'agent',
+});
+
+function finishModelConfigCollapse(content, pairedContent, transitionId) {
+    if (content.dataset.collapseTransitionId !== transitionId) return;
+
+    delete content.dataset.collapseTransitionId;
+    const expandedPair = pairedContent?.classList.contains('expanded') ? pairedContent : null;
+    if (expandedPair) {
+        expandedPair.classList.add('is-reflowing');
+        expandedPair.getBoundingClientRect();
+    }
+
+    content.classList.remove('is-collapsing');
+    content.style.removeProperty('max-height');
+
+    if (expandedPair) {
+        window.setTimeout(() => {
+            expandedPair.classList.remove('is-reflowing');
+        }, 260);
+    }
+}
+
 // 二级折叠功能：切换模型配置的展开/折叠状态
 function toggleModelConfig(modelType) {
     const content = document.getElementById(`${modelType}-model-content`);
@@ -3131,16 +3424,90 @@ function toggleModelConfig(modelType) {
     if (!icon) return;
 
     if (content.classList.contains('expanded')) {
+        const pairedType = MODEL_CONFIG_ROW_PAIRS[modelType];
+        const pairedContent = pairedType
+            ? document.getElementById(`${pairedType}-model-content`)
+            : null;
+        const transitionId = `${Date.now()}-${Math.random()}`;
+
+        content.dataset.collapseTransitionId = transitionId;
+        content.classList.add('is-collapsing');
+        content.style.maxHeight = `${content.scrollHeight}px`;
+        content.getBoundingClientRect();
         content.classList.remove('expanded');
         icon.style.transform = 'rotate(0deg)';
         header.setAttribute('aria-expanded', 'false');
         content.setAttribute('aria-hidden', 'true');
+
+        window.requestAnimationFrame(() => {
+            if (content.dataset.collapseTransitionId === transitionId) {
+                content.style.maxHeight = '0px';
+            }
+        });
+
+        const handleTransitionEnd = event => {
+            if (event.target !== content || event.propertyName !== 'max-height') return;
+            content.removeEventListener('transitionend', handleTransitionEnd);
+            finishModelConfigCollapse(content, pairedContent, transitionId);
+        };
+        content.addEventListener('transitionend', handleTransitionEnd);
+        window.setTimeout(() => {
+            content.removeEventListener('transitionend', handleTransitionEnd);
+            finishModelConfigCollapse(content, pairedContent, transitionId);
+        }, 360);
     } else {
+        delete content.dataset.collapseTransitionId;
+        content.classList.remove('is-collapsing');
+        content.style.removeProperty('max-height');
         content.classList.add('expanded');
         icon.style.transform = 'rotate(180deg)';
         header.setAttribute('aria-expanded', 'true');
         content.setAttribute('aria-hidden', 'false');
     }
+}
+
+function navigateToCustomModelConfig(modelType) {
+    const expansionPath = MODEL_CONFIG_EXPANSION_PATHS[modelType];
+    if (!expansionPath) return false;
+
+    const customApiOptions = document.getElementById('custom-api-options');
+    const customApiToggleBtn = document.getElementById('custom-api-toggle-btn');
+    if (customApiOptions && getComputedStyle(customApiOptions).display === 'none') {
+        customApiOptions.style.display = 'block';
+        if (customApiToggleBtn) customApiToggleBtn.classList.add('rotated');
+    }
+
+    const customApiContainer = document.getElementById('custom-api-container');
+    if (customApiContainer && getComputedStyle(customApiContainer).display === 'none') {
+        customApiContainer.style.display = 'grid';
+    }
+
+    let expandedConfig = false;
+    expansionPath.forEach(configType => {
+        const content = document.getElementById(`${configType}-model-content`);
+        if (content && !content.classList.contains('expanded')) {
+            toggleModelConfig(configType);
+            expandedConfig = true;
+        }
+    });
+
+    const targetType = expansionPath[expansionPath.length - 1];
+    const targetContent = document.getElementById(`${targetType}-model-content`);
+    const targetHeader = targetContent?.previousElementSibling;
+    if (!targetHeader) return false;
+    const targetPanel = targetHeader.closest(
+        '.nested-model-config-container, .model-config-container'
+    ) || targetHeader;
+
+    const prefersReducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+    window.setTimeout(() => {
+        targetPanel.scrollIntoView({
+            behavior: prefersReducedMotion ? 'auto' : 'smooth',
+            block: 'center'
+        });
+    }, expandedConfig ? 320 : 0);
+
+    return true;
 }
 
 // 页面加载完成后初始化折叠状态
@@ -3233,16 +3600,16 @@ const LightStatus = {
 
 function getCustomModelDisplayLabel(modelType) {
     const labelMap = {
-        conversation: ['api.conversationModelConfig', '文本对话模型配置'],
-        summary: ['api.summaryModelConfig', '摘要模型配置'],
+        conversation: ['api.conversationModelConfig', '文本聊天模型'],
+        summary: ['api.summaryModelConfig', '摘要模型'],
         gameMain: ['api.gameMainModelConfig', '小游戏主模型配置'],
         gameSummary: ['api.gameSummaryModelConfig', '小游戏摘要模型配置'],
-        correction: ['api.correctionModelConfig', '纠错模型配置'],
-        emotion: ['api.emotionModelConfig', '情感模型配置'],
-        vision: ['api.visionModelConfig', '视觉模型配置'],
-        agent: ['api.agentApiConfigTitle', 'Agent API 配置（需支持视觉功能）'],
-        omni: ['api.realtimeModelConfig', '实时模型配置（Local模式）'],
-        tts: ['api.ttsModelConfig', 'TTS模型配置（双工流式）'],
+        correction: ['api.correctionModelConfig', '纠错模型'],
+        emotion: ['api.emotionModelConfig', '情感模型'],
+        vision: ['api.visionModelConfig', '视觉聊天模型'],
+        agent: ['api.agentApiConfigTitle', 'Agent API（需支持视觉功能）'],
+        omni: ['api.realtimeModelConfig', '实时全模态模型（Local模式）'],
+        tts: ['api.ttsModelConfig', 'TTS模型'],
     };
     const [key, fallback] = labelMap[modelType] || ['', modelType];
     if (!key || !window.t) return fallback;
@@ -3290,11 +3657,23 @@ function createIndicatorLight(inputElement, context) {
 
     // 将灯和 input 包在一个水平 flex 容器中，确保同行对齐
     if (inputElement && inputElement.parentNode) {
+        const fieldRow = inputElement.closest('.field-row');
         const wrapper = document.createElement('div');
         wrapper.className = 'connectivity-input-row';
         inputElement.parentNode.insertBefore(wrapper, inputElement);
         wrapper.appendChild(light);
         wrapper.appendChild(inputElement);
+
+        // 服务商配置可能先于连通性组件初始化。此时“前往管理簿”已经被
+        // 插入 field-row，需要一并移入横向容器，避免它留在输入框下一行。
+        const keyBookShortcut = fieldRow
+            ? Array.from(fieldRow.querySelectorAll('.key-book-shortcut')).find(
+                link => !link.dataset.sourceInputId || link.dataset.sourceInputId === inputElement.id
+            )
+            : null;
+        if (keyBookShortcut) {
+            wrapper.appendChild(keyBookShortcut);
+        }
     }
 
     return light;
@@ -3322,6 +3701,9 @@ function updateLightStatus(lightElement, status) {
     const fallback = fallbackMap[status] || status;
     const statusLabel = window.t ? window.t(tooltipKey, fallback) : fallback;
     lightElement.title = buildConnectivityLightTitle(lightElement, statusLabel);
+    if (lightElement.classList.contains('connectivity-summary-light')) {
+        lightElement.setAttribute('aria-label', lightElement.title);
+    }
 }
 
 // ==================== 连通性测试：错误信息展示 UI 组件 ====================
@@ -3404,6 +3786,16 @@ function buildCustomConnectivityCacheId(providerType, subType, url, key, model, 
     ].join('|');
 }
 
+function omitMaskedSecretFromConnectivity(result) {
+    if (result && isMaskedSecretValue(result.key)) {
+        // GET 配置不再包含明文，因此当前页面无法验证这个凭据。保留“已配置”
+        // 状态供指示灯注册，但绝不把哨兵发送到连通性测试端点。
+        result.key = '';
+        result.secretMasked = true;
+    }
+    return result;
+}
+
 // ==================== 连通性测试：ConnectivityManager ====================
 
 const ConnectivityManager = {
@@ -3432,7 +3824,7 @@ const ConnectivityManager = {
      * @returns {{ key: string, url: string, providerType: string }} 解析结果
      */
     resolveEffectiveKey(context) {
-        const result = { key: '', url: '', providerType: 'openai_compatible', subType: '', providerKey: '', providerScope: '', cacheId: '' };
+        const result = { key: '', url: '', providerType: 'openai_compatible', subType: '', providerKey: '', providerScope: '', cacheId: '', secretMasked: false };
 
         if (!context || !context.type) return result;
 
@@ -3465,6 +3857,7 @@ const ConnectivityManager = {
                 }
                 result.providerType = 'websocket';
             }
+            omitMaskedSecretFromConnectivity(result);
             result.cacheId = buildConnectivityCacheId(result.providerScope, result.providerKey, result.key, result.url);
             return result;
         }
@@ -3493,6 +3886,7 @@ const ConnectivityManager = {
                 }
                 result.providerType = getProviderType(assistProvider);
             }
+            omitMaskedSecretFromConnectivity(result);
             const cacheProviderKey = getEffectiveAssistProviderKey(result.providerKey);
             result.cacheId = buildConnectivityCacheId(result.providerScope, cacheProviderKey, result.key, result.url);
             return result;
@@ -3524,6 +3918,7 @@ const ConnectivityManager = {
                 // omni 模型使用 core_url (WebSocket)，其他模型使用 openrouter_url
                 if (mt === 'omni') {
                     result.key = coreResult.key;
+                    result.secretMasked = coreResult.secretMasked;
                     result.url = coreResult.url;
                     result.providerType = 'websocket';
                     result.providerKey = coreResult.providerKey;
@@ -3534,6 +3929,7 @@ const ConnectivityManager = {
                     const pInfo = _assistApiProviders[coreProvider] || _coreApiProviders[coreProvider] || {};
                     result.url = getProviderOpenrouterUrl(coreProvider, pInfo) || getProviderCoreUrl(coreProvider, pInfo);
                     result.key = coreResult.key;
+                    result.secretMasked = coreResult.secretMasked;
                     result.providerType = getProviderType(coreProvider);
                     result.providerKey = coreProvider;
                     result.providerScope = 'assist';
@@ -3542,6 +3938,7 @@ const ConnectivityManager = {
                 // 跟随辅助 API
                 const assistResult = this.resolveEffectiveKey({ type: 'assist' });
                 result.key = assistResult.key;
+                result.secretMasked = assistResult.secretMasked;
                 result.url = assistResult.url;
                 result.providerType = assistResult.providerType;
                 result.providerKey = assistResult.providerKey;
@@ -3549,7 +3946,13 @@ const ConnectivityManager = {
             } else if (provider === 'custom') {
                 // 自定义：直接从输入框读取，不设 providerKey（走自定义模式）
                 result.key = keyInput ? getRealKey(keyInput) : '';
-                result.providerType = (mt === 'omni') ? 'websocket' : 'openai_compatible';
+                result.providerType = (mt === 'omni')
+                    ? 'websocket'
+                    : (mt === 'tts' ? 'tts' : 'openai_compatible');
+                if (mt === 'tts') {
+                    result.subType = 'openai_tts';
+                    result.voiceId = document.getElementById('ttsVoiceId')?.value?.trim() || '';
+                }
                 result.model = getResolvedCustomModelId(mt, provider);
             } else if (mt === 'tts' && getTtsProviderMeta(provider) && getTtsProviderMeta(provider).editable_endpoint) {
                 // 端点可编辑的 TTS provider（如 vLLM-Omni）：走 Mode 2（custom 路径），
@@ -3638,7 +4041,8 @@ const ConnectivityManager = {
                 }
             }
 
-            if (result.key || result.url) {
+            omitMaskedSecretFromConnectivity(result);
+            if (result.key || result.url || result.secretMasked) {
                 if (result.providerKey && result.providerScope) {
                     result.cacheId = buildConnectivityCacheId(result.providerScope, result.providerKey, result.key, result.url);
                 } else {
@@ -3715,6 +4119,14 @@ const ConnectivityManager = {
      */
     async testKey(params) {
         const { provider_key, provider_scope, url, api_key: apiKey, model, voice_id: voiceId, provider_type: providerType, sub_type: subType, is_free: isFree, cache_id: cacheId } = params;
+        if (isMaskedSecretValue(apiKey)) {
+            return {
+                success: false,
+                skipped: true,
+                error: null,
+                error_code: null
+            };
+        }
         console.log('[ConnectivityManager] testKey called:', {
             provider_key: provider_key || '(custom)',
             provider_scope: provider_scope || '(none)',
@@ -3877,7 +4289,7 @@ const ConnectivityManager = {
         const coreResult = this.resolveEffectiveKey({ type: 'core' });
         const coreCacheId = coreResult.cacheId;
         console.log('[ConnectivityManager] testAll - core resolved:', { hasUrl: !!coreResult.url, hasKey: !!coreResult.key, providerType: coreResult.providerType });
-        if (coreCacheId && !(coreResult.key && coreResult.key !== 'free-access' && isFreeVersionText(coreResult.key))) {
+        if (!coreResult.secretMasked && coreCacheId && !(coreResult.key && coreResult.key !== 'free-access' && isFreeVersionText(coreResult.key))) {
             if (!keyConfigs[coreCacheId]) {
                 keyConfigs[coreCacheId] = {
                     provider_key: coreResult.providerKey, provider_scope: coreResult.providerScope,
@@ -3891,7 +4303,7 @@ const ConnectivityManager = {
         const assistIsFree = assistSelect && assistSelect.value === 'free';
         const assistResult = this.resolveEffectiveKey({ type: 'assist' });
         const assistCacheId = assistResult.cacheId;
-        if (assistCacheId && !keyConfigs[assistCacheId]) {
+        if (!assistResult.secretMasked && assistCacheId && !keyConfigs[assistCacheId]) {
             keyConfigs[assistCacheId] = {
                 provider_key: assistResult.providerKey, provider_scope: assistResult.providerScope,
                 url: assistResult.url, api_key: assistResult.key || '', provider_type: assistResult.providerType, is_free: assistIsFree
@@ -3904,7 +4316,7 @@ const ConnectivityManager = {
             CONNECTIVITY_TESTABLE_TYPES.forEach(mt => {
                 const customResult = this.resolveEffectiveKey({ type: 'custom', modelType: mt });
                 const customCacheId = customResult.cacheId;
-                if (customCacheId && !keyConfigs[customCacheId]) {
+                if (!customResult.secretMasked && customCacheId && !keyConfigs[customCacheId]) {
                     const providerSel = document.getElementById(`${mt}ModelProvider`);
                     const provider = providerSel ? providerSel.value : '';
                     let isFree = false;
@@ -4055,7 +4467,7 @@ const ConnectivityManager = {
             CONNECTIVITY_TESTABLE_TYPES.forEach(mt => {
                 const customResult = this.resolveEffectiveKey({ type: 'custom', modelType: mt });
                 const cacheId = customResult.cacheId;
-                if (cacheId && !keyConfigs[cacheId]) {
+                if (!customResult.secretMasked && cacheId && !keyConfigs[cacheId]) {
                     const providerSel = document.getElementById(`${mt}ModelProvider`);
                     const provider = providerSel ? providerSel.value : '';
                     let isFree = false;
@@ -4118,6 +4530,14 @@ const ConnectivityManager = {
 };
 
 // ==================== 连通性测试：集成初始化 ====================
+
+function showMaskedSecretConnectivityNotice() {
+    const fallback = '密钥已保存但不可回显，请重新输入后再测试';
+    const message = window.t
+        ? window.t('connectivity.maskedSecretRetype', fallback)
+        : fallback;
+    showStatus(message, 'info');
+}
 
 /**
  * 初始化所有连通性指示灯、错误信息展示、测试按钮和事件绑定。
@@ -4240,7 +4660,9 @@ function initConnectivityLights() {
             coreTestBtn.disabled = true;
             coreTestBtn.classList.add('testing');
             const resolved = ConnectivityManager.resolveEffectiveKey({ type: 'core' });
-            if (resolved.cacheId) {
+            if (resolved.secretMasked) {
+                showMaskedSecretConnectivityNotice();
+            } else if (resolved.cacheId) {
                 const coreSelect = document.getElementById('coreApiSelect');
                 const isFree = coreSelect && coreSelect.value === 'free';
                 ConnectivityManager.keyStatusMap[resolved.cacheId] = LightStatus.TESTING;
@@ -4300,7 +4722,9 @@ function initConnectivityLights() {
             assistTestBtn.disabled = true;
             assistTestBtn.classList.add('testing');
             const resolved = ConnectivityManager.resolveEffectiveKey({ type: 'assist' });
-            if (resolved.cacheId) {
+            if (resolved.secretMasked) {
+                showMaskedSecretConnectivityNotice();
+            } else if (resolved.cacheId) {
                 const assistSelect = document.getElementById('assistApiSelect');
                 const isFree = assistSelect && assistSelect.value === 'free';
                 ConnectivityManager.keyStatusMap[resolved.cacheId] = LightStatus.TESTING;
@@ -4370,12 +4794,19 @@ function initConnectivityLights() {
         summaryRow.id = 'customApiSummaryLights';
 
         CONNECTIVITY_TESTABLE_TYPES.forEach(mt => {
-            const summaryLight = document.createElement('span');
+            const summaryLight = document.createElement('button');
+            summaryLight.type = 'button';
             summaryLight.className = 'connectivity-summary-light';
             summaryLight.dataset.status = LightStatus.NOT_CONFIGURED;
             summaryLight.dataset.modelType = mt;
             summaryLight.dataset.tooltipLabel = getCustomModelDisplayLabel(mt);
+            const expansionPath = MODEL_CONFIG_EXPANSION_PATHS[mt];
+            const targetType = expansionPath?.[expansionPath.length - 1];
+            if (targetType) {
+                summaryLight.dataset.targetContentId = `${targetType}-model-content`;
+            }
             updateLightStatus(summaryLight, LightStatus.NOT_CONFIGURED);
+            summaryLight.addEventListener('click', () => navigateToCustomModelConfig(mt));
             summaryRow.appendChild(summaryLight);
         });
 
@@ -4383,8 +4814,6 @@ function initConnectivityLights() {
         const btnWrapper = document.createElement('div');
         btnWrapper.className = 'connectivity-test-btn-wrapper';
         btnWrapper.style.display = 'flex';
-        btnWrapper.style.alignItems = 'center';
-        btnWrapper.style.marginBottom = '12px';
 
         // Move button into wrapper (replace its position)
         testButton.style.marginBottom = '0';
@@ -4863,7 +5292,10 @@ async function initializePage() {
             updateAssistApiKeyInputAvailability();
 
             updateAssistApiRecommendation();
-            autoFillCoreApiKey(true);
+            // loadCurrentApiKey() has already applied the saved core key.  Do
+            // not force a management-book overwrite during initial rendering;
+            // provider-change handlers below still use force=true.
+            autoFillCoreApiKey();
             // 不再调用 autoFillAssistApiKey(true)，因为 loadCurrentApiKey()
             // 已从后端数据直接设置辅助API Key，此处再次从管理簿读取会覆盖正确值
             // （同服务商时管理簿存的是核心Key，受限服务商时管理簿DOM不存在）

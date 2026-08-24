@@ -25,6 +25,16 @@ class QQBacklogMessage:
     is_at_bot: bool = False
     category: BacklogCategory = "unknown"
     review_status: ReviewStatus = "unreviewed"
+    # Group-memory policy at receipt time: retroactive review replays this
+    # message later, and consent belongs to when it was SAID — a message
+    # ignored during an opted-out era must not enter scoped history just
+    # because the toggle is ON at replay time. Default False fails closed
+    # for legacy rows that predate the field.
+    group_memory_enabled_at_receipt: bool = False
+    # 合成事件标记（与 pipeline 的 _synthetic_source 同源，如
+    # group_join_notice）：名义 sender 并没有真的说话。读侧"最近发言人"
+    # 名单靠它排除事件关联用户。默认空串 = 真实发言（legacy 行同判）。
+    synthetic_source: str = ""
     raw: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:

@@ -23,10 +23,19 @@ threshold:
      while it has both old and new vectors in hand, scans for
      cosine > FACT_DEDUP_COSINE_THRESHOLD against existing facts of
      the same entity.  Hits go into ``facts_pending_dedup.json``.
+     The queue is **ids-only**: fact text never lands in the sidecar
+     file. Scoped (group/member-derived) fact text must not exist in
+     any store outside facts.json itself — the queue used to carry
+     denormalized ``candidate_text`` / ``existing_text`` copies, which
+     both leaked member content into a second plaintext file and went
+     stale when the authoritative row was edited between enqueue and
+     resolve.
   2. The idle-maintenance loop periodically calls ``aresolve(name)``,
-     which batches the queue into one LLM call asking the model to
-     classify each (candidate, existing) pair as ``merge`` / ``replace``
-     / ``keep_both``.
+     which re-reads the current text for each queued id pair from
+     facts.json (a row that disappeared meanwhile is consumed via the
+     stale-pair path) and batches the queue into one LLM call asking
+     the model to classify each (candidate, existing) pair as
+     ``merge`` / ``replace`` / ``keep_both``.
   3. Decisions are applied to facts.json under the FactStore's
      existing per-character file lock, then processed queue items
      are removed.
@@ -37,16 +46,26 @@ Why an LLM is in the loop:
     "主人讨厌猫" (the user hates cats).
     Both surface forms vary by 1 token but ride opposite poles.
   * Hash-based dedup remains the first line of defence (catches exact
-    repeats, no LLM cost) and the FTS5 lightweight near-dup check
-    handles strong textual overlap.  This module addresses the
-    *paraphrase* class — "对猫咪很感兴趣" / "最近养了只猫" ("very
-    interested in cats" / "recently got a cat") — that legacy dedup
-    misses entirely.
+    repeats, no LLM cost). Everything past that arrives here as a
+    *candidate*, from either of two detectors:
 
-When the EmbeddingService is disabled, no candidates are ever
-enqueued, so ``aresolve`` always sees an empty queue and the legacy
-hash + FTS5 dedup path is the entire dedup pipeline — exactly the
-behaviour pre-P2.
+      - the embedding sweep above (cosine), and
+      - the FTS5 near-duplicate check in ``memory/facts.py`` (character
+        n-gram overlap), which enqueues its hits instead of dropping the
+        new fact — "养了一只猫" / "养了一只狗" ("got a cat" / "got a
+        dog") is the highest textual overlap two facts can plausibly
+        have and must still end in keep_both.
+
+    The two detectors overlap on purpose and rarely agree at the edges;
+    ``aenqueue_candidates`` dedups by id pair, so a pair both find is
+    arbitrated once.
+
+The FTS detector needs no vectors, so a character with the
+EmbeddingService disabled still gets paraphrase consolidation here —
+what it loses is the *paraphrase* class the embedding sweep is for
+("对猫咪很感兴趣" / "最近养了只猫", "very interested in cats" /
+"recently got a cat"), which shares almost no surface text and only a
+vector can reach.
 """  # noqa: DOCSTRING_CJK
 from __future__ import annotations
 
@@ -55,19 +74,16 @@ import json
 import logging
 import os
 import threading
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
-try:
-    from memory.embeddings import cosine_similarity
-except ImportError:
-    # See ``embedding_worker`` for context on the fallback path. With a
-    # 0.0-cosine stub the resolver's pending queue stays empty and the
-    # legacy hash + FTS5 dedup is the entire pipeline — same shape as
-    # ``is_available() == False`` in the real module.
-    from memory.embeddings_fallback import cosine_similarity, _warn_once
-    _warn_once(__name__)
-from memory.facts import safe_int_field
+from memory.facts import (
+    _fact_scoped_identity,
+    _speaker_trust_fact_id,
+    safe_importance,
+    safe_int_field,
+)
+from memory.temporal import to_naive_local
 from utils.cloudsave_runtime import MaintenanceModeError, assert_cloudsave_writable
 from utils.file_utils import (
     atomic_write_json_async,
@@ -78,15 +94,187 @@ from utils.file_utils import (
 if TYPE_CHECKING:
     from memory.facts import FactStore
 
+
+def _created_at_instant(value: object) -> datetime | None:
+    """Parse an ISO timestamp as a comparable UTC instant."""
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        return parsed.astimezone(timezone.utc)
+    except (OverflowError, TypeError, ValueError):
+        return None
+
+
+def _event_window_instant(value: object) -> datetime | None:
+    """Parse one event boundary without dropping extreme aware values."""
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    # Imported boundaries may sit at datetime.min/max with an offset whose UTC
+    # conversion overflows. The shared normalizer preserves a comparable local
+    # instant normally and falls back to the explicit wall clock at the edge.
+    return to_naive_local(parsed)
+
+
+def _has_distinct_event_windows(first: dict, second: dict) -> bool:
+    """Return True when facts describe different, at least partly explicit windows."""
+    def _explicit_window(entry: dict) -> tuple[datetime | None, datetime | None]:
+        start = _event_window_instant(entry.get('event_start_at'))
+        end = _event_window_instant(entry.get('event_end_at'))
+        created = _event_window_instant(entry.get('created_at'))
+        # Fact extraction synthesizes start=created_at for timeless facts.
+        # It is storage metadata, not an event boundary.  Imported start-only
+        # windows remain explicit when they differ from created_at; any end is
+        # likewise always explicit.
+        if not entry.get('event_when_raw') and end is None and start == created:
+            start = None
+        return start, end
+
+    first_window = _explicit_window(first)
+    second_window = _explicit_window(second)
+    return (
+        any(
+            boundary is not None
+            for boundary in (*first_window, *second_window)
+        )
+        and first_window != second_window
+    )
+
+
+def _queue_identity(item: dict) -> tuple:
+    """Identify one queued pair inside its arbitration domain."""
+    def _typed_id(value: object) -> str | None:
+        return None if value is None else _speaker_trust_fact_id(value)
+
+    return (
+        _typed_id(item.get('candidate_id')),
+        _typed_id(item.get('existing_id')),
+        item.get('subject_key'),
+        item.get('scope'),
+        item.get('candidate_subject_kind'),
+        item.get('candidate_subject_id'),
+        item.get('candidate_scope'),
+        item.get('existing_subject_kind'),
+        item.get('existing_subject_id'),
+        item.get('existing_scope'),
+    )
+
+
+def _fact_dedup_domain(entry: dict) -> tuple | None:
+    """Return the queue domain for a live fact row."""
+    from memory.scopes import is_legacy_private_entry, subject_from_entry
+
+    subject = subject_from_entry(entry)
+    if subject is not None:
+        if (
+            subject.kind == 'group_participant'
+            and subject.scope == f"{subject.kind}:{subject.subject_id}"
+            and ':' in subject.subject_id
+        ):
+            group_prefix = subject.subject_id.rsplit(':', 1)[0]
+            arbitration_key = f"@group_participant_arbitration:{group_prefix}"
+            return arbitration_key, arbitration_key
+        return subject.key, subject.scope
+    if is_legacy_private_entry(entry):
+        return None, None
+    return None
+
+
+def _pair_can_share_dedup(first: dict, second: dict) -> bool:
+    """Allow cross-participant pairing only for deterministic corrections."""
+    from memory.scopes import subject_from_entry
+
+    first_subject = subject_from_entry(first)
+    second_subject = subject_from_entry(second)
+    if (
+        first_subject is None
+        or second_subject is None
+        or first_subject.kind != 'group_participant'
+        or second_subject.kind != 'group_participant'
+    ):
+        return True
+    if (
+        first_subject.kind,
+        first_subject.subject_id,
+        first_subject.scope,
+    ) == (
+        second_subject.kind,
+        second_subject.subject_id,
+        second_subject.scope,
+    ):
+        return True
+    if _fact_dedup_domain(first) != _fact_dedup_domain(second):
+        return False
+    from memory.speaker_trust import deterministic_relation
+    return deterministic_relation(
+        str(first.get('text') or ''),
+        str(second.get('text') or ''),
+    ) == 'correction'
+
+
+def _find_queued_fact(
+    rows_by_id: dict[object, list[dict]], item: dict, side: str,
+) -> dict | None:
+    """Resolve a queued id to exactly one row in the queued scope."""
+    rows = rows_by_id.get(item.get(f'{side}_id'), [])
+    identity_fields = (
+        item.get(f'{side}_subject_kind'),
+        item.get(f'{side}_subject_id'),
+        item.get(f'{side}_scope'),
+    )
+    if all(value is not None for value in identity_fields):
+        expected = (
+            _speaker_trust_fact_id(item.get(f'{side}_id')),
+            *identity_fields,
+        )
+        rows = [row for row in rows if _fact_scoped_identity(row) == expected]
+    elif 'subject_key' in item:
+        domain = item.get('subject_key'), item.get('scope')
+        rows = [row for row in rows if _fact_dedup_domain(row) == domain]
+    return rows[0] if len(rows) == 1 else None
+
 logger = logging.getLogger(__name__)
 
 
-# Cosine cutoff for "candidate is *probably* a paraphrase". 0.85 is
-# the design number from the P2 plan — empirically what the default
-# local profile emits for "主人喜欢猫" vs "对猫咪很感兴趣" (≈0.88)
-# without false-positives between "主人喜欢猫" / "主人讨厌猫" (≈0.78). Tunable per
-# deploy via the constant; lower values flood the LLM, higher misses
-# real paraphrases.
+def _detect_fact_dedup_prompt_language(
+    text: str,
+    *,
+    ui_language: str,
+) -> str:
+    from utils.language_utils import detect_prompt_language_with_ascii_fallback
+
+    return detect_prompt_language_with_ascii_fallback(
+        text,
+        ui_language=ui_language,
+    )
+
+
+def cosine_similarity(left, right) -> float:
+    """Load the optional vector implementation only when detection runs."""
+    try:
+        from memory.embeddings import cosine_similarity as implementation
+    except ImportError:
+        from memory.embeddings_fallback import (
+            _warn_once,
+            cosine_similarity as implementation,
+        )
+        _warn_once(__name__)
+    return implementation(left, right)
+
+
+# Cosine cutoff for "candidate is *probably* a paraphrase". 0.85 is the design
+# number from the P2 plan: it was calibrated so a paraphrase pair clears the
+# bar while an antonym pair ("主人喜欢猫" / "主人讨厌猫") does not.
+#
+# ⚠️ This comment used to quote absolute scores (≈0.88 paraphrase / ≈0.78
+# antonym) as if they were current. They were measured on the embedding
+# profile of the time and were never re-taken after the model changed, so
+# they no longer describe what this deployment emits — re-measure before
+# citing any number here. What the threshold rests on is the *ordering*
+# (paraphrase > antonym), not those two values. Lower values flood the LLM,
+# higher ones miss real paraphrases; retune against freshly measured pairs on
+# the profile you actually ship, and note that Matryoshka truncation makes the
+# scale dimension-dependent (see memory/_embeddings/hardware.py).
 FACT_DEDUP_COSINE_THRESHOLD = 0.85
 
 # Cap how many candidate pairs go into a single LLM call. The prompt
@@ -111,6 +299,14 @@ class FactDedupResolver:
     consume).  FactStore's own threading.Lock guards facts.json, so
     apply_decision delegates to FactStore's save path rather than
     writing the file directly."""
+
+    @staticmethod
+    def _locale_text(batch_texts: list[tuple[str, str]]) -> str:
+        """Return only user-authored fact text for prompt locale detection."""
+        return "\n".join(
+            f"{candidate_text}\n{existing_text}"
+            for candidate_text, existing_text in batch_texts
+        )
 
     def __init__(self, fact_store: "FactStore") -> None:
         self._fact_store = fact_store
@@ -206,12 +402,19 @@ class FactDedupResolver:
     ) -> int:
         """Append candidate (candidate_id, existing_id, …) pairs to
         the queue. Returns count actually appended (de-duped against
-        existing pending items by (candidate_id, existing_id) pair).
+        existing pending items by id pair plus arbitration domain).
 
         Each pair dict must contain:
           * candidate_id / existing_id — stable fact ids
-          * candidate_text / existing_text — for the LLM prompt
           * cosine — scoring transparency (debugging + threshold tuning)
+
+        The queue is ids-only by design: fact TEXT is deliberately not
+        persisted here. The authoritative copy lives in facts.json;
+        ``_aresolve_locked`` re-reads it by id when assembling the LLM
+        prompt. A text copy in this sidecar would put scoped (group /
+        member-derived) content in a second plaintext file — the same
+        content whose extraction / dead-letter logs only ever print
+        domain markers and lengths.
 
         The id-pair dedup matters because an oscillating worker (e.g.
         re-embed under a new model_id) would otherwise re-enqueue the
@@ -219,29 +422,105 @@ class FactDedupResolver:
         """
         if not pairs:
             return 0
+        from memory.scopes import subject_from_entry
+
         async with self._get_alock(name):
+            # Candidate detection runs outside this lock. A scoped forget may
+            # therefore delete its source facts after detection but before
+            # enqueue. Revalidate both ids against the live store so a stale
+            # worker cannot reintroduce forgotten text after the queue purge.
+            has_scoped_pairs = any(
+                p.get('subject_key') is not None or p.get('scope') is not None
+                for p in pairs
+            )
+            live_facts_by_id: dict[object, list[dict]] = {}
+            if has_scoped_pairs:
+                live_facts = await self._fact_store.aload_facts(name)
+                for row in live_facts:
+                    if isinstance(row, dict) and row.get('id') is not None:
+                        live_facts_by_id.setdefault(row.get('id'), []).append(row)
             existing = await self.aload_pending(name)
+            # scrub 老 schema 条目的明文残留。即使本次没有新 pair 可追加
+            # （全部撞去重），只要发生了 scrub 就必须重写队列文件——否则
+            # 磁盘上的明文要等下一次真正的写入才消失。
+            scrubbed = False
+            for it in existing:
+                if 'candidate_text' in it or 'existing_text' in it:
+                    it.pop('candidate_text', None)
+                    it.pop('existing_text', None)
+                    scrubbed = True
             existing_keys = {
-                (it.get('candidate_id'), it.get('existing_id'))
-                for it in existing
+                _queue_identity(it) for it in existing
             }
             now_iso = datetime.now().isoformat()
             appended = 0
             for p in pairs:
-                key = (p.get('candidate_id'), p.get('existing_id'))
-                if key in existing_keys or None in key:
+                key = _queue_identity(p)
+                pair_rows = [
+                    _find_queued_fact(live_facts_by_id, p, side)
+                    for side in ('candidate', 'existing')
+                ]
+                real_subject_forget_active = any(
+                    (
+                        subject := subject_from_entry(row or {})
+                    ) is not None
+                    and self._fact_store._subject_forget_is_active(
+                        name, subject,
+                    )
+                    for row in pair_rows
+                )
+                if (
+                    key in existing_keys
+                    or key[0] is None
+                    or key[1] is None
+                    or self._fact_store._subject_forget_fields_are_active(
+                        name, p.get('subject_key'), p.get('scope'),
+                    )
+                    or real_subject_forget_active
+                    or (
+                        pair_rows[0] is not None
+                        and pair_rows[1] is not None
+                        and not _pair_can_share_dedup(
+                            pair_rows[0], pair_rows[1],
+                        )
+                    )
+                    or (
+                        (
+                            p.get('subject_key') is not None
+                            or p.get('scope') is not None
+                        )
+                        and (
+                            pair_rows[0] is None
+                            or pair_rows[1] is None
+                        )
+                    )
+                ):
                     continue
-                existing.append({
+                queued = {
                     'candidate_id': p.get('candidate_id'),
                     'existing_id': p.get('existing_id'),
-                    'candidate_text': p.get('candidate_text', ''),
-                    'existing_text': p.get('existing_text', ''),
                     'entity': p.get('entity'),
+                    'subject_key': p.get('subject_key'),
+                    'scope': p.get('scope'),
                     'cosine': float(p.get('cosine', 0.0)),
                     'queued_at': now_iso,
-                })
+                }
+                for field in (
+                    'candidate_subject_kind', 'candidate_subject_id',
+                    'candidate_scope', 'existing_subject_kind',
+                    'existing_subject_id', 'existing_scope',
+                    # FTS 近重复通道（#2703）带来的证据：文字重叠度不是
+                    # cosine，两者不能互相冒名——分开存，prompt 侧按 detector
+                    # 决定报哪一个。
+                    'text_overlap', 'detector',
+                ):
+                    if p.get(field) is not None:
+                        queued[field] = p[field]
+                existing.append(queued)
                 existing_keys.add(key)
                 appended += 1
+            if scrubbed and not appended:
+                await self._asave_pending(name, existing)
             if appended:
                 if not await self._asave_pending(name, existing):
                     # Maintenance-mode skip: the queue file was NOT
@@ -258,6 +537,114 @@ class FactDedupResolver:
                 )
         return appended
 
+    async def aforget_subject(self, name: str, subject) -> dict:
+        """Purge queued text for one exact subject under the resolver lock.
+
+        Holding the same lock as ``aresolve`` waits for any in-flight LLM
+        decision before returning. Old queue rows without explicit subject
+        fields are matched through their still-live fact ids, before the route
+        deletes those facts.
+        """
+        from memory.scopes import coerce_subject, entry_matches_subject
+
+        memory_subject = coerce_subject(subject)
+        if memory_subject is None:
+            raise ValueError("aforget_subject requires an explicit subject")
+        async with self._get_alock(name):
+            path = self._pending_path(name)
+            pending: list = []
+            if await asyncio.to_thread(os.path.exists, path):
+                try:
+                    data = await read_json_async(path)
+                except (json.JSONDecodeError, OSError) as exc:
+                    raise RuntimeError(
+                        f"facts_pending_dedup unreadable during forget: {exc}"
+                    ) from exc
+                if not isinstance(data, list):
+                    raise RuntimeError(
+                        "facts_pending_dedup is not a list during forget"
+                    )
+                pending = data
+
+            facts_path = self._fact_store._facts_path(name)
+            facts: list = []
+            if await asyncio.to_thread(os.path.exists, facts_path):
+                try:
+                    facts_data = await read_json_async(facts_path)
+                except (json.JSONDecodeError, OSError) as exc:
+                    raise RuntimeError(
+                        f"facts state unreadable during dedup forget: {exc}"
+                    ) from exc
+                if not isinstance(facts_data, list):
+                    raise RuntimeError(
+                        "facts state is not a list during dedup forget"
+                    )
+                facts = facts_data
+            subject_fact_ids = {
+                row.get('id')
+                for row in facts
+                if (
+                    isinstance(row, dict)
+                    and row.get('id')
+                    and entry_matches_subject(row, memory_subject)
+                )
+            }
+            archive_path = self._fact_store._facts_archive_path(name)
+            if await asyncio.to_thread(os.path.exists, archive_path):
+                try:
+                    archive_data = await read_json_async(archive_path)
+                except (json.JSONDecodeError, OSError) as exc:
+                    raise RuntimeError(
+                        f"facts_archive unreadable during dedup forget: {exc}"
+                    ) from exc
+                if not isinstance(archive_data, list):
+                    raise RuntimeError(
+                        "facts_archive is not a list during dedup forget"
+                    )
+                subject_fact_ids.update(
+                    row.get('id')
+                    for row in archive_data
+                    if (
+                        isinstance(row, dict)
+                        and row.get('id')
+                        and entry_matches_subject(row, memory_subject)
+                    )
+                )
+
+            def _matches(item: object) -> bool:
+                if not isinstance(item, dict):
+                    return False
+                if (
+                    item.get('subject_key') == memory_subject.key
+                    and item.get('scope') == memory_subject.scope
+                ):
+                    return True
+                return bool(subject_fact_ids.intersection({
+                    item.get('candidate_id'), item.get('existing_id'),
+                }))
+
+            kept: list = []
+            scrubbed = False
+            for item in pending:
+                if _matches(item):
+                    continue
+                if isinstance(item, dict):
+                    item = dict(item)
+                    if 'candidate_text' in item or 'existing_text' in item:
+                        item.pop('candidate_text', None)
+                        item.pop('existing_text', None)
+                        scrubbed = True
+                kept.append(item)
+            removed = len(pending) - len(kept)
+            if (
+                (removed or scrubbed)
+                and not await self._asave_pending(name, kept)
+            ):
+                raise RuntimeError(
+                    "facts_pending_dedup not writable during forget"
+                )
+        return {'pending_dedup': removed}
+
     # ── candidate detection ──────────────────────────────────────────
 
     @staticmethod
@@ -266,12 +653,12 @@ class FactDedupResolver:
         *,
         threshold: float = FACT_DEDUP_COSINE_THRESHOLD,
         per_fact_limit: int = FACT_DEDUP_PAIRS_PER_NEW,
-        only_for_ids: set[str] | None = None,
+        only_for_ids: set[str | tuple[object, str, str, str]] | None = None,
     ) -> list[dict]:
         """Pure function: scan facts for cosine > threshold pairs.
 
         ``only_for_ids`` constrains the *candidate* (newer) side so
-        the worker can pass the ids it just embedded — we don't want
+        the worker can pass the scoped identities it just embedded — we don't want
         to repeatedly scan the entire history on every sweep, only
         check the new arrivals against existing rows.
 
@@ -286,22 +673,60 @@ class FactDedupResolver:
         a paraphrase into an absorbed fact would resurrect it from the
         archive path, which is worse than the duplicate.
         """  # noqa: DOCSTRING_CJK
+        def _bucket_key(f: dict) -> tuple | None:
+            """Entity + subject boundary; None → excluded from dedup.
+
+            Scoped facts all share entity == subject.kind (e.g. every
+            group's facts have entity='group_chat'), so entity alone
+            would merge/replace rows ACROSS groups/members. The subject
+            (key, scope) pair keeps dedup inside one boundary; legacy
+            rows keep their pre-scope behaviour. Corrupt subject rows
+            are excluded from every read path, so pairing against them
+            would resurrect invisible data — skip them entirely.
+            """
+            entity = f.get('entity') or 'master'
+            domain = _fact_dedup_domain(f)
+            return (entity, *domain) if domain is not None else None
+
         results: list[dict] = []
-        # Pre-bucket by entity so the inner loop only walks relevant rows.
-        by_entity: dict[str, list[dict]] = {}
-        for f in facts:
+        scoped_only_for_ids = {
+            item for item in (only_for_ids or set())
+            if isinstance(item, tuple) and len(item) == 4
+        }
+        bare_only_for_ids = {
+            item for item in (only_for_ids or set()) if isinstance(item, str)
+        }
+
+        def _is_fresh(fact: dict) -> bool:
+            identity = _fact_scoped_identity(fact)
+            return (
+                identity in scoped_only_for_ids
+                or str(fact.get('id')) in bare_only_for_ids
+            )
+
+        # Pre-bucket by entity + subject so the inner loop only walks
+        # rows inside the same dedup boundary.
+        by_entity: dict[tuple, list[dict]] = {}
+        fact_order: dict[tuple[object, str, str, str], int] = {}
+        for index, f in enumerate(facts):
             if not isinstance(f, dict):
                 continue
-            entity = f.get('entity') or 'master'
-            by_entity.setdefault(entity, []).append(f)
+            identity = _fact_scoped_identity(f)
+            if identity is not None:
+                fact_order[identity] = index
+            bucket = _bucket_key(f)
+            if bucket is None:
+                continue
+            by_entity.setdefault(bucket, []).append(f)
 
         for f in facts:
             if not isinstance(f, dict):
                 continue
             cid = f.get('id')
-            if not cid:
+            if cid is None:
                 continue
-            if only_for_ids is not None and cid not in only_for_ids:
+            candidate_identity = _fact_scoped_identity(f)
+            if only_for_ids is not None and not _is_fresh(f):
                 continue
             if f.get('absorbed'):
                 # Already folded into a reflection — merging or
@@ -316,16 +741,19 @@ class FactDedupResolver:
                 # skip; the worker will retry on its next sweep once
                 # the vector triple is filled.
                 continue
+            bucket = _bucket_key(f)
+            if bucket is None:
+                continue
             entity = f.get('entity') or 'master'
-            ctext = f.get('text', '')
             collected = 0
             # Sort siblings by cosine descending so we capture the
             # strongest pair first; the per_fact_limit cap then keeps
             # the queue interpretable when N rows are all near.
             scored: list[tuple[float, dict]] = []
-            for sib in by_entity.get(entity, ()):
+            for sib in by_entity.get(bucket, ()):
                 sid = sib.get('id')
-                if not sid or sid == cid:
+                sibling_identity = _fact_scoped_identity(sib)
+                if sid is None or sibling_identity == candidate_identity:
                     continue
                 # Same-batch deduplication (CodeRabbit PR-956 Major):
                 # when both rows are in the fresh ``only_for_ids`` batch,
@@ -335,15 +763,31 @@ class FactDedupResolver:
                 # FACT_DEDUP_PAIRS_PER_NEW / FACT_DEDUP_BATCH_LIMIT
                 # budget and letting traversal order decide which row
                 # plays "candidate" for the LLM's replace semantics.
-                # Keep one canonical direction (cid < sid by id) so a
-                # single pair lands in the queue. The cross-batch case
-                # ("fresh vs already-embedded") is unaffected — there
-                # sid is NOT in only_for_ids and the check is a no-op.
+                # Keep one direction, but preserve the candidate/newer
+                # contract: created_at is authoritative and authored list
+                # order breaks same-timestamp ties.  ID text is hash-random
+                # within one timestamp and must not decide chronology.
                 if (only_for_ids is not None
-                        and sid in only_for_ids
-                        and cid >= sid):
-                    continue
+                        and _is_fresh(sib)
+                        and _is_fresh(f)):
+                    candidate_instant = _created_at_instant(f.get('created_at'))
+                    sibling_instant = _created_at_instant(sib.get('created_at'))
+                    if (
+                        candidate_instant is not None
+                        and sibling_instant is not None
+                        and candidate_instant != sibling_instant
+                    ):
+                        candidate_is_newer = candidate_instant > sibling_instant
+                    else:
+                        candidate_is_newer = (
+                            fact_order.get(candidate_identity, -1)
+                            > fact_order.get(sibling_identity, -1)
+                        )
+                    if not candidate_is_newer:
+                        continue
                 if sib.get('absorbed'):
+                    continue
+                if not _pair_can_share_dedup(f, sib):
                     continue
                 svec = sib.get('embedding')
                 if not svec:
@@ -368,12 +812,22 @@ class FactDedupResolver:
             for cos, sib in scored:
                 if collected >= per_fact_limit:
                     break
+                # ids-only（隐私收口）：pair 不携带 text，resolve 侧按 id
+                # 从 facts.json 现取——队列文件因此不落任何成员衍生原文。
                 results.append({
                     'candidate_id': cid,
                     'existing_id': sib.get('id'),
-                    'candidate_text': ctext,
-                    'existing_text': sib.get('text', ''),
+                    'candidate_subject_kind': f.get('subject_kind'),
+                    'candidate_subject_id': f.get('subject_id'),
+                    'candidate_scope': f.get('scope'),
+                    'existing_subject_kind': sib.get('subject_kind'),
+                    'existing_subject_id': sib.get('subject_id'),
+                    'existing_scope': sib.get('scope'),
                     'entity': entity,
+                    # 隔离域随 pair 入队（legacy 为 None/None）：resolve 侧
+                    # 按域锁批，跨隔离域的 fact 文本不得共现在同一个 prompt。
+                    'subject_key': bucket[1],
+                    'scope': bucket[2],
                     'cosine': cos,
                 })
                 collected += 1
@@ -381,7 +835,7 @@ class FactDedupResolver:
 
     # ── resolve loop ─────────────────────────────────────────────────
 
-    async def aresolve(self, name: str) -> int:
+    async def aresolve(self, name: str, *, prompt_locale_resolver=None) -> int:
         """Process one batch of pending items via a single LLM call.
 
         Returns the number of items resolved (i.e. removed from the
@@ -398,12 +852,15 @@ class FactDedupResolver:
         that landed mid-call.
         """
         async with self._get_alock(name):
-            return await self._aresolve_locked(name)
+            return await self._aresolve_locked(
+                name,
+                prompt_locale_resolver=prompt_locale_resolver,
+            )
 
-    async def _aresolve_locked(self, name: str) -> int:
+    async def _aresolve_locked(self, name: str, *, prompt_locale_resolver=None) -> int:
         from config import MEMORY_LIVENESS_MAX_ATTEMPTS
         from config.prompts.prompts_memory import get_fact_dedup_prompt
-        from utils.language_utils import get_global_language
+        from utils.language_utils import get_global_language_full
         from utils.llm_client import create_chat_llm_async
         from utils.token_tracker import set_call_type
 
@@ -411,33 +868,181 @@ class FactDedupResolver:
         if not pending:
             return 0
 
+        # 队列 ids-only 迁移 scrub：老 schema 条目落盘携带 candidate_text/
+        # existing_text 明文副本（成员衍生内容），一经发现就地剥掉并立即
+        # 重写队列文件——不能等到批次消费时才顺带清，否则轮不上的长尾条
+        # 目会让明文在磁盘上一直躺到 dead-letter。维护态写失败无妨：内存
+        # 里已 scrub，本轮 prompt 不受影响，下轮重试重写。
+        scrubbed = False
+        for it in pending:
+            if 'candidate_text' in it or 'existing_text' in it:
+                it.pop('candidate_text', None)
+                it.pop('existing_text', None)
+                scrubbed = True
+        if scrubbed:
+            await self._asave_pending(name, pending)
+            logger.info(
+                "[FactDedup] %s: 队列明文字段 scrub 完成（ids-only 迁移）", name,
+            )
+
         # Liveness：过滤已达 MEMORY_LIVENESS_MAX_ATTEMPTS 的 dead-letter pair
         # （防御性——_abump_dedup_attempts_and_dead_letter_locked 命中阈值时直接
         # 从 queue 删除，正常路径不会让 attempts ≥ MAX 的 entry 还留着）。
+        #
+        # 单批锁定单一隔离域（对偶 corrections 的 batch_domain 锁）：legacy
+        # 私聊为一域、每个 subject (key, scope) 各一域；跨域 pair 留队等
+        # 下一轮 FIFO 轮到。新条目带 subject_key/scope 直接分类；升级前的
+        # 老队列条目查活体 fact 行兜底分类。
+        #
+        # prompt 文本按 id 从 facts.json 现取（队列 ids-only）：任一侧行已
+        # 消失（被 absorb 归档 / 上一轮 merge 掉 / subject 归档）的 pair 按
+        # 既有 disappeared-row 语义直接出队，不进任何 prompt（fail-closed）。
+        from memory.scopes import subject_from_entry
+
+        rows = await self._fact_store.aload_facts(name)
+        facts_by_id: dict[object, list[dict]] = {}
+        for row in rows:
+            if isinstance(row, dict) and row.get('id') is not None:
+                facts_by_id.setdefault(row.get('id'), []).append(row)
+
+        def _classify_domain(it: dict) -> tuple | None:
+            if 'subject_key' in it:
+                return (it.get('subject_key'), it.get('scope'))
+            for side in ('candidate', 'existing'):
+                row = _find_queued_fact(facts_by_id, it, side)
+                if row is None:
+                    continue
+                domain = _fact_dedup_domain(row)
+                if domain is not None:
+                    return domain
+            return None
+
         batch: list[dict] = []
+        # 与 batch 平行的 (candidate_text, existing_text)。独立结构而不是
+        # 临时挂在 item 上：batch 条目在失败路径会带着 resolve_attempts 原样
+        # 写回队列文件，挂上去的文本会跟着落盘，把 ids-only 改回去。
+        batch_texts: list[tuple[str, str]] = []
+        stale_keys: set[tuple] = set()
+        batch_domain: tuple | None = None
         for it in pending:
             if safe_int_field(it, 'resolve_attempts') >= MEMORY_LIVENESS_MAX_ATTEMPTS:
                 continue
+            cand_row = _find_queued_fact(facts_by_id, it, 'candidate')
+            exist_row = _find_queued_fact(facts_by_id, it, 'existing')
+            if cand_row is None or exist_row is None:
+                stale_keys.add(_queue_identity(it))
+                continue
+            if any(
+                (subject := subject_from_entry(row)) is not None
+                and self._fact_store._subject_forget_is_active(name, subject)
+                for row in (cand_row, exist_row)
+            ):
+                stale_keys.add(_queue_identity(it))
+                continue
+            if not _pair_can_share_dedup(cand_row, exist_row):
+                stale_keys.add(_queue_identity(it))
+                continue
+            domain = _classify_domain(it)
+            if domain is None:
+                stale_keys.add(_queue_identity(it))
+                continue
+            if batch_domain is None:
+                batch_domain = domain
+            elif domain != batch_domain:
+                continue
             batch.append(it)
+            batch_texts.append(
+                (cand_row.get('text', '') or '', exist_row.get('text', '') or '')
+            )
             if len(batch) >= FACT_DEDUP_BATCH_LIMIT:
                 break
+        if stale_keys:
+            kept = [
+                it for it in pending
+                if _queue_identity(it) not in stale_keys
+            ]
+            # 落盘失败（维护态）无妨：下一轮重新识别重新丢。
+            await self._asave_pending(name, kept)
+            logger.info(
+                "[FactDedup] %s: 出队 %d 对行已消失/无法归域的陈旧候选",
+                name, len(stale_keys),
+            )
         if not batch:
             return 0
+        prompt_ui_language = get_global_language_full()
+        if prompt_locale_resolver is not None and batch_domain[0] is not None:
+            from memory.scopes import MemoryScopeError, MemorySubject
+
+            subject_key, subject_scope = batch_domain
+            subject_kind, separator, subject_id = subject_key.partition(':')
+            if separator:
+                try:
+                    batch_subject = MemorySubject.create(
+                        subject_kind,
+                        subject_id,
+                        scope=subject_scope,
+                    )
+                except MemoryScopeError:
+                    batch_subject = None
+                if batch_subject is not None:
+                    try:
+                        selected_locale = await prompt_locale_resolver(
+                            batch_subject,
+                        )
+                    except Exception as exc:
+                        logger.warning(
+                            "[FactDedup] %s: scoped prompt locale 解析失败，"
+                            "回退到全局 locale: %s",
+                            name,
+                            exc,
+                        )
+                        selected_locale = None
+                    if selected_locale:
+                        prompt_ui_language = selected_locale
+        def _evidence(item: dict) -> str:
+            """Name the metric that actually produced this pair.
+
+            An FTS pair has no cosine (vectors may not even be enabled);
+            printing its text overlap under the ``cosine=`` label would
+            hand the model a number that means something else.
+            """
+            # 脏值不抛：这段在 try 之外，一条被手改成字符串的 text_overlap
+            # 会让异常穿出 _aresolve_locked，既不 bump resolve_attempts 也不
+            # 进 dead-letter——整个队列永久卡在队头那条上（对齐同文件
+            # resolve_attempts 走 safe_int_field 的口径）。
+            def _num(value: object) -> float | None:
+                try:
+                    return float(value)  # type: ignore[arg-type]
+                except (TypeError, ValueError):
+                    return None
+
+            overlap = _num(item.get('text_overlap'))
+            if overlap is not None:
+                return f"text_overlap={overlap:.3f}"
+            return f"cosine={_num(item.get('cosine')) or 0.0:.3f}"
+
         pairs_text = "\n".join(
-            f"[{i}] candidate: {item.get('candidate_text', '')}"
-            f" | existing: {item.get('existing_text', '')}"
-            f" | cosine={item.get('cosine', 0.0):.3f}"
-            for i, item in enumerate(batch)
+            f"[{i}] candidate: {cand_text}"
+            f" | existing: {exist_text}"
+            f" | {_evidence(item)}"
+            for i, (item, (cand_text, exist_text)) in enumerate(
+                zip(batch, batch_texts)
+            )
         )
         prompt = (
-            get_fact_dedup_prompt(get_global_language())
+            get_fact_dedup_prompt(
+                _detect_fact_dedup_prompt_language(
+                    self._locale_text(batch_texts),
+                    ui_language=prompt_ui_language,
+                )
+            )
             .replace('{PAIRS}', pairs_text)
             .replace('{COUNT}', str(len(batch)))
         )
 
         try:
             set_call_type("memory_fact_dedup")
-            api_config = self._config_manager.get_model_api_config('summary')
+            api_config = await self._config_manager.aget_model_api_config('summary')
             # timeout=60: 持 FactDedup 锁但只阻 embedding worker enqueue
             # （background→background），用户路径无感。
             # max_retries=0: 禁 SDK 自动重试（这里没业务 retry，单次即终态）。
@@ -505,7 +1110,7 @@ class FactDedupResolver:
         current = await self.aload_pending(name)
         remaining = [
             it for it in current
-            if (it.get('candidate_id'), it.get('existing_id')) not in processed_keys
+            if _queue_identity(it) not in processed_keys
         ]
         if not await self._asave_pending(name, remaining):
             # Maintenance-mode skip: queue cleanup didn't land on disk
@@ -547,16 +1152,18 @@ class FactDedupResolver:
         if not batch_items:
             return
         bumped_keys = {
-            (it.get('candidate_id'), it.get('existing_id')) for it in batch_items
+            _queue_identity(it) for it in batch_items
         }
-        bumped_keys.discard((None, None))
+        bumped_keys = {
+            key for key in bumped_keys if key[0] is not None and key[1] is not None
+        }
         if not bumped_keys:
             return
         current = await self.aload_pending(name)
         kept: list[dict] = []
         dropped = 0
         for it in current:
-            key = (it.get('candidate_id'), it.get('existing_id'))
+            key = _queue_identity(it)
             if key in bumped_keys:
                 new_attempts = safe_int_field(it, 'resolve_attempts') + 1
                 if new_attempts >= MEMORY_LIVENESS_MAX_ATTEMPTS:
@@ -616,18 +1223,32 @@ class FactDedupResolver:
         consumed (so the next round doesn't keep flagging it).
 
         Returns ``(applied_count, processed_pair_keys)``.  The set
-        contains the (candidate_id, existing_id) keys for queue
-        entries the caller should *remove* — exactly the entries we
+        contains the full scoped pair keys for queue entries the caller should
+        *remove* — exactly the entries we
         applied or consumed via the conflict guard, NOT the ones we
         skipped due to malformed LLM output (those stay queued for
         retry).
         """
         if not results:
             return 0, set()
-        facts = await self._fact_store.aload_facts(name)
-        by_id = {f.get('id'): f for f in facts if isinstance(f, dict) and f.get('id')}
+        live_facts = await self._fact_store.aload_facts(name)
+        # Decisions are staged away from FactStore's shared cache.  The
+        # archive transaction validates the original survivor snapshots and
+        # publishes these copies only after it owns the persistence lock.
+        facts = [dict(f) if isinstance(f, dict) else f for f in live_facts]
+        rows_by_id: dict[object, list[dict]] = {}
+        for fact in facts:
+            if isinstance(fact, dict) and fact.get('id') is not None:
+                rows_by_id.setdefault(fact.get('id'), []).append(fact)
+        originals_by_identity = {
+            identity: dict(fact)
+            for fact in live_facts
+            if (identity := _fact_scoped_identity(fact)) is not None
+        }
         applied = 0
-        ids_to_remove: set[str] = set()
+        identities_to_remove: set[tuple[str, str, str, str]] = set()
+        archive_specs: dict[tuple[str, str, str, str], dict] = {}
+        mutated_survivor_identities: set[tuple[str, str, str, str]] = set()
         processed_pairs: set[tuple] = set()
         seen_pairs: set[tuple] = set()
         for r in results:
@@ -649,7 +1270,7 @@ class FactDedupResolver:
             # decision on the SAME pair (CodeRabbit PR-956 Major).
             cand_id_dedup = item.get('candidate_id')
             exist_id_dedup = item.get('existing_id')
-            pair_key = (cand_id_dedup, exist_id_dedup)
+            pair_key = _queue_identity(item)
             if pair_key in seen_pairs:
                 logger.info(
                     "[FactDedup] %s: 跳过重复决策 cand=%s exist=%s (LLM 在同一批次返回多次)",
@@ -680,25 +1301,129 @@ class FactDedupResolver:
             action = action_norm
             cand_id = item.get('candidate_id')
             exist_id = item.get('existing_id')
-            cand = by_id.get(cand_id)
-            existing = by_id.get(exist_id)
+            cand = _find_queued_fact(rows_by_id, item, 'candidate')
+            existing = _find_queued_fact(rows_by_id, item, 'existing')
             if cand is None or existing is None:
                 # One side disappeared between enqueue and resolve —
                 # not an error, just stale; consume the queue entry
                 # so it doesn't keep blocking subsequent batches.
-                processed_pairs.add((cand_id, exist_id))
+                processed_pairs.add(pair_key)
                 continue
+            cand_identity = _fact_scoped_identity(cand)
+            exist_identity = _fact_scoped_identity(existing)
+            if cand_identity is None or exist_identity is None:
+                processed_pairs.add(pair_key)
+                continue
+            from memory.speaker_trust import (
+                deterministic_relation,
+                preferred_by_trust,
+                provenance_of_entries,
+                same_provenance_source,
+                stable_speaker_id,
+            )
+            cand_speaker = cand.get('speaker_id')
+            exist_speaker = existing.get('speaker_id')
+            cand_speaker_id = stable_speaker_id(cand_speaker)
+            exist_speaker_id = stable_speaker_id(exist_speaker)
+            cand_trust = cand.get('speaker_trust')
+            exist_trust = existing.get('speaker_trust')
+            preference = None
+            if (
+                cand.get('speaker_provenance_mixed') is not True
+                and existing.get('speaker_provenance_mixed') is not True
+                and cand_speaker_id is not None
+                and exist_speaker_id is not None
+                and cand_speaker_id != exist_speaker_id
+                # Different account != different person. Canonical write
+                # routing puts one person's two accounts in the same subject
+                # and the same dedup domain, so "arbitrate against yourself"
+                # goes from theoretical to routine — and the base tier is NOT
+                # aggregated across accounts, so the same person can hold 1.0
+                # on QQ and 0.32 on a tier-less channel, a 0.68 gap against a
+                # 0.15 margin. Without this guard their own older statement
+                # deterministically overrides their own newer one.
+                # ``is not True`` so "unknown" still arbitrates as today.
+                and same_provenance_source(existing, cand) is not True
+                and isinstance(cand_trust, (int, float))
+                and not isinstance(cand_trust, bool)
+                and isinstance(exist_trust, (int, float))
+                and not isinstance(exist_trust, bool)
+                and deterministic_relation(
+                    str(existing.get('text') or ''),
+                    str(cand.get('text') or ''),
+                ) == 'correction'
+                and not _has_distinct_event_windows(existing, cand)
+            ):
+                preference = preferred_by_trust(
+                    exist_trust, cand_trust,
+                )
+            if preference == 'old' and action == 'replace':
+                logger.info(
+                    "[FactDedup] %s: trust 仲裁保留 existing=%s(%s)，覆盖模型 replace",
+                    name, exist_id, exist_speaker,
+                )
+                action = 'merge'
+            elif preference == 'new' and action == 'merge':
+                logger.info(
+                    "[FactDedup] %s: trust 仲裁保留 candidate=%s(%s)，覆盖模型 merge",
+                    name, cand_id, cand_speaker,
+                )
+                action = 'replace'
+
+            def _fold_survivor_provenance(
+                survivor: dict, absorbed: dict,
+            ) -> None:
+                # Must match what `provenance_of_entries` WRITES (and what
+                # `_reconcile_existing_provenance` / the rollback path pop).
+                # Leaving `speaker_entity_id` behind is worse than cosmetic: a
+                # survivor marked `speaker_provenance_mixed` would keep a stale
+                # entity id, and `same_provenance_source` checks entity
+                # equality BEFORE anything else — so an already-mixed row would
+                # start reading back as "same person".
+                provenance_keys = (
+                    'speaker_id', 'speaker_label', 'speaker_trust',
+                    'speaker_entity_id', 'speaker_provenance_mixed',
+                )
+                folded = provenance_of_entries((survivor, absorbed))
+                known_ids = [
+                    stable_speaker_id(row.get('speaker_id'))
+                    for row in (survivor, absorbed)
+                ]
+                attributed_ids = {value for value in known_ids if value}
+                mixed = (
+                    survivor.get('speaker_provenance_mixed') is True
+                    or absorbed.get('speaker_provenance_mixed') is True
+                    or (bool(attributed_ids) and None in known_ids)
+                    # Two account strings only mean "mixed" when they are two
+                    # PEOPLE. ``is False`` (not ``is not True``): "unknown"
+                    # must not be recorded as known-mixed, and
+                    # ``provenance_of_entries`` already keeps the survivor's
+                    # own provenance verbatim in that case.
+                    or (
+                        len(attributed_ids) > 1
+                        and same_provenance_source(survivor, absorbed) is False
+                    )
+                )
+                for key in provenance_keys:
+                    survivor.pop(key, None)
+                if mixed:
+                    survivor['speaker_provenance_mixed'] = True
+                else:
+                    survivor.update(folded)
             # Reciprocal-pair guard: an earlier decision in this batch
             # already scheduled one side for removal. Honouring this
             # decision too would either delete both facts (merge after
             # replace) or mutate a row about to vanish.  Treat as
             # consumed so the queue entry clears, but skip the apply.
-            if cand_id in ids_to_remove or exist_id in ids_to_remove:
+            if (
+                cand_identity in identities_to_remove
+                or exist_identity in identities_to_remove
+            ):
                 logger.info(
                     "[FactDedup] %s: 跳过冲突决策 cand=%s exist=%s (一方已被前一决策处理)",
                     name, cand_id, exist_id,
                 )
-                processed_pairs.add((cand_id, exist_id))
+                processed_pairs.add(pair_key)
                 applied += 1
                 continue
             if action == 'merge':
@@ -710,10 +1435,22 @@ class FactDedupResolver:
                 if cand_id not in merged:
                     merged.append(cand_id)
                 existing['merged_from_ids'] = merged
-                cur_imp = int(existing.get('importance', 5) or 5)
-                existing['importance'] = min(10, cur_imp + 1)
-                ids_to_remove.add(cand_id)
-                processed_pairs.add((cand_id, exist_id))
+                if preference != 'old':
+                    cur_imp = safe_importance(existing)
+                    existing['importance'] = min(10, cur_imp + 1)
+                # A trust-arbitrated correction is replacement semantics even
+                # when the surviving side is represented by ``merge``.  The
+                # rejected contradiction is not corroborating provenance;
+                # keep the selected winner attributable for later disputes.
+                if preference != 'old':
+                    _fold_survivor_provenance(existing, cand)
+                mutated_survivor_identities.add(exist_identity)
+                identities_to_remove.add(cand_identity)
+                archive_specs[cand_identity] = {
+                    'reason': 'fact_dedup_merge',
+                    'superseded_by': exist_id,
+                }
+                processed_pairs.add(pair_key)
                 applied += 1
             elif action == 'replace':
                 # Mirror image: drop existing, keep candidate. Carry
@@ -728,24 +1465,53 @@ class FactDedupResolver:
                 cand['merged_from_ids'] = merged
                 # Importance: max of the two so a "replace" doesn't
                 # silently demote a high-importance row.
-                cur = int(cand.get('importance', 5) or 5)
-                old = int(existing.get('importance', 5) or 5)
-                cand['importance'] = max(cur, old)
-                ids_to_remove.add(exist_id)
-                processed_pairs.add((cand_id, exist_id))
+                if preference != 'new':
+                    cur = safe_importance(cand)
+                    old = safe_importance(existing)
+                    cand['importance'] = max(cur, old)
+                # ``replace`` selects the candidate assertion rather than
+                # corroborating it with the rejected row. Keep the selected
+                # author's provenance; the loser remains traceable through
+                # merged_from_ids and the archive record below.
+                mutated_survivor_identities.add(cand_identity)
+                identities_to_remove.add(exist_identity)
+                archive_specs[exist_identity] = {
+                    'reason': 'fact_dedup_replace',
+                    'superseded_by': cand_id,
+                }
+                processed_pairs.add(pair_key)
                 applied += 1
             else:  # keep_both
                 # No mutation, just count it as resolved so the queue
                 # entry is consumed.
-                processed_pairs.add((cand_id, exist_id))
+                processed_pairs.add(pair_key)
                 applied += 1
 
-        if ids_to_remove:
-            # Use the in-memory list reference and rely on FactStore's
-            # asave_facts to persist. Removing in place preserves the
-            # FactStore's view-cache identity (same list object).
-            facts[:] = [f for f in facts if f.get('id') not in ids_to_remove]
-            await self._fact_store.asave_facts(name)
+        if identities_to_remove:
+            survivor_identities = (
+                mutated_survivor_identities - identities_to_remove
+            )
+            facts_by_identity = {
+                identity: fact
+                for fact in facts
+                if (identity := _fact_scoped_identity(fact)) is not None
+            }
+            await self._fact_store.aarchive_arbitrated_facts(
+                name,
+                archive_specs,
+                survivor_updates={
+                    identity: facts_by_identity[identity]
+                    for identity in survivor_identities
+                },
+                expected_survivors={
+                    identity: originals_by_identity[identity]
+                    for identity in survivor_identities
+                },
+                expected_losers={
+                    identity: originals_by_identity[identity]
+                    for identity in identities_to_remove
+                },
+            )
         elif applied:
             # Even pure keep_both rounds may have nudged nothing on
             # facts.json, but we still need a save if importance was

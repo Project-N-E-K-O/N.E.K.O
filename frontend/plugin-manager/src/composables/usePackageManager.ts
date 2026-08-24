@@ -7,7 +7,6 @@ import {
   getPluginCliPlugins,
   inspectPluginPackage,
   buildPluginCli,
-  installPluginPackage,
   verifyPluginPackage,
   type PluginCliAnalyzeResponse,
   type PluginCliInspectResponse,
@@ -27,6 +26,7 @@ import {
 } from '@/composables/usePluginWorkbench'
 import { resolvePluginDisplayText } from '@/utils/pluginDisplay'
 import { formatHttpError } from '@/utils/request'
+import { usePluginPackageInstaller } from '@/composables/usePluginPackageInstaller'
 
 export type LayoutMode = PluginWorkbenchLayoutMode
 export type BuildMode = PluginCliBuildMode
@@ -51,6 +51,11 @@ export type PackageResultRecord = {
   summaryWarnings: string[]
 }
 
+function shouldShowRefreshFallback(error: unknown): boolean {
+  const status = (error as { response?: { status?: unknown } } | null)?.response?.status
+  return status === 401 || status === 403 || status === 404
+}
+
 export function usePackageManager(options: UsePackageManagerOptions = {}) {
   const pluginStore = usePluginStore()
   // PR #1480 review-fix 1.31 (Phase 7): summary labels and the createdAt
@@ -73,7 +78,7 @@ export function usePackageManager(options: UsePackageManagerOptions = {}) {
   const building = ref(false)
   const inspecting = ref(false)
   const verifying = ref(false)
-  const installing = ref(false)
+  const { installing, installPlan, installPackagePath } = usePluginPackageInstaller()
   const analyzing = ref(false)
 
   const resultKind = ref<PackageResultKind>('')
@@ -102,7 +107,7 @@ export function usePackageManager(options: UsePackageManagerOptions = {}) {
     package: '',
     plugins_root: '',
     profiles_root: '',
-    on_conflict: 'rename',
+    on_conflict: 'fail',
   })
 
   const analyzeForm = ref({
@@ -497,9 +502,16 @@ export function usePackageManager(options: UsePackageManagerOptions = {}) {
 
   async function refreshPluginSources() {
     pluginsLoading.value = true
+    let warningShown = false
     try {
-      const syncResult = await pluginStore.syncRegistryAndFetch()
-      const response = await getPluginCliPlugins()
+      const syncResult = await pluginStore.syncRegistryAndFetch({ preserveMessagesOn404: true })
+      if (syncResult.warningMessage) {
+        ElMessage.warning(syncResult.warningMessage)
+        // 只有注册表请求本身失败（401/403/404）时，后续插件源请求的同类失败才算重复提示；
+        // 注册表已刷新但存在失败项属于另一个问题，不能吞掉插件源的失败反馈
+        warningShown = !syncResult.registryRefreshed
+      }
+      const response = await getPluginCliPlugins({ preserveMessagesOn404: true })
       const refs = response.plugin_refs || []
       localPluginRefs.value = refs
       localPluginIds.value = refs.length > 0 ? refs.map((ref) => pluginRefKey(ref)) : response.plugins
@@ -509,11 +521,11 @@ export function usePackageManager(options: UsePackageManagerOptions = {}) {
       } else {
         setSelectedPluginIds(selectedPluginIds.value.filter((pluginId) => availableIds.has(pluginId)))
       }
-      if (syncResult.warningMessage) {
-        ElMessage.warning(syncResult.warningMessage)
-      }
     } catch (error) {
       console.error('Failed to refresh plugin sources:', error)
+      if (!warningShown && shouldShowRefreshFallback(error)) {
+        ElMessage.warning(t('messages.pluginListRefreshFailed'))
+      }
     } finally {
       pluginsLoading.value = false
     }
@@ -547,7 +559,7 @@ export function usePackageManager(options: UsePackageManagerOptions = {}) {
   }
 
   function inferPackageType(pkg: PluginCliLocalPackageItem): 'plugin' | 'bundle' {
-    return pkg.name.endsWith('.neko-bundle') ? 'bundle' : 'plugin'
+    return pkg.name.toLowerCase().endsWith('.neko-bundle') ? 'bundle' : 'plugin'
   }
 
   async function inspectSelectedPackage(pkg: PluginCliLocalPackageItem) {
@@ -735,27 +747,24 @@ export function usePackageManager(options: UsePackageManagerOptions = {}) {
   }
 
   async function handleInstall() {
-    if (!installForm.value.package?.trim()) {
-      ElMessage.warning('请先输入包路径')
+    inspectResult.value = null
+    const response = await installPackagePath(installForm.value.package || '', {
+      pluginsRoot: installForm.value.plugins_root,
+      profilesRoot: installForm.value.profiles_root,
+    })
+    if (!response) {
       return
     }
-    installing.value = true
-    inspectResult.value = null
-    try {
-      const response = await installPluginPackage({
-        package: installForm.value.package.trim(),
-        plugins_root: installForm.value.plugins_root?.trim() || undefined,
-        profiles_root: installForm.value.profiles_root?.trim() || undefined,
-        on_conflict: installForm.value.on_conflict || 'rename',
-      })
-      setResult('install', response)
-      await refreshPluginSources()
+    setResult('install', response)
+    if (response.operation === 'upgrade') {
+      const plan = installPlan.value
+      ElMessage.success(t('package.install.upgradeSucceeded', {
+        plugin: plan?.plugin_id || plan?.directory_name || '',
+      }))
+    } else {
       ElMessage.success(`安装完成，处理了 ${response.installed_plugin_count} 个插件`)
-    } catch (error) {
-      ElMessage.error(`安装失败：${formatHttpError(error)}`)
-    } finally {
-      installing.value = false
     }
+    await refreshPluginSources()
   }
 
   async function handleAnalyze() {
@@ -842,6 +851,7 @@ export function usePackageManager(options: UsePackageManagerOptions = {}) {
     buildForm,
     packageRef,
     installForm,
+    installPlan,
     analyzeForm,
     selectablePlugins,
     pluginCount,

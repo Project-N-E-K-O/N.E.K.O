@@ -14,6 +14,7 @@ import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from utils import recent_file
 from utils.llm_client import AIMessage, HumanMessage
 
 
@@ -44,7 +45,7 @@ async def test_run_review_failed_bumps_backoff():
     cancel_event = asyncio.Event()  # 未置位 → 真失败
 
     with patch.object(memory_server.runtime, "recent_history_manager", fake_mgr), \
-         patch.object(memory_server.gates, "_asave_maint_state", AsyncMock()):
+         patch.object(memory_server.gates, "_persist_maint_state_locked", MagicMock()):
         await memory_server._run_review_in_background(name, snapshot, cancel_event)
 
     state = memory_server.gates._maint_state[name]
@@ -69,7 +70,7 @@ async def test_run_review_cancelled_does_not_bump():
     cancel_event.set()  # 模拟 cancel_correction 已置位
 
     with patch.object(memory_server.runtime, "recent_history_manager", fake_mgr), \
-         patch.object(memory_server.gates, "_asave_maint_state", AsyncMock()):
+         patch.object(memory_server.gates, "_persist_maint_state_locked", MagicMock()):
         await memory_server._run_review_in_background(name, snapshot, cancel_event)
 
     state = memory_server.gates._maint_state.get(name, {})
@@ -95,7 +96,7 @@ async def test_run_review_patched_clears_backoff():
     cancel_event = asyncio.Event()
 
     with patch.object(memory_server.runtime, "recent_history_manager", fake_mgr), \
-         patch.object(memory_server.gates, "_asave_maint_state", AsyncMock()):
+         patch.object(memory_server.gates, "_persist_maint_state_locked", MagicMock()):
         await memory_server._run_review_in_background(name, snapshot, cancel_event)
 
     state = memory_server.gates._maint_state[name]
@@ -117,11 +118,14 @@ async def test_run_review_patched_save_failure_does_not_bump():
     fake_mgr.review_history = AsyncMock(return_value=("patched", [{"type": "ai", "content": "x"}]))
     cancel_event = asyncio.Event()
 
+    persist = MagicMock(side_effect=RuntimeError("disk full"))
     with patch.object(memory_server.runtime, "recent_history_manager", fake_mgr), \
-         patch.object(memory_server.gates, "_asave_maint_state",
-                      AsyncMock(side_effect=RuntimeError("disk full"))):
+         patch.object(memory_server.gates, "_persist_maint_state_locked", persist):
         await memory_server._run_review_in_background(name, snapshot, cancel_event)
 
+    # 先确认注入的失败真的被触发过——否则本用例会在「patched 分支根本不落盘」时
+    # 空过（断言弱于主张）。
+    assert persist.call_count >= 1, "patched 分支没有落盘，注入的写盘失败被绕过了"
     state = memory_server.gates._maint_state.get(name, {})
     assert state.get("review_fail_attempts", 0) == 0, (
         "成功 review 的 save 失败被外层 except 当成 review 失败 bump 了"
@@ -142,12 +146,14 @@ async def test_run_review_failed_save_failure_counts_once():
     fake_mgr.review_history = AsyncMock(return_value=("failed", None))
     cancel_event = asyncio.Event()
 
+    persist = MagicMock(side_effect=RuntimeError("disk full"))
     with patch.object(memory_server.runtime, "recent_history_manager", fake_mgr), \
-         patch.object(memory_server.gates, "_asave_maint_state",
-                      AsyncMock(side_effect=RuntimeError("disk full"))):
+         patch.object(memory_server.gates, "_persist_maint_state_locked", persist):
         await memory_server._run_review_in_background(name, snapshot, cancel_event)
 
-    # _record_review_failure 在落盘前已把内存计数 +1；外层 except 不再重复 bump
+    assert persist.call_count >= 1, "'failed' 分支没有落盘，注入的写盘失败被绕过了"
+    # _record_review_failure 的 mutator 在落盘前已把内存计数 +1；写盘失败被
+    # _mutate_maint_state_locked 收在临界区里（只告警不抛），外层 except 不会重复 bump
     assert memory_server.gates._maint_state.get(name, {}).get("review_fail_attempts", 0) == 1, (
         "save 失败导致 _record_review_failure 抛出后被外层 except 重复计数了"
     )
@@ -157,15 +163,104 @@ async def test_run_review_failed_save_failure_counts_once():
 async def _drive_spawn(memory_server, name, history):
     """跑 maybe_spawn_review，gate 1-5 全开（patch 掉），只测 Gate 6。"""
     fake_mgr = MagicMock()
-    fake_mgr.aget_recent_history = AsyncMock(return_value=history)
+    fake_mgr.aget_recent_history = AsyncMock(
+        return_value=(
+            history,
+            recent_file.capture_recent_generation("review-test-recent.json"),
+        ),
+    )
     # 被 spawn 的后台 task 真跑起来时会调 review_history——给个安全返回
     fake_mgr.review_history = AsyncMock(return_value=("white", None))
 
     with patch.object(memory_server.runtime, "recent_history_manager", fake_mgr), \
          patch.object(memory_server.gates, "_ais_review_enabled", AsyncMock(return_value=True)), \
          patch.object(memory_server.review, "_count_new_user_msgs_since_last_review", return_value=999), \
-         patch.object(memory_server.gates, "_asave_maint_state", AsyncMock()):
+         patch.object(memory_server.gates, "_persist_maint_state_locked", MagicMock()):
         await memory_server.maybe_spawn_review(name)
+        task = memory_server.correction_tasks.get(name)
+        if task is not None:
+            await task
+    return fake_mgr
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_spawn_passes_snapshot_admission_generation():
+    """The background review must retain the identity token from its snapshot read."""
+    from app import memory_server
+    from utils import recent_file
+
+    name = "测试角色review-generation"
+    history = _history(12)
+    memory_server.correction_tasks.pop(name, None)
+    memory_server.gates._maint_state.pop(name, None)
+
+    admission_generation = recent_file.capture_recent_generation(
+        "review-test-recent.json",
+    )
+    fake_mgr = MagicMock()
+    fake_mgr.aget_recent_history = AsyncMock(
+        return_value=(history, admission_generation),
+    )
+    fake_mgr.review_history = AsyncMock(return_value=("white", None))
+
+    with patch.object(memory_server.runtime, "recent_history_manager", fake_mgr), \
+         patch.object(memory_server.gates, "_ais_review_enabled", AsyncMock(return_value=True)), \
+         patch.object(memory_server.review, "_count_new_user_msgs_since_last_review", return_value=999), \
+         patch.object(memory_server.gates, "_persist_maint_state_locked", MagicMock()):
+        await memory_server.maybe_spawn_review(name)
+        await memory_server.correction_tasks[name]
+
+    assert fake_mgr.review_history.await_args.kwargs["expected_generation"] == admission_generation
+    memory_server.correction_tasks.pop(name, None)
+    memory_server.correction_cancel_flags.pop(name, None)
+    memory_server.gates._maint_state.pop(name, None)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_stale_review_failure_cannot_mutate_reused_identity(tmp_path):
+    """An old failed review must not consume the new identity's retry budget."""
+    from app import memory_server
+    from utils import recent_file
+
+    name = "测试角色-stale-review-failure"
+    path = tmp_path / "recent.json"
+    path.write_text("[]", encoding="utf-8")
+    old_generation = recent_file.capture_recent_generation(path)
+    recent_file.activate_recent_paths([path])
+    memory_server.gates._maint_state.pop(name, None)
+
+    attempts = await memory_server.review._record_review_failure(
+        name, _history(10), old_generation,
+    )
+
+    assert attempts is None
+    assert memory_server.gates._maint_state.get(name) == {}
+    memory_server.gates._maint_state.pop(name, None)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_stale_background_review_skips_manager_call(tmp_path):
+    """A review invalidated before task start must not enter the LLM manager."""
+    from app import memory_server
+    from utils import recent_file
+
+    name = "测试角色-stale-before-review-call"
+    path = tmp_path / "recent.json"
+    path.write_text("[]", encoding="utf-8")
+    old_generation = recent_file.capture_recent_generation(path)
+    recent_file.activate_recent_paths([path])
+    fake_mgr = MagicMock()
+    fake_mgr.review_history = AsyncMock(return_value=("failed", None))
+
+    with patch.object(memory_server.runtime, "recent_history_manager", fake_mgr):
+        await memory_server._run_review_in_background(
+            name, _history(10), asyncio.Event(), old_generation,
+        )
+
+    fake_mgr.review_history.assert_not_awaited()
 
 
 @pytest.mark.unit
@@ -179,15 +274,71 @@ async def test_gate6_skips_when_dead_lettered_and_input_unchanged():
     name = "测试角色G6"
     history = _history(12)
     memory_server.correction_tasks.pop(name, None)
+    generation = recent_file.capture_recent_generation("review-test-recent.json")
     memory_server.gates._maint_state[name] = {
         "review_fail_attempts": MEMORY_LIVENESS_MAX_ATTEMPTS,
         "review_fail_fp": build_review_fingerprint(history),
+        "review_fail_generation": list(generation),
     }
 
     await _drive_spawn(memory_server, name, history)
 
     assert name not in memory_server.correction_tasks or memory_server.correction_tasks[name] is None, \
         "dead-letter + 输入未变时不应 spawn 新 review"
+    memory_server.gates._maint_state.pop(name, None)
+    memory_server.correction_tasks.pop(name, None)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_reused_identity_does_not_inherit_review_dead_letter():
+    """A same-fingerprint new generation must clear the old identity's backoff."""
+    from app import memory_server
+    from config import MEMORY_LIVENESS_MAX_ATTEMPTS
+    from memory.recent import build_review_fingerprint
+
+    name = "测试角色G6-generation-reuse"
+    history = _history(12)
+    path = "review-test-recent.json"
+    old_generation = recent_file.capture_recent_generation(path)
+    memory_server.gates._maint_state[name] = {
+        "review_fail_attempts": MEMORY_LIVENESS_MAX_ATTEMPTS,
+        "review_fail_fp": build_review_fingerprint(history),
+        "review_fail_generation": list(old_generation),
+    }
+    recent_file.activate_recent_paths([path])
+
+    fake_mgr = await _drive_spawn(memory_server, name, history)
+
+    fake_mgr.review_history.assert_awaited_once()
+    memory_server.gates._maint_state.pop(name, None)
+    memory_server.correction_tasks.pop(name, None)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_reused_identity_does_not_inherit_output_exhaustion_breaker():
+    """A new generation must not inherit the previous identity's token breaker."""
+    from app import memory_server
+    from config import MEMORY_REVIEW_OUTPUT_EXHAUSTION_MAX_ATTEMPTS
+
+    name = "测试角色G6a-generation-reuse"
+    history = _history(12)
+    path = "review-test-recent.json"
+    old_generation = recent_file.capture_recent_generation(path)
+    memory_server.gates._maint_state[name] = {
+        "review_output_exhaustion_attempts": (
+            MEMORY_REVIEW_OUTPUT_EXHAUSTION_MAX_ATTEMPTS
+        ),
+        "review_output_exhaustion_min_context_tokens": 1,
+        "review_output_exhaustion_blocked": True,
+        "review_output_exhaustion_generation": list(old_generation),
+    }
+    recent_file.activate_recent_paths([path])
+
+    fake_mgr = await _drive_spawn(memory_server, name, history)
+
+    fake_mgr.review_history.assert_awaited_once()
     memory_server.gates._maint_state.pop(name, None)
     memory_server.correction_tasks.pop(name, None)
 
@@ -208,20 +359,13 @@ async def test_gate6_resets_and_spawns_when_input_changed():
         "review_fail_fp": [{"type": "human", "content": "完全不同的旧输入"}],
     }
 
-    await _drive_spawn(memory_server, name, history)
+    fake_mgr = await _drive_spawn(memory_server, name, history)
 
     # 输入已变 → 复位计数
     assert memory_server.gates._maint_state[name]["review_fail_attempts"] == 0
-    # 并且确实 spawn 了（correction_tasks 落了一个 task）
-    task = memory_server.correction_tasks.get(name)
-    assert task is not None
-    # 清理后台 task
-    task.cancel()
-    try:
-        await task
-    except asyncio.CancelledError:
-        # 预期内：上面刚 task.cancel()，await 必然抛 CancelledError，吞掉即可
-        pass
+    # 并且后台路径确实跑到了 review_history，而不是只创建后立刻取消 task。
+    fake_mgr.review_history.assert_awaited_once()
+    assert name not in memory_server.correction_tasks
     memory_server.gates._maint_state.pop(name, None)
     memory_server.correction_tasks.pop(name, None)
 
@@ -240,7 +384,7 @@ async def test_failed_resets_budget_on_input_change():
     cancel_event = asyncio.Event()
 
     with patch.object(memory_server.runtime, "recent_history_manager", fake_mgr), \
-         patch.object(memory_server.gates, "_asave_maint_state", AsyncMock()):
+         patch.object(memory_server.gates, "_persist_maint_state_locked", MagicMock()):
         for n in (8, 10, 12):  # 三段 tail fingerprint 互不相同的输入
             await memory_server._run_review_in_background(name, _history(n), cancel_event)
 
@@ -266,7 +410,7 @@ async def test_run_review_exception_bumps_backoff():
     cancel_event = asyncio.Event()
 
     with patch.object(memory_server.runtime, "recent_history_manager", fake_mgr), \
-         patch.object(memory_server.gates, "_asave_maint_state", AsyncMock()):
+         patch.object(memory_server.gates, "_persist_maint_state_locked", MagicMock()):
         await memory_server._run_review_in_background(name, snapshot, cancel_event)
 
     state = memory_server.gates._maint_state[name]
@@ -289,7 +433,7 @@ async def test_failed_same_input_accumulates_budget():
     cancel_event = asyncio.Event()
 
     with patch.object(memory_server.runtime, "recent_history_manager", fake_mgr), \
-         patch.object(memory_server.gates, "_asave_maint_state", AsyncMock()):
+         patch.object(memory_server.gates, "_persist_maint_state_locked", MagicMock()):
         for _ in range(3):
             await memory_server._run_review_in_background(name, same, cancel_event)
 

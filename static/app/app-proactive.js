@@ -23,6 +23,20 @@
     const C = window.appConst;
     const NEW_USER_ICEBREAKER_STORAGE_KEY = 'neko.new_user_icebreaker.v1';
     const NEW_USER_ICEBREAKER_BLOCKING_WINDOW_MS = 2 * 60 * 60 * 1000;
+    const MEME_LOAD_FAILED_STICKER_URL = '/static/icons/meme-image-load-failed-sticker.png';
+
+    function isMusicOccupiedNow() {
+        if (typeof window.isMusicOccupied === 'function') return window.isMusicOccupied();
+        return ((typeof window.isMusicPlaying === 'function') && window.isMusicPlaying())
+            || ((typeof window.isMusicPending === 'function') && window.isMusicPending())
+            || ((typeof window.isRemoteMusicActive === 'function') && window.isRemoteMusicActive());
+    }
+
+    function getDesktopProvider() {
+        return typeof window.getDesktopCaptureProvider === 'function'
+            ? window.getDesktopCaptureProvider()
+            : null;
+    }
 
     // ======================== proactive leader election ========================
     //
@@ -328,6 +342,30 @@
         }
     }
 
+    function _applyProactiveLanguagePayload(payload, lanlanName) {
+        // Durable preference and request-only rendering fallback are deliberately
+        // separate. In particular, never promote the latter to i18n_language.
+        var explicitConversationLanguage = '';
+        var renderConversationLanguage = '';
+        try {
+            if (typeof window.getExplicitConversationLanguagePreference === 'function') {
+                explicitConversationLanguage = window.getExplicitConversationLanguagePreference(lanlanName);
+            }
+        } catch (_) { explicitConversationLanguage = ''; }
+        try {
+            if (typeof window.getConversationLanguagePreference === 'function') {
+                renderConversationLanguage = window.getConversationLanguagePreference(lanlanName);
+            }
+        } catch (_) { renderConversationLanguage = ''; }
+        if (explicitConversationLanguage) {
+            payload.i18n_language = explicitConversationLanguage;
+        }
+        if (renderConversationLanguage) {
+            payload.render_language = renderConversationLanguage;
+        }
+        return payload;
+    }
+
     function _isChatInputElement(element) {
         if (!element || element.nodeType !== 1 || typeof element.matches !== 'function') {
             return false;
@@ -479,6 +517,14 @@
         return window.appScreen.scheduleScreenCaptureIdleCheck();
     }
 
+    function normalizeNativeCaptureDataUrlForStream(dataUrl) {
+        return window.appScreen.normalizeNativeCaptureDataUrlForStream(dataUrl);
+    }
+
+    function buildStreamDataMessage(dataUrl, inputType, sourceId, explicitCaptureType) {
+        return window.appScreen.buildStreamDataMessage(dataUrl, inputType, sourceId, explicitCaptureType);
+    }
+
     // ======================== syncProactiveFlags (no-op) ========================
     // app-state.js 使用 Object.defineProperty 进行双向绑定，
     // 因此不再需要手动同步 window.xxx <-> 本地变量。
@@ -527,7 +573,7 @@
     // 网络来回有延迟时前端守门先挡住，请求根本不发出去，省一个 round-trip。
     // `S.userRecentSpeechTime` 由 app-audio-capture.js 里的 monitorInputVolume 持续
     // 写入（RMS > 0.01 每帧打点），这里用一个稍宽于后端的窗口，保证"前端没挡住但
-    // 后端挡住"的 race 不至于频繁发生（fudge 空跑成本低，但可以省则省）。
+    // 后端挡住"的 race 不至于频繁发生（文本触发空跑成本低，但可以省则省）。
     var USER_RECENT_SPEECH_WINDOW_MS = 8000;
 
     function _isAssistantSpeaking() {
@@ -705,6 +751,8 @@
             console.log('[ProactiveChat] 语音模式：' + (delay / 1000) + '秒后触发（无退避，无回复计数：' + (S._voiceProactiveNoResponseCount || 0) + '/10）');
 
             S.proactiveChatTimer = setTimeout(async function () {
+                // setTimeout firing does not clear our stored handle.
+                S.proactiveChatTimer = null;
                 if (S.isProactiveChatRunning) return;
                 // 设计说明（by 用户意图）：
                 // 这里不"rearm-after-playback"——那样每句话说完都要严格等满一个固定间隔
@@ -718,7 +766,7 @@
                     return;
                 }
                 // C: 前端麦克风 RMS 最近 8s 内超过语音阈值 → 用户正在说话或
-                // 刚说完，不发 fudge。与后端 _user_recent_activity_time guard
+                // 刚说完，不发主动文本触发。与后端 _user_recent_activity_time guard
                 // 对称（8s 窗口），请求根本不出门，省一次 round-trip。
                 // 同 AI-speaking 分支：不计入 no-response 计数，仍推进下一 tick。
                 if (_isUserRecentlySpeaking()) {
@@ -728,6 +776,7 @@
                 }
                 S.isProactiveChatRunning = true;
                 var voiceTriggered = false;
+                var voiceResetVersion = S._voiceProactiveBackoffResetVersion || 0;
                 try {
                     voiceTriggered = await triggerProactiveChat();
                 } finally {
@@ -738,15 +787,17 @@
                 // 409 会按 >=10 阈值熔断语音 nudge 直到下次 user 触发 reset。等同
                 // _isAssistantSpeaking / _isUserRecentlySpeaking 这两个 frontend
                 // guard 走的"跳过不计数"分支。Codex review on PR #1401。
-                if (voiceTriggered) {
+                if (voiceTriggered
+                    && (S._voiceProactiveBackoffResetVersion || 0) === voiceResetVersion) {
                     S._voiceProactiveNoResponseCount = (S._voiceProactiveNoResponseCount || 0) + 1;
+                } else if (voiceTriggered) {
+                    console.log('[ProactiveChat] 用户在本轮等待期间已回复，保留无回复计数 reset');
                 }
-                // 不在这里 scheduleProactiveChat()——等 AI turn end 后再调度下一次，
-                // 避免 AI 还在说话就被下一次 nudge 打断。
-                // turn end handler 中会对语音模式调用 scheduleProactiveChat()。
-                // 如果本次 nudge 被 guard 跳过（pass）/ 被 server 409 拒绝，
-                // AI 不会响应也不会有 turn end，所以这两种情况仍需自行调度。
-                if (S._voiceProactiveLastResult === 'pass') {
+                // 文本注入会一直 await 到 response.done；对应 turn end 可能在
+                // isProactiveChatRunning 仍为 true 时先到，导致调度调用被抑制。
+                // 请求完成、锁释放后兜底补排。若其它完成事件已排好 timer，
+                // 保留原 timer，避免把间隔起点向后推。
+                if (!S.proactiveChatTimer) {
                     scheduleProactiveChat();
                 }
             }, delay);
@@ -858,6 +909,8 @@
         }
 
         S.proactiveChatTimer = setTimeout(async function () {
+            // setTimeout firing does not clear our stored handle.
+            S.proactiveChatTimer = null;
             // 双重检查锁：定时器触发时再次检查是否正在执行
             if (S.isProactiveChatRunning) {
                 console.log('主动搭话定时器触发时发现正在执行中，跳过本次');
@@ -939,7 +992,10 @@
                 for (var _ref of Object.entries(result.data)) {
                     var platform = _ref[0];
                     var info = _ref[1];
-                    if (personalFeedPlatforms.has(platform) && info.has_cookies) {
+                    // A credential can belong to a non-feed platform (for example
+                    // NetEase Music or Xiaoheihe).  Presence alone must not enable
+                    // the personal-dynamics source.
+                    if (personalFeedPlatforms.has(platform) && info.has_cookies && info.supports_personal_dynamic === true) {
                         availablePlatforms.push(platform);
                     }
                 }
@@ -981,7 +1037,7 @@
                 console.log('[ProactiveChat] 游戏路由 active，跳过普通主动搭话');
                 return;
             }
-            // ── 语音模式快速路径：直接发 voice_mode 请求，后端注入预录音频 ──
+            // ── 语音模式快速路径：直接发 voice_mode 请求，后端注入文本触发 ──
             if (S.isRecording) {
                 var lanlanName = (window.lanlan_config && window.lanlan_config.lanlan_name) || '';
                 var voiceModes = [];
@@ -995,14 +1051,16 @@
                 // 之前就早退；语音 scheduler 自己也是固定 baseInterval 不带 backoff。
                 // 既然两边都不读，发了也是冗余字段。
                 var voiceProactiveSec = window.nekoLocalMutationSecurity;
-                var voiceProactiveBody = JSON.stringify({
+                var voiceProactivePayload = {
                     lanlan_name: lanlanName,
                     enabled_modes: voiceModes,
                     voice_mode: true,
                     // mini-game 邀请的用户级 toggle；后端 _maybe_deliver_mini_game_invite
                     // 与 source-driven sources 解耦，不进 enabled_modes 数组。
                     mini_game_invite_enabled: !!S.proactiveMiniGameInviteEnabled
-                });
+                };
+                _applyProactiveLanguagePayload(voiceProactivePayload, lanlanName);
+                var voiceProactiveBody = JSON.stringify(voiceProactivePayload);
 
                 async function _sendVoiceProactive() {
                     var hdrs = { 'Content-Type': 'application/json' };
@@ -1069,7 +1127,7 @@
                 availableModes.push('window');
             }
 
-            // 新闻搭话：使用微博热议话题
+            // 新闻搭话：使用微博热议与小黑盒首页内容
             if (S.proactiveNewsChatEnabled && S.proactiveChatEnabled) {
                 availableModes.push('news');
             }
@@ -1079,7 +1137,7 @@
                 availableModes.push('video');
             }
 
-            // 个人动态搭话：使用B站和微博个人动态
+            // 个人动态搭话：聚合已登录社交平台的账号信息流。
             if (S.proactivePersonalChatEnabled && S.proactiveChatEnabled) {
                 // 检查是否有可用的 Cookie 凭证
                 var platforms = await getAvailablePersonalPlatforms();
@@ -1094,13 +1152,11 @@
             // 音乐搭话（正在播放或冷却期内不发送 music 模式，避免后端搜歌浪费 + 污染模型上下文）
             console.log('[ProactiveChat] 检查音乐模式: proactiveMusicEnabled=' + S.proactiveMusicEnabled + ', proactiveChatEnabled=' + S.proactiveChatEnabled);
             if (S.proactiveMusicEnabled && S.proactiveChatEnabled) {
-                var musicPlaying = (typeof window.isMusicPlaying === 'function') && window.isMusicPlaying();
-                var musicPending = (typeof window.isMusicPending === 'function') && window.isMusicPending();
-                var remoteMusicActive = (typeof window.isRemoteMusicActive === 'function') && window.isRemoteMusicActive();
+                var musicOccupied = isMusicOccupiedNow();
                 var musicRateLimited = (typeof window.isMusicRecommendRateLimited === 'function') && window.isMusicRecommendRateLimited();
                 var musicCooldown = (typeof window.isMusicCooldown === 'function') && window.isMusicCooldown();
-                if (musicPlaying || musicPending || remoteMusicActive || musicRateLimited || musicCooldown) {
-                    console.log('[ProactiveChat] 音乐模式跳过: playing=' + musicPlaying + ', pending=' + musicPending + ', remote=' + remoteMusicActive + ', rateLimited=' + musicRateLimited + ', cooldown=' + musicCooldown);
+                if (musicOccupied || musicRateLimited || musicCooldown) {
+                    console.log('[ProactiveChat] 音乐模式跳过: occupied=' + musicOccupied + ', rateLimited=' + musicRateLimited + ', cooldown=' + musicCooldown);
                 } else {
                     console.log('[ProactiveChat] 音乐模式已启用');
                     availableModes.push('music');
@@ -1126,38 +1182,22 @@
             console.log('主动搭话：启用模式 [' + availableModes.join(', ') + ']，将并行获取所有信息源');
 
             var lanlanName = (window.lanlan_config && window.lanlan_config.lanlan_name) || '';
-            // 当前 UI locale —— 让后端 mini-game 邀请短路 + Phase 1/2 LLM 与
-            // 前端 i18n 显示完全对齐，不再依赖后端 ``get_global_language()``
-            // 的进程级缓存（Steam SDK 启动期 race 失败时会退化到系统 locale，
-            // Steam=中文 / 系统=英文 的用户会看到邀请文案是英文）。后端
-            // ``_resolve_proactive_locale`` 优先读这个字段，缺时再回落到
-            // ``mgr.user_language`` / 全局缓存。
-            var i18nLanguage = '';
-            try {
-                if (window.i18next && typeof window.i18next.language === 'string') {
-                    i18nLanguage = window.i18next.language;
-                } else if (typeof localStorage !== 'undefined') {
-                    i18nLanguage = localStorage.getItem('i18nextLng') || '';
-                }
-                if (!i18nLanguage && typeof navigator !== 'undefined' && typeof navigator.language === 'string') {
-                    i18nLanguage = navigator.language;
-                }
-            } catch (_) { i18nLanguage = ''; }
             var requestBody = {
                 lanlan_name: lanlanName,
                 enabled_modes: availableModes,
                 is_playing_music: (typeof window.isMusicPlaying === 'function') ? window.isMusicPlaying() : false,
+                is_music_occupied: isMusicOccupiedNow(),
                 current_track: (typeof window.getMusicCurrentTrack === 'function') ? window.getMusicCurrentTrack() : null,
                 music_cooldown: (typeof window.isMusicCooldown === 'function') ? window.isMusicCooldown() : false,
                 // mini-game 邀请的用户级 toggle；后端 _maybe_deliver_mini_game_invite
                 // 与 source-driven sources 解耦，不进 enabled_modes 数组。
                 mini_game_invite_enabled: !!S.proactiveMiniGameInviteEnabled,
-                i18n_language: i18nLanguage,
                 // 屏幕专注态后端会按 [0, 0.5×base] 注入间隔抖动，需要知道
                 // 当前用户配置的 baseInterval。后端 propensity 非屏幕专注态
                 // 时忽略此字段。
                 base_interval_seconds: S.proactiveChatInterval
             };
+            _applyProactiveLanguagePayload(requestBody, lanlanName);
 
             // 独立计时器：确保 vision/window 模式的屏幕感知间隔不低于 proactiveVisionInterval
             if (availableModes.includes('vision') || availableModes.includes('window')) {
@@ -1183,7 +1223,9 @@
 
                 if (availableModes.includes('vision')) {
                     screenshotIndex = fetchTasks.length;
-                    fetchTasks.push(captureProactiveChatScreenshot());
+                    // 带来源版：下面要靠 via 区分「后端整屏兜底」与「流/原生源」，
+                    // 光看发送时的 S.selectedScreenSourceId 会把整屏图误判成窗口截图。
+                    fetchTasks.push(captureProactiveChatScreenshotWithSource());
                 }
 
                 if (availableModes.includes('window')) {
@@ -1218,12 +1260,10 @@
                 }
                 // 音乐搭话（重新检查冷却状态，await 期间可能变化）
                 if (S.proactiveMusicEnabled && S.proactiveChatEnabled) {
-                    var musicPlayingNow = (typeof window.isMusicPlaying === 'function') && window.isMusicPlaying();
-                    var musicPendingNow = (typeof window.isMusicPending === 'function') && window.isMusicPending();
-                    var remoteMusicActiveNow = (typeof window.isRemoteMusicActive === 'function') && window.isRemoteMusicActive();
+                    var musicOccupiedNow = isMusicOccupiedNow();
                     var musicRateLimitedNow = (typeof window.isMusicRecommendRateLimited === 'function') && window.isMusicRecommendRateLimited();
                     var musicCooldownNow = (typeof window.isMusicCooldown === 'function') && window.isMusicCooldown();
-                    if (!musicPlayingNow && !musicPendingNow && !remoteMusicActiveNow && !musicRateLimitedNow && !musicCooldownNow) {
+                    if (!musicOccupiedNow && !musicRateLimitedNow && !musicCooldownNow) {
                         latestModes.push('music');
                     }
                 }
@@ -1239,21 +1279,14 @@
                 }
 
                 if (screenshotIndex !== -1 && availableModes.includes('vision')) {
-                    var screenshotDataUrl = results[screenshotIndex];
+                    var screenshotResult = results[screenshotIndex] || {};
+                    var screenshotDataUrl = screenshotResult.dataUrl;
                     if (screenshotDataUrl) {
                         requestBody.screenshot_data = screenshotDataUrl;
-                        // Determine capture type: cached stream → check displaySurface;
-                        // null 表示窗口截图或无法确定 → 不叠加
-                        // 仅当完全没有流/源（pyautogui 兜底）时才默认 'screen'
-                        var captureType = null;
-                        if (typeof window.detectScreenshotCaptureType === 'function') {
-                            captureType = window.detectScreenshotCaptureType(
-                                S.screenCaptureStream, S.selectedScreenSourceId
-                            );
-                        }
-                        if (captureType === null && !S.screenCaptureStream && !S.selectedScreenSourceId) {
-                            captureType = 'screen'; // 无流无源 → pyautogui 全屏兜底
-                        }
+                        // captureType 由截图函数在抓帧那一刻定好（见 resolveCaptureTypeFor）。
+                        // 这里不再二次推断：抓帧是异步的，等到这一步 S 里的流 / 源
+                        // 可能已经换人，拿它解释这张旧图会叠错或漏叠。
+                        var captureType = screenshotResult.captureType || null;
                         var avatarPos = typeof window.getAvatarScreenPosition === 'function'
                             ? window.getAvatarScreenPosition(captureType) : null;
                         if (avatarPos) {
@@ -1307,6 +1340,23 @@
             if (timeSinceLastInput < 20000) {
                 console.log('主动搭话作废：用户在' + Math.round(timeSinceLastInput / 1000) + '秒前有过输入');
                 return;
+            }
+
+            // 前面的截图/窗口标题等待期间，播放器可能刚好开始加载或播放。
+            // 在序列化请求前使用最新状态收口，避免后端为过期的 music 模式再次搜歌。
+            var musicPlayingBeforeRequest = (typeof window.isMusicPlaying === 'function') && window.isMusicPlaying();
+            var musicOccupiedBeforeRequest = isMusicOccupiedNow();
+            var musicRateLimitedBeforeRequest = (typeof window.isMusicRecommendRateLimited === 'function') && window.isMusicRecommendRateLimited();
+            var musicCooldownBeforeRequest = (typeof window.isMusicCooldown === 'function') && window.isMusicCooldown();
+            requestBody.is_playing_music = !!musicPlayingBeforeRequest;
+            requestBody.is_music_occupied = !!musicOccupiedBeforeRequest;
+            requestBody.current_track = (typeof window.getMusicCurrentTrack === 'function') ? window.getMusicCurrentTrack() : null;
+            requestBody.music_cooldown = !!musicCooldownBeforeRequest;
+            if (musicOccupiedBeforeRequest || musicRateLimitedBeforeRequest || musicCooldownBeforeRequest) {
+                requestBody.enabled_modes = requestBody.enabled_modes.filter(function (mode) { return mode !== 'music'; });
+                if (requestBody.enabled_modes.length === 0 && !S.proactiveMiniGameInviteEnabled) {
+                    return;
+                }
             }
 
             var proactiveSec = window.nekoLocalMutationSecurity;
@@ -1384,8 +1434,8 @@
 
                     var dispatchedTrackUrl = null;
 
-                    // 如果模式包含音乐信号，按顺序尝试音轨；只有媒体实际加载成功
-                    // 才停止回退，避免第一条坏链路让整次推荐静默失败。
+                    // 如果模式包含音乐信号，按顺序尝试音轨；候选 URL 或媒体自身
+                    // 的错误（包括加载超时）才回退，播放器/调度错误结束本轮推荐。
                     if ((result.source_mode === 'music' || result.source_mode === 'both') && result.source_links && Array.isArray(result.source_links)) {
                         var normalizedLinks = result.source_links.filter(Boolean);
                         var musicLinks = normalizedLinks.filter(function (link) {
@@ -1404,9 +1454,7 @@
                                 setTimeout(resolve, 50 + Math.floor(Math.random() * 120));
                             });
                             var musicBusyBeforeDispatch =
-                                ((typeof window.isMusicPlaying === 'function') && window.isMusicPlaying()) ||
-                                ((typeof window.isMusicPending === 'function') && window.isMusicPending()) ||
-                                ((typeof window.isRemoteMusicActive === 'function') && window.isRemoteMusicActive()) ||
+                                isMusicOccupiedNow() ||
                                 ((typeof window.isMusicRecommendRateLimited === 'function') && window.isMusicRecommendRateLimited()) ||
                                 ((typeof window.isMusicCooldown === 'function') && window.isMusicCooldown());
                             if (musicBusyBeforeDispatch) {
@@ -1426,15 +1474,27 @@
                                         cover: musicLink.cover
                                     };
                                     console.log('[ProactiveChat] 尝试音乐候选 ' + (musicIndex + 1) + '/' + musicLinks.length + ':', track);
-                                    var dispatchResult = await window.dispatchMusicPlay(track, { source: 'proactive' });
+                                    var dispatchResult;
+                                    if (typeof window.dispatchMusicPlayDetailed === 'function') {
+                                        dispatchResult = await window.dispatchMusicPlayDetailed(track, { source: 'proactive' });
+                                    } else {
+                                        var legacyAccepted = await window.dispatchMusicPlay(track, { source: 'proactive' });
+                                        dispatchResult = {
+                                            ok: legacyAccepted === true,
+                                            reason: legacyAccepted === true ? '' : 'player_error',
+                                            canTryNextCandidate: false
+                                        };
+                                    }
 
-                                    // dispatchMusicPlay 会等待播放器接口就绪并返回最终布尔结果；
-                                    // 仅在媒体明确加载成功时标记，false 才继续下一候选。
-                                    if (dispatchResult === true) {
+                                    if (dispatchResult.ok === true) {
                                         dispatchedTrackUrl = musicLink.url;
                                         break;
                                     }
-                                    console.warn('[ProactiveChat] 音乐候选加载失败，尝试下一条:', musicLink.url);
+                                    if (dispatchResult.canTryNextCandidate !== true) {
+                                        console.warn('[ProactiveChat] 音乐派发因非候选错误停止:', dispatchResult.reason, musicLink.url);
+                                        break;
+                                    }
+                                    console.warn('[ProactiveChat] 音乐候选不可用，尝试下一条:', dispatchResult.reason, musicLink.url);
                                 }
                             }
                         }
@@ -1775,18 +1835,15 @@
                         img.src = proxyUrl + '&retry=' + retryCount + '&t=' + Date.now();
                     } else {
                         img.dataset.failed = "true";
-                        img.src = "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxMjAiIGhlaWdodD0iMTIwIiB2aWV3Qm94PSIwIDAgMjQgMjQiIGZpbGw9Im5vbmUiIHN0cm9rZT0iIzg4OCIgc3Ryb2tlLXdpZHRoPSIyIiBzdHJva2UtbGluZWNhcD0icm91bmQiIHN0cm9rZS1saW5lam9pbj0icm91bmQiPjxyZWN0IHg9IjMiIHk9IjMiIHdpZHRoPSIxOCIgaGVpZ2h0PSIxOCIgcng9IjIiIHJ5PSIyIjPjwvcmVjdD48Y2lyY2xlIGN4PSI4LjUiIGN5PSI4LjUiIHI9IjEuNSI+PC9jaXJjbGU+PHBvbHlsaW5lIHBvaW50cz0iMjEgMTUgMTYgMTAgNSAyMSI+PC9wb2x5bGluZT48bGluZSB4MT0iNCIgeTE9IjQiIHgyPSIyMCIgeTI9IjIwIiBzdHJva2U9IiNmNDQzMzYiIG9wYWNpdHk9IjAuOCI+PC9saW5lPjwvc3ZnPg==";
-                        img.style.objectFit = "none";
-                        img.style.backgroundColor = "rgba(128,128,128,0.05)";
-                        img.style.border = "1px dashed var(--border-color, rgba(128,128,128,0.3))";
-                        img.style.minWidth = "120px";
-                        img.style.minHeight = "120px";
-                        img.style.cursor = "default";
-                        
-                        var errSpan = document.createElement('div');
-                        errSpan.textContent = '[' + (window.t ? window.t('proactive.meme.loadError') : '表情包加载失败') + ']';
-                        errSpan.style.cssText = 'color: var(--text-secondary, rgba(200,200,200,0.6)); font-size: 12px; margin-top: 4px;';
-                        imgOuter.appendChild(errSpan);
+                        img.src = MEME_LOAD_FAILED_STICKER_URL;
+                        Object.assign(img.style, {
+                            objectFit: "contain",
+                            backgroundColor: "#fff",
+                            border: "none",
+                            minWidth: "160px",
+                            minHeight: "160px",
+                            cursor: "default"
+                        });
                     }
                 });
 
@@ -1827,6 +1884,8 @@
         S.proactiveChatBackoffLevel = 0;
         // 语音模式：用户说话了，重置无回复计数
         S._voiceProactiveNoResponseCount = 0;
+        S._voiceProactiveBackoffResetVersion =
+            (S._voiceProactiveBackoffResetVersion || 0) + 1;
         // 重新安排定时器
         scheduleProactiveChat();
         // 跨窗口同步：分发环境下 chat.html 输入只会 reset 它自己这份无用的 state，
@@ -1841,10 +1900,14 @@
 
     // ======================== proactive vision during speech ========================
 
+    var proactiveVisionFrameInFlight = false;
+
     /**
      * 发送单帧屏幕数据（统一使用 acquireOrReuseCachedStream → captureFrameFromStream → 后端兜底）
      */
     async function sendOneProactiveVisionFrame() {
+        if (proactiveVisionFrameInFlight) return;
+        proactiveVisionFrameInFlight = true;
         try {
             if (!isProactiveVisionEnabledNow() || !S.isRecording) {
                 stopProactiveVisionDuringSpeech();
@@ -1852,14 +1915,33 @@
             }
             if (!S.socket || S.socket.readyState !== WebSocket.OPEN) return;
 
+            var rememberedWindowCapture = { required: false, allowed: true };
+            if (typeof window.prepareRememberedWindowCapture === 'function') {
+                rememberedWindowCapture = await window.prepareRememberedWindowCapture();
+                if (rememberedWindowCapture && rememberedWindowCapture.required
+                    && !rememberedWindowCapture.allowed) {
+                    console.warn('[ProactiveVision] 记忆窗口无法确认，停止本次语音视觉帧');
+                    return;
+                }
+            }
+
             var dataUrl = null;
+            // 这一帧来自哪种画面来源，决定 Avatar 坐标怎么映射到截图坐标系。
+            // 三条来源判据各不相同且逐级回退，必须在取到画面的那一步就定下来——
+            // 发送时的 S.screenCaptureStream / S.selectedScreenSourceId 描述的是
+            // 「本会话配置抓什么」，不是「这一帧抓到了什么」。
+            var captureType = null;
 
             // 优先前端流（缓存流 → Electron源 → 不弹窗）
             var stream = await acquireOrReuseCachedStream({ allowPrompt: false });
             if (stream) {
+                // 同上：抓帧是异步的，源 ID 要跟这条流一起钉住，事后再读可能已经换人。
+                // 必须在 acquireOrReuseCachedStream 之后取——它自己就会改写这个字段。
+                var streamSourceId = S.selectedScreenSourceId;
                 var frame = await captureFrameFromStream(stream, 0.8);
                 if (frame && frame.dataUrl) {
                     dataUrl = frame.dataUrl;
+                    captureType = window.detectScreenshotCaptureType(stream, streamSourceId);
                 } else if (S.screenCaptureStream === stream) {
                     // 空帧（黑帧或空壳流），废弃缓存流
                     console.warn('[ProactiveVision] 缓存流提取帧失败，废弃该流');
@@ -1869,10 +1951,67 @@
                 }
             }
 
+            // Native desktop shells return encoded frames instead of a
+            // Chromium MediaStream.
+            if (!dataUrl && S.selectedScreenSourceId) {
+                var desktopProvider = getDesktopProvider();
+                if (desktopProvider
+                    && desktopProvider.nativeFrameCapture
+                    && typeof desktopProvider.captureSourceAsDataUrl === 'function') {
+                    // 捕获前先钉住源 ID：下面隔着两个 await，期间用户换源会让
+                    // S.selectedScreenSourceId 变掉，事后再读就会拿新源去解释旧帧
+                    // （窗口换成屏幕 → 给一张没有 Avatar 的窗口图叠字）。
+                    var nativeSourceId = S.selectedScreenSourceId;
+                    try {
+                        var direct = await window.captureDesktopSourceWithTimeout(
+                            desktopProvider,
+                            'captureSourceAsDataUrl',
+                            nativeSourceId
+                        );
+                        if (direct && direct.success && direct.dataUrl) {
+                            // 桌面壳的 NativeImage.toDataURL() 通常出 PNG，而后端屏幕数据
+                            // 校验只接受 data:image/jpeg;base64,（utils/screenshot_utils.py:120），
+                            // 不转码会让整帧被判为「无效的屏幕数据格式」直接丢掉。
+                            var nativeDataUrl = await normalizeNativeCaptureDataUrlForStream(direct.dataUrl);
+                            if (nativeDataUrl) {
+                                dataUrl = nativeDataUrl;
+                                captureType = window.detectScreenshotCaptureType(null, nativeSourceId);
+                            } else {
+                                console.warn('[ProactiveVision] 原生帧转 JPEG 失败，尝试后端兜底');
+                            }
+                        } else if (typeof window.maybeClearSourceOnNotFound === 'function') {
+                            window.maybeClearSourceOnNotFound(direct, '主动视觉原生捕获源已失效');
+                        }
+                    } catch (directError) {
+                        if (typeof window.maybeClearSourceOnNotFound === 'function') {
+                            window.maybeClearSourceOnNotFound(
+                                { error: directError && directError.message },
+                                '主动视觉原生捕获源已失效'
+                            );
+                        }
+                        console.warn('[ProactiveVision] 原生捕获失败，尝试后端兜底:', directError);
+                    }
+                }
+            }
+
+            // Remember-window is a fail-closed boundary. A validated window whose
+            // stream/native capture failed must not widen to the full desktop.
+            if (!dataUrl && rememberedWindowCapture
+                && rememberedWindowCapture.required) {
+                console.warn('[ProactiveVision] 记忆窗口捕获失败，停止整桌面兜底');
+                return;
+            }
+
             // 后端 pyautogui 兜底
             if (!dataUrl) {
                 var backendResult = await fetchBackendScreenshot();
                 dataUrl = backendResult.dataUrl;
+                if (dataUrl) {
+                    // pyautogui 抓的是整屏桌面，与已选窗口源 / 缓存流都无关，必须显式
+                    // 定成 'screen'，否则会被残留的 window:* 源判成不叠加。
+                    // 多屏下由 getAvatarScreenPosition 的闸门兜底返回 null。
+                    captureType = 'screen';
+                }
                 // macOS 403 权限提示
                 if (backendResult.status === 403 && !S.screenRecordingPermissionHintShown) {
                     S.screenRecordingPermissionHintShown = true;
@@ -1887,16 +2026,25 @@
                 stopProactiveVisionDuringSpeech();
                 return;
             }
+            if (rememberedWindowCapture && rememberedWindowCapture.required
+                && typeof rememberedWindowCapture.isCurrent === 'function'
+                && !rememberedWindowCapture.isCurrent()) {
+                console.warn('[ProactiveVision] 记忆窗口身份已变化，丢弃过期语音视觉帧');
+                return;
+            }
             if (dataUrl && S.socket && S.socket.readyState === WebSocket.OPEN) {
-                S.socket.send(JSON.stringify({
-                    action: 'stream_data',
-                    data: dataUrl,
-                    input_type: (window.appUtils && window.appUtils.isMobile) ? (window.appUtils.isMobile() ? 'camera' : 'screen') : 'screen'
-                }));
+                var visionInputType = (window.appUtils && window.appUtils.isMobile) ? (window.appUtils.isMobile() ? 'camera' : 'screen') : 'screen';
+                // 与持续屏幕分享共用同一个构造函数，避免两条链路的 avatar_position 口径分叉。
+                // 第 3 参传 null：来源已由 captureType 显式给出，不需要再按 sourceId 推断。
+                S.socket.send(JSON.stringify(
+                    buildStreamDataMessage(dataUrl, visionInputType, null, captureType)
+                ));
                 console.log('[ProactiveVision] 发送单帧屏幕数据');
             }
         } catch (e) {
             console.error('sendOneProactiveVisionFrame 失败:', e);
+        } finally {
+            proactiveVisionFrameInFlight = false;
         }
     }
     mod.sendOneProactiveVisionFrame = sendOneProactiveVisionFrame;
@@ -2019,31 +2167,97 @@
      * 返回整屏的问题；同时也改善此函数走 WS_HOOK / CHAT_CHANNELS.REQUEST_SCREENSHOT
      * 路径时的准确性。
      */
-    async function captureProactiveChatScreenshot() {
+    /**
+     * 把「这一帧是怎么抓来的」翻译成 Avatar 坐标的映射方式。
+     *
+     * 必须在**抓帧的那一刻**用当时的流 / 源算出来：抓帧是异步的，调用方事后再读
+     * S.screenCaptureStream / S.selectedScreenSourceId 可能已经换人，会拿新源去
+     * 解释旧帧。原生帧的调用点传 stream=null——那条缓存流描述的是另一次捕获，
+     * 源被清空时会替原生帧答出 'screen'，给一张窗口图叠上不存在的 Avatar。
+     */
+    function resolveCaptureTypeFor(via, stream, sourceId) {
+        // pyautogui 抓的是整屏桌面，与流 / 已选源都无关。
+        if (via === 'backend') return 'screen';
+        if (typeof window.detectScreenshotCaptureType === 'function') {
+            return window.detectScreenshotCaptureType(stream, sourceId);
+        }
+        // detect 因加载顺序拿不到时的降级兜底：无流无源即整屏。这条不能删——
+        // 后端把「不带坐标」当成明确的否定信号，删了会从「默认整屏叠」静默
+        // 变成「永久不叠」。
+        return (!stream && !sourceId) ? 'screen' : null;
+    }
+
+    async function captureProactiveChatScreenshotWithSource() {
+        var rememberedWindowCapture = { required: false, allowed: true };
+        if (typeof window.prepareRememberedWindowCapture === 'function') {
+            rememberedWindowCapture = await window.prepareRememberedWindowCapture();
+            if (rememberedWindowCapture && rememberedWindowCapture.required
+                && !rememberedWindowCapture.allowed) {
+                console.warn('[主动搭话截图] 记忆窗口无法唯一确认，停止本次截图');
+                return { dataUrl: null, via: null, captureType: null };
+            }
+        }
+
+        function rememberedCaptureStillCurrent() {
+            return !rememberedWindowCapture
+                || !rememberedWindowCapture.required
+                || typeof rememberedWindowCapture.isCurrent !== 'function'
+                || rememberedWindowCapture.isCurrent();
+        }
+
+        function discardSupersededRememberedFrame(path) {
+            if (rememberedCaptureStillCurrent()) return false;
+            console.warn('[主动搭话截图] ' + path + ' 完成时记忆窗口已变化，丢弃旧帧');
+            return true;
+        }
+
         // 策略 0a: 复用有效缓存流（避免打扰正在进行的屏幕共享）
         if (S.screenCaptureStream && S.screenCaptureStream.active) {
             try {
-                var tracks = S.screenCaptureStream.getVideoTracks();
+                var cachedStream = S.screenCaptureStream;
+                var cachedSourceId = S.selectedScreenSourceId;
+                var tracks = cachedStream.getVideoTracks();
                 if (tracks.length > 0 && tracks.some(function (t) { return t.readyState === 'live'; })) {
-                    var cachedFrame = await captureFrameFromStream(S.screenCaptureStream, 0.85);
+                    var cachedFrame = await captureFrameFromStream(cachedStream, 0.85);
                     if (cachedFrame && cachedFrame.dataUrl) {
+                        if (discardSupersededRememberedFrame('缓存流截图')) {
+                            return { dataUrl: null, via: null, captureType: null };
+                        }
                         S.screenCaptureStreamLastUsed = Date.now();
                         if (window.scheduleScreenCaptureIdleCheck) window.scheduleScreenCaptureIdleCheck();
                         console.log('[主动搭话截图] 缓存流截图成功');
-                        return cachedFrame.dataUrl;
+                        return {
+                            dataUrl: cachedFrame.dataUrl,
+                            via: 'stream',
+                            captureType: resolveCaptureTypeFor('stream', cachedStream, cachedSourceId)
+                        };
                     }
                 }
             } catch (e) { console.warn('[主动搭话截图] 缓存流截图失败，继续:', e); }
         }
 
-        // 策略 0b: 主进程直接捕获选中源（Electron 桌面环境）
-        if (S.selectedScreenSourceId && window.electronDesktopCapturer
-            && typeof window.electronDesktopCapturer.captureSourceAsDataUrl === 'function') {
+        // 策略 0b: 桌面壳直接捕获选中源（Electron / Tauri）
+        var desktopProvider = getDesktopProvider();
+        if (S.selectedScreenSourceId && desktopProvider
+            && typeof desktopProvider.captureSourceAsDataUrl === 'function') {
+            // 捕获前钉住源 ID：下面是异步的，事后再读会拿新源解释旧帧。
+            var nativeSourceId = S.selectedScreenSourceId;
             try {
-                var direct = await window.electronDesktopCapturer.captureSourceAsDataUrl(S.selectedScreenSourceId);
+                var direct = await window.captureDesktopSourceWithTimeout(
+                    desktopProvider,
+                    'captureSourceAsDataUrl',
+                    nativeSourceId
+                );
                 if (direct && direct.success && direct.dataUrl) {
-                    console.log('[主动搭话截图] 主进程直接捕获成功:', S.selectedScreenSourceId);
-                    return direct.dataUrl;
+                    if (discardSupersededRememberedFrame('主进程直接捕获')) {
+                        return { dataUrl: null, via: null, captureType: null };
+                    }
+                    console.log('[主动搭话截图] 主进程直接捕获成功:', nativeSourceId);
+                    return {
+                        dataUrl: direct.dataUrl,
+                        via: 'native',
+                        captureType: resolveCaptureTypeFor('native', null, nativeSourceId)
+                    };
                 } else if (direct && direct.error) {
                     console.warn('[主动搭话截图] 主进程直接捕获失败，将回退到流路径:', direct.error);
                     if (typeof window.maybeClearSourceOnNotFound === 'function') {
@@ -2056,10 +2270,19 @@
         // 策略1: 缓存流 / Electron窗口ID / getDisplayMedia（非user gesture不弹窗）
         var stream = await acquireOrReuseCachedStream({ allowPrompt: false });
         if (stream) {
+            // 快照必须取在 acquireOrReuseCachedStream 之后——它自己就会改写这个字段。
+            var streamSourceId = S.selectedScreenSourceId;
             var frame = await captureFrameFromStream(stream, 0.85);
             if (frame && frame.dataUrl) {
+                if (discardSupersededRememberedFrame('前端流截图')) {
+                    return { dataUrl: null, via: null, captureType: null };
+                }
                 console.log('[主动搭话截图] 前端截图成功');
-                return frame.dataUrl;
+                return {
+                    dataUrl: frame.dataUrl,
+                    via: 'stream',
+                    captureType: resolveCaptureTypeFor('stream', stream, streamSourceId)
+                };
             }
             // 黑帧或抓帧失败 → 废弃流，重试一次
             console.warn('[主动搭话截图] 帧提取失败或纯黑帧，废弃缓存流并重试');
@@ -2071,8 +2294,18 @@
             // 重试：会走 Electron sourceId 路径
             stream = await acquireOrReuseCachedStream({ allowPrompt: false });
             if (stream) {
+                var retrySourceId = S.selectedScreenSourceId;
                 frame = await captureFrameFromStream(stream, 0.85);
-                if (frame && frame.dataUrl) return frame.dataUrl;
+                if (frame && frame.dataUrl) {
+                    if (discardSupersededRememberedFrame('前端流重试截图')) {
+                        return { dataUrl: null, via: null, captureType: null };
+                    }
+                    return {
+                        dataUrl: frame.dataUrl,
+                        via: 'stream',
+                        captureType: resolveCaptureTypeFor('stream', stream, retrySourceId)
+                    };
+                }
                 // 二次重试仍然失败，废弃这个流
                 console.warn('[主动搭话截图] 二次重试仍失败，废弃流');
                 if (S.screenCaptureStream === stream) {
@@ -2083,15 +2316,33 @@
             }
         }
 
+        // Remember-window is a fail-closed boundary. A validated window whose
+        // direct/stream capture failed must not widen to a desktop screenshot.
+        if (rememberedWindowCapture && rememberedWindowCapture.required) {
+            console.warn('[主动搭话截图] 记忆窗口捕获失败，停止整桌面兜底');
+            return { dataUrl: null, via: null, captureType: null };
+        }
+
         // 策略2: 后端 pyautogui 兜底
         var backendResult = await fetchBackendScreenshot();
         if (backendResult.dataUrl) {
             console.log('[主动搭话截图] 后端截图成功');
-            return backendResult.dataUrl;
+            return {
+                dataUrl: backendResult.dataUrl,
+                via: 'backend',
+                captureType: resolveCaptureTypeFor('backend', null, null)
+            };
         }
 
         console.warn('[主动搭话截图] 所有截图方式均失败');
-        return null;
+        return { dataUrl: null, via: null, captureType: null };
+    }
+    mod.captureProactiveChatScreenshotWithSource = captureProactiveChatScreenshotWithSource;
+
+    // 旧契约薄封装：只要 dataUrl 的调用方继续用这个。
+    async function captureProactiveChatScreenshot() {
+        var res = await captureProactiveChatScreenshotWithSource();
+        return res && res.dataUrl ? res.dataUrl : null;
     }
     mod.captureProactiveChatScreenshot = captureProactiveChatScreenshot;
 
@@ -2102,16 +2353,34 @@
      * 开启时：优先测试后端 pyautogui（静默无弹窗），不可用则通过前端流获取（用户手势上下文可弹 getDisplayMedia）
      */
     async function acquireProactiveVisionStream() {
-        // 策略1: 测试后端 pyautogui 是否可用（静默，无弹窗）
-        var backendResult = await fetchBackendScreenshot();
-        if (backendResult.dataUrl) {
-            console.log('[主动视觉] 后端 pyautogui 可用，无需前端流');
-            return true;
+        var rememberedWindowCapture = { required: false, allowed: true };
+        if (typeof window.prepareRememberedWindowCapture === 'function') {
+            rememberedWindowCapture = await window.prepareRememberedWindowCapture();
+            if (rememberedWindowCapture && rememberedWindowCapture.required
+                && !rememberedWindowCapture.allowed) {
+                console.warn('[主动视觉] 记忆窗口无法确认，停止启用');
+                return false;
+            }
+        }
+
+        // 策略1: 无记忆窗口约束时测试后端 pyautogui（静默，无弹窗）
+        if (!rememberedWindowCapture || !rememberedWindowCapture.required) {
+            var backendResult = await fetchBackendScreenshot();
+            if (backendResult.dataUrl) {
+                console.log('[主动视觉] 后端 pyautogui 可用，无需前端流');
+                return true;
+            }
         }
 
         // 策略2: 后端不可用，尝试前端流（用户手势上下文，可弹 getDisplayMedia）
         var stream = await acquireOrReuseCachedStream({ allowPrompt: true });
         if (stream) {
+            if (rememberedWindowCapture && rememberedWindowCapture.required
+                && typeof rememberedWindowCapture.isCurrent === 'function'
+                && !rememberedWindowCapture.isCurrent()) {
+                console.warn('[主动视觉] 记忆窗口身份已变化，忽略过期流');
+                return false;
+            }
             console.log('[主动视觉] 前端流获取/复用成功');
             return true;
         }

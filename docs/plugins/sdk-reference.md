@@ -45,7 +45,10 @@ class MyPlugin(NekoPluginBase):
 |----------|------|-------------|
 | `self.ctx` | `PluginContext` | The runtime context (injected by host) |
 | `self.plugin_id` | `str` | This plugin's unique identifier |
-| `self.config_dir` | `Path` | Directory containing `plugin.toml` |
+| `self.plugin_dir` | `Path` | Installed plugin directory containing code, manifest, and static assets |
+| `self.config_dir` | `Path` | Compatibility alias for `self.plugin_dir` |
+| `self.storage_dir` | `Path` | User storage root assigned to this plugin |
+| `self.runtime_config_path` | `Path` | External runtime configuration file |
 | `self.metadata` | `dict` | Plugin metadata from `plugin.toml` |
 | `self.bus` | `SdkBusContext` | Read/watch facade over host state; it has no publish/emit API |
 | `self.plugins` | `Plugins` | Cross-plugin call helper |
@@ -65,19 +68,31 @@ self.report_status({
 })
 ```
 
-#### `push_message(**kwargs) -> object`
+#### `push_message(**kwargs) -> PushMessageResult`
 
 Push a message to the host system with the v2 schema.
 
 ```python
-self.push_message(
+result = self.push_message(
     source="my_feature",
     visibility=["chat"],       # [], ["chat"], ["hud"], or both
     ai_behavior="blind",       # "respond", "read", or "blind"
     parts=[{"type": "text", "text": "Task complete"}],
     priority=5,
 )
+
+if not result["submitted"]:
+    # Keep local state; retry and deduplication remain plugin policy.
+    self.logger.warning("message submission failed: %s", result["reason"])
 ```
+
+`submitted=True` means only that the SDK's authoritative local submission path
+accepted responsibility for the payload. It does not acknowledge host
+consumption, model generation, or playback. Rejections use the stable reasons
+`backpressure`, `transport_error`, or `transport_unavailable`; the result never
+contains the message body or raw exception text. Rejected results also carry
+`ok=False` for compatibility with legacy callers; new code should use
+`submitted` as the authoritative discriminator.
 
 The v1 fields (`message_type`, `content`, `delivery`, `reply`, and the other legacy aliases) are deprecated but still translated in current source. Migrate now; this documentation does not guarantee an exact removal release. See the [migration guide](./migration-v0.9#push-message-v2).
 
@@ -86,7 +101,17 @@ The v1 fields (`message_type`, `content`, `delivery`, `reply`, and the other leg
 Get a path under the plugin's `data/` directory.
 
 ```python
-db_path = self.data_path("cache.db")  # → <plugin_dir>/data/cache.db
+db_path = self.data_path("records.db")
+# → <storage-root>/plugins/<plugin_id>/data/records.db
+```
+
+#### `cache_path(*parts) -> Path`
+
+Get a path under the plugin's disposable cache directory.
+
+```python
+preview_path = self.cache_path("preview.png")
+# → <storage-root>/plugins/<plugin_id>/cache/preview.png
 ```
 
 #### `register_dynamic_entry(entry_id, handler, ...) -> bool`

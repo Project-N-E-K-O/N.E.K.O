@@ -63,6 +63,7 @@ from .preferences import (  # noqa: F401
 from .language import (  # noqa: F401
     get_steam_language,
     get_user_language_api,
+    set_ui_language_api,
 )
 from .core_config import (  # noqa: F401
     get_core_config_api,

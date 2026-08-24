@@ -1,8 +1,8 @@
-"""Validation contract for the three supported avatar interaction tools.
+"""Validation contract for the supported avatar interaction tools.
 
 Prompt wording and memory templates intentionally stay in
 ``prompts_avatar_interaction.py``.  This module owns only wire-level facts so
-the runtime validator has one authoritative tool/action/intensity table.
+the runtime validator has one authoritative interaction contract.
 """
 
 from __future__ import annotations
@@ -16,6 +16,8 @@ from typing import Any, Optional
 TextContextSanitizer = Callable[[Any], str]
 
 AVATAR_INTERACTION_ALLOWED_TOUCH_ZONES = frozenset({"ear", "head", "face", "body"})
+AVATAR_INTERACTION_ROUND_GESTURES = frozenset({"rock", "scissors", "paper"})
+AVATAR_INTERACTION_ROUND_RESULTS = frozenset({"user_win", "avatar_win", "draw"})
 AVATAR_INTERACTION_TOOL_CONTRACT = {
     "lollipop": {
         "actions": {
@@ -25,6 +27,7 @@ AVATAR_INTERACTION_TOOL_CONTRACT = {
         },
         "touch_zone": False,
         "boolean_field": None,
+        "round_choice": False,
     },
     "fist": {
         "actions": {
@@ -32,6 +35,7 @@ AVATAR_INTERACTION_TOOL_CONTRACT = {
         },
         "touch_zone": True,
         "boolean_field": "reward_drop",
+        "round_choice": False,
     },
     "hammer": {
         "actions": {
@@ -39,6 +43,13 @@ AVATAR_INTERACTION_TOOL_CONTRACT = {
         },
         "touch_zone": True,
         "boolean_field": "easter_egg",
+        "round_choice": False,
+    },
+    "rps": {
+        "actions": {},
+        "touch_zone": False,
+        "boolean_field": None,
+        "round_choice": True,
     },
 }
 
@@ -88,6 +99,24 @@ def get_avatar_interaction_payload_value(
     return default
 
 
+def resolve_avatar_interaction_round_result(
+    user_gesture: str, avatar_gesture: str
+) -> Optional[str]:
+    if user_gesture == avatar_gesture and user_gesture in AVATAR_INTERACTION_ROUND_GESTURES:
+        return "draw"
+    if (
+        (user_gesture, avatar_gesture)
+        in {("rock", "scissors"), ("scissors", "paper"), ("paper", "rock")}
+    ):
+        return "user_win"
+    if (
+        (avatar_gesture, user_gesture)
+        in {("rock", "scissors"), ("scissors", "paper"), ("paper", "rock")}
+    ):
+        return "avatar_win"
+    return None
+
+
 def normalize_avatar_interaction_payload(
     payload: dict,
     *,
@@ -109,14 +138,42 @@ def normalize_avatar_interaction_payload(
 
     if not interaction_id or target != "avatar" or not tool_contract:
         return None
-    if action_id not in tool_contract["actions"]:
-        return None
-
-    intensity = normalize_avatar_interaction_intensity(
-        tool_id, action_id, payload.get("intensity")
-    )
-    if intensity is None:
-        return None
+    if tool_contract["round_choice"]:
+        allowed_round_keys = {
+            "action", "interaction_id", "interactionId", "tool_id", "toolId", "target",
+            "pointer", "timestamp", "text_context", "textContext",
+            "user_gesture", "userGesture", "avatar_gesture", "avatarGesture",
+            "round_result", "roundResult",
+        }
+        if any(key not in allowed_round_keys for key in payload):
+            return None
+        user_gesture = str(get_avatar_interaction_payload_value(
+            payload, "user_gesture", "userGesture", ""
+        ) or "").strip().lower()
+        avatar_gesture = str(get_avatar_interaction_payload_value(
+            payload, "avatar_gesture", "avatarGesture", ""
+        ) or "").strip().lower()
+        round_result = str(get_avatar_interaction_payload_value(
+            payload, "round_result", "roundResult", ""
+        ) or "").strip().lower()
+        expected_result = resolve_avatar_interaction_round_result(
+            user_gesture, avatar_gesture
+        )
+        if (
+            user_gesture not in AVATAR_INTERACTION_ROUND_GESTURES
+            or avatar_gesture not in AVATAR_INTERACTION_ROUND_GESTURES
+            or round_result not in AVATAR_INTERACTION_ROUND_RESULTS
+            or round_result != expected_result
+        ):
+            return None
+    else:
+        if action_id not in tool_contract["actions"]:
+            return None
+        intensity = normalize_avatar_interaction_intensity(
+            tool_id, action_id, payload.get("intensity")
+        )
+        if intensity is None:
+            return None
     boolean_field = tool_contract["boolean_field"]
     boolean_value = False
     if boolean_field:
@@ -186,16 +243,26 @@ def normalize_avatar_interaction_payload(
         else str(raw_text_context or "").strip()
     )
 
-    return {
+    normalized = {
         "interaction_id": interaction_id,
         "tool_id": tool_id,
-        "action_id": action_id,
         "target": "avatar",
         "text_context": text_context,
         "timestamp": timestamp_value,
-        "intensity": intensity,
-        "reward_drop": reward_drop,
-        "easter_egg": easter_egg,
-        "touch_zone": touch_zone,
         "pointer": pointer,
     }
+    if tool_contract["round_choice"]:
+        normalized.update({
+            "user_gesture": user_gesture,
+            "avatar_gesture": avatar_gesture,
+            "round_result": round_result,
+        })
+    else:
+        normalized.update({
+            "action_id": action_id,
+            "intensity": intensity,
+            "reward_drop": reward_drop,
+            "easter_egg": easter_egg,
+            "touch_zone": touch_zone,
+        })
+    return normalized

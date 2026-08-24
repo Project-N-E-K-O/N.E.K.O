@@ -7,7 +7,7 @@ from fastapi import HTTPException
 
 from plugin.logging_config import get_logger
 from plugin.server.infrastructure.config_protected import validate_protected_fields_unchanged
-from plugin.server.infrastructure.config_paths import get_plugin_config_path
+from plugin.server.infrastructure.config_paths import ensure_plugin_runtime_config
 from plugin.server.infrastructure.config_resolver import resolve_plugin_config
 from plugin.server.infrastructure.config_toml import (
     parse_toml_text,
@@ -17,7 +17,7 @@ from plugin.server.infrastructure.config_toml import (
 logger = get_logger("server.infrastructure.config_queries")
 
 
-def load_plugin_base_config(plugin_id: str) -> dict[str, object]:
+def _load_plugin_resolved_config(plugin_id: str, *, config_key: str) -> dict[str, object]:
     resolved = resolve_plugin_config(
         plugin_id,
         include_effective_config=False,
@@ -25,12 +25,20 @@ def load_plugin_base_config(plugin_id: str) -> dict[str, object]:
     )
     return {
         "plugin_id": plugin_id,
-        "config": resolved["base_config"],
+        "config": resolved[config_key],
         "last_modified": resolved["last_modified"],
         "config_path": resolved["config_path"],
         "profiles_state": resolved["profiles_state"],
         "warnings": resolved["warnings"],
     }
+
+
+def load_plugin_base_config(plugin_id: str) -> dict[str, object]:
+    return _load_plugin_resolved_config(plugin_id, config_key="base_config")
+
+
+def load_plugin_effective_base_config(plugin_id: str) -> dict[str, object]:
+    return _load_plugin_resolved_config(plugin_id, config_key="effective_config")
 
 
 def load_plugin_config(plugin_id: str, *, validate: bool = True) -> dict[str, object]:
@@ -58,7 +66,7 @@ def load_plugin_config(plugin_id: str, *, validate: bool = True) -> dict[str, ob
 
 
 def load_plugin_config_toml(plugin_id: str) -> dict[str, object]:
-    config_path = get_plugin_config_path(plugin_id)
+    config_path = ensure_plugin_runtime_config(plugin_id)
     try:
         toml_text = config_path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError) as exc:

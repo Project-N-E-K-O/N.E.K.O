@@ -206,3 +206,5 @@ JSON 视图文件仍是可编辑状态，因此这里不是完整事件溯源。
 打开 `http://localhost:48911/memory_browser` 可以浏览和编辑**近期对话记忆**，以及配置近期记忆审阅和强力记忆。当前浏览器 API 只读写 `recent.json`；它不是 `facts.json`、`reflections.json` 或 `persona.json` 的通用编辑器。
 
 面向用户的主服务器路由请参阅[记忆 REST API](/zh-CN/api/rest/memory)。进程间接口请参阅[记忆服务器 API](/zh-CN/api/memory-server)。`/cache`、`/process`、`/settle`、`/new_dialog` 和 `/query_memory` 等内部记忆服务器路径属于 N.E.K.O. 进程之间的实现接口，不是对外承诺兼容的公共端点。
+
+关于本地存储与 Provider 处理的用户层边界，请阅读[对话与记忆的数据流向](/zh-CN/guide/data-and-privacy)和[本地与离线边界](/zh-CN/guide/local-and-offline)。

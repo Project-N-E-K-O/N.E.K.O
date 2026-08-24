@@ -207,6 +207,11 @@
                     isDestroyed: () => this.destroyed,
                     isResistancePaused: () => this.scenePausedForResistance === true,
                     externalizedChatDetector: () => this.isHomeChatExternalized(),
+                    onExternalizedChatCursorOwnershipChange: (detail) => {
+                        this.setHomePcCursorOutputSuppressedForExternalizedChat(
+                            !!(detail && detail.owned === true)
+                        );
+                    },
                     externalChatChannelProvider: () => {
                         return window.appInterpage && window.appInterpage.nekoBroadcastChannel
                             ? window.appInterpage.nekoBroadcastChannel
@@ -445,6 +450,9 @@
             this.avatarStandInActive = true;
             Promise.resolve(this.startAvatarCornerPeekPerformance({
                 position: cue.position,
+                hideMs: cue.hideMs,
+                appearMs: cue.appearMs,
+                holdMs: cue.holdMs,
                 isCancelled: () => token !== this.avatarStandInToken
                     || this.isStopping()
                     || this.destroyed
@@ -462,9 +470,11 @@
                     return;
                 }
                 this.avatarStandInPerformanceHandle = handle;
-                const rawDurationMs = Number.isFinite(Number(cue.duration))
+                const rawDurationMs = Number.isFinite(Number(cue.totalDurationMs))
+                    ? Number(cue.totalDurationMs)
+                    : (Number.isFinite(Number(cue.duration))
                     ? Number(cue.duration)
-                    : Number(cue.durationMs);
+                    : Number(cue.durationMs));
                 const durationMs = Math.max(0, Number.isFinite(rawDurationMs) ? rawDurationMs : 0);
                 this.avatarStandInHideTimer = window.setTimeout(() => {
                     if (token === this.avatarStandInToken) {
@@ -2255,7 +2265,11 @@
                 if (!api || typeof api !== 'object') {
                     return null;
                 }
-                if (typeof api.isActive === 'function' && !api.isActive()) {
+                if (
+                    typeof api.isActive === 'function'
+                    && !api.isActive()
+                    && typeof api.getLayoutState !== 'function'
+                ) {
                     return null;
                 }
                 return api;
@@ -2290,8 +2304,14 @@
                     metrics.niriPetPhysicalCropBounds || metrics.contentBounds || metrics.bounds
                 );
                 const virtualBounds = this.normalizeNiriPetPhysicalCropBounds(metrics.niriPetPhysicalCropVirtualBounds);
-                const offsetX = Number(metrics.niriPetPhysicalCropOffsetX);
-                const offsetY = Number(metrics.niriPetPhysicalCropOffsetY);
+                const layoutOffsetX = Number(metrics.niriPetPhysicalCropLayoutOffsetX);
+                const layoutOffsetY = Number(metrics.niriPetPhysicalCropLayoutOffsetY);
+                const offsetX = Number.isFinite(layoutOffsetX)
+                    ? layoutOffsetX
+                    : Number(metrics.niriPetPhysicalCropOffsetX);
+                const offsetY = Number.isFinite(layoutOffsetY)
+                    ? layoutOffsetY
+                    : Number(metrics.niriPetPhysicalCropOffsetY);
                 return cropBounds ? {
                     cropBounds,
                     virtualBounds,
@@ -2306,10 +2326,11 @@
                 if (!api || typeof api !== 'object') {
                     return null;
                 }
-                if (typeof api.isActive === 'function' && !api.isActive()) {
+                const layoutState = typeof api.getLayoutState === 'function' ? api.getLayoutState() : null;
+                const state = layoutState || (typeof api.getState === 'function' ? api.getState() : null);
+                if (!state && typeof api.isActive === 'function' && !api.isActive()) {
                     return null;
                 }
-                const state = typeof api.getState === 'function' ? api.getState() : null;
                 const cropBounds = this.normalizeNiriPetPhysicalCropBounds(state && state.cropBounds);
                 const virtualBounds = this.normalizeNiriPetPhysicalCropBounds(state && state.virtualBounds);
                 if (!cropBounds) {
@@ -2336,11 +2357,16 @@
 
         toNiriPetPhysicalCropVirtualPoint(point) {
             const api = this.getNiriPetPhysicalCropApi();
-            if (!api || typeof api.toVirtualPoint !== 'function') {
+            const converter = api && (
+                typeof api.toLayoutVirtualPoint === 'function'
+                    ? api.toLayoutVirtualPoint
+                    : api.toVirtualPoint
+            );
+            if (typeof converter !== 'function') {
                 return null;
             }
             try {
-                return this.normalizeNiriPetPhysicalCropPoint(api.toVirtualPoint(point));
+                return this.normalizeNiriPetPhysicalCropPoint(converter.call(api, point));
             } catch (_) {
                 return null;
             }
@@ -2348,39 +2374,49 @@
 
         toNiriPetPhysicalCropLocalPoint(point) {
             const api = this.getNiriPetPhysicalCropApi();
-            if (!api || typeof api.toLocalPoint !== 'function') {
+            const converter = api && (
+                typeof api.toLayoutLocalPoint === 'function'
+                    ? api.toLayoutLocalPoint
+                    : api.toLocalPoint
+            );
+            if (typeof converter !== 'function') {
                 return null;
             }
             try {
-                return this.normalizeNiriPetPhysicalCropPoint(api.toLocalPoint(point));
+                return this.normalizeNiriPetPhysicalCropPoint(converter.call(api, point));
             } catch (_) {
                 return null;
             }
         }
 
         toNiriPetPhysicalCropVirtualPointWithState(point, cropState) {
-            if (cropState && cropState.metricsVirtualized) {
+            // Window metrics can already be virtual while the DOM point is
+            // still crop-local. Use the captured state so a live API read
+            // cannot switch coordinate generations midway through this call.
+            if (cropState) {
                 return {
-                    x: Number(point && point.x || 0),
-                    y: Number(point && point.y || 0)
+                    x: Number(point && point.x || 0) + Number(cropState.offsetX || 0),
+                    y: Number(point && point.y || 0) + Number(cropState.offsetY || 0)
                 };
             }
             return this.toNiriPetPhysicalCropVirtualPoint(point) || {
-                x: Number(point && point.x || 0) + Number(cropState && cropState.offsetX || 0),
-                y: Number(point && point.y || 0) + Number(cropState && cropState.offsetY || 0)
+                x: Number(point && point.x || 0),
+                y: Number(point && point.y || 0)
             };
         }
 
         toNiriPetPhysicalCropLocalPointWithState(point, cropState) {
-            if (cropState && cropState.metricsVirtualized) {
+            // Reverse the same DOM-layout transform when restoring a screen
+            // point to renderer-local coordinates.
+            if (cropState) {
                 return {
-                    x: Number(point && point.x || 0),
-                    y: Number(point && point.y || 0)
+                    x: Number(point && point.x || 0) - Number(cropState.offsetX || 0),
+                    y: Number(point && point.y || 0) - Number(cropState.offsetY || 0)
                 };
             }
             return this.toNiriPetPhysicalCropLocalPoint(point) || {
-                x: Number(point && point.x || 0) - Number(cropState && cropState.offsetX || 0),
-                y: Number(point && point.y || 0) - Number(cropState && cropState.offsetY || 0)
+                x: Number(point && point.x || 0),
+                y: Number(point && point.y || 0)
             };
         }
 
@@ -2396,6 +2432,20 @@
         }
 
         getGuideScreenCoordinateBounds(metrics) {
+            if (
+                metrics
+                && metrics.coordinateSpace === 'screen-dip'
+                && metrics.renderBounds
+                && (
+                    metrics.renderBoundsCoordinateSpace === 'screen-dip'
+                    || (
+                        metrics.niriPetPhysicalCrop === true
+                        && metrics.originSource === 'niri-pet-physical-crop-virtual-bounds'
+                    )
+                )
+            ) {
+                return metrics.renderBounds;
+            }
             return metrics && (metrics.bounds || metrics.contentBounds) || null;
         }
 
@@ -2721,6 +2771,15 @@
                 return;
             }
             const detail = event && event.detail ? event.detail : {};
+            if (
+                this.overlay
+                && typeof this.overlay.isPcOverlayActive === 'function'
+                && this.overlay.isPcOverlayActive()
+                && typeof this.isHomePcCursorOutputSuppressedForExternalizedChat === 'function'
+                && !this.isHomePcCursorOutputSuppressedForExternalizedChat()
+            ) {
+                return;
+            }
             const screenPoint = {
                 x: Number(detail.x),
                 y: Number(detail.y)

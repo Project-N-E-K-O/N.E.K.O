@@ -6268,6 +6268,154 @@ def test_subtitle_settings_window_includes_color_and_danmaku_switch():
 
 
 @pytest.mark.frontend
+def test_subtitle_settings_window_ignores_stale_opacity_sync(mock_page: Page):
+    _open_subtitle_harness(
+        mock_page,
+        "subtitle-settings-window-host",
+        """
+        <div id="subtitle-display" data-subtitle-panel-state="settings">
+            <div id="subtitle-settings-panel">
+                <div class="subtitle-settings-row">
+                    <input type="range" id="subtitle-opacity-slider" min="0" max="100" value="50">
+                    <span id="subtitle-opacity-value">50%</span>
+                </div>
+            </div>
+        </div>
+        """,
+        path="/subtitle-settings-opacity-sync-harness",
+    )
+    mock_page.evaluate(
+        """
+        () => {
+            window.localStorage.setItem('subtitleOpacity', '50');
+            window.__subtitleSettingsChanges = [];
+            window.nekoSubtitle = {
+                changeSettings: (change) => window.__subtitleSettingsChanges.push(change),
+            };
+        }
+        """
+    )
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle-shared.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle-settings-window.js"))
+
+    result = mock_page.evaluate(
+        """
+        () => {
+            document.dispatchEvent(new Event('DOMContentLoaded'));
+            const slider = document.getElementById('subtitle-opacity-slider');
+            slider.value = '80';
+            slider.dispatchEvent(new Event('input', { bubbles: true }));
+
+            window.dispatchEvent(new CustomEvent('neko-subtitle-state-sync', {
+                detail: { opacity: 60 },
+            }));
+            const afterStale = {
+                slider: slider.value,
+                label: document.getElementById('subtitle-opacity-value').textContent,
+                setting: window.nekoSubtitleShared.getSettings().subtitleOpacity,
+            };
+
+            window.dispatchEvent(new CustomEvent('neko-subtitle-state-sync', {
+                detail: { opacity: 80 },
+            }));
+            window.dispatchEvent(new CustomEvent('neko-subtitle-state-sync', {
+                detail: { opacity: 40 },
+            }));
+
+            return {
+                afterStale,
+                afterCurrentAck: {
+                    slider: slider.value,
+                    label: document.getElementById('subtitle-opacity-value').textContent,
+                    setting: window.nekoSubtitleShared.getSettings().subtitleOpacity,
+                },
+                changes: window.__subtitleSettingsChanges,
+            };
+        }
+        """
+    )
+
+    assert result == {
+        "afterStale": {"slider": "80", "label": "80%", "setting": 80},
+        "afterCurrentAck": {"slider": "40", "label": "40%", "setting": 40},
+        "changes": [{"type": "opacity", "value": 80}],
+    }
+
+
+@pytest.mark.frontend
+def test_subtitle_window_does_not_echo_external_settings_sync(mock_page: Page):
+    _open_subtitle_harness(
+        mock_page,
+        "subtitle-window-host",
+        """
+        <div id="subtitle-display" style="display:flex;" data-subtitle-panel-state="clean">
+            <div id="subtitle-scroll"><span id="subtitle-text"></span></div>
+            <div id="subtitle-panel-controls" aria-hidden="true"></div>
+            <div id="subtitle-settings-panel" class="hidden"></div>
+        </div>
+        """,
+        path="/subtitle-window-settings-sync-harness",
+    )
+    mock_page.evaluate(
+        """
+        () => {
+            window.__settingsWindowUpdates = [];
+            window.nekoSubtitle = {
+                getBounds: () => Promise.resolve({ x: 10, y: 20, width: 667, height: 121 }),
+                getCursorPoint: () => Promise.resolve({ x: 0, y: 0 }),
+                getWorkArea: () => Promise.resolve({ x: 0, y: 0, width: 1000, height: 800 }),
+                setSize: () => {},
+                setBounds: () => {},
+                changeSettings: () => {},
+                dragStart: () => {},
+                dragStop: () => {},
+                enableInteraction: () => {},
+                disableInteraction: () => {},
+                openSettings: () => {},
+                closeSettings: () => {},
+                updateSettingsWindow: (state) => window.__settingsWindowUpdates.push(state),
+            };
+        }
+        """
+    )
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle-shared.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle-window.js"))
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            document.dispatchEvent(new Event('DOMContentLoaded'));
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            window.__settingsWindowUpdates = [];
+
+            window.dispatchEvent(new CustomEvent('neko-subtitle-state-sync', {
+                detail: { opacity: 61 },
+            }));
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            const afterExternalSync = window.__settingsWindowUpdates.map((state) => state.subtitleOpacity);
+
+            window.nekoSubtitleShared.updateSettings(
+                { subtitleOpacity: 62 },
+                { source: 'test-local-opacity' },
+            );
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            return {
+                afterExternalSync,
+                afterLocalChange: window.__settingsWindowUpdates.map((state) => state.subtitleOpacity),
+                setting: window.nekoSubtitleShared.getSettings().subtitleOpacity,
+            };
+        }
+        """
+    )
+
+    assert result == {
+        "afterExternalSync": [],
+        "afterLocalChange": [62],
+        "setting": 62,
+    }
+
+
+@pytest.mark.frontend
 def test_subtitle_settings_window_panel_size_matches_added_rows():
     css = (PROJECT_ROOT / "static/css/subtitle.css").read_text(encoding="utf-8")
 

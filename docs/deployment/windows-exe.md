@@ -2,7 +2,7 @@
 
 ## Stable end-user path
 
-Install N.E.K.O. from the [Steam store](https://store.steampowered.com/app/4099310/__NEKO/), launch through Steam, and configure providers in the desktop/Web UI.
+Install N.E.K.O. from the [Steam store](https://store.steampowered.com/app/4099310/__NEKO/?utm_source=project-neko.online&utm_medium=referral&utm_campaign=docs_deployment&utm_content=install_en), launch through Steam, and configure providers in the desktop/Web UI.
 
 The Python-backend executable alone does not provide the Electron windows, tray, Steam integration, routes, or updater. Do not confuse backend-only and desktop artifacts.
 

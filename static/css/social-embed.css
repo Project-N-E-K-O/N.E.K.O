@@ -1,0 +1,173 @@
+/* ===== 猫娘社区「页内嵌入拟态窗」样式 =====
+   宿主桌面保持可交互：backdrop 只承载窗口、不拦截整屏点击；
+   窗口 / iframe / 关闭按钮显式 pointer-events:auto（见 static/social-embed.js）。 */
+
+.neko-social-embed-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 2000000;
+  background: transparent;
+  pointer-events: none;
+  animation: neko-social-embed-fade 0.18s ease;
+}
+
+@keyframes neko-social-embed-fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.neko-social-embed-window {
+  position: absolute;
+  top: max(28px, calc((100vh - min(800px, 88vh)) / 2));
+  left: max(28px, calc((100vw - min(1100px, 92vw)) / 2));
+  width: min(1100px, 92vw);
+  height: min(800px, 88vh);
+  display: flex;
+  flex-direction: column;
+  border-radius: 16px;
+  overflow: hidden;
+  background: #0e1118;
+  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(255, 255, 255, 0.08);
+  pointer-events: auto;
+  animation: neko-social-embed-pop 0.22s cubic-bezier(0.2, 0.9, 0.3, 1.2);
+  will-change: left, top, width, height;
+}
+
+@keyframes neko-social-embed-pop {
+  from { transform: translateY(10px) scale(0.98); opacity: 0; }
+  to { transform: none; opacity: 1; }
+}
+
+.neko-social-embed-titlebar {
+  flex: 0 0 auto;
+  height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 10px 0 16px;
+  background: linear-gradient(180deg, #1a1f2e, #141823);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+  -webkit-user-select: none;
+  user-select: none;
+  cursor: grab;
+  touch-action: none;
+}
+
+.neko-social-embed-titlebar.is-dragging {
+  cursor: grabbing;
+}
+
+.neko-social-embed-window.is-resizing,
+.neko-social-embed-window.is-resizing .neko-social-embed-titlebar {
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.neko-social-embed-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  font-weight: 700;
+  color: #eaeefb;
+  letter-spacing: 0.02em;
+}
+
+.neko-social-embed-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 35% 30%, #ff9ecf, #b06bff);
+  box-shadow: 0 0 8px rgba(176, 107, 255, 0.7);
+}
+
+.neko-social-embed-close {
+  width: 30px;
+  height: 30px;
+  border: none;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.08);
+  color: #cfd6e4;
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+  transition: background 0.15s, color 0.15s;
+  pointer-events: auto;
+  cursor: pointer;
+}
+
+.neko-social-embed-close:hover {
+  background: rgba(255, 90, 120, 0.85);
+  color: #fff;
+}
+
+.neko-social-embed-iframe {
+  flex: 1 1 auto;
+  width: 100%;
+  border: none;
+  background: #fff;
+  pointer-events: auto;
+}
+
+.neko-social-embed-resize-handle {
+  position: absolute;
+  z-index: 2;
+  pointer-events: auto;
+  touch-action: none;
+}
+
+.neko-social-embed-resize-n,
+.neko-social-embed-resize-s {
+  left: 12px;
+  right: 12px;
+  height: 10px;
+  cursor: ns-resize;
+}
+
+.neko-social-embed-resize-n { top: -5px; }
+.neko-social-embed-resize-s { bottom: -5px; }
+
+.neko-social-embed-resize-e,
+.neko-social-embed-resize-w {
+  top: 12px;
+  bottom: 12px;
+  width: 10px;
+  cursor: ew-resize;
+}
+
+.neko-social-embed-resize-e { right: -5px; }
+.neko-social-embed-resize-w { left: -5px; }
+
+.neko-social-embed-resize-ne,
+.neko-social-embed-resize-nw,
+.neko-social-embed-resize-se,
+.neko-social-embed-resize-sw {
+  width: 18px;
+  height: 18px;
+}
+
+.neko-social-embed-resize-ne {
+  top: -6px;
+  right: -6px;
+  cursor: nesw-resize;
+}
+
+.neko-social-embed-resize-nw {
+  top: -6px;
+  left: -6px;
+  cursor: nwse-resize;
+}
+
+.neko-social-embed-resize-se {
+  right: -6px;
+  bottom: -6px;
+  cursor: nwse-resize;
+}
+
+.neko-social-embed-resize-sw {
+  left: -6px;
+  bottom: -6px;
+  cursor: nesw-resize;
+}

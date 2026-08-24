@@ -29,12 +29,19 @@ agent server 与本插件通过单一 WebSocket 连接通信，JSON 帧格式：
 也兼容**——插件会回退到按完成顺序匹配（见下方"已知限制"）。建议有内部并发
 的 agent 实现一定带上 `task_id` 以避免 out-of-order 完成被错误归属。
 
-agent 端启动方式由你自己决定（一般是 `node minecraft-agent/index.js --port 48909`
-或类似命令），插件只负责连进去。
+agent 端启动方式由你自己决定：绿色包用户在解压出来的包根双击 `启动.bat`，
+开发态直接 `node main.js`。桥接端口不是命令行参数，而是环境变量
+`NEKO_PLUGIN_WS_PORT`（默认 `48909`）。插件只负责连进去。
 
 ## 启用步骤
 
-1. 启动 Minecraft agent server，记下监听端口（默认 `48909`）
+1. 启动 Minecraft agent server（绿色包双击 `启动.bat` 即可，端口默认
+   `48909` 不用管）。密钥、模型、MC 端口都在 mc-agent 自己的控制面板
+   `http://localhost:8765` 里填，不需要手动编辑它的任何配置文件。
+
+   > 改桥接端口要**改两处**：agent 侧的 `NEKO_PLUGIN_WS_PORT` 只挪动它自己
+   > 的监听端口，插件侧读的是下面 `[game_agent]` 里独立的 `ws_url`（默认
+   > `ws://localhost:48909`）。只改一处两边就连不上了。
 2. 在 N.E.K.O 插件管理界面启用 `game_agent_minecraft` 插件
 3. 如需修改配置，编辑 `plugin.toml` 的 `[game_agent]` 节后调
    `game_agent_reload_config` entry 应用：
@@ -61,6 +68,13 @@ agent 端启动方式由你自己决定（一般是 `node minecraft-agent/index.
 | `stream_screenshots_to_llm` | `true` | 收到 agent 截图就 push 到模型视觉上下文（`ai_behavior="read"`），按下面的最小间隔节流 |
 | `screenshot_stream_min_interval_seconds` | `6.0` | 内联截图流 push 的最小间隔（节流，防止按 agent ~1Hz 速率灌爆模型视觉上下文）；窗口内的帧折叠为最新一张 |
 | `screenshot_cache_size` | `3` | 内存里保留的最近 N 张截图，nudge 时一并发出 |
+
+> 截图节流阀从 mc-agent v0.2.0 起才真的开始工作：更早的发行包里 bot 视角截图
+> 默认是关的（一帧都不发），v0.2.0 把它默认打开成 ~1Hz。插件侧不用改代码——
+> `screenshot_stream_min_interval_seconds` 本来就是按这个速率设计的——但视觉
+> 上下文的实际 token 消耗会从零变成有，嫌多就调大这个值或直接把
+> `stream_screenshots_to_llm` 关掉，也可以在 mc-agent 面板的「高级 → 视觉」里
+> 关掉或降频。
 
 ## LLM 工具：`minecraft_task`
 

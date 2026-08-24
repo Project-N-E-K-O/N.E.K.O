@@ -25,7 +25,7 @@ from .voice_providers import _config_value_is_enabled
 import re
 import os
 import math
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 from fastapi import Request
 from fastapi.responses import JSONResponse
 from ..shared_state import (
@@ -119,6 +119,91 @@ def _derive_model_asset_binding(model_path: str, *, item_id: str = "") -> tuple[
     if normalized_path.startswith("/static/") or (normalized_path and not normalized_path.startswith("/")):
         return "builtin", ""
     return "", ""
+
+
+def _normalize_live2d_idle_animation(value):
+    """Validate a Live2D idle motion without touching the model binding."""
+    if value is None:
+        return None, None
+    if not isinstance(value, str):
+        return None, 'live2d_idle_animation 必须是字符串或 null'
+
+    idle_animation = value.strip()
+    if not idle_animation:
+        return None, None
+
+    # Canonicalize URL encoding before validation so encoded separators and
+    # traversal segments cannot bypass the checks. Decode repeatedly to cover
+    # values that would otherwise be decoded by more than one URL layer.
+    try:
+        for _ in range(3):
+            decoded_idle_animation = unquote(idle_animation, errors='strict')
+            if decoded_idle_animation == idle_animation:
+                break
+            idle_animation = decoded_idle_animation
+    except UnicodeDecodeError:
+        return None, 'Live2D待机动作路径包含无效URL编码'
+    if re.search(r'%[0-9A-Fa-f]{2}', idle_animation):
+        return None, 'Live2D待机动作路径包含过多层URL编码'
+
+    idle_animation = idle_animation.replace('\\', '/')
+    if re.match(r'^[A-Za-z][A-Za-z0-9+.-]*:', idle_animation):
+        return None, 'Live2D待机动作路径不能包含URL方案'
+    if any(part == '..' for part in idle_animation.split('/')):
+        return None, 'Live2D待机动作路径不能包含路径遍历（..）'
+    if idle_animation.startswith('/'):
+        return None, 'Live2D待机动作路径必须是相对路径，不能是绝对路径'
+    if not idle_animation.lower().endswith('.motion3.json'):
+        return None, 'Live2D待机动作必须是 .motion3.json 文件'
+    return idle_animation, None
+
+
+def _get_persisted_avatar_model_type(catgirl: dict) -> str:
+    """Resolve the active persisted model type for partial avatar updates."""
+    model_type = str(
+        get_reserved(
+            catgirl,
+            'avatar',
+            'model_type',
+            default='',
+            legacy_keys=('model_type',),
+        )
+        or ''
+    ).strip().lower()
+    if model_type == 'vrm':
+        return 'live3d'
+    if model_type in {'live2d', 'live3d', 'pngtuber'}:
+        return model_type
+
+    pngtuber_idle = get_reserved(
+        catgirl,
+        'avatar',
+        'pngtuber',
+        'idle_image',
+        default='',
+        legacy_keys=('pngtuber_idle_image',),
+    )
+    if pngtuber_idle:
+        return 'pngtuber'
+    vrm_path = get_reserved(
+        catgirl,
+        'avatar',
+        'vrm',
+        'model_path',
+        default='',
+        legacy_keys=('vrm',),
+    )
+    mmd_path = get_reserved(
+        catgirl,
+        'avatar',
+        'mmd',
+        'model_path',
+        default='',
+        legacy_keys=('mmd',),
+    )
+    if vrm_path or mmd_path:
+        return 'live3d'
+    return 'live2d'
 
 
 def _find_live2d_model_catalog_entry(
@@ -507,6 +592,67 @@ async def update_catgirl_l2d(name: str, request: Request):
     """Update the specified catgirl's model settings (supports Live2D and VRM)."""
     try:
         data = await request.json()
+        apply_runtime = _config_value_is_enabled(data.get('apply_runtime', True))
+        query_params = getattr(request, 'query_params', {})
+        if 'apply_runtime' in query_params:
+            apply_runtime = _config_value_is_enabled(query_params.get('apply_runtime'))
+
+        # The profile panel only owns the Live2D idle motion. It may have been
+        # opened before the model manager changed the active model, so an
+        # idle-only request must never rewrite a cached model binding.
+        idle_only_keys = {'live2d_idle_animation', 'apply_runtime'}
+        is_idle_only_update = (
+            'live2d_idle_animation' in data
+            and set(data).issubset(idle_only_keys)
+        )
+        if is_idle_only_update:
+            live2d_idle_animation, validation_error = _normalize_live2d_idle_animation(
+                data.get('live2d_idle_animation')
+            )
+            if validation_error:
+                return JSONResponse(
+                    content={'success': False, 'error': validation_error},
+                    status_code=400,
+                )
+
+            _config_manager = get_config_manager()
+            characters = await _config_manager.aload_characters()
+            catgirls = characters.get('猫娘')
+            if not isinstance(catgirls, dict) or name not in catgirls:
+                return JSONResponse(
+                    content={'success': False, 'error': '猫娘不存在'},
+                    status_code=404,
+                )
+
+            catgirl = catgirls[name]
+            current_model_type = _get_persisted_avatar_model_type(catgirl)
+            if current_model_type != 'live2d':
+                return JSONResponse(content={
+                    'success': True,
+                    'idle_animation_updated': False,
+                    'skipped': 'current_model_is_not_live2d',
+                    'applied_runtime': False,
+                })
+
+            set_reserved(
+                catgirl,
+                'avatar',
+                'live2d',
+                'idle_animation',
+                live2d_idle_animation,
+            )
+            await _config_manager.asave_characters(characters)
+
+            if apply_runtime:
+                init_one_catgirl = get_init_one_catgirl()
+                await init_one_catgirl(name, is_new=False)
+
+            return JSONResponse(content={
+                'success': True,
+                'idle_animation_updated': True,
+                'applied_runtime': apply_runtime,
+            })
+
         live2d_model = data.get('live2d')
         vrm_model = data.get('vrm')
         mmd_model = data.get('mmd')
@@ -838,30 +984,21 @@ async def update_catgirl_l2d(name: str, request: Request):
             set_reserved(characters['猫娘'][name], 'avatar', 'model_type', 'live2d')
 
             if 'live2d_idle_animation' in data:
-                live2d_idle_animation = data.get('live2d_idle_animation')
-                logger.info(f"[Live2D Save] 收到 live2d_idle_animation 请求: {live2d_idle_animation}")
-
-                if live2d_idle_animation is None:
-                    set_reserved(characters['猫娘'][name], 'avatar', 'live2d', 'idle_animation', None)
-                    logger.info(f"[Live2D Save] 已清空 idle_animation")
-                elif isinstance(live2d_idle_animation, str):
-                    live2d_idle_str = live2d_idle_animation.strip()
-                    if not live2d_idle_str:
-                        set_reserved(characters['猫娘'][name], 'avatar', 'live2d', 'idle_animation', None)
-                        logger.info(f"[Live2D Save] 已清空 idle_animation")
-                    else:
-                        if '://' in live2d_idle_str or live2d_idle_str.startswith('data:'):
-                            return JSONResponse(content={'success': False, 'error': 'Live2D待机动作路径不能包含URL方案'}, status_code=400)
-                        if '..' in live2d_idle_str:
-                            return JSONResponse(content={'success': False, 'error': 'Live2D待机动作路径不能包含路径遍历（..）'}, status_code=400)
-                        if live2d_idle_str.startswith('/') or live2d_idle_str.startswith('\\') or re.match(r'^[A-Za-z]:', live2d_idle_str):
-                            return JSONResponse(content={'success': False, 'error': 'Live2D待机动作路径必须是相对路径，不能是绝对路径'}, status_code=400)
-                        if not live2d_idle_str.lower().endswith('.motion3.json'):
-                            return JSONResponse(content={'success': False, 'error': 'Live2D待机动作必须是 .motion3.json 文件'}, status_code=400)
-                        set_reserved(characters['猫娘'][name], 'avatar', 'live2d', 'idle_animation', live2d_idle_str)
-                        logger.info(f"[Live2D Save] 已保存 idle_animation: {live2d_idle_str}")
-                else:
-                    return JSONResponse(content={'success': False, 'error': 'live2d_idle_animation 必须是字符串或 null'}, status_code=400)
+                live2d_idle_animation, validation_error = _normalize_live2d_idle_animation(
+                    data.get('live2d_idle_animation')
+                )
+                if validation_error:
+                    return JSONResponse(
+                        content={'success': False, 'error': validation_error},
+                        status_code=400,
+                    )
+                set_reserved(
+                    characters['猫娘'][name],
+                    'avatar',
+                    'live2d',
+                    'idle_animation',
+                    live2d_idle_animation,
+                )
             else:
                 logger.info(f"[Live2D Save] 请求中未包含 live2d_idle_animation 字段, data keys: {list(data.keys())}")
 
@@ -878,7 +1015,8 @@ async def update_catgirl_l2d(name: str, request: Request):
         await _config_manager.asave_characters(characters)
         # Fast path：只刷新被编辑角色的 session_manager（avatar 配置），不遍历其它 N-1 个。
         init_one_catgirl = get_init_one_catgirl()
-        await init_one_catgirl(name, is_new=False)
+        if apply_runtime:
+            await init_one_catgirl(name, is_new=False)
 
 
         if model_type_str == 'live3d':
@@ -892,7 +1030,8 @@ async def update_catgirl_l2d(name: str, request: Request):
 
         return JSONResponse(content={
             'success': True,
-            'message': message
+            'message': message,
+            'applied_runtime': apply_runtime,
         })
 
     except MaintenanceModeError:

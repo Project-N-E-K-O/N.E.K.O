@@ -26,7 +26,13 @@ from urllib.parse import quote
 from utils.config_manager import get_config_manager
 from utils.dashscope_region import dashscope_ws_url_from_base
 
-from .._infra import TTS_SHUTDOWN_SENTINEL, _resample_audio, make_audio_jitter_buffer, _enqueue_error
+from .._infra import (
+    AudioDoneEmitter,
+    TTS_SHUTDOWN_SENTINEL,
+    _resample_audio,
+    make_audio_jitter_buffer,
+    _enqueue_error,
+)
 from .._telemetry import _record_tts_telemetry
 from utils.logger_config import get_module_logger
 
@@ -83,6 +89,18 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
         # gives the client enough queued PCM to ride over short upstream stalls.
         # 共享 AudioJitterBuffer，旧的 NEKO_QWEN_TTS_* 覆盖仍兼容（见 make_audio_jitter_buffer）。
         qwen_audio_jitter = make_audio_jitter_buffer(response_queue, legacy_env_prefix="NEKO_QWEN_TTS")
+        # 上游 done 事件 = 本轮音频流关闭。两个 receive task 共用同一个 emitter，
+        # bound_speech_id 在建任务时钉死本轮 sid：sid 切换路径会先推进
+        # current_speech_id 再 await 关旧连接，此刻旧 receive 任务若读到迟到的
+        # done 事件，会把上一轮的收尾错标到新一轮。
+        # 再压一道 buffer_committed 闸：只有本轮已经 commit 过缓冲区，done 事件
+        # 才可能是整轮收尾；上游若按句发 done，没这道闸就是早发。
+        audio_done = AudioDoneEmitter(response_queue)
+
+        def _emit_audio_done(bound_speech_id) -> None:
+            """Signal end-of-stream once the round's buffer commit was sent."""
+            if buffer_committed:
+                audio_done.emit(bound_speech_id)
 
         def build_config_message(lang_hint=None):
             """Build the session.update message; lang_hint='ja' specifies Japanese, anything else uses server-side Auto."""
@@ -189,7 +207,7 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
             response_queue.put(("__ready__", True))
 
             # 初始接收任务（会在每次新 speech_id 时重新创建）
-            async def receive_messages_initial():
+            async def receive_messages_initial(bound_speech_id):
                 """Initial receive task"""
                 nonlocal ws
                 cancelled = False
@@ -217,6 +235,9 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                             # 服务器明确表示音频生成完成，设置完成标志
                             logger.debug(f"收到响应完成事件: {event_type}")
                             qwen_audio_jitter.flush()
+                            # 预热连接绑的是 None（首个真实 sid 一定先走重连分支），
+                            # emit(None) 静默跳过；带参保持两个 receive task 同形。
+                            _emit_audio_done(bound_speech_id)
                             response_done.set()
                 except websockets.exceptions.ConnectionClosed:
                     pass
@@ -237,8 +258,8 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                         ws = None
                     session_ready.clear()
 
-            receive_task = asyncio.create_task(receive_messages_initial())
-            
+            receive_task = asyncio.create_task(receive_messages_initial(current_speech_id))
+
             # 主循环：处理请求队列
             loop = asyncio.get_running_loop()
             pending = None  # 断线重试时暂存当前片段，保证顺序（不回共享队列）
@@ -259,6 +280,7 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                 if sid == "__interrupt__":
                     # 打断：立即关闭连接，不发 commit、不等服务器确认
                     qwen_audio_jitter.begin_interrupt()
+                    audio_done.begin_interrupt()  # 打断轮不发 audio_done（走独立 cancel 通道）
                     try:
                         if receive_task and not receive_task.done():
                             receive_task.cancel()
@@ -284,6 +306,8 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                         pending_text_buffer = ""
                         qwen_audio_jitter.reset()
                         qwen_audio_jitter.end_interrupt()
+                        audio_done.reset()
+                        audio_done.end_interrupt()
                     continue
 
                 if sid is None:
@@ -335,6 +359,7 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                     # 期间旧 receive_task 可能写入晚到的 audio.delta，若提前重置会被残留污染下一轮
                     resampler.clear()  # 重置重采样器状态（新轮次音频不应与上轮次连续）
                     qwen_audio_jitter.reset()
+                    audio_done.reset()  # 新轮次重置 audio_done 去重标记
 
                     # 建立新连接（延迟 session.update 至首批文本到达后发送，携带语言提示）
                     try:
@@ -342,7 +367,7 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                         session_ready.clear()
 
                         # 启动新的接收任务（合并 session.updated 监听）
-                        async def receive_messages():
+                        async def receive_messages(bound_speech_id):
                             nonlocal ws
                             cancelled = False
                             try:
@@ -371,6 +396,8 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                                         # 服务器明确表示音频生成完成，设置完成标志
                                         logger.debug(f"收到响应完成事件: {event_type}")
                                         qwen_audio_jitter.flush()
+                                        # flush 已经把尾音投进队列，此刻本轮音频流才真正关闭
+                                        _emit_audio_done(bound_speech_id)
                                         response_done.set()
                             except websockets.exceptions.ConnectionClosed:
                                 pass
@@ -391,8 +418,8 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                                     ws = None
                                 session_ready.clear()
                         
-                        receive_task = asyncio.create_task(receive_messages())
-                        
+                        receive_task = asyncio.create_task(receive_messages(current_speech_id))
+
                     except Exception as e:
                         logger.error(f"重新建立连接失败: {e}")
                         if 'HTTP 503' in str(e):

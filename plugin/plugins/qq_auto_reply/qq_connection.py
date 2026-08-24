@@ -68,7 +68,7 @@ class QQConnectionBase(ABC):
 
     @abstractmethod
     async def send_group_image(
-        self, group_id: str, image_data: str, *, reply_message_id: str = "", at_user_id: str = ""
+        self, group_id: str, image_data: str, *, reply_message_id: str = "", at_user_id: str = "", sub_type: str = ""
     ) -> Optional[str]:
         """发送群聊图片"""
         ...
@@ -118,9 +118,22 @@ class QQConnectionBase(ABC):
         return True
 
     @property
+    def supports_ark_cards(self) -> bool:
+        """是否支持 Ark 富卡片（仅开放平台；OneBot 后端不支持，降级文本）"""
+        return False
+
+    def is_group_muted(self, group_id: str) -> bool:
+        """检查 bot 是否在该群被禁言（含全体禁言）。
+
+        NapCat 通过 OneBot notice 事件跟踪禁言状态；
+        开放平台不跟踪此状态，默认返回 False。
+        """
+        return False
+
+    @property
     @abstractmethod
     def onebot_url(self) -> str:
-        """连接地址（用于 UI 显示和重连）"""
+        """反向 WebSocket 监听地址（NapCat 作为 WS Client 连接到此地址）"""
         ...
 
     @onebot_url.setter

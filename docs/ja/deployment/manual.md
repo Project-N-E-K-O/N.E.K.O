@@ -8,7 +8,7 @@ uv sync
 
 Python は 3.11 固定です。すべての Python module/script/test/temporary command は `uv run` 経由です。
 
-Frontend は repository root で `.\build_frontend.bat` または `./build_frontend.sh`。Yui Origin を確認し、`npm ci` で plugin manager と shared React chat bundle を生成します。
+Frontend は repository root で `.\build_frontend.bat` または `./build_frontend.sh`。内蔵 Live2D asset（Yui Lolita / Yui Origin）を確認し、`npm ci` で plugin manager と shared React chat bundle を生成します。
 
 通常の起動:
 

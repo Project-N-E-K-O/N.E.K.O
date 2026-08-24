@@ -19,6 +19,19 @@ AvatarButtonMixin.apply(Live2DManager.prototype, 'live2d', {
 });
 
 const LIVE2D_X11_UI_TICK_MS = 80;
+const LIVE2D_FLOATING_BUTTON_SIZE = 48;
+const LIVE2D_FLOATING_BUTTON_GAP = 12;
+const LIVE2D_FLOATING_BUTTON_COUNT = 5;
+const LIVE2D_BASE_TOOLBAR_HEIGHT =
+    LIVE2D_FLOATING_BUTTON_SIZE * LIVE2D_FLOATING_BUTTON_COUNT +
+    LIVE2D_FLOATING_BUTTON_GAP * (LIVE2D_FLOATING_BUTTON_COUNT - 1);
+
+function getLive2DFloatingControlScale(modelHeight, baseToolbarHeight) {
+    const minScale = 0.5;
+    const maxScale = 1.0;
+    const rawScale = modelHeight / 2 / baseToolbarHeight;
+    return Math.round(Math.max(minScale, Math.min(maxScale, rawScale)) * 1000) / 1000;
+}
 
 function shouldThrottleLive2DUiTicker(manager) {
     return !!(window.__NEKO_DESKTOP_RUNTIME__ && window.__NEKO_DESKTOP_RUNTIME__.isLinuxX11) &&
@@ -113,13 +126,15 @@ Live2DManager.prototype.setupHTMLLockIcon = function(model) {
     }
 
     const existingLockIcon = document.getElementById('live2d-lock-icon');
-    if (existingLockIcon) {
-        if (this._lockIconTicker && this.pixi_app?.ticker) {
-            this.pixi_app.ticker.remove(this._lockIconTicker);
-            this._lockIconTicker = null;
+    // 教程可能只移除 DOM、保留 manager 上的 ticker 引用。重建前必须独立摘除旧
+    // ticker，不能把清理条件绑定到旧锁图标仍存在，否则会留下永久的逐帧回调。
+    if (this._lockIconTicker) {
+        if (this.pixi_app?.ticker) {
+            try { this.pixi_app.ticker.remove(this._lockIconTicker); } catch (_) {}
         }
-        existingLockIcon.remove();
+        this._lockIconTicker = null;
     }
+    if (existingLockIcon) existingLockIcon.remove();
 
     const lockIcon = document.createElement('div');
     lockIcon.id = 'live2d-lock-icon';
@@ -175,6 +190,14 @@ Live2DManager.prototype.setupHTMLLockIcon = function(model) {
     lockIcon.appendChild(imgContainer);
 
     document.body.appendChild(lockIcon);
+    // 新建元素没有 left/top 内联样式：必须失效位置/透明度脏检查缓存，
+    // 否则模型位置与上次相同时首帧写入被跳过，图标停在 fixed 默认位置
+    this._lockIconLastLeft = undefined;
+    this._lockIconLastTop = undefined;
+    this._lockIconLastTransform = undefined;
+    this._lockIconLastOpacity = undefined;
+    this._lockIconLastPointerEvents = undefined;
+    this._lockIconLastOverlapScanAt = 0;
     this._lockIconElement = lockIcon;
     this._lockIconImages = {
         locked: imgLocked,
@@ -203,6 +226,8 @@ Live2DManager.prototype.setupHTMLLockIcon = function(model) {
                 delete lockIcon.dataset.yuiGuideForcedHidden;
                 lockIcon.style.visibility = '';
                 lockIcon.style.opacity = '';
+                // 旁路写入后失效 opacity 脏检查缓存，避免后续 tick 误跳过写回
+                this._lockIconLastOpacity = undefined;
             }
             if (!model || !model.parent) {
                 // 教程期间不隐藏锁图标，防止高亮框位置被刷到 (0,0)
@@ -213,41 +238,81 @@ Live2DManager.prototype.setupHTMLLockIcon = function(model) {
             const screenWidth = window.innerWidth;
             const screenHeight = window.innerHeight;
 
+            const modelHeight = bounds.bottom - bounds.top;
+            const scale = isMobileWidth()
+                ? 1
+                : getLive2DFloatingControlScale(modelHeight, LIVE2D_BASE_TOOLBAR_HEIGHT);
+            const nextTransform = `scale(${scale})`;
+            if (nextTransform !== this._lockIconLastTransform) {
+                this._lockIconLastTransform = nextTransform;
+                lockIcon.style.transformOrigin = 'left top';
+                lockIcon.style.transform = nextTransform;
+            }
+
+            const baseLockIconSize = 32;
+            const actualLockIconSize = baseLockIconSize * scale;
+            const viewportEdgePadding = 8;
+
             const targetX = bounds.right * 0.7 + bounds.left * 0.3;
             const targetY = bounds.top * 0.3 + bounds.bottom * 0.7;
 
+            const defaultMaxLockTop = screenHeight - actualLockIconSize - viewportEdgePadding;
             const maxLockTop = typeof window.getNekoYuiGuideLockIconMaxTop === 'function'
-                ? window.getNekoYuiGuideLockIconMaxTop(screenHeight - 40, 40)
-                : screenHeight - 40;
-            lockIcon.style.left = `${Math.max(0, Math.min(targetX, screenWidth - 40))}px`;
-            lockIcon.style.top = `${Math.max(0, Math.min(targetY, maxLockTop))}px`;
+                ? window.getNekoYuiGuideLockIconMaxTop(defaultMaxLockTop, actualLockIconSize)
+                : defaultMaxLockTop;
+            const maxLockLeft = screenWidth - actualLockIconSize - viewportEdgePadding;
+            const clampedLeft = Math.round(Math.max(0, Math.min(targetX, maxLockLeft)));
+            const clampedTop = Math.round(Math.max(0, Math.min(targetY, maxLockTop)));
+            // 位置无变化时跳过 style 写入，避免每帧无谓的样式失效
+            if (clampedLeft !== this._lockIconLastLeft || clampedTop !== this._lockIconLastTop) {
+                this._lockIconLastLeft = clampedLeft;
+                this._lockIconLastTop = clampedTop;
+                lockIcon.style.left = `${clampedLeft}px`;
+                lockIcon.style.top = `${clampedTop}px`;
+            }
 
-            const lockRect = lockIcon.getBoundingClientRect();
-            let isOverlapped = false;
-            document.querySelectorAll('[id^="live2d-popup-"]').forEach(popup => {
-                if (popup.style.display === 'flex' && popup.style.opacity === '1') {
-                    const popupRect = popup.getBoundingClientRect();
-                    if (lockRect.right > popupRect.left && lockRect.left < popupRect.right &&
-                        lockRect.bottom > popupRect.top && lockRect.top < popupRect.bottom) {
-                        isOverlapped = true;
-                    }
-                }
-            });
-            if (!isOverlapped) {
-                document.querySelectorAll('[data-neko-sidepanel]').forEach(panel => {
-                    if (panel.style.display !== 'none' && parseFloat(panel.style.opacity) > 0) {
-                        const panelRect = panel.getBoundingClientRect();
-                        if (lockRect.right > panelRect.left && lockRect.left < panelRect.right &&
-                            lockRect.bottom > panelRect.top && lockRect.top < panelRect.bottom) {
-                            isOverlapped = true;
-                        }
-                    }
+            // 指针拦截逐帧刷新，避免弹窗刚出现时短暂穿透；装饰性淡出仍节流到 250ms。
+            // 锁图标矩形使用已知坐标和缩放尺寸，避免额外读取自身布局。
+            const lockRect = {
+                left: clampedLeft,
+                top: clampedTop,
+                right: clampedLeft + actualLockIconSize,
+                bottom: clampedTop + actualLockIconSize
+            };
+            const popupUi = window.AvatarPopupUI || null;
+            const isPointerOverlapped = popupUi && typeof popupUi.isRectOverlappedByVisibleOverlay === 'function'
+                ? popupUi.isRectOverlappedByVisibleOverlay(lockRect, 'live2d')
+                : Array.from(document.querySelectorAll('[id^="live2d-popup-"], [data-neko-sidepanel-owner^="live2d-popup-"]')).some(element => {
+                    const style = window.getComputedStyle(element);
+                    const computedOpacity = Number.parseFloat(style.opacity || '1');
+                    const targetOpacity = Number.parseFloat(element.style.opacity || style.opacity || '1');
+                    if (style.display === 'none' || style.visibility === 'hidden' ||
+                        (computedOpacity <= 0 && targetOpacity <= 0)) return false;
+                    const overlayRect = element.getBoundingClientRect();
+                    return lockRect.right > overlayRect.left && lockRect.left < overlayRect.right &&
+                        lockRect.bottom > overlayRect.top && lockRect.top < overlayRect.bottom;
                 });
+
+            const nowTs = performance.now();
+            let isOverlapped = this._lockIconLastOverlapped === true;
+            if (!this._lockIconLastOverlapScanAt || nowTs - this._lockIconLastOverlapScanAt >= 250) {
+                this._lockIconLastOverlapScanAt = nowTs;
+                isOverlapped = isPointerOverlapped;
+                this._lockIconLastOverlapped = isOverlapped;
             }
             // 与角色形象半透明状态完全同步：容器加了 locked-hover-fade 类(opacity 0.12)时，锁图标也淡到同一透明度
             const live2dFadeContainer = document.getElementById('live2d-container');
             const lockShouldFade = live2dFadeContainer && live2dFadeContainer.classList.contains('locked-hover-fade');
-            lockIcon.style.opacity = lockShouldFade ? '0.12' : (isOverlapped ? '0.3' : '');
+            const nextOpacity = lockShouldFade ? '0.12' : (isOverlapped ? '0.3' : '');
+            if (nextOpacity !== this._lockIconLastOpacity) {
+                this._lockIconLastOpacity = nextOpacity;
+                lockIcon.style.opacity = nextOpacity;
+            }
+            const nextPointerEvents = isPointerOverlapped ? 'none' : 'auto';
+            if (nextPointerEvents !== this._lockIconLastPointerEvents) {
+                this._lockIconLastPointerEvents = nextPointerEvents;
+                lockIcon.style.pointerEvents = nextPointerEvents;
+            }
         } catch (_) {}
     };
     this._lockIconTicker = tick;
@@ -288,6 +353,11 @@ Live2DManager.prototype.setupFloatingButtons = function(model) {
 
     // 基础框架初始化
     const buttonsContainer = this.setupFloatingButtonsBase(model);
+    // 容器可能被重建（无 left/top/transform 内联样式）：失效脏检查缓存，
+    // 否则模型位置与上次相同时首帧写入被跳过，工具栏停在默认位置
+    this._floatingButtonsLastTransform = undefined;
+    this._floatingButtonsLastLeft = undefined;
+    this._floatingButtonsLastTop = undefined;
 
     const opts = this._avatarButtonOptions;
 
@@ -302,6 +372,7 @@ Live2DManager.prototype.setupFloatingButtons = function(model) {
 
     // 响应式布局处理
     const applyResponsiveFloatingLayout = () => {
+        this.syncResponsiveButtonVisibility(buttonsContainer);
         if (isMobileWidth()) {
             buttonsContainer.style.flexDirection = 'column';
             buttonsContainer.style.top = '16px';
@@ -372,6 +443,16 @@ Live2DManager.prototype.setupFloatingButtons = function(model) {
                 return;
             }
 
+            // 点击型按钮（非 toggle）：社区入口 / 请她离开
+            if (config.id === 'social') {
+                window.dispatchEvent(new CustomEvent('live2d-social-click'));
+                return;
+            }
+            if (config.id === 'goodbye') {
+                window.dispatchEvent(new CustomEvent('live2d-goodbye-click'));
+                return;
+            }
+
             const isActive = btn.dataset.active === 'true';
             const newActive = !isActive;
             btn.dataset.active = newActive.toString();
@@ -394,10 +475,11 @@ Live2DManager.prototype.setupFloatingButtons = function(model) {
 
         btnWrapper.appendChild(btn);
 
-        // 麦克风静音按钮（仅非手机模式下的麦克风按钮）
+        // 语音会话快捷控制（仅非手机模式下的麦克风按钮）
         if (config.id === 'mic' && config.hasPopup && config.separatePopupTrigger && !isMobileWidth()) {
-            const muteData = this.createMicMuteButton(btnWrapper);
-            // 监听麦克风切换事件以更新静音按钮可见性
+            const quickControls = this.createVoiceSessionQuickControls(btnWrapper);
+            const muteData = quickControls && quickControls.mute;
+            // 监听麦克风切换事件以更新静音按钮可见性；屏幕分享快捷按钮在共享工厂中自行同步。
             const micToggleHandler = (e) => {
                 if (muteData && muteData.updateVisibility) {
                     muteData.updateVisibility(e.detail.active);
@@ -584,7 +666,7 @@ Live2DManager.prototype.setupFloatingButtons = function(model) {
                     }
                 }, 50);
             });
-        } else {
+        } else if (config.id !== 'social' && config.id !== 'goodbye') {
             btn.addEventListener('click', (e) => {
                 console.log(`[Live2D] 按钮被点击: ${config.id}`);
                 e.stopPropagation();
@@ -605,6 +687,7 @@ Live2DManager.prototype.setupFloatingButtons = function(model) {
         };
         console.log(`[Live2D] 按钮已创建: ${config.id}, hasPopup: ${config.hasPopup}, toggle: ${config.toggle}`);
     });
+    applyResponsiveFloatingLayout();
 
     console.log('[Live2D] 所有浮动按钮已创建完成');
 
@@ -612,11 +695,6 @@ Live2DManager.prototype.setupFloatingButtons = function(model) {
     const returnButtonContainer = this.createReturnButton();
 
     container.style.pointerEvents = this.isLocked ? 'none' : 'auto';
-
-    const baseButtonSize = 48;
-    const baseGap = 12;
-    const buttonCount = 5;
-    const baseToolbarHeight = baseButtonSize * buttonCount + baseGap * (buttonCount - 1);
 
     const tick = () => {
         try {
@@ -644,34 +722,41 @@ Live2DManager.prototype.setupFloatingButtons = function(model) {
             const modelCenterY = (bounds.top + bounds.bottom) / 2;
 
             const modelHeight = bounds.bottom - bounds.top;
-            const targetToolbarHeight = modelHeight / 2;
-
-            const minScale = 0.5;
-            const maxScale = 1.0;
-            const rawScale = targetToolbarHeight / baseToolbarHeight;
-            const scale = Math.max(minScale, Math.min(maxScale, rawScale));
+            // scale 量化到千分位，避免呼吸抖动击穿 transform 脏检查
+            const scale = getLive2DFloatingControlScale(modelHeight, LIVE2D_BASE_TOOLBAR_HEIGHT);
             const rotation = Number(this._floatingButtonsRotationRadians) || 0;
             const rotateTransform = rotation ? ` rotate(${rotation}rad)` : '';
 
-            buttonsContainer.style.transformOrigin = 'left top';
-            buttonsContainer.style.transform = `scale(${scale})${rotateTransform}`;
+            const nextTransform = `scale(${scale})${rotateTransform}`;
 
             const targetX = bounds.right * 0.8 + bounds.left * 0.2;
 
-            const actualToolbarHeight = baseToolbarHeight * scale;
+            const actualToolbarHeight = LIVE2D_BASE_TOOLBAR_HEIGHT * scale;
             const actualToolbarWidth = 80 * scale;
 
             const targetY = modelCenterY - actualToolbarHeight / 2;
 
             const minY = 20;
             const maxY = screenHeight - actualToolbarHeight - 20;
-            const boundedY = Math.max(minY, Math.min(targetY, maxY));
+            const boundedY = Math.round(Math.max(minY, Math.min(targetY, maxY)));
 
             const maxX = screenWidth - actualToolbarWidth;
-            const boundedX = Math.max(0, Math.min(targetX, maxX));
+            // 量化到整像素：呼吸动画让 bounds 亚像素级抖动，不量化的话脏检查
+            // 每帧都会被无意义的浮点尾差击穿（工具栏定位不需要亚像素精度）
+            const boundedX = Math.round(Math.max(0, Math.min(targetX, maxX)));
 
-            buttonsContainer.style.left = `${boundedX}px`;
-            buttonsContainer.style.top = `${boundedY}px`;
+            // 模型静止时位置/缩放不变，跳过 style 写入避免每帧样式失效
+            if (nextTransform !== this._floatingButtonsLastTransform ||
+                boundedX !== this._floatingButtonsLastLeft ||
+                boundedY !== this._floatingButtonsLastTop) {
+                this._floatingButtonsLastTransform = nextTransform;
+                this._floatingButtonsLastLeft = boundedX;
+                this._floatingButtonsLastTop = boundedY;
+                buttonsContainer.style.transformOrigin = 'left top';
+                buttonsContainer.style.transform = nextTransform;
+                buttonsContainer.style.left = `${boundedX}px`;
+                buttonsContainer.style.top = `${boundedY}px`;
+            }
         } catch (_) {}
     };
     this._floatingButtonsTicker = tick;
@@ -679,6 +764,15 @@ Live2DManager.prototype.setupFloatingButtons = function(model) {
 
     setTimeout(() => {
         if (this.isLocked) {
+            return;
+        }
+        if (
+            typeof this.isLive2DPeekActive === 'function'
+            && this.isLive2DPeekActive()
+        ) {
+            if (typeof this._setLive2DPeekControlsSuppressed === 'function') {
+                this._setLive2DPeekControlsSuppressed(true);
+            }
             return;
         }
         if (isYuiGuideLive2DPreparing() || isYuiGuideFloatingToolbarSuppressed()) {
@@ -689,6 +783,15 @@ Live2DManager.prototype.setupFloatingButtons = function(model) {
         buttonsContainer.style.display = 'flex';
 
         setTimeout(() => {
+            if (
+                typeof this.isLive2DPeekActive === 'function'
+                && this.isLive2DPeekActive()
+            ) {
+                if (typeof this._setLive2DPeekControlsSuppressed === 'function') {
+                    this._setLive2DPeekControlsSuppressed(true);
+                }
+                return;
+            }
             const inTutorial = buttonsContainer.dataset.inTutorial === 'true' || window.isInTutorial === true;
             if (!this.isFocusing && !inTutorial) {
                 buttonsContainer.style.display = 'none';
@@ -709,6 +812,15 @@ Live2DManager.prototype.setupFloatingButtons = function(model) {
     }
 
     this.tutorialProtectionTimer = setInterval(() => {
+        if (
+            typeof this.isLive2DPeekActive === 'function'
+            && this.isLive2DPeekActive()
+        ) {
+            if (typeof this._setLive2DPeekControlsSuppressed === 'function') {
+                this._setLive2DPeekControlsSuppressed(true);
+            }
+            return;
+        }
         if (window.isInTutorial === true) {
             if (isYuiGuideLive2DPreparing() || isYuiGuideFloatingToolbarSuppressed()) {
                 hideYuiGuideLive2DPreparingButtonStyles(buttonsContainer);
@@ -747,6 +859,13 @@ Live2DManager.prototype.setupFloatingButtons = function(model) {
     this._uiWindowHandlers = this._uiWindowHandlers || [];
     this._uiWindowHandlers.push({ event: 'click', handler: this._outsideClickHandler, target: document });
 
+    if (
+        typeof this.isLive2DPeekActive === 'function' &&
+        this.isLive2DPeekActive() &&
+        typeof this._setLive2DPeekControlsSuppressed === 'function'
+    ) {
+        this._setLive2DPeekControlsSuppressed(true);
+    }
     window.dispatchEvent(new CustomEvent('live2d-floating-buttons-ready'));
     console.log('[Live2D] 浮动按钮就绪事件已发送');
 };

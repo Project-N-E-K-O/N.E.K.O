@@ -1,0 +1,453 @@
+import assert from 'node:assert/strict'
+import test from 'node:test'
+
+const moduleUrl = new URL(
+  '../.vitepress/theme/analytics-consent.mjs',
+  import.meta.url,
+)
+let moduleSequence = 0
+
+class MemoryStorage {
+  values = new Map()
+
+  getItem(key) {
+    return this.values.has(key) ? this.values.get(key) : null
+  }
+
+  setItem(key, value) {
+    this.values.set(key, String(value))
+  }
+
+  removeItem(key) {
+    this.values.delete(key)
+  }
+}
+
+function browserFixture() {
+  const storage = new MemoryStorage()
+  const elements = new Map()
+  const eventListeners = new Map()
+  let reloads = 0
+  let cookieValue = ''
+
+  const documentObject = {
+    title: 'N.E.K.O. Docs',
+    createElement(tagName) {
+      return { tagName, id: '', async: false, src: '' }
+    },
+    getElementById(id) {
+      return elements.get(id) ?? null
+    },
+    addEventListener(type, listener) {
+      const listeners = eventListeners.get(type) ?? []
+      listeners.push(listener)
+      eventListeners.set(type, listeners)
+    },
+    dispatch(type, event) {
+      for (const listener of eventListeners.get(type) ?? []) listener(event)
+    },
+    head: {
+      appendChild(element) {
+        elements.set(element.id, element)
+      },
+    },
+    get cookie() {
+      return cookieValue
+    },
+    set cookie(value) {
+      cookieValue = value
+    },
+  }
+  const windowObject = {
+    localStorage: storage,
+    location: {
+      href: 'https://project-neko.online/guide/',
+      origin: 'https://project-neko.online',
+      hostname: 'project-neko.online',
+      reload() {
+        reloads += 1
+      },
+    },
+    dispatchEvent() {},
+  }
+
+  return {
+    documentObject,
+    elements,
+    reloadCount: () => reloads,
+    storage,
+    windowObject,
+  }
+}
+
+async function freshAnalyticsModule() {
+  moduleSequence += 1
+  return import(`${moduleUrl.href}?test=${moduleSequence}`)
+}
+
+test('parses only current, unexpired consent records', async () => {
+  const analytics = await freshAnalyticsModule()
+  const now = Date.UTC(2026, 6, 21)
+  const record = (choice, updatedAt) => JSON.stringify({
+    version: 1,
+    choice,
+    updatedAt,
+  })
+
+  assert.equal(
+    analytics.parseAnalyticsConsent(record('granted', now - 1000), now),
+    'granted',
+  )
+  assert.equal(
+    analytics.parseAnalyticsConsent(record('denied', now - 1000), now),
+    'denied',
+  )
+  assert.equal(
+    analytics.parseAnalyticsConsent(record('granted', now - 181 * 24 * 60 * 60 * 1000), now),
+    null,
+  )
+  assert.equal(analytics.parseAnalyticsConsent('{invalid', now), null)
+})
+
+test('does not load or initialize Google Analytics without consent', async () => {
+  const analytics = await freshAnalyticsModule()
+  const fixture = browserFixture()
+
+  assert.equal(analytics.enableGoogleAnalytics(fixture), false)
+  assert.equal(fixture.elements.size, 0)
+  assert.equal(fixture.windowObject.dataLayer, undefined)
+})
+
+test('a rejected choice keeps Google Analytics completely unloaded', async () => {
+  const analytics = await freshAnalyticsModule()
+  const fixture = browserFixture()
+
+  analytics.setAnalyticsConsent('denied', {
+    storage: fixture.storage,
+    windowObject: fixture.windowObject,
+  })
+
+  assert.equal(analytics.enableGoogleAnalytics(fixture), false)
+  assert.equal(fixture.elements.size, 0)
+  assert.equal(fixture.windowObject.dataLayer, undefined)
+})
+
+test('granting consent queues consent before measurement and loads one tag', async () => {
+  const analytics = await freshAnalyticsModule()
+  const fixture = browserFixture()
+
+  assert.equal(analytics.acceptGoogleAnalytics(fixture), true)
+  assert.equal(fixture.elements.size, 1)
+
+  const script = fixture.elements.get('neko-google-analytics')
+  assert.equal(script.async, true)
+  assert.equal(
+    script.src,
+    'https://www.googletagmanager.com/gtag/js?id=G-N4QZK4PHE3',
+  )
+
+  const commands = fixture.windowObject.dataLayer
+  assert.equal(Array.isArray(commands[0]), false)
+  assert.equal(Object.prototype.toString.call(commands[0]), '[object Arguments]')
+  const queuedCommands = commands.slice(0, 5).map(
+    (command) => Array.from(command).slice(0, 2),
+  )
+  assert.deepEqual(queuedCommands, [
+    ['consent', 'default'],
+    ['consent', 'update'],
+    ['js', commands[2][1]],
+    ['config', 'G-N4QZK4PHE3'],
+    ['event', 'page_view'],
+  ])
+  assert.equal(commands[0][2].analytics_storage, 'denied')
+  assert.equal(commands[1][2].analytics_storage, 'granted')
+  assert.equal(commands[1][2].ad_storage, 'denied')
+
+  assert.equal(analytics.enableGoogleAnalytics(fixture), true)
+  assert.equal(fixture.elements.size, 1)
+  assert.equal(fixture.windowObject.dataLayer.length, 5)
+})
+
+test('route tracking skips exactly one bootstrap page view', async () => {
+  const analytics = await freshAnalyticsModule()
+  const trackedTargets = []
+  const trackRoutePageView = analytics.createRoutePageViewTracker({
+    skipFirst: true,
+    trackPageView(target) {
+      trackedTargets.push(target)
+      return true
+    },
+  })
+
+  assert.equal(trackRoutePageView('/guide/'), false)
+  assert.equal(trackRoutePageView('/architecture/'), true)
+  assert.equal(trackRoutePageView('/plugins/'), true)
+  assert.deepEqual(trackedTargets, ['/architecture/', '/plugins/'])
+})
+
+test('analytics URLs keep approved campaign tags and remove sensitive query data', async () => {
+  const analytics = await freshAnalyticsModule()
+  const sanitized = analytics.sanitizeAnalyticsPageUrl(
+    'https://project-neko.online/guide/?token=secret&utm_source=newsletter&utm_campaign=desktop_pet&utm_content=hero#account',
+  )
+
+  assert.equal(
+    sanitized.href,
+    'https://project-neko.online/guide/?utm_source=newsletter&utm_campaign=desktop_pet&utm_content=hero',
+  )
+  assert.equal(sanitized.searchParams.has('token'), false)
+  assert.equal(sanitized.hash, '')
+})
+
+test('analytics URL sanitization preserves the source origin for double-slash paths', async () => {
+  const analytics = await freshAnalyticsModule()
+  const sanitized = analytics.sanitizeAnalyticsPageUrl(
+    'https://project-neko.online//attacker.example/path?utm_source=newsletter#account',
+  )
+
+  assert.equal(sanitized.origin, 'https://project-neko.online')
+  assert.equal(sanitized.pathname, '//attacker.example/path')
+  assert.equal(
+    sanitized.href,
+    'https://project-neko.online//attacker.example/path?utm_source=newsletter',
+  )
+})
+
+test('outbound analytics destinations do not include query strings or fragments', async () => {
+  const analytics = await freshAnalyticsModule()
+  const sanitized = analytics.normalizeAnalyticsDestinationUrl(
+    'https://store.steampowered.com/app/4099310/__NEKO/?utm_source=docs&token=secret#reviews',
+  )
+
+  assert.equal(
+    sanitized.href,
+    'https://store.steampowered.com/app/4099310/__NEKO/',
+  )
+
+  const doubleSlashPath = analytics.normalizeAnalyticsDestinationUrl(
+    'https://store.steampowered.com//attacker.example/path?token=secret',
+  )
+  assert.equal(doubleSlashPath.origin, 'https://store.steampowered.com')
+  assert.equal(doubleSlashPath.pathname, '//attacker.example/path')
+})
+
+test('recognizes only the N.E.K.O. Steam store app URL', async () => {
+  const analytics = await freshAnalyticsModule()
+
+  assert.equal(
+    analytics.isSteamCtaUrl(
+      'https://store.steampowered.com/app/4099310/__NEKO/?utm_source=test',
+    ),
+    true,
+  )
+  assert.equal(
+    analytics.isSteamCtaUrl('https://store.steampowered.com/app/4099310'),
+    true,
+  )
+  assert.equal(
+    analytics.isSteamCtaUrl('https://store.steampowered.com/app/999999/other'),
+    false,
+  )
+  assert.equal(
+    analytics.isSteamCtaUrl('https://example.com/app/4099310/__NEKO/'),
+    false,
+  )
+})
+
+test('recognizes locale home navigation only when leaving a concrete docs page', async () => {
+  const analytics = await freshAnalyticsModule()
+
+  assert.equal(
+    analytics.isDocsHomeUrl('/', 'https://project-neko.online/guide/'),
+    true,
+  )
+  assert.equal(
+    analytics.isDocsHomeUrl('/zh-CN/', 'https://project-neko.online/zh-CN/api/'),
+    true,
+  )
+  assert.equal(
+    analytics.isDocsHomeUrl('/', 'https://project-neko.online/'),
+    false,
+  )
+  assert.equal(
+    analytics.isDocsHomeUrl('/zh-CN/', 'https://project-neko.online/'),
+    false,
+  )
+  assert.equal(
+    analytics.isDocsHomeUrl('/zh-CN/', 'https://project-neko.online/ja/'),
+    false,
+  )
+  assert.equal(
+    analytics.isDocsHomeUrl('/api/', 'https://project-neko.online/guide/'),
+    false,
+  )
+  assert.equal(
+    analytics.isDocsHomeUrl('https://project-neko.cn/', 'https://project-neko.online/guide/'),
+    false,
+  )
+  assert.equal(
+    analytics.isDocsHomeUrl('/', 'https://project-neko.online:8443/guide/'),
+    false,
+  )
+  assert.equal(
+    analytics.isDocsHomeUrl(
+      'https://project-neko.online:8443/',
+      'https://project-neko.online/guide/',
+    ),
+    false,
+  )
+})
+
+test('delegated Steam CTA tracking emits one consented GA4 event', async () => {
+  const analytics = await freshAnalyticsModule()
+  const fixture = browserFixture()
+  const anchor = {
+    href: 'https://store.steampowered.com/app/4099310/__NEKO/?utm_source=project-neko.online&utm_medium=referral&utm_campaign=docs_home&utm_content=hero_en',
+    textContent: '  Get on Steam  ',
+  }
+  const target = {
+    closest(selector) {
+      assert.equal(selector, 'a[href]')
+      return anchor
+    },
+  }
+
+  assert.equal(analytics.installSteamCtaClickTracking(fixture), true)
+  assert.equal(analytics.installSteamCtaClickTracking(fixture), false)
+  fixture.documentObject.dispatch('click', { target })
+  assert.equal(fixture.windowObject.dataLayer, undefined)
+
+  analytics.acceptGoogleAnalytics(fixture)
+  fixture.documentObject.dispatch('click', { target })
+
+  const eventCommand = Array.from(fixture.windowObject.dataLayer.at(-1))
+  assert.equal(eventCommand[0], 'event')
+  assert.equal(eventCommand[1], analytics.STEAM_CTA_EVENT_NAME)
+  assert.deepEqual(eventCommand[2], {
+    link_url: 'https://store.steampowered.com/app/4099310/__NEKO/',
+    link_domain: 'store.steampowered.com',
+    cta_location: 'hero_en',
+    page_location: 'https://project-neko.online/guide/',
+    page_title: 'N.E.K.O. Docs',
+    transport_type: 'beacon',
+  })
+})
+
+test('Steam CTA placement is sanitized before it is sent to GA4', async () => {
+  const analytics = await freshAnalyticsModule()
+  const fixture = browserFixture()
+  const longPlacement = 'x'.repeat(150)
+  const anchor = {
+    href: `https://store.steampowered.com/app/4099310/__NEKO/?utm_content=${longPlacement}&token=secret`,
+  }
+
+  analytics.acceptGoogleAnalytics(fixture)
+  assert.equal(analytics.trackSteamCtaClick(anchor, fixture), true)
+
+  const eventCommand = Array.from(fixture.windowObject.dataLayer.at(-1))
+  assert.equal(eventCommand[2].cta_location, 'x'.repeat(100))
+  assert.equal(eventCommand[2].cta_location.includes('secret'), false)
+  assert.equal(
+    eventCommand[2].link_url,
+    'https://store.steampowered.com/app/4099310/__NEKO/',
+  )
+})
+
+test('delegated docs-to-home tracking emits one consented GA4 event', async () => {
+  const analytics = await freshAnalyticsModule()
+  const fixture = browserFixture()
+  fixture.windowObject.location.href =
+    'https://project-neko.online/guide/?utm_source=sidebar&token=secret#account'
+  const anchor = {
+    href: 'https://project-neko.online/?token=secret#account',
+    textContent: '  N.E.K.O. Docs  ',
+  }
+  const target = {
+    closest(selector) {
+      assert.equal(selector, 'a[href]')
+      return anchor
+    },
+  }
+
+  analytics.installSteamCtaClickTracking(fixture)
+  fixture.documentObject.dispatch('click', { target })
+  assert.equal(fixture.windowObject.dataLayer, undefined)
+
+  analytics.acceptGoogleAnalytics(fixture)
+  fixture.documentObject.dispatch('click', { target })
+
+  const eventCommand = Array.from(fixture.windowObject.dataLayer.at(-1))
+  assert.equal(eventCommand[0], 'event')
+  assert.equal(eventCommand[1], analytics.DOCS_HOME_EVENT_NAME)
+  assert.deepEqual(eventCommand[2], {
+    link_url: 'https://project-neko.online/',
+    link_domain: 'project-neko.online',
+    source_path: '/guide/',
+    destination_path: '/',
+    page_location:
+      'https://project-neko.online/guide/?utm_source=sidebar',
+    page_title: 'N.E.K.O. Docs',
+    transport_type: 'beacon',
+  })
+})
+
+test('a cross-tab denial immediately disables active analytics', async () => {
+  const analytics = await freshAnalyticsModule()
+  const fixture = browserFixture()
+
+  analytics.acceptGoogleAnalytics(fixture)
+  const denialRecord = JSON.stringify({
+    version: 1,
+    choice: 'denied',
+    updatedAt: Date.now(),
+  })
+  fixture.storage.setItem(
+    analytics.ANALYTICS_CONSENT_STORAGE_KEY,
+    denialRecord,
+  )
+
+  assert.equal(
+    analytics.handleAnalyticsConsentStorageEvent(
+      {
+        key: analytics.ANALYTICS_CONSENT_STORAGE_KEY,
+        newValue: denialRecord,
+        storageArea: fixture.storage,
+      },
+      fixture,
+    ),
+    true,
+  )
+  assert.equal(analytics.getAnalyticsConsent(), 'denied')
+  assert.equal(analytics.trackAnalyticsPageView('/plugins/', fixture), false)
+  assert.equal(fixture.reloadCount(), 1)
+  assert.deepEqual(
+    Array.from(fixture.windowObject.dataLayer.at(-1)).slice(0, 2),
+    ['consent', 'update'],
+  )
+  assert.equal(
+    fixture.windowObject.dataLayer.at(-1)[2].analytics_storage,
+    'denied',
+  )
+})
+
+test('revoking active analytics stores denial and reloads without a second tag', async () => {
+  const analytics = await freshAnalyticsModule()
+  const fixture = browserFixture()
+
+  analytics.acceptGoogleAnalytics(fixture)
+  assert.equal(analytics.rejectGoogleAnalytics(fixture), true)
+  assert.equal(
+    analytics.readAnalyticsConsent({ storage: fixture.storage }),
+    'denied',
+  )
+  assert.equal(fixture.reloadCount(), 1)
+  assert.equal(fixture.elements.size, 1)
+  assert.deepEqual(
+    Array.from(fixture.windowObject.dataLayer.at(-1)).slice(0, 2),
+    ['consent', 'update'],
+  )
+  assert.equal(
+    fixture.windowObject.dataLayer.at(-1)[2].analytics_storage,
+    'denied',
+  )
+})

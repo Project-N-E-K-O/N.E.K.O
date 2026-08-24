@@ -57,6 +57,87 @@ from ._shared import (
 )
 
 class PersistenceMixin:
+    def _subject_forget_epoch(self, name: str, subject) -> int:
+        """Return the process-local erase generation for one scoped subject."""
+        from memory.scopes import coerce_subject
+
+        memory_subject = coerce_subject(subject)
+        if memory_subject is None:
+            return 0
+        epochs = getattr(self, "_subject_forget_epochs", None) or {}
+        return int(
+            epochs.get((name, memory_subject.key, memory_subject.scope), 0)
+        )
+
+    async def abump_subject_forget_epoch(self, name: str, subject) -> int:
+        """Invalidate scoped synthesis work that overlaps a forget request."""
+        from memory.scopes import coerce_subject
+
+        memory_subject = coerce_subject(subject)
+        if memory_subject is None:
+            raise ValueError(
+                "abump_subject_forget_epoch requires an explicit subject"
+            )
+        key = (name, memory_subject.key, memory_subject.scope)
+        async with self._get_alock(name):
+            epochs = getattr(self, "_subject_forget_epochs", None)
+            if epochs is None:
+                epochs = {}
+                self._subject_forget_epochs = epochs
+            epochs[key] = int(epochs.get(key, 0)) + 1
+            return epochs[key]
+
+    def _subject_forget_is_active(self, name: str, subject) -> bool:
+        """Return whether the complete scoped-forget route is still open."""
+        from memory.scopes import coerce_subject
+
+        memory_subject = coerce_subject(subject)
+        if memory_subject is None:
+            return False
+        active = getattr(self, "_active_subject_forgets", None) or set()
+        return (name, memory_subject.key, memory_subject.scope) in active
+
+    async def abegin_subject_forget(self, name: str, subject) -> None:
+        """Open a reflection-write tombstone for a scoped-forget route."""
+        from memory.scopes import coerce_subject
+
+        memory_subject = coerce_subject(subject)
+        if memory_subject is None:
+            raise ValueError("abegin_subject_forget requires an explicit subject")
+        key = (name, memory_subject.key, memory_subject.scope)
+        async with self._get_alock(name):
+            active = getattr(self, "_active_subject_forgets", None)
+            if active is None:
+                active = set()
+                self._active_subject_forgets = active
+            if key in active:
+                raise RuntimeError("subject forget is already active")
+            active.add(key)
+            epochs = getattr(self, "_subject_forget_epochs", None)
+            if epochs is None:
+                epochs = {}
+                self._subject_forget_epochs = epochs
+            epochs[key] = int(epochs.get(key, 0)) + 1
+
+    async def aend_subject_forget(self, name: str, subject) -> None:
+        """Close the tombstone and invalidate work started while it was open."""
+        from memory.scopes import coerce_subject
+
+        memory_subject = coerce_subject(subject)
+        if memory_subject is None:
+            raise ValueError("aend_subject_forget requires an explicit subject")
+        key = (name, memory_subject.key, memory_subject.scope)
+        async with self._get_alock(name):
+            active = getattr(self, "_active_subject_forgets", None)
+            if active is None or key not in active:
+                return
+            epochs = getattr(self, "_subject_forget_epochs", None)
+            if epochs is None:
+                epochs = {}
+                self._subject_forget_epochs = epochs
+            epochs[key] = int(epochs.get(key, 0)) + 1
+            active.remove(key)
+
     def _reflections_path(self, name: str) -> str:
         from memory import ensure_character_dir
         return os.path.join(ensure_character_dir(self._config_manager.memory_dir, name), 'reflections.json')
@@ -301,6 +382,165 @@ class PersistenceMixin:
                 merged = merged + to_archive
 
         atomic_write_json(path, merged, indent=2, ensure_ascii=False)
+
+    async def aforget_subject(self, name: str, subject) -> dict:
+        """Delete every reflection belonging to one exact (subject, scope).
+
+        撤回入口（对偶 FactStore.aforget_subject）。**不走** asave_reflections
+        ——它的 prepare_save_reflections 会把磁盘上不在入参 id 集里的
+        merged / promote_blocked 条目并回主文件，删除会被静默 undo；这里
+        在角色锁内读主文件全量、过滤后直写。surfaced.json 里引用被删
+        reflection 的行一并清（surfaced 条目自带 text，会进 feedback
+        prompt）。归档分片不清：分片不进任何渲染/召回读路径，属事件留底；
+        但会严格扫描分片及迁移失败时保留的 legacy flat fallback，以找回
+        archive-only reflection ID，防止 surfaced 副本漏删。
+        """  # noqa: DOCSTRING_CJK
+        from memory.scopes import coerce_subject, entry_matches_subject
+        memory_subject = coerce_subject(subject)
+        if memory_subject is None:
+            raise ValueError("aforget_subject requires an explicit subject")
+        async with self._get_alock(name):
+            path = self._reflections_path(name)
+            rows: list = []
+            if await asyncio.to_thread(os.path.exists, path):
+                try:
+                    data = await read_json_async(path)
+                except (json.JSONDecodeError, OSError) as exc:
+                    raise RuntimeError(
+                        f"reflections state unreadable during forget: {exc}"
+                    ) from exc
+                if not isinstance(data, list):
+                    raise RuntimeError(
+                        "reflections state is not a list during forget"
+                    )
+                rows = data
+            removed = [
+                r for r in rows
+                if isinstance(r, dict) and entry_matches_subject(r, memory_subject)
+            ]
+            removed_ids = {
+                r.get('id') for r in removed
+                if isinstance(r, dict) and r.get('id') is not None
+            }
+            surfaced_removed = 0
+            surfaced_path = self._surfaced_path(name)
+            surfaced: list = []
+            if await asyncio.to_thread(os.path.exists, surfaced_path):
+                # Erasure cannot use the best-effort reader: treating a corrupt
+                # or transiently unreadable sidecar as [] would delete the
+                # source reflections and permanently lose the IDs needed to
+                # find their copied surfaced text on retry.
+                try:
+                    surfaced_data = await read_json_async(surfaced_path)
+                except (json.JSONDecodeError, OSError) as exc:
+                    raise RuntimeError(
+                        f"surfaced state unreadable during forget: {exc}"
+                    ) from exc
+                if not isinstance(surfaced_data, list):
+                    raise RuntimeError(
+                        "surfaced state is not a list during forget"
+                    )
+                surfaced = surfaced_data
+
+            surfaced_ids = {
+                s.get('reflection_id') for s in surfaced
+                if isinstance(s, dict) and s.get('reflection_id') is not None
+            }
+            unresolved_surfaced_ids = surfaced_ids - removed_ids
+            archive_dir_getter = getattr(
+                self, '_reflections_archive_dir', None,
+            )
+            if unresolved_surfaced_ids and callable(archive_dir_getter):
+                from memory.archive_shards import (
+                    ShardCorruptError,
+                    _aread_shard,
+                    _list_shard_files,
+                )
+
+                archive_dir = archive_dir_getter(name)
+                for filename, _date, _uuid in await asyncio.to_thread(
+                    _list_shard_files, archive_dir,
+                ):
+                    shard_path = os.path.join(archive_dir, filename)
+                    try:
+                        archived_rows = await _aread_shard(shard_path)
+                    except ShardCorruptError as exc:
+                        raise RuntimeError(
+                            f"reflection archive unreadable during forget: {exc}"
+                        ) from exc
+                    for archived in archived_rows:
+                        if not isinstance(archived, dict):
+                            continue
+                        reflection_id = archived.get('id')
+                        if (
+                            reflection_id in unresolved_surfaced_ids
+                            and entry_matches_subject(
+                                archived, memory_subject,
+                            )
+                        ):
+                            removed_ids.add(reflection_id)
+
+            unresolved_surfaced_ids = surfaced_ids - removed_ids
+            legacy_archive_getter = getattr(
+                self, '_reflections_legacy_archive_path', None,
+            )
+            if unresolved_surfaced_ids and callable(legacy_archive_getter):
+                legacy_archive_path = legacy_archive_getter(name)
+                if await asyncio.to_thread(os.path.exists, legacy_archive_path):
+                    try:
+                        legacy_rows = await read_json_async(legacy_archive_path)
+                    except (json.JSONDecodeError, OSError) as exc:
+                        raise RuntimeError(
+                            "legacy reflection archive unreadable during "
+                            f"forget: {exc}"
+                        ) from exc
+                    if not isinstance(legacy_rows, list):
+                        raise RuntimeError(
+                            "legacy reflection archive is not a list during "
+                            "forget"
+                        )
+                    for archived in legacy_rows:
+                        if not isinstance(archived, dict):
+                            continue
+                        reflection_id = archived.get('id')
+                        if (
+                            reflection_id in unresolved_surfaced_ids
+                            and entry_matches_subject(archived, memory_subject)
+                        ):
+                            removed_ids.add(reflection_id)
+
+            if removed_ids:
+                kept_surfaced = [
+                    s for s in surfaced
+                    if not (
+                        isinstance(s, dict)
+                        and s.get('reflection_id') in removed_ids
+                    )
+                ]
+                surfaced_removed = len(surfaced) - len(kept_surfaced)
+                if surfaced_removed:
+                    await self.asave_surfaced(name, kept_surfaced)
+            if removed:
+                # Save surfaced first. If the reflections write then fails,
+                # a retry still sees the source rows and can recover their
+                # IDs. The reverse order could strand copied surfaced text.
+                assert_cloudsave_writable(
+                    self._config_manager,
+                    operation="save",
+                    target=f"memory/{name}/reflections.json",
+                )
+                removed_identities = {id(r) for r in removed}
+                kept = [r for r in rows if id(r) not in removed_identities]
+                await atomic_write_json_async(
+                    path, kept, indent=2, ensure_ascii=False,
+                )
+        if removed:
+            logger.info(
+                f"[Reflection] {name}: forget "
+                f"{memory_subject.key}/{memory_subject.scope}: "
+                f"reflections={len(removed)} surfaced={surfaced_removed}"
+            )
+        return {"reflections": len(removed), "surfaced": surfaced_removed}
 
     async def asave_reflections(self, name: str, reflections: list[dict]) -> None:
         from memory.archive_shards import aappend_to_shard

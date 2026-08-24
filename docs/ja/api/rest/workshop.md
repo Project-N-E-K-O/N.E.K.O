@@ -77,6 +77,10 @@ Sync は skip/conflict、missing install、storage write fence を JSON で報�
 
 Reference material を package するだけで、local TTS voice の clone/register は行いません。
 
+::: info Content folder の排他
+publish は upload 完了まで content folder 全体を Steam に渡します。その間は `upload-reference-audio`、`remove-reference-audio`、`cleanup-temp-folder` が待たずに `409` を返し、Steam が使用中の bytes を変更しません。逆方向も同じで、reference audio の書き込み中は `publish` が `409` を返します。
+:::
+
 ## 実装で確認した route 一覧
 
 ```text

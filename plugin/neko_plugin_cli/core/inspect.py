@@ -31,22 +31,36 @@ class PackageInspector:
         package_path = Path(package_path).expanduser().resolve()
 
         with zipfile.ZipFile(package_path) as archive:
-            manifest = read_manifest(archive)
-            metadata = read_metadata(archive)
+            return self.inspect_archive(
+                archive,
+                package_path=package_path,
+            )
 
-            package_type = self.require_string(manifest, "package_type")
-            package_id = self.require_string(manifest, "id")
-            plugin_folders = collect_plugin_folders(archive)
-            validate_package_type(package_type, plugin_folders)
-            validate_plugin_layout(archive, plugin_folders)
-            validate_plugin_manifest_types(archive, plugin_folders)
-            validate_dependency_layout(archive, plugin_folders)
+    def inspect_archive(
+        self,
+        archive: zipfile.ZipFile,
+        *,
+        package_path: Path,
+    ) -> PackageInspectResult:
+        """Inspect and validate an already-open package archive."""
 
-            payload_hash = compute_archive_payload_hash(archive)
-            payload_hash_verified = verify_payload_hash(metadata, payload_hash)
-            plugins = self.collect_plugins(archive, plugin_folders)
-            profile_names = collect_profile_names(archive)
-            dependencies = self.parse_dependency_manifest(read_dependency_manifest(archive))
+        manifest = read_manifest(archive)
+        metadata = read_metadata(archive)
+
+        package_type = self.require_string(manifest, "package_type")
+        package_id = self.require_string(manifest, "id")
+        plugin_folders = collect_plugin_folders(archive)
+        validate_package_type(package_type, plugin_folders)
+        validate_plugin_layout(archive, plugin_folders)
+        validate_plugin_manifest_types(archive, plugin_folders)
+        validate_dependency_layout(archive, plugin_folders)
+
+        payload_hash = compute_archive_payload_hash(archive)
+        payload_hash_verified = verify_payload_hash(metadata, payload_hash)
+
+        plugins = self.collect_plugins(archive, plugin_folders)
+        profile_names = collect_profile_names(archive)
+        dependencies = self.parse_dependency_manifest(read_dependency_manifest(archive))
 
         return PackageInspectResult(
             package_path=package_path,

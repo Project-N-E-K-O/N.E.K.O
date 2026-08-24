@@ -6,13 +6,13 @@ import re
 import shutil
 import subprocess
 
-from PIL import Image
 import pytest
 
 pytestmark = pytest.mark.unit
 
 PLUGIN_DIR = Path(__file__).resolve().parents[3] / "plugins" / "study_companion"
 I18N_DIR = PLUGIN_DIR / "i18n"
+NODE_SUBPROCESS_TIMEOUT_SECONDS = 30
 
 
 def test_phase9_static_math_assets_are_local_and_registered() -> None:
@@ -28,7 +28,14 @@ def test_phase9_static_math_assets_are_local_and_registered() -> None:
     assert '<link rel="stylesheet" href="./katex.min.css?v=study-hotfix-20260615v" />' in index
     assert '<script src="./katex.min.js?v=study-hotfix-20260615v"></script>' in index
     assert '<script src="./katex-render.js?v=study-hotfix-20260615v"></script>' in index
-    assert '<script src="./main.js?v=study-hotfix-20260621-yui-static"></script>' in index
+    outcome_formatters_script = (
+        '<script src="./outcome-formatters.js?v=study-hotfix-20260812"></script>'
+    )
+    main_script = '<script src="./main.js?v=study-ocr-fallback-notice-20260820"></script>'
+    assert outcome_formatters_script in index
+    assert main_script in index
+    assert "solution-narration.js" not in index
+    assert index.index(outcome_formatters_script) < index.index(main_script)
     assert ".study-panel__image-preview[hidden]" in css
     assert ".study-panel__image-preview:not([hidden])" in css
     assert "window.renderMathInText" in renderer
@@ -76,7 +83,7 @@ console.log(JSON.stringify(tools.splitByMath({json.dumps(text)})));
         check=True,
         capture_output=True,
         encoding="utf-8",
-        timeout=10,
+        timeout=NODE_SUBPROCESS_TIMEOUT_SECONDS,
     )
     return json.loads(result.stdout)
 
@@ -118,7 +125,7 @@ console.log(window.renderMathInText({json.dumps(text)}));
         check=True,
         capture_output=True,
         encoding="utf-8",
-        timeout=10,
+        timeout=NODE_SUBPROCESS_TIMEOUT_SECONDS,
     )
     return result.stdout.strip()
 
@@ -497,21 +504,19 @@ def test_phase9_neko_coach_uses_static_yui_asset_with_scene_driven_copy() -> Non
     css = (PLUGIN_DIR / "static" / "style.css").read_text(encoding="utf-8")
 
     asset = PLUGIN_DIR / "static" / "assets" / "yui" / "yui_companion_upper.webp"
-    assert asset.is_file()
-    assert asset.stat().st_size < 80_000
-    asset_image = Image.open(asset).convert("RGBA")
-    assert asset_image.size == (512, 576)
-    asset_bounds = asset_image.getbbox()
-    assert asset_bounds is not None
-    assert asset_bounds[1] >= 16
-    assert asset_bounds[2] < 512
+    assert not asset.exists()
     assert 'id="nekoCoachPanel"' in index
+    assert 'class="neko-coach" data-scene="idle"' in index
     assert index.index('<aside id="nekoCoachPanel"') > index.index("</main>")
-    assert 'id="nekoCoachSprite"' in index
-    assert "./assets/yui/yui_companion_upper.webp" in index
+    assert 'class="neko-coach__body"' in index
+    assert 'id="nekoCoachTitle"' in index
     assert 'id="nekoCoachRecommendation"' in index
     assert 'id="nekoCoachPrimaryAction"' in index
     assert 'id="nekoCoachSecondaryAction"' in index
+    assert 'class="neko-coach__stage"' not in index
+    assert 'id="nekoCoachSpriteContainer"' not in index
+    assert 'id="nekoCoachSprite"' not in index
+    assert "./assets/yui/yui_companion_upper.webp" not in index
     assert "./assets/vendor/" not in index
     assert 'data-neko-coach-action="explain-current"' in index
     assert 'data-neko-coach-action="quiz-me"' in index
@@ -528,7 +533,9 @@ def test_phase9_neko_coach_uses_static_yui_asset_with_scene_driven_copy() -> Non
     assert "function renderNekoCoachActions" in main_js
     assert "PIXI.live2d.Live2DModel.from" not in main_js
     assert "renderNekoCoach(data)" in main_js
-    assert ".neko-coach__sprite" in css
+    assert ".neko-coach__stage" not in css
+    assert ".neko-coach__sprite-wrap" not in css
+    assert ".neko-coach__sprite" not in css
     assert "neko-coach-sprites.png" not in css
 
 

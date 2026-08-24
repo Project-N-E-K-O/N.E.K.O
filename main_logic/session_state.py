@@ -54,7 +54,7 @@ class TurnOwner(Enum):
 
 
 class ProactivePhase(Enum):
-    """Current phase of the proactive-chat pipeline (text mode; voice fudge does not go through here)."""
+    """Current proactive-chat phase (the realtime text trigger bypasses this pipeline)."""
 
     IDLE = "idle"
     PHASE1 = "phase1"            # fetch + unified LLM

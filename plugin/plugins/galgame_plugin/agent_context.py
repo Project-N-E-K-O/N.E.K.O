@@ -55,13 +55,6 @@ class AgentContextMixin:
         )
         if pov_context:
             enriched = {**dict(enriched), **pov_context}
-        memory = self._cross_scene_memory_snapshot(shared)
-        rendered = _render_cross_scene_memory_for_push(memory, max_chars=360)
-        if not rendered:
-            return enriched
-        enriched = dict(enriched)
-        enriched["cross_scene_memory"] = json_copy(memory)
-        enriched["cross_scene_memory_context"] = rendered
         return enriched
 
     @staticmethod
@@ -177,7 +170,6 @@ class AgentContextMixin:
                 "trigger": trigger,
                 "context_boundary": json_copy(boundary),
             },
-            update_scene_memory=False,
         )
 
     async def query_context(self, shared: dict[str, Any], *, context_query: str) -> dict[str, Any]:

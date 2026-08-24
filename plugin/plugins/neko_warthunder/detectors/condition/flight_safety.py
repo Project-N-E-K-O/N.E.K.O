@@ -80,8 +80,25 @@ def _pl_ground_laser(s: BattleState) -> dict[str, Any]:
     return _drop_none({"domain": s.domain})
 
 
-def build_condition_detectors() -> list[ConditionDetector]:
+# 危急持续期心跳间隔，默认对齐 critical_preempt_cooldown_seconds=5。
+#
+# 这个值必须落在一个很窄的区间里，样本实测给出了两端：
+#  · 下界——要 ≥ 抢占冷却，否则重发落在冷却窗内被 Arbiter 丢弃，白白消耗掉这一次机会；
+#  · 上界——要 ≤ 危急条件的典型持续时长，否则条件早就结束了才轮到重发。
+#    实测两段完整对局(2303 / 4969 帧)里 critical 段最长只有 6.9s
+#    (low_alt_danger)，stall_risk 6.3s、high_aoa 3.4s、low_fuel 3.0s。
+#
+# 取 8s 时该机制在真实飞行中永不触发；取 5s 可救回样本里真实出现过的一次
+# "低空告警刚播完 5.9s 后进入失速、整段无提示"。已播报过的同一条仍会被
+# Dispatcher 的 repeat-collapse(30s 窗)折叠，因此不会刷屏。
+_CRITICAL_HEARTBEAT_SECONDS = 5.0
+
+
+def build_condition_detectors(
+    critical_heartbeat_seconds: float = _CRITICAL_HEARTBEAT_SECONDS,
+) -> list[ConditionDetector]:
     g = CONDITION_FLAG_GROUPS
+    heartbeat = max(0.0, float(critical_heartbeat_seconds or 0.0))
     return [
         ConditionDetector(
             "stall_risk",
@@ -90,6 +107,7 @@ def build_condition_detectors() -> list[ConditionDetector]:
             confirm_exit=3,
             payload_fn=_pl_stall,
             predicate=_is_fixed_wing_air,
+            critical_heartbeat_seconds=heartbeat,
         ),
         ConditionDetector(
             "high_aoa",
@@ -98,6 +116,7 @@ def build_condition_detectors() -> list[ConditionDetector]:
             confirm_exit=2,
             payload_fn=_pl_high_aoa,
             predicate=_is_fixed_wing_air,
+            critical_heartbeat_seconds=heartbeat,
         ),
         ConditionDetector(
             "over_g",
@@ -106,6 +125,7 @@ def build_condition_detectors() -> list[ConditionDetector]:
             confirm_exit=2,
             payload_fn=_pl_over_g,
             predicate=_is_fixed_wing_air,
+            critical_heartbeat_seconds=heartbeat,
         ),
         ConditionDetector(
             "low_alt_danger",
@@ -114,6 +134,7 @@ def build_condition_detectors() -> list[ConditionDetector]:
             confirm_exit=2,
             payload_fn=_pl_low_alt,
             predicate=_is_fixed_wing_air,
+            critical_heartbeat_seconds=heartbeat,
         ),
         ConditionDetector(
             "overspeed",
@@ -122,6 +143,7 @@ def build_condition_detectors() -> list[ConditionDetector]:
             confirm_exit=3,
             payload_fn=_pl_overspeed,
             predicate=_is_fixed_wing_air,
+            critical_heartbeat_seconds=heartbeat,
         ),
         ConditionDetector("overheat", g["overheat"], confirm_enter=3, confirm_exit=4, payload_fn=_pl_overheat),
         ConditionDetector(
@@ -131,6 +153,9 @@ def build_condition_detectors() -> list[ConditionDetector]:
             confirm_exit=2,
             payload_fn=_pl_low_fuel,
             predicate=_is_fixed_wing_air,
+            # EVENT_CATALOG 给 low_fuel 的 cooldown 是 -1（每局一次）；油量在阈值
+            # 附近抖动时不该反复催返航。warning→critical 升级不受影响。
+            once_per_battle=True,
         ),
         ConditionDetector(
             "ground_laser_warning",

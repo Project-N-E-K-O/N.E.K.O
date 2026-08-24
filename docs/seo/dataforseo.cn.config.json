@@ -1,0 +1,57 @@
+{
+  "targetDomain": "project-neko.cn",
+  "locationCode": 2156,
+  "languageCode": "zh-CN",
+  "device": "desktop",
+  "serpDepth": 100,
+  "keywords": [
+    {
+      "keyword": "喵可智能",
+      "landingPage": "/",
+      "intent": "BOFU 品牌词",
+      "cta": "Steam 商店访问"
+    },
+    {
+      "keyword": "AI 桌面助手",
+      "landingPage": "/",
+      "intent": "BOFU 核心品类词",
+      "cta": "Steam 商店访问"
+    },
+    {
+      "keyword": "人工智能桌面助手",
+      "landingPage": "/",
+      "intent": "MOFU 核心品类词",
+      "cta": "Steam 商店访问"
+    },
+    {
+      "keyword": "开源 AI 助手",
+      "landingPage": "/",
+      "intent": "MOFU 产品发现词",
+      "cta": "GitHub / Steam"
+    },
+    {
+      "keyword": "本地 AI 助手",
+      "landingPage": "/",
+      "intent": "MOFU 本地部署能力词",
+      "cta": "Steam 商店访问"
+    },
+    {
+      "keyword": "AI 虚拟伴侣",
+      "landingPage": "/",
+      "intent": "MOFU 核心品类词",
+      "cta": "Steam 商店访问"
+    },
+    {
+      "keyword": "Live2D AI 助手",
+      "landingPage": "/",
+      "intent": "MOFU Live2D 功能词",
+      "cta": "Steam 商店访问"
+    },
+    {
+      "keyword": "长期记忆 AI 助手",
+      "landingPage": "/",
+      "intent": "MOFU 长期记忆功能词",
+      "cta": "Steam 商店访问"
+    }
+  ]
+}

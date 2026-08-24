@@ -1,0 +1,131 @@
+name: Runtime Process Model
+
+# The foreground-residency guard and the single-instance lock are the only
+# parts of the codebase whose correctness is a property of the *operating
+# system*, not of our code: prctl(PR_SET_PDEATHSIG) on Linux, a parent process
+# handle plus GetProcessTimes on Windows, flock vs msvcrt.locking, and whether
+# the kernel really drops a lock when its holder is SIGKILLed.
+#
+# Their tests are therefore real-process and real-lock tests rather than mocks,
+# and each platform executes a genuinely different code path. Running them on
+# one OS proves almost nothing about the other two, so this is the one job that
+# has to be a three-platform matrix.
+#
+# The repository's other pytest gates do not substitute for it: plugin-tests.yml
+# is Windows-only and plugin-scoped, and unit-tests.yml runs tests/unit on
+# windows-latest alone. Windows is covered by the latter; the Linux
+# PR_SET_PDEATHSIG path and the macOS flock/killpg path are covered nowhere else.
+#
+# It is deliberately narrow: two files, about a second of runtime each.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'utils/parent_guard.py'
+      - 'utils/single_instance.py'
+      - 'utils/port_utils.py'
+      - 'launcher.py'
+      - 'launcher_core/**'
+      - 'tests/unit/test_launcher_foreground_residency.py'
+      - 'tests/unit/test_launcher_job_object.py'
+      - 'tests/unit/test_single_instance_lock.py'
+      - '.github/workflows/runtime-process-model.yml'
+      - 'pyproject.toml'
+      - 'uv.lock'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'utils/parent_guard.py'
+      - 'utils/single_instance.py'
+      - 'utils/port_utils.py'
+      - 'launcher.py'
+      - 'launcher_core/**'
+      - 'tests/unit/test_launcher_foreground_residency.py'
+      - 'tests/unit/test_launcher_job_object.py'
+      - 'tests/unit/test_single_instance_lock.py'
+      - '.github/workflows/runtime-process-model.yml'
+      - 'pyproject.toml'
+      - 'uv.lock'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: runtime-process-model-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  process-model:
+    name: Process model (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      # One platform failing must not hide the others: which OS breaks is the
+      # entire diagnostic value of this job.
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        # launcher_core.runtime pulls in config, cloudsave and storage on
+        # import, so the tests need the full main dependency set rather than a
+        # trimmed one.
+        run: uv sync
+
+      - name: Run process-model tests
+        # Sends the lock and record somewhere disposable so a runner that
+        # reuses its home directory cannot carry state between jobs.
+        env:
+          NEKO_RUNTIME_STATE_DIR: ${{ runner.temp }}/neko-runtime-ci
+        run: >
+          uv run pytest
+          tests/unit/test_launcher_foreground_residency.py
+          tests/unit/test_launcher_job_object.py
+          tests/unit/test_single_instance_lock.py
+          -q
+
+      - name: Report whether a spawned interpreter is the process the spawner sees
+        # Measures whether Popen(sys.executable) really starts the interpreter
+        # or a shim that re-launches it. It does not on Windows, which is why
+        # utils/single_instance now tells lock-less consumers (the Electron
+        # shell) to match record["owner_pid"], never record["parent_pid"] — the
+        # latter names the shim there. Keep measuring it: the day a platform
+        # changes, this line says so instead of the contract silently rotting.
+        run: >
+          uv run python -c
+          "import subprocess, sys;
+          p = subprocess.run([sys.executable, '-c', 'import os,sys; print(os.getpid(), os.getppid(), sys.executable)'],
+          capture_output=True, text=True);
+          child, grandparent, exe = p.stdout.split(None, 2);
+          print('spawner pid      :', __import__('os').getpid());
+          print('Popen.pid        : (see below)');
+          print('child self pid   :', child);
+          print('child getppid    :', grandparent);
+          print('child executable :', exe.strip());
+          print('MATCH' if int(grandparent) == __import__('os').getpid() else 'MISMATCH: an intermediate process sits between spawner and interpreter')"
+
+      - name: Report which parent-death mechanisms this platform armed
+        # Not an assertion — a record. If a platform silently stops arming any
+        # mechanism (a kernel change, a hardened runner sandbox), the guarantee
+        # quietly degrades to "best effort" and the tests above would still
+        # pass. This makes that visible in the log.
+        run: >
+          uv run python -c
+          "from utils import parent_guard;
+          g = parent_guard.install(lambda m: None, poll_interval=60);
+          print('owner pid:', g.parent_pid);
+          print('armed:', g.mechanisms or '(none)');
+          g.stop()"

@@ -186,6 +186,7 @@ def _stage_single_character_cloudsave_entries(
     exported_at: str,
     client_id: str,
     device_id: str,
+    memory_stage_overrides: dict[str, Path] | None = None,
 ) -> tuple[dict[str, Path], dict[str, Any]]:
     staged_entries: dict[str, Path] = {}
     object_root = f"characters/{character_name}"
@@ -194,10 +195,12 @@ def _stage_single_character_cloudsave_entries(
     memory_hashes: dict[str, str] = {}
     for filename in MANAGED_MEMORY_FILENAMES:
         source_path = memory_root / filename
-        if not source_path.is_file():
-            continue
         relative_path = f"{object_root}/memory/{filename}"
-        staged_path = _stage_memory_file(stage_root, relative_path, source_path)
+        staged_path = (memory_stage_overrides or {}).get(filename)
+        if staged_path is None:
+            if not source_path.is_file():
+                continue
+            staged_path = _stage_memory_file(stage_root, relative_path, source_path)
         staged_entries[relative_path] = staged_path
         memory_hashes[filename] = _sha256_file(staged_path)
 

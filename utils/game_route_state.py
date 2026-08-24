@@ -147,6 +147,21 @@ def is_game_route_active(lanlan_name: str, game_type: str | None = None) -> bool
     return _get_active_game_route_state(lanlan_name, game_type) is not None
 
 
+def get_active_game_route_identity(
+    lanlan_name: str,
+) -> tuple[str, str] | None:
+    """Return the concrete active ``(game_type, session_id)`` identity."""
+
+    target_lanlan = str(lanlan_name or "")
+    for (key_lanlan, key_game), state in _game_route_states.items():
+        if key_lanlan != target_lanlan or not state.get("game_route_active"):
+            continue
+        session_id = str(state.get("session_id") or "").strip()
+        if session_id:
+            return key_game, session_id
+    return None
+
+
 _VoiceTranscriptHandler = Callable[..., Awaitable[bool]]
 _voice_transcript_handler: Optional[_VoiceTranscriptHandler] = None
 

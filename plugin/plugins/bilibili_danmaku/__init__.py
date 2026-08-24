@@ -738,9 +738,12 @@ class BiliDanmakuPlugin(NekoPluginBase):
         constraints: str,
     ) -> str:
         try:
-            from config.prompts.prompts_sys import SESSION_INIT_PROMPT
+            from config.prompts.prompts_sys import (
+                SESSION_INIT_PROMPT,
+                normalize_sys_prompt_locale,
+            )
             from utils.config_manager import get_config_manager
-            from utils.language_utils import get_global_language
+            from utils.language_utils import get_global_language_full
         except Exception as e:
             raise RuntimeError(f"加载 NEKO 对话配置失败: {e}") from e
 
@@ -748,7 +751,10 @@ class BiliDanmakuPlugin(NekoPluginBase):
         master_name, her_name, _, catgirl_data, _, lanlan_prompt_map, _, _, _ = config_manager.get_character_data()
         if self._target_lanlan:
             her_name = self._target_lanlan
-        user_language = get_global_language()
+        # #2500 第 2 步：取全码再经 prompts_sys 归一，繁中才能命中 SESSION_INIT_PROMPT
+        # 的 'zh-TW' 键。⚠️ 不能拿 get_global_language_full() 直接当键：简中的全码是
+        # 'zh-CN'，而这张表的简体键是 'zh'，裸查会一路掉到英文。
+        user_language = normalize_sys_prompt_locale(get_global_language_full())
         init_prompt = SESSION_INIT_PROMPT.get(user_language, SESSION_INIT_PROMPT.get('en', 'You are {name}.'))
         character_prompt = lanlan_prompt_map.get(her_name, "你是一个友好的AI助手")
         current_character = catgirl_data.get(her_name, {})
@@ -822,6 +828,15 @@ class BiliDanmakuPlugin(NekoPluginBase):
             from utils.config_manager import get_config_manager
 
             config_manager = get_config_manager()
+            # 会话的线路会连 base_url 一起冻进 OmniOfflineClient，所以先给仍在飞的
+            # 区域探测一个收尾窗口（与主会话 / 游戏会话池 / 其它插件对偶）。已落定时
+            # 零开销；自配 API 用户不会因此发起探测。fail-open：插件不该因区域探测
+            # 本身出错而起不了会话。
+            try:
+                await config_manager.aensure_region_resolved()
+            except Exception as _geo_err:
+                self.logger.warning(f"[GeoIP] 插件会话区域落定失败，退化到当前配置继续: {_geo_err}")
+
             conversation_config = config_manager.get_model_api_config('conversation')
             reply_chunks = []
 

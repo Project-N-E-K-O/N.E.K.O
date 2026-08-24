@@ -25,7 +25,15 @@ from urllib.parse import urlparse, urlunparse
 from utils.config_manager import _as_bool
 from utils.gptsovits_config import redact_url_for_log
 
-from .._infra import TTS_SHUTDOWN_SENTINEL, _resample_audio, _enqueue_error
+from .._infra import (
+    AudioDoneEmitter,
+    TTS_SHUTDOWN_SENTINEL,
+    _enqueue_error,
+    _resample_audio,
+    configured_tts_unavailable_worker,
+    enqueue_configured_tts_failure,
+    log_configured_tts_failure,
+)
 from .._telemetry import _record_tts_telemetry
 from .dummy import dummy_tts_worker
 from utils.logger_config import get_module_logger
@@ -119,12 +127,9 @@ def vllm_omni_tts_worker(request_queue, response_queue, audio_api_key, voice_id,
     """
     raw_base_url = (base_url or '').strip().rstrip('/')
     if not raw_base_url:
-        logger.error("[vLLM-Omni TTS] 未配置 base_url（TTS_MODEL_URL 为空）")
-        _enqueue_error(response_queue, {
-            "code": "TTS_CONFIG_INVALID",
-            "provider": "vllm_omni",
-            "message": "vLLM-Omni TTS 未配置 URL",
-        })
+        enqueue_configured_tts_failure(
+            response_queue, "vllm_omni", "configuration"
+        )
         response_queue.put(("__ready__", False))
         return
 
@@ -182,6 +187,9 @@ def vllm_omni_tts_worker(request_queue, response_queue, audio_api_key, voice_id,
         }
         pending_text: list[str] = []
         pending_text_sid: str | None = None
+        # session.done = 整个 utterance 的音频流关闭（audio.done 是逐句事件，
+        # 带 sentence_index，不能当轮次收尾用）。
+        audio_done = AudioDoneEmitter(response_queue)
 
         async def _connect_and_config() -> bool:
             """Open the WS connection and send session.config; return success.
@@ -206,11 +214,11 @@ def vllm_omni_tts_worker(request_queue, response_queue, audio_api_key, voice_id,
                     ws_kwargs["extra_headers"] = ws_kwargs.pop("additional_headers")
                 try:
                     ws = await websockets.connect(ws_endpoint, **ws_kwargs)
-                except Exception as e:
-                    logger.error(f"[vLLM-Omni TTS] WS 连接失败(兼容旧版): {e}")
+                except Exception:
+                    log_configured_tts_failure("vllm_omni", "connect_legacy")
                     return False
-            except Exception as e:
-                logger.error(f"[vLLM-Omni TTS] WS 连接失败: {e}")
+            except Exception:
+                log_configured_tts_failure("vllm_omni", "connect")
                 return False
 
             try:
@@ -237,8 +245,8 @@ def vllm_omni_tts_worker(request_queue, response_queue, audio_api_key, voice_id,
                     config["api_key"] = key_for_auth
                 await ws.send(json.dumps(config))
                 return True
-            except Exception as e:
-                logger.error(f"[vLLM-Omni TTS] 发送 session.config 失败: {e}")
+            except Exception:
+                log_configured_tts_failure("vllm_omni", "session_config")
                 try:
                     await ws.close()
                 except Exception:
@@ -271,6 +279,9 @@ def vllm_omni_tts_worker(request_queue, response_queue, audio_api_key, voice_id,
                             )
                             # 修复 PR #1764 review #3：标记会话结束 + 清重采样器
                             # 主循环在下次 input.text 前会重建连接并重发 session.config
+                            # PCM 帧是同一条接收循环里同步 put 的，走到这里说明本轮
+                            # 音频已全部投递；先取 sid 再清状态。
+                            audio_done.emit(session_state.get("speech_id"))
                             session_state["active"] = False
                             session_state["awaiting_done"] = False
                             session_state["speech_id"] = None
@@ -285,9 +296,13 @@ def vllm_omni_tts_worker(request_queue, response_queue, audio_api_key, voice_id,
                                 event.get("sentence_text", "")[:40],
                             )
                         elif event_type == "audio.done":
-                            pass  # 静默
+                            pass  # 逐句完成事件，轮次收尾看 session.done
                         elif event_type == "error":
-                            _enqueue_error(response_queue, event)
+                            # Provider events may echo signed URLs or input text.
+                            # 服务端 error 事件只转换为稳定错误码，不记录原始 payload。
+                            enqueue_configured_tts_failure(
+                                response_queue, "vllm_omni", "server_event"
+                            )
                             # 修复 PR #1764 review 第六轮：服务端 error 事件后会话已不可用，
                             # 标记 session 失效，主循环下次 input 前会主动重建（与 session.done 处理对齐）
                             session_state["active"] = False
@@ -308,9 +323,9 @@ def vllm_omni_tts_worker(request_queue, response_queue, audio_api_key, voice_id,
                         "message": "vLLM-Omni TTS 连接在 session.done 前关闭",
                     })
                     response_queue.put(("__ready__", False))
-            except Exception as e:
+            except Exception:
                 was_awaiting_done = bool(session_state.get("awaiting_done"))
-                logger.error(f"[vLLM-Omni TTS] 接收异常: {e}")
+                log_configured_tts_failure("vllm_omni", "receive")
                 session_state["active"] = False
                 session_state["awaiting_done"] = False
                 session_state["speech_id"] = None
@@ -371,6 +386,7 @@ def vllm_omni_tts_worker(request_queue, response_queue, audio_api_key, voice_id,
             session_state["active"] = True
             session_state["awaiting_done"] = False
             session_state["speech_id"] = None
+            audio_done.reset()  # 新会话重置 audio_done 去重标记
             receive_task = asyncio.create_task(_receive_loop())
             return True
 
@@ -386,8 +402,8 @@ def vllm_omni_tts_worker(request_queue, response_queue, audio_api_key, voice_id,
                 session_state["speech_id"] = pending_text_sid
                 session_state["awaiting_done"] = False
                 return True
-            except Exception as e:
-                logger.error(f"[vLLM-Omni TTS] 重放 pending_text 失败: {e}")
+            except Exception:
+                log_configured_tts_failure("vllm_omni", "replay_pending")
                 session_state["active"] = False
                 return False
 
@@ -420,32 +436,44 @@ def vllm_omni_tts_worker(request_queue, response_queue, audio_api_key, voice_id,
                 # 修复 PR #1764 review 第二轮 #3：打断时只销毁当前连接、把 session 标记失效，
                 # 不立刻重连——避免上游短暂不可用时一次失败就把整个 worker 退出。
                 # 实际重连延迟到下一条输入到来时由活跃性检查（while 循环下方）处理。
-                if receive_task is not None and not receive_task.done():
-                    receive_task.cancel()
-                    try:
-                        await receive_task
-                    except asyncio.CancelledError:
-                        pass
-                    except Exception:
-                        pass
-                receive_task = None
-                if ws is not None:
-                    try:
-                        await ws.close()
-                    except Exception:
-                        pass
-                    ws = None
+                audio_done.begin_interrupt()  # 打断轮不发 audio_done（走独立 cancel 通道）
+                # try/finally 与 step/qwen/grok/elevenlabs/gptsovits 对偶：拆卸段里
+                # 任何意外抛出都不能把 emitter 永久停在 interrupted 上，否则本会话
+                # 之后所有轮都静默漏发 audio_done。
                 try:
-                    resampler.clear()
-                except Exception:
-                    pass
-                session_state["active"] = False
-                session_state["awaiting_done"] = False
-                # 与其他失效路径（_receive_loop / _rebuild_session / _fail_pending_flush /
-                # sid 切换）对齐，同步清理 speech_id，避免中断后残留旧 utterance id。
-                session_state["speech_id"] = None
-                pending_text.clear()
-                pending_text_sid = None
+                    if receive_task is not None and not receive_task.done():
+                        receive_task.cancel()
+                        try:
+                            await receive_task
+                        except asyncio.CancelledError:
+                            # 这个 cancel 是上一行自己发的，正常路径
+                            pass
+                        except Exception:
+                            # 接收协程临终抛的异常与本次打断无关，吞掉继续拆卸
+                            pass
+                    receive_task = None
+                    if ws is not None:
+                        try:
+                            await ws.close()
+                        except Exception:
+                            # 连接马上要丢弃，close 失败不影响拆卸
+                            pass
+                        ws = None
+                    try:
+                        resampler.clear()
+                    except Exception:
+                        # 重采样器状态下一轮会重建，清不掉也不该拦住打断
+                        pass
+                    session_state["active"] = False
+                    session_state["awaiting_done"] = False
+                    # 与其他失效路径（_receive_loop / _rebuild_session / _fail_pending_flush /
+                    # sid 切换）对齐，同步清理 speech_id，避免中断后残留旧 utterance id。
+                    session_state["speech_id"] = None
+                    pending_text.clear()
+                    pending_text_sid = None
+                    audio_done.reset()
+                finally:
+                    audio_done.end_interrupt()
                 continue
 
             if sid is None:
@@ -466,8 +494,8 @@ def vllm_omni_tts_worker(request_queue, response_queue, audio_api_key, voice_id,
                         pending_text.clear()
                         pending_text_sid = None
                         session_state["awaiting_done"] = True
-                    except Exception as e:
-                        logger.warning(f"[vLLM-Omni TTS] 发送 input.done 失败: {e}")
+                    except Exception:
+                        log_configured_tts_failure("vllm_omni", "input_done")
                         session_state["active"] = False
                         session_state["awaiting_done"] = False
                         if not await _rebuild_session():
@@ -482,8 +510,8 @@ def vllm_omni_tts_worker(request_queue, response_queue, audio_api_key, voice_id,
                             pending_text_sid = None
                             session_state["awaiting_done"] = True
                             logger.info("[vLLM-Omni TTS] 重放 pending_text 并重发 input.done 成功")
-                        except Exception as e2:
-                            logger.warning(f"[vLLM-Omni TTS] 重发 input.done 仍失败: {e2}")
+                        except Exception:
+                            log_configured_tts_failure("vllm_omni", "input_done_retry")
                             _fail_pending_flush("vLLM-Omni TTS flush 重发失败")
                             break
                 else:
@@ -541,8 +569,8 @@ def vllm_omni_tts_worker(request_queue, response_queue, audio_api_key, voice_id,
                     pending_text_sid = sid
                     session_state["speech_id"] = sid
                     session_state["awaiting_done"] = False
-                except Exception as e:
-                    logger.error(f"[vLLM-Omni TTS] 发送 input.text 失败: {e}，尝试重建并重发")
+                except Exception:
+                    log_configured_tts_failure("vllm_omni", "input_text")
                     session_state["active"] = False
                     session_state["awaiting_done"] = False
                     if await _rebuild_session():
@@ -557,8 +585,8 @@ def vllm_omni_tts_worker(request_queue, response_queue, audio_api_key, voice_id,
                             session_state["speech_id"] = sid
                             session_state["awaiting_done"] = False
                             logger.info("[vLLM-Omni TTS] 重发 input.text 成功")
-                        except Exception as e2:
-                            logger.error(f"[vLLM-Omni TTS] 重发 input.text 仍失败: {e2}，标记 worker 未就绪")
+                        except Exception:
+                            log_configured_tts_failure("vllm_omni", "input_text_retry")
                             session_state["active"] = False
                             _enqueue_error(response_queue, {
                                 "code": "TTS_CONNECTION_FAILED",
@@ -591,8 +619,8 @@ def vllm_omni_tts_worker(request_queue, response_queue, audio_api_key, voice_id,
 
     try:
         asyncio.run(async_worker())
-    except Exception as e:
-        logger.error(f"[vLLM-Omni TTS] Worker 启动失败: {e}")
+    except Exception:
+        log_configured_tts_failure("vllm_omni", "worker_start")
         response_queue.put(("__ready__", False))
 
 # ── vLLM-Omni（本地 self-hosted 服务）────────────────────────────────────────
@@ -626,13 +654,22 @@ def _vllm_omni_is_selected(ctx) -> bool:
     # 显式选中 vllm_omni（下拉默认）时不能触发 voice_meta 加载，否则违反
     # test_get_tts_worker_routes_explicit_vllm_before_cloned_voice 的短路契约（对偶 _mimo_is_selected
     # 的顺序：config-selected 先判，clone-meta 后判）。
-    core_config, cm = ctx.core_config, ctx.cm
+    core_config = ctx.core_config
     if _as_bool(core_config.get('ENABLE_CUSTOM_API'), False):
-        try:
-            raw = cm.load_json_config('core_config.json', {})
-        except Exception:
-            raw = {}
-        if (raw.get('ttsModelProvider') or '').strip() == 'vllm_omni':
+        # Selection uses the existing sanitized snapshot; sensitive credentials
+        # remain a resolver-only disk read.
+        # 选中判断只读现有快照，API Key 仍只在 resolve 阶段读取原始配置。
+        if 'ttsModelProvider' in core_config:
+            configured_provider = str(core_config.get('ttsModelProvider') or '').strip()
+        else:
+            try:
+                raw = ctx.cm.load_json_config('core_config.json', {}) or {}
+                configured_provider = str(raw.get('ttsModelProvider') or '').strip()
+            except Exception:
+                # Selection errors use the same redacted diagnostic contract.
+                # 选中判定失败也不能把配置异常原文写入后端日志。
+                log_configured_tts_failure("vllm_omni", "selection")
+        if configured_provider == 'vllm_omni':
             return True
     # 克隆音色选中：按所选音色的 voice_meta.provider 路由（惰性，命中前面 config-selected
     # provider / 本 provider 的 config 分支时不会触发 voice_meta 加载）。
@@ -693,10 +730,44 @@ def _vllm_omni_resolve(ctx):
     try:
         raw = cm.load_json_config('core_config.json', {})
     except Exception:
-        raw = {}
+        log_configured_tts_failure("vllm_omni", "configuration")
+        # Preserve WSS/HTTPS provider symmetry: both report setup failure through
+        # the same ready channel before core activates the existing fallback.
+        # WSS 与 HTTPS 配置读取失败都先回报原 provider，再进入同一保底接缝。
+        return configured_tts_unavailable_worker, "", "vllm_omni"
 
-    # 克隆音色始终优先于配置默认（preset）：用户选了克隆音色 = 明确意图用克隆，
-    # 无论是否配置了 vllm_omni 作为默认 provider 都应走 clone resolve。之前的
+    def _config_value(key):
+        # Selection and resolution must use one session snapshot. Disk is only
+        # a compatibility fallback when an older snapshot omits the field.
+        # 选中与解析共用会话快照；仅旧快照缺字段时回退磁盘配置。
+        if key in ctx.core_config:
+            return ctx.core_config.get(key)
+        return raw.get(key)
+
+    configured_voice = str(_config_value('ttsVoiceId') or '').strip() or 'default'
+    configured_provider = str(_config_value('ttsModelProvider') or '').strip()
+    config_selected = (
+        _as_bool(ctx.core_config.get('ENABLE_CUSTOM_API'), False)
+        and configured_provider == 'vllm_omni'
+    )
+    raw_provider = str(raw.get('ttsModelProvider') or '').strip()
+    if config_selected and raw_provider and raw_provider != configured_provider:
+        # The raw credential may already belong to a newly selected provider.
+        # Never send it to the endpoint retained by this session snapshot.
+        # 磁盘中的凭证可能已属于新 provider，禁止发往旧会话快照的端点。
+        log_configured_tts_failure("vllm_omni", "configuration")
+        return configured_tts_unavailable_worker, "", "vllm_omni"
+    # The exact configured preset owns a same-ID collision; a different clone
+    # still keeps the historical clone-first behavior.
+    # 仅当角色音色与配置 Voice ID 精确相同时，显式配置才压过同名克隆；
+    # 其他克隆仍沿用原有优先级。
+    configured_preset_selected = (
+        config_selected
+        and str(ctx.voice_id or '').strip() == configured_voice
+    )
+
+    # 克隆音色通常优先于配置默认（preset）：用户选了不同的克隆音色 = 明确意图用克隆，
+    # 即使配置了 vllm_omni 作为默认 provider 也应走 clone resolve。之前的
     # `not config_selected` 守卫导致"配置选了 vllm_omni + 用户选了克隆音色"时走
     # preset 路径，把克隆音色的内部 ID（如 vllm-omni-clone-ch-xxx）当作 voice
     # 发给 vLLM-Omni 服务端，服务端报 Invalid Voice（该 ID 是 N.E.K.O. 本地
@@ -704,12 +775,18 @@ def _vllm_omni_resolve(ctx):
     # 避免触发 voice_meta 惰性加载（短路契约），但 _vllm_omni_is_selected 已在
     # config-selected 后惰性检查 voice_meta，resolve 到达时 is_selected 已返回
     # True，voice_meta 已加载完毕，不存在短路问题。
-    if _vllm_omni_voice_meta_is_clone(ctx.voice_meta):
+    if (
+        _vllm_omni_voice_meta_is_clone(ctx.voice_meta)
+        and not configured_preset_selected
+    ):
         return _vllm_omni_clone_resolve(ctx)
-    vllm_url = (raw.get('ttsModelUrl') or '').strip() or VLLM_OMNI_DEFAULT_BASE_URL
-    vllm_model = (raw.get('ttsModelId') or '').strip() or VLLM_OMNI_DEFAULT_MODEL
-    vllm_voice = (raw.get('ttsVoiceId') or '').strip() or 'default'
-    # 凭证防泄漏：无 key 时返回空字符串而非 None，配合 core.resolve_tts_api_key
+    vllm_url = str(_config_value('ttsModelUrl') or '').strip() or VLLM_OMNI_DEFAULT_BASE_URL
+    vllm_model = str(_config_value('ttsModelId') or '').strip() or VLLM_OMNI_DEFAULT_MODEL
+    vllm_voice = configured_voice
+    # Credentials remain a resolver-only raw read and never enter the session
+    # snapshot; an empty key must still block fallback to another provider's key.
+    # 凭证仍只在 resolve 阶段读原始配置，不进会话快照；空 key 也禁止借用其他 provider 凭证。
+    # 无 key 时返回空字符串而非 None，配合 core.resolve_tts_api_key
     # 的 provider_key=='vllm_omni' 特判，禁止 fallback 到别家 provider 的 key
     # （见 get_tts_worker 原注释 / PR #1764 review 第三轮 #3）。
     vllm_key = (raw.get('ttsModelApiKey') or '').strip()

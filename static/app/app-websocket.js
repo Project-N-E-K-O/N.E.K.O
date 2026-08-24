@@ -21,9 +21,8 @@
     const GREETING_CHECK_RETRY_MAX_MS = 5000;
     const STARTUP_GREETING_RELEASE_FALLBACK_MS = 65000;
     const STARTUP_GREETING_RELEASE_EVENT = 'neko:startup-greeting-release';
-    // Cat-form returns shorter than three minutes stay silent by default. A
-    // summary carrying a strictly verified runner start is the one short-return
-    // exception, mirrored by the backend prompt gate below.
+    // Every cat-form return keeps the same minimum dwell time. Cat Mind
+    // activity never bypasses this return-conversation gate.
     const CAT_GREETING_SILENT_BELOW_SECONDS = 180;
     const NEW_USER_ICEBREAKER_STORAGE_KEY = 'neko.new_user_icebreaker.v1';
     const NEW_USER_ICEBREAKER_BLOCKING_WINDOW_MS = 2 * 60 * 60 * 1000;
@@ -33,10 +32,15 @@
     const MUSIC_PLAY_URL_CLAIM_CLEANUP_MS = 60000;
     const MUSIC_PLAY_URL_COORD_CHANNEL_NAME = 'neko_music_play_url_coord';
     const MUSIC_PLAY_URL_COORD_STORAGE_KEY = 'neko_music_play_url_coord';
+    const CAPTURE_BRIDGE_REANNOUNCE_INTERVAL_MS = 250;
+    const CAPTURE_BRIDGE_REANNOUNCE_MAX_ATTEMPTS = 40;
+    const CAPTURE_BRIDGE_REGION_IMAGE_MAX_CHARS = 9 * 1024 * 1024;
     let _pendingUserActivityCancelTimer = 0;
     let _pendingUserActivityCancelTurnId = null;
     let _lanlanNameWaitAttempts = 0;
     let _lanlanNameWaitLastLogAt = 0;
+    let _coreApiCapabilityRefreshPromise = null;
+    let _coreApiCapabilityRequestGeneration = 0;
     let _musicPlayUrlCoordChannel = null;
     let _musicPlayUrlCoordChannelReady = false;
     let _musicPlayUrlClaims = Object.create(null);
@@ -57,6 +61,105 @@
     function textSendButton()     { return $id('textSendButton'); }
     function screenshotButton()   { return $id('screenshotButton'); }
     function chatContainer()      { return $id('chatContainer'); }
+
+    function resolveDesktopCaptureProvider() {
+        return typeof window.getDesktopCaptureProvider === 'function'
+            ? window.getDesktopCaptureProvider()
+            : null;
+    }
+
+    function announceCaptureBridgeStatus(socket) {
+        if (!socket || socket !== S.socket || socket.readyState !== WebSocket.OPEN) {
+            return true;
+        }
+        try {
+            var dc = resolveDesktopCaptureProvider();
+            var available = !!(dc && (
+                (dc.getSources && dc.captureSourceAsDataUrl)
+                || dc.captureDesktopRegionAsDataUrl
+            ));
+            socket.send(JSON.stringify({
+                action: 'capture_bridge_status',
+                available: available,
+                capabilities: {
+                    getSources: !!(dc && dc.getSources),
+                    captureSourceAsDataUrl: !!(dc && dc.captureSourceAsDataUrl),
+                    captureSourceWithoutNeko: !!(dc && dc.captureSourceWithoutNeko),
+                    captureDesktopRegionAsDataUrl: !!(dc && dc.captureDesktopRegionAsDataUrl)
+                }
+            }));
+            return available;
+        } catch (_) {
+            return false;
+        }
+    }
+
+    function getCaptureBridgeCropTranslations() {
+        var keys = [
+            'chat.cropTabScreenshot', 'chat.cropTabHideNeko', 'chat.cropTabCancel',
+            'chat.cropClearSelectionTitle', 'chat.cropConfirmTitle'
+        ];
+        var translations = {};
+        if (typeof window.t !== 'function') return translations;
+        keys.forEach(function (key) {
+            try {
+                var value = window.t(key);
+                if (typeof value === 'string' && value && value !== key) {
+                    translations[key] = value;
+                }
+            } catch (_) { /* use crop overlay fallback */ }
+        });
+        return translations;
+    }
+
+    function loadCaptureBridgeImage(dataUrl) {
+        return new Promise(function (resolve, reject) {
+            var image = new Image();
+            image.onload = function () { resolve(image); };
+            image.onerror = function () { reject(new Error('invalid_capture_image')); };
+            image.src = dataUrl;
+        });
+    }
+
+    async function boundCaptureBridgeRegionImage(dataUrl) {
+        if (typeof dataUrl !== 'string' || dataUrl.indexOf('data:image/') !== 0) return null;
+        if (dataUrl.length <= CAPTURE_BRIDGE_REGION_IMAGE_MAX_CHARS) return dataUrl;
+
+        var image;
+        try {
+            image = await loadCaptureBridgeImage(dataUrl);
+        } catch (_) {
+            return null;
+        }
+        var scales = [1, 0.85, 0.7, 0.55];
+        var qualities = [0.92, 0.85, 0.75];
+        for (var scaleIndex = 0; scaleIndex < scales.length; scaleIndex++) {
+            var canvas = document.createElement('canvas');
+            canvas.width = Math.max(1, Math.round(image.naturalWidth * scales[scaleIndex]));
+            canvas.height = Math.max(1, Math.round(image.naturalHeight * scales[scaleIndex]));
+            var context = canvas.getContext('2d');
+            if (!context) return null;
+            context.drawImage(image, 0, 0, canvas.width, canvas.height);
+            for (var qualityIndex = 0; qualityIndex < qualities.length; qualityIndex++) {
+                var candidate = canvas.toDataURL('image/jpeg', qualities[qualityIndex]);
+                if (candidate.length <= CAPTURE_BRIDGE_REGION_IMAGE_MAX_CHARS) {
+                    return candidate;
+                }
+                await Promise.resolve();
+            }
+        }
+        return null;
+    }
+
+    function reannounceCaptureBridgeWhenReady(socket, attempt) {
+        if (attempt >= CAPTURE_BRIDGE_REANNOUNCE_MAX_ATTEMPTS) return;
+        setTimeout(function () {
+            if (!socket || socket !== S.socket || socket.readyState !== WebSocket.OPEN) return;
+            if (!announceCaptureBridgeStatus(socket)) {
+                reannounceCaptureBridgeWhenReady(socket, attempt + 1);
+            }
+        }, CAPTURE_BRIDGE_REANNOUNCE_INTERVAL_MS);
+    }
 
     function isGoodbyeUiSuppressed() {
         try {
@@ -122,6 +225,16 @@
 
         if (typeof window.stopMicCapture === 'function') {
             try {
+                // Stop recording WITHOUT notifying first: the backend is already
+                // tearing this session down, and a pause_session from a
+                // superseded recorder socket would be read as a character
+                // switch and get that socket closed (see the
+                // session_ended_by_server teardown below). stopMicCapture's own
+                // bare stopRecording() then hits its !S.isRecording early
+                // return, so no server message goes out.
+                if (typeof window.stopRecording === 'function') {
+                    window.stopRecording({ notifyServer: false });
+                }
                 await window.stopMicCapture();
             } catch (error) {
                 console.warn('[App] auto_close_mic cleanup failed:', error);
@@ -200,14 +313,20 @@
     function handleMusicPlayUrlCoordMessage(data) {
         if (!data || typeof data !== 'object') return;
         if (data.sender === MUSIC_PLAY_URL_SENDER_ID) return;
-        if (data.type === 'music_play_url_claim' && data.key && data.sender) {
+        if (data.type === 'music_play_url_claim' && data.key && data.sender && data.token) {
             _musicPlayUrlClaims[data.key] = {
                 sender: data.sender,
+                token: data.token,
                 expires: Date.now() + MUSIC_PLAY_URL_CLAIM_TTL_MS
             };
-        } else if (data.type === 'music_play_url_claim_release' && data.key && data.sender) {
+        } else if (
+            data.type === 'music_play_url_claim_release'
+            && data.key
+            && data.sender
+            && data.token
+        ) {
             var claim = getValidMusicPlayUrlClaim(data.key);
-            if (claim && claim.sender === data.sender) {
+            if (claim && claim.sender === data.sender && claim.token === data.token) {
                 delete _musicPlayUrlClaims[data.key];
             }
         }
@@ -356,7 +475,7 @@
         if (!key) return null;
         pruneMusicPlayUrlClaims();
         var claim = _musicPlayUrlClaims[key];
-        if (!claim || typeof claim !== 'object' || !claim.sender || !claim.expires) {
+        if (!claim || typeof claim !== 'object' || !claim.sender || !claim.token || !claim.expires) {
             if (claim) delete _musicPlayUrlClaims[key];
             return null;
         }
@@ -368,20 +487,24 @@
     }
 
     function claimMusicPlayUrl(key) {
-        if (!key) return;
+        if (!key) return '';
         pruneMusicPlayUrlClaims();
+        var token = MUSIC_PLAY_URL_SENDER_ID + ':' + Date.now().toString(36)
+            + ':' + Math.random().toString(36).slice(2, 10);
         _musicPlayUrlClaims[key] = {
             sender: MUSIC_PLAY_URL_SENDER_ID,
+            token: token,
             expires: Date.now() + MUSIC_PLAY_URL_CLAIM_TTL_MS
         };
         var channel = getMusicPlayUrlCoordChannel();
-        if (!channel) return;
+        if (!channel) return token;
         var timestamp = Date.now();
         try {
             channel.postMessage({
                 type: 'music_play_url_claim',
                 key: key,
                 sender: MUSIC_PLAY_URL_SENDER_ID,
+                token: token,
                 ts: timestamp
             });
         } catch (error) {
@@ -393,34 +516,48 @@
                 channelType: channel._nekoCoordType || 'unknown'
             });
         }
+        return token;
+    }
+
+    function releaseMusicPlayUrlClaim(key, token) {
+        var claim = getValidMusicPlayUrlClaim(key);
+        if (
+            !claim
+            || claim.sender !== MUSIC_PLAY_URL_SENDER_ID
+            || !token
+            || claim.token !== token
+        ) return;
+        delete _musicPlayUrlClaims[key];
+        var channel = _musicPlayUrlCoordChannel;
+        if (!channel || typeof channel.postMessage !== 'function') return;
+        var timestamp = Date.now();
+        try {
+            channel.postMessage({
+                type: 'music_play_url_claim_release',
+                key: key,
+                sender: MUSIC_PLAY_URL_SENDER_ID,
+                token: token,
+                ts: timestamp
+            });
+        } catch (error) {
+            console.warn('[Music] music_play_url claim 释放广播失败:', error, {
+                key: key,
+                sender: MUSIC_PLAY_URL_SENDER_ID,
+                timestamp: timestamp,
+                channelId: channel._nekoCoordId || MUSIC_PLAY_URL_COORD_CHANNEL_NAME,
+                channelType: channel._nekoCoordType || 'unknown'
+            });
+        }
     }
 
     function releaseOwnedMusicPlayUrlClaims() {
-        var channel = _musicPlayUrlCoordChannel;
         var keys = Object.keys(_musicPlayUrlClaims).filter(function (key) {
             var claim = getValidMusicPlayUrlClaim(key);
             return claim && claim.sender === MUSIC_PLAY_URL_SENDER_ID;
         });
         keys.forEach(function (key) {
-            delete _musicPlayUrlClaims[key];
-            if (!channel || typeof channel.postMessage !== 'function') return;
-            var timestamp = Date.now();
-            try {
-                channel.postMessage({
-                    type: 'music_play_url_claim_release',
-                    key: key,
-                    sender: MUSIC_PLAY_URL_SENDER_ID,
-                    ts: timestamp
-                });
-            } catch (error) {
-                console.warn('[Music] music_play_url claim 释放广播失败:', error, {
-                    key: key,
-                    sender: MUSIC_PLAY_URL_SENDER_ID,
-                    timestamp: timestamp,
-                    channelId: channel._nekoCoordId || MUSIC_PLAY_URL_COORD_CHANNEL_NAME,
-                    channelType: channel._nekoCoordType || 'unknown'
-                });
-            }
+            var claim = getValidMusicPlayUrlClaim(key);
+            if (claim) releaseMusicPlayUrlClaim(key, claim.token);
         });
     }
 
@@ -648,6 +785,17 @@
         return String(turnId);
     }
 
+    function resolveAssistantRequestId(requestId, responseMeta) {
+        var meta = responseMeta && typeof responseMeta === 'object' ? responseMeta : {};
+        return normalizeAssistantTurnId(
+            requestId
+            || meta.request_id
+            || meta.requestId
+            || meta.interaction_id
+            || meta.interactionId
+        );
+    }
+
     function allocateAssistantTurnId(serverTurnId) {
         var normalized = normalizeAssistantTurnId(serverTurnId);
         if (normalized) {
@@ -743,6 +891,137 @@
         cc.scrollTop = cc.scrollHeight;
         return true;
     }
+
+    // preview.asrTurnId 记录“屏幕上这个预览气泡属于哪一轮独立 ASR”。后端的
+    // final 经 transcript dispatcher 的独立 worker 回调，可能排在下一轮
+    // partial 之后才到达；带上轮次 id，过期轮次的清除信号才能被识别成 no-op。
+    // 后端未带 id（旧后端 / 轮次尚未 prepare）时保持空串 = 老的无条件移除语义。
+    function upsertExternalAsrPreview(text) {
+        var host = window.reactChatWindowHost;
+        if (!host || typeof host.appendMessage !== 'function' ||
+            typeof host.updateMessage !== 'function') {
+            return null;
+        }
+        var cleanText = String(text || '');
+        var preview = S.externalAsrPreviewMessage;
+        var existingId = preview && preview.dataset
+            ? preview.dataset.reactChatMessageId
+            : '';
+        if (existingId) {
+            host.updateMessage(existingId, {
+                blocks: [{ type: 'text', text: cleanText }],
+                status: 'streaming'
+            });
+            preview.textContent = cleanText;
+            return preview;
+        }
+
+        var messageId = 'external-asr-preview-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8);
+        host.appendMessage({
+            id: messageId,
+            role: 'user',
+            author: '',
+            time: (typeof window.getCurrentTimeString === 'function')
+                ? window.getCurrentTimeString()
+                : '',
+            createdAt: Date.now(),
+            blocks: [{ type: 'text', text: cleanText }],
+            status: 'streaming'
+        });
+        return {
+            dataset: { reactChatMessageId: messageId },
+            parentNode: null,
+            isConnected: true,
+            textContent: cleanText,
+            asrTurnId: '',
+            nodeType: 1
+        };
+    }
+
+    function removeExternalAsrPreview() {
+        var preview = S.externalAsrPreviewMessage;
+        if (!preview) return;
+        var messageId = preview.dataset && preview.dataset.reactChatMessageId;
+        var host = window.reactChatWindowHost;
+        if (messageId && host && typeof host.removeMessage === 'function') {
+            host.removeMessage(messageId);
+        }
+        if (preview.parentNode && typeof preview.parentNode.removeChild === 'function') {
+            preview.parentNode.removeChild(preview);
+        }
+        if (S.lastVoiceUserMessage === preview) {
+            S.lastVoiceUserMessage = null;
+            S.lastVoiceUserMessageTime = 0;
+        }
+        S.externalAsrPreviewMessage = null;
+    }
+    window.removeExternalAsrPreview = removeExternalAsrPreview;
+
+    // Fail-closed voice-route teardown, shared by the two ways a route dies:
+    // a runtime failure (ASR_LIFECYCLE_STATE blocked) and a STARTUP failure
+    // (terminal ASR_INDEPENDENT_* codes). Startup failures can never emit
+    // BLOCKED -- IndependentAsrRuntime.start cannot reach the only emitter --
+    // so before this was shared they showed a toast and left the hardware
+    // microphone running for the whole session.
+    function tearDownBlockedVoiceRoute() {
+
+    removeExternalAsrPreview();
+    S.independentAsrActive = false;
+    // Sticky: the teardown below is skipped while
+    // the game STT gate owns the hardware, and
+    // BLOCKED is never re-sent, so the game-exit
+    // resume path would otherwise reopen the mic
+    // onto a route that is still fail-closed.
+    S.voiceInputRouteBlocked = true;
+    // The route is now fail-closed. _handle_core_asr_failure
+    // (main_logic/core/asr_runtime.py) pins the microphone
+    // route to "blocked" and nothing re-arms it inside this
+    // session -- only a new start_session, or a hot swap that
+    // also changes core_api_type. canUploadOrdinaryMicFrame()
+    // consults the mic lease and mute/focus only, never the
+    // lifecycle state, so without this the browser keeps the
+    // hardware microphone (and its OS indicator) open and
+    // keeps uploading PCM that the backend decodes, denoises
+    // and VADs before dropping it -- while this very toast
+    // says voice input has stopped. An audio session never
+    // gets VOICE_INPUT_BLOCKED_TEXT_SESSION either, so this
+    // event is the only signal that exists.
+    //
+    // stopMicCapture rather than bare stopRecording: it is
+    // the only path that restores the whole non-recording UI
+    // (mic/mute/screen buttons, floating button state, the
+    // text input area, the volume readout). The user is not
+    // otherwise stranded -- the 闭麦 button is bound to
+    // stopMicCapture -- but leaving that UI claiming a live
+    // voice session is the same lie as the open mic.
+    //
+    // Guarded twice: only the capturing window acts, and
+    // never while the game STT gate holds the microphone,
+    // where the ordinary uplink is already released and a
+    // teardown would kill working game voice.
+    //
+    // Delivery contract, corrected: an earlier version of
+    // this comment claimed a per-window broadcast that does
+    // not exist. send_status targets the CURRENT socket,
+    // and sync_message_queue feeds the monitor process over a
+    // separate port that no app window connects to. Mic
+    // control-plane codes are therefore additionally pushed to
+    // the socket holding the voice lease (notify.py
+    // _send_to_voice_owner), which is how a recorder
+    // superseded by a newer chat window receives this at all.
+    if (S.isRecording === true
+        && S.gameVoiceSttGateActive !== true) {
+        console.log('[App] independent ASR blocked; stopping the microphone');
+        if (typeof window.stopMicCapture === 'function') {
+            Promise.resolve(window.stopMicCapture()).catch(function (micTeardownErr) {
+                console.warn('[App] blocked-ASR microphone teardown failed:', micTeardownErr);
+            });
+        } else if (typeof window.stopRecording === 'function') {
+            window.stopRecording();
+        }
+    }
+    }
+
 
     function websocketTraceEnabled() {
         return window.NEKO_DEBUG_BUBBLE_LIFECYCLE === true;
@@ -992,7 +1271,7 @@
         })();
     }
 
-    function ensureAssistantTurnStarted(source, serverTurnId, responseMeta) {
+    function ensureAssistantTurnStarted(source, serverTurnId, responseMeta, requestId) {
         if (S.assistantTurnId) {
             window._nekoAssistantTurnId = S.assistantTurnId;
             clearPendingAssistantTurnStart();
@@ -1017,6 +1296,7 @@
         clearPendingAssistantTurnStart();
         emitAssistantLifecycleEvent('neko-assistant-turn-start', {
             turnId: S.assistantTurnId,
+            requestId: resolveAssistantRequestId(requestId, responseMeta),
             source: source || 'visible_gemini_bubble',
             meta: responseMeta
         });
@@ -1127,6 +1407,11 @@
     function clearAssistantLifecycleOnDisconnect(source) {
         clearPendingUserActivityCancel();
         emitAssistantSpeechCancel(source || 'socket_close');
+        try {
+            window.dispatchEvent(new CustomEvent('neko:websocket-disconnected', {
+                detail: { source: source || 'socket_close' }
+            }));
+        } catch (_) {}
         S.assistantSpeechActiveTurnId = null;
         S.assistantTurnId = null;
         window._nekoAssistantTurnId = null;
@@ -1210,6 +1495,352 @@
         return v == null ? '' : String(v);
     }
 
+    function getLiveRendererLanguage() {
+        try {
+            if (window.i18next && window.i18next.language) return window.i18next.language;
+            if (window.i18n && window.i18n.language) return window.i18n.language;
+            return localStorage.getItem('i18nextLng') || navigator.language || 'en';
+        } catch (_) {
+            return 'en';
+        }
+    }
+
+    function getConversationLanguageForCurrentCharacter() {
+        try {
+            // Once the server preference has been hydrated, it is authoritative for
+            // this session even when a previous localStorage write failed.
+            if (S.conversationLanguageHydrated === true) {
+                if (S.conversationLanguage) return S.conversationLanguage;
+                return getLiveRendererLanguage();
+            }
+            if (typeof window.getConversationLanguagePreference === 'function') {
+                return window.getConversationLanguagePreference(getWebSocketLanlanName() || '');
+            }
+            if (S.conversationLanguage) return S.conversationLanguage;
+            return getLiveRendererLanguage();
+        } catch (_) {
+            return S.conversationLanguage || 'en';
+        }
+    }
+
+    function getExplicitConversationLanguageForCurrentCharacter() {
+        try {
+            if (S.conversationLanguageHydrated === true) {
+                return S.conversationLanguageExplicit || '';
+            }
+            if (typeof window.getExplicitConversationLanguagePreference === 'function') {
+                return window.getExplicitConversationLanguagePreference(
+                    getWebSocketLanlanName() || ''
+                ) || '';
+            }
+        } catch (_) { /* omit unavailable explicit preference */ }
+        return '';
+    }
+
+    function hydrateConversationLanguage(characterName) {
+        var hydrationId = (Number(S._conversationLanguageHydrationId) || 0) + 1;
+        S._conversationLanguageHydrationId = hydrationId;
+        S.conversationLanguageHydrated = false;
+        var fallback = getConversationLanguageForCurrentCharacter();
+        if (!characterName) {
+            S.conversationLanguage = '';
+            S.conversationLanguageExplicit = '';
+            S.conversationLanguageHydrated = true;
+            return Promise.resolve(fallback);
+        }
+
+        var explicitAtStart = '';
+        var preferenceRevisionAtStart = null;
+        try {
+            if (typeof window.getExplicitConversationLanguagePreference === 'function') {
+                explicitAtStart = window.getExplicitConversationLanguagePreference(characterName) || '';
+            }
+        } catch (_) { /* continue with server hydration */ }
+        try {
+            if (typeof window.getConversationLanguagePreferenceRevision === 'function') {
+                preferenceRevisionAtStart = window.getConversationLanguagePreferenceRevision(characterName);
+            }
+        } catch (_) { /* retain the value-only fence below */ }
+
+        var request = fetch('/api/characters/character/' + encodeURIComponent(characterName) + '/language-preference', {
+            cache: 'no-store'
+        }).then(function (response) {
+            if (!response.ok) throw new Error('HTTP ' + response.status);
+            return response.json();
+        }).then(function (payload) {
+            if (!payload || payload.success !== true) throw new Error('invalid language preference response');
+            var explicitLanguage = typeof payload.language === 'string'
+                ? payload.language.trim()
+                : '';
+            return {
+                language: explicitLanguage,
+                explicitLanguage: explicitLanguage
+            };
+        }).catch(function (error) {
+            console.warn('[ConversationLanguage] preference hydration failed, using UI fallback:', error);
+            return { language: fallback, explicitLanguage: '', requestFailed: true };
+        });
+
+        function applyHydratedConversationLanguage(hydrated) {
+            var resolved = hydrated || {};
+            var degraded = !!(resolved.requestFailed || resolved.timedOut);
+            // A successful empty response proves only that there is no durable
+            // character preference. Its backend effective_language can lag a
+            // URL/localStorage hot switch in this renderer, so resolve the live
+            // renderer locale at application time instead of replaying that
+            // process-level fallback over a newer UI update.
+            var language = resolved.explicitLanguage || (
+                degraded
+                    ? (resolved.language || fallback)
+                    : getLiveRendererLanguage()
+            );
+            if (S._conversationLanguageHydrationId !== hydrationId) return language;
+            var currentExplicit = '';
+            var currentExplicitResolved = false;
+            var preferenceRevisionChanged = false;
+            var localPreferenceOwnsResult = false;
+            try {
+                if (typeof window.getExplicitConversationLanguagePreference === 'function') {
+                    currentExplicit = window.getExplicitConversationLanguagePreference(characterName) || '';
+                    currentExplicitResolved = true;
+                }
+            } catch (_) { /* a newer revision still fences the stale response */ }
+            try {
+                if (
+                    preferenceRevisionAtStart !== null
+                    && typeof window.getConversationLanguagePreferenceRevision === 'function'
+                ) {
+                    preferenceRevisionChanged = (
+                        window.getConversationLanguagePreferenceRevision(characterName)
+                        !== preferenceRevisionAtStart
+                    );
+                }
+            } catch (_) { /* retain the value-only fence below */ }
+            // A revision change covers same-page dispatch:false writes and clears,
+            // including those that win before the timeout. Never let a degraded
+            // result mark that newer state untrusted or let a late response replace it.
+            if (preferenceRevisionChanged) {
+                language = currentExplicitResolved && currentExplicit
+                    ? currentExplicit
+                    : getLiveRendererLanguage();
+                resolved = {
+                    language: language,
+                    explicitLanguage: currentExplicitResolved ? currentExplicit : ''
+                };
+                degraded = false;
+                localPreferenceOwnsResult = true;
+            } else if (!degraded && currentExplicit && currentExplicit !== explicitAtStart) {
+                // Shared storage can expose a newer explicit value before this
+                // document receives its storage event. An unchanged startup cache
+                // must not override a fresh authoritative empty response.
+                resolved = {
+                    language: currentExplicit,
+                    explicitLanguage: currentExplicit
+                };
+                language = currentExplicit;
+            }
+            var effectiveConversationLanguage = resolved.explicitLanguage || '';
+            if (degraded) {
+                try {
+                    if (typeof window.getCachedConversationLanguagePreference === 'function') {
+                        effectiveConversationLanguage = window.getCachedConversationLanguagePreference(
+                            characterName
+                        ) || '';
+                    }
+                } catch (_) { effectiveConversationLanguage = ''; }
+                try {
+                    if (typeof window.markConversationLanguagePreferenceUntrusted === 'function') {
+                        window.markConversationLanguagePreferenceUntrusted(characterName);
+                    }
+                } catch (_) { /* keep hydration fail-soft */ }
+            }
+            // Fresh hydration stores the durable character preference. A degraded
+            // local-cache value may keep this page's templates stable, but it is
+            // not server evidence and must remain render-only.
+            S.conversationLanguage = effectiveConversationLanguage;
+            S.conversationLanguageExplicit = resolved.explicitLanguage || '';
+            S.conversationLanguageHydrated = true;
+            // Only mirror an explicit character preference into the local cache.
+            // effective_language is a UI/global fallback and must remain dynamic.
+            if (
+                !localPreferenceOwnsResult
+                && resolved.explicitLanguage
+                && typeof window.setConversationLanguagePreference === 'function'
+            ) {
+                window.setConversationLanguagePreference(
+                    resolved.explicitLanguage,
+                    characterName,
+                    { dispatch: false, source: 'server' }
+                );
+            } else if (
+                !localPreferenceOwnsResult
+                &&
+                !resolved.requestFailed
+                && !resolved.timedOut
+                && typeof window.clearConversationLanguagePreference === 'function'
+            ) {
+                window.clearConversationLanguagePreference(characterName, {
+                    dispatch: false,
+                    source: 'server'
+                });
+            }
+            if (!localPreferenceOwnsResult && resolved.explicitLanguage) {
+                _syncLanguageToBackend(resolved.explicitLanguage);
+            } else if (
+                !localPreferenceOwnsResult
+                && !resolved.requestFailed
+                && !resolved.timedOut
+            ) {
+                _syncClearedLanguageToBackend(language, characterName);
+            }
+            _sendGreetingCheckIfReady();
+            return language;
+        }
+
+        return Promise.race([
+            request,
+            new Promise(function (resolve) {
+                setTimeout(function () {
+                    resolve({ language: fallback, explicitLanguage: '', timedOut: true });
+                }, 2500);
+            })
+        ]).then(function (hydrated) {
+            var language = applyHydratedConversationLanguage(hydrated);
+            if (hydrated && hydrated.timedOut) {
+                // The timeout keeps startup responsive, but it must not discard a
+                // valid server preference that arrives later for the same character.
+                void request.then(function (lateHydrated) {
+                    if (lateHydrated && !lateHydrated.requestFailed) {
+                        applyHydratedConversationLanguage(lateHydrated);
+                    }
+                });
+            }
+            return language;
+        });
+    }
+
+    // Upper bound for the settings-sync gate below: a hung POST must never
+    // block session starts or socket-dependent flows for longer than this.
+    var SETTINGS_SYNC_GATE_TIMEOUT_MS = 3000;
+
+    function waitForConversationLanguageHydration() {
+        var pending = S._conversationLanguageHydration;
+        if (!pending || typeof pending.then !== 'function') return Promise.resolve();
+        return pending.catch(function () { /* hydration is fail-soft */ });
+    }
+
+    /**
+     * Refresh the current Core's independent-ASR capability from the same
+     * configuration endpoint used by the API settings UI. The capability is
+     * deliberately tri-state: only an explicit false may disable the effective
+     * UI. It never rewrites the user's preference or handshake, and a failed or
+     * legacy response remains unknown.
+     *
+     * Concurrent callers in one window share the in-flight refresh. `force`
+     * only bypasses completed cache data; the generation fence remains a
+     * defensive guard around request publication.
+     */
+    function publishCoreApiCapability(provider, capability) {
+        var previousProvider = S.coreApiProvider || '';
+        var previousCapability = S.coreApiSupportsIndependentAsr;
+        S.coreApiProvider = typeof provider === 'string' ? provider : '';
+        S.coreApiSupportsIndependentAsr =
+            typeof capability === 'boolean' ? capability : null;
+        if (
+            previousProvider !== S.coreApiProvider
+            || previousCapability !== S.coreApiSupportsIndependentAsr
+        ) {
+            try {
+                window.dispatchEvent(new CustomEvent(
+                    'neko:core-api-capability-changed',
+                    {
+                        detail: {
+                            provider: S.coreApiProvider,
+                            supportsIndependentAsr:
+                                S.coreApiSupportsIndependentAsr
+                        }
+                    }
+                ));
+            } catch (_) { /* optional UI notification */ }
+        }
+        return {
+            provider: S.coreApiProvider,
+            supportsIndependentAsr: S.coreApiSupportsIndependentAsr
+        };
+    }
+
+    function refreshCoreApiCapability(options) {
+        options = options || {};
+        // `force` bypasses completed cache data, not a request that is already
+        // in flight. All callers in this window share the same fresh result.
+        if (_coreApiCapabilityRefreshPromise) {
+            return _coreApiCapabilityRefreshPromise;
+        }
+        if (
+            options.force !== true
+            && typeof S.coreApiSupportsIndependentAsr === 'boolean'
+        ) {
+            return Promise.resolve({
+                provider: S.coreApiProvider || '',
+                supportsIndependentAsr: S.coreApiSupportsIndependentAsr
+            });
+        }
+        if (typeof window.fetch !== 'function') {
+            return Promise.resolve({
+                provider: S.coreApiProvider || '',
+                supportsIndependentAsr: S.coreApiSupportsIndependentAsr
+            });
+        }
+
+        var requestGeneration = ++_coreApiCapabilityRequestGeneration;
+        var refreshPromise = window.fetch('/api/config/core_api', {
+            cache: 'no-store',
+            headers: { Accept: 'application/json' }
+        }).then(function (response) {
+            if (!response || response.ok === false) {
+                throw new Error('Core API capability request failed');
+            }
+            return response.json();
+        }).then(function (data) {
+            if (requestGeneration !== _coreApiCapabilityRequestGeneration) {
+                return {
+                    provider: S.coreApiProvider || '',
+                    supportsIndependentAsr: S.coreApiSupportsIndependentAsr
+                };
+            }
+            data = data && typeof data === 'object' ? data : {};
+            if (data.success === false) {
+                throw new Error('Core API capability response was unsuccessful');
+            }
+            return publishCoreApiCapability(
+                typeof data.effectiveCoreApi === 'string'
+                    ? data.effectiveCoreApi
+                    : data.coreApi,
+                data.supportsIndependentAsr
+            );
+        }).catch(function (error) {
+            console.warn('[Core API] Failed to refresh ASR capability:', error);
+            if (requestGeneration === _coreApiCapabilityRequestGeneration) {
+                return publishCoreApiCapability('', null);
+            }
+            return {
+                provider: S.coreApiProvider || '',
+                supportsIndependentAsr: S.coreApiSupportsIndependentAsr
+            };
+        }).finally(function () {
+            if (_coreApiCapabilityRefreshPromise === refreshPromise) {
+                _coreApiCapabilityRefreshPromise = null;
+            }
+        });
+        _coreApiCapabilityRefreshPromise = refreshPromise;
+        return refreshPromise;
+    }
+
+    // Prime the capability once for both Web and Electron windows. API Core
+    // changes normally reload these pages; the microphone popup also forces a
+    // refresh so a window that missed that reload cannot keep a stale view.
+    refreshCoreApiCapability();
+
     /**
      * Wait for the WebSocket to reach OPEN state.
      *   - Already OPEN  -> resolves immediately
@@ -1219,6 +1850,27 @@
      * @returns {Promise<void>}
      */
     function ensureWebSocketOpen(timeoutMs = 5000) {
+        // Settings-sync gate: toggling independent ASR publishes its in-flight
+        // settings POST as S.pendingSettingsSyncPromise (app-audio-capture.js).
+        // Every start_session send awaits ensureWebSocketOpen() first, and the
+        // backend reads the SERVER-persisted independentAsrEnabled value at
+        // session start (asr_runtime.py _start_independent_asr_if_enabled), so
+        // waiting here closes the race where the first voice session after the
+        // toggle silently used the previous route. The wait is bounded and the
+        // gated promise never rejects (syncSettingsToServer swallows errors).
+        var pendingSync = S.pendingSettingsSyncPromise;
+        if (pendingSync && typeof pendingSync.then === 'function') {
+            return Promise.race([
+                pendingSync.catch(function () { /* gate must never reject */ }),
+                new Promise(function (resolve) { setTimeout(resolve, SETTINGS_SYNC_GATE_TIMEOUT_MS); })
+            ]).then(function () {
+                return ensureWebSocketOpenNow(timeoutMs);
+            }).then(waitForConversationLanguageHydration);
+        }
+        return ensureWebSocketOpenNow(timeoutMs).then(waitForConversationLanguageHydration);
+    }
+
+    function ensureWebSocketOpenNow(timeoutMs) {
         return new Promise(function (resolve, reject) {
             if (S.socket && S.socket.readyState === WebSocket.OPEN) {
                 return resolve();
@@ -1326,8 +1978,83 @@
         });
     }
     mod.ensureWebSocketOpen = ensureWebSocketOpen;
+    mod.refreshCoreApiCapability = refreshCoreApiCapability;
 
     // ========================  connectWebSocket  ========================
+
+    // Stamp the frontend's authoritative independent-ASR toggle onto every
+    // outgoing start_session payload. The bounded settings-sync gate in
+    // ensureWebSocketOpen() is best-effort only: when the settings POST fails
+    // or is still in flight past the bound, the backend would read a stale
+    // persisted independentAsrEnabled at session start. Carrying the toggle in
+    // the start_session handshake lets the backend override that read for this
+    // session (websocket_router -> asr_runtime.set_independent_asr_handshake).
+    // Wrapping send() at socket creation is the single seam that covers every
+    // start_session send site, including the ones in app-buttons.js.
+    //
+    // Hydration gate, two parts, BOTH required (Codex P2). S.settingsHydrated
+    // means "some authoritative settings event happened" — but it also flips on
+    // any unrelated user preference change (settings popup, subtitle toggle,
+    // chat-window translate toggle), which says nothing about the ASR value.
+    // S.independentAsrAuthoritative is the per-key half: set only by a merged
+    // server GET, an explicit independent-ASR toggle, or a cross-window ASR
+    // flip. Before both hold — fresh browser profile, an early start_session
+    // racing the still-pending GET, or a permanently failing GET plus one
+    // unrelated setting change — S.independentAsrEnabled is just the boot
+    // default false, and stamping it would override the
+    // backend's persisted true. Omit the field instead: websocket_router
+    // forwards an absent field as None and set_independent_asr_handshake
+    // falls back to the persisted setting (pinned by
+    // test_start_session_handshake_missing_falls_back_to_persisted). If the
+    // GET fails permanently the field simply stays omitted and the backend's
+    // persisted value keeps governing — the correct fallback.
+    //
+    // Core capability is intentionally NOT folded into this payload. Another
+    // window may switch to a capable Core while this window still has a stale
+    // false capability cache. The handshake always carries the authoritative
+    // user preference; the backend applies the current Core capability as the
+    // final routing guard.
+    function attachStartSessionHandshake(ws) {
+        var rawSend = ws.send.bind(ws);
+        ws.send = function (data) {
+            if (typeof data === 'string' && data.indexOf('start_session') !== -1) {
+                try {
+                    var msg = JSON.parse(data);
+                    var handshakeStamped = false;
+                    if (msg && msg.action === 'start_session' && S.settingsHydrated === true && S.independentAsrAuthoritative === true) {
+                        msg.independent_asr_enabled = S.independentAsrEnabled === true;
+                        handshakeStamped = true;
+                    }
+                    if (msg && msg.action === 'start_session' && S.settingsHydrated === true && S.voiceInputResourceOptimizationAuthoritative === true) {
+                        msg.voice_input_resource_optimization_enabled = S.voiceInputResourceOptimizationEnabled !== false;
+                        handshakeStamped = true;
+                    }
+                    if (msg && msg.action === 'start_session') {
+                        var explicitLanguage = typeof getExplicitConversationLanguageForCurrentCharacter === 'function'
+                            ? getExplicitConversationLanguageForCurrentCharacter()
+                            : '';
+                        var renderLanguage = typeof getConversationLanguageForCurrentCharacter === 'function'
+                            ? getConversationLanguageForCurrentCharacter()
+                            : '';
+                        if (explicitLanguage) {
+                            msg.language = explicitLanguage;
+                            handshakeStamped = true;
+                        }
+                        if (renderLanguage) {
+                            msg.render_language = renderLanguage;
+                            handshakeStamped = true;
+                        }
+                    }
+                    if (handshakeStamped) {
+                        data = JSON.stringify(msg);
+                    }
+                } catch (e) {
+                    // Non-JSON text frames pass through untouched.
+                }
+            }
+            return rawSend(data);
+        };
+    }
 
     function connectWebSocket() {
         var currentLanlanName = getWebSocketLanlanName();
@@ -1356,7 +2083,6 @@
         }
         _lanlanNameWaitAttempts = 0;
         _lanlanNameWaitLastLogAt = 0;
-
         var protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
         // 对 lanlan_name 做 percent-encode：WebSocket.url 会把非 ASCII 字符（中文角色名）
         // 编成 %XX，下面幂等守卫用 S.socket.url === wsUrl 比对，两侧编码口径必须一致，
@@ -1370,17 +2096,45 @@
         if (S.socket && S.socket.readyState === WebSocket.OPEN && S.socket.url === wsUrl) {
             return;
         }
+        // A queued proactive/plugin dispatch belongs to the connection and
+        // character that created it. Invalidate both asynchronous playback
+        // stages before replacing that scope.
+        if (typeof window.cancelPendingMusicMediaReady === 'function') {
+            window.cancelPendingMusicMediaReady();
+        }
+        if (typeof window.cancelQueuedMusicDispatch === 'function') {
+            window.cancelQueuedMusicDispatch();
+        }
 
+        S._conversationLanguageHydration = hydrateConversationLanguage(currentLanlanName);
         // 新连接重置模型就绪标志，等待模型重新加载
         S._modelReady = false;
 
         console.log(window.t('console.websocketConnecting'), currentLanlanName, window.t('console.websocketUrl'), wsUrl);
         S.socket = new WebSocket(wsUrl);
+        attachStartSessionHandshake(S.socket);
         var _thisSocket = S.socket; // 闭包捕获，供 onclose 判断是否已被替换
 
         // ---- onopen ----
         S.socket.onopen = function () {
+            if (S.socket !== _thisSocket) return;
             console.log(window.t('console.websocketConnected'));
+
+            if (S._conversationLanguageClearPending) {
+                var pendingLanguageClear = S._conversationLanguageClearPending;
+                if (pendingLanguageClear.characterName === getWebSocketLanlanName()) {
+                    _syncClearedLanguageToBackend(
+                        getConversationLanguageForCurrentCharacter(),
+                        pendingLanguageClear.characterName
+                    );
+                } else {
+                    S._conversationLanguageClearPending = null;
+                }
+            }
+
+            window.dispatchEvent(new CustomEvent('voice-input-socket-open', {
+                detail: { socket: _thisSocket }
+            }));
 
             // Warm up Agent snapshot once websocket is ready.
             Promise.all([
@@ -1439,30 +2193,18 @@
             }).catch(function () { });
 
             // Capture bridge: tell the backend whether this renderer can
-            // service window-level captures via Electron's desktopCapturer.
+            // service window-level captures through the active desktop host.
             // The backend uses this to fail /api/capture/health fast when
-            // no Electron renderer is available (e.g. running in a plain
+            // no desktop renderer is available (e.g. running in a plain
             // browser tab), which matters for the galgame OCR fallback path
             // on Linux pure-Wayland where MSS / PyAutoGUI can't see other
             // windows.
-            // Note: intentionally broadcast for all renderers; non-Electron
+            // Note: intentionally broadcast for all renderers; non-desktop
             // environments send available=false and the backend ignores them.
-            try {
-                var dc = window.electronDesktopCapturer;
-                var available = !!(dc && dc.getSources && dc.captureSourceAsDataUrl);
-                if (_thisSocket && _thisSocket.readyState === WebSocket.OPEN) {
-                    _thisSocket.send(JSON.stringify({
-                        action: 'capture_bridge_status',
-                        available: available,
-                        capabilities: {
-                            getSources: !!(dc && dc.getSources),
-                            captureSourceAsDataUrl: !!(dc && dc.captureSourceAsDataUrl),
-                            captureSourceWithoutNeko: !!(dc && dc.captureSourceWithoutNeko)
-                        }
-                    }));
-                }
-            } catch (_capErr) {
-                // capture bridge is best-effort; never block the rest of onopen
+            if (!announceCaptureBridgeStatus(_thisSocket)) {
+                // Tauri injects its bridge after navigation. Re-announce for a
+                // bounded window so a late bridge does not require reconnecting.
+                reannounceCaptureBridgeWhenReady(_thisSocket, 0);
             }
 
             // Start heartbeat
@@ -1609,6 +2351,13 @@
                         return;
                     }
                     var isNewMessage = response.isNewMessage || false;
+                    // Ordinary responses historically expose lifecycle metadata as
+                    // `meta`, while mirror responses (including game dialogue) use
+                    // `metadata`. Preserve the legacy field when present, but let
+                    // mirror turns carry their session identity into turn-start.
+                    var assistantResponseMeta = response.meta !== undefined
+                        ? response.meta
+                        : response.metadata;
                     if (response.metadata && response.metadata.game_route) {
                         var gameMeta = response.metadata.game_route;
                         var gameEvent = gameMeta.event || {};
@@ -1648,7 +2397,8 @@
                         ensureAssistantTurnStarted(
                             'gemini_response_first_chunk',
                             response.turn_id,
-                            response.meta
+                            assistantResponseMeta,
+                            response.request_id
                         );
                     }
                     var createdVisibleBubble = false;
@@ -1668,7 +2418,8 @@
                         ensureAssistantTurnStarted(
                             'gemini_response_visible_bubble',
                             response.turn_id,
-                            response.meta
+                            assistantResponseMeta,
+                            response.request_id
                         );
                     }
                     if (response.turn_id) {
@@ -1689,6 +2440,16 @@
                             willRetry: !!response.will_retry
                         });
                         return;
+                    }
+                    if (!response.will_retry) {
+                        try {
+                            window.dispatchEvent(new CustomEvent('neko:assistant-response-cancelled', {
+                                detail: {
+                                    reason: response.reason || 'response-discarded',
+                                    requestId: resolveAssistantRequestId(response.request_id, response.meta)
+                                }
+                            }));
+                        } catch (_) {}
                     }
                     emitAssistantSpeechCancel('response_discarded');
                     S.assistantTurnId = null;
@@ -1859,8 +2620,52 @@
                         }
                     }
 
+                // -------- user_transcript_preview (independent ASR only) --------
+                } else if (response.type === 'user_transcript_preview') {
+                    var externalPreviewText = String(response.text || '');
+                    var externalPreviewTurnId = String(response.asr_turn_id || '');
+                    if (externalPreviewText === '') {
+                        // 空 text 是后端的 preview-clear 信号（asr_runtime.py
+                        // _send_core_asr_preview_clear）：空 final 结束的轮次不会注入
+                        // user_transcript，唯有显式清除才能撤掉流式预览气泡；真实
+                        // partial 后端保证非空，不会误触发。
+                        // Codex P2：final 走 transcript dispatcher 的独立 worker，
+                        // 可能排在下一轮 partial 之后才回调，于是上一轮的清除会抹掉
+                        // 新一轮的气泡。按 asr_turn_id 配对：只有清除信号指向的轮次
+                        // 仍是屏幕上这个气泡时才移除；过期的清除直接忽略。任一侧缺
+                        // id（旧后端 / 轮次未 prepare）时退回无条件移除的老行为。
+                        var displayedPreview = S.externalAsrPreviewMessage;
+                        var displayedPreviewTurnId = displayedPreview
+                            ? String(displayedPreview.asrTurnId || '')
+                            : '';
+                        if (!externalPreviewTurnId || !displayedPreviewTurnId ||
+                            externalPreviewTurnId === displayedPreviewTurnId) {
+                            removeExternalAsrPreview();
+                        }
+                    } else {
+                        S.externalAsrPreviewMessage = upsertExternalAsrPreview(externalPreviewText);
+                        if (S.externalAsrPreviewMessage) {
+                            S.externalAsrPreviewMessage.asrTurnId = externalPreviewTurnId;
+                        }
+                    }
+
                 // -------- user_transcript --------
                 } else if (response.type === 'user_transcript') {
+                    // user_transcript 不带轮次身份（由 main_logic/core/turn.py 发出），
+                    // 这里无法配对，只能保持无条件移除；迟到 final 误删新一轮气泡的情况
+                    // 由后端在 user_transcript 之后补发该轮 preview 复原
+                    // （asr_runtime.py _restore_core_asr_preview_after_final）。
+                    removeExternalAsrPreview();
+                    var normalizedVoiceTranscript = String(response.text || '').trim();
+                    if (normalizedVoiceTranscript) {
+                        window.dispatchEvent(new CustomEvent('neko:user-voice-content-received', {
+                            detail: {
+                                requestId: resolveAssistantRequestId(response.request_id, response.meta),
+                                text: normalizedVoiceTranscript,
+                                source: 'voice'
+                            }
+                        }));
+                    }
                     // 语音转写也属于用户首次输入；这里只标记，成就仍等 AI 首次可见回复时触发
                     if (window.appChat && typeof window.appChat.isFirstUserInput === 'function' && window.appChat.isFirstUserInput()) {
                         window.appChat.markFirstUserInput();
@@ -1931,7 +2736,8 @@
                         ensureAssistantTurnStarted(
                             'audio_chunk_header_fallback',
                             response.turn_id,
-                            response.meta
+                            response.meta,
+                            response.request_id
                         );
                     }
                     var speechId = response.speech_id;
@@ -1975,7 +2781,29 @@
                         typeof window.appAudioPlayback.schedulePendingAudioMetaStallCheck === 'function') {
                         window.appAudioPlayback.schedulePendingAudioMetaStallCheck();
                     }
+                    // 记下 speech_id 属于哪一轮：随后的 audio_done 只带 speech_id，
+                    // 音频通道上从来没有服务端权威的 turn_id。
+                    if (!shouldSkip && window.appAudioPlayback &&
+                        typeof window.appAudioPlayback.rememberAssistantAudioSpeechTurn === 'function') {
+                        window.appAudioPlayback.rememberAssistantAudioSpeechTurn(
+                            speechId || S.currentPlayingSpeechId || null,
+                            resolveAssistantLifecycleTurnId(response.turn_id)
+                        );
+                    }
                     S.skipNextAudioBlob = false;
+
+                // -------- audio_done（本 speech 的音频流已关闭，权威结束信号）--------
+                // 后端 TTS worker / realtime provider 看得到"这一轮不会再有音频"，
+                // 前端看不到（阵间空档和真结束同构）。收到即可放行收尾；漏发时
+                // 由 app-audio-playback 的 give-up 计时器兜底。
+                } else if (response.type === 'audio_done') {
+                    logAssistantLifecycle('ws:audio_done', {
+                        speechId: response.speech_id || null
+                    });
+                    if (window.appAudioPlayback &&
+                        typeof window.appAudioPlayback.noteAssistantAudioStreamClosed === 'function') {
+                        window.appAudioPlayback.noteAssistantAudioStreamClosed(response.speech_id);
+                    }
 
                 // -------- cozy_audio --------
                 } else if (response.type === 'cozy_audio') {
@@ -2086,6 +2914,128 @@
                         }
                     } catch (_) { }
 
+                    if (statusCode === 'ASR_LIFECYCLE_STATE') {
+                        var lifecycleState = (statusDetails && statusDetails.state) || '';
+                        var allowedLifecycleStates = [
+                            'off', 'local_listen', 'prewarming', 'active',
+                            'draining', 'warm_idle', 'deep_sleep', 'backoff',
+                            'blocked', 'suspended'
+                        ];
+                        if (allowedLifecycleStates.indexOf(lifecycleState) !== -1) {
+                            S.voiceInputLifecycleState = lifecycleState;
+                            document.documentElement.setAttribute(
+                                'data-voice-input-state',
+                                lifecycleState
+                            );
+                            window.dispatchEvent(new CustomEvent(
+                                'voice-input-lifecycle-changed',
+                                { detail: statusDetails }
+                            ));
+                            // Hard-failure cleanup. The runtime's
+                            // _handle_independent_asr_error (main_logic/asr_client/
+                            // runtime.py) is the only BLOCKED emitter, and it always
+                            // broadcasts lifecycle BLOCKED before the fatal status
+                            // code. That code set is open-ended and mostly NOT
+                            // ASR_INDEPENDENT_-prefixed (ASR_ENDPOINTING_FAILED,
+                            // ASR_BLOCKED_ENDPOINTING, ASR_AUDIO_ORDERING_FAILED,
+                            // ASR_PROVIDER_FINAL_TIMEOUT, provider-specific codes...),
+                            // so derive the independent-ASR failure teardown from
+                            // BLOCKED instead of enumerating fatal codes. Start-path
+                            // failures (ASR_INDEPENDENT_PROVIDER_UNAVAILABLE /
+                            // ASR_INDEPENDENT_FAILED before READY) never emit
+                            // BLOCKED and keep their per-code toasts below; a
+                            // prefixed fatal code after BLOCKED re-shows the same
+                            // fallback text, which the toast renders as one message.
+                            if (lifecycleState === 'blocked') {
+                                tearDownBlockedVoiceRoute();
+                                if (typeof window.showStatusToast === 'function') {
+                                    window.showStatusToast(
+                                        window.t ? window.t('microphone.independentAsrFallback') : 'Independent ASR unavailable. Voice input has stopped for this session. Check the independent ASR configuration, then start a new voice session.',
+                                        5000
+                                    );
+                                }
+                            }
+                        }
+                        return;
+                    }
+
+                    if (statusCode === 'VOICE_INPUT_LEASE_RESYNC_REQUIRED') {
+                        // 仅采集中的窗口重发 lease 快照；非采集窗口忽略，避免多窗口互相覆盖
+                        if (S.isRecording === true
+                            && window.appAudioCapture
+                            && typeof window.appAudioCapture.sendVoiceInputControlState === 'function') {
+                            window.appAudioCapture.sendVoiceInputControlState(true);
+                        }
+                        return;
+                    }
+
+                    if (statusCode === 'ASR_AUDIO_PREPROCESSING_FAILED') {
+                        // Same class of failure as BLOCKED and the terminal
+                        // ASR_INDEPENDENT_* codes: the backend pins the route
+                        // to blocked for the rest of the session. But this code
+                        // rides neither channel — _fail_voice_input_pipeline
+                        // never reaches _handle_independent_asr_error (the only
+                        // BLOCKED emitter) and the code carries no
+                        // ASR_INDEPENDENT_ prefix — so without this branch it
+                        // is the one status that says "route dead" while the
+                        // microphone keeps running.
+                        tearDownBlockedVoiceRoute();
+                        if (typeof window.showStatusToast === 'function') {
+                            window.showStatusToast(
+                                window.t ? window.t('microphone.audioPreprocessingFailed') : 'Microphone audio processing failed. Voice input has stopped for this session. Please start a new voice session.',
+                                5000
+                            );
+                        }
+                        return;
+                    }
+
+                    if (statusCode && statusCode.indexOf('ASR_INDEPENDENT_') === 0) {
+                        var asrProvider = (statusDetails && statusDetails.provider) || '';
+                        S.independentAsrProvider = asrProvider;
+                        if (statusCode === 'ASR_INDEPENDENT_READY') {
+                            S.independentAsrActive = true;
+                            S.voiceInputRouteBlocked = false;
+                            if (typeof window.showStatusToast === 'function') {
+                                window.showStatusToast(
+                                    window.t ? window.t('microphone.independentAsrActive', { providerKey: asrProvider || 'unknown' }) : ('Independent ASR active: ' + asrProvider),
+                                    3000
+                                );
+                            }
+                            return;
+                        }
+                        if (statusCode === 'ASR_INDEPENDENT_DISABLED') {
+                            removeExternalAsrPreview();
+                            S.independentAsrActive = false;
+                            // Healthy native route: nothing is fail-closed.
+                            S.voiceInputRouteBlocked = false;
+                            return;
+                        }
+                        if (statusCode === 'ASR_INDEPENDENT_INJECTION_FAILED') {
+                            return;
+                        }
+                        // Terminal startup failure. Same fail-closed state as a
+                        // runtime BLOCKED, but no lifecycle event is ever emitted
+                        // for it, so run the same teardown here. The per-code
+                        // toasts below already say the right thing.
+                        tearDownBlockedVoiceRoute();
+                        if (typeof window.showStatusToast === 'function') {
+                            if (statusCode === 'ASR_INDEPENDENT_PROVIDER_UNAVAILABLE') {
+                                window.showStatusToast(
+                                    window.t
+                                        ? window.t('microphone.independentAsrProviderUnavailable', { providerKey: asrProvider || 'unknown' })
+                                        : ((asrProvider || 'ASR') + ' is temporarily unavailable. Voice input has stopped for this session. It did not switch to another speech recognition service. Please start a new voice session later.'),
+                                    5000
+                                );
+                                return;
+                            }
+                            window.showStatusToast(
+                                window.t ? window.t('microphone.independentAsrFallback') : 'Independent ASR unavailable. Voice input has stopped for this session. Check the independent ASR configuration, then start a new voice session.',
+                                5000
+                            );
+                        }
+                        return;
+                    }
+
                     if (statusCode === 'TTS_CONNECTION_FAILED') {
                         emitAssistantLifecycleEvent('neko-assistant-speech-unavailable', {
                             turnId: resolveAssistantLifecycleTurnId(response.turn_id),
@@ -2127,7 +3077,8 @@
                             S.gameVoiceSttGameType = '';
                             S.gameVoiceSttSessionId = '';
                         }
-                        if (shouldResumeAudio && wasRecording && !S.isMicMuted) {
+                        if (shouldResumeAudio && wasRecording && !S.isMicMuted
+                            && S.voiceInputRouteBlocked !== true) {
                             var micPipelineAlive = !!(S.stream && S.audioContext && S.workletNode);
                             if (!micPipelineAlive && typeof window.startMicCapture === 'function') {
                                 Promise.resolve(window.startMicCapture()).catch(function (error) {
@@ -2242,26 +3193,156 @@
                             var _rs = resetSessionButton(); if (_rs) _rs.disabled = true;
                             var _rt = returnSessionButton(); if (_rt) _rt.disabled = true;
 
+                            // Snapshot the voice-start intent this restart is acting on --
+                            // HERE, where the restart is decided, not inside the callback
+                            // 7.5s later. A goodbye or avatar drop during the delay goes
+                            // through cancelPendingSessionStart and bumps the epoch, and a
+                            // snapshot taken afterwards would read that cancellation as its
+                            // own starting point and restart anyway (codex P2). Nothing
+                            // between here and the callback moves the epoch on its own: the
+                            // three cancelPendingSessionStart callers are all user actions.
+                            //
+                            // Unlike the mic-button flow this path has no
+                            // ensureVoiceStartCurrent, and ownership alone cannot see an
+                            // ABA -- see voiceStartEpochIsCurrent.
+                            var restartVoiceEpoch = S.voiceSessionStartEpoch;
+                            // ...and the claim count with it. Until the callback claims, it
+                            // has no owner token to compare against, and a whole text
+                            // session can be started AND finished inside the 7.5s: by the
+                            // time we look, its resolver is gone, and text never moves the
+                            // epoch. Only the claim count still remembers it (codex P2).
+                            var restartClaimSeq = window.sessionStartClaimSeq();
+
                             setTimeout(async function () {
+                                var restartStartOwner = null;
+
+                                // Every point where this flow resumes from an await asks the
+                                // same question, and asking only part of it is how round
+                                // after round of this bug survived: ownership cannot see a
+                                // cancel-and-clear (the slot is back to empty), and the
+                                // epoch cannot see a TEXT takeover (text starts never mint
+                                // one). Returns true when this restart must stand down.
+                                //
+                                // Before the claim there is no owner token to compare
+                                // against, so the snapshot taken at scheduling time stands
+                                // in: it catches a text session that both started and
+                                // finished during the delay, which leaves nothing else
+                                // behind. After the claim the owner's own sequence carries
+                                // the same fact.
+                                function restartMustStandDown() {
+                                    var owned = !!restartStartOwner;
+                                    var takenOver = owned
+                                        ? window.sessionStartSuperseded(restartStartOwner)
+                                        : window.sessionStartsSince(restartClaimSeq);
+                                    if (takenOver
+                                            || (S._pendingSessionStartMode
+                                                && S._pendingSessionStartMode !== 'audio')) {
+                                        // Cancellation outranks the takeover: goodbye, avatar
+                                        // drop and character switch are the later intent and
+                                        // have already unwound and re-dressed the UI, so
+                                        // unwinding again would re-enable the mic button and
+                                        // unhide the composer on top of theirs (codex P2).
+                                        // The claim sequence cannot see it -- a cancellation
+                                        // clears the slot without claiming -- so it is asked
+                                        // here, ahead of the unwind, rather than at the end.
+                                        if (!window.voiceStartEpochIsCurrent(restartVoiceEpoch)) {
+                                            return true;
+                                        }
+                                        // The unwind is global -- it bumps the mic
+                                        // generation and clears window.isMicStarting -- so
+                                        // running it while the newer AUDIO start (a mic
+                                        // press inside the ack window) is still acquiring
+                                        // media makes that start abandon capture and fail
+                                        // its own ensureVoiceStartCurrent, leaving a
+                                        // backend-accepted session with the mic closed
+                                        // (greptile P1). That start is already driving this
+                                        // UI; a text start is not, so there it still runs.
+                                        var byAudio = owned
+                                            ? window.supersededByAudioStart(restartStartOwner)
+                                            : window.audioStartsSince(restartClaimSeq);
+                                        if (!byAudio) {
+                                            // Committed capture must be stopped BEFORE the
+                                            // unwind: the unwind clears S.isRecording without
+                                            // touching the stream, and the text
+                                            // session_started teardown is gated on that very
+                                            // flag, so the hardware microphone would stay
+                                            // live (codex P1). notifyServer:false -- the
+                                            // newer start owns the socket.
+                                            if (S.isRecording === true
+                                                    && typeof window.stopRecording === 'function') {
+                                                window.stopRecording({ notifyServer: false });
+                                            }
+                                            if (typeof window.abortVoiceStartForBlockedRoute === 'function') {
+                                                window.abortVoiceStartForBlockedRoute();
+                                            }
+                                        }
+                                        return true;
+                                    }
+                                    // Quietly: the cancel lever has already unwound the UI,
+                                    // and a newer mic start is driving it.
+                                    return !window.voiceStartEpochIsCurrent(restartVoiceEpoch);
+                                }
+
                                 try {
+                                    // BEFORE claiming anything. The first check used to sit
+                                    // after claim + start_session + ack, so a goodbye, an
+                                    // avatar drop or a mic press during the 7.5s delay was
+                                    // answered by taking the slot from whoever it belonged
+                                    // to, asking the backend for a session, and only then
+                                    // walking away -- without ending it (codex P2).
+                                    if (restartMustStandDown()) return;
+
                                     var sessionStartPromise = new Promise(function (resolve, reject) {
-                                        S.sessionStartedResolver = resolve;
-                                        S.sessionStartedRejecter = reject;
-                                        S._pendingSessionStartMode = 'audio';
+                                        // Owner token for every release in this
+                                        // flow; see claimSessionStart in
+                                        // app-state.js.
+                                        restartStartOwner = window.claimSessionStart('audio', resolve, reject);
+                                        // Re-arm the fail-closed latch on user
+                                        // intent, strictly before start_session
+                                        // goes out and therefore before any
+                                        // route verdict for it can arrive.
+                                        S.voiceInputRouteBlocked = false;
                                         if (window.sessionTimeoutId) {
                                             clearTimeout(window.sessionTimeoutId);
                                             window.sessionTimeoutId = null;
                                         }
                                     });
+                                    // Consume the rejection up front. claimSessionStart settles the start it
+                                    // displaces, and that can land while this flow is still inside
+                                    // ensureWebSocketOpen -- before it reaches the await, and possibly before a
+                                    // stand-down returns without ever awaiting at all. Without a handler on the
+                                    // promise itself a routine takeover surfaces as an unhandledrejection and
+                                    // the health diagnostics log it as a runtime error. `await` below still sees
+                                    // the rejection: this attaches a handler, it does not swallow one.
+                                    sessionStartPromise.catch(function () { });
 
+                                    // The pre-claim check does not cover the reconnect below:
+                                    // a text send or a mic press inside it takes the slot,
+                                    // and sending anyway hands the backend a stale audio
+                                    // start_session, overwrites the shared timeout handle
+                                    // and leaves this flow awaiting a promise whose resolver
+                                    // is no longer installed -- its own owner-gated timeout
+                                    // returns early, so nothing settles it and no later
+                                    // stand-down runs. Hence the check between the two lines
+                                    // that follow (codex P2).
                                     await ensureWebSocketOpen();
-                                    S.socket.send(JSON.stringify({ action: 'start_session', input_type: 'audio' }));
+                                    if (restartMustStandDown()) return;
+                                    S.socket.send(JSON.stringify({
+                                        action: 'start_session',
+                                        input_type: 'audio',
+                                        request_id: window.sessionStartRequestId(restartStartOwner)
+                                    }));
 
                                     window.sessionTimeoutId = setTimeout(function () {
+                                        // Only for the start this timer was armed for.
+                                        // A displaced start is settled by claimSessionStart:
+                                        // the flow that displaces us clears the shared
+                                        // window.sessionTimeoutId in its own claim setup, so
+                                        // this callback would not run to do it anyway.
+                                        if (!window.sessionStartIsCurrent(restartStartOwner)) return;
                                         if (S.sessionStartedRejecter) {
                                             var rejecter = S.sessionStartedRejecter;
-                                            S.sessionStartedResolver = null;
-                                            S.sessionStartedRejecter = null;
+                                            window.releaseSessionStart(restartStartOwner);
                                             window.sessionTimeoutId = null;
 
                                             if (S.socket && S.socket.readyState === WebSocket.OPEN) {
@@ -2275,11 +3356,96 @@
 
                                     await sessionStartPromise;
 
+                                    // Same takeover check as the mic-button flow
+                                    // (app-buttons.js): on mobile the composer stays
+                                    // visible during an audio session, so the user can
+                                    // send text inside the ack's 500ms settle window.
+                                    // The ack timer then leaves _pendingSessionStartMode
+                                    // owned by that newer text start and settles this
+                                    // promise anyway, and none of the guards below can
+                                    // see it -- the text ack changes neither
+                                    // voiceSessionStartEpoch nor isMicStarting, and never
+                                    // sets voiceInputRouteBlocked. This automatic restart
+                                    // would otherwise reclaim a lease onto the text
+                                    // session's blocked route (Codex P2).
+                                    //
+                                    // Ownership first, mode second, for the same reason as
+                                    // app-buttons.js: a newer AUDIO start (a mic press
+                                    // inside the ack window) passes `mode !== 'audio'`, and
+                                    // this restart would then open the microphone on top of
+                                    // it. Neither test subsumes the other -- the disconnect
+                                    // cleanup nulls the resolver but leaves the mode set --
+                                    // and neither sees a cancel-and-clear, which is why
+                                    // restartMustStandDown also asks the epoch.
+                                    if (restartMustStandDown()) return;
+
                                     if (typeof window.showCurrentModel === 'function') await window.showCurrentModel();
-                                    if (typeof window.startMicCapture === 'function') await window.startMicCapture();
+
+                                    // The SAME full question again, not just the epoch: this
+                                    // await is wide open, the disconnect path never disabled
+                                    // the mobile composer, and a text send inside it claims
+                                    // the slot without minting a voice epoch. An epoch-only
+                                    // recheck passes and this stale restart then opens the
+                                    // microphone on top of the text session and reports
+                                    // "restart complete" (codex P2).
+                                    if (restartMustStandDown()) return;
+
+                                    if (S.voiceInputRouteBlocked === true) {
+                                        // The rebuilt session came back fail-closed (independent
+                                        // ASR was enabled and failed to start). Its status ALWAYS
+                                        // precedes this ack — lifecycle.py runs
+                                        // _start_independent_asr_if_enabled before
+                                        // send_session_started — so this latch is THIS session's
+                                        // own verdict, and startMicCapture would refuse silently.
+                                        // Reporting "restart complete", lighting the floating mic
+                                        // and leaving the button row disabled would claim a live
+                                        // voice call with no microphone and no way back: the
+                                        // restart disabled mute/screen/stop/reset/return above and
+                                        // nothing here re-enables them. Fixed at the caller rather
+                                        // than inside startMicCapture, because the toast and the
+                                        // button row are outside it — moving the unwind there
+                                        // would not fix this.
+                                        if (typeof window.abortVoiceStartForBlockedRoute === 'function') {
+                                            window.abortVoiceStartForBlockedRoute();
+                                        }
+                                        var _muB = muteButton(); if (_muB) _muB.disabled = true;
+                                        var _sbB = screenButton(); if (_sbB) _sbB.disabled = true;
+                                        var _stB = stopButton(); if (_stB) _stB.disabled = true;
+                                        var _rsB = resetSessionButton(); if (_rsB) _rsB.disabled = false;
+                                        var _rtB = returnSessionButton(); if (_rtB) _rtB.disabled = false;
+                                        if (typeof window.syncFloatingMicButtonState === 'function') {
+                                            window.syncFloatingMicButtonState(false);
+                                        }
+                                        // Let the ASR failure toast stand as the explanation.
+                                        return;
+                                    }
+                                    var microphoneStarted = false;
+                                    if (typeof window.startMicCapture === 'function') {
+                                        microphoneStarted = await window.startMicCapture();
+                                    }
+                                    if (microphoneStarted !== true) {
+                                        // startMicCapture uses false for a benign
+                                        // ownership cancellation. The backend has
+                                        // already accepted this restart, though, so
+                                        // route the cancellation through the common
+                                        // unwind below instead of reporting success
+                                        // with no committed microphone pipeline.
+                                        var microphoneStartCancelled = new Error('Microphone start cancelled');
+                                        microphoneStartCancelled.microphoneStartCancelled = true;
+                                        throw microphoneStartCancelled;
+                                    }
                                     if (S.screenCaptureStream != null) {
                                         if (typeof window.startScreenSharing === 'function') await window.startScreenSharing();
                                     }
+
+                                    // The capture awaits are the last wide-open window, and
+                                    // the dual of the mic-button flow's post-getUserMedia
+                                    // check: a text takeover invalidates an in-flight mic
+                                    // start, but that cancellation path RETURNS rather than
+                                    // throws, so without this the restart lights the
+                                    // floating controls and reports "restart complete" over
+                                    // the text session (codex P2).
+                                    if (restartMustStandDown()) return;
 
                                     if (window.live2dManager && window.live2dManager._floatingButtons) {
                                         if (typeof window.syncFloatingMicButtonState === 'function') window.syncFloatingMicButtonState(true);
@@ -2292,14 +3458,31 @@
                                         window.showStatusToast(window.t ? window.t('app.restartComplete', { name: window.lanlan_config.lanlan_name }) : ('重启完成，' + window.lanlan_config.lanlan_name + '回来了！'), 4000);
                                     }
                                 } catch (error) {
-                                    console.error(window.t('console.restartError'), error);
-
-                                    if (window.sessionTimeoutId) {
-                                        clearTimeout(window.sessionTimeoutId);
-                                        window.sessionTimeoutId = null;
+                                    var isMicrophoneStartCancelled = !!(
+                                        error && error.microphoneStartCancelled
+                                    );
+                                    if (!isMicrophoneStartCancelled) {
+                                        console.error(window.t('console.restartError'), error);
                                     }
-                                    S.sessionStartedResolver = null;
-                                    S.sessionStartedRejecter = null;
+
+                                    // Only tear down THIS restart's slot.
+                                    if (window.sessionStartIsCurrent(restartStartOwner)) {
+                                        if (window.sessionTimeoutId) {
+                                            clearTimeout(window.sessionTimeoutId);
+                                            window.sessionTimeoutId = null;
+                                        }
+                                        window.releaseSessionStart(restartStartOwner);
+                                    }
+
+                                    // A takeover during any await above -- including one
+                                    // that caused this very error, and including
+                                    // ensureWebSocketOpen rejecting before the claim -- means
+                                    // everything below lands on somebody else: end_session
+                                    // would kill their session, and the failure toast plus
+                                    // the global recording/UI teardown would rewrite the
+                                    // state they are driving (codex P2). Gating the slot
+                                    // release alone left all of that unguarded.
+                                    if (restartMustStandDown()) return;
 
                                     if (S.socket && S.socket.readyState === WebSocket.OPEN) {
                                         S.socket.send(JSON.stringify({ action: 'end_session' }));
@@ -2307,7 +3490,8 @@
                                     }
 
                                     if (typeof window.hideVoicePreparingToast === 'function') window.hideVoicePreparingToast();
-                                    if (typeof window.showStatusToast === 'function') {
+                                    if (!isMicrophoneStartCancelled
+                                            && typeof window.showStatusToast === 'function') {
                                         window.showStatusToast(window.t ? window.t('app.restartFailed', { error: error.message }) : ('重启失败: ' + error.message), 5000);
                                     }
 
@@ -2524,6 +3708,58 @@
                         console.warn('[App] 处理 agent_task_update 失败:', e);
                     }
 
+                // -------- capture_bridge_region_request (interactive desktop selection) --------
+                } else if (response.type === 'capture_bridge_region_request') {
+                    (async function () {
+                        var requestId = response.request_id || '';
+                        var responseSocket = _thisSocket;
+                        var sendRegionResp = function (payload) {
+                            if (!responseSocket || responseSocket.readyState !== WebSocket.OPEN) return;
+                            payload.action = 'capture_bridge_region_response';
+                            payload.request_id = requestId;
+                            responseSocket.send(JSON.stringify(payload));
+                        };
+                        try {
+                            var dc = resolveDesktopCaptureProvider();
+                            if (!dc || typeof dc.captureDesktopRegionAsDataUrl !== 'function') {
+                                sendRegionResp({ success: false, error: 'unavailable' });
+                                return;
+                            }
+                            var regionResult = await dc.captureDesktopRegionAsDataUrl({
+                                selectionOnly: response.selection_only === true,
+                                copyToClipboard: response.copy_to_clipboard !== false,
+                                sessionTimeoutMs: response.session_timeout_ms,
+                                allowPin: false,
+                                returnDataUrl: true,
+                                includeOriginalDataUrl: false,
+                                translations: getCaptureBridgeCropTranslations()
+                            });
+                            if (!regionResult || regionResult.canceled || regionResult.cancelled) {
+                                sendRegionResp({ success: false, canceled: true });
+                                return;
+                            }
+                            if (regionResult.success === false) {
+                                sendRegionResp({
+                                    success: false,
+                                    error: regionResult.error || regionResult.code || 'capture_failed'
+                                });
+                                return;
+                            }
+                            var regionDataUrl = typeof regionResult === 'string'
+                                ? regionResult
+                                : regionResult.dataUrl;
+                            regionDataUrl = await boundCaptureBridgeRegionImage(regionDataUrl);
+                            if (!regionDataUrl) {
+                                sendRegionResp({ success: false, error: 'image_too_large' });
+                                return;
+                            }
+                            sendRegionResp({ success: true, image: regionDataUrl });
+                        } catch (regionError) {
+                            var regionCode = regionError && (regionError.code || regionError.message);
+                            sendRegionResp({ success: false, error: regionCode || 'internal_error' });
+                        }
+                    })();
+
                 // -------- capture_bridge_request (galgame OCR window capture) --------
                 } else if (response.type === 'capture_bridge_request') {
                     (async function () {
@@ -2562,7 +3798,7 @@
                             return (typeof result.dataUrl === 'string' && result.dataUrl) ? result.dataUrl : null;
                         };
                         try {
-                            var dc = window.electronDesktopCapturer;
+                            var dc = resolveDesktopCaptureProvider();
                             if (!dc || !dc.getSources) {
                                 sendResp({ success: false, error: 'unavailable' });
                                 return;
@@ -2626,7 +3862,11 @@
                             var captureResult = null;
                             if (typeof dc.captureSourceWithoutNeko === 'function') {
                                 try {
-                                    captureResult = await dc.captureSourceWithoutNeko(matched.id);
+                                    captureResult = await window.captureDesktopSourceWithTimeout(
+                                        dc,
+                                        'captureSourceWithoutNeko',
+                                        matched.id
+                                    );
                                     dataUrl = normalizeCaptureBridgeImage(captureResult);
                                 } catch (_woNekoErr) {
                                     dataUrl = null;
@@ -2634,7 +3874,11 @@
                             }
                             if (!dataUrl && typeof dc.captureSourceAsDataUrl === 'function') {
                                 try {
-                                    captureResult = await dc.captureSourceAsDataUrl(matched.id);
+                                    captureResult = await window.captureDesktopSourceWithTimeout(
+                                        dc,
+                                        'captureSourceAsDataUrl',
+                                        matched.id
+                                    );
                                     dataUrl = normalizeCaptureBridgeImage(captureResult);
                                 } catch (_dataUrlErr) {
                                     dataUrl = null;
@@ -2659,21 +3903,40 @@
                     (async function () {
                         try {
                             var dataUrl = null;
-                            if (typeof window.captureProactiveChatScreenshot === 'function') {
+                            // captureType 由截图函数在抓帧那一刻定好，这里不再二次推断：
+                            // 抓帧是异步的，等到这一步 S 里的流 / 源可能已经换人。
+                            var shotCaptureType = null;
+                            var hasPairedCaptureType = false;
+                            if (window.appProactive
+                                && typeof window.appProactive.captureProactiveChatScreenshotWithSource === 'function') {
+                                var shot = await window.appProactive.captureProactiveChatScreenshotWithSource();
+                                dataUrl = shot && shot.dataUrl ? shot.dataUrl : null;
+                                shotCaptureType = shot ? (shot.captureType || null) : null;
+                                hasPairedCaptureType = true;
+                            } else if (typeof window.captureProactiveChatScreenshot === 'function') {
                                 dataUrl = await window.captureProactiveChatScreenshot();
                             }
                             if (dataUrl && S.socket && S.socket.readyState === WebSocket.OPEN) {
                                 var respMsg = { action: 'screenshot_response', data: dataUrl };
-                                // Determine capture type for correct coordinate mapping
-                                // null = 窗口截图或无法确定 → 不叠加；仅无流无源时默认 'screen'
+                                // null = 窗口截图或无法确定 → 不叠加
                                 var captureType = null;
-                                if (typeof window.detectScreenshotCaptureType === 'function') {
-                                    captureType = window.detectScreenshotCaptureType(
-                                        S.screenCaptureStream, S.selectedScreenSourceId
-                                    );
-                                }
-                                if (captureType === null && !S.screenCaptureStream && !S.selectedScreenSourceId) {
-                                    captureType = 'screen';
+                                if (hasPairedCaptureType) {
+                                    captureType = shotCaptureType;
+                                } else {
+                                    // 旧契约兜底：拿不到带来源的截图函数时只能就地推断。
+                                    if (typeof window.detectScreenshotCaptureType === 'function') {
+                                        captureType = window.detectScreenshotCaptureType(
+                                            S.screenCaptureStream, S.selectedScreenSourceId
+                                        );
+                                    }
+                                    // 这一步必须是独立判断而不是 else：detect 存在但判不出
+                                    // （无流无源的后端整屏兜底）时也要提升成 'screen'。写成
+                                    // else if 会让它只在 detect 缺席时生效，后端把「不带坐标」
+                                    // 当明确的否定信号，于是整屏图变成永久不叠。
+                                    if (captureType === null
+                                        && !S.screenCaptureStream && !S.selectedScreenSourceId) {
+                                        captureType = 'screen';
+                                    }
                                 }
                                 var avatarPos = typeof window.getAvatarScreenPosition === 'function'
                                     ? window.getAvatarScreenPosition(captureType) : null;
@@ -2707,7 +3970,8 @@
                         ensureAssistantTurnStarted(
                             'turn_end_agent_callback_fallback',
                             undefined,
-                            response.meta
+                            response.meta,
+                            response.request_id
                         );
                     }
                     var agentCallbackTurnId = resolveAssistantLifecycleTurnId();
@@ -2717,6 +3981,7 @@
                         });
                         emitAssistantLifecycleEvent('neko-assistant-turn-end', {
                             turnId: agentCallbackTurnId,
+                            requestId: resolveAssistantRequestId(response.request_id, response.meta),
                             source: 'turn_end_agent_callback',
                             meta: response.meta
                         });
@@ -2752,7 +4017,8 @@
                         ensureAssistantTurnStarted(
                             'turn_end_fallback',
                             undefined,
-                            response.meta
+                            response.meta,
+                            response.request_id
                         );
                     }
                     var assistantTurnId = resolveAssistantLifecycleTurnId();
@@ -2762,6 +4028,7 @@
                         });
                         emitAssistantLifecycleEvent('neko-assistant-turn-end', {
                             turnId: assistantTurnId,
+                            requestId: resolveAssistantRequestId(response.request_id, response.meta),
                             source: 'turn_end',
                             meta: response.meta
                         });
@@ -2850,13 +4117,134 @@
                             && response.input_mode !== S._pendingSessionStartMode) {
                         console.log('[App] ignore cross-mode session_started', response.input_mode,
                             'while pending', S._pendingSessionStartMode);
+                        // 但麦克风必须先停。text session 把麦克风路由钉成 blocked，
+                        // 而这条早退原本会让"用户在 A 点麦、B 同时发文本"这种多窗口
+                        // 时序里，A 明明收到了 text session_started 却因为自己有
+                        // audio 启动在途而直接 return，麦克风一直开着往一条已死的
+                        // 路由上传。停麦是幂等的，且只在本窗口确实在录音时才做。
+                        // Cancel an in-flight start first: S.isRecording is still
+                        // false while getUserMedia()/addModule() are awaiting, so
+                        // the stopRecording() below cannot reach that case and the
+                        // pending start would complete and re-claim the revoked lease.
+                        if (response.input_mode === 'text' && typeof window.invalidatePendingMicStart === 'function') window.invalidatePendingMicStart();
+                        if (response.input_mode === 'text'
+                            && S.isRecording === true
+                            && typeof window.stopRecording === 'function') {
+                            console.log('[App] text session installed; stopping the microphone (cross-mode)');
+                            window.stopRecording({ notifyServer: false });
+                        }
                         return;
+                    }
+                    // 请求标识守卫：这条 ack 是不是在回应**本窗口**那次启动。
+                    //
+                    // 模式守卫拦不住同模式的串台：抢麦的窗口会把 voice socket 换成
+                    // 自己的，于是别人那次 audio start 的 ack 经 fan-out 落到本窗口。
+                    // 本窗口据此清超时、resolve、按 ack 里的 blocked 路由直接
+                    // abortVoiceStartForBlockedRoute()——而真正回应本窗口的那条 ack
+                    // （带着重跑后的路由）到达时，麦克风流程早就放弃了。
+                    //
+                    // 只 gate「收口」（清超时 + resolve），不 gate 下面的 UI 同步：
+                    // 后端确实起了一个会话，文本框显隐、停麦这些对本窗口照样成立。
+                    // ack 不带标识时按「是我的」处理：后端内部路径（proactive /
+                    // greeting / 断线自恢复）不经用户请求、没有标识，而它们撞上
+                    // pending 启动的情形本就由上面的模式守卫负责。
+                    //
+                    // 主判据是 resolver 而不是标识本身：清 resolver 的地方有十来处，
+                    // 指望每一处都记得连标识一起清是靠不住的，漏一处就会留下一个陈旧
+                    // 标识，让本窗口从此把所有别人的 ack 都判成「不是我的」，连
+                    // blocked latch 和准备中提示都不再处理（Codex P2）。没有 resolver
+                    // 在等 = 本窗口没有启动在途 = 任何 ack 都按旧行为处理。
+                    var _ackAnswersThisWindow = !S.sessionStartedResolver
+                        || !S._pendingSessionStartRequestId
+                        || !response.request_id
+                        || response.request_id === S._pendingSessionStartRequestId;
+                    if (!_ackAnswersThisWindow) {
+                        console.log('[App] session_started answers another start',
+                            response.request_id, 'pending', S._pendingSessionStartRequestId);
                     }
                     console.log(window.t('console.sessionStartedReceived'), response.input_mode);
                     S.suppressAssistantStreamUntilNextSession = false;
                     S.isTextSessionActive = response.input_mode === 'text';
                     S.voiceChatActive = response.input_mode !== 'text';
-                    S.voiceStartPending = false;
+                    if (_ackAnswersThisWindow) S.voiceStartPending = false;
+                    // NOTE: the fail-closed latch is deliberately NOT cleared
+                    // here. lifecycle.py runs _start_independent_asr_if_enabled
+                    // BEFORE send_session_started, so this ack always arrives
+                    // AFTER the current session's route verdict -- clearing
+                    // here would wipe a latch that verdict just set. It is
+                    // re-armed on user intent instead, next to
+                    // _pendingSessionStartMode = 'audio'.
+                    //
+                    // The ack now carries the SETTLED route, which covers the
+                    // case the status-driven latch structurally cannot: a
+                    // window that never received the ASR_INDEPENDENT_* verdict
+                    // at all -- either because it went to a different socket,
+                    // or because a competing lease claim fenced the failing
+                    // start so no status was ever emitted. Without this, such a
+                    // window opens the microphone onto a route that discards
+                    // every frame, with no status and no recovery path.
+                    //
+                    // SET-ONLY, never cleared, on purpose: the latch is
+                    // deliberately sticky (see tearDownBlockedVoiceRoute --
+                    // BLOCKED is never re-sent, so the game-exit resume path
+                    // relies on it surviving), and clearing it from an ack
+                    // would undo that. Guarded on the field being present so an
+                    // older backend keeps exactly today's behaviour.
+                    // Gated on the request guard as well (CodeRabbit): the latch
+                    // is set-only, so a blocked verdict belonging to ANOTHER
+                    // window's start would stick, and this window's own healthy
+                    // ack could not clear it -- the microphone would refuse to
+                    // open even though the route re-decision succeeded. A window
+                    // with no start pending still latches: that is the case with
+                    // no other channel to learn the verdict from.
+                    if (_ackAnswersThisWindow
+                            && response.input_mode !== 'text'
+                            && response.microphone_route === 'blocked') {
+                        S.voiceInputRouteBlocked = true;
+                    }
+
+                    // 文本 session 装好后麦克风必须停：mic lease 只由前端持有，
+                    // 后端任何 session 生命周期路径都不会重置它，而文本 session
+                    // 把麦克风路由钉死在 blocked（asr_runtime.py
+                    // _start_independent_asr_if_enabled 对非 audio 的 input_mode
+                    // 直接 return）。留着录音的话每一帧 PCM 都会被 ingress 接收、
+                    // 跑完整条降噪/VAD 流水线，然后在路由处静默丢弃——没有状态、
+                    // 没有恢复路径，用户必须手动关开麦克风。用户刚刚显式选择了打字，
+                    // 以最近一次显式动作为准停掉录音，比在 ingress 里反向重建
+                    // audio session 更安全（不会和 start_session 撕重建打架）。
+                    // Same window as the cross-mode branch above: a start still
+                    // inside getUserMedia()/addModule() has not set S.isRecording
+                    // yet, so only this reaches it. One line on purpose -- the
+                    // multi-line `if (response.input_mode === 'text'` opener is
+                    // the anchor test_text_session_start_stops_an_active_microphone
+                    // slices on, and must stay unique to the teardown guard below.
+                    if (response.input_mode === 'text' && typeof window.invalidatePendingMicStart === 'function') window.invalidatePendingMicStart();
+                    if (response.input_mode === 'text'
+                        && S.isRecording === true
+                        && typeof window.stopRecording === 'function') {
+                        console.log('[App] text session installed; stopping the microphone');
+                        // notifyServer:false is load-bearing. The default path
+                        // sends pause_session, which websocket_router.py maps to
+                        // an UNGATED end_session() — and the session it would end
+                        // is the text session the backend acknowledged one line
+                        // above. app-buttons.js is still awaiting this very ack
+                        // (the resolve fires 500 ms later, below) and only then
+                        // sends the queued user text, so the teardown wins the
+                        // race: CHARACTER_LEFT is pushed and the message either
+                        // rebuilds a whole new session or lands mid-teardown.
+                        // Nothing is given up by suppressing it — active_session_
+                        // is_idle, the only other thing pause_session sets, has no
+                        // reader in production. Capture teardown does not need the
+                        // server either: stopRecording stops the tracks, closes the
+                        // AudioContext and revokes the mic lease (refreshMicLease
+                        // still emits lease_sync owner:"none"/engaged:false, which
+                        // is how the backend learns the audio route is released)
+                        // regardless of this flag; it only gates the pause_session
+                        // send. stopMicCapture is NOT usable here — it rejects the
+                        // in-flight text-start promise with 'Session aborted' and
+                        // still sends pause_session, losing the message outright.
+                        window.stopRecording({ notifyServer: false });
+                    }
 
                     // Multi-window 文本框对偶 hide：每个 webview（index.html 主窗口、
                     // chat.html 子窗口）都通过自己的 ws 收到 session_started，借此
@@ -2889,23 +4277,61 @@
                     // 500ms 后才清，贴近 15s deadline 的 ack（如 14.8s，尤其跨模式等待+重启
                     // 链路）会被先一步触发的超时误 reject + end_session，把后端已接受的会话
                     // 打断（Codex P2）。resolve 仍延后做（留时间收尾 UI），但超时此刻就拆。
-                    if (S.sessionStartedResolver && window.sessionTimeoutId) {
+                    if (_ackAnswersThisWindow && S.sessionStartedResolver && window.sessionTimeoutId) {
                         clearTimeout(window.sessionTimeoutId);
                         window.sessionTimeoutId = null;
                     }
 
+                    // Capture the pending start THIS ack belongs to. The resolve
+                    // is deferred 500ms (to let the UI settle) but the slot is
+                    // shared, and on mobile the composer stays visible during an
+                    // audio session -- see _shouldHide above -- so the user can
+                    // send text inside that window. app-buttons.js then installs
+                    // a NEW resolver + mode for the text start, and this old
+                    // audio timer would resolve that promise, clear its timeout
+                    // and let the queued message go out before the backend has
+                    // acknowledged the text session at all (Codex P2). Resolve
+                    // only if the slot still holds the very start we acked.
+                    var _ackedResolver = _ackAnswersThisWindow ? S.sessionStartedResolver : null;
                     setTimeout(function () {
-                        if (typeof window.hideVoicePreparingToast === 'function') window.hideVoicePreparingToast();
-                        if (S.sessionStartedResolver) {
+                        // Not gated on the resolver: a window with no pending
+                        // start (chat.html) still has to drop the banner. Gated
+                        // on the request guard, though -- a window still waiting
+                        // for ITS ack must keep showing "preparing".
+                        if (_ackAnswersThisWindow && typeof window.hideVoicePreparingToast === 'function') window.hideVoicePreparingToast();
+                        if (!_ackedResolver) return;
+                        if (S.sessionStartedResolver === _ackedResolver) {
+                            // Still ours: release the shared slot and its timer.
                             if (window.sessionTimeoutId) {
                                 clearTimeout(window.sessionTimeoutId);
                                 window.sessionTimeoutId = null;
                             }
-                            S.sessionStartedResolver(response.input_mode);
                             S.sessionStartedResolver = null;
                             S.sessionStartedRejecter = null;
                             S._pendingSessionStartMode = null;
+                            S._pendingSessionStartRequestId = null;
                         }
+                        // Settle OUR promise either way, INCLUDING when the slot
+                        // has moved on (Codex P2). Its timeout was already
+                        // cleared when this ack arrived, so nothing else will
+                        // ever settle it -- the identity guard alone left the
+                        // mic-button handler suspended at `await
+                        // sessionStartPromise` forever, with isMicStarting true
+                        // and the button stuck active/disabled after the text
+                        // session succeeded.
+                        //
+                        // Resolve rather than reject: the backend really did
+                        // acknowledge this audio session, so resolving is the
+                        // truthful outcome, and the downstream guards
+                        // (ensureVoiceStartCurrent, then the
+                        // S.voiceInputRouteBlocked check before startMicCapture)
+                        // are what decide whether the mic should still open.
+                        // Rejecting would instead run the handler's catch, which
+                        // clears S.sessionStartedResolver / Rejecter /
+                        // _pendingSessionStartMode unconditionally and would
+                        // therefore tear down the NEWER start's slot -- the very
+                        // cross-start damage this guard exists to stop.
+                        _ackedResolver(response.input_mode);
                     }, 500);
 
                     // 语音模式：session 开始 5 秒内无 transcription，启动 proactive chat 计时器
@@ -2968,11 +4394,18 @@
                     S.sessionStartedResolver = null;
                     S.sessionStartedRejecter = null;
                     S._pendingSessionStartMode = null;
+                    S._pendingSessionStartRequestId = null;
 
                 // -------- session_ended_by_server --------
                 } else if (response.type === 'session_ended_by_server') {
                     console.log('[App] Session ended by server, input_mode:', response.input_mode);
                     window.dispatchEvent(new CustomEvent('neko:session-ended-by-server', { detail: response }));
+                    removeExternalAsrPreview();
+                    // The server ended the session, so the independent-ASR route is
+                    // gone with it; reset the flags even when S.isRecording is already
+                    // false (paused mic) and the stopRecording() below won't run.
+                    S.independentAsrActive = false;
+                    S.independentAsrProvider = '';
                     S.isTextSessionActive = false;
                     S.voiceChatActive = false;
                     S.voiceStartPending = false;
@@ -2986,6 +4419,7 @@
                     S.sessionStartedResolver = null;
                     S.sessionStartedRejecter = null;
                     S._pendingSessionStartMode = null;
+                    S._pendingSessionStartRequestId = null;
 
                     if (window.sessionTimeoutId) {
                         clearTimeout(window.sessionTimeoutId);
@@ -2993,7 +4427,14 @@
                     }
 
                     if (S.isRecording) {
-                        if (typeof window.stopRecording === 'function') window.stopRecording();
+                        // notifyServer:false — the server ALREADY ended this
+                        // session, so pause_session is pure noise; worse, sent
+                        // from a superseded recorder socket it is not a
+                        // voice-path message, so the router treats it as a
+                        // character switch, closes the socket, and the 3 s
+                        // auto-reconnect re-steals the session identity from
+                        // the window that legitimately owns it.
+                        if (typeof window.stopRecording === 'function') window.stopRecording({ notifyServer: false });
                     }
 
                     (async function () {
@@ -3122,9 +4563,9 @@
                     }
                 // -------- music allowlist add --------
                 } else if (response.type === 'music_allowlist_add') {
-                    if (window.MusicPluginAPI && response.domains) {
-                        console.log('[Music] Received allowlist update from backend:', response.domains);
-                        window.MusicPluginAPI.addAllowlist(response.domains);
+                    if (window.MusicPluginAPI && (response.domains || response.http_urls)) {
+                        console.log('[Music] Received allowlist update from backend:', response.domains, response.http_urls);
+                        window.MusicPluginAPI.addAllowlist(response.domains || [], response.http_urls || []);
                     }
 
                 // -------- music play url --------
@@ -3254,6 +4695,12 @@
                 return;
             }
             console.log(window.t('console.websocketClosed'));
+            removeExternalAsrPreview();
+            // Socket teardown ends the backend ASR route; drop the route flags so
+            // the mic settings hint stops reporting independent ASR as active. A
+            // reconnected session re-emits ASR_INDEPENDENT_* statuses on start.
+            S.independentAsrActive = false;
+            S.independentAsrProvider = '';
             clearAssistantLifecycleOnDisconnect('socket_close');
 
             // Clear heartbeat
@@ -3390,6 +4837,7 @@
     // ========================  Backward-compat globals  ========================
     window.connectWebSocket = connectWebSocket;
     window.ensureWebSocketOpen = ensureWebSocketOpen;
+    window.refreshCoreApiCapability = refreshCoreApiCapability;
     window.ensureAssistantTurnStarted = ensureAssistantTurnStarted;
     window.clearPendingAssistantTurnStart = clearPendingAssistantTurnStart;
 
@@ -3546,6 +4994,9 @@
             if (!S._greetingCheckPending) _resetGreetingCheckRetry(true);
             return;
         }
+        if (S.conversationLanguageHydrated !== true) {
+            return;
+        }
         if (S._startupGreetingReleasePending) {
             return;
         }
@@ -3558,31 +5009,23 @@
         }
         try {
             if (S.socket && S.socket.readyState === WebSocket.OPEN) {
-                // greeting_check 是 ws 链路上唯一会推 mgr.user_language 的消息。
-                // 后端 set_user_language 见空串就 no-op（保留旧值，旧值是
-                // start_session seed 的全局缓存），所以这里宁可送 navigator
-                // 的 BCP47 也别送空串——至少能纠正 Steam SDK race 失败后留下
-                // 的错误英文（例如 Steam=zh / 系统=en，i18next 还在异步拉
-                // Steam API 时，navigator.language 通常已经是 zh-CN）。
-                var greetingLang = '';
-                try {
-                    if (window.i18next && typeof window.i18next.language === 'string' && window.i18next.language) {
-                        greetingLang = window.i18next.language;
-                    } else if (typeof localStorage !== 'undefined') {
-                        greetingLang = localStorage.getItem('i18nextLng') || '';
-                    }
-                    if (!greetingLang && typeof navigator !== 'undefined' && navigator.language) {
-                        greetingLang = navigator.language;
-                    }
-                } catch (_) { greetingLang = ''; }
+                // UI locale and conversation locale are independent.  Hydration
+                // above resolves the durable per-character preference; only a
+                // character with no explicit choice falls back to the UI locale.
+                var greetingLang = getConversationLanguageForCurrentCharacter();
+                var explicitGreetingLang = typeof getExplicitConversationLanguageForCurrentCharacter === 'function'
+                    ? getExplicitConversationLanguageForCurrentCharacter()
+                    : '';
                 var greetingIsSwitch = !!S._greetingCheckIsSwitch;
                 var greetingReason = S._greetingCheckReason || (greetingIsSwitch ? 'character-switch' : 'ws-open');
-                S.socket.send(JSON.stringify({
+                var greetingMessage = {
                     action: 'greeting_check',
                     is_switch: greetingIsSwitch,
-                    language: greetingLang,
+                    render_language: greetingLang,
                     reason: greetingReason
-                }));
+                };
+                if (explicitGreetingLang) greetingMessage.language = explicitGreetingLang;
+                S.socket.send(JSON.stringify(greetingMessage));
                 S._greetingCheckPending = false;
                 S._greetingCheckIsSwitch = false;
                 S._greetingCheckReason = '';
@@ -3620,17 +5063,12 @@
     window.addEventListener('vrm-model-loaded', _onModelReady);
     window.addEventListener('mmd-model-loaded', _onModelReady);
 
-    // i18next 'languageChanged' → 重新把 i18n 真值同步到后端 mgr.user_language。
-    // 关键场景：socket open 早于 i18next bootstrap 完成时，首次 greeting_check
-    // 用 navigator/localStorage 兜底（可能跟 Steam 真值不同），i18next 异步从
-    // /api/config/steam_language 拉到对的值后 fire 'languageChanged'，这里重发
-    // 一条只携带 language 的 ws 消息，让后端 line 136-139 通用 language handler
-    // 把 mgr.user_language 纠正回真值。不复用 greeting_check action，避免再次
-    // 触发 greeting fire 逻辑——后端任何消息带 language 字段都会先调
-    // set_user_language（main_routers/websocket_router.py:136-139），用任意 action
-    // 即可。
+    // Only the dedicated conversation-language event updates the explicit
+    // template-language preference. UI locale changes still refresh the
+    // render-only fallback used by sessions without an explicit preference.
     function _syncLanguageToBackend(lng) {
         if (!lng || typeof lng !== 'string') return;
+        S._conversationLanguageClearPending = null;
         if (!S.socket || S.socket.readyState !== WebSocket.OPEN) return;
         try {
             S.socket.send(JSON.stringify({
@@ -3641,18 +5079,161 @@
             console.warn('[language_update] send failed:', e);
         }
     }
+    function _syncRenderLanguageToBackend(lng) {
+        if (!lng || typeof lng !== 'string') return;
+        if (!S.socket || S.socket.readyState !== WebSocket.OPEN) return;
+        try {
+            S.socket.send(JSON.stringify({
+                action: 'language_update',
+                render_language: lng,
+            }));
+        } catch (e) {
+            console.warn('[language_update] render language send failed:', e);
+        }
+    }
+    function _syncClearedLanguageToBackend(lng, characterName) {
+        if (!lng || typeof lng !== 'string') return;
+        var currentName = getWebSocketLanlanName() || '';
+        var targetName = characterName || currentName;
+        if (!targetName || targetName !== currentName) return;
+        S._conversationLanguageClearPending = {
+            characterName: targetName
+        };
+        if (!S.socket || S.socket.readyState !== WebSocket.OPEN) return;
+        try {
+            S.socket.send(JSON.stringify({
+                action: 'language_update',
+                clear_language_preference: true,
+                render_language: lng,
+            }));
+            S._conversationLanguageClearPending = null;
+        } catch (e) {
+            console.warn('[language_update] clear language send failed:', e);
+        }
+    }
+    function _applyClearedConversationLanguage(characterName) {
+        var currentName = getWebSocketLanlanName() || '';
+        if (!characterName || characterName !== currentName) return;
+        S._conversationLanguageHydrationId =
+            (Number(S._conversationLanguageHydrationId) || 0) + 1;
+        S.conversationLanguage = '';
+        S.conversationLanguageExplicit = '';
+        S.conversationLanguageHydrated = true;
+        _syncClearedLanguageToBackend(
+            getConversationLanguageForCurrentCharacter(),
+            characterName
+        );
+        _sendGreetingCheckIfReady();
+    }
     if (window.i18next && typeof window.i18next.on === 'function') {
-        window.i18next.on('languageChanged', _syncLanguageToBackend);
+        window.i18next.on('languageChanged', _syncRenderLanguageToBackend);
     } else {
-        // i18next 还没就绪：监听 i18n-i18next.js 完成时 dispatch 的 localechange。
         window.addEventListener('localechange', function () {
             try {
                 var lng = (window.i18next && typeof window.i18next.language === 'string')
                     ? window.i18next.language : '';
-                _syncLanguageToBackend(lng);
+                _syncRenderLanguageToBackend(lng);
             } catch (_) { /* noop */ }
         });
     }
+    window.addEventListener('neko:conversation-language-changed', function (event) {
+        var detail = event && event.detail ? event.detail : {};
+        var currentName = getWebSocketLanlanName() || '';
+        if (!detail.character_name || detail.character_name !== currentName) return;
+        if (!detail.language || typeof detail.language !== 'string') return;
+        S._conversationLanguageHydrationId =
+            (Number(S._conversationLanguageHydrationId) || 0) + 1;
+        S.conversationLanguage = detail.language;
+        S.conversationLanguageExplicit = detail.language;
+        S.conversationLanguageHydrated = true;
+        _syncLanguageToBackend(detail.language);
+        _sendGreetingCheckIfReady();
+    });
+    window.addEventListener('neko:conversation-language-cleared', function (event) {
+        var detail = event && event.detail ? event.detail : {};
+        _applyClearedConversationLanguage(detail.character_name || '');
+    });
+    window.addEventListener('storage', function (event) {
+        var currentName = getWebSocketLanlanName() || '';
+        var expectedKey = currentName
+            ? 'nekoConversationLanguage:' + encodeURIComponent(currentName)
+            : '';
+        var expectedUntrustedKey = currentName
+            ? 'nekoConversationLanguageUntrusted:' + encodeURIComponent(currentName)
+            : '';
+        if (expectedUntrustedKey && event.key === expectedUntrustedKey) {
+            if (event.newValue === '1') {
+                // A failed hydration in another window is weaker evidence than
+                // this window's in-flight or already confirmed server result.
+                // Let an active GET settle, and re-publish a confirmed explicit
+                // value so the sibling marker converges back to trusted state.
+                if (S.conversationLanguageHydrated !== true) return;
+                if (S.conversationLanguageExplicit) {
+                    if (typeof window.setConversationLanguagePreference === 'function') {
+                        window.setConversationLanguagePreference(
+                            S.conversationLanguageExplicit,
+                            currentName,
+                            { dispatch: false, source: 'server' }
+                        );
+                    }
+                    return;
+                }
+                try {
+                    if (typeof window.getCachedConversationLanguagePreference === 'function') {
+                        S.conversationLanguage = window.getCachedConversationLanguagePreference(
+                            currentName
+                        ) || '';
+                    }
+                } catch (_) { S.conversationLanguage = ''; }
+                S.conversationLanguageExplicit = '';
+                S.conversationLanguageHydrated = true;
+                _syncRenderLanguageToBackend(getConversationLanguageForCurrentCharacter());
+                _sendGreetingCheckIfReady();
+                return;
+            }
+            // Marker removal must not cancel stronger in-flight/server evidence.
+            // A successful sibling write leaves a trusted explicit cache that can
+            // be applied directly; only a true clear/no-evidence state needs GET.
+            if (S.conversationLanguageHydrated !== true) return;
+            if (S.conversationLanguageExplicit) return;
+            var trustedExplicitLanguage = '';
+            try {
+                if (typeof window.getExplicitConversationLanguagePreference === 'function') {
+                    trustedExplicitLanguage = window.getExplicitConversationLanguagePreference(
+                        currentName
+                    ) || '';
+                }
+            } catch (_) { trustedExplicitLanguage = ''; }
+            if (trustedExplicitLanguage) {
+                S.conversationLanguage = trustedExplicitLanguage;
+                S.conversationLanguageExplicit = trustedExplicitLanguage;
+                S.conversationLanguageHydrated = true;
+                _syncLanguageToBackend(trustedExplicitLanguage);
+                _sendGreetingCheckIfReady();
+                return;
+            }
+            S._conversationLanguageHydration = hydrateConversationLanguage(currentName);
+            return;
+        }
+        if (!expectedKey || event.key !== expectedKey) return;
+        if (!event.newValue) {
+            if (typeof window.clearConversationLanguagePreference === 'function') {
+                window.clearConversationLanguagePreference(currentName, {
+                    dispatch: false,
+                    source: 'storage'
+                });
+            }
+            _applyClearedConversationLanguage(currentName);
+            return;
+        }
+        S._conversationLanguageHydrationId =
+            (Number(S._conversationLanguageHydrationId) || 0) + 1;
+        S.conversationLanguage = event.newValue;
+        S.conversationLanguageExplicit = event.newValue;
+        S.conversationLanguageHydrated = true;
+        _syncLanguageToBackend(event.newValue);
+        _sendGreetingCheckIfReady();
+    });
 
     window.addEventListener('neko:new-user-icebreaker-ended', function () {
         _sendGreetingCheckIfReady();
@@ -3680,34 +5261,28 @@
             !Array.isArray(detail.catMemorySummary)
             ? detail.catMemorySummary
             : null;
-        // A real runner start may return before the old silence threshold.
-        // This flag is delivery-only: completed experience narration still
-        // comes solely from the strict done-only episode summary.
-        var hasStartedAutonomousAction = !!(catMemorySummary &&
-            catMemorySummary.has_started_autonomous_action === true);
-        if (durationSeconds < CAT_GREETING_SILENT_BELOW_SECONDS && !hasStartedAutonomousAction) {
+        if (durationSeconds < CAT_GREETING_SILENT_BELOW_SECONDS) {
             return;
         }
-        var catLang = '';
-        try {
-            if (window.i18next && window.i18next.language) catLang = window.i18next.language;
-            else catLang = localStorage.getItem('i18nextLng') || '';
-            if (!catLang && typeof navigator !== 'undefined' && navigator.language) catLang = navigator.language;
-        } catch (_) { catLang = ''; }
+        var catLang = getConversationLanguageForCurrentCharacter();
+        var explicitCatLang = typeof getExplicitConversationLanguageForCurrentCharacter === 'function'
+            ? getExplicitConversationLanguageForCurrentCharacter()
+            : '';
         try {
             var catGreetingMessage = {
                 action: 'cat_greeting_check',
                 cat_duration_seconds: durationSeconds,
                 tier: detail.tier || '',
                 was_auto: !!detail.wasAuto,
-                language: catLang
+                render_language: catLang
             };
+            if (explicitCatLang) catGreetingMessage.language = explicitCatLang;
             if (catMemorySummary) {
                 catGreetingMessage.cat_memory_summary = catMemorySummary;
             }
             S.socket.send(JSON.stringify(catGreetingMessage));
             console.log('[cat_greeting_check] sent, duration=' + durationSeconds + 's tier=' + (detail.tier || '-') +
-                ' was_auto=' + (!!detail.wasAuto) + ' started_action=' + hasStartedAutonomousAction);
+                ' was_auto=' + (!!detail.wasAuto));
         } catch (e) {
             console.warn('[cat_greeting_check] send failed:', e);
         }

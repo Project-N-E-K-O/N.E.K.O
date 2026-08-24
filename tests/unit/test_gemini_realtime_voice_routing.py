@@ -137,11 +137,11 @@ def test_validate_keeps_free_native_voice_on_lanlan_app_route():
     mgr.get_voices_for_current_api = lambda for_listing=False: {}
     mgr.get_model_api_config = lambda model_type: {
         "api_type": "free",
-        "base_url": "wss://lanlan.app/realtime",
+        "base_url": "wss://www.lanlan.app/realtime",
     }
     mgr.get_core_config = lambda: {
         "CORE_API_TYPE": "free",
-        "CORE_URL": "wss://lanlan.app/realtime",
+        "CORE_URL": "wss://www.lanlan.app/realtime",
     }
 
     assert ConfigManager.validate_voice_id(mgr, "qingchunshaonv") is True
@@ -177,10 +177,10 @@ def test_native_preview_provider_respects_custom_voice_collision():
 
 
 def test_step_native_preview_provider_respects_custom_voice_collision():
-    native_mgr = _FakeCharactersRouterConfigManager("free", "wss://lanlan.tech/realtime")
+    native_mgr = _FakeCharactersRouterConfigManager("free", "wss://www.lanlan.tech/realtime")
     colliding_mgr = _FakeCharactersRouterConfigManager(
         "free",
-        "wss://lanlan.tech/realtime",
+        "wss://www.lanlan.tech/realtime",
         stored_voice_ids={"qingchunshaonv"},
     )
 
@@ -220,7 +220,7 @@ async def test_free_voice_catalog_on_lanlan_app_shows_free_intl(monkeypatch):
         "get_config_manager",
         lambda: _FakeCharactersRouterConfigManager(
             "free",
-            "wss://lanlan.app/realtime",
+            "wss://www.lanlan.app/realtime",
         ),
     )
 
@@ -231,7 +231,7 @@ async def test_free_voice_catalog_on_lanlan_app_shows_free_intl(monkeypatch):
         "get_config_manager",
         lambda: _FakeCharactersRouterConfigManager(
             "free",
-            "wss://lanlan.tech/realtime",
+            "wss://www.lanlan.tech/realtime",
         ),
     )
 
@@ -260,7 +260,7 @@ async def test_free_intl_pin_hidden_when_voice_id_collides_with_clone(monkeypatc
         "get_config_manager",
         lambda: _FakeCharactersRouterConfigManager(
             "free",
-            "wss://lanlan.app/realtime",
+            "wss://www.lanlan.app/realtime",
             stored_voice_ids={"yui"},
         ),
     )
@@ -279,7 +279,7 @@ async def test_free_intl_native_entry_hidden_when_voice_id_collides(monkeypatch)
         "get_config_manager",
         lambda: _FakeCharactersRouterConfigManager(
             "free",
-            "wss://lanlan.app/realtime",
+            "wss://www.lanlan.app/realtime",
             stored_voice_ids={"Leda"},
         ),
     )
@@ -299,24 +299,24 @@ def test_free_intl_remaps_gemini_and_yui_native_on_lanlan_app_route():
 
     # Gemini 音色 / yui → 海外 free 路由认 native
     assert resolve_native_voice_for_routing(
-        "free", "Puck", voice_id_exists, realtime_base_url="wss://lanlan.app/realtime",
+        "free", "Puck", voice_id_exists, realtime_base_url="wss://www.lanlan.app/realtime",
     ) == ("Puck", True)
     assert resolve_native_voice_for_routing(
         "free", "  yui  ", voice_id_exists, realtime_base_url="wss://edge.lanlan.app/realtime",
     ) == ("yui", True)
     # default 别名 → Leda
     assert resolve_native_voice_for_routing(
-        "free", "default", voice_id_exists, realtime_base_url="wss://lanlan.app/realtime",
+        "free", "default", voice_id_exists, realtime_base_url="wss://www.lanlan.app/realtime",
     ) == ("Leda", True)
 
     # 国内 free（lanlan.tech）：阶跃目录不识别 Gemini 音色
     assert resolve_native_voice_for_routing(
-        "free", "Puck", voice_id_exists, realtime_base_url="wss://lanlan.tech/realtime",
+        "free", "Puck", voice_id_exists, realtime_base_url="wss://www.lanlan.tech/realtime",
     ) == ("Puck", False)
 
     # 海外 free：阶跃预设不在 free_intl 目录 → 非 native
     assert resolve_native_voice_for_routing(
-        "free", "qingchunshaonv", voice_id_exists, realtime_base_url="wss://lanlan.app/realtime",
+        "free", "qingchunshaonv", voice_id_exists, realtime_base_url="wss://www.lanlan.app/realtime",
     ) == ("qingchunshaonv", False)
 
 
@@ -401,13 +401,13 @@ def test_non_livestream_free_preset_still_skips_tts_only_on_lanlan_tech(monkeypa
 
     assert (
         LLMSessionManager._resolve_session_use_tts(
-            mgr, "audio", {"base_url": "wss://lanlan.tech/realtime"}, core_config,
+            mgr, "audio", {"base_url": "wss://www.lanlan.tech/realtime"}, core_config,
         )
         is False
     )
     assert (
         LLMSessionManager._resolve_session_use_tts(
-            mgr, "audio", {"base_url": "wss://lanlan.app/realtime"}, core_config,
+            mgr, "audio", {"base_url": "wss://www.lanlan.app/realtime"}, core_config,
         )
         is True
     )
@@ -474,6 +474,38 @@ def test_explicit_vllm_tts_uses_external_tts_before_native_voice():
                 "ttsVoiceId": "Puck",
                 "GPTSOVITS_ENABLED": False,
             },
+        )
+        is False
+    )
+
+
+def test_explicit_custom_tts_owns_configured_voice_before_native_voice():
+    core_config = {
+        "ENABLE_CUSTOM_API": True,
+        "ttsModelProvider": "custom",
+        "ttsModelUrl": "https://speech.example.com/v1",
+        "ttsModelId": "vendor-model",
+        "ttsVoiceId": "Puck",
+        "GPTSOVITS_ENABLED": False,
+    }
+    mgr = _make_mgr("Puck", core_config=core_config)
+
+    assert (
+        LLMSessionManager._resolve_session_use_tts(
+            mgr,
+            "audio",
+            {"base_url": "https://generativelanguage.googleapis.com"},
+            core_config,
+        )
+        is True
+    )
+    disabled_config = {**core_config, "ENABLE_CUSTOM_API": False}
+    assert (
+        LLMSessionManager._resolve_session_use_tts(
+            mgr,
+            "audio",
+            {"base_url": "https://generativelanguage.googleapis.com"},
+            disabled_config,
         )
         is False
     )

@@ -23,8 +23,15 @@
     const REMIX_LAYERED_CANVAS_PADDING_RATIO = 0.12;
     const REMIX_LAYERED_CANVAS_PADDING_MIN = 48;
     const REMIX_LAYERED_CANVAS_PADDING_MAX = 160;
+    const PNGTUBER_LAYERED_CANVAS_MAX_RENDER_EDGE = 1024;
     const REMIX_MESH_DEFORM_STRENGTH = 0.28;
     const PNGTUBER_PLUS_VISIBLE_VALUES = new Set([0, 10, 20, 30, 1, 21, 12, 32, 3, 13, 4, 15, 26, 36, 27, 38]);
+    // 空闲低频驱动（对齐 live2d-core.js round-2 模式）：呼吸是 0.32Hz 正弦、
+    // 峰值速度 ~2.6px/s，20fps 与满帧视觉无差；动画循环空闲态压到 30fps
+    // （弹簧物理 dt 33ms 在各处 0.05s clamp 之内），活动时仍走 rAF 满帧。
+    const PNGTUBER_BREATHING_IDLE_FPS = 20;
+    const PNGTUBER_ANIMATION_IDLE_FPS = 30;
+    const PNGTUBER_FULL_RATE_HOLD_MS = 900;
 
     function clampNumber(value, min, max, fallback) {
         const parsed = Number(value);
@@ -148,6 +155,10 @@
             this.layeredAnimationFrame = null;
             this.layeredAnimationStart = 0;
             this.layeredCanvasPadding = 0;
+            this.layeredCanvasLogicalWidth = 1;
+            this.layeredCanvasLogicalHeight = 1;
+            this.layeredCanvasScaleX = 1;
+            this.layeredCanvasScaleY = 1;
             this.layeredBreathingFrame = null;
             this.layeredBreathingStart = 0;
             this.layeredPhysicsByLayer = new Map();
@@ -193,6 +204,9 @@
             this._listenersAttached = false;
             this._dragListenersAttached = false;
             this._dragState = null;
+            this._dragSequence = 0;
+            this._isDraggingModel = false;
+            this.isDragging = false;
             this._saveInFlight = null;
             this._lastSavedPositionKey = '';
             this._saveTimer = null;
@@ -311,9 +325,9 @@
             window.removeEventListener('pointercancel', this._boundDragEnd);
             this._dragListenersAttached = false;
             this._dragState = null;
+            this._dragSequence += 1;
             this._touchZoomState = null;
-            document.body.classList.remove('neko-model-dragging');
-            if (this.image) this.image.classList.remove('is-dragging');
+            this.setModelDraggingState(false);
         }
 
         attachSpeechListeners() {
@@ -432,9 +446,14 @@
 
         stopLayeredAnimationLoop() {
             if (this.layeredAnimationFrame) {
-                cancelAnimationFrame(this.layeredAnimationFrame);
+                if (this._layeredAnimationDriveMode === 'timer') {
+                    clearTimeout(this.layeredAnimationFrame);
+                } else {
+                    cancelAnimationFrame(this.layeredAnimationFrame);
+                }
                 this.layeredAnimationFrame = null;
             }
+            this._layeredAnimationDriveMode = null;
         }
 
         attachLayeredHotkeys() {
@@ -566,6 +585,8 @@
                 this.layeredStateReturnTimer = null;
             }
             this.layeredStateIndex = nextIndex;
+            // 状态切换后的 900ms 满帧余温：切换过渡（贴图换装/弹跳）以 rAF 满帧渲染
+            this._layeredFullRateHoldUntil = performance.now() + PNGTUBER_FULL_RATE_HOLD_MS;
             this.drawLayeredState();
             this.restartLayeredAnimationLoop();
             if ((options.source === 'hotkey' || options.source === 'alt-one-cycle-hotkey')
@@ -850,6 +871,10 @@
             this.layeredToggleVisibility = new Map();
             this.layeredLayerById = new Map();
             this.layeredCanvasPadding = 0;
+            this.layeredCanvasLogicalWidth = 1;
+            this.layeredCanvasLogicalHeight = 1;
+            this.layeredCanvasScaleX = 1;
+            this.layeredCanvasScaleY = 1;
             this.layeredPhysicsByLayer = new Map();
             this.remixModelMotionState = null;
             this.layeredDragVelocity = { x: 0, y: 0, at: 0 };
@@ -888,9 +913,28 @@
                         Math.ceil(Math.max(baseCanvasWidth, baseCanvasHeight) * REMIX_LAYERED_CANVAS_PADDING_RATIO)
                     )
                 );
-                canvas.width = baseCanvasWidth + this.layeredCanvasPadding * 2;
-                canvas.height = baseCanvasHeight + this.layeredCanvasPadding * 2;
-                canvas.style.aspectRatio = `${canvas.width} / ${canvas.height}`;
+                const logicalWidth = baseCanvasWidth + this.layeredCanvasPadding * 2;
+                const logicalHeight = baseCanvasHeight + this.layeredCanvasPadding * 2;
+                const renderScale = Math.min(
+                    1,
+                    PNGTUBER_LAYERED_CANVAS_MAX_RENDER_EDGE / Math.max(logicalWidth, logicalHeight)
+                );
+                const renderWidth = Math.max(1, Math.round(logicalWidth * renderScale));
+                const renderHeight = Math.max(1, Math.round(logicalHeight * renderScale));
+                this.layeredCanvasLogicalWidth = logicalWidth;
+                this.layeredCanvasLogicalHeight = logicalHeight;
+                this.layeredCanvasScaleX = renderWidth / logicalWidth;
+                this.layeredCanvasScaleY = renderHeight / logicalHeight;
+                canvas.width = renderWidth;
+                canvas.height = renderHeight;
+                const maxHeightVh = isModelManagerPage() ? 92 : 82;
+                const heightLimitedWidthVh = (maxHeightVh * logicalWidth) / logicalHeight;
+                const viewportWidthLimits = isModelManagerPage()
+                    ? `80vw, ${heightLimitedWidthVh}vh`
+                    : `56vw, 560px, ${heightLimitedWidthVh}vh`;
+                canvas.style.width = `min(${logicalWidth}px, ${viewportWidthLimits})`;
+                canvas.style.height = 'auto';
+                canvas.style.aspectRatio = `${logicalWidth} / ${logicalHeight}`;
                 this.startLayeredBlinkLoop();
                 this.restartLayeredAnimationLoop();
                 this.attachLayeredHotkeys();
@@ -902,6 +946,10 @@
                 this.layeredMetadata = null;
                 this.layeredImages = new Map();
                 this.layeredCanvasPadding = 0;
+                this.layeredCanvasLogicalWidth = 1;
+                this.layeredCanvasLogicalHeight = 1;
+                this.layeredCanvasScaleX = 1;
+                this.layeredCanvasScaleY = 1;
                 this.layeredToggleVisibility = new Map();
                 this.layeredLayerById = new Map();
                 this.detachLayeredPointerTracking();
@@ -1276,10 +1324,56 @@
             });
         }
 
+        // 当前状态是否有"有效帧率超过空闲地板"的贴图动画：
+        // sheet 帧率 = animation_speed × REMIX_FRAME_SPEED_MULTIPLIER，
+        // 超过 PNGTUBER_ANIMATION_IDLE_FPS 时 30fps 采样会持续丢帧，需保持 rAF。
+        _layeredStateHasFastSheetAnimation(stateName = this.state || 'idle') {
+            if (!this.layeredRuntimeFeatureEnabled('sprite_sheet_animation')) return false;
+            const layers = Array.isArray(this.layeredMetadata && this.layeredMetadata.layers)
+                ? this.layeredMetadata.layers : [];
+            return layers.some((layer) => {
+                if (!this.shouldRenderLayer(layer, stateName)) return false;
+                const layerState = this.layerStateForRender(layer, stateName);
+                if (!layerState || !this.stateHasFrameAnimation(layerState)) return false;
+                const speed = Math.max(0, Number(layerState.animation_speed) || 0);
+                return speed * REMIX_FRAME_SPEED_MULTIPLIER > PNGTUBER_ANIMATION_IDLE_FPS;
+            });
+        }
+
+        // 动画循环是否需要 rAF 满帧：拖拽/触摸缩放、说话相关帧、非 idle 状态、
+        // 指针/物理仍需逐帧、弹簧未静定、高速贴图动画、或换装/拖拽释放后的
+        // 满帧余温。否则以 PNGTUBER_ANIMATION_IDLE_FPS 定时器低频驱动（避免
+        // rAF 请求把 Blink 主帧调度顶到显示器刷新率——live2d round-2 同款策略）。
+        _layeredAnimationNeedsFullRate(timestamp) {
+            try {
+                // 页面级豁免（demo/模型管理器等）：与 VRM/MMD governor 的豁免对齐
+                if (window.__NEKO_DISABLE_AVATAR_IDLE_THROTTLE__ === true) return true;
+                if (this._dragState || this._touchZoomState) return true;
+                if (this.isSpeaking || this.lipSyncFrame || this.talkingHopFrame || this.speakingBounceFrame) return true;
+                if ((this.state || 'idle') !== 'idle') return true;
+                if (typeof this.layeredPointerNeedsFrame === 'function' && this.layeredPointerNeedsFrame(timestamp)) return true;
+                if (typeof this.layeredPhysicsNeedsFrame === 'function' && this.layeredPhysicsNeedsFrame(timestamp)) return true;
+                const motion = this.remixModelMotionState;
+                if (motion && (Math.abs(motion.x || 0) > 0.02 || Math.abs(motion.y || 0) > 0.02 || Math.abs(motion.yVel || 0) > 1)) return true;
+                if (this._layeredFullRateHoldUntil && timestamp < this._layeredFullRateHoldUntil) return true;
+                if (this._layeredStateHasFastSheetAnimation()) return true;
+            } catch (_) { return true; }
+            return false;
+        }
+
         startLayeredAnimationLoop(options = {}) {
             if (this._renderingPaused) return;
             this.startLayeredBreathingLoop();
-            if (this.layeredAnimationFrame) return;
+            if (this.layeredAnimationFrame) {
+                // 已在低频定时器驱动中且此刻需要满帧：立即升频，不等下一拍
+                if (this._layeredAnimationDriveMode === 'timer' && this._layeredAnimationTick &&
+                    this._layeredAnimationNeedsFullRate(performance.now())) {
+                    clearTimeout(this.layeredAnimationFrame);
+                    this._layeredAnimationDriveMode = 'raf';
+                    this.layeredAnimationFrame = requestAnimationFrame(this._layeredAnimationTick);
+                }
+                return;
+            }
             if (!this.isLayeredActive() || !this.hasMotionLayersForCurrentState()) return;
             if (!options.preserveTimeline || !this.layeredAnimationStart) {
                 this.layeredAnimationStart = performance.now();
@@ -1289,13 +1383,28 @@
                     this.stopLayeredAnimationLoop();
                     return;
                 }
-                this.drawLayeredState(this.state || 'idle', timestamp);
+                // 隐藏标签页跳过 canvas 绘制但保持链条（timer 驱动路径专用；
+                // rAF 路径在隐藏标签页本身就会被浏览器暂停）
+                if (!(typeof document !== 'undefined' && document.hidden)) {
+                    this.drawLayeredState(this.state || 'idle', timestamp);
+                }
                 if (!this.hasMotionLayersForCurrentState()) {
                     this.stopLayeredAnimationLoop();
                     return;
                 }
-                this.layeredAnimationFrame = requestAnimationFrame(tick);
+                if (this._layeredAnimationNeedsFullRate(timestamp)) {
+                    this._layeredAnimationDriveMode = 'raf';
+                    this.layeredAnimationFrame = requestAnimationFrame(tick);
+                } else {
+                    this._layeredAnimationDriveMode = 'timer';
+                    this.layeredAnimationFrame = setTimeout(
+                        () => tick(performance.now()),
+                        Math.round(1000 / PNGTUBER_ANIMATION_IDLE_FPS)
+                    );
+                }
             };
+            this._layeredAnimationTick = tick;
+            this._layeredAnimationDriveMode = 'raf';
             this.layeredAnimationFrame = requestAnimationFrame(tick);
         }
 
@@ -1340,23 +1449,48 @@
             if (this._renderingPaused) return;
             if (this.layeredBreathingFrame || !this.layeredBreathingEnabled()) return;
             this.layeredBreathingStart = this.layeredBreathingStart || performance.now();
+            // 呼吸是 0.32Hz 正弦（峰值速度 ~2.6px/s），全程用 20fps 定时器驱动即可：
+            // 视觉与满帧 rAF 无差，且不会让 Blink 以显示器刷新率空跑主帧。
+            // 拖拽/说话等高频视觉各自的路径会直接调 applyTransform，不依赖本循环。
+            const breathingIntervalMs = Math.round(1000 / PNGTUBER_BREATHING_IDLE_FPS);
+            // 页面级豁免（demo/模型管理器等）：保持原 rAF 满帧驱动
+            const breathingUsesTimer = window.__NEKO_DISABLE_AVATAR_IDLE_THROTTLE__ !== true;
             const tick = (timestamp) => {
                 if (!this.layeredBreathingEnabled() || !this.container || this.container.style.display === 'none') {
                     this.stopLayeredBreathingLoop();
                     return;
                 }
-                this.applyAnimationTransform(timestamp);
-                this.updateOverlayPositionsForAnimation(timestamp);
-                this.layeredBreathingFrame = requestAnimationFrame(tick);
+                // 纯浏览器隐藏标签页跳过绘制但保持链条（rAF 暂停语义的近似；
+                // Electron 宠物窗禁用了节流，不受影响）
+                if (!(typeof document !== 'undefined' && document.hidden)) {
+                    this.applyAnimationTransform(timestamp);
+                    this.updateOverlayPositionsForAnimation(timestamp);
+                }
+                if (breathingUsesTimer) {
+                    this.layeredBreathingFrame = setTimeout(() => tick(performance.now()), breathingIntervalMs);
+                } else {
+                    this.layeredBreathingFrame = requestAnimationFrame(tick);
+                }
             };
-            this.layeredBreathingFrame = requestAnimationFrame(tick);
+            if (breathingUsesTimer) {
+                this._layeredBreathingDriveMode = 'timer';
+                this.layeredBreathingFrame = setTimeout(() => tick(performance.now()), breathingIntervalMs);
+            } else {
+                this._layeredBreathingDriveMode = 'raf';
+                this.layeredBreathingFrame = requestAnimationFrame(tick);
+            }
         }
 
         stopLayeredBreathingLoop() {
             if (this.layeredBreathingFrame) {
-                cancelAnimationFrame(this.layeredBreathingFrame);
+                if (this._layeredBreathingDriveMode === 'timer') {
+                    clearTimeout(this.layeredBreathingFrame);
+                } else {
+                    cancelAnimationFrame(this.layeredBreathingFrame);
+                }
                 this.layeredBreathingFrame = null;
             }
+            this._layeredBreathingDriveMode = null;
             this.layeredBreathingStart = 0;
         }
 
@@ -1528,8 +1662,8 @@
                 ? this.canvasElement.getBoundingClientRect()
                 : null;
             if (!rect || !rect.width || !rect.height) return pointer;
-            const canvasWidth = Math.max(1, Number(this.canvasElement.width) || Number(this.layeredMetadata?.canvas?.width) || 1);
-            const canvasHeight = Math.max(1, Number(this.canvasElement.height) || Number(this.layeredMetadata?.canvas?.height) || 1);
+            const canvasWidth = Math.max(1, Number(this.layeredCanvasLogicalWidth) || Number(this.layeredMetadata?.canvas?.width) || 1);
+            const canvasHeight = Math.max(1, Number(this.layeredCanvasLogicalHeight) || Number(this.layeredMetadata?.canvas?.height) || 1);
             const padding = Number(this.layeredCanvasPadding) || 0;
             const frameWidth = Number(frame?.dw || layerState?.frame_width || layer?.width) || 1;
             const frameHeight = Number(frame?.dh || layerState?.frame_height || layer?.height) || 1;
@@ -2262,12 +2396,35 @@
                 || (Number(a.order || 0) - Number(b.order || 0));
         }
 
-        drawLayeredState(stateName = this.state || 'idle', timestamp = performance.now()) {
+        renderLayeredSnapshotCanvas(stateName = this.state || 'idle', timestamp = performance.now()) {
+            if (!this.isLayeredActive()) return null;
+            const canvas = document.createElement('canvas');
+            canvas.width = Math.max(1, Math.round(Number(this.layeredCanvasLogicalWidth) || 1));
+            canvas.height = Math.max(1, Math.round(Number(this.layeredCanvasLogicalHeight) || 1));
+            const drawn = this.drawLayeredState(stateName, timestamp, {
+                canvas,
+                scaleX: 1,
+                scaleY: 1
+            });
+            return drawn ? canvas : null;
+        }
+
+        drawLayeredState(stateName = this.state || 'idle', timestamp = performance.now(), renderTarget = null) {
             if (!this.isLayeredActive() || !this.canvasElement) return false;
-            const canvas = this.canvasElement;
+            const canvas = renderTarget?.canvas || this.canvasElement;
             const ctx = canvas.getContext('2d');
             if (!ctx) return false;
+            const renderScaleX = Math.max(
+                0.0001,
+                Number(renderTarget?.scaleX ?? this.layeredCanvasScaleX) || 1
+            );
+            const renderScaleY = Math.max(
+                0.0001,
+                Number(renderTarget?.scaleY ?? this.layeredCanvasScaleY) || 1
+            );
+            ctx.setTransform(1, 0, 0, 1, 0, 0);
             ctx.clearRect(0, 0, canvas.width, canvas.height);
+            ctx.setTransform(renderScaleX, 0, 0, renderScaleY, 0, 0);
             const layers = Array.isArray(this.layeredMetadata.layers) ? this.layeredMetadata.layers : [];
             if (this.isLayeredPlusModel()) {
                 return this.drawPlusLayerTree(ctx, layers, stateName, timestamp);
@@ -2378,7 +2535,7 @@
             const modelManagerPage = isModelManagerPage();
             const pointerEvents = this.isLocked ? 'none' : 'auto';
             if (this.container) {
-                this.container.style.pointerEvents = 'none';
+                this.container.style.pointerEvents = modelManagerPage ? 'auto' : 'none';
             }
             const centerAnchored = modelManagerPage || this.config.position_anchor === 'center';
             if (centerAnchored) {
@@ -2436,13 +2593,25 @@
         }
 
         getRenderPlacement(placement) {
-            if (isModelManagerPage() && !this.config.preserve_model_manager_position) {
+            if (isModelManagerPage()
+                && !this.config.preserve_model_manager_position
+                && !this._modelManagerUseCurrentPlacement) {
                 return Object.assign({}, placement, {
                     offsetX: 0,
                     offsetY: 0
                 });
             }
             return placement;
+        }
+
+        beginModelManagerPositionEditing() {
+            if (!isModelManagerPage()) return false;
+            if (!this._modelManagerUseCurrentPlacement) {
+                const renderPlacement = this.getRenderPlacement(this.getActivePlacement());
+                this.setActiveOffsets(renderPlacement.offsetX, renderPlacement.offsetY);
+            }
+            this._modelManagerUseCurrentPlacement = true;
+            return true;
         }
 
         setActiveScale(nextScale) {
@@ -2505,6 +2674,261 @@
             }
         }
 
+        setModelDraggingState(active, moved = false) {
+            const dragging = !!active;
+            this._isDraggingModel = dragging;
+            this.isDragging = dragging;
+            document.body?.classList.toggle('neko-model-dragging', dragging);
+            if (!this.image) return;
+
+            this.image.dragging = dragging;
+            this.image.isDragging = dragging;
+            this.image._isDraggingModel = dragging;
+            this.image.classList.toggle('is-dragging', dragging);
+            if (dragging) {
+                this.image.setAttribute('data-dragging', moved ? 'true' : 'pending');
+            } else {
+                this.image.removeAttribute('data-dragging');
+            }
+        }
+
+        getModelCenterInWindow() {
+            if (!this.image || typeof this.image.getBoundingClientRect !== 'function') return null;
+            const rect = this.image.getBoundingClientRect();
+            const left = Number(rect?.left);
+            const top = Number(rect?.top);
+            const width = Number(rect?.width);
+            const height = Number(rect?.height);
+            if (![left, top, width, height].every(Number.isFinite) || width <= 0 || height <= 0) {
+                return null;
+            }
+            return {
+                x: left + width / 2,
+                y: top + height / 2
+            };
+        }
+
+        captureDragScreenPoint(event) {
+            const screenX = Number(event?.screenX);
+            const screenY = Number(event?.screenY);
+            if (!Number.isFinite(screenX) || !Number.isFinite(screenY)) return null;
+            return { x: screenX, y: screenY };
+        }
+
+        rememberDragScreenPoint(state, event, { start = false } = {}) {
+            if (!state) return null;
+            const point = this.captureDragScreenPoint(event);
+            if (!point) return null;
+            state.lastScreenPoint = point;
+            state.dragHintLastPointer = point;
+            if (!start) return point;
+
+            const center = this.getModelCenterInWindow();
+            const clientX = Number(event?.clientX);
+            const clientY = Number(event?.clientY);
+            state.modelCenterPointerOffset = center && Number.isFinite(clientX) && Number.isFinite(clientY)
+                ? { x: center.x - clientX, y: center.y - clientY }
+                : { x: 0, y: 0 };
+            state.dragHintStartPointer = Object.assign({ startedAt: Date.now() }, point);
+            return point;
+        }
+
+        isDragCompletionCurrent(state) {
+            return !!state
+                && state.dragSequence === this._dragSequence
+                && this._dragState === null;
+        }
+
+        async recordDragHintPointerEdgeApproach(state) {
+            const helper = window.NekoAvatarMultiScreenDragHint;
+            const start = state?.dragHintStartPointer;
+            const pointer = state?.dragHintLastPointer;
+            if (!helper || typeof helper.recordPointerEdgeApproach !== 'function'
+                || state?.dragHintApproachShown || state?.dragHintApproachPending
+                || !start || !pointer) return false;
+            state.dragHintApproachPending = true;
+            try {
+                const shown = await helper.recordPointerEdgeApproach('pngtuber', {
+                    startedAt: start.startedAt,
+                    startScreenX: start.x,
+                    startScreenY: start.y,
+                    screenX: pointer.x,
+                    screenY: pointer.y
+                });
+                if (shown) state.dragHintApproachShown = true;
+                return shown;
+            } finally {
+                state.dragHintApproachPending = false;
+            }
+        }
+
+        async recordDragHintPointerEdgeRelease(state) {
+            const helper = window.NekoAvatarMultiScreenDragHint;
+            const start = state?.dragHintStartPointer;
+            const pointer = state?.dragHintLastPointer;
+            if (!helper || typeof helper.recordPointerEdgeRelease !== 'function' || !start || !pointer) {
+                return false;
+            }
+            return await helper.recordPointerEdgeRelease('pngtuber', {
+                startedAt: start.startedAt,
+                startScreenX: start.x,
+                startScreenY: start.y,
+                screenX: pointer.x,
+                screenY: pointer.y
+            });
+        }
+
+        normalizeDisplayBounds(display) {
+            if (!display || typeof display !== 'object') return null;
+            const x = Number.isFinite(Number(display.screenX))
+                ? Number(display.screenX)
+                : Number(display.bounds?.x);
+            const y = Number.isFinite(Number(display.screenY))
+                ? Number(display.screenY)
+                : Number(display.bounds?.y);
+            const width = Number.isFinite(Number(display.width))
+                ? Number(display.width)
+                : Number(display.bounds?.width);
+            const height = Number.isFinite(Number(display.height))
+                ? Number(display.height)
+                : Number(display.bounds?.height);
+            if (![x, y, width, height].every(Number.isFinite) || width <= 0 || height <= 0) {
+                return null;
+            }
+            return { id: display.id, x, y, width, height };
+        }
+
+        moveModelCenterToWindowPoint(targetX, targetY) {
+            const x = Number(targetX);
+            const y = Number(targetY);
+            const center = this.getModelCenterInWindow();
+            if (!center || !Number.isFinite(x) || !Number.isFinite(y)) return false;
+
+            const placement = this.getActivePlacement();
+            this.setActiveOffsets(
+                placement.offsetX + x - center.x,
+                placement.offsetY + y - center.y
+            );
+            this.applyTransform();
+            if (this.isLayeredActive()) this.drawLayeredState();
+            this.syncGlobalConfig();
+            if (typeof this.updateFloatingButtonsPosition === 'function') {
+                this.updateFloatingButtonsPosition();
+            }
+            this.updateLockIconPosition();
+            return true;
+        }
+
+        async checkAndSwitchDisplayAfterDrag(state) {
+            const bridge = window.electronScreen;
+            if (isModelManagerPage() || !bridge
+                || typeof bridge.getAllDisplays !== 'function'
+                || typeof bridge.getCurrentDisplay !== 'function'
+                || typeof bridge.moveWindowToDisplay !== 'function') return false;
+
+            const center = this.getModelCenterInWindow();
+            if (!center) return false;
+            const pointer = state?.lastScreenPoint;
+            const hasPointer = pointer && Number.isFinite(pointer.x) && Number.isFinite(pointer.y);
+
+            try {
+                const coordinateSnapshotRequest = typeof bridge.getDesktopCoordinateSnapshot === 'function'
+                    ? Promise.resolve().then(() => bridge.getDesktopCoordinateSnapshot()).catch(() => null)
+                    : Promise.resolve(null);
+                const [rawDisplays, rawCurrentDisplay, coordinateSnapshot] = await Promise.all([
+                    bridge.getAllDisplays(),
+                    bridge.getCurrentDisplay(),
+                    coordinateSnapshotRequest
+                ]);
+                const displays = Array.isArray(rawDisplays)
+                    ? rawDisplays.map((display) => this.normalizeDisplayBounds(display)).filter(Boolean)
+                    : [];
+                const currentDisplay = this.normalizeDisplayBounds(rawCurrentDisplay);
+                if (displays.length <= 1 || !currentDisplay) return false;
+
+                const windowWidth = Number(window.innerWidth);
+                const windowHeight = Number(window.innerHeight);
+                if (!Number.isFinite(windowWidth) || !Number.isFinite(windowHeight)
+                    || windowWidth <= 0 || windowHeight <= 0) return false;
+
+                // screenOrigin matches renderer-local coordinates. It is the actual BrowserWindow
+                // origin normally and the virtual origin when physical crop mode remaps the renderer.
+                const rendererOrigin = coordinateSnapshot?.renderer?.screenOrigin;
+                const actualWindowBounds = coordinateSnapshot?.window?.actualBounds;
+                const rendererOriginX = Number(rendererOrigin?.x);
+                const rendererOriginY = Number(rendererOrigin?.y);
+                const actualWindowX = Number(actualWindowBounds?.x);
+                const actualWindowY = Number(actualWindowBounds?.y);
+                const currentWindowOriginX = Number.isFinite(rendererOriginX)
+                    ? rendererOriginX
+                    : (Number.isFinite(actualWindowX) ? actualWindowX : currentDisplay.x);
+                const currentWindowOriginY = Number.isFinite(rendererOriginY)
+                    ? rendererOriginY
+                    : (Number.isFinite(actualWindowY) ? actualWindowY : currentDisplay.y);
+                const modelCenterInsideWindow = center.x >= 0 && center.x < windowWidth
+                    && center.y >= 0 && center.y < windowHeight;
+                const pointerWindowX = hasPointer ? pointer.x - currentWindowOriginX : null;
+                const pointerWindowY = hasPointer ? pointer.y - currentWindowOriginY : null;
+                const pointerOutsideCurrentWindow = hasPointer && !(
+                    pointerWindowX >= 0 && pointerWindowX < windowWidth
+                    && pointerWindowY >= 0 && pointerWindowY < windowHeight
+                );
+                if ((!hasPointer && modelCenterInsideWindow)
+                    || (hasPointer && !pointerOutsideCurrentWindow && modelCenterInsideWindow)) {
+                    return false;
+                }
+
+                const modelScreenX = currentWindowOriginX + center.x;
+                const modelScreenY = currentWindowOriginY + center.y;
+                const usePointer = hasPointer && pointerOutsideCurrentWindow;
+                const switchScreenX = usePointer ? pointer.x : modelScreenX;
+                const switchScreenY = usePointer ? pointer.y : modelScreenY;
+                const targetDisplay = displays.find((display) => (
+                    switchScreenX >= display.x && switchScreenX < display.x + display.width
+                    && switchScreenY >= display.y && switchScreenY < display.y + display.height
+                ));
+                if (!targetDisplay) return false;
+                if (currentDisplay.id !== undefined && targetDisplay.id !== undefined
+                    && String(currentDisplay.id) === String(targetDisplay.id)) return false;
+                if (!this.isDragCompletionCurrent(state)) return false;
+
+                const result = await bridge.moveWindowToDisplay(switchScreenX, switchScreenY);
+                if (!(result && result.success && !result.sameDisplay)) return false;
+
+                const resultWindowBounds = result.windowBounds && typeof result.windowBounds === 'object'
+                    ? result.windowBounds
+                    : null;
+                const targetOriginX = Number.isFinite(Number(resultWindowBounds?.x))
+                    ? Number(resultWindowBounds.x)
+                    : targetDisplay.x;
+                const targetOriginY = Number.isFinite(Number(resultWindowBounds?.y))
+                    ? Number(resultWindowBounds.y)
+                    : targetDisplay.y;
+                const pointerOffset = state?.modelCenterPointerOffset || { x: 0, y: 0 };
+                const desiredCenterX = usePointer
+                    ? switchScreenX - targetOriginX + (Number(pointerOffset.x) || 0)
+                    : modelScreenX - targetOriginX;
+                const desiredCenterY = usePointer
+                    ? switchScreenY - targetOriginY + (Number(pointerOffset.y) || 0)
+                    : modelScreenY - targetOriginY;
+
+                await new Promise((resolve) => requestAnimationFrame(resolve));
+                await new Promise((resolve) => requestAnimationFrame(resolve));
+                if (this.isDragCompletionCurrent(state)) {
+                    this.moveModelCenterToWindowPoint(desiredCenterX, desiredCenterY);
+                }
+
+                const helper = window.NekoAvatarMultiScreenDragHint;
+                if (helper && typeof helper.markDisplaySwitchSuccess === 'function') {
+                    helper.markDisplaySwitchSuccess('pngtuber');
+                }
+                return true;
+            } catch (error) {
+                console.error('[PNGTuber] Failed to switch display after drag:', error);
+                return false;
+            }
+        }
+
         startDrag(event) {
             if (!canInteractWithAvatar()) return;
             if (this.isLocked) return;
@@ -2513,7 +2937,9 @@
             event.preventDefault();
             event.stopPropagation();
             const placement = this.getActivePlacement();
+            this._dragSequence += 1;
             this._dragState = {
+                dragSequence: this._dragSequence,
                 pointerId: event.pointerId,
                 startX: event.clientX,
                 startY: event.clientY,
@@ -2522,15 +2948,21 @@
                 lastX: event.clientX,
                 lastY: event.clientY,
                 lastAt: performance.now(),
-                moved: false
+                moved: false,
+                lastScreenPoint: null,
+                modelCenterPointerOffset: { x: 0, y: 0 },
+                dragHintStartPointer: null,
+                dragHintLastPointer: null,
+                dragHintApproachShown: false,
+                dragHintApproachPending: false
             };
+            this.rememberDragScreenPoint(this._dragState, event, { start: true });
             this.resetLayeredDragVelocity();
             if (this.layeredPointer) this.layeredPointer.active = false;
             if (this.image && typeof this.image.setPointerCapture === 'function') {
                 try { this.image.setPointerCapture(event.pointerId); } catch (_) {}
             }
-            document.body.classList.add('neko-model-dragging');
-            if (this.image) this.image.classList.add('is-dragging');
+            this.setModelDraggingState(true, false);
         }
 
         moveDrag(event) {
@@ -2543,10 +2975,13 @@
             state.lastX = event.clientX;
             state.lastY = event.clientY;
             state.lastAt = now;
+            this.rememberDragScreenPoint(state, event);
             if (Math.hypot(dx, dy) > 4 && !state.moved) {
                 state.moved = true;
+                this.setModelDraggingState(true, true);
                 this.showDragImage();
             }
+            if (state.moved) void this.recordDragHintPointerEdgeApproach(state);
             this.setActiveOffsets(state.startOffsetX + dx, state.startOffsetY + dy);
             this.applyTransform();
             if (this.isLayeredActive()) this.drawLayeredState();
@@ -2560,13 +2995,16 @@
         async endDrag(event) {
             const state = this._dragState;
             if (!state || (state.pointerId !== undefined && event.pointerId !== state.pointerId)) return;
+            this.rememberDragScreenPoint(state, event);
             this._dragState = null;
+            // 拖拽释放后的物理回摆窗口保持满帧：Plus 模型物理状态的内部字段
+            // （draggerX/Y）不走 remix 形状探测，用时间窗兜底两种物理形态
+            this._layeredFullRateHoldUntil = performance.now() + 2000;
             this.resetLayeredDragVelocity();
             if (this.image && typeof this.image.releasePointerCapture === 'function') {
                 try { this.image.releasePointerCapture(event.pointerId); } catch (_) {}
             }
-            document.body.classList.remove('neko-model-dragging');
-            if (this.image) this.image.classList.remove('is-dragging');
+            this.setModelDraggingState(false);
             this.restoreStateImage();
             this.restartLayeredAnimationLoop();
             if (typeof this.updateFloatingButtonsPosition === 'function') {
@@ -2575,6 +3013,12 @@
             this.updateLockIconPosition();
             if (state.moved) {
                 this._suppressNextClick = true;
+                const displaySwitched = await this.checkAndSwitchDisplayAfterDrag(state);
+                if (!this.isDragCompletionCurrent(state)) return;
+                if (!displaySwitched) {
+                    await this.recordDragHintPointerEdgeRelease(state);
+                }
+                if (!this.isDragCompletionCurrent(state)) return;
                 await this.saveCurrentConfig();
             }
         }
@@ -2635,6 +3079,7 @@
             event.stopPropagation();
             const center = this.getTouchCenter(event.touches[0], event.touches[1]);
             const placement = this.getActivePlacement();
+            this._dragSequence += 1;
             this._dragState = null;
             this._touchZoomState = {
                 initialDistance: this.getTouchDistance(event.touches[0], event.touches[1]),
@@ -2650,8 +3095,7 @@
             };
             this.resetLayeredDragVelocity();
             if (this.layeredPointer) this.layeredPointer.active = false;
-            document.body.classList.add('neko-model-dragging');
-            if (this.image) this.image.classList.add('is-dragging');
+            this.setModelDraggingState(true, true);
             this.showDragImage();
         }
 
@@ -2680,8 +3124,7 @@
             if (!state) return;
             this._touchZoomState = null;
             this.resetLayeredDragVelocity();
-            document.body.classList.remove('neko-model-dragging');
-            if (this.image) this.image.classList.remove('is-dragging');
+            this.setModelDraggingState(false);
             this.restoreStateImage();
             this.restartLayeredAnimationLoop();
             if (typeof this.updateFloatingButtonsPosition === 'function') {
@@ -2806,29 +3249,22 @@
             lockIcon.style.visibility = 'visible';
 
             const lockRect = lockIcon.getBoundingClientRect();
-            let isOverlapped = false;
-            document.querySelectorAll('[id^="pngtuber-popup-"]').forEach((popup) => {
-                if (popup.style.display === 'flex' && popup.style.opacity === '1') {
-                    const popupRect = popup.getBoundingClientRect();
-                    if (lockRect.right > popupRect.left && lockRect.left < popupRect.right &&
-                        lockRect.bottom > popupRect.top && lockRect.top < popupRect.bottom) {
-                        isOverlapped = true;
-                    }
-                }
-            });
-            if (!isOverlapped) {
-                document.querySelectorAll('[data-neko-sidepanel]').forEach((panel) => {
-                    if (panel.style.display !== 'none' && parseFloat(panel.style.opacity) > 0) {
-                        const panelRect = panel.getBoundingClientRect();
-                        if (lockRect.right > panelRect.left && lockRect.left < panelRect.right &&
-                            lockRect.bottom > panelRect.top && lockRect.top < panelRect.bottom) {
-                            isOverlapped = true;
-                        }
-                    }
+            const popupUi = window.AvatarPopupUI || null;
+            const isOverlapped = popupUi && typeof popupUi.isRectOverlappedByVisibleOverlay === 'function'
+                ? popupUi.isRectOverlappedByVisibleOverlay(lockRect, 'pngtuber')
+                : Array.from(document.querySelectorAll('[id^="pngtuber-popup-"], [data-neko-sidepanel-owner^="pngtuber-popup-"]')).some(element => {
+                    const style = window.getComputedStyle(element);
+                    const computedOpacity = Number.parseFloat(style.opacity || '1');
+                    const targetOpacity = Number.parseFloat(element.style.opacity || style.opacity || '1');
+                    if (style.display === 'none' || style.visibility === 'hidden' ||
+                        (computedOpacity <= 0 && targetOpacity <= 0)) return false;
+                    const overlayRect = element.getBoundingClientRect();
+                    return lockRect.right > overlayRect.left && lockRect.left < overlayRect.right &&
+                        lockRect.bottom > overlayRect.top && lockRect.top < overlayRect.bottom;
                 });
-            }
             const shouldFade = this.container && this.container.classList.contains('locked-hover-fade');
             lockIcon.style.opacity = shouldFade ? '0.12' : (isOverlapped ? '0.3' : '');
+            lockIcon.style.pointerEvents = isOverlapped ? 'none' : 'auto';
         }
 
         async resolveCurrentLanlanName() {
@@ -2872,7 +3308,8 @@
                 }
                 const payload = {
                     model_type: 'pngtuber',
-                    pngtuber: Object.assign({}, this.config)
+                    pngtuber: Object.assign({}, this.config),
+                    apply_runtime: false
                 };
                 const response = await fetch(`/api/characters/catgirl/l2d/${encodeURIComponent(name)}`, {
                     method: 'PUT',
@@ -2902,6 +3339,7 @@
         async load(config) {
             this.detachDragListeners();
             this.clearEmotion({ render: false });
+            this._modelManagerUseCurrentPlacement = false;
             this.config = normalizeConfig(config || {});
             await this.setupLayeredAdapter();
             this.ensureContainer();
@@ -3158,6 +3596,8 @@
 
         startCostumeChangeHopAnimation() {
             if (this.talkingHopFrame || !this.isLayeredActive()) return;
+            // 弹跳期间保持动画循环满帧
+            this._layeredFullRateHoldUntil = performance.now() + PNGTUBER_FULL_RATE_HOLD_MS;
             this.talkingHopStart = performance.now();
             this.talkingHopAmplitude = 4.5;
             this.talkingHopPeriodMs = 260;
@@ -3479,7 +3919,7 @@
             this.container.classList.remove('hidden');
             this.container.style.display = 'block';
             this.container.style.visibility = 'visible';
-            this.container.style.pointerEvents = 'none';
+            this.container.style.pointerEvents = isModelManagerPage() ? 'auto' : 'none';
             if (this.image) {
                 this.image.style.visibility = 'visible';
                 this.image.style.pointerEvents = this.isLocked ? 'none' : 'auto';
@@ -3636,6 +4076,7 @@
             this._pngtuberControlsHover = false;
 
             this.updateFloatingButtonsPosition = () => {
+                this.syncResponsiveButtonVisibility(buttonsContainer);
                 if (isYuiGuideFloatingToolbarSuppressed()) {
                     buttonsContainer.style.display = 'none';
                     buttonsContainer.style.visibility = 'hidden';
@@ -3850,12 +4291,14 @@
                     } else if (config.id === 'goodbye') {
                         this._isInReturnState = true;
                         window.dispatchEvent(new CustomEvent('live2d-goodbye-click'));
+                    } else if (config.id === 'social') {
+                        window.dispatchEvent(new CustomEvent('live2d-social-click'));
                     }
                 });
 
                 btnWrapper.appendChild(btn);
                 if (config.id === 'mic' && config.hasPopup && config.separatePopupTrigger && !(window.isMobileWidth && window.isMobileWidth())) {
-                    this.createMicMuteButton(btnWrapper);
+                    this.createVoiceSessionQuickControls(btnWrapper);
                 }
 
                 let triggerBtn = null;
@@ -3920,6 +4363,7 @@
                 buttonsContainer.appendChild(btnWrapper);
                 this._floatingButtons[config.id] = { button: btn, imgOff, imgOn, triggerButton: triggerBtn, triggerImg };
             });
+            applyResponsiveFloatingLayout();
 
             const returnHandler = () => {
                 this._isInReturnState = false;
@@ -3937,12 +4381,19 @@
                 applyResponsiveFloatingLayout();
                 this.updateLockIconPosition();
             });
+            const refreshLockForOverlayVisibility = (event) => {
+                const eventPrefix = event && event.detail ? event.detail.prefix : '';
+                if (eventPrefix && eventPrefix !== prefix) return;
+                this.updateLockIconPosition();
+            };
             this._uiWindowHandlers.push({ event: 'resize', handler: scheduleLayout, target: window });
             this._uiWindowHandlers.push({ event: 'orientationchange', handler: scheduleLayout, target: window });
             this._uiWindowHandlers.push({ event: 'neko:yui-guide-floating-toolbar-suppression-change', handler: scheduleLayout, target: window });
+            this._uiWindowHandlers.push({ event: 'neko-avatar-overlay-visibility-changed', handler: refreshLockForOverlayVisibility, target: window });
             window.addEventListener('resize', scheduleLayout);
             window.addEventListener('orientationchange', scheduleLayout);
             window.addEventListener('neko:yui-guide-floating-toolbar-suppression-change', scheduleLayout);
+            window.addEventListener('neko-avatar-overlay-visibility-changed', refreshLockForOverlayVisibility);
             if (this.image) {
                 this.image.addEventListener('load', scheduleLayout);
                 this.image.addEventListener('pointerenter', handleImagePointerEnter);

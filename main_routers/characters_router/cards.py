@@ -42,6 +42,7 @@ from .pngtuber_assets import (
     _restore_imported_pngtuber_avatar_config,
     _rewrite_imported_pngtuber_refs,
 )
+from .notify import notify_memory_server_reload
 
 import json
 import io
@@ -59,15 +60,18 @@ from ..shared_state import (
     get_initialize_character_data,
     get_init_one_catgirl,
 )
-from ..workshop_router import _ugc_sync_lock
 from utils.config_manager import (
     get_reserved,
 )
 from utils.file_utils import atomic_write_json_async, read_json_async
 from utils.frontend_utils import find_model_directory, is_user_imported_model
 from utils.cloudsave_runtime import MaintenanceModeError
+from utils.character_memory import (
+    asave_characters_with_recent_activation,
+    character_config_mutation_lock,
+)
 from config import (
-    DEFAULT_LIVE2D_MODEL_NAME,
+    BUILTIN_LIVE2D_MODEL_NAMES,
 )
 
 
@@ -192,9 +196,25 @@ async def save_catgirl_to_model_folder(request: Request):
 
 @router.post('/character-card/save')
 async def save_character_card(request: Request):
-    """Save the character card to characters.json."""
+    # Parse the body BEFORE taking the transaction: ``request.json()`` awaits
+    # the client's socket, and a slow or stalled upload would otherwise hold the
+    # process-wide characters.json lock for the whole transfer, blocking every
+    # other character mutation (add/rename/delete/import, workshop sync,
+    # language preference).  Same ordering as rename_catgirl / add_catgirl.
     try:
         data = await request.json()
+    except Exception as e:
+        logger.warning(f"解析角色卡保存请求体失败: {e}")
+        return JSONResponse({"success": False, "error": "请求体必须是合法的JSON格式"}, status_code=400)
+    if not isinstance(data, dict):
+        return JSONResponse({"success": False, "error": "请求体必须是JSON对象"}, status_code=400)
+    async with character_config_mutation_lock:
+        return await _save_character_card_serialized(data)
+
+
+async def _save_character_card_serialized(data: dict):
+    """Save the character card to characters.json."""
+    try:
         chara_data = data.get('charaData')
         character_card_name = data.get('character_card_name')
 
@@ -233,7 +253,13 @@ async def save_character_card(request: Request):
         characters['猫娘'][chara_name] = catgirl_data
 
         # 保存到characters.json
-        await _config_manager.asave_characters(characters)
+        publish_cancelled = False
+        if is_new_character:
+            publish_cancelled = await asave_characters_with_recent_activation(
+                _config_manager, characters, chara_name,
+            )
+        else:
+            await _config_manager.asave_characters(characters)
         prompt_fields_changed = (
             is_new_character
             or _catgirl_prompt_fields_changed(previous_catgirl_data, catgirl_data)
@@ -262,10 +288,18 @@ async def save_character_card(request: Request):
                 "session_restarted": False,
             }
 
+        memory_server_reloaded = True
+        if is_new_character:
+            memory_server_reloaded = await notify_memory_server_reload(
+                reason=f"角色卡保存新角色: {chara_name}",
+                resume_derived_task_names=(chara_name,),
+            )
+
         logger.info(f"角色卡已成功保存到characters.json: {chara_name}")
         result: dict = {
             "success": True,
             "character_card_name": chara_name,
+            "memory_server_reloaded": memory_server_reloaded,
             **context_refresh_result,
         }
         if not pending_mark_ok:
@@ -273,6 +307,8 @@ async def save_character_card(request: Request):
             result["pending_mark_ok"] = False
             result["pending_mark_failed"] = True
             result["pending_mark_error"] = pending_mark_error
+        if publish_cancelled:
+            raise asyncio.CancelledError
         return result
     except MaintenanceModeError:
         raise
@@ -291,7 +327,7 @@ async def export_catgirl_card(name: str):
     3. Append the archive data to the PNG image
     4. Return the PNG image for download
 
-    Note: the default model (DEFAULT_LIVE2D_MODEL_NAME) is never included in the export.
+    Note: built-in models (BUILTIN_LIVE2D_MODEL_NAMES) are never included in the export.
     """
     import zipfile
     import tempfile
@@ -360,11 +396,11 @@ async def export_catgirl_card(name: str):
                         else:
                             live2d_name = live2d_name.split('/')[-1]
 
-                        # 检查是否是默认模型
-                        if live2d_name == DEFAULT_LIVE2D_MODEL_NAME:
+                        # 检查是否是随包发的内置模型（收方一定有，不用打进包里）
+                        if live2d_name in BUILTIN_LIVE2D_MODEL_NAMES:
                             logger.info(
-                                f'猫娘 {name} 使用的是默认模型 '
-                                f'{DEFAULT_LIVE2D_MODEL_NAME}，跳过模型打包'
+                                f'猫娘 {name} 使用的是内置模型 '
+                                f'{live2d_name}，跳过模型打包'
                             )
                         else:
                             # 查找模型目录
@@ -798,7 +834,7 @@ async def import_character_card(
 
         _config_manager = get_config_manager()
 
-        async with _ugc_sync_lock:
+        async with character_config_mutation_lock:
             characters = await _config_manager.aload_characters()
 
             # 检查是否已存在同名角色，使用 Windows 风格的命名 (x)
@@ -994,13 +1030,19 @@ async def import_character_card(
             characters['猫娘'][character_name] = chara_data_to_save
 
             # 保存到文件
-            await _config_manager.asave_characters(characters)
+            publish_cancelled = await asave_characters_with_recent_activation(
+                _config_manager, characters, character_name,
+            )
             pending_mark_ok, pending_mark_error = await _mark_new_character_greeting_pending_safe(_config_manager, character_name, "import")
 
             # 刷新内存中的角色数据，确保磁盘和内存同步
             initialize_character_data = get_initialize_character_data()
             if initialize_character_data:
                 await initialize_character_data()
+            memory_server_reloaded = await notify_memory_server_reload(
+                reason=f"导入角色卡: {character_name}",
+                resume_derived_task_names=(character_name,),
+            )
 
             # 写入卡面元数据 sidecar（origin=imported）
             try:
@@ -1032,10 +1074,13 @@ async def import_character_card(
                     "card_meta_saved": False,
                     "character_name": character_name,
                     "pending_mark_ok": pending_mark_ok,
+                    "memory_server_reloaded": memory_server_reloaded,
                 }
                 if not pending_mark_ok:
                     partial_result["pending_mark_failed"] = True
                     partial_result["pending_mark_error"] = pending_mark_error
+                if publish_cancelled:
+                    raise asyncio.CancelledError
                 return JSONResponse(partial_result, status_code=200)
 
             # 老角色卡兼容：如果前端上传了载体 PNG，且本地还没有同名卡面，
@@ -1078,12 +1123,15 @@ async def import_character_card(
             'success': True,
             'character_name': character_name,
             'message': f'角色卡 "{character_name}" 导入成功',
+            'memory_server_reloaded': memory_server_reloaded,
         }
         if not pending_mark_ok:
             import_result['partial_success'] = True
             import_result['pending_mark_ok'] = False
             import_result['pending_mark_failed'] = True
             import_result['pending_mark_error'] = pending_mark_error
+        if publish_cancelled:
+            raise asyncio.CancelledError
         return JSONResponse(import_result)
 
     except zipfile.BadZipFile:
@@ -1501,7 +1549,7 @@ async def export_catgirl_with_portrait(
                     live2d_path = get_reserved(catgirl_data, 'avatar', 'live2d', 'model_path', default='')
                     if live2d_path and live2d_path.strip():
                         live2d_name = live2d_path.split('/')[0] if '/' in live2d_path else live2d_path.replace('.model3.json', '')
-                        if live2d_name and live2d_name != DEFAULT_LIVE2D_MODEL_NAME:
+                        if live2d_name and live2d_name not in BUILTIN_LIVE2D_MODEL_NAMES:
                             model_dir, _ = find_model_directory(live2d_name)
                             if model_dir and os.path.exists(model_dir):
                                 if is_user_imported_model(model_dir, _config_manager):

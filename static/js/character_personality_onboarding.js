@@ -17,9 +17,10 @@
             return '';
         }
     })();
-    const TUTORIAL_PROMPT_POLL_INTERVAL_MS = 120;
+    const TUTORIAL_FLOW_POLL_INTERVAL_MS = 120;
     const TYPEWRITER_BASE_DELAY_MS = 18;
     const TYPEWRITER_PUNCTUATION_DELAY_MS = 110;
+    const CHARACTER_LANGUAGE_HYDRATION_TIMEOUT_MS = 2500;
     const HOME_TUTORIAL_RESET_EVENT = 'neko:home-tutorial-reset';
     const HOME_TUTORIAL_RESET_STORAGE_EVENT_KEY = 'neko_home_tutorial_reset_event';
     const HOME_TUTORIAL_RESET_CHANNEL = 'neko_tutorial_events';
@@ -64,7 +65,19 @@
         return payload;
     }
 
-    function getCurrentLanguage() {
+    function getTrustedCharacterLanguage(characterName) {
+        try {
+            if (typeof window.getExplicitConversationLanguagePreference === 'function') {
+                const preferred = window.getExplicitConversationLanguagePreference(characterName);
+                if (preferred) return preferred;
+            }
+        } catch (_) {
+            return '';
+        }
+        return '';
+    }
+
+    function getLiveUiLanguage() {
         try {
             if (window.i18next && typeof window.i18next.language === 'string' && window.i18next.language) {
                 return window.i18next.language;
@@ -85,6 +98,90 @@
             return '';
         }
         return '';
+    }
+
+    function getCurrentLanguage(characterName) {
+        return getTrustedCharacterLanguage(characterName) || getLiveUiLanguage();
+    }
+
+    function getCharacterLanguageRevision(characterName) {
+        try {
+            if (typeof window.getConversationLanguagePreferenceRevision === 'function') {
+                const revision = Number(
+                    window.getConversationLanguagePreferenceRevision(characterName)
+                );
+                return Number.isFinite(revision) ? revision : 0;
+            }
+        } catch (_) {
+            return 0;
+        }
+        return 0;
+    }
+
+    async function resolveCurrentLanguage(characterName) {
+        const name = String(characterName || '').trim();
+        const trustedLanguage = getTrustedCharacterLanguage(name);
+        if (trustedLanguage || !name) {
+            return trustedLanguage || getLiveUiLanguage();
+        }
+
+        const languageRevision = getCharacterLanguageRevision(name);
+        const controller = typeof AbortController === 'function' ? new AbortController() : null;
+        let timeoutId = null;
+        try {
+            const payload = await Promise.race([
+                requestJson(
+                    `/api/characters/character/${encodeURIComponent(name)}/language-preference`,
+                    {
+                        cache: 'no-store',
+                        signal: controller ? controller.signal : undefined,
+                    }
+                ),
+                new Promise((_, reject) => {
+                    timeoutId = window.setTimeout(() => {
+                        if (controller) controller.abort();
+                        reject(new Error('character language hydration timed out'));
+                    }, CHARACTER_LANGUAGE_HYDRATION_TIMEOUT_MS);
+                }),
+            ]);
+
+            if (!payload || payload.success !== true) {
+                throw new Error('invalid character language preference response');
+            }
+
+            // A websocket or sibling window may have published newer durable
+            // evidence while this request was in flight. Never overwrite it
+            // with the older response.
+            if (getCharacterLanguageRevision(name) !== languageRevision) {
+                return getCurrentLanguage(name);
+            }
+            const currentTrustedLanguage = getTrustedCharacterLanguage(name);
+            if (currentTrustedLanguage) {
+                return currentTrustedLanguage;
+            }
+
+            const durableLanguage = typeof payload.language === 'string'
+                ? payload.language.trim()
+                : '';
+            if (durableLanguage) {
+                if (typeof window.setConversationLanguagePreference === 'function') {
+                    window.setConversationLanguagePreference(
+                        durableLanguage,
+                        name,
+                        { dispatch: false, source: 'server' }
+                    );
+                }
+                return durableLanguage;
+            }
+        } catch (error) {
+            console.warn(
+                '[CharacterPersonalityOnboarding] language hydration failed, using UI fallback:',
+                error
+            );
+        } finally {
+            if (timeoutId !== null) window.clearTimeout(timeoutId);
+        }
+        return getCurrentLanguage(name);
     }
 
     function ensureStyles() {
@@ -130,13 +227,12 @@
             this.originalBodyPointerEvents = '';
             this.openReason = 'onboarding';
             this.currentLanguage = '';
+            this.localeRefreshRunId = 0;
             this.typewriterRunId = 0;
             this.typewriterTimer = null;
-            this.lastTutorialPromptState = null;
             this.homeTutorialCompletedInSession = false;
             this.resetBroadcastChannel = null;
-            // bootstrap 超时 fallthrough 时拉这个旗子，让 waitForTutorialFlowToSettle 的轮询循环退出，
-            // 避免后台每 120ms 一次的 /api/tutorial-prompt/state 永久泄漏。
+            // bootstrap 超时 fallthrough 时拉这个旗子，让教程门控轮询退出。
             this._tutorialFlowAborted = false;
             // bootstrap 启动闭环 Promise：所有出口（不需要 / confirm / skip / 异常）都会 resolve；
             // 供 app.js / app-autostart-prompt.js 在显示低优先级通知前 await，避免与 onboarding overlay 争焦点。
@@ -167,8 +263,7 @@
                 return;
             }
             this.bootstrapStarted = true;
-            // tutorial flow settle 有超时兜底：fetchTutorialPromptState() 持续 fail 时
-            // waitForTutorialFlowToSettle 会无限轮询，需要超时让 finally 能跑到。
+            // 教程启动链异常时允许超时放行；仍处于明确占屏锁时继续等待。
             const TUTORIAL_FLOW_TIMEOUT_MS = 15000;
             try {
                 await this.waitForStartupBarrier();
@@ -214,8 +309,8 @@
             await this.waitForTutorialFlowToSettle();
             this.openReason = 'settings';
             this.currentCharacterName = String(characterName || '').trim() || await this.fetchCurrentCharacterName();
-            this.currentLanguage = getCurrentLanguage();
-            this.presets = await this.fetchPresets(this.currentLanguage);
+            this.currentLanguage = await resolveCurrentLanguage(this.currentCharacterName);
+            this.presets = await this.fetchPresets(this.currentLanguage, true);
             this.ensureOverlay();
             this.renderStageOne();
             this.showOverlay();
@@ -308,8 +403,6 @@
             const lockReaders = [
                 window.isNekoHomeTutorialInteractionLocked,
                 window.isNekoHomeTutorialBlockingGreeting,
-                window.appTutorialPrompt && window.appTutorialPrompt.isHomeTutorialInteractionLocked,
-                window.appTutorialPrompt && window.appTutorialPrompt.isHomeTutorialBlockingGreeting,
             ];
             return lockReaders.some((reader) => {
                 if (typeof reader !== 'function') {
@@ -326,112 +419,9 @@
         async waitForHomeTutorialInteractionUnlock() {
             while (this.isHomeTutorialInteractionLocked()) {
                 await new Promise((resolve) => {
-                    window.setTimeout(resolve, TUTORIAL_PROMPT_POLL_INTERVAL_MS);
+                    window.setTimeout(resolve, TUTORIAL_FLOW_POLL_INTERVAL_MS);
                 });
             }
-        }
-
-        async fetchTutorialPromptState() {
-            try {
-                const payload = await requestJson('/api/tutorial-prompt/state', {
-                    cache: 'no-store',
-                });
-                return payload && payload.state ? payload.state : null;
-            } catch (error) {
-                console.warn('[CharacterPersonalityOnboarding] failed to fetch tutorial prompt state:', error);
-                return null;
-            }
-        }
-
-        normalizeTutorialPromptStatus(state) {
-            if (!state || typeof state !== 'object') {
-                return '';
-            }
-            return String(state.status || '').trim().toLowerCase();
-        }
-
-        normalizeTutorialPromptUserCohort(state) {
-            if (!state || typeof state !== 'object') {
-                return '';
-            }
-            return String(state.user_cohort || '').trim().toLowerCase();
-        }
-
-        hasHomeTutorialCompletionMarker() {
-            if (this.homeTutorialCompletedInSession) {
-                return true;
-            }
-
-            const manager = window.universalTutorialManager || null;
-            if (manager && typeof manager.hasSeenTutorial === 'function') {
-                try {
-                    if (manager.hasSeenTutorial('home')) {
-                        return true;
-                    }
-                } catch (_) {}
-            }
-
-            try {
-                return localStorage.getItem('neko_tutorial_home_yui_v1') === 'true';
-            } catch (_) {
-                return false;
-            }
-        }
-
-        shouldWaitForHomeTutorialCompletion(state) {
-            if (!this.shouldRespectHomeTutorialGate() || this.hasHomeTutorialCompletionMarker()) {
-                return false;
-            }
-            if (!state || typeof state !== 'object') {
-                return false;
-            }
-
-            if (state.home_tutorial_completed === true || state.manual_home_tutorial_viewed === true) {
-                return false;
-            }
-
-            const userCohort = this.normalizeTutorialPromptUserCohort(state);
-            if (userCohort === 'new') {
-                return true;
-            }
-            if (userCohort !== 'existing') {
-                return false;
-            }
-
-            const chatTurns = Number(state.chat_turns || 0);
-            const voiceSessions = Number(state.voice_sessions || 0);
-            const shownCount = Number(state.shown_count || 0);
-            return (!Number.isFinite(chatTurns) || chatTurns <= 0)
-                && (!Number.isFinite(voiceSessions) || voiceSessions <= 0)
-                && (!Number.isFinite(shownCount) || shownCount <= 0);
-        }
-
-        isTutorialPromptSettled(state) {
-            if (!state || typeof state !== 'object') {
-                return false;
-            }
-            const status = this.normalizeTutorialPromptStatus(state);
-            if (this.shouldWaitForHomeTutorialCompletion(state) && (
-                status === 'completed'
-                || status === 'error'
-                || status === 'observing'
-                || status === 'prompted'
-            )) {
-                return false;
-            }
-            if (status === 'completed' || status === 'deferred' || status === 'never' || status === 'error') {
-                return true;
-            }
-            if (status === 'started') {
-                return false;
-            }
-
-            const userCohort = this.normalizeTutorialPromptUserCohort(state);
-            if (status === 'observing' || status === 'prompted') {
-                return userCohort === 'existing';
-            }
-
-            return false;
         }
 
         async waitForTutorialFlowToSettle() {
@@ -440,6 +430,13 @@
             }
 
             await this.waitForTutorialCompletion();
+            const stateApi = window.NekoSevenDayTutorialState || null;
+            if (!stateApi) {
+                return;
+            }
+            if (typeof stateApi.ready === 'function') {
+                await stateApi.ready();
+            }
 
             while (true) {
                 if (this._tutorialFlowAborted) {
@@ -454,28 +451,16 @@
                     continue;
                 }
 
-                const tutorialPromptState = await this.fetchTutorialPromptState();
-                if (!tutorialPromptState) {
-                    await new Promise((resolve) => {
-                        window.setTimeout(resolve, TUTORIAL_PROMPT_POLL_INTERVAL_MS);
-                    });
-                    continue;
+                const tutorialState = stateApi.loadState();
+                if (stateApi.isRoundSettled(tutorialState, 1)) {
+                    return;
                 }
-                const status = this.normalizeTutorialPromptStatus(tutorialPromptState);
-                this.lastTutorialPromptState = tutorialPromptState;
-                if (this.isTutorialPromptSettled(tutorialPromptState)) {
+                if (stateApi.getNextAutoRound(tutorialState) !== 1) {
                     return;
                 }
 
-                if (status === 'started') {
-                    await new Promise((resolve) => {
-                        window.setTimeout(resolve, TUTORIAL_PROMPT_POLL_INTERVAL_MS);
-                    });
-                    continue;
-                }
-
                 await new Promise((resolve) => {
-                    window.setTimeout(resolve, TUTORIAL_PROMPT_POLL_INTERVAL_MS);
+                    window.setTimeout(resolve, TUTORIAL_FLOW_POLL_INTERVAL_MS);
                 });
             }
         }
@@ -500,7 +485,7 @@
             }
 
             this.openReason = 'manual_reselect';
-            this.currentLanguage = getCurrentLanguage();
+            this.currentLanguage = await resolveCurrentLanguage(this.currentCharacterName);
             this.presets = await this.fetchPresets(this.currentLanguage);
             if (!this.presets.length) {
                 return false;
@@ -520,7 +505,7 @@
 
             this.openReason = 'onboarding';
             this.currentCharacterName = await this.fetchCurrentCharacterName();
-            this.currentLanguage = getCurrentLanguage();
+            this.currentLanguage = await resolveCurrentLanguage(this.currentCharacterName);
             this.presets = await this.fetchPresets(this.currentLanguage);
             if (!this.currentCharacterName || !this.presets.length) {
                 return;
@@ -536,13 +521,53 @@
             return String(payload.current_catgirl || '').trim();
         }
 
-        async fetchPresets(language) {
+        async fetchPresets(language, includeLegacy = false) {
             const requestLanguage = String(language || '').trim();
-            const url = requestLanguage
-                ? `/api/characters/persona-presets?language=${encodeURIComponent(requestLanguage)}`
-                : '/api/characters/persona-presets';
+            const query = new URLSearchParams();
+            if (requestLanguage) {
+                query.set('language', requestLanguage);
+            }
+            if (includeLegacy) {
+                query.set('include_legacy', 'true');
+            }
+            const queryString = query.toString();
+            const url = '/api/characters/persona-presets' + (queryString ? `?${queryString}` : '');
             const payload = await requestJson(url);
             return Array.isArray(payload.presets) ? payload.presets : [];
+        }
+
+        async refreshForLocaleChange() {
+            const nextLanguage = getCurrentLanguage(this.currentCharacterName);
+            const overlay = this.overlay;
+            if (!overlay || overlay.hidden) {
+                return;
+            }
+
+            const runId = ++this.localeRefreshRunId;
+            const presets = await this.fetchPresets(nextLanguage, this.openReason === 'settings');
+            if (
+                runId !== this.localeRefreshRunId
+                || this.overlay !== overlay
+                || !document.body.contains(overlay)
+                || overlay.hidden
+                || !presets.length
+            ) {
+                return;
+            }
+
+            this.currentLanguage = nextLanguage;
+            this.presets = presets;
+            const stageTwo = overlay.querySelector('.character-personality-stage-two');
+            const selectedPresetId = this.selectedPresetId;
+            const stillOnStageTwo = !!(stageTwo && !stageTwo.hidden && selectedPresetId);
+            if (stillOnStageTwo) {
+                const selectedPreset = presets.find((preset) => preset.preset_id === selectedPresetId);
+                if (selectedPreset) {
+                    this.renderStageTwo(selectedPreset, nextLanguage);
+                    return;
+                }
+            }
+            this.renderStageOne();
         }
 
         ensureOverlay() {
@@ -599,7 +624,12 @@
             };
 
             const markHomeTutorialCompleted = (event) => {
-                if (!event || !event.detail || event.detail.page !== 'home') {
+                if (
+                    !event
+                    || !event.detail
+                    || event.detail.page !== 'home'
+                    || (event.detail.day != null && Number(event.detail.day) !== 1)
+                ) {
                     return;
                 }
                 this.homeTutorialCompletedInSession = true;
@@ -615,11 +645,7 @@
                 const source = String(event.detail.source || '').trim().toLowerCase();
                 const tutorialActuallyRunning = !!(window.universalTutorialManager
                     && window.universalTutorialManager.isTutorialRunning);
-                if (
-                    source === 'auto'
-                    && !tutorialActuallyRunning
-                    && this.isTutorialPromptSettled(this.lastTutorialPromptState)
-                ) {
+                if (source === 'auto' && !tutorialActuallyRunning) {
                     return;
                 }
                 this.pendingResumeAfterTutorial = true;
@@ -660,8 +686,7 @@
                 if (!this.shouldRespectHomeTutorialGate()) {
                     return;
                 }
-                // 停止等待新手教程、放行选人格。否则在「教程夭折」一类没有 tutorial-completed/skipped 事件的路径上，
-                // pending 被 choke point 清除后 settle 轮询会卡在新用户 observing 态永不 resolve（永远不弹选人格）。
+                // 停止等待新手教程、放行选人格；教程夭折可能没有 completed/skipped 事件。
                 this._tutorialFlowAborted = true;
             };
 
@@ -676,8 +701,15 @@
                 }
             };
 
+            const refreshForLocaleChange = () => {
+                void this.refreshForLocaleChange().catch((error) => {
+                    console.warn('[CharacterPersonalityOnboarding] failed to refresh locale:', error);
+                });
+            };
+
             window.addEventListener(HOME_TUTORIAL_RESET_EVENT, resetHomeTutorialCompleted);
             window.addEventListener('storage', resetHomeTutorialCompletedFromStorage);
+            window.addEventListener('localechange', refreshForLocaleChange);
             window.addEventListener(STARTUP_GREETING_RELEASE_EVENT, handleHomeTutorialStartupRelease);
             window.addEventListener('neko:tutorial-started', queueResume);
             window.addEventListener('neko:tutorial-completed', markHomeTutorialCompleted);
@@ -702,13 +734,13 @@
             }
 
             window.addEventListener('beforeunload', () => {
-                if (!this.resetBroadcastChannel) {
-                    return;
+                window.removeEventListener('localechange', refreshForLocaleChange);
+                if (this.resetBroadcastChannel) {
+                    try {
+                        this.resetBroadcastChannel.close();
+                    } catch (_) {}
+                    this.resetBroadcastChannel = null;
                 }
-                try {
-                    this.resetBroadcastChannel.close();
-                } catch (_) {}
-                this.resetBroadcastChannel = null;
             });
         }
 
@@ -844,9 +876,10 @@
 
         getPresetHighlights(preset) {
             const highlightMap = {
-                classic_genki: ['高共情', '贴贴型', '情绪充电'],
-                tsundere_helper: ['嘴硬心软', '高可靠', '吐槽式偏爱'],
-                elegant_butler: ['稳妥周全', '优雅克制', '先你一步'],
+                frail_younger_sister: ['主动留人', '黏人迟疑', '拒绝不纠缠'],
+                empathetic_older_sister: ['温柔接管', '从容坚定', '可靠承诺'],
+                sharp_tongued_junior: ['强势毒舌', '行动偏爱', '嘴硬不认'],
+                chaotic_online_friend: ['正经胡说', '玩梗装傻', '事实可靠'],
             };
             const presetId = preset && preset.preset_id;
             const fallbacks = highlightMap[presetId] || [];
@@ -1224,12 +1257,22 @@
             if (!this.overlay) {
                 return;
             }
+            ++this.localeRefreshRunId;
             this.prepareOverlayPointerEvents();
             this.updateHeaderCopy();
             this.overlay.hidden = false;
+            if (
+                this.currentLanguage
+                && this.currentLanguage !== getCurrentLanguage(this.currentCharacterName)
+            ) {
+                void this.refreshForLocaleChange().catch((error) => {
+                    console.warn('[CharacterPersonalityOnboarding] failed to refresh reopened overlay:', error);
+                });
+            }
         }
 
         hideOverlay() {
+            ++this.localeRefreshRunId;
             if (this.overlay) {
                 this.overlay.hidden = true;
             }

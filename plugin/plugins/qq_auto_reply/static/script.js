@@ -12,29 +12,35 @@ const pluginId = 'qq_auto_reply';
             const runId = run_id || id;
             if (!runId) throw new Error('未获取到 run_id');
 
-            const deadline = Date.now() + 20000;
-            let delay = 300;
-            while (Date.now() < deadline) {
-                const poll = await fetch(`${RUNS_URL}/${runId}`);
-                if (!poll.ok) continue;
-                const rec = await poll.json();
-                if (rec.status === 'succeeded') {
-                    const exp = await fetch(`${RUNS_URL}/${runId}/export`);
-                    if (!exp.ok) return {};
-                    const { items = [] } = await exp.json();
-                    const item = items.find(i => i.type === 'json' && i.json) || items[0];
-                    if (!item) return {};
-                    let raw = item.json || {};
-                    while (raw && raw.data && typeof raw.data === 'object' && ('success' in raw.data || 'error' in raw.data)) {
-                        raw = raw.data;
-                    }
-                    return raw;
+            // SSE 等 run 完成 + 2s 慢轮询兜底（替代紧轮询 /runs/{id}）
+            const status = await window.UISSE.awaitRun(runId, {
+                fetchStatus: async (rid) => {
+                    try {
+                        const p = await fetch(`${RUNS_URL}/${rid}`);
+                        if (!p.ok) return null;
+                        const rec = await p.json();
+                        return ['succeeded', 'failed', 'canceled', 'timeout'].includes(rec.status) ? rec.status : null;
+                    } catch (e) { return null; }
+                },
+            });
+            if (status === 'succeeded') {
+                const exp = await fetch(`${RUNS_URL}/${runId}/export`);
+                if (!exp.ok) return {};
+                const { items = [] } = await exp.json();
+                const item = items.find(i => i.type === 'json' && i.json) || items[0];
+                if (!item) return {};
+                let raw = item.json || {};
+                while (raw && raw.data && typeof raw.data === 'object' && ('success' in raw.data || 'error' in raw.data)) {
+                    raw = raw.data;
                 }
-                if (['failed', 'canceled', 'timeout'].includes(rec.status)) {
-                    throw new Error(rec.error?.message || rec.message || rec.status);
+                // 顶层 { success: true, data: payload } 也要解到业务 payload（与
+                // napcat.html / open_platform.html 的 call() 保持一致）。
+                if (raw && raw.success && raw.data && typeof raw.data === 'object') {
+                    raw = raw.data;
                 }
+                return raw;
             }
-            throw new Error('调用超时');
+            throw new Error(status);
         }
         let state = {
             config: {
@@ -45,8 +51,6 @@ const pluginId = 'qq_auto_reply';
                 guideStepNapcatDone: false,
                 guideStepConfigDone: false,
                 guideStepRuntimeDone: false,
-                normalRelayProbability: 0.1,
-                truthReplyProbability: 0.1,
                 replyMode: 'text',
                 strategyMode: 'neko_dynamic',
             },
@@ -65,22 +69,6 @@ const pluginId = 'qq_auto_reply';
             activeReplyItem: null,
         };
 
-        function nextStep(stepNum) {
-            document.querySelectorAll('.step-card').forEach(card => card.classList.remove('active'));
-            document.querySelectorAll('.dot').forEach(dot => dot.classList.remove('active'));
-            document.getElementById('step' + stepNum).classList.add('active');
-            document.getElementById('dot' + stepNum).classList.add('active');
-        }
-
-        function onConnectionModeChange() {
-            const el = document.getElementById('cfg-connection-mode');
-            const napcatEl = document.getElementById('napcat-fields');
-            const openplatEl = document.getElementById('openplat-fields');
-            if (!el || !napcatEl || !openplatEl) return;
-            const mode = el.value;
-            napcatEl.style.display = mode === 'napcat' ? '' : 'none';
-            openplatEl.style.display = mode === 'open_platform' ? '' : 'none';
-        }
         async function initConfig() {
             try {
                 const payload = await callPlugin('init_config', {});
@@ -91,32 +79,8 @@ const pluginId = 'qq_auto_reply';
             }
         }
 
-        async function finishOnboarding() {
-            try {
-                await callPlugin('save_settings', { show_onboarding: false, guide_step_config_done: true });
-                await reloadDashboard();
-            } catch (error) {
-                showToast(error.message || t('ui.toast.save_failed', '保存失败'));
-                return;
-            }
-            const onboarding = document.getElementById('onboarding');
-            onboarding.classList.add('hidden');
-            onboarding.style.display = 'none';
-            updateConfigGate();
-        }
-
-        async function enterApp() {
-            await finishOnboarding();
-        }
-
         function updateConfigGate() {
             return;
-        }
-
-        function reopenOnboarding() {
-            document.getElementById('onboarding').classList.remove('hidden');
-            document.getElementById('onboarding').style.display = 'flex';
-            nextStep(1);
         }
 
         function openStep1GuideModal() {
@@ -202,8 +166,6 @@ const pluginId = 'qq_auto_reply';
             state.config.guideStepNapcatDone = Boolean(settings.guide_step_napcat_done ?? false);
             state.config.guideStepConfigDone = Boolean(settings.guide_step_config_done ?? false);
             state.config.guideStepRuntimeDone = Boolean(settings.guide_step_runtime_done ?? false);
-            state.config.normalRelayProbability = Number(settings.normal_relay_probability ?? 0.1);
-            state.config.truthReplyProbability = Number(settings.truth_reply_probability ?? 0.1);
             state.config.replyMode = ['text', 'voice', 'both'].includes(settings.reply_mode) ? settings.reply_mode : 'text';
             state.backlogLabels = Array.isArray(settings.backlog_labels) ? settings.backlog_labels.map(normalizeBacklogLabelDraft) : [];
             state.backlogLabelDrafts = state.backlogLabels.map((item) => ({ ...item }));
@@ -214,18 +176,8 @@ const pluginId = 'qq_auto_reply';
             document.getElementById('cfg-path').value = state.config.path;
             document.getElementById('cfg-show-napcat-window').checked = Boolean(settings.show_napcat_window ?? true);
             document.getElementById('cfg-reply-mode').value = state.config.replyMode;
-            state.config.strategyMode = String(settings.strategy_mode || 'neko_dynamic');
-            state.config.connectionMode = String(settings.qq_connection_mode || 'napcat');
-            document.getElementById('cfg-strategy-mode').value = state.config.strategyMode;
-            const connModeEl = document.getElementById('cfg-connection-mode');
-            connModeEl.value = state.config.connectionMode;
-            connModeEl.removeEventListener('change', onConnectionModeChange);
-            connModeEl.addEventListener('change', onConnectionModeChange);
-            document.getElementById('cfg-open-app-id').value = String(settings.qq_open_app_id || '');
-            document.getElementById('cfg-open-secret').value = String(settings.qq_open_client_secret || '');
-            onConnectionModeChange();
-            document.getElementById('cfg-normal-probability').value = Number.isFinite(state.config.normalRelayProbability) ? String(state.config.normalRelayProbability) : '0.1';
-            document.getElementById('cfg-truth-probability').value = Number.isFinite(state.config.truthReplyProbability) ? String(state.config.truthReplyProbability) : '0.1';
+            // 旧版控制中心固定使用正向连接（NapCat 的 WS 服务器由插件主动拨出）
+            state.config.connectionMode = 'napcat_forward';
             const runtime = data.runtime || {};
             document.getElementById('status-self-id').textContent = runtime.napcat_pid ? String(runtime.napcat_pid) : '-';
             document.getElementById('status-onebot').textContent = data.runtime && data.runtime.onebot_connected ? t('ui.status.connected', '已连接') : t('ui.status.disconnected', '未连接');
@@ -300,41 +252,21 @@ const pluginId = 'qq_auto_reply';
                 : [['trusted', 'trusted'], ['open', 'open'], ['normal', 'normal']];
             levelSelect.innerHTML = options.map(([value, label]) => `<option value="${value}">${label}</option>`).join('');
             levelSelect.value = String(item?.level || options[0][0]);
+            // 概率字段已移除（旧版固定猫娘动态，概率不参与门控）；只保留昵称随级别显隐
             const nicknameGroup = document.getElementById('entity-nickname-group');
-            const normalProbabilityGroup = document.getElementById('entity-normal-probability-group');
-            const openProbabilityGroup = document.getElementById('entity-open-probability-group');
-            const normalProbabilityInput = document.getElementById('entity-normal-probability');
-            const openProbabilityInput = document.getElementById('entity-open-probability');
-            normalProbabilityInput.value = isUser
-                ? (item?.normal_relay_probability === undefined ? '' : String(item.normal_relay_probability))
-                : (item?.normal_relay_probability === undefined ? '' : String(item.normal_relay_probability));
-            openProbabilityInput.value = isUser ? '' : (item?.open_reply_probability === undefined ? '' : String(item.open_reply_probability));
-            const syncProbabilityFieldVisibility = () => {
+            const syncNicknameVisibility = () => {
                 const selectedLevel = String(levelSelect.value || '');
                 if (isUser) {
                     nicknameGroup.style.display = selectedLevel === 'admin' ? 'none' : 'block';
                     if (selectedLevel === 'admin') {
                         document.getElementById('entity-nickname').value = '';
                     }
-                    normalProbabilityGroup.style.display = selectedLevel === 'normal' ? 'block' : 'none';
-                    openProbabilityGroup.style.display = 'none';
-                    if (selectedLevel !== 'normal') {
-                        normalProbabilityInput.value = '';
-                    }
-                    return;
-                }
-                nicknameGroup.style.display = 'none';
-                normalProbabilityGroup.style.display = selectedLevel === 'normal' ? 'block' : 'none';
-                openProbabilityGroup.style.display = selectedLevel === 'open' ? 'block' : 'none';
-                if (selectedLevel !== 'normal') {
-                    normalProbabilityInput.value = '';
-                }
-                if (selectedLevel !== 'open') {
-                    openProbabilityInput.value = '';
+                } else {
+                    nicknameGroup.style.display = 'none';
                 }
             };
-            levelSelect.onchange = syncProbabilityFieldVisibility;
-            syncProbabilityFieldVisibility();
+            levelSelect.onchange = syncNicknameVisibility;
+            syncNicknameVisibility();
         }
 
         function closeEntityForm() {
@@ -377,14 +309,8 @@ const pluginId = 'qq_auto_reply';
                 const isUser = state.currentTab === 'users';
                 const name = isUser ? (item.nickname || item.qq || t('ui.defaults.user', '朋友们')) : (item.group_id || t('ui.defaults.group', '猫圈群聊'));
                 const baseSub = isUser ? `${item.level || ''}${item.qq ? ` · ${item.qq}` : ''}` : `${item.level || ''}${item.group_id ? ` · ${item.group_id}` : ''}`;
-                const probabilityParts = [];
-                if (item.normal_relay_probability !== undefined) {
-                    probabilityParts.push(`转发 ${item.normal_relay_probability}`);
-                }
-                if (!isUser && item.open_reply_probability !== undefined) {
-                    probabilityParts.push(`回复 ${item.open_reply_probability}`);
-                }
-                const sub = probabilityParts.length ? `${baseSub} · ${probabilityParts.join(' · ')}` : baseSub;
+                // 概率不展示（旧版固定猫娘动态）
+                const sub = baseSub;
                 const displayName = escapeHtml(String(name));
                 const displaySub = escapeHtml(String(sub));
                 const avatarText = escapeHtml(String(name).charAt(0).toUpperCase());
@@ -967,12 +893,8 @@ const pluginId = 'qq_auto_reply';
             }
         }
 
-        function validateProbability(rawValue, key) {
-            const value = Number(rawValue);
-            if (!Number.isFinite(value) || value < 0 || value > 1) {
-                throw new Error(t(key, '概率必须在 0 到 1 之间'));
-            }
-            return value;
+        function isMaskedTokenPlaceholder(value) {
+            return /^[*●•]{3,8}$/.test(String(value || '').trim());
         }
 
         async function persistBacklogLabels(options = {}) {
@@ -990,22 +912,21 @@ const pluginId = 'qq_auto_reply';
         function saveSettings() {
             return (async () => {
                 try {
-                    const normalRelayProbability = validateProbability(document.getElementById('cfg-normal-probability').value, 'ui.probability.normal.invalid');
-                    const truthReplyProbability = validateProbability(document.getElementById('cfg-truth-probability').value, 'ui.probability.truth.invalid');
-                    await callPlugin('save_settings', {
-                        qq_connection_mode: document.getElementById('cfg-connection-mode').value,
+                    const tokenValue = document.getElementById('cfg-token').value;
+                    const args = {
+                        // 旧版控制中心固定使用正向连接（NapCat 的 WS 服务器由插件主动拨出）
+                        qq_connection_mode: 'napcat_forward',
                         onebot_url: document.getElementById('cfg-url').value.trim(),
-                        token: document.getElementById('cfg-token').value,
                         napcat_directory: document.getElementById('cfg-path').value.trim(),
                         show_napcat_window: document.getElementById('cfg-show-napcat-window').checked,
-                        qq_open_app_id: document.getElementById('cfg-open-app-id').value.trim(),
-                        qq_open_client_secret: document.getElementById('cfg-open-secret').value,
                         reply_mode: document.getElementById('cfg-reply-mode').value,
-                        normal_relay_probability: normalRelayProbability,
-                        truth_reply_probability: truthReplyProbability,
+                        // 概率参数不再发送：旧版固定猫娘动态，概率不参与门控
                         backlog_labels: buildBacklogLabelsPayload(),
-                        strategy_mode: document.getElementById('cfg-strategy-mode').value,
-                    });
+                    };
+                    if (!isMaskedTokenPlaceholder(tokenValue)) {
+                        args.token = tokenValue;
+                    }
+                    await callPlugin('save_settings', args);
                     await reloadDashboard();
                     await loadBacklogSummary();
                     showToast(t('ui.toast.saved', '设置已保存'));
@@ -1038,13 +959,6 @@ const pluginId = 'qq_auto_reply';
         function addNewEntity() {
             state.currentTab = state.currentTab || 'users';
             openEntityForm(state.currentTab);
-        }
-
-        function normalizeOptionalProbability(rawValue, key) {
-            if (rawValue === '' || rawValue === null || rawValue === undefined) {
-                return undefined;
-            }
-            return validateProbability(rawValue, key);
         }
 
         function editEntity(index) {
@@ -1119,47 +1033,41 @@ const pluginId = 'qq_auto_reply';
             const number = document.getElementById('entity-number').value.trim();
             const level = document.getElementById('entity-level').value;
             const nickname = document.getElementById('entity-nickname').value.trim();
-            const normalRelayProbability = normalizeOptionalProbability(document.getElementById('entity-normal-probability').value, 'ui.probability.normal.invalid');
-            const openReplyProbability = normalizeOptionalProbability(document.getElementById('entity-open-probability').value, 'ui.probability.truth.invalid');
             if (!number) {
                 showToast(t('ui.entity_form.required', '请先填写号码'));
                 return;
             }
             if (state.entityFormMode === 'users') {
-                await saveUser(number, level, nickname, normalRelayProbability);
+                await saveUser(number, level, nickname);
             } else if (state.entityFormMode === 'groups') {
-                await saveGroup(number, level, normalRelayProbability, openReplyProbability);
+                await saveGroup(number, level);
             }
         }
 
-        async function saveUser(qqNumber, level, nickname = '', normalRelayProbability = undefined) {
+        async function saveUser(qqNumber, level, nickname = '') {
+            // 客户端先校验昵称：控制字符 / 超长直接拒绝并给明确提示（与后端
+            // INVALID_ARGUMENT 一致，避免提交后才报笼统的 SET_FAILED）。
+            if (nickname && /[\u0000-\u001f\u007f]/.test(nickname)) {
+                showToast(t('errors.nickname_invalid', '昵称不能包含控制字符或不可见字符'));
+                return;
+            }
+            if (nickname && nickname.trim().length > 64) {
+                showToast(t('errors.nickname_invalid', '昵称不能超过 64 个字符'));
+                return;
+            }
             try {
                 const payload = { qq_number: qqNumber, level, nickname };
-                if (level === 'normal' && normalRelayProbability !== undefined) {
-                    payload.normal_relay_probability = normalRelayProbability;
-                }
                 await callPlugin('add_trusted_user', payload);
                 await reloadDashboard();
                 closeEntityForm();
                 showToast(t('ui.toast.saved', '设置已保存'));
             } catch (error) { showToast(error.message || t('ui.toast.save_failed', '保存失败')); }
         }
-        async function saveGroup(groupId, level, normalRelayProbability = undefined, openReplyProbability = undefined) {
+        async function saveGroup(groupId, level) {
             try {
                 const payload = { group_id: groupId, level };
-                if (level === 'normal' && normalRelayProbability !== undefined) {
-                    payload.normal_relay_probability = normalRelayProbability;
-                }
-                if (level === 'open' && openReplyProbability !== undefined) {
-                    payload.open_reply_probability = openReplyProbability;
-                }
                 await callPlugin('add_trusted_group', payload);
-                optimisticUpsertGroup({
-                    group_id: groupId,
-                    level,
-                    ...(level === 'normal' && normalRelayProbability !== undefined ? { normal_relay_probability: normalRelayProbability } : {}),
-                    ...(level === 'open' && openReplyProbability !== undefined ? { open_reply_probability: openReplyProbability } : {}),
-                });
+                optimisticUpsertGroup({ group_id: groupId, level });
                 renderList();
                 renderBacklogSummary();
                 closeEntityForm();
@@ -1200,10 +1108,6 @@ const pluginId = 'qq_auto_reply';
         window.closeBacklogLabelModal = closeBacklogLabelModal;
         window.confirmBacklogLabelModal = confirmBacklogLabelModal;
         window.deleteBacklogLabelFromModal = deleteBacklogLabelFromModal;
-        window.nextStep = nextStep;
-        window.enterApp = enterApp;
-        window.finishOnboarding = finishOnboarding;
-        window.reopenOnboarding = reopenOnboarding;
 
         document.getElementById('guide-step-napcat').addEventListener('click', () => {
             openStep1GuideModal();
@@ -1282,14 +1186,10 @@ const pluginId = 'qq_auto_reply';
             }
         });
         window.onload = async () => {
-            const onboarding = document.getElementById('onboarding');
-            onboarding.style.display = 'none';
-            onboarding.classList.remove('hidden');
             if (window.I18n?.whenReady) {
                 await new Promise((resolve) => window.I18n.whenReady(resolve));
             }
             await bootstrapDashboard();
             refreshGuideProgress();
-            onboarding.style.display = state.config.showOnboarding ? 'flex' : 'none';
             switchTab(state.currentTab);
         };

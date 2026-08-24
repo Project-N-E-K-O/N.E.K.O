@@ -257,9 +257,14 @@ class ProactiveBridge:
                 )
             elif action == "media_allowlist_add":
                 domains = ui.get("domains") or metadata.get("domains") or []
-                if not isinstance(domains, list) or not domains:
+                http_urls = ui.get("http_urls") or metadata.get("http_urls") or []
+                if not isinstance(domains, list):
+                    domains = []
+                if not isinstance(http_urls, list):
+                    http_urls = []
+                if not domains and not http_urls:
                     logger.debug(
-                        "ui_action=media_allowlist_add missing domains; plugin={}",
+                        "ui_action=media_allowlist_add missing domains/http_urls; plugin={}",
                         plugin_id,
                     )
                     continue
@@ -268,6 +273,7 @@ class ProactiveBridge:
                         "event_type": "music_allowlist_add",
                         "lanlan_name": target_lanlan,
                         "domains": list(domains),
+                        "http_urls": list(http_urls),
                         "source": plugin_id,
                         "timestamp": timestamp,
                     }

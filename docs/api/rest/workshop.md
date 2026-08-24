@@ -77,6 +77,10 @@ Synchronization may report skipped/conflicting cards, missing installs, or a sto
 
 These routes package reference material; they do not clone or register a local TTS voice themselves.
 
+::: info Content-folder exclusivity
+Publishing hands the whole content folder to Steam until the upload finishes. While a folder is publishing, `upload-reference-audio`, `remove-reference-audio` and `cleanup-temp-folder` answer `409` instead of modifying bytes that Steam is consuming. The exclusion also works in reverse: `publish` answers `409` while a reference-audio write is in flight.
+:::
+
 ## Implementation-verified route inventory
 
 ```text

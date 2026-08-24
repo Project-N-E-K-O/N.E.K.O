@@ -470,12 +470,15 @@ def test_all_static_rules_are_valid():
     prompts_slop = pytest.importorskip("config.prompts.prompts_slop")
     rules_by_lang = prompts_slop.SLOP_RULES
     assert isinstance(rules_by_lang, dict) and rules_by_lang
-    assert set(rules_by_lang) == {"zh", "en", "ja", "ko", "ru", "es", "pt"}
+    assert set(rules_by_lang) == {"zh", "zh-TW", "en", "ja", "ko", "ru", "es", "pt"}
     assert prompts_slop.SLOP_RULESET_VERSION >= 1
     assert prompts_slop.SLOP_REPEAT_THRESHOLD == 2
 
     seen_ids = set()
-    cjk_langs = {"zh", "ja"}
+    # Derived, not enumerated: a hardcoded {"zh", "ja"} silently stopped covering
+    # zh-TW when that key landed, leaving the \b and pronoun guards below inert
+    # for the new rules while the test still passed.
+    cjk_langs = {lang for lang in rules_by_lang if lang.startswith("zh")} | {"ja"}
     for lang, rules in rules_by_lang.items():
         for rule in rules:
             rid = rule.get("id")
@@ -504,10 +507,10 @@ def test_all_static_rules_are_valid():
                     assert int(ref) <= ngroups, (
                         f"{rid}: \\{ref} but only {ngroups} groups"
                     )
-                # zh replacements must stay gender-neutral: the subject is
+                # Chinese replacements must stay gender-neutral: the subject is
                 # carried by a backref (\1), never a hardcoded 他/她, so a
                 # male/1st/2nd-person turn is never misgendered in the rewrite.
-                if lang == "zh":
+                if lang.startswith("zh"):
                     assert "她" not in entry and "他" not in entry, (
                         f"{rid}: hardcoded gendered pronoun in replacement {entry!r}"
                     )
@@ -545,18 +548,110 @@ def test_anthropic_tool_use_block_turn_not_rewritten():
 
 
 # ---------------------------------------------------------------------------
-# Traditional Chinese is skipped (shared zh rules are Simplified)
+# Traditional Chinese routes to its own rule set, never to the Simplified one
 # ---------------------------------------------------------------------------
 
 
-def test_resolve_dialog_slop_lang_skips_traditional_chinese(monkeypatch):
+def test_resolve_dialog_slop_lang_routes_traditional_to_its_own_key(monkeypatch):
+    """Traditional variants must resolve to 'zh-TW', not to Simplified 'zh'.
+
+    The stub deliberately serves rules for BOTH keys: with a zh-only stub a
+    ``return "zh"`` regression would still be caught by the empty-rules guard
+    rather than by this assertion, which is not what the test claims to check.
+    """
+    monkeypatch.setattr(sf, "is_slop_filter_enabled", lambda: True)
+    monkeypatch.setattr(
+        sf,
+        "get_rules_for_language",
+        lambda lang: [_HEART] if lang in {"zh", "zh-TW"} else [],
+    )
+    assert sf.resolve_dialog_slop_lang(lambda: "zh-CN") == "zh"
+    assert sf.resolve_dialog_slop_lang(lambda: "zh") == "zh"
+    for traditional in ("zh-TW", "zh-Hant", "zh-HK", "tchinese"):
+        assert sf.resolve_dialog_slop_lang(lambda t=traditional: t) == "zh-TW", traditional
+
+
+def test_resolve_dialog_slop_lang_skips_when_a_rule_set_is_empty(monkeypatch):
+    """The empty-rules guard is what makes an emptied-out table a clean skip.
+
+    Without it, emptying ``SLOP_RULES['zh-TW']`` would arm the context var for a
+    language with nothing to apply instead of leaving the turn alone.
+    """
     monkeypatch.setattr(sf, "is_slop_filter_enabled", lambda: True)
     monkeypatch.setattr(
         sf, "get_rules_for_language", lambda lang: [_HEART] if lang == "zh" else []
     )
-    assert sf.resolve_dialog_slop_lang(lambda: "zh-CN") == "zh"  # Simplified → apply
-    assert sf.resolve_dialog_slop_lang(lambda: "zh-TW") is None  # Traditional → skip
-    assert sf.resolve_dialog_slop_lang(lambda: "zh-Hant") is None
+    assert sf.resolve_dialog_slop_lang(lambda: "zh-TW") is None
+    assert sf.resolve_dialog_slop_lang(lambda: "zh-CN") == "zh"
+
+
+def test_traditional_rules_are_not_a_simplified_copy():
+    """The zh-TW rule set must be its own lexicon, in Traditional characters.
+
+    Simplified patterns barely match Traditional text at all, so a copy-paste of
+    the ``zh`` table would be a table that never fires; and the few rules that do
+    match on shared glyphs would splice Simplified prose into a Traditional turn.
+    """
+    prompts_slop = pytest.importorskip("config.prompts.prompts_slop")
+    zh = prompts_slop.SLOP_RULES["zh"]
+    tw = prompts_slop.SLOP_RULES["zh-TW"]
+    assert tw, "zh-TW rule set is empty"
+
+    zh_finds = {r["find"] for r in zh}
+    for rule in tw:
+        assert rule["find"] not in zh_finds, f"{rule['id']}: verbatim copy of a zh pattern"
+
+    # Simplified-only characters that must not survive into the Traditional set.
+    # Each is the Simplified form of a character the zh rules actually use.
+    simplified_only = "脏疯剧动脸红丝缕间时钟静脑际际间头识现纪脸颊层从间"
+    blob = "".join(
+        rule["find"] + "".join(rule["replace"]) + rule.get("name", "") for rule in tw
+    )
+    leaked = sorted({ch for ch in simplified_only if ch in blob})
+    assert not leaked, f"Simplified characters leaked into the zh-TW rules: {leaked}"
+
+
+def test_traditional_rules_fire_on_traditional_prose_and_leave_normal_text_alone():
+    """Behavioural check on the real table, not just its shape.
+
+    Deleting the zh-TW entry, or routing Traditional turns back to ``zh``, both
+    turn the first half red; over-broad patterns turn the second half red.
+    """
+    prompts_slop = pytest.importorskip("config.prompts.prompts_slop")
+    rules = prompts_slop.SLOP_RULES["zh-TW"]
+
+    cliches = [
+        "心臟瘋狂跳動",
+        "嘴角微微勾起一抹弧度",
+        "耳根不由得發燙",
+        "臉頰漸漸浮上一層紅暈",
+        "瞳孔猛地一縮",
+        "這一刻時間彷彿靜止",
+    ]
+    for text in cliches:
+        assert _rewrites(rules, text), f"no zh-TW rule fires on {text!r}"
+
+    ordinary = [
+        "我今天去搜尋即時的裝置狀態",
+        "他心情很好，跳上了公車",
+        "時間過得真快，這一刻我很開心",
+        "嘴角沾到飯粒了啦",
+        "醫生說瞳孔對光反射正常",
+        "臉上有點紅，可能是曬的",
+        "執行程式後會回傳訊號",
+        "心裡有點難過",
+    ]
+    for text in ordinary:
+        assert not _rewrites(rules, text), f"zh-TW rule misfires on ordinary prose {text!r}"
+
+
+def _rewrites(rules, text):
+    """True if any rule in ``rules`` matches ``text``."""
+    import re
+
+    return any(
+        re.search(rule["find"], text, int(rule.get("flags", 0) or 0)) for rule in rules
+    )
 
 
 # ---------------------------------------------------------------------------

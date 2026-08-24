@@ -17,6 +17,8 @@
 
 import asyncio
 import os
+import secrets
+from urllib.parse import parse_qsl
 
 import httpx
 from fastapi import Request
@@ -33,11 +35,29 @@ app = runtime.app
 logger = runtime.logger
 
 
+def _has_generated_asset_version(query_string: bytes) -> bool:
+    """Return whether ``v`` is a content-derived version safe to cache immutably."""
+    try:
+        query_params = parse_qsl(query_string.decode("ascii"), keep_blank_values=True)
+    except UnicodeDecodeError:
+        return False
+
+    for key, value in query_params:
+        if key != "v":
+            continue
+        version_tail = value.rsplit("-", 1)[-1]
+        if version_tail.isascii() and version_tail.isdigit() and len(version_tail) >= 9:
+            return True
+    return False
+
+
 class CustomStaticFiles(StaticFiles):
     async def get_response(self, path, scope):
         response = await super().get_response(path, scope)
         if path.endswith(".js"):
             response.headers["Content-Type"] = "application/javascript"
+        if _has_generated_asset_version(scope.get("query_string", b"")):
+            response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
         return response
 
 
@@ -161,6 +181,7 @@ from main_routers.cloudsave_router import router as cloudsave_router  # noqa
 from main_routers.config_router import router as config_router  # noqa
 from main_routers.proactive_router import router as proactive_router  # noqa
 from main_routers.galgame_router import router as galgame_router  # noqa
+from main_routers.widget_mode_router import router as widget_mode_router  # noqa
 from main_routers.icebreaker_router import router as icebreaker_router  # noqa
 from main_routers.jukebox_router import router as jukebox_router  # noqa
 from main_routers.live2d_router import router as live2d_router  # noqa
@@ -173,10 +194,20 @@ from main_routers.storage_location_router import router as storage_location_rout
 from main_routers.system_router import router as system_router  # noqa
 from main_routers.tool_router import router as tool_router  # noqa
 from main_routers.vrm_router import router as vrm_router  # noqa
+from main_routers.vmc_router import router as vmc_router  # noqa
 from main_routers.websocket_router import router as websocket_router  # noqa
 from main_routers.workshop_router import router as workshop_router  # noqa
 from main_routers.cookies_login_router import router as cookies_login_router  # noqa
 from main_routers.game_router import router as game_router  # noqa
+from main_routers.card_drop_router import (  # noqa
+    _facts_cors_headers as _card_drop_cors_headers,
+    _local_mutation_origin_allowed as _card_drop_mutation_origin_allowed,
+    router as card_drop_router,
+)
+from main_routers.community_oauth import (  # noqa
+    callback_router as community_oauth_callback_router,
+    router as community_oauth_router,
+)
 from main_routers.debug_router import (
     router as debug_router,
     start_watchdog as _start_debug_health_watchdog,
@@ -195,6 +226,88 @@ async def health():
     return build_health_response("main", instance_id=INSTANCE_ID)
 
 
+# ── Card-drop cross-process active-character snapshot ──────────────────────
+# Community-card native delegation reads this snapshot for the current
+# character identity and optional avatar/reference images.
+_card_drop_active_character: dict[str, str] = {}
+
+
+async def _fallback_active_character_identity() -> tuple[str, str]:
+    """Use the configured active character when Pet has not posted a snapshot."""
+    try:
+        master_name, lanlan_name, *_rest = await _config_manager.aget_character_data()
+    except Exception:
+        return "", ""
+    return str(lanlan_name or "").strip(), str(master_name or "").strip()
+
+
+def _active_character_cors_headers(request: Request) -> dict[str, str] | None:
+    """Preserve native local reads; restrict browser reads to the social origin."""
+    if not (request.headers.get("origin") or "").strip():
+        return {"Cache-Control": "no-store", "Pragma": "no-cache"}
+    return _card_drop_cors_headers(request)
+
+
+@app.post("/api/card-drop/active-character")
+async def set_card_drop_active_character(request: Request, payload: dict):
+    """Apply supplied fields, dropping avatar payloads that belong to a prior name."""
+    if not _card_drop_mutation_origin_allowed(request):
+        return JSONResponse({"detail": "origin_not_allowed"}, status_code=403)
+    if not isinstance(payload, dict):
+        return {"ok": True}
+    if "name" in payload:
+        next_name = str(payload.get("name") or "")
+        if next_name != _card_drop_active_character.get("name", ""):
+            for avatar_field in ("dataUrl", "characterReferenceDataUrl"):
+                if avatar_field not in payload:
+                    _card_drop_active_character.pop(avatar_field, None)
+        _card_drop_active_character["name"] = next_name
+    if "dataUrl" in payload:
+        _card_drop_active_character["dataUrl"] = str(payload.get("dataUrl") or "")
+    if "characterReferenceDataUrl" in payload:
+        _card_drop_active_character["characterReferenceDataUrl"] = str(
+            payload.get("characterReferenceDataUrl") or ""
+        )
+    return {"ok": True}
+
+
+@app.options("/api/card-drop/active-character")
+async def active_character_options(request: Request):
+    """Allow only the configured community origin to read the local snapshot."""
+    cors = _active_character_cors_headers(request)
+    if cors is None:
+        return JSONResponse({"detail": "origin_not_allowed"}, status_code=403)
+    return JSONResponse({"ok": True}, headers=cors)
+
+
+@app.get("/api/card-drop/active-character")
+async def get_card_drop_active_character(
+    request: Request, include_avatar: bool = False
+):
+    """Return the active name and optionally the larger avatar payloads."""
+    cors = _active_character_cors_headers(request)
+    if cors is None:
+        return JSONResponse({"detail": "origin_not_allowed"}, status_code=403)
+    name = str(_card_drop_active_character.get("name", "") or "").strip()
+    master_name = ""
+    # Community forge used to treat an empty live snapshot as "本体未连接" even
+    # when the local ledger/credits were healthy. Fall back to the configured
+    # current catgirl so ticket selection can proceed before Pet avatar sync.
+    used_fallback = False
+    if not name:
+        name, master_name = await _fallback_active_character_identity()
+        used_fallback = True
+    payload: dict[str, str] = {"name": name}
+    if master_name:
+        payload["master_name"] = master_name
+    if include_avatar and not used_fallback:
+        payload["dataUrl"] = _card_drop_active_character.get("dataUrl", "")
+        payload["characterReferenceDataUrl"] = _card_drop_active_character.get(
+            "characterReferenceDataUrl", ""
+        )
+    return JSONResponse(payload, headers=cors)
+
+
 @app.post("/api/beacon/shutdown")
 async def beacon_shutdown():
     """Beacon endpoint: used for graceful server shutdown"""
@@ -210,6 +323,78 @@ async def beacon_shutdown():
     except Exception as e:
         logger.error(f"Beacon处理错误: {e}")
         return {"success": False, "error": str(e)}
+
+
+def _runtime_shutdown_has_target() -> bool:
+    current_config = runtime.get_start_config()
+    if callable(current_config.get("request_runtime_shutdown")):
+        return True
+    if current_config.get("server") is not None:
+        return True
+
+    launcher_pid_raw = os.environ.get("NEKO_LAUNCHER_PID", "").strip()
+    if os.name != "nt" and launcher_pid_raw:
+        try:
+            launcher_pid = int(launcher_pid_raw)
+        except ValueError:
+            return False
+        return launcher_pid > 0 and launcher_pid != os.getpid()
+
+    return False
+
+
+@app.post("/api/runtime/shutdown")
+async def runtime_shutdown(request: Request):
+    """Request an authenticated application-level shutdown from the owning desktop app."""
+    configured_token = os.environ.get("NEKO_RUNTIME_SHUTDOWN_TOKEN", "").strip()
+    if not configured_token:
+        return JSONResponse(
+            {"success": False, "error": "runtime shutdown is not enabled"},
+            status_code=503,
+        )
+
+    provided_token = request.headers.get("x-neko-runtime-shutdown-token", "").strip()
+    if not provided_token or not secrets.compare_digest(
+        configured_token, provided_token
+    ):
+        return JSONResponse(
+            {"success": False, "error": "invalid runtime shutdown token"},
+            status_code=403,
+        )
+
+    from config import INSTANCE_ID
+
+    provided_instance = request.headers.get("x-neko-instance-id", "").strip()
+    if provided_instance and not secrets.compare_digest(
+        str(INSTANCE_ID), provided_instance
+    ):
+        return JSONResponse(
+            {"success": False, "error": "runtime instance mismatch"},
+            status_code=409,
+        )
+
+    if not _runtime_shutdown_has_target():
+        return JSONResponse(
+            {"success": False, "error": "runtime shutdown target is unavailable"},
+            status_code=503,
+        )
+
+    shutdown = runtime.request_application_shutdown_async
+    if not callable(shutdown):
+        return JSONResponse(
+            {"success": False, "error": "runtime shutdown bridge is unavailable"},
+            status_code=503,
+        )
+
+    asyncio.create_task(shutdown(reason="desktop_owner_exit"))
+    return JSONResponse(
+        {
+            "success": True,
+            "message": "runtime shutdown accepted",
+            "instance_id": str(INSTANCE_ID),
+        },
+        status_code=202,
+    )
 
 
 @app.api_route(
@@ -318,10 +503,17 @@ app.include_router(system_router)
 app.include_router(tool_router)
 app.include_router(music_router)
 app.include_router(galgame_router)
+app.include_router(widget_mode_router)
 app.include_router(icebreaker_router)
 app.include_router(game_router)
 app.include_router(card_assist_router)
 app.include_router(capture_router)
+app.include_router(card_drop_router)  # Must precede the pages fallback router.
+app.include_router(community_oauth_router)
+app.include_router(community_oauth_callback_router)  # Exact /oauth/callback before pages.
+# VMC Protocol OSC sender: REST control plane plus an isolated per-frame
+# WebSocket data plane at /api/vmc/ws (kept off the chat/session channel).
+app.include_router(vmc_router)
 app.include_router(
     cookies_login_router
 )  # Cookies登录相关路由，放在最后以避免与其他API路由冲突

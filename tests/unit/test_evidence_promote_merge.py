@@ -163,6 +163,33 @@ async def test_amerge_into_emits_two_events_and_writes_view(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_amerge_into_handles_extreme_offset_event_boundaries(tmp_path):
+    _ev, _fs, pm, _re, _cm = _install(str(tmp_path))
+    target = _persona_entry('p_001', 'old text', rein=1.0)
+    target.update({
+        'event_when_raw': {'kind': 'absolute', 'value': '0001-01-02'},
+        'event_start_at': '0001-01-02T00:00:00+00:00',
+        'event_end_at': '0001-01-02T00:00:00+00:00',
+    })
+    await pm.asave_persona('小天', {'master': {'facts': [target]}})
+
+    result = await pm.amerge_into(
+        '小天', 'p_001', 'merged text',
+        reflection_evidence={'reinforcement': 1.0, 'disputation': 0.0},
+        source_reflection_id='ref_boundary',
+        source_provenance={
+            'event_when_raw': {'kind': 'absolute', 'value': '0001-01-01'},
+            'event_start_at': '0001-01-01T00:00:00+14:00',
+            'event_end_at': '0001-01-01T00:00:00+14:00',
+        },
+    )
+
+    assert result == 'merged'
+    entry = (await pm.aget_persona('小天'))['master']['facts'][0]
+    assert entry['event_start_at'] == '0001-01-01T00:00:00+14:00'
+
+
+@pytest.mark.asyncio
 async def test_amerge_into_idempotent_on_repeat(tmp_path):
     """RFC §3.9.6: re-calling amerge_into with the same
     source_reflection_id is a no-op (the source is already in
@@ -434,6 +461,185 @@ async def test_merge_into_path_updates_target_and_marks_merged(tmp_path):
     rstate = next(r for r in reloaded if r['id'] == 'ref_merge')
     assert rstate['status'] == 'merged'
     assert rstate['absorbed_into'] == 'p_001'
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("source_id", "source_trust", "expected_provenance"),
+    [
+        (
+            "qq:1001", 0.5,
+            {
+                "speaker_id": "qq:1001",
+                "speaker_trust": 0.5,
+                "speaker_label": "Alice(1001)",
+            },
+        ),
+        ("qq:2002", 0.5, {"speaker_provenance_mixed": True}),
+        (None, None, {"speaker_provenance_mixed": True}),
+    ],
+)
+async def test_merge_into_folds_and_replays_speaker_provenance(
+    tmp_path, source_id, source_trust, expected_provenance,
+):
+    from memory.evidence_handlers import make_persona_entry_handler
+
+    _ev, _fs, pm, re, _cm = _install(str(tmp_path))
+    target = _persona_entry('p_prov', '早期说法', rein=1.0)
+    target.update({
+        'speaker_id': 'qq:1001',
+        'speaker_trust': 0.8,
+        'speaker_label': 'Alice(1001)',
+    })
+    await pm.asave_persona('Neko', {'master': {'facts': [target]}})
+    reflection = _reflection('ref_prov', '后续补充', rein=2.5)
+    if source_id is not None:
+        reflection['speaker_id'] = source_id
+    if source_trust is not None:
+        reflection['speaker_trust'] = source_trust
+    await re.asave_reflections('Neko', [reflection])
+    decision = {
+        'action': 'merge_into',
+        'target_id': 'persona.master.p_prov',
+        'merged_text': '合并后说法',
+    }
+    with patch.object(
+        re, '_allm_call_promotion_merge', AsyncMock(return_value=decision),
+    ):
+        assert await re._apromote_with_merge('Neko', reflection) == 'merge_into'
+
+    merged = (await pm.aget_persona('Neko'))['master']['facts'][0]
+    actual = {
+        key: merged[key]
+        for key in (
+            'speaker_id', 'speaker_trust', 'speaker_label',
+            'speaker_provenance_mixed',
+        )
+        if key in merged
+    }
+    assert actual == expected_provenance
+
+    events_path = os.path.join(str(tmp_path), 'Neko', 'events.ndjson')
+    with open(events_path, encoding='utf-8') as f:
+        entry_payload = [
+            json.loads(line)['payload']
+            for line in f if line.strip()
+            and json.loads(line)['type'] == 'persona.entry_updated'
+        ][-1]
+    assert entry_payload['speaker_provenance'] == expected_provenance
+
+    # Simulate a crash-replay target that has the merged text but still carries
+    # the pre-merge strong provenance. The event payload must reproduce the
+    # conservative fold/clear, not merely mutate the live view once.
+    replay_target = _persona_entry('p_prov', '合并后说法', rein=1.0)
+    replay_target.update({
+        'speaker_id': 'qq:1001',
+        'speaker_trust': 0.8,
+        'speaker_label': 'Alice(1001)',
+    })
+    await pm.asave_persona('Neko', {'master': {'facts': [replay_target]}})
+    assert make_persona_entry_handler(pm)('Neko', entry_payload)
+    replayed = (await pm.aget_persona('Neko'))['master']['facts'][0]
+    replayed_provenance = {
+        key: replayed[key]
+        for key in (
+            'speaker_id', 'speaker_trust', 'speaker_label',
+            'speaker_provenance_mixed',
+        )
+        if key in replayed
+    }
+    assert replayed_provenance == expected_provenance
+
+
+@pytest.mark.asyncio
+async def test_merge_into_unions_and_replays_explicit_event_windows(tmp_path):
+    from memory.evidence_handlers import make_persona_entry_handler
+
+    _ev, _fs, pm, re, _cm = _install(str(tmp_path))
+    target = _persona_entry('p_time', '早期说法', rein=1.0)
+    target.update({
+        'event_when_raw': {'type': 'range', 'start': '2026-01-01'},
+        'event_start_at': '2026-01-01T00:00:00',
+        'event_end_at': '2026-01-10T00:00:00',
+    })
+    await pm.asave_persona('Neko', {'master': {'facts': [target]}})
+    reflection = _reflection('ref_time', '后续补充', rein=2.5)
+    reflection.update({
+        'event_when_raw': {'type': 'range', 'start': '2026-02-01'},
+        'event_start_at': '2026-02-01T00:00:00',
+        'event_end_at': '2026-02-20T00:00:00',
+    })
+    await re.asave_reflections('Neko', [reflection])
+    decision = {
+        'action': 'merge_into',
+        'target_id': 'persona.master.p_time',
+        'merged_text': '合并后说法',
+    }
+    with patch.object(
+        re, '_allm_call_promotion_merge', AsyncMock(return_value=decision),
+    ):
+        assert await re._apromote_with_merge('Neko', reflection) == 'merge_into'
+
+    merged = (await pm.aget_persona('Neko'))['master']['facts'][0]
+    assert merged['event_when_raw'] == reflection['event_when_raw']
+    assert merged['event_start_at'] == '2026-01-01T00:00:00'
+    assert merged['event_end_at'] == '2026-02-20T00:00:00'
+
+    events_path = os.path.join(str(tmp_path), 'Neko', 'events.ndjson')
+    with open(events_path, encoding='utf-8') as f:
+        entry_payload = [
+            json.loads(line)['payload']
+            for line in f if line.strip()
+            and json.loads(line)['type'] == 'persona.entry_updated'
+        ][-1]
+    replay_target = _persona_entry('p_time', '合并后说法', rein=1.0)
+    await pm.asave_persona('Neko', {'master': {'facts': [replay_target]}})
+    assert make_persona_entry_handler(pm)('Neko', entry_payload)
+    replayed = (await pm.aget_persona('Neko'))['master']['facts'][0]
+    assert replayed['event_when_raw'] == reflection['event_when_raw']
+    assert replayed['event_start_at'] == '2026-01-01T00:00:00'
+    assert replayed['event_end_at'] == '2026-02-20T00:00:00'
+
+
+@pytest.mark.asyncio
+async def test_merge_into_refuses_cross_scope_target(tmp_path):
+    """Two custom scopes share persona_section_key: a scope-A reflection
+    must not see scope-B entries as merge candidates, and a hallucinated
+    cross-domain target id is refused at revalidation instead of
+    overwriting B's entry with A's content."""
+    from memory.scopes import MemorySubject
+
+    _ev, _fs, pm, re, _cm = _install(str(tmp_path))
+    subject_a = MemorySubject.create("group_chat", "qq:1", scope="t-a")
+    subject_b = MemorySubject.create("group_chat", "qq:1", scope="t-b")
+    section_key = subject_a.persona_section_key
+    entry_b = _persona_entry('p_b', 'B 域条目', rein=1.0)
+    entry_b.update(subject_b.as_entry_fields())
+    await pm.asave_persona('小天', {section_key: {
+        **subject_b.as_entry_fields(), 'facts': [entry_b],
+    }})
+    R = _reflection('ref_a', 'A 域反思', rein=2.5)
+    R.update(subject_a.as_entry_fields())
+    R['entity'] = 'group_chat'
+    await re.asave_reflections('小天', [R])
+
+    captured = {}
+
+    async def _fake_llm(Rx, persona_cands, refl_cands, name, master):
+        captured['cands'] = list(persona_cands)
+        return {
+            'action': 'merge_into',
+            'target_id': f'persona.{section_key}.p_b',
+            'merged_text': 'A 覆写 B',
+        }
+
+    with patch.object(re, '_allm_call_promotion_merge', _fake_llm):
+        outcome = await re._apromote_with_merge('小天', R)
+
+    assert captured['cands'] == []
+    assert outcome == 'invalid_target'
+    entry = (await pm.aget_persona('小天'))[section_key]['facts'][0]
+    assert entry['text'] == 'B 域条目'
 
 
 @pytest.mark.asyncio

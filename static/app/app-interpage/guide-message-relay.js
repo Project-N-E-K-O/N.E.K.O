@@ -74,6 +74,19 @@
                 }
 
                 switch (event.data.action) {
+                    case 'motion_lifecycle': {
+                        var motionDetail = event.data.detail && typeof event.data.detail === 'object'
+                            ? event.data.detail : {};
+                        var motionCurrentName = I.getCurrentLanlanName();
+                        if (
+                            motionDetail.lanlan_name
+                            && (!motionCurrentName || motionDetail.lanlan_name !== motionCurrentName)
+                        ) break;
+                        window.dispatchEvent(new CustomEvent('neko:motion-lifecycle-relay', {
+                            detail: event.data
+                        }));
+                        break;
+                    }
                     case 'reload_model':
                         await I.handleModelReload(event.data?.lanlan_name, event.data?.reloadOptions);
                         break;
@@ -94,6 +107,9 @@
                         }
                         break;
                     }
+                    case 'model_manager_window_state':
+                        I.handleModelManagerWindowState(event.data);
+                        break;
                     case 'memory_edited':
                         await I.handleMemoryEdited(event.data.catgirl_name);
                         break;
@@ -109,6 +125,10 @@
                     }
                     case 'request_goodbye_chat_composer_hidden': {
                         I.handleGoodbyeChatComposerHiddenMessage(event.data, 'broadcast-request');
+                        break;
+                    }
+                    case 'cat_local_text_submit': {
+                        I.handleGoodbyeChatComposerHiddenMessage(event.data, 'broadcast-submit');
                         break;
                     }
                     case 'idle_activity': {
@@ -367,20 +387,31 @@
                         var captureLanlanName = (window.lanlan_config && window.lanlan_config.lanlan_name) || '';
                         if (event.data.lanlan_name && (!captureLanlanName || event.data.lanlan_name !== captureLanlanName)) break;
                         var captureRequestId = event.data.requestId || '';
+                        var captureMode = event.data.captureMode || 'avatar';
                         var includeSource = !!event.data.includeSourceDataUrl;
                         if (window.avatarPortrait && typeof window.avatarPortrait.capture === 'function') {
-                            window.avatarPortrait.capture({
-                                width: 320, height: 320, padding: 0.035,
-                                shape: 'rounded', radius: 40,
-                                background: 'rgba(255, 255, 255, 0.96)',
-                                includeDataUrl: true,
-                                includeSourceDataUrl: includeSource
-	                            }).then(function (result) {
+                            var captureOptions = captureMode === 'character_reference'
+                                ? {
+                                    width: 768, height: 1024, padding: 0.08,
+                                    shape: 'square',
+                                    background: 'transparent',
+                                    cropMode: 'portrait',
+                                    includeDataUrl: true,
+                                    includeSourceDataUrl: false
+                                }
+                                : {
+                                    width: 320, height: 320, padding: 0.035,
+                                    shape: 'rounded', radius: 40,
+                                    background: 'rgba(255, 255, 255, 0.96)',
+                                    includeDataUrl: true,
+                                    includeSourceDataUrl: includeSource
+                                };
+                            window.avatarPortrait.capture(captureOptions).then(function (result) {
 	                                I.postYuiGuideMessageToChat('avatar_capture_result', {
 	                                    requestId: captureRequestId,
 	                                    dataUrl: result.dataUrl || '',
 	                                    modelType: result.modelType || '',
-	                                    sourceDataUrl: includeSource ? (result.sourceDataUrl || '') : '',
+	                                    sourceDataUrl: captureOptions.includeSourceDataUrl ? (result.sourceDataUrl || '') : '',
 	                                    cropRectPixels: result.cropRectPixels || null
 	                                });
 	                            }).catch(function (err) {

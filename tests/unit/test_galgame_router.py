@@ -30,6 +30,9 @@ class FakeConfigManager:
     async def aget_character_data(self):
         return "主人", "猫娘", None, None
 
+    async def aget_model_api_config(self, model_type, *, core_config=None):
+        return self.get_model_api_config(model_type)
+
     def get_model_api_config(self, model_type):
         self.calls.append(model_type)
         if model_type == "summary":

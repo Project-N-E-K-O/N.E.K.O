@@ -22,7 +22,11 @@ from ._shared import logger
 
 from typing import Any, Dict
 from ..shared_state import get_config_manager, get_session_manager
-from utils.language_utils import get_global_language, normalize_language_code, is_supported_language_code
+from utils.language_utils import (
+    get_global_language_full,
+    is_supported_language_code,
+    normalize_language_code,
+)
 
 
 def _extract_request_language_full(data: Any) -> str | None:
@@ -35,6 +39,35 @@ def _extract_request_language_full(data: Any) -> str | None:
         return normalize_language_code(str(raw), format='full')
     except Exception:
         return None
+
+
+def _extract_request_render_language_full(data: Any) -> str | None:
+    """Return the request-only template locale without mutating session state."""
+    if not isinstance(data, dict):
+        return None
+    raw = data.get("render_language")
+    if not raw or not is_supported_language_code(raw):
+        return None
+    try:
+        return normalize_language_code(str(raw), format="full")
+    except Exception:
+        return None
+
+
+def _apply_request_render_language(data: Any, manager: Any) -> str | None:
+    """Apply a request-only renderer locale without promoting it to durable state."""
+    render_language = _extract_request_render_language_full(data)
+    if not render_language or manager is None:
+        return None
+    try:
+        setter = getattr(manager, "set_render_language", None)
+        if not callable(setter):
+            return None
+        setter(render_language)
+    except Exception:
+        logger.debug("🎮 apply request render language failed", exc_info=True)
+        return None
+    return render_language
 
 
 def _absorb_request_language(data: Any, lanlan_name: str | None) -> str | None:
@@ -72,7 +105,10 @@ def _absorb_request_language(data: Any, lanlan_name: str | None) -> str | None:
             if manager is not None:
                 normalized_full = normalize_language_code(str(raw), format='full')
                 current = getattr(manager, "user_language", None)
-                if normalized_full and current != normalized_full:
+                if normalized_full and (
+                    current != normalized_full
+                    or not getattr(manager, "_user_language_explicit", False)
+                ):
                     setter = getattr(manager, "set_user_language", None)
                     if callable(setter):
                         setter(str(raw))
@@ -87,15 +123,9 @@ def _resolve_game_prompt_language(
 ) -> str:
     """Resolve the user's current language for game-route LLM prompts.
 
-    Priority (same shape as ``main_routers/system_router._resolve_proactive_locale``):
-      1. ``i18n_language`` / ``language`` / ``lang`` in ``data`` (request body)
-         — explicitly sent by the frontend, highest priority; the value is also
-         written back to ``mgr.user_language`` so every downstream
-         ``_resolve_game_prompt_language`` in this request without access to
-         ``data`` hits it too.
-      2. ``mgr.user_language`` — the session ground truth synced by the websocket
-         greeting_check.
-      3. ``get_global_language()`` — process-level cache, final fallback.
+    Priority (same shape as the proactive-chat resolver): explicit request,
+    explicit manager preference, request render fallback, non-explicit manager
+    fallback, then the process-level global language.
 
     Layer 1 covers a hole beyond PR #1150: in a Steam=zh / system=en environment,
     ``mgr.user_language`` gets overwritten by the (wrong, 'en') global cache at
@@ -104,16 +134,37 @@ def _resolve_game_prompt_language(
     Making the request body's i18n truth the top-priority source, combined with
     the self-healing write-back, closes this race.
     """
-    request_lang = _absorb_request_language(data, lanlan_name)
-    if request_lang:
-        return request_lang
+    return (
+        normalize_language_code(
+            _resolve_game_prompt_locale(lanlan_name, data),
+            format="short",
+        )
+        or "en"
+    )
+
+
+def _resolve_game_prompt_locale(
+    lanlan_name: str | None = None,
+    data: Any = None,
+) -> str:
+    """Resolve the full locale while preserving variants such as zh-TW."""
+    request_locale = _extract_request_language_full(data)
+    if request_locale:
+        _absorb_request_language(data, lanlan_name)
+        return request_locale
+
+    manager_locale = None
+    manager_language_is_explicit = False
     try:
         name = str(lanlan_name or "").strip()
         session_manager = get_session_manager()
         manager = session_manager.get(name) if name and hasattr(session_manager, "get") else None
         language = getattr(manager, "user_language", None)
-        if language:
-            return normalize_language_code(str(language), format="short") or "en"
+        manager_language_is_explicit = bool(
+            getattr(manager, "_user_language_explicit", False)
+        )
+        if language and is_supported_language_code(language):
+            manager_locale = normalize_language_code(str(language), format="full")
     except Exception:
         logger.debug(
             "🎮 赛后归档语言解析失败，使用默认 prompt 语言: lanlan=%s",
@@ -121,8 +172,21 @@ def _resolve_game_prompt_language(
             exc_info=True,
         )
 
+    if manager_language_is_explicit and manager_locale:
+        return manager_locale
+
+    render_locale = _extract_request_render_language_full(data)
+    if render_locale:
+        return render_locale
+
+    if manager_locale:
+        return manager_locale
+
     try:
-        return normalize_language_code(get_global_language(), format="short") or "en"
+        return normalize_language_code(
+            get_global_language_full(),
+            format="full",
+        ) or "en"
     except Exception:
         return "en"
 
@@ -141,6 +205,14 @@ def _get_character_info(lanlan_name: str | None = None) -> Dict[str, Any]:
             if lanlan_name:
                 info.setdefault("lanlan_name", str(lanlan_name or "").strip())
             info.setdefault("user_language", _resolve_game_prompt_language(info.get("lanlan_name")))
+            info.setdefault(
+                "user_language_full",
+                normalize_language_code(
+                    str(info.get("user_language") or ""),
+                    format="full",
+                )
+                or _resolve_game_prompt_locale(info.get("lanlan_name")),
+            )
             return info
         raise
     characters = config_manager.load_characters()
@@ -167,6 +239,7 @@ def _get_character_info(lanlan_name: str | None = None) -> Dict[str, Any]:
     # 获取小游戏主模型配置；默认跟随文本对话模型，用户可在 API 设置中独立覆盖。
     conversation_config = config_manager.get_model_api_config('game_main')
 
+    prompt_locale = _resolve_game_prompt_locale(current_name)
     return {
         'lanlan_name': current_name,
         'master_name': master_name,
@@ -176,7 +249,8 @@ def _get_character_info(lanlan_name: str | None = None) -> Dict[str, Any]:
         'api_type': conversation_config.get('api_type', ''),
         'provider_type': conversation_config.get('provider_type', ''),
         'api_key': conversation_config.get('api_key', ''),
-        'user_language': _resolve_game_prompt_language(current_name),
+        'user_language': normalize_language_code(prompt_locale, format="short") or "en",
+        'user_language_full': prompt_locale,
     }
 
 

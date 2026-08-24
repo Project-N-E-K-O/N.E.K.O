@@ -74,6 +74,7 @@ Exports return files rather than JSON. Upload/import endpoints enforce filename,
 | `DELETE /api/characters/voices/{voice_id}` | Delete a registered custom voice. |
 | `POST /api/characters/voice_clone` | Clone from multipart audio. Required fields include `file` and `prefix`; provider-specific fields are also accepted. |
 | `POST /api/characters/voice_clone_direct` | Register/clone from a validated direct audio URL. Private-network and unsafe redirect targets are rejected. |
+| `POST /api/characters/voice_design` | Create and save a reusable voice from `provider`, `prefix`, and `voice_prompt`. Supported providers and their constraints come from the TTS provider registry. |
 | `POST /api/characters/voice_design_preview` | Ask ElevenLabs voice design for preview candidates. |
 | `POST /api/characters/voice_design_create` | Persist a selected design preview as a reusable voice. |
 | `POST /api/characters/audio/analyze_silence` | Analyze multipart audio field `file`. |
@@ -131,6 +132,7 @@ POST   /api/characters/audio/trim_silence
 GET    /api/characters/audio/trim_progress/{task_id}
 POST   /api/characters/audio/trim_cancel/{task_id}
 POST   /api/characters/voice_clone
+POST   /api/characters/voice_design
 POST   /api/characters/voice_design_preview
 POST   /api/characters/voice_design_create
 POST   /api/characters/voice_clone_direct

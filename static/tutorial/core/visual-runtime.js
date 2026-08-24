@@ -589,7 +589,12 @@
                 && legacyScene.id.indexOf('day4_') === 0
                 && typeof director.clearExternalizedChatGuideTarget === 'function'
             ) {
-                director.clearExternalizedChatGuideTarget({ clearCursor: true });
+                // 修改原因：这里只需要释放独立聊天窗对光标的控制权；保留全局光标当前位置，
+                // 让下一句设置教程可以从上一句的位置继续移动，避免光标和高亮等待真实鼠标唤醒。
+                director.clearExternalizedChatGuideTarget({
+                    clearCursor: true,
+                    preservePcOverlayCursor: true
+                });
             }
             return await director.settingsTourFlow.play(legacyScene, {
                 sceneRunId: context ? context.sceneRunId : undefined,

@@ -125,7 +125,31 @@ ACTIVITY_GUESS_PROMPTS: dict[str, str] = {
 如果你的判断和"规则系统的初判"不同，按你看到的实际信号给分；规则只是参考，不必盲从。
 
 输出示例：
-{{"scores": {{"focused_work": 0.7, "chatting": 0.2, "idle": 0.1, "gaming": 0.0, "casual_browsing": 0.0, "voice_engaged": 0.0}}, "guess": "主人在 VS Code 里写代码，偶尔切到聊天软件回消息"}}""",
+{{"scores": {{"focused_work": 0.7, "chatting": 0.2, "idle": 0.1, "gaming": 0.0, "casual_browsing": 0.0, "voice_engaged": 0.0}}, "guess": "用户在 VS Code 里写代码，偶尔切到聊天软件回消息"}}""",
+    "zh-TW": """你是一個使用者活動分析助手。根據下方的系統訊號和最近的對話片段，對使用者目前的活動狀態做軟評分，並寫一句簡短的活動敘述。
+
+======以下為系統訊號======
+{signals}
+======以上為系統訊號======
+
+======以下为最近对话(按时间顺序)======
+{conversation}
+======以上为最近对话(按时间顺序)======
+
+======以下為規則系統的初判======
+{rule_state}
+======以上為規則系統的初判======
+
+請輸出嚴格的 JSON（不帶 markdown 程式碼區塊），欄位：
+- "scores": 一個物件，鍵是狀態名，值是 0.0-1.0 的浮點數（各自獨立打分，不用正規化）。允許的狀態名：{state_keys}
+- "guess": 一句話敘述使用者現在在做什麼，符合中文的表達習慣，不超過 40 字
+
+如果某個狀態完全不像，就給 0.0；如果非常像，就給接近 1.0。多個狀態可以同時高分（例如一邊寫程式一邊聊天）。
+
+如果你的判斷跟「規則系統的初判」不同，就照你看到的實際訊號打分；規則只是參考，不必盲從。
+
+輸出範例：
+{{"scores": {{"focused_work": 0.7, "chatting": 0.2, "idle": 0.1, "gaming": 0.0, "casual_browsing": 0.0, "voice_engaged": 0.0}}, "guess": "使用者在 VS Code 裡寫程式，偶爾切到聊天軟體回訊息"}}""",
     "en": """You are a user-activity analyst. Given the system signals and recent conversation snippets below, give soft scores for the user's current activity state and write a one-sentence narrative.
 
 ======Below is System signals======
@@ -149,7 +173,7 @@ Give 0.0 for states that don't fit at all; close to 1.0 for very fitting ones. M
 If you disagree with the rule classification, score based on the actual signals — the rule is just a reference, not gospel.
 
 Example output:
-{{"scores": {{"focused_work": 0.7, "chatting": 0.2, "idle": 0.1, "gaming": 0.0, "casual_browsing": 0.0, "voice_engaged": 0.0}}, "guess": "Master is coding in VS Code, occasionally switching to a chat app to reply"}}""",
+{{"scores": {{"focused_work": 0.7, "chatting": 0.2, "idle": 0.1, "gaming": 0.0, "casual_browsing": 0.0, "voice_engaged": 0.0}}, "guess": "The user is coding in VS Code, occasionally switching to a chat app to reply"}}""",
     "ja": """あなたはユーザー活動の分析助手です。下のシステム信号と最近の会話に基づき、ユーザーの現在の活動状態にソフトスコアを付けて、一文の活動叙述を書いてください。
 
 ======以下はシステム信号======
@@ -173,7 +197,7 @@ Example output:
 ルール初期判定と意見が違う場合は、実際の信号に従ってください。ルールは参考に過ぎません。
 
 出力例：
-{{"scores": {{"focused_work": 0.7, "chatting": 0.2, "idle": 0.1, "gaming": 0.0, "casual_browsing": 0.0, "voice_engaged": 0.0}}, "guess": "ご主人はVS Codeでコーディング中、時々チャットアプリに切り替えて返信している"}}""",
+{{"scores": {{"focused_work": 0.7, "chatting": 0.2, "idle": 0.1, "gaming": 0.0, "casual_browsing": 0.0, "voice_engaged": 0.0}}, "guess": "ユーザーはVS Codeでコーディング中、時々チャットアプリに切り替えて返信している"}}""",
     "ko": """당신은 사용자 활동 분석 도우미입니다. 아래의 시스템 신호와 최근 대화 스니펫을 바탕으로 사용자의 현재 활동 상태에 소프트 점수를 매기고, 활동 서술 한 문장을 작성하세요.
 
 ======아래는 시스템 신호======
@@ -197,7 +221,7 @@ Example output:
 규칙 초기 판정과 다르면 실제 신호에 따라 점수를 매기세요. 규칙은 참고일 뿐.
 
 출력 예:
-{{"scores": {{"focused_work": 0.7, "chatting": 0.2, "idle": 0.1, "gaming": 0.0, "casual_browsing": 0.0, "voice_engaged": 0.0}}, "guess": "주인님이 VS Code에서 코딩 중, 가끔 채팅 앱으로 전환해 답장 중"}}""",
+{{"scores": {{"focused_work": 0.7, "chatting": 0.2, "idle": 0.1, "gaming": 0.0, "casual_browsing": 0.0, "voice_engaged": 0.0}}, "guess": "사용자가 VS Code에서 코딩 중, 가끔 채팅 앱으로 전환해 답장 중"}}""",
     "ru": """Вы — аналитик активности пользователя. Опираясь на сигналы системы и недавние реплики ниже, поставьте мягкие оценки текущему состоянию активности пользователя и напишите одно предложение-описание.
 
 ======Ниже Сигналы системы======
@@ -602,6 +626,29 @@ OPEN_THREADS_PROMPTS: dict[str, str] = {
 
 示例 A——对话顺利结束、互道晚安 → `{{"open_threads": []}}`
 示例 B——用户的另一半诉求被晾在一边 → `{{"open_threads": ["用户说想吃顿好的又想减肥，AI 只顺着减肥那条线接了下去——'吃点好的'被晾在一边没人回应"]}}`""",
+    "zh-TW": """你是對話回顧助手。看下面最近的對話，找出「被提起但還沒收尾」的話題——例如 AI 答應過但還沒做的事、使用者說到一半被打斷沒講完的事、使用者講到一半的故事或心情沒講到結局。
+
+======以下为最近对话(按时间顺序)======
+{conversation}
+======以上为最近对话(按时间顺序)======
+
+輸出嚴格的 JSON（不帶 markdown 程式碼區塊）：
+{{"open_threads": ["短句 1"]}}
+
+**預設應該回傳空陣列**。絕大多數對話都會自然收尾、沒有懸而未決——這種情況嚴格回傳 `{{"open_threads": []}}`。只有在你能明確指出「誰掛了什麼、對方還在等」時才回報，最多 3 條；正常情況預期是 0 條，偶爾 1 條，2-3 條很罕見。寧可漏報也不要湊數。
+
+算 hanging（應該回報）：
+- 使用者說「那個 bug 啊……」被打斷，之後沒再回到這個話題
+- 使用者講到一半的故事或心情停在懸念上，沒講到結局，AI 也沒追問後續
+- 使用者同時講了兩個並列的需求／矛盾的心情，AI 只接住其中一邊，另一邊沒人回應
+
+不算 hanging（應該忽略）：
+- 自然的話題切換、對方主動結束某個話題
+- 閒聊裡隨口提一句、寒暄性質的「下次再說」
+- 長期話題（早就在聊了，不是這段對話新起的懸念）
+
+範例 A——對話順利結束、互道晚安 → `{{"open_threads": []}}`
+範例 B——使用者的另一半訴求被晾在一邊 → `{{"open_threads": ["使用者說想吃頓好的又想減肥，AI 只順著減肥那條線接了下去——'吃點好的'被晾在一邊沒人回應"]}}`""",
     "en": """You are a conversation review assistant. Look at the recent conversation below and identify topics that were "raised but not closed" — promises the AI made but hasn't fulfilled, user thoughts cut off mid-sentence, a story or feeling the user started telling but never finished.
 
 ======以下为最近对话(按时间顺序)======
@@ -727,6 +774,7 @@ Não conta: mudança natural de assunto, fechamento deliberado, comentários cas
 
 OS_DEGRADED_MARKER: dict[str, str] = {
     "zh": "（远程模式·无屏幕信号）",
+    "zh-TW": "（遠端模式·無螢幕訊號）",
     "en": "(remote / no screen signal)",
     "ja": "（リモートモード・画面信号なし）",
     "ko": "(원격 모드 · 화면 신호 없음)",
@@ -756,6 +804,19 @@ ACTIVITY_STATE_LABELS: dict[str, dict[str, str]] = {
         "idle": "空闲",
         "transitioning": "切换状态中",
         "private": "隐私应用前台",
+    },
+    "zh-TW": {
+        "away": "離開",
+        "stale_returning": "剛回來",
+        "gaming": "遊戲中",
+        "focused_work": "專注工作中",
+        "casual_browsing": "隨意瀏覽",
+        "focused_video": "專心看影片",
+        "chatting": "聊天中",
+        "voice_engaged": "語音對話中",
+        "idle": "閒置",
+        "transitioning": "切換狀態中",
+        "private": "隱私應用程式在前景",
     },
     "en": {
         "away": "away",
@@ -937,6 +998,43 @@ ACTIVITY_TONE_HINTS: dict[str, dict[str, list[str]]] = {
             "体察式关心：观察对方当前在用劲 / 在赶 / 在卡 / 在疲惫，递一句对应当下状态的关心",
             "屏幕细节轻问：对屏幕上某个具体可见的细节好奇一句",
             "纯存在感：不开新话题、不抛素材，只让自己被感觉到",
+        ],
+    },
+    "zh-TW": {
+        "terse": [
+            "反射式實況反應：跟著當下的操作節奏即時短回應，多用語氣詞帶出反應，看到什麼反應什麼",
+            "起鬨吐槽：拉開距離調侃使用者當下的走位／選擇／抉擇，嘴賤但別戳痛處",
+            "短戰術建議：根據眼前的局面遞一句短建議，要符合使用者正在玩的這款遊戲",
+        ],
+        "hushed": [
+            "共怕共振：跟著使用者當下的緊張度屏住呼吸反應，氣氛多重就壓多低",
+            "幾乎不出聲，讓存在感和氣氛本身撐住這一輪",
+            "段落空檔的低聲打趣：剛過一個嚇點／剛切場景的空檔輕輕吐個槽",
+        ],
+        "mellow": [
+            "同行視角：對使用者當下看到的畫面或場景輕輕感嘆一句，不催也不搶戲",
+            "和氣氛共振：呼應正在播的 BGM、目前的畫風或節奏，讓自己融進氣氛裡",
+            "劇情共情：對正在發生的劇情走向或角色處境投入情緒反應",
+        ],
+        "playful": [
+            "打趣逗弄：對使用者當下正在做的事鬧一下，戳笑點別戳痛點，留個讓對方想回嘴的小鉤子",
+            "裝傻好奇：對眼前的東西裝作看不懂，問一個對方一句話就能接上的小問題",
+            "跳脫聯想：從螢幕內容隨性丟個梗或天馬行空的聯想，但要落在一個對方能順勢接的話頭上，別講完就冷場",
+        ],
+        "witty": [
+            "即時吐槽：對正在看的劇情／人物／梗即時吐槽，抓住好笑的點，毒舌但不下流",
+            "共享笑點：和使用者一起對畫面裡的名場面／耍笨瞬間起鬨，把好笑的地方點破",
+            "反差解讀：用一個意想不到的角度重新解讀眼前的內容，做出反差笑感",
+        ],
+        "warm": [
+            "共鳴回應：根據使用者剛說的內容接一句，讓對方明確感覺到自己被聽見了",
+            "主動關心：根據離開的時間長度／上次的狀態／目前的時段問一句",
+            "暖中帶俏皮：溫柔裡摻一點撒嬌、小怨念或小調皮",
+        ],
+        "concise": [
+            "體察式關心：觀察對方現在是在拼／在趕／卡住了／很疲憊，遞一句對應當下狀態的關心",
+            "螢幕細節輕問：對螢幕上某個具體看得到的細節好奇一句",
+            "純存在感：不開新話題、不丟素材，只讓自己被感覺到",
         ],
     },
     "en": {
@@ -1184,6 +1282,9 @@ ACTIVITY_TONE_QUALITY_BARS: dict[str, dict[str, str]] = {
     "zh": {
         "witty": "质量闸：没有真的好笑 / 值得吐槽的点，就别硬聊——宁可这一轮回 [PASS] 不出声，也不要尬接一句没意思的",
     },
+    "zh-TW": {
+        "witty": "品質閘：沒有真的好笑 / 值得吐槽的點，就別硬聊——寧可這一輪回 [PASS] 不出聲，也不要硬接一句沒意思的",
+    },
     "en": {
         "witty": "quality bar: if there's no genuinely funny / worth-riffing beat, don't force it — reply [PASS] this round rather than ship a flat, pointless line",
     },
@@ -1262,6 +1363,49 @@ _ACTIVITY_ENUM_COMMON_WORDS = frozenset({
 })
 
 
+_ACTIVITY_RENDERED_COMMON_LABELS_BY_LANG: dict[str, frozenset[str]] = {
+    # Short/common rendered activity labels and plain section headings are more
+    # likely to be natural reply openers than safe-to-drop scaffolding. Known
+    # observed CJK source-prefix leaks such as ``聊天中/`` are handled by the
+    # explicit source-prefix allowlist in proactive_parsing.py.
+    "zh": frozenset({
+        "离开", "刚回来", "游戏中", "聊天中", "空闲", "切换状态中",
+        "评估", "叙述", "开放话题", "口吻",
+    }),
+    "zh-TW": frozenset({
+        "離開", "剛回來", "遊戲中", "聊天中", "閒置", "切換狀態中",
+        "評估", "敘述", "開放話題", "口吻",
+    }),
+    "en": frozenset({
+        "scores", "narrative", "open threads", "tone",
+    }),
+    "ja": frozenset({
+        "離席", "ゲーム中", "チャット中", "アイドル",
+        "評価", "叙述", "保留話題", "口調",
+    }),
+    "ko": frozenset({
+        "자리 비움", "게임 중", "채팅 중", "유휴",
+        "평가", "서술", "보류 화제", "말투",
+    }),
+    "es": frozenset({
+        "ausente", "jugando", "chateando", "inactivo", "privado",
+        "puntuaciones", "narrativa", "hilos abiertos", "tono",
+    }),
+    "pt": frozenset({
+        "ausente", "jogando", "conversando", "ocioso", "privado",
+        "pontuações", "narrativa", "tópicos abertos", "tom",
+    }),
+    "ru": frozenset({
+        "отсутствует", "играет", "переписка", "простой",
+        "оценки", "описание", "открытые нити", "тон",
+    }),
+}
+
+
+def _is_activity_rendered_common_label(lang: str, label: str) -> bool:
+    return label.casefold() in _ACTIVITY_RENDERED_COMMON_LABELS_BY_LANG.get(lang, frozenset())
+
+
 @lru_cache(maxsize=1)
 def get_proactive_intent_leak_labels() -> frozenset[str]:
     """All internal guidance labels that must never reach spoken output.
@@ -1301,23 +1445,50 @@ def get_proactive_intent_leak_labels() -> frozenset[str]:
         if label:
             labels.add(label)
 
-    # Activity state / propensity enum literals + their English labels.
-    # The activity-state section historically rendered the bare English enum
-    # keys (state line / scores line), and weak models echo them as the reply's
-    # first line. Deny every enum key + English label EXCEPT the ordinary single
-    # words in ``_ACTIVITY_ENUM_COMMON_WORDS`` (see its docstring): denying a
-    # bare "idle" / "open" would let ``_strip`` scrub a legit reply opening with
-    # the word, while multi-token forms (focused_work, "focused work") never
-    # occur as natural speech and are safe to strip. English only on purpose:
-    # the leak is always the English literal.
+    # Activity state / propensity enum literals + rendered state labels.
+    # The activity-state section may render localized labels ("聊天中",
+    # "未收尾话题", etc.), and weak models can echo them as reply headings.
+    # Exclude ordinary rendered words per locale where the label is more likely
+    # to be natural speech than a safe-to-drop heading.
     for state_key, en_label in ACTIVITY_STATE_LABELS['en'].items():
         if state_key not in _ACTIVITY_ENUM_COMMON_WORDS:
             labels.add(state_key)
-        if en_label not in _ACTIVITY_ENUM_COMMON_WORDS:
+        if (
+            en_label not in _ACTIVITY_ENUM_COMMON_WORDS
+            and not _is_activity_rendered_common_label('en', en_label)
+        ):
             labels.add(en_label)
+    for lang, per_lang in ACTIVITY_STATE_LABELS.items():
+        for label in per_lang.values():
+            label = (label or '').strip()
+            if (
+                label
+                and label.casefold() not in _ACTIVITY_ENUM_COMMON_WORDS
+                and not _is_activity_rendered_common_label(lang, label)
+            ):
+                labels.add(label)
     for prop_key in ACTIVITY_PROPENSITY_DIRECTIVES['en']:
         if prop_key not in _ACTIVITY_ENUM_COMMON_WORDS:
             labels.add(prop_key)
+
+    for lang, per_lang in ACTIVITY_STATE_SECTION_LABELS.items():
+        for key in (
+            'unfinished_thread_fmt',
+            'activity_scores_label',
+            'activity_guess_label',
+            'open_threads_label',
+            'tone_label',
+        ):
+            label = (per_lang.get(key) or '').strip()
+            if not label:
+                continue
+            if key.endswith('_fmt'):
+                _add_before_colon(label)
+            elif (
+                label.casefold() not in _ACTIVITY_ENUM_COMMON_WORDS
+                and not _is_activity_rendered_common_label(lang, label)
+            ):
+                labels.add(label)
 
     return frozenset(label.casefold() for label in labels if label)
 
@@ -1336,6 +1507,12 @@ ACTIVITY_PROPENSITY_DIRECTIVES: dict[str, dict[str, str]] = {
         "restricted_screen_only": "只就屏幕内容轻聊一句",
         "open": "可正常搭话",
         "greeting_window": "温和问候，可自然带出久远旧话题的回忆",
+    },
+    "zh-TW": {
+        "closed": "不方便打擾",
+        "restricted_screen_only": "只就螢幕內容輕聊一句",
+        "open": "可以正常搭話",
+        "greeting_window": "溫和問候，可以自然帶出很久以前舊話題的回憶",
     },
     "en": {
         "closed": "do not disturb",
@@ -1413,6 +1590,22 @@ ACTIVITY_REASON_TEMPLATES: dict[str, dict[str, str]] = {
         "high_cpu": "CPU 30s 均值 {cpu_percent}%",
         "high_gpu": "GPU 利用率 {gpu_percent}%",
         "gaming_by_gpu": "GPU 持续高负载（怀疑未识别的游戏）",
+    },
+    "zh-TW": {
+        "state_away": "系統已經 {idle_seconds}s 沒有輸入",
+        "state_stale_returning": "使用者剛從離開狀態回來",
+        "state_voice_engaged": "語音模式 + 最近有出聲",
+        "state_gaming": "前景遊戲：{app}",
+        "state_focused_work": "專注 {app} 已經 {dwell_seconds}s",
+        "state_casual_browsing": "瀏覽娛樂：{app}",
+        "state_focused_video": "沉浸看影片：{app}",
+        "state_chatting": "前景聊天：{app}",
+        "state_transitioning": "最近視窗頻繁切換",
+        "state_idle": "人在電腦前但沒有明顯任務",
+        "state_private": "前景是隱私應用程式——不分類、不快取",
+        "high_cpu": "CPU 30s 平均 {cpu_percent}%",
+        "high_gpu": "GPU 使用率 {gpu_percent}%",
+        "gaming_by_gpu": "GPU 持續高負載（懷疑是沒認出來的遊戲）",
     },
     "en": {
         "state_away": "system idle for {idle_seconds}s",
@@ -1556,6 +1749,28 @@ ACTIVITY_STATE_SECTION_LABELS: dict[str, dict[str, str]] = {
         "tone_menu_label": "口吻（下面是参考角度，按你的人设和当下情境演绎，别照搬措辞、别违背角色设定）",
         "time_user_ai_fmt": "{time} | 用户 {user} | AI {ai}",
         "time_user_only_fmt": "{time} | 用户 {user}",
+        "time_only_fmt": "{time}",
+    },
+    "zh-TW": {
+        "header": "======以下為活動狀態======",
+        "footer": "======以上為活動狀態======",
+        "never": "無",
+        "seconds_ago_fmt": "{seconds:.0f}s前",
+        "minutes_ago_fmt": "{minutes:.0f}min前",
+        "hours_ago_fmt": "{hours:.0f}h前",
+        "time_fmt": "{hour:02d}:00 {period}",
+        "period_morning": "上午",
+        "period_afternoon": "下午",
+        "period_evening": "傍晚",
+        "period_night": "深夜",
+        "unfinished_thread_fmt": "還沒收尾的話題：「…{tail}」({age})",
+        "activity_scores_label": "評估",
+        "activity_guess_label": "敘述",
+        "open_threads_label": "開放話題",
+        "tone_label": "口吻",
+        "tone_menu_label": "口吻（下面是參考角度，照你的人設和當下情境演繹，別照抄措辭、別違背角色設定）",
+        "time_user_ai_fmt": "{time} | 使用者 {user} | AI {ai}",
+        "time_user_only_fmt": "{time} | 使用者 {user}",
         "time_only_fmt": "{time}",
     },
     "en": {
@@ -1712,6 +1927,7 @@ ACTIVITY_STATE_SECTION_LABELS: dict[str, dict[str, str]] = {
 
 WORK_BREAK_SEED_HINTS: dict[str, list[str]] = {
     "zh": ["喝口水", "活动一下", "休息下眼睛", "伸个懒腰", "放松一下"],
+    "zh-TW": ["喝口水", "動一動", "讓眼睛休息一下", "伸個懶腰", "放鬆一下"],
     "en": [
         "drink some water",
         "stretch a bit",
@@ -1763,6 +1979,7 @@ WORK_BREAK_SEED_HINTS: dict[str, list[str]] = {
 # the templates below so the slot doesn't render as ``?`` or empty.
 WORK_BREAK_GENERIC_WORK_LABEL: dict[str, str] = {
     "zh": "手头上的活",
+    "zh-TW": "手邊的事",
     "en": "their work",
     "ja": "今の作業",
     "ko": "하던 일",
@@ -1773,6 +1990,7 @@ WORK_BREAK_GENERIC_WORK_LABEL: dict[str, str] = {
 
 WORK_BREAK_GENERIC_LEISURE_LABEL: dict[str, str] = {
     "zh": "别的事情",
+    "zh-TW": "別的事情",
     "en": "something else",
     "ja": "ほかのこと",
     "ko": "다른 것",
@@ -1795,6 +2013,11 @@ WORK_BREAK_REMINDER_PROMPT: dict[str, str] = {
     "你看着{master}有点心疼，想提醒{master}{seed}。\n"
     "用符合你性格的方式自然搭话吧。直接说出你想说的话，简短自然即可，不要生成思考过程。\n"
     "========以上是环境提示========",
+    "zh-TW": "========以下是環境提示========\n"
+    "{master}已經在{app}專注工作{minutes}分鐘了。\n"
+    "你看著{master}有點心疼，想提醒{master}{seed}。\n"
+    "用符合你個性的方式自然搭話吧。直接說出你想說的話，簡短自然就好，不要生成思考過程。\n"
+    "========以上是環境提示========",
     "en": "========Below is Environment Notice========\n"
     "{master} has been focused on {app} for {minutes} minutes.\n"
     "Watching {master}, you feel a little worried and want to suggest {master} {seed}.\n"
@@ -1820,6 +2043,50 @@ WORK_BREAK_REMINDER_PROMPT: dict[str, str] = {
 }
 
 
+# Rewrite request used when a direct break reminder matches repeatedly ignored
+# proactive output. Placeholder: {terms}.
+BREAK_REMINDER_REGEN_INSTRUCTION: dict[str, str] = {
+    "zh": (
+        "【改写】对方已经多次没有回应类似提醒。请避开这些重复表达：{terms}。"
+        "换一种说法和内容角度，只输出最终提醒；想不到真正不同的提醒就只输出 [PASS]。"
+    ),
+    "zh-TW": (
+        "【改寫】對方已經好幾次沒有回應類似的提醒。請避開這些重複的說法：{terms}。"
+        "換一種講法和內容角度，只輸出最後的提醒；想不到真正不一樣的提醒就只輸出 [PASS]。"
+    ),
+    "en": (
+        "[Rewrite] The other person has repeatedly not responded to similar reminders. "
+        "Avoid these repeated expressions: {terms}. Use genuinely different wording "
+        "and an angle; output only the final reminder, or only [PASS] if none works."
+    ),
+    "ja": (
+        "【書き直し】相手は似たリマインダーに何度も反応していません。"
+        "次の繰り返し表現を避けてください：{terms}。言い方と切り口を変え、"
+        "最終的なリマインダーだけを出力してください。十分に変えられなければ [PASS] だけを出力してください。"
+    ),
+    "ko": (
+        "【다시 쓰기】상대가 비슷한 알림에 여러 번 반응하지 않았습니다. "
+        "다음 반복 표현을 피하세요: {terms}. 표현과 관점을 확실히 바꾸고 최종 알림만 "
+        "출력하세요. 충분히 다르게 쓸 수 없다면 [PASS]만 출력하세요."
+    ),
+    "ru": (
+        "[Перепиши] Собеседник уже несколько раз не ответил на похожие напоминания. "
+        "Избегай этих повторяющихся выражений: {terms}. Смени формулировку и подход; "
+        "выведи только итоговое напоминание или только [PASS], если нового варианта нет."
+    ),
+    "es": (
+        "[Reescribe] La otra persona no ha respondido varias veces a recordatorios "
+        "parecidos. Evita estas expresiones repetidas: {terms}. Cambia de verdad la "
+        "redacción y el enfoque; devuelve solo el recordatorio final o solo [PASS]."
+    ),
+    "pt": (
+        "[Reescreva] A outra pessoa não respondeu várias vezes a lembretes parecidos. "
+        "Evite estas expressões repetidas: {terms}. Mude de verdade a redação e o "
+        "ângulo; retorne apenas o lembrete final ou apenas [PASS]."
+    ),
+}
+
+
 # Anti-slack (just-left-focused-work) Phase 2 system prompt.
 # Placeholders: {master} {prev_app} {new_app} {minutes}
 # No seed slot — single behaviour, variation comes from app names +
@@ -1831,6 +2098,11 @@ ANTI_SLACK_REMINDER_PROMPT: dict[str, str] = {
     "你觉得{master}才进入状态就开始溜号，想拦一下，让{master}回去继续干完。\n"
     "用符合你性格的方式半带玩笑提醒一下吧。直接说出你想说的话，简短自然即可，不要生成思考过程。\n"
     "========以上是环境提示========",
+    "zh-TW": "========以下是環境提示========\n"
+    "{master}剛才在{prev_app}專注工作{minutes}分鐘，一轉頭就切去{new_app}了。\n"
+    "你覺得{master}才剛進入狀況就開始摸魚，想攔一下，讓{master}回去把它做完。\n"
+    "用符合你個性的方式半開玩笑提醒一下吧。直接說出你想說的話，簡短自然就好，不要生成思考過程。\n"
+    "========以上是環境提示========",
     "en": "========Below is Environment Notice========\n"
     "{master} just spent {minutes} minutes focused on {prev_app}, then switched straight to {new_app}.\n"
     "You feel {master} just hit their stride and is already drifting off — you want to pull {master} back to finish up.\n"
@@ -1868,6 +2140,11 @@ WORK_BREAK_GAME_INVITE_PROMPTS_BY_GAME: dict[str, dict[str, str]] = {
         "你想让{master}停下来歇一会儿，顺便邀请{master}陪你玩一局足球小游戏放松一下。\n"
         '用符合你性格的方式自然搭话吧——既要让{master}感觉到关心，也要把"一起玩一局"的邀请说出来。直接说出你想说的话，简短自然即可，不要生成思考过程。\n'
         "========以上是环境提示========",
+        "zh-TW": "========以下是環境提示========\n"
+        "{master}已經在{app}專注工作{minutes}分鐘了。\n"
+        "你想讓{master}停下來休息一下，順便邀{master}陪你玩一局足球小遊戲放鬆放鬆。\n"
+        "用符合你個性的方式自然搭話吧——既要讓{master}感覺到關心，也要把「一起玩一局」的邀請講出來。直接說出你想說的話，簡短自然就好，不要生成思考過程。\n"
+        "========以上是環境提示========",
         "en": "========Below is Environment Notice========\n"
         "{master} has been focused on {app} for {minutes} minutes.\n"
         "You want {master} to take a break — and you want to invite {master} to play a quick round of the soccer mini-game with you to unwind.\n"
@@ -1897,6 +2174,11 @@ WORK_BREAK_GAME_INVITE_PROMPTS_BY_GAME: dict[str, dict[str, str]] = {
         "你想让{master}停下来歇一会儿，顺便邀请{master}陪你玩一局羽毛球小游戏放松一下。\n"
         '用符合你性格的方式自然搭话吧——既要让{master}感觉到关心，也要把"一起打一局羽毛球"的邀请说出来。直接说出你想说的话，简短自然即可，不要生成思考过程。\n'
         "========以上是环境提示========",
+        "zh-TW": "========以下是環境提示========\n"
+        "{master}已經在{app}專注工作{minutes}分鐘了。\n"
+        "你想讓{master}停下來休息一下，順便邀{master}陪你打一局羽球小遊戲放鬆放鬆。\n"
+        "用符合你個性的方式自然搭話吧——既要讓{master}感覺到關心，也要把「一起打一局羽球」的邀請講出來。直接說出你想說的話，簡短自然就好，不要生成思考過程。\n"
+        "========以上是環境提示========",
         "en": "========Below is Environment Notice========\n"
         "{master} has been focused on {app} for {minutes} minutes.\n"
         "You want {master} to take a break — and you want to invite {master} to play a quick round of the badminton mini-game with you to unwind.\n"

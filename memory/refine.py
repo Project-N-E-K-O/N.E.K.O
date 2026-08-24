@@ -88,6 +88,18 @@ REFINE_ENTITY_KEY = '_refine_entity'  # 'master' | 'neko' | 'relationship'
 VALID_REFINE_ACTIONS = frozenset({'split', 'merge', 'modify', 'discard'})
 
 
+def _detect_refine_prompt_language(text: str) -> str:
+    from utils.language_utils import (
+        detect_prompt_language_with_ascii_fallback,
+        get_global_language_full,
+    )
+
+    return detect_prompt_language_with_ascii_fallback(
+        text,
+        ui_language=get_global_language_full(),
+    )
+
+
 # ── Annotation helpers (manager-side use) ─────────────────────────────
 
 
@@ -138,6 +150,15 @@ class MemoryRefineEngine:
     manager. Construct once per refine cron and call refine_persona_pass
     / refine_reflection_pass per character per pass."""
 
+    @staticmethod
+    def _cluster_locale_text(cluster: list[dict]) -> str:
+        """Return mutable member text without IDs or read-only fact context."""
+        return "\n".join(
+            str(entry.get('text') or '')
+            for entry in cluster
+            if entry.get(REFINE_TYPE_KEY) != 'fact'
+        )
+
     def __init__(self, config_manager):
         self._cm = config_manager
         self._service = get_embedding_service()
@@ -151,6 +172,7 @@ class MemoryRefineEngine:
         apply_fn: ApplyFn,
         scope_label: str,  # for logging: "persona/character" etc.
         failure_fn: FailureFn | None = None,
+        max_clusters: int | None = None,
     ) -> dict:
         """Generic pass: candidates are already sliced by entity (each tagged via
         annotate_entry); the engine runs cluster + hash skip + ranking + LLM +
@@ -223,7 +245,12 @@ class MemoryRefineEngine:
         # Starvation-first ordering (smallest last_refine_at first).
         active.sort(key=lambda t: self._cluster_starvation_key(t[1]))
 
-        to_process = active[:MEMORY_REFINE_CLUSTERS_PER_PASS]
+        cluster_budget = (
+            MEMORY_REFINE_CLUSTERS_PER_PASS
+            if max_clusters is None
+            else max(0, min(max_clusters, MEMORY_REFINE_CLUSTERS_PER_PASS))
+        )
+        to_process = active[:cluster_budget]
         resolved = 0
         failed = 0
         for entity, cluster, cluster_hash in to_process:
@@ -425,10 +452,11 @@ class MemoryRefineEngine:
             return False
 
         from config.prompts.prompts_memory import get_memory_refine_prompt
-        from utils.language_utils import get_global_language
         from utils.llm_client import create_chat_llm_async
 
-        template = get_memory_refine_prompt(get_global_language())
+        template = get_memory_refine_prompt(
+            _detect_refine_prompt_language(self._cluster_locale_text(cluster))
+        )
         prompt = (
             template
             .replace('{ENTITY}', entity)
@@ -440,7 +468,7 @@ class MemoryRefineEngine:
         # tier + thinking + 长 timeout。对齐 PersonaManager.resolve_corrections
         # 的调用配置。
         set_call_type("memory_refine")
-        api_config = self._cm.get_model_api_config('correction')
+        api_config = await self._cm.aget_model_api_config('correction')
         from config import LLM_OUTPUT_GUARD_MAX_TOKENS
         llm = await create_chat_llm_async(
             api_config['model'],

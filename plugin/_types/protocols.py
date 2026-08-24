@@ -9,6 +9,7 @@ from pathlib import Path
 
 if TYPE_CHECKING:
     from plugin.core.bus.types import BusHubProtocol
+    from plugin.sdk.shared.core.types import PushMessageResult
 
 
 @runtime_checkable
@@ -119,6 +120,10 @@ class PluginContextProtocol(Protocol):
         Returns:
             更新后的配置字典
         """
+        ...
+
+    async def replace_own_config(self, config: Dict[str, Any], timeout: float = 10.0) -> Dict[str, Any]:
+        """Replace this plugin's runtime configuration."""
         ...
     
     async def get_system_config(self, timeout: float = 5.0) -> Dict[str, Any]:
@@ -450,8 +455,8 @@ class PluginContextProtocol(Protocol):
         fast_mode: bool = False,
         delivery: Any = None,
         reply: Optional[bool] = None,
-    ) -> None:
-        """推送消息到主进程。
+    ) -> "PushMessageResult":
+        """推送消息到主进程，并返回本地传输层提交结果。
 
         v2 推荐参数 (visibility/ai_behavior/parts) 见 push_message_schema 文档；
         其余参数为 v1 deprecated，host 端会自动翻译并 emit DeprecationWarning。

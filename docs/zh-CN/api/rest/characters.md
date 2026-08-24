@@ -74,6 +74,7 @@
 | `DELETE /api/characters/voices/{voice_id}` | 删除自定义声音。 |
 | `POST /api/characters/voice_clone` | 从 multipart 音频克隆；必填 `file`、`prefix`，另接受 provider 专属字段。 |
 | `POST /api/characters/voice_clone_direct` | 从经过安全校验的直链音频注册/克隆；私网地址和不安全重定向会被拒绝。 |
+| `POST /api/characters/voice_design` | 以 `provider`、`prefix` 和 `voice_prompt` 创建并保存可复用音色。支持的服务商与约束由 TTS provider registry 决定。 |
 | `POST /api/characters/voice_design_preview` | 请求 ElevenLabs voice design 试听候选。 |
 | `POST /api/characters/voice_design_create` | 将选中的 design 试听保存成可复用声音。 |
 | `POST /api/characters/audio/analyze_silence` | 分析 multipart `file` 的静音区间。 |
@@ -131,6 +132,7 @@ POST   /api/characters/audio/trim_silence
 GET    /api/characters/audio/trim_progress/{task_id}
 POST   /api/characters/audio/trim_cancel/{task_id}
 POST   /api/characters/voice_clone
+POST   /api/characters/voice_design
 POST   /api/characters/voice_design_preview
 POST   /api/characters/voice_design_create
 POST   /api/characters/voice_clone_direct

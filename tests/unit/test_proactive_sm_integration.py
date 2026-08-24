@@ -18,6 +18,7 @@ import asyncio
 import os
 import re
 import sys
+import time
 from unittest.mock import AsyncMock, MagicMock
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../")))
@@ -28,7 +29,11 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../"
 # state/session/lock 结构，然后直接调用 trigger_agent_callbacks 的关键分支。
 import main_logic.core as core_module
 from main_logic.omni_offline_client import OmniOfflineClient
-from main_logic.proactive_delivery import DELIVERY_ACK_FUTURE_KEY, DELIVERY_RETRACTED_KEY
+from main_logic.proactive_delivery import (
+    CALLBACK_EXPIRES_AT_KEY,
+    DELIVERY_ACK_FUTURE_KEY,
+    DELIVERY_RETRACTED_KEY,
+)
 from main_logic.session_state import (
     ProactivePhase,
     SessionEvent,
@@ -181,17 +186,141 @@ def _make_voice_sess(*, is_responding=False, inject=None):
     sess = OmniRealtimeClient.__new__(OmniRealtimeClient)
     sess._is_responding = is_responding
     sess.injected = []
+    sess.injected_events = []
     sess.inject_calls = 0
     sess.is_active_response = lambda: sess._is_responding
+    sess.on_sid_rotate = AsyncMock()
+    sess._client_vad_active = False
+    sess._user_recent_activity_time = 0.0
+    sess._ai_recent_activity_time = 0.0
 
     if inject is None:
-        async def _default_inject(text, *, on_rejected=None):
+        async def _default_inject(
+            text,
+            *,
+            events_before_text=(),
+            on_rejected=None,
+        ):
             sess.inject_calls += 1
             sess.injected.append(text)
+            sess.injected_events.append(events_before_text)
         sess.inject_text_and_request_response = _default_inject
     else:
         sess.inject_text_and_request_response = inject
     return sess
+
+
+def _make_voice_sess_with_real_gate():
+    """``_make_voice_sess`` variant that keeps the REAL ``is_active_response``.
+
+    The stock fixture pins ``is_active_response`` to ``_is_responding`` alone,
+    which silently erases the other half of the production gate — since #2345
+    it is ``bool(self._is_responding or self._ensure_response_arbiter()
+    .is_busy)``. Every test built on the stock fixture is structurally blind
+    to arbiter-held busyness (queued tickets, a live server response, a
+    pending server-VAD response). Keep using the stock fixture for SM contract
+    tests; use THIS variant when the assertion is about the gate itself.
+
+    Deleting the instance attribute re-exposes the class method, whose
+    ``_ensure_response_arbiter()`` lazily builds a real arbiter on the
+    ``__new__``-built double (its ``send_event`` bound method exists and is
+    never called by these tests).
+    """
+    sess = _make_voice_sess()
+    del sess.is_active_response
+    return sess
+
+
+async def test_voice_gate_sees_arbiter_busyness_not_just_the_responding_flag():
+    """A live server-side response makes the arbiter busy while
+    ``_is_responding`` is still False (the flag flips on response.created via
+    the transport, which these doubles never run). The proactive gate must
+    defer on arbiter busyness alone — and deliver once the lane clears, so
+    the deferral is attributable to the gate rather than to any other
+    precondition. Mutation check: reverting ``is_active_response`` to
+    ``bool(self._is_responding)`` turns the first half red while every test
+    on the stock fixture stays green — that enduring green is the fixture
+    blind spot documented on ``_make_voice_sess_with_real_gate``."""
+    sess = _make_voice_sess_with_real_gate()
+    mgr = _make_mgr(session=sess)
+    cb = {
+        "_callback_delivery_id": "id-arbiter-busy",
+        "status": "completed",
+        "summary": "task done",
+    }
+    mgr.pending_agent_callbacks = [cb]
+
+    assert sess._is_responding is False
+    sess._ensure_response_arbiter().notify_response_created(
+        {"type": "response.created", "response": {"id": "srv-1"}}
+    )
+    assert sess.is_active_response() is True
+
+    delivered = await core_module.LLMSessionManager.trigger_agent_callbacks(mgr)
+
+    assert delivered is False
+    assert sess.inject_calls == 0, (
+        "the gate must defer while the arbiter holds a live server response"
+    )
+    assert mgr.pending_agent_callbacks == [cb], "deferred callbacks must be retained"
+
+    # The dual: once the lane clears the very same delivery goes through,
+    # proving the deferral above was the arbiter gate and nothing else.
+    sess._response_arbiter.notify_response_terminal(
+        {"type": "response.done", "response": {"id": "srv-1"}}
+    )
+    assert sess.is_active_response() is False
+
+    delivered = await core_module.LLMSessionManager.trigger_agent_callbacks(mgr)
+
+    assert delivered is True
+    assert sess.inject_calls == 1
+    assert mgr.pending_agent_callbacks == []
+
+
+async def test_voice_nudge_waits_for_callback_inject_lock():
+    sess = _make_voice_sess()
+    sess._proactive_inject_awaiting_outcome = False
+    sess.prompt_ephemeral = AsyncMock(return_value=True)
+    mgr = _make_mgr(session=sess)
+    mgr.is_active = True
+    mgr.input_mode = "microphone"
+    mgr.is_hot_swap_imminent = False
+
+    await mgr._voice_proactive_inject_lock.acquire()
+    task = asyncio.create_task(
+        core_module.LLMSessionManager.trigger_voice_proactive_nudge(mgr)
+    )
+    await asyncio.sleep(0)
+    sess.prompt_ephemeral.assert_not_awaited()
+
+    mgr._voice_proactive_inject_lock.release()
+    assert await task is True
+    sess.prompt_ephemeral.assert_awaited_once_with(language="en")
+
+
+async def test_voice_nudge_request_locale_is_forwarded_without_mutating_manager_state():
+    sess = _make_voice_sess()
+    sess._proactive_inject_awaiting_outcome = False
+    sess.prompt_ephemeral = AsyncMock(return_value=True)
+    mgr = _make_mgr(session=sess)
+    mgr.is_active = True
+    mgr.input_mode = "microphone"
+    mgr.is_hot_swap_imminent = False
+    mgr.user_language = "en"
+    mgr._user_language_explicit = False
+    mgr._conversation_render_language = None
+
+    delivered = await core_module.LLMSessionManager.trigger_voice_proactive_nudge(
+        mgr,
+        language="zh-TW",
+    )
+
+    assert delivered is True
+    sess.prompt_ephemeral.assert_awaited_once_with(language="zh-TW")
+    assert mgr.user_language == "en"
+    assert mgr._user_language_explicit is False
+    assert mgr._conversation_render_language is None
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -219,6 +348,7 @@ async def test_voice_mode_idle_injects_and_drops_paired_cbs_and_extras():
     await asyncio.sleep(0)
 
     assert len(sess.injected) == 1
+    sess.on_sid_rotate.assert_awaited_once_with()
     assert mgr.pending_agent_callbacks == []
     # 关键回归：matching extras 同步剔除
     assert mgr.pending_extra_replies == []
@@ -226,9 +356,69 @@ async def test_voice_mode_idle_injects_and_drops_paired_cbs_and_extras():
     assert events == []
 
 
-async def test_voice_mode_inject_preserves_passive_cb_and_its_extra():
-    """Voice 模式：inject 只删 proactive cb 配对的 extras 项，
-    passive cb 及其 extras 必须原封不动留下 —— 它们要走 user-turn drain。"""
+async def test_voice_mode_sid_rotation_rechecks_user_activity_before_media():
+    sess = _make_voice_sess()
+
+    async def _rotate_while_user_starts_speaking():
+        await asyncio.sleep(0)
+        sess._client_vad_active = True
+
+    sess.on_sid_rotate = AsyncMock(
+        side_effect=_rotate_while_user_starts_speaking
+    )
+    sess.stream_image = AsyncMock()
+    mgr = _make_mgr(session=sess)
+    cb = {
+        "_callback_delivery_id": "id-vad-during-rotation",
+        "status": "completed",
+        "summary": "defer this callback",
+        "media_images": ["callback-image"],
+    }
+    mgr.pending_agent_callbacks = [cb]
+
+    delivered = await core_module.LLMSessionManager.trigger_agent_callbacks(
+        mgr
+    )
+
+    assert delivered is False
+    sess.on_sid_rotate.assert_awaited_once_with()
+    sess.stream_image.assert_not_awaited()
+    assert sess.inject_calls == 0
+    assert mgr.pending_agent_callbacks == [cb]
+    assert cb.get("_voice_delivery_committed") is None
+
+
+async def test_voice_mode_sid_rotation_failure_arms_callback_retry():
+    sess = _make_voice_sess()
+    sess.on_sid_rotate = AsyncMock(side_effect=RuntimeError("rotate failed"))
+    sess.stream_image = AsyncMock()
+    mgr = _make_mgr(session=sess)
+    mgr._schedule_proactive_retry = MagicMock()
+    cb = {
+        "_callback_delivery_id": "id-rotation-failed",
+        "status": "completed",
+        "summary": "retry this callback",
+        "media_images": ["callback-image"],
+    }
+    mgr.pending_agent_callbacks = [cb]
+
+    delivered = await core_module.LLMSessionManager.trigger_agent_callbacks(
+        mgr
+    )
+
+    assert delivered is False
+    sess.on_sid_rotate.assert_awaited_once_with()
+    sess.stream_image.assert_not_awaited()
+    assert sess.inject_calls == 0
+    assert mgr.pending_agent_callbacks == [cb]
+    mgr._schedule_proactive_retry.assert_called_once_with(
+        mgr.proactive_manager.min_gap_s
+    )
+
+
+async def test_voice_mode_inject_preserves_passive_cb_without_extra():
+    """Voice inject consumes only proactive callbacks; passive stays queued
+    without a hot-swap extra mirror."""
     sess = _make_voice_sess()
     mgr = _make_mgr(session=sess)
     passive_cb = {
@@ -239,24 +429,41 @@ async def test_voice_mode_inject_preserves_passive_cb_and_its_extra():
         "_callback_delivery_id": "id-proactive",
         "status": "completed", "summary": "ping user now",
     }
-    passive_extra = {
-        "_callback_delivery_id": "id-passive",
-        "origin": "event", "summary": "passive note",
-    }
     proactive_extra = {
         "_callback_delivery_id": "id-proactive",
         "origin": "task_result", "summary": "ping user now",
     }
-    # enqueue_agent_callback stamps both queues with the same _callback_delivery_id
     mgr.pending_agent_callbacks = [passive_cb, proactive_cb]
-    mgr.pending_extra_replies = [passive_extra, proactive_extra]
+    mgr.pending_extra_replies = [proactive_extra]
 
     await core_module.LLMSessionManager.trigger_agent_callbacks(mgr)
     await asyncio.sleep(0)
 
     assert len(sess.injected) == 1
     assert mgr.pending_agent_callbacks == [passive_cb]
-    assert mgr.pending_extra_replies == [passive_extra]
+    assert mgr.pending_extra_replies == []
+
+
+async def test_voice_passive_enqueue_never_injects_or_creates_hot_swap_extra():
+    sess = _make_voice_sess()
+    mgr = _make_mgr(session=sess)
+    passive_cb = {
+        "origin": "event",
+        "status": "completed",
+        "summary": "context only",
+        "detail": "context only",
+        "delivery_mode": "passive",
+        "coalesce_key": "context",
+    }
+
+    core_module.LLMSessionManager.enqueue_agent_callback(mgr, passive_cb)
+    delivered = await core_module.LLMSessionManager.trigger_agent_callbacks(mgr)
+    await asyncio.sleep(0)
+
+    assert delivered is False
+    assert sess.injected == []
+    assert mgr.pending_agent_callbacks == [passive_cb]
+    assert mgr.pending_extra_replies == []
 
 
 async def test_voice_mode_busy_defers_cbs_for_retry():
@@ -414,7 +621,15 @@ async def test_voice_mode_rechecks_retracted_callbacks_before_inject():
         {"_callback_delivery_id": "id-retracted", "origin": "task_result", "summary": "cancelled"}
     ]
 
-    async def _stream_then_retract(callbacks, session):
+    async def _stream_then_retract(
+        callbacks,
+        session,
+        *,
+        on_rejected=None,
+        events_before_text=None,
+    ):
+        assert on_rejected is not None
+        assert events_before_text == []
         cb[DELIVERY_RETRACTED_KEY] = True
         return True
     mgr._stream_cb_media = _stream_then_retract
@@ -425,6 +640,44 @@ async def test_voice_mode_rechecks_retracted_callbacks_before_inject():
     assert sess.injected == []
     assert mgr.pending_agent_callbacks == []
     assert mgr.pending_extra_replies == []
+
+
+async def test_voice_mode_drops_callback_expired_during_media_before_inject():
+    """A callback expiring during media streaming never reaches text inject."""
+    sess = _make_voice_sess()
+    mgr = _make_mgr(session=sess)
+    future = asyncio.get_running_loop().create_future()
+    cb = {
+        "_callback_delivery_id": "id-expired-during-media",
+        "status": "completed",
+        "summary": "stale event",
+        CALLBACK_EXPIRES_AT_KEY: time.monotonic() + 60,
+        DELIVERY_ACK_FUTURE_KEY: future,
+    }
+    extra = {
+        "_callback_delivery_id": "id-expired-during-media",
+        "origin": "event",
+        "summary": "stale event",
+        CALLBACK_EXPIRES_AT_KEY: cb[CALLBACK_EXPIRES_AT_KEY],
+    }
+    mgr.pending_agent_callbacks = [cb]
+    mgr.pending_extra_replies = [extra]
+
+    async def _stream_then_expire(*_args, **_kwargs):
+        cb[CALLBACK_EXPIRES_AT_KEY] = time.monotonic() - 1
+        return True
+
+    mgr._stream_cb_media = _stream_then_expire
+
+    delivered = await core_module.LLMSessionManager.trigger_agent_callbacks(mgr)
+
+    assert delivered is False
+    assert sess.injected == []
+    assert mgr.pending_agent_callbacks == []
+    assert mgr.pending_extra_replies == []
+    assert future.done() and future.result() is False
+    assert cb.get("_voice_delivery_committed") is None
+    mgr.proactive_manager.release_inflight_noop.assert_called_once()
 
 
 async def test_text_mode_acks_only_callbacks_that_reach_prompt():
@@ -458,6 +711,36 @@ async def test_text_mode_acks_only_callbacks_that_reach_prompt():
     assert not dropped_future.done()
     assert active_future.done()
     assert active_future.result() is True
+
+
+async def test_trigger_releases_inflight_when_callback_expires_during_claim():
+    sess = _FakeOmniOffline(delivered=True)
+    mgr = _make_mgr(session=sess)
+    future = asyncio.get_running_loop().create_future()
+    callback = {
+        "_callback_delivery_id": "id-expired-during-trigger-claim",
+        "status": "completed",
+        "summary": "stale event",
+        CALLBACK_EXPIRES_AT_KEY: time.monotonic() + 60,
+        DELIVERY_ACK_FUTURE_KEY: future,
+    }
+    mgr.pending_agent_callbacks = [callback]
+    original_try_start = mgr.state.try_start_proactive
+
+    async def _try_start_and_expire(*args, **kwargs):
+        claimed = await original_try_start(*args, **kwargs)
+        callback[CALLBACK_EXPIRES_AT_KEY] = time.monotonic() - 1
+        return claimed
+
+    mgr.state.try_start_proactive = _try_start_and_expire
+
+    delivered = await core_module.LLMSessionManager.trigger_agent_callbacks(mgr)
+
+    assert delivered is False
+    assert sess.called_with == []
+    assert mgr.pending_agent_callbacks == []
+    assert future.done() and future.result() is False
+    mgr.proactive_manager.release_inflight_noop.assert_called_once()
 
 
 async def test_text_mode_resolves_delivery_ack_after_committed_output_before_completion_flush():
@@ -836,24 +1119,6 @@ async def test_inject_gemini_missing_session_raises():
         await OmniRealtimeClient.inject_text_and_request_response(sess, "x")
 
 
-async def test_sweep_inject_rejection_handlers_clears_dict():
-    """``response.done`` lifecycle sweep 清空 inject rejection handler 字典
-    （取代固定 3s TTL 作为主清理）。锁死 Codex P2：late reject 不该因 TTL 过期
-    丢失——主清理改成 response.done 触发的 sweep，TTL 只是 hang 兜底。"""
-    from main_logic.omni_realtime_client import OmniRealtimeClient
-
-    sess = OmniRealtimeClient.__new__(OmniRealtimeClient)
-    sess._inject_rejection_handlers = {
-        "event_inject_item_x": lambda msg: None,
-        "event_inject_resp_x": lambda msg: None,
-    }
-    sess._sweep_inject_rejection_handlers()
-    assert sess._inject_rejection_handlers == {}
-    # 空字典再 sweep 不报错（idempotent）
-    sess._sweep_inject_rejection_handlers()
-    assert sess._inject_rejection_handlers == {}
-
-
 async def test_route_inject_rejection_id_match():
     """精确路径：error 携带我们 stamp 的 client event_id → 命中并 fire 对应 handler。"""
     from main_logic.omni_realtime_client import OmniRealtimeClient
@@ -867,15 +1132,14 @@ async def test_route_inject_rejection_id_match():
 
 
 async def test_route_inject_rejection_content_fallback_no_id():
-    """fallback 路径（Codex P1）：provider 拒绝 response.create 但 error 不带
-    client event_id。proactive inject 正等待 outcome（flag True）且内容像
-    response-conflict 时 fire 所有 pending handler，避免静默丢失。"""
+    """Fire only the current outcome handler for a no-ID response conflict."""
     from main_logic.omni_realtime_client import OmniRealtimeClient
 
     fired = []
     sess = OmniRealtimeClient.__new__(OmniRealtimeClient)
     sess._inject_rejection_handlers = {"k1": lambda msg: fired.append(msg)}
     sess._proactive_inject_awaiting_outcome = True  # inject 刚发出，正等 outcome
+    sess._proactive_inject_outcome_token = "k1"
     # err_event_id 缺失，但消息是 response-conflict
     sess._route_inject_rejection(None, "Conversation already has an active response")
     assert len(fired) == 1
@@ -883,11 +1147,28 @@ async def test_route_inject_rejection_content_fallback_no_id():
     assert sess._proactive_inject_awaiting_outcome is False  # 窗口已消费
 
 
+async def test_route_inject_rejection_no_id_excludes_old_image_handler():
+    """Do not fire an old image handler for a later no-ID response conflict."""
+    from main_logic.omni_realtime_client import OmniRealtimeClient
+
+    fired = []
+    sess = OmniRealtimeClient.__new__(OmniRealtimeClient)
+    sess._inject_rejection_handlers = {
+        "event_old_callback_image": lambda msg: fired.append(("old", msg)),
+        "event_current_response": lambda msg: fired.append(("current", msg)),
+    }
+    sess._proactive_inject_awaiting_outcome = True
+    sess._proactive_inject_outcome_token = "event_current_response"
+
+    sess._route_inject_rejection(None, "response_already_active")
+
+    assert fired == [("current", "response_already_active")]
+    assert "event_old_callback_image" in sess._inject_rejection_handlers
+    assert "event_current_response" not in sess._inject_rejection_handlers
+
+
 async def test_route_inject_rejection_no_id_but_not_awaiting_does_not_fire():
-    """CodeRabbit Major：无 id 的 response-conflict，但当前没有 proactive inject
-    在等 outcome（flag False，例如 handler 是上一次成功 inject 的残留，或这条
-    冲突来自 create_response / tool-result / signal_user_activity_end 等别的
-    response.create 发送方）→ 绝不能 fire，否则把已接受的 cb 误回补造成重复。"""
+    """Ignore a no-ID response conflict when no proactive outcome is pending."""
     from main_logic.omni_realtime_client import OmniRealtimeClient
 
     fired = []
@@ -953,11 +1234,411 @@ async def test_voice_mode_inject_exception_keeps_cbs_for_retry():
     assert mgr.pending_agent_callbacks == original
 
 
+async def test_voice_mode_callback_image_rejection_before_inject_keeps_cb():
+    """A native callback image rejection that arrives during stream_image must
+    keep the callback queued and prevent a text-only response from starting."""
+    sess = _make_voice_sess()
+
+    async def _reject_image(
+        _image_b64,
+        *,
+        bypass_rate_limit=False,
+        cache_latest=True,
+        on_rejected=None,
+    ):
+        assert bypass_rate_limit is True
+        assert cache_latest is False
+        assert on_rejected is not None
+        on_rejected("callback image rejected")
+
+    sess.stream_image = _reject_image
+    mgr = _make_mgr(session=sess)
+    cb = {
+        "_callback_delivery_id": "id-image-rejected",
+        "status": "completed",
+        "summary": "inspect this image",
+        "media_images": ["image-b64"],
+    }
+    extra = {
+        "_callback_delivery_id": "id-image-rejected",
+        "summary": "inspect this image",
+    }
+    mgr.pending_agent_callbacks = [cb]
+    mgr.pending_extra_replies = [extra]
+    mgr._schedule_proactive_retry = MagicMock()
+
+    delivered = await core_module.LLMSessionManager.trigger_agent_callbacks(mgr)
+
+    assert delivered is False
+    assert sess.inject_calls == 0
+    assert mgr.pending_agent_callbacks == [cb]
+    assert mgr.pending_extra_replies == [extra]
+    mgr._schedule_proactive_retry.assert_called_once_with(
+        mgr.proactive_manager.min_gap_s
+    )
+
+
+async def test_voice_mode_drops_permanently_oversized_image_and_delivers_text():
+    from main_logic.omni_realtime_client import RealtimeImagePayloadTooLargeError
+
+    sess = _make_voice_sess()
+    streamed = []
+
+    async def _stream_image(
+        image_b64,
+        *,
+        bypass_rate_limit=False,
+        cache_latest=True,
+        on_rejected=None,
+    ):
+        assert bypass_rate_limit is True
+        assert cache_latest is False
+        assert on_rejected is not None
+        streamed.append(image_b64)
+        if image_b64 == "oversized-image":
+            raise RealtimeImagePayloadTooLargeError("permanent oversize")
+
+    sess.stream_image = _stream_image
+    mgr = _make_mgr(session=sess)
+    cb = {
+        "_callback_delivery_id": "id-oversized-image",
+        "status": "completed",
+        "summary": "deliver despite oversized media",
+        "media_images": ["valid-prefix", "oversized-image", "valid-tail"],
+    }
+    mgr.pending_agent_callbacks = [cb]
+
+    delivered = await core_module.LLMSessionManager.trigger_agent_callbacks(mgr)
+
+    assert delivered is True
+    assert streamed == ["valid-prefix", "oversized-image", "valid-tail"]
+    assert sess.inject_calls == 1
+    assert cb["media_images"] == ["valid-prefix", "valid-tail"]
+    assert mgr.pending_agent_callbacks == []
+
+
+async def test_standard_step_callback_image_description_shares_inject_ticket():
+    sess = _make_voice_sess()
+    sess._supports_native_image = False
+    sess._inject_rejection_handlers = {}
+    expired = []
+
+    async def _stream_image(
+        _image_b64,
+        *,
+        bypass_rate_limit=False,
+        cache_latest=True,
+        on_rejected=None,
+    ):
+        assert bypass_rate_limit is True
+        assert cache_latest is False
+        assert on_rejected is not None
+        return "画面里有一只猫。"
+
+    async def _expire(event_id, _timeout):
+        expired.append(event_id)
+
+    def _fire_task(coro):
+        asyncio.create_task(coro)
+
+    sess.stream_image = _stream_image
+    sess._expire_inject_rejection_handler = _expire
+    sess._fire_task = _fire_task
+    mgr = _make_mgr(session=sess)
+    cb = {
+        "_callback_delivery_id": "id-step-image",
+        "status": "completed",
+        "summary": "inspect this image",
+        "media_images": ["image-b64"],
+    }
+    mgr.pending_agent_callbacks = [cb]
+
+    delivered = await core_module.LLMSessionManager.trigger_agent_callbacks(mgr)
+    await asyncio.sleep(0)
+
+    assert delivered is True
+    assert len(sess.injected_events) == 1
+    assert len(sess.injected_events[0]) == 1
+    description_event = sess.injected_events[0][0]
+    assert description_event["item"]["content"] == [{
+        "type": "input_text",
+        "text": "[实时屏幕截图或相机画面]: 画面里有一只猫。",
+    }]
+    assert description_event["event_id"] in sess._inject_rejection_handlers
+    assert expired == [description_event["event_id"]]
+
+
+async def test_voice_mode_callback_image_rejection_after_inject_rearms_retry():
+    sess = _make_voice_sess()
+    image_rejections = []
+
+    async def _stream_image(
+        _image_b64,
+        *,
+        bypass_rate_limit=False,
+        cache_latest=True,
+        on_rejected=None,
+    ):
+        assert bypass_rate_limit is True
+        assert cache_latest is False
+        assert on_rejected is not None
+        image_rejections.append(on_rejected)
+
+    sess.stream_image = _stream_image
+    mgr = _make_mgr(session=sess)
+    cb = {
+        "_callback_delivery_id": "id-image-late-rejected",
+        "status": "completed",
+        "summary": "inspect this image",
+        "media_images": ["image-b64-1", "image-b64-2"],
+    }
+    extra = {
+        "_callback_delivery_id": "id-image-late-rejected",
+        "summary": "inspect this image",
+    }
+    mgr.pending_agent_callbacks = [cb]
+    mgr.pending_extra_replies = [extra]
+    mgr._schedule_proactive_retry = MagicMock()
+
+    delivered = await core_module.LLMSessionManager.trigger_agent_callbacks(mgr)
+
+    assert delivered is True
+    assert mgr.pending_agent_callbacks == []
+    assert mgr.pending_extra_replies == []
+    assert len(image_rejections) == 2
+
+    image_rejections[0]("callback image rejected")
+    image_rejections[1]("second callback image rejected")
+
+    assert mgr.pending_agent_callbacks == [cb]
+    assert mgr.pending_extra_replies == [extra]
+    mgr._schedule_proactive_retry.assert_called_once_with(
+        mgr.proactive_manager.min_gap_s
+    )
+
+
+async def test_voice_mode_callback_image_rejection_after_ack_is_ignored():
+    sess = _make_voice_sess()
+    image_rejections = []
+
+    async def _stream_image(
+        _image_b64,
+        *,
+        bypass_rate_limit=False,
+        cache_latest=True,
+        on_rejected=None,
+    ):
+        assert bypass_rate_limit is True
+        assert cache_latest is False
+        image_rejections.append(on_rejected)
+
+    sess.stream_image = _stream_image
+    mgr = _make_mgr(session=sess)
+    future = asyncio.get_running_loop().create_future()
+    cb = {
+        "_callback_delivery_id": "id-image-after-ack",
+        "status": "completed",
+        "summary": "inspect acknowledged image",
+        "media_images": ["image-b64"],
+        DELIVERY_ACK_FUTURE_KEY: future,
+    }
+    extra = {
+        "_callback_delivery_id": "id-image-after-ack",
+        "summary": "inspect acknowledged image",
+    }
+    mgr.pending_agent_callbacks = [cb]
+    mgr.pending_extra_replies = [extra]
+    mgr._schedule_proactive_retry = MagicMock()
+
+    delivered = await core_module.LLMSessionManager.trigger_agent_callbacks(mgr)
+    await asyncio.sleep(core_module._VOICE_PROACTIVE_ACK_GRACE_S + 0.02)
+
+    assert delivered is True
+    assert future.result() is True
+    assert mgr.pending_agent_callbacks == []
+    assert mgr.pending_extra_replies == []
+    image_rejections[0]("late callback image rejection")
+    assert mgr.pending_agent_callbacks == []
+    assert mgr.pending_extra_replies == []
+    mgr._schedule_proactive_retry.assert_not_called()
+
+
+async def test_voice_mode_rejected_media_does_not_restore_superseded_callback():
+    sess = _make_voice_sess()
+    image_rejections = []
+
+    async def _stream_image(
+        _image_b64,
+        *,
+        bypass_rate_limit=False,
+        cache_latest=True,
+        on_rejected=None,
+    ):
+        assert bypass_rate_limit is True
+        assert cache_latest is False
+        image_rejections.append(on_rejected)
+
+    sess.stream_image = _stream_image
+    mgr = _make_mgr(session=sess)
+    future = asyncio.get_running_loop().create_future()
+    old_cb = {
+        "_callback_delivery_id": "id-old-weather",
+        "status": "completed",
+        "summary": "old weather",
+        "media_images": ["old-weather-image"],
+        "coalesce_key": "weather",
+        "_coalesce_submit_seq": 1,
+        DELIVERY_ACK_FUTURE_KEY: future,
+    }
+    old_extra = {
+        "_callback_delivery_id": "id-old-weather",
+        "summary": "old weather",
+        "coalesce_key": "weather",
+        "_coalesce_submit_seq": 1,
+    }
+    mgr.pending_agent_callbacks = [old_cb]
+    mgr.pending_extra_replies = [old_extra]
+    mgr._schedule_proactive_retry = MagicMock()
+
+    assert await core_module.LLMSessionManager.trigger_agent_callbacks(mgr) is True
+    mgr._coalesce_latest = {"weather": 2}
+    image_rejections[0]("superseded callback image rejected")
+
+    assert old_cb[DELIVERY_RETRACTED_KEY] is True
+    assert future.result() is False
+    assert mgr.pending_agent_callbacks == []
+    assert mgr.pending_extra_replies == []
+    mgr._schedule_proactive_retry.assert_not_called()
+
+
+async def test_voice_mode_coalescing_queues_newer_cue_after_media_commit():
+    sess = _make_voice_sess()
+    stream_started = asyncio.Event()
+    release_stream = asyncio.Event()
+    streamed = []
+
+    async def _stream_image(
+        image_b64,
+        *,
+        bypass_rate_limit=False,
+        cache_latest=True,
+        on_rejected=None,
+    ):
+        assert bypass_rate_limit is True
+        assert cache_latest is False
+        assert on_rejected is not None
+        streamed.append(image_b64)
+        stream_started.set()
+        await release_stream.wait()
+
+    sess.stream_image = _stream_image
+    mgr = _make_mgr(session=sess)
+    old_cb = {
+        "_callback_delivery_id": "id-old-weather",
+        "status": "completed",
+        "summary": "old weather",
+        "media_images": ["old-weather-image"],
+        "coalesce_key": "weather",
+        "_coalesce_submit_seq": 1,
+    }
+    old_extra = {
+        "_callback_delivery_id": "id-old-weather",
+        "summary": "old weather",
+        "coalesce_key": "weather",
+        "_coalesce_submit_seq": 1,
+    }
+    mgr.pending_agent_callbacks = [old_cb]
+    mgr.pending_extra_replies = [old_extra]
+    mgr._coalesce_latest = {"weather": 1}
+
+    delivery = asyncio.create_task(
+        core_module.LLMSessionManager.trigger_agent_callbacks(mgr)
+    )
+    await stream_started.wait()
+
+    newer_cb = {
+        "status": "completed",
+        "summary": "new weather",
+        "coalesce_key": "weather",
+        "_coalesce_submit_seq": 2,
+    }
+    core_module.LLMSessionManager.enqueue_agent_callback(mgr, newer_cb)
+    assert old_cb.get(DELIVERY_RETRACTED_KEY) is not True
+
+    release_stream.set()
+    assert await delivery is True
+
+    assert streamed == ["old-weather-image"]
+    assert len(sess.injected) == 1
+    assert "old weather" in sess.injected[0]
+    assert "new weather" not in sess.injected[0]
+    assert old_cb.get("_voice_delivery_committed") is None
+    assert mgr.pending_agent_callbacks == [newer_cb]
+    assert mgr.pending_extra_replies[0]["summary"] == "new weather"
+
+
+async def test_voice_mode_build_failure_clears_media_commit_marker(monkeypatch):
+    import pytest
+    import main_logic.core.proactive as proactive_module
+
+    sess = _make_voice_sess()
+
+    async def _stream_image(
+        _image_b64,
+        *,
+        bypass_rate_limit=False,
+        cache_latest=True,
+        on_rejected=None,
+    ):
+        assert bypass_rate_limit is True
+        assert cache_latest is False
+        assert on_rejected is not None
+
+    sess.stream_image = _stream_image
+    mgr = _make_mgr(session=sess)
+    old_cb = {
+        "_callback_delivery_id": "id-old-weather",
+        "status": "completed",
+        "summary": "old weather",
+        "media_images": ["old-weather-image"],
+        "coalesce_key": "weather",
+        "_coalesce_submit_seq": 1,
+    }
+    mgr.pending_agent_callbacks = [old_cb]
+    mgr.pending_extra_replies = [{
+        "_callback_delivery_id": "id-old-weather",
+        "summary": "old weather",
+        "coalesce_key": "weather",
+        "_coalesce_submit_seq": 1,
+    }]
+    mgr._coalesce_latest = {"weather": 1}
+    monkeypatch.setattr(
+        proactive_module,
+        "_build_callback_instruction",
+        MagicMock(side_effect=RuntimeError("instruction build failed")),
+    )
+
+    with pytest.raises(RuntimeError, match="instruction build failed"):
+        await core_module.LLMSessionManager.trigger_agent_callbacks(mgr)
+
+    assert old_cb.get("_voice_delivery_committed") is None
+    core_module.LLMSessionManager.enqueue_agent_callback(
+        mgr,
+        {
+            "status": "completed",
+            "summary": "new weather",
+            "coalesce_key": "weather",
+            "_coalesce_submit_seq": 2,
+        },
+    )
+    assert old_cb[DELIVERY_RETRACTED_KEY] is True
+    assert [cb["summary"] for cb in mgr.pending_agent_callbacks] == [
+        "new weather"
+    ]
+
+
 async def test_voice_mode_unstamped_cb_still_pruned_via_object_id_fallback():
-    """Defense in depth：production 路径都过 ``enqueue_agent_callback`` 标
-    ``_callback_delivery_id``，但 voice 成功 inject 的 pac 清理还有一条
-    object ``id()`` 兜底，确保任何未来直接 append 没标 id 的 cb 也不会被
-    后续 retry 重复投递。锁死 Codex r3249183511。"""
+    """Prune unstamped callbacks through the object-ID fallback after delivery."""
     sess = _make_voice_sess()
     mgr = _make_mgr(session=sess)
     # 故意构造没有 _callback_delivery_id 的 cb（模拟绕过 enqueue_agent_callback 的入口）
@@ -1088,9 +1769,10 @@ def test_submit_proactive_callback_persists_when_goodbye_silent():
     assert mgr.pending_extra_replies == [
         {
             "_callback_delivery_id": cb["_callback_delivery_id"],
-            "coalesce_key": "same-source",
-            "_coalesce_submit_seq": cb["_coalesce_submit_seq"],
-            "origin": "event",
+                "coalesce_key": "same-source",
+                "_coalesce_submit_seq": cb["_coalesce_submit_seq"],
+                CALLBACK_EXPIRES_AT_KEY: None,
+                "origin": "event",
             "summary": "queued",
             "detail": "",
             "status": "completed",
@@ -1119,7 +1801,9 @@ def test_start_session_success_path_clears_goodbye_silent_gate():
     normalized_source = re.sub(r"\s+", " ", _read_core_package_source())
     success_marker = "self._session_start_circuit_open = False"
     clear_marker = "if self.is_goodbye_silent(): self.set_goodbye_silent(False)"
-    notify_marker = "await self.send_session_started(input_mode)"
+    # The ack now names the start it answers (#2539), so match the call opener
+    # rather than the whole call: the args are not what this guard is about.
+    notify_marker = "await self.send_session_started(input_mode"
 
     clear_pos = normalized_source.index(clear_marker)
     success_pos = normalized_source.rindex(success_marker, 0, clear_pos)
@@ -1413,6 +2097,47 @@ async def test_deliver_agent_callbacks_text_drops_topic_hook_when_voice_takes_ov
     assert fut.done() and fut.result() is False
     assert sess.called_with == []  # dropped at the prompt-adjacent re-gate
     assert mgr._voice_delivery_blocked.call_count == 2
+    mgr.proactive_manager.release_inflight_noop.assert_called_once()
+
+
+async def test_deliver_agent_callbacks_text_drops_callback_expired_during_claim():
+    """An out-of-queue snapshot is rechecked after the proactive claim awaits."""
+    sess = _FakeOmniOffline(delivered=True)
+    mgr = _make_mgr(session=sess)
+    future = asyncio.get_running_loop().create_future()
+    cb = {
+        "_callback_delivery_id": "id-expired-during-claim",
+        "status": "completed",
+        "summary": "stale event",
+        CALLBACK_EXPIRES_AT_KEY: time.monotonic() + 60,
+        DELIVERY_ACK_FUTURE_KEY: future,
+    }
+    extra = {
+        "_callback_delivery_id": "id-expired-during-claim",
+        "origin": "event",
+        "summary": "stale event",
+        CALLBACK_EXPIRES_AT_KEY: cb[CALLBACK_EXPIRES_AT_KEY],
+    }
+    mgr.pending_extra_replies = [extra]
+    original_fire = mgr.state.fire
+
+    async def _fire_and_expire(event, **payload):
+        await original_fire(event, **payload)
+        if event is SessionEvent.PROACTIVE_PHASE2:
+            cb[CALLBACK_EXPIRES_AT_KEY] = time.monotonic() - 1
+
+    mgr.state.fire = _fire_and_expire
+
+    snapshot = [cb]
+    delivered = await core_module.LLMSessionManager._deliver_agent_callbacks_text(
+        mgr, snapshot
+    )
+
+    assert delivered is False
+    assert sess.called_with == []
+    assert snapshot == []
+    assert mgr.pending_extra_replies == []
+    assert future.done() and future.result() is False
     mgr.proactive_manager.release_inflight_noop.assert_called_once()
 
 
@@ -1727,8 +2452,8 @@ async def test_cat_greeting_episode_scene_is_request_local_and_keeps_existing_gu
         assert raw_value not in instruction
     assert mgr.state.phase is ProactivePhase.IDLE
 
-    # The established silence remains unless the adapter verified a runner
-    # really entered started. A valid done episode alone cannot bypass it.
+    # The established silence is uniform: neither a completed episode nor a
+    # verified runner start can bypass it.
     short_without_start_session = _FakeOmniOffline(delivered=True)
     short_without_start_mgr = _make_mgr(session=short_without_start_session)
     await core_module.LLMSessionManager.trigger_cat_greeting(
@@ -1744,17 +2469,10 @@ async def test_cat_greeting_episode_scene_is_request_local_and_keeps_existing_gu
         "cat2",
         False,
         episode=episode,
-        has_started_autonomous_action=True,
     )
-    assert len(short_scene_session.called_with) == 1
-    short_scene_instruction = short_scene_session.called_with[0]
-    assert get_cat_greeting_episode_scene(episode, "en") in short_scene_instruction
-    assert "The true cat-form episode was:" in short_scene_instruction
-    assert "for 1 minute" not in short_scene_instruction
-    assert "dozed for" not in short_scene_instruction
+    assert short_scene_session.called_with == []
 
-    # started without strict done permits a neutral return only: it cannot use
-    # the old waiting/sleep template or invent a completed action.
+    # A start without strict done is subject to the same minimum dwell time.
     short_neutral_session = _FakeOmniOffline(delivered=True)
     short_neutral_mgr = _make_mgr(session=short_neutral_session)
     await core_module.LLMSessionManager.trigger_cat_greeting(
@@ -1762,25 +2480,8 @@ async def test_cat_greeting_episode_scene_is_request_local_and_keeps_existing_gu
         10,
         "cat3",
         False,
-        has_started_autonomous_action=True,
     )
-    assert len(short_neutral_session.called_with) == 1
-    short_neutral_instruction = short_neutral_session.called_with[0]
-    assert "There is no completed cat-form episode to narrate." in short_neutral_instruction
-    assert "for 1 minute" not in short_neutral_instruction
-    assert "had a short sleep of" not in short_neutral_instruction
-    assert get_cat_greeting_episode_scene(episode, "en") not in short_neutral_instruction
-
-    truthy_not_started_session = _FakeOmniOffline(delivered=True)
-    truthy_not_started_mgr = _make_mgr(session=truthy_not_started_session)
-    await core_module.LLMSessionManager.trigger_cat_greeting(
-        truthy_not_started_mgr,
-        10,
-        "cat1",
-        False,
-        has_started_autonomous_action="true",
-    )
-    assert truthy_not_started_session.called_with == []
+    assert short_neutral_session.called_with == []
 
     # No trustworthy chapter means the exact existing greeting path remains.
     no_episode_session = _FakeOmniOffline(delivered=True)

@@ -18,7 +18,7 @@ Python 固定为 3.11；所有 Python 模块、脚本、测试和临时命令都
 ./build_frontend.sh
 ```
 
-脚本校验/解压 Yui Origin，运行 `npm ci`，生成 plugin manager 与共享 React chat bundle。
+脚本校验/解压内置 Live2D 模型（Yui Lolita、Yui Origin），运行 `npm ci`，生成 plugin manager 与共享 React chat bundle。
 
 ## 正常启动
 

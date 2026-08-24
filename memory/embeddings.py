@@ -76,6 +76,7 @@ from ._embeddings.schema import (
     clear_embedding_fields,
     cosine_similarity as _cosine_similarity_impl,
     decode_embedding as _decode_embedding_impl,
+    decode_valid_cached_embedding as _decode_valid_cached_embedding_impl,
     decode_vector_fp16 as _decode_vector_fp16,
     embedding_text_sha256 as _embedding_text_sha256,
     encode_vector_fp16 as _encode_vector_fp16,
@@ -804,6 +805,27 @@ def is_cached_embedding_valid(
     current_model_id: str | None,
 ) -> bool:
     return _is_cached_embedding_valid_impl(
+        entry,
+        current_text,
+        current_model_id,
+        hash_text=_embedding_text_sha256,
+        decode_string=_decode_vector_fp16,
+        parse_dim=parse_dim_from_model_id,
+    )
+
+
+def decode_valid_cached_embedding(
+    entry: dict,
+    current_text: str,
+    current_model_id: str | None,
+):
+    """``is_cached_embedding_valid`` that hands back the vector it decoded.
+
+    Same facade discipline as its neighbours — the module-level
+    ``_decode_vector_fp16`` / ``_embedding_text_sha256`` indirection is kept so
+    tests that monkeypatch those names still steer this path.
+    """
+    return _decode_valid_cached_embedding_impl(
         entry,
         current_text,
         current_model_id,

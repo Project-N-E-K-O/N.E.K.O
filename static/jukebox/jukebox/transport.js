@@ -1,3 +1,18 @@
+var JUKEBOX_COMPRESSED_BUNDLED_VRM_IDLE_NAMES = new Set([
+  'liked', 'wait01', 'wait02', 'wait03', 'wait04', 'wait05',
+  '全身展示', '射击姿态', '屈伸运动', '旋转', '模特姿势', '比 V 手势', '致意问候'
+]);
+
+function normalizeJukeboxBundledVrmIdleUrl(url) {
+  const value = String(url || '');
+  const match = value.match(/^\/static\/vrm\/animation\/([^/?#]+)\.vrma(?:[?#]|$)/i);
+  if (!match) return url;
+  let assetName = match[1];
+  try { assetName = decodeURIComponent(assetName); } catch (_) {}
+  if (!JUKEBOX_COMPRESSED_BUNDLED_VRM_IDLE_NAMES.has(assetName)) return url;
+  return value.replace(/\.vrma(?=[?#]|$)/i, '.vrma.gz');
+}
+
 Object.assign(window.Jukebox, {
   startConfigPolling: function() {
     Jukebox.stopConfigPolling();
@@ -507,13 +522,15 @@ Object.assign(window.Jukebox, {
       console.log('[Jukebox] 播放 VRMA 动画:', vrmaPath);
 
       Jukebox.stopVMD(true); // 停止之前的舞蹈动画
+      const playRequestId = Jukebox.State.playRequestId;
 
       // 使用 VRMManager 播放 VRMA（manager 内部会确保 animation 模块已初始化）
-      await window.vrmManager.playVRMAAnimation(vrmaPath, {
+      const played = await window.vrmManager.playVRMAAnimation(vrmaPath, {
         loop: false,
         fadeInDuration: 0.5,
         fadeOutDuration: 0.5
       });
+      if (played !== true || playRequestId !== Jukebox.State.playRequestId) return;
       Jukebox.State.isVMDPlaying = true;
       console.log('[Jukebox] VRMA 动画已播放:', vrmaPath);
     } catch (error) {
@@ -838,12 +855,18 @@ Object.assign(window.Jukebox, {
         var vrmIdleList = window.lanlan_config?.vrmIdleAnimations;
         var vrmIdleUrl = (Array.isArray(vrmIdleList) && vrmIdleList.length > 0) ? vrmIdleList[0] : null;
         if (!vrmIdleUrl) {
-          vrmIdleUrl = window.lanlan_config?.vrmIdleAnimation || '/static/vrm/animation/wait03.vrma';
+          vrmIdleUrl = window.lanlan_config?.vrmIdleAnimation || '/static/vrm/animation/wait03.vrma.gz';
         }
+        vrmIdleUrl = normalizeJukeboxBundledVrmIdleUrl(vrmIdleUrl);
+        const restoreRequestId = ++Jukebox.State.playRequestId;
         await window.vrmManager.playVRMAAnimation(vrmIdleUrl, {
           loop: true,
-          isIdle: true
+          isIdle: true,
+          shouldApply: function() {
+            return restoreRequestId === Jukebox.State.playRequestId;
+          }
         });
+        if (restoreRequestId !== Jukebox.State.playRequestId) return;
         console.log('[Jukebox] VRM 待机动画已恢复');
       } catch (error) {
         console.warn('[Jukebox] VRM 待机动画恢复失败:', error);

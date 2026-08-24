@@ -18,7 +18,7 @@ N.E.K.O. port probing and health-check utilities.
 
 Capabilities:
 - probe /health and verify the N.E.K.O fingerprint
-- startup lock (Windows named mutex / cross-platform file lock)
+- single-instance startup lock (delegated to ``utils.single_instance``)
 - detection of Hyper-V reserved port ranges on Windows
 """
 
@@ -26,7 +26,6 @@ import json
 import os
 import socket
 import sys
-import tempfile
 from typing import Optional
 
 from utils.logger_config import get_module_logger
@@ -209,143 +208,44 @@ def is_port_in_excluded_range(port: int, excluded: list[tuple[int, int]] | None 
 #  启动锁
 # ---------------------------------------------------------------------------
 
-_LOCK_NAME = r"Global\NEKO_LAUNCHER_STARTUP_LOCK"
-_lock_handle = None  # Windows mutex handle
-_lock_fd = None  # POSIX file lock fd
-
-
 def acquire_startup_lock() -> bool:
-    """Try to acquire the system-wide single-instance startup lock.
+    """Back-compat façade over :mod:`utils.single_instance`.
 
-    Returns ``True`` when acquired (startup may continue).
-    Returns ``False`` when another launcher already holds the lock.
+    The old implementation lived here as a Windows named mutex plus a POSIX
+    ``flock``, and it disagreed with itself in three ways worth recording, since
+    they are the reason it could not be the basis of a uniqueness *proof*:
+
+    * Inverted failure polarity. A Windows mutex failure returned "go ahead"
+      while any POSIX ``OSError`` returned "somebody else is running" — and the
+      mutex lived in the ``Global\\`` namespace, which a non-elevated interactive
+      user usually cannot create, so the most common desktop configuration had
+      no lock at all.
+    * Inconsistent scope: machine-wide on Windows, per-user ``$TMPDIR`` on
+      macOS, shared ``/tmp`` on Linux (where the second user could not even open
+      the first user's lock file).
+    * It unlinked the lock file on release, which hands a third contender a
+      fresh inode while a second one is still waiting on the old one.
+
+    Uniqueness now lives in one place, and it publishes the winner's identity
+    instead of only saying "taken". This wrapper stays because ``launcher.py``
+    re-exports it and existing tests patch it by name.
     """
-    global _lock_handle, _lock_fd
+    from utils import single_instance
 
-    if sys.platform == "win32":
-        return _acquire_win32_mutex()
-    else:
-        return _acquire_file_lock()
+    try:
+        handle = single_instance.acquire_single_instance(
+            instance_id=os.environ.get("NEKO_INSTANCE_ID", ""),
+        )
+    except OSError:
+        # Not being able to consult the lock is "unknown", and unknown must not
+        # become "somebody else is running" — that would be an unclearable
+        # refusal to start on a full disk or a read-only home.
+        return True
+    return handle is not None
 
 
 def release_startup_lock() -> None:
-    """Release the startup lock (best effort)."""
-    global _lock_handle, _lock_fd
+    """Release the single-instance lock (best effort, idempotent)."""
+    from utils import single_instance
 
-    if sys.platform == "win32":
-        _release_win32_mutex()
-    else:
-        _release_file_lock()
-
-
-# -- Windows 命名互斥体 ----------------------------------------------------
-
-def _acquire_win32_mutex() -> bool:
-    global _lock_handle
-    try:
-        import ctypes
-        kernel32 = ctypes.windll.kernel32
-        ERROR_ALREADY_EXISTS = 183
-
-        handle = kernel32.CreateMutexW(None, True, _LOCK_NAME)
-        last_err = kernel32.GetLastError()
-
-        if handle != 0:
-            if last_err != ERROR_ALREADY_EXISTS:
-                # 成功创建新互斥体，本实例持有锁
-                _lock_handle = handle
-                return True
-            # 互斥体已存在，另一实例正在运行
-            kernel32.CloseHandle(handle)
-            return False
-        # handle == 0：创建失败
-        if last_err == ERROR_ALREADY_EXISTS:
-            return False  # 确认已有另一实例
-        # 权限或其他错误，允许启动以免误阻
-        return True
-    except Exception:
-        # 无法判定时，默认允许继续（避免误阻断）
-        return True
-
-
-def _release_win32_mutex() -> None:
-    global _lock_handle
-    if _lock_handle is None:
-        return
-    try:
-        import ctypes
-        kernel32 = ctypes.windll.kernel32
-        kernel32.ReleaseMutex(_lock_handle)
-        kernel32.CloseHandle(_lock_handle)
-    except Exception:
-        pass
-    _lock_handle = None
-
-
-# -- POSIX 文件锁 ---------------------------------------------------------
-
-_LOCK_FILE = os.path.join(tempfile.gettempdir(), "neko_launcher.lock")
-
-
-def _acquire_file_lock() -> bool:
-    global _lock_fd
-    fd = None
-    locked = False
-    try:
-        import fcntl
-
-        fd = open(_LOCK_FILE, "w", encoding="utf-8")
-        try:
-            fcntl.flock(fd.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-            locked = True
-            fd.write(str(os.getpid()))
-            fd.flush()
-        except (OSError, IOError):
-            if locked:
-                try:
-                    fcntl.flock(fd.fileno(), fcntl.LOCK_UN)
-                except (OSError, IOError):
-                    # Unlock failure is non-fatal here because this path is
-                    # already abandoning the lock attempt and will close fd next.
-                    pass
-            fd.close()
-            return False
-        _lock_fd = fd
-        return True
-    except (OSError, IOError):
-        if fd is not None and fd is not _lock_fd:
-            if locked:
-                try:
-                    fcntl.flock(fd.fileno(), fcntl.LOCK_UN)
-                except (OSError, IOError):
-                    # Best-effort unlock before closing; close is still
-                    # attempted below to avoid leaking the opened fd.
-                    pass
-            try:
-                fd.close()
-            except (OSError, IOError):
-                # Cleanup failure should not hide the original acquisition
-                # failure; callers already treat this path as "lock not held".
-                pass
-        return False
-    except ImportError:
-        # POSIX 上通常应有 fcntl，这里仅做兜底
-        return True
-
-
-def _release_file_lock() -> None:
-    global _lock_fd
-    if _lock_fd is None:
-        return
-    try:
-        import fcntl
-
-        fcntl.flock(_lock_fd.fileno(), fcntl.LOCK_UN)
-        _lock_fd.close()
-    except Exception:
-        pass
-    _lock_fd = None
-    try:
-        os.unlink(_LOCK_FILE)
-    except Exception:
-        pass
+    single_instance.release_single_instance()

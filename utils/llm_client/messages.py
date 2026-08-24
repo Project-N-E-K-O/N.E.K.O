@@ -130,6 +130,10 @@ class LLMStreamChunk:
     #     "function": {"name": "...", "arguments": "<json fragment>"}}]``
     # Multiple chunks may carry the same ``index`` — callers must
     # accumulate ``function.arguments`` strings before JSON-parsing.
+    # A fragment may additionally carry ``extra_content`` — the
+    # non-standard, provider-owned blob (Gemini's OpenAI-compat surface
+    # puts ``thought_signature`` there) that must be echoed back verbatim
+    # on the assistant turn; see ``ToolCallAggregate.extra_content``.
     tool_call_deltas: list[dict] | None = None
     # Reason the model finished this stream segment: ``"stop"`` / ``"length"`` /
     # ``"tool_calls"`` / ``"content_filter"`` / None. ``"tool_calls"`` signals
@@ -162,6 +166,13 @@ class ToolCallAggregate:
     id: str
     name: str
     arguments: str  # JSON string; caller decides whether to ``json.loads``
+    # Provider-owned passthrough blob attached to THIS call, e.g.
+    # ``{"google": {"thought_signature": "<base64>"}}`` from Gemini's
+    # OpenAI-compat endpoint. Opaque to us: the tool loop writes it back
+    # onto the assistant ``tool_calls`` entry unchanged, because Gemini
+    # rejects a follow-up request whose function call lost its signature
+    # (400 INVALID_ARGUMENT). ``None`` on providers that don't send one.
+    extra_content: dict | None = None
 
 def _normalize_messages(messages: Any) -> list[dict]:
     """Convert various message formats to openai-compatible dicts.

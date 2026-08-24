@@ -14,18 +14,97 @@
 
 """OpenAI TTS worker."""
 
-import numpy as np
+from functools import partial
+from inspect import signature
 
-from .._infra import TTS_SHUTDOWN_SENTINEL, _resample_audio, _run_sentence_tts_worker
+import httpx
+import numpy as np
+import soxr
+
+from .._infra import (
+    TTS_SHUTDOWN_SENTINEL,
+    _resample_audio,
+    _run_sentence_tts_worker,
+    configured_tts_unavailable_worker,
+    log_configured_tts_failure,
+)
 from .._telemetry import _record_tts_telemetry
+from utils.config_manager import _as_bool
 from utils.logger_config import get_module_logger
+from utils.openai_tts import (
+    OPENAI_TTS_DEFAULT_BASE_URL,
+    OPENAI_TTS_DEFAULT_MODEL,
+    OPENAI_TTS_DEFAULT_VOICE,
+    OPENAI_TTS_PCM_SAMPLE_RATE,
+    build_openai_tts_payload,
+    openai_tts_base_url,
+    openai_tts_extra_body,
+    openai_tts_sdk_options,
+)
 
 logger = get_module_logger(__name__, "Main")
 
-def openai_tts_worker(request_queue, response_queue, audio_api_key, voice_id):
-    """OpenAI TTS worker — per-sentence synthesis, streaming audio reception."""
+def _openai_auth_client_kwargs(client_type, audio_api_key):
+    """Build SDK credentials for authenticated and auth-free endpoints."""
+    client_kwargs = {"api_key": audio_api_key or ""}
+    if audio_api_key:
+        return client_kwargs
+
+    # OpenAI SDK 2.34+ 默认拒绝空 key，但提供免凭证兼容开关；旧版没有该参数。
+    # 仅在当前 SDK 明确支持时关闭初始化校验，请求层仍显式删除 Authorization。
     try:
-        from openai import AsyncOpenAI
+        supports_auth_free = "_enforce_credentials" in signature(client_type).parameters
+    except (TypeError, ValueError):
+        supports_auth_free = False
+    if supports_auth_free:
+        client_kwargs["_enforce_credentials"] = False
+    return client_kwargs
+
+
+def _openai_endpoint_query_http_client(client_type, endpoint_query):
+    """Build an SDK HTTP client that preserves the configured endpoint query."""
+
+    # 让 httpx 只负责把可能存在的非 ASCII 字符规范化为合法 URL 字节；重复 key、
+    # 顺序和尾随斜杠仍按配置原样保留。
+    endpoint_query_bytes = httpx.URL(
+        f"https://openai-tts-query.invalid/?{endpoint_query}"
+    ).query
+
+    async def inject_endpoint_query(request):
+        request_query = request.url.query
+        combined_query = endpoint_query_bytes
+        if request_query:
+            combined_query += b"&" + request_query
+        request.url = request.url.copy_with(query=combined_query)
+
+    return client_type(event_hooks={"request": [inject_endpoint_query]})
+
+
+def openai_tts_worker(
+    request_queue,
+    response_queue,
+    audio_api_key,
+    voice_id,
+    *,
+    base_url=None,
+    model=OPENAI_TTS_DEFAULT_MODEL,
+    voice=OPENAI_TTS_DEFAULT_VOICE,
+    label="OpenAI TTS",
+    safe_error_provider=None,
+):
+    """OpenAI-compatible TTS: sentence input with a streamed PCM response."""
+
+    # Normalize once so whitespace-only credentials use the auth-free path.
+    # 配置文件或环境变量里只含空白字符的 key 等同于未填写；否则 SDK 会误发
+    # ``Authorization: Bearer <空白>``，与连接测试的免鉴权行为不一致。
+    audio_api_key = str(audio_api_key or "").strip()
+
+    try:
+        from openai import (
+            AsyncOpenAI,
+            DefaultAsyncHttpxClient,
+            omit as openai_omit,
+        )
     except ImportError:
         logger.error("❌ 无法导入 openai 库，OpenAI TTS 不可用")
         response_queue.put(("__ready__", False))
@@ -38,25 +117,150 @@ def openai_tts_worker(request_queue, response_queue, audio_api_key, voice_id):
                 break
         return
 
-    if not voice_id:
-        voice_id = "marin"
+    effective_model = str(model or "").strip() or OPENAI_TTS_DEFAULT_MODEL
+    effective_voice = str(voice_id or "").strip() or str(voice or "").strip()
 
     async def setup(response_queue):
-        client = AsyncOpenAI(api_key=audio_api_key)
+        client_kwargs = _openai_auth_client_kwargs(AsyncOpenAI, audio_api_key)
+        if base_url:
+            # Validate/normalize inside setup so configuration failures travel
+            # through the shared worker skeleton's normal __ready__ channel.
+            # 配置错误必须走统一的未就绪信号，不能在线程外静默退出。
+            sdk_base_url, endpoint_query = openai_tts_sdk_options(base_url)
+            client_kwargs["base_url"] = sdk_base_url
+            if endpoint_query:
+                client_kwargs["http_client"] = _openai_endpoint_query_http_client(
+                    DefaultAsyncHttpxClient,
+                    endpoint_query,
+                )
+        client = AsyncOpenAI(**client_kwargs)
+        extra_body = openai_tts_extra_body(base_url or OPENAI_TTS_DEFAULT_BASE_URL)
+        base_payload = build_openai_tts_payload("", effective_model, effective_voice)
 
         async def synthesize(text: str, speech_id: str) -> None:
+            request_kwargs = {**base_payload, "input": text}
+            if extra_body:
+                request_kwargs["extra_body"] = extra_body
+            if not audio_api_key:
+                # 新版 SDK 还会在发请求前检查鉴权方式；Omit 保证免鉴权服务
+                # 不会收到占位或空白 Bearer 头。
+                request_kwargs["extra_headers"] = {
+                    "Authorization": openai_omit,
+                }
             async with client.audio.speech.with_streaming_response.create(
-                model="gpt-4o-mini-tts",
-                voice=voice_id,
-                input=text,
-                response_format="pcm",
+                **request_kwargs,
             ) as response:
-                _record_tts_telemetry("gpt-4o-mini-tts", len(text))
+                _record_tts_telemetry(effective_model, len(text))
+                pending = b""
+                received_samples = False
+                resampler = soxr.ResampleStream(
+                    OPENAI_TTS_PCM_SAMPLE_RATE,
+                    48000,
+                    1,
+                    dtype="float32",
+                )
                 async for chunk in response.iter_bytes(chunk_size=4096):
                     if chunk:
-                        audio_array = np.frombuffer(chunk, dtype=np.int16)
-                        response_queue.put(_resample_audio(audio_array, 24000, 48000))
+                        pcm = pending + chunk
+                        even_length = len(pcm) - (len(pcm) % 2)
+                        pending = pcm[even_length:]
+                        if not even_length:
+                            continue
+                        audio_array = np.frombuffer(pcm[:even_length], dtype="<i2")
+                        received_samples = True
+                        resampled = _resample_audio(
+                            audio_array,
+                            OPENAI_TTS_PCM_SAMPLE_RATE,
+                            48000,
+                            resampler,
+                        )
+                        if len(resampled):
+                            response_queue.put(resampled)
 
-        return synthesize, None
+                if pending:
+                    raise RuntimeError("OpenAI TTS returned a truncated PCM sample")
+                if not received_samples:
+                    raise RuntimeError("OpenAI TTS returned an empty PCM response")
 
-    _run_sentence_tts_worker(request_queue, response_queue, setup, label="OpenAI TTS")
+                tail = _resample_audio(
+                    np.empty(0, dtype=np.int16),
+                    OPENAI_TTS_PCM_SAMPLE_RATE,
+                    48000,
+                    resampler,
+                    last=True,
+                )
+                if len(tail):
+                    response_queue.put(tail)
+
+        return synthesize, client.close
+
+    _run_sentence_tts_worker(
+        request_queue,
+        response_queue,
+        setup,
+        label=label,
+        safe_error_provider=safe_error_provider,
+    )
+
+
+def _custom_openai_tts_is_selected(ctx) -> bool:
+    """Whether the user selected the custom OpenAI-compatible TTS endpoint."""
+
+    if not _as_bool(ctx.core_config.get("ENABLE_CUSTOM_API"), False):
+        return False
+    if str(ctx.core_config.get("ttsModelProvider") or "").strip() != "custom":
+        return False
+
+    configured_voice = str(ctx.core_config.get("ttsVoiceId") or "").strip()
+    selected_voice = str(ctx.voice_id or "").strip()
+    if selected_voice and configured_voice and selected_voice != configured_voice:
+        return False
+
+    # The exact configured voice is an explicit Custom API selection and wins
+    # even if an old clone with the same ID still exists in voice storage.
+    # 角色选中的音色与配置音色一致时，自定义 API 必须优先于同名历史克隆记录。
+    exact_configured_voice = bool(selected_voice and selected_voice == configured_voice)
+    if (
+        not exact_configured_voice
+        and selected_voice
+        and ctx.has_custom_voice
+        and ctx.voice_meta
+    ):
+        return False
+
+    effective_voice = selected_voice or configured_voice
+    return bool(
+        str(ctx.core_config.get("ttsModelUrl") or "").strip()
+        and str(ctx.core_config.get("ttsModelId") or "").strip()
+        and effective_voice
+    )
+
+
+def _custom_openai_tts_resolve(ctx):
+    try:
+        raw = ctx.cm.load_json_config("core_config.json", {}) or {}
+        base_url = str(raw.get("ttsModelUrl") or "").strip()
+        model = str(raw.get("ttsModelId") or "").strip()
+        configured_voice = str(raw.get("ttsVoiceId") or "").strip()
+        effective_voice = str(ctx.voice_id or "").strip() or configured_voice
+
+        # Validate before spawning the network worker, but retain the provider
+        # identity so the shared supervisor can sanitize and replay on fallback.
+        # 在线程启动前校验配置；失败时仍保留 provider 身份，交给监管层安全回退。
+        openai_tts_base_url(base_url)
+        build_openai_tts_payload("", model, effective_voice)
+    except Exception:
+        # The exception can contain a signed URL, credential, or provider echo.
+        # 配置读取/校验异常只记录稳定错误码和阶段，禁止输出原始异常内容。
+        log_configured_tts_failure("custom", "configuration")
+        return configured_tts_unavailable_worker, "", "custom"
+
+    worker = partial(
+        openai_tts_worker,
+        base_url=base_url,
+        model=model,
+        voice=configured_voice,
+        label="自定义 TTS API (Custom OpenAI-compatible TTS)",
+        safe_error_provider="custom",
+    )
+    return worker, str(raw.get("ttsModelApiKey") or "").strip(), "custom"

@@ -85,6 +85,8 @@ def test_upload_and_install_records_source(tmp_path: Path) -> None:
         directory_path=target,
         package_filename="uploaded_plugin.neko-plugin",
         package_sha256="d" * 64,
+        package_id="uploaded-package",
+        profile_dir=str(tmp_path / "profiles" / "custom" / "uploaded-package"),
     )
     lf = _parse_lock(mgr.lock_path.read_bytes())
     assert len(lf.entries) == 1
@@ -92,6 +94,10 @@ def test_upload_and_install_records_source(tmp_path: Path) -> None:
     assert e.channel == "imported"
     assert e.reason == "user_requested"
     assert e.plugin_id == "uploaded_plugin"
+    assert e.package_id == "uploaded-package"
+    assert Path(e.profile_dir) == (tmp_path / "profiles" / "custom" / "uploaded-package")
+    assert mgr.package_id_for_directory(target) == "uploaded-package"
+    assert mgr.profile_dir_for_directory(target) == e.profile_dir
     assert isinstance(e.source_detail, SourceDetailImported)
     assert e.source_detail.package_sha256 == "d" * 64
 
@@ -114,11 +120,13 @@ def test_market_install_single_write(tmp_path: Path) -> None:
         plugin_market_id="pid-1",
         version="1.0.0",
         package_url="https://m.example/pkg.neko-plugin",
+        package_id="market-package",
     )
     assert len(import_calls) == 0
     lf = _parse_lock(mgr.lock_path.read_bytes())
     e = lf.entries[0]
     assert e.channel == "market"
+    assert e.package_id == "market-package"
     assert isinstance(e.source_detail, SourceDetailMarket)
     assert e.source_detail.plugin_market_id == "pid-1"
     assert e.source_detail.previous_version is None
@@ -190,6 +198,7 @@ def test_mark_removed_flips_and_preserves_audit(tmp_path: Path) -> None:
         directory_path=target,
         package_filename="p.neko-plugin",
         package_sha256="f" * 64,
+        package_id="deleted-package",
     )
     before = mgr.list_entries()[0]
     mgr.mark_removed(directory_path=target)
@@ -204,6 +213,8 @@ def test_mark_removed_flips_and_preserves_audit(tmp_path: Path) -> None:
     assert after.channel == "imported"
     assert mgr.list_entries() == []
     assert len(mgr.list_entries(include_removed=True)) == 1
+    assert mgr.package_id_for_directory(target) == ""
+    assert mgr.package_id_for_directory(target, include_removed=True) == "deleted-package"
 
 
 def test_mark_removed_idempotent_and_builtin_locked(tmp_path: Path) -> None:

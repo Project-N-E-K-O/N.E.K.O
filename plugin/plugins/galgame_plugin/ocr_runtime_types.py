@@ -83,6 +83,12 @@ from plugin.plugins._shared.rapidocr.rapidocr_support import (
     inspect_rapidocr_installation,
     load_rapidocr_runtime,
 )
+
+try:
+    from plugin.settings import PLUGIN_SHUTDOWN_TIMEOUT as _PLUGIN_SHUTDOWN_TIMEOUT
+except Exception:  # pragma: no cover - plugin may run without the framework settings module.
+    _PLUGIN_SHUTDOWN_TIMEOUT = 1.5
+
 from .reader import normalize_text
 from .screen_classifier import (
     ScreenClassification,
@@ -196,6 +202,9 @@ __all__ = [
     "_OCR_PREPARE_MAX_LONG_EDGE",
     "_OCR_PREPARE_TARGET_LONG_EDGE",
     "_OCR_PREPARE_UPSCALE_SOURCE_LONG_EDGE",
+    "_OCR_SHUTDOWN_CAPTURE_DRAIN_BUDGET_SHARE",
+    "_OCR_SHUTDOWN_CAPTURE_DRAIN_MAX_SECONDS",
+    "_OCR_SHUTDOWN_CAPTURE_DRAIN_TIMEOUT_SECONDS",
     "_OCR_STABILITY_IGNORED_CHARS_RE",
     "_OCR_TRAILING_GARBAGE_AFTER_BRACKET_RE",
     "_OCR_TRAILING_GARBAGE_AFTER_DASH_RE",
@@ -205,6 +214,7 @@ __all__ = [
     "_OVERLAY_PROCESS_NAME_SUBSTRINGS",
     "_OVERLAY_WINDOW_TITLE_SUBSTRINGS",
     "_PENDING_VISUAL_SCENE_MAX_SECONDS",
+    "_PLUGIN_SHUTDOWN_TIMEOUT",
     "_PUNCTUATION_CONFUSION_FIXES",
     "_RAPIDOCR_INFERENCE_LOCK",
     "_RAPIDOCR_RUNTIME_CACHE",
@@ -294,6 +304,7 @@ __all__ = [
     "_rapidocr_runtime_cache_key",
     "_rapidocr_text_from_output",
     "_rapidocr_tokens_from_output",
+    "_resolve_ocr_shutdown_drain_timeout",
     "_resolve_stage_capture_profile",
     "_score_ocr_text",
     "_should_insert_ascii_space",
@@ -331,6 +342,44 @@ _KEYBOARD_ADVANCE_VK_CODES = frozenset({
 _OCR_FOLLOWUP_CONFIRM_DELAY_SECONDS = 0.18
 _OCR_CAPTURE_TIMEOUT_SECONDS = 12.0
 _OCR_MAX_ABANDONED_CAPTURE_WORKERS = 1
+# 收尾时等在飞 capture 跑完的上限。
+#
+# 必须远小于宿主给单个插件的优雅关闭预算（PLUGIN_SHUTDOWN_TIMEOUT，默认 1.5s）：
+# 宿主用同一份预算 join 子进程，到点直接 terminate。drain 若把预算吃光，它后面
+# 的 backend / classifier / writer 收尾根本轮不到跑 —— 那比不等还糟，等于用一次
+# 强杀换来什么都没释放。所以只取预算的一小段，剩下的留给后续收尾。
+#
+# 也不复用上面那 12s 的 capture 超时：worker 拖住的只是 RapidOCR runtime 的回收
+# 时机（capture 线程栈上还攥着 runtime 引用，重依赖要等它退栈才真落地），代价是
+# 内存晚一会儿吐出来外加一条 warning。而且 Python 杀不掉跑飞的线程，真卡死的
+# worker 等多久都等不到，只能记 warning 放它去。
+_OCR_SHUTDOWN_CAPTURE_DRAIN_BUDGET_SHARE = 0.2
+_OCR_SHUTDOWN_CAPTURE_DRAIN_MAX_SECONDS = 0.3
+
+
+def _resolve_ocr_shutdown_drain_timeout(host_shutdown_budget: float) -> float:
+    """Drain bound for a given host graceful-shutdown budget; never exceeds its share.
+
+    No lower floor on purpose: a floor independent of the budget can outgrow a
+    small `NEKO_PLUGIN_SHUTDOWN_TIMEOUT` and put us back to spending the whole
+    thing. A zero or negative budget yields 0.0, which skips the wait entirely.
+    """
+    try:
+        budget = float(host_shutdown_budget)
+    except (TypeError, ValueError):
+        return 0.0
+    return max(
+        0.0,
+        min(
+            _OCR_SHUTDOWN_CAPTURE_DRAIN_MAX_SECONDS,
+            budget * _OCR_SHUTDOWN_CAPTURE_DRAIN_BUDGET_SHARE,
+        ),
+    )
+
+
+_OCR_SHUTDOWN_CAPTURE_DRAIN_TIMEOUT_SECONDS = _resolve_ocr_shutdown_drain_timeout(
+    _PLUGIN_SHUTDOWN_TIMEOUT
+)
 class _CaptureStillRunning(TimeoutError):
     """Backpressure: previous capture worker has not finished yet."""
 
@@ -1263,6 +1312,7 @@ class OcrReaderCaptureRuntime:
     last_capture_source_size: dict[str, float] = field(default_factory=dict)
     last_capture_rect: dict[str, float] = field(default_factory=dict)
     last_capture_window_rect: dict[str, float] = field(default_factory=dict)
+    capture_region_occluded: bool = False
     consecutive_same_capture_frames: int = 0
     stale_capture_backend: bool = False
     last_capture_total_duration_seconds: float = 0.0
@@ -1427,6 +1477,7 @@ class OcrReaderRuntime:
         "last_capture_source_size": ("capture", "last_capture_source_size"),
         "last_capture_rect": ("capture", "last_capture_rect"),
         "last_capture_window_rect": ("capture", "last_capture_window_rect"),
+        "capture_region_occluded": ("capture", "capture_region_occluded"),
         "consecutive_same_capture_frames": ("capture", "consecutive_same_capture_frames"),
         "stale_capture_backend": ("capture", "stale_capture_backend"),
         "foreground_refresh_at": ("target", "foreground_refresh_at"),
@@ -1654,6 +1705,7 @@ class OcrReaderRuntime:
             "last_capture_source_size": dict(self.last_capture_source_size),
             "last_capture_rect": dict(self.last_capture_rect),
             "last_capture_window_rect": dict(self.last_capture_window_rect),
+            "capture_region_occluded": bool(self.capture_region_occluded),
             "consecutive_same_capture_frames": self.consecutive_same_capture_frames,
             "stale_capture_backend": self.stale_capture_backend,
             "foreground_refresh_at": self.foreground_refresh_at,
@@ -1792,6 +1844,10 @@ class OcrExtractionResult:
     window_rect: dict[str, float] = field(default_factory=dict)
     capture_backend_kind: str = ""
     capture_backend_detail: str = ""
+    target_foreground: bool = False
+    capture_region_occluded: bool = False
+    capture_content_trusted: bool = True
+    capture_untrusted_reason: str = ""
     capture_image: Any | None = None
     capture_image_hash: str = ""
     background_hash: str = ""

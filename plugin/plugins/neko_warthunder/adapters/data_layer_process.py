@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import importlib.util
 import ipaddress
 import os
 import shutil
@@ -59,8 +58,17 @@ def _bind_host_from_url(base_url: str) -> str:
 def _looks_like_python(executable: str | None) -> bool:
     if not executable:
         return False
-    name = Path(executable).name.lower()
-    return name.startswith("python") or name in {"py.exe", "py"}
+    name = Path(str(executable).replace("\\", "/")).name.lower()
+    if not (name.startswith("python") or name in {"py.exe", "py"}):
+        return False
+    normalized = str(executable).replace("/", "\\").lower()
+    return "\\microsoft\\windowsapps\\" not in normalized
+
+
+def _is_packaged_runtime() -> bool:
+    """Return whether this module is running from a frozen desktop build."""
+
+    return bool(getattr(sys, "frozen", False) or "__compiled__" in globals())
 
 
 def _python_command_prefixes() -> list[list[str]]:
@@ -75,13 +83,16 @@ def _python_command_prefixes() -> list[list[str]]:
             candidates.append(prefix)
             seen.add(key)
 
-    executable = sys.executable
-    if _looks_like_python(executable):
-        add([executable])
-
+    # uv's Windows venv launcher spawns ``sys._base_executable`` as a child.
+    # Starting that base interpreter directly keeps the managed data layer as
+    # one process, so ``stop()`` cannot leave an orphan listening on :8112.
     base_executable = getattr(sys, "_base_executable", None)
     if _looks_like_python(base_executable):
         add([str(base_executable)])
+
+    executable = sys.executable
+    if _looks_like_python(executable):
+        add([executable])
 
     env_python = os.environ.get("PYTHON")
     if _looks_like_python(env_python):
@@ -93,7 +104,7 @@ def _python_command_prefixes() -> list[list[str]]:
             add([path])
 
     py_launcher = shutil.which("py")
-    if py_launcher:
+    if _looks_like_python(py_launcher):
         add([py_launcher, "-3"])
 
     return candidates
@@ -137,25 +148,17 @@ class EmbeddedDataLayerProcess:
         return 0
 
 
-def _load_wt_server_module(data_process_dir: Path):
-    module_name = "_neko_warthunder_embedded_wt_server"
-    script = data_process_dir / "wt_server.py"
-    spec = importlib.util.spec_from_file_location(module_name, script)
-    if spec is None or spec.loader is None:
-        raise RuntimeError(f"cannot_load_data_layer_module: {script}")
+def _load_wt_server_module():
+    # Import through a real package path so Nuitka compiles the data layer into
+    # projectneko_server. Loading copied source with spec_from_file_location is
+    # not reliable in a frozen runtime that intentionally ships no python.exe.
+    from ..data_layer.data_process import wt_server
 
-    old_path = list(sys.path)
-    sys.path.insert(0, str(data_process_dir))
-    try:
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        return module
-    finally:
-        sys.path[:] = old_path
+    return wt_server
 
 
 def _spawn_embedded_data_layer(data_process_dir: Path, *, host: str, port: int) -> EmbeddedDataLayerProcess:
-    wt_server = _load_wt_server_module(data_process_dir)
+    wt_server = _load_wt_server_module()
     recorder = wt_server.SessionRecorder(
         root_dir=str(data_process_dir / "records"),
         interval=1.0,
@@ -218,11 +221,35 @@ class DataLayerProcessManager:
         self._stdout_log_path: Path | None = None
         self._stderr_log_path: Path | None = None
         self._python_cmd: list[str] = []
+        # 在健康前就退出的 Python 候选（如 Windows Store 的 python.exe 别名、
+        # 缺依赖的裁剪版宿主 Python）。下次 _spawn 跳过它们，逐个尝试余下候选；
+        # 全部失败后回退 embedded 模式。运行后才崩溃的不入黑名单。
+        self._failed_python_prefixes: set[tuple[str, ...]] = set()
 
     def configure(self, config: WtConfig) -> None:
         self.config = config
 
     def start_if_needed(self) -> dict[str, Any]:
+        managed_process_exited = False
+        if self._started_by_plugin and self._process is not None:
+            returncode = self._process.poll()
+            if returncode is None:
+                healthy = self.health_check(
+                    self.config.data_layer_url,
+                    self.config.http_timeout_seconds,
+                )
+                self._mode = "managed"
+                self._last_health = healthy
+                if healthy:
+                    self._last_error = None
+                return self.snapshot()
+            self._last_error = self._format_exit_error(returncode)
+            managed_process_exited = True
+            self._process = None
+            self._started_by_plugin = False
+            self._last_health = False
+            self._close_log_handles()
+
         if self.health_check(self.config.data_layer_url, self.config.http_timeout_seconds):
             self._mode = "external"
             self._started_by_plugin = False
@@ -232,37 +259,57 @@ class DataLayerProcessManager:
 
         self._last_health = False
         if not self.config.data_layer_auto_start:
-            self._mode = "missing"
+            self._mode = "failed" if managed_process_exited else "missing"
             self._started_by_plugin = False
-            self._last_error = None
+            if not managed_process_exited:
+                self._last_error = None
             return self.snapshot()
 
-        try:
-            self._process = self._spawn()
-            self._started_by_plugin = True
-            self._mode = "starting"
-            self._last_error = None
-        except Exception as exc:  # noqa: BLE001
-            self._process = None
-            self._started_by_plugin = False
-            self._mode = "failed"
-            self._last_error = f"{type(exc).__name__}: {exc}"
-            self._close_log_handles()
-            return self.snapshot()
-
-        deadline = time.monotonic() + self.config.data_layer_startup_timeout_seconds
-        while time.monotonic() < deadline:
-            if self.health_check(self.config.data_layer_url, self.config.http_timeout_seconds):
-                self._mode = "managed"
-                self._last_health = True
-                return self.snapshot()
-            if self._process is not None and self._process.poll() is not None:
+        startup_errors: list[str] = []
+        while True:
+            try:
+                self._process = self._spawn()
+                self._started_by_plugin = True
+                self._mode = "starting"
+                self._last_error = None
+            except Exception as exc:  # noqa: BLE001
+                self._process = None
+                self._started_by_plugin = False
                 self._mode = "failed"
-                returncode = self._process.poll()
+                self._last_error = f"{type(exc).__name__}: {exc}"
+                startup_errors.append(f"{' '.join(self._python_cmd) or 'spawn'}: {self._last_error}")
                 self._close_log_handles()
-                self._last_error = self._format_exit_error(returncode)
+                if self._blacklist_current_python_candidate():
+                    continue
+                self._last_error = self._format_startup_errors(startup_errors)
                 return self.snapshot()
-            self.sleep(0.1)
+
+            deadline = time.monotonic() + self.config.data_layer_startup_timeout_seconds
+            retry_next_candidate = False
+            while time.monotonic() < deadline:
+                if self.health_check(self.config.data_layer_url, self.config.http_timeout_seconds):
+                    self._mode = "managed"
+                    self._last_health = True
+                    return self.snapshot()
+                if self._process is not None and self._process.poll() is not None:
+                    self._mode = "failed"
+                    returncode = self._process.poll()
+                    self._close_log_handles()
+                    self._last_error = self._format_exit_error(returncode)
+                    startup_errors.append(
+                        f"{' '.join(self._python_cmd) or 'spawn'}: {self._last_error}"
+                    )
+                    self._process = None
+                    self._started_by_plugin = False
+                    retry_next_candidate = self._blacklist_current_python_candidate()
+                    break
+                self.sleep(0.1)
+            if retry_next_candidate:
+                continue
+            if self._mode == "failed":
+                self._last_error = self._format_startup_errors(startup_errors)
+                return self.snapshot()
+            break
 
         self._mode = "managed"
         self._last_health = False
@@ -315,6 +362,13 @@ class DataLayerProcessManager:
 
     def snapshot(self) -> dict[str, Any]:
         pid = getattr(self._process, "pid", None) if self._process is not None else None
+        runner_kind = (
+            "embedded"
+            if self._python_cmd == ["embedded"]
+            else "system_python"
+            if self._python_cmd
+            else "none"
+        )
         return {
             "mode": self._mode,
             "url": self.config.data_layer_url,
@@ -323,38 +377,48 @@ class DataLayerProcessManager:
             "auto_start": self.config.data_layer_auto_start,
             "health": self._last_health,
             "last_error": self._last_error,
+            "runner_kind": runner_kind,
             "python_cmd": " ".join(self._python_cmd),
             "stdout_log": str(self._stdout_log_path) if self._stdout_log_path else "",
             "stderr_log": str(self._stderr_log_path) if self._stderr_log_path else "",
         }
 
     def _spawn(self):
-        data_process_dir = self.plugin_root / "data_layer" / "data process"
+        # `_python_cmd` describes the runner selected for this spawn attempt.
+        # Clear the previous attempt before any validation can raise; otherwise
+        # an invalid URL can repeatedly blacklist a stale runner forever.
+        self._python_cmd = []
+        data_process_dir = self.plugin_root / "data_layer" / "data_process"
         script = data_process_dir / "wt_server.py"
         if not script.exists():
             raise FileNotFoundError(str(script))
 
         bind_host = _bind_host_from_url(self.config.data_layer_url)
-        python_prefixes = _python_command_prefixes()
+        bind_port = _port_from_url(self.config.data_layer_url)
+        python_prefixes = [] if _is_packaged_runtime() else [
+            prefix
+            for prefix in _python_command_prefixes()
+            if tuple(prefix) not in self._failed_python_prefixes
+        ]
         if not python_prefixes:
             self._python_cmd = ["embedded"]
             return _spawn_embedded_data_layer(
                 data_process_dir,
                 host=bind_host,
-                port=int(_port_from_url(self.config.data_layer_url)),
+                port=int(bind_port),
             )
 
+        self._python_cmd = python_prefixes[0]
         self._prepare_log_files()
         assert self._stdout_handle is not None
         assert self._stderr_handle is not None
-        self._python_cmd = python_prefixes[0]
         cmd = [
             *self._python_cmd,
             "wt_server.py",
             "--host",
             bind_host,
             "--port",
-            _port_from_url(self.config.data_layer_url),
+            bind_port,
         ]
         kwargs: dict[str, Any] = {
             "cwd": str(data_process_dir),
@@ -365,6 +429,19 @@ class DataLayerProcessManager:
         if hasattr(subprocess, "CREATE_NO_WINDOW"):
             kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
         return self.popen_factory(cmd, **kwargs)
+
+    def _blacklist_current_python_candidate(self) -> bool:
+        """Blacklist a pre-health Python runner and report whether spawn may retry."""
+        if not self._python_cmd or self._python_cmd == ["embedded"]:
+            return False
+        self._failed_python_prefixes.add(tuple(self._python_cmd))
+        return True
+
+    @staticmethod
+    def _format_startup_errors(errors: list[str]) -> str:
+        if not errors:
+            return "data_layer_start_failed"
+        return "all_data_layer_runners_failed: " + " | ".join(errors)[-1600:]
 
     def _prepare_log_files(self) -> None:
         self._close_log_handles()
@@ -393,6 +470,6 @@ class DataLayerProcessManager:
     def _format_exit_error(self, returncode: int | None) -> str:
         stderr_tail = _tail_text(self._stderr_log_path) if self._stderr_log_path else ""
         if stderr_tail:
-            first_line = stderr_tail.splitlines()[-1].strip()
-            return f"process_exited_before_healthy(exit={returncode}; {first_line})"
+            last_line = stderr_tail.splitlines()[-1].strip()
+            return f"process_exited_before_healthy(exit={returncode}; {last_line})"
         return f"process_exited_before_healthy(exit={returncode})"

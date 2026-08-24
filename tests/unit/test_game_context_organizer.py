@@ -19,7 +19,9 @@ from main_routers.game_router import runtime as gr_runtime
 def _new_state(monkeypatch):
     _gr_patch_all(monkeypatch, "get_session_manager", lambda: {})
     _gr_patch_all(monkeypatch, "_resolve_game_prompt_language", lambda _lanlan_name=None: "zh")
-    return gr_runtime._activate_game_route("soccer", "match_1", "Lan")
+    state = gr_runtime._activate_game_route("soccer", "match_1", "Lan")
+    state["user_language"] = "zh-CN"
+    return state
 
 
 def _append_user_line(state, index):

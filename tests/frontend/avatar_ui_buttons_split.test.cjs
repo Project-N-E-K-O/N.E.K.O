@@ -13,6 +13,7 @@ const PART_NAMES = [
     'idle-actions-and-audio.js',
     'idle-drag-and-subactions.js',
     'idle-journey-and-presentation.js',
+    'idle-cat-mind-observations.js',
     'methods-setup.js',
     'methods-buttons.js',
     'methods-return.js',
@@ -26,10 +27,13 @@ const EXPECTED_METHOD_NAMES = [
     'createButtonElement',
     'createMicMuteButton',
     'createReturnButton',
+    'createScreenShareQuickButton',
+    'createVoiceSessionQuickControls',
     'getDefaultButtonConfigs',
     'resetAllButtons',
     'setButtonActive',
     'setupFloatingButtonsBase',
+    'syncResponsiveButtonVisibility',
     'updateSeparatePopupTriggerIcon',
 ];
 

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from io import BytesIO
 from pathlib import Path
+import hashlib
 import shutil
 
 import pytest
@@ -8,7 +10,13 @@ from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
 from plugin.neko_plugin_cli.public import pack_plugin
+from plugin.server.application.plugin_cli import service as plugin_cli_service
 from plugin.server.application.plugin_cli.service import PluginCliService
+from plugin.server.application.install_source import (
+    InstallSourceManager,
+    PluginDirectoryScanner,
+    set_global_manager,
+)
 from plugin.server.domain.errors import ServerDomainError
 from plugin.server.infrastructure.exceptions import register_exception_handlers
 from plugin.server.routes.plugin_cli import router
@@ -18,7 +26,12 @@ pytestmark = pytest.mark.plugin_unit
 FIXTURE_PLUGINS_ROOT = Path(__file__).resolve().parents[2] / "fixtures" / "neko_plugin_cli" / "plugins"
 
 
-def _make_plugin_dir(tmp_path: Path, plugin_id: str = "route_demo") -> Path:
+def _make_plugin_dir(
+    tmp_path: Path,
+    plugin_id: str = "route_demo",
+    *,
+    version: str = "0.0.1",
+) -> Path:
     plugin_dir = tmp_path / plugin_id
     plugin_dir.mkdir(parents=True, exist_ok=True)
     (plugin_dir / "plugin.toml").write_text(
@@ -27,7 +40,7 @@ def _make_plugin_dir(tmp_path: Path, plugin_id: str = "route_demo") -> Path:
                 "[plugin]",
                 f'id = "{plugin_id}"',
                 'name = "Route Demo"',
-                'version = "0.0.1"',
+                f'version = "{version}"',
                 'type = "plugin"',
                 "",
                 f"[{plugin_id}]",
@@ -88,6 +101,43 @@ class _MemoryUploadFile:
         return b"demo"
 
 
+@pytest.mark.asyncio
+async def test_save_uploaded_file_streams_and_accepts_uppercase_suffix(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    packages_root = tmp_path / "packages"
+    _patch_plugin_cli_settings(monkeypatch, builtin_root=tmp_path, packages_root=packages_root)
+
+    result = await PluginCliService().save_uploaded_file(
+        filename="DEMO.NEKO-PLUGIN",
+        source_file=BytesIO(b"package-bytes"),
+    )
+
+    saved_path = Path(str(result["path"]))
+    assert saved_path.name == "DEMO.NEKO-PLUGIN"
+    assert saved_path.read_bytes() == b"package-bytes"
+    assert PluginCliService()._resolve_package_path(str(saved_path)) == saved_path
+
+
+@pytest.mark.asyncio
+async def test_save_uploaded_file_removes_partial_file_when_size_limit_is_exceeded(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    packages_root = tmp_path / "packages"
+    _patch_plugin_cli_settings(monkeypatch, builtin_root=tmp_path, packages_root=packages_root)
+    monkeypatch.setattr(plugin_cli_service, "_UPLOAD_MAX_BYTES", 5)
+
+    with pytest.raises(ServerDomainError, match="File too large"):
+        await PluginCliService().save_uploaded_file(
+            filename="demo.neko-plugin",
+            source_file=BytesIO(b"123456"),
+        )
+
+    assert not list(packages_root.glob("*"))
+
+
 @pytest.fixture
 def plugin_cli_test_app() -> FastAPI:
     app = FastAPI(title="plugin-cli-test-app")
@@ -117,7 +167,7 @@ def test_upload_and_unpack_legacy_returns_unpack_key(monkeypatch: pytest.MonkeyP
     body = asyncio.run(
         plugin_cli_routes.plugin_cli_upload_and_unpack_legacy(
             _MemoryUploadFile(),  # type: ignore[arg-type]
-            on_conflict="rename",
+            on_conflict="fail",
             _="",
         )
     )
@@ -454,7 +504,7 @@ async def test_plugin_cli_route_workflow_pack_analyze_inspect_verify_and_unpack(
                 "package": str(package_path),
                 "plugins_root": str(plugins_root),
                 "profiles_root": str(profiles_root),
-                "on_conflict": "rename",
+                "on_conflict": "fail",
             },
         )
         assert unpack_response.status_code == 200
@@ -492,13 +542,250 @@ async def test_plugin_cli_unpack_route_uses_default_roots_when_fields_omitted(
     async with AsyncClient(transport=transport, base_url="http://testserver") as client:
         response = await client.post(
             "/plugin-cli/unpack",
-            json={"package": str(package_path), "on_conflict": "rename"},
+            json={"package": str(package_path)},
         )
 
         assert response.status_code == 200
         body = response.json()
         assert body["plugins_root"] == str(default_plugins_root.resolve())
         assert (default_plugins_root / "simple_plugin" / "plugin.toml").is_file()
+
+
+@pytest.mark.asyncio
+async def test_plugin_cli_install_plan_reports_matching_plugin_upgrade(
+    plugin_cli_test_app: FastAPI,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _copy_fixture_plugin(tmp_path, "simple_plugin")
+    package_path = tmp_path / "simple_plugin.neko-plugin"
+    pack_plugin(source, package_path)
+    plugins_root = tmp_path / "plugins"
+    installed = plugins_root / "simple_plugin"
+    shutil.copytree(source, installed)
+    manifest = (installed / "plugin.toml").read_text(encoding="utf-8")
+    (installed / "plugin.toml").write_text(
+        manifest.replace('version = "0.1.0"', 'version = "0.0.9"'),
+        encoding="utf-8",
+    )
+    _patch_plugin_cli_settings(
+        monkeypatch,
+        builtin_root=tmp_path,
+        user_root=plugins_root,
+        packages_root=tmp_path,
+        profiles_root=tmp_path / "profiles",
+    )
+
+    transport = ASGITransport(app=plugin_cli_test_app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/plugin-cli/install-plan",
+            json={"package": str(package_path)},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["action"] == "upgrade"
+    assert response.json()["plugin_id"] == "simple_plugin"
+
+
+@pytest.mark.asyncio
+async def test_plugin_cli_route_upgrades_in_place_after_confirmation(
+    plugin_cli_test_app: FastAPI,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plugin_id = "route_upgrade_demo"
+    packages_root = tmp_path / "packages"
+    packages_root.mkdir()
+    v1_source = _make_plugin_dir(
+        tmp_path / "v1-source",
+        plugin_id=plugin_id,
+        version="1.0.0",
+    )
+    v2_source = _make_plugin_dir(
+        tmp_path / "v2-source",
+        plugin_id=plugin_id,
+        version="2.0.0",
+    )
+    v1_package = packages_root / f"{plugin_id}-1.0.0.neko-plugin"
+    v2_package = packages_root / f"{plugin_id}-2.0.0.neko-plugin"
+    pack_plugin(v1_source, v1_package)
+    pack_plugin(v2_source, v2_package)
+    user_root = tmp_path / "user-plugins"
+    _patch_plugin_cli_settings(
+        monkeypatch,
+        builtin_root=tmp_path / "builtin",
+        user_root=user_root,
+        packages_root=packages_root,
+        profiles_root=tmp_path / "profiles",
+    )
+
+    transport = ASGITransport(app=plugin_cli_test_app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        install_response = await client.post(
+            "/plugin-cli/install",
+            json={"package": str(v1_package)},
+        )
+        assert install_response.status_code == 200, install_response.text
+        assert install_response.json()["operation"] == "install"
+
+        plan_response = await client.post(
+            "/plugin-cli/install-plan",
+            json={"package": str(v2_package)},
+        )
+        assert plan_response.status_code == 200, plan_response.text
+        plan = plan_response.json()
+        assert plan["action"] == "upgrade"
+
+        upgrade_response = await client.post(
+            "/plugin-cli/install",
+            json={
+                "package": str(v2_package),
+                "confirm_upgrade": True,
+                "confirmation_token": plan["confirmation_token"],
+            },
+        )
+
+    assert upgrade_response.status_code == 200, upgrade_response.text
+    assert upgrade_response.json()["operation"] == "upgrade"
+    installed_manifest = (user_root / plugin_id / "plugin.toml").read_text(encoding="utf-8")
+    assert 'version = "2.0.0"' in installed_manifest
+    assert not (user_root / f"{plugin_id}_1").exists()
+
+
+@pytest.mark.asyncio
+async def test_plugin_cli_install_returns_structured_rollback_details(
+    plugin_cli_test_app: FastAPI,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fail_install(**_kwargs: object) -> dict[str, object]:
+        raise ServerDomainError(
+            code="PLUGIN_UPGRADE_ROLLED_BACK",
+            message="Plugin replacement failed and rollback completed",
+            status_code=500,
+            details={"stage": "install", "rollback_status": "completed"},
+        )
+
+    monkeypatch.setattr(plugin_cli_routes.service, "install", fail_install)
+    transport = ASGITransport(app=plugin_cli_test_app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/plugin-cli/install",
+            json={"package": "/packages/demo.neko-plugin"},
+        )
+
+    assert response.status_code == 500
+    assert response.headers["x-error-code"] == "PLUGIN_UPGRADE_ROLLED_BACK"
+    assert response.json() == {
+        "detail": {
+            "code": "PLUGIN_UPGRADE_ROLLED_BACK",
+            "message": "Plugin replacement failed and rollback completed",
+            "details": {"stage": "install", "rollback_status": "completed"},
+        }
+    }
+
+
+@pytest.mark.asyncio
+async def test_plugin_cli_install_records_uploaded_package_as_imported(
+    plugin_cli_test_app: FastAPI,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plugin_id = "route_import_demo"
+    source = _make_plugin_dir(tmp_path / "source", plugin_id=plugin_id)
+    package_source_root = tmp_path / "package-source"
+    package_source_root.mkdir()
+    package_path = package_source_root / f"{plugin_id}.neko-plugin"
+    pack_plugin(source, package_path)
+    package_bytes = package_path.read_bytes()
+    packages_root = tmp_path / "packages"
+    builtin_root = tmp_path / "builtin"
+    user_root = tmp_path / "user-plugins"
+    profiles_root = tmp_path / "profiles"
+    _patch_plugin_cli_settings(
+        monkeypatch,
+        builtin_root=builtin_root,
+        user_root=user_root,
+        packages_root=packages_root,
+        profiles_root=profiles_root,
+    )
+    manager = InstallSourceManager(
+        lock_path=tmp_path / "plugins.lock.json",
+        builtin_root=builtin_root,
+        user_root=user_root,
+        scanner=PluginDirectoryScanner(builtin_root, user_root),
+    )
+    set_global_manager(manager)
+    try:
+        transport = ASGITransport(app=plugin_cli_test_app)
+        async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+            upload_response = await client.post(
+                "/plugin-cli/upload",
+                files={"file": (package_path.name, package_bytes, "application/octet-stream")},
+            )
+            assert upload_response.status_code == 200, upload_response.text
+            response = await client.post(
+                "/plugin-cli/install",
+                json={
+                    "package": upload_response.json()["path"],
+                    "install_source": "imported",
+                },
+            )
+    finally:
+        set_global_manager(None)
+
+    assert response.status_code == 200, response.text
+    installed_dir = user_root / plugin_id
+    source_view = manager.to_api_view(plugin_id, directory_path=installed_dir)
+    assert source_view["source"] == "imported"
+    assert source_view["source_detail"] == {
+        "package_filename": package_path.name,
+        "package_sha256": hashlib.sha256(package_bytes).hexdigest(),
+    }
+
+
+@pytest.mark.asyncio
+async def test_plugin_cli_install_remains_successful_when_import_hashing_fails(
+    plugin_cli_test_app: FastAPI,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plugin_id = "route_import_hash_failure"
+    source = _make_plugin_dir(tmp_path / "source", plugin_id=plugin_id)
+    packages_root = tmp_path / "packages"
+    packages_root.mkdir()
+    package_path = packages_root / f"{plugin_id}.neko-plugin"
+    pack_plugin(source, package_path)
+    user_root = tmp_path / "user-plugins"
+    _patch_plugin_cli_settings(
+        monkeypatch,
+        builtin_root=tmp_path / "builtin",
+        user_root=user_root,
+        packages_root=packages_root,
+        profiles_root=tmp_path / "profiles",
+    )
+    def _hash_failure(_path: Path) -> str:
+        raise OSError("package archive disappeared")
+
+    monkeypatch.setattr(plugin_cli_routes.service, "_sha256_file", _hash_failure)
+    transport = ASGITransport(app=plugin_cli_test_app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/plugin-cli/install",
+            json={
+                "package": str(package_path),
+                "install_source": "imported",
+            },
+        )
+
+    assert response.status_code == 200, response.text
+    result = response.json()
+    assert result["operation"] == "install"
+    assert result["installed_plugin_count"] == 1
+    assert result["install_source_warning"] == (
+        "install_source_prepare_failed: package archive disappeared"
+    )
+    assert (user_root / plugin_id / "plugin.toml").is_file()
 
 
 @pytest.mark.asyncio

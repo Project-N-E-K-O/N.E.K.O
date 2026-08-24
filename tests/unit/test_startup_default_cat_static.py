@@ -4,6 +4,8 @@ import subprocess
 import textwrap
 from pathlib import Path
 
+from tests.node_harness import run_node_script
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 APP_AUTO_GOODBYE = PROJECT_ROOT / "static" / "app" / "app-auto-goodbye.js"
@@ -28,7 +30,8 @@ def test_startup_default_cat_retry_is_deferred_and_user_actions_cancel_it():
     assert "window.isNekoHomeTutorialPending === true" in source
     assert "cancelStartupDefaultCatRequest(false);" in source
     assert "detail.startupDefaultForm !== 'cat' && state.startupDefaultCatRequested" in source
-    assert "const handleReturn = () => {\n            // Returning" in source
+    assert "const handleReturnCommit = (event) => {" in source
+    assert "const handleReturnComplete = (event) => {" in source
     assert "cancelStartupDefaultCatRequest(true);" in source
     assert "function consumeStartupDefaultCatRequest()" in source
     assert "consumeStartupDefaultCatRequest: consumeStartupDefaultCatRequest" in source
@@ -114,5 +117,5 @@ def test_startup_default_cat_request_survives_tutorial_and_runs_after_unlock():
         }}).catch((error) => {{ console.error(error); process.exitCode = 1; }});
         """
     )
-    result = subprocess.run([node, "-e", script], capture_output=True, text=True, check=False)
+    result = run_node_script(node, script, capture_output=True, text=True, check=False)
     assert result.returncode == 0, result.stderr or result.stdout

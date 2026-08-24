@@ -10,6 +10,7 @@ from PIL import Image
 from main_routers.system_router import screenshot as system_router_module
 from main_routers.system_router import _shared as system_router_shared
 from main_routers.shared_state import init_shared_state
+from utils import capture_bridge
 
 
 SCREENSHOT_ENDPOINT = "/api/screenshot"
@@ -19,7 +20,9 @@ INTERACTIVE_SCREENSHOT_ENDPOINT = "/api/screenshot/interactive"
 @pytest.fixture(autouse=True)
 def _reset_shared_state_after_test(monkeypatch):
     monkeypatch.setattr(system_router_shared, "AUTOSTART_CSRF_TOKEN", "test-csrf-token")
+    capture_bridge._reset_for_tests()
     yield
+    capture_bridge._reset_for_tests()
     init_shared_state(
         role_state={},
         steamworks=None,
@@ -312,8 +315,138 @@ def test_interactive_screenshot_returns_unsupported_on_non_macos(monkeypatch, pl
     with _build_client() as client:
         response = client.post(INTERACTIVE_SCREENSHOT_ENDPOINT, headers=_local_headers())
 
-    assert response.status_code == 501
-    assert "only supported on macOS" in response.json()["error"]
+    if platform_name == "linux":
+        assert response.status_code == 501
+        assert "only supported on macOS or Windows" in response.json()["error"]
+    else:
+        assert response.status_code == 503
+        assert response.json()["error"] == "no_renderer"
+
+
+@pytest.mark.unit
+def test_windows_interactive_screenshot_uses_region_bridge_defaults_for_empty_body(monkeypatch):
+    monkeypatch.setattr(system_router_module, "_is_loopback_request", lambda _request: True)
+    monkeypatch.setattr(system_router_module.sys, "platform", "win32")
+    monkeypatch.setattr(system_router_module.capture_bridge, "has_region_capture_client", lambda: True)
+
+    async def _capture(payload, *, timeout):
+        assert payload == {
+            "selection_only": False,
+            "copy_to_clipboard": True,
+            "session_timeout_ms": 300000,
+        }
+        assert timeout == 305.0
+        return {"success": True, "image": "data:image/png;base64,AAAA"}
+
+    monkeypatch.setattr(system_router_module.capture_bridge, "request_capture_region", _capture)
+
+    with _build_client() as client:
+        response = client.post(INTERACTIVE_SCREENSHOT_ENDPOINT, headers=_local_headers())
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "success": True,
+        "data": "data:image/png;base64,AAAA",
+        "interactive": True,
+    }
+
+
+@pytest.mark.unit
+def test_windows_interactive_screenshot_forwards_selection_options_and_cancel(monkeypatch):
+    monkeypatch.setattr(system_router_module, "_is_loopback_request", lambda _request: True)
+    monkeypatch.setattr(system_router_module.sys, "platform", "win32")
+    selected_lanlan: list[str | None] = []
+
+    def _has_region_capture_client(lanlan_name=None):
+        selected_lanlan.append(lanlan_name)
+        return True
+
+    monkeypatch.setattr(
+        system_router_module.capture_bridge,
+        "has_region_capture_client",
+        _has_region_capture_client,
+    )
+
+    async def _capture(payload, *, timeout):
+        assert payload == {
+            "selection_only": True,
+            "copy_to_clipboard": False,
+            "session_timeout_ms": 45000,
+            "lanlan_name": "requesting",
+        }
+        assert timeout == 50.0
+        return {"success": False, "canceled": True}
+
+    monkeypatch.setattr(system_router_module.capture_bridge, "request_capture_region", _capture)
+
+    with _build_client() as client:
+        response = client.post(
+            INTERACTIVE_SCREENSHOT_ENDPOINT,
+            headers=_local_headers(),
+            json={
+                "selection_only": True,
+                "copy_to_clipboard": False,
+                "session_timeout_ms": 45000,
+                "lanlan_name": "requesting",
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {"success": False, "canceled": True}
+    assert selected_lanlan == ["requesting"]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("bridge_message", "expected_status", "expected_error"),
+    [
+        ("capture_busy", 409, "capture_busy"),
+        ("SCREENSHOT_BUSY", 409, "capture_busy"),
+        ("renderer response timeout", 504, "renderer_timeout"),
+        ("SCREENSHOT_OVERLAY_SESSION_TIMEOUT", 504, "renderer_timeout"),
+        ("no renderer available", 503, "no_renderer"),
+        ("SCREEN_CAPTURE_UNAVAILABLE", 503, "no_renderer"),
+    ],
+)
+def test_windows_interactive_screenshot_maps_bridge_failures(
+    monkeypatch, bridge_message, expected_status, expected_error
+):
+    monkeypatch.setattr(system_router_module, "_is_loopback_request", lambda _request: True)
+    monkeypatch.setattr(system_router_module.sys, "platform", "win32")
+    monkeypatch.setattr(system_router_module.capture_bridge, "has_region_capture_client", lambda: True)
+
+    async def _capture(_payload, *, timeout):
+        raise capture_bridge.CaptureBridgeError(bridge_message)
+
+    monkeypatch.setattr(system_router_module.capture_bridge, "request_capture_region", _capture)
+
+    with _build_client() as client:
+        response = client.post(INTERACTIVE_SCREENSHOT_ENDPOINT, headers=_local_headers())
+
+    assert response.status_code == expected_status
+    assert response.json()["error"] == expected_error
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"selection_only": "yes"},
+        {"copy_to_clipboard": 1},
+        {"session_timeout_ms": 9999},
+        {"session_timeout_ms": 300001},
+        {"unknown": True},
+    ],
+)
+def test_windows_interactive_screenshot_rejects_invalid_options(monkeypatch, payload):
+    monkeypatch.setattr(system_router_module, "_is_loopback_request", lambda _request: True)
+    monkeypatch.setattr(system_router_module.sys, "platform", "win32")
+
+    with _build_client() as client:
+        response = client.post(INTERACTIVE_SCREENSHOT_ENDPOINT, headers=_local_headers(), json=payload)
+
+    assert response.status_code == 422
+    assert response.json()["error"] == "validation_error"
 
 
 @pytest.mark.unit

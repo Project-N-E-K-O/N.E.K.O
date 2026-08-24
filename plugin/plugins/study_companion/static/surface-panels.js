@@ -91,6 +91,12 @@
     return t(ctx, pair[0], pair[1]);
   }
 
+  function deckDisplayName(ctx, deck) {
+    return deck?.is_default
+      ? t(ctx, 'ui.memory.default_deck_name', 'Default Deck')
+      : String(deck?.name || '');
+  }
+
   function itemTypeLabel(ctx, value) {
     return deckTypeLabel(ctx, value);
   }
@@ -128,8 +134,8 @@
     const key = String(value || 'focus');
     const labels = {
       focus: ['ui.pomodoro.mode.focus', 'Focus'],
-      break_short: ['ui.pomodoro.mode.break_short', 'Short break'],
-      break_long: ['ui.pomodoro.mode.break_long', 'Long break'],
+      short_break: ['ui.pomodoro.mode.break_short', 'Short break'],
+      long_break: ['ui.pomodoro.mode.break_long', 'Long break'],
     };
     const pair = labels[key] || [null, key];
     return pair[0] ? t(ctx, pair[0], pair[1]) : pair[1];
@@ -191,6 +197,40 @@
 
   function safeList(payload, key) {
     return Array.isArray(payload?.[key]) ? payload[key] : [];
+  }
+
+  async function listAllMemoryDecks(ctx) {
+    const decks = [];
+    let offset = 0;
+    let hasMore = true;
+    while (hasMore) {
+      const payload = await ctx.callPlugin('study_memory_list_decks', { limit: 100, offset });
+      decks.push(...safeList(payload, 'decks'));
+      hasMore = payload?.has_more === true;
+      if (!hasMore) break;
+      const nextOffset = Number(payload?.next_offset);
+      if (!Number.isSafeInteger(nextOffset) || nextOffset <= offset) {
+        throw new Error('Invalid memory deck continuation offset');
+      }
+      offset = nextOffset;
+    }
+    return decks;
+  }
+
+  let initialMemoryDecks = null;
+
+  function loadDecks(ctx, readyTarget) {
+    if (!initialMemoryDecks) {
+      initialMemoryDecks = listAllMemoryDecks(ctx).catch((error) => {
+        initialMemoryDecks = null;
+        throw error;
+      });
+    }
+    const pending = initialMemoryDecks;
+    return pending.finally(() => {
+      if (initialMemoryDecks === pending) initialMemoryDecks = null;
+      if (readyTarget) readyTarget.disabled = false;
+    });
   }
 
   function valid(root, token, allowDetached = false) {
@@ -298,6 +338,8 @@
     let errorText = '';
     let refreshTimer = 0;
     let refreshing = false;
+    let focusMinutes = '25';
+    let durationInitialized = false;
 
     function activeTimerState() {
       return ['focusing', 'short_break', 'long_break'].includes(String(status.state || ''));
@@ -328,6 +370,11 @@
       refreshing = true;
       try {
         status = await ctx.callPlugin('study_pomodoro_status');
+        if (!durationInitialized || status.config?.allow_custom_duration === false) {
+          const configuredMinutes = Number(status.config?.focus_minutes);
+          focusMinutes = String(Number.isFinite(configuredMinutes) && configuredMinutes >= 1 && configuredMinutes <= 120 ? Math.round(configuredMinutes) : 25);
+          durationInitialized = true;
+        }
         errorText = '';
         draw();
         scheduleRefresh();
@@ -336,10 +383,10 @@
       }
     }
 
-    async function act(entryId) {
+    async function act(entryId, args = {}) {
       try {
         stopTimer();
-        status = await ctx.callPlugin(entryId);
+        status = await ctx.callPlugin(entryId, args);
         errorText = '';
       } catch (error) {
         errorText = errText(error);
@@ -350,25 +397,114 @@
 
     function draw() {
       if (!valid(root, token, true)) return;
+      const stateKey = String(status.state || 'idle');
+      const modeKey = String(status.mode || 'focus');
+      const stateLabel = pomodoroStateLabel(ctx, stateKey);
+      const modeLabel = pomodoroModeLabel(ctx, modeKey);
+      const remaining = formatSeconds(status.remaining_seconds);
+      const isFocusing = stateKey === 'focusing';
+      const isPaused = stateKey === 'paused';
+      const isBreak = stateKey === 'short_break' || stateKey === 'long_break';
+      const isRunning = isFocusing || isPaused || isBreak;
+      const allowCustomDuration = status.config?.allow_custom_duration !== false;
+      const configuredFocusMinutes = Math.min(120, Math.max(1, Math.round(Number(status.config?.focus_minutes) || 25)));
+      const selectedMinutes = allowCustomDuration
+        ? Math.min(120, Math.max(1, Math.round(Number(focusMinutes) || 25)))
+        : configuredFocusMinutes;
+      const modeMinutes = modeKey === 'short_break'
+        ? Number(status.config?.short_break_minutes || 5)
+        : modeKey === 'long_break'
+          ? Number(status.config?.long_break_minutes || 15)
+          : Number(status.current_focus_session?.planned_minutes || selectedMinutes);
+      const totalSeconds = Math.max(60, modeMinutes * 60);
+      const displaySeconds = isRunning ? Number(status.remaining_seconds || 0) : selectedMinutes * 60;
+      const progress = isRunning ? Math.min(1, Math.max(0, Number(status.remaining_seconds || 0) / totalSeconds)) : 1;
       const children = [];
       if (errorText) children.push(pre(errorText));
+
+      const durationInput = input(String(selectedMinutes), { type: 'number', min: 1, max: 120, step: 1, inputmode: 'numeric' });
+      durationInput.disabled = isRunning || !allowCustomDuration;
+      durationInput.addEventListener('input', () => {
+        focusMinutes = durationInput.value;
+        if (!isRunning) {
+          const preview = root.querySelector('.pomodoro-ring__time');
+          if (preview) preview.textContent = formatSeconds(Math.min(120, Math.max(1, Math.round(Number(focusMinutes) || 25))) * 60);
+        }
+      });
+      durationInput.addEventListener('blur', () => {
+        focusMinutes = String(Math.min(120, Math.max(1, Math.round(Number(focusMinutes) || 25))));
+        durationInput.value = focusMinutes;
+      });
+      const duration = el('label', 'pomodoro-duration');
+      duration.append(
+        el('span', '', t(ctx, 'ui.label.focus_minutes', 'Focus minutes')),
+        durationInput,
+        el('small', '', '1–120'),
+      );
+
+      const stage = el('section', 'pomodoro-stage');
+      const ring = el('div', 'pomodoro-ring');
+      ring.dataset.mode = modeKey;
+      const progressSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+      progressSvg.setAttribute('class', 'pomodoro-ring__progress');
+      progressSvg.setAttribute('viewBox', '0 0 260 260');
+      progressSvg.setAttribute('aria-hidden', 'true');
+      const ticks = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+      const track = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+      const value = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+      [['class', 'pomodoro-ring__ticks'], ['cx', '130'], ['cy', '130'], ['r', '123'], ['pathLength', '100']].forEach(([key, val]) => ticks.setAttribute(key, val));
+      [['class', 'pomodoro-ring__track'], ['cx', '130'], ['cy', '130'], ['r', '112'], ['pathLength', '100']].forEach(([key, val]) => track.setAttribute(key, val));
+      [['class', 'pomodoro-ring__value'], ['cx', '130'], ['cy', '130'], ['r', '112'], ['pathLength', '100'], ['stroke-dasharray', '100'], ['stroke-dashoffset', String(100 - progress * 100)]].forEach(([key, val]) => value.setAttribute(key, val));
+      progressSvg.append(ticks, track, value);
+      const core = el('div', 'pomodoro-ring__core');
+      core.append(
+        el('span', 'pomodoro-ring__mode', modeLabel),
+        el('strong', 'pomodoro-ring__time', formatSeconds(displaySeconds)),
+        el('span', 'pomodoro-ring__state', stateLabel),
+      );
+      ring.append(progressSvg, core);
+      stage.appendChild(ring);
+      children.push(stage, duration);
+
       children.push(
         state([
-          [t(ctx, 'ui.label.remaining', 'Remaining'), formatSeconds(status.remaining_seconds)],
+          [t(ctx, 'ui.label.remaining', 'Remaining'), remaining],
           [t(ctx, 'ui.label.sessions', 'Sessions'), status.session_count || 0],
-          [t(ctx, 'ui.label.mode', 'Mode'), pomodoroModeLabel(ctx, status.mode)],
+          [t(ctx, 'ui.label.mode', 'Mode'), modeLabel],
         ]),
       );
-      const ring = el('div', 'pomodoro-ring', formatSeconds(status.remaining_seconds));
-      ring.dataset.mode = String(status.mode || 'focus');
-      children.push(ring, actions([
-        button(t(ctx, 'ui.button.start', 'Start'), () => act('study_pomodoro_start')),
-        button(t(ctx, 'ui.button.pause', 'Pause'), () => act('study_pomodoro_pause')),
-        button(t(ctx, 'ui.button.resume', 'Resume'), () => act('study_pomodoro_resume')),
-        button(t(ctx, 'ui.button.stop', 'Stop'), () => act('study_pomodoro_stop')),
-        button(t(ctx, 'ui.button.skip_break', 'Skip break'), () => act('study_pomodoro_skip_break')),
-      ], 'study-panel__actions--primary'));
-      replace(root, ctx, 'pomodoro-panel', pomodoroStateLabel(ctx, status.state), children);
+      children.at(-1).classList.add('pomodoro-metrics');
+
+      function action(label, entryId, actionKey, enabled, primary = false, danger = false, args = {}) {
+        const item = button(label, () => act(entryId, typeof args === 'function' ? args() : args), false);
+        item.classList.add('pomodoro-action');
+        if (primary) item.classList.add('is-primary');
+        if (danger) item.classList.add('is-danger');
+        item.dataset.action = actionKey;
+        item.disabled = !enabled;
+        return item;
+      }
+
+      children.push(actions([
+        action(t(ctx, 'ui.button.start', 'Start'), 'study_pomodoro_start', 'start', !isRunning, !isRunning, false, () => (allowCustomDuration ? { focus_minutes: Math.min(120, Math.max(1, Math.round(Number(focusMinutes) || 25))) } : {})),
+        action(t(ctx, 'ui.button.pause', 'Pause'), 'study_pomodoro_pause', 'pause', isFocusing, isFocusing),
+        action(t(ctx, 'ui.button.resume', 'Resume'), 'study_pomodoro_resume', 'resume', isPaused, isPaused),
+        action(t(ctx, 'ui.button.stop', 'Stop'), 'study_pomodoro_stop', 'stop', isRunning, false, true),
+        action(t(ctx, 'ui.button.skip_break', 'Skip break'), 'study_pomodoro_skip_break', 'skip-break', isBreak, isBreak),
+      ], 'study-panel__actions--primary pomodoro-actions'));
+      replace(root, ctx, 'pomodoro-panel', stateLabel, children);
+      root.dataset.state = stateKey;
+      root.dataset.mode = modeKey;
+      const title = root.querySelector('.study-panel__title');
+      if (title) {
+        const mark = el('span', 'pomodoro-title__mark', '◷');
+        mark.setAttribute('aria-hidden', 'true');
+        title.classList.add('pomodoro-title');
+        title.prepend(mark);
+      }
+      const statusChip = root.querySelector('.study-panel__status-chip');
+      statusChip?.setAttribute('role', 'status');
+      statusChip?.setAttribute('aria-live', 'polite');
     }
 
     refresh().catch((error) => { errorText = errText(error); refreshing = false; draw(); scheduleRefresh(); });
@@ -498,10 +634,14 @@
     let goalAmount = 10;
     let goalUnit = 'cards';
     let status = '';
+    let expandedDeckId = '';
+    const itemsByDeck = new Map();
+    const hasMoreByDeck = new Map();
+    const nextOffsetByDeck = new Map();
+    const loadingByDeck = new Map();
 
     async function refresh() {
-      const payload = await ctx.callPlugin('study_memory_list_decks', { limit: 100 });
-      decks = safeList(payload, 'decks');
+      decks = await listAllMemoryDecks(ctx);
       draw();
     }
 
@@ -543,6 +683,93 @@
       }
     }
 
+    async function loadDeckItems(deckId, append = false) {
+      if (loadingByDeck.get(deckId)) return;
+      loadingByDeck.set(deckId, true);
+      draw();
+      try {
+        const offset = append ? (nextOffsetByDeck.get(deckId) || 0) : 0;
+        const payload = await ctx.callPlugin('study_memory_list_deck_items', {
+          deck_id: deckId,
+          limit: 500,
+          offset,
+        });
+        const pageItems = safeList(payload, 'items');
+        itemsByDeck.set(
+          deckId,
+          append ? [...(itemsByDeck.get(deckId) || []), ...pageItems] : pageItems,
+        );
+        hasMoreByDeck.set(deckId, payload?.has_more === true);
+        nextOffsetByDeck.set(
+          deckId,
+          Number(payload?.next_offset) || offset + pageItems.length,
+        );
+      } catch (error) {
+        status = errText(error);
+        if (!append) itemsByDeck.set(deckId, []);
+      } finally {
+        loadingByDeck.set(deckId, false);
+        draw();
+      }
+    }
+
+    async function toggleDeckItems(deckId) {
+      if (expandedDeckId === deckId) {
+        expandedDeckId = '';
+        draw();
+        return;
+      }
+      expandedDeckId = deckId;
+      draw();
+      await loadDeckItems(deckId);
+    }
+
+    function deckRow(deck) {
+      const wrapper = el('div', 'study-panel__deck');
+      wrapper.appendChild(row(
+        tf(ctx, 'ui.memory.deck_summary', '{name} / {type} / {count} cards', {
+          name: deckDisplayName(ctx, deck),
+          type: deckTypeLabel(ctx, deck.deck_type),
+          count: deck.item_count || 0,
+        }),
+        button(
+          expandedDeckId === deck.id
+            ? t(ctx, 'ui.button.hide_cards', 'Hide cards')
+            : t(ctx, 'ui.button.view_cards', 'View cards'),
+          () => toggleDeckItems(deck.id),
+        ),
+        button(t(ctx, 'ui.daily_goal.set_for_deck', 'Set Goal'), () => saveGoal(deck.id)),
+        button(t(ctx, 'ui.button.delete', 'Delete'), () => deleteDeck(deck.id)),
+      ));
+      if (expandedDeckId === deck.id) {
+        const itemList = el('div', 'study-panel__deck-items');
+        const items = itemsByDeck.get(deck.id);
+        if (items?.length) {
+          items.forEach((item) => {
+            const itemRow = row(
+              item.prompt || '-',
+              item.answer || '-',
+              itemTypeLabel(ctx, item.item_type),
+            );
+            itemRow.classList.add('study-panel__deck-item');
+            itemList.appendChild(itemRow);
+          });
+        } else {
+          itemList.appendChild(el('p', 'study-panel__empty', t(ctx, 'ui.memory.empty_deck', 'No cards in this deck')));
+        }
+        if (hasMoreByDeck.get(deck.id)) {
+          const loadMore = button(
+            t(ctx, 'ui.button.load_more_cards', 'Load more cards'),
+            () => loadDeckItems(deck.id, true),
+          );
+          loadMore.disabled = loadingByDeck.get(deck.id) === true;
+          itemList.appendChild(loadMore);
+        }
+        wrapper.appendChild(itemList);
+      }
+      return wrapper;
+    }
+
     function draw() {
       if (!valid(root, token)) return;
       const nameInput = input(name);
@@ -553,7 +780,7 @@
       goalInput.addEventListener('input', () => { goalAmount = Math.max(1, Number(goalInput.value) || 1); });
       const unitSelect = select(goalUnit, unitOptions(ctx));
       unitSelect.addEventListener('change', () => { goalUnit = unitSelect.value; });
-      replace(root, ctx, 'memory-deck-list', status || String(decks.length), [
+      replace(root, ctx, 'memory-deck-list', status || tf(ctx, 'ui.memory.deck_count', '{count} decks', { count: decks.length }), [
         state([
           [t(ctx, 'ui.memory.title', 'Memory Deck'), decks.length],
           [t(ctx, 'ui.label.name', 'Name'), name || '-'],
@@ -566,11 +793,7 @@
           labeled(t(ctx, 'ui.memory.deck_goal_unit', 'Unit'), unitSelect),
           button(t(ctx, 'ui.button.create', 'Create'), createDeck, true),
         ], 'study-panel__actions--form'),
-        actions(decks.map((deck) => row(
-          `${deck.name} / ${deckTypeLabel(ctx, deck.deck_type)} / ${deck.item_count || 0}`,
-          button(t(ctx, 'ui.daily_goal.set_for_deck', 'Set Goal'), () => saveGoal(deck.id)),
-          button(t(ctx, 'ui.button.delete', 'Delete'), () => deleteDeck(deck.id)),
-        )), 'study-panel__actions--list'),
+        actions(decks.map(deckRow), 'study-panel__actions--list'),
       ]);
     }
 
@@ -587,8 +810,7 @@
     let result = '';
 
     async function refresh() {
-      const payload = await ctx.callPlugin('study_memory_list_decks', { limit: 100 });
-      decks = safeList(payload, 'decks');
+      decks = await listAllMemoryDecks(ctx);
       deckId = deckId || decks[0]?.id || '';
       draw();
     }
@@ -656,8 +878,39 @@
     let style = 'neko';
     let markdown = '';
     let status = '';
+    let availabilityResolved = false;
+    let exportAvailable = false;
+    let exportFormats = [];
+
+    function exportUnavailableText() {
+      return t(ctx, 'ui.status.export_unavailable', 'Export is disabled by doc_export.enabled');
+    }
+
+    async function loadExportAvailability() {
+      try {
+        const payload = await ctx.callPlugin('study_get_settings_config');
+        const config = payload?.config && typeof payload.config === 'object' ? payload.config : payload;
+        const docExport = config?.doc_export && typeof config.doc_export === 'object' ? config.doc_export : {};
+        exportAvailable = docExport.enabled === true;
+        exportFormats = exportAvailable ? ['markdown', 'pdf', 'docx'] : [];
+        if (exportAvailable && docExport.xmind_enabled === true) exportFormats.push('xmind');
+        if (!exportAvailable) status = exportUnavailableText();
+      } catch (error) {
+        exportAvailable = false;
+        exportFormats = [];
+        status = errText(error);
+      } finally {
+        availabilityResolved = true;
+        draw();
+      }
+    }
 
     async function exportNotes(previewOnly) {
+      if (!availabilityResolved || !exportAvailable) {
+        status = exportUnavailableText();
+        draw();
+        return;
+      }
       status = t(ctx, 'ui.status.exporting', 'Exporting...');
       draw();
       try {
@@ -673,7 +926,9 @@
 
     function draw() {
       if (!valid(root, token, true)) return;
-      const fmtSelect = select(fmt, [['markdown', formatLabel(ctx, 'markdown')], ['pdf', formatLabel(ctx, 'pdf')], ['docx', formatLabel(ctx, 'docx')], ['xmind', formatLabel(ctx, 'xmind')]]);
+      const visibleFormats = exportFormats.length ? exportFormats : ['markdown'];
+      if (!visibleFormats.includes(fmt)) fmt = visibleFormats[0];
+      const fmtSelect = select(fmt, visibleFormats.map((value) => [value, formatLabel(ctx, value)]));
       fmtSelect.addEventListener('change', () => { fmt = fmtSelect.value; draw(); });
       const styleSelect = select(style, [['neko', exportStyleLabel(ctx, 'neko')], ['academic', exportStyleLabel(ctx, 'academic')], ['compact', exportStyleLabel(ctx, 'compact')]]);
       styleSelect.addEventListener('change', () => { style = styleSelect.value; draw(); });
@@ -681,11 +936,21 @@
       previewButton.dataset.surfaceAction = 'export-preview';
       const exportButton = button(t(ctx, 'ui.button.export', 'Export'), () => exportNotes(false), true);
       exportButton.dataset.surfaceAction = 'export-download';
-      replace(root, ctx, 'note-exporter', status || t(ctx, 'ui.feature.export.body', 'Export notes or session artifacts'), [
+      const controlsDisabled = !availabilityResolved || !exportAvailable;
+      fmtSelect.disabled = controlsDisabled;
+      styleSelect.disabled = controlsDisabled;
+      previewButton.disabled = controlsDisabled;
+      exportButton.disabled = controlsDisabled;
+      const currentStatus = status || (!availabilityResolved
+        ? t(ctx, 'ui.status.config_loading', 'Loading settings...')
+        : exportAvailable
+          ? t(ctx, 'ui.feature.export.body', 'Export notes or session artifacts')
+          : exportUnavailableText());
+      replace(root, ctx, 'note-exporter', currentStatus, [
         state([
           [t(ctx, 'ui.label.format', 'Format'), formatLabel(ctx, fmt)],
           [t(ctx, 'ui.label.style', 'Style'), exportStyleLabel(ctx, style)],
-          [t(ctx, 'ui.label.reply', 'Reply'), status || t(ctx, 'ui.status.pending', 'Pending')],
+          [t(ctx, 'ui.label.reply', 'Reply'), currentStatus],
         ]),
         actions([
           labeled(t(ctx, 'ui.label.format', 'Format'), fmtSelect),
@@ -698,6 +963,7 @@
     }
 
     draw();
+    loadExportAvailability();
     return root;
   }
 
@@ -731,6 +997,50 @@
     return root;
   }
 
+  function renderKnowledgeContributionSettings(ctx, token) {
+    const root = panel(ctx, 'knowledge-contribution-settings', t(ctx, 'ui.status.loading', 'Loading...'));
+    let optIn = false;
+    let summary = {};
+
+    function draw(subtitle = '') {
+      if (!valid(root, token, true)) return;
+      const toggleButton = button(
+        optIn ? t(ctx, 'ui.button.disable', 'Disable') : t(ctx, 'ui.button.enable', 'Enable'),
+        async () => {
+          try {
+            const payload = await ctx.callPlugin('study_set_knowledge_contribution_opt_in', { opt_in: !optIn });
+            optIn = Boolean(payload?.opt_in);
+            summary = payload?.summary || {};
+            draw();
+          } catch (error) {
+            draw(errText(error));
+          }
+        },
+        true,
+      );
+      toggleButton.dataset.surfaceAction = 'knowledge-contribution-toggle';
+      replace(root, ctx, 'knowledge-contribution-settings', subtitle || (
+        optIn ? t(ctx, 'ui.status.enabled', 'Enabled') : t(ctx, 'ui.status.disabled', 'Disabled')
+      ), [
+        state([
+          [t(ctx, 'ui.label.candidates', 'Candidates'), summary.total || 0],
+          [t(ctx, 'ui.label.queue', 'Queue'), summary.queue_count || 0],
+        ]),
+        actions([toggleButton]),
+      ]);
+    }
+
+    ctx.callPlugin('study_anonymous_knowledge_preview', { limit: 100 })
+      .then((payload) => {
+        if (!valid(root, token)) return;
+        optIn = Boolean(payload?.opt_in);
+        summary = payload?.summary || {};
+        draw();
+      })
+      .catch((error) => replace(root, ctx, 'knowledge-contribution-settings', t(ctx, 'status.state.error', 'Error'), [pre(errText(error))]));
+    return root;
+  }
+
   function render(surfaceId, ctx) {
     panelToken += 1;
     const token = panelToken;
@@ -742,11 +1052,14 @@
     if (surfaceId === 'memory-importer') return renderMemoryImporter(ctx, token);
     if (surfaceId === 'note-exporter') return renderExporter(ctx, token);
     if (surfaceId === 'session-summary') return renderSessionSummary(ctx, token);
+    if (surfaceId === 'knowledge-contribution-settings') return renderKnowledgeContributionSettings(ctx, token);
     return null;
   }
 
   window.StudyCompanionSurfacePanels = {
     render,
+    listAllMemoryDecks,
+    loadDecks,
     close() {
       panelToken += 1;
     },

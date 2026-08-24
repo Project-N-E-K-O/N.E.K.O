@@ -44,6 +44,24 @@ _MAX_TEXT_TOKENS = 1000
 _TOKEN_PRECAP_CHARS_PER_TOKEN = 8
 _TRIGGER_RETRY_DELAY_SECONDS = 60.0
 _CANDIDATE_MATURE_SECONDS = 60.0
+# An analyzer failure (tier down, bad key, timeout, unparseable reply) keeps the
+# character dirty so a transient blip still gets retried. Without a backoff that
+# retry rides the 20s activity heartbeat indefinitely — thousands of LLM calls
+# before the 12h signal retention finally starves it, which is how a permanent
+# misconfiguration turns into a billable hot loop. Back off exponentially
+# instead, and reset the moment the analyzer answers at all (an empty result is
+# an answer: it takes the discard path, not this one).
+#
+# The base matches the heartbeat period on purpose: the first retry is NOT
+# delayed, it is the very next tick. That first step is a free immediate retry
+# for a blip (one timeout, one 5xx), not a backoff — the backoff starts from
+# the second failure. Total cost over a long outage is set by the cap, not by
+# this value: 20s and 60s bases both land within a couple of calls of each
+# other across 12h, so the cheaper-to-recover one wins.
+_ANALYZER_RETRY_BASE_SECONDS = 20.0
+_ANALYZER_RETRY_CAP_SECONDS = 30 * 60.0
+# Clamps the doubling itself, so a long-lived failure can't overflow the shift.
+_ANALYZER_RETRY_MAX_DOUBLINGS = 10
 _MIN_TOPIC_TRIGGER_GAP_SECONDS = 4 * 60 * 60
 _MAX_DAILY_TOPIC_TRIGGERS = 2
 _USED_TOPIC_RECENT_SECONDS = 48 * 60 * 60
@@ -310,6 +328,87 @@ class TopicHookPool:
         self._dirty: set[str] = set(self._signal_store.names())
         self._seq: dict[str, int] = defaultdict(int)
         self._purge_generation: dict[str, int] = defaultdict(int)
+        # Consecutive analyzer failures per character, and the wall-clock
+        # instant before which the next attempt is pointless.
+        self._analyzer_failures: dict[str, int] = defaultdict(int)
+        self._analyzer_retry_not_before: dict[str, float] = {}
+
+    def _analyzer_retry_delay(self, failures: int) -> float:
+        doublings = min(max(0, failures - 1), _ANALYZER_RETRY_MAX_DOUBLINGS)
+        return min(
+            _ANALYZER_RETRY_BASE_SECONDS * (2 ** doublings),
+            _ANALYZER_RETRY_CAP_SECONDS,
+        )
+
+    def _note_analyzer_failure(
+        self,
+        name: str,
+        now: float,
+        *,
+        elapsed: float,
+        reason: str,
+        seen_purge_generation: int | None = None,
+    ) -> None:
+        if (
+            seen_purge_generation is not None
+            and self._purge_generation.get(name, 0) != seen_purge_generation
+        ):
+            # An explicit purge landed while this call was in flight. The state
+            # it failed against is gone, so arming a retry window now would
+            # re-impose the old backoff on evidence the purge just cleared —
+            # the same reason the success path drops a stale result.
+            logger.debug(
+                "[%s] topic analyzer failure discarded: purged mid-flight", name
+            )
+            return
+        self._analyzer_failures[name] += 1
+        failures = self._analyzer_failures[name]
+        delay = self._analyzer_retry_delay(failures)
+        # The first step is not a backoff — it is the free immediate retry the
+        # base is sized for, so it anchors at the tick stamp and lands on the
+        # very next heartbeat. Adding the call's runtime here would push a
+        # normal 8s timeout past that tick and delay recovery to the one after.
+        # From the second consecutive failure on it IS a backoff, so it anchors
+        # at completion instead: otherwise the runtime and a stale tick stamp
+        # get subtracted out of every window.
+        anchor = now if failures == 1 else now + elapsed
+        self._analyzer_retry_not_before[name] = anchor + delay
+        logger.info(
+            "[%s] topic analyzer failed (%s, consecutive failures: %d); "
+            "keeping dirty, next attempt in %ds",
+            name,
+            reason,
+            failures,
+            int(delay),
+        )
+
+    @staticmethod
+    def _elapsed_since_tick(current_time: float, started_at: float) -> float:
+        """How long ago the failure's tick stamp was taken, in seconds.
+
+        Two independent sources, and the deadline has to clear both:
+
+        * the analyzer's own runtime — config read, client construction, the
+          8s call timeout — measured on a monotonic clock;
+        * however long the caller's tick had already been running before it
+          handed over ``now``. The activity heartbeat stamps ``ts`` and then
+          awaits a WebSocket drain before reaching the topic pool, so a
+          backpressured send makes that stamp arrive seconds stale. That gap
+          is measurable precisely because ``now`` lives in the same wall-clock
+          domain as ``time.time()``.
+
+        An injected future ``now`` (tests, replayed ticks) makes the wall-clock
+        term negative; the floor keeps the window deterministic there.
+        """
+        return max(
+            time.monotonic() - started_at,
+            time.time() - current_time,
+            0.0,
+        )
+
+    def _clear_analyzer_failures(self, name: str) -> None:
+        self._analyzer_failures.pop(name, None)
+        self._analyzer_retry_not_before.pop(name, None)
 
     def _purge_character_state(self, name: str) -> None:
         """Drop all topic state for a character."""
@@ -317,6 +416,7 @@ class TopicHookPool:
         self._signal_store.clear(name)
         self._materials.pop(name, None)
         self._dirty.discard(name)
+        self._clear_analyzer_failures(name)
         self._awaiting_response.pop(name, None)
         with self._used_topics_lock:
             self._used_topics.pop(name, None)
@@ -328,6 +428,12 @@ class TopicHookPool:
         had_dirty = name in self._dirty
         changed = self._signal_store.clear(name)
         self._dirty.discard(name)
+        # Same reset as _purge_character_state: an explicit purge is a user
+        # action, and leaving a 30min retry window armed behind it would stall
+        # analysis of whatever they say next with nothing on screen to explain
+        # it. The cost of clearing is one more failing call, which re-arms the
+        # backoff immediately.
+        self._clear_analyzer_failures(name)
         if changed or had_dirty:
             self._purge_generation[name] += 1
         if changed and flush:
@@ -348,13 +454,29 @@ class TopicHookPool:
 
     def purge_all_accumulated_signals(self) -> None:
         """Drop accumulated candidate evidence for every known character."""
-        names = set(self._signal_store.names()) | set(self._dirty)
+        # A character can hold backoff state and nothing else: the readiness
+        # path drops it from _dirty, and its evidence can later age out of the
+        # store, leaving it in neither set. A global purge that skipped it
+        # would leave a retry window armed with no way to reach it again.
+        names = (
+            set(self._signal_store.names())
+            | set(self._dirty)
+            | set(self._analyzer_retry_not_before)
+        )
         for name in names:
             self._purge_accumulated_signals(name)
 
     async def purge_all_accumulated_signals_async(self) -> None:
         """Async hook for explicit cleanup across every known character."""
-        names = set(self._signal_store.names()) | set(self._dirty)
+        # A character can hold backoff state and nothing else: the readiness
+        # path drops it from _dirty, and its evidence can later age out of the
+        # store, leaving it in neither set. A global purge that skipped it
+        # would leave a retry window armed with no way to reach it again.
+        names = (
+            set(self._signal_store.names())
+            | set(self._dirty)
+            | set(self._analyzer_retry_not_before)
+        )
         should_flush = False
         for name in names:
             should_flush = self._purge_accumulated_signals(name, flush=False) or should_flush
@@ -476,6 +598,7 @@ class TopicHookPool:
         lanlan_name: str,
         *,
         lang: str | None = None,
+        now: float | None = None,
     ) -> None:
         name = str(lanlan_name or "default")
         seen_seq = self._seq.get(name, 0)
@@ -490,6 +613,14 @@ class TopicHookPool:
                 self._signal_store.readiness_percent(name),
             )
             self._dirty.discard(name)
+            # Dropping out of _dirty here also drops the character out of the
+            # process_ready_topics walk, which is where the aged-out branch
+            # clears this state. Without clearing it now, a character that
+            # falls below the threshold and only later loses its remaining
+            # signals is never revisited, and a corpus accumulated afterwards
+            # inherits the old count. Analysis has stopped for this character
+            # either way, so the streak ends with it.
+            self._clear_analyzer_failures(name)
             return
         stored_lang = self._langs.get(name)
         topic_lang = (
@@ -499,17 +630,62 @@ class TopicHookPool:
         )
         signal_cutoff_at = self._signal_store.last_turn_at(name)
         global_signals = self._signal_store.format_global_signals(name, lang=topic_lang)
-        raw_materials = await self._analyzer(
-            lang=topic_lang,
-            global_signals=global_signals,
-        )
-        if raw_materials is None:
-            logger.info("[%s] topic analyzer returned no result; keeping dirty for retry", name)
+        current_time = time.time() if now is None else float(now)
+        # The retry window has to start when the call FAILED, not when the tick
+        # began — otherwise every delay silently loses that gap, and a gap
+        # wider than the delay itself lands the deadline already expired,
+        # which puts the heartbeat straight back into the hot loop this
+        # backoff exists to stop. See _elapsed_since_tick for the two sources.
+        started_at = time.monotonic()
+        try:
+            raw_materials = await self._analyzer(
+                lang=topic_lang,
+                global_signals=global_signals,
+            )
+            if raw_materials is not None:
+                # The Analyzer contract allows any Iterable, and a lazy one
+                # raises when it is consumed, not when it is awaited. Drain it
+                # here so an iteration failure lands in the same handler as a
+                # call failure — left to the comprehension below it would
+                # escape to process_ready_topics, which merely logs, and by
+                # then the failure state has already been cleared.
+                raw_materials = list(raw_materials)
+        except Exception as exc:
+            # An analyzer that raises is an analyzer that failed, and it has to
+            # arm the same backoff as one that returns None. Letting the
+            # exception reach process_ready_topics instead only logs it: the
+            # character stays dirty with no retry window set, which is exactly
+            # the 20s hot loop this backoff exists to prevent. Report the
+            # exception type only — its message can carry the prompt, i.e. the
+            # conversation itself.
+            self._note_analyzer_failure(
+                name,
+                current_time,
+                elapsed=self._elapsed_since_tick(current_time, started_at),
+                reason=type(exc).__name__,
+                seen_purge_generation=seen_purge_generation,
+            )
             return
-        if (
-            self._seq.get(name, 0) != seen_seq
-            or self._purge_generation.get(name, 0) != seen_purge_generation
-        ):
+        if raw_materials is None:
+            self._note_analyzer_failure(
+                name,
+                current_time,
+                elapsed=self._elapsed_since_tick(current_time, started_at),
+                reason="no result",
+                seen_purge_generation=seen_purge_generation,
+            )
+            return
+        purged = self._purge_generation.get(name, 0) != seen_purge_generation
+        if not purged:
+            # A success proves the analyzer is healthy, so the streak ends even
+            # when a new turn arrived mid-flight and the result itself is stale.
+            # A purge is different: it reset this state, and a replacement call
+            # may already have failed and armed a fresh window behind us —
+            # clearing it here would hand the next tick a free extra request.
+            # This is the mirror of the seen_purge_generation guard on the
+            # failure path.
+            self._clear_analyzer_failures(name)
+        if purged or self._seq.get(name, 0) != seen_seq:
             return
         cleaned = [
             material
@@ -567,12 +743,23 @@ class TopicHookPool:
             last_turn_at = self._signal_store.last_turn_at(name)
             if last_turn_at is None:
                 self._dirty.discard(name)
+                # Every signal aged out of the 12h retention window, so this
+                # character is back to its initial state. The failure count has
+                # to go with it: a corpus accumulated later starts a new
+                # sequence, and carrying a count across that gap would spend
+                # its first blip at whatever cap the old outage had reached
+                # instead of on the free immediate retry. A failure streak that
+                # matters is one where evidence is still arriving.
+                self._clear_analyzer_failures(name)
                 continue
             current_time = time.time() if now is None else float(now)
             if current_time - float(last_turn_at) < _CANDIDATE_MATURE_SECONDS:
                 continue
+            retry_not_before = self._analyzer_retry_not_before.get(name)
+            if retry_not_before is not None and current_time < retry_not_before:
+                continue
             try:
-                await self.process_now(name, lang=lang)
+                await self.process_now(name, lang=lang, now=current_time)
             except Exception as exc:
                 logger.warning("[%s] topic background processing failed: %s", name, exc)
 
@@ -1131,7 +1318,12 @@ class TopicHookPool:
                 path.parent.mkdir(parents=True, exist_ok=True)
                 atomic_write_json(path, payload, ensure_ascii=False, indent=2)
             except Exception:
-                logger.debug("topic used-history persistence failed", exc_info=True)
+                # 不上抛、不重试是有意的：失败后果只是跨重启丢一次 used-topic
+                # 历史（同话题重启后可能再投一次），而把失败上抛会在只读盘上
+                # 直接压掉 topic 投递，明显更糟，也没有现成的重试通道值得为它
+                # 新建。但 debug 在生产默认 INFO 下等于不可见，一个永久不可写的
+                # state 目录现在完全无法诊断。调用频率低（投递 + purge），不刷屏。
+                logger.warning("topic used-history persistence failed", exc_info=True)
 
 
 def _default_topic_trigger():

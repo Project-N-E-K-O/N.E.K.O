@@ -43,7 +43,11 @@ from utils.tts.providers.elevenlabs import (
 from utils.config_manager import (
     get_reserved,
 )
-from utils.dashscope_region import DASHSCOPE_GLOBAL_LOCK, configure_dashscope_sdk_urls
+from utils.dashscope_region import (
+    DASHSCOPE_GLOBAL_LOCK,
+    configure_dashscope_sdk_urls,
+    prefer_dashscope_websocket_ipv4,
+)
 from utils.doubao_tts import (
     DOUBAO_TTS_DEFAULT_BASE_URL,
     DOUBAO_TTS_DEFAULT_CONTEXT_TEXTS,
@@ -65,22 +69,15 @@ from utils.tts import provider_registry as tts_provider_registry
 from utils.voice_clone import (
     MinimaxVoiceCloneClient,
     MinimaxVoiceCloneError,
-    get_minimax_base_url,
     MimoVoiceCloneClient,
     MimoVoiceCloneError,
 )
-from utils.language_utils import is_supported_language_code, normalize_language_code
+from utils.tts.providers.minimax import get_minimax_base_url
+from utils.voice_design import MimoVoiceDesignClient, MimoVoiceDesignError
+from utils.voice_preview_text import normalize_voice_preview_language
 
-
-def _normalize_voice_preview_language(raw_language: object) -> str | None:
-    """Normalize the voice preview language; returns None for invalid values so other sources can be tried."""
-    raw = str(raw_language or "").strip()
-    if not raw or not is_supported_language_code(raw):
-        return None
-    normalized = normalize_language_code(raw, format="full")
-    if normalized in VOICE_PREVIEW_TEXTS:
-        return normalized
-    return None
+# Backward-compatible private alias for existing router-package imports.
+_normalize_voice_preview_language = normalize_voice_preview_language
 
 
 def _get_voice_preview_language(request: Request, language: object = None, i18n_language: object = None) -> str:
@@ -140,6 +137,19 @@ def _is_unpreviewable_selected_preset_voice(config_manager, core_config, voice_i
     static-catalog provider like MiMo (60), so the clone wins. Any id present in a voice
     storage bucket is therefore never treated as an unpreviewable preset (dual to the
     native-preview collision guard, which passes voice_id_exists_in_any_storage)."""
+    try:
+        selected_preset_key = tts_provider_registry.selected_preset_provider_key(
+            core_config or {}, config_manager, voice_id
+        )
+        selected_provider = tts_provider_registry.get(selected_preset_key)
+        if selected_provider and selected_provider.configured_preset_voice:
+            # The exact configured preset owns preview routing over a stale clone.
+            # 配置框中的精确 Voice ID 归当前 Custom API 所有；即使存储里有同名
+            # 克隆，也不能借旧克隆的 preview 路径制造预览/运行时身份分裂。
+            return True
+    except Exception:
+        logger.debug("configured preset preview 归属判定失败，按普通冲突规则继续", exc_info=True)
+
     if voice_data:
         return False
     try:
@@ -346,6 +356,20 @@ def _build_free_intl_voice_pins(native_catalog: dict, voice_id_exists=None) -> l
 async def get_voices():
     """Get all registered voices for the current API key."""
     _config_manager = get_config_manager()
+    # 与 /voice_preview 同理：本请求内区域判定会被读三次（get_voices_for_current_api、
+    # 下面的 aget_core_config、以及 get_active_realtime_native_provider_for_ui）。判定
+    # 尚未落定时那几次可能拿到不同结果，一份响应就会把海外 free_intl 原生目录和大陆
+    # free_voices 拼在一起（或反过来）——两者不相交，用户选中的音色到运行时必被拒。
+    # 先落定，让整个目录出自同一结论。已落定时零开销；自配 API 用户不会因此发起探测。
+    try:
+        if not await _config_manager.aensure_region_resolved():
+            logger.warning(
+                "[GeoIP] 音色列表开始时区域判定仍未落定；若结论恰在本请求中途到达，"
+                "目录可能混用两个区域的音色，刷新即可"
+            )
+    except Exception:
+        logger.debug("[GeoIP] 音色列表区域落定失败，按当前配置继续", exc_info=True)
+
     result = {"voices": _config_manager.get_voices_for_current_api(for_listing=True)}
 
     core_config = await _config_manager.aget_core_config()
@@ -368,7 +392,7 @@ async def get_voices():
         core_config or {}, _config_manager
     )
     selected_preset_catalog = (
-        tts_provider_registry.preset_catalog_for_ui(winning_provider_key)
+        tts_provider_registry.preset_catalog_for_ui(winning_provider_key, core_config)
         if winning_provider_key else None
     )
     active_native_provider = (
@@ -376,6 +400,19 @@ async def get_voices():
         if winning_provider_key is None else None
     )
     if selected_preset_catalog is not None:
+        selected_provider = tts_provider_registry.get(winning_provider_key)
+        if selected_provider and selected_provider.configured_preset_voice:
+            # Remove colliding clone rows so every frontend keeps the winning owner.
+            # 配置型 preset 对精确 Voice ID 拥有显式所有权。目录中移除同名历史
+            # 克隆，避免前端去重逻辑把真正会命中的 Custom API 条目隐藏掉。
+            # Runtime configured-preset ownership is exact and case-sensitive.
+            # 目录去重必须与运行时精确 ID 语义一致；大小写不同的克隆仍可选择。
+            configured_ids = {str(voice_id) for voice_id in selected_preset_catalog}
+            result["voices"] = {
+                voice_id: voice_data
+                for voice_id, voice_data in (result["voices"] or {}).items()
+                if str(voice_id) not in configured_ids
+            }
         result["native_voices"] = selected_preset_catalog
     elif active_native_provider:
         native_catalog = get_native_voice_catalog_for_ui(active_native_provider) or {}
@@ -442,6 +479,23 @@ async def get_voice_preview(
     """Get the voice preview audio."""
     try:
         _config_manager = get_config_manager()
+        # 本请求内区域判定会被读两次（先选 provider 目录，后拼 TTS URL）。判定尚未
+        # 落定时那两次可能拿到不同结果——按大陆 free 归一化的音色被发去 lanlan.app，
+        # 而 free_intl 目录与之不相交，预览直接失败。先落定，让整个请求用同一结论。
+        # 已落定时零开销；自配 API 用户不会因此发起探测。
+        # 等满仍未落定时残留一个窗口：结论恰在本请求中途到达，则 provider 目录与
+        # TTS URL 分属两个区域，预览失败。不做「把判定结果一路传参」的彻底修复——
+        # 那要穿透 native voice registry 的多个 cross-cutting 函数，而代价只是一次
+        # 预览失败、重试即好（届时判定已落定）。这里记 warning 让它可诊断。
+        try:
+            if not await _config_manager.aensure_region_resolved():
+                logger.warning(
+                    "[GeoIP] 音色预览开始时区域判定仍未落定；若结论恰在本请求中途到达，"
+                    "预览可能因线路与音色目录不匹配而失败，重试即可"
+                )
+        except Exception:
+            logger.debug("[GeoIP] 音色预览区域落定失败，按当前配置继续", exc_info=True)
+
         voices = _config_manager.get_voices_for_current_api()
         voice_data = voices.get(voice_id) if isinstance(voices, dict) else None
         provider = (voice_data or {}).get('provider', '')
@@ -449,7 +503,7 @@ async def get_voice_preview(
 
         # 优先尝试从 tts_custom 获取 API Key
         try:
-            tts_custom_config = _config_manager.get_model_api_config('tts_custom')
+            tts_custom_config = await _config_manager.aget_model_api_config('tts_custom')
             audio_api_key = tts_custom_config.get('api_key', '')
         except Exception:
             audio_api_key = ''
@@ -505,6 +559,48 @@ async def get_voice_preview(
         # voiceclone 模型一次性合成预览句（对偶 MiniMax 的克隆试听；避免落到下方
         # CosyVoice/DashScope 通用分支拿着 mimo-clone-* 的 id 误合成）。
         if provider == 'mimo':
+            if (voice_data or {}).get('source') == 'design':
+                design_prompt = str((voice_data or {}).get('design_prompt') or '').strip()
+                if not design_prompt:
+                    return JSONResponse({
+                        'success': False,
+                        'error': f'MiMo designed voice is missing its description: {voice_id}',
+                        'code': 'MIMO_VOICE_DESIGN_PROMPT_MISSING',
+                    }, status_code=400)
+                mimo_api_key = _config_manager.get_tts_api_key('mimo')
+                if not mimo_api_key:
+                    return JSONResponse({
+                        'success': False,
+                        'error': 'MIMO_API_KEY_MISSING',
+                        'code': 'MIMO_API_KEY_MISSING',
+                    }, status_code=400)
+                if str(preview_core_config.get('assistApi') or '').strip().lower() == 'mimo':
+                    mimo_base_url = (preview_core_config.get('OPENROUTER_URL') or '').strip()
+                else:
+                    mimo_base_url = str((voice_data or {}).get('mimo_base_url') or '').strip()
+                try:
+                    mimo_client = MimoVoiceDesignClient(api_key=mimo_api_key, base_url=mimo_base_url or None)
+                    audio_data = await mimo_client.synthesize_design_preview(design_prompt, text=text)
+                    audio_base64 = base64.b64encode(audio_data).decode('utf-8')
+                    logger.info(
+                        f"MiMo designed voice {voice_id} preview generated, size: {len(audio_data)} bytes"
+                    )
+                    return {'success': True, 'audio': audio_base64, 'mime_type': 'audio/wav'}
+                except MimoVoiceDesignError as exc:
+                    logger.error(f"MiMo designed voice {voice_id} preview failed: {exc}")
+                    return JSONResponse({
+                        'success': False,
+                        'error': f'MiMo preview generation failed: {str(exc)}',
+                        'code': 'MIMO_VOICE_PREVIEW_FAILED',
+                    }, status_code=502)
+                except Exception as exc:
+                    logger.error(f"MiMo designed voice {voice_id} preview raised an error: {exc}")
+                    return JSONResponse({
+                        'success': False,
+                        'error': f'MiMo preview generation failed: {str(exc)}',
+                        'code': 'MIMO_VOICE_PREVIEW_FAILED',
+                    }, status_code=500)
+
             sample_b64 = (voice_data or {}).get('clone_sample_b64') or ''
             if not sample_b64:
                 return JSONResponse({
@@ -555,6 +651,7 @@ async def get_voice_preview(
                 return JSONResponse({
                     'success': False,
                     'error': f'MiMo 预览生成失败: {str(e)}',
+                    'code': 'MIMO_VOICE_PREVIEW_FAILED',
                 }, status_code=500)
 
         if provider == 'doubao_tts':
@@ -635,16 +732,15 @@ async def get_voice_preview(
             from main_logic.tts_client._infra import _resample_audio
             clone_data_uri = _build_vllm_omni_clone_data_uri(voice_data)
             ref_text = str((voice_data or {}).get('clone_ref_text') or '').strip()
-            # base_url：优先 voice_meta 存的 vllm_omni_base_url，缺省回落
-            # preview_core_config 的 ttsModelUrl。无配置 URL 时返回 400 —— 不硬编码
-            # 任何内网端点（旧实现 fallback 到固定 IP，推到公共仓库后必失败且泄漏拓扑）。
-            base_url = str((voice_data or {}).get('vllm_omni_base_url') or '').strip()
+            # 配置优先级：先用 preview_core_config 的 ttsModelUrl，再 fallback 到
+            # voice_data 里持久化的 vllm_omni_base_url，避免历史“固定内网地址”回退。
+            base_url = str(
+                (preview_core_config or {}).get('ttsModelUrl')
+                or (preview_core_config or {}).get('TTS_MODEL_URL')
+                or ''
+            ).strip()
             if not base_url:
-                base_url = str(
-                    (preview_core_config or {}).get('ttsModelUrl')
-                    or (preview_core_config or {}).get('TTS_MODEL_URL')
-                    or ''
-                ).strip()
+                base_url = str((voice_data or {}).get('vllm_omni_base_url') or '').strip()
             if not base_url:
                 return JSONResponse({
                     'success': False,
@@ -790,7 +886,7 @@ async def get_voice_preview(
                     # free_intl（海外免费 Gemini 代理）预览同 free，走 www.lanlan.app/tts
                     # 流式合成（StepFun-shape，proxy 把 voice_id 透传给 Gemini）。
                     try:
-                        native_tts_config = _config_manager.get_model_api_config('tts_default')
+                        native_tts_config = await _config_manager.aget_model_api_config('tts_default')
                         native_audio_api_key = native_tts_config.get('api_key', '') or ''
                     except Exception:
                         native_audio_api_key = ''
@@ -940,14 +1036,31 @@ async def get_voice_preview(
 
         # 生成音频
         try:
-            tts_api_config = _config_manager.get_model_api_config('tts_custom')
+            tts_api_config = await _config_manager.aget_model_api_config('tts_custom')
         except Exception as e:
             logger.warning("DashScope 预览地域 URL 读取失败，回退到默认地域: %s", e, exc_info=True)
             tts_api_config = {}
-        preview_base_url = cosyvoice_base_url or tts_api_config.get('base_url', '')
+        if provider == 'cosyvoice_intl':
+            preview_base_url = (
+                cosyvoice_base_url
+                or (tts_api_config or {}).get('ttsModelUrl')
+                or (tts_api_config or {}).get('TTS_MODEL_URL')
+                or ''
+            )
+        else:
+            preview_base_url = (
+                (tts_api_config or {}).get('ttsModelUrl')
+                or (tts_api_config or {}).get('TTS_MODEL_URL')
+                or cosyvoice_base_url
+                or ''
+            )
 
         from utils.api_config_loader import get_cosyvoice_clone_model
-        clone_model = (voice_data or {}).get('clone_model') or get_cosyvoice_clone_model(provider)
+        clone_model = (
+            (voice_data or {}).get('design_model')
+            or (voice_data or {}).get('clone_model')
+            or get_cosyvoice_clone_model(provider)
+        )
 
         def _do_preview_synthesize():
             import dashscope
@@ -957,7 +1070,7 @@ async def get_voice_preview(
             # 同进程多流程共享的写点，并发跑会互相覆盖、拿别人的 key/地域请求。
             # 这里把整个 call 都圈进锁，因为 SpeechSynthesizer.call 是同步的
             # 一次性请求，锁持续时间 ~ 几秒，不会卡 event loop（在 to_thread 里跑）。
-            with DASHSCOPE_GLOBAL_LOCK:
+            with DASHSCOPE_GLOBAL_LOCK, prefer_dashscope_websocket_ipv4():
                 dashscope.api_key = audio_api_key
                 try:
                     configure_dashscope_sdk_urls(

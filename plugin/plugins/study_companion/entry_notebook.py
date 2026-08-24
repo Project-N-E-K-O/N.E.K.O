@@ -363,7 +363,7 @@ class _NotebookEntriesMixin:
                 "expand_scope": {"type": "string", "default": "details"},
             },
         },
-        timeout=75.0,
+        timeout=85.0,
         llm_result_fields=["content", "markdown", "degraded", "diagnostic"],
     )
     async def study_note_ai_expand(
@@ -419,7 +419,7 @@ class _NotebookEntriesMixin:
                 "topic_ids": {"type": "array", "items": {"type": "string"}, "default": []},
             },
         },
-        timeout=75.0,
+        timeout=85.0,
         llm_result_fields=["title", "content", "source_type", "source_ref", "topic_ids"],
     )
     async def study_note_ai_generate(

@@ -4,7 +4,6 @@
     var SOURCE = 'new_user_icebreaker';
     var ICEBREAKER_API_BASE = '/api/icebreaker';
     var STORAGE_KEY = 'neko.new_user_icebreaker.v1';
-    var AVATAR_FLOATING_GUIDE_STORAGE_KEY = 'neko_avatar_floating_guide_v1';
     var ICEBREAKER_BRIDGE_STORAGE_KEY = 'neko_new_user_icebreaker_bridge_event';
     var SCRIPT_URL = '/static/tutorial/icebreaker/icebreaker_scripts.json';
     var LOCALE_BASE_URL = '/static/tutorial/icebreaker/locales/';
@@ -132,9 +131,8 @@
         if (!session || !session.sessionId) return Promise.resolve(false);
         var body = Object.assign({
             lanlan_name: resolveLanlanName(),
-            session_id: String(session.sessionId || ''),
-            i18n_language: currentLocale()
-        }, extraBody || {});
+            session_id: String(session.sessionId || '')
+        }, conversationLanguagePayload(), extraBody || {});
 
         function parseRouteResponse(response) {
             if (!response.ok) throw new Error('HTTP ' + response.status);
@@ -210,13 +208,12 @@
         clearChoicePrompt();
         session.routeEnded = true;
         clearFreeTextRuntimeStateForSession(session);
-        var body = {
+        var body = Object.assign({
             lanlan_name: resolveLanlanName(),
             session_id: String(session.sessionId || ''),
-            i18n_language: currentLocale(),
             reason: reason || 'icebreaker_page_exit',
             postgameProactive: { enabled: false }
-        };
+        }, conversationLanguagePayload());
         try {
             var security = window.nekoLocalMutationSecurity;
             if (security && typeof security.peekCachedToken === 'function') {
@@ -283,10 +280,34 @@
             }
         } catch (_) {}
         try {
-            return normalizeLocale(window.localStorage.getItem('i18nextLng'));
-        } catch (_) {
-            return 'zh-CN';
-        }
+            var stored = window.localStorage.getItem('i18nextLng');
+            if (stored) return normalizeLocale(stored);
+        } catch (_) {}
+        try {
+            if (window.navigator && window.navigator.language) {
+                return normalizeLocale(window.navigator.language);
+            }
+        } catch (_) {}
+        return 'zh-CN';
+    }
+
+    function explicitConversationLocale() {
+        try {
+            if (typeof window.getExplicitConversationLanguagePreference === 'function') {
+                var preferred = window.getExplicitConversationLanguagePreference(resolveLanlanName());
+                return preferred ? normalizeLocale(preferred) : '';
+            }
+        } catch (_) {}
+        return '';
+    }
+
+    function conversationLanguagePayload() {
+        var payload = {};
+        var explicitLanguage = explicitConversationLocale();
+        var renderLanguage = currentLocale();
+        if (explicitLanguage) payload.i18n_language = explicitLanguage;
+        if (renderLanguage) payload.render_language = renderLanguage;
+        return payload;
     }
 
     function loadLocale(locale) {
@@ -443,6 +464,14 @@
         } catch (error) {
             console.warn('[NewUserIcebreaker] storage bridge failed:', action, error);
         }
+        try {
+            var electronBridge = window.nekoElectronIcebreakerBridge;
+            if (electronBridge && typeof electronBridge.send === 'function') {
+                electronBridge.send(message);
+            }
+        } catch (error) {
+            console.warn('[NewUserIcebreaker] Electron bridge failed:', action, error);
+        }
     }
 
     function broadcastIcebreakerAppendMessage(message) {
@@ -480,7 +509,7 @@
         if ((cleanRole !== 'assistant' && cleanRole !== 'user') || !cleanText) return Promise.resolve(false);
         var currentSession = activeSession || {};
         var extra = meta && typeof meta === 'object' ? meta : {};
-        var body = {
+        var body = Object.assign({
             lanlan_name: resolveLanlanName(),
             role: cleanRole,
             text: cleanText,
@@ -498,7 +527,7 @@
                 free_text: extra.freeText === true,
                 request_id: String(extra.requestId || '')
             }
-        };
+        }, conversationLanguagePayload());
         function parseContextResponse(response) {
             if (!response.ok) throw new Error('HTTP ' + response.status);
             return response.json().then(function (data) {
@@ -771,7 +800,7 @@
         var line = String(text || '').trim();
         if (!line) return Promise.resolve(false);
         var sessionId = activeSession && activeSession.sessionId ? activeSession.sessionId : '';
-        var body = {
+        var body = Object.assign({
             lanlan_name: resolveLanlanName(),
             line: line,
             request_id: makeMessageId('icebreaker-tts'),
@@ -784,7 +813,7 @@
                 source: SOURCE,
                 voice_key: String(voiceKey || '')
             }
-        };
+        }, conversationLanguagePayload());
         return getLocalMutationHeaders().then(function (headers) {
             var requestOptions = {
                 method: 'POST',
@@ -958,19 +987,18 @@
             ? session.dayConfig.nodes[bodyNodeId]
             : null;
         var localeData = info.localeData || (session && session.localeData) || {};
-        var body = {
+        var body = Object.assign({
             lanlan_name: String((session && session.lanlanName) || resolveLanlanName() || ''),
             session_id: String(info.sessionId || (session && session.sessionId) || ''),
             day: String(info.day || (session && session.day) || ''),
             node_id: bodyNodeId,
-            i18n_language: currentLocale(),
             assistant_line: getText(localeData, node && node.lineKey),
             options: buildPromptOptions(node, localeData),
             user_text: String(text || ''),
             free_text_derail_streak: getFreeTextDerailStreak(session, bodyNodeId),
             recent_free_text_turns: getRecentFreeTextTurns(session, bodyNodeId),
             request_id: String(info.requestId || '')
-        };
+        }, conversationLanguagePayload());
         return postIcebreakerJson('/free-text/interpret', body).then(function (data) {
             if (data && data.skipped === 'stale_session') {
                 throw makeIcebreakerApiError('stale_session', data);
@@ -1505,11 +1533,8 @@
     }
 
     function readPersistedAvatarGuideState() {
-        try {
-            return safeJsonParse(window.localStorage.getItem(AVATAR_FLOATING_GUIDE_STORAGE_KEY), {});
-        } catch (_) {
-            return {};
-        }
+        var stateApi = window.NekoSevenDayTutorialState || null;
+        return stateApi ? stateApi.loadState() : {};
     }
 
     function resolveRecentPersistedEndState() {

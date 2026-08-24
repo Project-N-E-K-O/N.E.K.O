@@ -206,3 +206,5 @@ Writes are atomic where a full JSON view is replaced, and per-character locks se
 Open `http://localhost:48911/memory_browser` to browse and edit **recent conversation memory** and to configure recent-memory review and powerful memory. The current browser API reads and writes `recent.json`; it is not a general editor for `facts.json`, `reflections.json`, or `persona.json`.
 
 For the user-facing main-server routes, see the [Memory REST API](/api/rest/memory). For service-to-service details, see the [Memory Server API](/api/memory-server). Internal memory-server paths such as `/cache`, `/process`, `/settle`, `/new_dialog`, and `/query_memory` are implementation interfaces between N.E.K.O. processes, not externally supported public endpoints.
+
+For the user-level boundary between local storage and provider processing, read [Where does N.E.K.O send conversations and memory?](/guide/data-and-privacy) and [Can N.E.K.O run completely offline?](/guide/local-and-offline).

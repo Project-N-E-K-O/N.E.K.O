@@ -27,7 +27,11 @@ from fastapi import Request
 from utils.llm_client import (
     create_chat_llm_async,
 )
-from ..shared_state import get_config_manager, get_sync_message_queue
+from ..shared_state import (
+    get_config_manager,
+    get_session_manager,
+    get_sync_message_queue,
+)
 from config import (
     EMOTION_ANALYSIS_MAX_TOKENS,
 )
@@ -42,8 +46,15 @@ from config.prompts.prompts_emotion import (
     get_heuristic_negation_blocklist_flat,
     get_heuristic_contrast_conjunctions_flat,
     get_emotion_label_aliases_flat,
+    get_emotion_negation_prefixes_flat,
+    get_emotion_negation_words_flat,
+    get_emotion_negation_suffixes_flat,
+    get_emotion_negation_suffix_exceptions_flat,
+    get_emotion_negation_degree_adverbs_flat,
+    get_heuristic_modal_negations_flat,
+    get_emotion_keyword_false_friends_flat,
 )
-from utils.language_utils import detect_language, normalize_language_code
+from utils.language_utils import detect_prompt_language
 
 
 # 统一的表情包图源白名单由 utils.meme_fetcher 维护，本文件仅用于引入
@@ -80,29 +91,29 @@ _EMOTION_FUZZY_COMPACT_KEYS = tuple(_EMOTION_COMPACT_ALIAS_LOOKUP.keys())
 _ASCII_EMOTION_ALIAS_RE = re.compile(r"^[a-z0-9]+(?:\s+[a-z0-9]+)*$")
 
 
-_EMOTION_NEGATION_WORDS = frozenset((
-    "not", "no", "never", "without",
-    "안", "아니", "못", "않", "아니다", "아닌", "아님",
-    "не", "нет", "никогда",
-))
+# 否定词表同样按语种维护在 config/prompts/prompts_emotion.py，此处只做扁平索引。
+_EMOTION_NEGATION_WORDS = frozenset(get_emotion_negation_words_flat())
 
 
-_EMOTION_NEGATION_PREFIXES = (
-    "不是", "并不", "并非", "不太", "没那么", "没有", "并没有",
-    "不", "没", "無", "无", "非", "别", "別",
-    "안", "아니", "못",
-    "не", "нет", "никогда",
-)
+_EMOTION_NEGATION_PREFIXES = get_emotion_negation_prefixes_flat()
 
 
-_EMOTION_NEGATION_SUFFIXES = (
-    "지 않", "지않", "지 않아", "지않아", "지 않다", "지않다", "지 않음", "지않음",
-    "지 못", "지못", "지 못해", "지못해", "지 못하다", "지못하다",
-    "않", "않아", "않다", "않음", "아냐", "아니야", "아니다", "아닌", "아님",
-)
+_EMOTION_NEGATION_SUFFIXES = get_emotion_negation_suffixes_flat()
 
 
-_EMOTION_TOKEN_RE = re.compile(r"[^\W_]+", flags=re.UNICODE)
+_EMOTION_NEGATION_SUFFIX_EXCEPTIONS = tuple(sorted({
+    re.sub(r"[\W_]+", "", str(word).strip().lower(), flags=re.UNICODE)
+    for word in get_emotion_negation_suffix_exceptions_flat()
+    if str(word).strip()
+}, key=len, reverse=True))
+
+
+# 保留撇号：否则 `don't` 被切成 `don` + `t`，两半都不在否定词表里，而
+# `_is_negated_ascii_match` 正是按 token 回看三个词来判 `don't be sad` 的。
+_EMOTION_TOKEN_RE = re.compile(r"[^\W_]+(?:['’][^\W_]+)*", flags=re.UNICODE)
+
+
+_NON_WORD_RE = re.compile(r"[\W_]", flags=re.UNICODE)
 
 
 _EMOTION_NEGATION_COMPACT_PREFIXES = tuple(sorted({
@@ -119,10 +130,61 @@ _EMOTION_NEGATION_COMPACT_SUFFIXES = tuple(sorted({
 }, key=len, reverse=True))
 
 
+_EMOTION_NEGATION_COMPACT_PREFIX_SET = frozenset(_EMOTION_NEGATION_COMPACT_PREFIXES)
+
+
+_HEURISTIC_MODAL_NEGATIONS = tuple(sorted(
+    {
+        re.sub(r"[\W_]+", "", str(word).strip().lower(), flags=re.UNICODE)
+        for word in get_heuristic_modal_negations_flat()
+        if str(word).strip()
+    },
+    key=len,
+    reverse=True,
+))
+
+
 _EMOTION_NEGATION_CONTEXT_WINDOW = max(
     (len(negation) for negation in _EMOTION_NEGATION_COMPACT_PREFIXES),
     default=6,
 )
+
+
+_EMOTION_DEGREE_ADVERBS = tuple(sorted(
+    {
+        re.sub(r"[\W_]+", "", str(adverb).strip().lower(), flags=re.UNICODE)
+        for adverb in get_emotion_negation_degree_adverbs_flat()
+        if str(adverb).strip()
+    },
+    key=len,
+    reverse=True,
+))
+
+
+def _strip_degree_adverbs(text):
+    """Peel degree adverbs off the end of `text`, longest first, repeatedly.
+
+    The compact negation test compares a punctuation-free window against the
+    negation table, so a degree adverb sitting between the negation and the
+    emotion word breaks the comparison and the label comes back as the emotion
+    itself -- the opposite of what the model said. English needs no such thing:
+    its match runs over the last three *tokens*, and a compact CJK window has no
+    token boundaries to count.
+
+    Longest first, and repeatedly, because adverbs stack and because a shorter
+    entry can be the tail of a longer one -- strip the short one and the
+    remainder no longer matches anything.
+    """
+    # 具体例子：`不怎麼開心` 的窗口是 `不怎麼`，剥掉 `怎麼` 才 endswith `不`；
+    # `不是很特別開心` 要连剥 `特別` 和 `很` 两次。
+    previous = None
+    while text and text != previous:
+        previous = text
+        for adverb in _EMOTION_DEGREE_ADVERBS:
+            if text.endswith(adverb):
+                text = text[:-len(adverb)]
+                break
+    return text
 
 
 def _looks_like_emotion_compact_candidate(candidate, cutoff):
@@ -138,9 +200,117 @@ def _looks_like_emotion_compact_candidate(candidate, cutoff):
     ))
 
 
-def _has_negated_emotion_phrase(normalized_text, compact_text, fuzzy_compact_cutoff):
-    tokens = [token for token in _EMOTION_TOKEN_RE.findall(normalized_text) if token]
-    if tokens and any(token in _EMOTION_NEGATION_WORDS for token in tokens):
+def _modal_ends_window(window, modal):
+    """Whether `window` ends with `modal`, honouring word boundaries in Latin.
+
+    Han and kana have none to honour, so those entries are compared as written.
+    A Latin one has to end a word as well: `una jornada feliz` ends in the four
+    letters of the Spanish `nada` and came back with no emotion at all.
+    """
+    if not window.endswith(modal):
+        return False
+    if _UNBOUNDED_SCRIPT_RE.search(modal):
+        return True
+    head = window[:-len(modal)]
+    return not head or not head[-1].isalnum()
+
+
+def _strip_negation_blocklist(text):
+    """Drop the words that merely *contain* a negation character.
+
+    Removed rather than blanked: both callers compare against the end of a
+    fixed-width window, so leaving spaces behind would push a real negation out
+    of that window and the phrase would read as un-negated.
+    """
+    # e.g. `別特別開心` -- blanking would leave `別  `, which ends in whitespace
+    # rather than in the negation that is actually there.
+    for phrase in _HEURISTIC_NEGATION_BLOCKLIST:
+        if phrase and phrase in text:
+            text = text.replace(phrase, '')
+    return text
+
+
+def _alias_after(compact_text, position):
+    """Whether any emotion alias appears at or after `position`.
+
+    Scoped to what follows the marker on purpose, so the very word being denied
+    cannot count as the later assertion. On today's tables the per-match check in
+    the alias scan happens to reach the same answer either way, so no test can
+    tell the two apart — the scoping is intent, not a load-bearing optimisation.
+    """
+    tail = compact_text[position:]
+    return any(alias and alias in tail for alias in _EMOTION_COMPACT_ALIAS_LOOKUP)
+
+
+def _suffix_negates_at(compact_text, position, marker):
+    """Whether the postposed marker at `position` really is a negation there.
+
+    Some words open with one: the Japanese conjunction for "or" starts with the
+    plain negative ending, so an alias followed by it read as denied when the
+    sentence is simply listing alternatives.
+    """
+    if not compact_text.startswith(marker, position):
+        return False
+    return not any(
+        compact_text.startswith(exception, position)
+        for exception in _EMOTION_NEGATION_SUFFIX_EXCEPTIONS
+    )
+
+
+def _marker_attaches_to_head(head):
+    """Whether a postposed negation is denying the emotion word right before it.
+
+    "so sad I can't even cry" is sad: the marker denies the crying, and the
+    sadness is the reason it is being mentioned. The fuzzy test alone read the
+    whole run before the marker as one misspelt emotion word and answered the
+    opposite. So when the head does contain an emotion word, that word has to be
+    the thing the marker sits against; a head with none is still handed to the
+    fuzzy test, which is what it was for.
+    """
+    # 上面那句对应的是 `難過哭不出來`，`不出來` 否定的是 `哭` 不是 `難過`。
+    present = [alias for alias in _EMOTION_COMPACT_ALIAS_LOOKUP if alias and alias in head]
+    return any(head.endswith(alias) for alias in present) if present else True
+
+
+def _last_clause_cut(head):
+    """Index of the last thing in `head` that ends a clause, or -1 for none.
+
+    Punctuation or a contrast conjunction, whichever comes later. Both mark the
+    same thing for our purposes: what precedes it is being left behind.
+    """
+    cut = max((head.rfind(delim) for delim in _HEURISTIC_CLAUSE_DELIMITERS), default=-1)
+    for conjunction in _HEURISTIC_CONTRAST_CONJUNCTIONS:
+        found = head.rfind(conjunction)
+        if found >= 0:
+            cut = max(cut, found + len(conjunction) - 1)
+    return cut
+
+
+def _has_negated_emotion_phrase(
+    normalized_text, compact_text, fuzzy_compact_cutoff, is_contiguous=None
+):
+    # Blocklist first, once, for both of the whole-label branches below: `sin
+    # duda feliz` is emphatic agreement and the negation inside that fixed phrase
+    # is not one. The heuristic already read this table; on the label side only
+    # the per-match path did, so the two branches that answer for the whole label
+    # went on treating the phrase as a denial.
+    sanitized_text = _strip_negation_blocklist(normalized_text)
+    sanitized_compact = re.sub(r"[\W_]+", "", sanitized_text, flags=re.UNICODE)
+    tokens = [token for token in _EMOTION_TOKEN_RE.findall(sanitized_text) if token]
+    # The two branches below answer for the WHOLE label off a single negation at
+    # its front, so they may only speak for a label that *is* one clause. Both
+    # read `não triste, feliz` as one run -- the negation dropped and the rest
+    # glued into `tristefeliz`, which scores close enough to `triste` at the
+    # confidence the endpoint passes -- and returned neutral, so the label named
+    # the emotion it was asserting and got nothing. Past a clause break the
+    # per-match scan is the one that can answer; it looks at each alias on its
+    # own. (The postposed loop further down is scoped by `_alias_after` instead,
+    # which is sharper: `我笑不起來，其實真的開心不起來` has a comma and still has
+    # to be vetoed.)
+    single_clause = _last_clause_cut(normalized_text) < 0
+    if tokens and single_clause and any(
+        token in _EMOTION_NEGATION_WORDS for token in tokens
+    ):
         remaining_compact = re.sub(
             r"[\W_]+",
             "",
@@ -151,17 +321,66 @@ def _has_negated_emotion_phrase(normalized_text, compact_text, fuzzy_compact_cut
             return True
 
     for negation in _EMOTION_NEGATION_COMPACT_PREFIXES:
-        if not compact_text.startswith(negation):
+        if not single_clause or not sanitized_compact.startswith(negation):
             continue
-        if _looks_like_emotion_compact_candidate(compact_text[len(negation):], fuzzy_compact_cutoff):
+        # Same string the `startswith` above tested, not the unstripped one:
+        # slicing one by an offset found in the other mixes two coordinate
+        # spaces. No input distinguishes them on today's tables -- consistency
+        # here is intent, not something a test can hold in place.
+        rest = sanitized_compact[len(negation):]
+        if tokens and not _UNBOUNDED_SCRIPT_RE.search(negation):
+            # A negation in a script that has word boundaries has to *be* the
+            # first word, not merely open it. Compacting hides that: `nice happy`
+            # starts with `ni` and `nadando feliz` with `nada`, and the remainder
+            # of each fuzzy-matches the emotion word once the cutoff drops to
+            # what the endpoint passes. Compared compacted so contractions still
+            # line up (`isn't` against `isnt`).
+            if re.sub(r"[\W_]+", "", tokens[0], flags=re.UNICODE) != negation:
+                continue
+            # And what follows has to be an alias outright, not merely close to
+            # one -- the same rule a single CJK character gets. `nada más feliz`
+            # is a superlative comparison, and fuzzy-matching `másfeliz` to the
+            # emotion word read it as the denial of what it asserts.
+            if rest in _EMOTION_COMPACT_ALIAS_LOOKUP:
+                return True
+            continue
+        if len(negation) == 1:
+            # A single character is as likely to be the first half of a word as a
+            # negation, so it only counts when what follows is an alias outright.
+            # Fuzzy-matching past it read `非常生氣` as "not 生氣" (`常生氣` scores
+            # 0.8 against `生氣`) and answered neutral at the confidence the
+            # endpoint actually passes -- the emotion word itself never won.
+            if rest in _EMOTION_COMPACT_ALIAS_LOOKUP:
+                return True
+            continue
+        if _looks_like_emotion_compact_candidate(rest, fuzzy_compact_cutoff):
             return True
 
     for negation in _EMOTION_NEGATION_COMPACT_SUFFIXES:
+        # Every occurrence, not just the first: `我笑不起來，其實真的開心不起來`
+        # negates its *last* emotion word, and stopping at the first marker read
+        # the label as the emotion it actually denies.
         marker_index = compact_text.find(negation)
-        if marker_index <= 0:
-            continue
-        if _looks_like_emotion_compact_candidate(compact_text[:marker_index], fuzzy_compact_cutoff):
-            return True
+        while marker_index > 0:
+            # The same original-text contiguity rule the per-match scan uses:
+            # punctuation is gone from compact_text, so a marker that opens the
+            # next clause looks attached to the alias ending this one.
+            if (
+                is_contiguous is not None and not is_contiguous(marker_index)
+            ) or not _suffix_negates_at(compact_text, marker_index, negation):
+                marker_index = compact_text.find(negation, marker_index + 1)
+                continue
+            head = compact_text[:marker_index]
+            # This branch answers for the ENTIRE label, so it may only fire when
+            # nothing follows the marker: `我難過不起來但很開心` denies the first
+            # emotion and asserts the second, and vetoing here would report the
+            # denial as the answer. A marker that negates one word among several
+            # is handled per match in the alias scan below instead.
+            if _marker_attaches_to_head(head) and _looks_like_emotion_compact_candidate(
+                head, fuzzy_compact_cutoff
+            ) and not _alias_after(compact_text, marker_index + len(negation)):
+                return True
+            marker_index = compact_text.find(negation, marker_index + 1)
 
     return False
 
@@ -195,22 +414,101 @@ def _normalize_emotion_label(raw_emotion, raw_confidence=None):
     fuzzy_alias_cutoff = 0.74 if high_confidence else 0.9
     fuzzy_compact_cutoff = 0.72 if high_confidence else 0.88
 
-    if _has_negated_emotion_phrase(normalized_text, compact_text, fuzzy_compact_cutoff):
+    # Where each compact character came from, so a clause boundary can be found in
+    # the original text. compact_text has the punctuation removed, which is what
+    # made `不是，非常开心` look contiguous.
+    compact_origin = [
+        index for index, char in enumerate(emotion_text)
+        if not _NON_WORD_RE.match(char)
+    ]
+
+    def _suffix_is_contiguous(position):
+        """Whether nothing was dropped between the alias and the marker.
+
+        compact_text has the punctuation removed, so a marker one clause later
+        looks adjacent, and the denial in that clause would be read as denying
+        the emotion the first clause asserts.
+        """
+        # 例：`開心，不下去了` —— `不下去` 属于后一小句。
+        if position <= 0 or position >= len(compact_origin):
+            return True
+        return compact_origin[position] == compact_origin[position - 1] + 1
+
+    if _has_negated_emotion_phrase(
+        normalized_text, compact_text, fuzzy_compact_cutoff, _suffix_is_contiguous
+    ):
         return "neutral"
 
     def _is_negated_ascii_match(match_start):
-        prefix_tokens = _EMOTION_TOKEN_RE.findall(normalized_text[:match_start])
+        # Three tokens of lookback is generous enough to cross a clause: `não
+        # triste, feliz` and `not sad but happy` both name the emotion they are
+        # asserting *after* the one they deny, and the denial reached forward and
+        # cancelled it. So stop at whichever comes last — punctuation or a
+        # contrast conjunction. The compact path already scopes this way; the
+        # ASCII one never did.
+        head = normalized_text[:match_start]
+        head = _strip_negation_blocklist(head[_last_clause_cut(head) + 1:])
+        prefix_tokens = _EMOTION_TOKEN_RE.findall(head)
         return any(token in _EMOTION_NEGATION_WORDS for token in prefix_tokens[-3:])
 
-    def _is_negated_compact_match(match_start):
+    def _current_clause(match_start):
+        """The compact text before `match_start` that shares its clause.
+
+        Punctuation is gone from compact_text, so a comma earlier in the label
+        would otherwise be invisible and the lookback would reach across it.
+        """
         prefix = compact_text[max(0, match_start - _EMOTION_NEGATION_CONTEXT_WINDOW):match_start]
-        return any(prefix.endswith(negation) for negation in _EMOTION_NEGATION_COMPACT_PREFIXES)
+        if match_start >= len(compact_origin):
+            return prefix
+        head = emotion_text[:compact_origin[match_start]]
+        cut = max((head.rfind(delim) for delim in _HEURISTIC_CLAUSE_DELIMITERS), default=-1)
+        if cut < 0:
+            return prefix
+        # How many compact characters survive the cut — anything before the
+        # delimiter belongs to a different clause.
+        kept = sum(1 for origin in compact_origin[:match_start] if origin > cut)
+        return prefix[len(prefix) - min(len(prefix), kept):]
+
+    def _is_negated_compact_match(match_start):
+        # The blocklist goes first, before anything measures this window: `別` is
+        # a negation on its own but only a syllable inside `個別` / `區別`, and the
+        # adjacency test below cannot tell them apart -- it read `個別難過` as
+        # "don't be sad" and answered neutral.
+        prefix = _strip_negation_blocklist(_current_clause(match_start))
+        peeled = _strip_degree_adverbs(prefix)
+        adverbs = len(prefix) - len(peeled)
+        # A negation adjacent to the alias still counts, as long as it reaches
+        # back past the intensifiers rather than living inside one: `我不太开心`
+        # ends with the negation `不太`, while `我特別開心` only appears to end
+        # with `別` because `特別` is an adverb. Peeling first and testing second
+        # would lose the former; testing first and peeling never would keep the
+        # latter.
+        if any(
+            len(negation) > adverbs and prefix.endswith(negation)
+            for negation in _EMOTION_NEGATION_COMPACT_PREFIXES
+        ):
+            return True
+        # No early-out when nothing was peeled: the test above already ran every
+        # negation against the unchanged window, so the two below can only agree.
+        # The negation, if there is one, is what peeling uncovers, and it has to
+        # really be one: a single character is a coincidence waiting to happen
+        # (`分别很开心` peels to `分别`), so it must be the whole of what is left;
+        # two or more are specific enough to sit after other text (`我沒有很生氣`).
+        return peeled in _EMOTION_NEGATION_COMPACT_PREFIX_SET or any(
+            len(negation) > 1 and peeled.endswith(negation)
+            for negation in _EMOTION_NEGATION_COMPACT_PREFIXES
+        )
 
     alias_items = sorted(
         _EMOTION_NORMALIZED_ALIAS_LOOKUP.items(),
         key=lambda item: len(item[0]),
         reverse=True
     )
+    # Every un-negated match, then one rule to pick between them. Returning on the
+    # first alias found made the answer depend on dict order rather than on the
+    # text: `中性但開心` and `平靜但生氣` are the same shape yet came back neutral
+    # and angry respectively.
+    matches: list[tuple[int, int, str]] = []
     for alias, canonical in alias_items:
         if not alias:
             continue
@@ -218,7 +516,24 @@ def _normalize_emotion_label(raw_emotion, raw_confidence=None):
             pattern = r"(?<![a-z0-9])" + re.escape(alias) + r"(?![a-z0-9])"
             for match in re.finditer(pattern, normalized_text):
                 if not _is_negated_ascii_match(match.start()):
-                    return canonical
+                    # Positions are compared across scripts, so both kinds have to
+                    # be in the same space: an ASCII index counts the punctuation
+                    # that compact_text drops, and leading punctuation alone was
+                    # enough to order a later alias ahead of an earlier one.
+                    compact_start = len(
+                        _NON_WORD_RE.sub("", normalized_text[:match.start()])
+                    )
+                    # Same postposed check the compact branch does. A label can
+                    # mix scripts -- `sadじゃないけどhappy` denies the ASCII alias
+                    # with a Japanese suffix -- and without this the denied half
+                    # stayed in the running and won the ranking.
+                    marker_at = compact_start + len(alias)
+                    if _suffix_is_contiguous(marker_at) and any(
+                        _suffix_negates_at(compact_text, marker_at, marker)
+                        for marker in _EMOTION_NEGATION_COMPACT_SUFFIXES
+                    ):
+                        continue
+                    matches.append((compact_start, -len(alias), canonical))
             continue
 
         compact_alias = re.sub(r"[\W_]+", "", alias, flags=re.UNICODE)
@@ -229,9 +544,23 @@ def _normalize_emotion_label(raw_emotion, raw_confidence=None):
             match_start = compact_text.find(compact_alias, search_start)
             if match_start < 0:
                 break
-            if not _is_negated_compact_match(match_start):
-                return canonical
+            marker_at = match_start + len(compact_alias)
+            if not _is_negated_compact_match(match_start) and not (
+                _suffix_is_contiguous(marker_at) and any(
+                    _suffix_negates_at(compact_text, marker_at, marker)
+                    for marker in _EMOTION_NEGATION_COMPACT_SUFFIXES
+                )
+            ):
+                matches.append((match_start, -len(compact_alias), canonical))
             search_start = match_start + len(compact_alias)
+
+    if matches:
+        # A named emotion outranks `neutral`: a label saying both (`中性但開心`)
+        # is hedging, and the named half is the one worth showing. Within a rank,
+        # earliest in the text, longest alias first — so the answer is a property
+        # of the label, not of iteration order.
+        named = [m for m in matches if m[2] != "neutral"] or matches
+        return min(named)[2]
 
     fuzzy_alias_match = difflib.get_close_matches(
         normalized_text,
@@ -299,10 +628,51 @@ def _coerce_emotion_confidence(raw_confidence, default=0.5):
 _HEURISTIC_NEGATION_TOKENS = get_heuristic_negation_tokens_flat()
 
 
+# The Latin entries in that table carry padding spaces to fake a word boundary,
+# which only works on one side: `no ` also matches inside `sino ` / `bueno ` /
+# `uno `, so `sino que estoy feliz` came back with no emotion at all. Match those
+# on real boundaries instead and leave the CJK entries on the substring path,
+# where there are no word boundaries to find.
+# The split is by writing system, not by `isascii()`: `não ` and `jamás ` are
+# Latin words that merely carry an accent, and leaving them on the substring path
+# meant `senão fico feliz` found `não ` inside `senão` and lost the emotion.
+# Scripts with no word boundaries to find -- Han, kana, Hangul -- stay on
+# substring, where their entries are morpheme fragments rather than words.
+_UNBOUNDED_SCRIPT_RE = re.compile(
+    r"[぀-ヿ㐀-䶿一-鿿가-힯豈-﫿]"
+)
+_HEURISTIC_WORD_NEGATIONS = tuple(
+    token for token in _HEURISTIC_NEGATION_TOKENS
+    if token.strip() and not _UNBOUNDED_SCRIPT_RE.search(token)
+)
+def _word_boundary_regex(tokens):
+    """Any of `tokens`, each having to start and end a word.
+
+    An empty set compiles to a pattern that never matches, rather than to the
+    zero-width `\\b(?:)\\b`, which matches at every word boundary and would read
+    every sentence as negated.
+    """
+    if not tokens:
+        return re.compile(r"(?!)")
+    return re.compile(r"\b(?:%s)\b" % "|".join(
+        re.escape(token.strip()) for token in sorted(tokens, key=len, reverse=True)
+    ))
+
+
+_HEURISTIC_ASCII_NEGATION_RE = _word_boundary_regex(_HEURISTIC_WORD_NEGATIONS)
+_HEURISTIC_CJK_NEGATION_TOKENS = tuple(
+    token for token in _HEURISTIC_NEGATION_TOKENS
+    if _UNBOUNDED_SCRIPT_RE.search(token)
+)
+
+
 _HEURISTIC_TIGHT_NEGATION_TOKENS = get_heuristic_tight_negation_tokens_flat()
 
 
 _HEURISTIC_NEGATION_BLOCKLIST = get_heuristic_negation_blocklist_flat()
+
+
+_EMOTION_KEYWORD_FALSE_FRIENDS = get_emotion_keyword_false_friends_flat()
 
 
 _HEURISTIC_CONTRAST_CONJUNCTIONS = get_heuristic_contrast_conjunctions_flat()
@@ -352,12 +722,28 @@ def _has_heuristic_negation_before(text_value, position):
         window = window[last_conj:]
     # 4) 排除非否定固定搭配（`not only / 不仅 / не только` 等肯定结构里的 not/不/не
     #    并不是真否定）：把这些短语从 window 里替换成等长空白后再做 token 匹配。
-    sanitized = window
-    for phrase in _HEURISTIC_NEGATION_BLOCKLIST:
-        if phrase and phrase in sanitized:
-            sanitized = sanitized.replace(phrase, ' ' * len(phrase))
+    sanitized = _strip_negation_blocklist(window)
     # 5) 多字否定 token（宽 lookback）
-    if any(token in sanitized for token in _HEURISTIC_NEGATION_TOKENS):
+    if any(token in sanitized for token in _HEURISTIC_CJK_NEGATION_TOKENS):
+        return True
+    if _HEURISTIC_ASCII_NEGATION_RE.search(sanitized):
+        return True
+    # 5.5) 情态复合否定（`不會 / 不算 / 不再 / 未必`）：这些词只有紧贴情绪词时
+    #      才是在否定它 —— 放进上面那张宽回看表会否定同一小句里**另一个**谓语
+    #      （`我不会唱歌也很开心`）。所以剥掉尾部的程度副词之后，要求它就压在
+    #      情绪词前面。
+    #      剥前剥后各判一次。剥后是为了 `不會真的開心`；剥前是为了**重叠关键词**：
+    #      `有什麼好開心的` 命中的是更长的 `好開心`，窗口只剩 `有什麼` —— 那一段
+    #      本身就是否定，而剥掉 `什麼` 把它拆散了，短的那个 `開心` 命中被正确压住、
+    #      长的这个反而漏过去，整句读成 happy。
+    #      窗口末尾的空白要先去掉：情态表是压缩过的（无空格），而窗口是原文切片，
+    #      拉丁语里关键词前那个空格会让 `nada ` 对不上 `nada`。
+    window_tail = sanitized.rstrip()
+    peeled_window = _strip_degree_adverbs(window_tail)
+    if any(
+        _modal_ends_window(window_tail, modal) or _modal_ends_window(peeled_window, modal)
+        for modal in _HEURISTIC_MODAL_NEGATIONS
+    ):
         return True
     # 6) zh 单字否定 token：仅在紧邻命中关键词的尾部窗口里才算真否定，
     #    避免 `不错/不思议/不具合` 等非否定词组里的单字误触发整个否定。
@@ -383,6 +769,19 @@ def _is_ascii_word_keyword(keyword):
     return all(c.isascii() and (c.isalpha() or c in " '") for c in keyword)
 
 
+def _has_heuristic_negation_after(text_value, position):
+    """Whether a postposed negation marker follows the keyword that ended here.
+
+    Chinese negates from behind too — the label parser learned this first, and
+    the heuristic reads the same user text. Anchored right after the keyword: a
+    marker further along belongs to some later phrase.
+    """
+    return any(
+        _suffix_negates_at(text_value, position, marker)
+        for marker in _EMOTION_NEGATION_COMPACT_SUFFIXES
+    )
+
+
 def _count_keyword_hits(text_value, keyword):
     if not keyword or not text_value:
         return 0
@@ -402,7 +801,9 @@ def _count_keyword_hits(text_value, keyword):
         pos = text_value.find(keyword, search_start)
         if pos < 0:
             break
-        if not _has_heuristic_negation_before(text_value, pos):
+        if not _has_heuristic_negation_before(text_value, pos) and not (
+            _has_heuristic_negation_after(text_value, pos + len(keyword))
+        ):
             hits += 1
         search_start = pos + len(keyword)
     return hits
@@ -410,6 +811,15 @@ def _count_keyword_hits(text_value, keyword):
 
 def _infer_emotion_from_text(text):
     text_value = str(text or "").lower()
+    if not text_value:
+        return None, 0
+
+    # Dropped before anything is counted: these read as an emotion keyword but
+    # are not one, and no negation is involved for the negation machinery to
+    # catch. Removing rather than blanking keeps the lookback windows tight.
+    for phrase in _EMOTION_KEYWORD_FALSE_FRIENDS:
+        if phrase and phrase in text_value:
+            text_value = text_value.replace(phrase, '')
     if not text_value:
         return None, 0
 
@@ -450,12 +860,24 @@ def _infer_emotion_from_text(text):
     return best_emotion, best_score
 
 
-def _resolve_emotion_prompt_language(text):
+def _resolve_emotion_prompt_language(text, lanlan_name=None):
+    # detect_language 分不出繁简（都是 zh），所以繁中使用者过去一律拿到简体 prompt。
+    # detect_prompt_language 在 zh 这一支上用界面语言细分，其余语种原样短码。
+    #
+    # 界面语言优先取**该角色 session** 的 user_language：它由前端 i18n 真值设定，
+    # 而进程级全局值来自 Steam/系统 locale。两者不一致时（在简体机器上切繁中，或
+    # 反过来）全局值两个方向都会给错。取不到 session 才回落到全局。
+    return detect_prompt_language(text, ui_language=_session_user_language(lanlan_name))
+
+
+def _session_user_language(lanlan_name):
+    if not lanlan_name:
+        return None
     try:
-        detected_lang = detect_language(str(text or ""))
-        return normalize_language_code(detected_lang, format='short')
+        session = get_session_manager().get(lanlan_name)
     except Exception:
-        return 'zh'
+        return None
+    return getattr(session, 'user_language', None)
 
 
 @router.post('/emotion/analysis')
@@ -491,7 +913,7 @@ async def emotion_analysis(request: Request):
         model = data.get('model')
         
         # 使用参数或默认配置，使用 .get() 安全获取避免 KeyError
-        emotion_config = _config_manager.get_model_api_config('emotion')
+        emotion_config = await _config_manager.aget_model_api_config('emotion')
         emotion_api_key = emotion_config.get('api_key')
         emotion_model = emotion_config.get('model')
         emotion_base_url = emotion_config.get('base_url')
@@ -507,7 +929,7 @@ async def emotion_analysis(request: Request):
         if not model:
             return {"error": "情绪分析模型配置缺失: 模型名称未提供且配置中未设置默认模型"}
        
-        prompt_lang = _resolve_emotion_prompt_language(text)
+        prompt_lang = _resolve_emotion_prompt_language(text, lanlan_name)
 
         # 构建请求消息
         messages = [

@@ -54,6 +54,42 @@ from ._genai_support import (
 )
 from ._lifecycle import _with_dialog_slop
 
+
+def _strip_route_bound_tool_call_extras(history) -> int:
+    """Drop ``tool_calls[].extra_content`` from a history that is about to be
+    replayed on a DIFFERENT endpoint. Returns how many were dropped.
+
+    ``extra_content`` is a vendor-private blob (today: Gemini's
+    ``thought_signature``) that only the endpoint which minted it understands.
+    It is stored so the same route can replay it — but the history outlives the
+    route: ``switch_model(vision_model, use_vision_config=True)`` re-points
+    ``self.llm`` at a separately configured provider for the rest of the session
+    and deliberately keeps the history. openai-python forwards unknown keys
+    inside ``messages[].tool_calls[]`` into the request body verbatim, so
+    without this the blob is POSTed to a provider that never issued it — and
+    endpoints that validate message objects strictly reject the request, which
+    would break every remaining turn of the session.
+
+    Dropping degrades that history to its pre-signature form (exactly what the
+    endpoint would have received before signatures were stored at all), so the
+    worst case is the old behaviour rather than a hard failure.
+
+    Scope note: the sibling ``reasoning_content`` field on the same assistant
+    turn has the same route-bound nature and predates this helper. It is left
+    alone deliberately — it has its own provider contract (thinking endpoints
+    require it echoed back) and its own failure mode, and changing it belongs
+    in its own change rather than riding along here.
+    """
+    stripped = 0
+    for msg in history or []:
+        if not isinstance(msg, dict):
+            continue
+        for tool_call in (msg.get("tool_calls") or []):
+            if isinstance(tool_call, dict) and tool_call.pop("extra_content", None) is not None:
+                stripped += 1
+    return stripped
+
+
 class _StreamingMixin:
     def update_max_response_length(self, max_length: int) -> None:
         """Update the response token cap (the user may change settings mid-conversation).
@@ -127,11 +163,11 @@ class _StreamingMixin:
             if use_vision_config:
                 base_url = self.vision_base_url
                 api_key = self.vision_api_key if self.vision_api_key and self.vision_api_key != '' else None
-                provider_type = self.vision_provider_type
+                provider_type = getattr(self, "vision_provider_type", None)
             else:
                 base_url = self.base_url
                 api_key = self.api_key
-                provider_type = self.provider_type
+                provider_type = getattr(self, "provider_type", None)
 
             # 先创建新 client，成功后再原子替换，避免半切换状态。
             # max_completion_tokens 跟随当前 max_response_length 同步设置
@@ -144,6 +180,20 @@ class _StreamingMixin:
                 timeout=DIALOG_LLM_STREAM_TIMEOUT_SECONDS,  # hang-guard; generous so normal/long replies aren't truncated
                 provider_type=provider_type,
             )
+            # 端点是否真的换了 —— 换 endpoint（或换账号）才需要清掉历史里
+            # 那些只有铸造方看得懂的 vendor 私有字段。同一个 endpoint 只换
+            # 模型（conversation → vision 都在同一家）不能清：那正是签名要
+            # 起作用的场景，清了等于把本要修的 400 又放回来。
+            #
+            # 比较前把空串归一成 None：上面 vision 分支已经做过这一步而
+            # conversation 分支没有，两边留着不同的"空"表示会让同一个端点被
+            # 判成换了路由——误判方向是"多清"，正好打在本改动的目标场景上。
+            def _same(a, b) -> bool:
+                return (a or None) == (b or None)
+
+            route_changed = not (
+                _same(base_url, self.base_url) and _same(api_key, self.api_key)
+            )
             old_llm = self.llm
             self.llm = new_llm
             self.model = new_model
@@ -152,6 +202,18 @@ class _StreamingMixin:
             # 把 vision 走的 Gemini endpoint 错误路由到 OpenAI-compat（反之亦然）。
             self.base_url = base_url
             self.api_key = api_key
+            if route_changed:
+                # getattr 防御与本文件其余处一致：__new__ 绕过 __init__ 的测试桩
+                # 没有这个字段，helper 对 None 也是 no-op。
+                dropped = _strip_route_bound_tool_call_extras(
+                    getattr(self, "_conversation_history", None)
+                )
+                if dropped:
+                    logger.info(
+                        "switch_model: dropped %d route-bound tool_call extra_content "
+                        "entry/entries before replaying history on %s",
+                        dropped, base_url or "(default endpoint)",
+                    )
             # 路由旗标随之刷新；旧 _genai_client 抛弃（若 api_key 变了它已失效）。
             # genai.Client 内部持有 httpx 连接池——直接 = None 靠 GC 回收虽不
             # 是 leak，但提早 close() 能马上释放底层连接（SDK 没暴露 aclose，
@@ -212,14 +274,25 @@ class _StreamingMixin:
 
         return False
 
-    async def _notify_response_discarded(self, reason: str, attempt: int, max_attempts: int, will_retry: bool,
-                                         message: Optional[str] = None) -> None:
+    async def _notify_response_discarded(
+        self,
+        reason: str,
+        attempt: int,
+        max_attempts: int,
+        will_retry: bool,
+        message: Optional[str] = None,
+        *,
+        callback: Optional[
+            Callable[[str, int, int, bool, Optional[str]], Awaitable[None]]
+        ] = None,
+    ) -> None:
         """
         Notify the upper layer that the current reply was discarded, so the frontend bubble can be cleared / the user informed
         """
-        if self.on_response_discarded:
+        discard_callback = callback or self.on_response_discarded
+        if discard_callback:
             try:
-                await self.on_response_discarded(reason, attempt, max_attempts, will_retry, message)
+                await discard_callback(reason, attempt, max_attempts, will_retry, message)
             except Exception as e:
                 logger.warning(f"通知 response_discarded 失败: {e}")
 
@@ -236,7 +309,8 @@ class _StreamingMixin:
         the main model in the persona's voice, so the small model only needs to keep
         the existing tone and shorten the tail, not re-enact the persona. Language is
         detected from ``tail`` (the prefix may be very short; the tail is more
-        informative).
+        informative), with the session locale breaking the Simplified / Traditional
+        tie the detector cannot see.
         """
         if not (tail and tail.strip()):
             return None
@@ -247,7 +321,7 @@ class _StreamingMixin:
         try:
             from utils.config_manager import get_config_manager  # 延迟 import 防循环
             cfg_mgr = get_config_manager()
-            emotion_config = cfg_mgr.get_model_api_config('emotion') if cfg_mgr else None
+            emotion_config = await cfg_mgr.aget_model_api_config('emotion') if cfg_mgr else None
         except Exception as e:
             logger.warning("summary: 取 emotion 配置失败: %s", e)
             return None
@@ -262,9 +336,16 @@ class _StreamingMixin:
             return None
 
         try:
-            from utils.language_utils import detect_language, normalize_language_code
-            detected = detect_language(tail) or 'zh'
-            lang = normalize_language_code(detected, format='short') or 'zh'
+            from utils.language_utils import detect_prompt_language
+            # detect_language alone reports script families, so a Traditional tail
+            # comes back as 'zh' and the zh-TW row of LONG_RESPONSE_TAIL_SUMMARY_PROMPT
+            # is unreachable. detect_prompt_language refines that with the session's
+            # own locale, which is the only signal separating the two (issue #2500 step 2).
+            ui_language = None
+            provider = getattr(self, "_user_language_provider", None)
+            if provider:
+                ui_language = provider()
+            lang = detect_prompt_language(tail, default='zh', ui_language=ui_language) or 'zh'
         except Exception:
             lang = 'zh'
 
@@ -412,6 +493,9 @@ class _StreamingMixin:
         thinking_on: bool = False,
         input_transcript_callback: Optional[Callable[[str], Awaitable[None]]] = None,
         history_replacement_text: str | None = None,
+        response_discarded_callback: Optional[
+            Callable[[str, int, int, bool, Optional[str]], Awaitable[None]]
+        ] = None,
     ) -> None:
         """
         Send a text message to the API and stream the response.
@@ -449,6 +533,10 @@ class _StreamingMixin:
         ``history_replacement_text`` keeps the full prompt available for the current
         LLM turn, then replaces the just-appended user history entry before the next
         turn reuses ``_conversation_history``.
+
+        ``response_discarded_callback`` binds discard ownership to this invocation.
+        It avoids re-reading mutable session-level request state after a later text
+        request has already started.
         """  # noqa: DOCSTRING_CJK
         if not text or not text.strip():
             # If only images without text, use a default prompt
@@ -462,6 +550,7 @@ class _StreamingMixin:
         # does not clear via _notify_reasoning_done — core's inline finally clears
         # unconditionally — so it only needs the bump, not an owner token.
         self._begin_reasoning_stream()
+        discard_callback = response_discarded_callback or self.on_response_discarded
 
         # Check if we need to switch to vision model. A staged proactive-vision
         # screenshot (the screen she just commented on) counts as an image too,
@@ -474,7 +563,11 @@ class _StreamingMixin:
         #    answering the screen-based talk anymore. History only grows by
         #    appends between staging and this read (the user hasn't been appended
         #    yet), so a length change means an intervening AI turn (Codex P2).
-        proactive_image = self._proactive_image_to_inject
+        # A few lightweight callers/tests intentionally construct the client via
+        # ``__new__`` and wire only the fields needed for one streaming turn.
+        # Treat an absent staging slot exactly like an empty slot so the optional
+        # proactive-vision feature does not break those legacy construction paths.
+        proactive_image = getattr(self, "_proactive_image_to_inject", None)
         if proactive_image:
             _expired = (
                 time.monotonic() - self._proactive_image_staged_at
@@ -724,7 +817,9 @@ class _StreamingMixin:
                         # uncapped.
                         _focus_overrides = self._focus_stream_overrides(
                             thinking_on, self.model,
-                            base_max_tokens=self.llm.max_completion_tokens if self.llm else None,
+                            base_max_tokens=(
+                                getattr(getattr(self, "llm", None), "max_completion_tokens", None)
+                            ),
                         )
                         # Focus 凝神: leak-prone models (qwen3.5/3.6/3.7 hybrids)
                         # stream their chain-of-thought into ``content`` ending in
@@ -1226,6 +1321,7 @@ class _StreamingMixin:
                                     total_attempts,
                                     True,
                                     None,
+                                    callback=discard_callback,
                                 )
                                 logger.info(
                                     "OmniOfflineClient: 响应被丢弃（%s），第 %d/%d 次重试",
@@ -1284,6 +1380,7 @@ class _StreamingMixin:
                                     total_attempts,
                                     False,
                                     truncate_msg,
+                                    callback=discard_callback,
                                 )
                                 status_reported = True
                                 # _conversation_history 由 core.handle_response_discarded
@@ -1307,6 +1404,7 @@ class _StreamingMixin:
                                 total_attempts,
                                 False,
                                 final_message,
+                                callback=discard_callback,
                             )
                             status_reported = True
                             # gibberish 或截不出句末 / 非 length 类 guard 失败 —
@@ -1482,13 +1580,14 @@ class _StreamingMixin:
                         # 整轮判定：本轮是否吐过任何文本到前端 —— 用 _total 才能
                         # 覆盖 tool_round_persisted 已重置 final-segment 的场景。
                         # 否则 pre-tool 文本残留在前端但 notify_discarded 漏触发。
-                        if assistant_message_total and self.on_response_discarded:
+                        if assistant_message_total and discard_callback:
                             await self._notify_response_discarded(
                                 f"api_error:{error_type}",
                                 attempt + 1,
                                 max_retries,
                                 will_retry=True,
                                 message=None,
+                                callback=discard_callback,
                             )
                         assistant_message = ""
                         assistant_message_total = ""
@@ -1555,7 +1654,7 @@ class _StreamingMixin:
                     # ``will_retry=False``，并附带可读的错误码到前端。
                     # 整轮判定：用 _total，覆盖 tool_round_persisted 已重置
                     # final-segment 但 pre-tool 文本仍在前端的场景。
-                    if assistant_message_total and self.on_response_discarded:
+                    if assistant_message_total and discard_callback:
                         try:
                             await self._notify_response_discarded(
                                 f"text_gen_error:{type(e).__name__}",
@@ -1563,6 +1662,7 @@ class _StreamingMixin:
                                 max_retries,
                                 will_retry=False,
                                 message=json.dumps(discard_error_payload),
+                                callback=discard_callback,
                             )
                             status_reported = True
                         except Exception as _notify_err:

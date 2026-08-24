@@ -15,9 +15,10 @@ import pytest
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../")))
 
-from main_routers.system_router import proactive_history as sr
-from main_routers.system_router import proactive_sources as sr_sources
-from main_routers.system_router import proactive_parsing as sr_parsing
+from main_logic.proactive_chat import state as sr
+from main_logic.proactive_chat import decisions as sr_sources
+from main_logic.proactive_chat import contracts as sr_parsing
+from tests.fake_clock import patch_module_clock
 
 
 LL = "测试娘"
@@ -79,7 +80,11 @@ def test_compute_source_weights_recovers_after_reset(monkeypatch):
     """关键集成验证：连续 3 次 music 分享后 music 应被 _filter_sources_by_weight 剔除；
     一旦完整播放调用 _clear_channel_from_proactive_history('music')，music 应不再被剔除。"""
     fixed_now = 10_000.0
-    monkeypatch.setattr(sr.time, "time", lambda: fixed_now)
+    # 两个模块各自读时钟：写入的时间戳来自 state._record_proactive_chat，
+    # 而窗口/衰减那句 now = time.time() 在 decisions._compute_source_weights 里。
+    # 只打 state 的话权重会拿真实时间去减 10000，记录立刻超出 1h 窗口。
+    patch_module_clock(monkeypatch, sr, time=lambda: fixed_now)
+    patch_module_clock(monkeypatch, sr_sources, time=lambda: fixed_now)
 
     # 连续 3 次都是 music（最近 1h 内）
     sr._record_proactive_chat(LL, "歌1", "music")
@@ -114,7 +119,10 @@ def test_reset_is_counter_zero_not_throttle_off(monkeypatch):
     candidates = ["web", "music", "meme", "reminiscence"]
 
     fake_t = [10_000.0]
-    monkeypatch.setattr(sr.time, "time", lambda: fake_t[0])
+    # 同上：state 负责记录时间戳，decisions._compute_source_weights 负责按 now 算衰减，
+    # 两边必须共用同一个假时钟。
+    patch_module_clock(monkeypatch, sr, time=lambda: fake_t[0])
+    patch_module_clock(monkeypatch, sr_sources, time=lambda: fake_t[0])
 
     # 第一轮：连推 3 首 → music 被剔除
     for i in range(3):
@@ -147,7 +155,9 @@ def test_cleared_entries_still_visible_in_format_recent(monkeypatch):
     """清空 channel 字段后，message 文本仍要在 _format_recent_proactive_chats 里出现，
     避免 LLM 反复推同一首歌。"""
     fixed_now = 20_000.0
-    monkeypatch.setattr(sr.time, "time", lambda: fixed_now)
+    # 这条只走 state：写入 (_record_proactive_chat) 和渲染
+    # (_format_recent_proactive_chats 里的 now = time.time()) 都在 state 模块内。
+    patch_module_clock(monkeypatch, sr, time=lambda: fixed_now)
 
     sr._record_proactive_chat(LL, "我刚刚发现一首很棒的歌", "music")
     sr._clear_channel_from_proactive_history(LL, "music")

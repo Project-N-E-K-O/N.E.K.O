@@ -51,6 +51,7 @@
                 <button id="qrcode-toggle" class="ghost-action" type="button" onclick="toggleQrcodeCard()" data-i18n="ui.qrcode.toggle.hide">隐藏</button>
                 <button id="btn-start-login" class="ghost-action" type="button" onclick="startLogin()" data-i18n="ui.qrcode.start">开始扫码登录</button>
                 <button id="btn-refresh-qrcode" class="ghost-action" type="button" onclick="refreshQrcode()" data-i18n="ui.qrcode.refresh">刷新二维码</button>
+                <button id="btn-logout" class="danger-action" type="button" onclick="logout()" data-i18n="ui.actions.logout" style="display:none;">退出登录</button>
             </div>
             <div id="qrcode-error" class="qrcode-error" style="display:none;"></div>
         </section>
@@ -89,6 +90,6 @@
 
     <div id="toast" class="toast"></div>
     <script src="./i18n.js"></script>
-    <script src="./script.js"></script>
+    <script src="./script.js?v=0.1.3"></script>
 </body>
 </html>

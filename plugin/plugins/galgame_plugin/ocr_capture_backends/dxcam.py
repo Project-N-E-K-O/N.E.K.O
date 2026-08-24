@@ -4,7 +4,12 @@ import time
 import threading
 from typing import Any
 from ..ocr_runtime_types import DetectedGameWindow, OcrCaptureProfile, _CAPTURE_BACKEND_DXCAM, _DXCAM_GRAB_RETRY_ATTEMPTS, _DXCAM_GRAB_RETRY_DELAY_SECONDS, _STALE_CAPTURE_FRAME_THRESHOLD, _LOGGER
-from ._helpers import _require_visible_capture_target, _target_screen_capture_rect, _crop_window_image
+from ._helpers import (
+    _crop_window_image,
+    _require_foreground_screen_capture_target,
+    _require_visible_capture_target,
+    _target_screen_capture_rect,
+)
 
 _DXCAM_CREATE_TIMEOUT_SECONDS = 5.0
 
@@ -123,7 +128,17 @@ class DxcamCaptureBackend:
                 )
             for attempt in range(_DXCAM_GRAB_RETRY_ATTEMPTS + 1):
                 camera = self._camera_instance()
+                _require_foreground_screen_capture_target(
+                    target,
+                    backend_kind=self.kind,
+                    failure_marker="target_not_foreground_for_screen_capture",
+                )
                 frame = camera.grab(region=rect)
+                _require_foreground_screen_capture_target(
+                    target,
+                    backend_kind=self.kind,
+                    failure_marker="foreground_changed_during_screen_capture",
+                )
                 if frame is not None:
                     self._consecutive_failures = 0
                     break

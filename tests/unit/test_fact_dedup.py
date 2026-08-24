@@ -23,6 +23,7 @@ We do NOT exercise the real LLM. The resolve-path tests stub
 test_persona_version_history.py does."""
 from __future__ import annotations
 
+import asyncio
 import json
 
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -34,10 +35,62 @@ from memory.fact_dedup import (
     FACT_DEDUP_COSINE_THRESHOLD,
     FACT_DEDUP_PAIRS_PER_NEW,
     FactDedupResolver,
+    _created_at_instant,
+    _has_distinct_event_windows,
 )
+from memory.facts import _merge_archive_entries
 
 
 # ── helpers ──────────────────────────────────────────────────────────
+
+
+def test_archive_merge_preserves_arbitration_marker_from_crash_duplicate():
+    existing = [{
+        "id": "loser",
+        "text": "old archived copy",
+        "arbitration_archived_at": "2026-08-01T00:00:00",
+        "arbitration_reason": "fact_dedup_merge",
+        "superseded_by": "winner",
+    }]
+    incoming = [{
+        "id": "loser",
+        "text": "newer active copy",
+        "subject_archived_at": "2026-08-02T00:00:00",
+    }]
+
+    assert _merge_archive_entries(existing, incoming) == [{
+        "id": "loser",
+        "text": "newer active copy",
+        "subject_archived_at": "2026-08-02T00:00:00",
+        "arbitration_archived_at": "2026-08-01T00:00:00",
+        "arbitration_reason": "fact_dedup_merge",
+        "superseded_by": "winner",
+    }]
+
+
+def test_archive_merge_distinguishes_scalar_id_types_in_one_scope():
+    subject_fields = {
+        "subject_kind": "group_chat",
+        "subject_id": "qq:7788",
+        "scope": "group_chat:qq:7788",
+    }
+    existing = [
+        {"id": True, "text": "boolean id", **subject_fields},
+        {"id": 1, "text": "integer id", **subject_fields},
+    ]
+    incoming = [
+        {"id": 1.0, "text": "float id", **subject_fields},
+        {"id": "1", "text": "string id", **subject_fields},
+    ]
+
+    merged = _merge_archive_entries(existing, incoming)
+
+    assert [(type(row["id"]), row["id"], row["text"]) for row in merged] == [
+        (bool, True, "boolean id"),
+        (int, 1, "integer id"),
+        (float, 1.0, "float id"),
+        (str, "1", "string id"),
+    ]
 
 
 def _mock_cm(tmpdir: str):
@@ -52,6 +105,7 @@ def _mock_cm(tmpdir: str):
     cm.get_model_api_config = MagicMock(return_value={
         "model": "fake", "base_url": "http://fake", "api_key": "sk-fake",
     })
+    cm.aget_model_api_config = AsyncMock(side_effect=lambda mt, **_: cm.get_model_api_config(mt))
     return cm
 
 
@@ -144,6 +198,146 @@ def test_detect_candidates_below_threshold_no_pair():
     assert FactDedupResolver.detect_candidates(facts) == []
 
 
+@pytest.mark.asyncio
+async def test_group_participants_share_only_their_groups_arbitration_domain(
+    tmp_path,
+):
+    """Different speakers in one group can conflict, but groups stay isolated."""
+    from memory.scopes import MemorySubject
+
+    same_group_a = MemorySubject.group_participant("qq", "7788", "1001")
+    same_group_b = MemorySubject.group_participant("qq", "7788", "2002")
+    other_group = MemorySubject.group_participant("qq", "8899", "3003")
+    rows = [
+        {
+            **_fact("a", "小明喜欢猫", entity="group_participant",
+                    embedding=[1.0, 0.0]),
+            **same_group_a.as_entry_fields(),
+        },
+        {
+            **_fact("b", "小明不喜欢猫", entity="group_participant",
+                    embedding=[0.99, 0.05]),
+            **same_group_b.as_entry_fields(),
+        },
+        {
+            **_fact("c", "小明不喜欢猫", entity="group_participant",
+                    embedding=[0.99, 0.05]),
+            **other_group.as_entry_fields(),
+        },
+    ]
+    rows[0].update(speaker_id="qq:1001", speaker_trust=0.2)
+    rows[1].update(speaker_id="qq:2002", speaker_trust=0.8)
+    rows[2].update(speaker_id="qq:3003", speaker_trust=0.8)
+
+    pairs = FactDedupResolver.detect_candidates(rows, only_for_ids={
+        ("a", same_group_a.kind, same_group_a.subject_id, same_group_a.scope),
+    })
+    assert [(pair["candidate_id"], pair["existing_id"]) for pair in pairs] == [
+        ("a", "b"),
+    ]
+    assert pairs[0]["subject_key"] == "@group_participant_arbitration:qq:7788"
+    assert pairs[0]["scope"] == pairs[0]["subject_key"]
+
+    fs, resolver = _install_resolver(str(tmp_path))
+    await _seed_facts(fs, "Neko", rows)
+    assert await resolver.aenqueue_candidates("Neko", pairs) == 1
+    model = _make_llm_mock([{"index": 0, "action": "replace"}])
+    with patch("utils.llm_client.create_chat_llm", return_value=model), \
+            patch("memory.facts.logger.info") as log_info:
+        assert await resolver.aresolve("Neko") == 1
+    assert any(
+        "仲裁归档 fact=a" in str(call.args[0])
+        and "superseded_by=b" in str(call.args[0])
+        for call in log_info.call_args_list
+    )
+    active = await fs.aload_facts("Neko")
+    assert {row["id"] for row in active} == {"b", "c"}
+    survivor = next(row for row in active if row["id"] == "b")
+    assert survivor["speaker_id"] == "qq:2002"
+    assert survivor["speaker_trust"] == pytest.approx(0.8)
+
+
+def test_detect_candidates_distinguishes_same_id_across_participant_scopes():
+    from memory.scopes import MemorySubject
+
+    first = MemorySubject.group_participant("qq", "7788", "1001")
+    second = MemorySubject.group_participant("qq", "7788", "2002")
+    rows = [
+        {
+            **_fact("shared", "成员甲喜欢猫", entity="group_participant",
+                    embedding=[1.0, 0.0]),
+            **first.as_entry_fields(),
+        },
+        {
+            **_fact("shared", "成员甲不喜欢猫", entity="group_participant",
+                    embedding=[1.0, 0.0]),
+            **second.as_entry_fields(),
+        },
+    ]
+    fresh = {
+        ("shared", first.kind, first.subject_id, first.scope),
+        ("shared", second.kind, second.subject_id, second.scope),
+    }
+
+    pairs = FactDedupResolver.detect_candidates(rows, only_for_ids=fresh)
+
+    assert len(pairs) == 1
+    assert pairs[0]["candidate_subject_id"] == second.subject_id
+    assert pairs[0]["existing_subject_id"] == first.subject_id
+
+
+@pytest.mark.asyncio
+async def test_group_participant_paraphrases_stay_in_each_participant_scope(
+    tmp_path,
+):
+    from memory.scopes import MemorySubject
+
+    first = MemorySubject.group_participant("qq", "7788", "1001")
+    second = MemorySubject.group_participant("qq", "7788", "2002")
+    rows = [
+        {
+            **_fact("a", "小明喜欢猫", entity="group_participant",
+                    embedding=[1.0, 0.0]),
+            **first.as_entry_fields(),
+        },
+        {
+            **_fact("b", "小明喜欢猫", entity="group_participant",
+                    embedding=[0.99, 0.05]),
+            **second.as_entry_fields(),
+        },
+    ]
+    pair = {
+        "candidate_id": "a", "existing_id": "b",
+        "candidate_subject_kind": first.kind,
+        "candidate_subject_id": first.subject_id,
+        "candidate_scope": first.scope,
+        "existing_subject_kind": second.kind,
+        "existing_subject_id": second.subject_id,
+        "existing_scope": second.scope,
+        "entity": "group_participant",
+        "subject_key": "@group_participant_arbitration:qq:7788",
+        "scope": "@group_participant_arbitration:qq:7788",
+        "cosine": 0.99,
+    }
+
+    assert FactDedupResolver.detect_candidates(rows, only_for_ids={
+        ("a", first.kind, first.subject_id, first.scope),
+    }) == []
+
+    fs, resolver = _install_resolver(str(tmp_path))
+    await _seed_facts(fs, "Neko", rows)
+    assert await resolver.aenqueue_candidates("Neko", [pair]) == 0
+
+    # Upgrade safety: consume an already-persisted invalid pair without
+    # exposing the two participants' texts to the LLM.
+    assert await resolver._asave_pending("Neko", [pair])
+    llm_factory = AsyncMock()
+    with patch("utils.llm_client.create_chat_llm_async", llm_factory):
+        assert await resolver.aresolve("Neko") == 0
+    llm_factory.assert_not_awaited()
+    assert await resolver.aload_pending("Neko") == []
+
+
 def test_detect_candidates_respects_entity_scope():
     """master + relationship entries don't collide even with identical
     embeddings — cross-entity dedup is too risky to defer to vectors."""
@@ -217,7 +411,7 @@ def test_detect_candidates_only_for_ids_filters_candidate_side():
     assert all(p["candidate_id"] == "f3" for p in pairs)
 
 
-def test_detect_candidates_same_batch_pair_emitted_in_canonical_direction_only():
+def test_detect_candidates_same_batch_pair_keeps_newer_candidate_direction():
     """When two fresh rows in the same batch collide, the queue should
     receive ONE pair, not both (a,b) and (b,a). Without the canonical
     direction guard the LLM's `replace` semantics would degenerate to
@@ -232,8 +426,60 @@ def test_detect_candidates_same_batch_pair_emitted_in_canonical_direction_only()
     )
     assert len(pairs) == 1
     p = pairs[0]
-    # Canonical direction: smaller id is candidate, larger is existing.
-    assert (p["candidate_id"], p["existing_id"]) == ("alpha", "beta")
+    # Same timestamp: later authored row is candidate, regardless of ID text.
+    assert (p["candidate_id"], p["existing_id"]) == ("beta", "alpha")
+
+
+def test_detect_candidates_same_batch_prefers_created_at_over_id_text():
+    same_vec = [1.0, 0.0, 0.0]
+    newer = _fact("zzz", "newer", embedding=same_vec)
+    older = _fact("aaa", "older", embedding=same_vec)
+    newer["created_at"] = "2026-04-25T10:00:01"
+    older["created_at"] = "2026-04-25T10:00:00"
+    pairs = FactDedupResolver.detect_candidates(
+        [newer, older], only_for_ids={"aaa", "zzz"},
+    )
+    assert [(p["candidate_id"], p["existing_id"]) for p in pairs] == [
+        ("zzz", "aaa"),
+    ]
+
+
+def test_detect_candidates_compares_offset_timestamps_as_instants():
+    same_vec = [1.0, 0.0, 0.0]
+    newer = _fact("newer", "newer", embedding=same_vec)
+    older = _fact("older", "older", embedding=same_vec)
+    newer["created_at"] = "2026-04-25T03:00:00+00:00"
+    older["created_at"] = "2026-04-25T10:00:00+08:00"
+
+    pairs = FactDedupResolver.detect_candidates(
+        [newer, older], only_for_ids={"newer", "older"},
+    )
+
+    assert [(p["candidate_id"], p["existing_id"]) for p in pairs] == [
+        ("newer", "older"),
+    ]
+
+
+@pytest.mark.parametrize("value", [
+    "0001-01-01T00:00:00+14:00",
+    "9999-12-31T23:59:59-14:00",
+])
+def test_created_at_instant_rejects_utc_conversion_overflow(value):
+    assert _created_at_instant(value) is None
+
+
+def test_distinct_event_windows_preserves_extreme_explicit_boundary():
+    explicit = {
+        "created_at": "2026-04-25T10:00:00",
+        "event_start_at": "0001-01-01T00:00:00+14:00",
+        "event_when_raw": {"start": {"offset": -1, "unit": "year"}},
+    }
+    undated = {
+        "created_at": "2026-04-25T10:00:00",
+        "event_start_at": "2026-04-25T10:00:00",
+    }
+
+    assert _has_distinct_event_windows(explicit, undated)
 
 
 def test_detect_candidates_cross_batch_pair_unaffected_by_canonical_guard():
@@ -253,6 +499,21 @@ def test_detect_candidates_cross_batch_pair_unaffected_by_canonical_guard():
     assert len(pairs) == 1
     assert pairs[0]["candidate_id"] == "zzz"
     assert pairs[0]["existing_id"] == "aaa"
+
+
+@pytest.mark.parametrize("falsey_id", [0, False])
+def test_detect_candidates_accepts_falsey_scalar_ids(falsey_id):
+    candidate = _fact("candidate", "fresh", embedding=[1.0, 0.0, 0.0])
+    candidate["id"] = falsey_id
+    existing = _fact("existing", "old", embedding=[1.0, 0.0, 0.0])
+
+    pairs = FactDedupResolver.detect_candidates([candidate, existing])
+
+    assert any(
+        type(pair["candidate_id"]) is type(falsey_id)
+        and pair["candidate_id"] == falsey_id
+        for pair in pairs
+    )
 
 
 def test_detect_candidates_per_fact_limit_caps_collisions():
@@ -300,6 +561,41 @@ async def test_aenqueue_candidates_appends_and_persists(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_aenqueue_scoped_numeric_ids_use_typed_identity(tmp_path):
+    from memory.scopes import MemorySubject
+
+    fs, resolver = _install_resolver(str(tmp_path))
+    subject = MemorySubject.group_chat("qq", "7788")
+    fields = subject.as_entry_fields()
+    candidate = {**_fact("numeric-1", "numeric candidate"), **fields}
+    existing = {**_fact("numeric-2", "numeric existing"), **fields}
+    candidate["id"] = 1
+    existing["id"] = 2
+    await _seed_facts(fs, "小天", [
+        candidate, existing,
+    ])
+    pair = {
+        "candidate_id": 1,
+        "existing_id": 2,
+        "subject_key": subject.key,
+        "scope": subject.scope,
+        "cosine": 0.99,
+    }
+    for side in ("candidate", "existing"):
+        pair.update({
+            f"{side}_subject_kind": subject.kind,
+            f"{side}_subject_id": subject.subject_id,
+            f"{side}_scope": subject.scope,
+        })
+
+    assert await resolver.aenqueue_candidates("小天", [pair]) == 1
+    pending = await resolver.aload_pending("小天")
+    assert [(row["candidate_id"], row["existing_id"]) for row in pending] == [
+        (1, 2),
+    ]
+
+
+@pytest.mark.asyncio
 async def test_aenqueue_dedups_same_pair_across_calls(tmp_path):
     """Re-enqueue of the same (candidate_id, existing_id) pair must
     no-op — otherwise an oscillating worker (re-embed under new
@@ -328,6 +624,149 @@ async def test_aenqueue_skips_rows_with_missing_ids(tmp_path):
     ])
     assert appended == 0
     assert await resolver.aload_pending("小天") == []
+
+
+@pytest.mark.asyncio
+async def test_scoped_forget_purges_pending_text_and_rejects_stale_enqueue(
+    tmp_path,
+):
+    from memory.scopes import MemorySubject
+
+    fs, resolver = _install_resolver(str(tmp_path))
+    target = MemorySubject.participant("qq", "1001")
+    other = MemorySubject.participant("qq", "1002")
+    target_rows = [
+        {**_fact("t1", "forgotten one"), **target.as_entry_fields()},
+        {**_fact("t2", "forgotten two"), **target.as_entry_fields()},
+    ]
+    other_rows = [
+        {**_fact("o1", "keep one"), **other.as_entry_fields()},
+        {**_fact("o2", "keep two"), **other.as_entry_fields()},
+    ]
+    await _seed_facts(fs, "小天", target_rows + other_rows)
+    target_pair = {
+        "candidate_id": "t1", "existing_id": "t2",
+        "candidate_text": "forgotten one", "existing_text": "forgotten two",
+        "entity": "participant", "subject_key": target.key,
+        "scope": target.scope, "cosine": 0.99,
+    }
+    other_pair = {
+        "candidate_id": "o1", "existing_id": "o2",
+        "candidate_text": "keep one", "existing_text": "keep two",
+        "entity": "participant", "subject_key": other.key,
+        "scope": other.scope, "cosine": 0.99,
+    }
+    assert await resolver.aenqueue_candidates(
+        "小天", [target_pair, other_pair],
+    ) == 2
+
+    assert await resolver.aforget_subject("小天", target) == {
+        "pending_dedup": 1,
+    }
+    pending = await resolver.aload_pending("小天")
+    assert any(
+        item.get("candidate_id") == "o1"
+        and "candidate_text" not in item
+        and "existing_text" not in item
+        for item in pending if isinstance(item, dict)
+    )
+    assert not any(
+        item.get("subject_key") == target.key
+        and item.get("scope") == target.scope
+        for item in pending if isinstance(item, dict)
+    )
+
+    # The route's fact tombstone is already open while queue purge and fact
+    # deletion are separate awaits. A stale embedding sweep entering in that
+    # exact gap must be rejected even though both fact ids are still live.
+    await fs.abegin_subject_forget("小天", target)
+    assert await resolver.aenqueue_candidates("小天", [target_pair]) == 0
+    await fs.aend_subject_forget("小天", target)
+
+    with patch("memory.facts.assert_cloudsave_writable"):
+        await fs.aforget_subject("小天", target)
+    assert await resolver.aenqueue_candidates("小天", [target_pair]) == 0
+
+
+@pytest.mark.asyncio
+async def test_participant_arbitration_uses_real_subject_forget_gate(tmp_path):
+    from memory.scopes import MemorySubject
+
+    fs, resolver = _install_resolver(str(tmp_path))
+    target = MemorySubject.group_participant("qq", "7788", "1001")
+    other = MemorySubject.group_participant("qq", "7788", "2002")
+    rows = [
+        {
+            **_fact("t1", "成员甲喜欢猫", entity="group_participant",
+                    embedding=[1.0, 0.0]),
+            **target.as_entry_fields(),
+        },
+        {
+            **_fact("o1", "成员甲不喜欢猫", entity="group_participant",
+                    embedding=[0.99, 0.05]),
+            **other.as_entry_fields(),
+        },
+    ]
+    await _seed_facts(fs, "小天", rows)
+    pairs = FactDedupResolver.detect_candidates(rows, only_for_ids={"t1"})
+    assert pairs[0]["subject_key"].startswith(
+        "@group_participant_arbitration:",
+    )
+
+    await fs.abegin_subject_forget("小天", target)
+    assert await resolver.aenqueue_candidates("小天", pairs) == 0
+    await fs.aend_subject_forget("小天", target)
+
+    assert await resolver.aenqueue_candidates("小天", pairs) == 1
+    await fs.abegin_subject_forget("小天", target)
+    llm_factory = MagicMock()
+    with patch("utils.llm_client.create_chat_llm", llm_factory):
+        assert await resolver.aresolve("小天") == 0
+    llm_factory.assert_not_called()
+    assert await resolver.aload_pending("小天") == []
+    await fs.aend_subject_forget("小天", target)
+
+
+@pytest.mark.asyncio
+async def test_scoped_forget_purges_legacy_archive_only_dedup_rows(tmp_path):
+    from pathlib import Path
+
+    from memory.scopes import MemorySubject
+
+    fs, resolver = _install_resolver(str(tmp_path))
+    target = MemorySubject.participant("qq", "1001")
+    other = MemorySubject.participant("qq", "1002")
+    await _seed_facts(fs, "小天", [
+        {**_fact("o1", "keep one"), **other.as_entry_fields()},
+        {**_fact("o2", "keep two"), **other.as_entry_fields()},
+    ])
+    archive_path = Path(fs._facts_archive_path("小天"))
+    archive_path.write_text(json.dumps([
+        {**_fact("t1", "forgotten one"), **target.as_entry_fields()},
+        {**_fact("t2", "forgotten two"), **target.as_entry_fields()},
+    ], ensure_ascii=False), encoding="utf-8")
+    legacy_target_pair = {
+        "candidate_id": "t1", "existing_id": "t2",
+        "candidate_text": "forgotten one", "existing_text": "forgotten two",
+        "entity": "participant", "cosine": 0.99,
+    }
+    other_pair = {
+        "candidate_id": "o1", "existing_id": "o2",
+        "candidate_text": "keep one", "existing_text": "keep two",
+        "entity": "participant", "subject_key": other.key,
+        "scope": other.scope, "cosine": 0.99,
+    }
+    assert await resolver._asave_pending(
+        "小天", [legacy_target_pair, other_pair],
+    )
+
+    assert await resolver.aforget_subject("小天", target) == {
+        "pending_dedup": 1,
+    }
+    expected_other = dict(other_pair)
+    expected_other.pop("candidate_text")
+    expected_other.pop("existing_text")
+    assert await resolver.aload_pending("小天") == [expected_other]
 
 
 # ── aresolve: action handling ────────────────────────────────────────
@@ -362,8 +801,52 @@ async def test_aresolve_merge_drops_candidate_and_bumps_importance(tmp_path):
     survivor = next(f for f in facts if f["id"] == "e1")
     assert survivor["importance"] == 5  # 4 + 1
     assert "c1" in (survivor.get("merged_from_ids") or [])
+    assert "speaker_provenance_mixed" not in survivor
     # Queue is empty after resolve.
     assert await resolver.aload_pending("小天") == []
+
+
+@pytest.mark.asyncio
+async def test_aresolve_merge_folds_speaker_provenance(tmp_path):
+    fs, resolver = _install_resolver(str(tmp_path))
+    cand = _fact("c1", "paraphrase", embedding=[1.0, 0.0])
+    cand.update(speaker_id="qq:1001", speaker_trust=0.3)
+    existing = _fact("e1", "original", embedding=[0.99, 0.05])
+    existing.update(speaker_id="qq:1001", speaker_trust=0.8)
+    await _seed_facts(fs, "小天", [cand, existing])
+    await resolver.aenqueue_candidates("小天", [{
+        "candidate_id": "c1", "existing_id": "e1",
+        "candidate_text": cand["text"], "existing_text": existing["text"],
+        "entity": "master", "cosine": 0.99,
+    }])
+    fake_llm = _make_llm_mock([{"index": 0, "action": "merge"}])
+    with patch("utils.llm_client.create_chat_llm", return_value=fake_llm):
+        assert await resolver.aresolve("小天") == 1
+    survivor = (await fs.aload_facts("小天"))[0]
+    assert survivor["speaker_id"] == "qq:1001"
+    assert survivor["speaker_trust"] == pytest.approx(0.3)
+
+
+@pytest.mark.asyncio
+async def test_aresolve_merge_marks_mixed_speaker_provenance(tmp_path):
+    fs, resolver = _install_resolver(str(tmp_path))
+    cand = _fact("c1", "paraphrase", embedding=[1.0, 0.0])
+    cand.update(speaker_id="qq:2002", speaker_trust=0.9)
+    existing = _fact("e1", "original", embedding=[0.99, 0.05])
+    existing.update(speaker_id="qq:1001", speaker_trust=0.3)
+    await _seed_facts(fs, "小天", [cand, existing])
+    await resolver.aenqueue_candidates("小天", [{
+        "candidate_id": "c1", "existing_id": "e1",
+        "candidate_text": cand["text"], "existing_text": existing["text"],
+        "entity": "master", "cosine": 0.99,
+    }])
+    fake_llm = _make_llm_mock([{"index": 0, "action": "merge"}])
+    with patch("utils.llm_client.create_chat_llm", return_value=fake_llm):
+        assert await resolver.aresolve("小天") == 1
+    survivor = (await fs.aload_facts("小天"))[0]
+    assert survivor["speaker_provenance_mixed"] is True
+    assert "speaker_id" not in survivor
+    assert "speaker_trust" not in survivor
 
 
 @pytest.mark.asyncio
@@ -384,6 +867,47 @@ async def test_aresolve_merge_caps_importance_at_ten(tmp_path):
         await resolver.aresolve("小天")
     survivor = next(f for f in await fs.aload_facts("小天") if f["id"] == "e1")
     assert survivor["importance"] == 10
+
+
+@pytest.mark.parametrize(
+    ("action", "candidate_importance", "existing_importance", "survivor_id", "expected"),
+    [
+        ("merge", 4, "unknown", "e1", 6),
+        ("replace", "unknown", "invalid", "c1", 5),
+    ],
+)
+@pytest.mark.asyncio
+async def test_aresolve_parses_malformed_persisted_importance(
+    tmp_path,
+    action,
+    candidate_importance,
+    existing_importance,
+    survivor_id,
+    expected,
+):
+    fs, resolver = _install_resolver(str(tmp_path))
+    cand = _fact(
+        "c1", "new", embedding=[1.0, 0.0],
+        importance=candidate_importance,
+    )
+    existing = _fact(
+        "e1", "old", embedding=[0.99, 0.05],
+        importance=existing_importance,
+    )
+    await _seed_facts(fs, "小天", [cand, existing])
+    await resolver.aenqueue_candidates("小天", [{
+        "candidate_id": "c1", "existing_id": "e1",
+        "candidate_text": "new", "existing_text": "old",
+        "entity": "master", "cosine": 0.99,
+    }])
+    fake_llm = _make_llm_mock([{"index": 0, "action": action}])
+
+    with patch("utils.llm_client.create_chat_llm", return_value=fake_llm):
+        assert await resolver.aresolve("小天") == 1
+
+    survivor = (await fs.aload_facts("小天"))[0]
+    assert survivor["id"] == survivor_id
+    assert survivor["importance"] == expected
 
 
 @pytest.mark.asyncio
@@ -441,6 +965,95 @@ async def test_aresolve_keep_both_leaves_facts_untouched(tmp_path):
     assert next(f for f in facts if f["id"] == "c1")["importance"] == 5
     assert next(f for f in facts if f["id"] == "e1")["importance"] == 3
     # Queue is consumed even though no mutation happened
+    assert await resolver.aload_pending("小天") == []
+
+
+@pytest.mark.asyncio
+async def test_aresolve_uses_scoped_batch_prompt_locale(tmp_path):
+    from memory.scopes import MemorySubject
+
+    fs, resolver = _install_resolver(str(tmp_path))
+    subject = MemorySubject.group_chat("qq", "7788")
+    cand = _fact("c1", "好", embedding=[1.0, 0.0])
+    existing = _fact("e1", "嗯", embedding=[0.99, 0.05])
+    cand.update(subject.as_entry_fields())
+    existing.update(subject.as_entry_fields())
+    await _seed_facts(fs, "小天", [cand, existing])
+    await resolver.aenqueue_candidates("小天", [{
+        "candidate_id": "c1",
+        "existing_id": "e1",
+        "entity": "master",
+        "subject_key": subject.key,
+        "scope": subject.scope,
+        "cosine": 0.99,
+    }])
+    observed_subjects = []
+
+    async def resolve_locale(actual_subject):
+        observed_subjects.append(actual_subject)
+        return "zh-TW"
+
+    fake_llm = _make_llm_mock([{"index": 0, "action": "keep_both"}])
+    with patch(
+        "utils.llm_client.create_chat_llm_async",
+        AsyncMock(return_value=fake_llm),
+    ), patch(
+        "config.prompts.prompts_memory.get_fact_dedup_prompt",
+        return_value="{PAIRS}",
+    ) as get_prompt:
+        await resolver.aresolve(
+            "小天",
+            prompt_locale_resolver=resolve_locale,
+        )
+
+    assert observed_subjects == [subject]
+    get_prompt.assert_called_once_with("zh-TW")
+
+
+@pytest.mark.asyncio
+async def test_aresolve_falls_back_when_scoped_locale_resolver_fails(
+    tmp_path, caplog,
+):
+    from memory.scopes import MemorySubject
+
+    fs, resolver = _install_resolver(str(tmp_path))
+    subject = MemorySubject.group_chat("qq", "7788")
+    cand = _fact("c1", "好", embedding=[1.0, 0.0])
+    existing = _fact("e1", "嗯", embedding=[0.99, 0.05])
+    cand.update(subject.as_entry_fields())
+    existing.update(subject.as_entry_fields())
+    await _seed_facts(fs, "小天", [cand, existing])
+    await resolver.aenqueue_candidates("小天", [{
+        "candidate_id": "c1",
+        "existing_id": "e1",
+        "entity": "master",
+        "subject_key": subject.key,
+        "scope": subject.scope,
+        "cosine": 0.99,
+    }])
+
+    async def fail_locale(_subject):
+        raise UnicodeDecodeError("utf-8", b"x", 0, 1, "invalid")
+
+    fake_llm = _make_llm_mock([{"index": 0, "action": "keep_both"}])
+    with patch(
+        "utils.language_utils.get_global_language_full",
+        return_value="zh-TW",
+    ), patch(
+        "utils.llm_client.create_chat_llm_async",
+        AsyncMock(return_value=fake_llm),
+    ), patch(
+        "config.prompts.prompts_memory.get_fact_dedup_prompt",
+        return_value="{PAIRS}",
+    ) as get_prompt:
+        resolved = await resolver.aresolve(
+            "小天",
+            prompt_locale_resolver=fail_locale,
+        )
+
+    assert resolved == 1
+    get_prompt.assert_called_once_with("zh-TW")
+    assert "scoped prompt locale" in caplog.text
     assert await resolver.aload_pending("小天") == []
 
 
@@ -837,6 +1450,923 @@ async def test_aapply_decisions_evicts_fact_cache_on_save_failure(tmp_path):
     assert e1["importance"] == 4  # untouched
 
 
+@pytest.mark.asyncio
+async def test_low_trust_candidate_cannot_replace_high_trust_fact(tmp_path):
+    fs, resolver = _install_resolver(str(tmp_path))
+    candidate = _fact("c1", "小明不喜欢猫", embedding=[1.0, 0.0])
+    candidate.update(speaker_id="qq:1001", speaker_trust=0.3)
+    existing = _fact("e1", "小明喜欢猫", embedding=[0.99, 0.05])
+    existing.update(speaker_id="qq:2002", speaker_trust=0.8)
+    await _seed_facts(fs, "Neko", [candidate, existing])
+    await resolver.aenqueue_candidates("Neko", [{
+        "candidate_id": "c1", "existing_id": "e1",
+        "entity": "master", "cosine": 0.99,
+    }])
+    model = _make_llm_mock([{"index": 0, "action": "replace"}])
+    with patch("utils.llm_client.create_chat_llm", return_value=model):
+        assert await resolver.aresolve("Neko") == 1
+    active = await fs.aload_facts("Neko")
+    assert [fact["id"] for fact in active] == ["e1"]
+    assert active[0]["speaker_id"] == "qq:2002"
+    assert active[0]["speaker_trust"] == pytest.approx(0.8)
+    assert active[0]["importance"] == 5
+    assert active[0].get("speaker_provenance_mixed") is not True
+    archive_path = tmp_path / "Neko" / "facts_archive.json"
+    archived = json.loads(archive_path.read_text(encoding="utf-8"))
+    loser = next(fact for fact in archived if fact["id"] == "c1")
+    assert loser["superseded_by"] == "e1"
+    assert loser["arbitration_reason"] == "fact_dedup_merge"
+    assert loser["text"] == "小明不喜欢猫"
+    fs._facts.pop("Neko", None)
+    original_load_facts = fs.load_facts
+
+    def _load_only_before_lock(name):
+        assert not fs._get_lock(name).locked()
+        return original_load_facts(name)
+
+    fs.load_facts = _load_only_before_lock
+    assert await fs.arestore_arbitrated_fact("Neko", "c1")
+    assert {fact["id"] for fact in await fs.aload_facts("Neko")} == {"c1", "e1"}
+    remaining_archive = json.loads(archive_path.read_text(encoding="utf-8"))
+    assert all(fact.get("id") != "c1" for fact in remaining_archive)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("candidate_speaker", ["QQ:1001", "legacy-user"])
+async def test_invalid_or_same_canonical_speaker_cannot_drive_trust_arbitration(
+    tmp_path, candidate_speaker,
+):
+    fs, resolver = _install_resolver(str(tmp_path))
+    candidate = _fact("c1", "小明不喜欢猫", embedding=[1.0, 0.0])
+    candidate.update(speaker_id=candidate_speaker, speaker_trust=0.3)
+    existing = _fact("e1", "小明喜欢猫", embedding=[0.99, 0.05])
+    existing.update(speaker_id="qq:1001", speaker_trust=0.8)
+    await _seed_facts(fs, "Neko", [candidate, existing])
+    await resolver.aenqueue_candidates("Neko", [{
+        "candidate_id": "c1", "existing_id": "e1",
+        "entity": "master", "cosine": 0.99,
+    }])
+    model = _make_llm_mock([{"index": 0, "action": "replace"}])
+
+    with patch("utils.llm_client.create_chat_llm", return_value=model):
+        assert await resolver.aresolve("Neko") == 1
+
+    assert [fact["id"] for fact in await fs.aload_facts("Neko")] == ["c1"]
+
+
+@pytest.mark.asyncio
+async def test_restore_arbitrated_fact_normalizes_legacy_numeric_ids(tmp_path):
+    fs, _resolver = _install_resolver(str(tmp_path))
+    await _seed_facts(fs, "Neko", [_fact("active", "survivor")])
+    archive_path = tmp_path / "Neko" / "facts_archive.json"
+    legacy = _fact("5", "legacy loser")
+    legacy["id"] = 5
+    archive_path.write_text(json.dumps([{
+        **legacy,
+        "arbitration_archived_at": "2026-08-01T00:00:00",
+        "arbitration_reason": "fact_dedup_merge",
+    }]), encoding="utf-8")
+
+    assert await fs.arestore_arbitrated_fact("Neko", "5")
+    restored = await fs.aload_facts("Neko")
+    assert {fact["id"] for fact in restored} == {"active", 5}
+    restored_row = next(fact for fact in restored if fact["id"] == 5)
+    assert restored_row["restored_at"]
+    assert restored_row["arbitration_restored_at"] == restored_row["restored_at"]
+    assert json.loads(archive_path.read_text(encoding="utf-8")) == []
+
+
+@pytest.mark.asyncio
+async def test_restore_arbitrated_fact_keeps_scalar_id_types_distinct(tmp_path):
+    from memory.scopes import MemorySubject
+
+    fs, _resolver = _install_resolver(str(tmp_path))
+    await _seed_facts(fs, "Neko", [])
+    subject = MemorySubject.group_chat("qq", "7788")
+    fields = subject.as_entry_fields()
+    archive_path = tmp_path / "Neko" / "facts_archive.json"
+    integer_loser = {**_fact("integer-1", "integer loser"), **fields}
+    integer_loser["id"] = 1
+    archive_path.write_text(json.dumps([
+        {
+            **integer_loser,
+            "arbitration_archived_at": "2026-08-01T00:00:00",
+        },
+        {
+            **_fact("1", "string loser"), **fields,
+            "arbitration_archived_at": "2026-08-01T00:00:01",
+        },
+    ]), encoding="utf-8")
+
+    assert await fs.arestore_arbitrated_fact("Neko", "1", subject=subject)
+    active = await fs.aload_facts("Neko")
+    assert [(type(row["id"]), row["text"]) for row in active] == [
+        (str, "string loser"),
+    ]
+    remaining = json.loads(archive_path.read_text(encoding="utf-8"))
+    assert [(type(row["id"]), row["text"]) for row in remaining] == [
+        (int, "integer loser"),
+    ]
+
+    # Preserve the compatibility path for an archive containing only a
+    # legacy numeric id addressed by its historical string form.
+    assert await fs.arestore_arbitrated_fact("Neko", "1", subject=subject)
+    active = await fs.aload_facts("Neko")
+    assert {(type(row["id"]), row["text"]) for row in active} == {
+        (str, "string loser"), (int, "integer loser"),
+    }
+    assert json.loads(archive_path.read_text(encoding="utf-8")) == []
+
+
+@pytest.mark.asyncio
+async def test_restore_arbitrated_fact_uses_full_scoped_identity(tmp_path):
+    from memory.scopes import MemorySubject
+
+    fs, _resolver = _install_resolver(str(tmp_path))
+    await _seed_facts(fs, "Neko", [])
+    target = MemorySubject.group_participant("qq", "7788", "1001")
+    foreign = MemorySubject.group_participant("qq", "8899", "1001")
+    archive_path = tmp_path / "Neko" / "facts_archive.json"
+    archived = [
+        {
+            **_fact("shared", "target loser"),
+            **target.as_entry_fields(),
+            "arbitration_archived_at": "2026-08-01T00:00:00",
+        },
+        {
+            **_fact("shared", "foreign loser"),
+            **foreign.as_entry_fields(),
+            "arbitration_archived_at": "2026-08-01T00:00:01",
+        },
+    ]
+    archive_path.write_text(json.dumps(archived), encoding="utf-8")
+
+    assert not await fs.arestore_arbitrated_fact("Neko", "shared")
+    assert await fs.arestore_arbitrated_fact(
+        "Neko", "shared", subject=target,
+    )
+    active = await fs.aload_facts("Neko")
+    assert [fact["text"] for fact in active] == ["target loser"]
+    remaining = json.loads(archive_path.read_text(encoding="utf-8"))
+    assert [fact["text"] for fact in remaining] == ["foreign loser"]
+
+
+@pytest.mark.asyncio
+async def test_restore_arbitrated_fact_rejects_subject_archived_row(tmp_path):
+    fs, _resolver = _install_resolver(str(tmp_path))
+    await _seed_facts(fs, "Neko", [_fact("active", "survivor")])
+    archive_path = tmp_path / "Neko" / "facts_archive.json"
+    archived = {
+        **_fact("loser", "subject-archived arbitration loser"),
+        "arbitration_archived_at": "2026-08-01T00:00:00",
+        "subject_archived_at": "2026-08-01T00:00:01",
+    }
+    archive_path.write_text(json.dumps([archived]), encoding="utf-8")
+
+    assert not await fs.arestore_arbitrated_fact("Neko", "loser")
+    assert [fact["id"] for fact in await fs.aload_facts("Neko")] == ["active"]
+    assert json.loads(archive_path.read_text(encoding="utf-8")) == [archived]
+
+
+@pytest.mark.asyncio
+async def test_subject_restore_unblocks_dual_marked_arbitration_row(tmp_path):
+    from memory.scopes import MemorySubject
+
+    fs, _resolver = _install_resolver(str(tmp_path))
+    subject = MemorySubject.group_chat("qq", "7788")
+    await _seed_facts(fs, "Neko", [])
+    archive_path = tmp_path / "Neko" / "facts_archive.json"
+    archived = {
+        **_fact("loser", "dual-marked loser"),
+        **subject.as_entry_fields(),
+        "arbitration_archived_at": "2026-08-01T00:00:00",
+        "subject_archived_at": "2026-08-01T00:00:01",
+    }
+    archive_path.write_text(json.dumps([archived]), encoding="utf-8")
+
+    assert not await fs.arestore_arbitrated_fact(
+        "Neko", "loser", subject=subject,
+    )
+    assert await fs.arestore_subject_facts("Neko", subject) == 1
+    assert await fs.aload_facts("Neko") == []
+    pending = json.loads(archive_path.read_text(encoding="utf-8"))
+    assert pending[0]["arbitration_archived_at"]
+    assert "subject_archived_at" not in pending[0]
+    assert await fs.arestore_arbitrated_fact(
+        "Neko", "loser", subject=subject,
+    )
+    assert [fact["id"] for fact in await fs.aload_facts("Neko")] == ["loser"]
+
+
+@pytest.mark.asyncio
+async def test_arbitration_archive_preserves_non_dict_legacy_rows(tmp_path):
+    fs, _resolver = _install_resolver(str(tmp_path))
+    await _seed_facts(fs, "Neko", [
+        _fact("c1", "loser", embedding=[1.0, 0.0]),
+        _fact("e1", "survivor", embedding=[0.99, 0.05]),
+    ])
+    fs._facts["Neko"].append("legacy row")
+
+    assert await fs.aarchive_arbitrated_facts(
+        "Neko", {"c1": {"reason": "mutation_guard"}},
+    ) == 1
+    active = await fs.aload_facts("Neko")
+    assert "legacy row" in active
+    assert [row["id"] for row in active if isinstance(row, dict)] == ["e1"]
+
+
+@pytest.mark.asyncio
+async def test_arbitration_archive_preserves_scalar_id_type(tmp_path):
+    from memory.scopes import MemorySubject
+
+    fs, _resolver = _install_resolver(str(tmp_path))
+    subject = MemorySubject.group_chat("qq", "7788")
+    fields = subject.as_entry_fields()
+    integer_fact = {
+        "id": 1, "text": "integer loser", "created_at": "2026-08-01",
+        **fields,
+    }
+    string_fact = {
+        "id": "1", "text": "string survivor", "created_at": "2026-08-01",
+        **fields,
+    }
+    await _seed_facts(fs, "Neko", [integer_fact, string_fact])
+    integer_identity = (1, subject.kind, subject.subject_id, subject.scope)
+
+    assert await fs.aarchive_arbitrated_facts(
+        "Neko", {integer_identity: {"reason": "typed-id-test"}},
+        expected_losers={integer_identity: integer_fact},
+    ) == 1
+    active = await fs.aload_facts("Neko")
+    assert [(fact["id"], fact["text"]) for fact in active] == [
+        ("1", "string survivor"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_arbitration_uses_full_identity_for_duplicate_ids_across_scopes(
+    tmp_path,
+):
+    from memory.scopes import MemorySubject
+
+    fs, resolver = _install_resolver(str(tmp_path))
+    target_candidate_subject = MemorySubject.group_participant(
+        "qq", "target", "1001",
+    )
+    target_existing_subject = MemorySubject.group_participant(
+        "qq", "target", "1002",
+    )
+    foreign_candidate_subject = MemorySubject.group_participant(
+        "qq", "target", "2001",
+    )
+    foreign_existing_subject = MemorySubject.group_participant(
+        "qq", "target", "2002",
+    )
+    target_candidate = {
+        **_fact("c1", "小明不喜欢猫", embedding=[1.0, 0.0]),
+        **target_candidate_subject.as_entry_fields(),
+    }
+    target_existing = {
+        **_fact("e1", "小明喜欢猫", embedding=[0.99, 0.05]),
+        **target_existing_subject.as_entry_fields(),
+    }
+    foreign_candidate = {
+        **_fact("c1", "小红不喜欢猫", embedding=[1.0, 0.0]),
+        **foreign_candidate_subject.as_entry_fields(),
+    }
+    foreign_existing = {
+        **_fact("e1", "小红喜欢猫", embedding=[0.99, 0.05]),
+        **foreign_existing_subject.as_entry_fields(),
+    }
+    await _seed_facts(fs, "Neko", [
+        target_candidate, target_existing,
+        foreign_candidate, foreign_existing,
+    ])
+    archive_path = tmp_path / "Neko" / "facts_archive.json"
+    archive_path.write_text(json.dumps([{
+        **foreign_candidate,
+        "arbitration_archived_at": "2026-08-01T00:00:00",
+    }]), encoding="utf-8")
+    assert await resolver.aenqueue_candidates("Neko", [{
+        "candidate_id": "c1", "existing_id": "e1",
+        "entity": "group_participant",
+        "subject_key": "@group_participant_arbitration:qq:target",
+        "scope": "@group_participant_arbitration:qq:target",
+        "candidate_subject_kind": target_candidate_subject.kind,
+        "candidate_subject_id": target_candidate_subject.subject_id,
+        "candidate_scope": target_candidate_subject.scope,
+        "existing_subject_kind": target_existing_subject.kind,
+        "existing_subject_id": target_existing_subject.subject_id,
+        "existing_scope": target_existing_subject.scope,
+        "cosine": 0.99,
+    }]) == 1
+
+    model = _make_llm_mock([{"index": 0, "action": "merge"}])
+    with patch("utils.llm_client.create_chat_llm", return_value=model):
+        assert await resolver.aresolve("Neko") == 1
+
+    active = await fs.aload_facts("Neko")
+    active_by_subject = {
+        (fact["subject_id"], fact["id"]): fact for fact in active
+    }
+    assert (target_candidate_subject.subject_id, "c1") not in active_by_subject
+    assert active_by_subject[
+        (target_existing_subject.subject_id, "e1")
+    ]["merged_from_ids"] == ["c1"]
+    assert active_by_subject[
+        (foreign_candidate_subject.subject_id, "c1")
+    ]["text"] == "小红不喜欢猫"
+    assert active_by_subject[
+        (foreign_existing_subject.subject_id, "e1")
+    ]["text"] == "小红喜欢猫"
+    archived = json.loads(
+        archive_path.read_text(encoding="utf-8")
+    )
+    assert [(fact["subject_id"], fact["id"]) for fact in archived] == [
+        (foreign_candidate_subject.subject_id, "c1"),
+        (target_candidate_subject.subject_id, "c1"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_high_trust_candidate_overrides_model_merge_and_archives_old(tmp_path):
+    fs, resolver = _install_resolver(str(tmp_path))
+    candidate = _fact("c1", "小明喜欢猫", embedding=[1.0, 0.0])
+    candidate.update(speaker_id="qq:2002", speaker_trust=0.8)
+    existing = _fact(
+        "e1", "小明不喜欢猫", embedding=[0.99, 0.05], importance=9,
+    )
+    existing.update(speaker_id="qq:1001", speaker_trust=0.3)
+    await _seed_facts(fs, "Neko", [candidate, existing])
+    await resolver.aenqueue_candidates("Neko", [{
+        "candidate_id": "c1", "existing_id": "e1",
+        "entity": "master", "cosine": 0.99,
+    }])
+    model = _make_llm_mock([{"index": 0, "action": "merge"}])
+    with patch("utils.llm_client.create_chat_llm", return_value=model):
+        assert await resolver.aresolve("Neko") == 1
+    active = await fs.aload_facts("Neko")
+    assert [fact["id"] for fact in active] == ["c1"]
+    assert active[0]["speaker_id"] == "qq:2002"
+    assert active[0]["speaker_trust"] == pytest.approx(0.8)
+    assert active[0]["importance"] == 5
+    assert active[0].get("speaker_provenance_mixed") is not True
+    archived = json.loads(
+        (tmp_path / "Neko" / "facts_archive.json").read_text(encoding="utf-8")
+    )
+    assert next(fact for fact in archived if fact["id"] == "e1")[
+        "superseded_by"
+    ] == "c1"
+
+
+@pytest.mark.asyncio
+async def test_synthesized_fact_starts_do_not_disable_trust_arbitration(tmp_path):
+    fs, resolver = _install_resolver(str(tmp_path))
+    candidate = _fact("c1", "小明不喜欢猫", embedding=[1.0, 0.0])
+    candidate.update(
+        speaker_id="qq:2002", speaker_trust=0.8,
+        created_at="2026-06-01T00:00:00",
+        event_start_at="2026-06-01T00:00:00",
+        event_end_at=None, event_when_raw=None,
+    )
+    existing = _fact("e1", "小明喜欢猫", embedding=[0.99, 0.05])
+    existing.update(
+        speaker_id="qq:1001", speaker_trust=0.3,
+        created_at="2026-01-01T00:00:00",
+        event_start_at="2026-01-01T00:00:00",
+        event_end_at=None, event_when_raw=None,
+    )
+    await _seed_facts(fs, "Neko", [candidate, existing])
+    await resolver.aenqueue_candidates("Neko", [{
+        "candidate_id": "c1", "existing_id": "e1",
+        "entity": "master", "cosine": 0.99,
+    }])
+    model = _make_llm_mock([{"index": 0, "action": "merge"}])
+
+    with patch("utils.llm_client.create_chat_llm", return_value=model):
+        assert await resolver.aresolve("Neko") == 1
+
+    active = await fs.aload_facts("Neko")
+    assert [fact["id"] for fact in active] == ["c1"]
+
+
+@pytest.mark.asyncio
+async def test_trust_does_not_collapse_distinct_temporal_fact_states(tmp_path):
+    fs, resolver = _install_resolver(str(tmp_path))
+    candidate = _fact("c1", "小明不喜欢猫", embedding=[1.0, 0.0])
+    candidate.update(
+        speaker_id="qq:1001",
+        speaker_trust=0.3,
+        event_start_at="2026-06-01T00:00:00",
+        event_end_at=None,
+    )
+    existing = _fact("e1", "小明喜欢猫", embedding=[0.99, 0.05])
+    existing.update(
+        speaker_id="qq:2002",
+        speaker_trust=0.8,
+        event_start_at="2026-01-01T00:00:00",
+        event_end_at="2026-01-31T00:00:00",
+    )
+    await _seed_facts(fs, "Neko", [candidate, existing])
+    await resolver.aenqueue_candidates("Neko", [{
+        "candidate_id": "c1", "existing_id": "e1",
+        "entity": "master", "cosine": 0.99,
+    }])
+    model = _make_llm_mock([{"index": 0, "action": "replace"}])
+
+    with patch("utils.llm_client.create_chat_llm", return_value=model):
+        assert await resolver.aresolve("Neko") == 1
+
+    active = await fs.aload_facts("Neko")
+    assert [fact["id"] for fact in active] == ["c1"]
+    archived = json.loads(
+        (tmp_path / "Neko" / "facts_archive.json").read_text(encoding="utf-8")
+    )
+    assert next(fact for fact in archived if fact["id"] == "e1")[
+        "superseded_by"
+    ] == "c1"
+
+
+@pytest.mark.asyncio
+async def test_trust_preserves_bounded_episode_against_undated_state(tmp_path):
+    fs, resolver = _install_resolver(str(tmp_path))
+    candidate = _fact("c1", "小明不喜欢猫", embedding=[1.0, 0.0])
+    candidate.update(
+        speaker_id="qq:1001",
+        speaker_trust=0.3,
+        event_start_at="2026-06-01T00:00:00",
+        event_end_at="2026-06-30T00:00:00",
+    )
+    existing = _fact("e1", "小明喜欢猫", embedding=[0.99, 0.05])
+    existing.update(speaker_id="qq:2002", speaker_trust=0.8)
+    await _seed_facts(fs, "Neko", [candidate, existing])
+    await resolver.aenqueue_candidates("Neko", [{
+        "candidate_id": "c1", "existing_id": "e1",
+        "entity": "master", "cosine": 0.99,
+    }])
+    model = _make_llm_mock([{"index": 0, "action": "replace"}])
+
+    with patch("utils.llm_client.create_chat_llm", return_value=model):
+        assert await resolver.aresolve("Neko") == 1
+
+    active = await fs.aload_facts("Neko")
+    assert [fact["id"] for fact in active] == ["c1"]
+    archived = json.loads(
+        (tmp_path / "Neko" / "facts_archive.json").read_text(encoding="utf-8")
+    )
+    assert next(fact for fact in archived if fact["id"] == "e1")[
+        "superseded_by"
+    ] == "c1"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mixed_side", ["candidate", "existing"])
+async def test_mixed_residual_provenance_cannot_drive_fact_trust_arbitration(
+    tmp_path, mixed_side,
+):
+    fs, resolver = _install_resolver(str(tmp_path))
+    candidate = _fact("c1", "小明喜欢猫", embedding=[1.0, 0.0])
+    candidate.update(speaker_id="qq:2002", speaker_trust=0.8)
+    existing = _fact("e1", "小明不喜欢猫", embedding=[0.99, 0.05])
+    existing.update(speaker_id="qq:1001", speaker_trust=0.3)
+    {"candidate": candidate, "existing": existing}[mixed_side][
+        "speaker_provenance_mixed"
+    ] = True
+    await _seed_facts(fs, "Neko", [candidate, existing])
+    await resolver.aenqueue_candidates("Neko", [{
+        "candidate_id": "c1", "existing_id": "e1",
+        "entity": "master", "cosine": 0.99,
+    }])
+    model = _make_llm_mock([{"index": 0, "action": "merge"}])
+
+    with patch("utils.llm_client.create_chat_llm", return_value=model):
+        assert await resolver.aresolve("Neko") == 1
+
+    active = await fs.aload_facts("Neko")
+    assert [fact["id"] for fact in active] == ["e1"]
+    assert active[0]["speaker_provenance_mixed"] is True
+    archived = json.loads(
+        (tmp_path / "Neko" / "facts_archive.json").read_text(encoding="utf-8")
+    )
+    assert [fact["id"] for fact in archived] == ["c1"]
+
+
+@pytest.mark.asyncio
+async def test_trust_does_not_override_complementary_replace(tmp_path):
+    fs, resolver = _install_resolver(str(tmp_path))
+    candidate = _fact(
+        "c1", "Alice lives in Tokyo near Shibuya", embedding=[1.0, 0.0],
+    )
+    candidate.update(speaker_id="qq:1001", speaker_trust=0.3)
+    existing = _fact("e1", "Alice lives in Tokyo", embedding=[0.99, 0.05])
+    existing.update(speaker_id="qq:2002", speaker_trust=0.8)
+    await _seed_facts(fs, "Neko", [candidate, existing])
+    await resolver.aenqueue_candidates("Neko", [{
+        "candidate_id": "c1", "existing_id": "e1",
+        "entity": "master", "cosine": 0.99,
+    }])
+    model = _make_llm_mock([{"index": 0, "action": "replace"}])
+    with patch("utils.llm_client.create_chat_llm", return_value=model):
+        assert await resolver.aresolve("Neko") == 1
+    active = await fs.aload_facts("Neko")
+    assert [fact["id"] for fact in active] == ["c1"]
+    assert active[0]["speaker_id"] == "qq:1001"
+    assert active[0]["speaker_trust"] == pytest.approx(0.3)
+    assert active[0].get("speaker_provenance_mixed") is not True
+
+
+@pytest.mark.asyncio
+async def test_corrupt_archive_aborts_arbitration_without_active_loss(tmp_path):
+    fs, resolver = _install_resolver(str(tmp_path))
+    candidate = _fact("c1", "candidate", embedding=[1.0, 0.0])
+    existing = _fact("e1", "existing", embedding=[0.99, 0.05])
+    await _seed_facts(fs, "Neko", [candidate, existing])
+    (tmp_path / "Neko" / "facts_archive.json").write_text(
+        "not-json", encoding="utf-8",
+    )
+    await resolver.aenqueue_candidates("Neko", [{
+        "candidate_id": "c1", "existing_id": "e1",
+        "entity": "master", "cosine": 0.99,
+    }])
+    model = _make_llm_mock([{"index": 0, "action": "merge"}])
+    with patch("utils.llm_client.create_chat_llm", return_value=model):
+        with pytest.raises(RuntimeError, match="facts_archive unreadable"):
+            await resolver.aresolve("Neko")
+    assert "Neko" not in fs._facts
+    active = await fs.aload_facts("Neko")
+    assert {fact["id"] for fact in active} == {"c1", "e1"}
+
+
+@pytest.mark.asyncio
+async def test_arbitration_stages_survivor_until_archive_lock(tmp_path):
+    fs, resolver = _install_resolver(str(tmp_path))
+    candidate = _fact("c1", "candidate", embedding=[1.0, 0.0])
+    existing = _fact("e1", "existing", embedding=[0.99, 0.05], importance=4)
+    await _seed_facts(fs, "Neko", [candidate, existing])
+    (tmp_path / "Neko" / "facts_archive.json").write_text(
+        "not-json", encoding="utf-8",
+    )
+    original_archive = fs.aarchive_arbitrated_facts
+    archive_entered = asyncio.Event()
+    allow_archive = asyncio.Event()
+
+    async def _paused_archive(name, specs, **kwargs):
+        archive_entered.set()
+        await allow_archive.wait()
+        return await original_archive(name, specs, **kwargs)
+
+    fs.aarchive_arbitrated_facts = _paused_archive
+    batch = [{
+        "candidate_id": "c1", "existing_id": "e1",
+        "entity": "master", "cosine": 0.99,
+    }]
+    task = asyncio.create_task(resolver._aapply_decisions(
+        "Neko", batch, [{"index": 0, "action": "merge"}],
+    ))
+    await archive_entered.wait()
+    live = await fs.aload_facts("Neko")
+    assert next(row for row in live if row["id"] == "e1")["importance"] == 4
+    await fs.asave_facts("Neko")
+    allow_archive.set()
+    with pytest.raises(RuntimeError, match="facts_archive unreadable"):
+        await task
+    fs._facts.pop("Neko", None)
+    durable = await fs.aload_facts("Neko")
+    assert next(row for row in durable if row["id"] == "e1")["importance"] == 4
+
+
+@pytest.mark.asyncio
+async def test_concurrent_forget_archive_mismatch_invalidates_mutated_cache(tmp_path):
+    fs, resolver = _install_resolver(str(tmp_path))
+    candidate = _fact("c1", "小明喜欢猫", embedding=[1.0, 0.0])
+    candidate.update(speaker_id="qq:2002", speaker_trust=0.8)
+    existing = _fact("e1", "小明不喜欢猫", embedding=[0.99, 0.05])
+    existing.update(speaker_id="qq:1001", speaker_trust=0.3)
+    await _seed_facts(fs, "Neko", [candidate, existing])
+    await resolver.aenqueue_candidates("Neko", [{
+        "candidate_id": "c1", "existing_id": "e1",
+        "entity": "master", "cosine": 0.99,
+    }])
+
+    original_archive = fs.aarchive_arbitrated_facts
+
+    async def _forget_before_archive(name, specs, **kwargs):
+        fs._facts[name][:] = [
+            fact for fact in fs._facts[name] if fact.get("id") != "e1"
+        ]
+        return await original_archive(name, specs, **kwargs)
+
+    fs.aarchive_arbitrated_facts = _forget_before_archive
+    model = _make_llm_mock([{"index": 0, "action": "merge"}])
+    with patch("utils.llm_client.create_chat_llm", return_value=model):
+        with pytest.raises(RuntimeError, match="archive mismatch"):
+            await resolver.aresolve("Neko")
+
+    assert "Neko" not in fs._facts
+    reloaded = await fs.aload_facts("Neko")
+    by_id = {fact["id"]: fact for fact in reloaded}
+    assert set(by_id) == {"c1", "e1"}
+    assert by_id["e1"]["importance"] == 5
+    assert by_id["e1"].get("merged_from_ids") == []
+
+
+@pytest.mark.asyncio
+async def test_concurrent_loser_provenance_drift_aborts_trust_override(tmp_path):
+    fs, resolver = _install_resolver(str(tmp_path))
+    candidate = _fact("c1", "小明喜欢猫", embedding=[1.0, 0.0])
+    candidate.update(speaker_id="qq:2002", speaker_trust=0.8)
+    existing = _fact("e1", "小明不喜欢猫", embedding=[0.99, 0.05])
+    existing.update(speaker_id="qq:1001", speaker_trust=0.3)
+    await _seed_facts(fs, "Neko", [candidate, existing])
+    await resolver.aenqueue_candidates("Neko", [{
+        "candidate_id": "c1", "existing_id": "e1",
+        "entity": "master", "cosine": 0.99,
+    }])
+
+    original_archive = fs.aarchive_arbitrated_facts
+
+    async def _reconcile_loser_before_archive(name, specs, **kwargs):
+        loser = next(row for row in fs._facts[name] if row.get("id") == "e1")
+        loser.pop("speaker_id")
+        loser.pop("speaker_trust")
+        loser["speaker_provenance_mixed"] = True
+        await fs.asave_facts(name)
+        return await original_archive(name, specs, **kwargs)
+
+    fs.aarchive_arbitrated_facts = _reconcile_loser_before_archive
+    model = _make_llm_mock([{"index": 0, "action": "merge"}])
+    with patch("utils.llm_client.create_chat_llm", return_value=model):
+        with pytest.raises(RuntimeError, match="loser mismatch"):
+            await resolver.aresolve("Neko")
+
+    reloaded = await fs.aload_facts("Neko")
+    by_id = {fact["id"]: fact for fact in reloaded}
+    assert set(by_id) == {"c1", "e1"}
+    assert by_id["e1"]["speaker_provenance_mixed"] is True
+    assert not (tmp_path / "Neko" / "facts_archive.json").exists()
+
+
+# ── ids-only queue（隐私收口：成员衍生原文不落 sidecar） ─────────────
+
+
+def _read_queue_file_raw(tmp_path, name: str = "小天") -> str:
+    """Read the pending-dedup sidecar as raw text (disk truth, not API)."""
+    import os
+    path = os.path.join(str(tmp_path), name, "facts_pending_dedup.json")
+    if not os.path.exists(path):
+        return ""
+    with open(path, encoding="utf-8") as f:
+        return f.read()
+
+
+@pytest.mark.asyncio
+async def test_queue_file_on_disk_never_contains_fact_text(tmp_path):
+    """The privacy contract this PR closes: the sidecar queue must be
+    ids-only. Scoped (member-derived) fact text may exist ONLY in
+    facts.json — the extraction / dead-letter logs already print just
+    domain markers and lengths, and a plaintext copy in the queue file
+    undid that. Assert against the RAW file: an implementation that
+    strips in memory but persists text would still pass an API-level
+    check."""
+    from memory.scopes import MemorySubject
+
+    fs, resolver = _install_resolver(str(tmp_path))
+    subject = MemorySubject.group_chat("qq", "12345")
+    member_text_a = "群成员小明说自己住在幸福路 42 号"
+    member_text_b = "小明提到过自己的家庭住址在幸福路"
+    a = {**_fact("s1", member_text_a, embedding=[1.0, 0.0]),
+         **subject.as_entry_fields()}
+    b = {**_fact("s2", member_text_b, embedding=[0.99, 0.05]),
+         **subject.as_entry_fields()}
+    await _seed_facts(fs, "小天", [a, b])
+
+    pairs = FactDedupResolver.detect_candidates([a, b])
+    assert pairs, "sanity: cosine 应产生候选对"
+    # detect_candidates 的返回本身就不携带文本字段。
+    for p in pairs:
+        assert "candidate_text" not in p
+        assert "existing_text" not in p
+    appended = await resolver.aenqueue_candidates("小天", pairs)
+    assert appended >= 1
+
+    raw = _read_queue_file_raw(tmp_path)
+    assert "幸福路" not in raw
+    assert "candidate_text" not in raw
+    assert "existing_text" not in raw
+    # 域标识（非内容）允许在队列里：resolve 按域锁批要用。
+    assert "group_chat:qq:12345" in raw
+
+
+@pytest.mark.asyncio
+async def test_legacy_plaintext_queue_scrubbed_by_resolve_even_on_llm_failure(tmp_path):
+    """Upgrade path: a queue file written by the old schema carries
+    plaintext copies. The FIRST resolve tick must scrub them from disk
+    — including when the LLM call itself fails (the scrub cannot wait
+    for a successful batch, or a poison pair would keep member text on
+    disk until dead-letter)."""
+    import os
+    from utils.file_utils import atomic_write_json
+
+    fs, resolver = _install_resolver(str(tmp_path))
+    cand = _fact("c1", "成员甲的敏感发言原文", embedding=[1.0, 0.0])
+    existing = _fact("e1", "成员甲的另一句原文", embedding=[0.99, 0.05])
+    await _seed_facts(fs, "小天", [cand, existing])
+    # 手写旧 schema 队列文件（绕过新 enqueue 的白名单）。
+    legacy_queue = [{
+        "candidate_id": "c1", "existing_id": "e1",
+        "candidate_text": "成员甲的敏感发言原文",
+        "existing_text": "成员甲的另一句原文",
+        "entity": "master", "cosine": 0.99,
+        "queued_at": "2026-04-25T10:00:00",
+    }]
+    qpath = os.path.join(str(tmp_path), "小天", "facts_pending_dedup.json")
+    atomic_write_json(qpath, legacy_queue, indent=2, ensure_ascii=False)
+
+    class _BoomLLM:
+        async def ainvoke(self, *_a, **_k):
+            raise RuntimeError("simulated failure")
+
+        async def aclose(self):
+            return None
+
+    with patch("utils.llm_client.create_chat_llm", return_value=_BoomLLM()):
+        resolved = await resolver.aresolve("小天")
+    assert resolved == 0
+    # pair 仍在队列（LLM 失败按 attempts 兜底），但磁盘上已无明文。
+    pending = await resolver.aload_pending("小天")
+    assert len(pending) == 1
+    raw = _read_queue_file_raw(tmp_path)
+    assert "成员甲" not in raw
+    assert "candidate_text" not in raw
+    assert "existing_text" not in raw
+
+
+@pytest.mark.asyncio
+async def test_enqueue_persists_scrub_even_when_all_pairs_are_duplicates(tmp_path):
+    """coderabbit round-3 Major: when every incoming pair dedups away
+    (appended == 0), the scrub of legacy plaintext fields must STILL be
+    written back — otherwise member text lingers on disk until the next
+    genuine write."""
+    import os
+    from utils.file_utils import atomic_write_json
+
+    fs, resolver = _install_resolver(str(tmp_path))
+    legacy_queue = [{
+        "candidate_id": "c1", "existing_id": "e1",
+        "candidate_text": "成员乙的明文残留",
+        "existing_text": "成员乙的另一句",
+        "entity": "master", "cosine": 0.9,
+        "queued_at": "2026-04-25T10:00:00",
+    }]
+    qpath = os.path.join(str(tmp_path), "小天", "facts_pending_dedup.json")
+    atomic_write_json(qpath, legacy_queue, indent=2, ensure_ascii=False)
+
+    # 唯一入队 pair 与队列现存条目重复 → appended == 0。
+    appended = await resolver.aenqueue_candidates("小天", [{
+        "candidate_id": "c1", "existing_id": "e1",
+        "entity": "master", "cosine": 0.9,
+    }])
+    assert appended == 0
+    raw = _read_queue_file_raw(tmp_path)
+    assert "成员乙" not in raw
+    assert "candidate_text" not in raw
+
+
+@pytest.mark.asyncio
+async def test_resolve_prompt_uses_current_authoritative_text(tmp_path):
+    """Texts in the LLM prompt come from facts.json AT RESOLVE TIME,
+    not from an enqueue-time copy — a fact edited between enqueue and
+    resolve must be arbitrated on its current wording."""
+    fs, resolver = _install_resolver(str(tmp_path))
+    cand = _fact("c1", "入队时的旧文本", embedding=[1.0, 0.0])
+    existing = _fact("e1", "另一条", embedding=[0.99, 0.05])
+    await _seed_facts(fs, "小天", [cand, existing])
+    await resolver.aenqueue_candidates("小天", [{
+        "candidate_id": "c1", "existing_id": "e1",
+        "entity": "master", "cosine": 0.99,
+    }])
+    # enqueue 之后、resolve 之前 fact 被改写。
+    facts = await fs.aload_facts("小天")
+    next(f for f in facts if f["id"] == "c1")["text"] = "EDITED-当前权威文本"
+    await fs.asave_facts("小天")
+
+    prompts: list[str] = []
+    resp = MagicMock()
+    resp.content = json.dumps([{"index": 0, "action": "keep_both"}])
+
+    class _RecordingLLM:
+        async def ainvoke(self, prompt, *_a, **_k):
+            prompts.append(prompt)
+            return resp
+
+        async def aclose(self):
+            return None
+
+    with patch("utils.llm_client.create_chat_llm", return_value=_RecordingLLM()):
+        resolved = await resolver.aresolve("小天")
+    assert resolved == 1
+    assert len(prompts) == 1
+    assert "EDITED-当前权威文本" in prompts[0]
+    assert "入队时的旧文本" not in prompts[0]
+
+
+@pytest.mark.asyncio
+async def test_resolve_detects_locale_from_hydrated_fact_text(tmp_path):
+    from utils.language_utils import (
+        detect_prompt_language as real_detect_prompt_language,
+        language_context,
+    )
+
+    fs, resolver = _install_resolver(str(tmp_path))
+    cand = _fact("c1", "I love coffee", embedding=[1.0, 0.0])
+    existing = _fact("e1", "I enjoy coffee", embedding=[0.99, 0.05])
+    await _seed_facts(fs, "小天", [cand, existing])
+    await resolver.aenqueue_candidates("小天", [{
+        "candidate_id": "c1", "existing_id": "e1",
+        "entity": "master", "cosine": 0.99,
+    }])
+
+    observed = []
+    resp = MagicMock()
+    resp.content = json.dumps([{"index": 0, "action": "keep_both"}])
+
+    class _RecordingLLM:
+        async def ainvoke(self, _prompt, *_a, **_k):
+            return resp
+
+        async def aclose(self):
+            return None
+
+    def detect(text, *, default="zh", ui_language):
+        selected = real_detect_prompt_language(
+            text,
+            default=default,
+            ui_language=ui_language,
+        )
+        observed.append((text, ui_language, selected))
+        return selected
+
+    with patch(
+        "utils.language_utils.detect_prompt_language",
+        side_effect=detect,
+    ), patch(
+        "utils.llm_client.create_chat_llm",
+        return_value=_RecordingLLM(),
+    ), language_context("zh-TW"):
+        resolved = await resolver.aresolve("小天")
+
+    assert resolved == 1
+    assert observed == [(
+        "I love coffee\nI enjoy coffee",
+        "zh-TW",
+        "en",
+    )]
+    raw_queue = _read_queue_file_raw(tmp_path)
+    assert "I love coffee" not in raw_queue
+    assert "I enjoy coffee" not in raw_queue
+
+
+@pytest.mark.asyncio
+async def test_resolve_dequeues_pair_with_both_rows_missing_without_llm(tmp_path):
+    """Both rows gone (merged away / archived) ⇒ the pair is consumed
+    via the stale path BEFORE any prompt is assembled — there is no
+    text to arbitrate and the entry must not block the queue."""
+    fs, resolver = _install_resolver(str(tmp_path))
+    await _seed_facts(fs, "小天", [_fact("other", "x", embedding=[1.0, 0.0])])
+    await resolver.aenqueue_candidates("小天", [{
+        "candidate_id": "gone1", "existing_id": "gone2",
+        "entity": "master", "cosine": 0.99,
+    }])
+    create_llm = MagicMock()
+    with patch("utils.llm_client.create_chat_llm", create_llm):
+        resolved = await resolver.aresolve("小天")
+    assert resolved == 0
+    assert create_llm.call_count == 0
+    assert await resolver.aload_pending("小天") == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("falsey_id", [0, False])
+async def test_resolve_finds_falsey_scalar_ids(falsey_id, tmp_path):
+    fs, resolver = _install_resolver(str(tmp_path))
+    candidate = _fact("candidate", "fresh", embedding=[1.0, 0.0, 0.0])
+    candidate["id"] = falsey_id
+    existing = _fact("existing", "old", embedding=[1.0, 0.0, 0.0])
+    await _seed_facts(fs, "小天", [candidate, existing])
+    await resolver.aenqueue_candidates("小天", [{
+        "candidate_id": falsey_id,
+        "existing_id": "existing",
+        "entity": "master",
+        "cosine": 1.0,
+    }])
+    model = _make_llm_mock([{"index": 0, "action": "keep_both"}])
+
+    with patch("utils.llm_client.create_chat_llm", return_value=model):
+        assert await resolver.aresolve("小天") == 1
+
+    assert await resolver.aload_pending("小天") == []
+
+
 def test_rebind_fact_store_preserves_alocks(tmp_path):
     """/reload swaps FactStore but rebind_fact_store must keep the
     per-character ``_alocks`` dict — otherwise an in-flight aresolve
@@ -862,3 +2392,21 @@ def test_rebind_fact_store_preserves_alocks(tmp_path):
     assert resolver._fact_store is fs2
     assert resolver._fact_store is not fs1
     assert resolver._get_alock("小天") is lock_before
+
+
+@pytest.mark.asyncio
+async def test_unscored_existing_fact_cannot_invent_a_trust_override(tmp_path):
+    fs, resolver = _install_resolver(str(tmp_path))
+    candidate = _fact("c1", "candidate", embedding=[1.0, 0.0])
+    candidate.update(speaker_id="qq:1001", speaker_trust=0.3)
+    existing = _fact("e1", "unscored", embedding=[0.99, 0.05])
+    existing.update(speaker_id="qq:2002")
+    await _seed_facts(fs, "Neko", [candidate, existing])
+    await resolver.aenqueue_candidates("Neko", [{
+        "candidate_id": "c1", "existing_id": "e1",
+        "entity": "master", "cosine": 0.99,
+    }])
+    model = _make_llm_mock([{"index": 0, "action": "replace"}])
+    with patch("utils.llm_client.create_chat_llm", return_value=model):
+        assert await resolver.aresolve("Neko") == 1
+    assert [fact["id"] for fact in await fs.aload_facts("Neko")] == ["c1"]

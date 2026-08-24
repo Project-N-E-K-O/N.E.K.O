@@ -58,6 +58,15 @@ def test_cluster_hash_changes_when_refl_member_changes():
     assert a != b
 
 
+def test_cluster_locale_text_excludes_read_only_facts():
+    from memory.refine import MemoryRefineEngine
+
+    assert MemoryRefineEngine._cluster_locale_text([
+        _refl('r1', text='喜歡貓'),
+        _fact('f1', text='A long English fact used only as reference context.'),
+    ]) == '喜歡貓'
+
+
 # ── _all_stamped_fresh ───────────────────────────────────────────────
 
 
@@ -220,3 +229,33 @@ async def test_refine_pass_noop_when_embedding_disabled():
         'clusters_resolved': 0,
         'clusters_failed': 0,
     }
+
+
+@pytest.mark.asyncio
+async def test_refine_pass_honors_explicit_cluster_budget(monkeypatch):
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    from memory.refine import MemoryRefineEngine
+
+    with patch("memory.refine.get_embedding_service") as mock_svc:
+        svc = MagicMock()
+        svc.is_disabled.return_value = False
+        mock_svc.return_value = svc
+        engine = MemoryRefineEngine(MagicMock())
+
+    clusters = [
+        [_refl(f"r{i}a", text="a"), _refl(f"r{i}b", text="b")]
+        for i in range(3)
+    ]
+    monkeypatch.setattr(engine, "_compute_clusters", lambda _entries: clusters)
+    monkeypatch.setattr(engine, "_resolve_cluster", AsyncMock(return_value=True))
+
+    result = await engine.refine_pass(
+        {"master": [_refl("seed")]},
+        apply_fn=AsyncMock(),
+        scope_label="test",
+        max_clusters=1,
+    )
+
+    assert result["clusters_resolved"] == 1
+    assert engine._resolve_cluster.await_count == 1

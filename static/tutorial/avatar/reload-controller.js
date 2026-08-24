@@ -97,7 +97,7 @@
             const normalizedOptions = options || {};
             this.host = normalizedOptions.host || null;
             this.timeoutMs = Number.isFinite(normalizedOptions.timeoutMs) ? normalizedOptions.timeoutMs : 8000;
-            this.tutorialModelName = normalizedOptions.tutorialModelName || 'yui-origin';
+            this.tutorialModelName = normalizedOptions.tutorialModelName || 'yui-lolita';
             this.resolveCurrentName = normalizedOptions.resolveCurrentName || noop;
             this.fetchCharacters = normalizedOptions.fetchCharacters || noop;
             this.buildSnapshotPayload = normalizedOptions.buildSnapshotPayload || noop;
@@ -224,7 +224,7 @@
                     }
                     await this.restoreOverride();
                 }
-                console.warn('[TutorialAvatarReloadController] 临时切换 yui-origin 模型失败:', error);
+                console.warn('[TutorialAvatarReloadController] 临时切换 yui-lolita 模型失败:', error);
                 throw error;
             });
 

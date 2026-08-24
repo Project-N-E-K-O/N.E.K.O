@@ -373,12 +373,12 @@
         window.__NEKO_JUKEBOX_MANAGER_STANDALONE__ = true;
     </script>
     <!-- jukebox/*.js 包含 SongActionManager 定义 -->
-    <script src="/static/jukebox/jukebox/bootstrap.js"></script>
-    <script src="/static/jukebox/jukebox/core.js"></script>
-    <script src="/static/jukebox/jukebox/manager.js"></script>
-    <script src="/static/jukebox/jukebox/shell.js"></script>
-    <script src="/static/jukebox/jukebox/transport.js"></script>
-    <script src="/static/jukebox/jukebox/wiring.js"></script>
+    <script src="/static/jukebox/jukebox/bootstrap.js?v={{ static_asset_version }}"></script>
+    <script src="/static/jukebox/jukebox/core.js?v={{ static_asset_version }}"></script>
+    <script src="/static/jukebox/jukebox/manager.js?v={{ static_asset_version }}"></script>
+    <script src="/static/jukebox/jukebox/shell.js?v={{ static_asset_version }}"></script>
+    <script src="/static/jukebox/jukebox/transport.js?v={{ static_asset_version }}"></script>
+    <script src="/static/jukebox/jukebox/wiring.js?v={{ static_asset_version }}"></script>
     <script>
         // 管理器独立窗口初始化
         // 拖动走 CSS `-webkit-app-region: drag`（OS 原生），不再用 JS mousedown 模拟。

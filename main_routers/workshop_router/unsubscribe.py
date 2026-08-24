@@ -26,10 +26,201 @@ import os
 import json
 import asyncio
 import threading
+import time
+from contextlib import suppress
 from fastapi import Request
 from fastapi.responses import JSONResponse
 from ..shared_state import ensure_steamworks as get_steamworks, get_config_manager
+from utils.character_memory import character_config_mutation_lock
 from utils.config_manager import get_reserved
+
+
+_RESUME_RETRY_INITIAL_DELAY_SECONDS = 1.0
+_RESUME_RETRY_MAX_DELAY_SECONDS = 30.0
+_released_derived_task_resume_tasks: dict[
+    tuple[int, tuple[tuple[str, str], ...]], asyncio.Task[None]
+] = {}
+
+
+def _schedule_released_derived_task_resume_retry(
+    config_mgr, released_claims: dict[str, str], item_id: int,
+) -> None:
+    """Keep retrying one failed admission recovery until it is acknowledged."""
+    claims = dict(released_claims)
+    key = (item_id, tuple(sorted(claims.items())))
+    existing = _released_derived_task_resume_tasks.get(key)
+    if existing is not None and not existing.done():
+        return
+
+    async def _retry() -> None:
+        delay = _RESUME_RETRY_INITIAL_DELAY_SECONDS
+        while True:
+            await asyncio.sleep(delay)
+            try:
+                await _resume_released_derived_tasks(
+                    config_mgr,
+                    claims,
+                    item_id,
+                    schedule_retry=False,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "取消订阅派生任务恢复重试失败: item_id=%s err=%s",
+                    item_id,
+                    exc,
+                )
+                delay = min(delay * 2, _RESUME_RETRY_MAX_DELAY_SECONDS)
+                continue
+            return
+
+    task = asyncio.create_task(_retry())
+    _released_derived_task_resume_tasks[key] = task
+
+    def _discard(done: asyncio.Task[None]) -> None:
+        if _released_derived_task_resume_tasks.get(key) is done:
+            _released_derived_task_resume_tasks.pop(key, None)
+
+    task.add_done_callback(_discard)
+
+
+async def _await_thread_call_to_completion(func, *args, **kwargs):
+    """Finish a thread-owned transaction before propagating cancellation."""
+    operation = asyncio.create_task(asyncio.to_thread(func, *args, **kwargs))
+    try:
+        return await asyncio.shield(operation), False
+    except asyncio.CancelledError:
+        while not operation.done():
+            with suppress(asyncio.CancelledError):
+                await asyncio.wait({operation})
+        try:
+            result = operation.result()
+        except BaseException as exc:
+            logger.error(
+                "取消到达后同步事务仍失败，保留取消语义: %s",
+                exc,
+                exc_info=True,
+            )
+            raise asyncio.CancelledError from exc
+        return result, True
+
+
+async def _finish_resume_preserving_cancellation(coro) -> None:
+    """Finish admission recovery without replacing or swallowing cancellation."""
+    current = asyncio.current_task()
+    cancellation_pending = bool(current and current.cancelling())
+    operation = asyncio.create_task(coro)
+    try:
+        await asyncio.shield(operation)
+    except asyncio.CancelledError:
+        cancellation_pending = True
+        while not operation.done():
+            with suppress(asyncio.CancelledError):
+                await asyncio.wait({operation})
+    except BaseException as exc:
+        if cancellation_pending:
+            raise asyncio.CancelledError from exc
+        raise
+    try:
+        operation.result()
+    except BaseException as exc:
+        if cancellation_pending:
+            raise asyncio.CancelledError from exc
+        raise
+    if cancellation_pending:
+        raise asyncio.CancelledError
+
+
+async def _resume_released_derived_tasks(
+    config_mgr, released_claims: dict[str, str], item_id: int,
+    *,
+    schedule_retry: bool = True,
+) -> bool:
+    """Release this transaction's claims without reopening a replaced identity."""
+    try:
+        characters_after = await config_mgr.aload_characters()
+        catgirls_after = (
+            characters_after.get('猫娘')
+            if isinstance(characters_after, dict)
+            else None
+        )
+        active_names = set(catgirls_after) if isinstance(catgirls_after, dict) else set()
+        claim_releases = {
+            name: (token,)
+            for name, token in released_claims.items()
+        }
+        if not claim_releases:
+            return True
+        from ..characters_router import notify_memory_server_reload
+
+        resumed = await notify_memory_server_reload(
+            reason=(
+                f"取消订阅流程结束，释放派生任务声明: {item_id}; "
+                f"仍存在={sorted(active_names & set(released_claims))}"
+            ),
+            release_derived_task_claims=claim_releases,
+        )
+        if not resumed:
+            raise RuntimeError("notify_memory_server_reload returned False")
+        return True
+    except Exception as exc:
+        if schedule_retry:
+            _schedule_released_derived_task_resume_retry(
+                config_mgr,
+                released_claims,
+                item_id,
+            )
+        logger.warning(
+            "取消订阅流程结束后恢复角色派生任务失败: item_id=%s err=%s",
+            item_id,
+            exc,
+        )
+        raise
+
+
+async def _release_workshop_character_handles(
+    candidate_names: list[str],
+    item_id: int,
+    release_character,
+    create_claim_token,
+    claim_sink: dict[str, str],
+    *,
+    per_call_timeout: float = 2.5,
+    overall_timeout: float = 3.0,
+) -> list[tuple[str, bool, str | None]]:
+    """Attempt releases while retaining every client-owned claim token."""
+    claim_sink.update({
+        name: create_claim_token()
+        for name in candidate_names
+    })
+
+    async def _release_one(name: str) -> tuple[str, bool, str | None]:
+        try:
+            released = await asyncio.wait_for(
+                release_character(
+                    name,
+                    reason=f"取消订阅前释放 SQLite 句柄: {name}（item_id={item_id}）",
+                    derived_task_claim_token=claim_sink[name],
+                ),
+                timeout=per_call_timeout,
+            )
+            return name, bool(released), None
+        except Exception as exc:
+            return name, False, str(exc)
+
+    try:
+        return await asyncio.wait_for(
+            asyncio.gather(
+                *(_release_one(name) for name in candidate_names),
+                return_exceptions=False,
+            ),
+            timeout=overall_timeout,
+        )
+    except asyncio.TimeoutError:
+        logger.warning(
+            f"取消订阅前置 release 总预算 {overall_timeout}s 超时"
+            f"（item_id={item_id}），视为全部 non-success 继续清理"
+        )
+        return [(name, False, "overall_timeout") for name in candidate_names]
 
 
 def _collect_character_names_by_workshop_item_id(config_mgr, item_id: int) -> list[str]:
@@ -188,11 +379,42 @@ def _resolve_workshop_item_install_path(steamworks, item_id: int) -> str | None:
 
 @router.post('/unsubscribe')
 async def unsubscribe_workshop_item(request: Request):
+    """Protect a started local unsubscribe transaction from request cancellation."""
+    commit_started = asyncio.Event()
+    operation = asyncio.create_task(
+        _unsubscribe_workshop_item(request, commit_started),
+    )
+    try:
+        return await asyncio.shield(operation)
+    except asyncio.CancelledError:
+        if not commit_started.is_set():
+            operation.cancel()
+        while not operation.done():
+            with suppress(asyncio.CancelledError):
+                await asyncio.wait({operation})
+        if commit_started.is_set():
+            try:
+                operation.result()
+            except Exception as exc:
+                logger.error(
+                    "取消订阅请求取消后，已开始的事务最终失败: %s",
+                    exc,
+                    exc_info=True,
+                )
+        else:
+            with suppress(asyncio.CancelledError):
+                operation.result()
+        raise
+
+
+async def _unsubscribe_workshop_item(request: Request, commit_started: asyncio.Event):
     """
     Unsubscribe from a Steam Workshop item.
     Accepts a POST request containing the item ID.
     """
     steamworks = get_steamworks()
+    released_derived_task_claims: dict[str, str] = {}
+    mutation_lock_acquired = False
 
     # 检查Steamworks是否初始化成功
     if steamworks is None:
@@ -239,22 +461,20 @@ async def unsubscribe_workshop_item(request: Request):
         disk_names = await asyncio.to_thread(
             _scan_workshop_folder_character_names, pre_item_path
         )
-        # 跟踪每个候选角色的来源：
-        #   "origin" = 从 characters.json 的 character_origin.source_id 反查命中，
-        #              配置明确标记来自该 item_id，可放心删除。
-        #   "disk"   = 仅来自磁盘 .chara.json 的名字扫描，只是"名字碰撞"，
-        #              不能证明这角色就是该 item_id 的；删除前必须对每个
-        #              候选在 characters.json 里二次确认 source_id / asset_source_id。
-        candidate_sources: dict[str, str] = {name: "origin" for name in candidate_names}
         seen_names: set[str] = set(candidate_names)
         for disk_name in disk_names:
             if disk_name not in seen_names:
                 candidate_names.append(disk_name)
-                candidate_sources[disk_name] = "disk"
                 seen_names.add(disk_name)
         logger.info(
             f"取消订阅 {item_id_int}: 反向索引候选角色 {candidate_names}（磁盘扫描追加 {disk_names}）"
         )
+
+        # Candidate discovery is intentionally outside the lock because it may
+        # scan Steam/disk state.  Reload and revalidate every candidate only
+        # after entering the shared characters.json transaction.
+        await character_config_mutation_lock.acquire()
+        mutation_lock_acquired = True
 
         target_item_id_str = str(item_id_int)
 
@@ -340,7 +560,10 @@ async def unsubscribe_workshop_item(request: Request):
         release_warnings: list[str] = []
         if candidate_names:
             try:
-                from ..characters_router import release_memory_server_character
+                from ..characters_router import (
+                    create_derived_task_claim_token,
+                    release_memory_server_character,
+                )
             except Exception as exc:
                 logger.error(
                     f"取消订阅前置 release: 无法 import release_memory_server_character: {exc}"
@@ -352,33 +575,13 @@ async def unsubscribe_workshop_item(request: Request):
                     "details": {"error": str(exc)},
                 }, status_code=500)
 
-            async def _release_one(name: str) -> tuple[str, bool, str | None]:
-                try:
-                    released = await asyncio.wait_for(
-                        release_memory_server_character(
-                            name,
-                            reason=f"取消订阅前释放 SQLite 句柄: {name}（item_id={item_id_int}）",
-                        ),
-                        timeout=2.5,
-                    )
-                    return name, bool(released), None
-                except Exception as exc:
-                    return name, False, str(exc)
-
-            try:
-                release_results = await asyncio.wait_for(
-                    asyncio.gather(
-                        *(_release_one(n) for n in candidate_names),
-                        return_exceptions=False,
-                    ),
-                    timeout=3.0,
-                )
-            except asyncio.TimeoutError:
-                logger.warning(
-                    f"取消订阅前置 release 总预算 3s 超时（item_id={item_id_int}），"
-                    f"视为全部 non-success 继续清理"
-                )
-                release_results = [(n, False, "overall_timeout") for n in candidate_names]
+            release_results = await _release_workshop_character_handles(
+                candidate_names,
+                item_id_int,
+                release_memory_server_character,
+                create_derived_task_claim_token,
+                released_derived_task_claims,
+            )
 
             for name, ok, err in release_results:
                 if ok:
@@ -416,7 +619,12 @@ async def unsubscribe_workshop_item(request: Request):
                     _build_character_tombstones_state,
                     notify_memory_server_reload,
                 )
-                from utils.character_memory import delete_character_memory_storage
+                from utils.character_memory import (
+                    begin_character_recent_transaction,
+                    delete_character_memory_storage,
+                    finalize_character_recent_delete,
+                    release_character_recent_transaction,
+                )
                 from ..shared_state import get_remove_one_catgirl
             except Exception as exc:
                 logger.error(
@@ -471,27 +679,45 @@ async def unsubscribe_workshop_item(request: Request):
                     "details": {"character_name": current_catgirl_now},
                 }, status_code=400)
 
-            async def _delete_memory_with_retry(name: str) -> list:
+            def _delete_memory_with_retry_sync(name: str) -> list:
                 """Windows file locks → one retry after 300ms as a safety net."""
+                transaction = begin_character_recent_transaction(config_mgr, name)
                 try:
-                    return list(
-                        await asyncio.to_thread(
-                            delete_character_memory_storage, config_mgr, name
+                    try:
+                        removed_paths, transaction = delete_character_memory_storage(
+                            config_mgr,
+                            name,
+                            capture_pending=True,
+                            keep_recent_locks=True,
+                            recent_transaction=transaction,
                         )
-                        or []
-                    )
-                except PermissionError as exc:
-                    logger.warning(
-                        f"同步清理: delete_character_memory_storage({name}) "
-                        f"PermissionError: {exc}，300ms 后重试"
-                    )
-                    await asyncio.sleep(0.3)
-                    return list(
-                        await asyncio.to_thread(
-                            delete_character_memory_storage, config_mgr, name
+                    except PermissionError as exc:
+                        logger.warning(
+                            f"同步清理: delete_character_memory_storage({name}) "
+                            f"PermissionError: {exc}，300ms 后重试"
                         )
-                        or []
-                    )
+                        time.sleep(0.3)
+                        removed_paths, transaction = delete_character_memory_storage(
+                            config_mgr,
+                            name,
+                            capture_pending=True,
+                            keep_recent_locks=True,
+                            recent_transaction=transaction,
+                        )
+                    finalize_character_recent_delete(transaction)
+                    return list(removed_paths or [])
+                except BaseException:
+                    release_character_recent_transaction(transaction)
+                    raise
+
+            async def _delete_memory_with_retry(name: str) -> list:
+                removed_paths, cancelled = await _await_thread_call_to_completion(
+                    _delete_memory_with_retry_sync,
+                    name,
+                )
+                if cancelled:
+                    raise asyncio.CancelledError
+                return removed_paths
 
             async def _write_tombstone(name: str) -> None:
                 await asyncio.to_thread(
@@ -509,6 +735,9 @@ async def unsubscribe_workshop_item(request: Request):
             pending_del_names: list[str] = []
             catgirl_map = characters_mut['猫娘']  # 上面 isinstance 已守卫
             target_item_id_str = str(item_id_int)
+            # characters.json 是第一项不可逆提交。外层从这里开始会完成本地提交
+            # 与 Steam 请求，再把请求取消传播给调用方。
+            commit_started.set()
             for name in candidate_names:
                 if not name:
                     continue
@@ -519,94 +748,18 @@ async def unsubscribe_workshop_item(request: Request):
                     )
                     continue
 
-                # 磁盘兜底候选必须二次确认来源：名字一致 ≠ 同一 item_id。
-                # 如果用户本地已有同名非 Workshop 角色（或同名但来自别的
-                # item_id 的 Workshop 角色），按磁盘名字盲删会误删。
-                # 反向索引候选（"origin"）已经是在 characters.json 里按
-                # source_id 匹配到的，不需要二次校验。
-                if candidate_sources.get(name) == "disk":
-                    payload = catgirl_map.get(name) if isinstance(catgirl_map, dict) else None
-                    origin_source = str(
-                        get_reserved(payload, 'character_origin', 'source', default='') or ''
-                    ).strip() if isinstance(payload, dict) else ''
-                    origin_source_id = str(
-                        get_reserved(payload, 'character_origin', 'source_id', default='') or ''
-                    ).strip() if isinstance(payload, dict) else ''
-                    asset_source = str(
-                        get_reserved(payload, 'avatar', 'asset_source', default='') or ''
-                    ).strip() if isinstance(payload, dict) else ''
-                    asset_source_id = str(
-                        get_reserved(payload, 'avatar', 'asset_source_id', default='') or ''
-                    ).strip() if isinstance(payload, dict) else ''
-                    confirmed_workshop_match = (
-                        origin_source == 'steam_workshop' and origin_source_id == target_item_id_str
-                    ) or (
-                        asset_source == 'steam_workshop' and asset_source_id == target_item_id_str
-                    )
-                    if not confirmed_workshop_match:
-                        logger.warning(
-                            f"取消订阅同步清理: 跳过未确认来源的磁盘候选角色 '{name}' "
-                            f"(item_id={item_id_int}, origin_source={origin_source!r}, "
-                            f"origin_source_id={origin_source_id!r}, "
-                            f"asset_source={asset_source!r}, asset_source_id={asset_source_id!r})"
-                        )
-                        cleanup_summary.setdefault("skipped_unverified_characters", []).append(name)
-                        continue
-
-                # 三步独立：并发执行
-                results = await asyncio.gather(
-                    _delete_memory_with_retry(name),
-                    _write_tombstone(name),
-                    _remove_one(name),
-                    return_exceptions=True,
-                )
-                rm_paths_or_exc, tombstone_or_exc, remove_or_exc = results
-
-                # delete_memory 结果
-                if isinstance(rm_paths_or_exc, Exception):
-                    logger.error(
-                        f"取消订阅同步清理: delete_memory({name}) 失败: {rm_paths_or_exc}",
-                        exc_info=rm_paths_or_exc,
-                    )
-                    cleanup_summary["errors"].append({
-                        "character": name,
-                        "stage": "delete_memory",
-                        "error": str(rm_paths_or_exc),
-                    })
-                else:
-                    for entry_path in rm_paths_or_exc:
-                        logger.info(f"取消订阅同步清理: 已删除记忆 {entry_path}")
-                        cleanup_summary["removed_memory_paths"].append(str(entry_path))
-                    if not rm_paths_or_exc:
-                        logger.warning(
-                            f"取消订阅同步清理: delete_memory({name}) 未返回任何路径 "
-                            f"(memory_dir={getattr(config_mgr, 'memory_dir', None)})"
-                        )
-
-                # tombstone 结果
-                if isinstance(tombstone_or_exc, Exception):
-                    logger.error(
-                        f"取消订阅同步清理: tombstone({name}) 失败: {tombstone_or_exc}",
-                        exc_info=tombstone_or_exc,
-                    )
-                    cleanup_summary["errors"].append({
-                        "character": name,
-                        "stage": "tombstone",
-                        "error": str(tombstone_or_exc),
-                    })
-                else:
-                    logger.info(f"取消订阅同步清理: 已写入 tombstone -> {name}")
-
-                # remove_one_catgirl 结果
-                if isinstance(remove_or_exc, Exception):
+                # Candidate discovery ran before the lifecycle guard and is only
+                # advisory.  Revalidate every candidate against the authoritative
+                # snapshot loaded under the guard: an origin-index hit can have
+                # been deleted/replaced while this request waited, just like a
+                # disk-only same-name candidate can be unrelated from the start.
+                if not _is_confirmed_workshop_character(characters_mut, name):
                     logger.warning(
-                        f"取消订阅同步清理: remove_one_catgirl({name}) 失败: {remove_or_exc}"
+                        f"取消订阅同步清理: 跳过锁内未确认来源的候选角色 '{name}' "
+                        f"(item_id={item_id_int})"
                     )
-                    cleanup_summary["errors"].append({
-                        "character": name,
-                        "stage": "remove_one_catgirl",
-                        "error": str(remove_or_exc),
-                    })
+                    cleanup_summary.setdefault("skipped_unverified_characters", []).append(name)
+                    continue
 
                 # characters.json 条目仅做内存删除，循环结束一次性批量写盘。
                 # 复用前面捕获的 catgirl_map 引用（上面 isinstance 已守卫），
@@ -670,15 +823,87 @@ async def unsubscribe_workshop_item(request: Request):
                     "cleanup_summary": cleanup_summary,
                 }, status_code=500)
 
+            # 配置先成功发布，再做不可逆的记忆、tombstone 与运行时清理。
+            # 若配置写失败，用户的记忆文件仍原样保留，不会出现回滚 registry
+            # 成功但文件已经被 shutil.rmtree 永久删除的假回滚。
+            for name in pending_del_names:
+                results = await asyncio.gather(
+                    _delete_memory_with_retry(name),
+                    _write_tombstone(name),
+                    _remove_one(name),
+                    return_exceptions=True,
+                )
+                rm_paths_or_exc, tombstone_or_exc, remove_or_exc = results
+
+                if isinstance(rm_paths_or_exc, BaseException):
+                    logger.error(
+                        f"取消订阅同步清理: delete_memory({name}) 失败: {rm_paths_or_exc}",
+                        exc_info=rm_paths_or_exc,
+                    )
+                    cleanup_summary["errors"].append({
+                        "character": name,
+                        "stage": "delete_memory",
+                        "error": str(rm_paths_or_exc),
+                    })
+                else:
+                    for entry_path in rm_paths_or_exc:
+                        logger.info(f"取消订阅同步清理: 已删除记忆 {entry_path}")
+                        cleanup_summary["removed_memory_paths"].append(str(entry_path))
+                    if not rm_paths_or_exc:
+                        logger.warning(
+                            f"取消订阅同步清理: delete_memory({name}) 未返回任何路径 "
+                            f"(memory_dir={getattr(config_mgr, 'memory_dir', None)})"
+                        )
+
+                if isinstance(tombstone_or_exc, BaseException):
+                    logger.error(
+                        f"取消订阅同步清理: tombstone({name}) 失败: {tombstone_or_exc}",
+                        exc_info=tombstone_or_exc,
+                    )
+                    cleanup_summary["errors"].append({
+                        "character": name,
+                        "stage": "tombstone",
+                        "error": str(tombstone_or_exc),
+                    })
+                else:
+                    logger.info(f"取消订阅同步清理: 已写入 tombstone -> {name}")
+
+                if isinstance(remove_or_exc, BaseException):
+                    logger.warning(
+                        f"取消订阅同步清理: remove_one_catgirl({name}) 失败: {remove_or_exc}"
+                    )
+                    cleanup_summary["errors"].append({
+                        "character": name,
+                        "stage": "remove_one_catgirl",
+                        "error": str(remove_or_exc),
+                    })
+
             # 通知 memory_server 重新加载（一次即可）
             try:
-                await notify_memory_server_reload(
-                    reason=f"取消订阅 item_id={item_id_int}"
+                reload_succeeded = await notify_memory_server_reload(
+                    reason=f"取消订阅 item_id={item_id_int}",
+                    release_derived_task_claims={
+                        name: (token,)
+                        for name, token in released_derived_task_claims.items()
+                    },
                 )
+                if reload_succeeded:
+                    released_derived_task_claims.clear()
             except Exception as exc:
                 logger.warning(
                     f"取消订阅同步清理: notify_memory_server_reload 失败: {exc}"
                 )
+
+        # Everything that touches characters.json is done.  Release the shared
+        # transaction here instead of in the ``finally``: the remaining work is
+        # Steam-side (UnsubscribeItem plus its callback/delayed folder cleanup)
+        # and can take arbitrarily long, and holding the lock across it would
+        # block unrelated character mutations -- including the character-card
+        # save and language-preference endpoints -- for that entire window.
+        # The ``finally`` still releases on every early-return/exception path.
+        if mutation_lock_acquired:
+            mutation_lock_acquired = False
+            character_config_mutation_lock.release()
 
         logger.info(
             f"取消订阅同步清理汇总 item_id={item_id_int}: "
@@ -912,3 +1137,16 @@ async def unsubscribe_workshop_item(request: Request):
             "error": "服务器内部错误",
             "message": f"取消订阅过程中发生错误: {str(e)}"
         }, status_code=500)
+    finally:
+        try:
+            if mutation_lock_acquired:
+                character_config_mutation_lock.release()
+        finally:
+            if released_derived_task_claims:
+                await _finish_resume_preserving_cancellation(
+                    _resume_released_derived_tasks(
+                        config_mgr,
+                        released_derived_task_claims,
+                        item_id_int,
+                    )
+                )

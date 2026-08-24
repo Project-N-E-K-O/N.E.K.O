@@ -26,12 +26,14 @@ CHARACTER_CARD_MANAGER_PART_NAMES = (
     "sync-and-legacy-memory.js",
 )
 MODEL_MANAGER_PART_NAMES = (
+    "named-window-registration.js",
     "runtime-loaders.js",
     "dropdown-manager.js",
     "page-bridge.js",
     "card-face.js",
     "path-request-fullscreen.js",
     "page-controller.js",
+    "background-model-drag.js",
     "window-lifecycle.js",
 )
 
@@ -50,6 +52,30 @@ def read_character_card_manager_source() -> str:
     )
 
 
+def test_character_profile_idle_save_does_not_rewrite_cached_model_binding():
+    script = (CHARACTER_CARD_MANAGER_JS_DIR / "card-form-and-actions.js").read_text(encoding="utf-8")
+    idle_save_start = script.index("// 只保存 Live2D 待机动作")
+    idle_save_end = script.index("let selectedAfterSave", idle_save_start)
+    idle_save_block = script[idle_save_start:idle_save_end]
+    payload_match = re.search(
+        r"body:\s*JSON\.stringify\(\{(?P<body>.*?)\}\)",
+        idle_save_block,
+        re.DOTALL,
+    )
+    assert payload_match is not None
+    payload_body = payload_match.group("body")
+    payload_fields = re.findall(
+        r"""^\s*(?:['\"]([^'\"]+)['\"]|([A-Za-z_$][\w$]*))\s*:""",
+        payload_body,
+        re.MULTILINE,
+    )
+    fields = [quoted or bare for quoted, bare in payload_fields]
+
+    assert fields == ["live2d_idle_animation"]
+    assert "live2d_idle_animation: idleAnimation" in payload_body
+    assert "..." not in payload_body
+
+
 def test_character_card_manager_parts_load_in_dependency_order():
     discovered_names = {path.name for path in CHARACTER_CARD_MANAGER_JS_DIR.glob("*.js")}
     assert discovered_names == set(CHARACTER_CARD_MANAGER_PART_NAMES)
@@ -60,6 +86,84 @@ def test_character_card_manager_parts_load_in_dependency_order():
         for part_name in CHARACTER_CARD_MANAGER_PART_NAMES
     ]
     assert script_positions == sorted(script_positions)
+
+
+def test_character_card_manager_hides_pngtuber_compatibility_fields_without_filtering_workshop_payloads():
+    core = (CHARACTER_CARD_MANAGER_JS_DIR / "core-and-upload.js").read_text(encoding="utf-8")
+    ui_hidden_block = core.split("const PNGTUBER_UI_HIDDEN_FIELDS", 1)[1].split("];", 1)[0]
+    workshop_reserved_function = core.split("function getWorkshopReservedFields()", 1)[1].split(
+        "function getWorkshopHiddenFields()", 1
+    )[0]
+    workshop_hidden_function = core.split("function getWorkshopHiddenFields()", 1)[1].split(
+        "function normalizeCharacterFieldName", 1
+    )[0]
+    pngtuber_fields = (
+        "pngtuber",
+        "pngtuber_idle_image",
+        "pngtuber_talking_image",
+        "pngtuber_happy_image",
+        "pngtuber_sad_image",
+        "pngtuber_angry_image",
+        "pngtuber_surprised_image",
+    )
+
+    for field in pngtuber_fields:
+        assert f"'{field}'" in ui_hidden_block
+    assert "PNGTUBER_UI_HIDDEN_FIELDS" not in workshop_reserved_function
+    assert "PNGTUBER_UI_HIDDEN_FIELDS" in workshop_hidden_function
+
+
+def test_character_card_import_keeps_non_blocking_progress_visible_until_completion():
+    core = (CHARACTER_CARD_MANAGER_JS_DIR / "core-and-upload.js").read_text(encoding="utf-8")
+    styles = (PROJECT_ROOT / "static" / "css" / "character_card_manager.css").read_text(encoding="utf-8")
+    template = (PROJECT_ROOT / "templates" / "character_card_manager.html").read_text(encoding="utf-8")
+    transfer = (CHARACTER_CARD_MANAGER_JS_DIR / "character-data-and-transfer.js").read_text(encoding="utf-8")
+    master_profile = (CHARACTER_CARD_MANAGER_JS_DIR / "master-profile.js").read_text(encoding="utf-8")
+    previews = (CHARACTER_CARD_MANAGER_JS_DIR / "model-previews.js").read_text(encoding="utf-8")
+    workshop = (CHARACTER_CARD_MANAGER_JS_DIR / "workshop-card-and-upload.js").read_text(encoding="utf-8")
+
+    assert template.count('id="message-area"') == 1
+    assert template.index('id="message-area"') < template.index('id="uploadToWorkshopModal"')
+    assert "messageArea.parentElement !== document.body" in core
+    assert "if (type !== 'importing' && type !== 'import-error')" in core
+    assert "icon: 'ccm-toast-spinner'" in core
+    assert "icon: 'ccm-toast-error-icon'" in core
+    assert "@keyframes ccm-toast-spin" in styles
+    assert "card.dismiss = dismiss;" in core
+    assert "showMessage(loadingText, 'importing', 0)" in transfer
+    assert "showMessage(errorText, 'import-error')" in transfer
+    assert "function showToast(" not in core
+    assert "showAutoSaveToast" not in master_profile
+    assert "auto-save-toast" not in template
+    assert "auto-save-toast" not in styles
+    assert "requestAnimationFrame(() => requestAnimationFrame(resolve))" in transfer
+    assert transfer.count("importNotice.dismiss();") == 2
+    assert "character.importCardSuccess" not in transfer
+    assert "steam.characterCardsRefreshed" not in transfer
+    assert "steam.scanningModels" not in workshop
+    assert "steam.scanningVoices" not in workshop
+    assert "steam.scanComplete" not in workshop
+    assert "steam.characterCardLoaded" not in workshop
+    assert "live2d.loadingModel" not in previews
+    assert "live2d.modelLoadSuccess" not in previews
+    assert "steam.vrmPreviewLoaded" not in previews
+    assert "steam.mmdPreviewLoaded" not in previews
+    assert "steam.live2dPreviewLoaded" not in previews
+    assert "character.importCardFailed" in transfer
+    assert "steam.voiceScanError" in workshop
+    assert "live2d.modelLoadFailed" in previews
+
+
+def test_workshop_publish_opens_item_in_system_browser():
+    core = (CHARACTER_CARD_MANAGER_JS_DIR / "core-and-upload.js").read_text(encoding="utf-8")
+
+    assert "function openPublishedWorkshopItem(webUrl)" in core
+    assert "https://steamcommunity.com/sharedfiles/filedetails/?id=${published_id}" in core
+    assert "window.electronShell.openExternal(webUrl)" in core
+    assert "window.open(webUrl, '_blank', 'noopener,noreferrer')" in core
+    assert "openPublishedWorkshopItem(webUrl);" in core
+    assert "ActivateGameOverlayToWebPage" not in core
+    assert "steam://url/CommunityFilePage" not in core
 
 
 def test_model_manager_parts_load_in_dependency_order():
@@ -73,7 +177,7 @@ def test_model_manager_parts_load_in_dependency_order():
     ]
     assert script_positions == sorted(script_positions)
 
-    loaders = (MODEL_MANAGER_JS_DIR / MODEL_MANAGER_PART_NAMES[0]).read_text(encoding="utf-8")
+    loaders = (MODEL_MANAGER_JS_DIR / "runtime-loaders.js").read_text(encoding="utf-8")
     assert loaders.index("window._vrmModulesLoading = true;") < loaders.index(
         "'/static/vrm/vrm-init.js'"
     )
@@ -278,6 +382,23 @@ def test_card_maker_rejects_remote_pngtuber_assets_before_export():
     assert "assertExportablePNGTuberConfig(pngtuberConfig);" in script
     assert "function assertExportablePNGTuberDrawable(source)" in script
     assert "assertExportablePNGTuberDrawable(source);" in script
+
+
+def test_card_maker_uses_full_resolution_layered_pngtuber_snapshot_for_final_export():
+    script = CARD_MAKER_JS.read_text(encoding="utf-8")
+    get_canvas_block = script[
+        script.index("    function getModelCanvas(options = {})"):
+        script.index("    /**\n     * 在截图前确保渲染器输出最新帧")
+    ]
+    export_block = script[
+        script.index("    async function renderFinalPortrait(options = {})"):
+        script.index("    async function renderFullCard(options = {})")
+    ]
+
+    assert "if (options.fullResolution && mgr?.isLayeredActive?.())" in get_canvas_block
+    assert "mgr.renderLayeredSnapshotCanvas?.()" in get_canvas_block
+    assert "if (snapshot) return snapshot;" in get_canvas_block
+    assert "getModelCanvas({ fullResolution: currentModelType === 'pngtuber' })" in export_block
 
 
 def test_model_manager_parameter_save_restores_unsaved_and_offers_card_face():

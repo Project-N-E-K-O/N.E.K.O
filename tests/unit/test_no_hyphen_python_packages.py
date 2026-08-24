@@ -64,6 +64,7 @@ _EXCLUDED_DIR_NAMES = frozenset(
         ".pytest_cache",
         ".mypy_cache",
         ".ruff_cache",
+        ".uv-cache",  # uv artifact cache; third-party extracted wheels, not project source
         "playwright_browsers",
         "data",  # data/browser_use_extensions 等带连字符 extension id，但不含 .py
         "site-packages",  # 任何虚拟环境的 site-packages 都是第三方代码

@@ -34,13 +34,43 @@ ability to solve the problem and think insightfully"""
 # =====================================================================
 
 def _loc(d: dict, lang: str) -> str:
-    """Resolve a value from a multi-language dict by lang, falling back to 'en' when missing.
-    Prompt modules should explicitly provide every currently supported language;
-    the fallback is only an exceptional safety net.
+    """Resolve a localized value with Chinese-aware safety fallbacks.
+
+    Prompt modules should explicitly provide every supported locale. If a
+    locale-specific key is nevertheless absent, Chinese variants use the
+    Simplified Chinese template while every other locale uses English.
     """
     if lang not in d:
         print(f"WARNING: Unexpected lang code {lang}")
-    return d.get(lang, d['en'])
+    else:
+        return d[lang]
+
+    from config.prompts._locale import prompt_locale_fallback_key
+
+    fallback = prompt_locale_fallback_key(lang)
+    if fallback == "zh":
+        if "zh" in d:
+            return d["zh"]
+        if "zh-CN" in d:
+            return d["zh-CN"]
+    return d["en"]
+
+
+def normalize_sys_prompt_locale(lang: str | None) -> str:
+    """Normalize a locale to a key of this module's prompt dicts.
+
+    Public on purpose, same reason as ``prompts_proactive.normalize_mini_game_invite_locale``:
+    callers in ``main_logic`` resolve a locale long before they reach ``_loc``, and
+    ``_loc`` cannot repair what arrived broken — it only *reports* an unexpected key
+    and then falls back, so a short code (``zh``) and a full locale (``zh-CN``) both
+    render Simplified without an error. This returns the scheme the tables here
+    actually use: ``zh`` / ``zh-TW``.
+    """
+    from config.prompts._locale import normalize_prompt_locale
+
+    return normalize_prompt_locale(
+        lang, default="en", simplified="zh", keep_traditional=True
+    )
 
 
 
@@ -49,7 +79,7 @@ def _loc(d: dict, lang: str) -> str:
 # 已知错误码映射
 RESULT_PARSER_ERROR_CODES = {
     'AGENT_QUOTA_EXCEEDED': {
-        'zh': '配额已用完', 'en': 'Quota exceeded',
+        'zh': '配额已用完', 'zh-TW': '配額已用完', 'en': 'Quota exceeded',
         'ja': 'クォータ超過', 'ko': '할당량 초과', 'ru': 'Квота исчерпана',
         'es': 'Cuota agotada', 'pt': 'Cota esgotada',
     },
@@ -58,32 +88,32 @@ RESULT_PARSER_ERROR_CODES = {
 # 已知错误子串映射（key=匹配子串，value=i18n dict）
 RESULT_PARSER_ERROR_SUBSTRINGS = {
     'Task cancelled by user': {
-        'zh': '被用户取消', 'en': 'Cancelled by user',
+        'zh': '被用户取消', 'zh-TW': '被使用者取消', 'en': 'Cancelled by user',
         'ja': 'ユーザーによりキャンセル', 'ko': '사용자가 취소함', 'ru': 'Отменено пользователем',
         'es': 'Cancelado por el usuario', 'pt': 'Cancelado pelo usuário',
     },
     'timed out after': {
-        'zh': '超时', 'en': 'Timed out',
+        'zh': '超时', 'zh-TW': '逾時', 'en': 'Timed out',
         'ja': 'タイムアウト', 'ko': '시간 초과', 'ru': 'Превышено время ожидания',
         'es': 'Tiempo agotado', 'pt': 'Tempo esgotado',
     },
     'Browser disconnected': {
-        'zh': '浏览器窗口被关闭', 'en': 'Browser window closed',
+        'zh': '浏览器窗口被关闭', 'zh-TW': '瀏覽器視窗被關閉', 'en': 'Browser window closed',
         'ja': 'ブラウザが切断されました', 'ko': '브라우저 연결 끊김', 'ru': 'Браузер отключён',
         'es': 'Ventana del navegador cerrada', 'pt': 'Janela do navegador fechada',
     },
     'CONTENT_FILTER': {
-        'zh': '内容安全过滤', 'en': 'Content filtered',
+        'zh': '内容安全过滤', 'zh-TW': '內容安全過濾', 'en': 'Content filtered',
         'ja': 'コンテンツフィルター', 'ko': '콘텐츠 필터링', 'ru': 'Фильтр контента',
         'es': 'Contenido filtrado', 'pt': 'Conteúdo filtrado',
     },
     'browser-use execution failed': {
-        'zh': '浏览器执行失败', 'en': 'Browser execution failed',
+        'zh': '浏览器执行失败', 'zh-TW': '瀏覽器執行失敗', 'en': 'Browser execution failed',
         'ja': 'ブラウザ実行失敗', 'ko': '브라우저 실행 실패', 'ru': 'Ошибка выполнения браузера',
         'es': 'Falló la ejecución del navegador', 'pt': 'Falha na execução do navegador',
     },
     '未找到 Chrome': {
-        'zh': '未找到 Chrome 浏览器', 'en': 'Chrome browser not found',
+        'zh': '未找到 Chrome 浏览器', 'zh-TW': '找不到 Chrome 瀏覽器', 'en': 'Chrome browser not found',
         'ja': 'Chrome ブラウザが見つかりません', 'ko': 'Chrome 브라우저를 찾을 수 없음',
         'ru': 'Браузер Chrome не найден',
         'es': 'No se encontró el navegador Chrome',
@@ -93,42 +123,43 @@ RESULT_PARSER_ERROR_SUBSTRINGS = {
 
 # 通用结果短语
 RESULT_PARSER_PHRASES = {
-    'no_result':          {'zh': '无结果', 'en': 'No result', 'ja': '結果なし', 'ko': '결과 없음', 'ru': 'Нет результата', 'es': 'Sin resultado', 'pt': 'Sem resultado'},
-    'completed':          {'zh': '已完成', 'en': 'Completed', 'ja': '完了', 'ko': '완료', 'ru': 'Выполнено', 'es': 'Completado', 'pt': 'Concluído'},
-    'completed_with':     {'zh': '已完成: {detail}', 'en': 'Completed: {detail}', 'ja': '完了: {detail}', 'ko': '완료: {detail}', 'ru': 'Выполнено: {detail}', 'es': 'Completado: {detail}', 'pt': 'Concluído: {detail}'},
-    'steps_done':         {'zh': '{n}步完成', 'en': '{n} steps done', 'ja': '{n}ステップ完了', 'ko': '{n}단계 완료', 'ru': 'Выполнено за {n} шагов', 'es': '{n} pasos completados', 'pt': '{n} passos concluídos'},
-    'steps_done_with':    {'zh': '{n}步完成: {detail}', 'en': '{n} steps done: {detail}', 'ja': '{n}ステップ完了: {detail}', 'ko': '{n}단계 완료: {detail}', 'ru': 'Выполнено за {n} шагов: {detail}', 'es': '{n} pasos completados: {detail}', 'pt': '{n} passos concluídos: {detail}'},
-    'failed':             {'zh': '失败: {detail}', 'en': 'Failed: {detail}', 'ja': '失敗: {detail}', 'ko': '실패: {detail}', 'ru': 'Ошибка: {detail}', 'es': 'Falló: {detail}', 'pt': 'Falhou: {detail}'},
-    'exec_failed':        {'zh': '执行未成功', 'en': 'Execution unsuccessful', 'ja': '実行失敗', 'ko': '실행 실패', 'ru': 'Выполнение не удалось', 'es': 'Ejecución sin éxito', 'pt': 'Execução sem sucesso'},
-    'exec_error':         {'zh': '执行失败', 'en': 'Execution failed', 'ja': '実行エラー', 'ko': '실행 오류', 'ru': 'Ошибка выполнения', 'es': 'Error de ejecución', 'pt': 'Erro de execução'},
-    'exec_done':          {'zh': '执行完成', 'en': 'Execution completed', 'ja': '実行完了', 'ko': '실행 완료', 'ru': 'Выполнение завершено', 'es': 'Ejecución completada', 'pt': 'Execução concluída'},
-    'list_count':         {'zh': '({n}条)', 'en': '({n} items)', 'ja': '({n}件)', 'ko': '({n}건)', 'ru': '({n} шт.)', 'es': '({n} elementos)', 'pt': '({n} itens)'},
-    'plugin_notification': {'zh': '收到插件通知', 'en': 'Plugin notification received', 'ja': 'プラグイン通知を受信', 'ko': '플러그인 알림 수신', 'ru': 'Получено уведомление от плагина', 'es': 'Notificación de plugin recibida', 'pt': 'Notificação de plugin recebida'},
-    'notification_received': {'zh': '收到通知', 'en': 'Notification received', 'ja': '通知を受信', 'ko': '알림 수신', 'ru': 'Получено уведомление', 'es': 'Notificación recibida', 'pt': 'Notificação recebida'},
+    'no_result':          {'zh': '无结果', 'zh-TW': '無結果', 'en': 'No result', 'ja': '結果なし', 'ko': '결과 없음', 'ru': 'Нет результата', 'es': 'Sin resultado', 'pt': 'Sem resultado'},
+    'completed':          {'zh': '已完成', 'zh-TW': '已完成', 'en': 'Completed', 'ja': '完了', 'ko': '완료', 'ru': 'Выполнено', 'es': 'Completado', 'pt': 'Concluído'},
+    'completed_with':     {'zh': '已完成: {detail}', 'zh-TW': '已完成: {detail}', 'en': 'Completed: {detail}', 'ja': '完了: {detail}', 'ko': '완료: {detail}', 'ru': 'Выполнено: {detail}', 'es': 'Completado: {detail}', 'pt': 'Concluído: {detail}'},
+    'steps_done':         {'zh': '{n}步完成', 'zh-TW': '{n}步完成', 'en': '{n} steps done', 'ja': '{n}ステップ完了', 'ko': '{n}단계 완료', 'ru': 'Выполнено за {n} шагов', 'es': '{n} pasos completados', 'pt': '{n} passos concluídos'},
+    'steps_done_with':    {'zh': '{n}步完成: {detail}', 'zh-TW': '{n}步完成: {detail}', 'en': '{n} steps done: {detail}', 'ja': '{n}ステップ完了: {detail}', 'ko': '{n}단계 완료: {detail}', 'ru': 'Выполнено за {n} шагов: {detail}', 'es': '{n} pasos completados: {detail}', 'pt': '{n} passos concluídos: {detail}'},
+    'failed':             {'zh': '失败: {detail}', 'zh-TW': '失敗: {detail}', 'en': 'Failed: {detail}', 'ja': '失敗: {detail}', 'ko': '실패: {detail}', 'ru': 'Ошибка: {detail}', 'es': 'Falló: {detail}', 'pt': 'Falhou: {detail}'},
+    'exec_failed':        {'zh': '执行未成功', 'zh-TW': '執行未成功', 'en': 'Execution unsuccessful', 'ja': '実行失敗', 'ko': '실행 실패', 'ru': 'Выполнение не удалось', 'es': 'Ejecución sin éxito', 'pt': 'Execução sem sucesso'},
+    'exec_error':         {'zh': '执行失败', 'zh-TW': '執行失敗', 'en': 'Execution failed', 'ja': '実行エラー', 'ko': '실행 오류', 'ru': 'Ошибка выполнения', 'es': 'Error de ejecución', 'pt': 'Erro de execução'},
+    'exec_done':          {'zh': '执行完成', 'zh-TW': '執行完成', 'en': 'Execution completed', 'ja': '実行完了', 'ko': '실행 완료', 'ru': 'Выполнение завершено', 'es': 'Ejecución completada', 'pt': 'Execução concluída'},
+    'list_count':         {'zh': '({n}条)', 'zh-TW': '({n}筆)', 'en': '({n} items)', 'ja': '({n}件)', 'ko': '({n}건)', 'ru': '({n} шт.)', 'es': '({n} elementos)', 'pt': '({n} itens)'},
+    'plugin_notification': {'zh': '收到插件通知', 'zh-TW': '收到外掛通知', 'en': 'Plugin notification received', 'ja': 'プラグイン通知を受信', 'ko': '플러그인 알림 수신', 'ru': 'Получено уведомление от плагина', 'es': 'Notificación de plugin recibida', 'pt': 'Notificação de plugin recebida'},
+    'notification_received': {'zh': '收到通知', 'zh-TW': '收到通知', 'en': 'Notification received', 'ja': '通知を受信', 'ko': '알림 수신', 'ru': 'Получено уведомление', 'es': 'Notificación recibida', 'pt': 'Notificação recebida'},
     # agent callback 注入 LLM 上下文的 detail 标签
     # 状态信息（已完成/失败/取消等）由外层 SYSTEM_NOTIFICATION_PROACTIVE / PASSIVE
     # 表达，inner item 渲染时只需要可选的 detail label。
-    'detail_result':      {'zh': '详细结果：', 'en': 'Detailed result: ', 'ja': '詳細結果：', 'ko': '상세 결과：', 'ru': 'Подробный результат: ', 'es': 'Resultado detallado: ', 'pt': 'Resultado detalhado: '},
-    'cu_task_done':       {'zh': '你的任务"{desc}"{status}：{detail}', 'en': 'Your task "{desc}" {status}: {detail}', 'ja': 'タスク「{desc}」{status}：{detail}', 'ko': '작업 "{desc}" {status}: {detail}', 'ru': 'Ваша задача «{desc}» {status}: {detail}', 'es': 'Tu tarea "{desc}" {status}: {detail}', 'pt': 'Sua tarefa "{desc}" {status}: {detail}'},
-    'cu_task_done_no_desc': {'zh': '你的任务{status}：{detail}', 'en': 'Your task {status}: {detail}', 'ja': 'タスク{status}：{detail}', 'ko': '작업 {status}: {detail}', 'ru': 'Ваша задача {status}: {detail}', 'es': 'Tu tarea {status}: {detail}', 'pt': 'Sua tarefa {status}: {detail}'},
-    'cu_task_desc_only':  {'zh': '你的任务"{desc}"{status}', 'en': 'Your task "{desc}" {status}', 'ja': 'タスク「{desc}」{status}', 'ko': '작업 "{desc}" {status}', 'ru': 'Ваша задача «{desc}» {status}', 'es': 'Tu tarea "{desc}" {status}', 'pt': 'Sua tarefa "{desc}" {status}'},
-    'cu_done':            {'zh': '任务已完成', 'en': 'Task completed', 'ja': 'タスク完了', 'ko': '작업 완료', 'ru': 'Задача выполнена', 'es': 'Tarea completada', 'pt': 'Tarefa concluída'},
-    'cu_fail':            {'zh': '任务执行失败', 'en': 'Task failed', 'ja': 'タスク失敗', 'ko': '작업 실패', 'ru': 'Задача не выполнена', 'es': 'La tarea falló', 'pt': 'A tarefa falhou'},
-    'cu_status_done':     {'zh': '已完成', 'en': 'completed', 'ja': '完了', 'ko': '완료', 'ru': 'выполнена', 'es': 'completada', 'pt': 'concluída'},
-    'cu_status_ended':    {'zh': '已结束', 'en': 'ended', 'ja': '終了', 'ko': '종료', 'ru': 'завершена', 'es': 'terminó', 'pt': 'terminou'},
-    'openclaw_try':       {'zh': '我试试', 'en': "I'll try", 'ja': 'やってみるね', 'ko': '해볼게', 'ru': 'Я попробую', 'es': 'Lo intentaré', 'pt': 'Vou tentar'},
-    'openclaw_processing': {'zh': 'OpenClaw(QwenPaw) 处理中...', 'en': 'OpenClaw (QwenPaw) is processing...', 'ja': 'OpenClaw(QwenPaw) 処理中...', 'ko': 'OpenClaw(QwenPaw) 처리 중...', 'ru': 'OpenClaw (QwenPaw) обрабатывает...', 'es': 'OpenClaw (QwenPaw) está procesando...', 'pt': 'OpenClaw (QwenPaw) está processando...'},
-    'openclaw_done':       {'zh': 'OpenClaw(QwenPaw) 执行完成', 'en': 'OpenClaw (QwenPaw) execution completed', 'ja': 'OpenClaw(QwenPaw) 実行完了', 'ko': 'OpenClaw(QwenPaw) 실행 완료', 'ru': 'OpenClaw (QwenPaw) выполнено', 'es': 'Ejecución de OpenClaw (QwenPaw) completada', 'pt': 'Execução do OpenClaw (QwenPaw) concluída'},
-    'openclaw_failed':     {'zh': 'OpenClaw(QwenPaw) 执行失败', 'en': 'OpenClaw (QwenPaw) execution failed', 'ja': 'OpenClaw(QwenPaw) 実行失敗', 'ko': 'OpenClaw(QwenPaw) 실행 실패', 'ru': 'OpenClaw (QwenPaw) не выполнено', 'es': 'Falló la ejecución de OpenClaw (QwenPaw)', 'pt': 'Falha na execução do OpenClaw (QwenPaw)'},
-    'openclaw_cancelled':  {'zh': 'OpenClaw(QwenPaw) 任务已取消', 'en': 'OpenClaw (QwenPaw) task cancelled', 'ja': 'OpenClaw(QwenPaw) タスクがキャンセルされました', 'ko': 'OpenClaw(QwenPaw) 작업 취소됨', 'ru': 'Задача OpenClaw (QwenPaw) отменена', 'es': 'Tarea de OpenClaw (QwenPaw) cancelada', 'pt': 'Tarefa do OpenClaw (QwenPaw) cancelada'},
-    'openclaw_dispatch_failed': {'zh': 'OpenClaw(QwenPaw) 任务分发失败', 'en': 'OpenClaw (QwenPaw) task dispatch failed', 'ja': 'OpenClaw(QwenPaw) タスク配信失敗', 'ko': 'OpenClaw(QwenPaw) 작업 전달 실패', 'ru': 'Ошибка отправки задачи OpenClaw (QwenPaw)', 'es': 'Falló el envío de la tarea de OpenClaw (QwenPaw)', 'pt': 'Falha ao despachar a tarefa do OpenClaw (QwenPaw)'},
-    'bu_cancelled':        {'zh': '你的任务"{desc}"已取消', 'en': 'Your task "{desc}" cancelled', 'ja': 'タスク「{desc}」がキャンセルされました', 'ko': '작업 "{desc}" 취소됨', 'ru': 'Ваша задача «{desc}» отменена', 'es': 'Tu tarea "{desc}" fue cancelada', 'pt': 'Sua tarefa "{desc}" foi cancelada'},
-    'of_cancelled':        {'zh': '虚拟机任务 "{desc}" 已取消', 'en': 'VM task "{desc}" cancelled', 'ja': 'VM タスク「{desc}」がキャンセルされました', 'ko': 'VM 작업 "{desc}" 취소됨', 'ru': 'Задача ВМ «{desc}» отменена', 'es': 'Tarea de VM "{desc}" cancelada', 'pt': 'Tarefa de VM "{desc}" cancelada'},
+    'detail_result':      {'zh': '详细结果：', 'zh-TW': '詳細結果：', 'en': 'Detailed result: ', 'ja': '詳細結果：', 'ko': '상세 결과：', 'ru': 'Подробный результат: ', 'es': 'Resultado detallado: ', 'pt': 'Resultado detalhado: '},
+    'cu_task_done':       {'zh': '你的任务"{desc}"{status}：{detail}', 'zh-TW': '你的任務「{desc}」{status}：{detail}', 'en': 'Your task "{desc}" {status}: {detail}', 'ja': 'タスク「{desc}」{status}：{detail}', 'ko': '작업 "{desc}" {status}: {detail}', 'ru': 'Ваша задача «{desc}» {status}: {detail}', 'es': 'Tu tarea "{desc}" {status}: {detail}', 'pt': 'Sua tarefa "{desc}" {status}: {detail}'},
+    'cu_task_done_no_desc': {'zh': '你的任务{status}：{detail}', 'zh-TW': '你的任務{status}：{detail}', 'en': 'Your task {status}: {detail}', 'ja': 'タスク{status}：{detail}', 'ko': '작업 {status}: {detail}', 'ru': 'Ваша задача {status}: {detail}', 'es': 'Tu tarea {status}: {detail}', 'pt': 'Sua tarefa {status}: {detail}'},
+    'cu_task_desc_only':  {'zh': '你的任务"{desc}"{status}', 'zh-TW': '你的任務「{desc}」{status}', 'en': 'Your task "{desc}" {status}', 'ja': 'タスク「{desc}」{status}', 'ko': '작업 "{desc}" {status}', 'ru': 'Ваша задача «{desc}» {status}', 'es': 'Tu tarea "{desc}" {status}', 'pt': 'Sua tarefa "{desc}" {status}'},
+    'cu_done':            {'zh': '任务已完成', 'zh-TW': '任務已完成', 'en': 'Task completed', 'ja': 'タスク完了', 'ko': '작업 완료', 'ru': 'Задача выполнена', 'es': 'Tarea completada', 'pt': 'Tarefa concluída'},
+    'cu_fail':            {'zh': '任务执行失败', 'zh-TW': '任務執行失敗', 'en': 'Task failed', 'ja': 'タスク失敗', 'ko': '작업 실패', 'ru': 'Задача не выполнена', 'es': 'La tarea falló', 'pt': 'A tarefa falhou'},
+    'cu_status_done':     {'zh': '已完成', 'zh-TW': '已完成', 'en': 'completed', 'ja': '完了', 'ko': '완료', 'ru': 'выполнена', 'es': 'completada', 'pt': 'concluída'},
+    'cu_status_ended':    {'zh': '已结束', 'zh-TW': '已結束', 'en': 'ended', 'ja': '終了', 'ko': '종료', 'ru': 'завершена', 'es': 'terminó', 'pt': 'terminou'},
+    'openclaw_try':       {'zh': '我试试', 'zh-TW': '我試試', 'en': "I'll try", 'ja': 'やってみるね', 'ko': '해볼게', 'ru': 'Я попробую', 'es': 'Lo intentaré', 'pt': 'Vou tentar'},
+    'openclaw_processing': {'zh': 'OpenClaw(QwenPaw) 处理中...', 'zh-TW': 'OpenClaw(QwenPaw) 處理中...', 'en': 'OpenClaw (QwenPaw) is processing...', 'ja': 'OpenClaw(QwenPaw) 処理中...', 'ko': 'OpenClaw(QwenPaw) 처리 중...', 'ru': 'OpenClaw (QwenPaw) обрабатывает...', 'es': 'OpenClaw (QwenPaw) está procesando...', 'pt': 'OpenClaw (QwenPaw) está processando...'},
+    'openclaw_done':       {'zh': 'OpenClaw(QwenPaw) 执行完成', 'zh-TW': 'OpenClaw(QwenPaw) 執行完成', 'en': 'OpenClaw (QwenPaw) execution completed', 'ja': 'OpenClaw(QwenPaw) 実行完了', 'ko': 'OpenClaw(QwenPaw) 실행 완료', 'ru': 'OpenClaw (QwenPaw) выполнено', 'es': 'Ejecución de OpenClaw (QwenPaw) completada', 'pt': 'Execução do OpenClaw (QwenPaw) concluída'},
+    'openclaw_failed':     {'zh': 'OpenClaw(QwenPaw) 执行失败', 'zh-TW': 'OpenClaw(QwenPaw) 執行失敗', 'en': 'OpenClaw (QwenPaw) execution failed', 'ja': 'OpenClaw(QwenPaw) 実行失敗', 'ko': 'OpenClaw(QwenPaw) 실행 실패', 'ru': 'OpenClaw (QwenPaw) не выполнено', 'es': 'Falló la ejecución de OpenClaw (QwenPaw)', 'pt': 'Falha na execução do OpenClaw (QwenPaw)'},
+    'openclaw_cancelled':  {'zh': 'OpenClaw(QwenPaw) 任务已取消', 'zh-TW': 'OpenClaw(QwenPaw) 任務已取消', 'en': 'OpenClaw (QwenPaw) task cancelled', 'ja': 'OpenClaw(QwenPaw) タスクがキャンセルされました', 'ko': 'OpenClaw(QwenPaw) 작업 취소됨', 'ru': 'Задача OpenClaw (QwenPaw) отменена', 'es': 'Tarea de OpenClaw (QwenPaw) cancelada', 'pt': 'Tarefa do OpenClaw (QwenPaw) cancelada'},
+    'openclaw_dispatch_failed': {'zh': 'OpenClaw(QwenPaw) 任务分发失败', 'zh-TW': 'OpenClaw(QwenPaw) 任務派送失敗', 'en': 'OpenClaw (QwenPaw) task dispatch failed', 'ja': 'OpenClaw(QwenPaw) タスク配信失敗', 'ko': 'OpenClaw(QwenPaw) 작업 전달 실패', 'ru': 'Ошибка отправки задачи OpenClaw (QwenPaw)', 'es': 'Falló el envío de la tarea de OpenClaw (QwenPaw)', 'pt': 'Falha ao despachar a tarefa do OpenClaw (QwenPaw)'},
+    'bu_cancelled':        {'zh': '你的任务"{desc}"已取消', 'zh-TW': '你的任務「{desc}」已取消', 'en': 'Your task "{desc}" cancelled', 'ja': 'タスク「{desc}」がキャンセルされました', 'ko': '작업 "{desc}" 취소됨', 'ru': 'Ваша задача «{desc}» отменена', 'es': 'Tu tarea "{desc}" fue cancelada', 'pt': 'Sua tarefa "{desc}" foi cancelada'},
+    'of_cancelled':        {'zh': '虚拟机任务 "{desc}" 已取消', 'zh-TW': '虛擬機任務「{desc}」已取消', 'en': 'VM task "{desc}" cancelled', 'ja': 'VM タスク「{desc}」がキャンセルされました', 'ko': 'VM 작업 "{desc}" 취소됨', 'ru': 'Задача ВМ «{desc}» отменена', 'es': 'Tarea de VM "{desc}" cancelada', 'pt': 'Tarefa de VM "{desc}" cancelada'},
 }
 
 # ---------- 语音会话初始 prompt ----------
 SESSION_INIT_PROMPT = {
     'zh': '你是一个角色扮演大师。请按要求扮演以下角色（{name}）。',
+    'zh-TW': '你是一個角色扮演大師。請照要求扮演以下角色（{name}）。',
     'en': 'You are a role-playing expert. Please play the following character ({name}) as instructed.',
     'ja': 'あなたはロールプレイの達人です。指示に従い、以下のキャラクター（{name}）を演じてください。',
     'ko': '당신은 롤플레이 전문가입니다. 지시에 따라 다음 캐릭터（{name}）를 연기하세요.',
@@ -139,6 +170,7 @@ SESSION_INIT_PROMPT = {
 
 SESSION_INIT_PROMPT_AGENT = {
     'zh': '你是一个角色扮演大师，并且精通电脑操作。请按要求扮演以下角色（{name}）。当用户要求你执行对话外的实际操作（例如控制游戏、插件、设备、浏览器或电脑）时，除非本轮上下文已经给出系统/工具执行结果，否则只能简短说明会尝试处理，绝对不要声称已经开始、已经完成，或自行编造执行结果。',
+    'zh-TW': '你是一個角色扮演大師，而且精通電腦操作。請照要求扮演以下角色（{name}）。當使用者要求你執行對話以外的實際操作（例如控制遊戲、外掛、裝置、瀏覽器或電腦）時，除非這一輪的上下文已經給出系統／工具的執行結果，否則只能簡短說明會試著處理，絕對不要宣稱已經開始、已經完成，或自己編造執行結果。',
     'en': 'You are a role-playing expert and skilled at computer operations. Please play the following character ({name}) as instructed. When the user asks you to perform a real action outside the conversation, such as controlling a game, plugin, device, browser, or computer, unless this turn already contains a system/tool execution result, only briefly say you will attempt it. Never claim it has started or completed, and never fabricate execution results.',
     'ja': 'あなたはロールプレイの達人で、コンピュータ操作も得意です。指示に従い、以下のキャラクター（{name}）を演じてください。ユーザーが会話外の実操作（ゲーム、プラグイン、デバイス、ブラウザ、PC操作など）を求めた場合、このターンの文脈にシステム/ツールの実行結果が既にない限り、対応を試みると簡潔に伝えてください。開始済み・完了済みと主張したり、実行結果を捏造したりしてはいけません。',
     'ko': '당신은 롤플레이 전문가이며 컴퓨터 조작에도 능숙합니다. 지시에 따라 다음 캐릭터（{name}）를 연기하세요. 사용자가 게임, 플러그인, 기기, 브라우저, 컴퓨터 제어처럼 대화 밖의 실제 작업을 요청할 때, 이번 턴의 문맥에 시스템/도구 실행 결과가 이미 있지 않다면 처리해 보겠다고 짧게 말하세요. 이미 시작했거나 완료했다고 말하지 말고 실행 결과를 지어내지 마세요.',
@@ -149,6 +181,7 @@ SESSION_INIT_PROMPT_AGENT = {
 
 SESSION_INIT_PROMPT_AGENT_DYNAMIC = {
     'zh': '你是一个角色扮演大师，并且能够{capabilities}。请按要求扮演以下角色（{name}）。当用户要求你执行对话外的实际操作（例如控制游戏、插件、设备、浏览器或电脑）时，除非本轮上下文已经给出系统/工具执行结果，否则只能简短说明会尝试处理，绝对不要声称已经开始、已经完成，或自行编造执行结果。',
+    'zh-TW': '你是一個角色扮演大師，而且能夠{capabilities}。請照要求扮演以下角色（{name}）。當使用者要求你執行對話以外的實際操作（例如控制遊戲、外掛、裝置、瀏覽器或電腦）時，除非這一輪的上下文已經給出系統／工具的執行結果，否則只能簡短說明會試著處理，絕對不要宣稱已經開始、已經完成，或自己編造執行結果。',
     'en': 'You are a role-playing expert and can {capabilities}. Please play the following character ({name}) as instructed. When the user asks you to perform a real action outside the conversation, such as controlling a game, plugin, device, browser, or computer, unless this turn already contains a system/tool execution result, only briefly say you will attempt it. Never claim it has started or completed, and never fabricate execution results.',
     'ja': 'あなたはロールプレイの達人で、{capabilities}ことができます。指示に従い、以下のキャラクター（{name}）を演じてください。ユーザーが会話外の実操作（ゲーム、プラグイン、デバイス、ブラウザ、PC操作など）を求めた場合、このターンの文脈にシステム/ツールの実行結果が既にない限り、対応を試みると簡潔に伝えてください。開始済み・完了済みと主張したり、実行結果を捏造したりしてはいけません。',
     'ko': '당신은 롤플레이 전문가이며 {capabilities} 수 있습니다. 지시에 따라 다음 캐릭터（{name}）를 연기하세요. 사용자가 게임, 플러그인, 기기, 브라우저, 컴퓨터 제어처럼 대화 밖의 실제 작업을 요청할 때, 이번 턴의 문맥에 시스템/도구 실행 결과가 이미 있지 않다면 처리해 보겠다고 짧게 말하세요. 이미 시작했거나 완료했다고 말하지 말고 실행 결과를 지어내지 마세요.',
@@ -159,6 +192,7 @@ SESSION_INIT_PROMPT_AGENT_DYNAMIC = {
 
 AGENT_CAPABILITY_COMPUTER_USE = {
     'zh': '操纵电脑（键鼠控制、打开应用等）',
+    'zh-TW': '操控電腦（鍵鼠控制、開啟應用程式等）',
     'en': 'operate a computer (mouse/keyboard control, opening apps, etc.)',
     'ja': 'コンピュータを操作する（マウス・キーボード操作、アプリ起動など）',
     'ko': '컴퓨터를 조작하는 것(키보드/마우스 제어, 앱 실행 등)',
@@ -169,6 +203,7 @@ AGENT_CAPABILITY_COMPUTER_USE = {
 
 AGENT_CAPABILITY_BROWSER_USE = {
     'zh': '浏览器自动化（网页搜索、填写表单等）',
+    'zh-TW': '瀏覽器自動化（網頁搜尋、填寫表單等）',
     'en': 'perform browser automation (web search, form filling, etc.)',
     'ja': 'ブラウザ自動化を行う（Web検索、フォーム入力など）',
     'ko': '브라우저 자동화를 수행하는 것(웹 검색, 폼 입력 등)',
@@ -179,6 +214,7 @@ AGENT_CAPABILITY_BROWSER_USE = {
 
 AGENT_CAPABILITY_USER_PLUGIN_USE = {
     'zh': '调用已安装的插件来完成特定任务',
+    'zh-TW': '呼叫已安裝的外掛來完成特定任務',
     'en': 'use installed plugins to complete specific tasks',
     'ja': 'インストール済みプラグインを使って特定のタスクを実行する',
     'ko': '설치된 플러그인을 사용해 특정 작업을 수행하는 것',
@@ -189,6 +225,7 @@ AGENT_CAPABILITY_USER_PLUGIN_USE = {
 
 AGENT_CAPABILITY_GENERIC = {
     'zh': '执行各种操作',
+    'zh-TW': '執行各種操作',
     'en': 'perform various operations',
     'ja': 'さまざまな操作を実行する',
     'ko': '다양한 작업을 수행하는 것',
@@ -199,6 +236,7 @@ AGENT_CAPABILITY_GENERIC = {
 
 AGENT_CAPABILITY_SEPARATOR = {
     'zh': '、',
+    'zh-TW': '、',
     'en': ', ',
     'ja': '、',
     'ko': ', ',
@@ -210,6 +248,7 @@ AGENT_CAPABILITY_SEPARATOR = {
 # ---------- Agent 任务状态标签 ----------
 AGENT_TASK_STATUS_RUNNING = {
     'zh': '进行中',
+    'zh-TW': '進行中',
     'en': 'Running',
     'ja': '実行中',
     'ko': '진행 중',
@@ -220,6 +259,7 @@ AGENT_TASK_STATUS_RUNNING = {
 
 AGENT_TASK_STATUS_QUEUED = {
     'zh': '排队中',
+    'zh-TW': '排隊中',
     'en': 'Queued',
     'ja': '待機中',
     'ko': '대기 중',
@@ -231,6 +271,7 @@ AGENT_TASK_STATUS_QUEUED = {
 # ---------- Agent 插件摘要 ----------
 AGENT_PLUGINS_HEADER = {
     'zh': '\n【已安装的插件】\n',
+    'zh-TW': '\n【已安裝的外掛】\n',
     'en': '\n[Installed Plugins]\n',
     'ja': '\n[インストール済みプラグイン]\n',
     'ko': '\n[설치된 플러그인]\n',
@@ -241,6 +282,7 @@ AGENT_PLUGINS_HEADER = {
 
 AGENT_PLUGINS_COUNT = {
     'zh': '\n【已安装的插件】共 {count} 个插件可用。\n',
+    'zh-TW': '\n【已安裝的外掛】共有 {count} 個外掛可用。\n',
     'en': '\n[Installed Plugins] {count} plugins are available.\n',
     'ja': '\n[インストール済みプラグイン] 利用可能なプラグインは {count} 個です。\n',
     'ko': '\n[설치된 플러그인] 사용 가능한 플러그인이 {count}개 있습니다.\n',
@@ -251,6 +293,7 @@ AGENT_PLUGINS_COUNT = {
 
 AGENT_TASKS_HEADER = {
     'zh': '\n[当前正在执行的Agent任务]\n',
+    'zh-TW': '\n[目前正在執行的Agent任務]\n',
     'en': '\n[Active Agent Tasks]\n',
     'ja': '\n[現在実行中のエージェントタスク]\n',
     'ko': '\n[현재 실행 중인 에이전트 작업]\n',
@@ -261,6 +304,7 @@ AGENT_TASKS_HEADER = {
 
 AGENT_TASKS_NOTICE = {
     'zh': '\n注意：以上任务正在后台执行，你可以视情况告知用户正在处理，但绝对不能编造或猜测任务结果。你也可以选择不告知用户，直接等待任务完成。任务完成后系统会自动通知你真实结果，届时再据实回答。\n',
+    'zh-TW': '\n注意：上面這些任務正在背景執行，你可以看情況告訴使用者正在處理，但絕對不能編造或猜測任務結果。你也可以選擇不告訴使用者，直接等任務完成。任務完成後系統會自動通知你真正的結果，到時候再據實回答。\n',
     'en': '\nNote: The above tasks are running in the background. You may inform the user that they are being processed, but must never fabricate or guess results. You may also choose to wait silently until completed. The system will notify you of the real results when done.\n',
     'ja': '\n注意：上記のタスクはバックグラウンドで実行中です。処理中であることをユーザーに伝えてもよいですが、結果を捏造・推測することは絶対に禁止です。タスク完了後、システムが自動的に本当の結果を通知しますので、その時点で正確に回答してください。\n',
     'ko': '\n주의: 위 작업들은 백그라운드에서 실행 중입니다. 처리 중임을 사용자에게 알릴 수 있지만 결과를 꾸며내거나 추측해서는 안 됩니다. 작업 완료 후 시스템이 자동으로 실제 결과를 알려드리며, 그때 정확하게 답변하세요.\n',
@@ -269,9 +313,17 @@ AGENT_TASKS_NOTICE = {
     'pt': '\nNota: as tarefas acima estão sendo executadas em segundo plano. Você pode informar ao usuário que elas estão sendo processadas, mas nunca deve fabricar nem adivinhar resultados. Você também pode esperar em silêncio até terminarem. O sistema avisará os resultados reais ao final.\n',
 }
 
-# ---------- 前情概要 + 语音就绪 ----------
+# ---------- 前情概要 + 就绪（按会话形态选变体） ----------
+# 三份变体对应三种会话形态，别再有第四处裸拼：
+#   CONTEXT_SUMMARY_READY        —— 语音一对一（realtime / audio）
+#   CONTEXT_SUMMARY_READY_TEXT   —— 文字一对一（桌面 text 模式、私聊类插件）
+#   CONTEXT_SUMMARY_READY_GROUP  —— 群聊（文字，且没有固定的单一对话对象）
+# 统一入口 get_context_summary_ready()。{master} 只在一对一变体里出现，
+# 群变体不指认任何具体的人——群里没有那个固定对象，写进去既是错的指令
+# 又把私聊对象的名字泄漏进群 prompt。
 CONTEXT_SUMMARY_READY = {
     'zh': '======以上为前情概要。现在请{name}准备，即将开始用语音与{master}继续对话。======\n',
+    'zh-TW': '======以上為前情概要。現在請{name}準備，即將開始用語音與{master}繼續對話。======\n',
     'en': '======End of context summary. {name}, please get ready — you are about to continue the conversation with {master} via voice.======\n',
     'ja': '======以上が前回までのあらすじです。{name}、準備してください。これより{master}との音声会話を再開します。======\n',
     'ko': '======이상이 이전 대화 요약입니다. {name}，준비하세요 — 곧 {master}와 음성으로 대화를 이어갑니다.======\n',
@@ -280,55 +332,93 @@ CONTEXT_SUMMARY_READY = {
     'pt': '======Fim do resumo de contexto. {name}, prepare-se: você está prestes a continuar a conversa com {master} por voz.======\n',
 }
 
+CONTEXT_SUMMARY_READY_TEXT = {
+    'zh': '======以上为前情概要。现在请{name}准备，即将开始用文字与{master}继续对话。======\n',
+    'zh-TW': '======以上為前情概要。現在請{name}準備，即將開始用文字與{master}繼續對話。======\n',
+    'en': '======End of context summary. {name}, please get ready — you are about to continue the conversation with {master} in text.======\n',
+    'ja': '======以上が前回までのあらすじです。{name}、準備してください。これより{master}とのテキスト会話を再開します。======\n',
+    'ko': '======이상이 이전 대화 요약입니다. {name}，준비하세요 — 곧 {master}와 문자로 대화를 이어갑니다.======\n',
+    'ru': '======Конец краткого содержания. {name}, приготовьтесь — вы скоро продолжите переписку с {master}.======\n',
+    'es': '======Fin del resumen de contexto. {name}, prepárate: estás por continuar la conversación con {master} por texto.======\n',
+    'pt': '======Fim do resumo de contexto. {name}, prepare-se: você está prestes a continuar a conversa com {master} por texto.======\n',
+}
+
+CONTEXT_SUMMARY_READY_GROUP = {
+    'zh': '======以上为前情概要。现在请{name}准备，即将开始在群聊里用文字继续对话。======\n',
+    'zh-TW': '======以上為前情概要。現在請{name}準備，即將開始在群組聊天裡用文字繼續對話。======\n',
+    'en': '======End of context summary. {name}, please get ready — you are about to continue in the group chat, in text.======\n',
+    'ja': '======以上が前回までのあらすじです。{name}、準備してください。これよりグループチャットでテキストでの会話を再開します。======\n',
+    'ko': '======이상이 이전 대화 요약입니다. {name}，준비하세요 — 곧 그룹 채팅에서 문자로 대화를 이어갑니다.======\n',
+    'ru': '======Конец краткого содержания. {name}, приготовьтесь — вы скоро продолжите переписку в групповом чате.======\n',
+    'es': '======Fin del resumen de contexto. {name}, prepárate: estás por continuar en el chat grupal, por texto.======\n',
+    'pt': '======Fim do resumo de contexto. {name}, prepare-se: você está prestes a continuar no chat em grupo, por texto.======\n',
+}
+
+
+def get_context_summary_ready(
+    lang: str, *, input_mode: str = 'audio', is_group: bool = False,
+) -> str:
+    """Pick the closing line that matches this session's actual shape.
+
+    ``input_mode`` uses the same vocabulary as the session lifecycle
+    ('audio' / 'text'); chat-platform plugins are always 'text'. Callers
+    still ``.format(name=..., master=...)`` the result — the group variant
+    simply has no ``{master}`` slot to fill."""
+    if is_group:
+        return _loc(CONTEXT_SUMMARY_READY_GROUP, lang)
+    if str(input_mode or '').strip() == 'text':
+        return _loc(CONTEXT_SUMMARY_READY_TEXT, lang)
+    return _loc(CONTEXT_SUMMARY_READY, lang)
+
 # ---------- 来源描述符（agent_task_callback 渲染时按 user_language 动态拼装）----------
 # source_kind → 模板，``{name}`` 由 callback.source_name 填入。kind 缺失或未识别时
 # 走 'unknown'（按字面回显 source_name）。新增来源时只需往这里加一行。
 SOURCE_DESCRIPTORS = {
     'plugin': {
-        'zh': '插件「{name}」', 'en': 'plugin "{name}"',
+        'zh': '插件「{name}」', 'zh-TW': '外掛「{name}」', 'en': 'plugin "{name}"',
         'ja': 'プラグイン「{name}」', 'ko': '플러그인 "{name}"',
         'ru': 'плагина «{name}»',
         'es': 'plugin "{name}"', 'pt': 'plugin "{name}"',
     },
     'timer': {
-        'zh': '定时器', 'en': 'the timer',
+        'zh': '定时器', 'zh-TW': '定時器', 'en': 'the timer',
         'ja': 'タイマー', 'ko': '타이머', 'ru': 'таймера',
         'es': 'el temporizador', 'pt': 'o temporizador',
     },
     'mcp': {
-        'zh': 'MCP 服务「{name}」', 'en': 'MCP server "{name}"',
+        'zh': 'MCP 服务「{name}」', 'zh-TW': 'MCP 服務「{name}」', 'en': 'MCP server "{name}"',
         'ja': 'MCPサーバー「{name}」', 'ko': 'MCP 서버 "{name}"',
         'ru': 'MCP-сервера «{name}»',
         'es': 'servidor MCP "{name}"', 'pt': 'servidor MCP "{name}"',
     },
     'system': {
-        'zh': '系统', 'en': 'the system',
+        'zh': '系统', 'zh-TW': '系統', 'en': 'the system',
         'ja': 'システム', 'ko': '시스템', 'ru': 'системы',
         'es': 'el sistema', 'pt': 'o sistema',
     },
     'cu': {
-        'zh': '电脑操作任务', 'en': 'computer use',
+        'zh': '电脑操作任务', 'zh-TW': '電腦操作任務', 'en': 'computer use',
         'ja': 'コンピュータ操作', 'ko': '컴퓨터 조작', 'ru': 'управления компьютером',
         'es': 'uso de computadora', 'pt': 'uso do computador',
     },
     'browser': {
-        'zh': '浏览器自动化任务', 'en': 'browser automation',
+        'zh': '浏览器自动化任务', 'zh-TW': '瀏覽器自動化任務', 'en': 'browser automation',
         'ja': 'ブラウザ自動化', 'ko': '브라우저 자동화', 'ru': 'автоматизации браузера',
         'es': 'automatización del navegador', 'pt': 'automação do navegador',
     },
     'topic': {
-        'zh': '话题提示', 'en': 'topic hint',
+        'zh': '话题提示', 'zh-TW': '話題提示', 'en': 'topic hint',
         'ja': '話題ヒント', 'ko': '화제 힌트', 'ru': 'подсказки темы',
         'es': 'sugerencia de tema', 'pt': 'sugestão de tópico',
     },
     'agent': {
-        'zh': '子代理「{name}」', 'en': 'sub-agent "{name}"',
+        'zh': '子代理「{name}」', 'zh-TW': '子代理「{name}」', 'en': 'sub-agent "{name}"',
         'ja': 'サブエージェント「{name}」', 'ko': '하위 에이전트 "{name}"',
         'ru': 'субагента «{name}»',
         'es': 'subagente "{name}"', 'pt': 'subagente "{name}"',
     },
     'unknown': {
-        'zh': '{name}', 'en': '{name}',
+        'zh': '{name}', 'zh-TW': '{name}', 'en': '{name}',
         'ja': '{name}', 'ko': '{name}', 'ru': '{name}',
         'es': '{name}', 'pt': '{name}',
     },
@@ -337,27 +427,27 @@ SOURCE_DESCRIPTORS = {
 # ---------- Task 状态短语（外层模板的 {status_phrase} 槽位）----------
 TASK_STATUS_PHRASES = {
     'completed': {
-        'zh': '已完成', 'en': 'has completed',
+        'zh': '已完成', 'zh-TW': '已完成', 'en': 'has completed',
         'ja': '完了しました', 'ko': '완료되었습니다', 'ru': 'завершена',
         'es': 'se completó', 'pt': 'foi concluída',
     },
     'partial': {
-        'zh': '部分完成', 'en': 'partially completed',
+        'zh': '部分完成', 'zh-TW': '部分完成', 'en': 'partially completed',
         'ja': '一部完了しました', 'ko': '부분 완료되었습니다', 'ru': 'частично завершена',
         'es': 'se completó parcialmente', 'pt': 'foi parcialmente concluída',
     },
     'blocked': {
-        'zh': '未执行', 'en': 'was not executed',
+        'zh': '未执行', 'zh-TW': '沒有執行', 'en': 'was not executed',
         'ja': '実行されませんでした', 'ko': '실행되지 않았습니다', 'ru': 'не была выполнена',
         'es': 'no se ejecutó', 'pt': 'não foi executada',
     },
     'failed': {
-        'zh': '执行失败', 'en': 'has failed',
+        'zh': '执行失败', 'zh-TW': '執行失敗', 'en': 'has failed',
         'ja': '失敗しました', 'ko': '실패했습니다', 'ru': 'не выполнена',
         'es': 'falló', 'pt': 'falhou',
     },
     'cancelled': {
-        'zh': '已取消', 'en': 'was cancelled',
+        'zh': '已取消', 'zh-TW': '已取消', 'en': 'was cancelled',
         'ja': 'キャンセルされました', 'ko': '취소되었습니다', 'ru': 'отменена',
         'es': 'fue cancelada', 'pt': 'foi cancelada',
     },
@@ -366,27 +456,27 @@ TASK_STATUS_PHRASES = {
 # ---------- Task 汇报动作短语（外层模板的 {action_phrase} 槽位，按 status 分化）----------
 TASK_ACTION_PHRASES = {
     'completed': {
-        'zh': '汇报', 'en': 'report',
+        'zh': '汇报', 'zh-TW': '回報', 'en': 'report',
         'ja': '報告', 'ko': '보고', 'ru': 'доложите',
         'es': 'informar', 'pt': 'relatar',
     },
     'partial': {
-        'zh': '汇报情况', 'en': 'report the situation',
+        'zh': '汇报情况', 'zh-TW': '回報情況', 'en': 'report the situation',
         'ja': '状況を報告', 'ko': '상황을 보고', 'ru': 'опишите ситуацию',
         'es': 'informar la situación', 'pt': 'relatar a situação',
     },
     'blocked': {
-        'zh': '说明未执行原因', 'en': 'explain why it was not executed',
+        'zh': '说明未执行原因', 'zh-TW': '說明沒有執行的原因', 'en': 'explain why it was not executed',
         'ja': '実行されなかった理由を説明', 'ko': '실행되지 않은 이유를 설명', 'ru': 'объясните, почему она не была выполнена',
         'es': 'explicar por qué no se ejecutó', 'pt': 'explicar por que não foi executada',
     },
     'failed': {
-        'zh': '说明情况', 'en': 'explain what happened',
+        'zh': '说明情况', 'zh-TW': '說明情況', 'en': 'explain what happened',
         'ja': '状況を説明', 'ko': '상황을 설명', 'ru': 'объясните, что произошло',
         'es': 'explicar qué ocurrió', 'pt': 'explicar o que aconteceu',
     },
     'cancelled': {
-        'zh': '说明情况', 'en': 'explain the cancellation',
+        'zh': '说明情况', 'zh-TW': '說明情況', 'en': 'explain the cancellation',
         'ja': 'キャンセルを説明', 'ko': '취소를 설명', 'ru': 'объясните отмену',
         'es': 'explicar la cancelación', 'pt': 'explicar o cancelamento',
     },
@@ -403,6 +493,7 @@ TASK_ACTION_PHRASES = {
 # Browser Use 跑完 / MCP tool 返回），要求 AI 立即起 turn 汇报结果。
 SYSTEM_NOTIFICATION_TASK_ACTIVE = {
     'zh': '======[系统通知] 来自{source}的任务{status_phrase}，请{name}先用自然、简洁的口吻向{master}{action_phrase}，再恢复正常对话======\n',
+    'zh-TW': '======[系統通知] 來自{source}的任務{status_phrase}，請{name}先用自然、簡潔的口吻向{master}{action_phrase}，再回到正常對話======\n',
     'en': '======[System Notice] A task from {source} {status_phrase}. Please have {name} briefly and naturally {action_phrase} to {master} first, then resume normal conversation.======\n',
     'ja': '======[システム通知] {source}からのタスクが{status_phrase}。{name}はまず自然に簡潔な口調で{master}に{action_phrase}し、その後通常の会話に戻ってください。======\n',
     'ko': '======[시스템 알림] {source}의 작업이 {status_phrase}. {name}은 먼저 자연스럽고 간결하게 {master}에게 {action_phrase}한 뒤 일반 대화로 돌아오세요.======\n',
@@ -415,6 +506,7 @@ SYSTEM_NOTIFICATION_TASK_ACTIVE = {
 # 下一次用户开口时由 AI 自然提及。
 SYSTEM_NOTIFICATION_TASK_PASSIVE = {
     'zh': '======[系统通知] 来自{source}的任务结果======\n',
+    'zh-TW': '======[系統通知] 來自{source}的任務結果======\n',
     'en': '======[System Notice] Task result from {source}======\n',
     'ja': '======[システム通知] {source}からのタスク結果======\n',
     'ko': '======[시스템 알림] {source}의 작업 결과======\n',
@@ -428,6 +520,7 @@ SYSTEM_NOTIFICATION_TASK_PASSIVE = {
 # 措辞刻意避开"任务"/"汇报"——它们在事件场景下会误导模型。
 SYSTEM_NOTIFICATION_EVENT_ACTIVE = {
     'zh': '======[系统通知] 来自{source}的新消息，请{name}先用自然、简洁的口吻根据内容回应{master}，再恢复正常对话======\n',
+    'zh-TW': '======[系統通知] 來自{source}的新訊息，請{name}先用自然、簡潔的口吻根據內容回應{master}，再回到正常對話======\n',
     'en': '======[System Notice] New message from {source}. Please have {name} briefly and naturally respond to {master} based on the content first, then resume normal conversation.======\n',
     'ja': '======[システム通知] {source}からの新しいメッセージ。{name}はまず自然に簡潔な口調で内容に応じて{master}に返答し、その後通常の会話に戻ってください。======\n',
     'ko': '======[시스템 알림] {source}의 새 메시지. {name}은 먼저 자연스럽고 간결한 어조로 내용에 따라 {master}에게 답변한 뒤 일반 대화로 돌아오세요.======\n',
@@ -440,6 +533,7 @@ SYSTEM_NOTIFICATION_EVENT_ACTIVE = {
 # 仅写入上下文，下一次用户开口时被自然带入 prompt。
 SYSTEM_NOTIFICATION_EVENT_PASSIVE = {
     'zh': '======[系统通知] 来自{source}的消息======\n',
+    'zh-TW': '======[系統通知] 來自{source}的訊息======\n',
     'en': '======[System Notice] Message from {source}======\n',
     'ja': '======[システム通知] {source}からのメッセージ======\n',
     'ko': '======[시스템 알림] {source}의 메시지======\n',
@@ -462,6 +556,7 @@ SYSTEM_NOTIFICATION_PASSIVE = SYSTEM_NOTIFICATION_EVENT_PASSIVE
 # ---------- 前情概要 + 任务汇报 ----------
 CONTEXT_SUMMARY_TASK_HEADER = {
     'zh': '\n======以上为前情概要。请{name}先用简洁自然的一段话向{master}汇报和解释先前执行的任务的结果，简要说明自己做了什么：\n',
+    'zh-TW': '\n======以上為前情概要。請{name}先用簡潔自然的一段話向{master}回報並解釋先前執行的任務結果，簡單說明自己做了什麼：\n',
     'en': '\n======End of context summary. Please have {name} first give {master} a brief, natural summary of the task results — what was done:\n',
     'ja': '\n======以上が前回までのあらすじです。{name}はまず{master}に、実行したタスクの結果を簡潔かつ自然に報告してください：\n',
     'ko': '\n======이상이 이전 대화 요약입니다. {name}은 먼저 {master}에게 수행한 작업 결과를 간결하고 자연스럽게 보고하세요：\n',
@@ -472,6 +567,7 @@ CONTEXT_SUMMARY_TASK_HEADER = {
 
 CONTEXT_SUMMARY_TASK_FOOTER = {
     'zh': '\n完成上述汇报后，再恢复正常对话。======\n',
+    'zh-TW': '\n回報完上面這些之後，再回到正常對話。======\n',
     'en': '\nAfter the report, resume normal conversation.======\n',
     'ja': '\n報告を終えたら、通常の会話に戻ってください。======\n',
     'ko': '\n보고를 마친 후 일반 대화로 돌아오세요.======\n',
@@ -487,6 +583,7 @@ CONTEXT_SUMMARY_TASK_FOOTER = {
 # 回应"，不出现"任务"/"汇报"字样，避免兰兰把观众弹幕误读成"我刚才执行的任务"。
 CONTEXT_SUMMARY_EVENT_HEADER = {
     'zh': '\n======以上为前情概要。请{name}先用自然、简洁的口吻根据下方新消息回应{master}：\n',
+    'zh-TW': '\n======以上為前情概要。請{name}先用自然、簡潔的口吻根據下面的新訊息回應{master}：\n',
     'en': '\n======End of context summary. Please have {name} first respond to {master} naturally and briefly based on the new messages below:\n',
     'ja': '\n======以上が前回までのあらすじです。{name}はまず自然に簡潔な口調で、下記の新しいメッセージに応じて{master}に返答してください：\n',
     'ko': '\n======이상이 이전 대화 요약입니다. {name}은 먼저 자연스럽고 간결한 어조로 아래의 새 메시지에 따라 {master}에게 답변하세요：\n',
@@ -497,6 +594,7 @@ CONTEXT_SUMMARY_EVENT_HEADER = {
 
 CONTEXT_SUMMARY_EVENT_FOOTER = {
     'zh': '\n完成上述回应后，再恢复正常对话。======\n',
+    'zh-TW': '\n回應完上面這些之後，再回到正常對話。======\n',
     'en': '\nAfter responding, resume normal conversation.======\n',
     'ja': '\n返答を終えたら、通常の会話に戻ってください。======\n',
     'ko': '\n응답을 마친 후 일반 대화로 돌아오세요.======\n',
@@ -546,6 +644,7 @@ VISION_WATERMARK = "你是一个图像描述助手, "
 # 有窗口标题时的 system prompt（水印后拼接）
 VISION_SYSTEM_WITH_TITLE = {
     'zh': '请根据用户的屏幕截图和当前窗口标题，简洁描述用户正在做什么、屏幕上的主要内容和关键细节和你觉得有趣的地方。不超过250字。',
+    'zh-TW': '請根據使用者的螢幕截圖和目前的視窗標題，簡潔描述使用者正在做什麼、螢幕上的主要內容、關鍵細節，以及你覺得有趣的地方。不超過 250 字。',
     'en': 'Based on the user\'s screenshot and the current window title, briefly describe what the user is doing, the main content on screen, key details, and anything you find interesting. No more than 250 words.',
     'ja': 'ユーザーのスクリーンショットと現在のウィンドウタイトルに基づき、ユーザーが何をしているか、画面の主な内容、重要な詳細、興味深い点を簡潔に説明してください。250文字以内。',
     'ko': '사용자의 스크린샷과 현재 창 제목을 바탕으로, 사용자가 무엇을 하고 있는지, 화면의 주요 내용, 핵심 세부사항, 흥미로운 점을 간결하게 설명하세요. 250자 이내.',
@@ -557,6 +656,7 @@ VISION_SYSTEM_WITH_TITLE = {
 # 无窗口标题时的 system prompt（水印后拼接）
 VISION_SYSTEM_NO_TITLE = {
     'zh': '请简洁地描述图片中的主要内容、关键细节和你觉得有趣的地方。你的回答不能超过250字。',
+    'zh-TW': '請簡潔地描述圖片裡的主要內容、關鍵細節和你覺得有趣的地方。你的回答不能超過 250 字。',
     'en': 'Briefly describe the main content, key details, and anything you find interesting in the image. Your response should not exceed 250 words.',
     'ja': '画像の主な内容、重要な詳細、興味深い点を簡潔に説明してください。回答は250文字以内にしてください。',
     'ko': '이미지의 주요 내용, 핵심 세부사항, 흥미로운 점을 간결하게 설명하세요. 답변은 250자를 넘지 마세요.',
@@ -568,6 +668,7 @@ VISION_SYSTEM_NO_TITLE = {
 # 有窗口标题时的 user prompt（{window_title} 占位符，水印包裹）
 VISION_USER_WITH_TITLE = {
     'zh': '======以下为窗口标题======\n{window_title}\n======以上为窗口标题======\n请描述截图内容。',
+    'zh-TW': '======以下为窗口标题======\n{window_title}\n======以上为窗口标题======\n請描述截圖的內容。',
     'en': '======以下为窗口标题======\n{window_title}\n======以上为窗口标题======\nPlease describe the screenshot.',
     'ja': '======以下为窗口标题======\n{window_title}\n======以上为窗口标题======\nスクリーンショットの内容を説明してください。',
     'ko': '======以下为窗口标题======\n{window_title}\n======以上为窗口标题======\n스크린샷 내용을 설명해 주세요.',
@@ -579,6 +680,7 @@ VISION_USER_WITH_TITLE = {
 # 无窗口标题时的 user prompt
 VISION_USER_NO_TITLE = {
     'zh': '请描述这张图片的内容。',
+    'zh-TW': '請描述這張圖片的內容。',
     'en': 'Please describe the content of this image.',
     'ja': 'この画像の内容を説明してください。',
     'ko': '이 이미지의 내용을 설명해 주세요.',
@@ -595,6 +697,7 @@ TRANSLATION_WATERMARK_END = "======以上为要求======"
 # 翻译指令行（{source_name} 和 {target_name} 为占位符）
 TRANSLATION_INSTRUCTION = {
     'zh': '请根据要求将用户提供的文本从{source_name}翻译成{target_name}。',
+    'zh-TW': '請照要求把使用者提供的文字從{source_name}翻譯成{target_name}。',
     'en': 'Please translate the user\'s text from {source_name} to {target_name} as required.',
     'ja': '以下の要件に従い、ユーザーのテキストを{source_name}から{target_name}に翻訳してください。',
     'ko': '요구사항에 따라 사용자의 텍스트를 {source_name}에서 {target_name}(으)로 번역하세요.',
@@ -606,6 +709,7 @@ TRANSLATION_INSTRUCTION = {
 # 翻译要求（水印包裹部分）
 TRANSLATION_REQUIREMENTS = {
     'zh': '1. 保持原文的语气和风格\n2. 准确传达原文的意思\n3. 只输出翻译结果，不要添加任何解释或说明\n4. 如果文本包含emoji或特殊符号，请保留它们',
+    'zh-TW': '1. 保持原文的語氣和風格\n2. 準確傳達原文的意思\n3. 只輸出翻譯結果，不要加上任何解釋或說明\n4. 如果文字裡有 emoji 或特殊符號，請保留它們',
     'en': '1. Maintain the tone and style of the original text\n2. Convey the meaning accurately\n3. Output only the translation, without any explanations or notes\n4. Preserve any emoji or special symbols in the text',
     'ja': '1. 原文の語調とスタイルを維持する\n2. 原文の意味を正確に伝える\n3. 翻訳結果のみを出力し、説明や注釈は一切加えない\n4. テキストに含まれる絵文字や特殊記号はそのまま残す',
     'ko': '1. 원문의 어조와 스타일을 유지할 것\n2. 원문의 의미를 정확히 전달할 것\n3. 번역 결과만 출력하고 설명이나 부연을 추가하지 말 것\n4. 텍스트에 포함된 이모지나 특수 기호는 그대로 유지할 것',
@@ -615,19 +719,26 @@ TRANSLATION_REQUIREMENTS = {
 }
 
 # 语言名称（外层 key=UI 语言，内层 key=语言代码）
+# 外层 key 是 UI locale，内层 key 是 ``translate_text(text, target_lang)`` 的
+# 翻译目标语言域。该域固定为 zh/en/ja/ko/ru/es/pt（见 utils/language_utils.py
+# 的 target_lang 白名单），zh-TW 从来不是翻译目标——繁中用户要的是"把原文译成
+# 中文"，而不是"译成繁体中文"这一独立目标。所以内层的 zh-TW 缺失不是欠账，
+# 逐个标 noqa；只有外层需要补 zh-TW 行。
 TRANSLATION_LANG_NAMES = {
-    'zh': {'zh': '中文', 'en': '英文', 'ja': '日语', 'ko': '韩语', 'ru': '俄语', 'es': '西班牙语', 'pt': '葡萄牙语'},
-    'en': {'zh': 'Chinese', 'en': 'English', 'ja': 'Japanese', 'ko': 'Korean', 'ru': 'Russian', 'es': 'Spanish', 'pt': 'Portuguese'},
-    'ja': {'zh': '中国語', 'en': '英語', 'ja': '日本語', 'ko': '韓国語', 'ru': 'ロシア語', 'es': 'スペイン語', 'pt': 'ポルトガル語'},
-    'ko': {'zh': '중국어', 'en': '영어', 'ja': '일본어', 'ko': '한국어', 'ru': '러시아어', 'es': '스페인어', 'pt': '포르투갈어'},
-    'ru': {'zh': 'китайский', 'en': 'английский', 'ja': 'японский', 'ko': 'корейский', 'ru': 'русский', 'es': 'испанский', 'pt': 'португальский'},
-    'es': {'zh': 'chino', 'en': 'inglés', 'ja': 'japonés', 'ko': 'coreano', 'ru': 'ruso', 'es': 'español', 'pt': 'portugués'},
-    'pt': {'zh': 'chinês', 'en': 'inglês', 'ja': 'japonês', 'ko': 'coreano', 'ru': 'russo', 'es': 'espanhol', 'pt': 'português'},
+    'zh': {'zh': '中文', 'en': '英文', 'ja': '日语', 'ko': '韩语', 'ru': '俄语', 'es': '西班牙语', 'pt': '葡萄牙语'},  # noqa: PROMPT_ZH_TW  # 内层=翻译目标语言域
+    'zh-TW': {'zh': '中文', 'en': '英文', 'ja': '日文', 'ko': '韓文', 'ru': '俄文', 'es': '西班牙文', 'pt': '葡萄牙文'},  # noqa: PROMPT_ZH_TW  # 内层=翻译目标语言域
+    'en': {'zh': 'Chinese', 'en': 'English', 'ja': 'Japanese', 'ko': 'Korean', 'ru': 'Russian', 'es': 'Spanish', 'pt': 'Portuguese'},  # noqa: PROMPT_ZH_TW  # 内层=翻译目标语言域
+    'ja': {'zh': '中国語', 'en': '英語', 'ja': '日本語', 'ko': '韓国語', 'ru': 'ロシア語', 'es': 'スペイン語', 'pt': 'ポルトガル語'},  # noqa: PROMPT_ZH_TW  # 内层=翻译目标语言域
+    'ko': {'zh': '중국어', 'en': '영어', 'ja': '일본어', 'ko': '한국어', 'ru': '러시아어', 'es': '스페인어', 'pt': '포르투갈어'},  # noqa: PROMPT_ZH_TW  # 内层=翻译目标语言域
+    'ru': {'zh': 'китайский', 'en': 'английский', 'ja': 'японский', 'ko': 'корейский', 'ru': 'русский', 'es': 'испанский', 'pt': 'португальский'},  # noqa: PROMPT_ZH_TW  # 内层=翻译目标语言域
+    'es': {'zh': 'chino', 'en': 'inglés', 'ja': 'japonés', 'ko': 'coreano', 'ru': 'ruso', 'es': 'español', 'pt': 'portugués'},  # noqa: PROMPT_ZH_TW  # 内层=翻译目标语言域
+    'pt': {'zh': 'chinês', 'en': 'inglês', 'ja': 'japonês', 'ko': 'coreano', 'ru': 'russo', 'es': 'espanhol', 'pt': 'português'},  # noqa: PROMPT_ZH_TW  # 内层=翻译目标语言域
 }
 
 # ---------- 对话备忘录注入 LLM 上下文 ----------
 MEMORY_MEMO_WITH_SUMMARY = {
     'zh': '先前对话的备忘录: {summary}',
+    'zh-TW': '先前對話的備忘錄: {summary}',
     'en': 'Memo from prior conversations: {summary}',
     'ja': '以前の会話のメモ: {summary}',
     'ko': '이전 대화의 메모: {summary}',
@@ -638,6 +749,7 @@ MEMORY_MEMO_WITH_SUMMARY = {
 
 MEMORY_MEMO_EMPTY = {
     'zh': '先前对话的备忘录: 无。',
+    'zh-TW': '先前對話的備忘錄: 無。',
     'en': 'Memo from prior conversations: None.',
     'ja': '以前の会話のメモ: なし。',
     'ko': '이전 대화의 메모: 없음.',
@@ -654,6 +766,7 @@ SEARCH_KEYWORD_WATERMARK_END = "======以上为窗口标题======"
 
 SEARCH_KEYWORD_SYSTEM = {
     'zh': '你是搜索关键词生成助手。根据用户提供的窗口标题，输出 3 个适合搜索的多样化关键词。\n\n要求：\n1. 生成 3 个不同角度的搜索关键词\n2. 关键词应简洁，控制在 2-8 个字\n3. 关键词应尽量覆盖不同方面\n4. 只输出 3 行关键词，不要添加序号、标点、解释或其他内容',
+    'zh-TW': '你是搜尋關鍵字生成助手。根據使用者提供的視窗標題，輸出 3 個適合拿去搜尋的多樣化關鍵字。\n\n要求：\n1. 生成 3 個不同角度的搜尋關鍵字\n2. 關鍵字要簡潔，控制在 2-8 個字\n3. 關鍵字盡量涵蓋不同面向\n4. 只輸出 3 行關鍵字，不要加上編號、標點、解釋或其他內容',
     'en': 'You generate search keywords from a window title.\n\nRequirements:\n1. Generate 3 diverse search keywords from different angles\n2. Each keyword should be concise, about 2-6 words\n3. Keep the keywords diverse\n4. Output exactly 3 lines, one keyword per line, without numbers, punctuation, explanations, or any extra text',
     'ja': 'ウィンドウタイトルから検索キーワードを生成してください。\n\n要件：\n1. 異なる角度から検索用のキーワードを 3 つ生成\n2. 各キーワードは簡潔に、2〜6 語程度\n3. キーワードは多様性を持たせる\n4. 3 行のみ出力し、番号・句読点・説明等は一切不要',
     'ko': '창 제목에서 검색 키워드를 생성하세요.\n\n요구사항:\n1. 서로 다른 관점에서 검색 키워드 3개 생성\n2. 각 키워드는 간결하게, 2~6 단어 정도\n3. 키워드는 다양하게\n4. 정확히 3줄만 출력하고 번호, 구두점, 설명 등은 추가하지 마세요',
@@ -664,6 +777,7 @@ SEARCH_KEYWORD_SYSTEM = {
 
 SEARCH_KEYWORD_USER = {
     'zh': '======以下为窗口标题======\n{window_title}\n======以上为窗口标题======\n\n请输出 3 个搜索关键词。',
+    'zh-TW': '======以下为窗口标题======\n{window_title}\n======以上为窗口标题======\n\n請輸出 3 個搜尋關鍵字。',
     'en': '======以下为窗口标题======\n{window_title}\n======以上为窗口标题======\n\nPlease output 3 search keywords.',
     'ja': '======以下为窗口标题======\n{window_title}\n======以上为窗口标题======\n\n検索キーワードを 3 つ出力してください。',
     'ko': '======以下为窗口标题======\n{window_title}\n======以上为窗口标题======\n\n검색 키워드 3개를 출력하세요.',

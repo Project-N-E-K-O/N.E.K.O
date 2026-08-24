@@ -1,14 +1,16 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import asdict, replace
 import hashlib
 import shutil
 import tomllib
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, BinaryIO, Literal
 
+from plugin.core.plugin_layout import resolve_plugin_layout
 from plugin.logging_config import get_logger
 from plugin.neko_plugin_cli.core.install import PackageInstaller
 from plugin.neko_plugin_cli.core.models import InstalledPlugin, InstallResult
@@ -26,6 +28,9 @@ from plugin.server.application.install_source import (
     get_install_source_manager,
 )
 from plugin.server.application.plugin_cli.paths import PluginCliPathPolicy
+from plugin.server.application.plugin_cli.install_plan import PluginInstallPlan, build_install_plan
+from plugin.server.application.plugins import upgrade_support
+from plugin.server.application.plugins.operation_lock import serialized_plugin_operation
 from plugin.server.application.plugin_cli.source_resolver import (
     PluginSourceResolver,
     ResolvedPluginSource,
@@ -48,8 +53,9 @@ _TARGET_ROOT = USER_PLUGIN_PACKAGES_ROOT
 
 # Allowed extensions for uploaded plugin packages
 _ALLOWED_UPLOAD_SUFFIXES = frozenset({".neko-plugin", ".neko-bundle"})
-# Maximum upload size (200 MB)
-_UPLOAD_MAX_BYTES = 200 * 1024 * 1024
+# Maximum upload size (500 MiB)
+_UPLOAD_MAX_BYTES = 500 * 1024 * 1024
+_UPLOAD_COPY_CHUNK_BYTES = 1024 * 1024
 
 logger = get_logger("server.application.plugin_cli")
 
@@ -120,25 +126,215 @@ class PluginCliService:
     async def verify(self, *, package: str) -> dict[str, object]:
         return await asyncio.to_thread(self._verify_sync, package=package)
 
+    async def plan_install(
+        self,
+        *,
+        package: str,
+        plugins_root: str | None = None,
+        profiles_root: str | None = None,
+        _allow_external_profiles_root: bool = False,
+    ) -> dict[str, object]:
+        return await asyncio.to_thread(
+            self._plan_install_sync,
+            package=package,
+            plugins_root=plugins_root,
+            profiles_root=profiles_root,
+            _allow_external_profiles_root=_allow_external_profiles_root,
+        )
+
+    @serialized_plugin_operation
     async def install(
         self,
         *,
         package: str,
         plugins_root: str | None = None,
         profiles_root: str | None = None,
-        on_conflict: str = "rename",
+        on_conflict: str = "fail",
         use_staging: bool = True,
         forced_directory_name: str | None = None,
+        install_source: Literal["imported"] | None = None,
+        confirm_upgrade: bool = False,
+        confirmation_token: str | None = None,
+        _allow_external_profiles_root: bool = False,
     ) -> dict[str, object]:
-        return await asyncio.to_thread(
-            self._install_sync,
+        plan_dict = await self.plan_install(
             package=package,
             plugins_root=plugins_root,
             profiles_root=profiles_root,
-            on_conflict=on_conflict,
-            use_staging=use_staging,
-            forced_directory_name=forced_directory_name,
+            _allow_external_profiles_root=_allow_external_profiles_root,
         )
+        action = str(plan_dict["action"])
+        if action == "blocked":
+            raise ServerDomainError(
+                code="PLUGIN_INSTALL_BLOCKED",
+                message="plugin package cannot be installed safely",
+                status_code=409,
+                details=plan_dict,
+            )
+        if action == "install":
+            result = await asyncio.to_thread(
+                self._install_sync,
+                package=package,
+                plugins_root=plugins_root,
+                profiles_root=profiles_root,
+                on_conflict=on_conflict,
+                use_staging=use_staging,
+                forced_directory_name=forced_directory_name,
+                _allow_external_profiles_root=_allow_external_profiles_root,
+            )
+            return await self._record_requested_install_source(
+                install_result=result,
+                package=package,
+                source=install_source,
+            )
+
+        if not confirm_upgrade or not confirmation_token:
+            raise ServerDomainError(
+                code="PLUGIN_UPGRADE_CONFIRMATION_REQUIRED",
+                message="plugin upgrade requires explicit confirmation",
+                status_code=409,
+                details=plan_dict,
+            )
+        if confirmation_token != str(plan_dict["confirmation_token"]):
+            raise ServerDomainError(
+                code="PLUGIN_UPGRADE_PLAN_CHANGED",
+                message="installed plugin changed after upgrade confirmation",
+                status_code=409,
+                details=plan_dict,
+            )
+
+        policy = self._path_policy()
+        target_root = (
+            _require_within(
+                Path(plugins_root).expanduser().resolve(),
+                policy.user_plugins_root,
+                field="plugins_root",
+            )
+            if plugins_root
+            else policy.user_plugins_root
+        )
+        directory_name = _require_safe_directory_name(
+            str(plan_dict["directory_name"]),
+            field="directory_name",
+        )
+        target_dir = target_root / directory_name
+        profiles_root_path = (
+            Path(profiles_root).expanduser().resolve()
+            if profiles_root and _allow_external_profiles_root
+            else (
+                _require_within(
+                    Path(profiles_root).expanduser().resolve(),
+                    policy.package_profiles_root,
+                    field="profiles_root",
+                )
+                if profiles_root
+                else policy.package_profiles_root
+            )
+        )
+        _require_safe_directory_name(
+            str(plan_dict["package_id"]),
+            field="package_id",
+        )
+        installed_package_id = _require_safe_directory_name(
+            str(plan_dict["installed_package_id"] or plan_dict["package_id"]),
+            field="installed_package_id",
+        )
+        profile_dir = profiles_root_path / installed_package_id
+        plan = self._apply_installed_package_identity(
+            build_install_plan(
+                package_path=self._resolve_package_path(package),
+                plugins_root=target_root,
+            ),
+            target_root=target_root,
+            profiles_root=profiles_root_path,
+        )
+
+        async def install_new() -> dict[str, object]:
+            return await asyncio.to_thread(
+                self._install_sync,
+                package=package,
+                plugins_root=plugins_root,
+                profiles_root=profiles_root,
+                on_conflict="fail",
+                use_staging=use_staging,
+                forced_directory_name=forced_directory_name,
+                _allow_external_profiles_root=_allow_external_profiles_root,
+            )
+
+        async def validate_new() -> None:
+            plugin_id = self._read_installed_plugin_toml_id(target_dir)
+            if plugin_id != plan.plugin_id or target_dir.name != plan.directory_name:
+                raise ValueError("installed plugin identity does not match the upgrade plan")
+
+        async def start(plugin_id: str) -> None:
+            await upgrade_support.start_plugin_after_replace(plugin_id, strict=True)
+
+        try:
+            result = await upgrade_support.replace_plugin(
+                layout=resolve_plugin_layout(plan.plugin_id, target_dir),
+                install_new=install_new,
+                validate_new=validate_new,
+                is_running=upgrade_support.plugin_is_running,
+                stop=upgrade_support.stop_plugin_for_replace,
+                start=start,
+                cleanup_backup=upgrade_support.remove_directory,
+                additional_targets=(profile_dir,),
+                preserve_targets=(profile_dir,),
+            )
+        except upgrade_support.ReplacePluginError as exc:
+            raise ServerDomainError(
+                code="PLUGIN_UPGRADE_ROLLED_BACK",
+                message="plugin upgrade failed and rollback was attempted",
+                status_code=500,
+                details={"stage": exc.stage, "rollback_status": exc.rollback_status},
+            ) from exc
+
+        response = {
+            **result.install_result,
+            # Compatibility response for the existing Package Manager UI.
+            # The shared file transaction itself is version-agnostic replace.
+            "operation": "upgrade",
+            "restarted": result.restarted,
+            "rollback_status": result.rollback_status,
+        }
+        return await self._record_requested_install_source(
+            install_result=response,
+            package=package,
+            source=install_source,
+        )
+
+    async def _record_requested_install_source(
+        self,
+        *,
+        install_result: dict[str, object],
+        package: str,
+        source: Literal["imported"] | None,
+    ) -> dict[str, object]:
+        if source is None:
+            return install_result
+
+        try:
+            package_path = self._resolve_package_path(package)
+            package_sha256 = await asyncio.to_thread(self._sha256_file, package_path)
+        except Exception as exc:
+            logger.warning(
+                "prepare install source failed: err_type={}, err={}",
+                type(exc).__name__,
+                str(exc),
+            )
+            return {
+                **install_result,
+                "install_source_warning": f"install_source_prepare_failed: {exc}",
+            }
+        warning = await self._record_install_source_best_effort(
+            install_result=install_result,
+            package_filename=package_path.name,
+            package_sha256=package_sha256,
+            override=None,
+        )
+        if warning is None:
+            return install_result
+        return {**install_result, "install_source_warning": warning}
 
     async def analyze(
         self,
@@ -164,13 +360,24 @@ class PluginCliService:
         """
         return await asyncio.to_thread(self._save_uploaded_package_sync, filename=filename, content=content)
 
+    async def save_uploaded_file(self, *, filename: str, source_file: BinaryIO) -> dict[str, object]:
+        """Stream an uploaded package into the managed artifacts directory."""
+        return await asyncio.to_thread(
+            self._save_uploaded_file_sync,
+            filename=filename,
+            source_file=source_file,
+        )
+
+    @serialized_plugin_operation
     async def upload_and_install(
         self,
         *,
         filename: str,
         content: bytes | None = None,
         package_path: str | None = None,
-        on_conflict: str = "rename",
+        profiles_root: str | None = None,
+        _allow_external_profiles_root: bool = False,
+        on_conflict: str = "fail",
         install_source_override: dict[str, Any] | None = None,
     ) -> dict[str, object]:
         """Upload, unpack, and atomically record the install source (design §3.3).
@@ -244,8 +451,10 @@ class PluginCliService:
             try:
                 install_result = await self.install(
                     package=str(saved["path"]),
+                    profiles_root=profiles_root,
                     on_conflict=on_conflict,
                     use_staging=True,
+                    _allow_external_profiles_root=_allow_external_profiles_root,
                 )
                 unpacked_target_dirs = self._extract_unpack_target_dirs(install_result)
                 unpacked_profile_dirs = self._extract_unpack_profile_dirs(install_result)
@@ -316,7 +525,7 @@ class PluginCliService:
             unpack_result = await self.install(
                 package=saved_path,
                 plugins_root=None,
-                profiles_root=None,
+                profiles_root=profiles_root,
                 on_conflict=on_conflict,
                 use_staging=use_staging,
                 forced_directory_name=(
@@ -324,6 +533,7 @@ class PluginCliService:
                     if isinstance(forced_directory_name, str)
                     else None
                 ),
+                _allow_external_profiles_root=_allow_external_profiles_root,
             )
             unpacked_target_dirs = self._extract_unpack_target_dirs(unpack_result)
             unpacked_profile_dirs = self._extract_unpack_profile_dirs(unpack_result)
@@ -346,6 +556,8 @@ class PluginCliService:
                     target_dir=target_dir,
                     saved_filename=str(saved["name"]),
                     actual_sha256=actual_sha256,
+                    package_id=str(unpack_result.get("package_id") or ""),
+                    profile_dir=str(unpack_result.get("profile_dir") or ""),
                 )
                 return self._compose_install_result(
                     saved=saved,
@@ -424,6 +636,8 @@ class PluginCliService:
                     directory_name=directory_name,
                     plugin_id=package_plugin_id,
                     market_detail=market_detail,
+                    package_id=str(unpack_result.get("package_id") or ""),
+                    profile_dir=str(unpack_result.get("profile_dir") or ""),
                 )
             else:
                 entry, ism_warnings = mgr.record_market_install(
@@ -431,6 +645,8 @@ class PluginCliService:
                     directory_name=directory_name,
                     plugin_id=package_plugin_id,
                     market_detail=market_detail,
+                    package_id=str(unpack_result.get("package_id") or ""),
+                    profile_dir=str(unpack_result.get("profile_dir") or ""),
                 )
             warnings.extend(ism_warnings)
 
@@ -588,6 +804,8 @@ class PluginCliService:
         target_dir: Path,
         saved_filename: str,
         actual_sha256: str,
+        package_id: str,
+        profile_dir: str,
     ) -> dict[str, Any]:
         """Fall back to recording the install as ``channel="imported"``.
 
@@ -603,6 +821,8 @@ class PluginCliService:
                 directory_path=target_dir,
                 package_filename=saved_filename,
                 package_sha256=actual_sha256,
+                package_id=package_id,
+                profile_dir=profile_dir,
             )
 
         await asyncio.to_thread(_record)
@@ -735,9 +955,8 @@ class PluginCliService:
             items: list[dict[str, object]] = []
             package_paths = [
                 path
-                for suffix in _ALLOWED_UPLOAD_SUFFIXES
-                for path in target_root.glob(f"*{suffix}")
-                if path.is_file()
+                for path in target_root.glob("*")
+                if path.is_file() and self._has_allowed_upload_suffix(path.name)
             ]
             for path in sorted(
                 package_paths,
@@ -868,6 +1087,82 @@ class PluginCliService:
         except Exception as exc:
             raise self._domain_error_from_exception(exc, action="verify") from exc
 
+    def _plan_install_sync(
+        self,
+        *,
+        package: str,
+        plugins_root: str | None,
+        profiles_root: str | None,
+        _allow_external_profiles_root: bool = False,
+    ) -> dict[str, object]:
+        try:
+            policy = self._path_policy()
+            target_root = (
+                _require_within(
+                    Path(plugins_root).expanduser().resolve(),
+                    policy.user_plugins_root,
+                    field="plugins_root",
+                )
+                if plugins_root
+                else policy.user_plugins_root
+            )
+            profiles_root_path = (
+                Path(profiles_root).expanduser().resolve()
+                if profiles_root and _allow_external_profiles_root
+                else (
+                    _require_within(
+                        Path(profiles_root).expanduser().resolve(),
+                        policy.package_profiles_root,
+                        field="profiles_root",
+                    )
+                    if profiles_root
+                    else policy.package_profiles_root
+                )
+            )
+            plan = self._apply_installed_package_identity(
+                build_install_plan(
+                    package_path=self._resolve_package_path(package),
+                    plugins_root=target_root,
+                ),
+                target_root=target_root,
+                profiles_root=profiles_root_path,
+            )
+            return asdict(plan)
+        except Exception as exc:
+            raise self._domain_error_from_exception(exc, action="install-plan") from exc
+
+    def _apply_installed_package_identity(
+        self,
+        plan: PluginInstallPlan,
+        *,
+        target_root: Path,
+        profiles_root: Path,
+    ) -> PluginInstallPlan:
+        if plan.action != "upgrade":
+            return plan
+
+        target_dir = target_root / plan.directory_name
+        manager = get_install_source_manager()
+        installed_package_id = (
+            manager.package_id_for_directory(target_dir) if manager is not None else ""
+        )
+        if not installed_package_id:
+            # Legacy rows predate package identity tracking. Directory
+            # existence cannot prove ownership because stale or unrelated
+            # profile trees may share the incoming name. Historical official
+            # single-plugin packages used plugin_id as package_id, so use that
+            # conservative baseline and fail closed on any ambiguous rename.
+            installed_package_id = plan.plugin_id
+        if installed_package_id != plan.package_id:
+            return replace(
+                plan,
+                action="blocked",
+                confirmation_token="",
+                reason="package_id_change",
+                installed_package_id=installed_package_id,
+            )
+        return replace(plan, installed_package_id=installed_package_id)
+
     def _install_sync(
         self,
         *,
@@ -877,6 +1172,7 @@ class PluginCliService:
         on_conflict: str,
         use_staging: bool = True,
         forced_directory_name: str | None = None,
+        _allow_external_profiles_root: bool = False,
     ) -> dict[str, object]:
         try:
             policy = self._path_policy()
@@ -888,9 +1184,17 @@ class PluginCliService:
                 else install_plugins_root
             )
             profiles_root_path = (
-                _require_within(Path(profiles_root).expanduser().resolve(), install_profiles_root, field="profiles_root")
-                if profiles_root
-                else install_profiles_root
+                Path(profiles_root).expanduser().resolve()
+                if profiles_root and _allow_external_profiles_root
+                else (
+                    _require_within(
+                        Path(profiles_root).expanduser().resolve(),
+                        install_profiles_root,
+                        field="profiles_root",
+                    )
+                    if profiles_root
+                    else install_profiles_root
+                )
             )
             package_path = self._resolve_package_path(package)
             if use_staging:
@@ -951,9 +1255,8 @@ class PluginCliService:
                 source_dir = Path(item.target_dir)
                 desired_name = forced_directory_name or item.target_plugin_id
                 desired = plugins_root / desired_name
-                final_dir = installer.resolve_target_dir(
+                final_dir = installer.resolve_plugin_target_dir(
                     desired,
-                    on_conflict=on_conflict,
                 )
                 if source_dir.resolve() != final_dir.resolve():
                     final_dir.parent.mkdir(parents=True, exist_ok=True)
@@ -1045,6 +1348,34 @@ class PluginCliService:
         except Exception as exc:
             raise self._domain_error_from_exception(exc, action="analyze") from exc
 
+    @staticmethod
+    def _has_allowed_upload_suffix(filename: str) -> bool:
+        return filename.lower().endswith(tuple(_ALLOWED_UPLOAD_SUFFIXES))
+
+    @staticmethod
+    def _upload_filename_parts(filename: str) -> tuple[str, str, str]:
+        safe_name = Path(filename).name
+        if not safe_name:
+            raise ValueError("Invalid filename")
+
+        lower_name = safe_name.lower()
+        for allowed_suffix in sorted(_ALLOWED_UPLOAD_SUFFIXES, key=len, reverse=True):
+            if lower_name.endswith(allowed_suffix):
+                return safe_name, safe_name[: -len(allowed_suffix)], allowed_suffix
+
+        allowed = ", ".join(sorted(_ALLOWED_UPLOAD_SUFFIXES))
+        raise ValueError(f"Unsupported file type. Allowed: {allowed}")
+
+    @staticmethod
+    def _upload_metadata(path: Path) -> dict[str, object]:
+        stat = path.stat()
+        return {
+            "name": path.name,
+            "path": str(path.resolve()),
+            "size_bytes": stat.st_size,
+            "modified_at": datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat(),
+        }
+
     def _save_uploaded_package_sync(self, *, filename: str, content: bytes) -> dict[str, object]:
         try:
             target_root = self._path_policy().package_artifacts_root
@@ -1052,32 +1383,13 @@ class PluginCliService:
             if len(content) > _UPLOAD_MAX_BYTES:
                 raise ValueError(
                     f"File too large: {len(content)} bytes "
-                    f"(max {_UPLOAD_MAX_BYTES // (1024 * 1024)} MB)"
+                    f"(max {_UPLOAD_MAX_BYTES // (1024 * 1024)} MiB)"
                 )
 
-            # Validate and sanitize filename
-            safe_name = Path(filename).name  # strip directory components
-            if not safe_name:
-                raise ValueError("Invalid filename")
-
-            # Check extension — must match one of the allowed suffixes
-            # Path.suffixes gives e.g. ['.neko', '-plugin'] for "foo.neko-plugin",
-            # but we need the compound suffix, so we check the name directly.
-            has_valid_suffix = any(safe_name.endswith(suffix) for suffix in _ALLOWED_UPLOAD_SUFFIXES)
-            if not has_valid_suffix:
-                allowed = ", ".join(sorted(_ALLOWED_UPLOAD_SUFFIXES))
-                raise ValueError(f"Unsupported file type. Allowed: {allowed}")
+            safe_name, stem, suffix = self._upload_filename_parts(filename)
 
             # Ensure target directory exists
             target_root.mkdir(parents=True, exist_ok=True)
-
-            stem = safe_name
-            suffix = ""
-            for allowed_suffix in sorted(_ALLOWED_UPLOAD_SUFFIXES, key=len, reverse=True):
-                if stem.endswith(allowed_suffix):
-                    suffix = allowed_suffix
-                    stem = stem[: -len(allowed_suffix)]
-                    break
 
             # Exclusive create: if name collides (including concurrent uploads
             # racing on the same filename), pick a UUID-suffixed dest and retry.
@@ -1094,13 +1406,40 @@ class PluginCliService:
                     dest.unlink(missing_ok=True)
                     raise
 
-            stat = dest.stat()
-            return {
-                "name": dest.name,
-                "path": str(dest.resolve()),
-                "size_bytes": stat.st_size,
-                "modified_at": datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat(),
-            }
+            return self._upload_metadata(dest)
+        except Exception as exc:
+            raise self._domain_error_from_exception(exc, action="upload") from exc
+
+    def _save_uploaded_file_sync(self, *, filename: str, source_file: BinaryIO) -> dict[str, object]:
+        """Copy an incoming upload in bounded chunks and enforce the size limit."""
+        try:
+            target_root = self._path_policy().package_artifacts_root
+            safe_name, stem, suffix = self._upload_filename_parts(filename)
+            target_root.mkdir(parents=True, exist_ok=True)
+            source_file.seek(0)
+
+            dest = target_root / safe_name
+            while True:
+                try:
+                    total_bytes = 0
+                    with dest.open("xb") as target:
+                        while chunk := source_file.read(_UPLOAD_COPY_CHUNK_BYTES):
+                            total_bytes += len(chunk)
+                            if total_bytes > _UPLOAD_MAX_BYTES:
+                                raise ValueError(
+                                    f"File too large: {total_bytes} bytes "
+                                    f"(max {_UPLOAD_MAX_BYTES // (1024 * 1024)} MiB)"
+                                )
+                            target.write(chunk)
+                    break
+                except FileExistsError:
+                    unique = uuid.uuid4().hex[:8]
+                    dest = target_root / f"{stem}_{unique}{suffix}"
+                except Exception:
+                    dest.unlink(missing_ok=True)
+                    raise
+
+            return self._upload_metadata(dest)
         except Exception as exc:
             raise self._domain_error_from_exception(exc, action="upload") from exc
 
@@ -1113,26 +1452,16 @@ class PluginCliService:
         if source.stat().st_size > _UPLOAD_MAX_BYTES:
             raise ValueError(
                 f"File too large: {source.stat().st_size} bytes "
-                f"(max {_UPLOAD_MAX_BYTES // (1024 * 1024)} MB)"
+                f"(max {_UPLOAD_MAX_BYTES // (1024 * 1024)} MiB)"
             )
 
-        safe_name = Path(filename or source.name).name
-        if not safe_name:
-            raise ValueError("Invalid filename")
-        has_valid_suffix = any(safe_name.endswith(suffix) for suffix in _ALLOWED_UPLOAD_SUFFIXES)
-        if not has_valid_suffix:
-            allowed = ", ".join(sorted(_ALLOWED_UPLOAD_SUFFIXES))
-            raise ValueError(f"Unsupported file type. Allowed: {allowed}")
+        safe_name, stem, suffix = self._upload_filename_parts(filename or source.name)
 
         target_root = self._path_policy().package_artifacts_root
         target_root.mkdir(parents=True, exist_ok=True)
-        stem = safe_name
-        suffix = ""
-        for allowed_suffix in sorted(_ALLOWED_UPLOAD_SUFFIXES, key=len, reverse=True):
-            if stem.endswith(allowed_suffix):
-                suffix = allowed_suffix
-                stem = stem[: -len(allowed_suffix)]
-                break
+
+        if source.parent == target_root.resolve() and source.name == safe_name:
+            return self._upload_metadata(source)
 
         dest = target_root / safe_name
         while True:
@@ -1147,13 +1476,7 @@ class PluginCliService:
                 dest.unlink(missing_ok=True)
                 raise
 
-        stat = dest.stat()
-        return {
-            "name": dest.name,
-            "path": str(dest.resolve()),
-            "size_bytes": stat.st_size,
-            "modified_at": datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat(),
-        }
+        return self._upload_metadata(dest)
 
     def _resolve_plugin_sources(
         self,
@@ -1206,9 +1529,7 @@ class PluginCliService:
         target_root = self._path_policy().package_artifacts_root
 
         def _accept(path: Path) -> bool:
-            return path.is_file() and any(
-                path.name.endswith(suffix) for suffix in _ALLOWED_UPLOAD_SUFFIXES
-            )
+            return path.is_file() and self._has_allowed_upload_suffix(path.name)
 
         candidate = Path(raw).expanduser()
         if candidate.exists():
@@ -1338,6 +1659,8 @@ def _record_install_source_for_install_result(
     from plugin.server.application.install_source import InstallSourceError
 
     installed_plugins = install_result.get("installed_plugins", [])
+    package_id = str(install_result.get("package_id") or "")
+    profile_dir = str(install_result.get("profile_dir") or "")
     for installed in installed_plugins:
         target_dir = Path(installed["target_dir"])
         if override is None:
@@ -1345,6 +1668,8 @@ def _record_install_source_for_install_result(
                 directory_path=target_dir,
                 package_filename=package_filename,
                 package_sha256=package_sha256,
+                package_id=package_id,
+                profile_dir=profile_dir,
             )
         elif override.get("channel") == "market":
             detail = override.get("market_detail", {})
@@ -1353,6 +1678,8 @@ def _record_install_source_for_install_result(
                 plugin_market_id=detail.get("plugin_market_id", ""),
                 version=detail.get("version", ""),
                 package_url=detail.get("package_url", ""),
+                package_id=package_id,
+                profile_dir=profile_dir,
             )
         else:
             raise InstallSourceError(

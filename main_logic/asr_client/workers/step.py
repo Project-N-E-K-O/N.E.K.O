@@ -1,0 +1,988 @@
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""StepFun bidirectional streaming ASR worker."""
+
+from __future__ import annotations
+
+import asyncio
+import base64
+import json
+import time
+import uuid
+from collections import deque
+from collections.abc import Callable
+from dataclasses import dataclass, field
+from typing import Any, TypeAlias
+
+import websockets
+from websockets.exceptions import ConnectionClosed
+
+from .._infra import AsrSessionConfig, _AsrWorkerEvent, _AsrWorkerRequest
+from ._shared import is_auth_rejection
+
+_STEP_URL = "wss://api.stepfun.com/v1/realtime/asr/stream"
+_STEP_MODEL = "stepaudio-2.5-asr-stream"
+_STEP_SUPPORTED_LANGUAGES = frozenset({"en", "zh"})
+_STEP_PENDING_TURN_TIMEOUT_SECONDS = 30.0
+
+_ItemKey: TypeAlias = tuple[int, int, int]
+# The second element is the stalled-turn deadline anchor: None while the
+# utterance is still live (provider turns before their endpoint event), the
+# arming clock reading once the turn only awaits its transcription.
+_PendingTurn: TypeAlias = tuple[_ItemKey, float | None]
+
+
+@dataclass(slots=True)
+class _StepConnectionState:
+    generation: int
+    buffer_epoch: int
+    next_utterance_id: int
+    emit_ready: bool
+    clock: Callable[[], float] = time.monotonic
+    provider_audio_item_keys: dict[str, _ItemKey] = field(default_factory=dict)
+    provider_audio_ids_by_key: dict[_ItemKey, str] = field(default_factory=dict)
+    transcription_item_keys: dict[str, _ItemKey] = field(default_factory=dict)
+    bound_item_deadlines: dict[str, float] = field(default_factory=dict)
+    pending_provider_turns: deque[_PendingTurn] = field(default_factory=deque)
+    pending_manual_commits: deque[_PendingTurn] = field(default_factory=deque)
+    unbound_manual_item_ids: deque[str] = field(default_factory=deque)
+    unbound_manual_item_id_set: set[str] = field(default_factory=set)
+    finalized_item_ids: set[str] = field(default_factory=set)
+    manual_commit_expired: bool = False
+    audio_id_reuse_proven: bool = False
+    reset_required: bool = False
+    configured: asyncio.Event = field(default_factory=asyncio.Event)
+    intentional_close: asyncio.Event = field(default_factory=asyncio.Event)
+    error_sent: asyncio.Event = field(default_factory=asyncio.Event)
+    closed_sent: asyncio.Event = field(default_factory=asyncio.Event)
+    last_utterance_id: int | None = None
+
+
+def _step_bind_pending_manual_items(state: _StepConnectionState) -> None:
+    while state.pending_manual_commits and state.unbound_manual_item_ids:
+        item_id = state.unbound_manual_item_ids.popleft()
+        if item_id not in state.unbound_manual_item_id_set:
+            continue
+        state.unbound_manual_item_id_set.remove(item_id)
+        if (
+            item_id in state.finalized_item_ids
+            or item_id in state.transcription_item_keys
+        ):
+            continue
+        key, _ = state.pending_manual_commits.popleft()
+        state.transcription_item_keys[item_id] = key
+        # Binding is progress, but only the terminal event releases the
+        # turn: restart the stalled clock so a stream that stops after
+        # binding still expires instead of pinning the turn open forever.
+        state.bound_item_deadlines[item_id] = state.clock()
+
+
+def _step_manual_item_key(
+    state: _StepConnectionState,
+    item_id: str,
+) -> _ItemKey | None:
+    if item_id in state.finalized_item_ids:
+        return None
+    key = state.transcription_item_keys.get(item_id)
+    if key is not None:
+        return key
+    if item_id not in state.unbound_manual_item_id_set:
+        if state.manual_commit_expired and not state.pending_manual_commits:
+            # A manual commit expired on this connection and no commit is
+            # pending, so this unknown item may be the expired commit's late
+            # transcription. Parking it would let the NEXT commit bind it and
+            # inject the previous speech as the new turn; tombstone it instead
+            # (bounded loss, consistent with the stalled-turn expiry contract).
+            _step_remember_finalized_item(state, item_id)
+            return None
+        state.unbound_manual_item_ids.append(item_id)
+        state.unbound_manual_item_id_set.add(item_id)
+    _step_bind_pending_manual_items(state)
+    return state.transcription_item_keys.get(item_id)
+
+
+def _step_provider_item_key(
+    state: _StepConnectionState,
+    item_id: str,
+) -> _ItemKey | None:
+    if not item_id or item_id in state.finalized_item_ids:
+        return None
+    key = state.transcription_item_keys.get(item_id)
+    if key is not None:
+        return key
+    audio_key = state.provider_audio_item_keys.get(item_id)
+    if audio_key is not None:
+        for index, (pending_key, armed_at) in enumerate(
+            state.pending_provider_turns
+        ):
+            if pending_key == audio_key:
+                del state.pending_provider_turns[index]
+                state.transcription_item_keys[item_id] = audio_key
+                # An exact audio-id binding proves this deployment reuses
+                # audio item ids for transcription events, so an expired
+                # turn's late transcription would carry its already
+                # tombstoned audio id and stay fail-closed; ambiguous
+                # expiries no longer need a connection reset.
+                state.audio_id_reuse_proven = True
+                if armed_at is not None:
+                    state.bound_item_deadlines[item_id] = state.clock()
+                return audio_key
+    if not state.pending_provider_turns:
+        return None
+    # Some Step deployments use a distinct transcription item ID. Preserve
+    # FIFO fallback for those events after preferring an exact audio item ID.
+    # Exact audio IDs remain fail-closed through finalized_item_ids above.
+    # FIFO is trusted here because an ambiguous stalled-turn expiry resets
+    # the connection (see _step_expire_stalled_pending_turns): a late
+    # transcription for an expired turn dies with the old socket instead of
+    # binding to a live turn on this one.
+    key, armed_at = state.pending_provider_turns.popleft()
+    state.transcription_item_keys[item_id] = key
+    if armed_at is not None:
+        state.bound_item_deadlines[item_id] = state.clock()
+    return key
+
+
+def _step_arm_pending_turn_deadline(
+    state: _StepConnectionState,
+    item_id: str,
+) -> None:
+    """Start the stalled-turn clock for a provider turn at its endpoint.
+
+    Server VAD reports speech_stopped/committed once the utterance is sealed
+    and only the transcription is outstanding. Arming the deadline here (and
+    never at speech_started) means a user speaking continuously can never be
+    expired mid-speech; the first endpoint event wins and re-arming is a
+    no-op, mirroring the OpenAI worker's stalled-item deadline.
+    """
+
+    if not item_id:
+        return
+    key = state.provider_audio_item_keys.get(item_id)
+    if key is None:
+        return
+    for index, (pending_key, armed_at) in enumerate(state.pending_provider_turns):
+        if pending_key == key:
+            if armed_at is None:
+                state.pending_provider_turns[index] = (key, state.clock())
+            return
+    # The turn already bound to a transcription item before its endpoint
+    # event arrived. Arm the bound-item deadline instead so a stream that
+    # stops after binding still expires; setdefault keeps the anchor of any
+    # deadline a delta already armed or refreshed.
+    for transcription_item_id, bound_key in state.transcription_item_keys.items():
+        if bound_key == key:
+            state.bound_item_deadlines.setdefault(
+                transcription_item_id, state.clock()
+            )
+            return
+
+
+async def _step_expire_stalled_pending_turns(
+    response_queue: asyncio.Queue[_AsrWorkerEvent],
+    state: _StepConnectionState,
+) -> None:
+    """Complete pending turns whose transcription never arrived.
+
+    Step correlates transcription item ids to turns purely by FIFO order. A
+    turn whose endpoint passed without any transcription event would pin the
+    queue head forever and shift every later binding by one slot, so a
+    stalled head is evicted a bounded age after its deadline was armed and
+    completed with an empty final to let the upstream utterance lifecycle
+    converge. Provider turns arm at speech_stopped/committed, manual commits
+    at the commit itself; an unarmed head is still live speech and is never
+    expired. A transcription delta binds a turn and removes it from the
+    queue, but the deadline follows it: bound items keep a stalled deadline
+    refreshed by each delta and disarmed only by the terminal event, so a
+    stream that stops after one delta still expires with an empty final
+    instead of leaving the turn open forever.
+    """
+
+    now = state.clock()
+    for pending in (state.pending_provider_turns, state.pending_manual_commits):
+        while pending:
+            key, armed_at = pending[0]
+            if (
+                armed_at is None
+                or now - armed_at < _STEP_PENDING_TURN_TIMEOUT_SECONDS
+            ):
+                break
+            pending.popleft()
+            if pending is state.pending_manual_commits:
+                # Quarantine late manual items: transcription events for this
+                # expired commit carry an item id we cannot know in advance,
+                # so until the next commit opens a new binding window any
+                # unknown item id must be tombstoned instead of parked.
+                state.manual_commit_expired = True
+            elif not state.audio_id_reuse_proven:
+                # An unbound provider turn expired and this connection has
+                # not proven that transcription events reuse audio item ids.
+                # On a distinct-id deployment the expired turn's late
+                # transcription would arrive under an unknown id that the
+                # FIFO fallback would misbind to a live turn, and the
+                # protocol exposes no correlation field to tell them apart
+                # no matter how long a quarantine is held. Request a
+                # connection reset: item ids are connection-scoped, so
+                # reconnecting retires the poisoned FIFO namespace and the
+                # late event dies with the old socket. With reuse proven the
+                # tombstoned audio id fail-closes the late event instead and
+                # the connection (and its live turns) can be kept.
+                state.reset_required = True
+            audio_item_id = state.provider_audio_ids_by_key.pop(key, None)
+            if audio_item_id is not None:
+                _step_remember_finalized_item(state, audio_item_id)
+                state.provider_audio_item_keys.pop(audio_item_id, None)
+            await response_queue.put(
+                _AsrWorkerEvent(
+                    kind="final",
+                    generation=key[0],
+                    buffer_epoch=key[1],
+                    utterance_id=key[2],
+                    text="",
+                )
+            )
+    expired_bound_items = [
+        item_id
+        for item_id, armed_at in state.bound_item_deadlines.items()
+        if now - armed_at >= _STEP_PENDING_TURN_TIMEOUT_SECONDS
+    ]
+    for item_id in expired_bound_items:
+        state.bound_item_deadlines.pop(item_id, None)
+        key = state.transcription_item_keys.get(item_id)
+        if key is None:
+            continue
+        # A bound turn stalled mid-transcription: a delta bound it (removing
+        # it from the pending queue) but the terminal event never arrived
+        # within the refreshed deadline. Both of its item ids are known, so
+        # tombstoning them keeps any later event fail-closed with no binding
+        # ambiguity and no need to reset the connection.
+        _step_complete_item(state, item_id, key)
+        await response_queue.put(
+            _AsrWorkerEvent(
+                kind="final",
+                generation=key[0],
+                buffer_epoch=key[1],
+                utterance_id=key[2],
+                text="",
+            )
+        )
+
+
+async def _step_flush_turns_for_reset(
+    response_queue: asyncio.Queue[_AsrWorkerEvent],
+    state: _StepConnectionState,
+) -> None:
+    """Complete every outstanding turn before an ambiguous-expiry reset.
+
+    Reconnecting retires all connection-scoped item ids, so a turn still
+    awaiting its transcription can never complete on the new connection.
+    Emit the expiry-contract empty final for each one (bounded loss) so the
+    upstream utterance lifecycle converges instead of staying open forever.
+    """
+
+    while state.pending_provider_turns:
+        key, _ = state.pending_provider_turns.popleft()
+        await response_queue.put(
+            _AsrWorkerEvent(
+                kind="final",
+                generation=key[0],
+                buffer_epoch=key[1],
+                utterance_id=key[2],
+                text="",
+            )
+        )
+    for key in list(state.transcription_item_keys.values()):
+        await response_queue.put(
+            _AsrWorkerEvent(
+                kind="final",
+                generation=key[0],
+                buffer_epoch=key[1],
+                utterance_id=key[2],
+                text="",
+            )
+        )
+    state.transcription_item_keys.clear()
+    state.bound_item_deadlines.clear()
+
+
+def _step_receive_timeout(state: _StepConnectionState) -> float | None:
+    """Return seconds until the earliest pending-turn deadline, or None.
+
+    The stalled-turn sweep otherwise runs only when another inbound frame
+    arrives (or a manual commit is sent), so an unbounded receive wait would
+    let a provider that goes silent after an utterance endpoint pin the FIFO
+    queue forever. Bounding the wait with this value guarantees the sweep
+    runs at the deadline even with no further provider events. Only queue
+    heads count, and an unarmed head (still-live speech) never bounds the
+    wait: the sweep cannot evict past it without breaking FIFO order. Bound
+    items all count: their deadlines are independent of queue order.
+    """
+
+    earliest: float | None = None
+    for pending in (state.pending_provider_turns, state.pending_manual_commits):
+        if not pending:
+            continue
+        armed_at = pending[0][1]
+        if armed_at is not None and (earliest is None or armed_at < earliest):
+            earliest = armed_at
+    for armed_at in state.bound_item_deadlines.values():
+        if earliest is None or armed_at < earliest:
+            earliest = armed_at
+    if earliest is None:
+        return None
+    remaining = earliest + _STEP_PENDING_TURN_TIMEOUT_SECONDS - state.clock()
+    return max(0.0, remaining)
+
+
+def _step_remember_finalized_item(
+    state: _StepConnectionState,
+    item_id: str,
+) -> None:
+    if not item_id or item_id in state.finalized_item_ids:
+        return
+    # Item IDs are scoped to this WebSocket connection. Keep every terminal
+    # ID until reconnect so an arbitrarily late duplicate can never consume a
+    # future FIFO fallback turn after falling out of a bounded tombstone cache.
+    state.finalized_item_ids.add(item_id)
+
+
+def _step_complete_item(
+    state: _StepConnectionState,
+    item_id: str,
+    key: _ItemKey,
+) -> None:
+    _step_remember_finalized_item(state, item_id)
+    state.transcription_item_keys.pop(item_id, None)
+    state.bound_item_deadlines.pop(item_id, None)
+    audio_item_id = state.provider_audio_ids_by_key.pop(key, None)
+    if audio_item_id is not None:
+        state.provider_audio_item_keys.pop(audio_item_id, None)
+
+
+def _step_event_id() -> str:
+    return f"event_{uuid.uuid4().hex}"
+
+
+def _step_language_code(language: str) -> str | None:
+    normalized = language.strip().lower()
+    if normalized == "auto":
+        return None
+    code = normalized.split("-", 1)[0]
+    if code not in _STEP_SUPPORTED_LANGUAGES:
+        raise ValueError("unsupported Step ASR language")
+    return code
+
+
+def _step_is_auth_rejection(exc: BaseException) -> bool:
+    return is_auth_rejection(exc)
+
+
+def _step_session_update(
+    config: AsrSessionConfig,
+    language: str | None,
+) -> dict[str, Any]:
+    if config.endpointing_mode not in ("manual", "provider"):
+        raise ValueError("unsupported Step ASR endpointing mode")
+
+    transcription: dict[str, Any] = {
+        "model": _STEP_MODEL,
+        "full_rerun_on_commit": True,
+        "enable_timestamp_align": False,
+    }
+    if language is not None:
+        transcription["language"] = language
+    audio_input: dict[str, Any] = {
+        "format": {
+            "type": "pcm",
+            "codec": "pcm_s16le",
+            "rate": 16000,
+            "bits": 16,
+            "channel": 1,
+        },
+        "transcription": transcription,
+    }
+    if config.endpointing_mode == "provider":
+        audio_input["turn_detection"] = {"type": "server_vad"}
+    return {
+        "event_id": _step_event_id(),
+        "type": "session.update",
+        "session": {"audio": {"input": audio_input}},
+    }
+
+
+async def _emit_step_error_once(
+    response_queue: asyncio.Queue[_AsrWorkerEvent],
+    state: _StepConnectionState,
+    error_code: str,
+    error_message: str,
+    *,
+    item_key: _ItemKey | None = None,
+) -> None:
+    if state.error_sent.is_set():
+        return
+    state.error_sent.set()
+    generation, buffer_epoch, utterance_id = item_key or (
+        state.generation,
+        state.buffer_epoch,
+        state.last_utterance_id,
+    )
+    await response_queue.put(
+        _AsrWorkerEvent(
+            kind="error",
+            generation=generation,
+            buffer_epoch=buffer_epoch,
+            utterance_id=utterance_id,
+            error_code=error_code,
+            error_message=error_message,
+        )
+    )
+
+
+async def _step_sender(
+    ws: Any,
+    request_queue: asyncio.Queue[_AsrWorkerRequest],
+    response_queue: asyncio.Queue[_AsrWorkerEvent],
+    config: AsrSessionConfig,
+    state: _StepConnectionState,
+) -> tuple[str, _AsrWorkerRequest | None]:
+    await state.configured.wait()
+    try:
+        while True:
+            request = await request_queue.get()
+            try:
+                if request.kind == "audio":
+                    state.last_utterance_id = request.utterance_id
+                    # The configured container and codec are raw PCM16LE. The
+                    # official field is Base64 text; no WAV header is added.
+                    await ws.send(
+                        json.dumps(
+                            {
+                                "event_id": _step_event_id(),
+                                "type": "input_audio_buffer.append",
+                                "audio": base64.b64encode(request.audio).decode(
+                                    "ascii"
+                                ),
+                            }
+                        )
+                    )
+                    continue
+
+                if request.kind == "commit":
+                    if config.endpointing_mode != "manual":
+                        await _emit_step_error_once(
+                            response_queue,
+                            state,
+                            "ASR_STEP_PROTOCOL_ERROR",
+                            "Step ASR received commit while server VAD is active",
+                        )
+                        return "error", request
+                    if request.utterance_id is None:
+                        await _emit_step_error_once(
+                            response_queue,
+                            state,
+                            "ASR_STEP_PROTOCOL_ERROR",
+                            "Step ASR commit is missing an utterance identifier",
+                        )
+                        return "error", request
+                    await _step_expire_stalled_pending_turns(response_queue, state)
+                    if state.pending_manual_commits:
+                        await _emit_step_error_once(
+                            response_queue,
+                            state,
+                            "ASR_STEP_PROTOCOL_ERROR",
+                            "Step ASR cannot safely bind overlapping manual commits",
+                        )
+                        return "error", request
+                    key = (
+                        request.generation,
+                        request.buffer_epoch,
+                        request.utterance_id,
+                    )
+                    state.pending_manual_commits.append((key, state.clock()))
+                    # A fresh commit opens a new binding window: unknown item
+                    # ids arriving from here on belong to this commit, so the
+                    # post-expiry quarantine ends now.
+                    state.manual_commit_expired = False
+                    _step_bind_pending_manual_items(state)
+                    await ws.send(
+                        json.dumps(
+                            {
+                                "event_id": _step_event_id(),
+                                "type": "input_audio_buffer.commit",
+                            }
+                        )
+                    )
+                    continue
+
+                if request.kind == "clear":
+                    state.intentional_close.set()
+                    try:
+                        await ws.close()
+                    except Exception:
+                        pass
+                    return "clear", request
+
+                if request.kind == "shutdown":
+                    state.intentional_close.set()
+                    if not state.closed_sent.is_set():
+                        state.closed_sent.set()
+                        await response_queue.put(
+                            _AsrWorkerEvent(
+                                kind="closed",
+                                generation=request.generation,
+                                buffer_epoch=request.buffer_epoch,
+                                utterance_id=request.utterance_id,
+                            )
+                        )
+                    try:
+                        await ws.close()
+                    except Exception:
+                        pass
+                    return "shutdown", request
+
+                await _emit_step_error_once(
+                    response_queue,
+                    state,
+                    "ASR_STEP_PROTOCOL_ERROR",
+                    "Step ASR received an unsupported command",
+                )
+                return "error", request
+            finally:
+                request_queue.task_done()
+    except asyncio.CancelledError:
+        raise
+    except ConnectionClosed:
+        if not state.intentional_close.is_set():
+            await _emit_step_error_once(
+                response_queue,
+                state,
+                "ASR_STEP_CONNECTION_CLOSED",
+                "Step ASR connection closed unexpectedly",
+            )
+        return "error", None
+    except Exception:
+        await _emit_step_error_once(
+            response_queue,
+            state,
+            "ASR_STEP_WORKER_FAILED",
+            "Step ASR sender failed",
+        )
+        return "error", None
+
+
+async def _step_receiver(
+    ws: Any,
+    response_queue: asyncio.Queue[_AsrWorkerEvent],
+    config: AsrSessionConfig,
+    state: _StepConnectionState,
+) -> str:
+    try:
+        while True:
+            # Bound the wait by the earliest pending-turn deadline so the
+            # stalled-turn sweep runs even when the provider sends nothing
+            # more. ws.recv() is used instead of async iteration because
+            # wait_for cancels the awaited call on timeout, and cancelling
+            # the iterator's __anext__ would finalize the underlying async
+            # generator and end the stream; recv() is cancellation-safe.
+            try:
+                raw_message = await asyncio.wait_for(
+                    ws.recv(), timeout=_step_receive_timeout(state)
+                )
+            except asyncio.TimeoutError:
+                await _step_expire_stalled_pending_turns(response_queue, state)
+                if state.reset_required:
+                    await _step_flush_turns_for_reset(response_queue, state)
+                    return "reset"
+                continue
+            try:
+                event = json.loads(raw_message)
+            except (TypeError, ValueError):
+                await _emit_step_error_once(
+                    response_queue,
+                    state,
+                    "ASR_STEP_PROTOCOL_ERROR",
+                    "Step ASR returned an invalid event",
+                )
+                return "error"
+            if not isinstance(event, dict):
+                # Valid JSON that is not an object (e.g. []) carries no event
+                # type; skip it instead of failing the session.
+                continue
+
+            await _step_expire_stalled_pending_turns(response_queue, state)
+            if state.reset_required:
+                # The connection's FIFO namespace is poisoned; the event in
+                # hand describes state that dies with this socket, so it is
+                # intentionally dropped along with the connection.
+                await _step_flush_turns_for_reset(response_queue, state)
+                return "reset"
+            event_type = event.get("type")
+            if event_type == "session.updated":
+                if not state.configured.is_set():
+                    state.configured.set()
+                    if state.emit_ready:
+                        await response_queue.put(
+                            _AsrWorkerEvent(
+                                kind="ready",
+                                generation=state.generation,
+                                buffer_epoch=state.buffer_epoch,
+                            )
+                        )
+                continue
+
+            if event_type == "error":
+                if state.intentional_close.is_set():
+                    return "closed"
+                item_id = str(event.get("item_id") or "")
+                await _emit_step_error_once(
+                    response_queue,
+                    state,
+                    "ASR_STEP_PROVIDER_ERROR",
+                    "Step ASR provider reported an error",
+                    item_key=(
+                        state.transcription_item_keys.get(item_id)
+                        or state.provider_audio_item_keys.get(item_id)
+                    ),
+                )
+                return "error"
+
+            if event_type == "input_audio_buffer.speech_started":
+                if config.endpointing_mode != "provider":
+                    continue
+                item_id = str(event.get("item_id") or "")
+                if not item_id or item_id in state.provider_audio_item_keys:
+                    continue
+                key = (
+                    state.generation,
+                    state.buffer_epoch,
+                    state.next_utterance_id,
+                )
+                state.next_utterance_id += 1
+                state.last_utterance_id = key[2]
+                state.provider_audio_item_keys[item_id] = key
+                state.provider_audio_ids_by_key[key] = item_id
+                # Unarmed while speech is live: the stalled-turn deadline is
+                # armed by the endpoint event, never by speech_started, so a
+                # long continuous utterance cannot expire mid-speech.
+                state.pending_provider_turns.append((key, None))
+                await response_queue.put(
+                    _AsrWorkerEvent(
+                        kind="utterance_started",
+                        generation=key[0],
+                        buffer_epoch=key[1],
+                        utterance_id=key[2],
+                    )
+                )
+                continue
+
+            if event_type == "input_audio_buffer.speech_stopped":
+                # Server VAD sealed the turn; only the transcription is still
+                # outstanding, so the stalled-turn deadline starts here.
+                if config.endpointing_mode == "provider":
+                    _step_arm_pending_turn_deadline(
+                        state, str(event.get("item_id") or "")
+                    )
+                continue
+
+            if event_type == "input_audio_buffer.committed":
+                # Step assigns this event to the committed audio item. Its
+                # transcription events use a different item_id, so manual
+                # utterances are bound when a transcription event arrives.
+                # In provider mode it is a turn endpoint too: arm the stalled
+                # deadline in case speech_stopped was never delivered.
+                if config.endpointing_mode == "provider":
+                    _step_arm_pending_turn_deadline(
+                        state, str(event.get("item_id") or "")
+                    )
+                continue
+
+            if event_type == "conversation.item.input_audio_transcription.delta":
+                item_id = str(event.get("item_id") or "")
+                key = (
+                    _step_provider_item_key(state, item_id)
+                    if config.endpointing_mode == "provider"
+                    else _step_manual_item_key(state, item_id)
+                )
+                if key is not None:
+                    if item_id in state.bound_item_deadlines:
+                        # Streaming deltas prove the transcription is alive;
+                        # push the stalled deadline forward instead of
+                        # expiring the turn mid-stream.
+                        state.bound_item_deadlines[item_id] = state.clock()
+                    await response_queue.put(
+                        _AsrWorkerEvent(
+                            kind="partial",
+                            generation=key[0],
+                            buffer_epoch=key[1],
+                            utterance_id=key[2],
+                            text=str(event.get("text") or ""),
+                        )
+                    )
+                continue
+
+            if event_type == "conversation.item.input_audio_transcription.completed":
+                item_id = str(event.get("item_id") or "")
+                if item_id in state.finalized_item_ids:
+                    continue
+                key = (
+                    _step_provider_item_key(state, item_id)
+                    if config.endpointing_mode == "provider"
+                    else _step_manual_item_key(state, item_id)
+                )
+                if key is not None:
+                    _step_complete_item(state, item_id, key)
+                    await response_queue.put(
+                        _AsrWorkerEvent(
+                            kind="final",
+                            generation=key[0],
+                            buffer_epoch=key[1],
+                            utterance_id=key[2],
+                            text=str(event.get("transcript") or ""),
+                        )
+                    )
+                else:
+                    # A completed item without an eligible turn is terminally
+                    # unknown. Remember it so a delayed duplicate cannot claim
+                    # a future provider turn or manual commit.
+                    _step_remember_finalized_item(state, item_id)
+                continue
+    except asyncio.CancelledError:
+        raise
+    except ConnectionClosed:
+        # ConnectionClosedOK is included: recv() raises it on a graceful
+        # close where async iteration used to end the loop silently.
+        if not state.intentional_close.is_set():
+            await _emit_step_error_once(
+                response_queue,
+                state,
+                "ASR_STEP_CONNECTION_CLOSED",
+                "Step ASR connection closed unexpectedly",
+            )
+            return "error"
+        return "closed"
+    except Exception:
+        if state.intentional_close.is_set():
+            return "closed"
+        await _emit_step_error_once(
+            response_queue,
+            state,
+            "ASR_STEP_WORKER_FAILED",
+            "Step ASR receiver failed",
+        )
+        return "error"
+
+
+async def step_asr_worker(
+    request_queue: asyncio.Queue[_AsrWorkerRequest],
+    response_queue: asyncio.Queue[_AsrWorkerEvent],
+    api_key: str,
+    config: AsrSessionConfig,
+    *,
+    clock: Callable[[], float] = time.monotonic,
+) -> None:
+    """Stream normalized PCM to StepFun and normalize provider events."""
+
+    generation = 0
+    buffer_epoch = 0
+    next_utterance_id = 1
+    first_connection = True
+    closed_sent = False
+    active_state: _StepConnectionState | None = None
+
+    try:
+        if not api_key:
+            raise PermissionError("Step ASR credentials are missing")
+        language = _step_language_code(config.language)
+        session_update = _step_session_update(config, language)
+
+        while True:
+            state = _StepConnectionState(
+                generation=generation,
+                buffer_epoch=buffer_epoch,
+                next_utterance_id=next_utterance_id,
+                emit_ready=first_connection,
+                clock=clock,
+            )
+            active_state = state
+            ws: Any | None = None
+            sender_task: asyncio.Task[tuple[str, _AsrWorkerRequest | None]] | None = (
+                None
+            )
+            receiver_task: asyncio.Task[str] | None = None
+            outcome = "error"
+            outcome_request: _AsrWorkerRequest | None = None
+            try:
+                ws = await websockets.connect(
+                    _STEP_URL,
+                    additional_headers={"Authorization": f"Bearer {api_key}"},
+                    close_timeout=0.5,
+                )
+                receiver_task = asyncio.create_task(
+                    _step_receiver(ws, response_queue, config, state),
+                    name="step-asr-receiver",
+                )
+                await ws.send(json.dumps(session_update))
+                sender_task = asyncio.create_task(
+                    _step_sender(
+                        ws,
+                        request_queue,
+                        response_queue,
+                        config,
+                        state,
+                    ),
+                    name="step-asr-sender",
+                )
+                done, pending = await asyncio.wait(
+                    {sender_task, receiver_task},
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                if sender_task in done:
+                    outcome, outcome_request = await sender_task
+                if (
+                    receiver_task in done
+                    and state.intentional_close.is_set()
+                    and sender_task not in done
+                ):
+                    try:
+                        outcome, outcome_request = await asyncio.wait_for(
+                            asyncio.shield(sender_task), timeout=1.0
+                        )
+                    except asyncio.TimeoutError:
+                        pass
+                if receiver_task in done:
+                    receiver_outcome = await receiver_task
+                    if receiver_outcome == "error":
+                        outcome = "error"
+                    elif receiver_outcome == "reset" and sender_task not in done:
+                        # An ambiguous stalled-turn expiry poisoned the
+                        # connection-scoped FIFO namespace; recycle the
+                        # connection. A concurrently finished sender keeps
+                        # its own outcome (clear/shutdown/error) instead.
+                        outcome = "reset"
+                for task in pending:
+                    if not task.done():
+                        task.cancel()
+                if pending:
+                    await asyncio.gather(*pending, return_exceptions=True)
+                if (
+                    outcome == "reset"
+                    and sender_task is not None
+                    and sender_task.done()
+                    and not sender_task.cancelled()
+                    and sender_task.exception() is None
+                ):
+                    # The sender finished a request (shutdown/clear/error)
+                    # in the window between the reset decision and its
+                    # cancellation; that outcome must win or the worker
+                    # would reconnect after the session already closed.
+                    outcome, outcome_request = sender_task.result()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                await _emit_step_error_once(
+                    response_queue,
+                    state,
+                    (
+                        "ASR_CREDENTIALS_REJECTED"
+                        if _step_is_auth_rejection(exc)
+                        else "ASR_STEP_CONNECTION_FAILED"
+                    ),
+                    (
+                        "Step ASR credentials were rejected"
+                        if _step_is_auth_rejection(exc)
+                        else "Step ASR connection or session setup failed"
+                    ),
+                )
+                outcome = "error"
+            finally:
+                for task in (sender_task, receiver_task):
+                    if task is not None and not task.done():
+                        task.cancel()
+                pending_tasks = [
+                    task
+                    for task in (sender_task, receiver_task)
+                    if task is not None and not task.done()
+                ]
+                if pending_tasks:
+                    await asyncio.gather(*pending_tasks, return_exceptions=True)
+                if ws is not None:
+                    state.intentional_close.set()
+                    try:
+                        await ws.close()
+                    except Exception:
+                        pass
+
+            closed_sent = state.closed_sent.is_set()
+            if outcome == "reset":
+                # Reconnect with a fresh item-id namespace. The route is
+                # unchanged (no request drove this), so generation and
+                # buffer_epoch carry over; the utterance counter continues
+                # so recycled connections never reuse an utterance id.
+                next_utterance_id = state.next_utterance_id
+                first_connection = False
+                continue
+            if outcome == "clear" and outcome_request is not None:
+                generation = outcome_request.generation
+                buffer_epoch = outcome_request.buffer_epoch
+                next_utterance_id = outcome_request.utterance_id or 1
+                first_connection = False
+                continue
+            if outcome_request is not None:
+                generation = outcome_request.generation
+                buffer_epoch = outcome_request.buffer_epoch
+                next_utterance_id = outcome_request.utterance_id or next_utterance_id
+            return
+    except asyncio.CancelledError:
+        raise
+    except PermissionError:
+        await response_queue.put(
+            _AsrWorkerEvent(
+                kind="error",
+                generation=generation,
+                buffer_epoch=buffer_epoch,
+                error_code="ASR_CREDENTIALS_MISSING",
+                error_message="Step ASR credentials are missing",
+            )
+        )
+    except ValueError as exc:
+        message = str(exc)
+        code = (
+            "ASR_LANGUAGE_NOT_SUPPORTED"
+            if "language" in message
+            else "ASR_INVALID_CONFIG"
+        )
+        await response_queue.put(
+            _AsrWorkerEvent(
+                kind="error",
+                generation=generation,
+                buffer_epoch=buffer_epoch,
+                error_code=code,
+                error_message="Step ASR configuration is not supported",
+            )
+        )
+    finally:
+        if active_state is not None:
+            closed_sent = closed_sent or active_state.closed_sent.is_set()
+        if not closed_sent:
+            await response_queue.put(
+                _AsrWorkerEvent(
+                    kind="closed",
+                    generation=generation,
+                    buffer_epoch=buffer_epoch,
+                    utterance_id=(
+                        active_state.last_utterance_id if active_state else None
+                    ),
+                )
+            )

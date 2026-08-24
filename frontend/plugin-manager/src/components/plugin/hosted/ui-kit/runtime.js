@@ -578,6 +578,37 @@ function patchProps(dom, oldProps, newProps) {
     if (oldProps[name] !== newProps[name]) setProp(dom, name, oldProps[name], newProps[name]);
   });
 }
+const __hostedUserActionEvents = new Set(['click', 'submit', 'keydown', 'change', 'input', 'drop', 'paste']);
+let __hostedUserActionDepth = 0;
+const __hostedConfirmedActionCredits = [];
+function retainHostedConfirmedAction() {
+  const credit = {};
+  __hostedConfirmedActionCredits.push(credit);
+  // Promise continuations registered by resolve run before this cleanup, so a
+  // confirmed `await useConfirm()` flow can claim one action without giving a
+  // later background request a time-based attribution window.
+  queueMicrotask(() => {
+    const index = __hostedConfirmedActionCredits.indexOf(credit);
+    if (index >= 0) __hostedConfirmedActionCredits.splice(index, 1);
+  });
+}
+function consumeHostedConfirmedAction() {
+  return __hostedConfirmedActionCredits.shift() !== undefined;
+}
+function wrapHostedEventHandler(eventName, handler) {
+  if (!__hostedUserActionEvents.has(eventName)) return handler;
+  return (event) => {
+    // Synthetic events are automatic activity, even if they invoke the same
+    // handler as a real click. happy-dom leaves isTrusted undefined.
+    const userInitiated = event && event.isTrusted !== false;
+    if (userInitiated) __hostedUserActionDepth += 1;
+    try {
+      return handler(event);
+    } finally {
+      if (userInitiated) __hostedUserActionDepth -= 1;
+    }
+  };
+}
 function setProp(dom, name, oldValue, newValue) {
   if (name === 'className') name = 'class';
   if (name === 'style') {
@@ -597,8 +628,15 @@ function setProp(dom, name, oldValue, newValue) {
   }
   if (name.startsWith('on') && typeof (oldValue || newValue) === 'function') {
     const eventName = name.slice(2).toLowerCase();
-    if (oldValue) dom.removeEventListener(eventName, oldValue);
-    if (newValue) dom.addEventListener(eventName, newValue);
+    const listeners = dom.__nekoEventListeners || (dom.__nekoEventListeners = {});
+    if (listeners[eventName]) dom.removeEventListener(eventName, listeners[eventName]);
+    if (newValue) {
+      const listener = wrapHostedEventHandler(eventName, newValue);
+      listeners[eventName] = listener;
+      dom.addEventListener(eventName, listener);
+    } else {
+      delete listeners[eventName];
+    }
     return;
   }
   if (name === 'dangerouslySetInnerHTML' || name === 'innerHTML' || name === 'srcdoc') {
@@ -1017,6 +1055,7 @@ function useConfirm() {
         renderPortal(null);
         host.remove();
         resolve(value);
+        if (value && __hostedUserActionDepth > 0) retainHostedConfirmedAction();
       };
       renderPortal(h(ConfirmDialog, {
         open: true,
@@ -1297,6 +1336,7 @@ function Input(props) {
     type: props.type || 'text',
     value: props.value ?? '',
     placeholder: props.placeholder || '',
+    disabled: props.disabled,
     min: props.min,
     max: props.max,
     step: props.step,
@@ -1339,14 +1379,14 @@ function Slider(props) {
     props.showValue === false ? null : h('output', { className: 'neko-slider-value' }, String(value))
   );
 }
-function Textarea(props) { return h('textarea', { className: 'neko-textarea ' + (props.className || ''), value: props.value ?? '', placeholder: props.placeholder || '', 'aria-invalid': props.invalid || props.error ? 'true' : undefined, 'data-invalid': props.invalid || props.error ? 'true' : undefined, onCompositionStart: (event) => { event.target.__nekoComposing = true; }, onCompositionEnd: (event) => { event.target.__nekoComposing = false; if (props.onChange) props.onChange(event.target.value); }, onInput: (event) => props.onChange && props.onChange(event.target.value) }); }
+function Textarea(props) { return h('textarea', { className: 'neko-textarea ' + (props.className || ''), value: props.value ?? '', placeholder: props.placeholder || '', disabled: props.disabled, 'aria-invalid': props.invalid || props.error ? 'true' : undefined, 'data-invalid': props.invalid || props.error ? 'true' : undefined, onCompositionStart: (event) => { event.target.__nekoComposing = true; }, onCompositionEnd: (event) => { event.target.__nekoComposing = false; if (props.onChange) props.onChange(event.target.value); }, onInput: (event) => props.onChange && props.onChange(event.target.value) }); }
 function Select(props) {
   const options = normalizeOptions(props.options);
-  return h('select', { className: 'neko-select ' + (props.className || ''), value: props.value ?? '', 'aria-invalid': props.invalid || props.error ? 'true' : undefined, 'data-invalid': props.invalid || props.error ? 'true' : undefined, onChange: (event) => props.onChange && props.onChange(event.target.value) },
+  return h('select', { className: 'neko-select ' + (props.className || ''), value: props.value ?? '', disabled: props.disabled, 'aria-invalid': props.invalid || props.error ? 'true' : undefined, 'data-invalid': props.invalid || props.error ? 'true' : undefined, onChange: (event) => props.onChange && props.onChange(event.target.value) },
     options.map((option) => {
       const value = optionValue(option);
       const label = optionLabel(option);
-      return h('option', { value }, label);
+      return h('option', { value, selected: String(props.value ?? '') === String(value) }, label);
     })
   );
 }
@@ -1910,31 +1950,94 @@ function refreshHostedPayload(context) {
 }
 
 const __pendingRequests = new Map();
+const __hostedContextParent = parent;
+const __hostedContextOrigin = (() => {
+  try {
+    return new URL(hostedTargetOrigin(), window.location.href).origin;
+  } catch (_) {
+    return window.location.origin;
+  }
+})();
 window.addEventListener('message', (event) => {
   const data = event.data;
-  if (!data || typeof data !== 'object' || data.type !== 'neko-hosted-surface-response') return;
+  if (!data || typeof data !== 'object') return;
+  if (data.type === 'neko-hosted-surface-context') {
+    if (event.source !== __hostedContextParent || event.origin !== __hostedContextOrigin) return;
+    refreshHostedPayload(data.context);
+    return;
+  }
+  if (data.type !== 'neko-hosted-surface-response') return;
   const pending = __pendingRequests.get(data.requestId);
   if (!pending) return;
   __pendingRequests.delete(data.requestId);
+  pending.cleanup();
   if (data.ok) pending.resolve(data.result);
   else pending.reject(createHostedBridgeError(data));
 });
+function createHostedAbortError() {
+  const error = new Error('Hosted surface request was aborted');
+  error.name = 'AbortError';
+  return error;
+}
 function requestHost(method, payload, options) {
   const requestId = Math.random().toString(36).slice(2) + Date.now().toString(36);
   const requestedTimeoutMs = Number(options && options.timeoutMs);
   const timeoutMs = Number.isFinite(requestedTimeoutMs) && requestedTimeoutMs > 0 ? requestedTimeoutMs : 30000;
+  const signal = options && options.signal;
+  if (signal && signal.aborted) return Promise.reject(createHostedAbortError());
   return new Promise((resolve, reject) => {
-    __pendingRequests.set(requestId, { resolve, reject });
-    parent.postMessage({ type: 'neko-hosted-surface-request', requestId, method, payload, timeoutMs }, hostedTargetOrigin());
-    window.setTimeout(() => {
+    let timeoutId;
+    const cleanup = () => {
+      if (timeoutId !== undefined) window.clearTimeout(timeoutId);
+      if (signal) signal.removeEventListener('abort', handleAbort);
+    };
+    const handleAbort = () => {
       if (!__pendingRequests.has(requestId)) return;
       __pendingRequests.delete(requestId);
-      reject(new Error('Hosted surface request timed out'));
+      cleanup();
+      parent.postMessage({ type: 'neko-hosted-surface-cancel', requestId }, hostedTargetOrigin());
+      reject(createHostedAbortError());
+    };
+    __pendingRequests.set(requestId, { resolve, reject, cleanup });
+    if (signal) signal.addEventListener('abort', handleAbort, { once: true });
+    const userInitiated = (method === 'call' || method === 'parseDocument') && options && options.userInitiated === true;
+    timeoutId = window.setTimeout(() => {
+      if (!__pendingRequests.has(requestId)) return;
+      __pendingRequests.delete(requestId);
+      cleanup();
+      const error = new Error(method === 'parseDocument' ? 'Document parsing timed out' : 'Hosted surface request timed out');
+      if (method === 'parseDocument') error.code = 'document_parse_timeout';
+      reject(error);
     }, timeoutMs);
+    parent.postMessage({ type: 'neko-hosted-surface-request', requestId, method, payload, timeoutMs, userInitiated }, hostedTargetOrigin());
   });
 }
 const api = {
-  call(actionId, args, options) { return requestHost('call', { actionId, args: args || {} }, options || {}); },
+  // Async handlers lose the synchronous DOM event scope after an await. They
+  // can explicitly preserve the attribution for this one action with
+  // { userInitiated: true }, without making unrelated background calls noisy.
+  call(actionId, args, options) {
+    const requestOptions = options || {};
+    const confirmedUserAction = consumeHostedConfirmedAction();
+    return requestHost('call', { actionId, args: args || {} }, {
+      ...requestOptions,
+      userInitiated: requestOptions.userInitiated === true || __hostedUserActionDepth > 0 || confirmedUserAction,
+    });
+  },
+  parseDocument(file, options) {
+    if (typeof File === 'undefined' || !(file instanceof File)) {
+      const error = new TypeError('parseDocument requires a File');
+      error.code = 'unsupported_document';
+      return Promise.reject(error);
+    }
+    const requestOptions = options || {};
+    const confirmedUserAction = consumeHostedConfirmedAction();
+    return requestHost('parseDocument', { file }, {
+      timeoutMs: requestOptions.timeoutMs,
+      signal: requestOptions.signal,
+      userInitiated: __hostedUserActionDepth > 0 || confirmedUserAction,
+    });
+  },
   async refresh() {
     const context = await requestHost('refresh', {});
     return refreshHostedPayload(context);
@@ -1951,7 +2054,7 @@ function ActionButton(props) {
     tone: props.tone || action.tone || 'primary',
     disabled: loading,
     children: props.children || label,
-    onClick: async () => {
+    onClick: async (event) => {
       try {
         setError('');
         const confirmMessage = props.confirm || action.confirm;
@@ -1959,7 +2062,7 @@ function ActionButton(props) {
           return;
         }
         setLoading(true);
-        const result = await api.call(actionId, props.values || props.args || {});
+        const result = await api.call(actionId, props.values || props.args || {}, { userInitiated: event && event.isTrusted !== false });
         if (action.refresh_context !== false && props.refresh !== false) await api.refresh();
         if (typeof props.onResult === 'function') props.onResult(result);
       } catch (error) {

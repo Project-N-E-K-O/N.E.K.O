@@ -77,7 +77,7 @@ def test_llm_backend_prompt_message_contracts_are_stable() -> None:
     }
     text = json.dumps(payload, ensure_ascii=False, sort_keys=True)
     assert hashlib.sha256(text.encode("utf-8")).hexdigest() == (
-        "f63025f0087981c3adf3cd5eff0f428744397990bb2a2eeb738349cc6c238821"
+        "8e5aef826052ebb2ae73d33a82a79ed8d5cdc9e781d88e6dcb5e9e07657f6b1c"
     )
 
 
@@ -522,3 +522,17 @@ def test_galgame_plugin_toml_defaults_to_internal_backend() -> None:
         payload = tomllib.load(handle)
 
     assert payload["llm"]["target_entry_ref"] == ""
+
+
+@pytest.mark.plugin_unit
+def test_galgame_plugin_toml_allows_slow_cold_start() -> None:
+    path = (
+        Path(__file__).resolve().parents[3]
+        / "plugins"
+        / "galgame_plugin"
+        / "plugin.toml"
+    )
+    with path.open("rb") as handle:
+        payload = tomllib.load(handle)
+
+    assert payload["plugin_runtime"]["timeout"] == 30

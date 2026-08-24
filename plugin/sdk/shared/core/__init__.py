@@ -72,6 +72,7 @@ from .types import (
     MutableStateProtocol,
     PluginContextProtocol,
     PluginRef,
+    PushMessageResult,
 )
 
 __all__ = [
@@ -121,6 +122,7 @@ __all__ = [
     "EntryRef",
     "EventRef",
     "PluginContextProtocol",
+    "PushMessageResult",
     "MutableStateProtocol",
     "JsonScalar",
     "JsonValue",

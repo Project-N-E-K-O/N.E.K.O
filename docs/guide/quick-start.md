@@ -1,5 +1,7 @@
 # Quick Start
 
+If you are choosing between Steam, a standalone release, and a source checkout, read [Install options](./install-options) first.
+
 Complete [Development Setup](./dev-setup) first.
 
 ## 1. Launch
@@ -16,7 +18,7 @@ Open `/api_key` on the main URL. Select a Core provider and, if needed, an Assis
 
 ## 3. Open chat
 
-A fresh data root is initialized from locale-specific character defaults and the bundled Yui Origin asset. Character identifiers/display names come from active data; the old fixed “小天” claim is no longer valid.
+A fresh data root is initialized from locale-specific character defaults and the bundled Yui Lolita asset. Character identifiers/display names come from active data; the old fixed “小天” claim is no longer valid.
 
 Text chat uses the shared React component. Voice availability depends on the selected core/TTS path and microphone permission.
 

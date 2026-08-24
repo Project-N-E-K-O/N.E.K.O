@@ -71,6 +71,14 @@ class SafetyGuard:
         if critical:
             self._last_critical_at = cur
 
+    def output_clock_checkpoint(self) -> tuple[float, float]:
+        """Capture output clocks before a two-stage arbiter/dispatcher attempt."""
+        return self._last_output_at, self._last_critical_at
+
+    def restore_output_clock(self, checkpoint: tuple[float, float]) -> None:
+        """Roll back clocks when the dispatcher declines the selected event."""
+        self._last_output_at, self._last_critical_at = checkpoint
+
     # --- 失败 / 自动急停 ---
     def record_failure(self, now: float | None = None) -> None:
         cur = time.time() if now is None else now

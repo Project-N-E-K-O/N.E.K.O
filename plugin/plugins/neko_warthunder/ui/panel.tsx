@@ -190,6 +190,16 @@ const DOMAIN_LABELS: Record<string, string> = {
   unknown: "未知模式",
 }
 
+// 面板自动刷新间隔。取 6s：数据层轮询是 0.4s 级，面板只需跟上"看得出在变"，
+// 太密会给宿主 context 通道添无谓压力。
+const PANEL_REFRESH_INTERVAL_MS = 6000
+
+const CONN_STATE_LABELS: Record<string, string> = {
+  offline: "离线",
+  not_in_battle: "已连接·未进战局",
+  in_battle: "战局中",
+}
+
 const SCENARIO_LABELS: Record<string, string> = {
   OUT_OF_BATTLE: "战斗外",
   SPAWNING: "出生/进场",
@@ -314,16 +324,20 @@ const PANEL_STYLES = `
   .wt-panel, .wt-panel * { letter-spacing: 0; }
   .wt-panel { display: grid; grid-template-rows: 72px minmax(0, 1fr) auto; width: 100%; height: 100vh; min-height: 0; overflow: hidden; background: var(--wt-bg); color: var(--wt-text); }
   .wt-tabs { display: flex; gap: 52px; height: 72px; padding: 0 32px; border-bottom: 1px solid var(--wt-border); }
+  .wt-sr-only { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
   .wt-tab { position: relative; min-width: 90px; border: 0; background: transparent; color: var(--wt-text); font: inherit; font-size: 18px; cursor: pointer; }
   .wt-tab.is-active { color: #2589f5; font-weight: 700; }
   .wt-tab.is-active::after { content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 3px; background: #2589f5; }
   .wt-settings-trigger { display: inline-grid; place-items: center; align-self: center; width: 38px; height: 38px; margin-left: auto; border: 1px solid var(--wt-control-border); border-radius: 6px; padding: 0; background: var(--wt-surface); color: var(--wt-muted); font: inherit; font-size: 22px; line-height: 1; cursor: pointer; }
   .wt-settings-trigger:hover { background: var(--wt-surface-hover); color: var(--wt-text); }
   .wt-content { min-height: 0; overflow-x: hidden; overflow-y: auto; padding: 32px; scrollbar-gutter: stable; }
+  /* 基础样式只承载布局；语义配色一律由 data-tone 给出，与本文件其余组件
+     (wt-health / wt-activity-row / wt-diagnostics-summary) 保持同一套机制。 */
   .wt-status { display: flex; align-items: center; justify-content: space-between; gap: 28px; min-height: 126px; padding: 26px 28px; border: 1px solid var(--wt-status-warning-border); border-radius: 8px; background: var(--wt-status-warning-bg); }
-  .wt-status-info { border-color: var(--wt-status-info-border); background: var(--wt-status-info-bg); }
-  .wt-status-success { border-color: var(--wt-status-success-border); background: var(--wt-status-success-bg); }
-  .wt-status-danger { border-color: var(--wt-status-danger-border); background: var(--wt-status-danger-bg); }
+  .wt-status[data-tone="warning"] { border-color: var(--wt-status-warning-border); background: var(--wt-status-warning-bg); }
+  .wt-status[data-tone="info"] { border-color: var(--wt-status-info-border); background: var(--wt-status-info-bg); }
+  .wt-status[data-tone="success"] { border-color: var(--wt-status-success-border); background: var(--wt-status-success-bg); }
+  .wt-status[data-tone="danger"] { border-color: var(--wt-status-danger-border); background: var(--wt-status-danger-bg); }
   .wt-status-copy { min-width: 0; }
   .wt-status-heading { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 9px; }
   .wt-status-title { margin: 0 0 9px; font-size: 22px; line-height: 1.35; font-weight: 760; }
@@ -1032,8 +1046,9 @@ export default function NekoWarthunderPanel(props: PluginSurfaceProps<DashboardS
   const [broadcastPreferenceError, setBroadcastPreferenceError] = useState("")
   const summary = derivePanelSummary(state)
   const playerName = currentPlayerName(identity)
-  const activityItems = buildActivityItems(state)
+  // limit=5 的结果就是 limit=20 的前缀，算一次即可（该函数没有 memo，每次渲染都会全量跑）。
   const allActivityItems = buildActivityItems(state, 20)
+  const activityItems = allActivityItems.slice(0, 5)
   const filteredActivityItems = activityFilter === "all"
     ? allActivityItems
     : allActivityItems.filter((item) => item.kind === activityFilter || (activityFilter === "suppressed" && item.kind === "failed"))
@@ -1050,6 +1065,42 @@ export default function NekoWarthunderPanel(props: PluginSurfaceProps<DashboardS
     setOnboardingOpen(true)
     setOnboardingAutoOpened(true)
   }, [onboardingRequired, onboardingAutoOpened])
+
+  // 战局状态是连续变化的，面板承诺"按当前状态实时更新"，因此需要自己拉取：
+  // 宿主只在挂载和显式 refresh 时取 context，没有推送。refresh 只读 dashboard
+  // context，不触发任何输出，也不影响任何安全门控。
+  // 面板不可见时暂停，避免后台标签页空转。
+  useEffect(() => {
+    let cancelled = false
+    let refreshInFlight = false
+    let timer: ReturnType<typeof setTimeout> | undefined
+
+    const hidden = () =>
+      typeof document !== "undefined" && (document as { hidden?: boolean }).hidden === true
+
+    const tick = async () => {
+      if (cancelled) return
+      if (!hidden() && !refreshInFlight) {
+        refreshInFlight = true
+        try {
+          await props.api.refresh()
+        } catch {
+          // 刷新失败只影响这一拍：下一拍照常重试，不打断面板。
+        } finally {
+          refreshInFlight = false
+        }
+      }
+      if (!cancelled) {
+        timer = setTimeout(() => { void tick() }, PANEL_REFRESH_INTERVAL_MS)
+      }
+    }
+
+    timer = setTimeout(() => { void tick() }, PANEL_REFRESH_INTERVAL_MS)
+    return () => {
+      cancelled = true
+      if (timer !== undefined) clearTimeout(timer)
+    }
+  }, [props.api])
 
   async function setDryRun(value: boolean) {
     if (!setDryRunAction) {
@@ -1170,6 +1221,14 @@ export default function NekoWarthunderPanel(props: PluginSurfaceProps<DashboardS
     setOnboardingOpen(true)
   }
 
+  // 每次打开都重新同步：输入框只在挂载时初始化过一次，昵称可能已被数据层自动识别
+  // 或在教程里保存过；identityError 也是持久 state，不清会把上次的失败提示带出来。
+  function openIdentityModal() {
+    setIdentityName(currentPlayerName(identity))
+    setIdentityError("")
+    setIdentityOpen(true)
+  }
+
   async function completeOnboarding(skipped = false) {
     if (!completeOnboardingAction) {
       toast.error("教程状态暂时无法保存")
@@ -1198,11 +1257,18 @@ export default function NekoWarthunderPanel(props: PluginSurfaceProps<DashboardS
 
   function handleTestResult(envelope: any) {
     const result = unwrapActionResult(envelope)
+    // 后端 test_say 声明 refresh_context=False，动作按钮也传 refresh={false}，
+    // 好让这里先处理结果再刷新；但它确实写了 timeline，不刷新的话诊断页第 5 步
+    // "猫娘接收"会一直停在"尚未测试"，与这里弹出的成功提示自相矛盾。
+    void props.api.refresh().catch(() => undefined)
     if (result.pushed) {
       toast.success("测试请求已交给猫娘")
       return
     }
     if (result.blocked === "dry_run") {
+      // 兼容内存里仍在跑旧版后端的情况：旧版 test_say 在 dry_run 下返回
+      // blocked="dry_run"，当前版本只会返回 SafetyGuard 的 tripped/paused/running。
+      // 确认不再有旧版共存后可删除本分支。
       toast.warning("当前运行版本仍限制测试开口，请重载插件后再试")
       return
     }
@@ -1222,7 +1288,7 @@ export default function NekoWarthunderPanel(props: PluginSurfaceProps<DashboardS
   const statusActions = (
     <div className="wt-status-actions">
       {summary.kind === "identity" ? (
-        <Button onClick={() => { setIdentityOpen(true) }}>设置游戏昵称</Button>
+        <Button onClick={openIdentityModal}>设置游戏昵称</Button>
       ) : null}
       {summary.kind === "waiting" || summary.kind === "error" ? (
         <RefreshButton label="刷新状态" />
@@ -1275,7 +1341,7 @@ export default function NekoWarthunderPanel(props: PluginSurfaceProps<DashboardS
 
   const overview = (
     <div>
-      <section className={`wt-status wt-status-${summary.tone}`}>
+      <section className="wt-status" data-tone={summary.tone}>
         <div className="wt-status-copy">
           <div className="wt-status-heading">
             <h2 className="wt-status-title">{summary.title}</h2>
@@ -1317,7 +1383,7 @@ export default function NekoWarthunderPanel(props: PluginSurfaceProps<DashboardS
               <p className="wt-identity-name">{playerName || "尚未设置战雷游戏昵称"}</p>
               <p className="wt-identity-meta">{playerName ? "已保存，等待本局身份匹配" : "设置后可识别自己发送的固定无线电消息"}</p>
             </div>
-            <Button className="wt-link-action" onClick={() => { setIdentityOpen(true) }}>{playerName ? "修改" : "设置"}</Button>
+            <Button className="wt-link-action" onClick={openIdentityModal}>{playerName ? "修改" : "设置"}</Button>
           </div>
         </section>
 
@@ -1430,7 +1496,7 @@ export default function NekoWarthunderPanel(props: PluginSurfaceProps<DashboardS
               items={[
                 { key: "enabled", label: "插件启用", value: text(state.enabled) },
                 { key: "connected", label: "数据连接", value: state.connected ? "已连接" : "未连接" },
-                { key: "conn_state", label: "连接阶段", value: state.connected ? "在线" : "离线" },
+                { key: "conn_state", label: "连接阶段", value: mappedText(state.conn_state, CONN_STATE_LABELS) },
                 { key: "context", label: "战雷上下文", value: state.game_context_active ? "已注入" : "未注入" },
                 { key: "mode", label: "数据层模式", value: mappedText(dataLayer.mode, DATA_LAYER_LABELS) },
                 { key: "health", label: "数据层健康", value: text(dataLayer.health) },
@@ -1648,7 +1714,7 @@ export default function NekoWarthunderPanel(props: PluginSurfaceProps<DashboardS
             >
               <Input
                 value={identityName}
-                placeholder="例如 CN-Zephyr 或 Player#123456"
+                placeholder="例如 Player#123456"
                 invalid={!!identityError}
                 onChange={setIdentityName}
               />
@@ -1675,12 +1741,12 @@ export default function NekoWarthunderPanel(props: PluginSurfaceProps<DashboardS
   return (
     <div className="wt-panel">
       <style>{PANEL_STYLES}</style>
-      <nav className="wt-tabs" aria-label="副驾驶面板">
-        <button className={`wt-tab ${activeTab === "overview" ? "is-active" : ""}`} onClick={() => { setActiveTab("overview") }}>概览</button>
-        <button className={`wt-tab ${activeTab === "activity" ? "is-active" : ""}`} onClick={() => { setActiveTab("activity") }}>活动</button>
-        <button className={`wt-tab ${activeTab === "diagnostics" ? "is-active" : ""}`} onClick={() => { setActiveTab("diagnostics") }}>诊断</button>
+      <div className="wt-tabs" aria-label="副驾驶面板">
+        <button type="button" aria-pressed={activeTab === "overview"} className={`wt-tab ${activeTab === "overview" ? "is-active" : ""}`} onClick={() => { setActiveTab("overview") }}>概览</button>
+        <button type="button" aria-pressed={activeTab === "activity"} className={`wt-tab ${activeTab === "activity" ? "is-active" : ""}`} onClick={() => { setActiveTab("activity") }}>活动</button>
+        <button type="button" aria-pressed={activeTab === "diagnostics"} className={`wt-tab ${activeTab === "diagnostics" ? "is-active" : ""}`} onClick={() => { setActiveTab("diagnostics") }}>诊断</button>
         <button type="button" className="wt-settings-trigger" aria-label="设置" title="设置" onClick={() => { setSettingsOpen(true) }}>⚙︎</button>
-      </nav>
+      </div>
       <main className="wt-content">
         {activeTab === "overview" ? overview : activeTab === "activity" ? activity : diagnostics}
       </main>
@@ -1713,10 +1779,12 @@ export default function NekoWarthunderPanel(props: PluginSurfaceProps<DashboardS
                   <Button
                     key={option.value}
                     tone={broadcastFrequency === option.value ? "primary" : "default"}
-                    aria-pressed={broadcastFrequency === option.value}
                     onClick={() => { void setBroadcastFrequency(option.value) }}
                   >
                     {option.label}
+                    {broadcastFrequency === option.value ? (
+                      <span className="wt-sr-only">（当前选择）</span>
+                    ) : null}
                   </Button>
                 ))}
               </ButtonGroup>
@@ -1740,7 +1808,6 @@ export default function NekoWarthunderPanel(props: PluginSurfaceProps<DashboardS
                       <Button
                         className="wt-toggle-button"
                         tone={enabled ? "primary" : "default"}
-                        aria-pressed={enabled}
                         onClick={() => { void setBroadcastCategory(option.value, !enabled) }}
                       >
                         {enabled ? "已开启" : "已关闭"}
@@ -1766,7 +1833,7 @@ export default function NekoWarthunderPanel(props: PluginSurfaceProps<DashboardS
               <p>{playerName ? `当前为 ${playerName}` : "用于识别你自己发送的固定无线电消息和本局归属。"}</p>
             </div>
             <div className="wt-settings-control">
-              <Button onClick={() => { setSettingsOpen(false); setIdentityOpen(true) }}>{playerName ? "修改昵称" : "设置昵称"}</Button>
+              <Button onClick={() => { setSettingsOpen(false); openIdentityModal() }}>{playerName ? "修改昵称" : "设置昵称"}</Button>
             </div>
           </div>
           <div className="wt-settings-row">
@@ -1803,7 +1870,7 @@ export default function NekoWarthunderPanel(props: PluginSurfaceProps<DashboardS
           >
             <Input
               value={identityName}
-              placeholder="例如 CN-Zephyr 或 Player#123456"
+              placeholder="例如 Player#123456"
               invalid={!!identityError}
               onChange={setIdentityName}
             />

@@ -76,14 +76,20 @@ class QQAutoReplyConfigStore:
 
     def default_config(self) -> dict[str, Any]:
         return {
-            "qq_connection_mode": "napcat",     # "napcat" | "open_platform"
-            "onebot_url": "ws://127.0.0.1:3001",
+            "qq_connection_mode": "napcat",     # "napcat" | "napcat_forward" | "open_platform"
+            "onebot_url": "ws://0.0.0.0:6199",
             "token": "",
             # QQ 开放平台
             "qq_open_app_id": "",
             "qq_open_client_secret": "",
+            # R11 身份作用域取证开关（qq_open_plat.py 顶部有完整说明）。默认
+            # 关：打开后每条群/私聊事件都会往持久日志里写一行标识符字段，只有
+            # 维护者做那次取证时才需要。
+            "qq_open_identity_probe_enabled": False,
             "trusted_users": [],
             "trusted_groups": [],
+            # 全局 per-QQ 信赖度演化账本；群与私聊 participant 共池。
+            "speaker_trust_profiles": {},
             "normal_relay_probability": 0.1,
             "open_reply_probability": 0.1,
             "show_onboarding": True,
@@ -97,15 +103,23 @@ class QQAutoReplyConfigStore:
             "napcat_directory": "",
             "show_napcat_window": True,
             "reply_mode": "text",
-            "group_attention_decay_per_second": 0.02,
-            "group_attention_message_recovery": 0.6,
-            "group_attention_reply_penalty": 1.3,
-            "group_attention_keyword_boost_scale": 2.5,
-            "group_attention_focus_lock_seconds": 120,
             "group_attention_max_score": 10.0,
             "group_attention_focus_threshold": 4.0,
+            # 焦点群的发送门控线：低于焦点线、高于最低线。焦点线是「赢得焦点」的
+            # 资格线；发送门控若也用焦点线，焦点群回一条就跌破线被门控（见
+            # attention_gate_service 门控第 5 步）。
+            "group_attention_focus_send_threshold": 2.0,
             "group_attention_min_threshold": 1.0,
             "group_attention_message_gain": 0.25,
+            # 周期模型：rise 基础增速 / 消息加成 / 夺冠蜜月 / 回落窗口 / 回落速率 / 发言消耗
+            "attention_base_rise_rate": 0.02,
+            "attention_message_boost": 0.15,
+            "attention_keyword_boost_ratio": 1.8,
+            "attention_honeymoon_seconds": 60,
+            "attention_fall_seconds": 30,
+            "attention_fall_rate": 0.015,
+            "attention_consume_ratio": 0.10,
+            "icebreaker_cold_threshold": 3,
             "backlog_retention_limit": 200,
             "backlog_summary_threshold": 10,
             "backlog_notify_cooldown_seconds": 900,
@@ -120,9 +134,26 @@ class QQAutoReplyConfigStore:
             # 回溯补回参数
             "retroactive_review_max_messages": 30,  # 回溯最多取多少条被忽略消息
             "retroactive_review_max_reply": 5,      # 回溯最多补回多少条
-            "sticker_cooldown_messages": 5,          # 表情包发送间隔（群内消息数），0=不限制
+            # 疲劳系统参数（KiraAI-style 动态行为约束）
+            "fatigue_enabled": True,
+            "fatigue_circadian_peak_hour": 15,       # 昼夜节律峰值时间（24小时制）
+            "fatigue_circadian_low_hour": 3,         # 昼夜节律低谷时间
+            "fatigue_session_per_reply": 5.0,        # 每条回复增加的会话疲劳
+            "fatigue_awake_idle_timeout": 10.0,      # 苏醒后空闲多久回睡眠（秒）
+            # 群聊长期记忆显式 opt-in。成员记忆会增加按成员分桶的提取调用，
+            # 因此独立开关且默认关闭。
+            "group_memory_enabled": False,
+            "group_member_memory_enabled": False,
+            # 非管理员私聊的 participant 记忆：以对方为主体单独建档
+            # （participant scope），绝不进管理员的 legacy 私聊语料。
+            # 同为显式 opt-in，默认关闭。
+            "private_participant_memory_enabled": False,
+            # 跨群实时话题不是长期记忆的一部分，默认严格隔离。
+            "allow_cross_group_context": False,
             # 提示词编辑器覆盖值（locale → layer_id → text）
             "prompt_overrides": {},
+            # 按群自定义提示词（group_id → 提示词文本）
+            "group_prompts": {},
         }
 
     async def exists(self) -> bool:
@@ -138,6 +169,11 @@ class QQAutoReplyConfigStore:
         merged.update(payload)
         merged["trusted_users"] = payload.get("trusted_users") if isinstance(payload.get("trusted_users"), list) else []
         merged["trusted_groups"] = payload.get("trusted_groups") if isinstance(payload.get("trusted_groups"), list) else []
+        # 存量 trust 池：**只读透传，永不改名、永不删键、永不归一**。池已上移
+        # memory_server，这份磁盘数据是一次性迁移源，且每次启动都会被重推
+        # （服务端按 account 哨兵幂等跳过）。归一/截断它等于悄悄改写迁移源，
+        # 而池文件一旦丢失就再也恢复不到迁移时刻的状态。
+        # `merged.update(payload)` 已经原样带过来了，这里刻意不做任何处理。
         merged["backlog_labels"] = self.normalize_backlog_labels(payload.get("backlog_labels"))
         reply_mode = self.normalize_reply_mode(payload.get("reply_mode"))
         if reply_mode != "text" or "reply_mode" in payload:
@@ -147,6 +183,7 @@ class QQAutoReplyConfigStore:
         else:
             merged["reply_mode"] = "text"
         merged["strategy_mode"] = self._normalize_strategy_mode(payload.get("strategy_mode"))
+        merged["group_prompts"] = payload.get("group_prompts") if isinstance(payload.get("group_prompts"), dict) else {}
         merged.pop("audio_reply_enabled", None)
         return merged
 
@@ -161,9 +198,15 @@ class QQAutoReplyConfigStore:
             normalized.update(dict(config or {}))
             normalized["trusted_users"] = list(normalized.get("trusted_users") or [])
             normalized["trusted_groups"] = list(normalized.get("trusted_groups") or [])
+            # 见 load()：存量 trust 池只读透传，save 不重建、不归一。
+            # `normalized.update(dict(config))` 已原样保留原值。
             normalized["backlog_labels"] = self.normalize_backlog_labels(normalized.get("backlog_labels"))
             normalized["reply_mode"] = self.normalize_reply_mode(normalized.get("reply_mode"))
             normalized["strategy_mode"] = self._normalize_strategy_mode(normalized.get("strategy_mode"))
+            normalized["group_prompts"] = {
+                str(k): str(v) for k, v in (normalized.get("group_prompts") or {}).items()
+                if str(k).strip() and str(v).strip()
+            }
             normalized.pop("audio_reply_enabled", None)
             await atomic_write_json_async(self._path, normalized)
             return normalized

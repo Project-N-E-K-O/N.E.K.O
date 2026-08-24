@@ -1,0 +1,17 @@
+{
+  "plugin.name": "网易云匿名点歌",
+  "plugin.description": "匿名搜索网易云单曲并播放搜索第一项，不确定时向用户给出委婉提示",
+  "plugin.short_description": "匿名搜索并播放明确匹配的网易云歌曲",
+  "entry.play.name": "播放网易云歌曲",
+  "entry.play.description": "仅在用户明确要求播放或点播某首网易云歌曲时调用。将 query 整理为“歌名 歌手”，保留现场版、翻唱等版本限定。不要用于歌词或歌曲知识查询、泛推荐、歌单、暂停、停止、切歌或下一首。",
+  "entry.play.param.query": "歌曲搜索词，优先使用“歌名 歌手”形式，最多 100 个字符",
+  "messages.no_results": "没有找到匹配的网易云歌曲，请换一个更具体的歌名或歌手。",
+  "messages.unavailable": "这首歌目前没有可匿名播放的公开音源，可能需要登录或会员权限。",
+  "messages.submitted": "播放动作已提交。",
+  "messages.fallback": "我不太确定这是不是你想听的版本，先按搜索结果给你放第一首啦。",
+  "errors.missing_target": "无法确定当前播放会话，已取消点歌。",
+  "errors.search_failed": "网易云搜索暂时不可用，请稍后重试。",
+  "errors.media_failed": "网易云音源验证失败，未提交播放。",
+  "errors.delivery_failed": "播放动作提交失败，未开始播放。",
+  "errors.message_delivery_failed": "结果消息提交失败。"
+}

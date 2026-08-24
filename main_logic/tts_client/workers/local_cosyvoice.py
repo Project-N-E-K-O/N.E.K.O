@@ -93,7 +93,17 @@ def local_cosyvoice_worker(request_queue, response_queue, audio_api_key, voice_i
         resampler = soxr.ResampleStream(SRC_RATE, 48000, 1, dtype='float32')
 
         async def receive_loop(ws_conn):
-            """Independent receive task, handles the audio stream"""
+            """Independent receive task, handles the audio stream.
+
+            No completion signal is emitted here on purpose: this endpoint's wire
+            protocol carries only raw PCM frames, with no server-side "done"
+            event and no framing that tells one utterance's tail from the next.
+            Sibling workers enqueue ("__audio_done__", speech_id) once the round's
+            audio stream closes; there is nothing here to hang that on, so the
+            frontend's own give-up timer is the fallback. Do not synthesize one
+            from a heuristic — an early or mis-attributed signal is worse than
+            none (the frontend finalizes lip-sync the moment it arrives).
+            """
             try:
                 async for message in ws_conn:
                     if isinstance(message, bytes):

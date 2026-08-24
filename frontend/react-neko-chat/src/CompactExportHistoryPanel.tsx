@@ -792,7 +792,7 @@ export default function CompactExportHistoryPanel({
           className="compact-export-preview-back"
           onClick={onClosePreview}
           aria-label={i18n('chat.previewClose', 'Close')}
-          title={i18n('chat.previewClose', 'Close')}
+          data-neko-tooltip={i18n('chat.previewClose', 'Close')}
         >
           <svg
             className="compact-export-preview-back-icon"

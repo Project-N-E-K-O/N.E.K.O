@@ -1,6 +1,6 @@
 # Windows デスクトップビルド
 
-End user は [Steam store](https://store.steampowered.com/app/4099310/__NEKO/) から install し、Steam 経由で起動して Provider を desktop/Web UI で設定します。
+End user は [Steam store](https://store.steampowered.com/app/4099310/__NEKO/?utm_source=project-neko.online&utm_medium=referral&utm_campaign=docs_deployment&utm_content=install_ja) から install し、Steam 経由で起動して Provider を desktop/Web UI で設定します。
 
 Python-backend artifact 単体には Electron windows、tray、Steam integration、routing、updater はありません。
 

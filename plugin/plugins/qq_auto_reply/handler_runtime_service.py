@@ -19,7 +19,7 @@ class QQHandlerRuntimeService:
         except asyncio.CancelledError:
             pass
         except Exception as exc:
-            self.plugin.logger.error(f"Message handler task failed: {exc}")
+            self.plugin.logger.exception(f"Message handler task failed: {exc}")
 
     async def run_message_handler(self, message: dict[str, Any]) -> None:
         session_key = self.plugin._message_session_key(message)

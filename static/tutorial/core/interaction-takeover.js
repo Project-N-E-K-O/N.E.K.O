@@ -24,6 +24,8 @@
             this.isResistancePaused = normalizedOptions.isResistancePaused || null;
             this.externalChatChannelProvider = normalizedOptions.externalChatChannelProvider || null;
             this.externalizedChatDetector = normalizedOptions.externalizedChatDetector || null;
+            this.onExternalizedChatCursorOwnershipChange = normalizedOptions.onExternalizedChatCursorOwnershipChange || null;
+            this.externalizedChatTutorialRunId = '';
             this.destroyed = false;
             this.active = false;
             this.externalizedChatSpotlightKind = '';
@@ -301,9 +303,18 @@
         }
 
         getExternalizedChatTutorialRunId() {
+            if (this.externalizedChatTutorialRunId) {
+                return this.externalizedChatTutorialRunId;
+            }
             try {
                 const storage = this.window && this.window.localStorage;
-                return storage ? String(storage.getItem('yuiGuidePcOverlayRunId') || '') : '';
+                const tutorialRunId = storage
+                    ? String(storage.getItem('yuiGuidePcOverlayRunId') || '')
+                    : '';
+                if (tutorialRunId) {
+                    this.externalizedChatTutorialRunId = tutorialRunId;
+                }
+                return tutorialRunId;
             } catch (_) {
                 return '';
             }
@@ -405,9 +416,19 @@
             });
         }
 
+        notifyExternalizedChatCursorOwnership(kind, action) {
+            const normalizedKind = typeof kind === 'string' ? kind : '';
+            safeInvoke(this.onExternalizedChatCursorOwnershipChange, [{
+                owned: !!normalizedKind,
+                kind: normalizedKind,
+                action: typeof action === 'string' ? action : ''
+            }], null);
+        }
+
         setExternalizedChatCursor(kind, options) {
+            const normalizedKind = typeof kind === 'string' ? kind : '';
             const message = {
-                kind: typeof kind === 'string' ? kind : '',
+                kind: normalizedKind,
                 effect: options && typeof options.effect === 'string' ? options.effect : '',
                 effectDurationMs: options && Number.isFinite(options.effectDurationMs)
                     ? Math.max(0, Math.floor(options.effectDurationMs))
@@ -421,7 +442,12 @@
             if (options && Number.isFinite(options.durationMs)) {
                 message.durationMs = Math.max(0, Math.floor(options.durationMs));
             }
-            this.postExternalChatCommand('yui_guide_set_chat_cursor', message);
+            this.notifyExternalizedChatCursorOwnership(normalizedKind, 'set');
+            const delivered = this.postExternalChatCommand('yui_guide_set_chat_cursor', message);
+            if (!delivered && normalizedKind) {
+                this.notifyExternalizedChatCursorOwnership('', 'set-failed');
+            }
+            return delivered;
         }
 
         setExternalizedChatAvatarToolMenuOpen(open, reason) {
@@ -468,8 +494,9 @@
 
         dragExternalizedChatCursor(kind, options) {
             const normalizedOptions = options || {};
+            const normalizedKind = typeof kind === 'string' ? kind : '';
             const message = {
-                kind: typeof kind === 'string' ? kind : '',
+                kind: normalizedKind,
                 deltaX: Number.isFinite(Number(normalizedOptions.deltaX)) ? Number(normalizedOptions.deltaX) : 0,
                 deltaY: Number.isFinite(Number(normalizedOptions.deltaY)) ? Number(normalizedOptions.deltaY) : 0,
                 effect: typeof normalizedOptions.effect === 'string' ? normalizedOptions.effect : '',
@@ -482,13 +509,19 @@
             ) {
                 message.durationMs = Math.max(0, Math.floor(Number(normalizedOptions.durationMs)));
             }
-            this.postExternalChatCommand('yui_guide_drag_chat_cursor', message);
+            this.notifyExternalizedChatCursorOwnership(normalizedKind, 'drag');
+            const delivered = this.postExternalChatCommand('yui_guide_drag_chat_cursor', message);
+            if (!delivered && normalizedKind) {
+                this.notifyExternalizedChatCursorOwnership('', 'drag-failed');
+            }
+            return delivered;
         }
 
         arcExternalizedChatCursor(kind, options) {
             const normalizedOptions = options || {};
+            const normalizedKind = typeof kind === 'string' ? kind : '';
             const message = {
-                kind: typeof kind === 'string' ? kind : '',
+                kind: normalizedKind,
                 direction: Number(normalizedOptions.direction) < 0 ? -1 : 1,
                 fraction: Number.isFinite(Number(normalizedOptions.fraction))
                     ? Math.max(0, Math.min(1, Number(normalizedOptions.fraction)))
@@ -504,7 +537,12 @@
                     ? Math.max(0, Math.floor(Number(normalizedOptions.targetIndex)))
                     : 0
             };
-            this.postExternalChatCommand('yui_guide_arc_chat_cursor', message);
+            this.notifyExternalizedChatCursorOwnership(normalizedKind, 'arc');
+            const delivered = this.postExternalChatCommand('yui_guide_arc_chat_cursor', message);
+            if (!delivered && normalizedKind) {
+                this.notifyExternalizedChatCursorOwnership('', 'arc-failed');
+            }
+            return delivered;
         }
 
         setExternalizedChatCompactFixedLayout(fixed, reason) {

@@ -20,6 +20,7 @@ handler at import time.
 """
 
 import asyncio
+from functools import wraps
 
 from config import (
     IGNORED_REINFORCEMENT_DELTA,
@@ -33,12 +34,61 @@ from memory.event_log import (
 )
 from memory.outbox import OP_POST_TURN_SIGNALS
 
-from . import gates, outbox_infra, runtime, signal_extraction
+from . import gates, locale_state, outbox_infra, runtime, signal_extraction
 from ._shared import logger
 from .rows import _extract_ai_response, _extract_user_messages
 
 
-async def _spawn_outbox_post_turn_signals(lanlan_name: str, messages: list) -> asyncio.Task:
+def _with_language_context(func):
+    """Run one post-turn operation with its persisted task-local locale."""
+
+    @wraps(func)
+    async def wrapped(
+        *args,
+        language: str | None = None,
+        render_language: str | None = None,
+        **kwargs,
+    ):
+        from utils.language_utils import is_supported_language_code, language_context
+
+        if is_supported_language_code(language):
+            # Persist first, then render under the locale that actually won the
+            # causal-order check. A stale outbox item may carry a valid older
+            # language even though record_character_prompt_locale correctly
+            # refuses to replace a newer session locale.
+            effective_language = await _wait_for_signal_locale_persistence(
+                args[1],
+                language=language,
+                locale_order=kwargs.get("locale_order"),
+            )
+            with language_context(effective_language):
+                return await func(*args, language=language, **kwargs)
+
+        # A render locale is request-local replay context, not durable evidence.
+        # Keep ``language`` missing so no signal-side locale write is attempted;
+        # a newer durable character preference still wins over the recorded
+        # fallback when replay runs after a restart.
+        lanlan_name = args[1]
+        selected = await asyncio.to_thread(
+            locale_state.get_character_prompt_locale,
+            lanlan_name,
+        )
+        if not is_supported_language_code(selected):
+            selected = render_language
+        with language_context(selected):
+            return await func(*args, language=language, **kwargs)
+
+    return wrapped
+
+
+async def _spawn_outbox_post_turn_signals(
+    lanlan_name: str,
+    messages: list,
+    *,
+    language: str | None = None,
+    render_language: str | None = None,
+    locale_admission_order: int | None = None,
+) -> asyncio.Task:
     """Register the per-turn signals background task in the outbox and spawn it.
 
     "per-turn signals" = counter bump (for the batch loop's counting) + repetition
@@ -46,9 +96,74 @@ async def _spawn_outbox_post_turn_signals(lanlan_name: str, messages: list) -> a
     ``_run_post_turn_signals``. The registered payload contains the whole turn's
     conversation serialized via messages_to_dict, replayable at restart.
     """
+    from .locale_state import (
+        PromptLocalePersistenceError,
+        allocate_character_prompt_locale_order,
+        reserve_character_prompt_locale_order,
+    )
+    from utils.cloudsave_runtime import MaintenanceModeError
+    from utils.language_utils import (
+        is_supported_language_code,
+        normalize_language_code,
+    )
     from utils.llm_client import messages_to_dict
 
-    payload = {'messages': messages_to_dict(messages)}
+    has_explicit_language = is_supported_language_code(language)
+    locale_order = None
+    if has_explicit_language:
+        if not isinstance(locale_admission_order, int) or isinstance(
+            locale_admission_order,
+            bool,
+        ):
+            locale_admission_order = allocate_character_prompt_locale_order(
+                lanlan_name,
+            )
+        try:
+            locale_order = await asyncio.to_thread(
+                reserve_character_prompt_locale_order,
+                lanlan_name,
+                order=locale_admission_order,
+            )
+        except (MaintenanceModeError, PromptLocalePersistenceError) as exc:
+            # The conversation rows may already be durable when a cloud operation
+            # closes the write fence or its sidecar commit is invalidated. Locale
+            # ordering is auxiliary metadata, so a late failure must not report the
+            # whole turn as failed and make the main server resend it. The durable
+            # outbox marker retries the reservation before any locale-bearing
+            # maintenance signal is allowed to complete.
+            logger.info(
+                "[PromptLocale] %s: reservation deferred while cloudsave is fenced: %s",
+                lanlan_name,
+                exc,
+            )
+    payload = {
+        'messages': messages_to_dict(messages),
+    }
+    if has_explicit_language:
+        if locale_order is not None:
+            payload['locale_order'] = locale_order
+        else:
+            payload['locale_order_deferred'] = True
+            payload['locale_admission_order'] = locale_admission_order
+        # Persist the locale with the work item: after a memory_server restart,
+        # replay must not re-resolve from a neutral process locale and switch
+        # the same conversation window back to English.
+        #
+        # Callers must pass the locale the client actually declared, NOT the
+        # value resolved for the in-flight request. Persisting a locale this
+        # process merely *guessed* would freeze that guess into outbox.ndjson:
+        # replay would keep reusing it even after the detection itself is fixed,
+        # whereas omitting the key lets replay re-resolve against the then-current
+        # process language (the pre-outbox behaviour).
+        payload['language'] = language
+    elif is_supported_language_code(render_language):
+        # Unlike the process-global fallback, this is explicit request context
+        # for the queued turn. Persist it separately so restart replay can render
+        # the same work without declaring or writing a character preference.
+        payload['render_language'] = normalize_language_code(
+            render_language,
+            format='full',
+        )
     try:
         op_id = await runtime.outbox.aappend_pending(lanlan_name, OP_POST_TURN_SIGNALS, payload)
     except Exception as e:
@@ -57,14 +172,118 @@ async def _spawn_outbox_post_turn_signals(lanlan_name: str, messages: list) -> a
             f"[Outbox] {lanlan_name}: append_pending 失败，降级为内存任务: "
             f"{type(e).__name__}: {e}"
         )
-        return runtime._spawn_background_task(
-            _run_post_turn_signals(messages, lanlan_name)
-        )
+        if has_explicit_language and locale_order is None:
+            operation = _run_post_turn_signals_after_locale_reservation(
+                messages,
+                lanlan_name,
+                language=language,
+                admission_order=locale_admission_order,
+                locale_only=not messages,
+            )
+        else:
+            operation = _run_post_turn_signals(
+                messages,
+                lanlan_name,
+                language=language,
+                render_language=payload.get('render_language'),
+                locale_order=locale_order,
+                locale_only=not messages,
+            )
+        return runtime._spawn_background_task(operation)
     op = {'op_id': op_id, 'type': OP_POST_TURN_SIGNALS, 'payload': payload}
     return runtime._spawn_background_task(outbox_infra._run_outbox_op(lanlan_name, op))
 
 
-async def _run_post_turn_signals(messages: list, lanlan_name: str):
+async def _wait_for_character_prompt_locale_order(
+    lanlan_name: str,
+    *,
+    admission_order: int | None,
+) -> int:
+    """Wait until the deferred locale reservation is durably committed."""
+    from .locale_state import (
+        PromptLocaleInvalidatedError,
+        reserve_character_prompt_locale_order,
+    )
+    from utils.cloudsave_runtime import MaintenanceModeError
+
+    if not isinstance(admission_order, int) or isinstance(admission_order, bool):
+        # Legacy outbox rows predate admission-order persistence, so they must
+        # sort before every ordered turn. Allocating here would put a replayed
+        # old locale above the durable high-water mark and let it overwrite a
+        # newer session locale.
+        admission_order = 0
+    while True:
+        try:
+            return await asyncio.to_thread(
+                reserve_character_prompt_locale_order,
+                lanlan_name,
+                order=admission_order,
+            )
+        except (MaintenanceModeError, PromptLocaleInvalidatedError):
+            await asyncio.sleep(0.25)
+
+
+async def _run_post_turn_signals_after_locale_reservation(
+    messages: list,
+    lanlan_name: str,
+    *,
+    language: str | None = None,
+    admission_order: int | None,
+    locale_only: bool = False,
+):
+    locale_order = await _wait_for_character_prompt_locale_order(
+        lanlan_name,
+        admission_order=admission_order,
+    )
+    return await _run_post_turn_signals(
+        messages,
+        lanlan_name,
+        language=language,
+        locale_order=locale_order,
+        locale_only=locale_only,
+    )
+
+
+async def _wait_for_signal_locale_persistence(
+    lanlan_name: str,
+    *,
+    language: str | None,
+    locale_order: int | None,
+) -> str | None:
+    """Return the effective locale after this ordered write is durable."""
+    from .locale_state import PromptLocaleInvalidatedError
+    from utils.cloudsave_runtime import MaintenanceModeError
+
+    while True:
+        try:
+            return await asyncio.to_thread(
+                signal_extraction._signal_check_persist_locale,
+                lanlan_name,
+                language=language,
+                locale_order=locale_order,
+            )
+        except (MaintenanceModeError, PromptLocaleInvalidatedError):
+            await asyncio.sleep(0.25)
+
+
+async def _resolve_corrections_with_subject_locale(lanlan_name: str) -> int:
+    return await runtime.persona_manager.resolve_corrections(
+        lanlan_name,
+        prompt_locale_resolver=lambda subject: (
+            locale_state.aget_subject_prompt_locale(lanlan_name, subject)
+        ),
+    )
+
+
+@_with_language_context
+async def _run_post_turn_signals(
+    messages: list,
+    lanlan_name: str,
+    *,
+    language: str | None = None,
+    locale_order: int | None = None,
+    locale_only: bool = False,
+):
     """Background async: per-turn signals at every turn end. Failures are skipped silently.
 
     Responsibilities (in step order):
@@ -99,13 +318,15 @@ async def _run_post_turn_signals(messages: list, lanlan_name: str):
     # 有 engagement 的窗口里跑。这是 product thesis 的"90% 没心没肺"——
     # AI 自言自语 + user 不搭理的内容是廉价层，不该自动当 fact 沉淀污染
     # memory；只有 user 印证过的才升级到神明降临层。
-    try:
-        if user_msgs:
+    if locale_only:
+        return
+    if user_msgs:
+        try:
             signal_extraction._signal_check_record_turn(lanlan_name)
-    except Exception as e:
-        # Best-effort counter bump; a failure here only delays the next
-        # signal-extraction cycle — not worth interrupting conversation flow.
-        logger.debug(f"[MemoryServer] signal-check turn counter 更新失败: {e}")
+        except Exception as e:
+            # Best-effort counter bump; a failure here only delays the next
+            # signal-extraction cycle — not worth interrupting conversation flow.
+            logger.debug(f"[MemoryServer] signal-check turn counter 更新失败: {e}")
 
     # 强力记忆开关——本轮 evidence-related 路径的 gate（promote/negative-keyword/
     # corrections）。check_feedback 自身仍跑（主动搭话回应是核心 channel）。
@@ -223,10 +444,10 @@ async def _run_post_turn_signals(messages: list, lanlan_name: str):
             # 3.5 负面关键词 hook（§3.4.5）——命中就派个异步小 LLM 任务
             # 强力记忆关 → 整段不跑（这是 evidence-RFC 引入的额外 LLM 路径）
             if user_msgs:
-                from utils.language_utils import get_global_language
+                from utils.language_utils import get_global_language_full
                 runtime._spawn_background_task(
                     signal_extraction._amaybe_trigger_negative_keyword_hook(
-                        lanlan_name, user_msgs, get_global_language(),
+                        lanlan_name, user_msgs, get_global_language_full(),
                     )
                 )
         except Exception as e:
@@ -235,7 +456,7 @@ async def _run_post_turn_signals(messages: list, lanlan_name: str):
         try:
             # 4. 审视矛盾队列（如果有 pending corrections）
             # 强力记忆关 → 不跑 LLM 批量审视（corrections queue 累积，等重开消化）
-            resolved = await runtime.persona_manager.resolve_corrections(lanlan_name)
+            resolved = await _resolve_corrections_with_subject_locale(lanlan_name)
             if resolved:
                 logger.info(f"[MemoryServer] {lanlan_name}: 审视了 {resolved} 条 persona 矛盾")
         except Exception as e:
@@ -257,14 +478,42 @@ async def _outbox_post_turn_signals_handler(lanlan_name: str, payload: dict) -> 
     """
     from utils.llm_client import messages_from_dict
 
+    from utils.language_utils import is_supported_language_code
+
     raw = payload.get('messages') or []
-    if not raw:
+    messages = messages_from_dict(raw) if raw else []
+    language = payload.get('language')
+    render_language = (
+        payload.get('render_language')
+        if not is_supported_language_code(language)
+        else None
+    )
+    if not is_supported_language_code(render_language):
+        render_language = None
+    if not messages and not is_supported_language_code(language):
         return
-    messages = messages_from_dict(raw)
+    if payload.get('locale_order_deferred'):
+        kwargs = {
+            'language': language,
+            'admission_order': payload.get('locale_admission_order'),
+        }
+        if not messages:
+            kwargs['locale_only'] = True
+        await _run_post_turn_signals_after_locale_reservation(
+            messages,
+            lanlan_name,
+            **kwargs,
+        )
+        return
+    kwargs = {
+        'language': language,
+        'locale_order': payload.get('locale_order'),
+    }
+    if render_language is not None:
+        kwargs['render_language'] = render_language
     if not messages:
-        return
-    await _run_post_turn_signals(messages, lanlan_name)
+        kwargs['locale_only'] = True
+    await _run_post_turn_signals(messages, lanlan_name, **kwargs)
 
 
 outbox_infra.register_outbox_handler(OP_POST_TURN_SIGNALS, _outbox_post_turn_signals_handler)
-

@@ -30,7 +30,7 @@ class PackageUnpacker:
         *,
         plugins_root: str | Path | None = None,
         profiles_root: str | Path | None = None,
-        on_conflict: str = "rename",
+        on_conflict: str = "fail",
     ) -> UnpackResult:
         package_path = Path(package_path).expanduser().resolve()
         plugins_root_path = Path(plugins_root).expanduser().resolve() if plugins_root is not None else _DEFAULT_PLUGINS_ROOT
@@ -57,12 +57,19 @@ class PackageUnpacker:
                 plugins_root_path,
                 on_conflict=on_conflict,
             )
+            profile_dir = self.preflight_profile_target(
+                archive,
+                profiles_root=profiles_root_path,
+                package_id=package_id,
+                on_conflict=on_conflict,
+            )
             self.extract_plugins(archive, folder_mapping)
             profile_dir = self.extract_profiles(
                 archive,
                 profiles_root=profiles_root_path,
                 package_id=package_id,
                 on_conflict=on_conflict,
+                preflighted_target=profile_dir,
             )
 
         return UnpackResult(
@@ -96,9 +103,15 @@ class PackageUnpacker:
     ) -> dict[str, Path]:
         mapping: dict[str, Path] = {}
         for folder in plugin_folders:
-            target_dir = self.resolve_target_dir(plugins_root / folder, on_conflict=on_conflict)
+            target_dir = self.resolve_plugin_target_dir(plugins_root / folder)
             mapping[folder] = target_dir
         return mapping
+
+    @staticmethod
+    def resolve_plugin_target_dir(target_dir: Path) -> Path:
+        if target_dir.exists():
+            raise FileExistsError(f"plugin target already exists: {target_dir.name}")
+        return target_dir.resolve()
 
     def extract_plugins(self, archive: zipfile.ZipFile, folder_mapping: dict[str, Path]) -> None:
         for name in archive.namelist():
@@ -115,7 +128,7 @@ class PackageUnpacker:
             target_path = target_root.joinpath(*relative_parts)
             self.extract_member(archive, name, target_path)
 
-    def extract_profiles(
+    def preflight_profile_target(
         self,
         archive: zipfile.ZipFile,
         *,
@@ -124,13 +137,35 @@ class PackageUnpacker:
         on_conflict: str,
     ) -> Path | None:
         profile_names = [
+            name
+            for name in archive.namelist()
+            if len(safe_archive_path(name).parts) >= 3
+            and safe_archive_path(name).parts[:2] == ("payload", "profiles")
+        ]
+        if not profile_names:
+            return None
+        return self.resolve_target_dir(profiles_root / package_id, on_conflict=on_conflict)
+
+    def extract_profiles(
+        self,
+        archive: zipfile.ZipFile,
+        *,
+        profiles_root: Path,
+        package_id: str,
+        on_conflict: str,
+        preflighted_target: Path | None = None,
+    ) -> Path | None:
+        profile_names = [
             name for name in archive.namelist()
             if len(safe_archive_path(name).parts) >= 3 and safe_archive_path(name).parts[:2] == ("payload", "profiles")
         ]
         if not profile_names:
             return None
 
-        target_dir = self.resolve_target_dir(profiles_root / package_id, on_conflict=on_conflict)
+        target_dir = preflighted_target or self.resolve_target_dir(
+            profiles_root / package_id,
+            on_conflict=on_conflict,
+        )
         for name in profile_names:
             path = safe_archive_path(name)
             relative_parts = path.parts[2:]
@@ -186,7 +221,7 @@ def unpack_package(
     *,
     plugins_root: str | Path | None = None,
     profiles_root: str | Path | None = None,
-    on_conflict: str = "rename",
+    on_conflict: str = "fail",
 ) -> UnpackResult:
     """Public convenience wrapper for archive extraction into runtime directories."""
 

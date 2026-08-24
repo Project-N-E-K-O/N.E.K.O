@@ -21,7 +21,7 @@
 
 次の順で確認します。
 
-1. 受理された GitHub issue とリンク先 design record
+1. 受理された GitHub issue とリンク先の[プロジェクト記録](/ja/records/)
 2. 管理されている場合は、現在の milestone／project board
 3. 完了事項については merged PR と release note
 4. 実際の現行挙動については code と test

@@ -15,6 +15,76 @@ const LIVE2D_MOTION_PRIORITY = Object.freeze({
     FORCE: 3
 });
 
+Live2DManager.prototype.hasActiveActionMotion = function(model = this.currentModel) {
+    if (
+        model === this.currentModel
+        && (this._actionMotionRequestPendingModel === model || this._simpleMotionActive === true)
+    ) {
+        return true;
+    }
+
+    const state = model?.internalModel?.motionManager?.state;
+    if (!state) return false;
+    return Number(state.currentPriority || 0) > LIVE2D_MOTION_PRIORITY.IDLE
+        || Number(state.reservePriority || 0) > LIVE2D_MOTION_PRIORITY.IDLE;
+};
+
+Live2DManager.prototype.playActionMotion = async function(groupName, index) {
+    const model = this.currentModel;
+    const motionManager = model?.internalModel?.motionManager;
+    if (!model || typeof model.motion !== 'function' || !motionManager) return false;
+    if (this.hasActiveActionMotion(model)) {
+        console.log(`[Live2D] 已有动作正在播放，忽略新动作: ${groupName}`);
+        return false;
+    }
+
+    const cachedMotion = motionManager.motionGroups?.[groupName]?.[index];
+    let restoreCachedMotionLoop = null;
+    if (cachedMotion) {
+        let previousLoop;
+        let hasPreviousLoop = false;
+        if (typeof cachedMotion.isLoop === 'function') {
+            previousLoop = cachedMotion.isLoop();
+            hasPreviousLoop = true;
+        } else if (cachedMotion._loop !== undefined) {
+            previousLoop = cachedMotion._loop;
+            hasPreviousLoop = true;
+        }
+        if (hasPreviousLoop) {
+            restoreCachedMotionLoop = () => {
+                if (typeof cachedMotion.setIsLoop === 'function') cachedMotion.setIsLoop(previousLoop);
+                else cachedMotion._loop = previousLoop;
+            };
+        }
+        if (typeof cachedMotion.setIsLoop === 'function') cachedMotion.setIsLoop(false);
+        else if (cachedMotion._loop !== undefined) cachedMotion._loop = false;
+    }
+
+    this._actionMotionRequestPendingModel = model;
+    let started;
+    try {
+        started = await model.motion(groupName, index, LIVE2D_MOTION_PRIORITY.NORMAL);
+        if (started === true) {
+            this._actionMotionGeneration = (this._actionMotionGeneration || 0) + 1;
+        }
+        return started;
+    } finally {
+        if (started !== true && restoreCachedMotionLoop) {
+            restoreCachedMotionLoop();
+        }
+        if (
+            started !== true
+            && motionManager.state?.reservedGroup === groupName
+            && (index == null || motionManager.state?.reservedIndex === index)
+        ) {
+            motionManager.state.setReserved(undefined, undefined, LIVE2D_MOTION_PRIORITY.NONE);
+        }
+        if (this._actionMotionRequestPendingModel === model) {
+            this._actionMotionRequestPendingModel = null;
+        }
+    }
+};
+
 // 缓动函数集合（用于眨眼、口型等动画的平滑过渡）
 const Easing = {
     linear: (t) => t,
@@ -89,6 +159,11 @@ Live2DManager.prototype.removeModel = async function(options = {}) {
     this.appearanceBaselineParameters = {};
     this._activeExpressionParamIds = null;
     this._activeMotionParamIds = null;
+    this._actionMotionRequestPendingModel = null;
+    this._simpleMotionActive = false;
+    this._transientExpressionGeneration = (this._transientExpressionGeneration || 0) + 1;
+    this._transientExpressionTask = null;
+    this._activeTransientExpression = false;
     this._motionParameterTrackGeneration = (this._motionParameterTrackGeneration || 0) + 1;
     if (typeof this._nextMotionTimerGeneration === 'function') {
         this._nextMotionTimerGeneration();
@@ -537,7 +612,6 @@ Live2DManager.prototype.reloadModelParameters = async function(options = {}) {
     return { applied: true, parameters: effectiveParameters };
 };
 
-// 加载模型
 Live2DManager.prototype.loadModel = async function(modelPath, options = {}) {
     const isModelManagerPage = document.body?.classList.contains('model-manager-page')
         || window.location.pathname.includes('model_manager');
@@ -581,6 +655,12 @@ Live2DManager.prototype.loadModel = async function(modelPath, options = {}) {
         }
 
         const model = await Live2DModel.from(modelPath, { autoFocus: false });
+        if (!this._isLoadTokenActive(loadToken)) {
+            try { model && model.destroy && model.destroy({ children: true }); } catch (_) {}
+            const cancelError = new Error('Live2D load superseded by a newer model request.');
+            cancelError.name = 'LoadSuperseded';
+            throw cancelError;
+        }
         if ((window.lanlan_config?.model_type || '').toLowerCase() === 'pngtuber' && !isModelManagerPage) {
             try { model && model.destroy && model.destroy({ children: true }); } catch (_) {}
             this._activeLoadToken = (this._activeLoadToken || 0) + 1;
@@ -598,6 +678,9 @@ Live2DManager.prototype.loadModel = async function(modelPath, options = {}) {
 
         return model;
     } catch (error) {
+        if (error && error.name === 'LoadSuperseded') {
+            throw error;
+        }
         if (error && error.name === 'PNGTuberActiveLive2DSkip') {
             console.log('[Live2D] PNGTuber 模式已接管，取消 Live2D 加载且不回退默认模型');
             throw error;
@@ -605,10 +688,10 @@ Live2DManager.prototype.loadModel = async function(modelPath, options = {}) {
         console.error('加载模型失败:', error);
         
         // 尝试回退到默认模型
-        if (modelPath !== '/static/yui-origin/yui-origin.model3.json') {
-            console.warn('模型加载失败，尝试回退到默认模型: yui-origin');
+        if (modelPath !== '/static/yui-lolita/yui-lolita.model3.json') {
+            console.warn('模型加载失败，尝试回退到默认模型: yui-lolita');
             try {
-                const defaultModelPath = '/static/yui-origin/yui-origin.model3.json';
+                const defaultModelPath = '/static/yui-lolita/yui-lolita.model3.json';
                 // 主模型可能已在 _configureLoadedModel 中途写入派生状态；
                 // 回退加载前先清空，避免默认模型继承失败模型的元数据。
                 this._resetDerivedModelMetadata();
@@ -619,7 +702,7 @@ Live2DManager.prototype.loadModel = async function(modelPath, options = {}) {
                 // 使用统一的模型配置方法
                 await this._configureLoadedModel(model, defaultModelPath, options, loadToken);
 
-                console.log('成功回退到默认模型: yui-origin');
+                console.log('成功回退到默认模型: yui-lolita');
                 return model;
             } catch (fallbackError) {
                 console.error('回退到默认模型也失败:', fallbackError);
@@ -1690,7 +1773,7 @@ Live2DManager.prototype._playIdleMotion = async function(motionManager) {
     const startTrackedMotion = async (groupName, index, file) => {
         if (!isCurrentIdleRequest()) return false;
         try {
-            const started = await motionManager.startMotion(groupName, index);
+            const started = await motionManager.startMotion(groupName, index, LIVE2D_MOTION_PRIORITY.IDLE);
             if (!isCurrentIdleRequest()) return false;
             if (started === false) {
                 console.warn(`[Live2D] 启动 ${groupName} 待机动作失败，尝试下一个 Idle 候选`);
@@ -1762,7 +1845,7 @@ Live2DManager.prototype._playIdleMotion = async function(motionManager) {
 
     if (!isCurrentIdleRequest()) return;
     try {
-        const started = await motionManager.startRandomMotion('Idle');
+        const started = await motionManager.startRandomMotion('Idle', LIVE2D_MOTION_PRIORITY.IDLE);
         if (!isCurrentIdleRequest()) return;
         if (started === false) {
             this._clearActiveMotionParamIds();
@@ -1783,6 +1866,7 @@ Live2DManager.prototype._configureLoadedModel = async function(model, modelPath,
     if (!this._isLoadTokenActive(loadToken)) return;
     this._modelLoadState = 'applying';
     this._parameterEditingMode = options.parameterEditingMode === true;
+    const minimalEmbed = options.minimalEmbed === true;
 
     // 解析模型目录名与根路径，供资源解析使用
     try {
@@ -1801,7 +1885,7 @@ Live2DManager.prototype._configureLoadedModel = async function(model, modelPath,
         const cleanPath = urlString.split('#')[0].split('?')[0];
         const lastSlash = cleanPath.lastIndexOf('/');
         const rootDir = lastSlash >= 0 ? cleanPath.substring(0, lastSlash) : '/static';
-        this.modelRootPath = rootDir; // e.g. /static/yui-origin or /static/some/deeper/dir
+        this.modelRootPath = rootDir; // e.g. /static/yui-lolita or /static/some/deeper/dir
         const parts = rootDir.split('/').filter(Boolean);
         const rawName = parts.length > 0 ? parts[parts.length - 1] : null;
         try { this.modelName = rawName ? decodeURIComponent(rawName) : null; } catch (_) { this.modelName = rawName; }
@@ -1863,7 +1947,7 @@ Live2DManager.prototype._configureLoadedModel = async function(model, modelPath,
     this.pixi_app.stage.addChild(model);
 
     // 设置交互性
-    if (options.dragEnabled !== false) {
+    if (!minimalEmbed && options.dragEnabled !== false) {
         this.setupDragAndDrop(model);
     }
 
@@ -1904,30 +1988,32 @@ Live2DManager.prototype._configureLoadedModel = async function(model, modelPath,
     // this.setupHitAreaInteraction(model);
 
     // 设置滚轮缩放
-    if (options.wheelEnabled !== false) {
+    if (!minimalEmbed && options.wheelEnabled !== false) {
         this.setupWheelZoom(model);
     }
     
     // 设置触摸缩放（双指捏合）
-    if (options.touchZoomEnabled !== false) {
+    if (!minimalEmbed && options.touchZoomEnabled !== false) {
         this.setupTouchZoom(model);
     }
 
     // 启用鼠标跟踪（始终启用监听器，内部根据设置决定是否执行眼睛跟踪）
     // enableMouseTracking 包含悬浮菜单显示/隐藏逻辑，必须始终启用
-    this.enableMouseTracking(model);
-    // 同步内部状态（眼睛跟踪是否启用）
-    this._mouseTrackingEnabled = window.mouseTrackingEnabled !== false;
-    console.log(`[Live2D] 鼠标跟踪初始化: window.mouseTrackingEnabled=${window.mouseTrackingEnabled}, _mouseTrackingEnabled=${this._mouseTrackingEnabled}`);
+    if (!minimalEmbed) {
+        this.enableMouseTracking(model);
+        // 同步内部状态（眼睛跟踪是否启用）
+        this._mouseTrackingEnabled = window.mouseTrackingEnabled !== false;
+        console.log(`[Live2D] 鼠标跟踪初始化: window.mouseTrackingEnabled=${window.mouseTrackingEnabled}, _mouseTrackingEnabled=${this._mouseTrackingEnabled}`);
 
-    // 设置浮动按钮系统（在模型完全就绪后再绑定ticker回调）
-    this.setupFloatingButtons(model);
+        // 设置浮动按钮系统（在模型完全就绪后再绑定ticker回调）
+        this.setupFloatingButtons(model);
 
-    // 应用保存的全屏跟踪设置
-    this.setFullscreenTrackingEnabled(window.live2dFullscreenTrackingEnabled === true);
-    
-    // 设置原来的锁按钮
-    this.setupHTMLLockIcon(model);
+        // 应用保存的全屏跟踪设置
+        this.setFullscreenTrackingEnabled(window.live2dFullscreenTrackingEnabled === true);
+
+        // 设置原来的锁按钮
+        this.setupHTMLLockIcon(model);
+    }
 
     const settings = model.internalModel && model.internalModel.settings && model.internalModel.settings.json;
     this._validateEyeBlinkGroup(settings, model);
@@ -1938,7 +2024,7 @@ Live2DManager.prototype._configureLoadedModel = async function(model, modelPath,
     } catch (e) {
         console.warn('[Live2D EyeBlink] first-frame override install failed; will retry after full init:', e);
     }
-    if (settings) {
+    if (settings && !minimalEmbed) {
         try {
             await this._loadDisplayInfo(settings);
         } catch (_) {}
@@ -2135,18 +2221,22 @@ Live2DManager.prototype._configureLoadedModel = async function(model, modelPath,
     if (!this._isLoadTokenActive(loadToken) || !model || model.destroyed) {
         return;
     }
-    await this._preTickPhysics(model, 2000, 16, loadToken);
+    await this._preTickPhysics(model, minimalEmbed ? 480 : 2000, 16, loadToken);
 
     this._modelLoadState = 'settling';
     if (this._isLoadTokenActive(loadToken)) {
-        await this._waitForModelVisualStability(model, loadToken);
+        await this._waitForModelVisualStability(model, loadToken, minimalEmbed ? {
+            requiredStableFrames: 2,
+            maxFrames: 18,
+            minElapsedMs: 96
+        } : {});
     }
     if (!this._isLoadTokenActive(loadToken) || !model || model.destroyed) {
         return;
     }
     // 在隐藏状态下先做一次边界校正，避免“先出现再瞬移”。
     // 启动恢复必须与拖拽结束使用同一可见像素阈值，避免允许的半出屏位置被更严格地拉回屏内。
-    if (typeof this._checkSnapRequired === 'function') {
+    if (!minimalEmbed && typeof this._checkSnapRequired === 'function') {
         try {
             const snapInfo = await this._checkSnapRequired(model);
             if (snapInfo && Number.isFinite(snapInfo.targetX) && Number.isFinite(snapInfo.targetY)) {
@@ -2164,8 +2254,13 @@ Live2DManager.prototype._configureLoadedModel = async function(model, modelPath,
     model.alpha = 1;
     // 等待 3 帧：让渲染器在 alpha=1 下输出完全稳定的画面
     // （含裁剪蒙版纹理刷新、变形器最终输出、物理末帧收敛）
-    await new Promise(r => requestAnimationFrame(() =>
-        requestAnimationFrame(() => requestAnimationFrame(r))));
+    await new Promise((resolve) => {
+        const waitFrame = (remaining) => requestAnimationFrame(() => {
+            if (remaining <= 1) resolve();
+            else waitFrame(remaining - 1);
+        });
+        waitFrame(minimalEmbed ? 1 : 3);
+    });
     if (!this._isLoadTokenActive(loadToken) || !model || model.destroyed) {
         return;
     }
@@ -2399,6 +2494,21 @@ Live2DManager.prototype.installMouthOverride = function() {
         } catch (_) {}
     }
 
+    // 每帧遍历用的 [id, idx] 快照：两个索引表都是上面一次性填充、之后只读的
+    // const 闭包变量，在这里提升 Object.entries 结果，避免包装后的 update
+    // 每帧（30-60fps）重复分配 5-6 个 entries 数组带来的 GC 压力。
+    const mouthParamEntries = Object.entries(mouthParamIndices);
+    const lookAtParamEntries = Object.entries(lookAtParamIndices);
+    // 呼吸参数索引同理：参数索引对模型实例固定，安装期解析一次，
+    // 免去每帧对 Cubism core 的 getParameterIndex 字符串查询。
+    const breathParamEntries = [];
+    for (const id of runtimeBreathParams) {
+        try {
+            const idx = coreModel.getParameterIndex(id);
+            if (idx >= 0) breathParamEntries.push([id, idx]);
+        } catch (_) {}
+    }
+
     // 覆盖 1: motionManager.update
     if (internalModel.motionManager && typeof internalModel.motionManager.update === 'function') {
         // 确保在绑定之前，motionManager 和 coreModel 都已准备好
@@ -2426,7 +2536,7 @@ Live2DManager.prototype.installMouthOverride = function() {
                     } catch (_) {}
                 }
             }
-            for (const [id, idx] of Object.entries(mouthParamIndices)) {
+            for (const [id, idx] of mouthParamEntries) {
                 try {
                     preUpdateParams[id] = coreModel.getParameterValueByIndex(idx);
                 } catch (_) {}
@@ -2436,14 +2546,12 @@ Live2DManager.prototype.installMouthOverride = function() {
                     try { preUpdateParams[p.id] = coreModel.getParameterValueByIndex(p.idx); } catch (_) {}
                 }
             }
-            const breathParams = runtimeBreathParams;
-            for (const id of breathParams) {
+            for (const [id, idx] of breathParamEntries) {
                 try {
-                    const idx = coreModel.getParameterIndex(id);
-                    if (idx >= 0) preUpdateParams[id] = coreModel.getParameterValueByIndex(idx);
+                    preUpdateParams[id] = coreModel.getParameterValueByIndex(idx);
                 } catch (_) {}
             }
-            for (const [id, idx] of Object.entries(lookAtParamIndices)) {
+            for (const [id, idx] of lookAtParamEntries) {
                 try {
                     preUpdateParams[id] = coreModel.getParameterValueByIndex(idx);
                 } catch (_) {}
@@ -2485,7 +2593,7 @@ Live2DManager.prototype.installMouthOverride = function() {
                 this._motionDrivenBreathParamIds = new Set();
             }
             const shouldTreatEyeChangesAsAuthoritative = motionPriority > LIVE2D_MOTION_PRIORITY.IDLE;
-            for (const [id, idx] of Object.entries(mouthParamIndices)) {
+            for (const [id, idx] of mouthParamEntries) {
                 try {
                     const postVal = coreModel.getParameterValueByIndex(idx);
                     const preVal = preUpdateParams[id];
@@ -2507,20 +2615,17 @@ Live2DManager.prototype.installMouthOverride = function() {
                     } catch (_) {}
                 }
             }
-            for (const id of breathParams) {
+            for (const [id, idx] of breathParamEntries) {
                 try {
-                    const idx = coreModel.getParameterIndex(id);
-                    if (idx >= 0) {
-                        const postVal = coreModel.getParameterValueByIndex(idx);
-                        const preVal = preUpdateParams[id];
-                        if (preVal !== undefined && Math.abs(postVal - preVal) > 0.001) {
-                            this._motionDrivenBreathParamIds.add(id);
-                        }
+                    const postVal = coreModel.getParameterValueByIndex(idx);
+                    const preVal = preUpdateParams[id];
+                    if (preVal !== undefined && Math.abs(postVal - preVal) > 0.001) {
+                        this._motionDrivenBreathParamIds.add(id);
                     }
                 } catch (_) {}
             }
             this._isBreathDrivenByMotion = this._motionDrivenBreathParamIds.size > 0;
-            for (const [id, idx] of Object.entries(lookAtParamIndices)) {
+            for (const [id, idx] of lookAtParamEntries) {
                 try {
                     const postVal = coreModel.getParameterValueByIndex(idx);
                     const preVal = preUpdateParams[id];
@@ -2573,7 +2678,7 @@ Live2DManager.prototype.installMouthOverride = function() {
 
                     // 口型参数：lipsync 在响（mouthValue > 0）时强制覆盖 motion；静默时让位给 motion 自带的嘴部动画
                     if (!this._isMouthDrivenByMotion || this.mouthValue > LIPSYNC_OVERRIDE_THRESHOLD) {
-                        for (const [id, idx] of Object.entries(mouthParamIndices)) {
+                        for (const [, idx] of mouthParamEntries) {
                             try {
                                 coreModel.setParameterValueByIndex(idx, this.mouthValue);
                             } catch (_) {}
@@ -2673,7 +2778,7 @@ Live2DManager.prototype.installMouthOverride = function() {
             // 这是渲染前的最后一步，强制命令，绝对优先级
             // 口型参数：lipsync 在响（mouthValue > 0）时强制覆盖 motion；静默时让位给 motion 自带的嘴部动画
             if (!this._isMouthDrivenByMotion || this.mouthValue > LIPSYNC_OVERRIDE_THRESHOLD) {
-                for (const [id, idx] of Object.entries(mouthParamIndices)) {
+                for (const [, idx] of mouthParamEntries) {
                     try {
                         currentCoreModel.setParameterValueByIndex(idx, this.mouthValue);
                     } catch (_) {}
@@ -2833,14 +2938,16 @@ Live2DManager.prototype.applyModelSettings = function(model, options) {
 
     if (isMobile) {
         model.anchor.set(0.5, 0.1);
+        const viewportWidth = Math.max(window.innerWidth || this.pixi_app.renderer.screen.width || 1, 1);
+        const viewportHeight = Math.max(window.innerHeight || this.pixi_app.renderer.screen.height || 1, 1);
         const scale = Math.min(
             0.5,
-            window.innerHeight * 1.3 / 4000,
-            window.innerWidth * 1.2 / 2000
+            viewportHeight * 1.3 / 4000,
+            viewportWidth * 1.2 / 2000
         );
         model.scale.set(scale);
-        model.x = this.pixi_app.renderer.screen.width * 0.5;
-        model.y = this.pixi_app.renderer.screen.height * 0.28;
+        model.x = viewportWidth * 0.5;
+        model.y = viewportHeight * 0.28;
     } else {
         model.anchor.set(0.65, 0.75);
         if (preferences && preferences.scale && preferences.position) {

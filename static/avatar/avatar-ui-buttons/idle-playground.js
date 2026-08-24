@@ -109,6 +109,7 @@ function _acquireNekoIdleCat1PlaygroundDropLifecycle(button, entryDetail) {
     _setNekoIdleCat1QuestionMarkKeyboardTarget(null);
     _cancelNekoIdleCat1Journey(button, { resetArt: false, preserveObservers: true });
     _cancelNekoIdleCat1EatAction(button, { restoreArt: false });
+    _cancelNekoIdleCat1StretchAction(button, { restoreArt: false });
     _cancelNekoIdleCat1PlayAction(button, { restoreArt: false });
     _finishNekoIdleReturnDragAction(button, { restoreArt: false });
     _stopNekoIdleCat1AmbientSound();
@@ -1375,7 +1376,10 @@ function _installNekoIdleCat1PlaygroundPointerListeners(button) {
 function _dispatchNekoIdleReturnClickFromButton(button) {
     const container = _getNekoIdleReturnContainerFromButton(button);
     if (!button || !container) return false;
-    const rect = container.getBoundingClientRect();
+    // Return/model transition state is stored in virtual body coordinates.
+    // Convert the crop-local DOMRect exactly once before publishing it.
+    const rect = _getNekoDesktopVirtualElementRect(container)
+        || container.getBoundingClientRect();
     const prefix = button.id && button.id.endsWith('-btn-return')
         ? button.id.slice(0, -'-btn-return'.length)
         : 'avatar';

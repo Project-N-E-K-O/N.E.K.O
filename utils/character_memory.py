@@ -14,12 +14,31 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import shutil
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
-from utils.file_utils import atomic_write_json
+from utils.recent_file import (
+    acquire_recent_file_locks,
+    activate_recent_paths,
+    fence_recent_deletions_and_clear_redirects,
+    get_recent_pending_unlocked,
+    read_recent_text_unlocked,
+    recent_file_lock,
+    recent_file_locks,
+    redirect_recent_paths,
+    release_recent_file_locks,
+    restore_recent_deletions,
+    restore_recent_redirects,
+    restore_recent_registry_state,
+    set_recent_pending_unlocked,
+    snapshot_recent_redirects,
+    snapshot_recent_deletions,
+    write_recent_payload_unlocked,
+)
 
 
 LEGACY_CHARACTER_MEMORY_FILE_MAP = {
@@ -41,6 +60,12 @@ LEGACY_CHARACTER_MEMORY_EXTRA_ENTRIES = (
 )
 
 MESSAGE_NAME_FIELDS = ("speaker", "author", "name", "character")
+
+
+# Language-sidecar and character identity operations share characters.json.
+# Reuse one transaction lock for those cooperating mutation paths so their
+# load -> mutate -> save snapshots cannot overtake each other.
+character_config_mutation_lock = asyncio.Lock()
 
 
 def iter_character_memory_roots(config_manager) -> list[Path]:
@@ -181,87 +206,411 @@ def _rewrite_recent_message_character_name(item: dict[str, Any], old_name: str, 
                 nested_data[field] = new_name
                 changed = True
 
-        content = nested_data.get("content")
-        if isinstance(content, str):
-            for pattern in (
-                f"{old_name}说：",
-                f"{old_name}说:",
-                f"{old_name}:",
-                f"{old_name}->",
-                f"[{old_name}]",
-                f"{old_name} | ",
-            ):
-                if pattern in content:
-                    content = content.replace(pattern, pattern.replace(old_name, new_name))
-                    changed = True
+        content, content_changed = _rewrite_recent_content_character_name(
+            nested_data.get("content"), old_name, new_name,
+        )
+        if content_changed:
             nested_data["content"] = content
+            changed = True
 
+    return changed
+
+
+def _rewrite_recent_content_character_name(content: Any, old_name: str, new_name: str) -> tuple[Any, bool]:
+    if not isinstance(content, str):
+        return content, False
+    changed = False
+    for pattern in (
+        f"{old_name}说：",
+        f"{old_name}说:",
+        f"{old_name}:",
+        f"{old_name}->",
+        f"[{old_name}]",
+        f"{old_name} | ",
+    ):
+        if pattern in content:
+            content = content.replace(pattern, pattern.replace(old_name, new_name))
+            changed = True
+    return content, changed
+
+
+def _rewrite_pending_message_character_name(message: Any, old_name: str, new_name: str) -> Any:
+    rewritten = deepcopy(message)
+    if isinstance(rewritten, dict):
+        _rewrite_recent_message_character_name(rewritten, old_name, new_name)
+        return rewritten
+    for field in MESSAGE_NAME_FIELDS:
+        if getattr(rewritten, field, None) == old_name:
+            setattr(rewritten, field, new_name)
+    content, changed = _rewrite_recent_content_character_name(
+        getattr(rewritten, "content", None), old_name, new_name,
+    )
+    if changed:
+        setattr(rewritten, "content", content)
+    return rewritten
+
+
+def _rewrite_recent_file_character_name_unlocked(
+    recent_path: Path, old_name: str, new_name: str,
+) -> bool:
+    if old_name == new_name or not recent_path.is_file():
+        return False
+    try:
+        payload = json.loads(read_recent_text_unlocked(recent_path))
+    except Exception:
+        return False
+    if not isinstance(payload, list):
+        return False
+    changed = False
+    for item in payload:
+        if isinstance(item, dict):
+            changed = _rewrite_recent_message_character_name(item, old_name, new_name) or changed
+    if changed:
+        write_recent_payload_unlocked(recent_path, payload)
     return changed
 
 
 def rewrite_recent_file_character_name(recent_path: Path, old_name: str, new_name: str) -> bool:
-    if old_name == new_name or not recent_path.is_file():
-        return False
+    """Rewrite the old character name inside a recent file. Blocking — worker thread only.
 
-    try:
-        with open(recent_path, "r", encoding="utf-8") as file_obj:
-            payload = json.load(file_obj)
-    except Exception:
-        return False
-
-    if not isinstance(payload, list):
-        return False
-
-    changed = False
-    for item in payload:
-        if not isinstance(item, dict):
-            continue
-        changed = _rewrite_recent_message_character_name(item, old_name, new_name) or changed
-
-    if changed:
-        atomic_write_json(recent_path, payload, ensure_ascii=False, indent=2)
-
-    return changed
+    Read and write live in one critical section so a concurrent memory_server
+    writer cannot land between them and lose its own append.
+    """
+    with recent_file_lock(recent_path):
+        return _rewrite_recent_file_character_name_unlocked(recent_path, old_name, new_name)
 
 
-def rename_character_memory_storage(config_manager, old_name: str, new_name: str) -> dict[str, Any]:
-    runtime_target_dir = get_runtime_character_memory_dir(config_manager, new_name)
-    changed = False
+def list_character_recent_paths(config_manager, character_name: str) -> list[Path]:
+    return list(dict.fromkeys(
+        candidate
+        for base_dir in iter_character_memory_roots(config_manager)
+        for candidate in (
+            base_dir / character_name / "recent.json",
+            base_dir / f"recent_{character_name}.json",
+        )
+    ))
 
-    for base_dir in iter_character_memory_roots(config_manager):
-        changed = _merge_directories(base_dir / old_name, runtime_target_dir) or changed
 
-        for legacy_name, target_name in LEGACY_CHARACTER_MEMORY_FILE_MAP.items():
-            source_path = base_dir / legacy_name.format(name=old_name)
-            target_path = runtime_target_dir / target_name
-            changed = _move_path(source_path, target_path) or changed
-
-        for legacy_name in LEGACY_CHARACTER_MEMORY_EXTRA_ENTRIES:
-            source_path = base_dir / legacy_name.format(name=old_name)
-            if source_path.exists():
-                target_path = runtime_target_dir / "semantic_memory_legacy"
-                changed = _move_path(source_path, target_path) or changed
-
-    changed = rewrite_recent_file_character_name(
-        runtime_target_dir / "recent.json",
-        old_name,
-        new_name,
-    ) or changed
-
+def begin_character_recent_transaction(
+    config_manager, *character_names: str,
+) -> dict[str, Any]:
+    """Acquire all recent-file locks needed by a character lifecycle transaction."""
+    recent_paths = list(dict.fromkeys(
+        path
+        for character_name in character_names
+        for path in list_character_recent_paths(config_manager, character_name)
+    ))
     return {
-        "changed": changed,
-        "runtime_dir": runtime_target_dir,
-        "exists_after": runtime_target_dir.exists(),
+        "recent_paths": recent_paths,
+        "held_locks": acquire_recent_file_locks(recent_paths),
     }
 
 
-def delete_character_memory_storage(config_manager, character_name: str) -> list[Path]:
-    removed_paths: list[Path] = []
-    for entry_path in list_character_memory_paths(config_manager, character_name):
-        if entry_path.is_dir():
-            shutil.rmtree(entry_path)
-        else:
-            entry_path.unlink()
-        removed_paths.append(entry_path)
+def release_character_recent_transaction(transaction: dict[str, Any] | None) -> None:
+    """Release a lifecycle transaction's recent locks exactly once."""
+    transaction = transaction or {}
+    held_locks = transaction.get("held_locks") or []
+    if held_locks:
+        transaction["held_locks"] = []
+        release_recent_file_locks(held_locks)
 
-    return removed_paths
+
+def rename_character_memory_storage(
+    config_manager,
+    old_name: str,
+    new_name: str,
+    *,
+    keep_recent_locks: bool = False,
+    recent_transaction: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    runtime_target_dir = get_runtime_character_memory_dir(config_manager, new_name)
+    roots = iter_character_memory_roots(config_manager)
+    pending_sources = list_character_recent_paths(config_manager, old_name)
+    target_recent_paths = list_character_recent_paths(config_manager, new_name)
+    target_recent = runtime_target_dir / "recent.json"
+    transaction = recent_transaction or begin_character_recent_transaction(
+        config_manager, old_name, new_name,
+    )
+    recent_paths = transaction["recent_paths"]
+    redirect_snapshot = snapshot_recent_redirects(recent_paths)
+    deletion_snapshot = snapshot_recent_deletions(recent_paths)
+    activation_scope: set[str] = set()
+    generation_snapshot: dict[str, tuple[int, int]] = {}
+    pending_snapshot: dict[Path, list[Any]] = {}
+    try:
+        # 目标角色名可能曾被改走；复用该名字前必须切断旧跳转，否则新角色会写进旧目标。
+        (
+            _,
+            activation_scope,
+            activation_deletion_snapshot,
+            generation_snapshot,
+        ) = activate_recent_paths(target_recent_paths)
+        deletion_snapshot |= activation_deletion_snapshot
+        pending_snapshot = {
+            path: deepcopy(get_recent_pending_unlocked(path))
+            for path in recent_paths
+        }
+        changed = False
+        for base_dir in roots:
+            changed = _merge_directories(base_dir / old_name, runtime_target_dir) or changed
+
+            for legacy_name, target_name in LEGACY_CHARACTER_MEMORY_FILE_MAP.items():
+                source_path = base_dir / legacy_name.format(name=old_name)
+                target_path = runtime_target_dir / target_name
+                changed = _move_path(source_path, target_path) or changed
+
+            for legacy_name in LEGACY_CHARACTER_MEMORY_EXTRA_ENTRIES:
+                source_path = base_dir / legacy_name.format(name=old_name)
+                if source_path.exists():
+                    target_path = runtime_target_dir / "semantic_memory_legacy"
+                    changed = _move_path(source_path, target_path) or changed
+
+        changed = _rewrite_recent_file_character_name_unlocked(
+            target_recent, old_name, new_name,
+        ) or changed
+
+        target_pending = get_recent_pending_unlocked(target_recent)
+        for source_recent in pending_sources:
+            if source_recent == target_recent:
+                continue
+            source_pending = get_recent_pending_unlocked(source_recent)
+            set_recent_pending_unlocked(source_recent, [])
+            target_pending.extend(
+                _rewrite_pending_message_character_name(message, old_name, new_name)
+                for message in source_pending
+            )
+        set_recent_pending_unlocked(target_recent, target_pending)
+        redirect_recent_paths(pending_sources, target_recent)
+
+        result = {
+            "changed": changed,
+            "runtime_dir": runtime_target_dir,
+            "exists_after": runtime_target_dir.exists(),
+            "_recent_rename_transaction": transaction,
+        }
+        transaction.update({
+            "pending_snapshot": pending_snapshot,
+            "redirect_snapshot": redirect_snapshot,
+            "deletion_snapshot": deletion_snapshot,
+            "activation_scope": activation_scope,
+            "generation_snapshot": generation_snapshot,
+        })
+        if not keep_recent_locks:
+            release_character_recent_transaction(transaction)
+        return result
+    except BaseException:
+        restore_recent_registry_state(
+            list(set(recent_paths) | activation_scope),
+            redirect_snapshot,
+            deletion_snapshot,
+            generation_snapshot,
+        )
+        for path, messages in pending_snapshot.items():
+            set_recent_pending_unlocked(path, messages)
+        if not keep_recent_locks:
+            release_character_recent_transaction(transaction)
+        raise
+
+
+def finalize_character_recent_rename(result: dict[str, Any]) -> None:
+    """Release recent locks after the surrounding rename transaction commits."""
+    release_character_recent_transaction(result.get("_recent_rename_transaction"))
+
+
+def rollback_character_recent_rename(result: dict[str, Any]) -> None:
+    """Restore pending state and redirects after the surrounding rename rolls back."""
+    transaction = result.get("_recent_rename_transaction") or {}
+    snapshot = transaction.get("pending_snapshot") or {}
+    recent_paths = transaction.get("recent_paths") or list(snapshot)
+    activation_scope = transaction.get("activation_scope") or set()
+    held_locks = transaction.get("held_locks") or []
+    if not held_locks:
+        held_locks = acquire_recent_file_locks(recent_paths)
+    try:
+        restore_recent_registry_state(
+            list(set(recent_paths) | set(activation_scope)),
+            transaction.get("redirect_snapshot") or {},
+            transaction.get("deletion_snapshot") or set(),
+            transaction.get("generation_snapshot") or {},
+        )
+        for path, messages in snapshot.items():
+            set_recent_pending_unlocked(path, messages)
+    finally:
+        transaction["held_locks"] = held_locks
+        release_character_recent_transaction(transaction)
+
+
+def clear_character_recent_redirects(config_manager, character_name: str) -> None:
+    """Detach obsolete path redirects before a newly created name starts writing."""
+    recent_paths = list_character_recent_paths(config_manager, character_name)
+    with recent_file_locks(recent_paths):
+        activate_recent_paths(recent_paths)
+
+
+def begin_character_recent_activation(
+    config_manager, *character_names: str,
+) -> dict[str, Any]:
+    """Activate a reused character identity while retaining its recent locks."""
+    transaction = begin_character_recent_transaction(config_manager, *character_names)
+    recent_paths = transaction["recent_paths"]
+    try:
+        (
+            redirect_snapshot,
+            activation_scope,
+            deletion_snapshot,
+            generation_snapshot,
+        ) = activate_recent_paths(recent_paths)
+        transaction.update({
+            "redirect_snapshot": redirect_snapshot,
+            "activation_scope": activation_scope,
+            "deletion_snapshot": deletion_snapshot,
+            "generation_snapshot": generation_snapshot,
+        })
+        return transaction
+    except BaseException:
+        release_character_recent_transaction(transaction)
+        raise
+
+
+def rollback_character_recent_activation(transaction: dict[str, Any]) -> None:
+    """Restore a reused character identity when publishing its config fails."""
+    recent_paths = transaction.get("recent_paths") or []
+    activation_scope = transaction.get("activation_scope") or set()
+    held_locks = transaction.get("held_locks") or []
+    if not held_locks:
+        held_locks = acquire_recent_file_locks(recent_paths)
+    try:
+        restore_recent_registry_state(
+            list(set(recent_paths) | set(activation_scope)),
+            transaction.get("redirect_snapshot") or {},
+            transaction.get("deletion_snapshot") or set(),
+            transaction.get("generation_snapshot") or {},
+        )
+    finally:
+        transaction["held_locks"] = held_locks
+        release_character_recent_transaction(transaction)
+
+
+async def _await_task_to_completion(task: asyncio.Task) -> Any:
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            continue
+    return task.result()
+
+
+async def asave_characters_with_recent_activation(
+    config_manager, characters: dict[str, Any], *character_names: str,
+) -> bool:
+    """Publish config and recent identities; return whether cancellation was deferred."""
+    activation_task = asyncio.create_task(asyncio.to_thread(
+        begin_character_recent_activation, config_manager, *character_names,
+    ))
+    try:
+        transaction = await asyncio.shield(activation_task)
+    except asyncio.CancelledError:
+        transaction = await _await_task_to_completion(activation_task)
+        await _await_task_to_completion(asyncio.create_task(asyncio.to_thread(
+            rollback_character_recent_activation, transaction,
+        )))
+        raise
+
+    save_task = asyncio.create_task(config_manager.asave_characters(characters))
+    try:
+        await asyncio.shield(save_task)
+    except asyncio.CancelledError:
+        try:
+            await _await_task_to_completion(save_task)
+        except BaseException:
+            await _await_task_to_completion(asyncio.create_task(asyncio.to_thread(
+                rollback_character_recent_activation, transaction,
+            )))
+        else:
+            release_character_recent_transaction(transaction)
+            return True
+        raise
+    except BaseException:
+        await _await_task_to_completion(asyncio.create_task(asyncio.to_thread(
+            rollback_character_recent_activation, transaction,
+        )))
+        raise
+    else:
+        release_character_recent_transaction(transaction)
+        return False
+
+
+def delete_character_memory_storage(
+    config_manager,
+    character_name: str,
+    *,
+    capture_pending: bool = False,
+    keep_recent_locks: bool = False,
+    recent_transaction: dict[str, Any] | None = None,
+) -> list[Path] | tuple[list[Path], dict[str, Any]]:
+    transaction = recent_transaction or begin_character_recent_transaction(
+        config_manager, character_name,
+    )
+    recent_candidates = transaction["recent_paths"]
+    redirect_snapshot, deletion_scope, deletion_snapshot = (
+        fence_recent_deletions_and_clear_redirects(recent_candidates)
+    )
+    pending_snapshot: dict[Path, list[Any]] = {}
+    try:
+        pending_snapshot = {
+            path: deepcopy(get_recent_pending_unlocked(path))
+            for path in recent_candidates
+        }
+        removed_paths: list[Path] = []
+        for entry_path in list_character_memory_paths(config_manager, character_name):
+            if entry_path.is_dir():
+                shutil.rmtree(entry_path)
+            else:
+                entry_path.unlink()
+            removed_paths.append(entry_path)
+
+        for recent_path in recent_candidates:
+            set_recent_pending_unlocked(recent_path, [])
+        transaction.update({
+            "pending_snapshot": pending_snapshot,
+            "redirect_snapshot": redirect_snapshot,
+            "deletion_snapshot": deletion_snapshot,
+            "deletion_scope": deletion_scope,
+        })
+        if not keep_recent_locks:
+            release_character_recent_transaction(transaction)
+        if capture_pending:
+            return removed_paths, transaction
+        return removed_paths
+    except BaseException:
+        restore_recent_redirects(redirect_snapshot)
+        restore_recent_deletions(list(deletion_scope), deletion_snapshot)
+        for path, messages in pending_snapshot.items():
+            set_recent_pending_unlocked(path, messages)
+        if not keep_recent_locks:
+            release_character_recent_transaction(transaction)
+        raise
+
+
+def finalize_character_recent_delete(result: dict[str, Any]) -> None:
+    """Release recent locks after the surrounding delete transaction commits."""
+    release_character_recent_transaction(result)
+
+
+def rollback_character_recent_delete(result: dict[str, Any]) -> None:
+    """Restore pending state and redirects after a delete transaction rolls back."""
+    recent_paths = result.get("recent_paths") or []
+    deletion_scope = result.get("deletion_scope") or recent_paths
+    held_locks = result.get("held_locks") or []
+    if not held_locks:
+        held_locks = acquire_recent_file_locks(recent_paths)
+        result["held_locks"] = held_locks
+    try:
+        restore_recent_redirects(result.get("redirect_snapshot") or {})
+        restore_recent_deletions(
+            list(deletion_scope), result.get("deletion_snapshot") or set(),
+        )
+        for path, messages in (result.get("pending_snapshot") or {}).items():
+            set_recent_pending_unlocked(path, messages)
+    finally:
+        release_character_recent_transaction(result)

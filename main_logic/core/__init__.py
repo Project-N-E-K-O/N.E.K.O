@@ -62,6 +62,9 @@ from main_logic.omni_offline_client import OmniOfflineClient, _is_safety_violati
 from main_logic.tts_client import (
     get_tts_worker,
     dummy_tts_worker,
+    selected_configured_tts_preset_provider_key,
+    tts_provider_falls_back_on_failure,
+    tts_provider_uses_configured_preset_voice,
     TTS_PROVIDER_REGISTRY,
     VLLM_OMNI_DEFAULT_BASE_URL,
     VLLM_OMNI_DEFAULT_MODEL,
@@ -106,7 +109,6 @@ from config.prompts.prompts_sys import (
     SESSION_INIT_PROMPT, SESSION_INIT_PROMPT_AGENT,
     AGENT_TASK_STATUS_RUNNING, AGENT_TASK_STATUS_QUEUED,
     AGENT_TASKS_HEADER, AGENT_TASKS_NOTICE,
-    CONTEXT_SUMMARY_READY,
     SYSTEM_NOTIFICATION_TASK_ACTIVE,
     SYSTEM_NOTIFICATION_TASK_PASSIVE,
     SYSTEM_NOTIFICATION_EVENT_ACTIVE,
@@ -187,8 +189,8 @@ import httpx
 # (#2148).
 #
 # State-carrying objects (the notice queue/lock, the
-# ``_proactive_expected_sid`` ContextVar, ``_notified_legacy_voices``) are
-# re-exported by reference; their single owner is the defining submodule.
+# proactive ContextVars, ``_notified_legacy_voices``) are re-exported by
+# reference; their single owner is the defining submodule.
 # ``notices._prominent_notice_seq`` is intentionally NOT re-exported: the
 # owner rebinds that int on every enqueue, so a facade snapshot would go
 # stale immediately (no external reader exists).
@@ -219,6 +221,7 @@ from ._shared import (  # noqa: F401
     FRONTEND_START_SESSION_TIMEOUT_SECONDS,
     CROSS_MODE_RESTART_WAIT_SECONDS,
     _proactive_expected_sid,
+    _proactive_published_text_chunks,
     NO_RETRY_TTS_CODES,
     IMMEDIATE_REPORT_TTS_CODES,
     _STATIC_LOCALES_DIR,
@@ -226,6 +229,7 @@ from ._shared import (  # noqa: F401
     _get_chat_locale_text,
     _START_LLM_CONCURRENT_ABORTED,
     ContextAppendResult,
+    FreshScreenshot,
     _purge_closed_tool_calls,
 )
 from .callback_render import (  # noqa: F401

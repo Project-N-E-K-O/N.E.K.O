@@ -10,14 +10,14 @@ if _project_root not in _sys.path:
     _sys.path.insert(0, _project_root)
 
 
-def _ensure_yui_origin_unpacked():
-    # Some tests read static/yui-origin/* directly (Live2D model). The model is
-    # shipped as assets/yui-origin.tar.gz; auto-unpack so pytest works without
+def _ensure_builtin_live2d_unpacked(model_name):
+    # Some tests read static/<model>/* directly (Live2D model). The models are
+    # shipped as assets/<model>.tar.gz; auto-unpack so pytest works without
     # requiring build_frontend to have been run.
-    archive = _Path(_project_root) / "assets" / "yui-origin.tar.gz"
+    archive = _Path(_project_root) / "assets" / f"{model_name}.tar.gz"
     target_root = _Path(_project_root) / "static"
-    target_dir = target_root / "yui-origin"
-    marker = target_dir / "yui-origin.moc3"
+    target_dir = target_root / model_name
+    marker = target_dir / f"{model_name}.moc3"
     if not archive.exists():
         return
     if marker.exists() and marker.stat().st_mtime >= archive.stat().st_mtime:
@@ -39,7 +39,8 @@ def _ensure_yui_origin_unpacked():
     marker.touch()
 
 
-_ensure_yui_origin_unpacked()
+for _builtin_live2d_model in ("yui-origin", "yui-lolita"):
+    _ensure_builtin_live2d_unpacked(_builtin_live2d_model)
 
 # Redirect test logs out of the user's real %USERPROFILE%/Documents/N.E.K.O/logs.
 # Without this, every pytest session — including ones that intentionally inject
@@ -139,6 +140,12 @@ KEY_MAPPING = {
     "assistApiKeyMimo": "ASSIST_API_KEY_MIMO",
     "assistApiKeyMimoTokenPlan": "ASSIST_API_KEY_MIMO_TOKEN_PLAN",
 }
+
+# 全进程时钟守卫：运行期比对，与 patch 的写法无关（见 tests/clock_guard.py）
+# pytest 按名字在 conftest 命名空间里发现 hook，所以这个导入没有显式调用点
+# ——它不是死代码：把它删掉，全进程时钟守卫就整个失效（改回全局 patch 也不再转红）。
+from tests.clock_guard import pytest_runtest_call  # noqa: F401,E402
+
 
 def pytest_addoption(parser):
     parser.addoption(

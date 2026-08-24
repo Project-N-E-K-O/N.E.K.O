@@ -15,6 +15,357 @@
     const mod = {};
     const S = window.appState;
     const C = window.appConst;
+    const DEFAULT_SPEAKER_DEVICE_ID = C.DEFAULT_SPEAKER_DEVICE_ID || 'default';
+    const SELECTED_SPEAKER_STORAGE_KEY = 'neko_selected_speaker';
+    let audioPlayerContextSetupPromise = null;
+    let speakerTransitionPromise = Promise.resolve();
+    let localSpeakerPreferenceRevision = 0;
+
+    function normalizeSpeakerDeviceId(deviceId) {
+        return typeof deviceId === 'string' && deviceId.length > 0
+            ? deviceId
+            : DEFAULT_SPEAKER_DEVICE_ID;
+    }
+
+    function notifySpeakerDeviceChanged(reason) {
+        window.dispatchEvent(new CustomEvent('neko:speaker-device-changed', {
+            detail: {
+                selectedDeviceId: normalizeSpeakerDeviceId(S.selectedSpeakerId),
+                effectiveDeviceId: normalizeSpeakerDeviceId(S.effectiveSpeakerId),
+                selectedDeviceAvailable: S.selectedSpeakerAvailable !== false,
+                reason: reason || 'change'
+            }
+        }));
+    }
+
+    function persistSelectedSpeaker(deviceId) {
+        var normalized = normalizeSpeakerDeviceId(deviceId);
+        try {
+            if (normalized === DEFAULT_SPEAKER_DEVICE_ID) {
+                localStorage.removeItem(SELECTED_SPEAKER_STORAGE_KEY);
+            } else {
+                localStorage.setItem(SELECTED_SPEAKER_STORAGE_KEY, normalized);
+            }
+        } catch (error) {
+            // Storage can be unavailable in restricted webviews. The current
+            // session must keep the successfully routed device even then.
+            console.warn('[Audio] 保存播放设备设置失败:', error);
+        }
+    }
+
+    function getContextEffectiveSpeakerId(context, fallbackDeviceId) {
+        if (context && typeof context.sinkId === 'string') {
+            return normalizeSpeakerDeviceId(context.sinkId);
+        }
+        return normalizeSpeakerDeviceId(fallbackDeviceId);
+    }
+
+    async function applySpeakerDeviceToContext(context, deviceId) {
+        if (!context) return false;
+        var normalized = normalizeSpeakerDeviceId(deviceId);
+        if (typeof context.setSinkId !== 'function') {
+            if (normalized === DEFAULT_SPEAKER_DEVICE_ID) return false;
+            var unsupportedError = new Error('Audio output device selection is not supported');
+            unsupportedError.name = 'NotSupportedError';
+            throw unsupportedError;
+        }
+        if (
+            context.sinkId === normalized
+            || (
+                normalized === DEFAULT_SPEAKER_DEVICE_ID
+                && context.sinkId === ''
+            )
+        ) return true;
+        await context.setSinkId(normalized);
+        return true;
+    }
+
+    function enqueueSpeakerTransition(operation) {
+        var task = speakerTransitionPromise.catch(function () {
+            // A failed transition must not poison later selections or recovery.
+        }).then(operation);
+        speakerTransitionPromise = task.catch(function () {
+            // Keep exactly one bounded tail promise; callers still receive the
+            // current task's result or error.
+        });
+        return task;
+    }
+
+    async function fallbackToDefaultSpeaker(context, error, reason, defaultAlreadyFailed) {
+        console.warn('[Audio] 播放设备不可用，回退到系统默认播放设备:', error);
+        if (normalizeSpeakerDeviceId(S.selectedSpeakerId) !== DEFAULT_SPEAKER_DEVICE_ID) {
+            S.selectedSpeakerAvailable = false;
+        }
+        var fallbackError = defaultAlreadyFailed ? error : null;
+        if (!fallbackError) {
+            try {
+                await applySpeakerDeviceToContext(context, DEFAULT_SPEAKER_DEVICE_ID);
+            } catch (applyError) {
+                fallbackError = applyError;
+            }
+        }
+        if (fallbackError) {
+            console.warn('[Audio] 应用系统默认播放设备失败:', fallbackError);
+            S.effectiveSpeakerId = getContextEffectiveSpeakerId(
+                context,
+                S.effectiveSpeakerId
+            );
+            notifySpeakerDeviceChanged((reason || 'fallback') + '-failed');
+            return S.effectiveSpeakerId;
+        }
+        S.effectiveSpeakerId = DEFAULT_SPEAKER_DEVICE_ID;
+        // Keep selectedSpeakerId and its localStorage entry intact. A temporary
+        // device outage must not erase the user's preferred output.
+        notifySpeakerDeviceChanged(reason || 'fallback');
+        return DEFAULT_SPEAKER_DEVICE_ID;
+    }
+
+    async function ensureAudioPlayerContext() {
+        if (S.audioPlayerContext) {
+            if (audioPlayerContextSetupPromise) {
+                await audioPlayerContextSetupPromise;
+            }
+            await speakerTransitionPromise;
+            return S.audioPlayerContext;
+        }
+
+        var AudioContextConstructor = window.AudioContext || window.webkitAudioContext;
+        var context = new AudioContextConstructor();
+        S.audioPlayerContext = context;
+        if (typeof window.syncAudioGlobals === 'function') {
+            window.syncAudioGlobals();
+        }
+
+        var preferredDeviceId = normalizeSpeakerDeviceId(S.selectedSpeakerId);
+        var initialDeviceId = S.selectedSpeakerAvailable === false
+            ? DEFAULT_SPEAKER_DEVICE_ID
+            : preferredDeviceId;
+        var setupPromise = enqueueSpeakerTransition(async function () {
+            if (S.audioPlayerContext !== context) return null;
+            try {
+                await applySpeakerDeviceToContext(context, initialDeviceId);
+                S.effectiveSpeakerId = initialDeviceId;
+                return initialDeviceId;
+            } catch (error) {
+                return fallbackToDefaultSpeaker(
+                    context,
+                    error,
+                    'context-fallback',
+                    initialDeviceId === DEFAULT_SPEAKER_DEVICE_ID
+                );
+            }
+        }).finally(function () {
+            if (audioPlayerContextSetupPromise === setupPromise) {
+                audioPlayerContextSetupPromise = null;
+            }
+        });
+        audioPlayerContextSetupPromise = setupPromise;
+        await setupPromise;
+        return S.audioPlayerContext;
+    }
+
+    async function selectSpeakerDevice(deviceId) {
+        var normalized = normalizeSpeakerDeviceId(deviceId);
+        if (audioPlayerContextSetupPromise) {
+            await audioPlayerContextSetupPromise;
+        }
+        return enqueueSpeakerTransition(async function () {
+            var previousDeviceId = normalizeSpeakerDeviceId(S.selectedSpeakerId);
+            var previousDeviceAvailable = S.selectedSpeakerAvailable;
+            var previousEffectiveDeviceId = normalizeSpeakerDeviceId(S.effectiveSpeakerId);
+            S.selectedSpeakerId = normalized;
+            S.selectedSpeakerAvailable = true;
+
+            try {
+                if (S.audioPlayerContext) {
+                    await applySpeakerDeviceToContext(S.audioPlayerContext, normalized);
+                    S.effectiveSpeakerId = normalized;
+                } else if (normalized !== DEFAULT_SPEAKER_DEVICE_ID) {
+                    var AudioContextConstructor = window.AudioContext || window.webkitAudioContext;
+                    if (
+                        !AudioContextConstructor
+                        || !AudioContextConstructor.prototype
+                        || typeof AudioContextConstructor.prototype.setSinkId !== 'function'
+                    ) {
+                        var unsupportedError = new Error('Audio output device selection is not supported');
+                        unsupportedError.name = 'NotSupportedError';
+                        throw unsupportedError;
+                    }
+                }
+
+                persistSelectedSpeaker(normalized);
+                localSpeakerPreferenceRevision += 1;
+                notifySpeakerDeviceChanged('selection');
+                return true;
+            } catch (error) {
+                S.selectedSpeakerId = previousDeviceId;
+                S.selectedSpeakerAvailable = previousDeviceAvailable;
+                if (S.audioPlayerContext) {
+                    try {
+                        await applySpeakerDeviceToContext(
+                            S.audioPlayerContext,
+                            previousEffectiveDeviceId
+                        );
+                        S.effectiveSpeakerId = previousEffectiveDeviceId;
+                    } catch (restoreError) {
+                        S.effectiveSpeakerId = getContextEffectiveSpeakerId(
+                            S.audioPlayerContext,
+                            S.effectiveSpeakerId
+                        );
+                        console.warn('[Audio] 恢复原播放设备失败:', restoreError);
+                    }
+                }
+                notifySpeakerDeviceChanged('selection-failed');
+                throw error;
+            }
+        });
+    }
+
+    async function loadSelectedSpeaker() {
+        var saved = null;
+        try {
+            saved = localStorage.getItem(SELECTED_SPEAKER_STORAGE_KEY);
+        } catch (error) {
+            console.warn('[Audio] 读取播放设备设置失败，使用系统默认播放设备:', error);
+        }
+        var savedDeviceId = normalizeSpeakerDeviceId(saved);
+        if (audioPlayerContextSetupPromise) {
+            await audioPlayerContextSetupPromise;
+        }
+        return enqueueSpeakerTransition(async function () {
+            S.selectedSpeakerId = savedDeviceId;
+            S.selectedSpeakerAvailable = savedDeviceId === DEFAULT_SPEAKER_DEVICE_ID
+                ? true
+                : null;
+            if (!S.audioPlayerContext) return S.selectedSpeakerId;
+            try {
+                await applySpeakerDeviceToContext(
+                    S.audioPlayerContext,
+                    savedDeviceId
+                );
+                S.effectiveSpeakerId = savedDeviceId;
+                S.selectedSpeakerAvailable = true;
+            } catch (error) {
+                await fallbackToDefaultSpeaker(
+                    S.audioPlayerContext,
+                    error,
+                    'load-fallback',
+                    savedDeviceId === DEFAULT_SPEAKER_DEVICE_ID
+                );
+            }
+            return S.selectedSpeakerId;
+        });
+    }
+
+    async function reconcileSelectedSpeakerDevices(devices) {
+        if (S.audioPlayerContext && audioPlayerContextSetupPromise) {
+            await audioPlayerContextSetupPromise;
+        }
+        var outputDevices = Array.isArray(devices)
+            ? devices.filter(function (device) { return device && device.kind === 'audiooutput'; })
+            : [];
+        return enqueueSpeakerTransition(async function () {
+            var preferredDeviceId = normalizeSpeakerDeviceId(S.selectedSpeakerId);
+            var preferredAvailable = preferredDeviceId === DEFAULT_SPEAKER_DEVICE_ID
+                || outputDevices.some(function (device) {
+                    return device.deviceId === preferredDeviceId;
+                });
+            S.selectedSpeakerAvailable = preferredAvailable;
+            var targetDeviceId = preferredAvailable
+                ? preferredDeviceId
+                : DEFAULT_SPEAKER_DEVICE_ID;
+
+            if (!S.audioPlayerContext) {
+                S.effectiveSpeakerId = DEFAULT_SPEAKER_DEVICE_ID;
+                notifySpeakerDeviceChanged(
+                    preferredAvailable ? 'devices-checked' : 'device-missing'
+                );
+                return preferredAvailable;
+            }
+
+            var currentSinkId = getContextEffectiveSpeakerId(
+                S.audioPlayerContext,
+                S.effectiveSpeakerId
+            );
+            if (
+                targetDeviceId === normalizeSpeakerDeviceId(S.effectiveSpeakerId)
+                && targetDeviceId === currentSinkId
+            ) {
+                // devicechange still re-enumerates and verifies existence. Avoid a
+                // redundant setSinkId only after that verification succeeds.
+                notifySpeakerDeviceChanged('devices-checked');
+                return preferredAvailable;
+            }
+
+            try {
+                await applySpeakerDeviceToContext(S.audioPlayerContext, targetDeviceId);
+                S.effectiveSpeakerId = targetDeviceId;
+                notifySpeakerDeviceChanged(
+                    preferredAvailable ? 'device-restored' : 'device-missing'
+                );
+            } catch (error) {
+                await fallbackToDefaultSpeaker(
+                    S.audioPlayerContext,
+                    error,
+                    preferredAvailable ? 'device-restore-fallback' : 'device-missing',
+                    targetDeviceId === DEFAULT_SPEAKER_DEVICE_ID
+                );
+                return false;
+            }
+            return preferredAvailable;
+        });
+    }
+
+    window.addEventListener('storage', function (event) {
+        if (event.key !== SELECTED_SPEAKER_STORAGE_KEY) return;
+        var eventDeviceId = normalizeSpeakerDeviceId(event.newValue);
+        var localRevisionAtArrival = localSpeakerPreferenceRevision;
+        Promise.resolve(audioPlayerContextSetupPromise).then(function () {
+            return enqueueSpeakerTransition(async function () {
+                // A local selection that completed after this event arrived is
+                // authoritative for this window. It will not receive a storage
+                // event for its own write, so an older queued event must not
+                // route back over it.
+                if (localRevisionAtArrival !== localSpeakerPreferenceRevision) {
+                    return;
+                }
+                var deviceId = eventDeviceId;
+                try {
+                    // Storage events may be delivered after newer writes. Read
+                    // the value at transaction time instead of trusting the
+                    // event snapshot captured before queued routes completed.
+                    deviceId = normalizeSpeakerDeviceId(
+                        localStorage.getItem(SELECTED_SPEAKER_STORAGE_KEY)
+                    );
+                } catch (error) {
+                    console.warn('[Audio] 读取跨窗口播放设备设置失败:', error);
+                }
+                S.selectedSpeakerId = deviceId;
+                S.selectedSpeakerAvailable = deviceId === DEFAULT_SPEAKER_DEVICE_ID
+                    ? true
+                    : null;
+                if (S.audioPlayerContext) {
+                    try {
+                        await applySpeakerDeviceToContext(S.audioPlayerContext, deviceId);
+                        S.effectiveSpeakerId = deviceId;
+                        S.selectedSpeakerAvailable = true;
+                        notifySpeakerDeviceChanged('storage');
+                    } catch (error) {
+                        await fallbackToDefaultSpeaker(
+                            S.audioPlayerContext,
+                            error,
+                            'storage-fallback',
+                            deviceId === DEFAULT_SPEAKER_DEVICE_ID
+                        );
+                    }
+                } else {
+                    notifySpeakerDeviceChanged('storage');
+                }
+            });
+        }).catch(function (error) {
+            console.warn('[Audio] 同步播放设备设置失败:', error);
+        });
+    });
 
     function normalizeAssistantTurnId(turnId) {
         if (turnId === undefined || turnId === null || turnId === '') {
@@ -32,8 +383,16 @@
     // 还粘着，30s 后强制 cancel 收尾。比 ASSISTANT_TURN_COMPLETION_FALLBACK_MS
     // 长一个数量级——前者覆盖正常 race，后者覆盖 server 漏包。
     const STUCK_SPEAKING_FALLBACK_MS = 30000;
+    // 权威 audio_done 迟迟不来时的有界放弃时长。必须是独立计时器，不能复用
+    // scheduleAssistantTurnCompletionFallback：后者 fire 前有 hasAssistantSpeechActivity
+    // 守卫，会把"speech 仍 active 但已 drained、正在等 audio_done"误判成还在说话
+    // 而跳过收尾——那正好是要兜的场景。漏发 audio_done 的 provider 靠它保证
+    // 每轮最多多等这么久，而不是一路卡到 30s 看门狗。
+    const ASSISTANT_AUDIO_STREAM_CLOSE_GIVEUP_MS = 700;
     let _assistantTurnCompletionFallbackTimer = 0;
     let _assistantTurnCompletionFallbackTurnId = null;
+    let _audioStreamCloseGiveUpTimer = 0;
+    let _audioStreamCloseGiveUpTurnId = null;
     let _pendingAudioMetaStallTimer = 0;
     let _stuckSpeakingFallbackTimer = 0;
     const SPEECH_PLAYBACK_STATE_KEY = 'neko_speech_playback_state';
@@ -329,6 +688,9 @@
         // 表不撤 → 30s 到点时如果刚好在第 N 段间隙 → 误 fire cancel。
         if (normalizedTurnId) {
             clearStuckSpeakingFallback();
+            // 新一阵音频到了 = 上一次"队列空了"不是流结束。撤掉正在跑的
+            // give-up，等这阵放完时再重新排，否则它会在播放中途强制收尾。
+            clearAudioStreamCloseGiveUp();
         }
         if (!normalizedTurnId || S.assistantSpeechActiveTurnId === normalizedTurnId) {
             return;
@@ -461,6 +823,134 @@
         }
     }
 
+    function clearAudioStreamCloseGiveUp() {
+        if (_audioStreamCloseGiveUpTimer) {
+            clearTimeout(_audioStreamCloseGiveUpTimer);
+            _audioStreamCloseGiveUpTimer = 0;
+        }
+        _audioStreamCloseGiveUpTurnId = null;
+    }
+
+    // 把"本轮音频流已关闭"的记录连同 speech_id 映射一起清掉。挂在
+    // clearAssistantTurnCompletion 上，于是 turn-start / speech-cancel /
+    // clearAudioQueue / 正常收尾 四条路径都会走到。
+    function resetAssistantAudioStreamClose() {
+        clearAudioStreamCloseGiveUp();
+        S.assistantAudioStreamClosedTurnId = null;
+        S.assistantAudioStreamClosedEpoch = -1;
+        S.assistantAudioTurnBySpeechId = {};
+    }
+
+    function isAssistantAudioStreamClosed(turnId) {
+        var normalizedTurnId = normalizeAssistantTurnId(turnId);
+        if (!normalizedTurnId) {
+            return false;
+        }
+        // 打断会推 epoch。此后才到达的 audio_done 属于上一世代，作废——
+        // 否则它会去收尾一个已经被取消的轮（#1566 的镜像 bug）。
+        if (S.assistantAudioStreamClosedEpoch !== S.incomingAudioEpoch) {
+            return false;
+        }
+        return normalizeAssistantTurnId(S.assistantAudioStreamClosedTurnId) === normalizedTurnId;
+    }
+
+    // 音频头只带 speech_id，audio_done 也只能按 speech_id 对账，所以在音频头
+    // 到达时把当时解析出的 turnId 记下来。
+    function rememberAssistantAudioSpeechTurn(speechId, turnId) {
+        var sid = normalizeAssistantTurnId(speechId);
+        var normalizedTurnId = normalizeAssistantTurnId(turnId);
+        if (!sid || !normalizedTurnId) {
+            return;
+        }
+        if (!S.assistantAudioTurnBySpeechId || typeof S.assistantAudioTurnBySpeechId !== 'object') {
+            S.assistantAudioTurnBySpeechId = {};
+        }
+        S.assistantAudioTurnBySpeechId[sid] = normalizedTurnId;
+
+        // 宣告关闭之后又收到本轮的音频头 = 那条 audio_done 已经过期。
+        // 音频头和 audio_done 走同一条 ws、严格按序，所以这是"后端说完了却
+        // 又发来音频"的确凿证据，不是猜测。omni 原生通路会遇到：它的
+        // response.audio.done 是 per-response 的，而一轮里可能有第二个带音频
+        // 的 response（工具调用后的续答）。作废后重新等下一条 audio_done，
+        // 等不到就走 give-up。
+        if (isAssistantAudioStreamClosed(normalizedTurnId)) {
+            logAudioLifecycle('rememberAssistantAudioSpeechTurn:reopen_after_close', {
+                speechId: sid,
+                turnId: normalizedTurnId
+            });
+            S.assistantAudioStreamClosedTurnId = null;
+            S.assistantAudioStreamClosedEpoch = -1;
+        }
+    }
+
+    // 后端权威信号：该 speech_id 的音频流已关闭，之后不会再有属于它的 chunk。
+    function noteAssistantAudioStreamClosed(speechId) {
+        var sid = normalizeAssistantTurnId(speechId);
+        var mapped = (sid && S.assistantAudioTurnBySpeechId)
+            ? S.assistantAudioTurnBySpeechId[sid]
+            : null;
+        var turnId = normalizeAssistantTurnId(mapped);
+        if (!turnId) {
+            // 没见过这个 sid 的音频头 = 本机从没播过它的音频，这条信号跟当前
+            // 正在放的那一轮毫无关系。回落到"当前轮"会把别人的结束信号安到
+            // 正在说话的轮头上，重造一次提前收尾——后端确实存在零音频也发信号
+            // 的轮（整轮 TTS 文本被标点过滤成空）。宁可忽略走 give-up。
+            logAudioLifecycle('noteAssistantAudioStreamClosed:skip_unknown_speech', {
+                speechId: sid
+            });
+            return false;
+        }
+
+        S.assistantAudioStreamClosedTurnId = turnId;
+        S.assistantAudioStreamClosedEpoch = S.incomingAudioEpoch;
+        logAudioLifecycle('noteAssistantAudioStreamClosed', {
+            speechId: sid,
+            turnId: turnId,
+            epoch: S.incomingAudioEpoch
+        });
+        // 信号可能早于最后一段音频播完（它只承诺"不会再有新的了"），
+        // 所以照样要过 drained 那一关；没过就等 onended 再来一次。
+        return maybeFinalizeAssistantSpeech(turnId);
+    }
+
+    // 等 audio_done 的有界放弃。刻意不加 hasAssistantSpeechActivity 守卫：
+    // 这里要兜的就是"speech 还挂着 active、队列已空、只差信号"这个状态。
+    function scheduleAudioStreamCloseGiveUp(turnId) {
+        var normalizedTurnId = normalizeAssistantTurnId(turnId);
+        if (!normalizedTurnId) {
+            return;
+        }
+        if (_audioStreamCloseGiveUpTimer && _audioStreamCloseGiveUpTurnId === normalizedTurnId) {
+            return;
+        }
+        clearAudioStreamCloseGiveUp();
+
+        _audioStreamCloseGiveUpTurnId = normalizedTurnId;
+        logAudioLifecycle('audioStreamCloseGiveUp:armed', {
+            turnId: normalizedTurnId,
+            delayMs: ASSISTANT_AUDIO_STREAM_CLOSE_GIVEUP_MS
+        });
+        _audioStreamCloseGiveUpTimer = window.setTimeout(function () {
+            var pendingTurnId = _audioStreamCloseGiveUpTurnId;
+            _audioStreamCloseGiveUpTimer = 0;
+            _audioStreamCloseGiveUpTurnId = null;
+
+            if (!pendingTurnId || S.assistantTurnCompletedId !== pendingTurnId) {
+                logAudioLifecycle('audioStreamCloseGiveUp:skip_completion_mismatch', {
+                    turnId: pendingTurnId || normalizedTurnId
+                });
+                return;
+            }
+            logAudioLifecycle('audioStreamCloseGiveUp:fire', {
+                turnId: pendingTurnId
+            });
+            // force 只放行"等 audio_done"这一道门。等待期间又涌进音频时，
+            // maybeFinalizeAssistantSpeech 自己的 drained 检查会拦住，
+            // 等那阵播完再重新排 —— 所以这里不需要也不该再复查一遍。
+            maybeFinalizeAssistantSpeech(pendingTurnId, { force: true });
+        }, ASSISTANT_AUDIO_STREAM_CLOSE_GIVEUP_MS);
+    }
+
     // 4 个队列 + 3 个 in-flight async flag，覆盖所有"音频还在路上"的状态。
     // - 4 queue 对齐 isAssistantTurnPlaybackDrained（少查 pendingAudioChunkMetaQueue
     //   会在 header 到了 blob 还没到的窗口里误判空）
@@ -545,6 +1035,7 @@
 
     function clearAssistantTurnCompletion() {
         clearAssistantTurnCompletionFallback();
+        resetAssistantAudioStreamClose();
         S.assistantTurnCompletedId = null;
         S.assistantTurnCompletionSource = null;
         S.assistantSpeechStartedTurnId = null;
@@ -609,6 +1100,17 @@
         schedulePendingAudioMetaStallCheck();
         var normalizedTurnId = normalizeAssistantTurnId(turnId);
         if (!normalizedTurnId) {
+            return false;
+        }
+
+        // 四个队列之外还有一段真空洞：processIncomingAudioBlobQueue 先 shift 出队
+        // 再 await 解码，那期间 chunk 不在任何队列里，只有 processingAudioBlobTurnId
+        // 证明它属于本轮。不查 pendingDecoderReset —— 它是打断时 latch 的意图标记，
+        // 会一直粘到下一条音频 header 才清，拿它当"音频在路上"会把纯文本轮判成
+        // 永不 drained（settledId 不置位 → 切语音干等 15s 的老毛病复发）。
+        // decoderResetPromise 的等待发生在同一个循环内，已被本标志覆盖。
+        if (S.isProcessingIncomingAudioBlob &&
+            normalizeAssistantTurnId(S.processingAudioBlobTurnId) === normalizedTurnId) {
             return false;
         }
 
@@ -682,12 +1184,14 @@
         }
     }
 
-    function maybeFinalizeAssistantSpeech(turnId) {
+    function maybeFinalizeAssistantSpeech(turnId, options) {
+        var force = !!(options && options.force);
         var normalizedTurnId = normalizeAssistantTurnId(
             turnId || S.assistantSpeechActiveTurnId || S.assistantTurnCompletedId
         );
         logAudioLifecycle('maybeFinalizeAssistantSpeech:enter', {
-            requestedTurnId: normalizedTurnId
+            requestedTurnId: normalizedTurnId,
+            force: force
         });
         if (!normalizedTurnId || S.assistantTurnCompletedId !== normalizedTurnId) {
             logAudioLifecycle('maybeFinalizeAssistantSpeech:skip_completion_mismatch', {
@@ -697,6 +1201,20 @@
         }
         if (!isAssistantTurnPlaybackDrained(normalizedTurnId)) {
             logAudioLifecycle('maybeFinalizeAssistantSpeech:skip_not_drained', {
+                requestedTurnId: normalizedTurnId
+            });
+            return false;
+        }
+        // 队列空了只说明"此刻手里没有音频"。本轮真的放过音频时，这既可能是
+        // 阵间空档也可能是流结束，两者在前端完全同构 —— 凭它收尾就是 #1566：
+        // 口型停一下又重启、emotion/字幕早触发、后来的尾音成了孤儿（completedId
+        // 已被清，没人再收尾）→ isPlaying 卡到 30s 看门狗。等后端的 audio_done，
+        // 或等 give-up 计时器到点（force）。
+        if (!force &&
+            normalizeAssistantTurnId(S.assistantSpeechStartedTurnId) === normalizedTurnId &&
+            !isAssistantAudioStreamClosed(normalizedTurnId)) {
+            scheduleAudioStreamCloseGiveUp(normalizedTurnId);
+            logAudioLifecycle('maybeFinalizeAssistantSpeech:await_audio_done', {
                 requestedTurnId: normalizedTurnId
             });
             return false;
@@ -822,6 +1340,7 @@
         S.audioBufferQueue = [];
         S.pendingAudioChunkMetaQueue = [];
         S.incomingAudioBlobQueue = [];
+        S.processingAudioBlobTurnId = null;
         S.isPlaying = false;
         S.audioStartTime = 0;
         S.nextChunkTime = 0;
@@ -854,6 +1373,7 @@
         S.audioBufferQueue = [];
         S.pendingAudioChunkMetaQueue = [];
         S.incomingAudioBlobQueue = [];
+        S.processingAudioBlobTurnId = null;
         S.isPlaying = false;
         S.audioStartTime = 0;
         S.nextChunkTime = 0;
@@ -1167,9 +1687,9 @@
             return;
         }
 
-        if (!S.audioPlayerContext) {
-            S.audioPlayerContext = new (window.AudioContext || window.webkitAudioContext)();
-            window.syncAudioGlobals();
+        await ensureAudioPlayerContext();
+        if (expectedEpoch !== S.incomingAudioEpoch) {
+            return;
         }
 
         if (S.audioPlayerContext.state === 'suspended') {
@@ -1314,6 +1834,7 @@
         try {
             while (S.incomingAudioBlobQueue.length > 0) {
                 var item = S.incomingAudioBlobQueue.shift();
+                S.processingAudioBlobTurnId = null;
                 if (!item) continue;
                 if (item.epoch !== S.incomingAudioEpoch) {
                     continue;
@@ -1329,6 +1850,10 @@
                     }
                     continue;
                 }
+
+                // 出队之后、解码完成之前这个 chunk 不在任何队列里。记下它属于哪一轮，
+                // 让 isAssistantTurnPlaybackDrained 看得见这段空洞。
+                S.processingAudioBlobTurnId = item.turnId || null;
 
                 if (S.decoderResetPromise) {
                     var resetTask = S.decoderResetPromise;
@@ -1354,6 +1879,7 @@
                 });
             }
         } finally {
+            S.processingAudioBlobTurnId = null;
             S.isProcessingIncomingAudioBlob = false;
             maybeFinalizeAssistantSpeech();
             schedulePendingAudioMetaStallCheck();
@@ -1445,6 +1971,13 @@
     mod.enqueueIncomingAudioBlob = enqueueIncomingAudioBlob;
     mod.processIncomingAudioBlobQueue = processIncomingAudioBlobQueue;
     mod.schedulePendingAudioMetaStallCheck = schedulePendingAudioMetaStallCheck;
+    mod.rememberAssistantAudioSpeechTurn = rememberAssistantAudioSpeechTurn;
+    mod.noteAssistantAudioStreamClosed = noteAssistantAudioStreamClosed;
+    mod.ensureAudioPlayerContext = ensureAudioPlayerContext;
+    mod.applySpeakerDeviceToContext = applySpeakerDeviceToContext;
+    mod.selectSpeakerDevice = selectSpeakerDevice;
+    mod.loadSelectedSpeaker = loadSelectedSpeaker;
+    mod.reconcileSelectedSpeakerDevices = reconcileSelectedSpeakerDevices;
     mod.saveSpeakerVolumeSetting = saveSpeakerVolumeSetting;
     mod.loadSpeakerVolumeSetting = loadSpeakerVolumeSetting;
 
@@ -1461,6 +1994,10 @@
     window.enqueueIncomingAudioBlob = enqueueIncomingAudioBlob;
     window.processIncomingAudioBlobQueue = processIncomingAudioBlobQueue;
     window.schedulePendingAudioMetaStallCheck = schedulePendingAudioMetaStallCheck;
+    window.ensureAudioPlayerContext = ensureAudioPlayerContext;
+    window.selectSpeakerDevice = selectSpeakerDevice;
+    window.loadSelectedSpeaker = loadSelectedSpeaker;
+    window.reconcileSelectedSpeakerDevices = reconcileSelectedSpeakerDevices;
     window.saveSpeakerVolumeSetting = saveSpeakerVolumeSetting;
     window.loadSpeakerVolumeSetting = loadSpeakerVolumeSetting;
 

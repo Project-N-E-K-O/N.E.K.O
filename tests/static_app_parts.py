@@ -14,7 +14,10 @@ def read_js_parts(
     encoding: str = "utf-8",
     contract_view: bool = True,
 ) -> str:
-    source = "\n".join(path.read_text(encoding=encoding) for path in js_part_paths(directory))
+    source = "\n".join(
+        path.read_text(encoding=encoding).replace("\r\n", "\n")
+        for path in js_part_paths(directory)
+    )
     if contract_view:
         # Parts share promoted bindings through a closure-captured `I` object.
         # Static contracts continue to assert the original identifier-level

@@ -25,15 +25,72 @@ from tests.unit.avatar_ui_buttons_source import read_avatar_ui_buttons_source
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
+def test_vrm_load_normalizes_legacy_bundled_idle_animation_path():
+    source = (PROJECT_ROOT / "static/vrm/vrm-manager.js").read_text(
+        encoding="utf-8"
+    )
+    helper = source.split("function normalizeBundledVrmAnimationPath", 1)[1].split(
+        "class VRMManager",
+        1,
+    )[0]
+    load_body = source.split("async _loadModelInternal", 1)[1].split(
+        "async dispose()",
+        1,
+    )[0]
+
+    assert "COMPRESSED_BUNDLED_VRMA_NAMES.has(assetName)" in helper
+    assert "decodeURIComponent(assetName)" in helper
+    assert ".replace(/\\.vrma(?=[?#]|$)/i, '.vrma.gz')" in helper
+    assert "normalizeBundledVrmAnimationPath(" in load_body
+    assert "window.lanlan_config?.vrmIdleAnimation" in load_body
+    public_playback = source.split("async playVRMAAnimation", 1)[1].split(
+        "seekVRMAAnimation",
+        1,
+    )[0]
+    assert "normalizeBundledVrmAnimationPath(url)" in public_playback
+
+
+def test_model_manager_starts_saved_idle_rotation_with_normalized_urls():
+    source = (PROJECT_ROOT / "static/js/model_manager/page-controller.js").read_text(
+        encoding="utf-8"
+    )
+    restore_body = source.split("let vrmIdleAnims =", 1)[1].split(
+        "// 加载MMD待机动作选项",
+        1,
+    )[0]
+
+    normalization = "vrmIdleAnims = vrmIdleAnims.map(url =>"
+    start = "startIdleRotation('vrm', vrmIdleAnims);"
+    assert normalization in restore_body
+    assert "normalizeBundledVrmAnimationUrl(url, availableIdleAnimationValues)" in restore_body
+    assert restore_body.index(normalization) < restore_body.index(start)
+
+
+def test_vrm_reset_uses_the_same_desktop_framing_ratio_as_initial_load():
+    manager_source = (PROJECT_ROOT / "static/vrm/vrm-manager.js").read_text(
+        encoding="utf-8"
+    )
+    reset_body = manager_source.split("resetModelPosition()", 1)[1].split(
+        "resetModelScale()",
+        1,
+    )[0]
+
+    assert reset_body.count("screenHeight * 0.40") == 2
+    assert "screenHeight * 0.45" not in reset_body
+
+
 def test_vrm_load_model_uses_entry_token_without_blocking_queue():
     # 设计：token-only「后到者胜」，无串行队列（与 mmd-manager 对偶）。
     # 队列会让新加载 await 一个已被自己取代的旧加载 → 慢/挂死的 GLTF（无超时）
     # 无限期阻塞 VRM→VRM 切换（Codex P2）。并发正确性由 vrm-core 的 token 守卫兜底。
     source = (PROJECT_ROOT / "static/vrm/vrm-manager.js").read_text(encoding="utf-8")
 
-    # token 在入口同步分配（后到者胜），直接调用加载体，不经 promise 队列
+    # token 在入口同步分配（后到者胜），直接调用加载体，不经 promise 队列。
+    # round-2 起挂 .catch 收尾（非 await，遵守本契约）：失败路径复位 _loadState，
+    # 防止空闲 governor 把卡在 'preparing' 的状态当作永久活动（节流失效）。
     assert "const loadToken = ++this._activeLoadToken;" in source
-    assert "return this._loadModelInternal(modelUrl, options, loadToken);" in source
+    assert "return this._loadModelInternal(modelUrl, options, loadToken).catch((e) => {" in source
+    assert "if (this._isLoadTokenActive(loadToken)) this._loadState = 'idle';" in source
     assert "async _loadModelInternal(modelUrl, options, loadToken)" in source
 
     # 串行队列必须彻底移除：不得残留 _loadModelChain / previousLoad / 旧方法名
@@ -41,8 +98,22 @@ def test_vrm_load_model_uses_entry_token_without_blocking_queue():
     assert "previousLoad" not in source
     assert "_loadModelExclusive" not in source
 
-    # loadModel 包装体必须极薄：bump token → 直接委派，中间不 await 任何前序加载
-    wrapper = source.split("async loadModel(modelUrl, options = {})", 1)[1]
+    # loadModel 包装体必须极薄：bump token → 直接委派，中间不 await 任何前序加载。
+    # #2253 之后 loadModel 与 token 分配之间多了一层只记在飞计数的薄包装
+    # (_loadModelImplementation)，所以两段分开断言——包装层唯一允许的 await 就是
+    # 那一次委派，token 分配层仍然一个 await 都不许有。
+    outer = source.split("async loadModel(modelUrl, options = {})", 1)[1]
+    outer = outer.split("async _loadModelImplementation", 1)[0]
+    assert "return await this._loadModelImplementation(modelUrl, options);" in outer, (
+        "loadModel 包装层必须直接委派给 _loadModelImplementation"
+    )
+    outer_rest = outer.replace(
+        "return await this._loadModelImplementation(modelUrl, options);", ""
+    )
+    assert "await this." not in outer_rest, "loadModel 包装层除委派外不得 await 任何东西"
+    assert ".then(" not in outer, "loadModel 不得挂 promise 链（否则重现阻塞队列）"
+
+    wrapper = source.split("async _loadModelImplementation", 1)[1]
     wrapper = wrapper.split("async _loadModelInternal", 1)[0]
     assert "await this." not in wrapper, "loadModel 不得 await 前序加载（否则重现阻塞）"
     assert ".then(" not in wrapper, "loadModel 不得挂 promise 链（否则重现阻塞队列）"

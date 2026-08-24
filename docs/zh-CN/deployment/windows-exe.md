@@ -1,6 +1,6 @@
 # Windows 桌面构建
 
-普通用户应从 [Steam 商店](https://store.steampowered.com/app/4099310/__NEKO/) 安装并通过 Steam 启动，再在桌面/Web UI 配置 Provider。
+普通用户应从 [Steam 商店](https://store.steampowered.com/app/4099310/__NEKO/?utm_source=project-neko.online&utm_medium=referral&utm_campaign=docs_deployment&utm_content=install_zh_cn) 安装并通过 Steam 启动，再在桌面/Web UI 配置 Provider。
 
 独立 Python 后端产物不包含 Electron 窗口、托盘、Steam 集成、路由或更新器，不能与桌面产物混为一谈。
 

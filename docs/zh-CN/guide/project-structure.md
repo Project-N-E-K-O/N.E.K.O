@@ -30,6 +30,9 @@ N.E.K.O/
 
 `launcher.py` 委托给 `launcher_core/`；`utils/config_manager/` 管可写配置，`config/` 管内置默认值。`react-neko-chat/` 是唯一聊天 UI，`index.html` 与 `chat.html` 共用，旧 `#chat-container` 已废弃。
 
-`main_logic/core/` 受 CI 结构契约约束。Docker 文件不在仓库根。依赖契约是 `pyproject.toml` + `uv.lock`，`requirements.txt` 不是推荐安装入口。
+`main_logic/core/` 受 CI 结构契约约束。`main_logic/voice_turn/` 只拥有
+Provider 无关的语音合同；本地 Silero/Smart Turn 实现与模型资源归
+`main_logic/asr_client/endpointing/`。Docker 文件不在仓库根。依赖契约是
+`pyproject.toml` + `uv.lock`，`requirements.txt` 不是推荐安装入口。
 
 编辑前用 `rg`、import 和 route 找当前 owner；历史 Issue 中的单文件可能已拆成 package。

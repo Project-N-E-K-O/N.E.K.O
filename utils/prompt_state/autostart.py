@@ -455,8 +455,8 @@ def process_autostart_prompt_heartbeat(
         state = load_autostart_prompt_state(config_manager)
         changed = False
 
-        # 客户端在网络失败时会把 delta 加回 pending 并重试同一 heartbeat_token，
-        # 镜像 tutorial_prompt_state.py 的幂等做法：识别 replay 时不再累加 delta，
+        # 客户端在网络失败时会把 delta 加回 pending 并重试同一 heartbeat_token。
+        # 识别 replay 时不再累加 delta，
         # 只基于当前状态重算 eligibility。没有 active token 时强制 should_prompt=false，
         # 避免前端收到 null token 去 shown/decision 报 400。
         if heartbeat_token and _is_autostart_heartbeat_replayed(state, heartbeat_token):

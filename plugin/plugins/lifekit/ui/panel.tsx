@@ -29,6 +29,9 @@ type LifeKitConfig = {
   locale?: string
   force_locale?: boolean
   cache_ttl_seconds?: number
+  enable_geoip?: boolean
+  amap_configured?: boolean
+  baidu_map_configured?: boolean
 }
 
 type SavedLocation = {
@@ -57,6 +60,10 @@ const defaultConfigForm = {
   forecast_days: "3",
   locale: "",
   force_locale: false,
+  cache_ttl_seconds: "1800",
+  enable_geoip: true,
+  amap_key: "",
+  baidu_map_key: "",
 }
 
 const emptyLocationForm = {
@@ -82,6 +89,19 @@ function locationKey(location: SavedLocation): string {
   return String(location.id || location.label || location.city || "")
 }
 
+function unwrapActionResult(envelope: any): Record<string, any> {
+  if (envelope && typeof envelope === "object") {
+    if (envelope.result && typeof envelope.result === "object") return envelope.result
+    return envelope
+  }
+  return {}
+}
+
+function requireReady(result: Record<string, any>): Record<string, any> {
+  if (result.status === "ready") return result
+  throw new Error(String(result.summary || result.message || result.status || "Action failed"))
+}
+
 export default function LifeKitPanel(props: PluginSurfaceProps<LifeKitDashboardState>) {
   const { state, actions, t } = props
   const safeState = state || {}
@@ -97,6 +117,24 @@ export default function LifeKitPanel(props: PluginSurfaceProps<LifeKitDashboardS
   const removeLocationAction = actionById(actions || [], "remove_location")
   const setDefaultAction = actionById(actions || [], "set_default_location")
 
+  async function callConfirmed(actionId: string, payload: Record<string, any>) {
+    const first = unwrapActionResult(await props.api.call(actionId, {
+      ...payload,
+      confirmed: true,
+    }))
+    const context = first.context
+    const confirmationToken = String(first.confirmation_token || context?.confirmation_token || "")
+    if (first.status === "clarify" && confirmationToken) {
+      const confirmed = unwrapActionResult(await props.api.call(actionId, {
+        ...context,
+        confirmed: true,
+        confirmation_token: confirmationToken,
+      }))
+      return requireReady(confirmed)
+    }
+    return requireReady(first)
+  }
+
   useEffect(() => {
     configForm.setValues({
       default_city: String(config.default_city || ""),
@@ -104,8 +142,12 @@ export default function LifeKitPanel(props: PluginSurfaceProps<LifeKitDashboardS
       forecast_days: String(config.forecast_days || 3),
       locale: String(config.locale || ""),
       force_locale: !!config.force_locale,
+      cache_ttl_seconds: String(config.cache_ttl_seconds ?? 1800),
+      enable_geoip: config.enable_geoip !== false,
+      amap_key: "",
+      baidu_map_key: "",
     })
-  }, [config.default_city, config.timezone, config.forecast_days, config.locale, config.force_locale])
+  }, [config.default_city, config.timezone, config.forecast_days, config.locale, config.force_locale, config.cache_ttl_seconds, config.enable_geoip])
 
   async function saveConfig() {
     if (!updateConfigAction) {
@@ -113,12 +155,24 @@ export default function LifeKitPanel(props: PluginSurfaceProps<LifeKitDashboardS
       return
     }
     try {
-      await props.api.call("update_config", {
+      const cacheTtl = Number(configForm.values.cache_ttl_seconds)
+      if (!Number.isInteger(cacheTtl) || cacheTtl < 0) {
+        throw new Error(t("config.cache_nonnegative"))
+      }
+      await callConfirmed("update_config", {
         default_city: configForm.values.default_city.trim(),
         timezone: configForm.values.timezone.trim() || "Asia/Shanghai",
         forecast_days: Number(configForm.values.forecast_days) || 3,
         locale: configForm.values.locale,
         force_locale: !!configForm.values.force_locale,
+        cache_ttl_seconds: cacheTtl,
+        enable_geoip: !!configForm.values.enable_geoip,
+        ...(configForm.values.amap_key.trim()
+          ? { amap_key: configForm.values.amap_key.trim() }
+          : {}),
+        ...(configForm.values.baidu_map_key.trim()
+          ? { baidu_map_key: configForm.values.baidu_map_key.trim() }
+          : {}),
       })
       await props.api.refresh()
       toast.success(t("panel.messages.configSaved"))
@@ -139,7 +193,7 @@ export default function LifeKitPanel(props: PluginSurfaceProps<LifeKitDashboardS
       return
     }
     try {
-      await props.api.call("add_location", {
+      await callConfirmed("add_location", {
         label,
         city,
         address: locationForm.values.address.trim(),
@@ -169,7 +223,7 @@ export default function LifeKitPanel(props: PluginSurfaceProps<LifeKitDashboardS
     })
     if (!ok) return
     try {
-      await props.api.call("remove_location", { location_id: key })
+      await callConfirmed("remove_location", { location_id: key })
       await props.api.refresh()
       toast.success(t("panel.messages.locationRemoved"))
     } catch (err) {
@@ -185,7 +239,7 @@ export default function LifeKitPanel(props: PluginSurfaceProps<LifeKitDashboardS
     const key = locationKey(location)
     if (!key) return
     try {
-      await props.api.call("set_default_location", { location_id: key })
+      await callConfirmed("set_default_location", { location_id: key })
       await props.api.refresh()
       toast.success(t("panel.messages.defaultSet"))
     } catch (err) {
@@ -241,6 +295,11 @@ export default function LifeKitPanel(props: PluginSurfaceProps<LifeKitDashboardS
                   { value: "zh-CN", label: t("panel.options.zhCN") },
                   { value: "zh-TW", label: t("panel.options.zhTW") },
                   { value: "en", label: t("panel.options.en") },
+                  { value: "ja", label: "日本語" },
+                  { value: "ko", label: "한국어" },
+                  { value: "ru", label: "Русский" },
+                  { value: "es", label: "Español" },
+                  { value: "pt", label: "Português" },
                 ]}
                 onChange={(value) => configForm.setField("locale", String(value))}
               />
@@ -250,6 +309,40 @@ export default function LifeKitPanel(props: PluginSurfaceProps<LifeKitDashboardS
               label={t("panel.fields.forceLocale")}
               onChange={(value) => configForm.setField("force_locale", value)}
             />
+            <Field label={t("panel.fields.cacheTtl")}>
+              <Input
+                value={configForm.values.cache_ttl_seconds}
+                placeholder="1800"
+                onChange={(value) => configForm.setField("cache_ttl_seconds", value)}
+              />
+            </Field>
+            <Switch
+              checked={configForm.values.enable_geoip}
+              label={t("panel.fields.enableGeoip")}
+              onChange={(value) => configForm.setField("enable_geoip", value)}
+            />
+            <Field
+              label="AMap API key"
+              help={config.amap_configured ? t("panel.configured") : t("panel.notConfigured")}
+            >
+              <Input
+                type="password"
+                value={configForm.values.amap_key}
+                placeholder={t("panel.keepSecret")}
+                onChange={(value) => configForm.setField("amap_key", value)}
+              />
+            </Field>
+            <Field
+              label="Baidu Maps API key"
+              help={config.baidu_map_configured ? t("panel.configured") : t("panel.notConfigured")}
+            >
+              <Input
+                type="password"
+                value={configForm.values.baidu_map_key}
+                placeholder={t("panel.keepSecret")}
+                onChange={(value) => configForm.setField("baidu_map_key", value)}
+              />
+            </Field>
             <Button tone="success" disabled={!updateConfigAction} onClick={saveConfig}>
               {t("panel.actions.saveConfig")}
             </Button>

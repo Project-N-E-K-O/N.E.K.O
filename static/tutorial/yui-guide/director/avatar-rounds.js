@@ -124,6 +124,7 @@
                 day3SettingsSceneIds.includes(sceneId)
                 || day4SettingsSceneIds.includes(sceneId)
                 || day5SettingsSceneIds.includes(sceneId)
+                || sceneId === 'day1_screen_entry_invite'
             ) {
                 return true;
             }
@@ -162,6 +163,7 @@
                 : '';
             return !!(
                 operation === 'day1-intro-basic-voice-showcase'
+                || operation === 'day1-screen-share-entry-flow'
                 || operation === 'day3-open-settings-personalization'
                 || operation === 'day3-settings-detail'
                 || operation.indexOf('day1-managed-scene:') === 0
@@ -840,6 +842,45 @@
             }
         },
 
+        isHomePcCursorOutputSuppressedForExternalizedChat() {
+            return !!(
+                this.overlay
+                && this.overlay.pcCursorOutputSuppressed === true
+            );
+        },
+
+        releaseExternalizedChatCursorToHome() {
+            if (
+                !this.isHomeChatExternalized()
+                || !this.isHomePcCursorOutputSuppressedForExternalizedChat()
+            ) {
+                return false;
+            }
+
+            this.setHomePcCursorOutputSuppressedForExternalizedChat(false);
+            const currentCursorPoint = this.overlay && typeof this.overlay.getCursorPosition === 'function'
+                ? this.overlay.getCursorPosition()
+                : null;
+            if (
+                currentCursorPoint
+                && Number.isFinite(currentCursorPoint.x)
+                && Number.isFinite(currentCursorPoint.y)
+                && this.overlay
+                && typeof this.overlay.syncCursorPosition === 'function'
+            ) {
+                this.overlay.syncCursorPosition(currentCursorPoint.x, currentCursorPoint.y, true);
+            }
+            if (
+                this.interactionTakeover
+                && typeof this.interactionTakeover.setExternalizedChatCursor === 'function'
+            ) {
+                this.interactionTakeover.setExternalizedChatCursor('', {
+                    preservePcOverlayCursor: true
+                });
+            }
+            return true;
+        },
+
         clearHomeSpotlightsForExternalizedChat() {
             if (this.overlay && typeof this.overlay.clearSpotlight === 'function') {
                 this.overlay.clearSpotlight({
@@ -955,28 +996,12 @@
             const nextSceneId = scene && typeof scene.id === 'string' ? scene.id : '';
             return !!(
                 (
-                    previousSceneId === 'day2_intro_context'
-                    && nextSceneId === 'day2_screen_entry'
-                )
-                || (
-                    previousSceneId === 'day1_history_handle'
-                    && nextSceneId === 'day1_intro_basic_voice'
-                )
-                || (
-                    previousSceneId === 'day1_intro_basic_voice'
-                    && nextSceneId === 'day1_screen_entry'
-                )
-                || (
-                    previousSceneId === 'day1_screen_entry'
-                    && nextSceneId === 'day1_screen_entry_invite'
-                )
-                || (
-                    previousSceneId === 'day1_screen_entry_invite'
-                    && nextSceneId === 'day1_takeover_capture_cursor'
-                )
-                || (
                     previousSceneId === 'day1_takeover_capture_cursor'
                     && nextSceneId === 'day1_takeover_return_control'
+                )
+                || (
+                    previousSceneId === 'day2_intro_context'
+                    && nextSceneId === 'day2_screen_entry'
                 )
                 || (
                     previousSceneId === 'day2_tool_toggle_intro'
@@ -1606,7 +1631,7 @@
                     existingHud && existingHud.style.display !== 'none' && this.isElementVisible(existingHud)
                 );
                 if (window.AgentHUD && typeof window.AgentHUD.showAgentTaskHUD === 'function') {
-                    window.AgentHUD.showAgentTaskHUD();
+                    window.AgentHUD.showAgentTaskHUD({ ignoreVisibilityPreference: true });
                     this.avatarFloatingGuideTemporaryHudShown = true;
                     if (typeof window.AgentHUD.expandAgentTaskHUD === 'function') {
                         window.AgentHUD.expandAgentTaskHUD();
@@ -2386,7 +2411,11 @@
                     continue;
                 }
                 if (action === 'click' && index === 0) {
-                    const clickPromise = this.clickCursorAndWait(DEFAULT_CURSOR_CLICK_VISIBLE_MS);
+                    // 修改原因：允许特定教程场景单独延长点击反馈，避免关键按钮的模拟点击一闪而过。
+                    const clickDurationMs = Number.isFinite(scene.cursorClickDurationMs)
+                        ? Math.max(120, Math.floor(scene.cursorClickDurationMs))
+                        : DEFAULT_CURSOR_CLICK_VISIBLE_MS;
+                    const clickPromise = this.clickCursorAndWait(clickDurationMs);
                     if (typeof normalizedOptions.onClickStart === 'function') {
                         normalizedOptions.onClickStart({
                             scene,

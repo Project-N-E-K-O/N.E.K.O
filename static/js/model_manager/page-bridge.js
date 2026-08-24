@@ -16,6 +16,7 @@ try {
 // 用于页面间通信的事件处理
 function sendMessageToMainPage(action, payload = {}) {
     try {
+        const quiet = action === 'model_manager_window_state';
         const safePayload = {};
         if (payload && typeof payload === 'object') {
             for (const [key, value] of Object.entries(payload)) {
@@ -33,20 +34,22 @@ function sendMessageToMainPage(action, payload = {}) {
         // 优先使用 BroadcastChannel
         if (modelManagerBroadcastChannel) {
             modelManagerBroadcastChannel.postMessage(message);
-            console.log('[CrossPageComm] 通过 BroadcastChannel 发送消息:', action);
+            if (!quiet) console.log('[CrossPageComm] 通过 BroadcastChannel 发送消息:', action);
+            if (quiet) return;
         }
 
         // 方式1: 如果是在弹出窗口中，使用 postMessage（更可靠）
         if (window.opener && !window.opener.closed) {
-            console.log(`[消息发送] 使用 postMessage 发送消息: ${action}`);
+            if (!quiet) console.log(`[消息发送] 使用 postMessage 发送消息: ${action}`);
             window.opener.postMessage(message, window.location.origin);
+            if (quiet && isModelManagerHostPageWindow(window.opener)) return;
         }
 
         // 方式2: 使用localStorage事件机制发送消息给主页面（备用方案）
         try {
             localStorage.setItem('nekopage_message', JSON.stringify(message));
             localStorage.removeItem('nekopage_message'); // 立即移除以允许重复发送相同消息
-            console.log(`[消息发送] 使用 localStorage 发送消息: ${action}`);
+            if (!quiet) console.log(`[消息发送] 使用 localStorage 发送消息: ${action}`);
         } catch (e) {
             console.warn('localStorage 消息发送失败:', e);
         }
@@ -55,7 +58,19 @@ function sendMessageToMainPage(action, payload = {}) {
     }
 }
 
-
+function isModelManagerHostPageWindow(targetWindow) {
+    try {
+        const targetDocument = targetWindow && targetWindow.document;
+        return !!targetDocument && !!(
+            targetDocument.getElementById('live2d-container') ||
+            targetDocument.getElementById('vrm-container') ||
+            targetDocument.getElementById('mmd-container') ||
+            targetDocument.getElementById('pngtuber-container')
+        );
+    } catch (_) {
+        return false;
+    }
+}
 
 function isModelManagerPopupWindow() {
     return window.opener !== null;

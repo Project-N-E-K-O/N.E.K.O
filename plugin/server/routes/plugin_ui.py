@@ -17,14 +17,20 @@
     GET /plugin/{plugin_id}/ui/main.js   -> static/main.js
     GET /plugin/{plugin_id}/ui/style.css -> static/style.css
 """
+import asyncio
+import json
 import mimetypes
+import os
 import re
+from collections.abc import Awaitable
 from pathlib import Path
+from urllib.parse import urlparse
 
-from fastapi import APIRouter, HTTPException
-from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 
+from plugin.core.state import state
 from plugin.logging_config import get_logger
 from plugin.server.application.plugins.ui_query_service import PluginUiQueryService
 from plugin.server.domain.errors import ServerDomainError
@@ -40,12 +46,177 @@ _I18N_LOCALE_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9_\-]{0,15}$")
 # the parsed bytes in process memory and revalidate via mtime on each hit.
 _I18N_BUNDLE_CACHE: dict[Path, tuple[float, bytes]] = {}
 
+# ---- 插件静态 UI 的 SSE 实时推送通道（强化后端 → 前端通信）----
+# plugin_id -> list[asyncio.Queue]；每个 SSE 连接一个队列，POST /ui-api/push 广播。
+# 任意插件/后端往 /ui-api/push 推送，前端页面连 /ui-api/events 即时接收实时更新。
+_sse_clients: dict[str, list[asyncio.Queue]] = {}
+_sse_clients_lock = asyncio.Lock()
+# 每个客户端队列的最大缓冲（慢/阻塞客户端不使其无限膨胀）；满时丢弃新消息
+_SSE_QUEUE_MAX = 100
+# push 请求体大小上限（字节）：1MB，足够 catgirl 带头像弹幕，同时限制本机恶意分块请求占内存
+_PUSH_MAX_BODY = 1024 * 1024
+# 可信 Origin 主机（本机回环）：push 广播只接受无 Origin（插件后端/非浏览器）或本机页面
+_TRUSTED_ORIGIN_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
+
+# ---- runs bus → SSE 桥：把 run 状态迁移事件推给对应插件的 SSE 客户端 ----
+# run 协议本就通过 state.bus_change_hub（bus "runs"）在每次迁移发出事件
+# （plugin/runs/manager.py _emit_runs）。这里订阅它并桥接进 _sse_clients，
+# 让前端 call() 不必紧轮询 /runs/{id}。只桥接终端状态（succeeded/failed/
+# canceled/timeout），前端只关心这些。
+_SSE_RUNS_BRIDGE_INSTALLED = False
+_SSE_RUNS_BRIDGE_SUB = None
+_SSE_RUN_TERMINAL_STATUSES = frozenset({"succeeded", "failed", "canceled", "timeout"})
+
+
+def _sse_queue_put_best_effort(queue: asyncio.Queue, frame: str) -> None:
+    try:
+        queue.put_nowait(frame)
+    except asyncio.QueueFull:
+        pass  # 慢客户端丢帧，SSE 本来就是尽力而为
+
+
+def _bridge_runs_event(op: str, payload: object) -> None:
+    """runs bus 事件 → 对应 plugin_id 的 SSE 队列（仅终端状态）。
+
+    run 在事件循环内执行（asyncio.create_task），emit 也发生在事件循环线程，
+    因此这里直接 put_nowait 是线程安全的。
+    """
+    try:
+        if not isinstance(payload, dict):
+            return
+        plugin_id = payload.get("plugin_id")
+        if not isinstance(plugin_id, str) or not plugin_id:
+            return
+        status = str(payload.get("status") or "").strip()
+        if status not in _SSE_RUN_TERMINAL_STATUSES:
+            return
+        clients = _sse_clients.get(plugin_id)
+        if not clients:
+            return
+        frame = "data: " + json.dumps({
+            "type": "run",
+            "plugin_id": plugin_id,
+            "run_id": payload.get("run_id"),
+            "status": status,
+        }, ensure_ascii=False) + "\n\n"
+        for queue_obj in list(clients):
+            _sse_queue_put_best_effort(queue_obj, frame)
+    except Exception:
+        return
+
+
+def _ensure_runs_sse_bridge() -> None:
+    """懒安装：首个 SSE 客户端连接时订阅 runs bus。幂等。"""
+    global _SSE_RUNS_BRIDGE_INSTALLED, _SSE_RUNS_BRIDGE_SUB
+    if _SSE_RUNS_BRIDGE_INSTALLED:
+        return
+    try:
+        _SSE_RUNS_BRIDGE_SUB = state.bus_change_hub.subscribe("runs", _bridge_runs_event)
+        _SSE_RUNS_BRIDGE_INSTALLED = True
+    except Exception:
+        _SSE_RUNS_BRIDGE_INSTALLED = False
+
+
+def _origin_is_trusted(origin: str) -> bool:
+    """push 广播的 Origin 校验：无 Origin（插件后端/curl）或本机回环放行。
+
+    防止恶意网站通过浏览器表单 POST（no-cors）向 loopback 注入 SSE 消息。
+    """
+    origin = (origin or "").strip()
+    if not origin:
+        return True
+    try:
+        host = (urlparse(origin).hostname or "").lower()
+    except Exception:
+        return False
+    return host in _TRUSTED_ORIGIN_HOSTS
+
+
+def _is_loopback_host(host: str) -> bool:
+    """判断对端主机是否本机回环：localhost、整个 IPv4 回环网段 127.0.0.0/8、
+    IPv6 ::1，以及 IPv4-mapped IPv6 形式 ::ffff:127.x.x.x。
+
+    push 移除共享密钥后，以此作为「仅本机回环可推送」的边界：不信任
+    X-Forwarded-For 等转发头，直接看直连对端 request.client.host。
+    """
+    host = (host or "").strip().lower()
+    if host in ("localhost", "::1"):
+        return True
+    if host.startswith("127."):  # 整个 127.0.0.0/8 都是 IPv4 回环（本机后端可能绑 127.0.0.2 等）
+        return True
+    return host.startswith("::ffff:127.")
+
+
+def _parse_push_payload(body: bytes) -> dict:
+    """POST /ui-api/push 入参解析：支持 {"type":..., "text":..., ...} 或纯文本。
+
+    type 为调用方（插件）自定义的消息类别，server 原样透传、不预设分类；
+    text 为必填正文；style / avatar 等为可选扩展元数据。返回空 dict 表示无内容。
+    """
+    raw = body.decode("utf-8", "replace").strip()
+    if not raw:
+        return {}
+    if raw.startswith("{"):
+        try:
+            payload = json.loads(raw)
+        except Exception:
+            return {"text": raw}  # 非合法 JSON → 回退纯文本
+        if not isinstance(payload, dict):
+            return {}  # JSON 但不是对象 → 拒绝
+        text = str(payload.get("text") or "").strip()
+        if not text:
+            return {}  # 缺 text / 空 text → 拒绝（不回退纯文本，避免原始 JSON 被当正文）
+        result: dict = {"text": text}
+        msg_type = str(payload.get("type") or "").strip()
+        if msg_type:
+            result["type"] = msg_type
+        style = str(payload.get("style") or "").strip()
+        if style in ("catgirl", "narration"):
+            result["style"] = style
+        placement = str(payload.get("placement") or "").strip()
+        if placement in ("scrolling", "top"):
+            result["placement"] = placement
+        avatar = str(payload.get("avatar") or "").strip()
+        if avatar:
+            result["avatar"] = avatar
+        return result
+    return {"text": raw}
+
 
 class HostedUiActionRequest(BaseModel):
     args: dict[str, object] = Field(default_factory=dict)
     kind: str = "panel"
     surface_id: str = "main"
     locale: str | None = None
+
+
+async def _wait_for_request_disconnect(request: Request) -> None:
+    while not await request.is_disconnected():
+        await asyncio.sleep(0.05)
+
+
+async def _await_action_or_disconnect(
+    request: Request,
+    action: Awaitable[dict[str, object]],
+) -> dict[str, object]:
+    action_task = asyncio.create_task(action)
+    disconnect_task = asyncio.create_task(_wait_for_request_disconnect(request))
+    try:
+        done, _pending = await asyncio.wait(
+            {action_task, disconnect_task},
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        if action_task in done:
+            return await action_task
+        raise HTTPException(
+            status_code=499,
+            detail={"code": "hosted_action_client_disconnected"},
+        )
+    finally:
+        for task in (action_task, disconnect_task):
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(action_task, disconnect_task, return_exceptions=True)
 
 
 async def _get_plugin_static_dir(plugin_id: str) -> Path | None:
@@ -214,6 +385,114 @@ async def plugin_ui_api_i18n_bundle(plugin_id: str, locale: str) -> Response:
     )
 
 
+@router.get("/plugin/{plugin_id}/ui-api/events")
+async def plugin_ui_sse_events(plugin_id: str):
+    """插件静态 UI 的 SSE 事件流（后端 → 前端实时推送）。
+
+    前端页面用 EventSource 连这里，即时接收 /ui-api/push 广播的实时更新；
+    同时订阅 runs bus，run 完成后台推送 ``type:run`` 事件，替代前端紧轮询。
+    """
+    # 有界队列：慢/阻塞客户端不被无限缓冲（满时由 push 侧丢弃新消息）
+    queue_obj: asyncio.Queue = asyncio.Queue(maxsize=_SSE_QUEUE_MAX)
+    # 首个客户端连接时安装 runs bus → SSE 桥（幂等）
+    _ensure_runs_sse_bridge()
+
+    async def event_stream():
+        await _sse_clients_lock.acquire()
+        try:
+            _sse_clients.setdefault(plugin_id, []).append(queue_obj)
+        finally:
+            _sse_clients_lock.release()
+        try:
+            yield "data: " + json.dumps({"type": "hello", "lanes": 12}, ensure_ascii=False) + "\n\n"
+            while True:
+                try:
+                    payload = await asyncio.wait_for(queue_obj.get(), timeout=15.0)
+                    yield payload
+                except asyncio.TimeoutError:
+                    yield ": keepalive\n\n"
+        finally:
+            await _sse_clients_lock.acquire()
+            try:
+                clients = _sse_clients.get(plugin_id)
+                if clients and queue_obj in clients:
+                    clients.remove(queue_obj)
+                # 列表空则删除 plugin_id，避免任意路径参数留下永久空条目
+                if clients is not None and not clients:
+                    _sse_clients.pop(plugin_id, None)
+            finally:
+                _sse_clients_lock.release()
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@router.post("/plugin/{plugin_id}/ui-api/push")
+async def plugin_ui_push(plugin_id: str, request: Request):
+    """向插件静态 UI 的所有 SSE 客户端广播一条实时消息（后端 → 前端推送）。
+
+    入参：{"text": "..."} 或纯文本。任意插件/后端调用，推送到已订阅的前端页面。
+    返回 ``queued``：成功写入各客户端缓冲队列的数目（排队计数，非客户端实际送达确认）。
+
+    鉴权：仅本机回环客户端可直接推送（不再要求共享密钥；对端非回环一律拒绝，
+    伪造 Origin / 转发头均无法绕过；Origin 校验仍防跨站注入）。
+    """
+    # 回环校验：只接受本机回环客户端。用直连对端 request.client.host，不信任
+    # X-Forwarded-For，避免伪造转发头绕过（非回环部署应保留其他鉴权/可信代理）。
+    client_host = request.client.host if request.client else ""
+    if not _is_loopback_host(client_host):
+        return JSONResponse({"ok": False, "error": "non-loopback push rejected"}, status_code=403)
+    # Origin 校验：浏览器跨站表单 POST（no-cors）可向 loopback 注入 SSE；
+    # 只接受无 Origin（插件后端/curl）或本机回环 Origin
+    if not _origin_is_trusted(request.headers.get("origin", "")):
+        return JSONResponse({"ok": False, "error": "invalid origin"}, status_code=403)
+    # 流式读取请求体：累计字节数，超过固定上限立即 413，避免本机恶意分块请求占内存
+    chunks: list[bytes] = []
+    total = 0
+    async for chunk in request.stream():
+        total += len(chunk)
+        if total > _PUSH_MAX_BODY:
+            return JSONResponse({"ok": False, "error": "payload too large"}, status_code=413)
+        chunks.append(chunk)
+    body = b"".join(chunks)
+    payload = _parse_push_payload(body)
+    if not payload.get("text"):
+        return JSONResponse({"ok": False, "error": "empty"}, status_code=400)
+    # type 由插件自定义并原样透传（server 不预设分类）；未指定则不带 type 字段
+    event: dict = {"text": payload["text"]}
+    if payload.get("type"):
+        event["type"] = payload["type"]
+    if payload.get("style"):
+        event["style"] = payload["style"]
+    if payload.get("placement"):
+        event["placement"] = payload["placement"]
+    if payload.get("avatar"):
+        event["avatar"] = payload["avatar"]
+    data = "data: " + json.dumps(event, ensure_ascii=False) + "\n\n"
+    queued = 0
+    await _sse_clients_lock.acquire()
+    try:
+        clients = _sse_clients.get(plugin_id, [])
+        for c in list(clients):
+            try:
+                c.put_nowait(data)  # 队列满（QueueFull）→ 丢弃新消息，不计入 queued
+                queued += 1
+            except asyncio.QueueFull:
+                pass  # 预期：队列满丢弃该条，不计入 queued
+            except Exception as exc:  # 其他运行时故障（如队列已关闭）记录，不阻断其它客户端
+                logger.warning("[plugin-ui] SSE push 队列写入失败: %s", exc)
+    finally:
+        _sse_clients_lock.release()
+    return JSONResponse({"ok": True, "queued": queued})
+
+
 @router.get("/plugin/{plugin_id}/ui/{file_path:path}")
 async def plugin_ui_file(plugin_id: str, file_path: str):
     """获取插件 UI 静态文件"""
@@ -347,16 +626,24 @@ async def plugin_hosted_ui_context(plugin_id: str, kind: str = "panel", id: str 
 
 
 @router.post("/plugin/{plugin_id}/hosted-ui/action/{action_id}")
-async def plugin_hosted_ui_action(plugin_id: str, action_id: str, request: HostedUiActionRequest):
+async def plugin_hosted_ui_action(
+    plugin_id: str,
+    action_id: str,
+    http_request: Request,
+    request: HostedUiActionRequest,
+):
     """执行 hosted surface 动作；第一版复用本插件 plugin_entry。"""
     try:
-        result = await plugin_ui_query_service.call_surface_action(
-            plugin_id,
-            action_id=action_id,
-            args=request.args,
-            kind=request.kind,
-            surface_id=request.surface_id,
-            locale=request.locale,
+        result = await _await_action_or_disconnect(
+            http_request,
+            plugin_ui_query_service.call_surface_action(
+                plugin_id,
+                action_id=action_id,
+                args=request.args,
+                kind=request.kind,
+                surface_id=request.surface_id,
+                locale=request.locale,
+            ),
         )
     except ServerDomainError as error:
         raise_http_from_domain(error, logger=logger)

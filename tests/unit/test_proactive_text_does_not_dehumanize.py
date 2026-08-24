@@ -250,14 +250,11 @@ from config.prompts.prompts_proactive import (  # noqa: E402
     _CAT_GREETING_EPISODE_PROMPTS,
     _CAT_GREETING_EPISODE_RETURN_TONES,
     _CAT_GREETING_EPISODE_SCENES,
-    _CAT_GREETING_SHORT_EPISODE_PROMPTS,
-    _CAT_GREETING_SHORT_STARTED_PROMPTS,
     _CAT_GREETING_TABLES,
     get_cat_greeting_episode_prompt,
     get_cat_greeting_episode_scene,
     get_cat_greeting_prompt,
     get_cat_greeting_reason_hint,
-    get_cat_greeting_started_return_prompt,
 )
 
 # (behavior, duration_seconds) 覆盖清醒/打盹/熟睡三行为 × 短/久两档。
@@ -296,7 +293,13 @@ def test_cat_greeting_silences_short_returns() -> None:
         assert get_cat_greeting_prompt('awake', 180, lang) is not None
 
 
-_CAT_EPISODE_LOCALES = ('zh', 'en', 'ja', 'ko', 'ru', 'es', 'pt')
+# 'zh-TW' joined the tables with the issue #2500 backfill. The module's
+# normalizer still collapses Traditional to 'zh' (keep_traditional=False), so the
+# new rows are not reachable through get_cat_greeting_* yet — see
+# test_cat_greeting_episode_scene_rejects_invalid_combinations_and_uses_english_fallback,
+# which pins that collapse. This tuple is the table-coverage list, not the
+# resolver's input domain.
+_CAT_EPISODE_LOCALES = ('zh', 'zh-TW', 'en', 'ja', 'ko', 'ru', 'es', 'pt')
 _CAT_EPISODE_CASES = [
     {'kind': 'activity'},
     {'kind': 'activity', 'highlight': 'played_yarn'},
@@ -321,8 +324,6 @@ def test_cat_greeting_episode_prompt_tables_cover_all_normalized_locales() -> No
     }
     assert set(_CAT_GREETING_EPISODE_SCENES) == expected_locales
     assert set(_CAT_GREETING_EPISODE_PROMPTS) == expected_locales
-    assert set(_CAT_GREETING_SHORT_EPISODE_PROMPTS) == expected_locales
-    assert set(_CAT_GREETING_SHORT_STARTED_PROMPTS) == expected_locales
     assert set(_CAT_GREETING_EPISODE_RETURN_TONES) == expected_locales
     for lang in expected_locales:
         assert set(_CAT_GREETING_EPISODE_SCENES[lang]) == {
@@ -360,7 +361,13 @@ def test_cat_greeting_episode_scene_rejects_invalid_combinations_and_uses_englis
     assert get_cat_greeting_episode_scene({'kind': 'rested'}, 'fr-FR') == english
     zh = get_cat_greeting_episode_scene({'kind': 'rested'}, 'zh')
     assert get_cat_greeting_episode_scene({'kind': 'rested'}, 'zh-CN') == zh
-    assert get_cat_greeting_episode_scene({'kind': 'rested'}, 'zh-TW') == zh
+    # 自 #2500 C2 起繁中走自己那一行，不再折成简体。
+    traditional = get_cat_greeting_episode_scene({'kind': 'rested'}, 'zh-TW')
+    # 空断言陷阱：查不到 kind 时函数返回 ''，那样 '' != zh 与 '' == '' 两条都成立，
+    # 繁中用户拿到空文案而测试全绿。必须先钉住它非空。
+    assert traditional, 'zh-TW 缺少 rested 场景行，繁中会拿到空文案'
+    assert traditional != zh
+    assert get_cat_greeting_episode_scene({'kind': 'rested'}, 'zh-Hant') == traditional
 
 
 def test_cat_greeting_episode_scene_is_not_labeled_as_optional_background() -> None:
@@ -462,8 +469,6 @@ def test_cat_greeting_source_templates_embed_chinese_environment_end_marker() ->
     tables = (
         *_CAT_GREETING_TABLES.values(),
         _CAT_GREETING_EPISODE_PROMPTS,
-        _CAT_GREETING_SHORT_EPISODE_PROMPTS,
-        _CAT_GREETING_SHORT_STARTED_PROMPTS,
     )
     for table in tables:
         assert set(table) == set(_CAT_EPISODE_LOCALES)
@@ -482,10 +487,6 @@ def test_cat_greeting_all_prompt_paths_preserve_embedded_environment_end_marker(
     prompts = (
         get_cat_greeting_prompt('awake', 300, lang),
         get_cat_greeting_episode_prompt('nap', 300, lang),
-        get_cat_greeting_episode_prompt(
-            'sleep', 10, lang, allow_short_started=True,
-        ),
-        get_cat_greeting_started_return_prompt(lang),
     )
     for prompt in prompts:
         assert prompt is not None
@@ -499,52 +500,11 @@ def test_cat_greeting_all_prompt_paths_preserve_embedded_environment_end_marker(
 
 @pytest.mark.parametrize('lang', _CAT_SHORT_RETURN_INPUT_LOCALES)
 @pytest.mark.parametrize('behavior', ('awake', 'nap', 'sleep'))
-def test_cat_greeting_short_started_episode_uses_a_scene_without_fabricated_duration(lang, behavior) -> None:
-    episode = {'kind': 'activity', 'highlight': 'played_yarn'}
-    template = get_cat_greeting_episode_prompt(
-        behavior,
-        10,
-        lang,
-        allow_short_started=True,
-    )
-    assert template is not None
-    assert '{elapsed}' not in template
-    scene = get_cat_greeting_episode_scene(episode, lang)
-    rendered = template.format(
-        reason_hint=get_cat_greeting_reason_hint(False, lang).format(master=MASTER),
-        elapsed='must never render',
-        name='奈々',
-        master=MASTER,
-        time_hint='must never render',
-        cat_form_scene=scene,
-    )
-    assert scene in rendered
-    assert 'must never render' not in rendered
-    assert '{' not in rendered and '}' not in rendered
-    _assert_no_forbidden(rendered, ctx=f'cat_short_episode lang={lang}/{behavior}')
+def test_cat_greeting_episode_prompt_cannot_bypass_minimum_dwell_time(lang, behavior) -> None:
+    template = get_cat_greeting_episode_prompt(behavior, 10, lang)
+    assert template is None
 
 
-@pytest.mark.parametrize('lang', _CAT_SHORT_RETURN_INPUT_LOCALES)
-def test_cat_greeting_short_started_without_done_episode_is_neutral_and_format_safe(lang) -> None:
-    template = get_cat_greeting_started_return_prompt(lang)
-    rendered = template.format(
-        reason_hint=get_cat_greeting_reason_hint(False, lang).format(master=MASTER),
-        name='奈々',
-        master=MASTER,
-    )
-    assert MASTER in rendered
-    assert '{' not in rendered and '}' not in rendered
-    assert 'cat1_' not in rendered
-    assert 'cat2_' not in rendered
-    assert 'cat3_' not in rendered
-    assert 'requestId' not in rendered
-    assert 'runId' not in rendered
-    assert '{elapsed}' not in template
-    assert '{cat_form_scene}' not in template
-    _assert_no_forbidden(rendered, ctx=f'cat_short_started_neutral lang={lang}')
-
-
-def test_cat_greeting_short_started_helpers_keep_default_short_silence_and_english_fallback() -> None:
+def test_cat_greeting_episode_prompt_keeps_unified_silence_boundary() -> None:
     assert get_cat_greeting_episode_prompt('awake', 179, 'en') is None
-    assert get_cat_greeting_episode_prompt('awake', 179, 'en', allow_short_started=True) is not None
-    assert get_cat_greeting_started_return_prompt('fr-FR') == get_cat_greeting_started_return_prompt('en')
+    assert get_cat_greeting_episode_prompt('awake', 180, 'en') is not None

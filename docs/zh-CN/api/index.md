@@ -44,6 +44,7 @@ http://127.0.0.1:48911
 | [角色](/zh-CN/api/rest/characters) | `/api/characters` | 角色、人格、角色卡、语音和形象操作 |
 | [Live2D](/zh-CN/api/rest/live2d) | `/api/live2d` | Live2D 模型和表情映射 |
 | [VRM](/zh-CN/api/rest/vrm) | `/api/model/vrm` | VRM 模型、配置、动画和表情 |
+| [VMC 动作输出](/zh-CN/api/rest/vmc) | `/api/vmc` | 把当前 VRM 动作通过 OSC/UDP 发送到本地接收端 |
 | [MMD](/zh-CN/api/rest/mmd) | `/api/model/mmd` | MMD 模型和动作管理 |
 | [PNGTuber](/zh-CN/api/rest/pngtuber) | `/api/model/pngtuber` | PNGTuber 模型管理 |
 | [记忆](/zh-CN/api/rest/memory) | `/api/memory` | 近期记忆文件、审阅/设置、重命名和遗留清理；召回使用内部 `/query_memory` 路由 |

@@ -189,7 +189,10 @@ class MemoryRecallReranker:
         # anyway, so the LLM call would be wasted tokens.
         try:
             from config.prompts.prompts_memory import get_memory_recall_rerank_prompt
-            from utils.language_utils import get_global_language
+            from utils.language_utils import (
+                detect_prompt_language_with_ascii_fallback,
+                get_global_language_full,
+            )
         except ImportError:
             # Prompt not available yet — degrade to coarse rank.
             return coarse[:budget]
@@ -204,7 +207,10 @@ class MemoryRecallReranker:
             ranked = await self._fine_rank(
                 coarse, query_texts, budget=budget,
                 config_manager=config_manager,
-                lang=get_global_language(),
+                lang=detect_prompt_language_with_ascii_fallback(
+                    "\n".join(query_texts),
+                    ui_language=get_global_language_full(),
+                ),
                 prompt_loader=get_memory_recall_rerank_prompt,
             )
         except Exception as e:  # noqa: BLE001 — best-effort, never crash recall
@@ -657,7 +663,7 @@ class MemoryRecallReranker:
         )
 
         set_call_type("memory_recall_rerank")
-        api_config = config_manager.get_model_api_config('summary')
+        api_config = await config_manager.aget_model_api_config('summary')
         # timeout=8: recall 在 query_memory 请求路径上，上游 plugin/core/context.py
         # 默认 5s 截断；本地 8s 给 connect + 一次失败裕度。超时即抛
         # APITimeoutError，外层 try/except 已会降级到 coarse rank。

@@ -1088,13 +1088,21 @@ padding-left: 4px;
 
 /* 自定义API折叠样式 */
 .custom-api-container {
-transition: all 0.3s ease-in-out;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    column-gap: 18px;
+    row-gap: 14px;
+    align-items: start;
+    transition: all 0.3s ease-in-out;
 }
 
 /* 清空自定义API按钮 */
 .clear-custom-api-wrapper {
-    margin-bottom: 16px;
-    text-align: right;
+    grid-column: 2;
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    min-width: 0;
+    margin: 0;
 }
 
 .clear-custom-api-btn {
@@ -1124,16 +1132,68 @@ transition: all 0.3s ease-in-out;
     box-shadow: 0 1px 4px rgba(238, 90, 36, 0.2);
 }
 
-.clear-custom-api-icon {
-    font-size: 1em;
+.model-config-container {
+    min-width: 0;
+    margin-bottom: 0;
+    border: 0;
+    border-radius: 0;
+    overflow: visible;
+    transition: all 0.3s ease-in-out;
 }
 
-.model-config-container {
-    margin-bottom: 16px;
-    border: 1px solid #e0e0e0;
-    border-radius: 24px;
-    overflow: hidden;
-    transition: all 0.3s ease-in-out;
+@media (min-width: 801px) {
+    .custom-api-container
+        > .model-config-container
+        > .model-content.expanded {
+        width: calc(200% + 18px);
+    }
+
+    .custom-api-container
+        > .model-config-container:has(> #vision-model-content, > #correction-model-content, > #omni-model-content, > #tts-model-content)
+        > .model-content.expanded {
+        margin-left: calc(-100% - 18px);
+    }
+
+    .custom-api-container:has(#conversation-model-content:is(.expanded, .is-collapsing)):has(#vision-model-content:is(.expanded, .is-collapsing))
+        :is(#conversation-model-content, #vision-model-content):is(.expanded, .is-collapsing),
+    .custom-api-container:has(#summary-model-content:is(.expanded, .is-collapsing)):has(#correction-model-content:is(.expanded, .is-collapsing))
+        :is(#summary-model-content, #correction-model-content):is(.expanded, .is-collapsing),
+    .custom-api-container:has(#emotion-model-content:is(.expanded, .is-collapsing)):has(#omni-model-content:is(.expanded, .is-collapsing))
+        :is(#emotion-model-content, #omni-model-content):is(.expanded, .is-collapsing),
+    .custom-api-container:has(#agent-model-content:is(.expanded, .is-collapsing)):has(#tts-model-content:is(.expanded, .is-collapsing))
+        :is(#agent-model-content, #tts-model-content):is(.expanded, .is-collapsing) {
+        width: 100%;
+        margin-left: 0;
+    }
+
+    .custom-api-container:has(#conversation-model-content.expanded)
+        > .model-config-container:has(> #vision-model-content)
+        > .model-header[aria-expanded="false"],
+    .custom-api-container:has(#vision-model-content.expanded)
+        > .model-config-container:has(> #conversation-model-content)
+        > .model-header[aria-expanded="false"],
+    .custom-api-container:has(#summary-model-content.expanded)
+        > .model-config-container:has(> #correction-model-content)
+        > .model-header[aria-expanded="false"],
+    .custom-api-container:has(#correction-model-content.expanded)
+        > .model-config-container:has(> #summary-model-content)
+        > .model-header[aria-expanded="false"],
+    .custom-api-container:has(#emotion-model-content.expanded)
+        > .model-config-container:has(> #omni-model-content)
+        > .model-header[aria-expanded="false"],
+    .custom-api-container:has(#omni-model-content.expanded)
+        > .model-config-container:has(> #emotion-model-content)
+        > .model-header[aria-expanded="false"],
+    .custom-api-container:has(#agent-model-content.expanded)
+        > .model-config-container:has(> #tts-model-content)
+        > .model-header[aria-expanded="false"],
+    .custom-api-container:has(#tts-model-content.expanded)
+        > .model-config-container:has(> #agent-model-content)
+        > .model-header[aria-expanded="false"] {
+        opacity: 0.62;
+        filter: saturate(0.55);
+    }
+
 }
 
 .model-header {
@@ -1143,8 +1203,10 @@ transition: all 0.3s ease-in-out;
     width: 100%;
     padding: 12px 20px;
     background: linear-gradient(135deg, #40C5F1 0%, #22b3ff 100%);
-    border: 0;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.2);
+    border: 1px solid rgba(34, 179, 255, 0.35);
+    border-radius: 999px;
+    overflow: hidden;
+    box-sizing: border-box;
     cursor: pointer;
     font: inherit;
     text-align: left;
@@ -1161,6 +1223,25 @@ box-shadow: 0 2px 6px rgba(64, 197, 241, 0.3);
 opacity: 0.95;
 transform: translateY(1px) scale(0.98);
 box-shadow: 0 1px 3px rgba(64, 197, 241, 0.2);
+}
+
+.custom-api-container
+    > .model-config-container
+    > .model-header[aria-expanded="true"] {
+    opacity: 1;
+    background: linear-gradient(135deg, #4bd0f7 0%, #13adfa 100%);
+    transform: translateY(-2px) scale(1.006);
+    box-shadow:
+        inset 0 0 0 2px rgba(255, 255, 255, 0.9),
+        0 0 16px rgba(64, 197, 241, 0.3),
+        0 8px 18px rgba(16, 131, 193, 0.3);
+}
+
+.custom-api-container
+    > .model-config-container
+    > .model-header[aria-expanded="true"]:hover {
+    opacity: 1;
+    transform: translateY(-2px) scale(1.006);
 }
 
 .model-title {
@@ -1187,25 +1268,42 @@ font-size: 0.9rem;
 .model-content {
 max-height: 0;
 overflow: hidden;
-transition: max-height 0.3s ease-in-out;
+box-sizing: border-box;
+transition: max-height 0.3s ease-in-out, margin-top 0.3s ease-in-out;
+}
+
+.model-content.is-reflowing {
+    transition:
+        max-height 0.3s ease-in-out,
+        margin-top 0.3s ease-in-out,
+        width 0.24s ease-in-out,
+        margin-left 0.24s ease-in-out;
 }
 
 .model-content.expanded {
     max-height: 2000px;
+    margin-top: 8px;
+    border: 1px solid #d5eaf4;
+    border-top: 3px solid #40c5f1;
+    border-radius: 24px;
+}
+
+.model-content.expanded:has(.api-provider-dropdown.open) {
+    overflow: visible;
 }
 
 .nested-model-config-container {
     margin: 10px 12px;
-    border: 1px solid #d6edf8;
-    border-radius: 8px;
-    overflow: hidden;
-    background: rgba(64, 197, 241, 0.04);
+    border: 0;
+    border-radius: 0;
+    overflow: visible;
+    background: transparent;
 }
 
 .nested-model-header {
     padding: 10px 14px;
     background: rgba(64, 197, 241, 0.14);
-    border-bottom: 1px solid rgba(64, 197, 241, 0.16);
+    border-color: #d6edf8;
 }
 
 .nested-model-header .model-title {
@@ -1224,6 +1322,9 @@ transition: max-height 0.3s ease-in-out;
 
 .nested-model-content.expanded {
     max-height: 800px;
+    border-color: #d6edf8;
+    border-radius: 18px;
+    background: rgba(64, 197, 241, 0.04);
 }
 
 .model-content .field-row {
@@ -1680,6 +1781,21 @@ padding: 0;
 margin: 0;
 }
 
+.custom-api-container {
+    grid-template-columns: minmax(0, 1fr);
+    row-gap: 12px;
+}
+
+.custom-api-container > .clear-custom-api-wrapper,
+.custom-api-container > .connectivity-test-btn-wrapper,
+.custom-api-container > .model-config-container {
+    grid-column: 1;
+}
+
+.clear-custom-api-wrapper {
+    justify-content: flex-start;
+}
+
 .container-content {
     padding: 18px 18px 120px;
 }
@@ -1751,9 +1867,17 @@ font-size: 0.8em;
     max-width: 600px;
 }
 
+.model-content .connectivity-input-row {
+    margin-top: 8px;
+}
+
 .connectivity-input-row input {
     flex: 1;
     min-width: 0;
+}
+
+.model-content .connectivity-input-row input {
+    margin-top: 0;
 }
 
 /* Connected - Green */
@@ -1840,6 +1964,14 @@ font-size: 0.8em;
     margin-bottom: 12px;
 }
 
+.connectivity-test-btn-wrapper {
+    grid-column: 1;
+    display: flex;
+    align-items: center;
+    min-width: 0;
+    margin: 0;
+}
+
 .connectivity-test-btn:hover:not(:disabled) {
     background: linear-gradient(135deg, rgba(64, 197, 241, 0.2) 0%, rgba(64, 197, 241, 0.1) 100%);
     border-color: #22b3ff;
@@ -1911,12 +2043,35 @@ font-size: 0.8em;
 
 .connectivity-summary-light {
     display: inline-block;
+    position: relative;
     width: 10px;
     height: 10px;
+    flex: 0 0 auto;
+    padding: 0;
+    border: 0;
     border-radius: 50%;
     background-color: #CCCCCC;
-    transition: background-color 0.3s ease, box-shadow 0.3s ease;
-    cursor: default;
+    appearance: none;
+    transition: background-color 0.3s ease, box-shadow 0.3s ease, outline-color 0.2s ease;
+    cursor: pointer;
+}
+
+.connectivity-summary-light::after {
+    content: '';
+    position: absolute;
+    inset: -3px;
+    border-radius: 50%;
+    cursor: pointer;
+}
+
+.connectivity-summary-light:hover {
+    outline: 2px solid rgba(64, 197, 241, 0.45);
+    outline-offset: 2px;
+}
+
+.connectivity-summary-light:focus-visible {
+    outline: 2px solid #40C5F1;
+    outline-offset: 3px;
 }
 
 /* Reuse the same color states for summary lights */

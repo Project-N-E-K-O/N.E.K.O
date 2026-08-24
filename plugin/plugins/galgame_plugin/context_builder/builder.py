@@ -6,10 +6,6 @@ import re
 from typing import Any
 
 from ..context_tokens import count_tokens_heuristic
-from ..cross_scene_memory import (
-    render_for_push as _render_cross_scene_memory_for_push,
-    sanitize_memory as _cross_scene_sanitize,
-)
 from ..models import (
     DATA_SOURCE_BRIDGE_SDK,
     DATA_SOURCE_MEMORY_READER,
@@ -19,6 +15,7 @@ from ..models import (
     sanitize_snapshot_state,
 )
 from ..reader import normalize_text
+from ..ocr_text_normalize import _looks_like_self_ui_text
 
 _OCR_OVERLAY_TEXT_GUARD_SUBSTRINGS = (
     ".agent",
@@ -152,7 +149,9 @@ def _looks_like_ocr_overlay_text(text: object) -> bool:
     normalized = normalize_text(str(text or "")).strip().lower()
     if not normalized:
         return False
-    return any(token in normalized for token in _OCR_OVERLAY_TEXT_GUARD_SUBSTRINGS)
+    return _looks_like_self_ui_text(normalized) or any(
+        token in normalized for token in _OCR_OVERLAY_TEXT_GUARD_SUBSTRINGS
+    )
 
 
 def _significant_char_count(text: object) -> int:
@@ -528,7 +527,9 @@ def _global_scene_context_window(
     observed_candidates = [
         {**dict(item), "_context_source": "observed"}
         for item in history_observed_lines
-        if isinstance(item, dict) and _matches(item)
+        if isinstance(item, dict)
+        and _matches(item)
+        and str(item.get("stability") or "").strip().lower() != "stable"
     ]
     if dialogue_only:
         stable_candidates = _dialogue_context_lines(
@@ -539,6 +540,14 @@ def _global_scene_context_window(
             observed_candidates,
             limit=max(line_limit, len(observed_candidates)) if line_importance_enabled else line_limit,
         )
+    stable_keys = {
+        _dialogue_line_dedupe_key(item) for item in stable_candidates
+    }
+    observed_candidates = [
+        item
+        for item in observed_candidates
+        if _dialogue_line_dedupe_key(item) not in stable_keys
+    ]
 
     ordered_lines = _recency_ordered_context_lines(stable_candidates, observed_candidates)
     if target_line is not None:
@@ -1069,21 +1078,6 @@ def _scene_context_hint(
     return {}
 
 
-def _cross_scene_memory_context(
-    local_state: dict[str, Any],
-    *,
-    max_chars: int = 360,
-) -> dict[str, Any]:
-    memory = _cross_scene_sanitize(local_state.get("cross_scene_memory"))
-    rendered = _render_cross_scene_memory_for_push(memory, max_chars=max_chars)
-    if not rendered:
-        return {}
-    return {
-        "cross_scene_memory": memory,
-        "cross_scene_memory_context": rendered,
-    }
-
-
 def _compact_profile_text(value: Any, *, limit: int = 180) -> str:
     if isinstance(value, list):
         text = " / ".join(str(item).strip() for item in value if str(item).strip())
@@ -1175,12 +1169,25 @@ def _snapshot_for_stable_summary_seed(
     local_state: dict[str, Any],
     snapshot: dict[str, Any],
     stable_lines: list[dict[str, Any]],
+    *,
+    scene_id: str = "",
 ) -> dict[str, Any]:
-    if str(local_state.get("active_data_source") or "") != DATA_SOURCE_OCR_READER:
-        return snapshot
-    if str(snapshot.get("stability") or "") == "stable":
-        return snapshot
     snapshot_line_id = str(snapshot.get("line_id") or "")
+    is_ocr_snapshot = (
+        str(local_state.get("active_data_source") or "") == DATA_SOURCE_OCR_READER
+        or _is_ocr_reader_identifier(snapshot_line_id)
+    )
+    if not is_ocr_snapshot:
+        return snapshot
+    snapshot_scene_id = str(snapshot.get("scene_id") or "").strip()
+    if str(snapshot.get("stability") or "") == "stable":
+        if scene_id and snapshot_scene_id == str(scene_id).strip():
+            return snapshot
+        for line in stable_lines:
+            if not isinstance(line, dict):
+                continue
+            if snapshot_line_id and snapshot_line_id == str(line.get("line_id") or ""):
+                return snapshot
     snapshot_text = str(snapshot.get("text") or "")
     snapshot_speaker = str(snapshot.get("speaker") or "")
     for line in stable_lines:
@@ -1409,7 +1416,12 @@ def build_summarize_context(
         route_id=route_id,
         lines=stable_lines,
         selected_choices=selected_choices,
-        snapshot=_snapshot_for_stable_summary_seed(local_state, snapshot, stable_lines),
+        snapshot=_snapshot_for_stable_summary_seed(
+            local_state,
+            snapshot,
+            stable_lines,
+            scene_id=effective_scene_id,
+        ),
         previous_summary=_previous_summary_from_state(
             local_state,
             current_game_id=str(local_state.get("active_game_id") or ""),
@@ -1428,12 +1440,18 @@ def build_summarize_context(
             route_id=route_id,
         ),
     )
+    reviewed_snapshot = _snapshot_for_stable_summary_seed(
+        local_state,
+        snapshot,
+        stable_lines,
+        scene_id=effective_scene_id,
+    )
     return {
         "game_id": str(local_state.get("active_game_id") or ""),
         "session_id": str(local_state.get("active_session_id") or ""),
         "scene_id": effective_scene_id,
         "route_id": route_id,
-        "current_snapshot": snapshot,
+        "current_snapshot": reviewed_snapshot,
         "recent_lines": scene_lines,
         "stable_lines": stable_lines,
         "observed_lines": observed_lines,
@@ -1516,7 +1534,6 @@ def build_suggest_context(
         "input_degraded": input_degraded,
         "degraded_reasons": degraded_reasons,
         **_fixed_character_pov_context(local_state),
-        **_cross_scene_memory_context(local_state),
         **_scene_context_hint(
             local_state,
             scene_id=scene_id,

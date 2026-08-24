@@ -47,7 +47,8 @@ Note for tests: ``monkeypatch.setattr`` must target the submodule that
 ``gates._ais_powerful_memory_enabled``), not this package facade --
 re-exports are snapshots, they do not rebind submodule globals. Rebindable
 submodule state (the ``runtime`` component singletons and init flags,
-``gates._maint_state`` / ``gates._last_activity_time``,
+``gates._maint_state`` (read it via ``gates._maint_view``) /
+``gates._last_activity_time``,
 ``outbox_infra._replay_semaphore``, ``evidence_loops._RECHECK_RR_CURSOR``,
 ``runtime.enable_shutdown``) is deliberately NOT re-exported: a facade
 snapshot would silently go stale after the first in-place rebind.
@@ -93,10 +94,11 @@ from .gates import (  # noqa: F401
     _ais_powerful_memory_enabled,
     _ais_review_enabled,
     _aload_maint_state,
-    _asave_maint_state,
+    _amutate_maint_state,
     _is_idle,
     _is_review_clean,
     _maint_state_path,
+    _maint_view,
     _touch_activity,
 )
 from .rows import (  # noqa: F401
@@ -226,6 +228,7 @@ from . import routes  # noqa: F401
 from .routes import (  # noqa: F401
     ExternalMemoryImportRequest,
     HistoryRequest,
+    PromptLocalePreferenceRequest,
     NEW_DIALOG_QPS_FLUSH_INTERVAL,
     QueryMemoryRequest,
     _format_legacy_settings_as_text,
@@ -240,6 +243,7 @@ from .routes import (  # noqa: F401
     cancel_correction,
     get_memory,
     get_persona,
+    get_prompt_locale_preference,
     get_recent_history,
     get_settings,
     import_external_markdown,
@@ -249,4 +253,5 @@ from .routes import (  # noqa: F401
     process_conversation_for_renew,
     query_memory,
     settle_conversation,
+    set_prompt_locale_preference,
 )

@@ -42,6 +42,9 @@ def test_preview_reports_two_fusion_calls_for_soul_and_user():
     # persona 候选（不含 MEMORY.md 的 facts）总 token 为正，供前端估时。
     assert result["persona_candidate_tokens"] > 0
     assert result["counts"]["facts"] >= 1
+    # 无 daily 文件 → daily 抽取 0 次调用。
+    assert result["daily_extraction_calls"] == 0
+    assert result["daily_candidate_tokens"] == 0
 
 
 def test_preview_reports_one_fusion_call_for_user_only():
@@ -73,3 +76,22 @@ def test_preview_reports_zero_fusion_calls_for_facts_only():
     assert result["persona_fusion_calls"] == 0
     assert result["persona_candidate_tokens"] == 0
     assert result["counts"]["persona"] == 0
+    assert result["daily_extraction_calls"] == 0
+
+
+def test_preview_counts_daily_extraction_calls_per_day():
+    result = _preview({
+        "character_name": "Neko",
+        "files": [
+            {"path": "workspace/memory/2026-07-12.md",
+             "content": "Woke early and shipped the importer fix.\n"},
+            {"path": "workspace/memory/2026-07-13.md",
+             "content": "Reviewed feedback and refactored tests.\n"},
+        ],
+    })
+
+    assert result["success"] is True
+    # daily 抽取按天（=source_file）各一次 LLM 调用；token 供前端保守 sum 估时。
+    assert result["daily_extraction_calls"] == 2
+    assert result["daily_candidate_tokens"] > 0
+    assert result["persona_fusion_calls"] == 0

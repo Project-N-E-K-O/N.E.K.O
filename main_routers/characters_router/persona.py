@@ -137,9 +137,16 @@ async def _rollback_character_persona_selection_change(config_manager, previous_
 
 @router.get('/persona-presets')
 async def list_persona_presets_route(request: Request):
+    include_legacy = str(request.query_params.get("include_legacy") or "").strip().lower() in {
+        "1",
+        "true",
+    }
     return _json_no_store_response({
         "success": True,
-        "presets": list_persona_presets(lang=_get_persona_request_language(request)),
+        "presets": list_persona_presets(
+            lang=_get_persona_request_language(request),
+            include_legacy=include_legacy,
+        ),
     })
 
 

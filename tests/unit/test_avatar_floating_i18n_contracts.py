@@ -92,6 +92,14 @@ def test_avatar_floating_reset_toast_keys_exist_for_all_supported_locales():
         assert _get(data, "tutorial.reset.dayFailed")
 
 
+def test_avatar_floating_skip_button_describes_escape_shortcut_in_all_supported_locales():
+    for locale in ("zh-CN", "zh-TW", "en", "ja", "ru", "ko", "es", "pt"):
+        assert "ESC" in _get(_locale(locale), "tutorial.buttons.skipWithEsc")
+
+    manager_source = (ROOT / "static" / "tutorial/core/universal-manager.js").read_text(encoding="utf-8")
+    assert "this.t('tutorial.buttons.skipWithEsc', '跳过(ESC)')" in manager_source
+
+
 def test_day3_voice_used_intro_uses_matching_audio_key_after_day_swap():
     day3_source = (ROOT / "static" / "tutorial/yui-guide/days/day3-interaction-guide.js").read_text(encoding="utf-8")
     director_source = read_director_source(ROOT)

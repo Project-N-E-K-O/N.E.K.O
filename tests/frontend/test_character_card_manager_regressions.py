@@ -8,6 +8,62 @@ def _open_character_card_manager(page: Page, running_server: str) -> None:
     page.wait_for_selector("body")
 
 
+@pytest.mark.frontend
+def test_character_card_manager_hides_pngtuber_fields_without_filtering_workshop_payloads(
+    mock_page: Page,
+    running_server: str,
+):
+    _open_character_card_manager(mock_page, running_server)
+
+    state = mock_page.evaluate(
+        """
+        () => {
+            const host = document.createElement('div');
+            document.body.appendChild(host);
+            buildCatgirlDetailForm('PNGTuber角色', {
+                '性格': '开朗',
+                'pngtuber': {
+                    idle_image: '/user_pngtuber/avatar/idle.png',
+                    talking_image: '/user_pngtuber/avatar/talking.png'
+                },
+                'pngtuber_idle_image': '/user_pngtuber/avatar/idle.png',
+                'pngtuber_talking_image': '/user_pngtuber/avatar/talking.png',
+                'pngtuber_happy_image': '/user_pngtuber/avatar/happy.png',
+                'pngtuber_sad_image': '/user_pngtuber/avatar/sad.png',
+                'pngtuber_angry_image': '/user_pngtuber/avatar/angry.png',
+                'pngtuber_surprised_image': '/user_pngtuber/avatar/surprised.png'
+            }, false, host);
+            const pngtuberFields = [
+                'pngtuber',
+                'pngtuber_idle_image',
+                'pngtuber_talking_image',
+                'pngtuber_happy_image',
+                'pngtuber_sad_image',
+                'pngtuber_angry_image',
+                'pngtuber_surprised_image'
+            ];
+            return {
+                renderedFields: [...host.querySelectorAll('textarea[name]')].map(field => field.name),
+                hiddenFields: pngtuberFields.filter(field => getWorkshopHiddenFields().includes(field)),
+                workshopReservedFields: pngtuberFields.filter(field => getWorkshopReservedFields().includes(field))
+            };
+        }
+        """
+    )
+
+    assert state["renderedFields"] == ['性格']
+    assert state["hiddenFields"] == [
+        'pngtuber',
+        'pngtuber_idle_image',
+        'pngtuber_talking_image',
+        'pngtuber_happy_image',
+        'pngtuber_sad_image',
+        'pngtuber_angry_image',
+        'pngtuber_surprised_image',
+    ]
+    assert state["workshopReservedFields"] == []
+
+
 def _mount_steam_preview_dom(page: Page) -> None:
     page.evaluate(
         """
@@ -377,6 +433,297 @@ def test_character_card_manager_voice_dropdown_prefers_clone_prefix(
 
 
 @pytest.mark.frontend
+def test_character_card_manager_open_voice_dropdown_stays_above_adjacent_rows(
+    mock_page: Page,
+    running_server: str,
+):
+    _open_character_card_manager(mock_page, running_server)
+
+    state = mock_page.evaluate(
+        """
+        async () => {
+            const wrapper = document.createElement('div');
+            wrapper.className = 'catgirl-panel-wrapper phase-expand';
+            wrapper.style.cssText = [
+                'position: fixed',
+                'left: 120px',
+                'top: calc(100vh - 380px)',
+                'width: 720px',
+                'height: 400px',
+                'max-height: none',
+                'z-index: 2147483647',
+                'overflow: hidden',
+                'opacity: 1',
+                'transform: scale(0.95)',
+                'transform-origin: top left',
+                'transition: none'
+            ].join(';');
+
+            const host = document.createElement('div');
+            host.className = 'catgirl-panel-right';
+            host.style.cssText = [
+                'width: 720px',
+                'height: 400px',
+                'max-height: none',
+                'overflow: visible',
+                'opacity: 1',
+                'transform: none'
+            ].join(';');
+            wrapper.appendChild(host);
+
+            const scrollport = document.createElement('div');
+            scrollport.className = 'panel-tab-content active';
+            scrollport.style.cssText = 'height: 400px; overflow-y: auto; padding: 0;';
+            host.appendChild(scrollport);
+
+            const form = document.createElement('form');
+            form.className = 'settings-form-layout panel-tab-settings';
+            scrollport.appendChild(form);
+            document.body.appendChild(wrapper);
+
+            const topSpacer = document.createElement('div');
+            topSpacer.style.height = '320px';
+            form.appendChild(topSpacer);
+
+            function appendSelectRow(wrapperClass, values) {
+                const wrapper = document.createElement('div');
+                wrapper.className = `field-row-wrapper ${wrapperClass}`;
+
+                const label = document.createElement('label');
+                label.textContent = wrapperClass;
+                wrapper.appendChild(label);
+
+                const row = document.createElement('div');
+                row.className = 'field-row';
+                const select = document.createElement('select');
+                select.className = 'voice-native-select';
+                values.forEach((value, index) => {
+                    const option = document.createElement('option');
+                    option.value = value;
+                    option.textContent = `Option ${index + 1}`;
+                    select.appendChild(option);
+                });
+                row.appendChild(select);
+                const ui = _panelCreateVoiceSelectUi(select);
+                row.appendChild(ui.container);
+                wrapper.appendChild(row);
+                form.appendChild(wrapper);
+                return { wrapper, ui };
+            }
+
+            const voice = appendSelectRow(
+                'voice-row',
+                Array.from({ length: 12 }, (_, index) => `voice-${index}`)
+            );
+            const language = appendSelectRow('language-preference-row', ['zh-CN']);
+
+            const bottomSpacer = document.createElement('div');
+            bottomSpacer.style.height = '320px';
+            form.appendChild(bottomSpacer);
+
+            const header = voice.ui.container.querySelector('.voice-select-header');
+            const scrollportBefore = scrollport.getBoundingClientRect();
+            const headerBefore = header.getBoundingClientRect();
+            scrollport.scrollTop += (
+                headerBefore.top - (scrollportBefore.top + 140 * 0.95)
+            ) / 0.95;
+
+            header.click();
+
+            const options = voice.ui.container.querySelector('.voice-select-options');
+            const languageRect = language.wrapper.getBoundingClientRect();
+            const optionsRect = options.getBoundingClientRect();
+            const scrollportRect = scrollport.getBoundingClientRect();
+            const overlapTop = Math.max(languageRect.top, optionsRect.top);
+            const overlapBottom = Math.min(languageRect.bottom, optionsRect.bottom);
+            const overlapLeft = Math.max(languageRect.left, optionsRect.left);
+            const overlapRight = Math.min(languageRect.right, optionsRect.right);
+            const hasOverlap = overlapTop < overlapBottom && overlapLeft < overlapRight;
+            const topmost = hasOverlap
+                ? document.elementFromPoint(
+                    (overlapLeft + overlapRight) / 2,
+                    (overlapTop + overlapBottom) / 2
+                )
+                : null;
+            const opensDown = voice.ui.container.classList.contains('open-down');
+            const optionsOwnsOverlap = Boolean(topmost && options.contains(topmost));
+            const optionsStayInsideScrollport = optionsRect.top >= scrollportRect.top - 1
+                && optionsRect.bottom <= Math.min(scrollportRect.bottom, window.innerHeight) + 1;
+            const maxHeightBeforeScale = Number.parseFloat(options.style.maxHeight);
+
+            wrapper.getBoundingClientRect();
+            wrapper.style.transition = 'transform 80ms linear';
+            wrapper.style.transform = 'scale(1)';
+            const transformTransition = wrapper.getAnimations().find(
+                animation => animation.transitionProperty === 'transform'
+            );
+            if (!transformTransition) throw new Error('Expected wrapper transform transition');
+            await transformTransition.finished;
+            await new Promise(resolve => requestAnimationFrame(resolve));
+
+            const optionsAfterScale = options.getBoundingClientRect();
+            const scrollportAfterScale = scrollport.getBoundingClientRect();
+            const maxHeightAfterScale = Number.parseFloat(options.style.maxHeight);
+            const staysInsideAfterScaleEnd = optionsAfterScale.top >= scrollportAfterScale.top - 1
+                && optionsAfterScale.bottom
+                    <= Math.min(scrollportAfterScale.bottom, window.innerHeight) + 1;
+
+            const headerAfterScale = header.getBoundingClientRect();
+            scrollport.scrollTop += headerAfterScale.top
+                - (Math.min(scrollportAfterScale.bottom, window.innerHeight) - 60);
+            scrollport.dispatchEvent(new Event('scroll'));
+            const optionsAfterScroll = options.getBoundingClientRect();
+
+            return {
+                opensDown,
+                hasOverlap,
+                optionsOwnsOverlap,
+                optionsStayInsideScrollport,
+                staysInsideAfterScaleEnd,
+                maxHeightBeforeScale,
+                maxHeightAfterScale,
+                repositionsUpAfterScroll: voice.ui.container.classList.contains('open-up'),
+                staysInsideScrollportAfterScroll: optionsAfterScroll.top >= scrollportRect.top - 1
+                    && optionsAfterScroll.bottom
+                        <= Math.min(scrollportAfterScale.bottom, window.innerHeight) + 1,
+                activeRowZIndex: Number.parseInt(getComputedStyle(voice.wrapper).zIndex, 10),
+                languageRowZIndex: Number.parseInt(getComputedStyle(language.wrapper).zIndex, 10)
+            };
+        }
+        """
+    )
+
+    assert state["opensDown"] is True, state
+    assert state["hasOverlap"] is True, state
+    assert state["activeRowZIndex"] > state["languageRowZIndex"], state
+    assert state["optionsOwnsOverlap"] is True, state
+    assert state["optionsStayInsideScrollport"] is True, state
+    assert state["staysInsideAfterScaleEnd"] is True, state
+    assert state["maxHeightAfterScale"] < state["maxHeightBeforeScale"], state
+    assert state["repositionsUpAfterScroll"] is True, state
+    assert state["staysInsideScrollportAfterScroll"] is True, state
+
+
+@pytest.mark.frontend
+def test_character_language_fallback_can_be_pinned_by_reselecting_it(
+    mock_page: Page,
+    running_server: str,
+):
+    _open_character_card_manager(mock_page, running_server)
+
+    state = mock_page.evaluate(
+        """
+        async () => {
+            const originalFetch = window.fetch.bind(window);
+            const saves = [];
+            window.getConversationLanguagePreference = () => '';
+            window.getExplicitConversationLanguagePreference = () => '';
+            window.clearConversationLanguagePreference = () => {};
+            window.setConversationLanguagePreference = () => {};
+            window.nekoLocalMutationSecurity = {
+                getMutationHeaders: async () => ({ 'X-CSRF-Token': 'test-token' })
+            };
+            window.fetch = async (input, init = {}) => {
+                const url = typeof input === 'string' ? input : input.url;
+                const path = new URL(url, window.location.origin).pathname;
+                if (path === '/api/characters/character/Mimi/language-preference') {
+                    if ((init.method || 'GET').toUpperCase() === 'PUT') {
+                        saves.push(JSON.parse(init.body));
+                        return new Response(JSON.stringify({
+                            success: true,
+                            language: 'ja'
+                        }), {
+                            status: 200,
+                            headers: { 'Content-Type': 'application/json' }
+                        });
+                    }
+                    return new Response(JSON.stringify({
+                        success: true,
+                        language: '',
+                        effective_language: 'ja'
+                    }), {
+                        status: 200,
+                        headers: { 'Content-Type': 'application/json' }
+                    });
+                }
+                if (path === '/api/characters/voices') {
+                    return new Response(JSON.stringify({
+                        voices: {}, free_voices: {}, native_voices: {}
+                    }), {
+                        status: 200,
+                        headers: { 'Content-Type': 'application/json' }
+                    });
+                }
+                if (path === '/api/characters/custom_tts_voices') {
+                    return new Response(JSON.stringify({ success: true, voices: [] }), {
+                        status: 200,
+                        headers: { 'Content-Type': 'application/json' }
+                    });
+                }
+                return originalFetch(input, init);
+            };
+
+            const host = document.createElement('div');
+            document.body.appendChild(host);
+            buildCatgirlDetailForm('Mimi', {}, false, host);
+
+            const select = host.querySelector('[data-testid="character-language-preference"]');
+            const customSelect = host.querySelector('.language-preference-custom-select');
+            for (let attempt = 0; attempt < 50; attempt += 1) {
+                if (!select.disabled && select.dataset.durableLanguagePreference === '') break;
+                await new Promise(resolve => setTimeout(resolve, 10));
+            }
+
+            const optionValues = Array.from(select.options).map(option => option.value);
+            const before = {
+                value: select.value,
+                durable: select.dataset.durableLanguagePreference,
+                saves: saves.length,
+                disabled: select.disabled
+            };
+            customSelect.querySelector('.voice-select-header').click();
+            customSelect.querySelector('.voice-select-option.selected').click();
+            for (let attempt = 0; attempt < 50 && saves.length < 1; attempt += 1) {
+                await new Promise(resolve => setTimeout(resolve, 10));
+            }
+            for (let attempt = 0; attempt < 50 && select.disabled; attempt += 1) {
+                await new Promise(resolve => setTimeout(resolve, 10));
+            }
+
+            // Once the same value is durable, selecting it again is a no-op.
+            customSelect.querySelector('.voice-select-header').click();
+            customSelect.querySelector('.voice-select-option.selected').click();
+            await new Promise(resolve => setTimeout(resolve, 20));
+
+            return {
+                before,
+                after: {
+                    value: select.value,
+                    durable: select.dataset.durableLanguagePreference,
+                    saves,
+                    disabled: select.disabled
+                },
+                optionValues
+            };
+        }
+        """
+    )
+
+    assert state["optionValues"] == [
+        "zh-CN", "zh-TW", "en", "ja", "ko", "ru", "es", "pt"
+    ]
+    assert state["before"] == {
+        "value": "ja", "durable": "", "saves": 0, "disabled": False
+    }
+    assert state["after"] == {
+        "value": "ja",
+        "durable": "ja",
+        "saves": [{"language": "ja"}],
+        "disabled": False,
+    }
+
+
+@pytest.mark.frontend
 def test_character_card_manager_voice_dropdown_groups_by_provider_source(
     mock_page: Page,
     running_server: str,
@@ -443,6 +790,85 @@ def test_character_card_manager_voice_dropdown_groups_by_provider_source(
     # native 预制组（Gemini · 预制）
     native = next((g for g in groups if "Gemini" in g["label"]), None)
     assert native and native["source"] == "preset" and "·" in native["label"]
+
+
+@pytest.mark.frontend
+@pytest.mark.parametrize(
+    ("provider", "voice_id"),
+    [
+        ("vllm_omni", "default"),
+        ("custom", "vendor-voice"),
+    ],
+)
+def test_character_card_manager_shows_configured_custom_api_voice(
+    mock_page: Page,
+    running_server: str,
+    provider: str,
+    voice_id: str,
+):
+    """Configured HTTPS/WSS voices replace the unspecified placeholder when selected."""
+    _open_character_card_manager(mock_page, running_server)
+
+    state = mock_page.evaluate(
+        """
+        async ({ provider, voiceId }) => {
+            window.t = (key) => ({
+                'api.customModelProviderCustom': 'Custom API',
+                'voice.sourcePreset': 'Preset',
+                'voice.providerUnknown': 'Other',
+                'character.voiceNotSet': 'Unspecified voice'
+            }[key] || key);
+
+            const originalFetch = window.fetch.bind(window);
+            window.fetch = async (input, init) => {
+                const url = typeof input === 'string' ? input : input.url;
+                const path = new URL(url, window.location.origin).pathname;
+                if (path === '/api/characters/voices') {
+                    return new Response(JSON.stringify({
+                        voices: {},
+                        free_voices: {},
+                        native_voices: {
+                            [voiceId]: {
+                                prefix: voiceId,
+                                provider,
+                                provider_label: 'custom'
+                            }
+                        }
+                    }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+                }
+                if (path === '/api/characters/custom_tts_voices') {
+                    return new Response(JSON.stringify({ success: true, voices: [] }), {
+                        status: 200, headers: { 'Content-Type': 'application/json' }
+                    });
+                }
+                return originalFetch(input, init);
+            };
+
+            const select = document.createElement('select');
+            document.body.appendChild(select);
+            await _loadPanelVoices(select, voiceId);
+
+            const selected = select.options[select.selectedIndex];
+            const group = Array.from(select.querySelectorAll('optgroup'))
+                .find(item => Array.from(item.querySelectorAll('option'))
+                    .some(option => option.value === voiceId));
+            return {
+                value: select.value,
+                selectedText: selected ? selected.textContent : '',
+                groupLabel: group ? group.label : '',
+                unspecifiedSelected: select.options[0] ? select.options[0].selected : true
+            };
+        }
+        """,
+        {"provider": provider, "voiceId": voice_id},
+    )
+
+    assert state == {
+        "value": voice_id,
+        "selectedText": voice_id,
+        "groupLabel": "Custom API · Preset",
+        "unspecifiedSelected": False,
+    }
 
 
 @pytest.mark.frontend
@@ -769,6 +1195,342 @@ def test_character_card_manager_localizes_master_profile_builtin_field_labels(
     assert by_name["喜欢的食物"]["label"] == "喜欢的食物"
     assert by_name["昵称"]["value"] == "Yuki"
     assert by_name["喜欢的食物"]["value"] == "cookies"
+
+
+@pytest.mark.frontend
+@pytest.mark.parametrize(
+    ("viewport", "expected_width", "expected_height"),
+    [
+        ({"width": 1440, "height": 900}, 920, 720),
+        ({"width": 700, "height": 900}, 652, 720),
+        ({"width": 560, "height": 900}, 540, 880),
+    ],
+    ids=["desktop-dialog", "single-column-dialog", "mobile-dialog"],
+)
+def test_master_profile_opens_as_stable_dialog_without_reflowing_layout(
+    mock_page: Page,
+    running_server: str,
+    viewport: dict[str, int],
+    expected_width: int,
+    expected_height: int,
+):
+    mock_page.set_viewport_size(viewport)
+    _open_character_card_manager(mock_page, running_server)
+
+    state = mock_page.evaluate(
+        """
+        async () => {
+            const wait = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+            const master = { '档案名': 'Master Profile' };
+            for (let index = 1; index <= 14; index += 1) {
+                master['需要完整显示的设定名称 ' + index] = '第 ' + index + ' 项完整内容';
+            }
+            renderMasterForm(master);
+
+            const sidebar = document.getElementById('sidebar');
+            const main = document.querySelector('.main-content');
+            const cover = document.querySelector('.character-card-cover-section');
+            const snapshotRect = (element) => {
+                const rect = element.getBoundingClientRect();
+                return { left: rect.left, top: rect.top, width: rect.width, height: rect.height };
+            };
+            const before = {
+                sidebar: snapshotRect(sidebar),
+                main: snapshotRect(main),
+                cover: snapshotRect(cover),
+            };
+
+            const trigger = document.getElementById('master-profile-header');
+            trigger.click();
+            const afterClick = {
+                sidebar: snapshotRect(sidebar),
+                main: snapshotRect(main),
+                cover: snapshotRect(cover),
+            };
+            await wait(100);
+            const duringAnimation = {
+                sidebar: snapshotRect(sidebar),
+                main: snapshotRect(main),
+                cover: snapshotRect(cover),
+            };
+            await wait(200);
+
+            const content = document.getElementById('master-profile-content');
+            const backdrop = document.getElementById('master-profile-backdrop');
+            const dialogBody = content.querySelector('.master-profile-dialog-body');
+            const dialogFooter = content.querySelector('.master-profile-dialog-footer');
+            const addButton = dialogFooter.querySelector('.settings-primary-action');
+            const addButtonBeforeScroll = snapshotRect(addButton);
+            const rows = Array.from(content.querySelectorAll('.field-row-wrapper'));
+            const customRows = Array.from(content.querySelectorAll('.field-row-wrapper.custom-row'));
+            const labels = Array.from(content.querySelectorAll('.field-row-wrapper label'));
+            const contentRect = content.getBoundingClientRect();
+            const bodyRect = dialogBody.getBoundingClientRect();
+            const after = {
+                sidebar: snapshotRect(sidebar),
+                main: snapshotRect(main),
+                cover: snapshotRect(cover),
+            };
+            const rectStable = (first, second) => (
+                Math.abs(first.left - second.left) < 1
+                && Math.abs(first.top - second.top) < 1
+                && Math.abs(first.width - second.width) < 1
+                && Math.abs(first.height - second.height) < 1
+            );
+
+            const hasInternalScroll = dialogBody.scrollHeight > dialogBody.clientHeight + 1;
+            dialogBody.scrollTop = dialogBody.scrollHeight;
+            await wait(0);
+            const lastRowRect = rows.at(-1).getBoundingClientRect();
+            const addButtonAfterScroll = snapshotRect(addButton);
+            const transitionProperties = getComputedStyle(content).transitionProperty
+                .split(',')
+                .map(value => value.trim())
+                .sort();
+
+            const openState = {
+                position: getComputedStyle(content).position,
+                display: getComputedStyle(content).display,
+                contentWidth: contentRect.width,
+                contentHeight: contentRect.height,
+                usesDialogSemantics: trigger.getAttribute('aria-haspopup') === 'dialog'
+                    && !trigger.hasAttribute('aria-expanded'),
+                hasNoDecorativeProfileIcon: !trigger.querySelector('svg')
+                    && !content.querySelector('.master-profile-dialog-header svg'),
+                usesSharedSettingsLayout: dialogBody.classList.contains('settings-form-layout')
+                    && dialogBody.classList.contains('panel-tab-settings')
+                    && dialogFooter.classList.contains('settings-form-layout')
+                    && dialogFooter.classList.contains('panel-tab-settings'),
+                addActionAlwaysVisible: dialogFooter.contains(addButton)
+                    && !dialogBody.contains(addButton)
+                    && rectStable(addButtonBeforeScroll, addButtonAfterScroll)
+                    && addButtonAfterScroll.top >= contentRect.top
+                    && addButtonAfterScroll.top + addButtonAfterScroll.height <= contentRect.bottom,
+                usesCharacterSettingRows: customRows.length === 14 && customRows.every(row => {
+                    const textarea = row.querySelector('textarea');
+                    const deleteButton = row.querySelector('.setting-field-delete');
+                    const deleteStyle = deleteButton && getComputedStyle(deleteButton);
+                    const deleteGlyph = deleteButton && getComputedStyle(deleteButton, '::before');
+                    return row.classList.contains('setting-field-row')
+                        && textarea?.dataset.autoResizeAttached === 'true'
+                        && deleteButton?.getAttribute('aria-label')
+                        && Math.abs(Number.parseFloat(deleteStyle.width) - 36) < 1
+                        && deleteGlyph.content !== 'none';
+                }),
+                usesCharacterSettingActions: Boolean(
+                    content.querySelector('.profile-row .rename-action .edit-icon')
+                    && content.querySelector('.settings-toolbar-row .settings-primary-action .add-icon')
+                    && content.querySelector('.settings-action-row .settings-save-action .save-icon')
+                    && content.querySelector('.settings-action-row .settings-cancel-action .cancel-icon')
+                ),
+                backdropVisible: getComputedStyle(backdrop).display === 'block'
+                    && Number.parseFloat(getComputedStyle(backdrop).opacity) > 0.99,
+                dialogInsideViewport: contentRect.left >= 0
+                    && contentRect.top >= 0
+                    && contentRect.right <= window.innerWidth
+                    && contentRect.bottom <= window.innerHeight,
+                sidebarStable: rectStable(before.sidebar, after.sidebar),
+                mainStable: rectStable(before.main, after.main),
+                decorationStable: rectStable(before.cover, after.cover),
+                stableThroughoutAnimation: [afterClick, duringAnimation, after].every(snapshot => (
+                    rectStable(before.sidebar, snapshot.sidebar)
+                    && rectStable(before.main, snapshot.main)
+                    && rectStable(before.cover, snapshot.cover)
+                )),
+                transformOnlyAnimation: transitionProperties.length === 2
+                    && transitionProperties.includes('opacity')
+                    && transitionProperties.includes('transform'),
+                labelsUnclipped: labels.every(label => {
+                    const style = getComputedStyle(label);
+                    return style.whiteSpace === 'normal'
+                        && style.overflow !== 'hidden'
+                        && label.scrollWidth <= label.clientWidth + 1;
+                }),
+                hasInternalScroll,
+                lastRowReachable: lastRowRect.top >= bodyRect.top - 1
+                    && lastRowRect.bottom <= bodyRect.bottom + 1,
+            };
+
+            content.querySelector('.master-profile-dialog-close').click();
+            await wait(340);
+
+            return {
+                ...openState,
+                hiddenAfterClose: getComputedStyle(content).display === 'none',
+                backdropHiddenAfterClose: getComputedStyle(backdrop).display === 'none',
+            };
+        }
+        """
+    )
+
+    assert state["position"] == "fixed"
+    assert state["display"] == "flex"
+    assert state["contentWidth"] == pytest.approx(expected_width, abs=2)
+    assert state["contentHeight"] == pytest.approx(expected_height, abs=2)
+    assert state["usesDialogSemantics"] is True
+    assert state["hasNoDecorativeProfileIcon"] is True
+    assert state["usesSharedSettingsLayout"] is True
+    assert state["addActionAlwaysVisible"] is True
+    assert state["usesCharacterSettingRows"] is True
+    assert state["usesCharacterSettingActions"] is True
+    assert state["backdropVisible"] is True
+    assert state["dialogInsideViewport"] is True
+    assert state["sidebarStable"] is True
+    assert state["mainStable"] is True
+    assert state["decorationStable"] is True
+    assert state["stableThroughoutAnimation"] is True
+    assert state["transformOnlyAnimation"] is True
+    assert state["labelsUnclipped"] is True
+    assert state["hasInternalScroll"] is True
+    assert state["lastRowReachable"] is True
+    assert state["hiddenAfterClose"] is True
+    assert state["backdropHiddenAfterClose"] is True
+
+
+@pytest.mark.frontend
+def test_master_profile_dialog_traps_tab_focus_without_interfering_with_common_modal(
+    mock_page: Page,
+    running_server: str,
+):
+    _open_character_card_manager(mock_page, running_server)
+
+    initial_state = mock_page.evaluate(
+        """
+        () => {
+            renderMasterForm({ '档案名': 'Master', '昵称': 'Yuki' });
+
+            const trigger = document.getElementById('master-profile-header');
+            const content = document.getElementById('master-profile-content');
+            trigger.focus();
+            trigger.click();
+            window.__masterProfileTestFocusables = () => Array.from(content.querySelectorAll([
+                    'a[href]',
+                    'button:not([disabled])',
+                    'input:not([disabled]):not([type="hidden"])',
+                    'select:not([disabled])',
+                    'textarea:not([disabled])',
+                    '[contenteditable="true"]',
+                    '[tabindex]:not([tabindex="-1"])'
+                ].join(','))).filter(element => (
+                    !element.hidden
+                    && element.getAttribute('aria-hidden') !== 'true'
+                    && element.getClientRects().length > 0
+                ));
+            return {
+                contentOpen: content.classList.contains('open'),
+                focusableCount: window.__masterProfileTestFocusables().length,
+            };
+        }
+        """
+    )
+    mock_page.wait_for_timeout(40)
+
+    assert initial_state["contentOpen"] is True
+    assert initial_state["focusableCount"] > 1
+    assert mock_page.evaluate(
+        "() => document.activeElement === window.__masterProfileTestFocusables()[0]"
+    )
+
+    mock_page.evaluate("() => window.__masterProfileTestFocusables().at(-1).focus()")
+    mock_page.keyboard.press("Tab")
+    assert mock_page.evaluate(
+        "() => document.activeElement === window.__masterProfileTestFocusables()[0]"
+    )
+
+    mock_page.keyboard.press("Shift+Tab")
+    assert mock_page.evaluate(
+        "() => document.activeElement === window.__masterProfileTestFocusables().at(-1)"
+    )
+
+    mock_page.locator("#master-profile-add-actions .btn.add").click()
+    common_overlay = mock_page.locator(".modal-overlay")
+    common_overlay.wait_for(state="visible")
+    mock_page.wait_for_timeout(120)
+    assert mock_page.evaluate(
+        "() => Boolean(document.activeElement?.closest('.modal-overlay'))"
+    )
+
+    mock_page.keyboard.press("Tab")
+    assert mock_page.evaluate(
+        """
+        () => Boolean(document.activeElement?.closest('.modal-overlay'))
+            && !document.activeElement?.closest('#master-profile-content')
+        """
+    )
+
+    common_overlay.locator(".modal-btn-secondary").click()
+    common_overlay.wait_for(state="detached")
+    mock_page.locator(".master-profile-dialog-close").click()
+    assert mock_page.evaluate(
+        "() => document.activeElement === document.getElementById('master-profile-header')"
+    )
+
+    mock_page.keyboard.press("Tab")
+    assert mock_page.evaluate(
+        """
+        () => document.activeElement !== document.getElementById('master-profile-header')
+            && !document.activeElement?.closest('#master-profile-content')
+        """
+    )
+
+    mock_page.evaluate("() => { delete window.__masterProfileTestFocusables; }")
+
+
+@pytest.mark.frontend
+def test_master_add_field_prompt_keeps_fade_out_final_frame_until_removal(
+    mock_page: Page,
+    running_server: str,
+):
+    _open_character_card_manager(mock_page, running_server)
+
+    state = mock_page.evaluate(
+        """
+        async () => {
+            const originalSetTimeout = window.setTimeout;
+            const nativeSetTimeout = originalSetTimeout.bind(window);
+            const wait = (ms) => new Promise(resolve => nativeSetTimeout(resolve, ms));
+
+            renderMasterForm({ '档案名': 'Master' });
+            document.querySelector('#master-profile-add-actions .btn.add').click();
+            const overlay = document.querySelector('.modal-overlay');
+            overlay.querySelector('.modal-input').value = 'Stable Field';
+
+            let delayedRemoval = false;
+            window.setTimeout = (callback, delay, ...args) => {
+                if (!delayedRemoval && delay === 200) {
+                    delayedRemoval = true;
+                    return nativeSetTimeout(callback, 350, ...args);
+                }
+                return nativeSetTimeout(callback, delay, ...args);
+            };
+
+            overlay.querySelector('.modal-btn-primary').click();
+            await wait(230);
+            const opacityAfterFadeOut = getComputedStyle(overlay).opacity;
+            const connectedAfterFadeOut = overlay.isConnected;
+            const closingFillMode = getComputedStyle(overlay).animationFillMode;
+
+            window.setTimeout = originalSetTimeout;
+            await wait(150);
+
+            return {
+                opacityAfterFadeOut,
+                connectedAfterFadeOut,
+                closingFillMode,
+                removedAfterCleanup: !overlay.isConnected,
+                fieldCount: document.querySelectorAll('#master-form textarea[name="Stable Field"]').length,
+            };
+        }
+        """
+    )
+
+    assert state == {
+        "opacityAfterFadeOut": "0",
+        "connectedAfterFadeOut": True,
+        "closingFillMode": "forwards",
+        "removedAfterCleanup": True,
+        "fieldCount": 1,
+    }
 
 
 @pytest.mark.frontend

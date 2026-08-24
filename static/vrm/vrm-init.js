@@ -7,10 +7,17 @@
     // 如果已经加载过模块，或者正由 model_manager/runtime-loaders.js 加载中，则不再重复加载
     if (window.vrmModuleLoaded || window._vrmModulesLoading) return;
 
-    const VRM_VERSION = '1.0.0';
+    // Propagate the page's cache-busting version to every dynamically loaded
+    // VRM module. A fixed submodule version leaves old VMC sampling code in
+    // browser cache even after vrm-init.js itself changes.
+    const initScriptSrc = document.currentScript && document.currentScript.src;
+    const VRM_VERSION = initScriptSrc
+        ? (new URL(initScriptSrc, window.location.href).searchParams.get('v') || '1.0.1')
+        : '1.0.1';
 
     const loadModules = async () => {
         console.log('[VRM] 开始加载依赖模块');
+        const lightweightEmbed = window.__NEKO_CARD_MAKER_EMBED__ === true;
 
         // 可以并行加载的核心模块（无相互依赖）
         const parallelModules = [
@@ -18,15 +25,21 @@
             '/static/vrm/vrm-core.js',
             '/static/vrm/vrm-expression.js',
             '/static/vrm/vrm-animation.js',
-            '/static/vrm/vrm-interaction.js',
-            '/static/vrm/vrm-cursor-follow.js',
-            '/static/vrm/vrm-manager.js'
+            ...(!lightweightEmbed ? [
+                '/static/vrm/vrm-interaction.js',
+                '/static/vrm/vrm-cursor-follow.js'
+            ] : []),
+            '/static/vrm/vrm-manager.js',
+            // Only install the lightweight API facade here. The full VMC
+            // sender is loaded after an explicit enable/control call so the
+            // disabled path has no polling, timers, or frame sampling.
+            ...(!lightweightEmbed ? ['/static/vrm/vrm-vmc-loader.js'] : [])
         ];
 
         // 必须顺序加载的 UI 模块（公共定位 → 公共 mixin → 统一配置 → buttons）
         // avatar-popup-common, avatar-ui-popup, avatar-ui-popup-config, avatar-ui-buttons
         // 已由 HTML 静态 <script> 加载，此处不再重复加载
-        const sequentialModules = [
+        const sequentialModules = lightweightEmbed ? [] : [
             '/static/vrm/vrm-ui-buttons.js'
         ];
 
@@ -655,6 +668,13 @@ function _clearVrmIdleSchedule() {
 
 function _startVrmIdleRotation(urls) {
     _stopVrmIdleRotation();
+    // The semantic motion state machine owns VRMA transitions on the main 3D
+    // surface. Keep the currently loaded idle, but never schedule another idle
+    // clip behind the state machine's back.
+    if (window.__nekoMotionOwnsVrmPlayback === true) {
+        console.info('[VRM IdleRotation] disabled while semantic motion owns playback');
+        return;
+    }
     if (!Array.isArray(urls) || urls.length < 2) return;
 
     function pickRandom() {
@@ -678,7 +698,12 @@ function _startVrmIdleRotation(urls) {
             const url = pickRandom();
             if (url) {
                 if (mgr.vrmaAction) mgr.stopVRMAAnimation();
-                await mgr.playVRMAAnimation(url, { loop: true, immediate: true, isIdle: true });
+                const played = await mgr.playVRMAAnimation(url, {
+                    loop: true,
+                    immediate: true,
+                    isIdle: true
+                });
+                if (played !== true) return;
                 _vrmIdleLastUrl = url;
                 console.debug('[VRM IdleRotation] 切换待机动作:', url.split('/').pop());
 

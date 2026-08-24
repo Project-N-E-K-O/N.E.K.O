@@ -172,7 +172,7 @@ async def analyze_image_with_vision_model(
         from utils.config_manager import get_config_manager
         
         config_manager = get_config_manager()
-        api_config = config_manager.get_model_api_config('vision')
+        api_config = await config_manager.aget_model_api_config('vision')
         
         vision_model = api_config['model']
         vision_api_key = api_config['api_key']

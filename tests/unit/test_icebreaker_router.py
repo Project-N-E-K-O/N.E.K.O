@@ -1,5 +1,4 @@
 import json
-import logging
 from types import SimpleNamespace
 
 import pytest
@@ -18,6 +17,7 @@ from config._runtime import register_truncate_to_tokens
 from config.prompts.prompts_icebreaker import build_icebreaker_free_text_prompts
 from main_routers import icebreaker_router, system_router
 from main_routers.system_router import AUTOSTART_CSRF_TOKEN
+from tests.fake_clock import patch_module_clock
 from utils.icebreaker_free_text import parse_icebreaker_free_text_decision
 from utils import icebreaker_route_state
 from utils.game_route_state import _get_active_game_route_state
@@ -45,8 +45,13 @@ class _FakeAppendContextManager:
     def __init__(self, result=None, error=None, speech_error=None):
         self.calls = []
         self.spoken = []
+        self.engagement_calls = 0
+        self.engagement_times = []
         self.language_updates = []
+        self.render_language_updates = []
         self.user_language = "zh-CN"
+        self._user_language_explicit = True
+        self._conversation_render_language = None
         self.result = result or SimpleNamespace(appended=True, deduped=False, reason=None)
         self.error = error
         self.speech_error = speech_error
@@ -54,6 +59,17 @@ class _FakeAppendContextManager:
     def set_user_language(self, language):
         self.language_updates.append(language)
         self.user_language = language
+        self._user_language_explicit = True
+
+    def set_render_language(self, language):
+        self.render_language_updates.append(language)
+        self._conversation_render_language = language
+        if not self._user_language_explicit:
+            self.user_language = language
+
+    def note_user_engagement(self, *, at=None):
+        self.engagement_calls += 1
+        self.engagement_times.append(at)
 
     async def append_context(self, **kwargs):
         self.calls.append(kwargs)
@@ -74,6 +90,9 @@ class _FakeConfigManager:
 
     def load_characters(self):
         return self._characters
+
+    async def aget_model_api_config(self, model_type, *, core_config=None):
+        return self.get_model_api_config(model_type)
 
     def get_model_api_config(self, model_type):
         assert model_type == "emotion"
@@ -109,6 +128,69 @@ def _prompt_field(prompt: str, label: str) -> str:
         if line.startswith(prefix):
             return line[len(prefix):]
     raise AssertionError(f"missing prompt field: {label}")
+
+
+@pytest.mark.parametrize(
+    (
+        "payload",
+        "expected_language",
+        "language_updates",
+        "render_updates",
+        "manager_language",
+        "explicit",
+    ),
+    [
+        ({"language": "en"}, "en", ["en"], [], "en", True),
+        ({"render_language": "ja"}, None, [], ["ja"], "ja", False),
+        (
+            {"i18n_language": "zh-TW", "render_language": "ja"},
+            "zh-TW",
+            ["zh-TW"],
+            ["ja"],
+            "zh-TW",
+            True,
+        ),
+    ],
+)
+def test_icebreaker_request_language_provenance(
+    monkeypatch,
+    payload,
+    expected_language,
+    language_updates,
+    render_updates,
+    manager_language,
+    explicit,
+):
+    manager = _FakeAppendContextManager()
+    manager.user_language = "en"
+    manager._user_language_explicit = False
+    monkeypatch.setattr(icebreaker_router, "get_session_manager", lambda: {"Lan": manager})
+
+    assert (
+        icebreaker_router._absorb_request_language(payload, "Lan"),
+        manager.language_updates,
+        manager.render_language_updates,
+        manager.user_language,
+        manager._user_language_explicit,
+    ) == (
+        expected_language,
+        language_updates,
+        render_updates,
+        manager_language,
+        explicit,
+    )
+    if "render_language" in payload:
+        assert manager._conversation_render_language == payload["render_language"]
+    if expected_language is None:
+        prompt_options = [{"id": "yes", "label": "はい"}]
+        prompt_kwargs = {"recent_turns": [], "derail_streak": 0}
+        assert build_icebreaker_free_text_prompts(
+            payload, prompt_options, **prompt_kwargs
+        ) == (
+            build_icebreaker_free_text_prompts(
+                {"i18n_language": "ja"}, prompt_options, **prompt_kwargs
+            )
+        )
 
 
 async def _fake_cache_memory(**kwargs):
@@ -176,6 +258,7 @@ async def test_icebreaker_context_endpoint_appends_session_history(monkeypatch):
             "role": "assistant",
             "text": "教程看完啦？",
             "session_id": "icebreaker-day1-test",
+            "i18n_language": "zh-TW",
         })
     )
 
@@ -199,7 +282,10 @@ async def test_icebreaker_context_endpoint_appends_session_history(monkeypatch):
         "lanlan_name": "Lan",
         "role": "assistant",
         "text": "教程看完啦？",
+        "language": "zh-TW",
+        "render_language": None,
     }]
+    assert mgr.engagement_calls == 0
 
 
 @pytest.mark.asyncio
@@ -232,13 +318,145 @@ async def test_icebreaker_context_caches_user_choice_to_recent_memory(monkeypatc
         "lanlan_name": "Lan",
         "role": "user",
         "text": "可以，多陪一会儿",
+        "language": "zh-CN",
+        "render_language": None,
     }]
+    assert mgr.engagement_calls == 1
 
 
 @pytest.mark.asyncio
-async def test_icebreaker_context_cache_failure_does_not_block_context(monkeypatch, caplog):
+async def test_icebreaker_context_preserves_user_request_ingress_time(monkeypatch):
+    mgr = _FakeAppendContextManager()
+    clock = {"now": 100.0}
+
+    class _DelayedJsonRequest(_FakeRequest):
+        async def json(self):
+            clock["now"] = 200.0
+            return self._payload
+
+    monkeypatch.setattr(icebreaker_router, "get_session_manager", lambda: {"Lan": mgr})
+    monkeypatch.setattr(system_router, "_validate_local_mutation_request", _allow_local_mutation)
+    # 取入口时刻的 request_arrival_time = time.time() 就写在 icebreaker_context 里。
+    patch_module_clock(monkeypatch, icebreaker_router, time=lambda: clock["now"])
+
+    async def fake_cache_memory(**_kwargs):
+        return True, ""
+
+    monkeypatch.setattr(
+        icebreaker_router,
+        "_cache_icebreaker_context_memory",
+        fake_cache_memory,
+    )
+    icebreaker_route_state.activate_icebreaker_route("Lan", "icebreaker-day1-test")
+
+    result = await icebreaker_router.icebreaker_context(
+        _DelayedJsonRequest(
+            {
+                "lanlan_name": "Lan",
+                "role": "user",
+                "text": "可以，多陪一会儿",
+                "session_id": "icebreaker-day1-test",
+            }
+        )
+    )
+
+    assert result["ok"] is True
+    assert mgr.engagement_times == [100.0]
+
+
+@pytest.mark.asyncio
+async def test_icebreaker_choice_records_user_engagement(monkeypatch):
+    mgr = _FakeAppendContextManager()
+    clock = {"now": 100.0}
+
+    class _DelayedJsonRequest(_FakeRequest):
+        async def json(self):
+            clock["now"] = 150.0
+            return self._payload
+
+    monkeypatch.setattr(icebreaker_router, "get_session_manager", lambda: {"Lan": mgr})
+    monkeypatch.setattr(system_router, "_validate_local_mutation_request", _allow_local_mutation)
+    # choice_arrival_time = time.time() 同样在 icebreaker_choice 函数体内。
+    patch_module_clock(monkeypatch, icebreaker_router, time=lambda: clock["now"])
+
+    def record_choice(payload):
+        clock["now"] = 200.0
+        return {
+            "ok": True,
+            "lanlan_name": payload["lanlan_name"],
+            "day": payload["day"],
+        }
+
+    monkeypatch.setattr(
+        icebreaker_router,
+        "record_tutorial_choice",
+        record_choice,
+    )
+    icebreaker_route_state.activate_icebreaker_route("Lan", "icebreaker-day1-test")
+
+    result = await icebreaker_router.icebreaker_choice(
+        _DelayedJsonRequest(
+            {
+                "lanlan_name": "Lan",
+                "session_id": "icebreaker-day1-test",
+                "day": "day1",
+                "node_id": "welcome",
+                "choice": "stay",
+            },
+            path="/api/icebreaker/choice",
+        )
+    )
+
+    assert result["ok"] is True
+    assert mgr.engagement_calls == 1
+    assert mgr.engagement_times == [100.0]
+
+
+@pytest.mark.asyncio
+async def test_icebreaker_choice_write_failure_still_records_user_engagement(
+    monkeypatch,
+):
+    mgr = _FakeAppendContextManager()
+
+    monkeypatch.setattr(icebreaker_router, "get_session_manager", lambda: {"Lan": mgr})
+    monkeypatch.setattr(system_router, "_validate_local_mutation_request", _allow_local_mutation)
+    # 同上：读时钟的是 icebreaker_choice 自己。
+    patch_module_clock(monkeypatch, icebreaker_router, time=lambda: 123.0)
+
+    def fail_record_choice(_payload):
+        raise OSError("state unavailable")
+
+    monkeypatch.setattr(
+        icebreaker_router,
+        "record_tutorial_choice",
+        fail_record_choice,
+    )
+    icebreaker_route_state.activate_icebreaker_route("Lan", "icebreaker-day1-test")
+
+    result = await icebreaker_router.icebreaker_choice(
+        _FakeRequest(
+            {
+                "lanlan_name": "Lan",
+                "session_id": "icebreaker-day1-test",
+                "day": "day1",
+                "node_id": "welcome",
+                "choice": "stay",
+            },
+            path="/api/icebreaker/choice",
+        )
+    )
+
+    assert result["ok"] is False
+    assert result["reason"] == "choice_write_failed"
+    assert mgr.engagement_calls == 1
+    assert mgr.engagement_times == [123.0]
+
+
+@pytest.mark.asyncio
+async def test_icebreaker_context_cache_failure_does_not_block_context(monkeypatch):
     mgr = _FakeAppendContextManager()
     memory_cache_calls = []
+    warning_calls = []
 
     async def fake_cache_memory(**kwargs):
         memory_cache_calls.append(kwargs)
@@ -247,20 +465,8 @@ async def test_icebreaker_context_cache_failure_does_not_block_context(monkeypat
     monkeypatch.setattr(icebreaker_router, "get_session_manager", lambda: {"Lan": mgr})
     monkeypatch.setattr(system_router, "_validate_local_mutation_request", _allow_local_mutation)
     monkeypatch.setattr(icebreaker_router, "_cache_icebreaker_context_memory", fake_cache_memory)
+    monkeypatch.setattr(icebreaker_router.logger, "warning", lambda *args: warning_calls.append(args))
     icebreaker_route_state.activate_icebreaker_route("Lan", "icebreaker-day1-test")
-
-    # icebreaker_router.logger is built via get_module_logger with propagate=False,
-    # and the app-root logger (N.E.K.O) also gets propagate=False once another test
-    # in the suite initializes the app logging config — either break stops the record
-    # before it reaches caplog's root handler. Re-enable propagation along the whole
-    # ancestor chain (monkeypatch auto-reverts) so caplog observes the warning
-    # regardless of test ordering.
-    _lg = icebreaker_router.logger
-    _root = logging.getLogger()
-    while _lg is not None and _lg is not _root:
-        monkeypatch.setattr(_lg, "propagate", True)
-        _lg = _lg.parent
-    caplog.set_level(logging.WARNING, logger=icebreaker_router.logger.name)
 
     result = await icebreaker_router.icebreaker_context(
         _FakeRequest({
@@ -279,8 +485,45 @@ async def test_icebreaker_context_cache_failure_does_not_block_context(monkeypat
         "lanlan_name": "Lan",
         "role": "assistant",
         "text": "教程看完啦？",
+        "language": "zh-CN",
+        "render_language": None,
     }]
-    assert "icebreaker memory cache failed" in caplog.text
+    assert warning_calls
+    assert "icebreaker memory cache failed" in warning_calls[0][0]
+
+
+@pytest.mark.asyncio
+async def test_icebreaker_context_forwards_render_fallback_without_durable_locale(monkeypatch):
+    mgr = _FakeAppendContextManager()
+    mgr.user_language = "en"
+    mgr._user_language_explicit = False
+    memory_cache_calls = []
+
+    async def fake_cache_memory(**kwargs):
+        memory_cache_calls.append(kwargs)
+        return True, ""
+
+    monkeypatch.setattr(icebreaker_router, "get_session_manager", lambda: {"Lan": mgr})
+    monkeypatch.setattr(system_router, "_validate_local_mutation_request", _allow_local_mutation)
+    monkeypatch.setattr(icebreaker_router, "_cache_icebreaker_context_memory", fake_cache_memory)
+    icebreaker_route_state.activate_icebreaker_route("Lan", "icebreaker-day1-test")
+
+    result = await icebreaker_router.icebreaker_context(
+        _FakeRequest({
+            "lanlan_name": "Lan",
+            "role": "assistant",
+            "text": "教程看完啦？",
+            "session_id": "icebreaker-day1-test",
+            "request_id": "line-seeded",
+            "render_language": "ja-JP",
+        })
+    )
+
+    assert result["ok"] is True
+    assert memory_cache_calls[0]["language"] is None
+    assert memory_cache_calls[0]["render_language"] == "ja"
+    assert mgr.render_language_updates == ["ja-JP"]
+    assert mgr._user_language_explicit is False
 
 
 @pytest.mark.asyncio
@@ -339,12 +582,22 @@ async def test_icebreaker_context_falls_back_to_active_session_id(monkeypatch):
 async def test_icebreaker_context_memory_cache_uses_existing_cache_endpoint(monkeypatch):
     calls = []
 
-    async def fake_post_memory_server(endpoint, lanlan_name, payload, *, timeout_s):
+    async def fake_post_memory_server(
+        endpoint,
+        lanlan_name,
+        payload,
+        *,
+        timeout_s,
+        language,
+        render_language,
+    ):
         calls.append({
             "endpoint": endpoint,
             "lanlan_name": lanlan_name,
             "payload": payload,
             "timeout_s": timeout_s,
+            "language": language,
+            "render_language": render_language,
         })
         return True, "", {"status": "cached", "count": 1}
 
@@ -356,6 +609,8 @@ async def test_icebreaker_context_memory_cache_uses_existing_cache_endpoint(monk
         lanlan_name="Lan",
         role="user",
         text="可以，多陪一会儿",
+        language="zh-TW",
+        render_language="ja",
     )
 
     assert ok is True
@@ -368,6 +623,8 @@ async def test_icebreaker_context_memory_cache_uses_existing_cache_endpoint(monk
             "content": [{"type": "text", "text": "可以，多陪一会儿"}],
         }],
         "timeout_s": icebreaker_router.ICEBREAKER_MEMORY_CACHE_TIMEOUT_SECONDS,
+        "language": "zh-TW",
+        "render_language": "ja",
     }]
 
 
@@ -684,6 +941,7 @@ async def test_icebreaker_free_text_interpreter_does_not_absorb_language_before_
             "day": "1",
             "node_id": "1",
             "i18n_language": "ja",
+            "render_language": "ko",
             "assistant_line": "今から話しましょう。",
             "options": [
                 {"choice": "A", "label": "はい"},
@@ -696,34 +954,85 @@ async def test_icebreaker_free_text_interpreter_does_not_absorb_language_before_
     assert result["ok"] is False
     assert result["reason"] == "route_not_active"
     assert mgr.language_updates == []
+    assert mgr.render_language_updates == []
 
 
 @pytest.mark.asyncio
-async def test_icebreaker_context_rejects_stale_session(monkeypatch):
-    mgr = _FakeAppendContextManager(error=AssertionError("stale context must not append"))
+async def test_icebreaker_free_text_invalid_options_do_not_absorb_language(monkeypatch):
+    mgr = _FakeAppendContextManager()
     monkeypatch.setattr(icebreaker_router, "get_session_manager", lambda: {"Lan": mgr})
     monkeypatch.setattr(system_router, "_validate_local_mutation_request", _allow_local_mutation)
     icebreaker_route_state.activate_icebreaker_route("Lan", "active-session")
 
-    result = await icebreaker_router.icebreaker_context(
+    result = await icebreaker_router.icebreaker_free_text_interpret(
         _FakeRequest({
             "lanlan_name": "Lan",
-            "role": "assistant",
-            "text": "late line",
+            "session_id": "active-session",
+            "user_text": "keep going",
+            "i18n_language": "ja",
+            "render_language": "ko",
+            "options": [],
+        }, path="/api/icebreaker/free-text/interpret")
+    )
+
+    assert result == {"ok": False, "reason": "missing_options", "lanlan_name": "Lan"}
+    assert mgr.language_updates == []
+    assert mgr.render_language_updates == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("endpoint_name", "payload", "method", "calls_attribute"),
+    [
+        (
+            "icebreaker_context", {"role": "assistant", "text": "late line"},
+            "project_session_history", "calls",
+        ),
+        (
+            "icebreaker_speak", {"line": "late line"}, "project_tts", "spoken",
+        ),
+    ],
+)
+async def test_icebreaker_endpoints_reject_stale_locale_updates(
+    monkeypatch,
+    endpoint_name,
+    payload,
+    method,
+    calls_attribute,
+):
+    manager = _FakeAppendContextManager(
+        error=AssertionError("stale context must not append"),
+        speech_error=AssertionError("stale speech must not run"),
+    )
+    monkeypatch.setattr(icebreaker_router, "get_session_manager", lambda: {"Lan": manager})
+    monkeypatch.setattr(
+        system_router,
+        "_validate_local_mutation_request",
+        _allow_local_mutation,
+    )
+    icebreaker_route_state.activate_icebreaker_route("Lan", "active-session")
+
+    result = await getattr(icebreaker_router, endpoint_name)(
+        _FakeRequest({
+            "lanlan_name": "Lan",
             "session_id": "old-session",
+            "render_language": "ja",
+            **payload,
         })
     )
 
-    assert result["ok"] is True
-    assert result["skipped"] == "stale_session"
-    assert result["reason"] == "session_id_mismatch"
-    assert result["method"] == "project_session_history"
-    assert mgr.calls == []
+    assert (result["ok"], result["skipped"], result["reason"], result["method"]) == (
+        True, "stale_session", "session_id_mismatch", method,
+    )
+    assert getattr(manager, calls_attribute) == []
+    assert manager.render_language_updates == []
 
 
 @pytest.mark.asyncio
 async def test_icebreaker_speak_uses_independent_project_tts(monkeypatch):
     mgr = _FakeAppendContextManager()
+    mgr.user_language = "en"
+    mgr._user_language_explicit = False
     monkeypatch.setattr(icebreaker_router, "get_session_manager", lambda: {"Lan": mgr})
     icebreaker_route_state.activate_icebreaker_route("Lan", "icebreaker-day1-test")
 
@@ -736,11 +1045,15 @@ async def test_icebreaker_speak_uses_independent_project_tts(monkeypatch):
             "mirror_text": False,
             "emit_turn_end": True,
             "interrupt_audio": True,
+            "render_language": "ja",
         })
     )
 
     assert result["ok"] is True
     assert result["method"] == "project_tts"
+    assert mgr.render_language_updates == ["ja"]
+    assert mgr.user_language == "ja"
+    assert mgr._user_language_explicit is False
     assert mgr.spoken == [("现在开始跟我聊天吧", {
         "metadata": {
             "source": "new_user_icebreaker",

@@ -29,9 +29,26 @@ class HudNoticeDetector(DiscreteDetector):
     """Promote safe technical notice codes into existing BattleEvents."""
 
     id = "hud_notice"
+    dead_state_policy = "consume"  # hud_notices.feed 整局持久，重置游标会重播旧通知
 
     def __init__(self) -> None:
         self._last_id: int = -1
+
+    def reset(self) -> None:
+        self._last_id = -1
+
+    def consume(self, prev: BattleState, cur: BattleState) -> None:
+        ids = [
+            eid
+            for item in _notice_items(cur)
+            if (eid := _notice_id(item)) is not None
+        ]
+        if not ids:
+            return
+        max_id = max(ids)
+        if max_id < self._last_id:
+            self._last_id = -1
+        self._last_id = max(self._last_id, max_id)
 
     def detect(self, prev: BattleState, cur: BattleState) -> BattleEvent | None:
         if not cur.is_alive():

@@ -20,7 +20,7 @@ Project N.E.K.O. 接受范围明确的代码、文档、翻译、测试和内容
 - 计数文件超过 20 个时，必须填写非空的“不拆分理由”。新文件、识别出的测试文件和同步修改的 i18n locale 组按门禁规则排除。
 - 静态分析和插件测试以当前 workflow 为准，不要沿用旧检查清单。
 
-修改相应领域前，请阅读[测试](./testing)、[代码规范](./code-style)和 [Nuitka 打包](./nuitka-packaging)。
+修改相应领域前，请阅读[测试](./testing)、[代码规范](./code-style)、[文档维护规范](./documentation)和 [Nuitka 打包](./nuitka-packaging)。
 
 ## 报告问题与社区协作
 
