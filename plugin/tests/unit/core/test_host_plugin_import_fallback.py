@@ -253,7 +253,7 @@ def test_child_import_only_exposes_selected_plugin(tmp_path: Path) -> None:
     assert shadowed is False, imported_from
 
 
-def test_child_import_roots_keep_user_before_builtin(
+def test_child_import_roots_remove_shared_plugin_candidates(
     _isolate_plugins_namespace,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -267,14 +267,13 @@ def test_child_import_roots_keep_user_before_builtin(
     monkeypatch.setattr(settings, "PLUGIN_CONFIG_ROOTS", (user_root, builtin_root))
     monkeypatch.setattr(settings, "BUILTIN_PLUGIN_CONFIG_ROOT", builtin_root)
 
-    # Simulate inherited paths in the wrong order; child setup must normalize
-    # them, not merely skip paths that are already present.
+    # Simulate inherited candidate roots. Child setup must remove both instead
+    # of exposing sibling plugins through top-level import resolution.
     sys.path[:0] = [str(builtin_root.parent), str(user_root.parent)]
     host_module._prepare_child_plugin_import_roots(_StubLogger())
 
-    assert sys.path.index(str(user_root.parent.resolve())) < sys.path.index(
-        str(builtin_root.parent.resolve())
-    )
+    assert str(user_root.parent.resolve()) not in sys.path
+    assert str(builtin_root.parent.resolve()) not in sys.path
 
 
 @pytest.mark.plugin_unit
@@ -310,7 +309,6 @@ def test_child_import_prefers_current_user_plugin(
     assert module.SOURCE == "user"
     assert Path(module.__file__).resolve().is_relative_to(user_root.resolve())
     namespace_paths = [Path(path).resolve() for path in sys.modules["plugins"].__path__]
-    assert namespace_paths[0] == user_root.resolve()
-    assert builtin_root.resolve() in namespace_paths
-    shared_module = importlib.import_module("plugins._shared")
-    assert shared_module.SOURCE == "builtin_shared"
+    assert namespace_paths == []
+    with pytest.raises(ModuleNotFoundError):
+        importlib.import_module("plugins._shared")

@@ -189,7 +189,7 @@ def _prepare_child_plugin_import_roots(logger: Any) -> None:
     """Expose Core itself without exposing shared plugin candidate roots."""
 
     try:
-        from plugin.settings import BUILTIN_PLUGIN_CONFIG_ROOT
+        from plugin.settings import BUILTIN_PLUGIN_CONFIG_ROOT, PLUGIN_CONFIG_ROOTS
     except Exception as exc:
         logger.debug("[Plugin Process] Failed to load plugin config roots: {}", exc)
         return
@@ -198,6 +198,18 @@ def _prepare_child_plugin_import_roots(logger: Any) -> None:
         builtin_root = BUILTIN_PLUGIN_CONFIG_ROOT.resolve()
     except Exception:
         builtin_root = BUILTIN_PLUGIN_CONFIG_ROOT
+
+    # A child process loads only the plugin selected by its config path. Remove
+    # any inherited candidate roots so sibling user/builtin plugins cannot
+    # shadow standard-library or third-party top-level modules.
+    for plugin_config_root in PLUGIN_CONFIG_ROOTS:
+        try:
+            import_root = plugin_config_root.resolve().parent
+        except Exception:
+            import_root = plugin_config_root.parent
+        value = str(import_root)
+        while value in sys.path:
+            sys.path.remove(value)
 
     repo_root = builtin_root.parent.parent
     if str(repo_root) not in sys.path:
@@ -259,7 +271,6 @@ def _ensure_plugins_namespace(plugin_root: Path, logger: Any) -> None:
         existing.__spec__ = spec
     spec.submodule_search_locations = existing.__path__
     logger.debug("[Plugin Process] Cleared inherited plugins namespace search paths")
-
 
 def _evict_plugin_module_tree(plugin_module_path: str) -> None:
     """Remove one synthetic plugin package without disturbing its siblings."""
