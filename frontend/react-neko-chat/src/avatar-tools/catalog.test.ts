@@ -299,7 +299,7 @@ describe('avatar tool definition validation', () => {
       [asDefinition({ ...fist, interaction: {
         ...fist.interaction,
         chance: { ...fist.interaction.chance, sound: undefined as never },
-      } }), /references missing sound/],
+      } }), /interaction\.chance\.sound/],
       [asDefinition({ ...hammer, interaction: {
         ...hammer.interaction,
         chance: { ...hammer.interaction.chance, intensity: 'normal' as never },

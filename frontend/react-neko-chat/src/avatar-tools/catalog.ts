@@ -888,7 +888,9 @@ function validateInteractionReferences(definition: AvatarToolDefinition) {
         fail(definition, 'interaction.chance.field conflicts with a reserved payload field');
       }
       assertProbability(definition, interaction.chance.probability, 'interaction.chance.probability');
-      if (definition.definitionVersion === 1 || interaction.chance.sound) {
+      const hasChanceSound = Object.prototype.hasOwnProperty.call(interaction.chance, 'sound');
+      if (definition.definitionVersion === 1 || hasChanceSound) {
+        assertWireIdentifier(definition, interaction.chance.sound, 'interaction.chance.sound');
         requireSound(interaction.chance.sound as AvatarToolSoundId);
       }
       requireEffect(interaction.chance.effect);

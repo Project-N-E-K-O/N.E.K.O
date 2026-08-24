@@ -192,6 +192,24 @@ describe('local avatar tool image change modes', () => {
     expect(() => validateAvatarToolDefinition(wrongField)).toThrow(/must be specialTriggered/);
   });
 
+  it('rejects an explicitly malformed optional local chance sound', () => {
+    const definition = buildLocalAvatarToolDefinition(dto({
+      special: { probability: 0.1, imageUrl: `/user_avatar_tools/${TOOL_ID}/special.png?v=1` },
+    }));
+    if (definition.interaction.kind !== 'press-release' || !definition.interaction.chance) {
+      throw new Error('invalid local profile');
+    }
+
+    for (const sound of ['', null, undefined]) {
+      const malformed = structuredClone(definition);
+      if (malformed.interaction.kind !== 'press-release' || !malformed.interaction.chance) {
+        throw new Error('invalid local profile');
+      }
+      malformed.interaction.chance.sound = sound as never;
+      expect(() => validateAvatarToolDefinition(malformed)).toThrow(/interaction\.chance\.sound/);
+    }
+  });
+
   it('falls back to normal sound on a special hit and remains silent when neither sound exists', () => {
     const withFallback = buildLocalAvatarToolDefinition(dto({
       normalSoundUrl: `/user_avatar_tools/${TOOL_ID}/normal.mp3?v=1`,
