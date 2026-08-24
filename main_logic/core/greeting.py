@@ -160,13 +160,14 @@ class GreetingMixin:
 
         local_record = None
         local_prompt_record = None
+        local_store = None
         if is_local_avatar_tool_id(raw["tool_id"]):
             local_store = get_avatar_tool_store(self._config_manager)
             try:
                 local_record = await asyncio.to_thread(
                     local_store.read_record,
                     raw["tool_id"],
-                    verify_resources=True,
+                    verify_resources=False,
                 )
             except (AvatarToolStoreError, OSError):
                 logger.debug(
@@ -222,6 +223,35 @@ class GreetingMixin:
             self._remember_avatar_interaction_id(interaction_id)
             await self.send_avatar_interaction_ack(interaction_id, False, "cooldown")
             return {"accepted": False, "reason": "cooldown", "interaction_id": interaction_id}
+
+        # Only an event that can pass the duplicate/cooldown gates pays the
+        # full resource-digest cost. Re-read and resolve from the verified
+        # record so prompt data never comes from the lightweight first read.
+        if local_store is not None:
+            try:
+                local_record = await asyncio.to_thread(
+                    local_store.read_record,
+                    raw["tool_id"],
+                    verify_resources=True,
+                )
+                if raw["tool_revision"] != local_store.record_revision(local_record):
+                    await self.send_avatar_interaction_ack(
+                        raw_interaction_id, False, "stale_tool_revision"
+                    )
+                    return {"accepted": False, "reason": "stale_tool_revision"}
+                local_prompt_record = self._resolve_local_avatar_tool_prompt_record(
+                    raw, local_record
+                )
+            except (AvatarToolStoreError, OSError, KeyError, TypeError, ValueError):
+                logger.debug(
+                    "[%s] handle_avatar_interaction: local tool changed or failed resource verification=%s",
+                    self.lanlan_name,
+                    raw["tool_id"],
+                )
+                await self.send_avatar_interaction_ack(
+                    raw_interaction_id, False, "invalid_payload"
+                )
+                return {"accepted": False, "reason": "invalid_payload"}
 
         self._remember_avatar_interaction_id(interaction_id)
         self._last_avatar_interaction_at = now_ms

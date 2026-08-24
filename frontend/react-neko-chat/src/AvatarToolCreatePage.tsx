@@ -38,6 +38,7 @@ type ChangeItemDraft = {
   id: number;
   image: File | null;
   imageResource?: string;
+  imageUrl?: string;
   meaning: string;
 };
 
@@ -93,6 +94,7 @@ export default function AvatarToolCreatePage({
     id: index,
     image: null,
     imageResource: item.resource,
+    imageUrl: item.url,
     meaning: item.meaning,
   }));
   const nextItemIdRef = useRef((initialChangeItems?.length ?? 0) + 2);
@@ -101,17 +103,21 @@ export default function AvatarToolCreatePage({
   const [changeMode, setChangeMode] = useState<LocalAvatarToolChangeMode>(initialDetail?.changeMode ?? 'press-swap');
   const [defaultImage, setDefaultImage] = useState<File | null>(null);
   const [defaultImageResource] = useState(initialDetail?.defaultImage.resource);
+  const [defaultImageUrl] = useState(initialDetail?.defaultImage.url);
   const [normalSound, setNormalSound] = useState<File | null>(null);
   const [normalSoundResource, setNormalSoundResource] = useState(initialDetail?.normalSound?.resource);
+  const [normalSoundUrl, setNormalSoundUrl] = useState(initialDetail?.normalSound?.url);
   const [specialEnabled, setSpecialEnabled] = useState(!!initialDetail?.special);
   const [specialProbabilityPercent, setSpecialProbabilityPercent] = useState(
     Math.round((initialDetail?.special?.probability ?? 0.1) * 100),
   );
   const [specialImage, setSpecialImage] = useState<File | null>(null);
   const [specialImageResource] = useState(initialDetail?.special?.image.resource);
+  const [specialImageUrl] = useState(initialDetail?.special?.image.url);
   const [specialMeaning, setSpecialMeaning] = useState(initialDetail?.special?.meaning ?? '');
   const [specialSound, setSpecialSound] = useState<File | null>(null);
   const [specialSoundResource, setSpecialSoundResource] = useState(initialDetail?.special?.sound?.resource);
+  const [specialSoundUrl, setSpecialSoundUrl] = useState(initialDetail?.special?.sound?.url);
   const [changeItemsByMode, setChangeItemsByMode] = useState<Record<LocalAvatarToolChangeMode, ChangeItemDraft[]>>({
     'press-swap': initialDetail?.changeMode === 'press-swap' && initialChangeItems
       ? initialChangeItems
@@ -469,21 +475,29 @@ export default function AvatarToolCreatePage({
           baseRevision: initialDetail!.revision,
           name: normalizedName,
           changeMode,
-          defaultImage: defaultImage ? { file: defaultImage } : { resource: defaultImageResource },
+          defaultImage: defaultImage
+            ? { file: defaultImage }
+            : { resource: defaultImageResource, url: defaultImageUrl },
           changeItems: changeItems.map(item => ({
-            ...(item.image ? { file: item.image } : { resource: item.imageResource }),
+            ...(item.image ? { file: item.image } : { resource: item.imageResource, url: item.imageUrl }),
             meaning: normalizeMeaning(item.meaning),
           })),
           ...((normalSound || normalSoundResource) ? {
-            normalSound: normalSound ? { file: normalSound } : { resource: normalSoundResource },
+            normalSound: normalSound
+              ? { file: normalSound }
+              : { resource: normalSoundResource, url: normalSoundUrl },
           } : {}),
           ...(specialEnabled ? {
             special: {
               probability: specialProbabilityPercent / 100,
-              image: specialImage ? { file: specialImage } : { resource: specialImageResource },
+              image: specialImage
+                ? { file: specialImage }
+                : { resource: specialImageResource, url: specialImageUrl },
               meaning: normalizeMeaning(specialMeaning),
               ...((specialSound || specialSoundResource) ? {
-                sound: specialSound ? { file: specialSound } : { resource: specialSoundResource },
+                sound: specialSound
+                  ? { file: specialSound }
+                  : { resource: specialSoundResource, url: specialSoundUrl },
               } : {}),
             },
           } : {}),
@@ -532,12 +546,14 @@ export default function AvatarToolCreatePage({
   const removeNormalSound = () => {
     setNormalSound(null);
     setNormalSoundResource(undefined);
+    setNormalSoundUrl(undefined);
     clearFieldError('normal_sound');
   };
 
   const removeSpecialSound = () => {
     setSpecialSound(null);
     setSpecialSoundResource(undefined);
+    setSpecialSoundUrl(undefined);
     clearFieldError('special_sound');
   };
 

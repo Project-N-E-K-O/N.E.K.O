@@ -208,8 +208,6 @@ describe('useLocalAvatarToolCatalog failure handling', () => {
       ...oldItem,
       revision: '120-300',
       name: 'Soft Feather',
-      defaultUrl: '/default.png?v=2',
-      changeUrls: ['/change-000.png?v=2'],
     };
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true, items: [oldItem], limits: LIMITS }), {
@@ -237,7 +235,7 @@ describe('useLocalAvatarToolCatalog failure handling', () => {
 
     const definition = result.current.registry.getRegistration(toolId).definition;
     expect(definition?.label).toEqual({ kind: 'literal', value: 'Soft Feather' });
-    expect(definition?.visual.variants.primary.iconImagePath).toBe('/default.png?v=2');
+    expect(definition?.visual.variants.primary.iconImagePath).toBe('/default.png?v=1');
     expect(result.current.refreshFailed).toBe(true);
   });
 
@@ -255,8 +253,6 @@ describe('useLocalAvatarToolCatalog failure handling', () => {
       ...oldItem,
       revision: '120-300',
       name: 'Soft Feather',
-      defaultUrl: '/default.png?v=2',
-      changeUrls: ['/change-000.png?v=2'],
     };
     const listResponse = (items: unknown[]) => new Response(JSON.stringify({ ok: true, items, limits: LIMITS }), {
       status: 200,
@@ -290,8 +286,8 @@ describe('useLocalAvatarToolCatalog failure handling', () => {
         baseRevision: '100-200',
         name: 'Soft Feather',
         changeMode: 'press-swap',
-        defaultImage: { resource: 'default.png' },
-        changeItems: [{ resource: 'change-000.png', meaning: 'A gentle touch' }],
+        defaultImage: { resource: 'default.png', url: oldItem.defaultUrl },
+        changeItems: [{ resource: 'change-000.png', url: oldItem.changeUrls[0], meaning: 'A gentle touch' }],
       })).resolves.toBeUndefined();
     });
 
@@ -300,6 +296,58 @@ describe('useLocalAvatarToolCatalog failure handling', () => {
       value: 'Soft Feather',
     });
     expect(fetchMock).toHaveBeenCalledTimes(4);
+  });
+
+  it('does not infer a lost retained-resource PUT succeeded when an asset changed elsewhere', async () => {
+    const toolId = 'local-12345678-1234-4123-8123-123456789abc' as const;
+    const oldItem = {
+      id: toolId,
+      revision: '100-200',
+      name: 'Feather',
+      changeMode: 'press-swap',
+      defaultUrl: '/default.png?v=old-default',
+      changeUrls: ['/change-000.png?v=old-change'],
+    };
+    const listResponse = (items: unknown[]) => new Response(JSON.stringify({ ok: true, items, limits: LIMITS }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(listResponse([oldItem]))
+      .mockRejectedValueOnce(new TypeError('connection reset'))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        ok: true,
+        detail: {
+          id: toolId,
+          revision: '120-300',
+          name: 'Soft Feather',
+          changeMode: 'press-swap',
+          defaultImage: { resource: 'default.png', url: oldItem.defaultUrl },
+          changeItems: [{
+            resource: 'change-000.png',
+            url: '/change-000.png?v=changed-elsewhere',
+            meaning: 'A gentle touch',
+          }],
+        },
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+      .mockResolvedValueOnce(listResponse([oldItem]));
+    vi.stubGlobal('fetch', fetchMock);
+    const { result } = renderHook(() => useLocalAvatarToolCatalog());
+    await waitFor(() => expect(result.current.registry.has(toolId)).toBe(true));
+
+    await act(async () => {
+      await expect(result.current.update(toolId, {
+        baseRevision: '100-200',
+        name: 'Soft Feather',
+        changeMode: 'press-swap',
+        defaultImage: { resource: 'default.png', url: oldItem.defaultUrl },
+        changeItems: [{
+          resource: 'change-000.png',
+          url: oldItem.changeUrls[0],
+          meaning: 'A gentle touch',
+        }],
+      })).rejects.toThrow('connection reset');
+    });
   });
 
   it('returns the current detail when an edit revision conflicts', async () => {

@@ -318,11 +318,15 @@ describe('AvatarToolItemManager local creation', () => {
       name: 'Soft Feather',
       baseRevision: '100-200',
       changeMode: 'press-swap',
-      defaultImage: { resource: 'default.png' },
-      changeItems: [{ resource: 'change-000.png', meaning: 'A gentle touch' }],
+      defaultImage: { resource: 'default.png', url: detailed.defaultImage.url },
+      changeItems: [{
+        resource: 'change-000.png',
+        url: detailed.changeItems[0].url,
+        meaning: 'A gentle touch',
+      }],
       special: expect.objectContaining({
-        image: { resource: 'special.png' },
-        sound: { resource: 'special.mp3' },
+        image: { resource: 'special.png', url: detailed.special?.image.url },
+        sound: { resource: 'special.mp3', url: detailed.special?.sound?.url },
       }),
     })));
     expect(onUpdate.mock.calls[0][1]).not.toHaveProperty('normalSound');
@@ -374,7 +378,11 @@ describe('AvatarToolItemManager local creation', () => {
     await waitFor(() => expect(onUpdate).toHaveBeenLastCalledWith(LOCAL_ID, expect.objectContaining({
       baseRevision: '120-300',
       name: 'Merged change',
-      changeItems: [{ resource: 'change-000.png', meaning: 'Latest meaning' }],
+      changeItems: [{
+        resource: 'change-000.png',
+        url: currentDetail.changeItems[0].url,
+        meaning: 'Latest meaning',
+      }],
     })));
   });
 

@@ -79,14 +79,14 @@ export type UpdateLocalAvatarToolInput = {
   baseRevision: string;
   name: string;
   changeMode: LocalAvatarToolChangeMode;
-  defaultImage: { resource?: string; file?: File };
-  changeItems: Array<{ resource?: string; file?: File; meaning: string }>;
-  normalSound?: { resource?: string; file?: File };
+  defaultImage: { resource?: string; url?: string; file?: File };
+  changeItems: Array<{ resource?: string; url?: string; file?: File; meaning: string }>;
+  normalSound?: { resource?: string; url?: string; file?: File };
   special?: {
     probability: number;
-    image: { resource?: string; file?: File };
+    image: { resource?: string; url?: string; file?: File };
     meaning: string;
-    sound?: { resource?: string; file?: File };
+    sound?: { resource?: string; url?: string; file?: File };
   };
 };
 

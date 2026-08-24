@@ -61,6 +61,17 @@ AVATAR_TOOL_LIMITS: dict[str, int] = {
     "maxTotalBytes": 256 * 1024 * 1024,
 }
 
+# A create/update request can contain the default and surprise images in
+# addition to every change image, plus normal/surprise audio. Leave bounded
+# room for multipart headers and short text fields without weakening per-file
+# validation in the router/store.
+AVATAR_TOOL_MAX_MULTIPART_BODY_BYTES = (
+    (AVATAR_TOOL_LIMITS["maxChangeImages"] + 2)
+    * AVATAR_TOOL_LIMITS["maxImageBytes"]
+    + 2 * AVATAR_TOOL_LIMITS["maxAudioBytes"]
+    + 1024 * 1024
+)
+
 _CONTROL_CHARACTER_PATTERN = re.compile(r"[\x00-\x1f\x7f-\x9f]")
 _MEANING_CONTROL_CHARACTER_PATTERN = re.compile(r"[\x00-\x09\x0b\x0c\x0e-\x1f\x7f-\x9f]")
 _NAME_SPACES_PATTERN = re.compile(r" +")

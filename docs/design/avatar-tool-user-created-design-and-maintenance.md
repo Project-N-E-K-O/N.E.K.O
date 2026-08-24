@@ -116,7 +116,7 @@
 - 图片只接受真实、可完整解码、非动画且不是完全透明的 PNG。
 - 后端使用 Pillow 校验格式、帧数、像素上限和完整解码，并重新编码为静态 RGBA PNG；原始上传和规范化输出都必须满足单图字节上限。
 - 音频只接受真实可解码、包含音频流且不超过时长和大小上限的 MP3；使用 PyAV 校验。
-- multipart 上传在 endpoint 内按块读取并计数，不能依赖会跳过 multipart 的全局 body cap。
+- 自定义道具的 multipart mutation 必须在 FastAPI 解析表单前完成 loopback、CSRF/origin 与请求聚合体积守门；endpoint 仍按文件读取并复验单文件上限、格式和内容，不能只依赖全局非 multipart body cap。
 - 单图大小、像素、音频大小和时长、单道具变化图片数量、有效可见道具数量和本地总占用由后端 `AVATAR_TOOL_LIMITS` 唯一定义；坏记录保持隔离但不占用有效道具数量，前端读取 limits 展示，不能成为权威来源。
 - 用户原文件名不进入记录或资源路径。
 
@@ -282,6 +282,8 @@ Web 和 PC 必须由同一 v2 profile 计算图片索引、声音、效果和事
 - `specialTriggered = 明确布尔值`，仅在该 definition 声明彩蛋时存在
 
 Host 只做静态 wire 校验和现有 dispatch/cooldown/ack 生命周期，不持有本地记录。Python 在消耗互动冷却前通过同进程 store 读取权威 record，复验 ID、索引和彩蛋字段：
+
+- 重复或仍在冷却期的事件只做 record/revision/索引轻量校验；可能进入提示词的事件必须重新逐字节核验资源摘要，并且只使用这次严格核验得到的 record 构造提示词；
 
 - 未命中彩蛋时只选择当前 `changeIndex` 对应的互动描述；
 - 命中彩蛋时只选择彩蛋互动描述；

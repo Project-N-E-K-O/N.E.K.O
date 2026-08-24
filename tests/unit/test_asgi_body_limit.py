@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
-"""Tests for the global inbound body-size guard (issue #1586).
+"""Tests for the inbound body-size guard (issue #1586).
 
 The middleware caps oversized *non-multipart* request bodies before they reach
-any router, by inspecting only ``Content-Length``. Multipart uploads, requests
-without ``Content-Length``, and non-http scopes are passed through untouched.
+any router, by inspecting only ``Content-Length``. Applications can opt a
+specific multipart route into preflight and streamed aggregate limits.
 """
 from __future__ import annotations
 
@@ -51,6 +51,17 @@ async def _drive(middleware, scope):
 def _make(max_bytes=64):
     # Tiny cap keeps the test payloads small; the guard logic is size-agnostic.
     return InboundBodySizeLimitMiddleware(app=None, max_body_bytes=max_bytes)
+
+
+def _make_bounded(max_bytes=64, preflight=None):
+    return InboundBodySizeLimitMiddleware(
+        app=None,
+        max_body_bytes=1024,
+        multipart_path_prefix="/api/avatar-tools",
+        multipart_methods=("POST", "PUT"),
+        max_multipart_body_bytes=max_bytes,
+        multipart_preflight=preflight,
+    )
 
 
 def test_under_limit_passes_through():
@@ -107,6 +118,84 @@ def test_multipart_content_type_is_case_insensitive():
     )
     hit, _sent = _run(_drive(mw, scope))
     assert hit is True
+
+
+def test_bounded_multipart_route_rejects_known_oversize_before_downstream():
+    mw = _make_bounded(max_bytes=64)
+    scope = {
+        **_http_scope(
+            [
+                (b"content-length", b"65"),
+                (b"content-type", b"multipart/form-data; boundary=abc"),
+            ]
+        ),
+        "path": "/api/avatar-tools/local-example",
+        "method": "PUT",
+    }
+    hit, sent = _run(_drive(mw, scope))
+    assert hit is False
+    assert sent[0]["status"] == 413
+    assert json.loads(sent[1]["body"])["max_bytes"] == 64
+
+
+def test_bounded_multipart_route_counts_body_without_content_length():
+    mw = _make_bounded(max_bytes=5)
+    scope = {
+        **_http_scope([(b"content-type", b"multipart/form-data; boundary=abc")]),
+        "path": "/api/avatar-tools",
+    }
+    chunks = iter(
+        [
+            {"type": "http.request", "body": b"123", "more_body": True},
+            {"type": "http.request", "body": b"456", "more_body": False},
+        ]
+    )
+    sent = []
+
+    async def downstream(_scope, receive, _send):
+        while True:
+            message = await receive()
+            if not message.get("more_body"):
+                break
+
+    mw.app = downstream
+
+    async def receive():
+        return next(chunks)
+
+    async def send(message):
+        sent.append(message)
+
+    _run(mw(scope, receive, send))
+    assert sent[0]["status"] == 413
+
+
+def test_bounded_multipart_preflight_rejects_before_body_is_read():
+    from fastapi.responses import JSONResponse
+
+    received = {"hit": False}
+
+    def preflight(_scope):
+        return JSONResponse(status_code=403, content={"error_code": "csrf_validation_failed"})
+
+    mw = _make_bounded(preflight=preflight)
+    scope = {
+        **_http_scope([(b"content-type", b"multipart/form-data; boundary=abc")]),
+        "path": "/api/avatar-tools",
+    }
+
+    async def receive():
+        received["hit"] = True
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    sent = []
+
+    async def send(message):
+        sent.append(message)
+
+    _run(mw(scope, receive, send))
+    assert received["hit"] is False
+    assert sent[0]["status"] == 403
 
 
 def test_missing_content_length_passes_through():

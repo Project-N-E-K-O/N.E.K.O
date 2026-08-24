@@ -205,7 +205,7 @@ async def test_missing_local_record_is_rejected_before_interaction_cooldown(monk
 
     class MissingStore:
         def read_record(self, _tool_id, *, verify_resources=False):
-            assert verify_resources is True
+            assert verify_resources is False
             raise AvatarToolStoreError("tool_not_found", "missing", status_code=404)
 
     class Harness(greeting.GreetingMixin):
@@ -234,7 +234,7 @@ async def test_out_of_range_change_index_is_rejected_before_interaction_cooldown
 
     class Store:
         def read_record(self, _tool_id, *, verify_resources=False):
-            assert verify_resources is True
+            assert verify_resources is False
             return RECORD
 
         record_revision = staticmethod(AvatarToolStore.record_revision)
@@ -265,7 +265,7 @@ async def test_stale_local_revision_is_rejected_before_interaction_cooldown(monk
 
     class Store:
         def read_record(self, _tool_id, *, verify_resources=False):
-            assert verify_resources is True
+            assert verify_resources is False
             return RECORD
 
         record_revision = staticmethod(AvatarToolStore.record_revision)
@@ -287,3 +287,43 @@ async def test_stale_local_revision_is_rejected_before_interaction_cooldown(monk
     assert result == {"accepted": False, "reason": "stale_tool_revision"}
     assert harness._last_avatar_interaction_at == 12345
     assert harness.acks == [("local-interaction-1", False, "stale_tool_revision")]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_local_cooldown_skips_expensive_resource_verification(monkeypatch):
+    from main_logic.core import greeting
+
+    verified = []
+
+    class Store:
+        def read_record(self, _tool_id, *, verify_resources=False):
+            verified.append(verify_resources)
+            return RECORD
+
+        record_revision = staticmethod(AvatarToolStore.record_revision)
+
+    class Harness(greeting.GreetingMixin):
+        lanlan_name = "YUI"
+        _config_manager = object()
+        avatar_interaction_cooldown_ms = 600
+
+        def __init__(self):
+            self.acks = []
+            self._last_avatar_interaction_at = 10**15
+            self._recent_avatar_interaction_id_set = set()
+
+        def note_user_engagement(self, **_kwargs):
+            pass
+
+        def _remember_avatar_interaction_id(self, interaction_id):
+            self._recent_avatar_interaction_id_set.add(interaction_id)
+
+        async def send_avatar_interaction_ack(self, interaction_id, accepted, reason, **_kwargs):
+            self.acks.append((interaction_id, accepted, reason))
+
+    monkeypatch.setattr(greeting, "get_avatar_tool_store", lambda _manager: Store())
+    harness = Harness()
+    result = await harness.handle_avatar_interaction(_payload())
+    assert result["reason"] == "cooldown"
+    assert verified == [False]

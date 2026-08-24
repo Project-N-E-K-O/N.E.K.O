@@ -61,21 +61,32 @@ function detailMatchesUpdate(detail: LocalAvatarToolDetail, input: UpdateLocalAv
     detail.name !== input.name
     || detail.changeMode !== input.changeMode
     || detail.defaultImage.resource !== input.defaultImage.resource
+    || !input.defaultImage.url
+    || detail.defaultImage.url !== input.defaultImage.url
     || detail.changeItems.length !== input.changeItems.length
     || detail.changeItems.some((item, index) => (
       item.resource !== input.changeItems[index]?.resource
+      || !input.changeItems[index]?.url
+      || item.url !== input.changeItems[index]?.url
       || item.meaning !== input.changeItems[index]?.meaning.trim()
     ))
     || !!detail.normalSound !== !!input.normalSound
     || (detail.normalSound?.resource !== input.normalSound?.resource)
+    || (!!input.normalSound && (!input.normalSound.url || detail.normalSound?.url !== input.normalSound.url))
     || !!detail.special !== !!input.special
   ) return false;
   if (!detail.special || !input.special) return true;
   return detail.special.probability === input.special.probability
     && detail.special.image.resource === input.special.image.resource
+    && !!input.special.image.url
+    && detail.special.image.url === input.special.image.url
     && detail.special.meaning === input.special.meaning.trim()
     && !!detail.special.sound === !!input.special.sound
-    && detail.special.sound?.resource === input.special.sound?.resource;
+    && detail.special.sound?.resource === input.special.sound?.resource
+    && (!input.special.sound || (
+      !!input.special.sound.url
+      && detail.special.sound?.url === input.special.sound.url
+    ));
 }
 
 function detailToPublicItem(detail: LocalAvatarToolDetail): LocalAvatarToolDto {
