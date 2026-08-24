@@ -21,7 +21,9 @@
               <el-tag v-if="displayPlugin.is_recommended" size="small" type="warning" effect="plain">
                 {{ t('market.recommended') }}
               </el-tag>
-              <el-tag v-if="installed" size="small" type="success">{{ t('market.installed') }}</el-tag>
+              <el-tag v-if="effectiveAction.installed" size="small" type="success">
+                {{ effectiveAction.effectiveSource === 'builtin' ? t('market.usingBuiltin') : t('market.installed') }}
+              </el-tag>
             </div>
             <p>{{ displayPlugin.short_description || displayPlugin.description || t('market.noDescription') }}</p>
             <div class="market-plugin-detail__meta">
@@ -97,7 +99,9 @@
       >
         {{ upgrading ? t('market.upgrading') : t('market.upgradeTo', { version: actionablePlugin.version }) }}
       </el-button>
-      <el-button v-else-if="installed" type="primary" disabled>{{ t('market.installed') }}</el-button>
+      <el-button v-else-if="effectiveAction.kind === 'blocked'" type="primary" disabled>{{ t('market.autoUpgradeBlocked') }}</el-button>
+      <el-button v-else-if="effectiveAction.kind === 'builtin'" type="primary" disabled>{{ t('market.usingBuiltin') }}</el-button>
+      <el-button v-else-if="effectiveAction.kind === 'installed'" type="primary" disabled>{{ t('market.installed') }}</el-button>
       <el-button v-else type="primary" :loading="installing" :disabled="installing || !actionablePlugin.has_release" @click="emit('install', actionablePlugin)">
         {{ actionablePlugin.has_release ? (installing ? t('market.installing') : t('market.install')) : t('market.noVersionAvailable') }}
       </el-button>
@@ -123,6 +127,7 @@ import type { MarketWorkbenchItem } from '@/composables/useMarketWorkbench'
 import { openExternalUrl } from '@/utils/openExternal'
 import { resolveMarketReadmeLink } from '@/utils/marketReadmeLink'
 import { compareVersion } from '@/utils/version'
+import type { MarketPluginAction } from '@/utils/marketPluginInstallState'
 
 interface Props {
   visible: boolean
@@ -132,6 +137,7 @@ interface Props {
   localVersion?: string
   installing?: boolean
   upgrading?: boolean
+  action?: MarketPluginAction
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -139,6 +145,7 @@ const props = withDefaults(defineProps<Props>(), {
   localVersion: undefined,
   installing: false,
   upgrading: false,
+  action: undefined,
 })
 const emit = defineEmits<{
   'update:visible': [value: boolean]
@@ -201,9 +208,31 @@ const readmeHtml = computed(() => {
     return ''
   }
 })
-const showUpgrade = computed(() =>
+const legacyShowUpgrade = computed(() =>
   props.installed && !!props.localVersion && !!actionablePlugin.value.version && actionablePlugin.value.has_release
     && compareVersion(props.localVersion, actionablePlugin.value.version) < 0,
+)
+const effectiveAction = computed<MarketPluginAction>(() => {
+  if (props.action) return props.action
+  if (legacyShowUpgrade.value) {
+    return {
+      kind: 'upgrade',
+      effectiveSource: 'market',
+      currentVersion: props.localVersion || '',
+      targetVersion: actionablePlugin.value.version,
+      installed: true,
+    }
+  }
+  return {
+    kind: props.installed ? 'installed' : actionablePlugin.value.has_release ? 'install' : 'unavailable',
+    effectiveSource: props.installed ? 'market' : 'unknown',
+    currentVersion: props.localVersion || '',
+    targetVersion: actionablePlugin.value.version,
+    installed: props.installed,
+  }
+})
+const showUpgrade = computed(() =>
+  effectiveAction.value.kind === 'upgrade' || effectiveAction.value.kind === 'override_builtin',
 )
 
 async function loadDetail() {

@@ -42,6 +42,7 @@ from plugin.server.application.install_source import (
 from plugin.server.application.plugin_cli import PluginCliService
 from plugin.server.application.plugin_cli.paths import PluginCliPathPolicy
 from plugin.server.application.plugins.operation_lock import serialized_plugin_operation
+from plugin.server.application.plugins.source_switch import SourceSwitchError
 from plugin.server.application.plugins.upgrade_support import (
     ReplacePluginError,
     plugin_is_running,
@@ -275,20 +276,25 @@ def _plugin_config_roots() -> tuple[Path, ...]:
     return tuple(roots)
 
 
-def _read_plugin_toml_id(manifest: Path) -> str | None:
+def _read_plugin_toml_metadata(manifest: Path) -> tuple[str | None, str]:
     try:
         data = tomllib.loads(manifest.read_text(encoding="utf-8"))
     except (OSError, tomllib.TOMLDecodeError) as exc:
         logger.warning("Failed to read plugin manifest {}: {}", manifest, exc)
-        return None
+        return None, ""
 
     plugin_table = data.get("plugin")
     if not isinstance(plugin_table, dict):
-        return None
+        return None, ""
     plugin_id = plugin_table.get("id")
     if not isinstance(plugin_id, str) or not plugin_id.strip():
-        return None
-    return plugin_id.strip()
+        return None, ""
+    version = plugin_table.get("version")
+    return plugin_id.strip(), version.strip() if isinstance(version, str) else ""
+
+
+def _read_plugin_toml_id(manifest: Path) -> str | None:
+    return _read_plugin_toml_metadata(manifest)[0]
 
 
 # ─── 请求/响应模型 ─────────────────────────────────────────────────
@@ -334,9 +340,12 @@ class MarketInstallRequest(BaseModel):
         description="Market 上 latest_version.created_at；None 时由客户端兜底为当前时间",
     )
     # v2: install / upgrade / reinstall mode 选择；旧客户端不传 mode 则默认 install
-    mode: Literal["install", "upgrade", "reinstall"] = Field(
+    mode: Literal["install", "upgrade", "reinstall", "override_builtin"] = Field(
         default="install",
-        description="install=全新安装；upgrade=覆盖旧版本；reinstall=同版本重装",
+        description=(
+            "install=全新安装；upgrade=覆盖旧版本；reinstall=同版本重装；"
+            "override_builtin=以 Market 版本覆盖同 ID 的内置插件"
+        ),
     )
     # v2 (Option C): plugin 身份一致性校验 —— Market slug 透传给客户端，
     # 客户端 unpack 后比对包内 plugin.toml [plugin].id；install 不一致时
@@ -397,6 +406,11 @@ class MarketTaskStatus(BaseModel):
 class MarketInstalledPlugin(BaseModel):
     plugin_id: str
     path: str
+    effective_source: Literal["builtin", "market", "manual"] = "manual"
+    effective_version: str = ""
+    market_installed: bool = False
+    builtin_version: str = ""
+    latest_market_version: str = ""
     # v2 (R6.1 / R6.6 / design §3.5): 让前端在不二次请求的前提下展示 yank /
     # channel / 版本对比信息。仅 channel="market" 的 entry 投影；非 market /
     # 没有 lock entry 时为 None。
@@ -853,15 +867,20 @@ async def market_installed(
                 if not e.removed and e.root_id and e.directory_name
             }
 
-        installed_by_pid: dict[str, MarketInstalledPlugin] = {}
+        discovered: dict[str, dict[str, tuple[Path, str, LockEntry | None]]] = {}
+        path_policy = PluginCliPathPolicy.from_settings()
         for root in _plugin_config_roots():
             if not root.is_dir():
                 continue
+            root_kind = "builtin" if root.resolve() == path_policy.builtin_plugins_root.resolve() else "user"
             for manifest in root.glob("*/plugin.toml"):
                 if not manifest.is_file():
                     continue
                 plugin_dir = manifest.parent
-                plugin_id = _read_plugin_toml_id(manifest) or plugin_dir.name
+                if plugin_dir.name.startswith("."):
+                    continue
+                manifest_plugin_id, version = _read_plugin_toml_metadata(manifest)
+                plugin_id = manifest_plugin_id or plugin_dir.name
                 entry: LockEntry | None = None
                 if mgr is not None:
                     try:
@@ -881,18 +900,33 @@ async def market_installed(
                     ):
                         entry = pid_entry
 
-                projected_source = _project_market_source_detail(entry)
-                candidate = MarketInstalledPlugin(
-                    plugin_id=plugin_id,
-                    path=str(plugin_dir),
-                    latest_install_source=projected_source,
-                )
-                existing = installed_by_pid.get(plugin_id)
-                if existing is None or (
-                    existing.latest_install_source is None
-                    and candidate.latest_install_source is not None
-                ):
-                    installed_by_pid[plugin_id] = candidate
+                discovered.setdefault(plugin_id, {})[root_kind] = (plugin_dir, version, entry)
+
+        installed_by_pid: dict[str, MarketInstalledPlugin] = {}
+        for plugin_id, sources in discovered.items():
+            builtin = sources.get("builtin")
+            user = sources.get("user")
+            effective = user or builtin
+            if effective is None:  # pragma: no cover - discovered always contains one source
+                continue
+            plugin_dir, effective_version, entry = effective
+            projected_source = _project_market_source_detail(entry if user is not None else None)
+            is_market_installed = projected_source is not None
+            effective_source: Literal["builtin", "market", "manual"] = (
+                "market" if is_market_installed else ("manual" if user is not None else "builtin")
+            )
+            installed_by_pid[plugin_id] = MarketInstalledPlugin(
+                plugin_id=plugin_id,
+                path=str(plugin_dir),
+                effective_source=effective_source,
+                effective_version=effective_version,
+                market_installed=is_market_installed,
+                builtin_version=builtin[1] if builtin is not None else "",
+                latest_market_version=(
+                    str(projected_source.get("version") or "") if projected_source is not None else ""
+                ),
+                latest_install_source=projected_source,
+            )
         installed = list(installed_by_pid.values())
         return MarketInstalledResponse(installed=installed, count=len(installed))
     except Exception as exc:
@@ -2615,7 +2649,7 @@ async def _execute_install(task_id: str, payload: MarketInstallRequest) -> None:
 
     try:
         _raise_if_task_cancel_requested(task)
-        if payload.mode == "install":
+        if payload.mode in ("install", "override_builtin"):
             await _do_install(task, payload, log_ctx)
         elif payload.mode == "upgrade":
             await _do_upgrade(task, payload, log_ctx)
@@ -2764,6 +2798,10 @@ _HUMAN_MESSAGES: dict[str, str] = {
     "download_failed": "下载失败",
     "package_hash_mismatch": "插件包校验失败",
     "install_failed": "安装失败，已清理临时文件",
+    "override_rollback_completed": "内置插件升级失败，已恢复内置版本",
+    "override_rollback_incomplete": "内置插件升级失败，回滚未完整完成，请检查插件状态",
+    "override_source_changed": "插件来源已变化，请刷新后重试",
+    "override_start_failed": "Market 版本启动失败，已尝试恢复内置版本",
 }
 
 
@@ -2796,7 +2834,7 @@ def _raise_if_task_cancel_requested(task: dict[str, Any]) -> None:
 def _with_market_operation_status(
     result: dict[str, object],
     *,
-    operation: Literal["install", "upgrade"],
+    operation: Literal["install", "upgrade", "override_builtin"],
     restarted: bool,
     rollback_status: str,
 ) -> dict[str, object]:
@@ -2883,7 +2921,10 @@ async def _do_install(
         )
 
         filename = _extract_filename(payload.package_url)
-        market_override = _build_market_override(payload, mode="install")
+        operation: Literal["install", "override_builtin"] = (
+            "override_builtin" if payload.mode == "override_builtin" else "install"
+        )
+        market_override = _build_market_override(payload, mode=operation)
 
         try:
             result = await _cli_service.upload_and_install(
@@ -2899,16 +2940,25 @@ async def _do_install(
                     message=str(exc.message),
                 ) from exc
             raise _TaskError(code="internal_error", message=str(exc.message)) from exc
+        except SourceSwitchError as exc:
+            task["rollback"] = exc.as_payload()
+            raise _TaskError(code=exc.code, message=str(exc)) from exc
         except Exception as exc:
             raise _TaskError(code="install_failed", message=str(exc)) from exc
     finally:
         _cleanup_download_file(package_path)
 
     _post_install_payload_check(payload, result)
+    unpack_result = result.get("unpack") if isinstance(result, dict) else None
+    install_result = result.get("install") if isinstance(result, dict) else None
+    restarted = bool(
+        (unpack_result.get("restarted") if isinstance(unpack_result, dict) else False)
+        or (install_result.get("restarted") if isinstance(install_result, dict) else False)
+    )
     result = _with_market_operation_status(
         result,
-        operation="install",
-        restarted=False,
+        operation=operation,
+        restarted=restarted,
         rollback_status="not_needed",
     )
 
