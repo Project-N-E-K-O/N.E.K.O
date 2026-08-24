@@ -7,6 +7,7 @@ See plan gap-review notes: import-time ``from config import DATA_DIR`` bindings 
 """
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any, Callable
 
@@ -63,6 +64,14 @@ def apply_standalone_patches(*, bundle_dir: Path, user_data_dir: Path) -> None:
     tb_config.DOCS_DIR = code_dir / "docs"
     tb_config.TEMPLATES_DIR = code_dir / "templates"
     tb_config.STATIC_DIR = code_dir / "static"
+
+    import tests.testbench.presets as tb_presets
+
+    tb_presets.PRESETS_ROOT = code_dir / "presets"
+
+    tik_cache = bundle_dir / "data" / "tiktoken_cache"
+    if tik_cache.is_dir():
+        os.environ["TIKTOKEN_CACHE_DIR"] = str(tik_cache)
 
     # Bundle is read-only in freeze; datas already include support trees.
     tb_config.ensure_code_support_dirs = _noop  # type: ignore[assignment]

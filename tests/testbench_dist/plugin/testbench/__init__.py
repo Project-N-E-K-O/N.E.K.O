@@ -242,9 +242,12 @@ class TestbenchDriverPlugin(NekoPluginBase):
         super().__init__(ctx)
         self._plugin_dir = Path(__file__).resolve().parent
         self._shell_proc: subprocess.Popen[Any] | None = None
+        self._webview_proc: subprocess.Popen[Any] | None = None
         self._embed_thread: threading.Thread | None = None
         self._embed_server: Any | None = None
         self._script_python: list[str] | None | object = _SCRIPT_PYTHON_UNSET
+        self._runtime_lock = threading.Lock()
+        self._start_in_progress = False
 
     def _cached_script_python(self) -> list[str] | None:
         cached = self._script_python
@@ -340,13 +343,62 @@ class TestbenchDriverPlugin(NekoPluginBase):
         if not self._script_python_can_import("webview"):
             raise RuntimeError("无法启动 WebView：当前 Python 未安装 pywebview。")
         webview_cmd = [*py, "-c", _WEBVIEW_LAUNCHER, url]
-        subprocess.Popen(
+        self._webview_proc = subprocess.Popen(
             webview_cmd,
             cwd=str(self._plugin_dir),
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             start_new_session=(sys.platform != "win32"),
         )
+
+    def _terminate_webview_proc(self) -> None:
+        proc = self._webview_proc
+        if proc is None:
+            return
+        if proc.poll() is None:
+            try:
+                if sys.platform == "win32":
+                    _windows_taskkill(proc.pid)
+                else:
+                    proc.terminate()
+            except Exception:  # noqa: BLE001
+                try:
+                    proc.kill()
+                except Exception:  # noqa: BLE001
+                    pass
+        self._webview_proc = None
+
+    def _mode_a_viable(
+        self,
+        *,
+        neko_root: Path,
+        code_dir: Path,
+        import_root: Path,
+    ) -> bool:
+        """True when script Python can import testbench with the same PYTHONPATH as Mode A."""
+        py = self._cached_script_python()
+        if py is None:
+            return False
+        vendor = self._plugin_dir / "vendor"
+        env = self._clean_env(
+            neko_root=neko_root,
+            import_root=import_root,
+            vendor=vendor if vendor.is_dir() else None,
+        )
+        probe = "import tests.testbench.server as s; assert hasattr(s, 'app')"
+        try:
+            completed = subprocess.run(
+                [*py, "-c", probe],
+                cwd=str(self._plugin_dir),
+                env=env,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=25,
+                check=False,
+            )
+            return completed.returncode == 0
+        except (OSError, subprocess.TimeoutExpired):
+            return False
 
     def _status_dict(self) -> dict[str, Any]:
         state = self._reconcile_runtime_state()
@@ -603,7 +655,7 @@ class TestbenchDriverPlugin(NekoPluginBase):
         py = self._cached_script_python()
         if py is not None and self._script_python_can_import("webview"):
             try:
-                subprocess.Popen(
+                self._webview_proc = subprocess.Popen(
                     [*py, "-c", _WEBVIEW_LAUNCHER, url],
                     cwd=str(self._plugin_dir),
                     stdout=subprocess.DEVNULL,
@@ -634,7 +686,11 @@ class TestbenchDriverPlugin(NekoPluginBase):
         import_root: Path,
     ) -> dict[str, Any]:
         py = self._cached_script_python()
-        if py is not None:
+        if py is not None and self._mode_a_viable(
+            neko_root=neko_root,
+            code_dir=code_dir,
+            import_root=import_root,
+        ):
             try:
                 return self._start_mode_a(
                     python_prefix=py,
@@ -644,6 +700,10 @@ class TestbenchDriverPlugin(NekoPluginBase):
                 )
             except Exception as exc:  # noqa: BLE001
                 self.logger.warning("Mode A failed (%s); falling back to Mode B", exc)
+        elif py is not None:
+            self.logger.info(
+                "Mode A skipped: script Python cannot import tests.testbench in isolated env"
+            )
         return self._start_mode_b(
             neko_root=neko_root,
             code_dir=code_dir,
@@ -668,12 +728,25 @@ class TestbenchDriverPlugin(NekoPluginBase):
         id="start",
         name="Start Testbench",
         description="Start Testbench (prefer WebView window)",
-        timeout=120.0,
+        timeout=200.0,
     )
     async def start(self, **_) -> Any:
-        status = await asyncio.to_thread(self._status_dict)
-        if status["running"]:
-            return Ok({**status, "message": "Testbench 已在运行"})
+        def _begin_start() -> tuple[str, dict[str, Any] | None]:
+            with self._runtime_lock:
+                status = self._status_dict()
+                if status["running"]:
+                    return "running", status
+                if self._start_in_progress:
+                    return "busy", status
+                self._start_in_progress = True
+                return "go", None
+
+        phase, payload = await asyncio.to_thread(_begin_start)
+        if phase == "running":
+            return Ok({**payload, "message": "Testbench 已在运行"})  # type: ignore[arg-type]
+        if phase == "busy":
+            return Err(SdkError("Testbench 正在启动中，请稍候", code="START_IN_PROGRESS"))
+
         try:
             neko_root = _resolve_neko_root_for_start(self._plugin_dir)
             if neko_root is None:
@@ -702,6 +775,12 @@ class TestbenchDriverPlugin(NekoPluginBase):
             prev.update(fail)
             self._save_state(prev)
             return Err(SdkError(str(exc), code="START_FAILED"))
+        finally:
+            def _end_start() -> None:
+                with self._runtime_lock:
+                    self._start_in_progress = False
+
+            await asyncio.to_thread(_end_start)
 
     @ui.action(label="停止", tone="danger", group="control", order=20, refresh_context=True)
     @plugin_entry(id="stop", name="Stop Testbench", description="Stop Testbench server / window")
@@ -710,6 +789,9 @@ class TestbenchDriverPlugin(NekoPluginBase):
         return Ok({**await asyncio.to_thread(self._status_dict), "message": "已请求停止"})
 
     async def _stop_impl(self) -> None:
+        with self._runtime_lock:
+            self._start_in_progress = False
+        self._terminate_webview_proc()
         state = self._load_state()
         if self._embed_server is not None:
             try:

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import importlib.util
 import inspect
+import threading
 from pathlib import Path
 
 import pytest
@@ -95,6 +96,9 @@ def test_reconcile_runtime_state_clears_stale_file(tmp_path, monkeypatch):
     plugin._shell_proc = None
     plugin._embed_server = None
     plugin._embed_thread = None
+    plugin._webview_proc = None
+    plugin._runtime_lock = threading.Lock()
+    plugin._start_in_progress = False
     plugin._script_python = []
     plugin.data_path = lambda *parts: data_dir.joinpath(*parts) if parts else data_dir  # type: ignore[method-assign]
     status = plugin._status_dict()
@@ -120,6 +124,9 @@ def test_reconcile_mode_b_clears_when_embed_dead_despite_host_pid(tmp_path, monk
     plugin._shell_proc = None
     plugin._embed_server = None
     plugin._embed_thread = None
+    plugin._webview_proc = None
+    plugin._runtime_lock = threading.Lock()
+    plugin._start_in_progress = False
     plugin._script_python = []
     plugin.data_path = lambda *parts: data_dir.joinpath(*parts) if parts else data_dir  # type: ignore[method-assign]
     status = plugin._status_dict()

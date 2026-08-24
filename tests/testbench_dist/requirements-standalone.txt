@@ -29,5 +29,6 @@ pywebview>=5.0
 pyinstaller==6.12.0
 sqlalchemy
 psutil
+soxr
 # Windows WebView2 / COM helpers often pulled transitively; keep explicit on Win:
 # pythonnet / clr — pywebview selects backend per OS.

@@ -59,7 +59,7 @@ todos:
 
 ## 现状结论
 
-Testbench 是 **FastAPI + Jinja2 + 原生 ES Module** 的本地 Web 应用，入口为 [`tests/testbench/run_testbench.py`](tests/testbench/run_testbench.py)，默认 `http://127.0.0.1:48920`。
+Testbench 是 **FastAPI + Jinja2 + 原生 ES Module** 的本地 Web 应用，入口为 [`tests/testbench/run_testbench.py`](../../testbench/run_testbench.py)，默认 `http://127.0.0.1:48920`。
 
 ```mermaid
 flowchart LR
@@ -77,10 +77,10 @@ flowchart LR
 | 维度 | 现状 |
 |------|------|
 | NEKO 依赖 | 大量 import `config.*`、`utils.*`、`memory.*`；少量 `main_logic.topic` / `main_logic.core`（`avatar_dedupe` 已 copy，不 import `cross_server`） |
-| 运行数据 | [`tests/testbench/config.py`](tests/testbench/config.py) 写死 `DATA_DIR = PROJECT_ROOT / "tests/testbench_data"` |
-| API Keys | [`api_keys_registry.py`](tests/testbench/api_keys_registry.py) 读 `tests/api_keys.json` |
-| 嵌入模型 | `memory/embeddings.py` 需要 onnx + tokenizer；主项目已有 [`scripts/prepare_embedding_model.py`](scripts/prepare_embedding_model.py) |
-| 打包先例 | 主程序走 Nuitka+Electron；Monitor 有 [`specs/monitor_build.spec`](specs/monitor_build.spec)（PyInstaller + FastAPI 精简版） |
+| 运行数据 | [`tests/testbench/config.py`](../../testbench/config.py) 写死 `DATA_DIR = PROJECT_ROOT / "tests/testbench_data"` |
+| API Keys | [`api_keys_registry.py`](../../testbench/api_keys_registry.py) 读 `tests/api_keys.json` |
+| 嵌入模型 | `memory/embeddings.py` 需要 onnx + tokenizer；主项目已有 [`scripts/prepare_embedding_model.py`](../../../scripts/prepare_embedding_model.py) |
+| 打包先例 | 主程序走 Nuitka+Electron；Monitor 有 [`specs/monitor_build.spec`](../../../specs/monitor_build.spec)（PyInstaller + FastAPI 精简版） |
 | Testbench 自身 | **无** 现有打包脚本；定位为开发/测试工具，非终端产品 |
 
 **目标形态（用户已确认）：三平台 + 安装包分发 + NEKO 插件包**
@@ -121,15 +121,15 @@ flowchart TB
 
 | 规则 | 说明 |
 |------|------|
-| **testbench 源码零改动** | [`tests/testbench/`](tests/testbench/) 内所有 `.py` / `.js` / 配置**不**为打包添加 `IS_FROZEN`、`TESTBENCH_FROZEN`、dist import 等分支 |
-| **开发入口不变** | [`run_testbench.py`](tests/testbench/run_testbench.py) + `uv run` + 浏览器访问 **保持唯一官方开发路径**，不新增「开发也用 desktop_main」的混用 |
+| **testbench 源码零改动** | [`tests/testbench/`](../../testbench/) 内所有 `.py` / `.js` / 配置**不**为打包添加 `IS_FROZEN`、`TESTBENCH_FROZEN`、dist import 等分支 |
+| **开发入口不变** | [`run_testbench.py`](../../testbench/run_testbench.py) + `uv run` + 浏览器访问 **保持唯一官方开发路径**，不新增「开发也用 desktop_main」的混用 |
 | **单向依赖** | `testbench_dist → testbench`（构建时引用）；**禁止** `testbench → testbench_dist` |
 | **smoke 不耦合** | 现有 `tests/testbench/smoke/*` **不**新增打包相关用例；打包验收 smoke 全部放在 `tests/testbench_dist/smoke/` |
 | **CI 分离** | testbench 日常 CI 不跑 PyInstaller；打包 CI 为独立 workflow，失败不阻塞 testbench 开发合并 |
 
 ### 冻结态适配的唯一落点：`bootstrap.py`
 
-所有「独立安装包才需要」的行为，集中在 [`tests/testbench_dist/src/bootstrap.py`](tests/testbench_dist/src/bootstrap.py)，在 `desktop_main.py` **最早阶段**、**任何 testbench router/pipeline import 之前**执行：
+所有「独立安装包才需要」的行为，集中在 [`tests/testbench_dist/src/bootstrap.py`](../src/bootstrap.py)，在 `desktop_main.py` **最早阶段**、**任何 testbench router/pipeline import 之前**执行：
 
 ```python
 # bootstrap.py — 仅 dist 入口调用；必须覆盖「全部」派生常量，见「审查补漏」
@@ -202,7 +202,7 @@ flowchart TD
 
 ### 打包器：PyInstaller one-dir + 各平台安装器
 
-- **理由**：项目 dev 依赖已有 `pyinstaller==6.12.0`；[`monitor_build.spec`](specs/monitor_build.spec) 可复用 FastAPI/uvicorn 打包模式；比 Nuitka 上手快，且与「py 脚本处理 exe」一致。
+- **理由**：项目 dev 依赖已有 `pyinstaller==6.12.0`；[`monitor_build.spec`](../../../specs/monitor_build.spec) 可复用 FastAPI/uvicorn 打包模式；比 Nuitka 上手快，且与「py 脚本处理 exe」一致。
 - **分发**：**one-dir 文件夹**作为 payload（不选 onefile — onnx/大资源冷启动慢、排错难），外层再包安装器：
   - **Windows**：Inno Setup（`.exe` 安装向导，可注册开始菜单/卸载项）
   - **macOS**：`.app` bundle + `.dmg` 或 `.pkg`
@@ -210,13 +210,13 @@ flowchart TD
 
 ### 依赖策略：独立精简 requirements，非整仓 pyproject
 
-主项目 [`pyproject.toml`](pyproject.toml) 含 playwright、browser-use、dxcam 等 Testbench **不需要**的包。在 `tests/testbench_dist/requirements-standalone.txt` 维护**按 import 图裁剪**的依赖清单（fastapi、uvicorn、jinja2、onnxruntime、tokenizers、numpy、openai、anthropic、sklearn、umap-learn、tiktoken、pywebview 等），构建时在隔离 venv 中 `pip install -r requirements-standalone.txt` 再跑 PyInstaller，避免 1GB+ 膨胀。
+主项目 [`pyproject.toml`](../../../pyproject.toml) 含 playwright、browser-use、dxcam 等 Testbench **不需要**的包。在 `tests/testbench_dist/requirements-standalone.txt` 维护**按 import 图裁剪**的依赖清单（fastapi、uvicorn、jinja2、onnxruntime、tokenizers、numpy、openai、anthropic、sklearn、umap-learn、tiktoken、pywebview 等），构建时在隔离 venv 中 `pip install -r requirements-standalone.txt` 再跑 PyInstaller，避免 1GB+ 膨胀。
 
 ---
 
 ## 新建目录结构
 
-在 [`tests/testbench_dist/`](tests/testbench_dist/) 集中所有打包工作（不污染 testbench 业务代码）：
+在 [`tests/testbench_dist/`](../) 集中所有打包工作（不污染 testbench 业务代码）：
 
 ```
 tests/testbench_dist/
@@ -264,7 +264,7 @@ tests/testbench_dist/
 
 ## 安装向导品牌图占位
 
-所有品牌资源放在 [`tests/testbench_dist/assets/installer/`](tests/testbench_dist/assets/installer/)，**与 testbench 业务代码完全分离**。首发用纯色/网格占位图（可提交 git），你后续只需**同名覆盖** PNG 文件，无需改 Inno Setup / 构建脚本。
+所有品牌资源放在 [`tests/testbench_dist/assets/installer/`](../assets/installer/)，**与 testbench 业务代码完全分离**。首发用纯色/网格占位图（可提交 git），你后续只需**同名覆盖** PNG 文件，无需改 Inno Setup / 构建脚本。
 
 ### 需要准备的图片尺寸
 
@@ -318,7 +318,7 @@ AppImage / deb 通常无多步安装向导；若后续加首次启动 splash，�
 
 **全部在 `testbench_dist/` 内完成，testbench 源码不读、不写 frozen 分支。**
 
-`frozen_runtime.py` 解析路径（复用 [`launcher_core/bootstrap.py`](launcher_core/bootstrap.py) 判别逻辑）：
+`frozen_runtime.py` 解析路径（复用 [`launcher_core/bootstrap.py`](../../../launcher_core/bootstrap.py) 判别逻辑）：
 
 ```python
 IS_FROZEN = getattr(sys, "frozen", False) or "__compiled__" in globals()
@@ -341,7 +341,7 @@ user_data_dir = ...  # Win: %LOCALAPPDATA%/NEKO-Testbench 等
 
 职责清单：
 
-1. 修正 `sys.path`（复制 [`run_testbench.py`](tests/testbench/run_testbench.py) 的 shadow 处理逻辑到 dist，**不修改 run_testbench.py 本身**）
+1. 修正 `sys.path`（复制 [`run_testbench.py`](../../testbench/run_testbench.py) 的 shadow 处理逻辑到 dist，**不修改 run_testbench.py 本身**）
 2. 调用 `bootstrap.apply_standalone_patches()` — **不设任何 testbench 可读的环境变量**
 3. `ensure_data_dirs()` + 首次启动复制 `api_keys.json.template` → 用户目录
 3. 在 daemon 线程启动 `uvicorn.run(app, host=127.0.0.1, port=0)` 或固定端口 + 冲突重试
@@ -352,7 +352,7 @@ user_data_dir = ...  # Win: %LOCALAPPDATA%/NEKO-Testbench 等
 
 ### 3. PyInstaller spec 资源清单
 
-参考 [`monitor_build.spec`](specs/monitor_build.spec)，扩展 `datas` + `hiddenimports`：
+参考 [`monitor_build.spec`](../../../specs/monitor_build.spec)，扩展 `datas` + `hiddenimports`：
 
 **必须打包的 Python 包**（通过 `collect_submodules` + 显式 hiddenimports）：
 
@@ -421,7 +421,7 @@ flowchart LR
 | 包体积 ≈ standalone（数百 MB/平台） | 包内为 **源码快照 + 少量 vendor**，embedding 用本体 `data/embedding_models` |
 | 与已装 NEKO 的 `config`/`memory`/`utils` 重复冻结 | 运行时 **复用本体** 语义库（插件进程由 Host 注入 repo root；壳进程须显式继承同等 `PYTHONPATH`/`vendor`） |
 
-先例：[`neko_warthunder` 数据层](plugin/plugins/neko_warthunder/adapters/data_layer_process.py) — 可 spawn 则子进程挂端口，否则 **嵌入同进程 HTTP**（正式 Nuitka 宿主常走后者）。
+先例：[`neko_warthunder` 数据层](../../../plugin/plugins/neko_warthunder/adapters/data_layer_process.py) — 可 spawn 则子进程挂端口，否则 **嵌入同进程 HTTP**（正式 Nuitka 宿主常走后者）。
 
 ### 产品偏好（已确认）
 
@@ -506,7 +506,7 @@ Plugin Manager
 
 ### 插件设计：`testbench` 驱动器
 
-**位置**：[`tests/testbench_dist/plugin/testbench/`](tests/testbench_dist/plugin/testbench/) — **不**放入 [`plugin/plugins/`](plugin/plugins/)。
+**位置**：[`tests/testbench_dist/plugin/testbench/`](../plugin/testbench/) — **不**放入 [`plugin/plugins/`](../../../plugin/plugins/)。
 
 **`plugin.toml` 要点**：
 
@@ -616,10 +616,10 @@ uv run neko-plugin check -r tests/testbench_dist/plugin/testbench
 
 | # | 问题 | 表现 | 缓解 |
 |---|------|------|------|
-| H1 | [`config.py`](tests/testbench/config.py) 在 import 时一次性求值 `DATA_DIR` / `SANDBOXES_DIR` / `LOGS_DIR` / `AUTOSAVE_DIR` / `EXPORTS_DIR` / `STATIC_DIR` 等 | 只改 `DATA_DIR` 时，sandbox/autosave 仍写旧路径或 `_MEIPASS`（只读/重启丢数据） | bootstrap **重绑全部派生常量**；dist smoke：建会话后断言文件落在 `%LOCALAPPDATA%/NEKO-Testbench`（等） |
-| H2 | [`live_runtime_log.py`](tests/testbench/pipeline/live_runtime_log.py)：`from config import DATA_DIR` → `LIVE_DIR = DATA_DIR / "live_runtime"` | 事后改 `tb_config.DATA_DIR` **不更新** `LIVE_*`；tee 写错目录或 `OSError` 被吞后「无实时日志」 | import 后立刻重设 `LIVE_DIR` / `CURRENT_FILE` / `PREVIOUS_FILE`；关窗调用 `close()` |
-| H3 | [`logger.py`](tests/testbench/logger.py)：`from config import LOGS_DIR` | `SessionLogger` mkdir / 部分路径用模块级 `LOGS_DIR`，与 `session_log_path()`（走 config 模块）可能分叉 | bootstrap 同步 `logger.LOGS_DIR = tb_config.LOGS_DIR`；smoke 断言 JSONL 在用户数据目录 |
-| H4 | [`api_keys_registry.py`](tests/testbench/api_keys_registry.py)：`def __init__(path=API_KEYS_PATH)` **默认参数在 def 时绑定** + `get_api_keys_registry()` 单例 | 只改 `keys.API_KEYS_PATH` 无效；Settings 密钥读写仍指向 bundle / 源码树 | patch 后 `keys._registry = None`，并以**显式 path** 重建；首次启动从 template 拷到用户目录 |
+| H1 | [`config.py`](../../testbench/config.py) 在 import 时一次性求值 `DATA_DIR` / `SANDBOXES_DIR` / `LOGS_DIR` / `AUTOSAVE_DIR` / `EXPORTS_DIR` / `STATIC_DIR` 等 | 只改 `DATA_DIR` 时，sandbox/autosave 仍写旧路径或 `_MEIPASS`（只读/重启丢数据） | bootstrap **重绑全部派生常量**；dist smoke：建会话后断言文件落在 `%LOCALAPPDATA%/NEKO-Testbench`（等） |
+| H2 | [`live_runtime_log.py`](../../testbench/pipeline/live_runtime_log.py)：`from config import DATA_DIR` → `LIVE_DIR = DATA_DIR / "live_runtime"` | 事后改 `tb_config.DATA_DIR` **不更新** `LIVE_*`；tee 写错目录或 `OSError` 被吞后「无实时日志」 | import 后立刻重设 `LIVE_DIR` / `CURRENT_FILE` / `PREVIOUS_FILE`；关窗调用 `close()` |
+| H3 | [`logger.py`](../../testbench/logger.py)：`from config import LOGS_DIR` | `SessionLogger` mkdir / 部分路径用模块级 `LOGS_DIR`，与 `session_log_path()`（走 config 模块）可能分叉 | bootstrap 同步 `logger.LOGS_DIR = tb_config.LOGS_DIR`；smoke 断言 JSONL 在用户数据目录 |
+| H4 | [`api_keys_registry.py`](../../testbench/api_keys_registry.py)：`def __init__(path=API_KEYS_PATH)` **默认参数在 def 时绑定** + `get_api_keys_registry()` 单例 | 只改 `keys.API_KEYS_PATH` 无效；Settings 密钥读写仍指向 bundle / 源码树 | patch 后 `keys._registry = None`，并以**显式 path** 重建；首次启动从 template 拷到用户目录 |
 | H5 | tiktoken / onnx embedding 资源未打入 | token 计数静默 fallback；向量空间不可用 | spec 打入 `tiktoken` 编码 + `embedding_models/`；验收禁止 fallback |
 | H6 | 冻结态 `install_umap` 调 `sys.executable -m pip` | 必挂或误导用户 | 预打 umap+sklearn；bootstrap stub；UI 文案「已内置」 |
 | H7 | 插件驱动器端口冲突 / 多实例 / 脏 env / GUI 阻塞 ZMQ / Nuitka 误用 sys.executable | 二次启动撞端口；webview 卡死 IPC；冻结宿主 spawn 脚本失败 | 单实例锁；能力探测 Mode A/B；Mode A **单壳**；禁止在 ZMQ 主循环同步 `webview.start()`；独立窗口优先，失败降浏览器 |
@@ -628,10 +628,10 @@ uv run neko-plugin check -r tests/testbench_dist/plugin/testbench
 
 | # | 问题 | 缓解 |
 |---|------|------|
-| M1 | [`ensure_code_support_dirs()`](tests/testbench/config.py) 在 `CODE_DIR` 下 mkdir；`_MEIPASS` 只读 | bootstrap 换成 no-op；datas 已含 static/templates/presets |
+| M1 | [`ensure_code_support_dirs()`](config.py) 在 `CODE_DIR` 下 mkdir；`_MEIPASS` 只读 | bootstrap 换成 no-op；datas 已含 static/templates/presets |
 | M2 | pywebview + Chat **POST SSE** 长连接可能被缓冲/空闲断连 | 专项手测流式回复 / Auto-Dialog；URL 必须是 `http://127.0.0.1`；必要时加 heartbeat |
 | M3 | Diagnostics「打开文件夹」依赖桌面会话 | 白名单对齐用户 `DATA_DIR`；失败时提示复制路径 |
-| M4 | [`holiday_cache`](utils/holiday_cache.py) 缓存消费路径，可能在 sandbox apply 前写真实 Documents | session 边界重置缓存；或文档说明「节日缓存写真实 CM 配置」 |
+| M4 | [`holiday_cache`](../../../utils/holiday_cache.py) 缓存消费路径，可能在 sandbox apply 前写真实 Documents | session 边界重置缓存；或文档说明「节日缓存写真实 CM 配置」 |
 | M5 | ConfigManager frozen 下 `project_root=_MEIPASS`，`docs_dir` 仍系统 Documents | 「导入真实角色」需本机已有 NEKO 用户数据；文档写明 |
 | M6 | `uvicorn.run("tests.testbench.server:app")` 字符串入口 + `--reload` | desktop 禁用 reload；确保 collect_submodules；提供 `--console` |
 
@@ -639,7 +639,7 @@ uv run neko-plugin check -r tests/testbench_dist/plugin/testbench
 
 | # | 结论 |
 |---|------|
-| L1 | [`atomic_io`](tests/testbench/pipeline/atomic_io.py) / persistence / autosave：**逻辑 OK**；风险在根路径（H1）与杀软锁 `.tmp` |
+| L1 | [`atomic_io`](../../testbench/pipeline/atomic_io.py) / persistence / autosave：**逻辑 OK**；风险在根路径（H1）与杀软锁 `.tmp` |
 | L2 | SessionLogger 无长期 FileHandler，append 即关；无旋转句柄泄漏 |
 | L3 | `presets/`、builtin schemas 只读，打进 datas 即可 |
 | L4 | testbench 主路径未见自建 multiprocessing；onnx 风险主要在 datas/DLL |
