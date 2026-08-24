@@ -851,6 +851,18 @@ class PluginCliService:
             raise ValueError("upload_and_install requires content or package_path")
         if content is not None and package_path is not None:
             raise ValueError("upload_and_install accepts content or package_path, not both")
+        if (
+            install_source_override is not None
+            and install_source_override.get("channel") == "market"
+        ):
+            manager = get_install_source_manager()
+            if manager is not None and manager.is_degraded:
+                raise ServerDomainError(
+                    code="INSTALL_SOURCE_READ_ONLY",
+                    message="Market installation requires a writable install-source lock",
+                    status_code=503,
+                    details={"reason": manager.degrade_reason or "read_only_degrade"},
+                )
 
         if install_source_override is None:
             owns_saved_package = content is not None or package_path is not None
@@ -951,8 +963,10 @@ class PluginCliService:
                     package=saved_path,
                     market_override=install_source_override,
                 )
-                unpacked_target_dirs = self._extract_unpack_target_dirs(unpack_result)
-                unpacked_profile_dirs = self._extract_unpack_profile_dirs(unpack_result)
+                # The source-switch transaction has committed and owns its
+                # rollback. Do not let the outer upload cleanup delete the
+                # promoted executable/profile directories if response
+                # composition fails after the commit.
                 install_dict: dict[str, Any] = {
                     "channel": "market",
                     "directory_name": str(unpack_result["installed_plugins"][0]["target_plugin_id"]),

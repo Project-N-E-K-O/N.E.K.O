@@ -312,3 +312,47 @@ def test_child_import_prefers_current_user_plugin(
     assert namespace_paths == []
     with pytest.raises(ModuleNotFoundError):
         importlib.import_module("plugins._shared")
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.parametrize(
+    ("initial_source", "effective_source"),
+    [("builtin", "user"), ("user", "builtin")],
+)
+def test_child_import_evicts_cached_same_id_from_previous_source(
+    _isolate_plugins_namespace,
+    tmp_path: Path,
+    initial_source: str,
+    effective_source: str,
+) -> None:
+    plugin_id = "shared"
+    user_root = tmp_path / "user" / "plugins"
+    builtin_root = tmp_path / "repo" / "plugin" / "plugins"
+    configs = {
+        "user": _make_importable_plugin(user_root, plugin_id, "user"),
+        "builtin": _make_importable_plugin(builtin_root, plugin_id, "builtin"),
+    }
+    for root in (user_root, builtin_root):
+        (root / "__init__.py").write_text("", encoding="utf-8")
+        (root / plugin_id / "marker.py").write_text(
+            f"SOURCE = {root.parent.name!r}\n",
+            encoding="utf-8",
+        )
+
+    initial_root = user_root if initial_source == "user" else builtin_root
+    sys.path.insert(0, str(initial_root.parent))
+    importlib.invalidate_caches()
+    initial_module = importlib.import_module(f"plugins.{plugin_id}")
+    importlib.import_module(f"plugins.{plugin_id}.marker")
+    assert initial_module.SOURCE == initial_source
+
+    effective_module = host_module._import_plugin_module(
+        f"plugins.{plugin_id}",
+        configs[effective_source],
+        _StubLogger(),
+    )
+
+    effective_root = user_root if effective_source == "user" else builtin_root
+    assert effective_module.SOURCE == effective_source
+    assert Path(effective_module.__file__).resolve().is_relative_to(effective_root.resolve())
+    assert f"plugins.{plugin_id}.marker" not in sys.modules

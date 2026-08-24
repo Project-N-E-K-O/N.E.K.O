@@ -245,6 +245,38 @@ async def test_staging_cleanup_failure_does_not_block_other_cleanup_or_migration
 
 
 @pytest.mark.asyncio
+async def test_unreadable_state_root_is_reported_after_staging_cleanup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state_root = tmp_path / "plugins"
+    state_root.mkdir()
+    exec_root = tmp_path / "exec"
+    stale = exec_root / f".neko_override_staging_{'a' * 32}"
+    stale.mkdir(parents=True)
+    original_iterdir = Path.iterdir
+
+    def fail_state_root_iterdir(path: Path):
+        if path == state_root:
+            raise PermissionError(13, "access denied", str(path))
+        return original_iterdir(path)
+
+    monkeypatch.setattr(Path, "iterdir", fail_state_root_iterdir)
+
+    result = await migrate_legacy_plugin_layout(
+        state_root=state_root,
+        exec_root=exec_root,
+    )
+
+    assert result.migrated == ()
+    assert [(issue.code, issue.path) for issue in result.blocked] == [
+        ("PLUGIN_LAYOUT_MIGRATION_IO_FAILED", str(state_root.resolve()))
+    ]
+    assert result.cleaned_staging == (str(stale.resolve()),)
+    assert not stale.exists()
+
+
+@pytest.mark.asyncio
 async def test_exec_state_collision_fails_closed_without_writes(tmp_path: Path) -> None:
     shared_root = tmp_path / "plugins"
     _write_plugin(shared_root, "legacy")

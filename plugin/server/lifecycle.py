@@ -14,6 +14,7 @@ from plugin.utils.time_utils import now_iso
 from plugin.server.application.install_source import StartupReconciler, get_install_source_manager
 from plugin.server.application.plugins import PluginLifecycleService, PluginRegistryService
 from plugin.server.application.plugins.layout_migration import migrate_legacy_plugin_layout
+from plugin.server.application.plugins.operation_lock import serialized_plugin_operation
 from plugin.server.messaging.bus_subscriptions import bus_subscription_manager
 from plugin.server.messaging.lifecycle_events import emit_lifecycle_event
 from plugin.server.messaging.plane_bridge import start_bridge, stop_bridge
@@ -165,13 +166,9 @@ class ServerLifecycleService:
                     str(exc),
                 )
 
-    async def startup(self) -> None:
-        try:
-            emit_lifecycle_event({"type": "server_startup_begin", "plugin_id": "server", "time": now_iso()})
-        except Exception as exc:
-            logger.warning("failed to emit server_startup_begin event: {}", exc)
-
-        self._clear_runtime_state()
+    @serialized_plugin_operation
+    async def _migrate_layout_and_reconcile_install_sources(self) -> None:
+        """Run startup layout mutations under the shared plugin operation lock."""
 
         try:
             migration_result = await migrate_legacy_plugin_layout()
@@ -197,26 +194,34 @@ class ServerLifecycleService:
                 type(exc).__name__,
                 str(exc),
             )
-        else:
-            # In embedded-agent mode the HTTP lifespan starts before the
-            # externally managed plugin lifecycle. Its install-source manager
-            # has therefore already reconciled the pre-migration layout and
-            # may have soft-deleted entries that the migration just restored.
-            # A published manager is documented to have completed its initial
-            # reconcile, so replay it after migration. In standalone mode the
-            # manager is not published until later in the HTTP lifespan and
-            # this remains a no-op, preserving migration-before-registration.
-            try:
-                install_source_manager = get_install_source_manager()
-                if install_source_manager is not None:
-                    await StartupReconciler(install_source_manager).run()
-            except Exception as exc:
-                logger.error(
-                    "install-source reconciliation after layout migration failed: "
-                    "err_type={}, err={}",
-                    type(exc).__name__,
-                    str(exc),
-                )
+            return
+
+        # In embedded-agent mode the HTTP lifespan starts before the
+        # externally managed plugin lifecycle. Its install-source manager has
+        # therefore already reconciled the pre-migration layout and may have
+        # soft-deleted entries that the migration just restored. Replay it
+        # while the same operation lock remains held.
+        try:
+            install_source_manager = get_install_source_manager()
+            if install_source_manager is not None:
+                await StartupReconciler(install_source_manager).run()
+        except Exception as exc:
+            logger.error(
+                "install-source reconciliation after layout migration failed: "
+                "err_type={}, err={}",
+                type(exc).__name__,
+                str(exc),
+            )
+
+    async def startup(self) -> None:
+        try:
+            emit_lifecycle_event({"type": "server_startup_begin", "plugin_id": "server", "time": now_iso()})
+        except Exception as exc:
+            logger.warning("failed to emit server_startup_begin event: {}", exc)
+
+        self._clear_runtime_state()
+
+        await self._migrate_layout_and_reconcile_install_sources()
 
         await ensure_plugin_messaging_started()
 

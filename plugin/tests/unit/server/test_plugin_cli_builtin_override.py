@@ -9,6 +9,7 @@ import pytest
 from plugin.neko_plugin_cli.public import build_plugin
 from plugin.server.application.plugin_cli.service import PluginCliService
 from plugin.server.application.install_source import (
+    InstallSourceError,
     InstallSourceManager,
     PluginDirectoryScanner,
     set_global_manager,
@@ -469,6 +470,152 @@ async def test_upload_and_install_routes_override_mode_to_source_switch(
     assert result["install"]["channel"] == "market"
     assert result["install"]["version"] == "0.1.6"
     assert result["install"]["previous_version"] == "0.1.5"
+
+
+@pytest.mark.asyncio
+async def test_committed_override_is_not_deleted_when_response_composition_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import plugin.settings as settings
+
+    packages_root = tmp_path / "packages"
+    user_root = tmp_path / "installations" / "plugins"
+    profiles_root = tmp_path / "profiles"
+    source_package = tmp_path / "download" / "study_companion.neko-plugin"
+    source_package.parent.mkdir()
+    source_package.write_bytes(b"verified-package")
+    package_sha256 = hashlib.sha256(source_package.read_bytes()).hexdigest()
+    target_dir = user_root / "study_companion"
+    profile_dir = profiles_root / "study_companion"
+
+    monkeypatch.setattr(settings, "BUILTIN_PLUGIN_CONFIG_ROOT", tmp_path / "builtin")
+    monkeypatch.setattr(settings, "USER_PLUGIN_CONFIG_ROOT", user_root)
+    monkeypatch.setattr(settings, "USER_PLUGIN_PACKAGES_ROOT", packages_root)
+    monkeypatch.setattr(settings, "USER_PACKAGE_PROFILES_ROOT", profiles_root)
+    monkeypatch.setattr(settings, "PLUGIN_STATE_ROOT", tmp_path / "state")
+
+    service = PluginCliService()
+
+    async def install_override(**_kwargs: object) -> dict[str, object]:
+        target_dir.mkdir(parents=True)
+        (target_dir / "plugin.toml").write_text(
+            "[plugin]\nid='study_companion'\n",
+            encoding="utf-8",
+        )
+        profile_dir.mkdir(parents=True)
+        (profile_dir / "default.toml").write_text("enabled=true\n", encoding="utf-8")
+        return {
+            "package_path": str(packages_root / source_package.name),
+            "package_type": "plugin",
+            "package_id": "study_companion",
+            "plugins_root": str(user_root),
+            "profiles_root": str(profiles_root),
+            "installed_plugins": [
+                {
+                    "source_folder": "study_companion",
+                    "target_plugin_id": "study_companion",
+                    "target_dir": str(target_dir),
+                    "renamed": False,
+                }
+            ],
+            "profile_dir": str(profile_dir),
+            "metadata_found": True,
+            "payload_hash": "b" * 64,
+            "payload_hash_verified": True,
+            "conflict_strategy": "fail",
+            "installed_plugin_count": 1,
+            "operation": "override_builtin",
+            "restarted": True,
+            "rollback_status": "not_needed",
+            "previous_version": "0.1.5",
+            "install_source_warning": None,
+        }
+
+    monkeypatch.setattr(service, "install_builtin_override", install_override)
+    monkeypatch.setattr(
+        service,
+        "_compose_install_result",
+        lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("compose failed")),
+    )
+
+    with pytest.raises(RuntimeError, match="compose failed"):
+        await service.upload_and_install(
+            filename=source_package.name,
+            package_path=str(source_package),
+            install_source_override=_market_override(
+                plugin_id="study_companion",
+                version="0.1.6",
+                package_sha256=package_sha256,
+            ),
+        )
+
+    assert (target_dir / "plugin.toml").is_file()
+    assert (profile_dir / "default.toml").is_file()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["install", "upgrade", "reinstall"])
+async def test_market_mutations_reject_degraded_lock_before_package_write(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mode: str,
+) -> None:
+    import plugin.settings as settings
+
+    packages_root = tmp_path / "packages"
+    user_root = tmp_path / "installations" / "plugins"
+    lock_path = tmp_path / "plugins.lock.json"
+    lock_path.mkdir()
+    manager = InstallSourceManager(
+        lock_path=lock_path,
+        builtin_root=tmp_path / "builtin",
+        user_root=user_root,
+        scanner=PluginDirectoryScanner(tmp_path / "builtin", user_root),
+    )
+    manager.load()
+    assert manager.is_degraded
+    with pytest.raises(InstallSourceError) as manager_error:
+        manager.record_market_install(
+            root_id="user",
+            directory_name="study_companion",
+            plugin_id="study_companion",
+            package_id="study_companion",
+            market_detail={
+                "plugin_market_id": "study_companion",
+                "version": "0.1.6",
+                "package_url": "https://example.invalid/study_companion.neko-plugin",
+                "package_sha256": "a" * 64,
+            },
+        )
+    assert manager_error.value.code == "INSTALL_SOURCE_READ_ONLY"
+    set_global_manager(manager)
+
+    monkeypatch.setattr(settings, "BUILTIN_PLUGIN_CONFIG_ROOT", tmp_path / "builtin")
+    monkeypatch.setattr(settings, "USER_PLUGIN_CONFIG_ROOT", user_root)
+    monkeypatch.setattr(settings, "USER_PLUGIN_PACKAGES_ROOT", packages_root)
+    monkeypatch.setattr(settings, "USER_PACKAGE_PROFILES_ROOT", tmp_path / "profiles")
+    monkeypatch.setattr(settings, "PLUGIN_STATE_ROOT", tmp_path / "state")
+
+    try:
+        with pytest.raises(ServerDomainError) as exc_info:
+            await PluginCliService().upload_and_install(
+                filename="study_companion.neko-plugin",
+                content=b"package",
+                install_source_override=_market_override(
+                    plugin_id="study_companion",
+                    version="0.1.6",
+                    package_sha256=hashlib.sha256(b"package").hexdigest(),
+                    mode=mode,
+                    directory_name="study_companion" if mode != "install" else None,
+                ),
+            )
+
+        assert exc_info.value.code == "INSTALL_SOURCE_READ_ONLY"
+        assert exc_info.value.status_code == 503
+        assert not packages_root.exists()
+    finally:
+        set_global_manager(None)
 
 
 @pytest.mark.asyncio

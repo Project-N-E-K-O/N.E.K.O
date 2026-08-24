@@ -1845,6 +1845,17 @@ class InstallSourceManager:
             )
 
         with self._lock:
+            if self._read_only:
+                raise InstallSourceError(
+                    "INSTALL_SOURCE_READ_ONLY",
+                    "Market source metadata cannot be changed while the lock is degraded",
+                    details={
+                        "plugin_id": plugin_id,
+                        "root_id": root_id,
+                        "directory_name": directory_name,
+                        "reason": self._degrade_reason or "read_only_degrade",
+                    },
+                )
             old_lock = self._current
             now = self._now_iso()
             existing = self._find_entry(old_lock, root_id, directory_name)

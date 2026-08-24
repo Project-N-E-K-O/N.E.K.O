@@ -390,7 +390,26 @@ def _migrate_legacy_plugin_layout_sync(
     migrated: list[str] = []
     skipped: list[str] = []
 
-    if not state_root.is_dir():
+    try:
+        if not state_root.is_dir():
+            return LayoutMigrationResult(
+                migrated=(),
+                skipped=(),
+                blocked=tuple(blocked),
+                cleaned_staging=tuple(cleaned),
+            )
+        legacy_entries = sorted(
+            state_root.iterdir(),
+            key=lambda item: item.name.casefold(),
+        )
+    except OSError as exc:
+        blocked.append(
+            LayoutMigrationIssue(
+                code="PLUGIN_LAYOUT_MIGRATION_IO_FAILED",
+                message=f"failed to list the legacy plugin state root: {exc}",
+                path=str(state_root),
+            )
+        )
         return LayoutMigrationResult(
             migrated=(),
             skipped=(),
@@ -398,7 +417,7 @@ def _migrate_legacy_plugin_layout_sync(
             cleaned_staging=tuple(cleaned),
         )
 
-    for source in sorted(state_root.iterdir(), key=lambda item: item.name.casefold()):
+    for source in legacy_entries:
         manifest_path = source / "plugin.toml"
         if not source.is_dir() or not manifest_path.is_file():
             continue

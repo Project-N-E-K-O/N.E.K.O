@@ -51,6 +51,7 @@ from plugin.server.application.plugins.upgrade_support import (
     start_plugin_after_upgrade,
     stop_plugin_for_upgrade,
 )
+from plugin.server.domain.errors import ServerDomainError
 from plugin.settings import (
     MARKET_API_URL,
     MARKET_WEB_URL,
@@ -2867,6 +2868,16 @@ async def _do_install(
     to the lock record.
     """
 
+    install_source_manager = get_install_source_manager()
+    if install_source_manager is not None and bool(
+        getattr(install_source_manager, "is_degraded", False)
+    ):
+        raise _TaskError(
+            code="install_source_read_only",
+            message="Market installation requires a writable install-source lock",
+            http_status=503,
+        )
+
     _set_task_stage(
         task,
         status="downloading",
@@ -2943,6 +2954,12 @@ async def _do_install(
         except SourceSwitchError as exc:
             task["rollback"] = exc.as_payload()
             raise _TaskError(code=exc.code, message=str(exc)) from exc
+        except ServerDomainError as exc:
+            raise _TaskError(
+                code=exc.code.lower(),
+                message=exc.message,
+                http_status=exc.status_code,
+            ) from exc
         except Exception as exc:
             raise _TaskError(code="install_failed", message=str(exc)) from exc
     finally:
@@ -3042,6 +3059,12 @@ async def _do_upgrade(
         raise _TaskError(
             code="plugin_not_installed_for_upgrade",
             message="install source manager not initialised",
+        )
+    if bool(getattr(mgr, "is_degraded", False)):
+        raise _TaskError(
+            code="install_source_read_only",
+            message="Market upgrade requires a writable install-source lock",
+            http_status=503,
         )
 
     entry = mgr.find_active_market_entry(expected_plugin_id)
@@ -3242,10 +3265,14 @@ async def _do_upgrade(
             )
         except ReplacePluginError as exc:
             rollback_ok = exc.rollback_status == "completed" and source_restored
-            cause_code = exc.cause.code if isinstance(exc.cause, InstallSourceError) else None
+            cause_code = (
+                exc.cause.code
+                if isinstance(exc.cause, (InstallSourceError, ServerDomainError))
+                else None
+            )
             cause_message = (
                 str(exc.cause.message)
-                if isinstance(exc.cause, InstallSourceError)
+                if isinstance(exc.cause, (InstallSourceError, ServerDomainError))
                 else str(exc.cause)
             )
             task["rollback"] = {

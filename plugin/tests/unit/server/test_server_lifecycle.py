@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 import copy
 
 import pytest
 
 from plugin.server import lifecycle as module
+from plugin.server.application.plugins.operation_lock import plugin_operation_lock
 
 
 pytestmark = pytest.mark.plugin_unit
@@ -192,3 +194,28 @@ async def test_startup_reconciles_existing_install_source_after_migration_before
             module.state.event_handlers.update(handlers_backup)
         with module.state._snapshot_cache_lock:
             module.state._snapshot_cache = cache_backup
+
+
+@pytest.mark.asyncio
+async def test_layout_migration_and_reconcile_share_plugin_operation_lock(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = module.ServerLifecycleService()
+    migration_started = asyncio.Event()
+
+    async def migrate_layout():
+        migration_started.set()
+        return type("MigrationResult", (), {"migrated": (), "blocked": ()})()
+
+    monkeypatch.setattr(module, "migrate_legacy_plugin_layout", migrate_layout)
+    monkeypatch.setattr(module, "get_install_source_manager", lambda: None)
+
+    async with plugin_operation_lock.hold():
+        task = asyncio.create_task(
+            service._migrate_layout_and_reconcile_install_sources()
+        )
+        await asyncio.sleep(0)
+        assert not migration_started.is_set()
+
+    await task
+    assert migration_started.is_set()

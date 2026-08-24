@@ -293,6 +293,35 @@ def _evict_plugin_module_tree(plugin_module_path: str) -> None:
         delattr(parent_module, child_name)
 
 
+def _evict_cached_plugin_source(module_path: str, config_path: Path, logger: Any) -> None:
+    """Remove an inherited same-ID package before importing the effective source."""
+
+    parts = module_path.split(".")
+    if len(parts) < 2 or parts[0] != "plugins":
+        return
+    try:
+        plugin_dir = config_path.resolve().parent
+    except OSError as exc:
+        logger.debug("[Plugin Process] Failed to resolve plugin directory for cache eviction: {}", exc)
+        return
+    if parts[1] != plugin_dir.name:
+        return
+
+    package_prefix = ".".join(parts[:2])
+    evicted = [
+        name
+        for name in tuple(sys.modules)
+        if name == package_prefix or name.startswith(f"{package_prefix}.")
+    ]
+    for name in evicted:
+        sys.modules.pop(name, None)
+    if evicted:
+        logger.info(
+            "[Plugin Process] Evicted cached plugin package before source import: {}",
+            package_prefix,
+        )
+
+
 def _import_current_plugin_from_config(module_path: str, config_path: Path, logger: Any) -> Any | None:
     """在命名空间导入失败时，按当前 plugin.toml 同目录直接加载插件包。"""
 
@@ -387,6 +416,7 @@ def _import_plugin_module(module_path: str, config_path: Path | None, logger: An
     """
 
     if config_path is not None and module_path.startswith("plugins."):
+        _evict_cached_plugin_source(module_path, config_path, logger)
         configured_module = _import_current_plugin_from_config(
             module_path,
             config_path,

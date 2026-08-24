@@ -146,6 +146,7 @@ def _configure_paths(
         market_bridge,
         "get_install_source_manager",
         lambda: SimpleNamespace(
+            is_degraded=False,
             find_active_market_entry=lambda plugin_id: entry or _entry(plugin_id)
         ),
     )
@@ -154,6 +155,38 @@ def _configure_paths(
         "inspect_package",
         lambda path: SimpleNamespace(package_id="demo"),
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation", ["install", "upgrade"])
+async def test_market_mutation_rejects_degraded_lock_before_download(
+    monkeypatch: pytest.MonkeyPatch,
+    operation: str,
+) -> None:
+    manager = SimpleNamespace(is_degraded=True, degrade_reason="legacy_migration_failed")
+    monkeypatch.setattr(market_bridge, "get_install_source_manager", lambda: manager)
+
+    async def unexpected_download(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("download must not start while the lock is degraded")
+
+    monkeypatch.setattr(market_bridge, "_download_package", unexpected_download)
+    payload = market_bridge.MarketInstallRequest(
+        plugin_id="demo",
+        expected_plugin_toml_id="demo",
+        version="2.0.0",
+        package_url="https://example.invalid/demo.neko-plugin",
+        package_sha256="a" * 64,
+        mode="install" if operation == "install" else "upgrade",
+    )
+
+    with pytest.raises(market_bridge._TaskError) as exc_info:
+        if operation == "install":
+            await market_bridge._do_install({}, payload, {})
+        else:
+            await market_bridge._do_upgrade({}, payload, {})
+
+    assert exc_info.value.code == "install_source_read_only"
+    assert exc_info.value.http_status == 503
 
 
 @pytest.mark.asyncio

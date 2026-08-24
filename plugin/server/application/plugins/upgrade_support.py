@@ -252,7 +252,11 @@ def _path_is_within(path: Path, root: Path) -> bool:
 
 def _validate_replacement_targets(targets: tuple[Path, ...]) -> None:
     state_root = get_plugin_state_root()
-    forbidden = [target for target in targets if _path_is_within(target, state_root)]
+    forbidden = [
+        target
+        for target in targets
+        if _path_is_within(target, state_root) or _path_is_within(state_root, target)
+    ]
     if forbidden:
         raise ValueError(
             "plugin persistent state paths cannot be replacement targets: "
