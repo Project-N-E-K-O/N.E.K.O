@@ -1745,3 +1745,124 @@ def test_switching_tts_provider_away_from_vllm_clears_fallback_voice(mock_page: 
     """)
 
     assert values == {"vllmVoice": "default", "followVoice": ""}
+
+
+@pytest.mark.frontend
+def test_capability_dropdowns_hide_providers_with_no_implementation(
+    mock_page: Page, running_server: str
+):
+    """TTS / realtime dropdowns must only offer providers the backend implements.
+
+    Both dropdowns used to be filled from the assist (text-LLM) table, so they
+    listed providers that own no TTS worker / no realtime endpoint at all.
+    Picking one was silently ignored downstream while its auto-filled URL and
+    key polluted that slot's credentials.
+    """
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
+    mock_page.goto(f"{running_server}/api_key")
+    expect(mock_page.locator("#loading-overlay")).to_be_hidden(timeout=15000)
+    mock_page.wait_for_selector("#ttsModelProvider option[value='vllm_omni']", state="attached", timeout=10000)
+
+    options = mock_page.evaluate("""
+        () => {
+            const read = id => Array.from(
+                document.getElementById(id).options
+            ).map(o => o.value);
+            return { tts: read('ttsModelProvider'), omni: read('omniModelProvider') };
+        }
+    """)
+
+    # 纯文本 LLM 厂商没有任何 TTS worker，不该出现在 TTS 下拉里
+    for pk in ('deepseek', 'kimi', 'kimi_code', 'claude', 'openrouter', 'silicon'):
+        assert pk not in options['tts'], f"TTS 下拉仍暴露无 TTS 能力的 {pk}"
+
+    # 实时全模态下拉不提供**任何**具名服务商。这个槽的取值会变成进程级的
+    # core api type，而那个身份同时决定 TTS worker / 原生音色 / 音频凭证——
+    # 它们都跟着核心 API 走。选一个与核心不同的厂商会把音频链路撕成两半
+    # （Qwen TTS worker 拿着 OpenAI 的 key），所以连真正有 realtime 端点的
+    # qwen / glm 也不摆出来。
+    for pk in ('deepseek', 'kimi', 'claude', 'minimax', 'elevenlabs', 'openrouter',
+               'gemini', 'qwen', 'glm', 'step', 'grok', 'openai'):
+        assert pk not in options['omni'], f"实时全模态下拉不该暴露具名服务商 {pk}"
+
+    # 反向断言：真正有能力的项必须还在，避免"全都过滤掉"也能让上面的断言通过
+    assert 'gptsovits' in options['tts'], "GPT-SoVITS 被误过滤"
+    assert 'vllm_omni' in options['tts'], "vLLM-Omni 被误过滤"
+    assert 'custom' in options['tts'], "自定义 TTS 被误过滤"
+    assert 'custom' in options['omni'], "自定义实时端点被误过滤"
+    for sel in ('tts', 'omni'):
+        assert 'follow_core' in options[sel] and 'follow_assist' in options[sel], (
+            f"{sel} 下拉丢了跟随项"
+        )
+
+
+@pytest.mark.frontend
+def test_saved_incapable_provider_falls_back_and_clears_stale_credentials(
+    mock_page: Page, running_server: str
+):
+    """A saved pick the backend never honoured must not survive as 'custom'.
+
+    The dropdowns used to offer providers with no TTS / realtime implementation.
+    Those picks did nothing downstream, but the URL and key the page auto-filled
+    for them polluted the slot. On load they now fall back to the slot default —
+    NOT to 'custom', which would promote an LLM chat endpoint into a real
+    self-hosted TTS endpoint and start actually calling it.
+    """
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
+
+    def _seed(route):
+        response = route.fetch()
+        data = response.json()
+        data['enableCustomApi'] = True
+        # 存量：TTS / omni 槽各选了一个后端根本没有实现的服务商，
+        # 连带被自动填进去的是该厂商的 LLM 端点与凭证
+        data['ttsModelProvider'] = 'deepseek'
+        data['ttsModelUrl'] = 'https://api.deepseek.com/v1'
+        data['ttsModelApiKey'] = 'sk-stale-deepseek'
+        data['omniModelProvider'] = 'claude'
+        data['omniModelUrl'] = 'https://api.anthropic.com/v1'
+        data['omniModelApiKey'] = 'sk-stale-claude'
+        route.fulfill(response=response, json=data)
+
+    mock_page.route("**/api/config/core_api", _seed)
+    mock_page.goto(f"{running_server}/api_key")
+    expect(mock_page.locator("#loading-overlay")).to_be_hidden(timeout=15000)
+    mock_page.wait_for_selector("#ttsModelProvider option[value='vllm_omni']", state="attached", timeout=10000)
+
+    state = mock_page.evaluate("""
+        () => {
+            const read = id => {
+                const el = document.getElementById(id);
+                return el ? (el.dataset.realKey ?? el.value) : null;
+            };
+            return {
+                ttsProvider: document.getElementById('ttsModelProvider').value,
+                omniProvider: document.getElementById('omniModelProvider').value,
+                ttsUrl: read('ttsModelUrl'),
+                ttsKey: read('ttsModelApiKey'),
+                omniUrl: read('omniModelUrl'),
+                omniKey: read('omniModelApiKey'),
+            };
+        }
+    """)
+
+    assert state['ttsProvider'] == 'follow_assist', (
+        f"无能力的 TTS 选择应回落该槽默认值，实际={state['ttsProvider']!r}"
+    )
+    assert state['omniProvider'] == 'follow_core', (
+        f"无能力的 omni 选择应回落该槽默认值，实际={state['omniProvider']!r}"
+    )
+    # 关键：绝不能落到 'custom' —— 那会把一个 LLM 端点坐实成自配 TTS/实时端点
+    assert state['ttsProvider'] != 'custom' and state['omniProvider'] != 'custom'
+    assert 'deepseek' not in (state['ttsUrl'] or ''), (
+        f"残留的 LLM 端点应被跟随方的值覆盖，实际 ttsUrl={state['ttsUrl']!r}"
+    )
+    assert 'sk-stale-deepseek' not in (state['ttsKey'] or ''), (
+        f"残留凭证应被覆盖，实际 ttsKey={state['ttsKey']!r}"
+    )
+    assert 'anthropic' not in (state['omniUrl'] or ''), (
+        f"残留的 Anthropic 端点应被覆盖，实际 omniUrl={state['omniUrl']!r}"
+    )
+    assert 'sk-stale-claude' not in (state['omniKey'] or ''), (
+        f"残留凭证应被覆盖，实际 omniKey={state['omniKey']!r}"
+    )

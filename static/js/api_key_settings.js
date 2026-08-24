@@ -1191,6 +1191,48 @@ function getTtsProviderMeta(pk) {
 }
 
 /**
+ * 该 provider 是否真的具备某个槽位所需的能力。
+ *
+ * TTS 与「实时全模态」两个下拉原本把辅助 LLM 全表无差别铺开，于是列出了一堆后端
+ * 根本没有对应实现的服务商：选中后 TTS 仍由核心 API 决定 worker、实时全模态则落进
+ * 未实现的 api_type='local' 或被静默忽略，而下拉自动填进去的 URL/Key 还会污染该槽
+ * 的凭证。能力真相各有单一来源——实时全模态是 core_api_providers（后端按它分流），
+ * TTS 是后端 tts_provider_registry——这里据此过滤，前端不硬编码任何 provider key。
+ *
+ * 两处都 fail-open：元数据没取到（/api_providers 失败）时不过滤，宁可多列几项，
+ * 也不要把用户正在用的服务商从下拉里藏掉。
+ */
+function isProviderCapableForModelType(providerKey, modelType) {
+    const pk = String(providerKey || '').trim();
+    if (!pk || pk === 'custom' || pk.startsWith('follow_')) return true;
+
+    if (modelType === 'omni') {
+        // 实时全模态槽不提供任何具名服务商，只留「跟随」与「自定义」。
+        //
+        // 这个槽的取值最终会变成进程级的 core api type，而那个身份**同时**决定
+        // TTS worker、原生音色目录和音频凭证——它们都跟着核心 API 走。选一个与
+        // 核心不同的厂商会把音频链路撕成两半（实测过：核心 OpenAI + 本槽选 Qwen
+        // → 启动 Qwen TTS worker 却拿着 OpenAI 的 key，既无声又把一家的凭证发给
+        // 另一家）。整条音频链路只有一个 provider 身份，这个槽表达不了第二个，
+        // 所以干脆不摆出来。与后端 _normalize_realtime_provider 对偶。
+        return false;
+    }
+
+    if (modelType === 'tts') {
+        if (!_ttsProviders || Object.keys(_ttsProviders).length === 0) return true;
+        if (getTtsProviderMeta(pk)) return true;
+        // 注册表用 aliases 表达同一家的多地域入口（如 minimax_intl → minimax），
+        // 只按 key 查会把这些别名误判成无能力。
+        return Object.keys(_ttsProviders).some(k => {
+            const aliases = _ttsProviders[k] && _ttsProviders[k].aliases;
+            return Array.isArray(aliases) && aliases.includes(pk);
+        });
+    }
+
+    return true;
+}
+
+/**
  * 填充所有自定义模型的服务商下拉框
  */
 function getProviderInfo(providerKey) {
@@ -1340,6 +1382,8 @@ function populateModelProviderDropdowns() {
             const _spFilter = getTtsProviderMeta(pk);
             if (mt === 'tts' && !isTtsProviderVisibleInModelConfig(pk, _spFilter)) return;
             if (_spFilter && _spFilter.tts_dropdown_only && mt !== 'tts') return;
+            // 该槽位没有这家的实现就不要摆出来（伪选项 → 静默 fallback）。
+            if (!isProviderCapableForModelType(pk, mt)) return;
             const pInfo = _assistApiProviders[pk];
             const opt = document.createElement('option');
             opt.value = pk;
@@ -2072,6 +2116,19 @@ async function loadCurrentApiKey() {
                 // 覆盖「有 URL 但无 provider → custom」的旧回退，保证存量配置正确回填。
                 if (mt === 'tts' && _loadedGptSovitsState === 'enabled') {
                     sel.value = 'gptsovits';
+                    onCustomModelProviderChange(mt);
+                    return;
+                }
+                if (data[providerField] && !isProviderCapableForModelType(data[providerField], mt)) {
+                    // 存量配置里选中了一个该槽根本没有实现的服务商（TTS / 实时全模态
+                    // 下拉曾把辅助 LLM 全表铺开）。这个选择在后端从来没有生效过，但它
+                    // 自动填进去的 URL/Key 会污染该槽凭证，是「界面绿灯、实际无声」的来源。
+                    //
+                    // 必须落回该槽默认值，**不能**走下面那条 'custom' 兜底：那会把一个
+                    // LLM 端点坐实成用户自配的 TTS/实时端点，反而让原本只是空转的配置
+                    // 真的被拿去请求。落回 follow_* 后 onCustomModelProviderChange 会用
+                    // 被跟随方的值重写 URL/Key，残留污染一并清掉。
+                    sel.value = getDefaultProviderForModelType(mt);
                     onCustomModelProviderChange(mt);
                     return;
                 }

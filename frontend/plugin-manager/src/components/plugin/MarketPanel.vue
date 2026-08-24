@@ -322,6 +322,10 @@ import type {
 } from '@/composables/workbenchDescriptors'
 import { usePluginStore } from '@/stores/plugin'
 import { useUserPreferenceStore } from '@/stores/userPreference'
+import {
+  isGithubReleaseDownloadUrl,
+  useGithubMirrorSource,
+} from '@/composables/useGithubMirrorSource'
 import { narrowMarketChannel } from '@/utils/narrowChannel'
 import { openExternalUrl } from '@/utils/openExternal'
 
@@ -357,6 +361,7 @@ const totalCount = ref(0)
 const installingId = ref<string | null>(null)
 const upgradingId = ref<string | number | null>(null)
 const bridgeToken = ref('')
+const { resolveGithubDownloadUrl, ensureAutoSource } = useGithubMirrorSource()
 const detailDialogVisible = ref(false)
 const selectedPlugin = ref<MarketWorkbenchItem | null>(null)
 
@@ -1099,13 +1104,21 @@ async function handleInstall(plugin: MarketWorkbenchItem) {
       return
     }
 
-    packageUrl = payload.package_url
     installingId.value = plugin.id
+    if (isGithubReleaseDownloadUrl(payload.package_url)) {
+      try {
+        await ensureAutoSource()
+      } catch {
+        ElMessage.warning(t('mirrorSource.installFallback'))
+      }
+    }
+    packageUrl = resolveGithubDownloadUrl(payload.package_url)
     const res = await fetchBridge('/market/install', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        package_url: payload.package_url,
+        package_url: packageUrl,
+        canonical_package_url: payload.package_url,
         package_sha256: payload.package_sha256,
         payload_hash: payload.payload_hash,
         plugin_id: String(plugin.rawId),
@@ -1177,11 +1190,20 @@ async function handleUpgrade(plugin: MarketWorkbenchItem) {
     }
 
     upgradingId.value = plugin.id
+    if (isGithubReleaseDownloadUrl(payload.package_url)) {
+      try {
+        await ensureAutoSource()
+      } catch {
+        ElMessage.warning(t('mirrorSource.installFallback'))
+      }
+    }
+    const packageUrl = resolveGithubDownloadUrl(payload.package_url)
     const res = await fetchBridge('/market/install', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        package_url: payload.package_url,
+        package_url: packageUrl,
+        canonical_package_url: payload.package_url,
         package_sha256: payload.package_sha256,
         payload_hash: payload.payload_hash,
         plugin_id: String(plugin.rawId),

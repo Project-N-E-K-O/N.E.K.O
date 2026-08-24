@@ -30,6 +30,38 @@ class TestDetectProviderInfo:
         assert r["needs_proxy"] is False
         assert r["api_key_env"] == "ANTHROPIC_API_KEY"
 
+    def test_kimi_code_is_anthropic_not_an_openai_proxy(self):
+        """kimi_code speaks Anthropic Messages; it must not fall to the proxy.
+
+        The provider was added in #1948 with provider_type=anthropic, but the
+        detector only knew anthropic.com, so an agent slot pinned to kimi_code
+        landed in the openai + needs_proxy catch-all.
+        """
+        r = _detect_provider_info("https://api.kimi.com/coding", "kimi-for-coding")
+        assert r["provider"] == "anthropic", f"实际={r['provider']!r}"
+        assert r["needs_proxy"] is False, "Anthropic 方言端点不应绕 LLM proxy"
+        assert r["effective_url"] == "https://api.kimi.com/coding"
+        assert r["api_key_env"] == "ANTHROPIC_API_KEY"
+
+    def test_declared_anthropic_provider_type_wins_over_unknown_host(self):
+        """A self-hosted Anthropic endpoint is honoured when the slot says so."""
+        r = _detect_provider_info(
+            "https://llm.example.com/anthropic",
+            "claude-sonnet-4",
+            provider_type="anthropic",
+        )
+        assert r["provider"] == "anthropic", f"实际={r['provider']!r}"
+        assert r["needs_proxy"] is False
+
+    def test_openai_compatible_provider_type_is_not_forced_to_anthropic(self):
+        """The new parameter must not hijack ordinary OpenAI-compatible slots."""
+        r = _detect_provider_info(
+            "https://api.deepseek.com/v1",
+            "deepseek-chat",
+            provider_type="openai_compatible",
+        )
+        assert r["provider"] == "deepseek", f"实际={r['provider']!r}"
+
     def test_openai_by_url(self):
         r = _detect_provider_info("https://api.openai.com/v1", "gpt-4.1")
         assert r["provider"] == "openai"
@@ -312,3 +344,141 @@ class TestSyncConfigKeyFreeProvider:
         adapter = OpenFangAdapter()
         result = self._run(adapter.sync_config())
         assert result is False
+
+
+# ── _write_openfang_model_config: the persisted config.toml path ──
+
+
+class TestWriteOpenFangModelConfig:
+    """The persisted config.toml must agree with the runtime provider push.
+
+    This path had no coverage at all, which is how a `self` reference slipped
+    into a @staticmethod: nothing ever executed the function.
+    """
+
+    def _write(self, tmp_path, monkeypatch, **kwargs):
+        from brain.openfang_adapter import OpenFangAdapter
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("USERPROFILE", str(tmp_path))
+        OpenFangAdapter._write_openfang_model_config(**kwargs)
+        return (tmp_path / ".openfang" / "config.toml").read_text(encoding="utf-8")
+
+    def test_writes_without_a_bound_instance(self, tmp_path, monkeypatch):
+        """It is a @staticmethod — it must not reach for `self`."""
+        content = self._write(
+            tmp_path, monkeypatch,
+            api_key="sk-x", base_url="https://api.openai.com/v1", model="gpt-5",
+        )
+        assert 'provider = "openai"' in content, f"实际写出=\n{content}"
+
+    def test_caller_supplied_provider_info_wins(self, tmp_path, monkeypatch):
+        """A declared Anthropic endpoint must not be re-detected as openai."""
+        content = self._write(
+            tmp_path, monkeypatch,
+            api_key="sk-x",
+            base_url="https://llm.example.com/anthropic",
+            model="claude-sonnet-4",
+            pinfo={
+                "provider": "anthropic",
+                "needs_proxy": False,
+                "effective_url": "https://llm.example.com/anthropic",
+                "api_key_env": "ANTHROPIC_API_KEY",
+            },
+        )
+        assert 'provider = "anthropic"' in content, f"实际写出=\n{content}"
+        assert 'api_key_env = "ANTHROPIC_API_KEY"' in content
+        assert "https://llm.example.com/anthropic" in content
+
+    def test_falls_back_to_detection_when_not_supplied(self, tmp_path, monkeypatch):
+        """Other call sites that pass no pinfo keep the old behaviour."""
+        content = self._write(
+            tmp_path, monkeypatch,
+            api_key="sk-x", base_url="https://api.kimi.com/coding", model="kimi-for-coding",
+        )
+        assert 'provider = "anthropic"' in content, f"实际写出=\n{content}"
+
+    def test_plaintext_key_is_never_persisted(self, tmp_path, monkeypatch):
+        """Guard the existing invariant while touching this function."""
+        content = self._write(
+            tmp_path, monkeypatch,
+            api_key="sk-super-secret-value", base_url="https://api.openai.com/v1", model="gpt-5",
+        )
+        assert "sk-super-secret-value" not in content, "明文密钥不得落盘"
+
+
+class TestProviderTypeIsEvidenceOfLastResort:
+    """A declared dialect must not outrank what the URL already proves.
+
+    provider_type is a claim carried by the slot; the host checks above it are
+    evidence. If the claim wins, a residual 'anthropic' on a slot whose URL is
+    really an OpenAI-compatible proxy routes the agent to a direct Anthropic
+    call that cannot succeed.
+    """
+
+    def test_declared_anthropic_does_not_hijack_a_known_openai_host(self):
+        r = _detect_provider_info(
+            "https://api.openai.com/v1", "gpt-5", provider_type="anthropic"
+        )
+        assert r["provider"] == "openai", f"实际={r['provider']!r}"
+
+    def test_declared_anthropic_does_not_hijack_an_openrouter_proxy(self):
+        r = _detect_provider_info(
+            "https://openrouter.ai/api/v1", "some-model", provider_type="anthropic"
+        )
+        assert r["provider"] == "openai", f"实际={r['provider']!r}"
+        assert r["needs_proxy"] is True
+
+    def test_declared_anthropic_does_not_hijack_a_local_ollama(self):
+        r = _detect_provider_info(
+            "http://localhost:11434/v1", "llama3", provider_type="anthropic"
+        )
+        assert r["provider"] == "ollama", f"实际={r['provider']!r}"
+
+    def test_declaration_still_wins_when_nothing_else_matched(self):
+        r = _detect_provider_info(
+            "https://llm.example.com/anthropic", "claude-sonnet-4", provider_type="anthropic"
+        )
+        assert r["provider"] == "anthropic", f"实际={r['provider']!r}"
+        assert r["needs_proxy"] is False
+
+
+class TestEvidenceOutranksDeclarationOutranksModelName:
+    """The routing order is host/port/path evidence > declaration > model-name guess.
+
+    The middle rung is what makes a self-hosted Anthropic gateway usable: its
+    model IDs are arbitrary, so a name containing another vendor's word must
+    not outrank the slot's explicit protocol declaration.
+    """
+
+    def test_declared_anthropic_beats_a_deepseek_model_name(self):
+        r = _detect_provider_info(
+            "https://llm.example.com/anthropic", "deepseek-r1", provider_type="anthropic"
+        )
+        assert r["provider"] == "anthropic", f"实际={r['provider']!r}"
+        assert r["api_key_env"] == "ANTHROPIC_API_KEY"
+
+    def test_declared_anthropic_beats_a_groq_model_name(self):
+        r = _detect_provider_info(
+            "https://llm.example.com/anthropic", "groq-llama-70b", provider_type="anthropic"
+        )
+        assert r["provider"] == "anthropic", f"实际={r['provider']!r}"
+
+    def test_host_evidence_still_beats_the_declaration(self):
+        """Splitting the branches must not let the declaration climb over hosts."""
+        for url, expected in (
+            ("https://api.groq.com/openai/v1", "groq"),
+            ("https://api.deepseek.com/v1", "deepseek"),
+            ("https://api.openai.com/v1", "openai"),
+            ("http://localhost:11434/v1", "ollama"),
+        ):
+            r = _detect_provider_info(url, "some-model", provider_type="anthropic")
+            assert r["provider"] == expected, f"{url} 实际={r['provider']!r}"
+
+    def test_model_name_guess_still_works_without_a_declaration(self):
+        """The relocated heuristics keep their old behaviour when nothing declares."""
+        assert _detect_provider_info(
+            "https://custom-endpoint.example.com/v1", "groq-llama-70b"
+        )["provider"] == "groq"
+        assert _detect_provider_info(
+            "https://custom.example.com/v1", "deepseek-r1"
+        )["provider"] == "deepseek"

@@ -2924,7 +2924,7 @@
             "tokens": "tokens",
             "textGuardUnlimitedWarning": "Pode causar problemas sérios com a gata, não recomendado, a menos que seja necessário",
             "textGuardHighWarning": "Configuração muito alta pode causar confusão de memória e idioma, recomendado dentro de 1000 tokens",
-            "textGuardNote": "Calculado via tiktoken; aplica-se apenas a respostas de texto e não afeta sessões de voz"
+            "textGuardNote": "Aplica-se apenas a respostas de texto e não afeta sessões de voz"
         }
     },
     "openclawGuide": {

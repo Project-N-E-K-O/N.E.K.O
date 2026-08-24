@@ -197,8 +197,8 @@
       "summary_model": "deepseek-v4-flash",
       "correction_model": "deepseek-v4-flash",
       "emotion_model": "deepseek-v4-flash",
-      "vision_model": "",
-      "agent_model": "deepseek-v4-flash"
+      "vision_model": "deepseek-v4-flash-vision-exp",
+      "agent_model": "deepseek-v4-flash-vision-exp"
     },
     "doubao": {
       "key": "doubao",

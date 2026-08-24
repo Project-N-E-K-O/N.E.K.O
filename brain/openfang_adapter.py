@@ -42,9 +42,13 @@ logger = logging.getLogger("openfang_adapter")
 # OpenFang 原生支持多种 provider: anthropic, openai, groq, gemini, deepseek, ollama 等
 # 根据用户配置的 agent API base_url 推断最合适的 provider 和是否需要 proxy
 
-def _detect_provider_info(base_url: str, model: str) -> dict:
+def _detect_provider_info(base_url: str, model: str, provider_type: str | None = None) -> dict:
     """
     Infer the OpenFang provider and whether an LLM proxy is needed from the user-configured agent API.
+
+    ``provider_type`` is the dialect the config layer already resolved for this
+    slot; pass it when available so an Anthropic-Messages endpoint is routed as
+    Anthropic even when its hostname is not a known one.
 
     Returns:
         {
@@ -97,8 +101,9 @@ def _detect_provider_info(base_url: str, model: str) -> dict:
             "api_key_env": "OPENAI_API_KEY",
         }
 
-    # Groq
-    if _host_matches("groq.com", "api.groq.com") or "groq" in model_lower:
+    # Groq -- 主机证据这一半留在前面；纯按模型名猜的那一半挪到声明式判据之后
+    # （见下面 "其余 Anthropic Messages 协议端点" 处的次序说明）。
+    if _host_matches("groq.com", "api.groq.com"):
         return {
             "provider": "groq",
             "needs_proxy": False,
@@ -132,8 +137,8 @@ def _detect_provider_info(base_url: str, model: str) -> dict:
             "api_key_env": "GEMINI_API_KEY",
         }
 
-    # DeepSeek
-    if _host_matches("deepseek.com", "api.deepseek.com") or "deepseek" in model_lower:
+    # DeepSeek -- 同 Groq，主机证据留前，模型名猜测挪后
+    if _host_matches("deepseek.com", "api.deepseek.com"):
         return {
             "provider": "deepseek",
             "needs_proxy": False,
@@ -164,6 +169,43 @@ def _detect_provider_info(base_url: str, model: str) -> dict:
             "needs_proxy": False,
             "effective_url": base_url,
             "api_key_env": "",
+        }
+
+    # 其余 Anthropic Messages 协议端点：kimi_code 的 api.kimi.com/coding，以及
+    # 槽位自己声明了 provider_type=anthropic 的自建端点。判据复用 utils.llm_client
+    # 的 _is_anthropic_endpoint（聊天链路的同一套真相），不在这里另抄一份域名表。
+    #
+    # 次序是三档：**主机/端口/路径证据 > 声明 > 纯模型名猜测**。
+    #   - 排在所有 URL 分支之后：provider_type 只是槽位携带的一个声明，而上面那些
+    #     是证据。声明排前面的话，「槽位残留 anthropic + URL 其实是 lanlan 代理 /
+    #     deepseek / 本机 ollama」会被误判成 Anthropic 直连打死。
+    #   - 但排在 groq / deepseek 的**模型名**猜测之前：那两条只是看模型名里有没有
+    #     厂商字样，比一个显式声明弱。否则自建 Anthropic 网关只要服务一个名字里带
+    #     deepseek 的模型，就会被按 DeepSeek 协议和 Key 环境变量发出去。
+    from utils.llm_client import _is_anthropic_endpoint
+
+    if _is_anthropic_endpoint(base_url, provider_type):
+        return {
+            "provider": "anthropic",
+            "needs_proxy": False,
+            "effective_url": base_url,
+            "api_key_env": "ANTHROPIC_API_KEY",
+        }
+
+    # 纯模型名启发式：证据用尽、也没有声明时才据此猜厂商。
+    if "groq" in model_lower:
+        return {
+            "provider": "groq",
+            "needs_proxy": False,
+            "effective_url": base_url,
+            "api_key_env": "GROQ_API_KEY",
+        }
+    if "deepseek" in model_lower:
+        return {
+            "provider": "deepseek",
+            "needs_proxy": False,
+            "effective_url": base_url,
+            "api_key_env": "DEEPSEEK_API_KEY",
         }
 
     # OpenRouter / lanlan.app / 其他 OpenAI-compatible 代理
@@ -253,7 +295,12 @@ class OpenFangAdapter:
         import hashlib
         cm = get_config_manager()
         agent_cfg = cm.get_model_api_config('agent')
-        key_fields = f"{agent_cfg.get('model', '')}|{agent_cfg.get('base_url', '')}|{agent_cfg.get('api_key', '')}"
+        # provider_type 也要进哈希：它现在参与 provider 探测，只改协议不改
+        # model/url/key 的配置变更否则会被判成「没变」，重新探测永远不触发。
+        key_fields = (
+            f"{agent_cfg.get('model', '')}|{agent_cfg.get('base_url', '')}"
+            f"|{agent_cfg.get('api_key', '')}|{agent_cfg.get('provider_type', '')}"
+        )
         return hashlib.md5(key_fields.encode()).hexdigest()
 
     async def _ensure_config_synced(self) -> None:
@@ -595,7 +642,9 @@ class OpenFangAdapter:
 
         # 先检测 provider，再决定是否需要 api_key
         # Ollama 等本地 provider 不需要 api_key（api_key_env 为空串）
-        pinfo = _detect_provider_info(base_url, model)
+        pinfo = _detect_provider_info(
+            base_url, model, provider_type=agent_cfg.get("provider_type")
+        )
         if not api_key and pinfo.get("api_key_env"):
             # 云端 provider 缺少 api_key，跳过同步
             logger.warning("[OpenFang] Agent API key 未配置 (provider=%s), 跳过同步",
@@ -693,7 +742,12 @@ class OpenFangAdapter:
         # (3) Write config.toml（同步文件 IO，offload 到线程）
         file_written = False
         try:
-            await asyncio.to_thread(self._write_openfang_model_config, api_key, base_url, model)
+            # 把本次已解析好的 pinfo 传下去：落盘路径自己重算的话会漏掉配置层的
+            # provider_type，声明式 anthropic 端点被判成 openai，config.toml 与
+            # 运行时推上去的 provider 分叉。
+            await asyncio.to_thread(
+                self._write_openfang_model_config, api_key, base_url, model, pinfo
+            )
             file_written = True
         except Exception as e:
             logger.debug("[OpenFang] config.toml write failed (non-fatal): %s", e)
@@ -743,7 +797,9 @@ class OpenFangAdapter:
         return ok
 
     @staticmethod
-    def _write_openfang_model_config(api_key: str, base_url: str, model: str) -> None:
+    def _write_openfang_model_config(
+        api_key: str, base_url: str, model: str, pinfo: dict | None = None
+    ) -> None:
         """
         Ensure ~/.openfang/config.toml contains the [default_model] and [provider_urls] config.
         Whether to go through the proxy is decided by the provider type.
@@ -764,8 +820,9 @@ class OpenFangAdapter:
             with open(config_path, "r", encoding="utf-8") as f:
                 content = f.read()
 
-        # 根据 base_url 检测 provider
-        pinfo = _detect_provider_info(base_url, model)
+        # 优先用调用方已解析好的那份（它带上了配置层的 provider_type）；
+        # 没传时才自己按 URL/模型名重算，保住其他调用路径。
+        pinfo = pinfo or _detect_provider_info(base_url, model)
         provider = pinfo["provider"]
         effective_url = pinfo["effective_url"]
         api_key_env = pinfo["api_key_env"]

@@ -139,8 +139,9 @@ MODELS_EXTRA_BODY_MAP: dict[str, dict] = {
     # DeepSeek 官方（api.deepseek.com）：V4 默认开思考，且用的是 thinking.type 方言，
     # 跟 GLM/Kimi/Doubao 同形状，直接复用 EXTRA_BODY_CLAUDE。转售同款的网关是另外的
     # 键名（SiliconFlow 的 deepseek-ai/…、OpenRouter 的 deepseek/…），各走各的方言，
-    # 不会被这两行波及。
+    # 不会被这几行波及。vision-exp 是同端口同代的视觉版，方言一致。
     "deepseek-v4-flash": EXTRA_BODY_CLAUDE,
+    "deepseek-v4-flash-vision-exp": EXTRA_BODY_CLAUDE,
     "deepseek-v4-pro": EXTRA_BODY_CLAUDE,
     # Step
     "step-2-mini": {"tools": [{"type": "web_search", "function": {"description": "这个web_search用来搜索互联网的信息"}}]},
