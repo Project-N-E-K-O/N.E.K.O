@@ -34,6 +34,8 @@ _STATE_FILE = "driver_state.json"
 _READY_FILE = "shell_ready.json"
 _LOG_NAME = "driver_shell.log"
 _DEFAULT_COMPATIBLE_NEKO = "*"
+_STATUS_HEALTH_TIMEOUT = 0.35
+_SCRIPT_PYTHON_UNSET = object()
 
 
 def _read_plugin_config(plugin_dir: Path) -> dict[str, Any]:
@@ -173,6 +175,17 @@ def _find_neko_root(plugin_dir: Path) -> Path | None:
     return None
 
 
+def _resolve_neko_root_for_start(plugin_dir: Path) -> Path | None:
+    """Live repo root, or bundled import root for installed .neko-plugin packages."""
+    found = _find_neko_root(plugin_dir)
+    if found is not None:
+        return found
+    bundled_tb = plugin_dir / "bundled" / "tests" / "testbench"
+    if bundled_tb.is_dir():
+        return (plugin_dir / "bundled").resolve()
+    return None
+
+
 def _resolve_code_layout(plugin_dir: Path, neko_root: Path) -> tuple[Path, Path]:
     """Return (code_dir, import_root) for tests.testbench imports."""
     if os.environ.get("NEKO_TESTBENCH_DEV_MODE", "").lower() in {"1", "true", "yes"}:
@@ -226,6 +239,14 @@ class TestbenchDriverPlugin(NekoPluginBase):
         self._shell_proc: subprocess.Popen[Any] | None = None
         self._embed_thread: threading.Thread | None = None
         self._embed_server: Any | None = None
+        self._script_python: list[str] | None | object = _SCRIPT_PYTHON_UNSET
+
+    def _cached_script_python(self) -> list[str] | None:
+        cached = self._script_python
+        if cached is _SCRIPT_PYTHON_UNSET:
+            cached = find_script_python()
+            self._script_python = cached
+        return cached
 
     def _state_path(self) -> Path:
         return Path(self.data_path()) / _STATE_FILE
@@ -258,30 +279,95 @@ class TestbenchDriverPlugin(NekoPluginBase):
                 except OSError:
                     pass
 
-    def _status_dict(self) -> dict[str, Any]:
+    def _runtime_alive(self, state: dict[str, Any], *, health_timeout: float = _STATUS_HEALTH_TIMEOUT) -> bool:
+        url = state.get("url")
+        if url and _health_ok(f"{str(url).rstrip('/')}/healthz", timeout=health_timeout):
+            return True
+        pid = state.get("shell_pid") or state.get("pid")
+        if pid and _pid_alive(int(pid)):
+            return True
+        proc = self._shell_proc
+        if proc is not None and proc.poll() is None:
+            return True
+        mode = state.get("mode")
+        if mode == "B" and self._embed_thread is not None and self._embed_thread.is_alive():
+            return True
+        return False
+
+    def _reconcile_runtime_state(self) -> dict[str, Any]:
+        """Drop stale driver_state when shell/server is gone (e.g. user closed WebView)."""
         state = self._load_state()
+        proc = self._shell_proc
+        if proc is not None and proc.poll() is not None:
+            self._shell_proc = None
+        if not state:
+            return {}
+        if self._runtime_alive(state):
+            return state
+        self._shell_proc = None
+        self._embed_server = None
+        self._embed_thread = None
+        self._clear_state()
+        return {}
+
+    def _spawn_webview_window(self, url: str) -> None:
+        py = self._cached_script_python()
+        if py is None:
+            raise RuntimeError("无法启动 WebView：未找到可用的 Python。")
+        webview_cmd = [
+            *py,
+            "-c",
+            (
+                "import webview; "
+                f"webview.create_window('N.E.K.O. Testbench', '{url}', width=1400, height=900); "
+                "webview.start()"
+            ),
+        ]
+        subprocess.Popen(
+            webview_cmd,
+            cwd=str(self._plugin_dir),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=(sys.platform != "win32"),
+        )
+
+    def _status_dict(self) -> dict[str, Any]:
+        state = self._reconcile_runtime_state()
         url = state.get("url")
         port = state.get("port")
         mode = state.get("mode")
         ui_mode = state.get("ui")
         pid = state.get("shell_pid") or state.get("pid")
-        running = False
-        if url and _health_ok(f"{str(url).rstrip('/')}/healthz"):
-            running = True
-        elif pid and _pid_alive(int(pid)):
-            running = True
-        if not running and mode == "B" and self._embed_thread and self._embed_thread.is_alive():
-            running = True
+        running = bool(state) and self._runtime_alive(state)
+        can_spawn = self._cached_script_python() is not None
+        access_url = None
+        if running and url:
+            access_url = str(url)
+        elif running and port:
+            access_url = f"http://127.0.0.1:{port}"
         if not running:
-            hint = "就绪：将优先打开独立 WebView 窗口"
-            if find_script_python() is None:
-                hint = "就绪（Mode B）：无独立脚本 Python 时将嵌入 HTTP，窗口尽力而为"
+            if not can_spawn:
+                hint = (
+                    "就绪（Mode B）：将嵌入 HTTP 服务；启动后请在浏览器访问 "
+                    "http://127.0.0.1:<端口>（启动完成后见下方 URL/端口）"
+                )
+            else:
+                hint = "就绪（Mode A）：启动后将优先打开独立 WebView；关闭窗口即停止服务"
+        elif mode == "B":
+            target = access_url or "见下方 URL"
+            if ui_mode == "browser":
+                hint = f"已在运行（Mode B）：请在浏览器打开 {target}"
+            else:
+                hint = (
+                    f"已在运行（Mode B）：HTTP 已嵌入插件进程；若未看到窗口，"
+                    f"请在浏览器打开 {target}"
+                )
         else:
             hint = "已在运行"
             if ui_mode == "browser":
-                hint = "已在运行（HTTP；请用「打开窗口」走浏览器）"
+                hint = f"已在运行（浏览器模式）：请在浏览器打开 {access_url or '见下方 URL'}"
             elif ui_mode == "webview":
-                hint = "已在运行（独立 WebView 窗口）"
+                hint = "已在运行（Mode A / WebView）；关闭窗口即停止服务，需重新启动"
         return {
             "running": running,
             "mode": mode,
@@ -289,13 +375,35 @@ class TestbenchDriverPlugin(NekoPluginBase):
             "pid": pid if running else None,
             "port": port if running else None,
             "url": url if running else None,
+            "access_url": access_url if running else None,
             "data_dir": str(self.data_path()),
             "neko_root": state.get("neko_root"),
             "code_dir": state.get("code_dir"),
             "last_error": state.get("last_error"),
-            "can_spawn_python": find_script_python() is not None,
+            "can_spawn_python": can_spawn,
             "hint": hint if not state.get("last_error") else f"{hint}；上次错误: {state.get('last_error')}",
         }
+
+    def _start_work(
+        self,
+        *,
+        neko_root: Path,
+        code_dir: Path,
+        import_root: Path,
+    ) -> dict[str, Any]:
+        py = self._cached_script_python()
+        if py is not None:
+            return self._start_mode_a(
+                python_prefix=py,
+                neko_root=neko_root,
+                code_dir=code_dir,
+                import_root=import_root,
+            )
+        return self._start_mode_b(
+            neko_root=neko_root,
+            code_dir=code_dir,
+            import_root=import_root,
+        )
 
     def _user_data_dir(self) -> Path:
         override = os.environ.get("NEKO_TESTBENCH_DATA_DIR")
@@ -482,7 +590,7 @@ class TestbenchDriverPlugin(NekoPluginBase):
             raise RuntimeError("embedded healthz timeout")
 
         ui_mode = "browser"
-        py = find_script_python()
+        py = self._cached_script_python()
         if py is not None:
             try:
                 webview_cmd = [
@@ -518,60 +626,63 @@ class TestbenchDriverPlugin(NekoPluginBase):
         }
 
     @lifecycle(id="startup")
-    async def startup(self) -> None:
-        self.logger.info("Testbench driver ready (can_spawn=%s)", find_script_python() is not None)
+    async def startup(self, **_) -> None:
+        self._script_python = await asyncio.to_thread(find_script_python)
+        self.logger.info("Testbench driver ready (can_spawn=%s)", self._script_python is not None)
 
     @lifecycle(id="shutdown")
-    async def shutdown(self) -> None:
+    async def shutdown(self, **_) -> None:
         await self._stop_impl()
 
     @ui.context(id="dashboard")
-    async def dashboard(self) -> dict[str, Any]:
-        return self._status_dict()
+    async def dashboard(self, **_) -> dict[str, Any]:
+        return await asyncio.to_thread(self._status_dict)
 
     @ui.action(label="启动 Testbench", tone="primary", group="control", order=10, refresh_context=True)
-    @plugin_entry(id="start", name="Start Testbench", description="Start Testbench (prefer WebView window)")
-    async def start(self) -> Any:
-        status = self._status_dict()
+    @plugin_entry(
+        id="start",
+        name="Start Testbench",
+        description="Start Testbench (prefer WebView window)",
+        timeout=120.0,
+    )
+    async def start(self, **_) -> Any:
+        status = await asyncio.to_thread(self._status_dict)
         if status["running"]:
             return Ok({**status, "message": "Testbench 已在运行"})
         try:
-            neko_root = _find_neko_root(self._plugin_dir)
+            neko_root = _resolve_neko_root_for_start(self._plugin_dir)
             if neko_root is None:
-                return Err(SdkError("NEKO_ROOT", "无法定位 NEKO 工程根（需含 utils/ 与 plugin/）。"))
+                return Err(
+                    SdkError(
+                        "无法定位 NEKO 工程根，且插件包内缺少 bundled/tests/testbench。",
+                        code="NEKO_ROOT",
+                    )
+                )
             compat_err = _check_compatible_neko(self._plugin_dir)
             if compat_err:
-                return Err(SdkError("INCOMPATIBLE_NEKO", compat_err))
+                return Err(SdkError(compat_err, code="INCOMPATIBLE_NEKO"))
             code_dir, import_root = _resolve_code_layout(self._plugin_dir, neko_root)
-            py = find_script_python()
-            if py is not None:
-                state = self._start_mode_a(
-                    python_prefix=py,
-                    neko_root=neko_root,
-                    code_dir=code_dir,
-                    import_root=import_root,
-                )
-            else:
-                state = self._start_mode_b(
-                    neko_root=neko_root,
-                    code_dir=code_dir,
-                    import_root=import_root,
-                )
+            state = await asyncio.to_thread(
+                self._start_work,
+                neko_root=neko_root,
+                code_dir=code_dir,
+                import_root=import_root,
+            )
             self._save_state(state)
-            return Ok({**self._status_dict(), "message": "已启动 Testbench"})
+            return Ok({**await asyncio.to_thread(self._status_dict), "message": "已启动 Testbench"})
         except Exception as exc:  # noqa: BLE001
             self.logger.exception("Testbench start failed")
             fail = {"last_error": f"{type(exc).__name__}: {exc}", "running": False}
             prev = self._load_state()
             prev.update(fail)
             self._save_state(prev)
-            return Err(SdkError("START_FAILED", str(exc)))
+            return Err(SdkError(str(exc), code="START_FAILED"))
 
     @ui.action(label="停止", tone="danger", group="control", order=20, refresh_context=True)
     @plugin_entry(id="stop", name="Stop Testbench", description="Stop Testbench server / window")
-    async def stop(self) -> Any:
+    async def stop(self, **_) -> Any:
         await self._stop_impl()
-        return Ok({**self._status_dict(), "message": "已请求停止"})
+        return Ok({**await asyncio.to_thread(self._status_dict), "message": "已请求停止"})
 
     async def _stop_impl(self) -> None:
         state = self._load_state()
@@ -610,24 +721,41 @@ class TestbenchDriverPlugin(NekoPluginBase):
                 pass
         self._clear_state()
 
-    @ui.action(label="打开窗口", tone="secondary", group="control", order=25, refresh_context=True)
     @plugin_entry(id="open", name="Open UI", description="Focus WebView or return URL for external open")
-    async def open_ui(self) -> Any:
-        status = self._status_dict()
+    async def open_ui(self, **_) -> Any:
+        status = await asyncio.to_thread(self._status_dict)
         if not status["running"] or not status.get("url"):
-            return Err(SdkError("NOT_RUNNING", "Testbench 未在运行，请先启动。"))
+            return Err(
+                SdkError(
+                    "Testbench 未在运行（窗口关闭后服务已停止），请先重新启动。",
+                    code="NOT_RUNNING",
+                )
+            )
+        url = str(status["url"])
+        if status.get("ui") == "webview":
+            try:
+                await asyncio.to_thread(self._spawn_webview_window, url)
+                return Ok({**status, "message": "已打开 WebView 窗口"})
+            except Exception as exc:  # noqa: BLE001
+                return Ok(
+                    {
+                        **status,
+                        "message": f"WebView 打开失败，改用浏览器：{exc}",
+                        "open_external_url": url,
+                    }
+                )
         return Ok(
             {
                 **status,
-                "message": "请在宿主打开 URL" if status.get("ui") != "webview" else "独立窗口应已打开",
-                "open_external_url": status["url"],
+                "message": "请在宿主打开 URL",
+                "open_external_url": url,
             }
         )
 
     @ui.action(label="刷新状态", tone="secondary", group="control", order=30, refresh_context=True)
     @plugin_entry(id="status", name="Status", description="Query Testbench driver status")
-    async def status(self) -> Any:
-        return Ok(self._status_dict())
+    async def status(self, **_) -> Any:
+        return Ok(await asyncio.to_thread(self._status_dict))
 
 
 # Back-compat alias for older entry strings / docs.

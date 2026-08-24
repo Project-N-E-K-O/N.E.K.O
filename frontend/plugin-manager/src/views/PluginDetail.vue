@@ -178,7 +178,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, watch } from 'vue'
+import { ref, computed, onMounted, provide, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ArrowLeft, Loading } from '@element-plus/icons-vue'
 import { usePluginStore } from '@/stores/plugin'
@@ -194,6 +194,10 @@ import { getPluginUiSurfaceInfo } from '@/api/plugins'
 import { resolvePluginDisplayText, type PluginDisplayText } from '@/utils/pluginDisplay'
 import { useI18n } from 'vue-i18n'
 import type { PluginUiSurface, PluginUiWarning } from '@/types/api'
+import {
+  PLUGIN_DETAIL_REFRESH_HOSTED_PANELS_KEY,
+  refreshHostedPanelFrames,
+} from '@/views/pluginDetailHostedPanelRefresh'
 
 const route = useRoute()
 const router = useRouter()
@@ -426,13 +430,19 @@ function setPanelSurfaceFrameRef(surfaceId: string, instance: unknown) {
   }
 }
 
+async function refreshHostedPanelContextsAfterRuntimeChange(): Promise<void> {
+  await refreshHostedPanelFrames(panelSurfaceFrameRefs.values())
+}
+
+provide(PLUGIN_DETAIL_REFRESH_HOSTED_PANELS_KEY, refreshHostedPanelContextsAfterRuntimeChange)
+
 function relayHostedSurfaceMessageToStaticUi(data: unknown) {
   if (isLegacyOpenSurfaceMessage(data)) {
     openHostedSurfaceFromStaticUi(data.payload)
     return
   }
   if (data && typeof data === 'object' && (data as { type?: unknown }).type === 'neko-plugin-context-invalidated') {
-    void Promise.allSettled(Array.from(panelSurfaceFrameRefs.values(), (frame) => frame.refreshContext()))
+    void refreshHostedPanelContextsAfterRuntimeChange()
     return
   }
   // Hosted surface messages have already been source/origin checked by the
