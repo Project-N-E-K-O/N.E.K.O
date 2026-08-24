@@ -25,6 +25,10 @@ def main() -> int:
         return 1
     port = _free_port()
     data = _DIST / "staging" / "smoke_user_data"
+    if data.exists():
+        import shutil
+
+        shutil.rmtree(data)
     data.mkdir(parents=True, exist_ok=True)
     env = os.environ.copy()
     env["NEKO_TESTBENCH_DATA_DIR"] = str(data)

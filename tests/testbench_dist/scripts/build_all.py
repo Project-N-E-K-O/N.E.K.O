@@ -37,7 +37,7 @@ def main() -> int:
     if not args.skip_embedding:
         rc = _run("prepare_embedding.py", ["--skip-if-present"])
         if rc != 0:
-            print("[build_all] WARN: embedding prepare failed; continuing", file=sys.stderr)
+            return rc
 
     if not args.skip_pyinstaller:
         rc = _run("build_pyinstaller.py")

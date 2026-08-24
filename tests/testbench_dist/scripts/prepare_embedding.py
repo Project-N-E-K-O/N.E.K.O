@@ -23,16 +23,18 @@ def main() -> int:
     out = _PROJECT / "data" / "embedding_models" / _DEFAULT_PROFILE
     marker = out / ".prepared.json"
     tokenizer = out / "tokenizer.json"
+    fp32 = out / "onnx" / "model.onnx"
     int8 = out / "onnx" / "model_quantized.onnx"
-    if (
-        args.skip_if_present
-        and marker.is_file()
-        and tokenizer.is_file()
-        and int8.is_file()
-        and (args.variant == "int8" or (out / "onnx" / "model.onnx").is_file())
-    ):
-        print(f"[prepare_embedding] skip, already present: {out}")
-        return 0
+    if args.skip_if_present and marker.is_file() and tokenizer.is_file():
+        if args.variant == "int8" and int8.is_file():
+            print(f"[prepare_embedding] skip, already present: {out}")
+            return 0
+        if args.variant == "fp32" and fp32.is_file():
+            print(f"[prepare_embedding] skip, already present: {out}")
+            return 0
+        if args.variant == "both" and fp32.is_file() and int8.is_file():
+            print(f"[prepare_embedding] skip, already present: {out}")
+            return 0
     if not _PREPARE.is_file():
         print(f"[prepare_embedding] missing {_PREPARE}", file=sys.stderr)
         return 1

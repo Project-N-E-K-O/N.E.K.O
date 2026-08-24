@@ -36,6 +36,11 @@ _LOG_NAME = "driver_shell.log"
 _DEFAULT_COMPATIBLE_NEKO = "*"
 _STATUS_HEALTH_TIMEOUT = 0.35
 _SCRIPT_PYTHON_UNSET = object()
+_WEBVIEW_LAUNCHER = (
+    "import sys, webview; "
+    "webview.create_window('N.E.K.O. Testbench', sys.argv[1], width=1400, height=900); "
+    "webview.start()"
+)
 
 
 def _read_plugin_config(plugin_dir: Path) -> dict[str, Any]:
@@ -283,13 +288,14 @@ class TestbenchDriverPlugin(NekoPluginBase):
         url = state.get("url")
         if url and _health_ok(f"{str(url).rstrip('/')}/healthz", timeout=health_timeout):
             return True
-        pid = state.get("shell_pid") or state.get("pid")
-        if pid and _pid_alive(int(pid)):
-            return True
+        mode = state.get("mode")
+        if mode != "B":
+            pid = state.get("shell_pid") or state.get("pid")
+            if pid and _pid_alive(int(pid)):
+                return True
         proc = self._shell_proc
         if proc is not None and proc.poll() is None:
             return True
-        mode = state.get("mode")
         if mode == "B" and self._embed_thread is not None and self._embed_thread.is_alive():
             return True
         return False
@@ -314,15 +320,7 @@ class TestbenchDriverPlugin(NekoPluginBase):
         py = self._cached_script_python()
         if py is None:
             raise RuntimeError("无法启动 WebView：未找到可用的 Python。")
-        webview_cmd = [
-            *py,
-            "-c",
-            (
-                "import webview; "
-                f"webview.create_window('N.E.K.O. Testbench', '{url}', width=1400, height=900); "
-                "webview.start()"
-            ),
-        ]
+        webview_cmd = [*py, "-c", _WEBVIEW_LAUNCHER, url]
         subprocess.Popen(
             webview_cmd,
             cwd=str(self._plugin_dir),
@@ -391,15 +389,7 @@ class TestbenchDriverPlugin(NekoPluginBase):
         code_dir: Path,
         import_root: Path,
     ) -> dict[str, Any]:
-        py = self._cached_script_python()
-        if py is not None:
-            return self._start_mode_a(
-                python_prefix=py,
-                neko_root=neko_root,
-                code_dir=code_dir,
-                import_root=import_root,
-            )
-        return self._start_mode_b(
+        return self._start_with_fallback(
             neko_root=neko_root,
             code_dir=code_dir,
             import_root=import_root,
@@ -511,9 +501,10 @@ class TestbenchDriverPlugin(NekoPluginBase):
                         ui_mode = str(ready_data.get("ui") or ui_mode)
                         url = str(ready_data.get("url") or url)
                         port = int(ready_data.get("port") or port)
+                        if ui_mode in {"browser", "webview"}:
+                            break
                     except (OSError, json.JSONDecodeError, ValueError):
                         pass
-                break
             time.sleep(0.3)
         else:
             proc.terminate()
@@ -546,7 +537,7 @@ class TestbenchDriverPlugin(NekoPluginBase):
                 sys.path.insert(0, value)
         sys.path[:] = [p for p in sys.path if Path(p).resolve() != code_dir.resolve()]
 
-        from path_bootstrap import apply_plugin_patches
+        from .path_bootstrap import apply_plugin_patches
 
         user_data = self._user_data_dir()
         apply_plugin_patches(neko_root=neko_root, code_dir=code_dir, user_data_dir=user_data)
@@ -593,17 +584,8 @@ class TestbenchDriverPlugin(NekoPluginBase):
         py = self._cached_script_python()
         if py is not None:
             try:
-                webview_cmd = [
-                    *py,
-                    "-c",
-                    (
-                        "import webview; "
-                        f"webview.create_window('N.E.K.O. Testbench', '{url}', width=1400, height=900); "
-                        "webview.start()"
-                    ),
-                ]
                 subprocess.Popen(
-                    webview_cmd,
+                    [*py, "-c", _WEBVIEW_LAUNCHER, url],
                     cwd=str(self._plugin_dir),
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
@@ -618,12 +600,36 @@ class TestbenchDriverPlugin(NekoPluginBase):
             "ui": ui_mode,
             "url": url,
             "port": port,
-            "shell_pid": os.getpid(),
+            "shell_pid": None,
             "neko_root": str(neko_root),
             "code_dir": str(code_dir),
             "last_error": None,
             "open_url_hint": url if ui_mode == "browser" else None,
         }
+
+    def _start_with_fallback(
+        self,
+        *,
+        neko_root: Path,
+        code_dir: Path,
+        import_root: Path,
+    ) -> dict[str, Any]:
+        py = self._cached_script_python()
+        if py is not None:
+            try:
+                return self._start_mode_a(
+                    python_prefix=py,
+                    neko_root=neko_root,
+                    code_dir=code_dir,
+                    import_root=import_root,
+                )
+            except Exception as exc:  # noqa: BLE001
+                self.logger.warning("Mode A failed (%s); falling back to Mode B", exc)
+        return self._start_mode_b(
+            neko_root=neko_root,
+            code_dir=code_dir,
+            import_root=import_root,
+        )
 
     @lifecycle(id="startup")
     async def startup(self, **_) -> None:

@@ -31,6 +31,6 @@ embedding 优先用本体已有模型。
 | 连点启动 | 先停止再启 |
 | 功能异常 | 先用 `run_testbench.py` 复现 |
 
-详见仓库内 [PLUGIN_INSTALL.md](../../PLUGIN_INSTALL.md) 与 [PLAN.md](../../docs/PLAN.md)。
+详见仓库内 [PLUGIN_INSTALL.md](../../../PLUGIN_INSTALL.md) 与 [PLAN.md](../../../docs/PLAN.md)。
 
 官方插件入门：[Plugin CLI 快速开始](https://project-neko.online/zh-CN/plugins/quick-start)

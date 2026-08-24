@@ -40,10 +40,12 @@ def main() -> int:
 
     port = _free_port()
     data = _DIST / "staging" / "plugin_shell_smoke_data"
+    if data.exists():
+        import shutil
+
+        shutil.rmtree(data)
     data.mkdir(parents=True, exist_ok=True)
     ready = data / "ready.json"
-    if ready.exists():
-        ready.unlink()
 
     env = os.environ.copy()
     env["NEKO_TESTBENCH_DATA_DIR"] = str(data)
@@ -140,8 +142,12 @@ def main() -> int:
                     proc.kill()
         # Port should free shortly.
         time.sleep(0.5)
+        stop_deadline = time.monotonic() + 10.0
+        while time.monotonic() < stop_deadline and _health(url):
+            time.sleep(0.25)
         if _health(url):
-            print("[WARN] healthz still up after stop (race); not failing")
+            print("[FAIL] healthz still up after stop")
+            return 1
 
 
 if __name__ == "__main__":

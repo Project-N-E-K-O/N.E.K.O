@@ -5,6 +5,8 @@ import importlib.util
 import inspect
 from pathlib import Path
 
+import pytest
+
 
 def _load_mod():
     plugin_dir = Path(__file__).resolve().parents[1]
@@ -17,22 +19,18 @@ def _load_mod():
         return mod
     except ModuleNotFoundError as exc:
         if "plugin" in str(exc):
-            return None
+            pytest.skip(f"NEKO plugin SDK unavailable: {exc}", allow_module_level=True)
         raise
 
 
 def test_find_script_python_or_none():
     mod = _load_mod()
-    if mod is None:
-        return
     prefix = mod.find_script_python()
     assert prefix is None or (isinstance(prefix, list) and prefix)
 
 
 def test_resolve_code_layout_prefers_source_without_bundle(tmp_path, monkeypatch):
     mod = _load_mod()
-    if mod is None:
-        return
     # Use real repo layout via plugin_dir walk.
     plugin_dir = Path(__file__).resolve().parents[1]
     neko = mod._find_neko_root(plugin_dir)
@@ -45,8 +43,6 @@ def test_resolve_code_layout_prefers_source_without_bundle(tmp_path, monkeypatch
 
 def test_compatible_neko_wildcard_ok(monkeypatch):
     mod = _load_mod()
-    if mod is None:
-        return
     plugin_dir = Path(__file__).resolve().parents[1]
     monkeypatch.delenv("NEKO_VERSION", raising=False)
     monkeypatch.setenv("NEKO_TESTBENCH_COMPATIBLE_NEKO", "*")
@@ -55,8 +51,6 @@ def test_compatible_neko_wildcard_ok(monkeypatch):
 
 def test_compatible_neko_rejects_mismatch(monkeypatch, tmp_path):
     mod = _load_mod()
-    if mod is None:
-        return
     plugin_dir = Path(__file__).resolve().parents[1]
     monkeypatch.setenv("NEKO_TESTBENCH_COMPATIBLE_NEKO", ">=99.0.0")
     monkeypatch.setenv("NEKO_VERSION", "1.0.0")
@@ -67,8 +61,6 @@ def test_compatible_neko_rejects_mismatch(monkeypatch, tmp_path):
 
 def test_resolve_neko_root_for_start_uses_bundled_without_repo(tmp_path):
     mod = _load_mod()
-    if mod is None:
-        return
     plugin_dir = tmp_path / "pkg"
     bundled = plugin_dir / "bundled" / "tests" / "testbench"
     bundled.mkdir(parents=True)
@@ -79,8 +71,6 @@ def test_resolve_neko_root_for_start_uses_bundled_without_repo(tmp_path):
 
 def test_hosted_ui_entries_accept_ctx_kwarg():
     mod = _load_mod()
-    if mod is None:
-        return
     cls = mod.TestbenchDriverPlugin
     for name in ("start", "stop", "open_ui", "status", "dashboard", "startup", "shutdown"):
         sig = inspect.signature(getattr(cls, name))
@@ -89,8 +79,6 @@ def test_hosted_ui_entries_accept_ctx_kwarg():
 
 def test_reconcile_runtime_state_clears_stale_file(tmp_path, monkeypatch):
     mod = _load_mod()
-    if mod is None:
-        return
 
     data_dir = tmp_path / "data"
     data_dir.mkdir()
@@ -101,6 +89,31 @@ def test_reconcile_runtime_state_clears_stale_file(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(mod, "_health_ok", lambda _url, timeout=0.35: False)
     monkeypatch.setattr(mod, "_pid_alive", lambda _pid: False)
+
+    plugin = mod.TestbenchDriverPlugin.__new__(mod.TestbenchDriverPlugin)
+    plugin._plugin_dir = Path(__file__).resolve().parents[1]
+    plugin._shell_proc = None
+    plugin._embed_server = None
+    plugin._embed_thread = None
+    plugin._script_python = []
+    plugin.data_path = lambda *parts: data_dir.joinpath(*parts) if parts else data_dir  # type: ignore[method-assign]
+    status = plugin._status_dict()
+    assert status["running"] is False
+    assert not state_path.is_file()
+
+
+def test_reconcile_mode_b_clears_when_embed_dead_despite_host_pid(tmp_path, monkeypatch):
+    mod = _load_mod()
+
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    state_path = data_dir / "driver_state.json"
+    state_path.write_text(
+        '{"url":"http://127.0.0.1:59999","shell_pid":12345,"mode":"B","ui":"browser"}',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(mod, "_health_ok", lambda _url, timeout=0.35: False)
+    monkeypatch.setattr(mod, "_pid_alive", lambda _pid: True)
 
     plugin = mod.TestbenchDriverPlugin.__new__(mod.TestbenchDriverPlugin)
     plugin._plugin_dir = Path(__file__).resolve().parents[1]

@@ -20,4 +20,22 @@ describe('refreshHostedPanelFrames', () => {
 
     vi.useRealTimers()
   })
+
+  it('reuses a single-use Map iterator across delayed refresh passes', async () => {
+    vi.useFakeTimers()
+    const refreshContext = vi.fn(async () => undefined)
+    const frames = new Map([
+      ['main', { refreshContext }],
+      ['guide', { refreshContext }],
+    ])
+
+    const pending = refreshHostedPanelFrames(frames.values())
+    await vi.runAllTimersAsync()
+    await pending
+
+    const expectedCalls = frames.size * HOSTED_PANEL_REFRESH_DELAYS_MS.length
+    expect(refreshContext).toHaveBeenCalledTimes(expectedCalls)
+
+    vi.useRealTimers()
+  })
 })

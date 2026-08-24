@@ -37,6 +37,18 @@ def main() -> int:
     else:
         with zipfile.ZipFile(_PKG) as zf:
             names = zf.namelist()
+            norm = [n.replace("\\", "/") for n in names]
+        driver_files = (
+            "shell_main.py",
+            "path_bootstrap.py",
+            "__init__.py",
+        )
+        for fname in driver_files:
+            hits = [n for n in norm if n.endswith(f"/{fname}") or n == fname]
+            if not hits:
+                failures.append(f"package missing driver file {fname}")
+            elif any("/bundled/" in hit for hit in hits):
+                failures.append(f"package driver file {fname} only found under bundled/")
         if any(n.lower().endswith(".exe") and "/runtime/" in n.replace("\\", "/").lower() for n in names):
             failures.append("package still contains runtime exe")
         bundled_hits = [n for n in names if "bundled/tests/testbench/" in n.replace("\\", "/")]

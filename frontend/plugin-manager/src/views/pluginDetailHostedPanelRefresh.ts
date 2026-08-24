@@ -8,12 +8,13 @@ export async function refreshHostedPanelFrames(
   frames: Iterable<{ refreshContext: () => Promise<void> }>,
   delaysMs: readonly number[] = HOSTED_PANEL_REFRESH_DELAYS_MS,
 ): Promise<void> {
+  const frameList = Array.from(frames)
   for (const delayMs of delaysMs) {
     if (delayMs > 0) {
       await new Promise<void>((resolve) => {
         setTimeout(resolve, delayMs)
       })
     }
-    await Promise.allSettled(Array.from(frames, (frame) => frame.refreshContext()))
+    await Promise.allSettled(frameList.map((frame) => frame.refreshContext()))
   }
 }

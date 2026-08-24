@@ -41,6 +41,10 @@ def main() -> int:
     from path_bootstrap import apply_plugin_patches
 
     data = _DIST / "staging" / "plugin_mode_b_smoke_data"
+    if data.exists():
+        import shutil
+
+        shutil.rmtree(data)
     apply_plugin_patches(
         neko_root=_PROJECT,
         code_dir=_TESTBENCH,
@@ -93,6 +97,9 @@ def main() -> int:
     finally:
         server.should_exit = True  # type: ignore[attr-defined]
         thread.join(timeout=15)
+        if thread.is_alive():
+            print("[FAIL] embed thread still alive after stop")
+            return 1
 
 
 if __name__ == "__main__":

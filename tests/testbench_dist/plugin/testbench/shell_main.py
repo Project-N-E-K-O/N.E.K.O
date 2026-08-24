@@ -62,7 +62,7 @@ def _wait_health(url: str, *, timeout_s: float = 90.0) -> None:
                     return
         except Exception as exc:  # noqa: BLE001
             last = exc
-            time.sleep(0.25)
+        time.sleep(0.25)
     raise RuntimeError(f"healthz not ready at {url}: {last}")
 
 

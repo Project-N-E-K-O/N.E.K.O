@@ -28,7 +28,7 @@ uv run python tests/testbench_dist/scripts/run_plugin_smokes.py
 
 ## 目录
 
-```
+```text
 testbench_dist/
 ├── src/           # desktop_main / bootstrap / plugin_shell_main
 ├── plugin/        # NEKO 驱动器插件（不进 plugin/plugins/）

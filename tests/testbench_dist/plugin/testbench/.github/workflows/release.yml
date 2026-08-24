@@ -1,4 +1,4 @@
-name: Release N.E.K.O Plugin
+﻿name: Release N.E.K.O Plugin
 
 on:
   push:
@@ -39,6 +39,16 @@ jobs:
           mkdir -p neko/plugin/plugins
           cp -R plugin-repo "neko/plugin/plugins/${PLUGIN_ID}"
 
+      - name: Snapshot bundled testbench sources
+        working-directory: neko
+        run: |
+          uv run python -c "import importlib.util; from pathlib import Path; p=Path('tests/testbench_dist/scripts/build_plugin.py'); spec=importlib.util.spec_from_file_location('build_plugin', p); mod=importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); mod.snapshot_testbench()"
+
+      - name: Record NEKO commit
+        id: neko_commit
+        working-directory: neko
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
       - name: Market release check
         working-directory: neko
         run: |
@@ -59,6 +69,7 @@ jobs:
             echo "| --- | --- |"
             echo "| Plugin ID | ${PLUGIN_ID} |"
             echo "| Tag | ${GITHUB_REF_NAME} |"
+            echo "| N.E.K.O commit | ${{ steps.neko_commit.outputs.sha }} |"
             echo "| Package | ${PLUGIN_ID}.neko-plugin |"
             echo "| Package SHA256 | ${PACKAGE_SHA256} |"
           } >> "$GITHUB_STEP_SUMMARY"
