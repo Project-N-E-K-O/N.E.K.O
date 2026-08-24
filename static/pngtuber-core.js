@@ -3103,12 +3103,16 @@
             state.lastAt = now;
             this.rememberDragScreenPoint(state, event);
             if (Math.hypot(dx, dy) > 4 && !state.moved) {
+                const takingOverSnap = this._edgeSnapAnimationFrame !== null || this._edgeSnapResolve !== null;
                 this.cancelEdgeSnapAnimation();
                 this._dragSequence += 1;
                 state.dragSequence = this._dragSequence;
                 const placement = this.getActivePlacement();
                 state.startOffsetX = placement.offsetX;
                 state.startOffsetY = placement.offsetY;
+                if (takingOverSnap) {
+                    this.rememberDragScreenPoint(state, event, { start: true });
+                }
                 state.moved = true;
                 this.setModelDraggingState(true, true);
                 this.showDragImage();
@@ -3197,7 +3201,12 @@
             this.applyScale(nextScale);
             this.snapModelIntoScreen({ animate: true }).then(() => {
                 if (zoomSequence === this._dragSequence) {
-                    this.scheduleSaveCurrentConfig();
+                    if (isModelManagerPage() &&
+                        typeof window.stageModelManagerPNGTuberPlacement === 'function') {
+                        window.stageModelManagerPNGTuberPlacement(this.config);
+                    } else {
+                        this.scheduleSaveCurrentConfig();
+                    }
                 }
             });
         }
@@ -3221,13 +3230,11 @@
             if (!event.touches || event.touches.length !== 2) return;
             event.preventDefault();
             event.stopPropagation();
-            this.cancelEdgeSnapAnimation();
             const center = this.getTouchCenter(event.touches[0], event.touches[1]);
             const placement = this.getActivePlacement();
-            this._dragSequence += 1;
             this._dragState = null;
             this._touchZoomState = {
-                dragSequence: this._dragSequence,
+                dragSequence: null,
                 initialDistance: this.getTouchDistance(event.touches[0], event.touches[1]),
                 initialScale: placement.scale,
                 startCenterX: center.x,
@@ -3241,8 +3248,7 @@
             };
             this.resetLayeredDragVelocity();
             if (this.layeredPointer) this.layeredPointer.active = false;
-            this.setModelDraggingState(true, true);
-            this.showDragImage();
+            this.setModelDraggingState(true, false);
         }
 
         moveTouchZoom(event) {
@@ -3259,7 +3265,20 @@
             state.lastCenterX = center.x;
             state.lastCenterY = center.y;
             state.lastAt = now;
-            state.changed = Math.abs(scaleChange - 1) > 0.01 || Math.hypot(dx, dy) > 4;
+            const changed = Math.abs(scaleChange - 1) > 0.01 || Math.hypot(dx, dy) > 4;
+            if (changed && !state.changed) {
+                this.cancelEdgeSnapAnimation();
+                this._dragSequence += 1;
+                state.dragSequence = this._dragSequence;
+                const placement = this.getActivePlacement();
+                state.initialScale = placement.scale;
+                state.startOffsetX = placement.offsetX;
+                state.startOffsetY = placement.offsetY;
+                state.changed = true;
+                this.setModelDraggingState(true, true);
+                this.showDragImage();
+            }
+            if (!state.changed) return;
             this.setActiveOffsets(state.startOffsetX + dx, state.startOffsetY + dy);
             this.applyScale(state.initialScale * scaleChange);
             if (this.isLayeredActive()) this.drawLayeredState();

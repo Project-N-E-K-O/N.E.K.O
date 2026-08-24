@@ -92,6 +92,7 @@ def test_pngtuber_transform_and_interactions_use_active_layout_fields():
     assert "startOffsetX: placement.offsetX" in drag_block
     assert "this.setActiveOffsets(state.startOffsetX + dx, state.startOffsetY + dy);" in drag_block
     assert "const currentScale = this.getActivePlacement().scale;" in wheel_block
+    assert "window.stageModelManagerPNGTuberPlacement(this.config);" in wheel_block
     assert "initialScale: placement.scale" in touch_block
     assert "this.setActiveOffsets(state.startOffsetX + dx, state.startOffsetY + dy);" in touch_block
     assert "this.config.mobile_offset_x" in save_block
@@ -173,11 +174,13 @@ const runNextFrame = (timestamp) => {{
   frames.delete(frameId);
   callback(timestamp);
 }};
+let stagedPlacement = null;
 const window = {{
   location: {{ pathname: '/' }},
   innerWidth: 1000,
   innerHeight: 800,
   lanlan_config: {{ model_type: 'pngtuber' }},
+  stageModelManagerPNGTuberPlacement(config) {{ stagedPlacement = {{ ...config }}; }},
 }};
 const document = {{
   body: {{ classList: {{ contains() {{ return false; }}, toggle() {{}} }} }},
@@ -223,6 +226,8 @@ manager.applyTransform = () => {{}};
 manager.isLayeredActive = () => false;
 manager.resetLayeredDragVelocity = () => {{}};
 manager.showDragImage = () => {{}};
+manager.restoreStateImage = () => {{}};
+manager.restartLayeredAnimationLoop = () => {{}};
 manager.syncGlobalConfig = () => {{}};
 manager.updateFloatingButtonsPosition = () => {{}};
 manager.updateLockIconPosition = () => {{}};
@@ -290,6 +295,39 @@ manager.scheduleSaveCurrentConfig = () => {{ scheduledSaves += 1; }};
   assert.ok(Math.abs(resizedRight - 200) < 0.001);
   assert.equal(scheduledSaves, 1);
 
+  // An unchanged two-finger gesture leaves the active rebound untouched.
+  manager.config.scale = 1;
+  manager.config.offset_x = -750;
+  const untouchedSnap = manager.snapModelIntoScreen();
+  manager.startTouchZoom({{
+    touches: [{{ clientX: 100, clientY: 100 }}, {{ clientX: 200, clientY: 100 }}],
+    preventDefault() {{}},
+    stopPropagation() {{}},
+  }});
+  assert.equal(frames.size, 1);
+  await manager.endTouchZoom();
+  assert.equal(frames.size, 1, 'unchanged touch must not cancel the rebound');
+  runNextFrame(0);
+  runNextFrame(260);
+  assert.equal(await untouchedSnap, true);
+  assert.equal(manager.config.offset_x, -500);
+
+  // Model-manager wheel replacement stages the final snapped placement.
+  window.location.pathname = '/model_manager';
+  manager.config.offset_x = -750;
+  manager.handleWheelZoom({{
+    deltaY: 1000,
+    preventDefault() {{}},
+    stopPropagation() {{}},
+  }});
+  runNextFrame(0);
+  runNextFrame(260);
+  await Promise.resolve();
+  assert.ok(stagedPlacement);
+  assert.equal(stagedPlacement.offset_x, manager.config.offset_x);
+  assert.equal(scheduledSaves, 1, 'model-manager placement must be staged instead of auto-saved');
+  window.location.pathname = '/';
+
   manager.config.offset_x = -750;
   const cancelledSnap = manager.snapModelIntoScreen();
   assert.equal(frames.size, 1);
@@ -307,6 +345,7 @@ manager.scheduleSaveCurrentConfig = () => {{ scheduledSaves += 1; }};
   assert.equal(frames.size, 1, 'pointerdown alone must not cancel the rebound');
   runNextFrame(0);
   runNextFrame(130);
+  const centerBeforeTakeover = manager.getModelCenterInWindow();
   manager.moveDrag({{
     pointerId: 9,
     clientX: 110,
@@ -315,6 +354,8 @@ manager.scheduleSaveCurrentConfig = () => {{ scheduledSaves += 1; }};
     screenY: 100,
     preventDefault() {{}},
   }});
+  assert.equal(manager._dragState.modelCenterPointerOffset.x, centerBeforeTakeover.x - 110);
+  assert.equal(manager._dragState.modelCenterPointerOffset.y, centerBeforeTakeover.y - 100);
   manager.setActiveOffsets(-123, 45);
   assert.equal(await cancelledSnap, false);
   assert.equal(frames.size, 0);
