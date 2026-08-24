@@ -1276,6 +1276,80 @@ def test_stale_update_backup_counts_toward_the_total_storage_limit(tmp_path, mon
     assert raised.value.code == "storage_limit_reached"
 
 
+@pytest.mark.parametrize("operation", ("create", "update"))
+def test_failed_staging_cleanup_blocks_more_mutations_until_recovery(
+    tmp_path, monkeypatch, operation
+):
+    monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
+    store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
+    created = _create_tool(
+        store,
+        name="Feather",
+        change_mode="press-swap",
+        change_meanings=["before"],
+        default_image=_png(),
+        change_images=[_png()],
+    )
+    staged_tool_id = (
+        "local-12345678-1234-4123-8123-123456789abc"
+        if operation == "create"
+        else created["id"]
+    )
+    suffix = "uploading" if operation == "create" else "updating"
+    staging = store.root / f".{staged_tool_id}.{suffix}"
+    real_rmtree = shutil.rmtree
+
+    def reject_staging_cleanup(path, *args, **kwargs):
+        if Path(path) == staging:
+            raise OSError("staging directory is busy")
+        return real_rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr("utils.avatar_tool_store.shutil.rmtree", reject_staging_cleanup)
+    monkeypatch.setattr(store, "_current_storage_bytes", lambda: store.limits["maxTotalBytes"])
+
+    with pytest.raises(AvatarToolStoreError) as failed_mutation:
+        if operation == "create":
+            _create_tool(
+                store,
+                tool_id=staged_tool_id,
+                name="Blocked create",
+                change_mode="press-swap",
+                change_meanings=["blocked"],
+                default_image=_png(),
+                change_images=[_png()],
+            )
+        else:
+            store.update_tool(
+                created["id"],
+                base_revision=store.get_detail(created["id"])["revision"],
+                name="Blocked update",
+                change_mode="press-swap",
+                change_meanings=["blocked"],
+                default_resource="default.png",
+                default_image=None,
+                change_resources=["change-000.png"],
+                change_images=[],
+            )
+
+    assert failed_mutation.value.code == "storage_limit_reached"
+    assert staging.is_dir()
+
+    with pytest.raises(AvatarToolStoreError) as blocked_create:
+        _create_tool(
+            store,
+            name="Wait for recovery",
+            change_mode="press-swap",
+            change_meanings=["wait"],
+            default_image=_png(),
+            change_images=[_png()],
+        )
+
+    assert blocked_create.value.code == "avatar_tools_directory_unavailable"
+    monkeypatch.setattr("utils.avatar_tool_store.shutil.rmtree", real_rmtree)
+    assert [item["id"] for item in store.list_items()] == [created["id"]]
+    assert not staging.exists()
+
+
 def test_initialize_replaces_a_corrupt_final_directory_with_a_valid_backup(tmp_path, monkeypatch):
     monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
     store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))

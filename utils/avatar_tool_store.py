@@ -1002,6 +1002,15 @@ class AvatarToolStore:
             verify_resources=True,
         )
 
+    def _cleanup_failed_staging(self, directory: Path) -> None:
+        try:
+            shutil.rmtree(directory)
+        except FileNotFoundError:
+            return
+        except OSError:
+            _RECOVERY_PENDING_ROOTS.add(self._root_key())
+            logger.warning("Could not clean failed avatar tool staging directory %s", directory)
+
     def create_tool(
         self,
         *,
@@ -1063,7 +1072,7 @@ class AvatarToolStore:
                     )
                 os.replace(temporary, final)
             except BaseException:
-                shutil.rmtree(temporary, ignore_errors=True)
+                self._cleanup_failed_staging(temporary)
                 raise
             return self._public_item(record)
 
@@ -1253,7 +1262,7 @@ class AvatarToolStore:
                 published_backup = True
                 os.replace(updating, final)
             except BaseException:
-                shutil.rmtree(updating, ignore_errors=True)
+                self._cleanup_failed_staging(updating)
                 if published_backup and not final.exists() and backup.exists():
                     os.replace(backup, final)
                 raise
