@@ -19,9 +19,15 @@ PLUGIN_REL = Path("tests/testbench_dist/plugin/testbench")
 SKIP_UNTRACKED = {"uv.lock", ".venv"}
 
 
-def _run(cmd: list[str], *, cwd: Path) -> subprocess.CompletedProcess[str]:
+def _run(cmd: list[str], *, cwd: Path, capture: bool = False) -> subprocess.CompletedProcess[str]:
     print("+", " ".join(cmd), file=sys.stderr)
-    return subprocess.run(cmd, cwd=cwd, text=True, check=False)
+    return subprocess.run(
+        cmd,
+        cwd=cwd,
+        text=True,
+        check=False,
+        capture_output=capture,
+    )
 
 
 def main() -> int:
@@ -63,7 +69,7 @@ def main() -> int:
             )
             return 1
 
-    status = _run(["git", "status", "--porcelain"], cwd=plugin_dir)
+    status = _run(["git", "status", "--porcelain"], cwd=plugin_dir, capture=True)
     if status.returncode != 0:
         return status.returncode
     lines = [ln for ln in (status.stdout or "").splitlines() if ln.strip()]
@@ -85,7 +91,7 @@ def main() -> int:
     if _run(["git", "push", "origin", "HEAD"], cwd=plugin_dir).returncode != 0:
         return 1
 
-    head = _run(["git", "rev-parse", "--short", "HEAD"], cwd=plugin_dir)
+    head = _run(["git", "rev-parse", "--short", "HEAD"], cwd=plugin_dir, capture=True)
     if head.returncode == 0:
         print(f"plugin repo synced at {head.stdout.strip()}")
     return 0
