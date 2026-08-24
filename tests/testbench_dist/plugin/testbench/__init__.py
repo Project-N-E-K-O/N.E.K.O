@@ -253,6 +253,23 @@ class TestbenchDriverPlugin(NekoPluginBase):
             self._script_python = cached
         return cached
 
+    def _script_python_can_import(self, module: str) -> bool:
+        py = self._cached_script_python()
+        if py is None:
+            return False
+        try:
+            completed = subprocess.run(
+                [*py, "-c", f"import {module}"],
+                cwd=str(self._plugin_dir),
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=15,
+                check=False,
+            )
+            return completed.returncode == 0
+        except (OSError, subprocess.TimeoutExpired):
+            return False
+
     def _state_path(self) -> Path:
         return Path(self.data_path()) / _STATE_FILE
 
@@ -320,6 +337,8 @@ class TestbenchDriverPlugin(NekoPluginBase):
         py = self._cached_script_python()
         if py is None:
             raise RuntimeError("无法启动 WebView：未找到可用的 Python。")
+        if not self._script_python_can_import("webview"):
+            raise RuntimeError("无法启动 WebView：当前 Python 未安装 pywebview。")
         webview_cmd = [*py, "-c", _WEBVIEW_LAUNCHER, url]
         subprocess.Popen(
             webview_cmd,
@@ -582,7 +601,7 @@ class TestbenchDriverPlugin(NekoPluginBase):
 
         ui_mode = "browser"
         py = self._cached_script_python()
-        if py is not None:
+        if py is not None and self._script_python_can_import("webview"):
             try:
                 subprocess.Popen(
                     [*py, "-c", _WEBVIEW_LAUNCHER, url],

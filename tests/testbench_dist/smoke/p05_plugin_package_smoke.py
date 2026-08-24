@@ -47,7 +47,7 @@ def main() -> int:
             hits = [n for n in norm if n.endswith(f"/{fname}") or n == fname]
             if not hits:
                 failures.append(f"package missing driver file {fname}")
-            elif any("/bundled/" in hit for hit in hits):
+            elif all("/bundled/" in hit for hit in hits):
                 failures.append(f"package driver file {fname} only found under bundled/")
         if any(n.lower().endswith(".exe") and "/runtime/" in n.replace("\\", "/").lower() for n in names):
             failures.append("package still contains runtime exe")
