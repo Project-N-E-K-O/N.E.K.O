@@ -15,6 +15,7 @@ class PluginCliPathPolicy:
     user_plugins_root: Path
     package_artifacts_root: Path
     package_profiles_root: Path
+    plugin_state_root: Path | None = None
 
     @classmethod
     def from_settings(cls) -> "PluginCliPathPolicy":
@@ -28,9 +29,39 @@ class PluginCliPathPolicy:
 
         return cls(
             builtin_plugins_root=Path(settings.BUILTIN_PLUGIN_CONFIG_ROOT).expanduser().resolve(),
+            # Keep reading the compatibility alias while external callers and
+            # tests still override it dynamically. Its default value is the
+            # isolated USER_PLUGIN_EXEC_ROOT.
             user_plugins_root=Path(settings.USER_PLUGIN_CONFIG_ROOT).expanduser().resolve(),
             package_artifacts_root=Path(settings.USER_PLUGIN_PACKAGES_ROOT).expanduser().resolve(),
             package_profiles_root=Path(settings.USER_PACKAGE_PROFILES_ROOT).expanduser().resolve(),
+            plugin_state_root=Path(settings.PLUGIN_STATE_ROOT).expanduser().resolve(),
+        )
+
+    def ensure_writable_layout(self) -> None:
+        """Reject package mutations when writable code/state roots collide."""
+
+        from plugin.settings import ensure_plugin_exec_state_roots_separated
+
+        ensure_plugin_exec_state_roots_separated(
+            exec_root=self.user_plugins_root,
+            state_root=self.plugin_state_root,
+        )
+        ensure_plugin_exec_state_roots_separated(
+            exec_root=self.package_profiles_root,
+            state_root=self.plugin_state_root,
+        )
+        ensure_plugin_exec_state_roots_separated(
+            exec_root=self.user_plugins_root,
+            state_root=self.package_profiles_root,
+        )
+        ensure_plugin_exec_state_roots_separated(
+            exec_root=self.user_plugins_root,
+            state_root=self.builtin_plugins_root,
+        )
+        ensure_plugin_exec_state_roots_separated(
+            exec_root=self.package_profiles_root,
+            state_root=self.builtin_plugins_root,
         )
 
     @property
