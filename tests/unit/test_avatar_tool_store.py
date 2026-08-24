@@ -360,6 +360,33 @@ def test_list_skips_a_record_with_invalid_utf8_without_hiding_valid_tools(tmp_pa
     assert [item["id"] for item in store.list_items()] == [valid["id"]]
 
 
+def test_list_isolates_a_tool_when_a_persisted_resource_fails_integrity(tmp_path, monkeypatch):
+    monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
+    store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
+    valid = _create_tool(
+        store,
+        name="Valid",
+        change_mode="press-swap",
+        change_meanings=["valid"],
+        default_image=_png(),
+        change_images=[_png()],
+    )
+    damaged = _create_tool(
+        store,
+        name="Damaged",
+        change_mode="press-swap",
+        change_meanings=["damaged"],
+        default_image=_png(size=(9, 9)),
+        change_images=[_png(size=(10, 10))],
+    )
+    (store.root / damaged["id"] / "default.png").write_bytes(b"truncated")
+
+    assert [item["id"] for item in store.list_items()] == [valid["id"]]
+    with pytest.raises(AvatarToolStoreError) as raised:
+        store.get_detail(damaged["id"])
+    assert raised.value.code == "record_invalid"
+
+
 def test_initialize_and_list_wrap_unreadable_store_errors(tmp_path, monkeypatch):
     store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
     store.ensure()
@@ -913,8 +940,10 @@ def test_asset_only_update_changes_revision_independently_of_record_metadata(tmp
     tool_id = created["id"]
     before_record = store.read_record(tool_id)
     before_revision = store.get_detail(tool_id)["revision"]
+    before_default_size = (store.root / tool_id / "default.png").stat().st_size
 
-    store.update_tool(
+    before_default_url = created["defaultUrl"]
+    updated = store.update_tool(
         tool_id,
         base_revision=before_revision,
         name="Feather",
@@ -926,8 +955,16 @@ def test_asset_only_update_changes_revision_independently_of_record_metadata(tmp
         change_images=[],
     )
 
-    assert store.read_record(tool_id) == before_record
+    after_record = store.read_record(tool_id)
+    assert {
+        key: value for key, value in after_record.items() if key != "resourceDigests"
+    } == {
+        key: value for key, value in before_record.items() if key != "resourceDigests"
+    }
     assert store.get_detail(tool_id)["revision"] != before_revision
+    assert (store.root / tool_id / "default.png").stat().st_size == before_default_size
+    assert updated["defaultUrl"] != before_default_url
+    assert updated["defaultUrl"].endswith(after_record["resourceDigests"]["default.png"])
     with pytest.raises(AvatarToolStoreError) as raised:
         store.update_tool(
             tool_id,
@@ -967,6 +1004,48 @@ def test_initialize_restores_a_valid_backup_after_interrupted_update(tmp_path, m
     assert store.read_record(tool_id)["name"] == "Feather"
     assert not backup.exists()
     assert not updating.exists()
+
+
+def test_delete_cleans_a_stale_update_backup_without_resurrection(tmp_path, monkeypatch):
+    monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
+    store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
+    created = _create_tool(
+        store,
+        name="Before",
+        change_mode="press-swap",
+        change_meanings=["before"],
+        default_image=_png(),
+        change_images=[_png()],
+    )
+    tool_id = created["id"]
+    backup = store.root / f".{tool_id}.backup"
+    real_rmtree = shutil.rmtree
+
+    def leave_update_backup(path, *args, **kwargs):
+        if Path(path) == backup:
+            raise OSError("backup busy")
+        return real_rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr("utils.avatar_tool_store.shutil.rmtree", leave_update_backup)
+    store.update_tool(
+        tool_id,
+        base_revision=store.get_detail(tool_id)["revision"],
+        name="After",
+        change_mode="press-swap",
+        change_meanings=["after"],
+        default_resource="default.png",
+        default_image=None,
+        change_resources=["change-000.png"],
+        change_images=[],
+    )
+    assert backup.is_dir()
+
+    monkeypatch.setattr("utils.avatar_tool_store.shutil.rmtree", real_rmtree)
+    store.delete_tool(tool_id)
+    assert not backup.exists()
+    store.initialize()
+    assert not (store.root / tool_id).exists()
+    assert store.list_items() == []
 
 
 def test_initialize_replaces_a_corrupt_final_directory_with_a_valid_backup(tmp_path, monkeypatch):
@@ -1090,8 +1169,8 @@ def test_detail_and_revision_are_from_one_snapshot_during_update(tmp_path, monke
     details = []
     original_read_record = store.read_record
 
-    def paused_read_record(requested_tool_id):
-        record = original_read_record(requested_tool_id)
+    def paused_read_record(requested_tool_id, **kwargs):
+        record = original_read_record(requested_tool_id, **kwargs)
         if threading.current_thread().name == "detail-reader":
             record_read.set()
             release_detail.wait()

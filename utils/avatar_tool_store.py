@@ -65,6 +65,7 @@ _CONTROL_CHARACTER_PATTERN = re.compile(r"[\x00-\x1f\x7f-\x9f]")
 _MEANING_CONTROL_CHARACTER_PATTERN = re.compile(r"[\x00-\x09\x0b\x0c\x0e-\x1f\x7f-\x9f]")
 _NAME_SPACES_PATTERN = re.compile(r" +")
 _REVISION_PATTERN = re.compile(r"^[0-9]+-[0-9]+$")
+_RESOURCE_DIGEST_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 _STORE_LOCK = threading.RLock()
 logger = logging.getLogger(__name__)
 
@@ -323,7 +324,7 @@ class AvatarToolStore:
             backup = self.root / f".{tool_id}.backup"
             if final.is_dir() and not final.is_symlink():
                 try:
-                    self.read_record(tool_id)
+                    self.read_record(tool_id, verify_resources=True)
                 except AvatarToolStoreError:
                     pass
                 else:
@@ -332,7 +333,11 @@ class AvatarToolStore:
                     continue
             if backup.is_dir() and not backup.is_symlink():
                 try:
-                    self._read_record_from_directory(tool_id, backup)
+                    self._read_record_from_directory(
+                        tool_id,
+                        backup,
+                        verify_resources=True,
+                    )
                 except AvatarToolStoreError:
                     pass
                 else:
@@ -355,11 +360,26 @@ class AvatarToolStore:
                 continue
             shutil.rmtree(candidate, ignore_errors=True)
 
-    def read_record(self, tool_id: str) -> dict[str, Any]:
+    def read_record(
+        self,
+        tool_id: str,
+        *,
+        verify_resources: bool = False,
+    ) -> dict[str, Any]:
         with _STORE_LOCK:
-            return self._read_record_from_directory(tool_id, self.root / tool_id)
+            return self._read_record_from_directory(
+                tool_id,
+                self.root / tool_id,
+                verify_resources=verify_resources,
+            )
 
-    def _read_record_from_directory(self, tool_id: str, directory: Path) -> dict[str, Any]:
+    def _read_record_from_directory(
+        self,
+        tool_id: str,
+        directory: Path,
+        *,
+        verify_resources: bool = False,
+    ) -> dict[str, Any]:
         if not is_local_avatar_tool_id(tool_id):
             raise AvatarToolStoreError("invalid_tool_id", "Invalid local avatar tool ID")
         path = directory / "record.json"
@@ -369,7 +389,12 @@ class AvatarToolStore:
             payload = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise AvatarToolStoreError("record_invalid", "Avatar tool record is invalid", status_code=404) from exc
-        return self._validate_record(payload, expected_id=tool_id, directory=directory)
+        return self._validate_record(
+            payload,
+            expected_id=tool_id,
+            directory=directory,
+            verify_resources=verify_resources,
+        )
 
     def _validate_record(
         self,
@@ -377,9 +402,11 @@ class AvatarToolStore:
         *,
         expected_id: str,
         directory: Path | None = None,
+        verify_resources: bool = False,
     ) -> dict[str, Any]:
         if not isinstance(payload, dict) or set(payload) != {
-            "recordVersion", "id", "name", "defaultImage", "imageChange", "interaction"
+            "recordVersion", "id", "name", "defaultImage", "imageChange",
+            "interaction", "resourceDigests",
         }:
             raise AvatarToolStoreError("record_invalid", "Avatar tool record is invalid", status_code=404)
         if payload.get("recordVersion") != 2 or payload.get("id") != expected_id:
@@ -388,6 +415,7 @@ class AvatarToolStore:
         default_image = payload.get("defaultImage")
         image_change = payload.get("imageChange")
         interaction = payload.get("interaction")
+        resource_digests = payload.get("resourceDigests")
         if default_image != "default.png":
             raise AvatarToolStoreError("record_invalid", "Avatar tool record is invalid", status_code=404)
         if not isinstance(image_change, dict) or set(image_change) != {"mode", "items"}:
@@ -460,10 +488,39 @@ class AvatarToolStore:
             resource_names.append(clean_special["image"])
             if clean_special.get("sound"):
                 resource_names.append(clean_special["sound"])
+        if (
+            not isinstance(resource_digests, dict)
+            or set(resource_digests) != set(resource_names)
+            or any(
+                not isinstance(digest, str)
+                or _RESOURCE_DIGEST_PATTERN.fullmatch(digest) is None
+                for digest in resource_digests.values()
+            )
+        ):
+            raise AvatarToolStoreError(
+                "record_invalid",
+                "Avatar tool resource integrity is invalid",
+                status_code=404,
+            )
         for filename in resource_names:
             resource = directory / filename
             if resource.is_symlink() or not resource.is_file():
                 raise AvatarToolStoreError("record_invalid", "Avatar tool resource is invalid", status_code=404)
+            if verify_resources:
+                try:
+                    actual_digest = self._file_digest(resource)
+                except OSError as exc:
+                    raise AvatarToolStoreError(
+                        "record_invalid",
+                        "Avatar tool resource integrity is invalid",
+                        status_code=404,
+                    ) from exc
+                if actual_digest != resource_digests[filename]:
+                    raise AvatarToolStoreError(
+                        "record_invalid",
+                        "Avatar tool resource integrity is invalid",
+                        status_code=404,
+                    )
         expected_entries = {"record.json", *resource_names}
         try:
             actual_entries = {
@@ -485,28 +542,35 @@ class AvatarToolStore:
                 **({"normalSound": normal_sound} if normal_sound else {}),
                 **({"special": clean_special} if clean_special else {}),
             },
+            "resourceDigests": {
+                filename: resource_digests[filename]
+                for filename in resource_names
+            },
         }
 
-    def _asset_url(self, tool_id: str, filename: str) -> str:
-        path = self.root / tool_id / filename
-        stat = path.stat()
-        return f"/user_avatar_tools/{tool_id}/{filename}?v={stat.st_size}-{stat.st_mtime_ns}"
+    @staticmethod
+    def _file_digest(path: Path) -> str:
+        digest = hashlib.sha256()
+        with path.open("rb") as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
 
     @staticmethod
-    def _content_revision(directory: Path) -> str:
-        digest = hashlib.sha256()
-        files = sorted(
-            entry for entry in directory.iterdir()
-            if entry.is_file() and not entry.is_symlink()
-        )
-        for entry in files:
-            encoded_name = entry.name.encode("utf-8")
-            digest.update(len(encoded_name).to_bytes(4, "big"))
-            digest.update(encoded_name)
-            with entry.open("rb") as stream:
-                for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-                    digest.update(chunk)
-        return f"{len(files)}-{int.from_bytes(digest.digest(), 'big')}"
+    def _record_revision(record: dict[str, Any]) -> str:
+        encoded = json.dumps(
+            record,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        digest = hashlib.sha256(encoded).digest()
+        return f"2-{int.from_bytes(digest, 'big')}"
+
+    @staticmethod
+    def _asset_url(record: dict[str, Any], filename: str) -> str:
+        digest = record["resourceDigests"][filename]
+        return f"/user_avatar_tools/{record['id']}/{filename}?v={digest}"
 
     def _public_item(self, record: dict[str, Any]) -> dict[str, Any]:
         tool_id = record["id"]
@@ -514,22 +578,24 @@ class AvatarToolStore:
             "id": tool_id,
             "name": record["name"],
             "changeMode": record["imageChange"]["mode"],
-            "defaultUrl": self._asset_url(tool_id, record["defaultImage"]),
+            "defaultUrl": self._asset_url(record, record["defaultImage"]),
             "changeUrls": [
-                self._asset_url(tool_id, item["image"])
+                self._asset_url(record, item["image"])
                 for item in record["imageChange"]["items"]
             ],
         }
         normal_sound = record["interaction"].get("normalSound")
         if normal_sound:
-            item["normalSoundUrl"] = self._asset_url(tool_id, normal_sound)
+            item["normalSoundUrl"] = self._asset_url(record, normal_sound)
         special = record["interaction"].get("special")
         if special:
             item["special"] = {
                 "probability": special["probability"],
-                "imageUrl": self._asset_url(tool_id, special["image"]),
+                "imageUrl": self._asset_url(record, special["image"]),
                 **(
-                    {"soundUrl": self._asset_url(tool_id, special["sound"])}
+                    {
+                        "soundUrl": self._asset_url(record, special["sound"])
+                    }
                     if special.get("sound")
                     else {}
                 ),
@@ -538,21 +604,20 @@ class AvatarToolStore:
 
     def get_detail(self, tool_id: str) -> dict[str, Any]:
         with _STORE_LOCK:
-            record = self.read_record(tool_id)
-            directory = self.root / tool_id
+            record = self.read_record(tool_id, verify_resources=True)
             detail = {
                 "id": tool_id,
-                "revision": self._content_revision(directory),
+                "revision": self._record_revision(record),
                 "name": record["name"],
                 "changeMode": record["imageChange"]["mode"],
                 "defaultImage": {
                     "resource": record["defaultImage"],
-                    "url": self._asset_url(tool_id, record["defaultImage"]),
+                    "url": self._asset_url(record, record["defaultImage"]),
                 },
                 "changeItems": [
                     {
                         "resource": item["image"],
-                        "url": self._asset_url(tool_id, item["image"]),
+                        "url": self._asset_url(record, item["image"]),
                         "meaning": item["meaning"],
                     }
                     for item in record["imageChange"]["items"]
@@ -562,7 +627,7 @@ class AvatarToolStore:
             if normal_sound:
                 detail["normalSound"] = {
                     "resource": normal_sound,
-                    "url": self._asset_url(tool_id, normal_sound),
+                    "url": self._asset_url(record, normal_sound),
                 }
             special = record["interaction"].get("special")
             if special:
@@ -570,14 +635,14 @@ class AvatarToolStore:
                     "probability": special["probability"],
                     "image": {
                         "resource": special["image"],
-                        "url": self._asset_url(tool_id, special["image"]),
+                        "url": self._asset_url(record, special["image"]),
                     },
                     "meaning": special["meaning"],
                     **(
                         {
                             "sound": {
                                 "resource": special["sound"],
-                                "url": self._asset_url(tool_id, special["sound"]),
+                                "url": self._asset_url(record, special["sound"]),
                             }
                         }
                         if special.get("sound")
@@ -602,7 +667,11 @@ class AvatarToolStore:
                 if candidate.is_symlink() or not candidate.is_dir() or not is_local_avatar_tool_id(candidate.name):
                     continue
                 try:
-                    items.append(self._public_item(self.read_record(candidate.name)))
+                    record = self.read_record(
+                        candidate.name,
+                        verify_resources=True,
+                    )
+                    items.append(self._public_item(record))
                 except (AvatarToolStoreError, OSError) as exc:
                     logger.warning("Skipping invalid local avatar tool %s: %s", candidate.name, exc)
                     continue
@@ -660,6 +729,22 @@ class AvatarToolStore:
                     "Avatar tool could not be deleted",
                     status_code=500,
                 )
+            backup = self.root / f".{tool_id}.backup"
+            if backup.is_symlink() or (backup.exists() and not backup.is_dir()):
+                raise AvatarToolStoreError(
+                    "tool_delete_failed",
+                    "Avatar tool could not be deleted",
+                    status_code=500,
+                )
+            if backup.is_dir():
+                try:
+                    shutil.rmtree(backup)
+                except OSError as exc:
+                    raise AvatarToolStoreError(
+                        "tool_delete_failed",
+                        "Avatar tool could not be deleted",
+                        status_code=500,
+                    ) from exc
             try:
                 os.replace(target, deleting)
             except FileNotFoundError as exc:
@@ -801,6 +886,10 @@ class AvatarToolStore:
                 **({"normalSound": "normal.mp3"} if normal_sound is not None else {}),
                 **({"special": clean_special} if clean_special else {}),
             },
+            "resourceDigests": {
+                filename: hashlib.sha256(data).hexdigest()
+                for filename, data in resources.items()
+            },
         }
         return record, resources
 
@@ -822,7 +911,11 @@ class AvatarToolStore:
         for filename, data in resources.items():
             (directory / filename).write_bytes(data)
         atomic_write_json(directory / "record.json", record, ensure_ascii=False, indent=2)
-        self._read_record_from_directory(record["id"], directory)
+        self._read_record_from_directory(
+            record["id"],
+            directory,
+            verify_resources=True,
+        )
 
     def create_tool(
         self,
@@ -863,12 +956,8 @@ class AvatarToolStore:
             self.ensure()
             final = self.root / tool_id
             if final.exists():
-                current = self.read_record(tool_id)
-                exact_replay = current == record and all(
-                    (final / filename).read_bytes() == data
-                    for filename, data in resources.items()
-                )
-                if not exact_replay:
+                current = self.read_record(tool_id, verify_resources=True)
+                if current != record:
                     raise AvatarToolStoreError(
                         "tool_id_conflict",
                         "Local avatar tool ID already belongs to a different creation",
@@ -928,9 +1017,9 @@ class AvatarToolStore:
                 target=f"avatar_tools/{tool_id}",
             )
             self.ensure()
-            current = self.read_record(tool_id)
+            current = self.read_record(tool_id, verify_resources=True)
             final = self.root / tool_id
-            current_revision = self._content_revision(final)
+            current_revision = self._record_revision(current)
             if not _REVISION_PATTERN.fullmatch(base_revision) or base_revision != current_revision:
                 raise AvatarToolStoreError(
                     "tool_revision_conflict",

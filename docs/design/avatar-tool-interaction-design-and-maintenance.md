@@ -93,7 +93,7 @@ Chat descriptor 只传当前选择和桌面契约，不传 Avatar pointer。桌�
 | `config/prompts/avatar_interaction_contract.py` | Python 唯一公开 payload normalizer 和 tool/action/intensity/special-field 契约。 |
 | `config/prompts/prompts_avatar_interaction.py` | 事件事实、位置事实、memory 和 text-context sanitizer。 |
 | `main_logic/cross_server.py` | interaction memory 的隔离、去重和持久化。 |
-| `utils/avatar_tool_store.py` | 本地 record v2、PNG 校验、原子创建、公开 DTO 和按 ID 读取的唯一权威事实源。 |
+| `utils/avatar_tool_store.py` | 本地 record v2、媒体校验与资源摘要、原子创建、公开 DTO 和按 ID 读取的唯一权威事实源。 |
 | `main_routers/avatar_tool_router.py` | loopback 受限的 GET/POST、multipart 上限、mutation guard 和线程化存储调用。 |
 
 Host 与 Python 因跨语言边界各自保留契约实现，但必须由 parity 测试约束完整行为，不能只比较允许值列表。Python 调用方统一使用 `normalize_avatar_interaction_payload`；不得恢复私有 normalizer、facade alias 或第二套宽松归一入口。

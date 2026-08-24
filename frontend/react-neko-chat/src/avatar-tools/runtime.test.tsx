@@ -114,6 +114,7 @@ function Harness({
       <output aria-label="active tool">{runtime.activeToolId ?? 'inactive'}</output>
       <output aria-label="within avatar range">{String(runtime.visualModel.withinAvatarRange)}</output>
       <output aria-label="effective tool variant">{runtime.effectiveVariant}</output>
+      <output aria-label="image frame index">{runtime.visualModel.imageFrameIndex}</output>
       <output aria-label="avatar gesture phase">
         {runtime.visualModel.roundChoiceAvatarGesture ? 'cycling' : 'hidden'}
       </output>
@@ -888,6 +889,38 @@ describe('useAvatarToolRuntime press lifecycle', () => {
       }),
     })));
     expect(onStateChange.mock.calls.some(([payload]) => payload.active === false)).toBe(false);
+  });
+
+  it('restarts an updated same-id local definition from its default frame', async () => {
+    const view = render(
+      <Harness
+        onInteraction={vi.fn()}
+        providers={createProviders()}
+        toolId={LOCAL_TOOL_ID}
+        registry={localToolRegistry(1)}
+      />,
+    );
+    selectTool();
+    fireEvent.pointerDown(window, {
+      button: 0,
+      pointerId: 7,
+      clientX: 150,
+      clientY: 150,
+    });
+    expect(screen.getByRole('status', { name: 'image frame index' })).toHaveTextContent('1');
+
+    view.rerender(
+      <Harness
+        onInteraction={vi.fn()}
+        providers={createProviders()}
+        toolId={LOCAL_TOOL_ID}
+        registry={localToolRegistry(2)}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByRole('status', { name: 'image frame index' })).toHaveTextContent('0');
+    });
   });
 
   it('publishes only the selected descriptor without local runtime work in desktop multi-window mode', async () => {
