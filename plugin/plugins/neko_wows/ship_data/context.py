@@ -28,6 +28,13 @@ from .store import NullCatalogSnapshot
 
 _MAX_GAME_INFO_BYTES = 1024 * 1024
 _MAX_EXPIRY_ATTEMPTS = 3
+_EXPIRY_RETRY_BASE_SECONDS = 1.0
+_FORCED_EXPIRY_REASONS = frozenset({
+    "config_disabled",
+    "disabled",
+    "reconnect",
+    "shutdown",
+})
 _VERSION_TAGS = frozenset({"version", "clientversion", "gameversion"})
 _EXPIRED_SHIP_REFERENCE_TEXT = (
     "Previously submitted World of Warships ship reference context has "
@@ -108,7 +115,9 @@ class BattleShipContextManager:
         self._unresolved_reasons: Counter[str] = Counter()
         self._batch_sequence = 0
         self._submitted_context_targets: dict[str, str | None] = {}
+        self._pending_context_expirations: dict[str, str | None] = {}
         self._expiry_attempts: dict[str, int] = {}
+        self._expiry_retry_after: dict[str, float] = {}
         self._retry_failures = 0
         self._retry_after = 0.0
         self._last_error = ""
@@ -199,10 +208,15 @@ class BattleShipContextManager:
             return self._observation(events=events)
 
         identity = snapshot.identity
-        if self._identity is not None and identity != self._identity:
+        identity_changed = (
+            self._identity is not None and identity != self._identity
+        )
+        if identity_changed:
             self._reset_locked("identity_changed")
             events.append(ShipCatalogEvent(
                 "battle_reset", {"reason": "identity_changed"}))
+        elif self._pending_context_expirations:
+            self._expire_submitted_contexts("observation_retry")
         if self._identity is None:
             self._freeze(snapshot, events)
 
@@ -664,17 +678,27 @@ class BattleShipContextManager:
         return tuple(sorted(pending))
 
     def _expire_submitted_contexts(self, reason: str) -> None:
-        pending = sorted(self._submitted_context_targets.items())
+        now = float(self._clock())
+        force = reason in _FORCED_EXPIRY_REASONS
+        pending = sorted(self._pending_context_expirations.items())
         for coalesce_key, target_lanlan in pending:
             attempts = self._expiry_attempts.get(coalesce_key, 0)
             if attempts >= _MAX_EXPIRY_ATTEMPTS:
-                self._submitted_context_targets.pop(coalesce_key, None)
+                self._pending_context_expirations.pop(coalesce_key, None)
                 self._expiry_attempts.pop(coalesce_key, None)
+                self._expiry_retry_after.pop(coalesce_key, None)
                 self._warn(
                     "ship reference expiry abandoned after "
                     f"{attempts} attempts ({coalesce_key})")
                 continue
-            self._expiry_attempts[coalesce_key] = attempts + 1
+            if (
+                not force
+                and now < self._expiry_retry_after.get(coalesce_key, 0.0)
+            ):
+                continue
+            attempts += 1
+            self._expiry_attempts[coalesce_key] = attempts
+            accepted = False
             try:
                 receipt = self._plugin.push_message(
                     source="neko_wows",
@@ -697,19 +721,38 @@ class BattleShipContextManager:
                     },
                     target_lanlan=target_lanlan,
                 )
-                if (
+                accepted = (
                     isinstance(receipt, Mapping)
                     and receipt.get("submitted") is True
-                ):
-                    self._submitted_context_targets.pop(coalesce_key, None)
-                    self._expiry_attempts.pop(coalesce_key, None)
+                )
             except Exception as exc:
                 self._warn(
                     "ship reference expiry push failed: "
                     f"{type(exc).__name__}"
                 )
+            if accepted:
+                self._pending_context_expirations.pop(coalesce_key, None)
+                self._expiry_attempts.pop(coalesce_key, None)
+                self._expiry_retry_after.pop(coalesce_key, None)
+                continue
+            if attempts >= _MAX_EXPIRY_ATTEMPTS:
+                self._pending_context_expirations.pop(coalesce_key, None)
+                self._expiry_attempts.pop(coalesce_key, None)
+                self._expiry_retry_after.pop(coalesce_key, None)
+                self._warn(
+                    "ship reference expiry abandoned after "
+                    f"{attempts} attempts ({coalesce_key})")
+                continue
+            delay = _EXPIRY_RETRY_BASE_SECONDS * (2 ** (attempts - 1))
+            self._expiry_retry_after[coalesce_key] = (
+                float(self._clock()) + delay
+            )
 
     def _reset_locked(self, reason: str) -> None:
+        self._pending_context_expirations.update(
+            self._submitted_context_targets
+        )
+        self._submitted_context_targets.clear()
         self._expire_submitted_contexts(reason)
         catalog = self._catalog
         self._catalog = None

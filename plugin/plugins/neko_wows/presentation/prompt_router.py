@@ -275,7 +275,10 @@ def _render_facts(
 
 def _strip_fence(raw: str) -> str:
     """Remove fence markers so imported docs cannot close the untrusted block."""
-    return raw.replace(REFERENCE_CLOSE, "").replace(REFERENCE_OPEN, "")
+    text = raw
+    while REFERENCE_CLOSE in text or REFERENCE_OPEN in text:
+        text = text.replace(REFERENCE_CLOSE, "").replace(REFERENCE_OPEN, "")
+    return text
 
 
 def _render_reference(excerpts: Sequence[TacticExcerpt], lane: str) -> tuple[str, int]:

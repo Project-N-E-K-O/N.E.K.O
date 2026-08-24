@@ -627,6 +627,18 @@ def test_clearing_removes_everything(store):
     }
 
 
+def test_clearing_begins_immediate_transaction_before_counting(store):
+    statements = []
+    store._require().set_trace_callback(statements.append)
+
+    store.clear_documents()
+
+    assert statements[:2] == [
+        "BEGIN IMMEDIATE",
+        "SELECT COUNT(*) AS n FROM documents",
+    ]
+
+
 # --- query shape ---------------------------------------------------------
 
 def test_tag_candidates_map_battle_context_onto_kinds():

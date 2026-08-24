@@ -1105,6 +1105,63 @@ def test_startup_reload_authorizes_live_frame_reuse_when_enabled():
     asyncio.run(scenario())
 
 
+def test_startup_reload_retries_failed_delivery_permission_publication(
+    monkeypatch,
+):
+    import plugin.plugins.neko_wows as wows_module
+
+    real_sleep = asyncio.sleep
+
+    async def yield_once(_delay):
+        await real_sleep(0)
+
+    monkeypatch.setattr(wows_module.asyncio, "sleep", yield_once)
+    target = _ReloadTarget(current=True, configured=False)
+    target._plugin_delivery_token = "generation-one"
+    calls: list[dict[str, object]] = []
+
+    async def set_plugin_delivery_permission_async(**kwargs):
+        calls.append(kwargs)
+        if len(calls) == 1:
+            raise RuntimeError("host unavailable")
+        return {
+            "ok": True,
+            "token": kwargs["token"],
+            "enabled": kwargs["enabled"],
+        }
+
+    target._host_ctx = type("Host", (), {
+        "set_plugin_delivery_permission_async": staticmethod(
+            set_plugin_delivery_permission_async),
+    })()
+
+    asyncio.run(NekoWowsPlugin._reload_config(
+        target, force_dry_run=True))
+    assert len(calls) == 1
+
+    async def command_loop():
+        await NekoWowsPlugin._on_command_loop_start(target)
+        for _ in range(10):
+            if len(calls) >= 2:
+                break
+            await real_sleep(0)
+
+        assert calls == [
+            {
+                "token": "generation-one",
+                "enabled": True,
+                "timeout": 3.0,
+            },
+            {
+                "token": "generation-one",
+                "enabled": True,
+                "timeout": 3.0,
+            },
+        ]
+
+    asyncio.run(command_loop())
+
+
 def test_failed_live_frame_registration_clears_runtime_readiness():
     async def scenario():
         target = _ReloadTarget(current=True, configured=False)

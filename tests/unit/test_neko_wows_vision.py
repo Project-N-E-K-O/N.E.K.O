@@ -351,7 +351,7 @@ def test_capture_jpeg_does_not_fall_back_to_mss_when_printwindow_encode_fails(
     assert capture_module.capture_jpeg(game_window) is None
 
 
-def test_capture_jpeg_rereads_window_rect_before_mss_fallback(monkeypatch):
+def test_capture_jpeg_reads_window_rect_after_printwindow_fails(monkeypatch):
     window = SimpleNamespace(hwnd=101, left=10, top=20, width=800, height=600)
     seen = []
 

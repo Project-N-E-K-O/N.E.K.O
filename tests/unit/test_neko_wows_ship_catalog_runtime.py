@@ -1386,6 +1386,93 @@ def test_reset_expires_context_in_the_original_target_session(context_parts):
     ] == ["alpha", "alpha"]
 
 
+def test_observation_spaces_expiry_retries_without_expiring_new_context(
+    snapshot,
+):
+    class ScriptedPlugin:
+        def __init__(self, outcomes) -> None:
+            self.outcomes = list(outcomes)
+            self.calls: list[dict] = []
+
+        def push_message(self, **kwargs):
+            self.calls.append(kwargs)
+            outcome = self.outcomes.pop(0)
+            if isinstance(outcome, Exception):
+                raise outcome
+            return outcome
+
+    plugin = ScriptedPlugin([
+        {"submitted": True},
+        RuntimeError("host unavailable"),
+        {"submitted": True},
+        RuntimeError("host unavailable"),
+        {"submitted": True},
+        {"submitted": True},
+    ])
+    clock = FakeClock()
+    context = BattleShipContextManager(
+        plugin,
+        MutableStore(snapshot),
+        WowsConfig(ship_catalog_enabled=True, dry_run=False),
+        clock=clock,
+    )
+    old_battle = battle_snapshot(
+        yamato_ship(1, 1, RELATION_SELF),
+        identity=("instance-1", "battle-1"),
+    )
+    new_battle = battle_snapshot(
+        yamato_ship(1, 1, RELATION_SELF),
+        identity=("instance-1", "battle-2"),
+    )
+
+    context.observe(old_battle, dry_run=False)
+    old_key = plugin.calls[0]["coalesce_key"]
+
+    context.observe(new_battle, dry_run=False)
+    new_key = plugin.calls[2]["coalesce_key"]
+    assert new_key != old_key
+
+    for _ in range(20):
+        context.observe(new_battle, dry_run=False)
+
+    assert len(plugin.calls) == 3
+
+    clock.advance(0.999)
+    context.observe(new_battle, dry_run=False)
+
+    assert len(plugin.calls) == 3
+
+    clock.advance(0.001)
+    context.observe(new_battle, dry_run=False)
+
+    assert len(plugin.calls) == 4
+    assert plugin.calls[3]["coalesce_key"] == old_key
+    assert plugin.calls[3]["metadata"]["cleanup_reason"] == "observation_retry"
+
+    for _ in range(20):
+        context.observe(new_battle, dry_run=False)
+
+    assert len(plugin.calls) == 4
+
+    clock.advance(1.999)
+    context.observe(new_battle, dry_run=False)
+
+    assert len(plugin.calls) == 4
+
+    clock.advance(0.001)
+    context.observe(new_battle, dry_run=False)
+
+    assert len(plugin.calls) == 5
+    assert plugin.calls[4]["coalesce_key"] == old_key
+    assert plugin.calls[4]["metadata"]["cleanup_reason"] == "observation_retry"
+    assert old_key not in context._expiry_retry_after
+
+    context.reset("battle_end")
+
+    assert len(plugin.calls) == 6
+    assert plugin.calls[5]["coalesce_key"] == new_key
+
+
 @pytest.mark.parametrize("failure_mode", ("declined", "non_mapping", "exception"))
 def test_reset_retries_expiry_until_host_confirms_submission(
     context_parts,
@@ -1418,6 +1505,58 @@ def test_reset_retries_expiry_until_host_confirms_submission(
     assert plugin.calls[2]["metadata"]["cleanup_reason"] == "shutdown"
 
     context.reset("reconnect")
+
+    assert len(plugin.calls) == 3
+
+
+@pytest.mark.parametrize(
+    "reason",
+    ("config_disabled", "disabled", "reconnect", "shutdown"),
+)
+def test_lifecycle_reset_bypasses_expiry_backoff(context_parts, reason):
+    context, plugin, _, _ = context_parts
+    context.observe(
+        battle_snapshot(yamato_ship(1, 1, RELATION_SELF)),
+        dry_run=False,
+    )
+    plugin.receipt = {"submitted": False}
+    context.reset("battle_end")
+
+    plugin.receipt = {"submitted": True}
+    context.reset(reason)
+
+    assert len(plugin.calls) == 3
+    assert plugin.calls[2]["metadata"]["cleanup_reason"] == reason
+
+
+def test_expiry_backoff_starts_after_the_failed_host_call(context_parts):
+    context, plugin, _, clock = context_parts
+    context.observe(
+        battle_snapshot(yamato_ship(1, 1, RELATION_SELF)),
+        dry_run=False,
+    )
+    original_push = plugin.push_message
+
+    def slow_decline(**kwargs):
+        plugin.calls.append(kwargs)
+        clock.advance(1.5)
+        return {"submitted": False}
+
+    plugin.push_message = slow_decline
+    context.reset("battle_end")
+    plugin.push_message = original_push
+
+    context.reset("battle_end")
+
+    assert len(plugin.calls) == 2
+
+    clock.advance(0.999)
+    context.reset("battle_end")
+
+    assert len(plugin.calls) == 2
+
+    clock.advance(0.001)
+    context.reset("battle_end")
 
     assert len(plugin.calls) == 3
 
@@ -1483,7 +1622,7 @@ def test_reset_continues_other_expiries_and_retries_only_the_failed_key(
 
 
 def test_reset_abandons_expiry_after_the_attempt_limit(context_parts):
-    context, plugin, _, _ = context_parts
+    context, plugin, _, clock = context_parts
     warnings: list[str] = []
     context._logger = SimpleNamespace(warning=warnings.append)
     context.observe(
@@ -1492,16 +1631,20 @@ def test_reset_abandons_expiry_after_the_attempt_limit(context_parts):
     )
     plugin.receipt = {"submitted": False}
 
-    for _ in range(_MAX_EXPIRY_ATTEMPTS):
+    for delay in (0.0, 1.0, 2.0):
+        clock.advance(delay)
         context.reset("battle_end")
 
     assert len(plugin.calls) == 1 + _MAX_EXPIRY_ATTEMPTS
+    assert context._pending_context_expirations == {}
+    assert context._expiry_attempts == {}
+    assert context._expiry_retry_after == {}
+    assert any("abandoned after" in message for message in warnings)
 
     context.reset("shutdown")
 
     assert len(plugin.calls) == 1 + _MAX_EXPIRY_ATTEMPTS
     assert context._submitted_context_targets == {}
-    assert any("abandoned after" in message for message in warnings)
 
 
 def test_reset_releases_frozen_snapshot_and_state(context_parts, snapshot):

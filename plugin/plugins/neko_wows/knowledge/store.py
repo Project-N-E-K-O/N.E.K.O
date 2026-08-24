@@ -315,6 +315,7 @@ class KnowledgeStore:
         with self._lock:
             conn = self._require()
             try:
+                conn.execute("BEGIN IMMEDIATE")
                 removed = conn.execute("SELECT COUNT(*) AS n FROM documents").fetchone()
                 conn.execute("DELETE FROM chunk_terms")
                 conn.execute("DELETE FROM chunks")

@@ -129,6 +129,7 @@ from .vision.tool import ScreenshotService, facts_to_telemetry
 CONFIG_SECTION = "neko_wows"
 KNOWLEDGE_DB_NAME = "tactical_knowledge.db"
 SCREENSHOT_DIR_NAME = "screenshots"
+_PLUGIN_DELIVERY_PERMISSION_RETRY_SECONDS = 1.0
 
 STORE_CHANNEL_MODE = "channel_mode"
 STORE_INTRUSION_SETTINGS = "intrusion_settings"
@@ -274,6 +275,11 @@ class NekoWowsPlugin(NekoPluginBase):
         self._live_frame_permission_token = uuid.uuid4().hex
         self._live_frame_permission_ready = False
         self._plugin_delivery_token = uuid.uuid4().hex
+        self._plugin_delivery_permission_retry_task: asyncio.Task[None] | None = None
+        self._plugin_delivery_permission_retry_pending = False
+        # Startup runs on a transient asyncio.run() loop. The host calls
+        # _on_command_loop_start once its long-lived loop is available.
+        self._command_loop_started = False
 
     # ------------------------------------------------------------------ 配置
     def _build_registry(self) -> DetectorRegistry:
@@ -309,6 +315,8 @@ class NekoWowsPlugin(NekoPluginBase):
                     cfg.screenshot_enabled = bool(self.cfg.screenshot_enabled)
                     cfg.live_vision_enabled = bool(self.cfg.live_vision_enabled)
                 self._apply_config(cfg)
+            self._plugin_delivery_permission_retry_pending = False
+            await NekoWowsPlugin._cancel_plugin_delivery_permission_retry(self)
             try:
                 await NekoWowsPlugin._publish_live_frame_permission(
                     self, enabled=bool(cfg.live_vision_enabled))
@@ -325,7 +333,9 @@ class NekoWowsPlugin(NekoPluginBase):
             except asyncio.CancelledError:
                 raise
             except Exception:
-                pass
+                if cfg.enabled:
+                    self._plugin_delivery_permission_retry_pending = True
+                    NekoWowsPlugin._schedule_plugin_delivery_permission_retry(self)
             return cfg
 
     async def _apply_stored_preferences(self, cfg: WowsConfig) -> None:
@@ -444,6 +454,67 @@ class NekoWowsPlugin(NekoPluginBase):
                     f"{type(exc).__name__}: {exc}"
                 )
             raise
+
+    def _schedule_plugin_delivery_permission_retry(self) -> None:
+        if (
+            not getattr(self, "_command_loop_started", False)
+            or not getattr(
+                self, "_plugin_delivery_permission_retry_pending", False)
+            or not bool(self.cfg.enabled)
+        ):
+            return
+        task = getattr(self, "_plugin_delivery_permission_retry_task", None)
+        if task is not None and not task.done():
+            return
+        self._plugin_delivery_permission_retry_task = asyncio.create_task(
+            NekoWowsPlugin._retry_plugin_delivery_permission(self),
+            name="neko-wows-delivery-permission-retry",
+        )
+
+    async def _retry_plugin_delivery_permission(self) -> None:
+        task = asyncio.current_task()
+        try:
+            while (
+                bool(self.cfg.enabled)
+                and getattr(
+                    self, "_plugin_delivery_permission_retry_pending", False)
+            ):
+                await asyncio.sleep(_PLUGIN_DELIVERY_PERMISSION_RETRY_SECONDS)
+                if (
+                    not bool(self.cfg.enabled)
+                    or not getattr(
+                        self, "_plugin_delivery_permission_retry_pending", False)
+                ):
+                    return
+                try:
+                    await NekoWowsPlugin._publish_plugin_delivery_permission(
+                        self, enabled=True)
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    continue
+                self._plugin_delivery_permission_retry_pending = False
+                return
+        finally:
+            if getattr(self, "_plugin_delivery_permission_retry_task", None) is task:
+                self._plugin_delivery_permission_retry_task = None
+
+    async def _cancel_plugin_delivery_permission_retry(self) -> None:
+        task = getattr(self, "_plugin_delivery_permission_retry_task", None)
+        self._plugin_delivery_permission_retry_task = None
+        if task is None or task is asyncio.current_task():
+            return
+        if not task.done():
+            task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    async def _on_command_loop_start(self) -> None:
+        """Start deferred retries on the host's long-lived asyncio loop."""
+        self._command_loop_started = True
+        NekoWowsPlugin._schedule_plugin_delivery_permission_retry(self)
 
     async def _stored(self, key: str):
         try:
@@ -640,6 +711,8 @@ class NekoWowsPlugin(NekoPluginBase):
     async def shutdown(self, **_):
         with self._state_lock:
             self._running = False
+        self._plugin_delivery_permission_retry_pending = False
+        await self._cancel_plugin_delivery_permission_retry()
 
         permission_error: Exception | None = None
         failed_permission = "live frame"
@@ -737,6 +810,8 @@ class NekoWowsPlugin(NekoPluginBase):
             self._running = False
             self._latest = None
             self._previous = None
+        self._plugin_delivery_permission_retry_pending = False
+        await self._cancel_plugin_delivery_permission_retry()
         delivery_error: Exception | None = None
         try:
             await self._publish_plugin_delivery_permission(enabled=False)

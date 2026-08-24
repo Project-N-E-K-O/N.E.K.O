@@ -841,6 +841,24 @@ def test_enemy_closing_rate_requires_the_same_ship():
     assert closing[0].detail["ship_name"] == "Shimakaze"
 
 
+def test_enemy_closing_rate_rejects_matching_ui_id_for_different_players():
+    registry = DetectorRegistry(build_threat_detectors(CFG))
+    results = feed(registry, [
+        frame(seq=1, at=100.0, ships=(
+            replace(enemy(ui_id=2, x=11000.0), player_id=3002),
+        )),
+        frame(seq=2, at=101.0, ships=(
+            replace(enemy(ui_id=2, x=5000.0), player_id=4002),
+        )),
+    ])
+    closing = [
+        event for result in results for event in result.events
+        if event.event_id == ENEMY_CLOSING
+    ]
+    assert closing
+    assert closing[0].detail["closing_m_per_s"] is None
+
+
 def test_enemy_closing_rate_matches_stable_ui_id_without_player_id():
     registry = DetectorRegistry(build_threat_detectors(CFG))
     approaching = feed(registry, [

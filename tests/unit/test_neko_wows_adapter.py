@@ -1283,7 +1283,6 @@ async def test_silent_open_websocket_falls_back_to_rest(monkeypatch):
         transport_module,
         "WS_FRAME_TIMEOUT_SECONDS",
         0.01,
-        raising=False,
     )
     monkeypatch.setattr(transport, "_switch_mode", _track_mode)
 

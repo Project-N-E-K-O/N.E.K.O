@@ -28,8 +28,8 @@ class EnemyClosingDetector(Detector):
 
     @staticmethod
     def _same_tracked_ship(before, current) -> bool:
-        if before.player_id is not None and before.player_id == current.player_id:
-            return True
+        if before.player_id is not None and current.player_id is not None:
+            return before.player_id == current.player_id
         return before.ui_id is not None and before.ui_id == current.ui_id
 
     def observe(self, snapshot, facts) -> None:
