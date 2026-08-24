@@ -69,9 +69,10 @@ class AvatarToolStaticFiles(CustomStaticFiles):
         from starlette.exceptions import HTTPException as StarletteHTTPException
         from utils.avatar_tool_store import is_public_avatar_tool_resource_path
 
-        if not is_public_avatar_tool_resource_path(Path(self.directory), path):
+        normalized_path = str(path).replace("\\", "/")
+        if not is_public_avatar_tool_resource_path(Path(self.directory), normalized_path):
             raise StarletteHTTPException(status_code=404)
-        return await super().get_response(path, scope)
+        return await super().get_response(normalized_path, scope)
 
 
 # 确定 static 目录位置（使用 _get_app_root）
@@ -177,13 +178,12 @@ if _IS_MAIN_PROCESS:
         logger.info(f"已挂载PNGTuber目录: {user_pngtuber_path}")
 
     user_avatar_tools_path = str(_config_manager.avatar_tools_dir)
-    if os.path.exists(user_avatar_tools_path):
-        app.mount(
-            "/user_avatar_tools",
-            AvatarToolStaticFiles(directory=user_avatar_tools_path),
-            name="user_avatar_tools",
-        )
-        logger.info("已挂载本地Avatar Tool资源目录: %s", user_avatar_tools_path)
+    app.mount(
+        "/user_avatar_tools",
+        AvatarToolStaticFiles(directory=user_avatar_tools_path, check_dir=False),
+        name="user_avatar_tools",
+    )
+    logger.info("已挂载本地Avatar Tool资源目录: %s", user_avatar_tools_path)
 
     # 挂载项目目录下的static/mmd（作为备用）
     project_mmd_path = os.path.join(static_dir, "mmd")

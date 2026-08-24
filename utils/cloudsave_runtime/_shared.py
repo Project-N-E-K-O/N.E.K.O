@@ -194,6 +194,7 @@ RUNTIME_ASSET_DIR_NAMES = (
     "workshop",
     "character_cards",
     "card_faces",
+    "avatar_tools",
 )
 
 

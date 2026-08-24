@@ -220,6 +220,8 @@ def _decode_static_png(data: bytes, *, limits: dict[str, int]) -> bytes:
             return output.getvalue()
     except AvatarToolStoreError:
         raise
+    except Image.DecompressionBombError as exc:
+        raise AvatarToolStoreError("image_pixels_exceeded", "PNG dimensions are too large") from exc
     except (UnidentifiedImageError, OSError, ValueError) as exc:
         raise AvatarToolStoreError("image_decode_failed", "PNG could not be decoded") from exc
 
@@ -328,12 +330,16 @@ class AvatarToolStore:
                     shutil.rmtree(updating, ignore_errors=True)
                     shutil.rmtree(backup, ignore_errors=True)
                     continue
-            if not final.exists() and backup.is_dir() and not backup.is_symlink():
+            if backup.is_dir() and not backup.is_symlink():
                 try:
                     self._read_record_from_directory(tool_id, backup)
                 except AvatarToolStoreError:
                     pass
                 else:
+                    if final.is_symlink() or final.is_file():
+                        final.unlink()
+                    elif final.is_dir():
+                        shutil.rmtree(final)
                     os.replace(backup, final)
                     shutil.rmtree(updating, ignore_errors=True)
                     continue
@@ -361,7 +367,7 @@ class AvatarToolStore:
             raise AvatarToolStoreError("tool_not_found", "Avatar tool does not exist", status_code=404)
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise AvatarToolStoreError("record_invalid", "Avatar tool record is invalid", status_code=404) from exc
         return self._validate_record(payload, expected_id=tool_id, directory=directory)
 

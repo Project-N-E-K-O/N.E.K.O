@@ -1144,8 +1144,8 @@ function CompactChatApp({
   }, [activeAvatarToolId, clearActiveAvatarToolSelection, localAvatarToolCatalog.registry]);
 
   const handleLocalAvatarToolDelete = useCallback(async (toolId: `local-${string}`) => {
-    if (activeAvatarToolId === toolId) clearActiveAvatarToolSelection();
     await localAvatarToolCatalog.remove(toolId);
+    if (activeAvatarToolId === toolId) clearActiveAvatarToolSelection();
   }, [activeAvatarToolId, clearActiveAvatarToolSelection, localAvatarToolCatalog.remove]);
 
   useEffect(() => {

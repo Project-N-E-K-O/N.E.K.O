@@ -6,6 +6,7 @@ import { useLocalAvatarToolCatalog } from './useLocalAvatarToolCatalog';
 describe('useLocalAvatarToolCatalog failure handling', () => {
   afterEach(() => {
     window.localStorage.removeItem(ACTIVE_AVATAR_TOOLS_STORAGE_KEY);
+    Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'visible' });
     vi.unstubAllGlobals();
   });
 
@@ -217,6 +218,59 @@ describe('useLocalAvatarToolCatalog failure handling', () => {
       value: 'Soft Feather',
     });
     expect(fetchMock).toHaveBeenCalledTimes(4);
+  });
+
+  it('does not infer a lost replacement-file PUT succeeded from matching text fields', async () => {
+    const toolId = 'local-12345678-1234-4123-8123-123456789abc' as const;
+    const oldItem = {
+      id: toolId,
+      name: 'Feather',
+      changeMode: 'press-swap',
+      defaultUrl: '/default.png?v=1',
+      changeUrls: ['/change-000.png?v=1'],
+    };
+    const listResponse = new Response(JSON.stringify({ ok: true, items: [oldItem], limits: LIMITS }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(listResponse)
+      .mockRejectedValueOnce(new TypeError('connection reset'))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        ok: true,
+        detail: {
+          id: toolId,
+          revision: '120-300',
+          name: 'Soft Feather',
+          changeMode: 'press-swap',
+          defaultImage: { resource: 'default.png', url: '/default.png?v=2' },
+          changeItems: [{
+            resource: 'change-000.png',
+            url: '/change-000.png?v=2',
+            meaning: 'A gentle touch',
+          }],
+        },
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true, items: [oldItem], limits: LIMITS }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }));
+    vi.stubGlobal('fetch', fetchMock);
+    const { result } = renderHook(() => useLocalAvatarToolCatalog());
+    await waitFor(() => expect(result.current.registry.has(toolId)).toBe(true));
+
+    await act(async () => {
+      await expect(result.current.update(toolId, {
+        baseRevision: '100-200',
+        name: 'Soft Feather',
+        changeMode: 'press-swap',
+        defaultImage: { resource: 'default.png' },
+        changeItems: [{
+          file: new File(['replacement'], 'replacement.png', { type: 'image/png' }),
+          meaning: 'A gentle touch',
+        }],
+      })).rejects.toThrow('connection reset');
+    });
   });
 
   it('ignores a pre-create GET and confirms the created item with a newer GET', async () => {

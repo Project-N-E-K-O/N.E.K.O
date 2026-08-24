@@ -247,6 +247,16 @@ describe('local avatar tool image change modes', () => {
     await expect(fetchLocalAvatarTools()).resolves.toEqual({ items: [], limits });
   });
 
+  it('drops catalog items with an empty default image URL', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      ok: true,
+      items: [dto({ defaultUrl: '' })],
+      limits: LIMITS,
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } })));
+
+    await expect(fetchLocalAvatarTools()).resolves.toEqual({ items: [], limits: LIMITS });
+  });
+
   it('posts ordered image/meaning pairs and retries csrf failure exactly once', async () => {
     const getMutationHeaders = vi.fn()
       .mockResolvedValueOnce({ 'X-CSRF-Token': 'old' })
@@ -404,6 +414,41 @@ describe('local avatar tool image change modes', () => {
     expect(form.has('normal_sound_resource')).toBe(false);
     expect(form.get('special_image_resource')).toBe('special.png');
     expect(form.has('special_sound_resource')).toBe(false);
+  });
+
+  it('rebuilds PUT FormData when retrying after a csrf refresh', async () => {
+    const getMutationHeaders = vi.fn()
+      .mockResolvedValueOnce({ 'X-CSRF-Token': 'old' })
+      .mockResolvedValueOnce({ 'X-CSRF-Token': 'new' });
+    const refreshToken = vi.fn().mockResolvedValue(undefined);
+    window.nekoLocalMutationSecurity = { getMutationHeaders, refreshToken };
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ error_code: 'csrf_validation_failed' }), {
+        status: 403,
+        headers: { 'Content-Type': 'application/json' },
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true, item: dto() }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }));
+    vi.stubGlobal('fetch', fetchMock);
+    const replacement = new File(['new'], 'new.png', { type: 'image/png' });
+
+    await updateLocalAvatarTool(TOOL_ID, {
+      baseRevision: '100-200',
+      name: 'Feather',
+      changeMode: 'press-swap',
+      defaultImage: { resource: 'default.png' },
+      changeItems: [{ file: replacement, meaning: 'Replacement' }],
+    });
+
+    expect(refreshToken).toHaveBeenCalledTimes(1);
+    expect(getMutationHeaders).toHaveBeenCalledTimes(2);
+    const firstForm = fetchMock.mock.calls[0][1]?.body as FormData;
+    const secondForm = fetchMock.mock.calls[1][1]?.body as FormData;
+    expect(secondForm).not.toBe(firstForm);
+    expect(secondForm.getAll('change_images')).toEqual([replacement]);
+    expect(fetchMock.mock.calls[1][1]?.headers).toEqual({ 'X-CSRF-Token': 'new' });
   });
 
   it('deletes a local tool with mutation headers and retries csrf failure once', async () => {

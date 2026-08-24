@@ -887,7 +887,9 @@ function validateInteractionReferences(definition: AvatarToolDefinition) {
         fail(definition, 'interaction.chance.field conflicts with a reserved payload field');
       }
       assertProbability(definition, interaction.chance.probability, 'interaction.chance.probability');
-      if (interaction.chance.sound) requireSound(interaction.chance.sound);
+      if (definition.definitionVersion === 1 || interaction.chance.sound) {
+        requireSound(interaction.chance.sound as AvatarToolSoundId);
+      }
       requireEffect(interaction.chance.effect);
       if (definition.definitionVersion === 2) {
         if (interaction.chance.field !== 'specialTriggered') {

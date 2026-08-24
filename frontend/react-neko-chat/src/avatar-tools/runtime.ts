@@ -839,6 +839,10 @@ export function useAvatarToolRuntime({
       clearTool();
       return;
     }
+    if (!registry.has(item.id)) {
+      clearTool();
+      return;
+    }
     if (!ownsLocalPointerRuntime) {
       if (activeToolIdRef.current === item.id) {
         clearTool();
@@ -847,7 +851,6 @@ export function useAvatarToolRuntime({
       destroySession();
       activeToolIdRef.current = item.id;
       setActiveToolId(item.id);
-      if (!registry.has(item.id)) return;
       const initialVariant = registry.getRegistration(item.id).definition.visual.initialVariant;
       const nextRange = { ...rangeVariantsRef.current, [item.id]: initialVariant };
       const nextOutside = { ...outsideVariantsRef.current, [item.id]: initialVariant };
@@ -872,7 +875,6 @@ export function useAvatarToolRuntime({
     createSession(item.id);
     activeToolIdRef.current = item.id;
     setActiveToolId(item.id);
-    if (!registry.has(item.id)) return;
     const initialVariant = registry.getRegistration(item.id).definition.visual.initialVariant;
     const nextRange = { ...rangeVariantsRef.current, [item.id]: initialVariant };
     const nextOutside = { ...outsideVariantsRef.current, [item.id]: initialVariant };

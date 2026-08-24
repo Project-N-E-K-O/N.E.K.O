@@ -229,7 +229,10 @@ async def update_avatar_tool(
 
     store = get_avatar_tool_store(get_config_manager())
     try:
-        if len(change_resources) > store.limits["maxChangeImages"]:
+        if (
+            len(change_resources) > store.limits["maxChangeImages"]
+            or len(change_uploads) > store.limits["maxChangeImages"]
+        ):
             raise AvatarToolStoreError(
                 "change_items_invalid",
                 "Image change item count is invalid",

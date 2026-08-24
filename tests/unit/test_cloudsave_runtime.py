@@ -289,6 +289,34 @@ def test_bootstrap_imports_legacy_root_after_seed_migration(tmp_path):
 
 
 @pytest.mark.unit
+def test_bootstrap_repairs_seeded_target_when_legacy_root_only_adds_avatar_tools(tmp_path):
+    new_root_base = tmp_path / "new_root_base"
+    legacy_root = tmp_path / "legacy_docs" / "N.E.K.O"
+    cm = _make_config_manager(new_root_base)
+    from utils.cloudsave_runtime import bootstrap_local_cloudsave_environment
+
+    tool_id = "local-12345678-1234-4123-8123-123456789abc"
+    legacy_tool = legacy_root / "avatar_tools" / tool_id
+    legacy_tool.mkdir(parents=True)
+    (legacy_tool / "record.json").write_text('{"recordVersion":2}', encoding="utf-8")
+    cm.get_legacy_app_root_candidates = lambda: [legacy_root]
+    cm.migrate_config_files()
+    cm.migrate_memory_files()
+    atomic_write_json(
+        Path(cm.get_config_path("user_preferences.json")),
+        [{"model_path": "/custom.model3.json"}],
+        ensure_ascii=False,
+        indent=2,
+    )
+
+    result = bootstrap_local_cloudsave_environment(cm)
+
+    assert result["legacy_import"]["migrated"] is True
+    assert result["legacy_import"]["repair_reason"] == "missing_avatar_tools"
+    assert (cm.avatar_tools_dir / tool_id / "record.json").is_file()
+
+
+@pytest.mark.unit
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows held-file replacement semantics")
 def test_bootstrap_replaces_runtime_root_while_single_instance_lock_is_held(tmp_path, monkeypatch):
     from utils import single_instance

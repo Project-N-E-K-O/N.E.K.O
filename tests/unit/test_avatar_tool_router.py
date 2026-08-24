@@ -305,3 +305,26 @@ def test_put_rejects_unowned_resource_reference_and_keeps_old_item(tmp_path, mon
     assert response.status_code == 400
     assert response.json()["error_code"] == "resource_reference_invalid"
     assert client.get("/api/avatar-tools").json()["items"][0]["name"] == "Feather"
+
+
+def test_put_rejects_too_many_replacement_uploads_before_reading_them(tmp_path, monkeypatch):
+    client, _manager = _client(tmp_path, monkeypatch, allow_mutation=True)
+    uploads = [
+        ("change_images", (f"change-{index}.png", b"not-read", "image/png"))
+        for index in range(17)
+    ]
+
+    response = client.put(
+        "/api/avatar-tools/local-12345678-1234-4123-8123-123456789abc",
+        files=[
+            ("base_revision", (None, "100-200")),
+            ("name", (None, "Feather")),
+            ("change_mode", (None, "click-advance")),
+            ("change_meanings", (None, "meaning")),
+            ("change_resources", (None, "")),
+            *uploads,
+        ],
+    )
+
+    assert response.status_code == 413
+    assert response.json()["error_code"] == "change_items_invalid"

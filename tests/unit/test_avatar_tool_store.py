@@ -282,6 +282,26 @@ def test_create_rejects_unsafe_images_without_publishing(tmp_path, monkeypatch, 
     assert not store.root.exists() or not list(store.root.iterdir())
 
 
+def test_create_translates_pillow_decompression_bomb_errors(tmp_path, monkeypatch):
+    monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
+    store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
+    monkeypatch.setattr(
+        "utils.avatar_tool_store.Image.open",
+        lambda *_a, **_k: (_ for _ in ()).throw(Image.DecompressionBombError("too many pixels")),
+    )
+
+    with pytest.raises(AvatarToolStoreError) as raised:
+        store.create_tool(
+            name="bad",
+            change_mode="press-swap",
+            change_meanings=["meaning"],
+            default_image=_png(),
+            change_images=[_png()],
+        )
+
+    assert raised.value.code == "image_pixels_exceeded"
+
+
 def test_initialize_cleans_only_owned_transient_directories_and_list_stays_read_only(tmp_path):
     root = tmp_path / "avatar_tools"
     root.mkdir()
@@ -304,6 +324,24 @@ def test_initialize_cleans_only_owned_transient_directories_and_list_stays_read_
     assert not owned_upload.exists()
     assert not owned_delete.exists()
     assert unrelated.exists()
+
+
+def test_list_skips_a_record_with_invalid_utf8_without_hiding_valid_tools(tmp_path, monkeypatch):
+    monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
+    store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
+    valid = store.create_tool(
+        name="Feather",
+        change_mode="press-swap",
+        change_meanings=["meaning"],
+        default_image=_png(),
+        change_images=[_png()],
+    )
+    invalid_id = "local-aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+    invalid_directory = store.root / invalid_id
+    invalid_directory.mkdir()
+    (invalid_directory / "record.json").write_bytes(b"\xff\xfe")
+
+    assert [item["id"] for item in store.list_items()] == [valid["id"]]
 
 
 def test_initialize_and_list_wrap_unreadable_store_errors(tmp_path, monkeypatch):
@@ -793,6 +831,31 @@ def test_initialize_restores_a_valid_backup_after_interrupted_update(tmp_path, m
     shutil.copytree(final, backup)
     shutil.copytree(final, updating)
     shutil.rmtree(final)
+
+    store.initialize()
+
+    assert store.read_record(tool_id)["name"] == "Feather"
+    assert not backup.exists()
+    assert not updating.exists()
+
+
+def test_initialize_replaces_a_corrupt_final_directory_with_a_valid_backup(tmp_path, monkeypatch):
+    monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
+    store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
+    created = store.create_tool(
+        name="Feather",
+        change_mode="press-swap",
+        change_meanings=["meaning"],
+        default_image=_png(),
+        change_images=[_png()],
+    )
+    tool_id = created["id"]
+    final = store.root / tool_id
+    backup = store.root / f".{tool_id}.backup"
+    updating = store.root / f".{tool_id}.updating"
+    shutil.copytree(final, backup)
+    shutil.copytree(final, updating)
+    (final / "record.json").write_bytes(b"\xff\xfe")
 
     store.initialize()
 

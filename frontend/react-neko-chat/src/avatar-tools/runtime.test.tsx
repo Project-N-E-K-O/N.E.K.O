@@ -7,6 +7,7 @@ import AvatarToolVisuals from './presentation';
 import {
   BUILT_IN_AVATAR_TOOL_REGISTRY,
   createAvatarToolRegistrySnapshot,
+  type AvatarToolItem,
   type AvatarToolRegistrySnapshot,
 } from './registry';
 import {
@@ -74,6 +75,7 @@ type HarnessProps = {
   avatarName?: string;
   renderVisuals?: boolean;
   registry?: AvatarToolRegistrySnapshot;
+  item?: AvatarToolItem;
 };
 
 function Harness({
@@ -86,6 +88,7 @@ function Harness({
   avatarName = 'Yui',
   renderVisuals = false,
   registry = BUILT_IN_AVATAR_TOOL_REGISTRY,
+  item,
 }: HarnessProps) {
   const runtime = useAvatarToolRuntime({
     composerHidden: false,
@@ -99,7 +102,7 @@ function Harness({
     providers,
     registry,
   });
-  const tool = registry.items.find(item => item.id === toolId)!;
+  const tool = item ?? registry.items.find(candidate => candidate.id === toolId)!;
   const confirmedRound = runtime.visualModel.overlayEffect?.kind === 'round-reveal'
     ? runtime.visualModel.overlayEffect.round
     : null;
@@ -1263,6 +1266,25 @@ describe('useAvatarToolRuntime press lifecycle', () => {
 
     selectTool();
 
+    expect(screen.getByRole('status', { name: 'active tool' })).toHaveTextContent('inactive');
+    expect(onStateChange.mock.calls.some(([payload]) => payload.active)).toBe(false);
+  });
+
+  it('fails closed when a stale catalog item is selected after registry invalidation', () => {
+    const onInteraction = vi.fn();
+    const onStateChange = vi.fn<(payload: AvatarToolStatePayload) => void>();
+    const staleItem = localToolRegistry(1).items.find(item => item.id === LOCAL_TOOL_ID)!;
+    render(
+      <Harness
+        onInteraction={onInteraction}
+        onStateChange={onStateChange}
+        providers={createProviders()}
+        registry={BUILT_IN_AVATAR_TOOL_REGISTRY}
+        item={staleItem}
+      />,
+    );
+
+    expect(() => selectTool()).not.toThrow();
     expect(screen.getByRole('status', { name: 'active tool' })).toHaveTextContent('inactive');
     expect(onStateChange.mock.calls.some(([payload]) => payload.active)).toBe(false);
   });

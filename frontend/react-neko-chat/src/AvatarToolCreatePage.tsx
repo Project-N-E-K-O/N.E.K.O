@@ -47,6 +47,10 @@ function normalizeToolName(value: string): string {
   return value.normalize('NFC').trim().replace(/ +/g, ' ');
 }
 
+function normalizeMeaning(value: string): string {
+  return value.replace(/\r\n?/g, '\n').trim();
+}
+
 function characterCount(value: string): number {
   return Array.from(value).length;
 }
@@ -323,7 +327,7 @@ export default function AvatarToolCreatePage({
   );
 
   const validateMeaning = (value: string, requiredError: string): string => {
-    const normalized = value.replace(/\r\n?/g, '\n').trim();
+    const normalized = normalizeMeaning(value);
     if (!normalized) return requiredError;
     if (characterCount(normalized) > (limits?.maxMeaningChars ?? 100)) return meaningLengthError();
     return '';
@@ -463,7 +467,7 @@ export default function AvatarToolCreatePage({
           defaultImage: defaultImage ? { file: defaultImage } : { resource: defaultImageResource },
           changeItems: changeItems.map(item => ({
             ...(item.image ? { file: item.image } : { resource: item.imageResource }),
-            meaning: item.meaning,
+            meaning: normalizeMeaning(item.meaning),
           })),
           ...((normalSound || normalSoundResource) ? {
             normalSound: normalSound ? { file: normalSound } : { resource: normalSoundResource },
@@ -472,7 +476,7 @@ export default function AvatarToolCreatePage({
             special: {
               probability: specialProbabilityPercent / 100,
               image: specialImage ? { file: specialImage } : { resource: specialImageResource },
-              meaning: specialMeaning,
+              meaning: normalizeMeaning(specialMeaning),
               ...((specialSound || specialSoundResource) ? {
                 sound: specialSound ? { file: specialSound } : { resource: specialSoundResource },
               } : {}),
@@ -486,14 +490,14 @@ export default function AvatarToolCreatePage({
           defaultImage: defaultImage!,
           changeItems: changeItems.map(item => ({
             image: item.image!,
-            meaning: item.meaning,
+            meaning: normalizeMeaning(item.meaning),
           })),
           ...(normalSound ? { normalSound } : {}),
           ...(specialEnabled ? {
             special: {
               probability: specialProbabilityPercent / 100,
               image: specialImage!,
-              meaning: specialMeaning,
+              meaning: normalizeMeaning(specialMeaning),
               ...(specialSound ? { sound: specialSound } : {}),
             },
           } : {}),

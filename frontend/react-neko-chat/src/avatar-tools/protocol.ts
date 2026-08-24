@@ -147,11 +147,11 @@ type PayloadForDefinition<Definition extends RegistryDefinition> =
     : never;
 
 export type AvatarInteractionPayload =
-  RegistryDefinition extends infer Definition
+  (RegistryDefinition extends infer Definition
     ? Definition extends RegistryDefinition
       ? PayloadForDefinition<Definition>
       : never
-    : never
+    : never)
   | (AvatarInteractionPayloadBase & {
     toolId: `local-${string}`;
     actionId: 'interact';

@@ -296,6 +296,10 @@ describe('avatar tool definition validation', () => {
     if (scatter?.kind !== 'random-scatter') throw new Error('invalid fixture');
     const cases: Array<[AvatarToolDefinition, RegExp]> = [
       [asDefinition({ ...fist, interaction: { ...fist.interaction, touchZone: 'press' as never } }), /touchZone.*release/],
+      [asDefinition({ ...fist, interaction: {
+        ...fist.interaction,
+        chance: { ...fist.interaction.chance, sound: undefined as never },
+      } }), /references missing sound/],
       [asDefinition({ ...hammer, interaction: {
         ...hammer.interaction,
         chance: { ...hammer.interaction.chance, intensity: 'normal' as never },

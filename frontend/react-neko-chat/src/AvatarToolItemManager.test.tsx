@@ -476,7 +476,7 @@ describe('AvatarToolItemManager local creation', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Create tool' }));
     fireEvent.change(screen.getByLabelText('Tool name'), { target: { value: 'My Tool' } });
     fireEvent.change(screen.getByLabelText('Interaction description'), {
-      target: { value: 'A friendly interaction' },
+      target: { value: '  A friendly\r\ninteraction  ' },
     });
     const fileInputs = document.querySelectorAll<HTMLInputElement>('input[type="file"]');
     fireEvent.click(fileInputs[0]);
@@ -496,7 +496,7 @@ describe('AvatarToolItemManager local creation', () => {
     expect(payload.changeItems).toHaveLength(1);
     expect(payload.changeItems[0].image).toBeInstanceOf(File);
     expect(payload.changeItems[0].image.name).toBe('pressed.png');
-    expect(payload.changeItems[0].meaning).toBe('A friendly interaction');
+    expect(payload.changeItems[0].meaning).toBe('A friendly\ninteraction');
     expect(payload.normalSound).toBeInstanceOf(File);
     expect(payload.normalSound.name).toBe('interaction.mp3');
   });

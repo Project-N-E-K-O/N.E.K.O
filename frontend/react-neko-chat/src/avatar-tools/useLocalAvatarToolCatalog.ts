@@ -49,17 +49,31 @@ function buildValidLocalDefinitions(items: ReadonlyArray<LocalAvatarToolDto>): A
 
 function detailMatchesUpdate(detail: LocalAvatarToolDetail, input: UpdateLocalAvatarToolInput): boolean {
   if (
+    input.defaultImage.file
+    || input.changeItems.some(item => item.file)
+    || input.normalSound?.file
+    || input.special?.image.file
+    || input.special?.sound?.file
+  ) return false;
+  if (
     detail.name !== input.name
     || detail.changeMode !== input.changeMode
+    || detail.defaultImage.resource !== input.defaultImage.resource
     || detail.changeItems.length !== input.changeItems.length
-    || detail.changeItems.some((item, index) => item.meaning !== input.changeItems[index]?.meaning.trim())
+    || detail.changeItems.some((item, index) => (
+      item.resource !== input.changeItems[index]?.resource
+      || item.meaning !== input.changeItems[index]?.meaning.trim()
+    ))
     || !!detail.normalSound !== !!input.normalSound
+    || (detail.normalSound?.resource !== input.normalSound?.resource)
     || !!detail.special !== !!input.special
   ) return false;
   if (!detail.special || !input.special) return true;
   return detail.special.probability === input.special.probability
+    && detail.special.image.resource === input.special.image.resource
     && detail.special.meaning === input.special.meaning.trim()
-    && !!detail.special.sound === !!input.special.sound;
+    && !!detail.special.sound === !!input.special.sound
+    && detail.special.sound?.resource === input.special.sound?.resource;
 }
 
 function detailToPublicItem(detail: LocalAvatarToolDetail): LocalAvatarToolDto {

@@ -159,7 +159,7 @@ function decodeLocalAvatarToolItem(value: unknown, maxChangeImages: number): Loc
     typeof item.id !== 'string' || !LOCAL_AVATAR_TOOL_ID_PATTERN.test(item.id)
     || typeof item.name !== 'string' || !item.name.trim()
     || (item.changeMode !== 'press-swap' && item.changeMode !== 'click-advance')
-    || typeof item.defaultUrl !== 'string'
+    || typeof item.defaultUrl !== 'string' || !item.defaultUrl
     || !Array.isArray(changeUrls)
     || changeUrls.length < 1
     || changeUrls.length > maxChangeImages

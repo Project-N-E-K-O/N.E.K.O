@@ -91,7 +91,7 @@ export function readPersistedActiveAvatarToolIds(): AvatarToolId[] {
 
 export function persistActiveAvatarToolIds(
   ids: AvatarToolId[],
-  registry: AvatarToolRegistrySnapshot = BUILT_IN_AVATAR_TOOL_REGISTRY,
+  registry: AvatarToolRegistrySnapshot,
 ) {
   if (typeof window === 'undefined') return;
   try {
