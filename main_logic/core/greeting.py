@@ -166,6 +166,7 @@ class GreetingMixin:
                 local_record = await asyncio.to_thread(
                     local_store.read_record,
                     raw["tool_id"],
+                    verify_resources=True,
                 )
             except (AvatarToolStoreError, OSError):
                 logger.debug(

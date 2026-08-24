@@ -204,7 +204,8 @@ async def test_missing_local_record_is_rejected_before_interaction_cooldown(monk
     from main_logic.core import greeting
 
     class MissingStore:
-        def read_record(self, _tool_id):
+        def read_record(self, _tool_id, *, verify_resources=False):
+            assert verify_resources is True
             raise AvatarToolStoreError("tool_not_found", "missing", status_code=404)
 
     class Harness(greeting.GreetingMixin):
@@ -232,7 +233,8 @@ async def test_out_of_range_change_index_is_rejected_before_interaction_cooldown
     from main_logic.core import greeting
 
     class Store:
-        def read_record(self, _tool_id):
+        def read_record(self, _tool_id, *, verify_resources=False):
+            assert verify_resources is True
             return RECORD
 
         record_revision = staticmethod(AvatarToolStore.record_revision)
@@ -262,7 +264,8 @@ async def test_stale_local_revision_is_rejected_before_interaction_cooldown(monk
     from main_logic.core import greeting
 
     class Store:
-        def read_record(self, _tool_id):
+        def read_record(self, _tool_id, *, verify_resources=False):
+            assert verify_resources is True
             return RECORD
 
         record_revision = staticmethod(AvatarToolStore.record_revision)
