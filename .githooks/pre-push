@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# Auto-mirror Testbench plugin driver to the Market repo before push (optional local hook).
+# Enable once: git config core.hooksPath .githooks
+set -euo pipefail
+
+ROOT="$(git rev-parse --show-toplevel)"
+PLUGIN_REL="tests/testbench_dist/plugin/testbench"
+ZERO_SHA="0000000000000000000000000000000000000000"
+
+while read -r local_ref local_sha remote_ref remote_sha; do
+  [ "$local_ref" = "refs/heads/main" ] || continue
+  if [ "$remote_sha" = "$ZERO_SHA" ]; then
+    range="$local_sha"
+  else
+    range="${remote_sha}..${local_sha}"
+  fi
+  if git -C "$ROOT" diff --name-only "$range" -- "$PLUGIN_REL" | grep -q .; then
+    echo "pre-push: mirroring $PLUGIN_REL to n.e.k.o_plugin_testbench ..."
+    python "$ROOT/tests/testbench_dist/scripts/sync_plugin_repo.py" \
+      -m "chore: auto-sync from local pre-push (${local_sha:0:12})"
+  fi
+done
+
+exit 0

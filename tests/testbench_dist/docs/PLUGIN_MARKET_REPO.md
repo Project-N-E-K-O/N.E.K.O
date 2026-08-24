@@ -203,7 +203,8 @@ uses: Project-N-E-K-O/N.E.K.O/.github/workflows/plugin-market-verify.yml@main
 **每次功能性修改后：**
 
 - [ ] 主仓：`check` / `check -r` / smoke 通过
-- [ ] 插件仓：`git push origin main`，Verify CI 绿
+- [ ] 主仓 push 后确认 **Sync Testbench plugin to Market repo** Action 绿（或本地 pre-push 已 mirror）
+- [ ] 插件仓 Verify CI 绿
 - [ ] 若发 Market 版本：`plugin.toml` 版本号已递增
 - [ ] 若发 Market 版本：`neko-plugin publish tests/testbench_dist/plugin/testbench` 到「Market 发布成功」
 - [ ] 手测：Plugin Manager 导入 → 启停 → Panel 状态刷新
@@ -212,20 +213,51 @@ uses: Project-N-E-K-O/N.E.K.O/.github/workflows/plugin-market-verify.yml@main
 
 ---
 
-## 11. 能否完全自动同步？
+## 10. 全自动同步（推荐）
 
-| 方式 | 说明 |
-|------|------|
-| **`sync_plugin_repo.py`（§4.2.1）** | 本地一条命令，适合每次改驱动后手动跑；最稳、无额外密钥 |
-| **主仓 pre-push hook** | 检测到 `plugin/testbench/` 变更时提示或调用上述脚本；可写进 `.githooks/`，需 `core.hooksPath` |
-| **GitHub Actions（NEKO-dev push）** | push 主仓后 Action 用 PAT 向 `n.e.k.o_plugin_testbench` 提交 mirror；需保管 write token，且 nested git  checkout 要额外步骤 |
-| **Market 发布时** | `neko-plugin publish` 打 tag 触发 release workflow；**不**替代日常源码 mirror，审核仍看插件仓 `main` |
+### 10.1 GitHub Actions（云端，push 即 mirror）
 
-推荐流程：**主仓 PR 合并前** 跑一遍 `sync_plugin_repo.py`，让 Market 仓 Verify CI 与 PR 同批改动对齐。完全无人值守的 mirror 可用 Action，但维护成本更高，首发阶段用脚本即可。
+Workflow：`.github/workflows/sync-testbench-plugin-repo.yml`
+
+- **触发**：`main` 上 `tests/testbench_dist/plugin/testbench/**` 有变更时 push；也可 `workflow_dispatch` 手动跑
+- **行为**：从主仓 checkout 驱动源码 → 写入克隆的 `n.e.k.o_plugin_testbench` → commit → push → 插件仓 Verify CI 自动跑
+
+**一次性配置（NEKO-dev 与 upstream 合入后均需配置）：**
+
+1. GitHub → **Settings → Developer settings → Fine-grained tokens**（或 Classic PAT）
+2. 权限：`TL0SR2/n.e.k.o_plugin_testbench` → **Contents: Read and write**
+3. 主仓 **Settings → Secrets and variables → Actions** → New secret：
+   - Name: `TESTBENCH_PLUGIN_REPO_PAT`
+   - Value: 上述 PAT
+4. 推送含 workflow 的 commit 后，改插件驱动并 push `main`，在 Actions 页确认 **Sync Testbench plugin to Market repo** 成功
+
+Secret 未配置时 workflow 会明确报错，不会静默跳过。
+
+### 10.2 本地 pre-push hook（可选，双保险）
+
+```powershell
+git config core.hooksPath .githooks
+```
+
+`.githooks/pre-push` 在 push `main` 且本次 commit 涉及 `plugin/testbench/` 时，自动调用 `sync_plugin_repo.py`（依赖本地嵌套 `.git`）。
+
+### 10.3 手动 / CI 脚本
+
+```powershell
+# 本地嵌套 .git
+uv run python tests/testbench_dist/scripts/sync_plugin_repo.py -m "fix: ..."
+
+# GitHub Actions 内部（无嵌套 .git）
+python tests/testbench_dist/scripts/sync_plugin_repo.py --ci \
+  --target-repo plugin-market-repo \
+  --monorepo-sha "$GITHUB_SHA"
+```
+
+`neko-plugin publish` 只负责 Market **发版打 tag**，不替代日常源码 mirror。
 
 ---
 
-## 10. 相关文档
+## 11. 相关文档
 
 - [PLUGIN_INSTALL.md](../PLUGIN_INSTALL.md) — 安装与手测
 - [docs/PLAN.md](PLAN.md) — 双通道架构

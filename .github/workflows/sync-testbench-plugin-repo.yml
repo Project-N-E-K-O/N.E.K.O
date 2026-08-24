@@ -1,0 +1,54 @@
+﻿name: Sync Testbench plugin to Market repo
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "tests/testbench_dist/plugin/testbench/**"
+      - "tests/testbench_dist/scripts/sync_plugin_repo.py"
+      - ".github/workflows/sync-testbench-plugin-repo.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: sync-testbench-plugin-repo
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout N.E.K.O
+        uses: actions/checkout@v4
+
+      - name: Require sync token
+        env:
+          SYNC_TOKEN: ${{ secrets.TESTBENCH_PLUGIN_REPO_PAT }}
+        run: |
+          if [ -z "$SYNC_TOKEN" ]; then
+            echo "::error::Missing repository secret TESTBENCH_PLUGIN_REPO_PAT (PAT with write access to TL0SR2/n.e.k.o_plugin_testbench)."
+            exit 1
+          fi
+
+      - name: Checkout Market plugin repo
+        uses: actions/checkout@v4
+        with:
+          repository: TL0SR2/n.e.k.o_plugin_testbench
+          token: ${{ secrets.TESTBENCH_PLUGIN_REPO_PAT }}
+          path: plugin-market-repo
+          fetch-depth: 0
+
+      - name: Mirror driver sources and push
+        env:
+          SYNC_TOKEN: ${{ secrets.TESTBENCH_PLUGIN_REPO_PAT }}
+        run: |
+          set -euo pipefail
+          git -C plugin-market-repo config user.name "github-actions[bot]"
+          git -C plugin-market-repo config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git -C plugin-market-repo remote set-url origin "https://x-access-token:${SYNC_TOKEN}@github.com/TL0SR2/n.e.k.o_plugin_testbench.git"
+          python tests/testbench_dist/scripts/sync_plugin_repo.py --ci \
+            --target-repo plugin-market-repo \
+            --monorepo-sha "${GITHUB_SHA}" \
+            -m "chore: auto-sync from N.E.K.O @ ${GITHUB_SHA:0:12}"
