@@ -2825,7 +2825,11 @@
             return true;
         }
 
-        getEdgeSnapTarget({ minVisiblePixels = PNGTUBER_EDGE_SNAP_MIN_VISIBLE_PX } = {}) {
+        getEdgeSnapTarget({
+            minVisiblePixels = PNGTUBER_EDGE_SNAP_MIN_VISIBLE_PX,
+            horizontalDirection = 0,
+            verticalDirection = 0
+        } = {}) {
             if (!this.image || typeof this.image.getBoundingClientRect !== 'function') return null;
             const rect = this.image.getBoundingClientRect();
             const left = Number(rect?.left);
@@ -2839,30 +2843,47 @@
                 return null;
             }
 
-            const right = left + width;
-            const bottom = top + height;
+            let contentLeft = left;
+            let contentTop = top;
+            let contentWidth = width;
+            let contentHeight = height;
+            if (this.isLayeredActive()) {
+                const padding = Math.max(0, Number(this.layeredCanvasPadding) || 0);
+                const logicalWidth = Math.max(1, Number(this.layeredCanvasLogicalWidth) || width);
+                const logicalHeight = Math.max(1, Number(this.layeredCanvasLogicalHeight) || height);
+                const paddingX = Math.min(width / 2, (padding / logicalWidth) * width);
+                const paddingY = Math.min(height / 2, (padding / logicalHeight) * height);
+                contentLeft += paddingX;
+                contentTop += paddingY;
+                contentWidth -= paddingX * 2;
+                contentHeight -= paddingY * 2;
+            }
+            const right = contentLeft + contentWidth;
+            const bottom = contentTop + contentHeight;
             const effectiveMinX = Math.min(Math.max(0, Number(minVisiblePixels) || 0), viewportWidth);
             const effectiveMinY = Math.min(Math.max(0, Number(minVisiblePixels) || 0), viewportHeight);
-            const visibleWidth = Math.max(0, Math.min(viewportWidth, right) - Math.max(0, left));
-            const visibleHeight = Math.max(0, Math.min(viewportHeight, bottom) - Math.max(0, top));
-            const needsClampH = (left < 0 || right > viewportWidth) && visibleWidth < effectiveMinX;
-            const needsClampV = (top < 0 || bottom > viewportHeight) && visibleHeight < effectiveMinY;
+            const visibleWidth = Math.max(0, Math.min(viewportWidth, right) - Math.max(0, contentLeft));
+            const visibleHeight = Math.max(0, Math.min(viewportHeight, bottom) - Math.max(0, contentTop));
+            const needsClampH = horizontalDirection !== 0
+                || ((contentLeft < 0 || right > viewportWidth) && visibleWidth < effectiveMinX);
+            const needsClampV = verticalDirection !== 0
+                || ((contentTop < 0 || bottom > viewportHeight) && visibleHeight < effectiveMinY);
             if (!needsClampH && !needsClampV) return null;
 
             let moveX = 0;
             let moveY = 0;
             if (needsClampH) {
-                if (right < effectiveMinX) {
+                if (horizontalDirection > 0 || (!horizontalDirection && right < effectiveMinX)) {
                     moveX = effectiveMinX - right;
-                } else if (left > viewportWidth - effectiveMinX) {
-                    moveX = (viewportWidth - effectiveMinX) - left;
+                } else if (horizontalDirection < 0 || contentLeft > viewportWidth - effectiveMinX) {
+                    moveX = (viewportWidth - effectiveMinX) - contentLeft;
                 }
             }
             if (needsClampV) {
-                if (bottom < effectiveMinY) {
+                if (verticalDirection > 0 || (!verticalDirection && bottom < effectiveMinY)) {
                     moveY = effectiveMinY - bottom;
-                } else if (top > viewportHeight - effectiveMinY) {
-                    moveY = (viewportHeight - effectiveMinY) - top;
+                } else if (verticalDirection < 0 || contentTop > viewportHeight - effectiveMinY) {
+                    moveY = (viewportHeight - effectiveMinY) - contentTop;
                 }
             }
             if (!moveX && !moveY) return null;
@@ -2915,6 +2936,8 @@
             const placement = this.getActivePlacement();
             const startOffsetX = placement.offsetX;
             const startOffsetY = placement.offsetY;
+            const horizontalDirection = Math.sign(target.offsetX - startOffsetX);
+            const verticalDirection = Math.sign(target.offsetY - startOffsetY);
             const duration = Math.max(0, Number(durationMs) || 0);
             if (!animate || duration === 0) {
                 this.applyEdgeSnapOffsets(target.offsetX, target.offsetY);
@@ -2925,7 +2948,7 @@
             return new Promise((resolve) => {
                 this._edgeSnapResolve = resolve;
                 const step = (timestamp) => {
-                    const refreshedTarget = this.getEdgeSnapTarget();
+                    const refreshedTarget = this.getEdgeSnapTarget({ horizontalDirection, verticalDirection });
                     if (refreshedTarget) target = refreshedTarget;
                     const elapsed = Math.max(0, Number(timestamp) - startedAt);
                     const progress = Math.min(1, elapsed / duration);
@@ -3110,6 +3133,7 @@
                 this.cancelEdgeSnapAnimation();
                 this._dragSequence += 1;
                 state.dragSequence = this._dragSequence;
+                this.beginModelManagerPositionEditing();
                 const placement = this.getActivePlacement();
                 state.startOffsetX = placement.offsetX;
                 state.startOffsetY = placement.offsetY;
@@ -3198,6 +3222,7 @@
             this._dragSequence += 1;
             const zoomSequence = this._dragSequence;
             this.cancelEdgeSnapAnimation();
+            this.beginModelManagerPositionEditing();
             const absDelta = Math.abs(event.deltaY);
             const zoomStep = Math.min(absDelta / 1000, 0.08);
             const scaleFactor = 1 + zoomStep;
@@ -3275,6 +3300,7 @@
                 this.cancelEdgeSnapAnimation();
                 this._dragSequence += 1;
                 state.dragSequence = this._dragSequence;
+                this.beginModelManagerPositionEditing();
                 const placement = this.getActivePlacement();
                 state.initialScale = placement.scale;
                 state.startOffsetX = placement.offsetX;

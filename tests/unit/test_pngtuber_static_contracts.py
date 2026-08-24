@@ -96,8 +96,10 @@ def test_pngtuber_transform_and_interactions_use_active_layout_fields():
     assert "startOffsetX: placement.offsetX" in drag_block
     assert "this.setActiveOffsets(state.startOffsetX + dx, state.startOffsetY + dy);" in drag_block
     assert "const currentScale = this.getActivePlacement().scale;" in wheel_block
+    assert "this.beginModelManagerPositionEditing();" in wheel_block
     assert "window.stageModelManagerPNGTuberPlacement(this.config);" in wheel_block
     assert "initialScale: placement.scale" in touch_block
+    assert "this.beginModelManagerPositionEditing();" in touch_block
     assert "this.setActiveOffsets(state.startOffsetX + dx, state.startOffsetY + dy);" in touch_block
     assert "window.stageModelManagerPNGTuberPlacement(this.config);" in save_block
     assert "this.config.mobile_offset_x" in runtime_save_block
@@ -129,6 +131,7 @@ def test_pngtuber_drag_uses_the_shared_multiscreen_transfer_contract():
     assert "state.dragHintApproachPending = true;" in drag_block
     assert "state.dragHintApproachPending = false;" in drag_block
     assert "this.isDragCompletionCurrent(state)" in drag_block
+    assert "this.beginModelManagerPositionEditing();" in drag_block
     assert "bridge.moveWindowToDisplay(switchScreenX, switchScreenY)" in drag_block
     assert "result.windowBounds" in drag_block
     assert "this.moveModelCenterToWindowPoint(desiredCenterX, desiredCenterY);" in drag_block
@@ -283,6 +286,16 @@ manager.scheduleSaveCurrentConfig = () => {{ scheduledSaves += 1; }};
   assert.equal(manager.config.offset_x, -500);
   assert.equal(manager.config.offset_y, 0);
 
+  // Layered-canvas padding is transparent and does not count as visible avatar content.
+  manager.isLayeredActive = () => true;
+  manager.layeredCanvasPadding = 100;
+  manager.layeredCanvasLogicalWidth = 600;
+  manager.layeredCanvasLogicalHeight = 600;
+  manager.config.offset_x = -700;
+  const layeredTarget = manager.getEdgeSnapTarget();
+  assert.ok(Math.abs(layeredTarget.offsetX - (-433.3333333333333)) < 0.001);
+  manager.isLayeredActive = () => false;
+
   // State image geometry changes retarget an in-flight rebound.
   manager.config.offset_x = -750;
   modelWidth = 400;
@@ -293,6 +306,17 @@ manager.scheduleSaveCurrentConfig = () => {{ scheduledSaves += 1; }};
   runNextFrame(260);
   assert.equal(await resizedImageSnap, true);
   assert.equal(manager.config.offset_x, -400);
+
+  // A size change during ease-out-back overshoot still replaces the stale target.
+  manager.config.offset_x = -750;
+  modelWidth = 400;
+  const overshootResizeSnap = manager.snapModelIntoScreen();
+  runNextFrame(0);
+  runNextFrame(130);
+  modelWidth = 370;
+  runNextFrame(260);
+  assert.equal(await overshootResizeSnap, true);
+  assert.ok(Math.abs(manager.config.offset_x - (-485)) < 0.001);
   modelWidth = 400;
 
   // Wheel zoom cancels the old rebound and targets the resized model geometry.
@@ -332,6 +356,7 @@ manager.scheduleSaveCurrentConfig = () => {{ scheduledSaves += 1; }};
 
   // Model-manager wheel replacement stages the final snapped placement.
   window.location.pathname = '/model_manager';
+  manager._modelManagerUseCurrentPlacement = true;
   manager.config.offset_x = -750;
   manager.handleWheelZoom({{
     deltaY: 1000,
