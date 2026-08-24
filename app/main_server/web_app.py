@@ -178,7 +178,18 @@ class AvatarToolStaticFiles(CustomStaticFiles):
             scope.get("query_string", b"")
         )
         if requested_digest is None:
-            return await StaticFiles.get_response(self, normalized_path, scope)
+            response = await StaticFiles.get_response(self, normalized_path, scope)
+            range_header = Headers(scope=scope).get("range", "")
+            if (
+                range_header.split("=", 1)[-1].count(",") + 1
+                > _VerifiedAssetFileResponse._MAX_RANGE_SPECS
+            ):
+                file_size = getattr(getattr(response, "stat_result", None), "st_size", "*")
+                return Response(
+                    status_code=416,
+                    headers={"Content-Range": f"bytes */{file_size}"},
+                )
+            return response
         try:
             full_path, stat_result = await asyncio.to_thread(
                 self.lookup_path,

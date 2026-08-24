@@ -465,6 +465,7 @@ def test_list_isolates_a_tool_when_a_persisted_resource_fails_integrity(tmp_path
 
 
 def test_initialize_and_list_wrap_unreadable_store_errors(tmp_path, monkeypatch):
+    monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
     store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
     store.ensure()
 
@@ -1085,10 +1086,15 @@ def test_initialize_restores_a_valid_backup_after_interrupted_update(tmp_path, m
 
 
 @pytest.mark.parametrize("first_operation", ("list", "detail", "delete"))
+@pytest.mark.parametrize("valid_final", (False, True))
 def test_first_available_request_retries_a_failed_startup_recovery(
-    tmp_path, monkeypatch, first_operation
+    tmp_path, monkeypatch, first_operation, valid_final
 ):
-    monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
+    fence_calls = []
+    monkeypatch.setattr(
+        "utils.avatar_tool_store.assert_cloudsave_writable",
+        lambda *_a, **kwargs: fence_calls.append(kwargs),
+    )
     root = tmp_path / "avatar_tools"
     store = AvatarToolStore(_ConfigManager(root))
     created = _create_tool(
@@ -1103,7 +1109,8 @@ def test_first_available_request_retries_a_failed_startup_recovery(
     final = root / tool_id
     backup = root / f".{tool_id}.backup"
     shutil.copytree(final, backup)
-    shutil.rmtree(final)
+    if not valid_final:
+        shutil.rmtree(final)
 
     class FlakyConfigManager(_ConfigManager):
         available = False
@@ -1119,6 +1126,7 @@ def test_first_available_request_retries_a_failed_startup_recovery(
         recovering_store.initialize()
     assert raised.value.code == "avatar_tools_directory_unavailable"
 
+    fence_calls.clear()
     config_manager.available = True
     if first_operation == "list":
         assert [item["id"] for item in recovering_store.list_items()] == [tool_id]
@@ -1130,6 +1138,7 @@ def test_first_available_request_retries_a_failed_startup_recovery(
         assert recovering_store.delete_tool(tool_id) == tool_id
         assert not final.exists()
     assert not backup.exists()
+    assert any(call.get("operation") == "recover" for call in fence_calls)
 
 
 def test_delete_cleans_a_stale_update_backup_without_resurrection(tmp_path, monkeypatch):

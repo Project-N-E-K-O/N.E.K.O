@@ -250,3 +250,28 @@ async def test_avatar_tool_verified_response_rejects_excessive_range_specs(tmp_p
 
     assert messages[0]["status"] == 416
     assert b"".join(message.get("body", b"") for message in messages[1:]) == b""
+
+
+@pytest.mark.asyncio
+async def test_avatar_tool_unversioned_response_rejects_excessive_range_specs(tmp_path):
+    tool_id = "local-12345678-1234-4123-8123-123456789abc"
+    static_files = AvatarToolStaticFiles(directory=tmp_path, check_dir=False)
+    content = bytes(range(64))
+    asset = tmp_path / tool_id / "normal.mp3"
+    asset.parent.mkdir()
+    asset.write_bytes(content)
+    ranges = ",".join(f"{index * 2}-{index * 2}" for index in range(17))
+    scope = {
+        "type": "http",
+        "method": "GET",
+        "path": f"/{tool_id}/normal.mp3",
+        "root_path": "",
+        "query_string": b"",
+        "headers": [(b"range", f"bytes={ranges}".encode("ascii"))],
+    }
+
+    response = await static_files.get_response(f"{tool_id}/normal.mp3", scope)
+    messages = await _render_response(response, scope)
+
+    assert messages[0]["status"] == 416
+    assert dict(messages[0]["headers"])[b"content-range"] == b"bytes */64"

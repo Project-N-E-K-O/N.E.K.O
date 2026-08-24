@@ -325,6 +325,11 @@ class AvatarToolStore:
             root_key = self._root_key()
             if root_key not in _RECOVERY_PENDING_ROOTS:
                 return
+            assert_cloudsave_writable(
+                self.config_manager,
+                operation="recover",
+                target="avatar_tools",
+            )
             try:
                 self._recover_interrupted_mutations()
             except OSError as exc:
@@ -368,7 +373,11 @@ class AvatarToolStore:
             backup = self.root / f".{tool_id}.backup"
             if final.is_dir() and not final.is_symlink():
                 try:
-                    self.read_record(tool_id, verify_resources=True)
+                    self._read_record_from_directory(
+                        tool_id,
+                        final,
+                        verify_resources=True,
+                    )
                 except AvatarToolStoreError:
                     pass
                 else:
