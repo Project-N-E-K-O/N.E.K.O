@@ -223,3 +223,5 @@ async def test_avatar_tool_verified_response_preserves_multiple_ranges(tmp_path)
     assert b"01" in body
     assert b"45" in body
     assert len(body) == int(headers[b"content-length"])
+    assert headers[b"content-type"].startswith(b"multipart/byteranges; boundary=")
+    assert b"content-range" not in headers

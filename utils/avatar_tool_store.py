@@ -496,7 +496,7 @@ class AvatarToolStore:
             if special.get("image") != "special.png":
                 raise AvatarToolStoreError("record_invalid", "Avatar tool record is invalid", status_code=404)
             special_sound = special.get("sound")
-            if special_sound is not None and special_sound != "special.mp3":
+            if "sound" in special and special_sound != "special.mp3":
                 raise AvatarToolStoreError("record_invalid", "Avatar tool record is invalid", status_code=404)
             special_probability = special.get("probability")
             if isinstance(special_probability, bool) or not isinstance(special_probability, (int, float)):

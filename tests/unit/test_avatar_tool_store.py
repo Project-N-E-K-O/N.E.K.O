@@ -280,6 +280,31 @@ def test_read_record_rejects_null_options_and_non_numeric_probability(
     assert raised.value.code == "record_invalid"
 
 
+def test_read_record_rejects_explicit_null_special_sound(tmp_path, monkeypatch):
+    monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
+    store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
+    item = _create_tool(
+        store,
+        name="strict special sound",
+        change_mode="press-swap",
+        change_meanings=["meaning"],
+        default_image=_png(),
+        change_images=[_png()],
+        special_probability=0.1,
+        special_image=_png(),
+        special_meaning="surprise",
+    )
+    record_path = store.root / item["id"] / "record.json"
+    record = json.loads(record_path.read_text(encoding="utf-8"))
+    record["interaction"]["special"]["sound"] = None
+    record_path.write_text(json.dumps(record), encoding="utf-8")
+
+    with pytest.raises(AvatarToolStoreError) as raised:
+        store.read_record(item["id"])
+
+    assert raised.value.code == "record_invalid"
+
+
 @pytest.mark.parametrize(
     ("data", "code"),
     [
