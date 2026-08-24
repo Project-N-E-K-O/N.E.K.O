@@ -29,6 +29,7 @@ const LIMITS = {
 function dto(overrides: Partial<LocalAvatarToolDto> = {}): LocalAvatarToolDto {
   return {
     id: TOOL_ID,
+    revision: '2-123',
     name: 'Feather',
     changeMode: 'press-swap',
     defaultUrl: '/default.png?v=1',

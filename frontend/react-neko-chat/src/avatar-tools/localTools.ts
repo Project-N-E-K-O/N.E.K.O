@@ -19,6 +19,7 @@ export type LocalAvatarToolLimits = {
 
 export type LocalAvatarToolDto = {
   id: LocalAvatarToolId;
+  revision: string;
   name: string;
   changeMode: LocalAvatarToolChangeMode;
   defaultUrl: string;
@@ -176,6 +177,7 @@ function decodeLocalAvatarToolItem(value: unknown, maxChangeImages: number): Loc
   const special = item.special === undefined ? undefined : decodeSpecial(item.special);
   if (
     typeof item.id !== 'string' || !LOCAL_AVATAR_TOOL_ID_PATTERN.test(item.id)
+    || typeof item.revision !== 'string' || !/^\d+-\d+$/.test(item.revision) || item.revision.length > 128
     || typeof item.name !== 'string' || !item.name.trim()
     || (item.changeMode !== 'press-swap' && item.changeMode !== 'click-advance')
     || typeof item.defaultUrl !== 'string' || !item.defaultUrl
@@ -189,6 +191,7 @@ function decodeLocalAvatarToolItem(value: unknown, maxChangeImages: number): Loc
   ) return null;
   return {
     id: item.id as LocalAvatarToolId,
+    revision: item.revision,
     name: item.name,
     changeMode: item.changeMode,
     defaultUrl: item.defaultUrl,
@@ -566,6 +569,7 @@ export function buildLocalAvatarToolDefinition(item: LocalAvatarToolDto): Avatar
     effects: specialEffect ? [specialEffect] : [],
     interaction: {
       kind: 'press-release',
+      revision: item.revision,
       actionId: 'interact',
       imageChange: { kind: item.changeMode },
       burst: {

@@ -515,6 +515,7 @@ describe('App', () => {
       ok: true,
       items: [{
         id: localToolId,
+        revision: '2-123',
         name: 'Feather',
         changeMode: 'click-advance',
         defaultUrl: `/user_avatar_tools/${localToolId}/default.png?v=1`,
@@ -6033,6 +6034,7 @@ describe('App', () => {
     const localToolId = 'local-12345678-1234-4123-8123-123456789abc';
     const localItem = {
       id: localToolId,
+      revision: '100-200',
       name: 'Feather',
       changeMode: 'press-swap',
       defaultUrl: `/user_avatar_tools/${localToolId}/default.png?v=1`,

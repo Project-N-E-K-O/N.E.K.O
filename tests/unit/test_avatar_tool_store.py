@@ -63,6 +63,7 @@ def test_create_publishes_ordered_public_dto_but_keeps_meanings_private(tmp_path
     )
 
     assert item["id"].startswith("local-")
+    assert item["revision"] == store.get_detail(item["id"])["revision"]
     assert item["name"] == "小 羽毛__01"
     assert "meaning" not in json.dumps(item, ensure_ascii=False).lower()
     assert item["changeMode"] == "click-advance"
@@ -963,6 +964,7 @@ def test_asset_only_update_changes_revision_independently_of_record_metadata(tmp
         key: value for key, value in before_record.items() if key != "resourceDigests"
     }
     assert store.get_detail(tool_id)["revision"] != before_revision
+    assert updated["revision"] == store.get_detail(tool_id)["revision"]
     assert (store.root / tool_id / "default.png").stat().st_size == before_default_size
     assert updated["defaultUrl"] != before_default_url
     assert updated["defaultUrl"].endswith(after_record["resourceDigests"]["default.png"])

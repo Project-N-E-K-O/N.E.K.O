@@ -48,6 +48,7 @@ describe('useLocalAvatarToolCatalog failure handling', () => {
       items: [
         {
           id: 'local-aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+          revision: '2-100',
           name: 'Unsafe',
           changeMode: 'press-swap',
           defaultUrl: 'https://example.com/default.png',
@@ -55,6 +56,7 @@ describe('useLocalAvatarToolCatalog failure handling', () => {
         },
         {
           id: 'local-12345678-1234-4123-8123-123456789abc',
+          revision: '2-101',
           name: 'Feather',
           changeMode: 'press-swap',
           defaultUrl: '/default.png',
@@ -79,6 +81,7 @@ describe('useLocalAvatarToolCatalog failure handling', () => {
   it('keeps a successful POST successful and publishes its item when the following GET fails', async () => {
     const createdItem = {
       id: 'local-12345678-1234-4123-8123-123456789abc' as const,
+      revision: '2-100',
       name: 'Feather',
       changeMode: 'press-swap',
       defaultUrl: '/default.png?v=1',
@@ -120,6 +123,7 @@ describe('useLocalAvatarToolCatalog failure handling', () => {
   it('treats a lost POST response as successful when the authoritative refresh contains its stable id', async () => {
     const createdItem = {
       id: 'local-12345678-1234-4123-8123-123456789abc' as const,
+      revision: '2-100',
       name: 'Feather',
       changeMode: 'press-swap',
       defaultUrl: '/default.png?v=1',
@@ -194,6 +198,7 @@ describe('useLocalAvatarToolCatalog failure handling', () => {
     const toolId = 'local-12345678-1234-4123-8123-123456789abc' as const;
     const oldItem = {
       id: toolId,
+      revision: '100-200',
       name: 'Feather',
       changeMode: 'press-swap',
       defaultUrl: '/default.png?v=1',
@@ -201,6 +206,7 @@ describe('useLocalAvatarToolCatalog failure handling', () => {
     };
     const updatedItem = {
       ...oldItem,
+      revision: '120-300',
       name: 'Soft Feather',
       defaultUrl: '/default.png?v=2',
       changeUrls: ['/change-000.png?v=2'],
@@ -239,6 +245,7 @@ describe('useLocalAvatarToolCatalog failure handling', () => {
     const toolId = 'local-12345678-1234-4123-8123-123456789abc' as const;
     const oldItem = {
       id: toolId,
+      revision: '100-200',
       name: 'Feather',
       changeMode: 'press-swap',
       defaultUrl: '/default.png?v=1',
@@ -246,6 +253,7 @@ describe('useLocalAvatarToolCatalog failure handling', () => {
     };
     const updatedItem = {
       ...oldItem,
+      revision: '120-300',
       name: 'Soft Feather',
       defaultUrl: '/default.png?v=2',
       changeUrls: ['/change-000.png?v=2'],
@@ -298,6 +306,7 @@ describe('useLocalAvatarToolCatalog failure handling', () => {
     const toolId = 'local-12345678-1234-4123-8123-123456789abc' as const;
     const oldItem = {
       id: toolId,
+      revision: '100-200',
       name: 'Feather',
       changeMode: 'press-swap',
       defaultUrl: '/default.png?v=1',
@@ -330,6 +339,7 @@ describe('useLocalAvatarToolCatalog failure handling', () => {
       }))
       .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true, items: [{
         ...oldItem,
+        revision: currentDetail.revision,
         name: currentDetail.name,
         defaultUrl: currentDetail.defaultImage.url,
         changeUrls: currentDetail.changeItems.map(item => item.url),
@@ -356,6 +366,7 @@ describe('useLocalAvatarToolCatalog failure handling', () => {
     const toolId = 'local-12345678-1234-4123-8123-123456789abc' as const;
     const oldItem = {
       id: toolId,
+      revision: '100-200',
       name: 'Feather',
       changeMode: 'press-swap',
       defaultUrl: '/default.png?v=1',
@@ -408,6 +419,7 @@ describe('useLocalAvatarToolCatalog failure handling', () => {
   it('ignores a pre-create GET and confirms the created item with a newer GET', async () => {
     const createdItem = {
       id: 'local-12345678-1234-4123-8123-123456789abc' as const,
+      revision: '2-100',
       name: 'Feather',
       changeMode: 'press-swap',
       defaultUrl: '/default.png?v=1',
@@ -462,6 +474,7 @@ describe('useLocalAvatarToolCatalog failure handling', () => {
   it('removes a deleted item immediately and keeps deletion successful if the follow-up GET fails', async () => {
     const localItem = {
       id: 'local-12345678-1234-4123-8123-123456789abc',
+      revision: '2-100',
       name: 'Feather',
       changeMode: 'press-swap',
       defaultUrl: '/default.png?v=1',
@@ -492,6 +505,7 @@ describe('useLocalAvatarToolCatalog failure handling', () => {
   it('ignores a pre-delete GET and confirms deletion with a newer GET', async () => {
     const localItem = {
       id: 'local-12345678-1234-4123-8123-123456789abc',
+      revision: '2-100',
       name: 'Feather',
       changeMode: 'press-swap',
       defaultUrl: '/default.png?v=1',
@@ -535,6 +549,7 @@ describe('useLocalAvatarToolCatalog failure handling', () => {
   it('refreshes the actual catalog after a failed delete', async () => {
     const localItem = {
       id: 'local-12345678-1234-4123-8123-123456789abc',
+      revision: '2-100',
       name: 'Feather',
       changeMode: 'press-swap',
       defaultUrl: '/default.png?v=1',
@@ -566,6 +581,7 @@ describe('useLocalAvatarToolCatalog failure handling', () => {
   it('treats an uncertain delete as successful when the authoritative refresh shows it absent', async () => {
     const localItem = {
       id: 'local-12345678-1234-4123-8123-123456789abc',
+      revision: '2-100',
       name: 'Feather',
       changeMode: 'press-swap',
       defaultUrl: '/default.png?v=1',

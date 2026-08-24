@@ -154,6 +154,7 @@ export type AvatarInteractionPayload =
     : never)
   | (AvatarInteractionPayloadBase & {
     toolId: `local-${string}`;
+    toolRevision: string;
     actionId: 'interact';
     intensity: 'normal' | 'rapid';
     touchZone: 'ear' | 'head' | 'face' | 'body';
@@ -281,6 +282,9 @@ function createAvatarInteractionPayloadSchema(definition: AvatarToolDefinition) 
   if (facts.requiresChangeIndex) {
     conditionalShape.changeIndex = z.number().int().nonnegative().safe();
   }
+  if (definition.definitionVersion === 2 && definition.interaction.kind === 'press-release') {
+    conditionalShape.toolRevision = z.literal(definition.interaction.revision!);
+  }
   return z.object({
     ...avatarInteractionPayloadBaseShape,
     ...toolSpecificShape,
@@ -321,6 +325,7 @@ const toolIdProbeSchema = z.object({ toolId: z.string() }).passthrough();
 const localAvatarInteractionPayloadSchema = z.object({
   ...avatarInteractionPayloadBaseShape,
   toolId: z.string().regex(LOCAL_AVATAR_TOOL_ID_PATTERN),
+  toolRevision: z.string().regex(/^\d+-\d+$/).max(128),
   actionId: z.literal('interact'),
   intensity: z.enum(['normal', 'rapid']),
   touchZone: z.enum(AVATAR_TOOL_TOUCH_ZONES),
@@ -489,6 +494,9 @@ export function buildAvatarInteractionPayload(
   } = commit;
   const payload = {
     ...facts,
+    ...(definition?.definitionVersion === 2 && definition.interaction.kind === 'press-release' ? {
+      toolRevision: definition.interaction.revision,
+    } : {}),
     interactionId: createAvatarInteractionId(),
     target: 'avatar' as const,
     pointer: { clientX, clientY },

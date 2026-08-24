@@ -75,6 +75,39 @@ describe('AvatarToolItemManager local creation', () => {
     expect(screen.getByRole('button', { name: 'Save changes' })).toBeEnabled();
   });
 
+  it('reuses a draft slot whose local tool disappeared from the authoritative catalog', () => {
+    const onSave = vi.fn();
+    const localTool: AvatarToolItem = {
+      id: LOCAL_ID,
+      label: { kind: 'literal', value: 'My Feather' },
+      iconImagePath: '/user_avatar_tools/local/default.png?v=1',
+      pointerImagePath: '/user_avatar_tools/local/default.png?v=1',
+    };
+    const props = {
+      open: true,
+      activeToolIds: [LOCAL_ID, 'lollipop', 'fist'] as AvatarToolId[],
+      onSave,
+      onCancel: vi.fn(),
+    };
+    const { rerender } = render(
+      <AvatarToolItemManager
+        {...props}
+        availableTools={[...AVAILABLE_COMPACT_AVATAR_TOOLS, localTool]}
+      />,
+    );
+
+    rerender(
+      <AvatarToolItemManager
+        {...props}
+        availableTools={AVAILABLE_COMPACT_AVATAR_TOOLS}
+      />,
+    );
+    fireEvent.click(document.querySelector('[data-avatar-tool-library-id="hammer"]')!);
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+
+    expect(onSave).toHaveBeenCalledWith(['hammer', 'lollipop', 'fist']);
+  });
+
   it('keeps focus, scrolling, and close visibility inside the create surface', () => {
     expect(chatStyles).toMatch(/\.avatar-tool-create-page\s*\{[\s\S]*?padding:\s*3px/);
     expect(chatStyles).toMatch(/\.avatar-tool-manager-create-body\s*\{[\s\S]*?overflow-y:\s*hidden/);

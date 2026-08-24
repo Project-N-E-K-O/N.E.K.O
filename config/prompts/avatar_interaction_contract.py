@@ -22,6 +22,7 @@ AVATAR_INTERACTION_ROUND_RESULTS = frozenset({"user_win", "avatar_win", "draw"})
 LOCAL_AVATAR_TOOL_ID_PATTERN = re.compile(
     r"^local-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
 )
+LOCAL_AVATAR_TOOL_REVISION_PATTERN = re.compile(r"^[0-9]+-[0-9]+$")
 AVATAR_INTERACTION_TOOL_CONTRACT = {
     "lollipop": {
         "actions": {
@@ -158,6 +159,7 @@ def normalize_avatar_interaction_payload(
             "action_id", "actionId", "target", "pointer", "timestamp",
             "text_context", "textContext", "intensity", "touch_zone", "touchZone",
             "change_index", "changeIndex",
+            "tool_revision", "toolRevision",
             "special_triggered", "specialTriggered",
         }
         if any(key not in allowed_local_keys for key in payload):
@@ -235,7 +237,16 @@ def normalize_avatar_interaction_payload(
         touch_zone = ""
 
     change_index = None
+    tool_revision = None
     if local_tool:
+        tool_revision = str(get_avatar_interaction_payload_value(
+            payload, "tool_revision", "toolRevision", ""
+        ) or "").strip()
+        if (
+            len(tool_revision) > 128
+            or LOCAL_AVATAR_TOOL_REVISION_PATTERN.fullmatch(tool_revision) is None
+        ):
+            return None
         raw_change_index = get_avatar_interaction_payload_value(
             payload, "change_index", "changeIndex", None
         )
@@ -302,6 +313,7 @@ def normalize_avatar_interaction_payload(
             "touch_zone": touch_zone,
         })
         if local_tool:
+            normalized["tool_revision"] = tool_revision
             normalized["change_index"] = change_index
             if carries_boolean_field:
                 normalized["special_triggered"] = boolean_value

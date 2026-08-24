@@ -11,6 +11,7 @@ const localTool = {
 };
 const localDefinition = buildLocalAvatarToolDefinition({
   id: localToolId,
+  revision: '2-123',
   name: 'Cross-repo surprise fixture',
   changeMode: 'click-advance',
   defaultUrl: localDefaultUrl,

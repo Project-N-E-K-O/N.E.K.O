@@ -51,6 +51,7 @@ describe('desktop avatar tool contract', () => {
   it('projects ordered local frames and the selected image-change rule as strict v2', () => {
     const source = buildLocalAvatarToolDefinition({
       id: 'local-12345678-1234-4123-8123-123456789abc',
+      revision: '2-123',
       name: 'Feather',
       changeMode: 'click-advance',
       defaultUrl: '/user_avatar_tools/local-12345678-1234-4123-8123-123456789abc/default.png?v=1',
@@ -72,6 +73,7 @@ describe('desktop avatar tool contract', () => {
     expect(contract.definition?.visual?.frames).toHaveLength(3);
     expect(contract.definition?.interaction?.profile).toMatchObject({
       kind: 'press-release',
+      revision: '2-123',
       actionId: 'interact',
       imageChange: { kind: 'click-advance' },
       feedback: { sound: 'normal-feedback' },
@@ -103,6 +105,11 @@ describe('desktop avatar tool contract', () => {
     ]);
     expect(contract.definition?.interaction?.profile).not.toHaveProperty('pointerDown');
     expect(desktopAvatarToolContractSchema.parse(cloneJson(contract))).toEqual(contract);
+    const withoutRevision = cloneJson(contract);
+    if (withoutRevision.definition?.interaction?.profile) {
+      delete (withoutRevision.definition.interaction.profile as { revision?: string }).revision;
+    }
+    expect(() => desktopAvatarToolContractSchema.parse(withoutRevision)).toThrow();
   });
 
   it('projects inactive and all four active definitions with strict JSON round trips', () => {

@@ -161,9 +161,10 @@ class GreetingMixin:
         local_record = None
         local_prompt_record = None
         if is_local_avatar_tool_id(raw["tool_id"]):
+            local_store = get_avatar_tool_store(self._config_manager)
             try:
                 local_record = await asyncio.to_thread(
-                    get_avatar_tool_store(self._config_manager).read_record,
+                    local_store.read_record,
                     raw["tool_id"],
                 )
             except (AvatarToolStoreError, OSError):
@@ -176,6 +177,16 @@ class GreetingMixin:
                     raw_interaction_id, False, "invalid_payload"
                 )
                 return {"accepted": False, "reason": "invalid_payload"}
+            if raw["tool_revision"] != local_store.record_revision(local_record):
+                logger.debug(
+                    "[%s] handle_avatar_interaction: stale local tool revision=%s",
+                    self.lanlan_name,
+                    raw["tool_id"],
+                )
+                await self.send_avatar_interaction_ack(
+                    raw_interaction_id, False, "stale_tool_revision"
+                )
+                return {"accepted": False, "reason": "stale_tool_revision"}
             try:
                 local_prompt_record = self._resolve_local_avatar_tool_prompt_record(
                     raw, local_record

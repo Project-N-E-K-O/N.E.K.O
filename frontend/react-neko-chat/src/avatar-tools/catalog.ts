@@ -256,6 +256,7 @@ export type ProgressiveReleaseProfile = {
 
 type PressReleaseProfileBase = {
   kind: 'press-release';
+  revision?: string;
   actionId: string;
   burst: {
     key: string;
@@ -973,6 +974,9 @@ export function validateAvatarToolDefinition(definition: AvatarToolDefinition): 
     if (definition.label?.kind !== 'literal') fail(definition, 'v2 label must be literal');
     assertNonEmpty(definition, definition.label.value, 'label.value');
     if (definition.interaction.kind !== 'press-release') fail(definition, 'v2 interaction must be press-release');
+    if (!/^\d+-\d+$/.test(definition.interaction.revision ?? '') || definition.interaction.revision!.length > 128) {
+      fail(definition, 'v2 interaction revision must identify the authoritative record');
+    }
   }
   if (
     typeof definition.capability?.desktopVisual !== 'boolean'

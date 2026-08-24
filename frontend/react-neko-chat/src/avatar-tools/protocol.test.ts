@@ -220,6 +220,7 @@ describe('avatar interaction payload contract', () => {
     expectTypeOf<RpsPayload['avatarGesture']>().toEqualTypeOf<'rock' | 'scissors' | 'paper'>();
     expectTypeOf<RpsPayload['roundResult']>().toEqualTypeOf<'user_win' | 'avatar_win' | 'draw'>();
     expectTypeOf<LocalPayload['actionId']>().toEqualTypeOf<'interact'>();
+    expectTypeOf<LocalPayload['toolRevision']>().toEqualTypeOf<string>();
     expectTypeOf<LocalPayload['changeIndex']>().toEqualTypeOf<number>();
     expectTypeOf<LocalPayload['specialTriggered']>().toEqualTypeOf<boolean | undefined>();
   });

@@ -16,6 +16,7 @@
 """Mount static assets and register main-server routers and local endpoints."""
 
 import asyncio
+import hashlib
 import os
 import re
 import secrets
@@ -54,17 +55,27 @@ def _has_generated_asset_version(query_string: bytes) -> bool:
     return False
 
 
-def _has_avatar_tool_asset_digest_version(query_string: bytes) -> bool:
-    """Return whether the query is one generated avatar-tool content digest."""
+def _avatar_tool_asset_digest_version(query_string: bytes) -> str | None:
+    """Return the exact generated avatar-tool digest carried by the query."""
     try:
         query_params = parse_qsl(query_string.decode("ascii"), keep_blank_values=True)
     except UnicodeDecodeError:
-        return False
-    return (
+        return None
+    if not (
         len(query_params) == 1
         and query_params[0][0] == "v"
         and _AVATAR_TOOL_ASSET_DIGEST_PATTERN.fullmatch(query_params[0][1]) is not None
-    )
+    ):
+        return None
+    return query_params[0][1]
+
+
+def _avatar_tool_asset_matches_digest(path: Path, expected_digest: str) -> bool:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return secrets.compare_digest(digest.hexdigest(), expected_digest)
 
 
 class CustomStaticFiles(StaticFiles):
@@ -87,8 +98,23 @@ class AvatarToolStaticFiles(CustomStaticFiles):
         normalized_path = str(path).replace("\\", "/")
         if not is_public_avatar_tool_resource_path(Path(self.directory), normalized_path):
             raise StarletteHTTPException(status_code=404)
-        response = await super().get_response(normalized_path, scope)
-        if _has_avatar_tool_asset_digest_version(scope.get("query_string", b"")):
+        requested_digest = _avatar_tool_asset_digest_version(
+            scope.get("query_string", b"")
+        )
+        if requested_digest is not None:
+            resource = Path(self.directory) / normalized_path
+            try:
+                matches_digest = await asyncio.to_thread(
+                    _avatar_tool_asset_matches_digest,
+                    resource,
+                    requested_digest,
+                )
+            except OSError as exc:
+                raise StarletteHTTPException(status_code=404) from exc
+            if not matches_digest:
+                raise StarletteHTTPException(status_code=404)
+        response = await StaticFiles.get_response(self, normalized_path, scope)
+        if requested_digest is not None:
             response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
         return response
 

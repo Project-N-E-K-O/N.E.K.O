@@ -14,7 +14,7 @@
 | 猫爪 | `fist` | `press-release` | `random-scatter` | `poke/normal`、`poke/rapid` |
 | 锤子 | `hammer` | `locked-impact` | `hammer-swing` | `bonk/normal`、`bonk/rapid`、`bonk/burst`、`bonk/easter_egg` |
 | 猜拳 | `rps` | `round-choice` | `round-reveal` | `userGesture/avatarGesture/roundResult`，不使用 action/intensity |
-| 自定义道具（动态） | `local-<lowercase-uuid-v4>` | v2 `press-release` + `press-swap` 或 `click-advance` | 可选 `random-scatter` 彩蛋 | `interact/normal`、`interact/rapid`，另含 `changeIndex`、`touchZone` 和可选 `specialTriggered` |
+| 自定义道具（动态） | `local-<lowercase-uuid-v4>` | v2 `press-release` + `press-swap` 或 `click-advance` | 可选 `random-scatter` 彩蛋 | `interact/normal`、`interact/rapid`，另含 `toolRevision`、`changeIndex`、`touchZone` 和可选 `specialTriggered` |
 
 当前特殊事实：
 
@@ -67,7 +67,7 @@ Chat descriptor 只传当前选择和桌面契约，不传 Avatar pointer。桌�
 | 模块 | 唯一职责 |
 |---|---|
 | `frontend/react-neko-chat/src/avatar-tools/catalog.ts` | 内置 ID、definition v1/v2 schema、视觉资源、声音、effect recipe、interaction profile、capability 和 definition 校验。 |
-| `frontend/react-neko-chat/src/avatar-tools/localTools.ts` | 本地公开 DTO、GET/POST client，以及从权威 DTO 构建固定 v2 definition；不接收用户自定义运行规则。 |
+| `frontend/react-neko-chat/src/avatar-tools/localTools.ts` | 带内容 revision 的本地公开 DTO、GET/POST client，以及从权威 DTO 构建固定 v2 definition；不接收用户自定义运行规则。 |
 | `frontend/react-neko-chat/src/avatar-tools/registry.ts` | 组合内置 registration 与当前有效本地 definition，生成不可变 snapshot 和按 `(toolId, resourceId)` 的资源查询。 |
 | `frontend/react-neko-chat/src/avatar-tools/useLocalAvatarToolCatalog.ts` | Full／Compact 的本地列表加载、Compact 创建后发布、刷新失败保留和权威加载状态；不管理槽位或 pointer。 |
 | `frontend/react-neko-chat/src/avatar-tools/profileInterpreter.ts` | 解释当前支持的 profile kind，生成通用 handlers；不按 tool id 分支。 |
@@ -245,11 +245,11 @@ UI exclusion 至少覆盖 composer、工具菜单/快捷栏/manager、消息操�
 
 ### 自定义道具
 
-1. Full／Compact 从后端公开 DTO 构建固定 definition v2；名称使用 literal label，互动描述不返回浏览器或 PC。
+1. Full／Compact 从后端公开 DTO 构建固定 definition v2；名称使用 literal label，内容 revision 随 definition 和 descriptor 传递，互动描述不返回浏览器或 PC。
 2. `press-swap` 按下临时显示唯一变化帧，合法松开提交 `changeIndex=0` 后恢复默认帧；取消链只恢复，不提交。
 3. `click-advance` 只在合法松开时前进并提交新显示帧对应的 `changeIndex`；末张保持且继续提交末项索引，不循环。
 4. 当前帧只属于选择 session。离开范围不复位；取消选择、道具切换、强制停用、surface handoff、页面重建或销毁后回到默认帧。
-5. Web 与 PC 解释同一 v2 profile，不按具体本地 ID、图片数或文件名建立分支。Host/Python 只消费已验证的本次索引、强度和触点。
+5. Web 与 PC 解释同一 v2 profile，不按具体本地 ID、图片数或文件名建立分支。本地 payload 必须携带生成当前画面的 `toolRevision`；Host/Python 只消费版本仍与权威 record 一致的本次索引、强度和触点，过期版本直接拒绝。
 6. 普通互动音效可选；完整彩蛋块固定包含概率、图片和互动描述，彩蛋音效可选。命中时散落彩蛋图片，声音按彩蛋音效优先、普通音效回退、都没有则静默执行一次。
 7. Full／Compact 分别消费同一权威本地列表和动态 registry，继续保存各自的三槽选择；Full 不提供创建入口，不增加跨窗口槽位同步。
 

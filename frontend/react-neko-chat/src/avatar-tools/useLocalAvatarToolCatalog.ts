@@ -81,6 +81,7 @@ function detailMatchesUpdate(detail: LocalAvatarToolDetail, input: UpdateLocalAv
 function detailToPublicItem(detail: LocalAvatarToolDetail): LocalAvatarToolDto {
   return {
     id: detail.id,
+    revision: detail.revision,
     name: detail.name,
     changeMode: detail.changeMode,
     defaultUrl: detail.defaultImage.url,

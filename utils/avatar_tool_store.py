@@ -557,7 +557,7 @@ class AvatarToolStore:
         return digest.hexdigest()
 
     @staticmethod
-    def _record_revision(record: dict[str, Any]) -> str:
+    def record_revision(record: dict[str, Any]) -> str:
         encoded = json.dumps(
             record,
             ensure_ascii=False,
@@ -576,6 +576,7 @@ class AvatarToolStore:
         tool_id = record["id"]
         item = {
             "id": tool_id,
+            "revision": self.record_revision(record),
             "name": record["name"],
             "changeMode": record["imageChange"]["mode"],
             "defaultUrl": self._asset_url(record, record["defaultImage"]),
@@ -607,7 +608,7 @@ class AvatarToolStore:
             record = self.read_record(tool_id, verify_resources=True)
             detail = {
                 "id": tool_id,
-                "revision": self._record_revision(record),
+                "revision": self.record_revision(record),
                 "name": record["name"],
                 "changeMode": record["imageChange"]["mode"],
                 "defaultImage": {
@@ -1019,7 +1020,7 @@ class AvatarToolStore:
             self.ensure()
             current = self.read_record(tool_id, verify_resources=True)
             final = self.root / tool_id
-            current_revision = self._record_revision(current)
+            current_revision = self.record_revision(current)
             if not _REVISION_PATTERN.fullmatch(base_revision) or base_revision != current_revision:
                 raise AvatarToolStoreError(
                     "tool_revision_conflict",

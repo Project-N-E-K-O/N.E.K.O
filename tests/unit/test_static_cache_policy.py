@@ -1,4 +1,7 @@
+import hashlib
+
 import pytest
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.main_server.web_app import AvatarToolStaticFiles, CustomStaticFiles, _has_generated_asset_version
 
@@ -72,21 +75,31 @@ async def test_avatar_tool_static_files_accepts_windows_normalized_resource_path
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("query_string", "expected_cache_control"),
+    ("version", "expected_cache_control"),
     (
-        (f"v={'a1' * 32}".encode("ascii"), "public, max-age=31536000, immutable"),
-        (f"v={'A1' * 32}".encode("ascii"), None),
-        (f"v={'a1' * 32}&cache=1".encode("ascii"), None),
+        ("digest", "public, max-age=31536000, immutable"),
+        ("uppercase", None),
+        ("extra", None),
+        ("123456789", None),
+        ("build-123456789", None),
     ),
 )
 async def test_avatar_tool_static_files_recognizes_exact_sha256_versions(
-    tmp_path, query_string, expected_cache_control
+    tmp_path, version, expected_cache_control
 ):
     tool_id = "local-12345678-1234-4123-8123-123456789abc"
     static_files = AvatarToolStaticFiles(directory=tmp_path, check_dir=False)
     asset = tmp_path / tool_id / "default.png"
     asset.parent.mkdir()
     asset.write_bytes(b"png")
+    digest = hashlib.sha256(b"png").hexdigest()
+    query_string = {
+        "digest": f"v={digest}",
+        "uppercase": f"v={digest.upper()}",
+        "extra": f"v={digest}&cache=1",
+        "123456789": "v=123456789",
+        "build-123456789": "v=build-123456789",
+    }[version].encode("ascii")
     scope = {
         "type": "http",
         "method": "GET",
@@ -99,3 +112,24 @@ async def test_avatar_tool_static_files_recognizes_exact_sha256_versions(
     response = await static_files.get_response(f"{tool_id}/default.png", scope)
 
     assert response.headers.get("cache-control") == expected_cache_control
+
+
+@pytest.mark.asyncio
+async def test_avatar_tool_static_files_rejects_a_stale_digest(tmp_path):
+    tool_id = "local-12345678-1234-4123-8123-123456789abc"
+    static_files = AvatarToolStaticFiles(directory=tmp_path, check_dir=False)
+    asset = tmp_path / tool_id / "default.png"
+    asset.parent.mkdir()
+    asset.write_bytes(b"current")
+    scope = {
+        "type": "http",
+        "method": "GET",
+        "path": f"/{tool_id}/default.png",
+        "root_path": "",
+        "query_string": f"v={hashlib.sha256(b'stale').hexdigest()}".encode("ascii"),
+        "headers": [],
+    }
+
+    with pytest.raises(StarletteHTTPException) as raised:
+        await static_files.get_response(f"{tool_id}/default.png", scope)
+    assert raised.value.status_code == 404

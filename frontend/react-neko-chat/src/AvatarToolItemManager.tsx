@@ -659,7 +659,9 @@ export default function AvatarToolItemManager({
   const handleLibraryClick = (toolId: AvatarToolId) => {
     if (suppressClickRef.current) return;
     if (equippedIdSet.has(toolId)) return;
-    const firstEmptyIndex = draftSlots.findIndex(slotToolId => slotToolId === null);
+    const firstEmptyIndex = draftSlots.findIndex(
+      slotToolId => slotToolId === null || !validToolIds.has(slotToolId),
+    );
     if (firstEmptyIndex < 0 || draftFull) {
       setNotice(i18n('chat.avatarToolSlotFull', 'Unequip a tool first.'));
       setNoticeIsError(false);

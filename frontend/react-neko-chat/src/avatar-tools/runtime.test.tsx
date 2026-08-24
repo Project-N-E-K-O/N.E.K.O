@@ -30,6 +30,7 @@ const LOCAL_TOOL_ID = 'local-12345678-1234-4123-8123-123456789abc' as const;
 function localToolDto(version: number): LocalAvatarToolDto {
   return {
     id: LOCAL_TOOL_ID,
+    revision: `2-${version}`,
     name: 'Feather',
     changeMode: 'press-swap',
     defaultUrl: `/user_avatar_tools/${LOCAL_TOOL_ID}/default.png?v=${version}`,
@@ -781,6 +782,27 @@ describe('useAvatarToolRuntime press lifecycle', () => {
     await waitFor(() => expect(prepareVisuals).toHaveBeenCalledTimes(2));
     expect(firstAudio.pause).toHaveBeenCalledTimes(1);
     expect(screen.getByRole('status', { name: 'active tool' })).toHaveTextContent(LOCAL_TOOL_ID);
+  });
+
+  it('binds a local interaction to the revision that produced its visible frame', () => {
+    const onInteraction = vi.fn();
+    render(
+      <Harness
+        onInteraction={onInteraction}
+        providers={createProviders()}
+        toolId={LOCAL_TOOL_ID}
+        registry={localToolRegistry(1)}
+      />,
+    );
+    selectTool();
+    fireEvent.pointerDown(window, { button: 0, pointerId: 7, clientX: 150, clientY: 150 });
+    fireEvent.pointerUp(window, { button: 0, pointerId: 7, clientX: 150, clientY: 150 });
+
+    expect(onInteraction).toHaveBeenCalledWith(expect.objectContaining({
+      toolId: LOCAL_TOOL_ID,
+      toolRevision: '2-1',
+      changeIndex: 0,
+    }));
   });
 
   it('selects a local tool first loaded after the runtime mounted', async () => {

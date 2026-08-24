@@ -1233,6 +1233,7 @@
         })
     });
     var LOCAL_AVATAR_TOOL_ID_PATTERN = /^local-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+    var LOCAL_AVATAR_TOOL_REVISION_PATTERN = /^[0-9]+-[0-9]+$/;
     // The backend sends the final ack only after prompt_ephemeral has completed
     // the visible assistant turn. Keep separate fail-safes for no reply signal
     // and a started turn whose end event is lost, then allow a short grace period
@@ -1646,6 +1647,7 @@
                 'action_id', 'actionId', 'target', 'pointer', 'timestamp',
                 'text_context', 'textContext', 'intensity', 'touch_zone', 'touchZone',
                 'change_index', 'changeIndex',
+                'tool_revision', 'toolRevision',
                 'special_triggered', 'specialTriggered'
             ];
             if (Object.keys(payload).some(function (field) {
@@ -1743,6 +1745,13 @@
         normalized.intensity = intensity;
 
         if (localTool) {
+            var toolRevision = String(getAvatarInteractionPayloadValue(
+                payload, 'tool_revision', 'toolRevision', ''
+            ) || '').trim();
+            if (toolRevision.length > 128 || !LOCAL_AVATAR_TOOL_REVISION_PATTERN.test(toolRevision)) {
+                console.warn('[AvatarInteraction] ignored invalid local tool revision');
+                return null;
+            }
             var rawChangeIndex = getAvatarInteractionPayloadValue(
                 payload, 'change_index', 'changeIndex', null
             );
@@ -1750,6 +1759,7 @@
                 console.warn('[AvatarInteraction] ignored invalid local change index');
                 return null;
             }
+            normalized.tool_revision = toolRevision;
             normalized.change_index = rawChangeIndex;
         }
 

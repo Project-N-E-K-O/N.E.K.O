@@ -195,7 +195,7 @@ resourceDigests:
 - `DELETE /api/avatar-tools/{tool_id}`：删除合法本地 ID 的独占目录。
 - `/user_avatar_tools/...`：由 `AvatarToolStaticFiles` 只读暴露 allowlist 内的 PNG／MP3。
 
-公开列表 DTO 只包含 `id`、`name`、`changeMode`、`defaultUrl`、有序 `changeUrls`，以及存在时的普通音效和彩蛋运行投影。所有资源 URL 必须是单 `/` 开头、无反斜杠和 fragment 的同源绝对路径，并且必须且只能携带一个非空 `v` 参数；`v` 的内容身份规则见下方原子性约束。互动描述不得进入公开列表、registry、desktopContract 或 PC；只有修改详情和 Python 权威 record resolver 可以读取。
+公开列表 DTO 只包含 `id`、内容 `revision`、`name`、`changeMode`、`defaultUrl`、有序 `changeUrls`，以及存在时的普通音效和彩蛋运行投影。所有资源 URL 必须是单 `/` 开头、无反斜杠和 fragment 的同源绝对路径，并且必须且只能携带一个非空 `v` 参数；`v` 的内容身份规则见下方原子性约束。互动描述不得进入公开列表、registry、desktopContract 或 PC；只有修改详情和 Python 权威 record resolver 可以读取。
 
 POST、PUT 和 DELETE 必须经过 loopback access、同源 mutation 校验和存储写围栏。PC 只消费同源资源 URL，不读取磁盘路径或 record。
 
@@ -262,6 +262,7 @@ Web 和 PC 必须由同一 v2 profile 计算图片索引、声音、效果和事
 ### desktopContract 与 NEKO-PC
 
 - Web projector 把 definition v2 投影为严格 descriptor；用户互动描述不进入 descriptor。
+- definition v2、desktop descriptor 和本地互动 payload 必须携带公开目录对应的内容 revision；Python 只按完全相同的当前 record revision 解释图片索引和彩蛋事实，过期互动直接拒绝，不能用新记录解释旧画面。
 - PC consumer 严格校验有序帧、两种图片变化规则、可选声音、chance、effect 和资源闭包。
 - PC 只保存当前选择 session 的图片索引，不保存本地 record 或互动描述。
 - deactivate、dispose、renderer reload 和 surface handoff 必须清理未完成 press、timer、effect、sound 和旧 generation。

@@ -321,6 +321,7 @@ const pressReleaseProfileSchema = z.object({
 
 const localPressReleaseProfileSchema = z.object({
   kind: z.literal('press-release'),
+  revision: z.string().regex(/^\d+-\d+$/).max(128),
   actionId: z.literal('interact'),
   imageChange: z.discriminatedUnion('kind', [
     z.object({ kind: z.literal('press-swap') }).strict(),
@@ -797,6 +798,7 @@ function projectProfile(profile: AvatarToolInteractionProfile) {
     if (profile.imageChange) {
       return {
         kind: profile.kind,
+        ...(profile.revision ? { revision: profile.revision } : {}),
         actionId: profile.actionId,
         imageChange: { kind: profile.imageChange.kind },
         burst: {

@@ -348,12 +348,17 @@ test('avatar interaction host normalizer accepts the strict local base contract'
     timestamp: 1234,
     intensity: 'normal',
     touchZone: 'head',
+    toolRevision: '2-123',
     changeIndex: 1,
   };
   const minimal = normalize(base);
   assert.equal(minimal.tool_id, base.toolId);
   assert.equal(minimal.action_id, 'interact');
+  assert.equal(minimal.tool_revision, '2-123');
   assert.equal(minimal.change_index, 1);
+  assert.equal(normalize({ ...base, toolRevision: 'stale' }), null);
+  const { toolRevision: _toolRevision, ...withoutToolRevision } = base;
+  assert.equal(normalize(withoutToolRevision), null);
   assert.equal(normalize({ ...base, changeIndex: -1 }), null);
   assert.equal(normalize({ ...base, changeIndex: 1.5 }), null);
   assert.equal(normalize({ ...base, changeIndex: Number.MAX_SAFE_INTEGER + 1 }), null);
