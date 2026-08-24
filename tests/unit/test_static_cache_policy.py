@@ -6,6 +6,19 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from app.main_server.web_app import AvatarToolStaticFiles, CustomStaticFiles, _has_generated_asset_version
 
 
+async def _render_response(response, scope):
+    messages = []
+
+    async def receive():
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    async def send(message):
+        messages.append(message)
+
+    await response(scope, receive, send)
+    return messages
+
+
 @pytest.mark.parametrize(
     ("query_string", "expected"),
     (
@@ -133,3 +146,52 @@ async def test_avatar_tool_static_files_rejects_a_stale_digest(tmp_path):
     with pytest.raises(StarletteHTTPException) as raised:
         await static_files.get_response(f"{tool_id}/default.png", scope)
     assert raised.value.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_avatar_tool_static_files_serves_the_exact_verified_file_bytes(tmp_path):
+    tool_id = "local-12345678-1234-4123-8123-123456789abc"
+    static_files = AvatarToolStaticFiles(directory=tmp_path, check_dir=False)
+    verified_content = b"verified-content"
+    asset = tmp_path / tool_id / "default.png"
+    asset.parent.mkdir()
+    asset.write_bytes(verified_content)
+    scope = {
+        "type": "http",
+        "method": "GET",
+        "path": f"/{tool_id}/default.png",
+        "root_path": "",
+        "query_string": f"v={hashlib.sha256(verified_content).hexdigest()}".encode("ascii"),
+        "headers": [],
+    }
+
+    response = await static_files.get_response(f"{tool_id}/default.png", scope)
+    asset.write_bytes(b"replacement-after-verification")
+    messages = await _render_response(response, scope)
+
+    assert messages[0]["status"] == 200
+    assert b"".join(message.get("body", b"") for message in messages[1:]) == verified_content
+
+
+@pytest.mark.asyncio
+async def test_avatar_tool_verified_response_preserves_byte_ranges(tmp_path):
+    tool_id = "local-12345678-1234-4123-8123-123456789abc"
+    static_files = AvatarToolStaticFiles(directory=tmp_path, check_dir=False)
+    content = b"0123456789"
+    asset = tmp_path / tool_id / "normal.mp3"
+    asset.parent.mkdir()
+    asset.write_bytes(content)
+    scope = {
+        "type": "http",
+        "method": "GET",
+        "path": f"/{tool_id}/normal.mp3",
+        "root_path": "",
+        "query_string": f"v={hashlib.sha256(content).hexdigest()}".encode("ascii"),
+        "headers": [(b"range", b"bytes=2-5")],
+    }
+
+    response = await static_files.get_response(f"{tool_id}/normal.mp3", scope)
+    messages = await _render_response(response, scope)
+
+    assert messages[0]["status"] == 206
+    assert b"".join(message.get("body", b"") for message in messages[1:]) == b"2345"

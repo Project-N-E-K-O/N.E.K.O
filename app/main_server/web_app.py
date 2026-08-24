@@ -20,13 +20,16 @@ import hashlib
 import os
 import re
 import secrets
+import stat
 from pathlib import Path
 from urllib.parse import parse_qsl
 
 import httpx
 from fastapi import Request
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
+from starlette.datastructures import Headers
+from starlette.staticfiles import NotModifiedResponse
 
 from ._shared import runtime
 
@@ -70,12 +73,69 @@ def _avatar_tool_asset_digest_version(query_string: bytes) -> str | None:
     return query_params[0][1]
 
 
-def _avatar_tool_asset_matches_digest(path: Path, expected_digest: str) -> bool:
-    digest = hashlib.sha256()
+def _read_verified_avatar_tool_asset(
+    path: Path,
+    expected_digest: str,
+    maximum_bytes: int,
+) -> tuple[bytes, os.stat_result] | None:
     with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return secrets.compare_digest(digest.hexdigest(), expected_digest)
+        content = stream.read(maximum_bytes + 1)
+        stat_result = os.fstat(stream.fileno())
+    if not stat.S_ISREG(stat_result.st_mode):
+        return None
+    if len(content) > maximum_bytes or stat_result.st_size != len(content):
+        return None
+    if not secrets.compare_digest(hashlib.sha256(content).hexdigest(), expected_digest):
+        return None
+    return content, stat_result
+
+
+class _VerifiedAssetFileResponse(FileResponse):
+    """Serve the exact bytes verified for a content-addressed asset URL."""
+
+    def __init__(self, path: str, content: bytes, stat_result: os.stat_result, digest: str):
+        self._verified_content = content
+        super().__init__(
+            path,
+            stat_result=stat_result,
+            headers={
+                "Cache-Control": "public, max-age=31536000, immutable",
+                "ETag": f'"{digest}"',
+            },
+        )
+
+    async def _handle_simple(self, send, send_header_only: bool) -> None:
+        await send({"type": "http.response.start", "status": self.status_code, "headers": self.raw_headers})
+        body = b"" if send_header_only else self._verified_content
+        await send({"type": "http.response.body", "body": body, "more_body": False})
+
+    async def _handle_single_range(
+        self, send, start: int, end: int, file_size: int, send_header_only: bool
+    ) -> None:
+        self.headers["content-range"] = f"bytes {start}-{end - 1}/{file_size}"
+        self.headers["content-length"] = str(end - start)
+        await send({"type": "http.response.start", "status": 206, "headers": self.raw_headers})
+        body = b"" if send_header_only else self._verified_content[start:end]
+        await send({"type": "http.response.body", "body": body, "more_body": False})
+
+    async def _handle_multiple_ranges(
+        self, send, ranges: list[tuple[int, int]], file_size: int, send_header_only: bool
+    ) -> None:
+        boundary = secrets.token_hex(13)
+        content_length, header = self.generate_multipart(
+            ranges, boundary, file_size, self.headers["content-type"]
+        )
+        self.headers["content-range"] = f"multipart/byteranges; boundary={boundary}"
+        self.headers["content-length"] = str(content_length)
+        await send({"type": "http.response.start", "status": 206, "headers": self.raw_headers})
+        if send_header_only:
+            await send({"type": "http.response.body", "body": b"", "more_body": False})
+            return
+        body = b"".join(
+            header(start, end) + self._verified_content[start:end] + b"\n"
+            for start, end in ranges
+        ) + f"\n--{boundary}--\n".encode("latin-1")
+        await send({"type": "http.response.body", "body": body, "more_body": False})
 
 
 class CustomStaticFiles(StaticFiles):
@@ -93,7 +153,10 @@ class AvatarToolStaticFiles(CustomStaticFiles):
 
     async def get_response(self, path, scope):
         from starlette.exceptions import HTTPException as StarletteHTTPException
-        from utils.avatar_tool_store import is_public_avatar_tool_resource_path
+        from utils.avatar_tool_store import (
+            AVATAR_TOOL_LIMITS,
+            is_public_avatar_tool_resource_path,
+        )
 
         normalized_path = str(path).replace("\\", "/")
         if not is_public_avatar_tool_resource_path(Path(self.directory), normalized_path):
@@ -101,21 +164,38 @@ class AvatarToolStaticFiles(CustomStaticFiles):
         requested_digest = _avatar_tool_asset_digest_version(
             scope.get("query_string", b"")
         )
-        if requested_digest is not None:
-            resource = Path(self.directory) / normalized_path
-            try:
-                matches_digest = await asyncio.to_thread(
-                    _avatar_tool_asset_matches_digest,
-                    resource,
-                    requested_digest,
-                )
-            except OSError as exc:
-                raise StarletteHTTPException(status_code=404) from exc
-            if not matches_digest:
+        if requested_digest is None:
+            return await StaticFiles.get_response(self, normalized_path, scope)
+        try:
+            full_path, stat_result = await asyncio.to_thread(
+                self.lookup_path,
+                normalized_path,
+            )
+            if stat_result is None or not stat.S_ISREG(stat_result.st_mode):
                 raise StarletteHTTPException(status_code=404)
-        response = await StaticFiles.get_response(self, normalized_path, scope)
-        if requested_digest is not None:
-            response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+            verified = await asyncio.to_thread(
+                _read_verified_avatar_tool_asset,
+                Path(full_path),
+                requested_digest,
+                (
+                    AVATAR_TOOL_LIMITS["maxAudioBytes"]
+                    if normalized_path.endswith(".mp3")
+                    else AVATAR_TOOL_LIMITS["maxImageBytes"]
+                ),
+            )
+        except OSError as exc:
+            raise StarletteHTTPException(status_code=404) from exc
+        if verified is None:
+            raise StarletteHTTPException(status_code=404)
+        content, opened_stat = verified
+        response = _VerifiedAssetFileResponse(
+            full_path,
+            content,
+            opened_stat,
+            requested_digest,
+        )
+        if self.is_not_modified(response.headers, Headers(scope=scope)):
+            return NotModifiedResponse(response.headers)
         return response
 
 

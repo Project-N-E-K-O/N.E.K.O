@@ -114,10 +114,10 @@
 ### 图片与音频
 
 - 图片只接受真实、可完整解码、非动画且不是完全透明的 PNG。
-- 后端使用 Pillow 校验格式、帧数、像素上限和完整解码，并重新编码为静态 RGBA PNG。
+- 后端使用 Pillow 校验格式、帧数、像素上限和完整解码，并重新编码为静态 RGBA PNG；原始上传和规范化输出都必须满足单图字节上限。
 - 音频只接受真实可解码、包含音频流且不超过时长和大小上限的 MP3；使用 PyAV 校验。
 - multipart 上传在 endpoint 内按块读取并计数，不能依赖会跳过 multipart 的全局 body cap。
-- 单图大小、像素、音频大小和时长、单道具变化图片数量、道具数量和本地总占用由后端 `AVATAR_TOOL_LIMITS` 唯一定义；前端读取 limits 展示，不能成为权威来源。
+- 单图大小、像素、音频大小和时长、单道具变化图片数量、有效可见道具数量和本地总占用由后端 `AVATAR_TOOL_LIMITS` 唯一定义；坏记录保持隔离但不占用有效道具数量，前端读取 limits 展示，不能成为权威来源。
 - 用户原文件名不进入记录或资源路径。
 
 ### 彩蛋
@@ -193,7 +193,7 @@ resourceDigests:
 - `POST /api/avatar-tools`：multipart 携带本次创建会话的 `tool_id` 创建一个新道具；后端必须复验 ID 格式。
 - `PUT /api/avatar-tools/{tool_id}`：以详情 revision 为基线完整更新，保持同一 ID。
 - `DELETE /api/avatar-tools/{tool_id}`：删除合法本地 ID 的独占目录。
-- `/user_avatar_tools/...`：由 `AvatarToolStaticFiles` 只读暴露 allowlist 内的 PNG／MP3。
+- `/user_avatar_tools/...`：由 `AvatarToolStaticFiles` 只读暴露 allowlist 内的 PNG／MP3；摘要匹配后必须从同一次打开并核验的文件实例返回字节，不能重新按可替换路径打开，同时保留 HEAD、条件请求和音频 byte range 语义。
 
 公开列表 DTO 只包含 `id`、内容 `revision`、`name`、`changeMode`、`defaultUrl`、有序 `changeUrls`，以及存在时的普通音效和彩蛋运行投影。所有资源 URL 必须是单 `/` 开头、无反斜杠和 fragment 的同源绝对路径，并且必须且只能携带一个非空 `v` 参数；`v` 的内容身份规则见下方原子性约束。互动描述不得进入公开列表、registry、desktopContract 或 PC；只有修改详情和 Python 权威 record resolver 可以读取。
 
@@ -210,7 +210,7 @@ POST、PUT 和 DELETE 必须经过 loopback access、同源 mutation 校验和�
 - 删除先把正式目录改名为 `.local-<uuid>.deleting`，再清理目录；残留在启动初始化时处理。
 - 创建、修改和删除由同一进程内 mutation lock 串行化，使数量、总占用和发布属于同一操作。
 - 写围栏检查必须发生在创建目录或清理残留之前；存储维护或迁移期间明确拒绝写入。
-- 启动初始化只处理本模块严格命名的临时目录和可证明完整的备份；删除在发布删除前必须先清理同 ID 的旧 backup，使已删除道具不能在启动恢复中复活。普通 GET 不执行清理，也不扫描其它目录。
+- 启动初始化只处理本模块严格命名的临时目录和可证明完整的备份；删除在发布删除前必须先清理同 ID 的旧 backup，使已删除道具不能在启动恢复中复活。普通 GET 不执行清理，也不扫描其它目录；唯一例外是启动初始化已因存储暂时不可用而明确挂起时，首次重新确认目录可用的存储操作必须先完成同一初始化恢复。
 
 `avatar_tools` 必须加入应用存储根迁移、storage diagnostics 和“运行时是否有用户内容”的识别，但不能因此进入云存档托管列表。
 

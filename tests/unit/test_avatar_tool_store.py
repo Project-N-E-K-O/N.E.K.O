@@ -33,6 +33,14 @@ def _png(*, alpha: int = 255, size=(8, 8)) -> bytes:
     return output.getvalue()
 
 
+def _expanding_png() -> bytes:
+    image = Image.new("1", (512, 512))
+    image.putdata([(x + y) % 2 for y in range(512) for x in range(512)])
+    output = io.BytesIO()
+    image.save(output, format="PNG", optimize=True)
+    return output.getvalue()
+
+
 def _mp3() -> bytes:
     return (
         Path(__file__).resolve().parents[2]
@@ -318,6 +326,27 @@ def test_create_translates_pillow_decompression_bomb_errors(tmp_path, monkeypatc
     assert raised.value.code == "image_pixels_exceeded"
 
 
+def test_create_reapplies_image_limit_after_canonical_encoding(tmp_path, monkeypatch):
+    monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
+    store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
+    store.limits["maxImageBytes"] = 1024
+    source = _expanding_png()
+    assert len(source) < store.limits["maxImageBytes"]
+
+    with pytest.raises(AvatarToolStoreError) as raised:
+        _create_tool(
+            store,
+            name="expanding",
+            change_mode="press-swap",
+            change_meanings=["meaning"],
+            default_image=source,
+            change_images=[_png()],
+        )
+
+    assert raised.value.code == "image_too_large"
+    assert not store.root.exists() or not list(store.root.iterdir())
+
+
 def test_initialize_cleans_only_owned_transient_directories_and_list_stays_read_only(tmp_path):
     root = tmp_path / "avatar_tools"
     root.mkdir()
@@ -359,6 +388,27 @@ def test_list_skips_a_record_with_invalid_utf8_without_hiding_valid_tools(tmp_pa
     (invalid_directory / "record.json").write_bytes(b"\xff\xfe")
 
     assert [item["id"] for item in store.list_items()] == [valid["id"]]
+
+
+def test_corrupt_hidden_records_do_not_consume_the_visible_tool_limit(tmp_path, monkeypatch):
+    monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
+    store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
+    store.ensure()
+    store.limits["maxTools"] = 1
+    invalid = store.root / "local-aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+    invalid.mkdir()
+    (invalid / "record.json").write_bytes(b"not-json")
+
+    created = _create_tool(
+        store,
+        name="Visible",
+        change_mode="press-swap",
+        change_meanings=["meaning"],
+        default_image=_png(),
+        change_images=[_png()],
+    )
+
+    assert [item["id"] for item in store.list_items()] == [created["id"]]
 
 
 def test_list_isolates_a_tool_when_a_persisted_resource_fails_integrity(tmp_path, monkeypatch):
@@ -1007,6 +1057,44 @@ def test_initialize_restores_a_valid_backup_after_interrupted_update(tmp_path, m
     assert store.read_record(tool_id)["name"] == "Feather"
     assert not backup.exists()
     assert not updating.exists()
+
+
+def test_first_available_request_retries_a_failed_startup_recovery(tmp_path, monkeypatch):
+    monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
+    root = tmp_path / "avatar_tools"
+    store = AvatarToolStore(_ConfigManager(root))
+    created = _create_tool(
+        store,
+        name="Feather",
+        change_mode="press-swap",
+        change_meanings=["meaning"],
+        default_image=_png(),
+        change_images=[_png()],
+    )
+    tool_id = created["id"]
+    final = root / tool_id
+    backup = root / f".{tool_id}.backup"
+    shutil.copytree(final, backup)
+    shutil.rmtree(final)
+
+    class FlakyConfigManager(_ConfigManager):
+        available = False
+
+        def ensure_avatar_tools_directory(self):
+            if not self.available:
+                return False
+            return super().ensure_avatar_tools_directory()
+
+    config_manager = FlakyConfigManager(root)
+    recovering_store = AvatarToolStore(config_manager)
+    with pytest.raises(AvatarToolStoreError) as raised:
+        recovering_store.initialize()
+    assert raised.value.code == "avatar_tools_directory_unavailable"
+
+    config_manager.available = True
+    assert [item["id"] for item in recovering_store.list_items()] == [tool_id]
+    assert final.is_dir()
+    assert not backup.exists()
 
 
 def test_delete_cleans_a_stale_update_backup_without_resurrection(tmp_path, monkeypatch):

@@ -67,6 +67,7 @@ _NAME_SPACES_PATTERN = re.compile(r" +")
 _REVISION_PATTERN = re.compile(r"^[0-9]+-[0-9]+$")
 _RESOURCE_DIGEST_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 _STORE_LOCK = threading.RLock()
+_RECOVERY_PENDING_ROOTS: set[str] = set()
 logger = logging.getLogger(__name__)
 
 
@@ -218,7 +219,14 @@ def _decode_static_png(data: bytes, *, limits: dict[str, int]) -> bytes:
                 raise AvatarToolStoreError("image_fully_transparent", "PNG cannot be fully transparent")
             output = io.BytesIO()
             rgba.save(output, format="PNG", optimize=True)
-            return output.getvalue()
+            canonical = output.getvalue()
+            if len(canonical) > limits["maxImageBytes"]:
+                raise AvatarToolStoreError(
+                    "image_too_large",
+                    "PNG image is too large",
+                    status_code=413,
+                )
+            return canonical
     except AvatarToolStoreError:
         raise
     except Image.DecompressionBombError as exc:
@@ -289,7 +297,10 @@ class AvatarToolStore:
         self.root = Path(config_manager.avatar_tools_dir)
         self.limits = dict(AVATAR_TOOL_LIMITS)
 
-    def ensure(self) -> None:
+    def _root_key(self) -> str:
+        return os.path.normcase(os.path.abspath(self.root))
+
+    def _ensure_directory(self) -> None:
         if not self.config_manager.ensure_avatar_tools_directory():
             raise AvatarToolStoreError(
                 "avatar_tools_directory_unavailable",
@@ -297,10 +308,12 @@ class AvatarToolStore:
                 status_code=503,
             )
 
-    def initialize(self) -> None:
-        """Prepare the store once and recover interrupted mutations."""
+    def ensure(self) -> None:
         with _STORE_LOCK:
-            self.ensure()
+            self._ensure_directory()
+            root_key = self._root_key()
+            if root_key not in _RECOVERY_PENDING_ROOTS:
+                return
             try:
                 self._recover_interrupted_mutations()
             except OSError as exc:
@@ -309,6 +322,26 @@ class AvatarToolStore:
                     "Avatar tool storage is unavailable",
                     status_code=503,
                 ) from exc
+            _RECOVERY_PENDING_ROOTS.discard(root_key)
+
+    def initialize(self) -> None:
+        """Prepare the store once and recover interrupted mutations."""
+        with _STORE_LOCK:
+            root_key = self._root_key()
+            try:
+                self._ensure_directory()
+                self._recover_interrupted_mutations()
+            except AvatarToolStoreError:
+                _RECOVERY_PENDING_ROOTS.add(root_key)
+                raise
+            except OSError as exc:
+                _RECOVERY_PENDING_ROOTS.add(root_key)
+                raise AvatarToolStoreError(
+                    "avatar_tools_directory_unavailable",
+                    "Avatar tool storage is unavailable",
+                    status_code=503,
+                ) from exc
+            _RECOVERY_PENDING_ROOTS.discard(root_key)
 
     def _recover_interrupted_mutations(self) -> None:
         candidates = list(self.root.iterdir())
@@ -965,11 +998,7 @@ class AvatarToolStore:
                         status_code=409,
                     )
                 return self._public_item(current)
-            published = [
-                item for item in self.root.iterdir()
-                if item.is_dir() and not item.is_symlink() and is_local_avatar_tool_id(item.name)
-            ]
-            if len(published) >= self.limits["maxTools"]:
+            if len(self.list_items()) >= self.limits["maxTools"]:
                 raise AvatarToolStoreError("tool_limit_reached", "Avatar tool limit reached", status_code=409)
             temporary = self.root / f".{tool_id}.uploading"
             try:
