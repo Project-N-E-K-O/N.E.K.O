@@ -29,6 +29,7 @@ from fastapi import Request
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from starlette.datastructures import Headers
+from starlette.responses import RangeNotSatisfiable
 from starlette.staticfiles import NotModifiedResponse
 
 from ._shared import runtime
@@ -93,6 +94,8 @@ def _read_verified_avatar_tool_asset(
 class _VerifiedAssetFileResponse(FileResponse):
     """Serve the exact bytes verified for a content-addressed asset URL."""
 
+    _MAX_RANGE_SPECS = 16
+
     def __init__(self, path: str, content: bytes, stat_result: os.stat_result, digest: str):
         self._verified_content = content
         super().__init__(
@@ -103,6 +106,16 @@ class _VerifiedAssetFileResponse(FileResponse):
                 "ETag": f'"{digest}"',
             },
         )
+
+    @staticmethod
+    def _parse_range_header(http_range: str, file_size: int) -> list[tuple[int, int]]:
+        # Bound work before Starlette materializes and coalesces every range.
+        # Disjoint one-byte ranges otherwise make parsing and multipart headers
+        # grow independently of the managed asset-size limit.
+        range_spec = http_range.split("=", 1)[-1]
+        if range_spec.count(",") + 1 > _VerifiedAssetFileResponse._MAX_RANGE_SPECS:
+            raise RangeNotSatisfiable(file_size)
+        return FileResponse._parse_range_header(http_range, file_size)
 
     async def _handle_simple(self, send, send_header_only: bool) -> None:
         await send({"type": "http.response.start", "status": self.status_code, "headers": self.raw_headers})

@@ -679,6 +679,44 @@ describe('useLocalAvatarToolCatalog failure handling', () => {
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
     Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'visible' });
   });
+
+  it('queues a fresh catalog fetch when desktop invalidation arrives during an older fetch', async () => {
+    const oldItem = {
+      id: 'local-12345678-1234-4123-8123-123456789abc',
+      revision: '100-200',
+      name: 'Old feather',
+      changeMode: 'press-swap',
+      defaultUrl: '/default.png?v=old',
+      changeUrls: ['/change-000.png?v=old'],
+    };
+    const newItem = {
+      ...oldItem,
+      revision: '120-300',
+      name: 'New feather',
+      defaultUrl: '/default.png?v=new',
+      changeUrls: ['/change-000.png?v=new'],
+    };
+    let resolveOldFetch!: (response: Response) => void;
+    const oldFetch = new Promise<Response>((resolve) => { resolveOldFetch = resolve; });
+    const listResponse = (items: unknown[]) => new Response(JSON.stringify({ ok: true, items, limits: LIMITS }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
+    const fetchMock = vi.fn()
+      .mockReturnValueOnce(oldFetch)
+      .mockResolvedValueOnce(listResponse([newItem]));
+    vi.stubGlobal('fetch', fetchMock);
+    const { result } = renderHook(() => useLocalAvatarToolCatalog());
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+
+    act(() => window.dispatchEvent(new Event('neko:refresh-local-avatar-tools')));
+    resolveOldFetch(listResponse([oldItem]));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(
+      result.current.registry.getRegistration(newItem.id as `local-${string}`).definition.label,
+    ).toEqual({ kind: 'literal', value: 'New feather' }));
+  });
 });
 
 const LIMITS = {

@@ -193,7 +193,7 @@ resourceDigests:
 - `POST /api/avatar-tools`：multipart 携带本次创建会话的 `tool_id` 创建一个新道具；后端必须复验 ID 格式。
 - `PUT /api/avatar-tools/{tool_id}`：以详情 revision 为基线完整更新，保持同一 ID。
 - `DELETE /api/avatar-tools/{tool_id}`：删除合法本地 ID 的独占目录。
-- `/user_avatar_tools/...`：由 `AvatarToolStaticFiles` 只读暴露 allowlist 内的 PNG／MP3；摘要匹配后必须从同一次打开并核验的文件实例返回字节，不能重新按可替换路径打开，同时保留 HEAD、条件请求和音频 byte range 语义。
+- `/user_avatar_tools/...`：由 `AvatarToolStaticFiles` 只读暴露 allowlist 内的 PNG／MP3；摘要匹配后必须从同一次打开并核验的文件实例返回字节，不能重新按可替换路径打开，同时保留 HEAD、条件请求和音频 byte range 语义；Range 数量必须在解析和 multipart 物化前受固定上限约束。
 
 公开列表 DTO 只包含 `id`、内容 `revision`、`name`、`changeMode`、`defaultUrl`、有序 `changeUrls`，以及存在时的普通音效和彩蛋运行投影。所有资源 URL 必须是单 `/` 开头、无反斜杠和 fragment 的同源绝对路径，并且必须且只能携带一个非空 `v` 参数；`v` 的内容身份规则见下方原子性约束。互动描述不得进入公开列表、registry、desktopContract 或 PC；只有修改详情和 Python 权威 record resolver 可以读取。
 
@@ -267,7 +267,7 @@ Web 和 PC 必须由同一 v2 profile 计算图片索引、声音、效果和事
 - PC 只保存当前选择 session 的图片索引，不保存本地 record 或互动描述。
 - deactivate、dispose、renderer reload 和 surface handoff 必须清理未完成 press、timer、effect、sound 和旧 generation。
 - surface lease 下发布本地 descriptor 前，要向权威公开列表核对 ID、有序版本化资源 URL、切图方式、可选音效和彩蛋概率/资源语义；无论 lease 与页面状态谁先到，首次发布和重发都不能绕过校验。已删除 ID 发布 inactive，任一内容过期只请求 renderer 刷新，不能发送旧 descriptor；同一 lease 下较新的页面状态必须替代尚未完成的旧校验。
-- 列表暂时请求失败不能解释为删除，也不能回流未经确认的旧本地 descriptor。
+- 列表暂时请求失败不能解释为删除，也不能回流未经确认的旧本地 descriptor；显式目录失效事件若撞上在途 GET，必须废弃其快照并在结束后再发起一次新 GET。
 
 ### Host 与 Python
 

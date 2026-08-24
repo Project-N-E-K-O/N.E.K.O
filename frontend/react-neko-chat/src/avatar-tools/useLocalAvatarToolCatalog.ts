@@ -157,7 +157,12 @@ export function useLocalAvatarToolCatalog(): LocalAvatarToolCatalog {
       refresh().catch(() => undefined);
     };
     const refreshRequested = () => {
-      refresh().catch(() => undefined);
+      const staleRefresh = refreshInFlightRef.current;
+      refreshEpochRef.current += 1;
+      void (async () => {
+        await staleRefresh?.catch(() => undefined);
+        await refresh().catch(() => undefined);
+      })();
     };
     window.addEventListener('focus', refreshWhenActive);
     window.addEventListener('neko:refresh-local-avatar-tools', refreshRequested);

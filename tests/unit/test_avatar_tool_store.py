@@ -1084,7 +1084,10 @@ def test_initialize_restores_a_valid_backup_after_interrupted_update(tmp_path, m
     assert not updating.exists()
 
 
-def test_first_available_request_retries_a_failed_startup_recovery(tmp_path, monkeypatch):
+@pytest.mark.parametrize("first_operation", ("list", "detail", "delete"))
+def test_first_available_request_retries_a_failed_startup_recovery(
+    tmp_path, monkeypatch, first_operation
+):
     monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
     root = tmp_path / "avatar_tools"
     store = AvatarToolStore(_ConfigManager(root))
@@ -1117,8 +1120,15 @@ def test_first_available_request_retries_a_failed_startup_recovery(tmp_path, mon
     assert raised.value.code == "avatar_tools_directory_unavailable"
 
     config_manager.available = True
-    assert [item["id"] for item in recovering_store.list_items()] == [tool_id]
-    assert final.is_dir()
+    if first_operation == "list":
+        assert [item["id"] for item in recovering_store.list_items()] == [tool_id]
+        assert final.is_dir()
+    elif first_operation == "detail":
+        assert recovering_store.get_detail(tool_id)["id"] == tool_id
+        assert final.is_dir()
+    else:
+        assert recovering_store.delete_tool(tool_id) == tool_id
+        assert not final.exists()
     assert not backup.exists()
 
 

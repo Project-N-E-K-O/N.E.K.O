@@ -411,6 +411,8 @@ class AvatarToolStore:
         verify_resources: bool = False,
     ) -> dict[str, Any]:
         with _STORE_LOCK:
+            if self._root_key() in _RECOVERY_PENDING_ROOTS:
+                self.ensure()
             return self._read_record_from_directory(
                 tool_id,
                 self.root / tool_id,
@@ -743,6 +745,14 @@ class AvatarToolStore:
             raise AvatarToolStoreError("invalid_tool_id", "Invalid local avatar tool ID")
 
         with _STORE_LOCK:
+            recovery_pending = self._root_key() in _RECOVERY_PENDING_ROOTS
+            if recovery_pending:
+                assert_cloudsave_writable(
+                    self.config_manager,
+                    operation="delete",
+                    target=f"avatar_tools/{tool_id}",
+                )
+                self.ensure()
             directory = self.root / tool_id
             if directory.is_symlink() or not directory.is_dir():
                 raise AvatarToolStoreError(
@@ -762,11 +772,12 @@ class AvatarToolStore:
             if target.parent != root:
                 raise AvatarToolStoreError("invalid_tool_path", "Invalid local avatar tool path")
 
-            assert_cloudsave_writable(
-                self.config_manager,
-                operation="delete",
-                target=f"avatar_tools/{tool_id}",
-            )
+            if not recovery_pending:
+                assert_cloudsave_writable(
+                    self.config_manager,
+                    operation="delete",
+                    target=f"avatar_tools/{tool_id}",
+                )
             deleting = self.root / f".{tool_id}.deleting"
             if deleting.is_symlink() or deleting.exists():
                 raise AvatarToolStoreError(

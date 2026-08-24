@@ -225,3 +225,28 @@ async def test_avatar_tool_verified_response_preserves_multiple_ranges(tmp_path)
     assert len(body) == int(headers[b"content-length"])
     assert headers[b"content-type"].startswith(b"multipart/byteranges; boundary=")
     assert b"content-range" not in headers
+
+
+@pytest.mark.asyncio
+async def test_avatar_tool_verified_response_rejects_excessive_range_specs(tmp_path):
+    tool_id = "local-12345678-1234-4123-8123-123456789abc"
+    static_files = AvatarToolStaticFiles(directory=tmp_path, check_dir=False)
+    content = bytes(range(64))
+    asset = tmp_path / tool_id / "normal.mp3"
+    asset.parent.mkdir()
+    asset.write_bytes(content)
+    ranges = ",".join(f"{index * 2}-{index * 2}" for index in range(17))
+    scope = {
+        "type": "http",
+        "method": "GET",
+        "path": f"/{tool_id}/normal.mp3",
+        "root_path": "",
+        "query_string": f"v={hashlib.sha256(content).hexdigest()}".encode("ascii"),
+        "headers": [(b"range", f"bytes={ranges}".encode("ascii"))],
+    }
+
+    response = await static_files.get_response(f"{tool_id}/normal.mp3", scope)
+    messages = await _render_response(response, scope)
+
+    assert messages[0]["status"] == 416
+    assert b"".join(message.get("body", b"") for message in messages[1:]) == b""
