@@ -27,9 +27,12 @@ from plugin.sdk.plugin import (
 import httpx
 
 from ._parsing import (
+    MAX_SNIPPET_LEN,
+    MAX_TITLE_LEN,
     SearchBlockedError,
     SearchResponseError,
     decode_html,
+    is_http_url,
     is_baidu_no_results,
     is_baidu_blocked,
     is_ddg_blocked,
@@ -38,6 +41,7 @@ from ._parsing import (
     parse_baidu_mobile_html,
     parse_ddg_html,
     parse_ddg_lite_html,
+    sanitize_text,
 )
 from ._resilience import (
     SearchCoordinator,
@@ -121,6 +125,10 @@ def _fallback_backend(primary_backend: str, country: Optional[str]) -> Optional[
     if primary_backend == "baidu":
         return "duckduckgo"
     return None
+
+
+def _clip_untrusted_text(text: str, limit: int) -> str:
+    return text if len(text) <= limit else text[:limit].rstrip() + "…"
 
 
 def _snapshot_baidu_cookies(client: httpx.AsyncClient) -> List[Dict[str, Any]]:
@@ -447,9 +455,10 @@ async def _search_anysearch(
     retry_base_delay: float = 0.5,
 ) -> List[Dict[str, str]]:
     """Query AnySearch while allowing anonymous access when no key is configured."""
+    result_limit = max(1, min(int(max_results), _ANYSEARCH_MAX_RESULTS))
     payload: Dict[str, object] = {
         "query": query,
-        "max_results": max(1, min(int(max_results), _ANYSEARCH_MAX_RESULTS)),
+        "max_results": result_limit,
     }
     if zone in {"cn", "intl"}:
         payload["zone"] = zone
@@ -492,11 +501,20 @@ async def _search_anysearch(
     for item in raw_results[:_ANYSEARCH_MAX_RESULTS]:
         if not isinstance(item, dict):
             continue
-        title = str(item.get("title") or "").strip()
-        url = str(item.get("url") or "").strip()
-        snippet = str(item.get("snippet") or item.get("content") or "").strip()
-        if title or url or snippet:
-            results.append({"title": title or "（无标题）", "url": url, "snippet": snippet})
+        title = _clip_untrusted_text(
+            sanitize_text(str(item.get("title") or "")),
+            MAX_TITLE_LEN,
+        )
+        url = sanitize_text(str(item.get("url") or ""))
+        if not title or not is_http_url(url):
+            continue
+        snippet = _clip_untrusted_text(
+            sanitize_text(str(item.get("snippet") or item.get("content") or "")),
+            MAX_SNIPPET_LEN,
+        )
+        results.append({"title": title, "url": url, "snippet": snippet})
+        if len(results) >= result_limit:
+            break
     return results
 
 
@@ -515,6 +533,7 @@ class WebSearchPlugin(NekoPluginBase):
         self._country: Optional[str] = None
         self._is_cn: bool = False
         self._backend: str = "anysearch"
+        self._configured_backend: str = "auto"
         self._anysearch_zone: Optional[str] = None
         self._anysearch_api_key: str = ""
         self._client: Optional[httpx.AsyncClient] = None
@@ -622,14 +641,18 @@ class WebSearchPlugin(NekoPluginBase):
         await self._load_baidu_cookies()
         defs = self._defaults()
         configured_backend = str(self._cfg.get("backend", "auto")).strip().lower()
+        self._configured_backend = (
+            configured_backend
+            if configured_backend in {"auto", "anysearch", "baidu", "duckduckgo"}
+            else "auto"
+        )
         raw_api_key = self._cfg.get("anysearch_api_key", "")
         self._anysearch_api_key = raw_api_key.strip() if isinstance(raw_api_key, str) else ""
-        self._country = (
-            None
-            if configured_backend in {"baidu", "duckduckgo"}
-            else await _detect_country()
-        )
-        self._backend = _select_backend(configured_backend, self._country)
+        # Entry-level backend="anysearch" is supported even when the configured
+        # backend is Baidu or DuckDuckGo, so GeoIP must always be available for
+        # AnySearch's per-call zone selection.
+        self._country = await _detect_country()
+        self._backend = _select_backend(self._configured_backend, self._country)
         self._anysearch_zone = _select_anysearch_zone(self._country)
         self._is_cn = self._country in _CN_COUNTRIES
         common_coordinator_options = {
@@ -665,7 +688,7 @@ class WebSearchPlugin(NekoPluginBase):
 
         self.logger.info(
             "WebSearch started: country={}, anysearch_zone={}, configured_backend={}, backend={}, anysearch_key={}",
-            self._country, self._anysearch_zone, configured_backend, self._backend, bool(self._anysearch_api_key),
+            self._country, self._anysearch_zone, self._configured_backend, self._backend, bool(self._anysearch_api_key),
         )
         return Ok({
             "status": "running",
@@ -773,7 +796,13 @@ class WebSearchPlugin(NekoPluginBase):
             else None
         )
         primary_backend = requested_backend or hinted_backend or self._backend
-        fallback_backend = None if requested_backend is not None else _fallback_backend(primary_backend, self._country)
+        configured_is_auto = getattr(self, "_configured_backend", "auto") == "auto"
+        entry_is_auto = requested_backend is None
+        fallback_backend = (
+            _fallback_backend(primary_backend, getattr(self, "_country", None))
+            if configured_is_auto and entry_is_auto
+            else None
+        )
         normalized_query = " ".join(query.casefold().split())
         attempted_backends = [primary_backend]
         total_timeout = defs["total_timeout"]

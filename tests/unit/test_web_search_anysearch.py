@@ -67,3 +67,43 @@ def test_anysearch_request_uses_optional_auth_and_zone() -> None:
     assert seen["payload"] == {"query": "test query", "max_results": 20, "zone": "intl"}
     assert seen["headers"]["authorization"] == "Bearer test-key"
     assert results == [{"title": "AnySearch result", "url": "https://example.com/result", "snippet": "A result snippet."}]
+
+
+def test_anysearch_sanitizes_and_caps_results_to_requested_limit() -> None:
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "code": 0,
+                "data": {
+                    "results": [
+                        {
+                            "title": "unsafe\u202etitle",
+                            "url": "javascript:alert(1)",
+                            "snippet": "ignored",
+                        },
+                        *[
+                            {
+                                "title": f"result {index}\u200b" + ("x" * 240),
+                                "url": f"https://example.com/{index}",
+                                "snippet": "\u0000" + ("y" * 400),
+                            }
+                            for index in range(6)
+                        ],
+                    ]
+                },
+            },
+        )
+
+    async def run() -> list[dict[str, str]]:
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            return await _search_anysearch(client, "test query", max_results=3)
+
+    results = asyncio.run(run())
+    assert len(results) == 3
+    assert all(item["url"].startswith("https://") for item in results)
+    assert all("\u200b" not in item["title"] for item in results)
+    assert all("\u0000" not in item["snippet"] for item in results)
+    # Existing parser clipping appends an ellipsis after the configured limit.
+    assert all(len(item["title"]) <= 201 for item in results)
+    assert all(len(item["snippet"]) <= 321 for item in results)

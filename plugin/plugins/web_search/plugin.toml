@@ -29,8 +29,8 @@ enabled = true
 # auto: use AnySearch first. GeoIP CN -> zone=cn; known non-CN -> zone=intl;
 # detection failure omits zone. If AnySearch fails, CN/unknown falls back to
 # Baidu and known non-CN falls back to DuckDuckGo.
-# Set anysearch, baidu or duckduckgo to override auto's primary source.
-# An entry-level explicit backend disables cross-engine fallback.
+# Set anysearch, baidu or duckduckgo to force that source without cross-engine
+# fallback. An entry-level explicit backend also disables cross-engine fallback.
 backend = "auto"
 # Optional. Without a key, AnySearch uses anonymous access with lower limits.
 anysearch_api_key = ""
