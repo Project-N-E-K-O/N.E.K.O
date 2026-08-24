@@ -149,7 +149,7 @@ app_docs_dir/
 
 必须保持以下不变量：
 
-- ID 由 Compact 创建表单在一次创建会话开始时生成，严格为 `local-<lowercase-uuid-v4>`；不向用户显示或开放输入，删除后不复用。
+- ID 由 Compact 创建表单在一次创建会话开始时生成，严格为 `local-<lowercase-uuid-v4>`；不向用户显示或开放输入。同一会话的保存重试复用该 ID，删除后的新建会话重新生成；不为已删除 ID 增加永久 tombstone。
 - 每个道具独占一个目录，所有资源只属于该道具。
 - 记录只引用应用生成的同目录相对文件名，不接受绝对路径、`..`、软链接或其它道具的资源。
 - 资源顺序来自 record 的有序列表，不依赖目录枚举或用户文件名。
@@ -195,7 +195,7 @@ resourceDigests:
 - `DELETE /api/avatar-tools/{tool_id}`：删除合法本地 ID 的独占目录。
 - `/user_avatar_tools/...`：由 `AvatarToolStaticFiles` 只读暴露 allowlist 内的 PNG／MP3。
 
-公开列表 DTO 只包含 `id`、`name`、`changeMode`、`defaultUrl`、有序 `changeUrls`，以及存在时的普通音效和彩蛋运行投影。互动描述不得进入公开列表、registry、desktopContract 或 PC；只有修改详情和 Python 权威 record resolver 可以读取。
+公开列表 DTO 只包含 `id`、`name`、`changeMode`、`defaultUrl`、有序 `changeUrls`，以及存在时的普通音效和彩蛋运行投影。所有资源 URL 必须是单 `/` 开头、无反斜杠和 fragment 的同源绝对路径，并且必须且只能携带一个非空 `v` 参数；`v` 的内容身份规则见下方原子性约束。互动描述不得进入公开列表、registry、desktopContract 或 PC；只有修改详情和 Python 权威 record resolver 可以读取。
 
 POST、PUT 和 DELETE 必须经过 loopback access、同源 mutation 校验和存储写围栏。PC 只消费同源资源 URL，不读取磁盘路径或 record。
 
