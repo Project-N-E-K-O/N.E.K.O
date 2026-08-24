@@ -209,9 +209,11 @@ manager.image = {{
   removeAttribute() {{}},
   setPointerCapture() {{}},
   getBoundingClientRect() {{
+    const width = 400 * manager.config.scale;
+    const height = 400 * manager.config.scale;
     const centerX = window.innerWidth / 2 + manager.config.offset_x;
     const centerY = window.innerHeight / 2 + manager.config.offset_y;
-    return {{ left: centerX - 200, top: centerY - 200, width: 400, height: 400 }};
+    return {{ left: centerX - width / 2, top: centerY - height / 2, width, height }};
   }},
 }};
 manager.applyTransform = () => {{}};
@@ -221,6 +223,8 @@ manager.showDragImage = () => {{}};
 manager.syncGlobalConfig = () => {{}};
 manager.updateFloatingButtonsPosition = () => {{}};
 manager.updateLockIconPosition = () => {{}};
+let scheduledSaves = 0;
+manager.scheduleSaveCurrentConfig = () => {{ scheduledSaves += 1; }};
 
 (async () => {{
   manager.config.offset_x = -750;
@@ -264,6 +268,24 @@ manager.updateLockIconPosition = () => {{}};
   assert.equal(await animatedSnap, true);
   assert.equal(manager.config.offset_x, -500);
   assert.equal(manager.config.offset_y, 0);
+
+  // Wheel zoom cancels the old rebound and targets the resized model geometry.
+  manager.config.offset_x = -750;
+  const preZoomSnap = manager.snapModelIntoScreen();
+  manager.handleWheelZoom({{
+    deltaY: 1000,
+    preventDefault() {{}},
+    stopPropagation() {{}},
+  }});
+  assert.equal(await preZoomSnap, false);
+  assert.equal(frames.size, 1);
+  runNextFrame(0);
+  runNextFrame(260);
+  await Promise.resolve();
+  const resizedBounds = manager.image.getBoundingClientRect();
+  const resizedRight = resizedBounds.left + resizedBounds.width;
+  assert.ok(Math.abs(resizedRight - 200) < 0.001);
+  assert.equal(scheduledSaves, 1);
 
   manager.config.offset_x = -750;
   const cancelledSnap = manager.snapModelIntoScreen();

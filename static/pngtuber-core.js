@@ -2888,6 +2888,11 @@
         beginExternalPositionDrag() {
             this._dragSequence += 1;
             this.cancelEdgeSnapAnimation();
+            return this._dragSequence;
+        }
+
+        isExternalPositionDragCurrent(dragSequence) {
+            return dragSequence === this._dragSequence;
         }
 
         applyEdgeSnapOffsets(offsetX, offsetY) {
@@ -3176,13 +3181,20 @@
             if (this._dragState) return;
             event.preventDefault();
             event.stopPropagation();
+            this._dragSequence += 1;
+            const zoomSequence = this._dragSequence;
+            this.cancelEdgeSnapAnimation();
             const absDelta = Math.abs(event.deltaY);
             const zoomStep = Math.min(absDelta / 1000, 0.08);
             const scaleFactor = 1 + zoomStep;
             const currentScale = this.getActivePlacement().scale;
             const nextScale = event.deltaY < 0 ? currentScale * scaleFactor : currentScale / scaleFactor;
             this.applyScale(nextScale);
-            this.scheduleSaveCurrentConfig();
+            this.snapModelIntoScreen({ animate: true }).then(() => {
+                if (zoomSequence === this._dragSequence) {
+                    this.scheduleSaveCurrentConfig();
+                }
+            });
         }
 
         getTouchDistance(touch1, touch2) {
