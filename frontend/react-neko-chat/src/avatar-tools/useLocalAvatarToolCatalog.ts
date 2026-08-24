@@ -233,18 +233,24 @@ export function useLocalAvatarToolCatalog(): LocalAvatarToolCatalog {
       try {
         currentDetail = await fetchLocalAvatarToolDetail(toolId, limits?.maxChangeImages ?? 16);
       } catch {}
-      await refresh().catch(() => undefined);
+      let refreshed = false;
+      try {
+        await refresh();
+        refreshed = true;
+      } catch {}
       if (
         currentDetail
         && currentDetail.revision !== input.baseRevision
         && detailMatchesUpdate(currentDetail, input)
       ) {
-        const definitions = buildValidLocalDefinitions([detailToPublicItem(currentDetail)]);
-        if (definitions.length === 1) {
-          setRegistry((current) => createAvatarToolRegistrySnapshot([
-            ...current.definitions.filter(definition => definition.definitionVersion === 2 && definition.id !== toolId),
-            definitions[0],
-          ]));
+        if (!refreshed) {
+          const definitions = buildValidLocalDefinitions([detailToPublicItem(currentDetail)]);
+          if (definitions.length === 1) {
+            setRegistry((current) => createAvatarToolRegistrySnapshot([
+              ...current.definitions.filter(definition => definition.definitionVersion === 2 && definition.id !== toolId),
+              definitions[0],
+            ]));
+          }
         }
         return;
       }
@@ -253,7 +259,13 @@ export function useLocalAvatarToolCatalog(): LocalAvatarToolCatalog {
         && error.message === 'tool_revision_conflict'
         && currentDetail
       ) {
-        throw new LocalAvatarToolRevisionConflictError(currentDetail);
+        let conflictDetail = currentDetail;
+        if (refreshed) {
+          try {
+            conflictDetail = await fetchLocalAvatarToolDetail(toolId, limits?.maxChangeImages ?? 16);
+          } catch {}
+        }
+        throw new LocalAvatarToolRevisionConflictError(conflictDetail);
       }
       throw error;
     }

@@ -350,6 +350,74 @@ describe('useLocalAvatarToolCatalog failure handling', () => {
     expect(fetchMock).toHaveBeenCalledTimes(4);
   });
 
+  it('keeps a newer catalog revision published after confirming a lost PUT', async () => {
+    const toolId = 'local-12345678-1234-4123-8123-123456789abc' as const;
+    const oldItem = {
+      id: toolId,
+      revision: '100-200',
+      name: 'Feather',
+      changeMode: 'press-swap',
+      defaultUrl: '/default.png?v=old',
+      changeUrls: ['/change-000.png?v=old'],
+    };
+    const submittedItem = {
+      ...oldItem,
+      revision: '120-300',
+      name: 'Soft Feather',
+    };
+    const newestItem = {
+      ...submittedItem,
+      revision: '130-400',
+      name: 'Newest feather',
+      defaultUrl: '/default.png?v=newest',
+      changeUrls: ['/change-000.png?v=newest'],
+    };
+    const listResponse = (items: unknown[]) => new Response(JSON.stringify({ ok: true, items, limits: LIMITS }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(listResponse([oldItem]))
+      .mockRejectedValueOnce(new TypeError('connection reset'))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        ok: true,
+        detail: {
+          id: toolId,
+          revision: submittedItem.revision,
+          name: submittedItem.name,
+          changeMode: 'press-swap',
+          defaultImage: { resource: 'default.png', url: submittedItem.defaultUrl },
+          changeItems: [{
+            resource: 'change-000.png',
+            url: submittedItem.changeUrls[0],
+            meaning: 'A gentle touch',
+          }],
+        },
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+      .mockResolvedValueOnce(listResponse([newestItem]));
+    vi.stubGlobal('fetch', fetchMock);
+    const { result } = renderHook(() => useLocalAvatarToolCatalog());
+    await waitFor(() => expect(result.current.registry.has(toolId)).toBe(true));
+
+    await act(async () => {
+      await expect(result.current.update(toolId, {
+        baseRevision: oldItem.revision,
+        name: submittedItem.name,
+        changeMode: 'press-swap',
+        defaultImage: { resource: 'default.png', url: oldItem.defaultUrl },
+        changeItems: [{
+          resource: 'change-000.png',
+          url: oldItem.changeUrls[0],
+          meaning: 'A gentle touch',
+        }],
+      })).resolves.toBeUndefined();
+    });
+
+    const definition = result.current.registry.getRegistration(toolId).definition;
+    expect(definition.label).toEqual({ kind: 'literal', value: 'Newest feather' });
+    expect(definition.visual.variants.primary.iconImagePath).toBe(newestItem.defaultUrl);
+  });
+
   it('does not infer a lost retained-resource PUT succeeded when an asset changed elsewhere', async () => {
     const toolId = 'local-12345678-1234-4123-8123-123456789abc' as const;
     const oldItem = {
@@ -402,7 +470,7 @@ describe('useLocalAvatarToolCatalog failure handling', () => {
     });
   });
 
-  it('returns the current detail when an edit revision conflicts', async () => {
+  it('returns the latest detail after refreshing an edit revision conflict', async () => {
     const toolId = 'local-12345678-1234-4123-8123-123456789abc' as const;
     const oldItem = {
       id: toolId,
@@ -412,7 +480,7 @@ describe('useLocalAvatarToolCatalog failure handling', () => {
       defaultUrl: '/default.png?v=1',
       changeUrls: ['/change-000.png?v=1'],
     };
-    const currentDetail = {
+    const conflictDetail = {
       id: toolId,
       revision: '120-300',
       name: 'Changed elsewhere',
@@ -424,6 +492,17 @@ describe('useLocalAvatarToolCatalog failure handling', () => {
         meaning: 'Changed elsewhere',
       }],
     };
+    const latestDetail = {
+      ...conflictDetail,
+      revision: '130-400',
+      name: 'Changed again',
+      defaultImage: { resource: 'default.png', url: '/default.png?v=3' },
+      changeItems: [{
+        resource: 'change-000.png',
+        url: '/change-000.png?v=3',
+        meaning: 'Changed again',
+      }],
+    };
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true, items: [oldItem], limits: LIMITS }), {
         status: 200,
@@ -433,17 +512,21 @@ describe('useLocalAvatarToolCatalog failure handling', () => {
         status: 409,
         headers: { 'Content-Type': 'application/json' },
       }))
-      .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true, detail: currentDetail }), {
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true, detail: conflictDetail }), {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
       }))
       .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true, items: [{
         ...oldItem,
-        revision: currentDetail.revision,
-        name: currentDetail.name,
-        defaultUrl: currentDetail.defaultImage.url,
-        changeUrls: currentDetail.changeItems.map(item => item.url),
+        revision: latestDetail.revision,
+        name: latestDetail.name,
+        defaultUrl: latestDetail.defaultImage.url,
+        changeUrls: latestDetail.changeItems.map(item => item.url),
       }], limits: LIMITS }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true, detail: latestDetail }), {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
       }));
@@ -458,7 +541,7 @@ describe('useLocalAvatarToolCatalog failure handling', () => {
         changeMode: 'press-swap',
         defaultImage: { resource: 'default.png' },
         changeItems: [{ resource: 'change-000.png', meaning: 'My pending change' }],
-      })).rejects.toMatchObject({ currentDetail });
+      })).rejects.toMatchObject({ currentDetail: latestDetail });
     });
   });
 
