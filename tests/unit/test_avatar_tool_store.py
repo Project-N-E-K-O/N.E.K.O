@@ -1124,6 +1124,29 @@ def test_initialize_defers_recovery_while_the_write_fence_is_active(tmp_path, mo
     assert not updating.exists()
 
 
+@pytest.mark.parametrize("read_operation", ("list", "record"))
+def test_deferred_recovery_does_not_create_a_missing_root_while_fenced(
+    tmp_path, monkeypatch, read_operation
+):
+    root = tmp_path / "avatar_tools"
+    store = AvatarToolStore(_ConfigManager(root))
+
+    def reject_recovery(*_args, **_kwargs):
+        raise MaintenanceModeError("maintenance_readonly", operation="recover", target="avatar_tools")
+
+    monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", reject_recovery)
+    store.initialize()
+    assert not root.exists()
+
+    with pytest.raises(MaintenanceModeError):
+        if read_operation == "list":
+            store.list_items()
+        else:
+            store.read_record("local-12345678-1234-4123-8123-123456789abc")
+
+    assert not root.exists()
+
+
 @pytest.mark.parametrize("first_operation", ("list", "detail", "delete"))
 @pytest.mark.parametrize("valid_final", (False, True))
 def test_first_available_request_retries_a_failed_startup_recovery(
@@ -1276,6 +1299,38 @@ def test_initialize_replaces_a_corrupt_final_directory_with_a_valid_backup(tmp_p
 
     assert store.read_record(tool_id)["name"] == "Feather"
     assert not backup.exists()
+    assert not updating.exists()
+
+
+def test_failed_recovery_cleanup_stays_pending_until_the_directory_can_be_removed(tmp_path, monkeypatch):
+    monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
+    store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
+    created = _create_tool(
+        store,
+        name="Feather",
+        change_mode="press-swap",
+        change_meanings=["meaning"],
+        default_image=_png(),
+        change_images=[_png()],
+    )
+    updating = store.root / f".{created['id']}.updating"
+    shutil.copytree(store.root / created["id"], updating)
+    real_rmtree = shutil.rmtree
+
+    def reject_updating_cleanup(path, *args, **kwargs):
+        if Path(path) == updating:
+            raise OSError("updating directory is busy")
+        return real_rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr("utils.avatar_tool_store.shutil.rmtree", reject_updating_cleanup)
+    with pytest.raises(AvatarToolStoreError) as raised:
+        store.initialize()
+
+    assert raised.value.code == "avatar_tools_directory_unavailable"
+    assert updating.is_dir()
+
+    monkeypatch.setattr("utils.avatar_tool_store.shutil.rmtree", real_rmtree)
+    assert [item["id"] for item in store.list_items()] == [created["id"]]
     assert not updating.exists()
 
 

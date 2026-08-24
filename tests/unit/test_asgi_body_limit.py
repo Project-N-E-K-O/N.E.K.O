@@ -10,6 +10,9 @@ from __future__ import annotations
 import asyncio
 import json
 
+from fastapi import FastAPI, Request
+from fastapi.testclient import TestClient
+
 from utils.asgi_body_limit import (
     DEFAULT_MAX_INBOUND_BODY_BYTES,
     InboundBodySizeLimitMiddleware,
@@ -168,6 +171,42 @@ def test_bounded_multipart_route_counts_body_without_content_length():
 
     _run(mw(scope, receive, send))
     assert sent[0]["status"] == 413
+
+
+def test_streamed_multipart_overflow_keeps_the_outer_response_through_fastapi():
+    app = FastAPI()
+
+    @app.post("/api/avatar-tools")
+    async def parse_form(request: Request):
+        await request.form()
+        return {"ok": True}
+
+    guarded = InboundBodySizeLimitMiddleware(
+        app,
+        max_body_bytes=1024,
+        multipart_path_prefix="/api/avatar-tools",
+        multipart_methods=("POST",),
+        max_multipart_body_bytes=32,
+    )
+    body = (
+        b"--abc\r\nContent-Disposition: form-data; name=\"name\"\r\n\r\n"
+        + b"x" * 64
+        + b"\r\n--abc--\r\n"
+    )
+
+    with TestClient(guarded) as client:
+        response = client.post(
+            "/api/avatar-tools",
+            content=body,
+            headers={
+                "Content-Type": "multipart/form-data; boundary=abc",
+                "Content-Length": "1",
+            },
+        )
+
+    assert response.status_code == 413
+    assert response.json()["error_code"] == "payload_too_large"
+    assert response.headers["connection"] == "close"
 
 
 def test_bounded_multipart_preflight_rejects_before_body_is_read():

@@ -129,8 +129,8 @@ def _validate_local_callback_url(url: str) -> str:
 
 # 这些端点能改运行时状态（注册/卸载工具、配置 callback_url），如果服务被
 # 暴露到 LAN 上不加保护就成了任意远程工具转发器。复用 cookies_login_router
-# 里已有的 verify_local_access：仅允许 127.0.0.1 / ::1 / localhost，本地之外
-# 的请求一律 403。
+# 里已有的 verify_local_access：仅允许 loopback 地址或 localhost，本地之外
+# 的请求一律 403；IPv4-mapped IPv6 仍按其映射后的地址判断。
 router = APIRouter(
     prefix="/api/tools",
     tags=["tools"],

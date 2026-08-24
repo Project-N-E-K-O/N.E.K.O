@@ -321,15 +321,17 @@ class AvatarToolStore:
 
     def ensure(self) -> None:
         with _STORE_LOCK:
-            self._ensure_directory()
             root_key = self._root_key()
-            if root_key not in _RECOVERY_PENDING_ROOTS:
+            recovery_pending = root_key in _RECOVERY_PENDING_ROOTS
+            if recovery_pending:
+                assert_cloudsave_writable(
+                    self.config_manager,
+                    operation="recover",
+                    target="avatar_tools",
+                )
+            self._ensure_directory()
+            if not recovery_pending:
                 return
-            assert_cloudsave_writable(
-                self.config_manager,
-                operation="recover",
-                target="avatar_tools",
-            )
             try:
                 self._recover_interrupted_mutations()
             except OSError as exc:
@@ -369,6 +371,14 @@ class AvatarToolStore:
             _RECOVERY_PENDING_ROOTS.discard(root_key)
 
     def _recover_interrupted_mutations(self) -> None:
+        def remove_owned_directory(directory: Path) -> None:
+            if directory.is_symlink() or not directory.is_dir():
+                return
+            try:
+                shutil.rmtree(directory)
+            except FileNotFoundError:
+                return
+
         candidates = list(self.root.iterdir())
         tool_ids = {
             match.group(1)
@@ -390,8 +400,8 @@ class AvatarToolStore:
                 except AvatarToolStoreError:
                     pass
                 else:
-                    shutil.rmtree(updating, ignore_errors=True)
-                    shutil.rmtree(backup, ignore_errors=True)
+                    remove_owned_directory(updating)
+                    remove_owned_directory(backup)
                     continue
             if backup.is_dir() and not backup.is_symlink():
                 try:
@@ -408,9 +418,9 @@ class AvatarToolStore:
                     elif final.is_dir():
                         shutil.rmtree(final)
                     os.replace(backup, final)
-                    shutil.rmtree(updating, ignore_errors=True)
+                    remove_owned_directory(updating)
                     continue
-            shutil.rmtree(updating, ignore_errors=True)
+            remove_owned_directory(updating)
 
         for candidate in self.root.iterdir():
             if not (
@@ -420,7 +430,7 @@ class AvatarToolStore:
                 continue
             if candidate.is_symlink() or not candidate.is_dir():
                 continue
-            shutil.rmtree(candidate, ignore_errors=True)
+            remove_owned_directory(candidate)
 
     def read_record(
         self,

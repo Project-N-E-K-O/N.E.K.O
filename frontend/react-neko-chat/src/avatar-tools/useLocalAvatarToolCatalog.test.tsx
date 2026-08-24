@@ -138,6 +138,10 @@ describe('useLocalAvatarToolCatalog failure handling', () => {
       .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true, items: [createdItem], limits: LIMITS }), {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true, item: createdItem }), {
+        status: 201,
+        headers: { 'Content-Type': 'application/json' },
       }));
     vi.stubGlobal('fetch', fetchMock);
     const { result } = renderHook(() => useLocalAvatarToolCatalog());
@@ -157,7 +161,55 @@ describe('useLocalAvatarToolCatalog failure handling', () => {
     });
 
     expect(result.current.registry.has(createdItem.id)).toBe(true);
-    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+    expect(fetchMock.mock.calls[3]?.[1]).toMatchObject({ method: 'POST' });
+  });
+
+  it('keeps creation uncertain when the stable id belongs to different content', async () => {
+    const toolId = 'local-12345678-1234-4123-8123-123456789abc' as const;
+    const existingItem = {
+      id: toolId,
+      revision: '2-100',
+      name: 'Old feather',
+      changeMode: 'press-swap',
+      defaultUrl: '/default.png?v=old',
+      changeUrls: ['/change-000.png?v=old'],
+    };
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true, items: [], limits: LIMITS }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }))
+      .mockRejectedValueOnce(new TypeError('connection reset'))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true, items: [existingItem], limits: LIMITS }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        ok: false,
+        error_code: 'tool_id_conflict',
+      }), {
+        status: 409,
+        headers: { 'Content-Type': 'application/json' },
+      }));
+    vi.stubGlobal('fetch', fetchMock);
+    const { result } = renderHook(() => useLocalAvatarToolCatalog());
+    await waitFor(() => expect(result.current.authoritativeLoaded).toBe(true));
+
+    await act(async () => {
+      await expect(result.current.create({
+        toolId,
+        name: 'Changed feather',
+        changeMode: 'press-swap',
+        defaultImage: new File(['changed'], 'default.png', { type: 'image/png' }),
+        changeItems: [{
+          image: new File(['changed'], 'pressed.png', { type: 'image/png' }),
+          meaning: 'A different touch',
+        }],
+      })).rejects.toMatchObject({ message: 'tool_id_conflict' });
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(4);
   });
 
   it('does not treat a mismatched stable-id creation conflict as a lost response', async () => {

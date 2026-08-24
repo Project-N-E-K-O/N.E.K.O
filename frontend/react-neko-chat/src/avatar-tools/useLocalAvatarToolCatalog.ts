@@ -196,7 +196,10 @@ export function useLocalAvatarToolCatalog(): LocalAvatarToolCatalog {
         await refresh();
         refreshed = true;
       } catch {}
-      if (refreshed && authoritativeRegistryRef.current?.has(input.toolId) === true) return;
+      if (refreshed && authoritativeRegistryRef.current?.has(input.toolId) === true) {
+        const confirmedItem = await createLocalAvatarTool(input);
+        if (confirmedItem?.id === input.toolId) return;
+      }
       throw error;
     }
     const staleRefresh = refreshInFlightRef.current;

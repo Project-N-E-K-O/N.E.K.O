@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import io
 from pathlib import Path
+from types import SimpleNamespace
 
-from fastapi import FastAPI
+import pytest
+from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 from PIL import Image
 
@@ -48,6 +50,21 @@ def _client(tmp_path, monkeypatch, *, allow_mutation: bool):
     app.dependency_overrides[verify_local_access] = lambda: None
     app.include_router(avatar_tool_router.router)
     return TestClient(app), manager
+
+
+def test_shared_local_access_accepts_ipv4_mapped_loopback():
+    request = SimpleNamespace(client=SimpleNamespace(host="::ffff:127.0.0.1"))
+
+    verify_local_access(request)
+
+
+def test_shared_local_access_rejects_ipv4_mapped_public_address():
+    request = SimpleNamespace(client=SimpleNamespace(host="::ffff:8.8.8.8"))
+
+    with pytest.raises(HTTPException) as raised:
+        verify_local_access(request)
+
+    assert raised.value.status_code == 403
 
 
 def test_post_then_get_returns_authoritative_item_without_meaning(tmp_path, monkeypatch):

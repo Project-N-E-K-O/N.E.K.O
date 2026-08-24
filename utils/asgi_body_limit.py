@@ -112,19 +112,27 @@ class InboundBodySizeLimitMiddleware:
             return
 
         consumed = 0
+        overflowed = False
 
         async def limited_receive():
-            nonlocal consumed
+            nonlocal consumed, overflowed
             message = await receive()
             if message.get("type") == "http.request":
                 consumed += len(message.get("body", b""))
                 if consumed > maximum:
+                    overflowed = True
                     raise _InboundBodyTooLarge(maximum)
             return message
 
+        async def limited_send(message):
+            if not overflowed:
+                await send(message)
+
         try:
-            await self.app(scope, limited_receive, send)
+            await self.app(scope, limited_receive, limited_send)
         except _InboundBodyTooLarge:
+            pass
+        if overflowed:
             await self._reject(send, maximum)
 
     def _is_bounded_multipart(self, scope, content_type: bytes) -> bool:
