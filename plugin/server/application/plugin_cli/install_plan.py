@@ -380,21 +380,20 @@ def _packaged_entry_is_valid(
     if not module_name or not attribute:
         return False
 
-    relative_module = module_name
-    for prefix in (
-        f"plugin.plugins.{plugin_id}",
-        f"plugins.{plugin_id}",
-        plugin_id,
-    ):
-        if module_name == prefix:
-            relative_module = ""
-            break
-        if module_name.startswith(prefix + "."):
-            relative_module = module_name[len(prefix) + 1 :]
-            break
+    # The plugin host imports user plugins through the ``plugins.<id>``
+    # namespace. A package-local entry such as ``main:Plugin`` may point at a
+    # real archive member, but it cannot be loaded safely by the child process
+    # after a source switch. Fail closed during override planning instead of
+    # committing a package that cannot subsequently start.
+    runtime_prefix = f"plugins.{plugin_id}"
+    if module_name == runtime_prefix:
+        relative_module = ""
+    elif module_name.startswith(runtime_prefix + "."):
+        relative_module = module_name[len(runtime_prefix) + 1 :]
+    else:
+        return False
 
-    # Third-party packages may use a local module path. Whether prefixed or
-    # local, every component must remain a Python identifier so separators or
+    # Every remaining component must be a Python identifier so separators or
     # traversal-like empty components can never escape the package subtree.
     if relative_module and any(
         not part.isidentifier() for part in relative_module.split(".")

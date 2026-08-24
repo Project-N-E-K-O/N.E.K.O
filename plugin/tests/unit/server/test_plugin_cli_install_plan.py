@@ -120,16 +120,14 @@ def test_plan_allows_exact_single_plugin_to_override_builtin(tmp_path: Path) -> 
     assert builtin.is_dir()
 
 
-@pytest.mark.parametrize("entry_prefix", ["plugins.demo", "demo"])
-def test_plan_allows_supported_user_entry_namespaces_for_builtin_override(
+def test_plan_allows_runtime_user_entry_namespace_for_builtin_override(
     tmp_path: Path,
-    entry_prefix: str,
 ) -> None:
     source = _write_plugin(
         tmp_path / "source",
         "demo",
         "2.0.0",
-        entry=f"{entry_prefix}:Plugin",
+        entry="plugins.demo:Plugin",
     )
     package = tmp_path / "demo.neko-plugin"
     build_plugin(source, package)
@@ -143,6 +141,36 @@ def test_plan_allows_supported_user_entry_namespaces_for_builtin_override(
 
     assert plan.action == "override_builtin"
     assert plan.reason == ""
+
+
+@pytest.mark.parametrize(
+    "entry",
+    ["demo:Plugin", "main:Plugin", "demo.main:Plugin"],
+)
+def test_plan_rejects_package_local_entries_for_builtin_override(
+    tmp_path: Path,
+    entry: str,
+) -> None:
+    source = _write_plugin(
+        tmp_path / "source",
+        "demo",
+        "2.0.0",
+        entry=entry,
+    )
+    (source / "main.py").write_text("class Plugin: pass\n", encoding="utf-8")
+    package = tmp_path / "demo.neko-plugin"
+    build_plugin(source, package)
+    _write_plugin(tmp_path / "builtin", plugin_id="demo", version="1.0.0")
+
+    plan = build_install_plan(
+        package_path=package,
+        plugins_root=tmp_path / "user",
+        builtin_plugins_root=tmp_path / "builtin",
+    )
+
+    assert plan.action == "blocked"
+    assert plan.reason == "override_entry_missing"
+    assert plan.confirmation_token == ""
 
 
 @pytest.mark.parametrize(
