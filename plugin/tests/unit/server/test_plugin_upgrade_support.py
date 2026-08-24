@@ -326,6 +326,39 @@ async def test_replace_plugin_rejects_invalid_preserve_target_before_side_effect
 
 
 @pytest.mark.asyncio
+async def test_replace_plugin_rejects_persistent_state_target_before_side_effects(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state_root = tmp_path / "plugins"
+    target = state_root / "demo"
+    target.mkdir(parents=True)
+    state_db = target / "data" / "study.db"
+    state_db.parent.mkdir()
+    state_db.write_bytes(b"state")
+    events: list[str] = []
+    monkeypatch.setattr(upgrade_support, "get_plugin_state_root", lambda: state_root)
+
+    async def is_running(plugin_id: str) -> bool:
+        events.append(f"running:{plugin_id}")
+        return False
+
+    with pytest.raises(ValueError, match="persistent state paths"):
+        await replace_plugin(
+            layout=resolve_plugin_layout("demo", target, storage_root=tmp_path),
+            install_new=lambda: _async_none(),  # type: ignore[arg-type]
+            validate_new=_async_none,
+            is_running=is_running,
+            stop=lambda _plugin_id: _async_none(),
+            start=lambda _plugin_id: _async_none(),
+            cleanup_backup=remove_directory,
+        )
+
+    assert events == []
+    assert state_db.read_bytes() == b"state"
+
+
+@pytest.mark.asyncio
 async def test_run_rollback_removes_new_directory_restores_backup_and_restarts(tmp_path: Path) -> None:
     target = tmp_path / "demo"
     backup = tmp_path / "demo.bak"

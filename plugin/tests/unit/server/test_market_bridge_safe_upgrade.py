@@ -73,6 +73,58 @@ def test_market_override_records_canonical_package_url() -> None:
     assert override["market_detail"]["package_url"] == canonical_url
 
 
+@pytest.mark.asyncio
+async def test_market_builtin_override_routes_verified_package_to_source_switch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    package_path = tmp_path / "study_companion.neko-plugin"
+    package_path.write_bytes(b"verified package")
+    payload = market_bridge.MarketInstallRequest(
+        plugin_id="study_companion",
+        expected_plugin_toml_id="study_companion",
+        version="0.1.6",
+        package_url="https://example.invalid/study_companion.neko-plugin",
+        package_sha256="a" * 64,
+        mode="override_builtin",
+    )
+    calls: list[dict[str, Any]] = []
+
+    monkeypatch.setattr(
+        market_bridge,
+        "_download_package",
+        lambda _url, _task: _async_value(package_path),
+    )
+    monkeypatch.setattr(
+        market_bridge,
+        "_verify_downloaded_package_with_fallback",
+        lambda *_args, **_kwargs: _async_value((package_path, "passed")),
+    )
+    monkeypatch.setattr(market_bridge, "_cleanup_download_file", lambda _path: None)
+
+    async def upload_and_install(**kwargs: Any) -> dict[str, object]:
+        calls.append(kwargs)
+        return {
+            "upload": {},
+            "unpack": {"operation": "override_builtin", "restarted": True},
+            "install": {"channel": "market"},
+        }
+
+    monkeypatch.setattr(
+        market_bridge,
+        "_cli_service",
+        SimpleNamespace(upload_and_install=upload_and_install),
+    )
+
+    task: dict[str, Any] = {}
+    await market_bridge._do_install(task, payload, {})
+
+    assert calls[0]["install_source_override"]["mode"] == "override_builtin"
+    assert task["result"]["operation"] == "override_builtin"
+    assert task["result"]["restarted"] is True
+    assert task["result"]["install"]["operation"] == "override_builtin"
+
+
 def _configure_paths(
     monkeypatch: pytest.MonkeyPatch,
     *,

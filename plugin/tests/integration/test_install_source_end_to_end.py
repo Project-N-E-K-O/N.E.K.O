@@ -14,6 +14,7 @@ from pathlib import Path
 
 import pytest
 
+import plugin.settings as settings
 from plugin.server.application.install_source.manager import (
     InstallSourceError,
     InstallSourceManager,
@@ -182,6 +183,52 @@ def test_corrupt_lock_is_backed_up_and_rebuilt(tmp_path: Path) -> None:
     assert len(bak_files) == 1
     assert mgr._current.entries == ()  # noqa: SLF001
     assert mgr._current.created_at is not None  # noqa: SLF001
+
+
+def test_explicit_config_root_migrates_legacy_lock_to_state_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An old lock beside PLUGIN_CONFIG_ROOT remains the migration source."""
+    builtin_root = tmp_path / "builtin"
+    custom_exec_root = tmp_path / "custom" / "plugins"
+    state_root = tmp_path / "state" / "plugins"
+    plugin_dir = custom_exec_root / "market_plugin"
+    builtin_root.mkdir()
+    plugin_dir.mkdir(parents=True)
+
+    monkeypatch.setenv("PLUGIN_CONFIG_ROOT", str(custom_exec_root))
+    monkeypatch.delenv("NEKO_PLUGIN_INSTALL_LOCK_PATH", raising=False)
+    monkeypatch.setattr(settings, "get_plugins_directory", lambda: state_root)
+
+    legacy_lock_path = custom_exec_root.parent / "plugins.lock.json"
+    old_manager = InstallSourceManager(
+        lock_path=legacy_lock_path,
+        builtin_root=builtin_root,
+        user_root=custom_exec_root,
+        scanner=PluginDirectoryScanner(builtin_root, custom_exec_root),
+    )
+    old_manager.record_market(
+        directory_path=plugin_dir,
+        plugin_market_id="market-id",
+        version="1.2.3",
+        package_url="https://example.test/market-plugin.neko-plugin",
+    )
+
+    canonical_lock_path = state_root.parent / "plugins.lock.json"
+    manager = InstallSourceManager(
+        lock_path=canonical_lock_path,
+        builtin_root=builtin_root,
+        user_root=custom_exec_root,
+        scanner=PluginDirectoryScanner(builtin_root, custom_exec_root),
+    )
+    manager.load()
+
+    entry = manager.list_entries()[0]
+    assert entry.channel == "market"
+    assert isinstance(entry.source_detail, SourceDetailMarket)
+    assert entry.source_detail.plugin_market_id == "market-id"
+    assert canonical_lock_path.read_bytes() == legacy_lock_path.read_bytes()
 
 
 # ──────────────────────────────────────────────────────────────────────

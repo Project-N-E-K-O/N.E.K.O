@@ -77,7 +77,9 @@ async def test_ensure_plugin_messaging_started_starts_router_when_response_map_i
 
 
 @pytest.mark.asyncio
-async def test_startup_uses_registry_refresh_then_autostart(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_startup_reconciles_existing_install_source_after_migration_before_registry_refresh(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     plugins_backup = copy.deepcopy(module.state.plugins)
     hosts_backup = dict(module.state.plugin_hosts)
     handlers_backup = dict(module.state.event_handlers)
@@ -99,6 +101,28 @@ async def test_startup_uses_registry_refresh_then_autostart(monkeypatch: pytest.
         monkeypatch.setattr(module.metrics_collector, "start", _noop_async)
         monkeypatch.setattr(module, "start_bridge", lambda: None)
         monkeypatch.setattr(module, "start_proactive_bridge", lambda: None)
+
+        async def _migrate_layout():
+            calls.append(("layout", "migrate"))
+            return type(
+                "MigrationResult",
+                (),
+                {"migrated": (), "blocked": ()},
+            )()
+
+        monkeypatch.setattr(module, "migrate_legacy_plugin_layout", _migrate_layout)
+
+        install_source_manager = object()
+
+        class _StartupReconciler:
+            def __init__(self, manager: object) -> None:
+                assert manager is install_source_manager
+
+            async def run(self) -> None:
+                calls.append(("install_source", "reconcile"))
+
+        monkeypatch.setattr(module, "get_install_source_manager", lambda: install_source_manager)
+        monkeypatch.setattr(module, "StartupReconciler", _StartupReconciler)
 
         async def _retry_deferred_profile_cleanup() -> int:
             calls.append(("profile_cleanup", "retry"))
@@ -150,6 +174,8 @@ async def test_startup_uses_registry_refresh_then_autostart(monkeypatch: pytest.
         await service.startup()
 
         assert calls == [
+            ("layout", "migrate"),
+            ("install_source", "reconcile"),
             ("profile_cleanup", "retry"),
             ("registry", "refresh"),
             ("start", "auto_plugin:False"),

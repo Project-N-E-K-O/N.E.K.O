@@ -86,6 +86,15 @@ def _make_user_plugin(tmp_path: Path) -> Path:
     return config_path
 
 
+def _make_importable_plugin(root: Path, plugin_id: str, source: str) -> Path:
+    plugin_dir = root / plugin_id
+    plugin_dir.mkdir(parents=True, exist_ok=True)
+    (plugin_dir / "__init__.py").write_text(f"SOURCE = {source!r}\n", encoding="utf-8")
+    config_path = plugin_dir / "plugin.toml"
+    config_path.write_text(f"[plugin]\nid={plugin_id!r}\n", encoding="utf-8")
+    return config_path
+
+
 @pytest.mark.plugin_unit
 def test_import_current_plugin_loads_package_from_config(_isolate_plugins_namespace, tmp_path: Path) -> None:
     config_path = _make_user_plugin(tmp_path)
@@ -242,3 +251,66 @@ def test_child_import_only_exposes_selected_plugin(tmp_path: Path) -> None:
     assert process.exitcode == 0
     shadowed, imported_from = result_queue.get(timeout=5)
     assert shadowed is False, imported_from
+
+
+def test_child_import_roots_keep_user_before_builtin(
+    _isolate_plugins_namespace,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from plugin import settings
+
+    user_root = tmp_path / "user" / "plugins"
+    builtin_root = tmp_path / "repo" / "plugin" / "plugins"
+    user_root.mkdir(parents=True)
+    builtin_root.mkdir(parents=True)
+    monkeypatch.setattr(settings, "PLUGIN_CONFIG_ROOTS", (user_root, builtin_root))
+    monkeypatch.setattr(settings, "BUILTIN_PLUGIN_CONFIG_ROOT", builtin_root)
+
+    # Simulate inherited paths in the wrong order; child setup must normalize
+    # them, not merely skip paths that are already present.
+    sys.path[:0] = [str(builtin_root.parent), str(user_root.parent)]
+    host_module._prepare_child_plugin_import_roots(_StubLogger())
+
+    assert sys.path.index(str(user_root.parent.resolve())) < sys.path.index(
+        str(builtin_root.parent.resolve())
+    )
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.parametrize("has_builtin_collision", [True, False])
+def test_child_import_prefers_current_user_plugin(
+    _isolate_plugins_namespace,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    has_builtin_collision: bool,
+) -> None:
+    from plugin import settings
+
+    plugin_id = "shared" if has_builtin_collision else "user_only"
+    user_root = tmp_path / "user" / "plugins"
+    builtin_root = tmp_path / "repo" / "plugin" / "plugins"
+    config_path = _make_importable_plugin(user_root, plugin_id, "user")
+    builtin_root.mkdir(parents=True, exist_ok=True)
+    (builtin_root / "__init__.py").write_text("", encoding="utf-8")
+    _make_importable_plugin(builtin_root, "_shared", "builtin_shared")
+    if has_builtin_collision:
+        _make_importable_plugin(builtin_root, plugin_id, "builtin")
+
+    monkeypatch.setattr(settings, "PLUGIN_CONFIG_ROOTS", (user_root, builtin_root))
+    monkeypatch.setattr(settings, "BUILTIN_PLUGIN_CONFIG_ROOT", builtin_root)
+    host_module._prepare_child_plugin_import_roots(_StubLogger())
+
+    module = host_module._import_plugin_module(
+        f"plugins.{plugin_id}",
+        config_path,
+        _StubLogger(),
+    )
+
+    assert module.SOURCE == "user"
+    assert Path(module.__file__).resolve().is_relative_to(user_root.resolve())
+    namespace_paths = [Path(path).resolve() for path in sys.modules["plugins"].__path__]
+    assert namespace_paths[0] == user_root.resolve()
+    assert builtin_root.resolve() in namespace_paths
+    shared_module = importlib.import_module("plugins._shared")
+    assert shared_module.SOURCE == "builtin_shared"

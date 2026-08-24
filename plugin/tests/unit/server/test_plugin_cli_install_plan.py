@@ -18,6 +18,7 @@ def _write_plugin(
     plugin_id: str,
     version: str,
     previous_ids: tuple[str, ...] = (),
+    entry: str | None = None,
 ) -> Path:
     plugin_dir = root / plugin_id
     plugin_dir.mkdir(parents=True)
@@ -30,6 +31,7 @@ def _write_plugin(
                 f'name = "{plugin_id}"\n',
                 f'version = "{version}"\n',
                 'type = "plugin"\n',
+                f'entry = "{entry or f"plugin.plugins.{plugin_id}:Plugin"}"\n',
                 previous_line,
                 f"\n[{plugin_id}]\n",
                 "enabled = true\n",
@@ -97,6 +99,123 @@ def test_plan_classifies_plugin_replacements_by_version(
     assert len(plan.confirmation_token) == 64
 
 
+def test_plan_allows_exact_single_plugin_to_override_builtin(tmp_path: Path) -> None:
+    package = _single_package(tmp_path, "demo", version="2.0.0")
+    builtin = _write_plugin(tmp_path / "builtin", plugin_id="demo", version="1.0.0")
+
+    plan = build_install_plan(
+        package_path=package,
+        plugins_root=tmp_path / "user",
+        builtin_plugins_root=tmp_path / "builtin",
+    )
+
+    assert plan.action == "override_builtin"
+    assert plan.plugin_id == "demo"
+    assert plan.directory_name == "demo"
+    assert plan.current_source == "builtin"
+    assert plan.target_source == "market"
+    assert plan.current_version == "1.0.0"
+    assert plan.target_version == "2.0.0"
+    assert len(plan.confirmation_token) == 64
+    assert builtin.is_dir()
+
+
+@pytest.mark.parametrize("entry_prefix", ["plugins.demo", "demo"])
+def test_plan_allows_supported_user_entry_namespaces_for_builtin_override(
+    tmp_path: Path,
+    entry_prefix: str,
+) -> None:
+    source = _write_plugin(
+        tmp_path / "source",
+        "demo",
+        "2.0.0",
+        entry=f"{entry_prefix}:Plugin",
+    )
+    package = tmp_path / "demo.neko-plugin"
+    build_plugin(source, package)
+    _write_plugin(tmp_path / "builtin", plugin_id="demo", version="1.0.0")
+
+    plan = build_install_plan(
+        package_path=package,
+        plugins_root=tmp_path / "user",
+        builtin_plugins_root=tmp_path / "builtin",
+    )
+
+    assert plan.action == "override_builtin"
+    assert plan.reason == ""
+
+
+@pytest.mark.parametrize(
+    "entry",
+    ["plugins.demo..escape:Plugin", "demo...escape:Plugin"],
+)
+def test_plan_rejects_malformed_supported_entry_namespace_paths(
+    tmp_path: Path,
+    entry: str,
+) -> None:
+    source = _write_plugin(
+        tmp_path / "source",
+        "demo",
+        "2.0.0",
+        entry=entry,
+    )
+    package = tmp_path / "demo.neko-plugin"
+    build_plugin(source, package)
+    _write_plugin(tmp_path / "builtin", plugin_id="demo", version="1.0.0")
+
+    plan = build_install_plan(
+        package_path=package,
+        plugins_root=tmp_path / "user",
+        builtin_plugins_root=tmp_path / "builtin",
+    )
+
+    assert plan.action == "blocked"
+    assert plan.reason == "override_entry_missing"
+
+
+def test_builtin_override_token_changes_with_builtin_manifest(tmp_path: Path) -> None:
+    package = _single_package(tmp_path, "demo", version="2.0.0")
+    builtin = _write_plugin(tmp_path / "builtin", plugin_id="demo", version="1.0.0")
+    kwargs = {
+        "package_path": package,
+        "plugins_root": tmp_path / "user",
+        "builtin_plugins_root": tmp_path / "builtin",
+    }
+    first = build_install_plan(**kwargs)
+
+    manifest = builtin / "plugin.toml"
+    manifest.write_text(
+        manifest.read_text(encoding="utf-8").replace('version = "1.0.0"', 'version = "1.0.1"'),
+        encoding="utf-8",
+    )
+    second = build_install_plan(**kwargs)
+
+    assert first.confirmation_token != second.confirmation_token
+    assert second.current_version == "1.0.1"
+
+
+def test_plan_blocks_builtin_override_with_previous_ids(tmp_path: Path) -> None:
+    source = _write_plugin(
+        tmp_path / "source",
+        "demo",
+        "2.0.0",
+        previous_ids=("old_demo",),
+    )
+    package = tmp_path / "demo.neko-plugin"
+    build_plugin(source, package)
+    _write_plugin(tmp_path / "builtin", plugin_id="demo", version="1.0.0")
+
+    plan = build_install_plan(
+        package_path=package,
+        plugins_root=tmp_path / "user",
+        builtin_plugins_root=tmp_path / "builtin",
+    )
+
+    assert plan.action == "blocked"
+    assert plan.reason == "override_previous_ids_not_supported"
+    assert plan.confirmation_token == ""
+
+
 def test_plan_blocks_bundle_with_any_existing_plugin(tmp_path: Path) -> None:
     source_root = tmp_path / "source"
     package_path = tmp_path / "demo-bundle.neko-bundle"
@@ -114,6 +233,33 @@ def test_plan_blocks_bundle_with_any_existing_plugin(tmp_path: Path) -> None:
 
     assert plan.action == "blocked"
     assert plan.reason == "bundle_conflict"
+
+
+def test_plan_blocks_bundle_that_contains_a_builtin_plugin(tmp_path: Path) -> None:
+    source_root = tmp_path / "source"
+    package_path = tmp_path / "builtin-bundle.neko-bundle"
+    build_bundle(
+        [
+            _write_plugin(source_root, "study_companion", "0.1.6"),
+            _write_plugin(source_root, "other", "2.0.0"),
+        ],
+        package_path,
+        bundle_id="builtin_bundle",
+        package_name="Builtin Bundle",
+        version="2.0.0",
+    )
+    builtin_root = tmp_path / "builtin"
+    _write_plugin(builtin_root, "study_companion", "0.1.5")
+
+    plan = build_install_plan(
+        package_path=package_path,
+        plugins_root=tmp_path / "user",
+        builtin_plugins_root=builtin_root,
+    )
+
+    assert plan.action == "blocked"
+    assert plan.reason == "bundle_conflict"
+    assert plan.confirmation_token == ""
 
 
 def test_plan_blocks_an_installed_declared_previous_id(tmp_path: Path) -> None:
