@@ -122,19 +122,19 @@ class _VerifiedAssetFileResponse(FileResponse):
         self, send, ranges: list[tuple[int, int]], file_size: int, send_header_only: bool
     ) -> None:
         boundary = secrets.token_hex(13)
-        content_length, header = self.generate_multipart(
+        _, header = self.generate_multipart(
             ranges, boundary, file_size, self.headers["content-type"]
         )
-        self.headers["content-range"] = f"multipart/byteranges; boundary={boundary}"
-        self.headers["content-length"] = str(content_length)
-        await send({"type": "http.response.start", "status": 206, "headers": self.raw_headers})
-        if send_header_only:
-            await send({"type": "http.response.body", "body": b"", "more_body": False})
-            return
         body = b"".join(
             header(start, end) + self._verified_content[start:end] + b"\n"
             for start, end in ranges
         ) + f"\n--{boundary}--\n".encode("latin-1")
+        self.headers["content-range"] = f"multipart/byteranges; boundary={boundary}"
+        self.headers["content-length"] = str(len(body))
+        await send({"type": "http.response.start", "status": 206, "headers": self.raw_headers})
+        if send_header_only:
+            await send({"type": "http.response.body", "body": b"", "more_body": False})
+            return
         await send({"type": "http.response.body", "body": body, "more_body": False})
 
 

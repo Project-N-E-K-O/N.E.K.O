@@ -195,3 +195,31 @@ async def test_avatar_tool_verified_response_preserves_byte_ranges(tmp_path):
 
     assert messages[0]["status"] == 206
     assert b"".join(message.get("body", b"") for message in messages[1:]) == b"2345"
+
+
+@pytest.mark.asyncio
+async def test_avatar_tool_verified_response_preserves_multiple_ranges(tmp_path):
+    tool_id = "local-12345678-1234-4123-8123-123456789abc"
+    static_files = AvatarToolStaticFiles(directory=tmp_path, check_dir=False)
+    content = b"0123456789"
+    asset = tmp_path / tool_id / "normal.mp3"
+    asset.parent.mkdir()
+    asset.write_bytes(content)
+    scope = {
+        "type": "http",
+        "method": "GET",
+        "path": f"/{tool_id}/normal.mp3",
+        "root_path": "",
+        "query_string": f"v={hashlib.sha256(content).hexdigest()}".encode("ascii"),
+        "headers": [(b"range", b"bytes=0-1,4-5")],
+    }
+
+    response = await static_files.get_response(f"{tool_id}/normal.mp3", scope)
+    messages = await _render_response(response, scope)
+    headers = dict(messages[0]["headers"])
+    body = b"".join(message.get("body", b"") for message in messages[1:])
+
+    assert messages[0]["status"] == 206
+    assert b"01" in body
+    assert b"45" in body
+    assert len(body) == int(headers[b"content-length"])
