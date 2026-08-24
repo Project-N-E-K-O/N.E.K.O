@@ -2885,6 +2885,11 @@
             }
         }
 
+        beginExternalPositionDrag() {
+            this._dragSequence += 1;
+            this.cancelEdgeSnapAnimation();
+        }
+
         applyEdgeSnapOffsets(offsetX, offsetY) {
             this.setActiveOffsets(offsetX, offsetY);
             this.applyTransform();
@@ -3205,6 +3210,7 @@
             this._dragSequence += 1;
             this._dragState = null;
             this._touchZoomState = {
+                dragSequence: this._dragSequence,
                 initialDistance: this.getTouchDistance(event.touches[0], event.touches[1]),
                 initialScale: placement.scale,
                 startCenterX: center.x,
@@ -3255,6 +3261,8 @@
             }
             this.updateLockIconPosition();
             if (state.changed) {
+                await this.snapModelIntoScreen({ animate: true });
+                if (!this.isDragCompletionCurrent(state)) return;
                 await this.saveCurrentConfig();
             }
         }

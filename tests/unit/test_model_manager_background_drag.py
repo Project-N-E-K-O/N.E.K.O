@@ -159,12 +159,14 @@ const container = {{
 }};
 let renderedPlacement = null;
 let stagedConfig = null;
+let externalDrags = 0;
 const manager = {{
   container,
   image: {{}},
   isLocked: false,
   config: {{ offset_x: 100, offset_y: 50 }},
   editing: false,
+  beginExternalPositionDrag() {{ externalDrags += 1; }},
   beginModelManagerPositionEditing() {{
     if (!this.editing) this.setActiveOffsets(0, 0);
     this.editing = true;
@@ -213,6 +215,7 @@ function pointer(x, y) {{
 
 (async () => {{
   documentListeners.get('pointerdown')(pointer(400, 300));
+  assert.equal(externalDrags, 1);
   windowListeners.get('pointermove')(pointer(430, 320));
   assert.deepEqual(renderedPlacement, {{ x: 30, y: 20 }});
   windowListeners.get('pointerup')(pointer(430, 320));

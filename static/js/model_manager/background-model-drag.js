@@ -175,6 +175,9 @@
         const container = manager && manager.container;
         if (!manager || !container || event.target !== container || manager.isLocked) return null;
         if (!manager.image || !isVisible(container)) return null;
+        if (typeof manager.beginExternalPositionDrag === 'function') {
+            manager.beginExternalPositionDrag();
+        }
 
         return {
             type: 'pngtuber',

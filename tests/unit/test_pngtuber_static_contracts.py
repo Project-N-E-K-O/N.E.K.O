@@ -134,6 +134,15 @@ def test_pngtuber_drag_uses_the_shared_multiscreen_transfer_contract():
     assert drag_block.index("await this.snapModelIntoScreen({ animate: true });") < drag_block.index(
         "await this.saveCurrentConfig();"
     )
+    touch_end_block = source[
+        source.index("        async endTouchZoom() {"):
+        source.index("        setupHTMLLockIcon()")
+    ]
+    assert "await this.snapModelIntoScreen({ animate: true });" in touch_end_block
+    assert "if (!this.isDragCompletionCurrent(state)) return;" in touch_end_block
+    assert touch_end_block.index("await this.snapModelIntoScreen({ animate: true });") < touch_end_block.index(
+        "await this.saveCurrentConfig();"
+    )
 
 
 def test_pngtuber_drag_snaps_back_when_less_than_200_pixels_remain_visible():
@@ -146,12 +155,21 @@ def test_pngtuber_drag_snaps_back_when_less_than_200_pixels_remain_visible():
 const assert = require('node:assert/strict');
 const vm = require('node:vm');
 
-const frames = [];
+let nextFrameId = 0;
+const frames = new Map();
 const requestAnimationFrame = (callback) => {{
-  frames.push(callback);
-  return frames.length;
+  const frameId = ++nextFrameId;
+  frames.set(frameId, callback);
+  return frameId;
 }};
-const cancelAnimationFrame = () => {{}};
+const cancelAnimationFrame = (frameId) => {{ frames.delete(frameId); }};
+const runNextFrame = (timestamp) => {{
+  const next = frames.entries().next();
+  assert.equal(next.done, false, 'expected a pending animation frame');
+  const [frameId, callback] = next.value;
+  frames.delete(frameId);
+  callback(timestamp);
+}};
 const window = {{
   location: {{ pathname: '/' }},
   innerWidth: 1000,
@@ -159,7 +177,7 @@ const window = {{
   lanlan_config: {{ model_type: 'pngtuber' }},
 }};
 const document = {{
-  body: {{ classList: {{ contains() {{ return false; }} }} }},
+  body: {{ classList: {{ contains() {{ return false; }}, toggle() {{}} }} }},
   getElementById() {{ return null; }},
   querySelectorAll() {{ return []; }},
 }};
@@ -185,6 +203,11 @@ manager.config = {{
   mirror: false,
 }};
 manager.image = {{
+  classList: {{ toggle() {{}} }},
+  closest() {{ return null; }},
+  setAttribute() {{}},
+  removeAttribute() {{}},
+  setPointerCapture() {{}},
   getBoundingClientRect() {{
     const centerX = window.innerWidth / 2 + manager.config.offset_x;
     const centerY = window.innerHeight / 2 + manager.config.offset_y;
@@ -193,6 +216,8 @@ manager.image = {{
 }};
 manager.applyTransform = () => {{}};
 manager.isLayeredActive = () => false;
+manager.resetLayeredDragVelocity = () => {{}};
+manager.showDragImage = () => {{}};
 manager.syncGlobalConfig = () => {{}};
 manager.updateFloatingButtonsPosition = () => {{}};
 manager.updateLockIconPosition = () => {{}};
@@ -231,14 +256,35 @@ manager.updateLockIconPosition = () => {{}};
   manager.config.offset_x = -750;
   manager.config.offset_y = 0;
   const animatedSnap = manager.snapModelIntoScreen();
-  assert.equal(frames.length, 1);
-  frames.shift()(0);
-  frames.shift()(130);
+  assert.equal(frames.size, 1);
+  runNextFrame(0);
+  runNextFrame(130);
   assert.ok(manager.config.offset_x > -500, 'easeOutBack should briefly overshoot the target');
-  frames.shift()(260);
+  runNextFrame(260);
   assert.equal(await animatedSnap, true);
   assert.equal(manager.config.offset_x, -500);
   assert.equal(manager.config.offset_y, 0);
+
+  manager.config.offset_x = -750;
+  const cancelledSnap = manager.snapModelIntoScreen();
+  runNextFrame(0);
+  runNextFrame(130);
+  manager.startDrag({{
+    target: manager.image,
+    button: 0,
+    pointerId: 9,
+    clientX: 100,
+    clientY: 100,
+    screenX: 100,
+    screenY: 100,
+    preventDefault() {{}},
+    stopPropagation() {{}},
+  }});
+  manager.setActiveOffsets(-123, 45);
+  assert.equal(await cancelledSnap, false);
+  assert.equal(frames.size, 0);
+  assert.equal(manager.config.offset_x, -123);
+  assert.equal(manager.config.offset_y, 45);
 }})().catch((error) => {{
   console.error(error);
   process.exit(1);
