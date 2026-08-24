@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections import OrderedDict
 
 import pytest
@@ -20,7 +21,7 @@ def _reset_gateway_state(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.mark.asyncio
-async def test_gateway_auto_reserves_anysearch_and_keeps_plugin_backend_auto(
+async def test_gateway_auto_uses_neutral_scope_and_keeps_plugin_backend_auto(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _reset_gateway_state(monkeypatch)
@@ -46,7 +47,7 @@ async def test_gateway_auto_reserves_anysearch_and_keeps_plugin_backend_auto(
     result = await search_gateway.search_via_plugin("neko", limit=3)
 
     assert result["success"] is True
-    assert calls == [("anysearch", None, None)]
+    assert calls == [("auto", None, None)]
 
 
 @pytest.mark.asyncio
@@ -77,3 +78,40 @@ async def test_gateway_explicit_anysearch_remains_an_explicit_plugin_backend(
 
     assert result["success"] is True
     assert calls == [("anysearch", "anysearch")]
+
+
+@pytest.mark.asyncio
+async def test_gateway_slot_throttles_using_its_reservation_scope(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _reset_gateway_state(monkeypatch)
+    calls: list[tuple[str | None, str | None]] = []
+
+    async def invoke(
+        _query: str,
+        _limit: int,
+        backend: str | None,
+        preferred_backend: str | None,
+        *,
+        run_timeout: float,
+    ) -> dict[str, object]:
+        calls.append((backend, preferred_backend))
+        return {
+            "success": True,
+            "results": [{"title": "result", "url": "https://example.com", "abstract": ""}],
+        }
+
+    monkeypatch.setattr(search_gateway, "_invoke_plugin", invoke)
+    deadline = asyncio.get_running_loop().time() + 1
+
+    result = await search_gateway._invoke_in_backend_slot(
+        "neko",
+        3,
+        "auto",
+        deadline,
+    )
+
+    assert result["success"] is True
+    assert calls == [(None, None)]
+    assert "auto" in search_gateway._next_run_at
+    assert "anysearch" not in search_gateway._next_run_at

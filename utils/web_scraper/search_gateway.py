@@ -328,7 +328,7 @@ async def _invoke_in_backend_slot(
     entry_backend: Optional[str] = None,
     preferred_backend: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Serialize one upstream backend while leaving other engines independent."""
+    """Serialize one known backend or the neutral automatic-dispatch scope."""
     loop = asyncio.get_running_loop()
     lock = _backend_locks.setdefault(reservation_backend, asyncio.Lock())
     remaining = deadline - loop.time()
@@ -345,7 +345,7 @@ async def _invoke_in_backend_slot(
         cooldown_until = _failure_cooldown_until.get(reservation_backend, 0.0)
         if now < cooldown_until:
             raise _PluginThrottleError("联网搜索暂处于失败冷却期")
-        throttle_wait = max(0.0, _next_run_at.get(backend, 0.0) - now)
+        throttle_wait = max(0.0, _next_run_at.get(reservation_backend, 0.0) - now)
         if throttle_wait:
             remaining = deadline - loop.time()
             if remaining <= 0:
@@ -398,11 +398,13 @@ async def search_via_plugin(
         if preferred_backend in {"anysearch", "baidu", "duckduckgo"}
         else None
     )
-    selected_backend = requested_backend or hinted_backend or "anysearch"
-    # The plugin owns automatic AnySearch -> regional-engine fallback.  The
-    # gateway reserves AnySearch for auto calls but leaves the entry backend
-    # unset, so it cannot turn an auto call into an explicit legacy backend.
-    cache_scope = "auto" if requested_backend is None and hinted_backend is None else selected_backend
+    # The plugin owns automatic AnySearch -> regional-engine fallback and may
+    # be configured to use a fixed legacy engine.  The host therefore cannot
+    # truthfully attribute an automatic call to AnySearch: keep that call in a
+    # neutral scope and let the plugin coordinate the actual backend. Explicit
+    # or hinted choices remain isolated by their known backend.
+    reservation_backend = requested_backend or hinted_backend or "auto"
+    cache_scope = reservation_backend
     key = (cache_scope, normalized_query.casefold(), requested_limit)
     cached = _cached(key)
     if cached is not None:
@@ -419,7 +421,7 @@ async def search_via_plugin(
                 result = await _invoke_in_backend_slot(
                     normalized_query,
                     plugin_limit,
-                    selected_backend,
+                    reservation_backend,
                     deadline,
                     entry_backend=requested_backend,
                     preferred_backend=hinted_backend,
