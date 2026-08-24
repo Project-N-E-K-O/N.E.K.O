@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import copy
+import threading
+from collections import deque
 
 import pytest
 
@@ -310,6 +313,7 @@ async def test_local_cooldown_skips_expensive_resource_verification(monkeypatch)
 
         def __init__(self):
             self.acks = []
+            self._avatar_interaction_gate_lock = asyncio.Lock()
             self._last_avatar_interaction_at = 10**15
             self._recent_avatar_interaction_id_set = set()
 
@@ -327,3 +331,63 @@ async def test_local_cooldown_skips_expensive_resource_verification(monkeypatch)
     result = await harness.handle_avatar_interaction(_payload())
     assert result["reason"] == "cooldown"
     assert verified == [False]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_concurrent_local_interactions_share_resource_verification_cooldown_gate(monkeypatch):
+    from main_logic.core import greeting
+
+    strict_started = threading.Event()
+    release_strict = threading.Event()
+    strict_reads = 0
+
+    class Store:
+        def read_record(self, _tool_id, *, verify_resources=False):
+            nonlocal strict_reads
+            if verify_resources:
+                strict_reads += 1
+                strict_started.set()
+                assert release_strict.wait(timeout=5)
+            return RECORD
+
+        record_revision = staticmethod(AvatarToolStore.record_revision)
+
+    class FakeRealtimeClient:
+        pass
+
+    class Harness(greeting.GreetingMixin):
+        lanlan_name = "YUI"
+        _config_manager = object()
+        avatar_interaction_cooldown_ms = 600
+
+        def __init__(self):
+            self.is_active = True
+            self.session = FakeRealtimeClient()
+            self.acks = []
+            self._recent_avatar_interaction_ids = deque(maxlen=32)
+            self._recent_avatar_interaction_id_set = set()
+            self._avatar_interaction_gate_lock = asyncio.Lock()
+            self._last_avatar_interaction_at = 0
+
+        def note_user_engagement(self, **_kwargs):
+            pass
+
+        async def send_avatar_interaction_ack(self, interaction_id, accepted, reason, **_kwargs):
+            self.acks.append((interaction_id, accepted, reason))
+
+    monkeypatch.setattr(greeting, "get_avatar_tool_store", lambda _manager: Store())
+    monkeypatch.setattr(greeting, "OmniRealtimeClient", FakeRealtimeClient)
+    harness = Harness()
+
+    first = asyncio.create_task(harness.handle_avatar_interaction(_payload()))
+    assert await asyncio.to_thread(strict_started.wait, 5)
+    second = asyncio.create_task(harness.handle_avatar_interaction(_payload(
+        interactionId="local-interaction-2",
+    )))
+    await asyncio.sleep(0)
+    release_strict.set()
+    results = await asyncio.gather(first, second)
+
+    assert {result["reason"] for result in results} == {"voice_session_active", "cooldown"}
+    assert strict_reads == 1
