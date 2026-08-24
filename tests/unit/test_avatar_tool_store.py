@@ -379,12 +379,42 @@ def test_list_isolates_a_tool_when_a_persisted_resource_fails_integrity(tmp_path
         default_image=_png(size=(9, 9)),
         change_images=[_png(size=(10, 10))],
     )
+    assert {item["id"] for item in store.list_items()} == {valid["id"], damaged["id"]}
     (store.root / damaged["id"] / "default.png").write_bytes(b"truncated")
 
     assert [item["id"] for item in store.list_items()] == [valid["id"]]
     with pytest.raises(AvatarToolStoreError) as raised:
         store.get_detail(damaged["id"])
     assert raised.value.code == "record_invalid"
+
+
+def test_list_reuses_verified_resource_digests_across_store_instances(tmp_path, monkeypatch):
+    monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
+    config = _ConfigManager(tmp_path / "avatar_tools")
+    store = AvatarToolStore(config)
+    created = _create_tool(
+        store,
+        name="Cached",
+        change_mode="press-swap",
+        change_meanings=["cached"],
+        default_image=_png(),
+        change_images=[_png(size=(9, 9))],
+    )
+    original_file_digest = AvatarToolStore._file_digest
+    digest_calls: list[Path] = []
+
+    def counted_file_digest(path):
+        digest_calls.append(path)
+        return original_file_digest(path)
+
+    monkeypatch.setattr(AvatarToolStore, "_file_digest", staticmethod(counted_file_digest))
+    assert [item["id"] for item in store.list_items()] == [created["id"]]
+    first_call_count = len(digest_calls)
+    assert first_call_count == 2
+
+    another_request_store = AvatarToolStore(config)
+    assert [item["id"] for item in another_request_store.list_items()] == [created["id"]]
+    assert len(digest_calls) == first_call_count
 
 
 def test_initialize_and_list_wrap_unreadable_store_errors(tmp_path, monkeypatch):
