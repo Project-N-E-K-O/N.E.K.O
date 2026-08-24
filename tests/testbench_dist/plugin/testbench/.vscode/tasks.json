@@ -1,0 +1,41 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "N.E.K.O: check testbench",
+      "type": "shell",
+      "command": "uv run neko-plugin check \"${workspaceFolder}\"",
+      "options": {
+        "cwd": "${config:nekoPlugin.repoRoot}"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "N.E.K.O: sync testbench",
+      "type": "shell",
+      "command": "uv run --with pip neko-plugin sync \"${workspaceFolder}\" --clean",
+      "options": {
+        "cwd": "${config:nekoPlugin.repoRoot}"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "N.E.K.O: check -r testbench",
+      "type": "shell",
+      "command": "uv run neko-plugin check -r \"${workspaceFolder}\"",
+      "options": {
+        "cwd": "${config:nekoPlugin.repoRoot}"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "N.E.K.O: build testbench",
+      "type": "shell",
+      "command": "uv run neko-plugin build \"${workspaceFolder}\"",
+      "options": {
+        "cwd": "${config:nekoPlugin.repoRoot}"
+      },
+      "problemMatcher": []
+    }
+  ]
+}

@@ -79,6 +79,8 @@ __pycache__/
 # 忽略 Jupyter Notebook 检查点
 .ipynb_checkpoints/
 .vscode/
+!tests/testbench_dist/plugin/testbench/.vscode/
+!tests/testbench_dist/plugin/testbench/.vscode/**
 .idea/
 .cursor/
 .pytest_cache/
