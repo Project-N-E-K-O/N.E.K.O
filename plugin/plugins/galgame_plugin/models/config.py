@@ -39,6 +39,7 @@ class GalgameBridgeConfig:
     default_mode: str = MODE_COMPANION
     push_notifications: bool = True
     scene_change_cooldown_seconds: float = 15.0
+    scene_summary_repeat_guard_enabled: bool = True
     scene_push_half_threshold: int = 4
     scene_push_time_fallback_seconds: float = 120.0
     scene_merge_total_threshold: int = 12
@@ -198,6 +199,10 @@ class GalgameConfig:
         "default_mode": ("bridge", "default_mode"),
         "push_notifications": ("bridge", "push_notifications"),
         "scene_change_cooldown_seconds": ("bridge", "scene_change_cooldown_seconds"),
+        "scene_summary_repeat_guard_enabled": (
+            "bridge",
+            "scene_summary_repeat_guard_enabled",
+        ),
         "scene_push_half_threshold": ("bridge", "scene_push_half_threshold"),
         "scene_push_time_fallback_seconds": ("bridge", "scene_push_time_fallback_seconds"),
         "scene_merge_total_threshold": ("bridge", "scene_merge_total_threshold"),

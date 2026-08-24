@@ -137,6 +137,32 @@ def test_build_config_reads_auto_open_ui_flag() -> None:
     assert invalid_cfg.auto_open_ui is False
 
 
+def test_build_config_reads_scene_summary_repeat_guard_fields() -> None:
+    cfg = galgame_service.build_config(
+        {
+            "galgame": {
+                "scene_summary_repeat_guard_enabled": False,
+            }
+        }
+    )
+
+    assert cfg.scene_summary_repeat_guard_enabled is False
+
+
+def test_build_config_defaults_invalid_scene_summary_repeat_guard_fields() -> None:
+    default_cfg = galgame_service.build_config({})
+    invalid_cfg = galgame_service.build_config(
+        {
+            "galgame": {
+                "scene_summary_repeat_guard_enabled": "false",
+            }
+        }
+    )
+
+    assert default_cfg.scene_summary_repeat_guard_enabled is True
+    assert invalid_cfg.scene_summary_repeat_guard_enabled is True
+
+
 def test_build_config_defaults_fast_loop_enabled() -> None:
     default_cfg = galgame_service.build_config({})
     disabled_cfg = galgame_service.build_config({"ocr_reader": {"fast_loop_enabled": False}})

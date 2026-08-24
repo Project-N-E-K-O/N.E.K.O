@@ -1,6 +1,13 @@
 /* Knowledge-map fallback rendering. Loaded before main.js; function bodies run after bootstrap. */
 const UNCATEGORIZED_SUBJECT = '__uncategorized__';
+const KNOWLEDGE_MAP_ZOOM_LEVELS = [60, 75, 90, 100];
 let knowledgeMapSubject = '';
+let knowledgeMapCourseFamily = '';
+let knowledgeMapChapter = '';
+let knowledgeMapUnit = '';
+let knowledgeMapZoomIndex = 3;
+const practiceScopePath = document.getElementById('practiceScopePath');
+const clearPracticeScopeBtn = document.getElementById('clearPracticeScopeBtn');
 
 function knowledgeMapActiveStage() {
   return knowledgeMapStage || normalizeLearningStage(learningProfile.stage) || 'all';
@@ -8,6 +15,145 @@ function knowledgeMapActiveStage() {
 
 function subjectValueFromNode(node = {}) {
   return String(node.subject || node.subject_id || '').trim();
+}
+
+function courseFamilyValueFromNode(node = {}) {
+  return String(node.course_family || '').trim();
+}
+
+function topicIdFromNode(node = {}) {
+  return String(node.id || node.topic_id || '').trim();
+}
+
+function knowledgePracticeScopeFromNode(node = {}) {
+  const stage = stageValueFromNode(node);
+  const subject = subjectValueFromNode(node);
+  const courseFamily = courseFamilyValueFromNode(node);
+  const topicId = topicIdFromNode(node);
+  if (!stage || !subject || !topicId || (stage === 'college' && !courseFamily)) return null;
+  const chapter = String(node.chapter || '').trim();
+  return {
+    schema_version: 1,
+    mode: 'explicit_topic',
+    stage,
+    subject,
+    course_family: courseFamily,
+    chapter,
+    unit: chapter ? String(node.unit || '').trim() : '',
+    topic_id: topicId,
+  };
+}
+
+function knowledgeCurrentPracticeScope(nodes = []) {
+  const stage = knowledgeMapActiveStage();
+  const stageNodes = visibleKnowledgeNodes(nodes, stage, 'all');
+  const subject = knowledgeMapActiveSubject(stageNodes);
+  if (stage === 'all' || subject === 'all' || subject === UNCATEGORIZED_SUBJECT) return null;
+  const candidates = visibleKnowledgeNodes(nodes, stage, subject);
+  const availableFamilies = [...new Set(candidates.map(courseFamilyValueFromNode).filter(Boolean))];
+  const courseFamily = String(knowledgeMapCourseFamily || '').trim()
+    || (availableFamilies.length === 1 ? availableFamilies[0] : '');
+  if (stage === 'college' && !courseFamily) return null;
+  const chapter = String(knowledgeMapChapter || '').trim();
+  return {
+    schema_version: 1,
+    mode: 'explicit_scope',
+    stage,
+    subject,
+    course_family: courseFamily,
+    chapter,
+    unit: chapter ? String(knowledgeMapUnit || '').trim() : '',
+  };
+}
+
+async function runKnowledgePracticeScopeAction(button, scope) {
+  if (!scope || button.disabled) return;
+  button.disabled = true;
+  try {
+    await activateKnowledgePracticeScope(scope);
+  } catch (error) {
+    setStatus(t('ui.status.error', 'Error'));
+    setReply(formatPluginError(error));
+    button.disabled = false;
+  }
+}
+
+function practiceScopeDisplayPath(scope = currentPracticeScope) {
+  const path = Array.isArray(scope?.display_path)
+    ? scope.display_path.map((part) => String(part || '').trim()).filter(Boolean)
+    : [];
+  return path.join(' / ');
+}
+
+function setPracticeScopeState(payload = {}) {
+  const active = payload?.active === true && payload.scope && typeof payload.scope === 'object';
+  currentPracticeScope = active ? payload.scope : null;
+  if (practiceScopePath) {
+    practiceScopePath.textContent = practiceScopeDisplayPath()
+      || t('ui.practice.scope_automatic', 'Automatic adaptive selection');
+  }
+  if (clearPracticeScopeBtn) clearPracticeScopeBtn.hidden = !active;
+  if (questionContextCard) {
+    questionContextCard.dataset.scopeRevision = active
+      ? String(currentPracticeScope.scope_revision || payload.scope_revision || '')
+      : String(payload.scope_revision || '');
+  }
+  return currentPracticeScope;
+}
+
+async function loadPracticeScope(options = {}) {
+  try {
+    const data = await callPlugin('study_get_practice_scope');
+    setPracticeScopeState(data);
+    return data;
+  } catch (error) {
+    setPracticeScopeState({ active: false, scope: {}, scope_revision: 0 });
+    setQuestionContext({ selection_reason: 'no_data', no_data: true });
+    if (!options.silent) {
+      setStatus(t('ui.status.error', 'Error'));
+      setReply(formatPluginError(error));
+    }
+    throw error;
+  }
+}
+
+async function activateKnowledgePracticeScope(scope) {
+  setStatus(t('ui.practice.scope_setting', 'Setting practice scope...'));
+  const data = await callPlugin('study_set_practice_scope', { scope });
+  setPracticeScopeState(data);
+  currentSelectionContext = null;
+  setQuestionContext({
+    practice_scope: data.scope || {},
+    scope_key: data.scope?.scope_key || '',
+    scope_revision: data.scope_revision || data.scope?.scope_revision || 0,
+    selection_reason: 'loading',
+  });
+  closeSurfaceDrawer();
+  focusAfterScroll(openPracticePanel(), generateQuestionBtn);
+  setStatus(t('ui.practice.scope_set', 'Practice scope selected. Click Generate Question to begin.'));
+  return data;
+}
+
+async function clearPracticeScope() {
+  const data = await callPlugin('study_clear_practice_scope');
+  setPracticeScopeState(data);
+  currentSelectionContext = null;
+  setQuestionContext({ selection_reason: 'loading' });
+  setStatus(t('ui.practice.scope_cleared', 'Practice scope cleared.'));
+  return data;
+}
+
+function practiceCompletionMessage(data = {}) {
+  return data.practice_scope_status === 'completed'
+    ? t('ui.practice.scope_completed', 'Scope complete. You can continue reviewing this topic.')
+    : '';
+}
+
+function updatePracticeCompletionAction(data = {}) {
+  if (!generateQuestionBtn) return;
+  generateQuestionBtn.textContent = data.practice_scope_status === 'completed'
+    ? t('ui.button.continue_practice_review', 'Continue review')
+    : t('ui.button.generate_question', 'Generate Question');
 }
 
 function knowledgeSubjectLabel(subject) {
@@ -35,6 +181,59 @@ function knowledgeMapSubjectLabel(subject = 'all') {
   return knowledgeSubjectLabel(subject);
 }
 
+function knowledgeMapZoomLevel() {
+  return KNOWLEDGE_MAP_ZOOM_LEVELS[knowledgeMapZoomIndex];
+}
+
+function renderKnowledgeZoomControls() {
+  const root = drawerElement('div', 'knowledge-map-zoom');
+  root.setAttribute('role', 'group');
+  root.setAttribute('aria-label', t('ui.knowledge.zoom_controls', 'Window size controls'));
+  const status = drawerElement('span', 'sr-only', tf('ui.knowledge.zoom_status', 'Current window size: {percent}%', { percent: knowledgeMapZoomLevel() }));
+  status.setAttribute('role', 'status');
+  status.setAttribute('aria-live', 'polite');
+  status.setAttribute('aria-atomic', 'true');
+  root.appendChild(status);
+  const addButton = (action, label, value, disabled, onClick, className = '') => {
+    const button = drawerElement('button', `button button-secondary knowledge-map-zoom__button ${className}`.trim(), value);
+    button.type = 'button';
+    button.dataset.action = action;
+    button.setAttribute('aria-label', label);
+    button.title = label;
+    button.disabled = disabled;
+    button.addEventListener('click', () => {
+      onClick();
+      syncZoomControls();
+    });
+    root.appendChild(button);
+    return button;
+  };
+  addButton('zoom-out', t('ui.knowledge.zoom_out', 'Shrink window'), '−', knowledgeMapZoomIndex === 0, () => {
+    knowledgeMapZoomIndex = Math.max(0, knowledgeMapZoomIndex - 1);
+  });
+  const reset = addButton('zoom-reset', t('ui.knowledge.zoom_reset', 'Reset window size'), `${knowledgeMapZoomLevel()}%`, knowledgeMapZoomIndex === 3, () => {
+    knowledgeMapZoomIndex = 3;
+  }, 'knowledge-map-zoom__level');
+  addButton('zoom-in', t('ui.knowledge.zoom_in', 'Enlarge window'), '+', knowledgeMapZoomIndex === KNOWLEDGE_MAP_ZOOM_LEVELS.length - 1, () => {
+    knowledgeMapZoomIndex = Math.min(KNOWLEDGE_MAP_ZOOM_LEVELS.length - 1, knowledgeMapZoomIndex + 1);
+  });
+  function syncZoomControls() {
+    const level = knowledgeMapZoomLevel();
+    surfaceDrawer.dataset.windowScale = String(level);
+    const zoomOut = root.querySelector('[data-action="zoom-out"]');
+    const zoomReset = root.querySelector('[data-action="zoom-reset"]');
+    const zoomIn = root.querySelector('[data-action="zoom-in"]');
+    if (zoomOut) zoomOut.disabled = knowledgeMapZoomIndex === 0;
+    if (zoomReset) {
+      zoomReset.textContent = `${level}%`;
+      zoomReset.disabled = knowledgeMapZoomIndex === 3;
+    }
+    if (zoomIn) zoomIn.disabled = knowledgeMapZoomIndex === KNOWLEDGE_MAP_ZOOM_LEVELS.length - 1;
+    status.textContent = tf('ui.knowledge.zoom_status', 'Current window size: {percent}%', { percent: level });
+  }
+  return root;
+}
+
 function visibleKnowledgeNodes(nodes = [], stage = knowledgeMapActiveStage(), subject = 'all') {
   const subjectValue = subject === UNCATEGORIZED_SUBJECT ? '' : subject;
   return nodes.filter((node) => {
@@ -43,6 +242,14 @@ function visibleKnowledgeNodes(nodes = [], stage = knowledgeMapActiveStage(), su
     const subjectVisible = subject === 'all' || subjectValueFromNode(node) === subjectValue;
     return stageVisible && subjectVisible;
   });
+}
+
+function visibleKnowledgeScopeNodes(nodes = [], stage = knowledgeMapActiveStage(), subject = 'all') {
+  return visibleKnowledgeNodes(nodes, stage, subject).filter((node) => (
+    (!knowledgeMapCourseFamily || courseFamilyValueFromNode(node) === knowledgeMapCourseFamily)
+    && (!knowledgeMapChapter || String(node.chapter || '').trim() === knowledgeMapChapter)
+    && (!knowledgeMapUnit || String(node.unit || '').trim() === knowledgeMapUnit)
+  ));
 }
 
 function visibleKnowledgeEdges(edges = [], nodes = [], stage = knowledgeMapActiveStage()) {
@@ -78,6 +285,9 @@ function renderKnowledgeSubjectSelector(nodes = [], stage = knowledgeMapActiveSt
     button.setAttribute('aria-pressed', subject === activeSubject ? 'true' : 'false');
     button.addEventListener('click', () => {
       knowledgeMapSubject = subject === 'all' ? '' : subject;
+      knowledgeMapCourseFamily = '';
+      knowledgeMapChapter = '';
+      knowledgeMapUnit = '';
       if (surfaceDrawerBody) {
         surfaceDrawerBody.replaceChildren(renderKnowledgePanel(lastKnowledgeMapPayload || lastStatusPayload));
       }
@@ -85,6 +295,103 @@ function renderKnowledgeSubjectSelector(nodes = [], stage = knowledgeMapActiveSt
     actions.appendChild(button);
   });
   root.appendChild(actions);
+  return root;
+}
+
+function renderKnowledgeHierarchyScopePicker(nodes = []) {
+  const stage = knowledgeMapActiveStage();
+  const stageNodes = visibleKnowledgeNodes(nodes, stage, 'all');
+  const subject = knowledgeMapActiveSubject(stageNodes);
+  const subjectNodes = visibleKnowledgeNodes(nodes, stage, subject);
+  const root = drawerElement('section', 'knowledge-hierarchy-picker');
+  root.setAttribute('aria-label', t('ui.knowledge.practice_scope_label', 'Practice scope'));
+
+  const renderSelect = (label, values, selected, onChange, disabled = false) => {
+    const field = drawerElement('label', 'knowledge-hierarchy-picker__field');
+    field.appendChild(drawerElement('span', '', label));
+    const select = drawerElement('select');
+    select.disabled = disabled;
+    const all = drawerElement('option', '', t('ui.knowledge.hierarchy_all', 'All in current level'));
+    all.value = '';
+    select.appendChild(all);
+    values.forEach((value) => {
+      const option = drawerElement('option', '', value);
+      option.value = value;
+      option.selected = value === selected;
+      select.appendChild(option);
+    });
+    select.addEventListener('change', () => onChange(select.value));
+    field.appendChild(select);
+    return field;
+  };
+
+  const families = [...new Set(subjectNodes.map(courseFamilyValueFromNode).filter(Boolean))].sort();
+  if (knowledgeMapCourseFamily && !families.includes(knowledgeMapCourseFamily)) {
+    knowledgeMapCourseFamily = '';
+  }
+  const effectiveFamily = knowledgeMapCourseFamily || (families.length === 1 ? families[0] : '');
+  const familyNodes = effectiveFamily
+    ? subjectNodes.filter((node) => courseFamilyValueFromNode(node) === effectiveFamily)
+    : subjectNodes;
+  const chapters = [...new Set(familyNodes.map((node) => String(node.chapter || '').trim()).filter(Boolean))].sort();
+  if (knowledgeMapChapter && !chapters.includes(knowledgeMapChapter)) {
+    knowledgeMapChapter = '';
+    knowledgeMapUnit = '';
+  }
+  const chapterNodes = knowledgeMapChapter
+    ? familyNodes.filter((node) => String(node.chapter || '').trim() === knowledgeMapChapter)
+    : [];
+  const units = [...new Set(chapterNodes.map((node) => String(node.unit || '').trim()).filter(Boolean))].sort();
+  if (knowledgeMapUnit && !units.includes(knowledgeMapUnit)) knowledgeMapUnit = '';
+
+  if (stage === 'college') {
+    root.appendChild(renderSelect(
+      t('ui.knowledge.course_family_label', 'Course module'),
+      families,
+      effectiveFamily,
+      (value) => {
+        knowledgeMapCourseFamily = value;
+        knowledgeMapChapter = '';
+        knowledgeMapUnit = '';
+        surfaceDrawerBody?.replaceChildren(renderKnowledgePanel(lastKnowledgeMapPayload || lastStatusPayload));
+      },
+      subject === 'all',
+    ));
+  }
+  root.appendChild(renderSelect(
+    t('ui.knowledge.chapter_label', 'Chapter'),
+    chapters,
+    knowledgeMapChapter,
+    (value) => {
+      knowledgeMapChapter = value;
+      knowledgeMapUnit = '';
+      surfaceDrawerBody?.replaceChildren(renderKnowledgePanel(lastKnowledgeMapPayload || lastStatusPayload));
+    },
+    stage === 'all' || subject === 'all',
+  ));
+  root.appendChild(renderSelect(
+    t('ui.knowledge.unit_label', 'Unit'),
+    units,
+    knowledgeMapUnit,
+    (value) => {
+      knowledgeMapUnit = value;
+      surfaceDrawerBody?.replaceChildren(renderKnowledgePanel(lastKnowledgeMapPayload || lastStatusPayload));
+    },
+    !knowledgeMapChapter,
+  ));
+
+  const scope = knowledgeCurrentPracticeScope(nodes);
+  const action = drawerElement('button', 'button button-primary', t('ui.knowledge.practice_current_scope', 'Practice current scope'));
+  action.type = 'button';
+  action.disabled = !scope;
+  action.addEventListener('click', () => runKnowledgePracticeScopeAction(action, scope));
+  root.appendChild(action);
+  if (!scope) {
+    root.appendChild(drawerElement('p', 'knowledge-hierarchy-picker__hint', t(
+      'ui.knowledge.scope_requires_stage_subject',
+      'Choose a stage and subject or course module before starting practice.',
+    )));
+  }
   return root;
 }
 
@@ -116,6 +423,9 @@ function renderKnowledgeStageSelector(nodes = []) {
     button.addEventListener('click', () => {
       knowledgeMapStage = stage === normalizeLearningStage(learningProfile.stage) ? '' : stage;
       knowledgeMapSubject = '';
+      knowledgeMapCourseFamily = '';
+      knowledgeMapChapter = '';
+      knowledgeMapUnit = '';
       if (surfaceDrawerBody) {
         surfaceDrawerBody.replaceChildren(renderKnowledgePanel(lastKnowledgeMapPayload || lastStatusPayload));
       }
@@ -175,6 +485,20 @@ function renderKnowledgeNodeDetail(node = {}, edges = [], labelById = new Map())
   }));
   addSection('ui.knowledge.node_detail.practice', 'Practice type', (Array.isArray(node.question_types) ? node.question_types : []).map((item) => String(item || '').trim()).filter(Boolean));
   addSection('ui.knowledge.node_detail.misconceptions', 'Common misconceptions', (Array.isArray(node.typical_misconceptions) ? node.typical_misconceptions : []).map((item) => String(item || '').trim()).filter(Boolean));
+  const actions = drawerElement('div', 'knowledge-node-detail__actions');
+  const topicScope = knowledgePracticeScopeFromNode(node);
+  const topicAction = drawerElement('button', 'button button-primary', t('ui.knowledge.practice_topic', 'Practice this topic'));
+  topicAction.type = 'button';
+  topicAction.disabled = !topicScope;
+  topicAction.addEventListener('click', () => runKnowledgePracticeScopeAction(topicAction, topicScope));
+  const allNodes = Array.isArray(lastKnowledgeMapPayload?.nodes) ? lastKnowledgeMapPayload.nodes : [];
+  const currentScope = knowledgeCurrentPracticeScope(allNodes);
+  const scopeAction = drawerElement('button', 'button button-secondary', t('ui.knowledge.practice_current_scope', 'Practice current scope'));
+  scopeAction.type = 'button';
+  scopeAction.disabled = !currentScope;
+  scopeAction.addEventListener('click', () => runKnowledgePracticeScopeAction(scopeAction, currentScope));
+  actions.append(topicAction, scopeAction);
+  detail.appendChild(actions);
   return detail;
 }
 
@@ -221,10 +545,9 @@ function renderKnowledgeNodeDetailDialog(node = {}, edges = [], labelById = new 
   return dialog;
 }
 
-function renderKnowledgeNodes(nodes = [], edges = []) {
+function renderKnowledgeNodes(nodes = [], edges = [], detailMount = drawerElement('div', 'knowledge-node-detail-mount')) {
   const root = drawerElement('div', 'knowledge-stage-groups');
   const labelById = new Map(nodes.map((node) => [String(node.id || node.topic_id || ''), knowledgeNodeLabel(node)]));
-  const detailMount = drawerElement('div', 'knowledge-node-detail-mount');
   const groups = new Map();
   const cappedNodes = nodes.slice(0, 80);
   cappedNodes.forEach((node) => {
@@ -257,7 +580,10 @@ function renderKnowledgeNodes(nodes = [], edges = []) {
       valueLabel(node.unit, ''),
     ].filter(Boolean).join(' / ');
     item.addEventListener('click', () => {
-      const close = () => detailMount.replaceChildren();
+      const close = () => {
+        detailMount.replaceChildren();
+        item.focus();
+      };
       detailMount.replaceChildren(renderKnowledgeNodeDetailDialog(node, edges, labelById, close));
     });
     return item;
@@ -306,7 +632,6 @@ function renderKnowledgeNodes(nodes = [], edges = []) {
   if (nodes.length > cappedNodes.length) {
     root.appendChild(drawerElement('span', 'knowledge-edge-more', tf('ui.knowledge.edge_more', '+ {count} more', { count: nodes.length - cappedNodes.length })));
   }
-  root.appendChild(detailMount);
   return root;
 }
 function knowledgeNodeLabel(node) {
@@ -544,12 +869,15 @@ function renderKnowledgePanel(payload = null) {
   const activeStage = knowledgeMapActiveStage();
   const stageNodes = visibleKnowledgeNodes(nodes, activeStage, 'all');
   const activeSubject = knowledgeMapActiveSubject(stageNodes);
-  const shownNodes = visibleKnowledgeNodes(nodes, activeStage, activeSubject);
+  const shownNodes = visibleKnowledgeScopeNodes(nodes, activeStage, activeSubject);
   const shownEdges = visibleKnowledgeEdges(edges, shownNodes, activeStage);
   const topicCount = countFromSummary(summary, ['topic_count', 'topics', 'node_count', 'nodes']) || nodes.length;
   const edgeCount = countFromSummary(summary, ['edge_count', 'edges']) || edges.length;
   const weakTopics = shownNodes.filter((node) => masteryLevelForPanel(node) === 'weak').length;
   const root = surfacePanel('knowledge-map', `${shownNodes.length}/${topicCount}`);
+  surfaceDrawer.dataset.windowScale = String(knowledgeMapZoomLevel());
+  root.querySelector('.study-panel__header')?.appendChild(renderKnowledgeZoomControls());
+  const detailMount = drawerElement('div', 'knowledge-node-detail-mount');
   const state = drawerElement('section', 'study-panel__state');
   appendPanelState(state, t('ui.profile.stage_label', 'Stage'), learningStageLabel());
   appendPanelState(state, t('ui.knowledge.scope_label', 'Graph range'), knowledgeMapRangeLabel(activeStage));
@@ -560,13 +888,15 @@ function renderKnowledgePanel(payload = null) {
   root.appendChild(state);
   root.appendChild(renderKnowledgeStageSelector(nodes));
   root.appendChild(renderKnowledgeSubjectSelector(nodes, activeStage));
+  root.appendChild(renderKnowledgeHierarchyScopePicker(nodes));
 
   if (shownNodes.length) {
-    root.appendChild(renderKnowledgeNodes(shownNodes, shownEdges));
+    root.appendChild(renderKnowledgeNodes(shownNodes, shownEdges, detailMount));
   } else {
     root.appendChild(drawerElement('pre', '', t('ui.knowledge.scope_empty', 'No topics in this graph range yet. Switch to all stages or keep studying to build it.')));
   }
   root.appendChild(drawerElement('div', 'study-panel__reply-label', t('ui.knowledge.edge_section', 'Relationships')));
   root.appendChild(renderKnowledgeEdges(shownNodes, shownEdges, shownEdges.length, shownNodes.length));
+  root.appendChild(detailMount);
   return root;
 }

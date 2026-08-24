@@ -7,9 +7,19 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 # Built-in excludes are hard safety defaults. User rules extend them, but do
 # not replace them, so common cache/build artifacts never leak into packages.
+#
+# On macOS an editor directory is not merely noise. The desktop build stages
+# this payload under projectneko_server.app/Contents/MacOS/, and codesign's
+# default rules treat every directory there whose name contains a dot as a
+# nested bundle. It then fails to read one — there is no Contents/ inside — and
+# aborts the whole seal with "bundle format unrecognized, invalid, or
+# unsuitable", naming only the subcomponent. One stray .vscode/ in one plugin
+# therefore breaks the entire mac backend build.
 _DEFAULT_EXCLUDE_DIR_NAMES = {
     "__pycache__",
     ".github",
+    ".vscode",
+    ".idea",
     ".pytest_cache",
     ".mypy_cache",
     ".venv",

@@ -22,6 +22,7 @@ import json
 import mimetypes
 import os
 import re
+from collections.abc import Awaitable
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -187,6 +188,35 @@ class HostedUiActionRequest(BaseModel):
     kind: str = "panel"
     surface_id: str = "main"
     locale: str | None = None
+
+
+async def _wait_for_request_disconnect(request: Request) -> None:
+    while not await request.is_disconnected():
+        await asyncio.sleep(0.05)
+
+
+async def _await_action_or_disconnect(
+    request: Request,
+    action: Awaitable[dict[str, object]],
+) -> dict[str, object]:
+    action_task = asyncio.create_task(action)
+    disconnect_task = asyncio.create_task(_wait_for_request_disconnect(request))
+    try:
+        done, _pending = await asyncio.wait(
+            {action_task, disconnect_task},
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        if action_task in done:
+            return await action_task
+        raise HTTPException(
+            status_code=499,
+            detail={"code": "hosted_action_client_disconnected"},
+        )
+    finally:
+        for task in (action_task, disconnect_task):
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(action_task, disconnect_task, return_exceptions=True)
 
 
 async def _get_plugin_static_dir(plugin_id: str) -> Path | None:
@@ -596,16 +626,24 @@ async def plugin_hosted_ui_context(plugin_id: str, kind: str = "panel", id: str 
 
 
 @router.post("/plugin/{plugin_id}/hosted-ui/action/{action_id}")
-async def plugin_hosted_ui_action(plugin_id: str, action_id: str, request: HostedUiActionRequest):
+async def plugin_hosted_ui_action(
+    plugin_id: str,
+    action_id: str,
+    http_request: Request,
+    request: HostedUiActionRequest,
+):
     """执行 hosted surface 动作；第一版复用本插件 plugin_entry。"""
     try:
-        result = await plugin_ui_query_service.call_surface_action(
-            plugin_id,
-            action_id=action_id,
-            args=request.args,
-            kind=request.kind,
-            surface_id=request.surface_id,
-            locale=request.locale,
+        result = await _await_action_or_disconnect(
+            http_request,
+            plugin_ui_query_service.call_surface_action(
+                plugin_id,
+                action_id=action_id,
+                args=request.args,
+                kind=request.kind,
+                surface_id=request.surface_id,
+                locale=request.locale,
+            ),
         )
     except ServerDomainError as error:
         raise_http_from_domain(error, logger=logger)

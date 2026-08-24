@@ -4,8 +4,10 @@ import asyncio
 import base64
 import json
 import threading
+import time
 from types import MethodType, SimpleNamespace
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 from PIL import Image
@@ -20,6 +22,12 @@ from plugin.plugins.study_companion.entry_tutor_explain_entries import (
     IMAGE_ONLY_EXPLAIN_PROMPT_ZH_CN,
 )
 from plugin.plugins.study_companion.models import StudyConfig
+from plugin.plugins.study_companion.qwen_compatible_transport import QwenCompatibleResult
+from plugin.plugins.study_companion.qwen_native_client import (
+    QwenNativeClient,
+    QwenNativeError,
+    QwenNativeResult,
+)
 from plugin.plugins.study_companion.state import build_initial_state
 from plugin.plugins.study_companion.study_ocr_pipeline import StudyOcrPipeline
 from plugin.plugins.study_companion.tutor_llm_agent import TutorLLMAgent, TutorReply
@@ -41,6 +49,20 @@ class _Logger:
     def debug(self, *_args: object, **_kwargs: object) -> None:
         self.debugs.append((_args, _kwargs))
         return None
+
+
+def _model_result(text: str, *, output_limit_reached: bool = False) -> QwenNativeResult:
+    return QwenNativeResult(
+        text=text,
+        model="qwen-test",
+        model_group="vision",
+        request_id="test-request",
+        input_tokens=1,
+        output_tokens=1,
+        finish_reason="length" if output_limit_reached else "stop",
+        max_output_tokens=3072,
+        output_limit_reached=output_limit_reached,
+    )
 
 
 class _FakeOcrBackend:
@@ -78,40 +100,30 @@ ZH_TRANSFER_EXPECTED_TEXT = (
 
 
 def test_image_only_explain_prompts_require_solution_process_sections() -> None:
-    assert "detailed solution process" in IMAGE_ONLY_EXPLAIN_PROMPT_EN
+    assert "concise, reproducible solution" in IMAGE_ONLY_EXPLAIN_PROMPT_EN
     assert "Solution Process" in IMAGE_ONLY_EXPLAIN_PROMPT_EN
     assert "Answer" in IMAGE_ONLY_EXPLAIN_PROMPT_EN
-    assert "brief analysis" in IMAGE_ONLY_EXPLAIN_PROMPT_EN
+    assert "verified key derivations" in IMAGE_ONLY_EXPLAIN_PROMPT_EN
     assert "Problem Analysis" in IMAGE_ONLY_EXPLAIN_PROMPT_EN
     assert "Transfer Practice" in IMAGE_ONLY_EXPLAIN_PROMPT_EN
+    assert "exactly one short variant" in IMAGE_ONLY_EXPLAIN_PROMPT_EN
+    assert "do not guess geometry, labels" in IMAGE_ONLY_EXPLAIN_PROMPT_EN
     assert "do not assume it is single-choice" in IMAGE_ONLY_EXPLAIN_PROMPT_EN
     assert "verify each item independently" in IMAGE_ONLY_EXPLAIN_PROMPT_EN
     assert "output all correct options" in IMAGE_ONLY_EXPLAIN_PROMPT_EN
-    assert "详细的解答过程" in IMAGE_ONLY_EXPLAIN_PROMPT_ZH_CN
+    assert "精简、可复算的解答" in IMAGE_ONLY_EXPLAIN_PROMPT_ZH_CN
     assert "题目解析" in IMAGE_ONLY_EXPLAIN_PROMPT_ZH_CN
     assert "解题过程" in IMAGE_ONLY_EXPLAIN_PROMPT_ZH_CN
     assert "答案" in IMAGE_ONLY_EXPLAIN_PROMPT_ZH_CN
     assert "举一反三" in IMAGE_ONLY_EXPLAIN_PROMPT_ZH_CN
-    assert "解析" in IMAGE_ONLY_EXPLAIN_PROMPT_ZH_CN
+    assert "恰好给出一道简短变式" in IMAGE_ONLY_EXPLAIN_PROMPT_ZH_CN
+    assert "禁止猜测几何关系" in IMAGE_ONLY_EXPLAIN_PROMPT_ZH_CN
     assert "不要默认是单选题" in IMAGE_ONLY_EXPLAIN_PROMPT_ZH_CN
     assert "输出全部正确选项" in IMAGE_ONLY_EXPLAIN_PROMPT_ZH_CN
 
 
-@pytest.mark.parametrize(
-    "model, expected",
-    [
-        ("gpt-4o", True),
-        ("claude-4-sonnet", True),
-        ("gemini-2.5-pro", True),
-        ("glm-4.6v", True),
-        ("glm-5v-turbo", True),
-        ("glm-4-plus", False),
-        ("gpt-4", False),
-        ("", False),
-    ],
-)
-def test_model_supports_vision(model: str, expected: bool) -> None:
-    assert TutorLLMAgent._model_supports_vision(model) is expected
+def test_agent_does_not_guess_vision_support_from_model_name() -> None:
+    assert not hasattr(TutorLLMAgent, "_model_supports_vision")
 
 
 def test_study_explain_text_schema_accepts_vision_image() -> None:
@@ -211,25 +223,8 @@ def test_attach_vision_image_only_allows_jpeg_and_png_data_urls() -> None:
     assert svg is messages
 
 
-def test_strip_image_content_removes_image_blocks() -> None:
-    messages = [
-        {
-            "role": "user",
-            "content": [
-                {"type": "text", "text": "one"},
-                {"type": "image_url", "image_url": {"url": "data:image/png;base64,x"}},
-                {"type": "text", "text": "two"},
-            ],
-        },
-        {"role": "assistant", "content": "unchanged"},
-    ]
-
-    result = TutorLLMAgent._strip_image_content(messages)
-
-    assert result == [
-        {"role": "user", "content": "one\ntwo"},
-        {"role": "assistant", "content": "unchanged"},
-    ]
+def test_agent_cannot_strip_image_content_before_provider_call() -> None:
+    assert not hasattr(TutorLLMAgent, "_strip_image_content")
 
 
 @pytest.mark.asyncio
@@ -239,11 +234,11 @@ async def test_concept_explain_attaches_vision_context(
     agent = TutorLLMAgent(logger=_Logger(), config=StudyConfig(language="en"))
     seen: list[dict[str, Any]] = []
 
-    async def _fake_call_model(messages: list[dict[str, Any]]):
+    async def _fake_call_model_result(messages: list[dict[str, Any]], **_kwargs: Any):
         seen.extend(messages)
-        return "vision reply"
+        return _model_result("vision reply")
 
-    monkeypatch.setattr(agent, "_call_model", _fake_call_model)
+    monkeypatch.setattr(agent, "_call_model_result", _fake_call_model_result)
 
     reply = await agent.concept_explain(
         "solve this",
@@ -262,14 +257,19 @@ async def test_concept_explain_appends_missing_zh_transfer_section(
 ) -> None:
     agent = TutorLLMAgent(logger=_Logger(), config=StudyConfig(language="zh-CN"))
 
-    async def _fake_call_model(_messages: list[dict[str, Any]]):
-        return "题目解析\n分析题意。\n\n解题过程\n列式计算。\n\n答案\nA"
+    async def _fake_call_model_result(
+        _messages: list[dict[str, Any]], **_kwargs: Any
+    ):
+        return _model_result("题目解析\n分析题意。\n\n解题过程\n列式计算。\n\n答案\nA")
 
-    monkeypatch.setattr(agent, "_call_model", _fake_call_model)
+    monkeypatch.setattr(agent, "_call_model_result", _fake_call_model_result)
 
     reply = await agent.concept_explain(
         IMAGE_ONLY_EXPLAIN_PROMPT_ZH_CN,
-        context={"vision_image_base64": JPEG_IMAGE_BASE64},
+        context={
+            "vision_image_base64": JPEG_IMAGE_BASE64,
+            "study_response_mode": "problem_solving",
+        },
     )
 
     expected_tail = "举一反三\n" + ZH_TRANSFER_EXPECTED_TEXT
@@ -283,14 +283,19 @@ async def test_concept_explain_appends_transfer_to_numbered_zh_solution(
 ) -> None:
     agent = TutorLLMAgent(logger=_Logger(), config=StudyConfig(language="zh-CN"))
 
-    async def _fake_call_model(_messages: list[dict[str, Any]]):
-        return "1. 分析条件。\n\n2. 计算总和。\n\n答案\nA"
+    async def _fake_call_model_result(
+        _messages: list[dict[str, Any]], **_kwargs: Any
+    ):
+        return _model_result("1. 分析条件。\n\n2. 计算总和。\n\n答案\nA")
 
-    monkeypatch.setattr(agent, "_call_model", _fake_call_model)
+    monkeypatch.setattr(agent, "_call_model_result", _fake_call_model_result)
 
     reply = await agent.concept_explain(
         IMAGE_ONLY_EXPLAIN_PROMPT_ZH_CN,
-        context={"vision_image_base64": JPEG_IMAGE_BASE64},
+        context={
+            "vision_image_base64": JPEG_IMAGE_BASE64,
+            "study_response_mode": "problem_solving",
+        },
     )
 
     assert reply.reply.rstrip().endswith("举一反三\n" + ZH_TRANSFER_EXPECTED_TEXT)
@@ -302,27 +307,34 @@ async def test_concept_explain_appends_transfer_when_reply_is_zh_but_locale_is_e
 ) -> None:
     agent = TutorLLMAgent(logger=_Logger(), config=StudyConfig(language="en"))
 
-    async def _fake_call_model(_messages: list[dict[str, Any]]):
-        return "4. 计算期望并验证\n\n对分数进行约分。\n\n答案\nA"
+    async def _fake_call_model_result(
+        _messages: list[dict[str, Any]], **_kwargs: Any
+    ):
+        return _model_result("4. 计算期望并验证\n\n对分数进行约分。\n\n答案\nA")
 
-    monkeypatch.setattr(agent, "_call_model", _fake_call_model)
+    monkeypatch.setattr(agent, "_call_model_result", _fake_call_model_result)
 
     reply = await agent.concept_explain(
         IMAGE_ONLY_EXPLAIN_PROMPT_ZH_CN,
-        context={"vision_image_base64": JPEG_IMAGE_BASE64},
+        context={
+            "vision_image_base64": JPEG_IMAGE_BASE64,
+            "study_response_mode": "problem_solving",
+        },
     )
 
     assert reply.reply.rstrip().endswith("举一反三\n" + ZH_TRANSFER_EXPECTED_TEXT)
 
 
 @pytest.mark.asyncio
-async def test_concept_explain_appends_transfer_to_option_verification_reply(
+async def test_concept_explain_does_not_append_transfer_without_answer_section(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     agent = TutorLLMAgent(logger=_Logger(), config=StudyConfig(language="zh-CN"))
 
-    async def _fake_call_model(_messages: list[dict[str, Any]]):
-        return (
+    async def _fake_call_model_result(
+        _messages: list[dict[str, Any]], **_kwargs: Any
+    ):
+        return _model_result(
             "验证 C：若 AB ⊥ CD，则 CD ⊥ 平面 ABD。\n\n"
             "结论：C 错误。\n\n"
             "验证 D：若 AB ⊥ 平面 ACD，则 AC ⊥ AD。\n\n"
@@ -330,14 +342,15 @@ async def test_concept_explain_appends_transfer_to_option_verification_reply(
             "结论：B 正确。"
         )
 
-    monkeypatch.setattr(agent, "_call_model", _fake_call_model)
+    monkeypatch.setattr(agent, "_call_model_result", _fake_call_model_result)
 
     reply = await agent.concept_explain(
         IMAGE_ONLY_EXPLAIN_PROMPT_ZH_CN,
         context={"vision_image_base64": JPEG_IMAGE_BASE64},
     )
 
-    assert reply.reply.rstrip().endswith("举一反三\n" + ZH_TRANSFER_EXPECTED_TEXT)
+    assert "举一反三" not in reply.reply
+    assert reply.reply.rstrip().endswith("结论：B 正确。")
 
 
 @pytest.mark.asyncio
@@ -346,10 +359,12 @@ async def test_concept_explain_vision_failure_uses_image_specific_fallback(
 ) -> None:
     agent = TutorLLMAgent(logger=_Logger(), config=StudyConfig(language="zh-CN"))
 
-    async def _broken_call_model(_messages: list[dict[str, Any]]):
+    async def _broken_call_model_result(
+        _messages: list[dict[str, Any]], **_kwargs: Any
+    ):
         raise RuntimeError("llm unavailable")
 
-    monkeypatch.setattr(agent, "_call_model", _broken_call_model)
+    monkeypatch.setattr(agent, "_call_model_result", _broken_call_model_result)
 
     reply = await agent.concept_explain(
         IMAGE_ONLY_EXPLAIN_PROMPT_ZH_CN,
@@ -372,7 +387,10 @@ async def test_structured_operation_attaches_vision_context(
     seen: list[dict[str, Any]] = []
 
     async def _fake_call_model(
-        messages: list[dict[str, Any]], *, operation: str = "question_generate"
+        messages: list[dict[str, Any]],
+        *,
+        operation: str = "question_generate",
+        deadline: float | None = None,
     ):
         seen.extend(messages)
         return json.dumps(
@@ -399,15 +417,12 @@ async def test_structured_operation_attaches_vision_context(
 
 
 @pytest.mark.asyncio
-async def test_call_model_strips_vision_for_text_model(
+async def test_call_model_rejects_missing_vision_config_without_text_fallback(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from utils import config_manager, llm_client, token_tracker
+    from utils import config_manager
 
-    seen: list[dict[str, Any]] = []
     config_groups: list[str] = []
-    call_types: list[str] = []
-    logger = _Logger()
 
     class _ConfigManager:
         def get_model_api_config(self, group: str) -> dict[str, str]:
@@ -418,80 +433,77 @@ async def test_call_model_strips_vision_for_text_model(
                     "model": "",
                     "api_key": "",
                 }
-            return {
-                "base_url": "https://llm.example.test/v1",
-                "model": "gpt-4",
-                "api_key": "key",
-            }
-
-    class _FakeLLM:
-        async def ainvoke(self, messages: list[dict[str, Any]]):
-            seen.extend(messages)
-            return SimpleNamespace(content="reply")
+            raise AssertionError("image requests must not fall back to the text model")
 
     monkeypatch.setattr(config_manager, "get_config_manager", lambda: _ConfigManager())
-    monkeypatch.setattr(llm_client, "create_chat_llm", lambda **_kwargs: _FakeLLM())
-    monkeypatch.setattr(token_tracker, "set_call_type", call_types.append)
-    agent = TutorLLMAgent(logger=logger, config=StudyConfig(language="en"))
+    agent = TutorLLMAgent(logger=_Logger(), config=StudyConfig(language="en"))
 
-    result = await agent._call_model(
-        [
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": "one"},
-                    {"type": "image_url", "image_url": {"url": "data:image/png;base64,x"}},
-                ],
-            }
-        ]
-    )
+    from plugin.plugins.study_companion.study_model_gateway import StudyModelError
 
-    assert result == "reply"
-    assert config_groups == ["vision", "agent"]
-    assert call_types == ["agent"]
-    assert seen == [{"role": "user", "content": "one"}]
-    assert logger.warnings
-    assert "vision stripped" in str(logger.warnings[0][0][0])
+    with pytest.raises(StudyModelError) as exc_info:
+        await agent._call_model(
+            [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "one"},
+                        {"type": "image_url", "image_url": {"url": "data:image/png;base64,x"}},
+                    ],
+                }
+            ]
+        )
+
+    assert exc_info.value.diagnostic == "model_unavailable"
+    assert config_groups == ["vision"]
 
 
 @pytest.mark.asyncio
 async def test_call_model_uses_vision_config_for_image_messages(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from utils import config_manager, llm_client, token_tracker
+    from plugin.plugins.study_companion import study_model_gateway
+    from utils import config_manager
 
     seen_messages: list[dict[str, Any]] = []
-    seen_client_kwargs: list[dict[str, Any]] = []
+    seen_call_kwargs: list[dict[str, Any]] = []
     config_groups: list[str] = []
-    call_types: list[str] = []
 
     class _ConfigManager:
         def get_model_api_config(self, group: str) -> dict[str, str]:
             config_groups.append(group)
             if group == "vision":
                 return {
-                    "base_url": "https://vision.example.test/v1",
-                    "model": "step-1o-turbo-vision",
+                    "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+                    "model": "qwen3.7-plus",
                     "api_key": "vision-key",
                 }
-            return {
-                "base_url": "https://agent.example.test/v1",
-                "model": "step-3",
-                "api_key": "agent-key",
-            }
+            raise AssertionError("vision request unexpectedly used the agent model")
 
-    class _FakeLLM:
-        async def ainvoke(self, messages: list[dict[str, Any]]):
+    class _FakeGenericClient:
+        async def ainvoke(self, messages: list[dict[str, Any]]) -> SimpleNamespace:
             seen_messages.extend(messages)
-            return SimpleNamespace(content="vision reply")
+            return SimpleNamespace(
+                content="vision reply",
+                response_metadata={
+                    "request_id": "request-1",
+                    "finish_reason": "stop",
+                    "token_usage": {"prompt_tokens": 12, "completion_tokens": 4},
+                },
+            )
 
-    def _create_chat_llm(**kwargs: Any) -> _FakeLLM:
-        seen_client_kwargs.append(kwargs)
-        return _FakeLLM()
+        async def aclose(self) -> None:
+            return None
+
+    async def _fake_factory(**kwargs: Any) -> _FakeGenericClient:
+        seen_call_kwargs.append(dict(kwargs))
+        return _FakeGenericClient()
 
     monkeypatch.setattr(config_manager, "get_config_manager", lambda: _ConfigManager())
-    monkeypatch.setattr(llm_client, "create_chat_llm", _create_chat_llm)
-    monkeypatch.setattr(token_tracker, "set_call_type", call_types.append)
+    monkeypatch.setattr(
+        study_model_gateway,
+        "create_chat_llm_async",
+        _fake_factory,
+    )
     agent = TutorLLMAgent(logger=_Logger(), config=StudyConfig(language="en"))
 
     result = await agent._call_model(
@@ -503,18 +515,596 @@ async def test_call_model_uses_vision_config_for_image_messages(
                     {"type": "image_url", "image_url": {"url": "data:image/png;base64,x"}},
                 ],
             }
-        ]
+        ],
+        operation="knowledge_semantic_route",
     )
 
     assert result == "vision reply"
     assert config_groups == ["vision"]
-    assert call_types == ["vision"]
-    assert seen_client_kwargs[0]["base_url"] == "https://vision.example.test/v1"
-    assert seen_client_kwargs[0]["model"] == "step-1o-turbo-vision"
-    assert seen_client_kwargs[0]["api_key"] == "vision-key"
+    assert seen_call_kwargs[0]["base_url"] == "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    assert seen_call_kwargs[0]["model"] == "qwen3.7-plus"
+    assert seen_call_kwargs[0]["api_key"] == "vision-key"
+    assert seen_call_kwargs[0]["provider_type"] == "openai_compatible"
+    assert seen_call_kwargs[0]["max_completion_tokens"] == 512
+    assert seen_call_kwargs[0]["max_retries"] == 0
     content = seen_messages[0]["content"]
     assert isinstance(content, list)
-    assert content[1]["type"] == "image_url"
+    assert content[0] == {"type": "text", "text": "what is shown?"}
+    assert content[1] == {
+        "type": "image_url",
+        "image_url": {"url": "data:image/png;base64,x"},
+    }
+
+
+@pytest.mark.parametrize(
+    "model",
+    ["qwen3.7-plus", "qwen3.7-plus-2026-05-26"],
+)
+@pytest.mark.asyncio
+async def test_qwen37_plus_text_uses_agent_config_with_compatible_endpoint(
+    monkeypatch: pytest.MonkeyPatch,
+    model: str,
+) -> None:
+    from plugin.plugins.study_companion import qwen_native_client
+    from utils import config_manager
+
+    config_groups: list[str] = []
+    compatible_calls: list[dict[str, Any]] = []
+
+    class _ConfigManager:
+        def get_model_api_config(self, group: str) -> dict[str, str]:
+            config_groups.append(group)
+            assert group == "agent"
+            return {
+                "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+                "model": model,
+                "api_key": "agent-key",
+            }
+
+    class _CompatibleTransport:
+        async def chat_completions(self, **kwargs: Any) -> QwenCompatibleResult:
+            compatible_calls.append(dict(kwargs))
+            return QwenCompatibleResult(
+                text="《活着》呈现了苦难中的生命韧性。",
+                model=model,
+                request_id="text-request",
+                input_tokens=8,
+                output_tokens=5,
+            )
+
+    class _UnexpectedGeneration:
+        @staticmethod
+        async def call(**_kwargs: Any) -> SimpleNamespace:
+            raise AssertionError("compatible text must not use native generation")
+
+    class _UnexpectedMultiModalConversation:
+        @staticmethod
+        async def call(**_kwargs: Any) -> SimpleNamespace:
+            raise AssertionError("text-only requests must not use multimodal generation")
+
+    async def _discard_usage(_client: object, **_kwargs: Any) -> None:
+        return None
+
+    monkeypatch.setattr(config_manager, "get_config_manager", lambda: _ConfigManager())
+    monkeypatch.setattr(
+        qwen_native_client,
+        "AioMultiModalConversation",
+        _UnexpectedMultiModalConversation,
+    )
+    monkeypatch.setattr(qwen_native_client, "AioGeneration", _UnexpectedGeneration)
+    monkeypatch.setattr(QwenNativeClient, "_record_usage", _discard_usage)
+    client = QwenNativeClient(logger=_Logger())
+    client._compatible_transport = _CompatibleTransport()  # type: ignore[assignment]
+
+    result = await client.call(
+        [{"role": "user", "content": "谈谈你对活着这本书的理解"}],
+        operation=LLM_OPERATION_CONCEPT_EXPLAIN,
+        deadline=time.monotonic() + 10.0,
+    )
+
+    assert result.text == "《活着》呈现了苦难中的生命韧性。"
+    assert result.model_group == "agent"
+    assert config_groups == ["agent"]
+    assert len(compatible_calls) == 1
+    assert compatible_calls[0]["model"] == model
+    assert compatible_calls[0]["messages"] == [
+        {"role": "user", "content": "谈谈你对活着这本书的理解"}
+    ]
+
+
+@pytest.mark.parametrize(
+    "model",
+    ["qwen-plus", "qwen3.7-plus-future", "qwen-future-experimental"],
+)
+@pytest.mark.asyncio
+async def test_other_qwen_text_models_keep_text_endpoint(
+    monkeypatch: pytest.MonkeyPatch,
+    model: str,
+) -> None:
+    from plugin.plugins.study_companion import qwen_native_client
+    from utils import config_manager
+
+    compatible_calls: list[dict[str, Any]] = []
+
+    class _ConfigManager:
+        def get_model_api_config(self, group: str) -> dict[str, str]:
+            assert group == "agent"
+            return {
+                "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+                "model": model,
+                "api_key": "agent-key",
+            }
+
+    class _CompatibleTransport:
+        async def chat_completions(self, **kwargs: Any) -> QwenCompatibleResult:
+            compatible_calls.append(dict(kwargs))
+            return QwenCompatibleResult(
+                text="text reply",
+                model=model,
+                request_id="text-request",
+                input_tokens=1,
+                output_tokens=1,
+            )
+
+    class _UnexpectedGeneration:
+        @staticmethod
+        async def call(**_kwargs: Any) -> SimpleNamespace:
+            raise AssertionError("compatible text must not use native generation")
+
+    class _UnexpectedMultiModalConversation:
+        @staticmethod
+        async def call(**_kwargs: Any) -> SimpleNamespace:
+            raise AssertionError("unregistered models must keep text-generation")
+
+    async def _discard_usage(_client: object, **_kwargs: Any) -> None:
+        return None
+
+    monkeypatch.setattr(config_manager, "get_config_manager", lambda: _ConfigManager())
+    monkeypatch.setattr(qwen_native_client, "AioGeneration", _UnexpectedGeneration)
+    monkeypatch.setattr(
+        qwen_native_client,
+        "AioMultiModalConversation",
+        _UnexpectedMultiModalConversation,
+    )
+    monkeypatch.setattr(QwenNativeClient, "_record_usage", _discard_usage)
+    client = QwenNativeClient(logger=_Logger())
+    client._compatible_transport = _CompatibleTransport()  # type: ignore[assignment]
+
+    result = await client.call(
+        [{"role": "user", "content": "hello"}],
+        operation=LLM_OPERATION_CONCEPT_EXPLAIN,
+        deadline=time.monotonic() + 10.0,
+    )
+
+    assert result.text == "text reply"
+    assert result.model_group == "agent"
+    assert len(compatible_calls) == 1
+    assert compatible_calls[0]["model"] == model
+    assert compatible_calls[0]["messages"] == [
+        {"role": "user", "content": "hello"}
+    ]
+
+
+@pytest.mark.asyncio
+async def test_qwen_compatible_result_reports_length_finish_reason(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from plugin.plugins.study_companion import qwen_native_client
+    from utils import config_manager
+
+    class _ConfigManager:
+        def get_model_api_config(self, group: str) -> dict[str, str]:
+            assert group == "agent"
+            return {
+                "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+                "model": "qwen3.7-plus",
+                "api_key": "agent-key",
+            }
+
+    class _CompatibleTransport:
+        async def chat_completions(self, **_kwargs: Any) -> QwenCompatibleResult:
+            return QwenCompatibleResult(
+                text="truncated explanation",
+                model="qwen3.7-plus",
+                request_id="compatible-length-request",
+                input_tokens=17,
+                output_tokens=29,
+                finish_reason="length",
+            )
+
+    async def _discard_usage(_client: object, **_kwargs: Any) -> None:
+        return None
+
+    monkeypatch.setattr(config_manager, "get_config_manager", lambda: _ConfigManager())
+    monkeypatch.setattr(
+        qwen_native_client,
+        "AioMultiModalConversation",
+        None,
+    )
+    monkeypatch.setattr(QwenNativeClient, "_record_usage", _discard_usage)
+    logger = _Logger()
+    client = QwenNativeClient(logger=logger)
+    client._compatible_transport = _CompatibleTransport()  # type: ignore[assignment]
+
+    result = await client.call(
+        [{"role": "user", "content": "sensitive question text"}],
+        operation=LLM_OPERATION_CONCEPT_EXPLAIN,
+        deadline=time.monotonic() + 10.0,
+    )
+
+    assert result.finish_reason == "length"
+    assert result.input_tokens == 17
+    assert result.output_tokens == 29
+    assert result.max_output_tokens == 3072
+    assert result.output_limit_reached is True
+    assert logger.warnings == [
+        (
+            (
+                "study Qwen output limit reached: diagnostic=output_truncated "
+                "operation={} model_group={} "
+                "finish_reason={} output_tokens={} max_output_tokens={}",
+                LLM_OPERATION_CONCEPT_EXPLAIN,
+                "agent",
+                "length",
+                29,
+                3072,
+            ),
+            {},
+        )
+    ]
+    assert "sensitive question text" not in repr(logger.warnings)
+    assert "truncated explanation" not in repr(logger.warnings)
+
+
+@pytest.mark.asyncio
+async def test_qwen_solution_structure_repair_has_bounded_observable_output_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from plugin.plugins.study_companion import qwen_native_client
+    from utils import config_manager
+
+    calls: list[dict[str, Any]] = []
+
+    class _ConfigManager:
+        def get_model_api_config(self, group: str) -> dict[str, str]:
+            assert group == "agent"
+            return {
+                "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+                "model": "qwen-plus",
+                "api_key": "agent-key",
+            }
+
+    class _CompatibleTransport:
+        async def chat_completions(self, **kwargs: Any) -> QwenCompatibleResult:
+            calls.append(dict(kwargs))
+            return QwenCompatibleResult(
+                text="complete json correction",
+                model="qwen-plus",
+                request_id="text-budget-request",
+                input_tokens=11,
+                output_tokens=1536,
+                finish_reason="stop",
+            )
+
+    async def _discard_usage(_client: object, **_kwargs: Any) -> None:
+        return None
+
+    monkeypatch.setattr(config_manager, "get_config_manager", lambda: _ConfigManager())
+    monkeypatch.setattr(QwenNativeClient, "_record_usage", _discard_usage)
+    logger = _Logger()
+    client = QwenNativeClient(logger=logger)
+    client._compatible_transport = _CompatibleTransport()  # type: ignore[assignment]
+
+    result = await client.call(
+        [{"role": "user", "content": "repair json"}],
+        operation="solution_structure_repair",
+        deadline=time.monotonic() + 10.0,
+    )
+
+    assert result.finish_reason == "stop"
+    assert result.input_tokens == 11
+    assert result.output_tokens == 1536
+    assert result.max_output_tokens == 1536
+    assert result.output_limit_reached is False
+    assert calls[0]["max_tokens"] == 1536
+    assert logger.warnings == []
+
+
+@pytest.mark.asyncio
+async def test_qwen_semantic_route_uses_bounded_text_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from plugin.plugins.study_companion import qwen_native_client
+    from utils import config_manager
+
+    calls: list[dict[str, Any]] = []
+
+    class _ConfigManager:
+        def get_model_api_config(self, group: str) -> dict[str, str]:
+            assert group == "agent"
+            return {
+                "model": "qwen-plus",
+                "base_url": "https://dashscope.aliyuncs.com/api/v1",
+                "api_key": "test-key",
+            }
+
+    class _FakeGeneration:
+        @staticmethod
+        async def call(**kwargs: Any) -> SimpleNamespace:
+            calls.append(dict(kwargs))
+            return SimpleNamespace(
+                status_code=200,
+                output=SimpleNamespace(text='{"subject":"unknown"}'),
+                usage=SimpleNamespace(input_tokens=2, output_tokens=3),
+            )
+
+    async def _discard_usage(_client: object, **_kwargs: Any) -> None:
+        return None
+
+    monkeypatch.setattr(config_manager, "get_config_manager", lambda: _ConfigManager())
+    monkeypatch.setattr(qwen_native_client, "AioGeneration", _FakeGeneration)
+    monkeypatch.setattr(QwenNativeClient, "_record_usage", _discard_usage)
+    client = QwenNativeClient(logger=_Logger())
+
+    result = await client.call(
+        [{"role": "user", "content": "classify semantics"}],
+        operation="knowledge_semantic_route",
+        deadline=time.monotonic() + 10.0,
+    )
+
+    assert result.max_output_tokens == 512
+    assert calls[0]["max_tokens"] == 512
+    assert result.output_limit_reached is False
+
+
+@pytest.mark.parametrize(
+    ("status_code", "code", "message", "expected"),
+    [
+        (401, "InvalidApiKey", "unauthorized", "authentication_failed"),
+        (403, "Forbidden", "forbidden", "authentication_failed"),
+        (429, "Throttling", "too many requests", "rate_limited"),
+        (503, "ServiceUnavailable", "provider down", "provider_unavailable"),
+        (400, "InvalidParameter", "invalid image payload", "invalid_image"),
+        (
+            400,
+            "InvalidParameter",
+            "url error; https://help.aliyun.com/zh/model-studio/error-code#error-url",
+            "invalid_endpoint",
+        ),
+        (400, "InvalidParameter", "unsupported request parameter", "invalid_request"),
+        (404, "NotFound", "route not found", "invalid_endpoint"),
+        (400, "ModelNotFound", "configured model is unavailable", "model_not_supported"),
+    ],
+)
+def test_qwen_native_response_diagnostics(
+    status_code: int, code: str, message: str, expected: str
+) -> None:
+    from plugin.plugins.study_companion import qwen_native_client
+
+    response = SimpleNamespace(status_code=status_code, code=code, message=message)
+
+    assert qwen_native_client._diagnostic_for_response(response) == expected
+
+
+@pytest.mark.asyncio
+async def test_qwen_native_deadline_exhaustion_skips_sdk_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from plugin.plugins.study_companion import qwen_native_client
+    from utils import config_manager
+
+    calls: list[dict[str, Any]] = []
+
+    class _ConfigManager:
+        def get_model_api_config(self, group: str) -> dict[str, str]:
+            assert group == "agent"
+            return {
+                "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+                "model": "qwen-plus",
+                "api_key": "text-key",
+            }
+
+    class _FakeGeneration:
+        @staticmethod
+        async def call(**kwargs: Any) -> SimpleNamespace:
+            calls.append(dict(kwargs))
+            raise AssertionError("expired requests must not reach DashScope")
+
+    monkeypatch.setattr(config_manager, "get_config_manager", lambda: _ConfigManager())
+    monkeypatch.setattr(qwen_native_client, "AioGeneration", _FakeGeneration)
+    client = QwenNativeClient(logger=_Logger())
+    monkeypatch.setattr(client, "_record_usage", AsyncMock())
+
+    with pytest.raises(QwenNativeError) as raised:
+        await client.call(
+            [{"role": "user", "content": "hello"}],
+            operation="concept_explain",
+            deadline=time.monotonic() - 1.0,
+        )
+
+    assert raised.value.diagnostic == "timeout"
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_qwen_native_timeout_cancels_sdk_call_without_background_close_task(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from plugin.plugins.study_companion import qwen_native_client
+    from utils import config_manager
+
+    cancelled = asyncio.Event()
+
+    class _ConfigManager:
+        def get_model_api_config(self, group: str) -> dict[str, str]:
+            assert group == "agent"
+            return {
+                "base_url": "https://dashscope.aliyuncs.com/api/v1",
+                "model": "qwen-plus",
+                "api_key": "text-key",
+            }
+
+    class _FakeGeneration:
+        @staticmethod
+        async def call(**_kwargs: Any) -> SimpleNamespace:
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                cancelled.set()
+                raise
+
+    async def _discard_usage(_client: object, **_kwargs: Any) -> None:
+        return None
+
+    monkeypatch.setattr(config_manager, "get_config_manager", lambda: _ConfigManager())
+    monkeypatch.setattr(qwen_native_client, "AioGeneration", _FakeGeneration)
+    monkeypatch.setattr(QwenNativeClient, "_record_usage", _discard_usage)
+    client = QwenNativeClient(logger=_Logger())
+    current = asyncio.current_task()
+    tasks_before = {task for task in asyncio.all_tasks() if task is not current}
+
+    with pytest.raises(QwenNativeError) as raised:
+        await client.call(
+            [{"role": "user", "content": "hello"}],
+            operation="concept_explain",
+            deadline=time.monotonic() + 0.02,
+        )
+    await asyncio.sleep(0)
+
+    tasks_after = {
+        task for task in asyncio.all_tasks() if task is not current and not task.done()
+    }
+    assert cancelled.is_set()
+    assert raised.value.diagnostic == "timeout"
+    assert tasks_after <= tasks_before
+
+
+@pytest.mark.asyncio
+async def test_qwen_native_network_failure_is_normalized(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from plugin.plugins.study_companion import qwen_native_client
+    from utils import config_manager
+
+    class _ConfigManager:
+        def get_model_api_config(self, group: str) -> dict[str, str]:
+            assert group == "agent"
+            return {
+                "base_url": "https://dashscope.aliyuncs.com/api/v1",
+                "model": "qwen-plus",
+                "api_key": "text-key",
+            }
+
+    class _FakeGeneration:
+        @staticmethod
+        async def call(**_kwargs: Any) -> SimpleNamespace:
+            raise ConnectionError("network unavailable")
+
+    monkeypatch.setattr(config_manager, "get_config_manager", lambda: _ConfigManager())
+    monkeypatch.setattr(qwen_native_client, "AioGeneration", _FakeGeneration)
+    client = QwenNativeClient(logger=_Logger())
+    monkeypatch.setattr(client, "_record_usage", AsyncMock())
+
+    with pytest.raises(QwenNativeError) as raised:
+        await client.call(
+            [{"role": "user", "content": "hello"}],
+            operation="concept_explain",
+            deadline=time.monotonic() + 1.0,
+        )
+
+    assert raised.value.diagnostic == "provider_unavailable"
+
+
+@pytest.mark.asyncio
+async def test_json_correction_reuses_deadline_and_strips_image_payload() -> None:
+    agent = TutorLLMAgent(logger=_Logger(), config=StudyConfig(language="en"))
+    calls: list[tuple[str, float, list[dict[str, Any]]]] = []
+    deadline = time.monotonic() + 30.0
+
+    async def _fake_call_model(
+        messages: list[dict[str, Any]], *, operation: str, deadline: float
+    ) -> str:
+        calls.append((operation, deadline, messages))
+        if len(calls) == 1:
+            return "not valid json"
+        return '{"question":"What is shown?","answer":"A diagram"}'
+
+    raw = await agent._json_corrector.invoke_with_correction(
+        operation="question_generate",
+        messages=[
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "make a question"},
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": "data:image/png;base64,sensitive-image"
+                        },
+                    },
+                ],
+            }
+        ],
+        call_model=_fake_call_model,
+        deadline=deadline,
+    )
+
+    assert json.loads(raw)["question"] == "What is shown?"
+    assert [call[0] for call in calls] == ["question_generate", "json_correction"]
+    assert [call[1] for call in calls] == [deadline, deadline]
+    correction_messages = calls[1][2]
+    assert all(isinstance(message["content"], str) for message in correction_messages)
+    assert "sensitive-image" not in repr(correction_messages)
+    assert "image_url" not in repr(correction_messages)
+
+
+@pytest.mark.asyncio
+async def test_qwen_json_correction_uses_text_client_and_1536_token_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from plugin.plugins.study_companion import qwen_native_client
+    from utils import config_manager
+
+    calls: list[dict[str, Any]] = []
+
+    class _ConfigManager:
+        def get_model_api_config(self, group: str) -> dict[str, str]:
+            assert group == "agent"
+            return {
+                "base_url": "https://dashscope.aliyuncs.com/api/v1",
+                "model": "qwen-plus",
+                "api_key": "text-key",
+            }
+
+    class _FakeGeneration:
+        @staticmethod
+        async def call(**kwargs: Any) -> SimpleNamespace:
+            calls.append(dict(kwargs))
+            return SimpleNamespace(
+                status_code=200,
+                request_id="correction-request",
+                output=SimpleNamespace(text='{"question":"fixed"}'),
+                usage=SimpleNamespace(input_tokens=2, output_tokens=3),
+            )
+
+    async def _discard_usage(_client: object, **_kwargs: Any) -> None:
+        return None
+
+    monkeypatch.setattr(config_manager, "get_config_manager", lambda: _ConfigManager())
+    monkeypatch.setattr(qwen_native_client, "AioGeneration", _FakeGeneration)
+    monkeypatch.setattr(QwenNativeClient, "_record_usage", _discard_usage)
+    client = QwenNativeClient(logger=_Logger())
+
+    result = await client.call(
+        [{"role": "user", "content": "repair the json"}],
+        operation="json_correction",
+        deadline=time.monotonic() + 10.0,
+    )
+
+    assert result.text == '{"question":"fixed"}'
+    assert calls[0]["max_tokens"] == 1536
+    assert calls[0]["enable_thinking"] is False
+    assert calls[0]["request_timeout"] > 0
 
 
 def test_study_state_to_dict_excludes_transient_vision_image() -> None:

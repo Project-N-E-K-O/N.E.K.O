@@ -51,10 +51,15 @@ class _JSONCorrector:
         self,
         *,
         operation: str,
-        messages: list[dict[str, str]],
+        messages: list[dict[str, Any]],
         call_model: Callable[..., Awaitable[str]],
+        deadline: float,
     ) -> str:
-        raw_text = await call_model(messages, operation=operation)
+        raw_text = await call_model(
+            messages,
+            operation=operation,
+            deadline=deadline,
+        )
         last_error: Exception | None = None
         for attempt in range(_JSON_CORRECTION_MAX_ATTEMPTS + 1):
             try:
@@ -72,7 +77,11 @@ class _JSONCorrector:
                 attempt=attempt + 1,
                 max_attempts=_JSON_CORRECTION_MAX_ATTEMPTS,
             )
-            raw_text = await call_model(correction_messages, operation=operation)
+            raw_text = await call_model(
+                correction_messages,
+                operation="json_correction",
+                deadline=deadline,
+            )
         raise SdkError(
             f"llm result is not valid json object after correction: {last_error}"
         )
@@ -81,13 +90,13 @@ class _JSONCorrector:
         self,
         *,
         operation: str,
-        messages: list[dict[str, str]],
+        messages: list[dict[str, Any]],
         bad_output: object,
         parse_error: object,
         attempt: int,
         max_attempts: int,
     ) -> list[dict[str, str]]:
-        correction_messages = list(messages)
+        correction_messages = self._text_only_messages(messages)
         correction_messages.append(
             {
                 "role": "assistant",
@@ -112,3 +121,26 @@ class _JSONCorrector:
             }
         )
         return correction_messages
+
+    @staticmethod
+    def _text_only_messages(
+        messages: list[dict[str, Any]],
+    ) -> list[dict[str, str]]:
+        result: list[dict[str, str]] = []
+        for message in messages:
+            content = message.get("content")
+            if isinstance(content, list):
+                text = "\n".join(
+                    str(block.get("text") or "")
+                    for block in content
+                    if isinstance(block, dict) and block.get("type") == "text"
+                )
+            else:
+                text = str(content or "")
+            result.append(
+                {
+                    "role": str(message.get("role") or "user"),
+                    "content": text,
+                }
+            )
+        return result

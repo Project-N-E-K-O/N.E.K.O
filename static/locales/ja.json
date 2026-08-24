@@ -953,11 +953,14 @@
     "speaker": {
         "volumeLabel": "スピーカー音量",
         "volumeHint": "AI音声の再生音量を調整",
-        "title": "スピーカーを選択",
-        "defaultDevice": "システムのデフォルトスピーカー",
-        "deviceLabel": "スピーカー {{index}}",
-        "loadFailed": "スピーカーリストの取得に失敗しました",
-        "noDevices": "スピーカーデバイスが検出されませんでした",
+        "title": "再生デバイスを選択",
+        "defaultDevice": "システムのデフォルト再生デバイス",
+        "deviceLabel": "再生デバイス {{index}}",
+        "loadFailed": "再生デバイス一覧の取得に失敗しました",
+        "noDevices": "再生デバイスが検出されませんでした",
+        "switchFailed": "再生デバイスの切り替えに失敗しました",
+        "unavailableFallback": "選択したデバイスを利用できないため、システムのデフォルトを使用中",
+        "unavailableFallbackFailed": "選択したデバイスを利用できず、システムのデフォルトにも切り替えられません",
         "spatialAudioLabel": "空間オーディオ",
         "spatialAudioHint": "キャラクターウィンドウのメインモニターに対する位置からステレオ定位と距離減衰を適用"
     },
@@ -2490,6 +2493,11 @@
             "screens": "画面",
             "screenLabel": "画面 {{index}}",
             "windows": "ウィンドウ",
+            "titleFilterPlaceholder": "ウィンドウ名を絞り込み",
+            "titleFilterAriaLabel": "タイトルでウィンドウを絞り込む",
+            "noWindowMatches": "一致するウィンドウがありません",
+            "rememberWindow": "ウィンドウを記憶",
+            "rememberedWindowUnavailable": "記憶したウィンドウを一意に特定できません。画面ソースを選択し直してください",
             "selected": "{{source}}を選択しました",
             "sourceLost": "画面共有で以前選択したウィンドウが見つかりません。全画面共有に切り替えました",
             "captureFailed": "画面キャプチャを停止しました。システム権限を確認するか、ソースを選択し直してください"
@@ -2916,7 +2924,7 @@
             "tokens": "トークン",
             "textGuardUnlimitedWarning": "猫娘に深刻な問題が発生する可能性があり、必要な場合を除き無制限は推奨されません",
             "textGuardHighWarning": "設定が大きすぎると猫娘の記憶と言語が混乱する可能性があります。1000 トークン以内を推奨します",
-            "textGuardNote": "tiktoken で計測。テキスト返信にのみ適用され、音声セッションには影響しません"
+            "textGuardNote": "テキスト返信にのみ適用され、音声セッションには影響しません"
         }
     },
     "openclawGuide": {

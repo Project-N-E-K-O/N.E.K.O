@@ -228,6 +228,11 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v5
+        with:
+          # The baseline-growth step below diffs scripts/nonascii_asset_baseline.txt
+          # against the merge-base, which a shallow clone cannot reach. Same
+          # trade the prompts-i18n job already makes: negligible on this repo.
+          fetch-depth: 0
 
       - name: Set up Python 3.11
         uses: actions/setup-python@v5
@@ -277,6 +282,38 @@ jobs:
         # Fix is to inline the path as code (`foo/bar.js`) instead of a
         # link, or move the referenced content into docs/.
         run: python scripts/check_docs_no_relative_paths.py
+
+      - name: Forbid new non-ASCII filenames in bundled assets
+        # Nuitka --mode=app puts the payload under Contents/MacOS/, where
+        # codesign treats every file as nested code and writes an
+        # `identifier <name> ...` requirement into CodeResources. A non-ASCII
+        # name becomes a hex literal, which is not valid requirement syntax,
+        # and the whole bundle then fails to verify with "the sealed resource
+        # directory is invalid" — dead in the water for signing, notarization
+        # and Steam upload, with no filename in the error to go on.
+        #
+        # This step exists because build-desktop.yml cannot catch it: it signs
+        # ad-hoc (`--sign -`), whose requirements are `cdhash H"..."` and carry
+        # no identifier, so the bug is invisible there and only bites the local
+        # Developer ID path (build_mac.sh). Ratchet, not a ban — the assets
+        # that predate the check live in scripts/nonascii_asset_baseline.txt
+        # and that list may only shrink. Companion unit test:
+        # tests/unit/test_check_no_nonascii_asset_names.py.
+        run: python scripts/check_no_nonascii_asset_names.py
+
+      - name: Forbid growing the non-ASCII baseline (PR-only)
+        # The step above compares the tree against the baseline, so a PR that
+        # adds a non-ASCII asset AND its baseline line has an empty diff and
+        # passes — the ratchet would only be a convention. This step diffs the
+        # baseline itself against the merge-base and fails on any added entry,
+        # which is what makes "may only shrink" enforceable. `--update-baseline`
+        # already refuses to add; this catches the hand-written line too.
+        # Skipped on direct push to main — nothing to diff against.
+        if: github.event_name == 'pull_request'
+        env:
+          # Same zizmor template-injection indirection as the i18n-sync step.
+          BASE_REF: ${{ github.base_ref }}
+        run: python scripts/check_no_nonascii_asset_names.py --base "origin/${BASE_REF}"
 
   core-contracts:
     name: Core package contracts

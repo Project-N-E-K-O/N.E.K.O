@@ -1,60 +1,49 @@
-# Study Companion Onboarding
+这份指南对应伴学主界面的首次使用流程，帮助新用户按顺序完成模式选择、目标设置、首次学习记录和复盘导出。
 
-This guide mirrors the in-app quickstart panel and gives first-time users a
-linear path through the Study Companion workflow.
+## 1. 选择学习模式
 
-## 1. Choose A Mode
+- 伴学：阅读或解题时需要快速解释，优先使用这个模式。
+- 互动：希望插件出题、追问并检查答案时使用。
+- 教学：需要分步骤讲解和引导练习时使用。
 
-- Companion: use this for quick explanations while reading or solving.
-- Interactive: use this when you want the plugin to ask questions and check your answer.
-- Teaching: use this for step-by-step explanations and guided practice.
+不确定时先从伴学模式开始。之后可以随时在伴学界面的模式按钮里切换。
 
-Start with Companion if you are unsure. You can switch modes at any time from
-the mode buttons in the study panel.
+## 2. 设置每日目标
 
-## 2. Set A Daily Goal
+打开每日目标编辑器，选择适合当前学习场景的目标：
 
-Open the daily goal editor and choose a target that matches the current study
-session:
+- 卡片：适合单词、公式、短知识点。
+- 分钟：适合专注阅读或集中解题。
+- 次数：适合背诵、口述或重复练习。
 
-- Cards: for vocabulary, formulas, or short facts.
-- Minutes: for focused reading or problem-solving blocks.
-- Attempts: for passage recitation or repeated practice.
+如果使用记忆卡组，开始专注前先打开记忆卡组面板并绑定卡组目标。
 
-For memory decks, open the memory deck panel and bind a deck goal before
-starting a focus session.
+## 3. 记录第一条学习内容
 
-## 3. Record The First Study Item
+可以把文本粘贴到伴学界面，也可以点击 OCR 读取当前屏幕内容。随后选择主要操作：
 
-Paste text into the study panel, or run OCR on the current screen. Then choose
-one of the main actions:
+- 解释：把当前文本转成简短说明。
+- 生成题目：根据当前材料生成检查题。
+- 评估答案：把你的答案和题目进行对比，并返回反馈。
 
-- Explain: turn the current text into a short explanation.
-- Generate Question: create a check question from the current material.
-- Evaluate Answer: compare your answer with the question and get feedback.
+如果 OCR 不可用，请查看依赖状态，并在插件界面里安装缺失的 OCR 后端。
 
-If OCR is unavailable, check the dependency status entry and install the missing
-OCR backend from the plugin UI.
+## 4. 复盘与导出
 
-## 4. Review And Export
+学习结束后，打开总结面板查看已完成和未完成的目标。先在插件设置里启用笔记导出，再把最近的学习材料导出为 Markdown、PDF 或 DOCX。XMind 导出还需要同时启用 `doc_export.xmind_enabled` 配置项。
 
-After a session, open the summary panel to review completed and incomplete
-goals. Use the note exporter to create Markdown, PDF, DOCX, or XMind notes from
-recent study material.
+下一次学习前，可以通过知识图谱和记忆卡组面板查找薄弱知识点和待复习卡片。
 
-Use the knowledge map and memory deck panels to find weak topics and due memory
-cards before the next study session.
+## 空状态
 
-## Empty States
+- 知识图谱没有主题：说明插件还没有记录到足够的解释或答题数据。
+- 记忆卡组没有卡片：需要先创建或导入卡片。
+- 学习记录没有最近事件：说明还没有完成解释、出题或评估操作。
+- 导出没有笔记：说明最近的学习材料还不足以生成导出内容。
 
-- Knowledge map: no topics means the plugin has not tracked enough explanations or answers yet.
-- Memory deck: no cards means you need to create or import cards first.
-- Study record: no recent events means no explain/question/evaluate actions have completed.
-- Export: no notes means there is not enough recent study material to export.
+## 错误状态
 
-## Error States
-
-- OCR failed: verify screen capture permissions and OCR dependencies.
-- LLM timeout: retry after checking the configured model and network.
-- Export failed: retry once; if it still fails, export Markdown first and then convert externally.
-- Missing answer or question: generate or enter a question before evaluating an answer.
+- OCR 失败：检查屏幕捕获权限和 OCR 依赖。
+- LLM 超时：检查已配置模型和网络后重试。
+- 导出失败：先重试一次；如果仍失败，先导出 Markdown 再外部转换。
+- 缺少答案或题目：评估答案前，先生成或输入题目。

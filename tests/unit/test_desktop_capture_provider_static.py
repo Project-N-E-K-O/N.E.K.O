@@ -34,6 +34,62 @@ def test_templates_install_desktop_capture_provider_before_consumers() -> None:
     )
 
 
+def test_avatar_screen_source_manager_delegates_to_shared_filtered_renderer() -> None:
+    node_executable = shutil.which("node")
+    if node_executable is None:
+        pytest.skip("Node.js is required for the avatar screen-source contract")
+
+    avatar_source = json.dumps(read_text("static/avatar/avatar-ui-popup.js"))
+    node_harness = f"""
+global.window = {{
+  screen: {{ availWidth: 1920, availHeight: 1080 }},
+  addEventListener() {{}},
+}};
+const popup = {{
+  id: 'avatar-popup',
+  isConnected: true,
+  style: {{ display: 'flex', opacity: '1' }},
+  innerHTML: '',
+  appendChild() {{}},
+}};
+global.document = {{
+  head: {{ appendChild() {{}} }},
+  getElementById(id) {{ return id === popup.id ? popup : null; }},
+  createElement() {{ return {{ style: {{}}, dataset: {{}}, classList: {{ add() {{}}, contains() {{ return false; }} }}, appendChild() {{}}, addEventListener() {{}} }}; }},
+}};
+eval({avatar_source});
+
+(async () => {{
+  const manager = {{}};
+  window.AvatarPopupMixin.apply(manager, 'test', {{}});
+  let sharedCalls = 0;
+  window.renderFloatingScreenSourceList = async (candidate) => {{
+    sharedCalls += 1;
+    return candidate === popup;
+  }};
+  const result = await manager.renderScreenSourceList(popup);
+  console.log(JSON.stringify({{ sharedCalls, result }}));
+}})();
+"""
+
+    completed = run_node_stdin(
+        node_executable,
+        node_harness,
+        capture_output=True,
+        check=True,
+        timeout=10,
+    )
+    result = json.loads(completed.stdout)
+    assert result == {"sharedCalls": 1, "result": True}
+
+    for relative_path in (
+        "static/vrm/vrm-ui-buttons.js",
+        "static/mmd/mmd-ui-buttons.js",
+        "static/pngtuber-core.js",
+    ):
+        assert "this.renderScreenSourceList(popup)" in read_text(relative_path)
+
+
 def test_provider_prefers_tauri_and_preserves_electron_fallback() -> None:
     provider = read_text("static/app/desktop-capture-provider.js")
 
@@ -86,6 +142,28 @@ eval({provider_source});
       || result.shell !== 'electron'
       || result.options.quality !== 80) {{
     throw new Error('Electron capture call contract changed');
+  }}
+
+  let getSourcesArgs = null;
+  const sourceOptions = {{
+    types: ['window', 'screen'],
+    thumbnailSize: {{ width: 160, height: 100 }}
+  }};
+  const sources = await window.invokeDesktopCaptureWithTimeout(
+    {{
+      getSources(options) {{
+        getSourcesArgs = Array.from(arguments);
+        return Promise.resolve([{{ id: 'screen:1', options }}]);
+      }}
+    }},
+    'getSources',
+    [sourceOptions],
+    50
+  );
+  if (getSourcesArgs.length !== 1
+      || getSourcesArgs[0] !== sourceOptions
+      || sources[0].options !== sourceOptions) {{
+    throw new Error('Generic timeout changed the getSources(options) contract');
   }}
 
   const tauriProvider = {{ captureSourceAsDataUrl() {{ return Promise.resolve(null); }} }};

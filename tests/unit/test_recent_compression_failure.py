@@ -57,6 +57,22 @@ class _FakeConfig:
         )
 
 
+class _FakeModelConfig:
+    """Serves the official DeepSeek V4 endpoint and records which feature asked."""
+
+    def __init__(self):
+        self.features: list[str] = []
+
+    def get_model_api_config(self, feature: str) -> dict[str, Any]:
+        self.features.append(feature)
+        return {
+            "model": "deepseek-v4-pro",
+            "base_url": "https://api.deepseek.com/v1",
+            "api_key": "test-key",
+            "provider_type": None,
+        }
+
+
 @pytest.fixture(autouse=True)
 def _patch_cloudsave(monkeypatch):
     monkeypatch.setattr(
@@ -112,6 +128,26 @@ def test_compress_history_returns_none_when_summary_llm_keeps_failing(tmp_path):
 
     assert result is None
     assert fake_llm.calls == 3
+
+
+def test_deepseek_thinking_is_disabled_only_for_memory_compression():
+    """Compression must run thinking-off; review keeps the model's native thinking.
+
+    Deliberately goes through the real ``create_chat_llm`` instead of stubbing it:
+    thinking-off is resolved by the factory from the model name, so a stub would
+    only show what ``_get_llm`` passed (nothing) and prove nothing about what the
+    client ends up sending.
+    """
+    mgr = object.__new__(CompressedRecentHistoryManager)
+    mgr._config_manager = _FakeModelConfig()
+
+    compression = mgr._get_llm()
+    review = mgr._get_review_llm()
+
+    assert mgr._config_manager.features == ["summary", "correction"]
+    assert compression.extra_body == {"thinking": {"type": "disabled"}}
+    # 记忆整理显式 extra_body=None，压过工厂的自动解析，保持模型原生思考行为。
+    assert review.extra_body == {}
 
 
 def test_update_history_preserves_existing_memo_when_compression_fails(tmp_path):

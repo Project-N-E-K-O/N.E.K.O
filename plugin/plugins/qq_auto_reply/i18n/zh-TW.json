@@ -1,6 +1,6 @@
 {
   "plugin.name": "QQ 整合",
-  "plugin.description": "透過 NapCat（OneBot 反向 WebSocket）或 QQ 官方開放平台接入，支援回覆引用鏈解析、語音/表情包/戳一戳等多模態輸出。",
+  "plugin.description": "透過 OneBot v11（正向/反向 WebSocket，相容於 NapCat / LLOneBot / go-cqhttp / Lagrange 等任意 OneBot 後端）或 QQ 官方開放平台接入。支援多群注意力競爭、動態回覆緩衝、檔案內容讀取（文字/VLM 圖片描述）、回覆引用鏈解析、語音/表情包/戳一戳等多模態輸出。",
   "entries.init_config.name": "初始化 QQ 設定",
   "entries.init_config.description": "在第一次使用 QQ 插件、完成引導或缺少設定檔時，建立一份新的 QQ 設定。",
   "entries.get_dashboard_state.name": "取得控制面板狀態",

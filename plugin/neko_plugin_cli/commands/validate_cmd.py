@@ -28,11 +28,15 @@ from plugin.sdk.shared.core.push_message_schema import (
 from ..core.plugin_source import load_plugin_source
 from ..core.toml_utils import load_toml
 
-_MARKET_REPO_PREFIX = "n.e.k.o_plugin_"
 _PLUGIN_RUNTIME_TIMEOUT_MAX = 300.0
 
 
-def validate_plugin_dir(plugin_dir: Path, *, strict: bool = False) -> list[tuple[str, str]]:
+def validate_plugin_dir(
+    plugin_dir: Path,
+    *,
+    strict: bool = False,
+    require_matching_directory_name: bool = False,
+) -> list[tuple[str, str]]:
     issues: list[tuple[str, str]] = []
     config_example_path = plugin_dir / "config.example.toml"
     config_example: dict[str, object] | None = None
@@ -65,6 +69,15 @@ def validate_plugin_dir(plugin_dir: Path, *, strict: bool = False) -> list[tuple
         return issues
     plugin_table = source.plugin_table
     _check_plugin_toml_schema(plugin_dir, source.plugin_toml, source.plugin_id, issues)
+    if require_matching_directory_name and source.plugin_id != plugin_dir.name:
+        issues.append(
+            (
+                "warning",
+                f"plugin.id '{source.plugin_id}' does not match directory name '{plugin_dir.name}' / "
+                f"plugin.id '{source.plugin_id}' 与目录名 '{plugin_dir.name}' 不一致 / "
+                f"plugin.id '{source.plugin_id}' がディレクトリ名 '{plugin_dir.name}' と一致しません",
+            )
+        )
     if config_example is not None:
         _check_config_example_schema(config_example, issues)
     elif "plugin_runtime" in source.plugin_toml or source.plugin_id in source.plugin_toml:
@@ -77,9 +90,6 @@ def validate_plugin_dir(plugin_dir: Path, *, strict: bool = False) -> list[tuple
                 "plugin.toml の従来の実行設定は互換対応です。可変の既定値を config.example.toml に移してください",
             )
         )
-
-    if source.plugin_id != plugin_dir.name and plugin_dir.name != _market_repo_name(source.plugin_id):
-        issues.append(("warning", f"plugin.id '{source.plugin_id}' does not match directory name '{plugin_dir.name}'"))
 
     entry = source.entry_point
     if not entry:
@@ -123,10 +133,6 @@ def _check_config_example_schema(
             )
         )
     _check_runtime_table(config.get("plugin_runtime"), issues)
-
-
-def _market_repo_name(plugin_id: str) -> str:
-    return f"{_MARKET_REPO_PREFIX}{plugin_id}"
 
 
 def _check_plugin_toml_schema(
@@ -229,6 +235,22 @@ def _check_optional_string(table: dict[str, object], key: str, label: str, issue
     value = table.get(key)
     if value is not None and not isinstance(value, str):
         issues.append(("error", f"{label} must be a string"))
+
+
+def _check_optional_i18n_string(table: dict[str, object], key: str, label: str, issues: list[tuple[str, str]]) -> None:
+    value = table.get(key)
+    if value is None or isinstance(value, str):
+        return
+    if not isinstance(value, dict):
+        issues.append(("error", f"{label} must be a string or $i18n table"))
+        return
+    _warn_unknown_keys(value, {"$i18n", "default"}, label, issues)
+    ref = value.get("$i18n")
+    if not isinstance(ref, str) or not ref.strip():
+        issues.append(("error", f"{label}.$i18n must be a non-empty string"))
+    default = value.get("default")
+    if default is not None and not isinstance(default, str):
+        issues.append(("error", f"{label}.default must be a string"))
 
 
 def _check_optional_bool(table: dict[str, object], key: str, label: str, issues: list[tuple[str, str]]) -> None:
@@ -459,8 +481,19 @@ def _check_ui_table(plugin_dir: Path, value: object, issues: list[tuple[str, str
     if not isinstance(value, dict):
         issues.append(("error", "[plugin.ui] must be a table"))
         return
-    _warn_unknown_keys(value, {"enabled", "panel", "guide", "docs", "warnings"}, "[plugin.ui]", issues)
+    _warn_unknown_keys(
+        value,
+        {"enabled", "expose_legacy_static_panel", "panel", "guide", "docs", "warnings"},
+        "[plugin.ui]",
+        issues,
+    )
     _check_optional_bool(value, "enabled", "[plugin.ui].enabled", issues)
+    _check_optional_bool(
+        value,
+        "expose_legacy_static_panel",
+        "[plugin.ui].expose_legacy_static_panel",
+        issues,
+    )
     for kind in ("panel", "guide", "docs"):
         raw = value.get(kind)
         if raw is None:
@@ -479,7 +512,7 @@ def _check_ui_surface(plugin_dir: Path, value: object, label: str, issues: list[
         return
     _warn_unknown_keys(value, {"id", "title", "entry", "mode", "url", "ui_path", "open_in", "context", "permissions", "available"}, label, issues)
     _check_optional_string(value, "id", f"{label}.id", issues)
-    _check_optional_string(value, "title", f"{label}.title", issues)
+    _check_optional_i18n_string(value, "title", f"{label}.title", issues)
     entry = value.get("entry")
     url = value.get("url")
     if entry and url:

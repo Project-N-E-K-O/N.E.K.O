@@ -86,7 +86,7 @@ defineEmits<{
 }>()
 
 function inferPackageType(pkg: PluginCliLocalPackageItem): 'plugin' | 'bundle' {
-  return pkg.name.endsWith('.neko-bundle') ? 'bundle' : 'plugin'
+  return pkg.name.toLowerCase().endsWith('.neko-bundle') ? 'bundle' : 'plugin'
 }
 
 function packageLabel(pkg: PluginCliLocalPackageItem): string {

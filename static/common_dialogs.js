@@ -1329,6 +1329,7 @@
                             return modalConfig.onShown({
                                 overlay: overlay,
                                 dialog: dialog,
+                                close: finish,
                             });
                         })
                         .catch(function (error) {

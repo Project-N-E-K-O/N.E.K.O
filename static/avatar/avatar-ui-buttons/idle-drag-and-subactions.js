@@ -480,6 +480,10 @@ function _clearNekoIdleCat1EdgePeek(containerOrButton) {
     _NEKO_IDLE_CAT1_EDGE_PEEK_CLASSES.forEach((className) => {
         button.classList.remove(className);
     });
+    const art = button.querySelector('.neko-idle-return-art');
+    if (art) {
+        art.style.removeProperty('--neko-idle-return-edge-visual-shift-y');
+    }
     _syncNekoIdleCat1QuestionMarkKeyboardAvailabilityForButton(button);
 }
 
@@ -497,6 +501,33 @@ function _getNekoIdleCat1EdgePeekActiveEdge(containerOrButton) {
         return button.classList.contains(className);
     });
     return activeClass ? activeClass.replace('is-cat1-edge-peek-', '') : '';
+}
+
+function _isNekoIdleCat1TransferredPeekAnchorActive(containerOrButton) {
+    const button = _getNekoIdleCat1EdgePeekButton(containerOrButton);
+    const container = button
+        ? _getNekoIdleReturnContainerFromButton(button)
+        : containerOrButton;
+    return !!(container && typeof container.getAttribute === 'function' &&
+        container.getAttribute('data-neko-live2d-peek-anchor'));
+}
+
+function _isNekoIdleCat1MovementAnchored(containerOrButton) {
+    return _isNekoIdleCat1EdgePeekActive(containerOrButton) ||
+        _isNekoIdleCat1TransferredPeekAnchorActive(containerOrButton);
+}
+
+function _dispatchNekoIdleCat1EdgePeekAfterDragObservation(containerOrButton) {
+    const button = _getNekoIdleCat1EdgePeekButton(containerOrButton);
+    const edge = _getNekoIdleCat1EdgePeekActiveEdge(button);
+    if (!button || !edge) return false;
+    _dispatchNekoCatIdleObservationSource(_NEKO_CAT_IDLE_OBSERVATION_TYPES.EDGE_PEEK_AFTER_DRAG, {
+        source: 'return-ball',
+        tier: button.getAttribute('data-neko-idle-tier'),
+        reason: 'drag-edge-peek',
+        edge: edge
+    });
+    return true;
 }
 
 function _isNekoIdleCat1EdgePeekEligible(containerOrButton) {
@@ -581,20 +612,10 @@ function _applyNekoIdleCat1EdgePeek(container, placement) {
 
 function _applyNekoIdleCat1EdgePeekAfterDrag(container, left, top, viewportWidth, viewportHeight) {
     if (!container || !_isNekoIdleCat1EdgePeekEligible(container)) return false;
-    const button = _getNekoIdleCat1EdgePeekButton(container);
     const w = container.offsetWidth || 64;
     const h = container.offsetHeight || 64;
     const placement = _getNekoIdleCat1EdgePeekPlacement(left, top, w, h, viewportWidth, viewportHeight);
-    const applied = _applyNekoIdleCat1EdgePeek(container, placement);
-    if (applied) {
-        _dispatchNekoCatIdleObservationSource(_NEKO_CAT_IDLE_OBSERVATION_TYPES.EDGE_PEEK_AFTER_DRAG, {
-            source: 'return-ball',
-            tier: button && button.getAttribute('data-neko-idle-tier'),
-            reason: 'drag-edge-peek',
-            edge: placement && placement.edge ? placement.edge : ''
-        });
-    }
-    return applied;
+    return _applyNekoIdleCat1EdgePeek(container, placement);
 }
 
 function _reclampNekoIdleCat1EdgePeekToViewport(containerOrButton) {

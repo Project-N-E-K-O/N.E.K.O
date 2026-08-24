@@ -1,7 +1,7 @@
 {
   "core_memory_section": "## 核心记忆（Core Memory）\n以下是来自本体记忆系统的稳定记忆、人格背景或启动上下文。如果其中有相关内容，请自然地在回复中体现，但不要生硬地复述，也不要暴露内部记忆结构。\n{memory_context}\n{context_ready}",
   "plugin.name": "QQ 集成",
-  "plugin.description": "通过 NapCat（OneBot 反向 WebSocket）或 QQ 官方开放平台接入，回复引用链解析、语音/表情包/戳一戳等多模态输出。",
+  "plugin.description": "通过 OneBot v11（正向/反向 WebSocket，兼容 NapCat / LLOneBot / go-cqhttp / Lagrange 等任意 OneBot 后端）或 QQ 官方开放平台接入。支持多群注意力竞争、动态回复缓冲、文件内容读取（文本/VLM 图片描述）、回复引用链解析、语音/表情包/戳一戳等多模态输出。",
   "entries.init_config.name": "初始化 QQ 配置",
   "entries.init_config.description": "在第一次使用 QQ 插件、完成引导或缺少配置文件时，创建一份新的 QQ 配置。",
   "entries.get_dashboard_state.name": "获取控制面板状态",

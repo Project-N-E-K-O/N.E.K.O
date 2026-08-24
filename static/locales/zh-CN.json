@@ -953,11 +953,14 @@
     "speaker": {
         "volumeLabel": "扬声器音量",
         "volumeHint": "调节AI语音的播放音量",
-        "title": "选择扬声器",
-        "defaultDevice": "系统默认扬声器",
-        "deviceLabel": "扬声器 {{index}}",
-        "loadFailed": "获取扬声器列表失败",
-        "noDevices": "没有检测到扬声器设备",
+        "title": "选择播放设备",
+        "defaultDevice": "系统默认播放设备",
+        "deviceLabel": "播放设备 {{index}}",
+        "loadFailed": "获取播放设备列表失败",
+        "noDevices": "没有检测到播放设备",
+        "switchFailed": "切换播放设备失败",
+        "unavailableFallback": "所选设备不可用，正使用系统默认播放设备",
+        "unavailableFallbackFailed": "所选设备不可用，且无法切换到系统默认播放设备",
         "spatialAudioLabel": "空间音频",
         "spatialAudioHint": "根据猫娘窗口相对主屏的位置做立体声与距离衰减"
     },
@@ -2490,6 +2493,11 @@
             "screens": "屏幕",
             "screenLabel": "屏幕 {{index}}",
             "windows": "窗口",
+            "titleFilterPlaceholder": "筛选窗口标题",
+            "titleFilterAriaLabel": "按标题筛选窗口",
+            "noWindowMatches": "没有匹配的窗口",
+            "rememberWindow": "记住窗口",
+            "rememberedWindowUnavailable": "无法唯一找到记住的窗口，请重新选择屏幕来源",
             "selected": "已选择 {{source}}",
             "sourceLost": "屏幕分享无法找到之前选择窗口，已切换为全屏分享",
             "captureFailed": "屏幕捕获已停止，请检查系统权限或重新选择来源"
@@ -2916,7 +2924,7 @@
             "tokens": "词元",
             "textGuardUnlimitedWarning": "可能导致猫娘出现严重问题，非必要不建议无限制",
             "textGuardHighWarning": "设置过大可能导致猫娘记忆和语言混乱，建议 1000 词元以内",
-            "textGuardNote": "按 tiktoken 统计；仅对文本回复有效，不影响语音对话"
+            "textGuardNote": "仅对文本回复有效，不影响语音对话"
         }
     },
     "openclawGuide": {

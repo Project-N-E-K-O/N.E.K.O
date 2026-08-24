@@ -18,6 +18,7 @@
         MAX_MIC_GAIN_DB: 25,                 // 麦克风增益上限 (dB ≈ 18x)
         MIN_MIC_GAIN_DB: -5,                 // 麦克风增益下限 (dB ≈ 0.56x)
         DEFAULT_SPEAKER_VOLUME: 100,         // 扬声器默认音量
+        DEFAULT_SPEAKER_DEVICE_ID: 'default', // Chromium 的系统默认多媒体输出（不是 communications）
         MAX_SPEAKER_VOLUME: 200,             // 扬声器音量上限（200% ≈ +6 dB 增益）
         SPEAKER_VOLUME_KNEE_RATIO: 0.75,     // 100% 锚点落在轨道 75% 处：前 3/4 给 0-100%，后 1/4 给 100-200% 增强区
         DEFAULT_SPATIAL_AUDIO_ENABLED: true, // 空间音频默认开启
@@ -55,6 +56,9 @@
         animationFrameId: null,
         seqCounter: 0,
         speakerVolume: 100,
+        selectedSpeakerId: 'default',
+        effectiveSpeakerId: 'default',
+        selectedSpeakerAvailable: true,
 
         // --- Audio (空间音频，多屏立体声 + 距离衰减) ---
         spatialAudioEnabled: true,

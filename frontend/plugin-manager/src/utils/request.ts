@@ -13,6 +13,7 @@ let lastNetworkErrorShownAt = 0
 type ErrorDisplayRequestConfig = AxiosRequestConfig & {
   /** Suppress only the expected stopped-plugin response for panel probes. */
   suppressPluginNotRunningMessage?: boolean
+  preserveMessagesOn404?: boolean
 }
 
 type HeaderBag = Record<string, unknown> & {
@@ -148,6 +149,9 @@ service.interceptors.response.use(
     return response.data
   },
   async (error: AxiosError) => {
+    if (axios.isCancel(error) || error.code === 'ERR_CANCELED') {
+      return Promise.reject(error)
+    }
     // 对于 404 错误，不输出错误日志（这是正常的，某些资源可能不存在）
     // 对于 401/403 错误，也不输出错误日志
     const status = error.response?.status
@@ -166,8 +170,6 @@ service.interceptors.response.use(
         console.debug('Connection store not available:', err)
       }
       // 服务器返回了错误状态码
-      const data = error.response.data as any
-
       switch (status) {
         case 400:
           message = formatHttpError(error) || i18n.global.t('messages.badRequest')
@@ -178,11 +180,17 @@ service.interceptors.response.use(
         case 403:
           message = formatHttpError(error) || i18n.global.t('auth.forbidden')
           break
-        case 404:
+        case 404: {
           message = formatHttpError(error) || i18n.global.t('messages.resourceNotFound')
           // 404 错误不显示通用错误消息，让调用方自己处理
-          ElMessage.closeAll()
+          const preserveMessagesOn404 = Boolean(
+            (error.config as ErrorDisplayRequestConfig | undefined)?.preserveMessagesOn404,
+          )
+          if (!preserveMessagesOn404) {
+            ElMessage.closeAll()
+          }
           break
+        }
         case 500:
           message = formatHttpError(error) || i18n.global.t('messages.internalServerError')
           break

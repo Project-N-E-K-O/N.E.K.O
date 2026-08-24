@@ -125,9 +125,12 @@ class Poke(MessageElement):
 
 
 class File(MessageElement):
-    def __init__(self, name: str = "", bs64: str = "") -> None:
+    def __init__(self, name: str = "", bs64: str = "", url: str = "") -> None:
         self.name: str = str(name or "")
         self.bs64: str = str(bs64 or "")
+        # 可选直链 URL（Lagrange 类后端 data.url / NapCat get_*_file_url 换取），
+        # 纯增量：repr / bs64 行为不变。
+        self.url: str = str(url or "")
 
     @property
     def repr(self) -> str:

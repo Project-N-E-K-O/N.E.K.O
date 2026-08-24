@@ -351,45 +351,47 @@ def find_topic_by_name(self, name: str) -> dict[str, Any] | None:
 
 
 def list_topics(
-    self, limit: int = 100, subject: str | None = None, stage: str | None = None
+    self,
+    limit: int = 100,
+    subject: str | None = None,
+    stage: str | None = None,
+    *,
+    chapter: str | None = None,
+    unit: str | None = None,
+    course_family: str | None = None,
 ) -> list[dict[str, Any]]:
-    stage_key = str(stage or "").strip()
-    if subject and stage_key:
-        rows = (
-            self._require_read_conn()
-            .execute(
-                "SELECT * FROM topics WHERE subject = ? AND stage = ? ORDER BY chapter, depth, id LIMIT ?",
-                (subject, stage_key, max(1, int(limit))),
+    filters = {
+        "subject": str(subject or "").strip(),
+        "stage": str(stage or "").strip(),
+        "chapter": str(chapter or "").strip(),
+        "unit": str(unit or "").strip(),
+        "course_family": str(course_family or "").strip(),
+    }
+    machine_key_columns = {"subject", "stage", "course_family"}
+    clauses: list[str] = []
+    params: list[Any] = []
+    for column, value in filters.items():
+        if not value:
+            continue
+        if column in machine_key_columns:
+            clauses.append(
+                f"lower(replace(replace({column}, '-', '_'), ' ', '_')) = ?"
             )
-            .fetchall()
+            params.append(value.lower().replace("-", "_").replace(" ", "_"))
+        else:
+            clauses.append(f"{column} = ?")
+            params.append(value)
+    where_sql = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+    params.append(max(1, int(limit)))
+    rows = (
+        self._require_read_conn()
+        .execute(
+            f"SELECT * FROM topics{where_sql} "
+            "ORDER BY stage, subject, course_family, chapter, unit, depth, id LIMIT ?",
+            tuple(params),
         )
-    elif subject:
-        rows = (
-            self._require_read_conn()
-            .execute(
-                "SELECT * FROM topics WHERE subject = ? ORDER BY chapter, depth, id LIMIT ?",
-                (subject, max(1, int(limit))),
-            )
-            .fetchall()
-        )
-    elif stage_key:
-        rows = (
-            self._require_read_conn()
-            .execute(
-                "SELECT * FROM topics WHERE stage = ? ORDER BY subject, chapter, depth, id LIMIT ?",
-                (stage_key, max(1, int(limit))),
-            )
-            .fetchall()
-        )
-    else:
-        rows = (
-            self._require_read_conn()
-            .execute(
-                "SELECT * FROM topics ORDER BY subject, chapter, depth, id LIMIT ?",
-                (max(1, int(limit)),),
-            )
-            .fetchall()
-        )
+        .fetchall()
+    )
     return [
         topic
         for topic in (self._topic_from_row(row) for row in rows)

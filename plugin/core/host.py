@@ -1788,12 +1788,12 @@ class PluginHost:
             self.plugin_id,
             entry_id,
         )
-        # 详细参数信息使用 DEBUG
+        # Parameter values may contain schema-declared sensitive data. Keep only
+        # structural diagnostics here; execution still receives the original args.
         self.logger.debug(
-            "[PluginHost] Args: type={}, keys={}, content={}",
+            "[PluginHost] Args: type={}, keys={}",
             type(args),
             list(args.keys()) if isinstance(args, dict) else "N/A",
-            args,
         )
         # 发送 TRIGGER 命令到子进程并等待结果
         # 委托给通信资源管理器处理

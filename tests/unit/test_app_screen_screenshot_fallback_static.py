@@ -48,7 +48,26 @@ def test_linux_portal_screen_share_does_not_reenumerate_sources_during_fallbacks
     )[0]
 
     assert "sourceEnumerationMayPrompt = desktopSourceEnumerationMayPrompt" in start_once
-    assert "selectedSourceId && desktopProvider && !sourceEnumerationMayPrompt" in start_once
+    assert "(selectedSourceId || hasRememberedWindowTitle)" in start_once
+    assert "&& desktopProvider && !sourceEnumerationMayPrompt" in start_once
     assert "if (!sourceEnumerationMayPrompt)" in start_once
     assert "if (!desktopSourceEnumerationMayPrompt(desktopProvider))" in acquire_once
     assert "Linux Portal 每次枚举都可能再次弹系统窗口" in start_once
+
+
+@pytest.mark.unit
+def test_manual_screen_share_resolves_remembered_title_before_capture():
+    source = APP_SCREEN_JS.read_text(encoding="utf-8")
+    start_once = source.split("async function startScreenSharingOnce(attempt)", 1)[1].split(
+        "mod.startScreenSharing = startScreenSharing;",
+        1,
+    )[0]
+
+    assert "reconcileRememberedWindowSource(currentSources)" in start_once
+    assert "thumbnailSize: { width: 0, height: 0 }" in start_once
+    assert "rememberedWindowNeedsPicker" in start_once
+    assert "if (!sourceStillExists && !rememberedWindowNeedsPicker)" in start_once
+    assert "rememberedWindowNeedsSelection = true;" in start_once
+    assert "if (rememberedWindowNeedsSelection)" in start_once
+    assert "app.screenSource.rememberedWindowUnavailable" in start_once
+    assert "停止本次启动并等待用户重新选择" in start_once

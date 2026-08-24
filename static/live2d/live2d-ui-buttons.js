@@ -126,13 +126,15 @@ Live2DManager.prototype.setupHTMLLockIcon = function(model) {
     }
 
     const existingLockIcon = document.getElementById('live2d-lock-icon');
-    if (existingLockIcon) {
-        if (this._lockIconTicker && this.pixi_app?.ticker) {
-            this.pixi_app.ticker.remove(this._lockIconTicker);
-            this._lockIconTicker = null;
+    // 教程可能只移除 DOM、保留 manager 上的 ticker 引用。重建前必须独立摘除旧
+    // ticker，不能把清理条件绑定到旧锁图标仍存在，否则会留下永久的逐帧回调。
+    if (this._lockIconTicker) {
+        if (this.pixi_app?.ticker) {
+            try { this.pixi_app.ticker.remove(this._lockIconTicker); } catch (_) {}
         }
-        existingLockIcon.remove();
+        this._lockIconTicker = null;
     }
+    if (existingLockIcon) existingLockIcon.remove();
 
     const lockIcon = document.createElement('div');
     lockIcon.id = 'live2d-lock-icon';

@@ -8,7 +8,7 @@ import tomllib
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, BinaryIO, Literal
 
 from plugin.core.plugin_layout import resolve_plugin_layout
 from plugin.logging_config import get_logger
@@ -30,6 +30,7 @@ from plugin.server.application.install_source import (
 from plugin.server.application.plugin_cli.paths import PluginCliPathPolicy
 from plugin.server.application.plugin_cli.install_plan import PluginInstallPlan, build_install_plan
 from plugin.server.application.plugins import upgrade_support
+from plugin.server.application.plugins.operation_lock import serialized_plugin_operation
 from plugin.server.application.plugin_cli.source_resolver import (
     PluginSourceResolver,
     ResolvedPluginSource,
@@ -52,8 +53,9 @@ _TARGET_ROOT = USER_PLUGIN_PACKAGES_ROOT
 
 # Allowed extensions for uploaded plugin packages
 _ALLOWED_UPLOAD_SUFFIXES = frozenset({".neko-plugin", ".neko-bundle"})
-# Maximum upload size (200 MB)
-_UPLOAD_MAX_BYTES = 200 * 1024 * 1024
+# Maximum upload size (500 MiB)
+_UPLOAD_MAX_BYTES = 500 * 1024 * 1024
+_UPLOAD_COPY_CHUNK_BYTES = 1024 * 1024
 
 logger = get_logger("server.application.plugin_cli")
 
@@ -130,14 +132,17 @@ class PluginCliService:
         package: str,
         plugins_root: str | None = None,
         profiles_root: str | None = None,
+        _allow_external_profiles_root: bool = False,
     ) -> dict[str, object]:
         return await asyncio.to_thread(
             self._plan_install_sync,
             package=package,
             plugins_root=plugins_root,
             profiles_root=profiles_root,
+            _allow_external_profiles_root=_allow_external_profiles_root,
         )
 
+    @serialized_plugin_operation
     async def install(
         self,
         *,
@@ -150,11 +155,13 @@ class PluginCliService:
         install_source: Literal["imported"] | None = None,
         confirm_upgrade: bool = False,
         confirmation_token: str | None = None,
+        _allow_external_profiles_root: bool = False,
     ) -> dict[str, object]:
         plan_dict = await self.plan_install(
             package=package,
             plugins_root=plugins_root,
             profiles_root=profiles_root,
+            _allow_external_profiles_root=_allow_external_profiles_root,
         )
         action = str(plan_dict["action"])
         if action == "blocked":
@@ -173,6 +180,7 @@ class PluginCliService:
                 on_conflict=on_conflict,
                 use_staging=use_staging,
                 forced_directory_name=forced_directory_name,
+                _allow_external_profiles_root=_allow_external_profiles_root,
             )
             return await self._record_requested_install_source(
                 install_result=result,
@@ -211,13 +219,17 @@ class PluginCliService:
         )
         target_dir = target_root / directory_name
         profiles_root_path = (
-            _require_within(
-                Path(profiles_root).expanduser().resolve(),
-                policy.package_profiles_root,
-                field="profiles_root",
+            Path(profiles_root).expanduser().resolve()
+            if profiles_root and _allow_external_profiles_root
+            else (
+                _require_within(
+                    Path(profiles_root).expanduser().resolve(),
+                    policy.package_profiles_root,
+                    field="profiles_root",
+                )
+                if profiles_root
+                else policy.package_profiles_root
             )
-            if profiles_root
-            else policy.package_profiles_root
         )
         _require_safe_directory_name(
             str(plan_dict["package_id"]),
@@ -246,6 +258,7 @@ class PluginCliService:
                 on_conflict="fail",
                 use_staging=use_staging,
                 forced_directory_name=forced_directory_name,
+                _allow_external_profiles_root=_allow_external_profiles_root,
             )
 
         async def validate_new() -> None:
@@ -347,12 +360,23 @@ class PluginCliService:
         """
         return await asyncio.to_thread(self._save_uploaded_package_sync, filename=filename, content=content)
 
+    async def save_uploaded_file(self, *, filename: str, source_file: BinaryIO) -> dict[str, object]:
+        """Stream an uploaded package into the managed artifacts directory."""
+        return await asyncio.to_thread(
+            self._save_uploaded_file_sync,
+            filename=filename,
+            source_file=source_file,
+        )
+
+    @serialized_plugin_operation
     async def upload_and_install(
         self,
         *,
         filename: str,
         content: bytes | None = None,
         package_path: str | None = None,
+        profiles_root: str | None = None,
+        _allow_external_profiles_root: bool = False,
         on_conflict: str = "fail",
         install_source_override: dict[str, Any] | None = None,
     ) -> dict[str, object]:
@@ -427,8 +451,10 @@ class PluginCliService:
             try:
                 install_result = await self.install(
                     package=str(saved["path"]),
+                    profiles_root=profiles_root,
                     on_conflict=on_conflict,
                     use_staging=True,
+                    _allow_external_profiles_root=_allow_external_profiles_root,
                 )
                 unpacked_target_dirs = self._extract_unpack_target_dirs(install_result)
                 unpacked_profile_dirs = self._extract_unpack_profile_dirs(install_result)
@@ -499,7 +525,7 @@ class PluginCliService:
             unpack_result = await self.install(
                 package=saved_path,
                 plugins_root=None,
-                profiles_root=None,
+                profiles_root=profiles_root,
                 on_conflict=on_conflict,
                 use_staging=use_staging,
                 forced_directory_name=(
@@ -507,6 +533,7 @@ class PluginCliService:
                     if isinstance(forced_directory_name, str)
                     else None
                 ),
+                _allow_external_profiles_root=_allow_external_profiles_root,
             )
             unpacked_target_dirs = self._extract_unpack_target_dirs(unpack_result)
             unpacked_profile_dirs = self._extract_unpack_profile_dirs(unpack_result)
@@ -530,6 +557,7 @@ class PluginCliService:
                     saved_filename=str(saved["name"]),
                     actual_sha256=actual_sha256,
                     package_id=str(unpack_result.get("package_id") or ""),
+                    profile_dir=str(unpack_result.get("profile_dir") or ""),
                 )
                 return self._compose_install_result(
                     saved=saved,
@@ -609,6 +637,7 @@ class PluginCliService:
                     plugin_id=package_plugin_id,
                     market_detail=market_detail,
                     package_id=str(unpack_result.get("package_id") or ""),
+                    profile_dir=str(unpack_result.get("profile_dir") or ""),
                 )
             else:
                 entry, ism_warnings = mgr.record_market_install(
@@ -617,6 +646,7 @@ class PluginCliService:
                     plugin_id=package_plugin_id,
                     market_detail=market_detail,
                     package_id=str(unpack_result.get("package_id") or ""),
+                    profile_dir=str(unpack_result.get("profile_dir") or ""),
                 )
             warnings.extend(ism_warnings)
 
@@ -775,6 +805,7 @@ class PluginCliService:
         saved_filename: str,
         actual_sha256: str,
         package_id: str,
+        profile_dir: str,
     ) -> dict[str, Any]:
         """Fall back to recording the install as ``channel="imported"``.
 
@@ -791,6 +822,7 @@ class PluginCliService:
                 package_filename=saved_filename,
                 package_sha256=actual_sha256,
                 package_id=package_id,
+                profile_dir=profile_dir,
             )
 
         await asyncio.to_thread(_record)
@@ -923,9 +955,8 @@ class PluginCliService:
             items: list[dict[str, object]] = []
             package_paths = [
                 path
-                for suffix in _ALLOWED_UPLOAD_SUFFIXES
-                for path in target_root.glob(f"*{suffix}")
-                if path.is_file()
+                for path in target_root.glob("*")
+                if path.is_file() and self._has_allowed_upload_suffix(path.name)
             ]
             for path in sorted(
                 package_paths,
@@ -1062,6 +1093,7 @@ class PluginCliService:
         package: str,
         plugins_root: str | None,
         profiles_root: str | None,
+        _allow_external_profiles_root: bool = False,
     ) -> dict[str, object]:
         try:
             policy = self._path_policy()
@@ -1075,13 +1107,17 @@ class PluginCliService:
                 else policy.user_plugins_root
             )
             profiles_root_path = (
-                _require_within(
-                    Path(profiles_root).expanduser().resolve(),
-                    policy.package_profiles_root,
-                    field="profiles_root",
+                Path(profiles_root).expanduser().resolve()
+                if profiles_root and _allow_external_profiles_root
+                else (
+                    _require_within(
+                        Path(profiles_root).expanduser().resolve(),
+                        policy.package_profiles_root,
+                        field="profiles_root",
+                    )
+                    if profiles_root
+                    else policy.package_profiles_root
                 )
-                if profiles_root
-                else policy.package_profiles_root
             )
             plan = self._apply_installed_package_identity(
                 build_install_plan(
@@ -1136,6 +1172,7 @@ class PluginCliService:
         on_conflict: str,
         use_staging: bool = True,
         forced_directory_name: str | None = None,
+        _allow_external_profiles_root: bool = False,
     ) -> dict[str, object]:
         try:
             policy = self._path_policy()
@@ -1147,9 +1184,17 @@ class PluginCliService:
                 else install_plugins_root
             )
             profiles_root_path = (
-                _require_within(Path(profiles_root).expanduser().resolve(), install_profiles_root, field="profiles_root")
-                if profiles_root
-                else install_profiles_root
+                Path(profiles_root).expanduser().resolve()
+                if profiles_root and _allow_external_profiles_root
+                else (
+                    _require_within(
+                        Path(profiles_root).expanduser().resolve(),
+                        install_profiles_root,
+                        field="profiles_root",
+                    )
+                    if profiles_root
+                    else install_profiles_root
+                )
             )
             package_path = self._resolve_package_path(package)
             if use_staging:
@@ -1303,6 +1348,34 @@ class PluginCliService:
         except Exception as exc:
             raise self._domain_error_from_exception(exc, action="analyze") from exc
 
+    @staticmethod
+    def _has_allowed_upload_suffix(filename: str) -> bool:
+        return filename.lower().endswith(tuple(_ALLOWED_UPLOAD_SUFFIXES))
+
+    @staticmethod
+    def _upload_filename_parts(filename: str) -> tuple[str, str, str]:
+        safe_name = Path(filename).name
+        if not safe_name:
+            raise ValueError("Invalid filename")
+
+        lower_name = safe_name.lower()
+        for allowed_suffix in sorted(_ALLOWED_UPLOAD_SUFFIXES, key=len, reverse=True):
+            if lower_name.endswith(allowed_suffix):
+                return safe_name, safe_name[: -len(allowed_suffix)], allowed_suffix
+
+        allowed = ", ".join(sorted(_ALLOWED_UPLOAD_SUFFIXES))
+        raise ValueError(f"Unsupported file type. Allowed: {allowed}")
+
+    @staticmethod
+    def _upload_metadata(path: Path) -> dict[str, object]:
+        stat = path.stat()
+        return {
+            "name": path.name,
+            "path": str(path.resolve()),
+            "size_bytes": stat.st_size,
+            "modified_at": datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat(),
+        }
+
     def _save_uploaded_package_sync(self, *, filename: str, content: bytes) -> dict[str, object]:
         try:
             target_root = self._path_policy().package_artifacts_root
@@ -1310,32 +1383,13 @@ class PluginCliService:
             if len(content) > _UPLOAD_MAX_BYTES:
                 raise ValueError(
                     f"File too large: {len(content)} bytes "
-                    f"(max {_UPLOAD_MAX_BYTES // (1024 * 1024)} MB)"
+                    f"(max {_UPLOAD_MAX_BYTES // (1024 * 1024)} MiB)"
                 )
 
-            # Validate and sanitize filename
-            safe_name = Path(filename).name  # strip directory components
-            if not safe_name:
-                raise ValueError("Invalid filename")
-
-            # Check extension — must match one of the allowed suffixes
-            # Path.suffixes gives e.g. ['.neko', '-plugin'] for "foo.neko-plugin",
-            # but we need the compound suffix, so we check the name directly.
-            has_valid_suffix = any(safe_name.endswith(suffix) for suffix in _ALLOWED_UPLOAD_SUFFIXES)
-            if not has_valid_suffix:
-                allowed = ", ".join(sorted(_ALLOWED_UPLOAD_SUFFIXES))
-                raise ValueError(f"Unsupported file type. Allowed: {allowed}")
+            safe_name, stem, suffix = self._upload_filename_parts(filename)
 
             # Ensure target directory exists
             target_root.mkdir(parents=True, exist_ok=True)
-
-            stem = safe_name
-            suffix = ""
-            for allowed_suffix in sorted(_ALLOWED_UPLOAD_SUFFIXES, key=len, reverse=True):
-                if stem.endswith(allowed_suffix):
-                    suffix = allowed_suffix
-                    stem = stem[: -len(allowed_suffix)]
-                    break
 
             # Exclusive create: if name collides (including concurrent uploads
             # racing on the same filename), pick a UUID-suffixed dest and retry.
@@ -1352,13 +1406,40 @@ class PluginCliService:
                     dest.unlink(missing_ok=True)
                     raise
 
-            stat = dest.stat()
-            return {
-                "name": dest.name,
-                "path": str(dest.resolve()),
-                "size_bytes": stat.st_size,
-                "modified_at": datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat(),
-            }
+            return self._upload_metadata(dest)
+        except Exception as exc:
+            raise self._domain_error_from_exception(exc, action="upload") from exc
+
+    def _save_uploaded_file_sync(self, *, filename: str, source_file: BinaryIO) -> dict[str, object]:
+        """Copy an incoming upload in bounded chunks and enforce the size limit."""
+        try:
+            target_root = self._path_policy().package_artifacts_root
+            safe_name, stem, suffix = self._upload_filename_parts(filename)
+            target_root.mkdir(parents=True, exist_ok=True)
+            source_file.seek(0)
+
+            dest = target_root / safe_name
+            while True:
+                try:
+                    total_bytes = 0
+                    with dest.open("xb") as target:
+                        while chunk := source_file.read(_UPLOAD_COPY_CHUNK_BYTES):
+                            total_bytes += len(chunk)
+                            if total_bytes > _UPLOAD_MAX_BYTES:
+                                raise ValueError(
+                                    f"File too large: {total_bytes} bytes "
+                                    f"(max {_UPLOAD_MAX_BYTES // (1024 * 1024)} MiB)"
+                                )
+                            target.write(chunk)
+                    break
+                except FileExistsError:
+                    unique = uuid.uuid4().hex[:8]
+                    dest = target_root / f"{stem}_{unique}{suffix}"
+                except Exception:
+                    dest.unlink(missing_ok=True)
+                    raise
+
+            return self._upload_metadata(dest)
         except Exception as exc:
             raise self._domain_error_from_exception(exc, action="upload") from exc
 
@@ -1371,26 +1452,16 @@ class PluginCliService:
         if source.stat().st_size > _UPLOAD_MAX_BYTES:
             raise ValueError(
                 f"File too large: {source.stat().st_size} bytes "
-                f"(max {_UPLOAD_MAX_BYTES // (1024 * 1024)} MB)"
+                f"(max {_UPLOAD_MAX_BYTES // (1024 * 1024)} MiB)"
             )
 
-        safe_name = Path(filename or source.name).name
-        if not safe_name:
-            raise ValueError("Invalid filename")
-        has_valid_suffix = any(safe_name.endswith(suffix) for suffix in _ALLOWED_UPLOAD_SUFFIXES)
-        if not has_valid_suffix:
-            allowed = ", ".join(sorted(_ALLOWED_UPLOAD_SUFFIXES))
-            raise ValueError(f"Unsupported file type. Allowed: {allowed}")
+        safe_name, stem, suffix = self._upload_filename_parts(filename or source.name)
 
         target_root = self._path_policy().package_artifacts_root
         target_root.mkdir(parents=True, exist_ok=True)
-        stem = safe_name
-        suffix = ""
-        for allowed_suffix in sorted(_ALLOWED_UPLOAD_SUFFIXES, key=len, reverse=True):
-            if stem.endswith(allowed_suffix):
-                suffix = allowed_suffix
-                stem = stem[: -len(allowed_suffix)]
-                break
+
+        if source.parent == target_root.resolve() and source.name == safe_name:
+            return self._upload_metadata(source)
 
         dest = target_root / safe_name
         while True:
@@ -1405,13 +1476,7 @@ class PluginCliService:
                 dest.unlink(missing_ok=True)
                 raise
 
-        stat = dest.stat()
-        return {
-            "name": dest.name,
-            "path": str(dest.resolve()),
-            "size_bytes": stat.st_size,
-            "modified_at": datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat(),
-        }
+        return self._upload_metadata(dest)
 
     def _resolve_plugin_sources(
         self,
@@ -1464,9 +1529,7 @@ class PluginCliService:
         target_root = self._path_policy().package_artifacts_root
 
         def _accept(path: Path) -> bool:
-            return path.is_file() and any(
-                path.name.endswith(suffix) for suffix in _ALLOWED_UPLOAD_SUFFIXES
-            )
+            return path.is_file() and self._has_allowed_upload_suffix(path.name)
 
         candidate = Path(raw).expanduser()
         if candidate.exists():
@@ -1597,6 +1660,7 @@ def _record_install_source_for_install_result(
 
     installed_plugins = install_result.get("installed_plugins", [])
     package_id = str(install_result.get("package_id") or "")
+    profile_dir = str(install_result.get("profile_dir") or "")
     for installed in installed_plugins:
         target_dir = Path(installed["target_dir"])
         if override is None:
@@ -1605,6 +1669,7 @@ def _record_install_source_for_install_result(
                 package_filename=package_filename,
                 package_sha256=package_sha256,
                 package_id=package_id,
+                profile_dir=profile_dir,
             )
         elif override.get("channel") == "market":
             detail = override.get("market_detail", {})
@@ -1614,6 +1679,7 @@ def _record_install_source_for_install_result(
                 version=detail.get("version", ""),
                 package_url=detail.get("package_url", ""),
                 package_id=package_id,
+                profile_dir=profile_dir,
             )
         else:
             raise InstallSourceError(

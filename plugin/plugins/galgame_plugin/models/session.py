@@ -15,6 +15,7 @@ class SessionCandidate:
     events_path: Path
     session: dict[str, Any]
     data_source: str = DATA_SOURCE_BRIDGE_SDK
+    events_file_size: int = 0
 
     @property
     def session_id(self) -> str:

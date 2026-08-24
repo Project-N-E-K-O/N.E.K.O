@@ -575,3 +575,184 @@ def test_property_3_missing_sha256_emits_warning(
     assert isinstance(entry.source_detail, SourceDetailMarket)
     assert entry.source_detail.package_sha256 == ""
     assert any("package_sha256" in w for w in warnings)
+
+
+def test_corrupt_profile_installed_is_treated_as_not_owned() -> None:
+    raw = json.dumps(
+        {
+            "schema_version": 2,
+            "updated_at": "2026-01-01T00:00:00.000000Z",
+            "entries": [
+                {
+                    "root_id": "user",
+                    "directory_name": "corrupt-profile",
+                    "plugin_id": "corrupt-profile",
+                    "channel": "imported",
+                    "reason": "user_requested",
+                    "installed_at": "2026-01-01T00:00:00.000000Z",
+                    "updated_at": "2026-01-01T00:00:00.000000Z",
+                    "last_seen_at": "2026-01-01T00:00:00.000000Z",
+                    "removed": False,
+                    "source_detail": None,
+                    "profile_installed": "false",
+                }
+            ],
+        }
+    ).encode("utf-8")
+
+    entry = _parse_lock(raw).entries[0]
+
+    assert entry.profile_installed is False
+
+
+def test_import_reinstall_clears_profile_ownership_from_removed_entry(
+    manager: InstallSourceManager,
+) -> None:
+    target = manager.user_root / "profileless-reinstall"
+    target.mkdir(parents=True)
+    (target / "plugin.toml").write_text(
+        '[plugin]\nid = "profileless-reinstall"\n',
+        encoding="utf-8",
+    )
+    profile_dir = manager.user_root.parent / "profiles" / "profileless-package"
+
+    manager.record_import(
+        directory_path=target,
+        package_filename="first.neko-plugin",
+        package_sha256="a" * 64,
+        package_id="profileless-package",
+        profile_dir=str(profile_dir),
+    )
+    manager.mark_removed(directory_path=target)
+    manager.record_import(
+        directory_path=target,
+        package_filename="second.neko-plugin",
+        package_sha256="b" * 64,
+        package_id="profileless-package",
+        profile_dir="",
+    )
+
+    entry = manager.entry_for_directory(target, include_removed=False)
+    assert entry is not None
+    assert entry.profile_dir == ""
+    assert entry.profile_installed is False
+
+
+def test_market_upgrade_preserves_owned_profile_when_new_package_has_none(
+    manager: InstallSourceManager,
+    tmp_path: Path,
+) -> None:
+    profile_dir = tmp_path / "profiles" / "preserved-package"
+    market_detail = {
+        "plugin_market_id": "preserved-plugin",
+        "version": "1.0.0",
+        "package_url": "https://example.com/v1.neko-plugin",
+        "channel": "stable",
+        "package_sha256": "a" * 64,
+        "payload_hash": None,
+        "published_at": "2026-01-01T00:00:00.000000Z",
+    }
+    manager.record_market_install(
+        root_id="user",
+        directory_name="preserved-plugin",
+        plugin_id="preserved-plugin",
+        market_detail=market_detail,
+        package_id="preserved-package",
+        profile_dir=str(profile_dir),
+    )
+
+    upgraded, _ = manager.record_market_upgrade(
+        root_id="user",
+        directory_name="preserved-plugin",
+        plugin_id="preserved-plugin",
+        market_detail={**market_detail, "version": "2.0.0"},
+        package_id="preserved-package",
+        profile_dir="",
+    )
+
+    assert upgraded.profile_installed is True
+    assert upgraded.profile_dir == str(profile_dir)
+
+
+def _write_legacy_lock(manager: InstallSourceManager, directory_name: str) -> None:
+    """Seed a pre-``profile_installed`` row, whose ownership is inferred."""
+    manager.lock_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "updated_at": "2026-01-01T00:00:00.000000Z",
+                "entries": [
+                    {
+                        "root_id": "user",
+                        "directory_name": directory_name,
+                        "plugin_id": directory_name,
+                        "channel": "market",
+                        "reason": "user_requested",
+                        "installed_at": "2026-01-01T00:00:00.000000Z",
+                        "updated_at": "2026-01-01T00:00:00.000000Z",
+                        "last_seen_at": "2026-01-01T00:00:00.000000Z",
+                        "removed": False,
+                        "source_detail": None,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    manager.load()
+
+
+def test_market_upgrade_keeps_legacy_profile_ownership_unknown(
+    manager: InstallSourceManager,
+) -> None:
+    """A legacy row must not be downgraded to "owns no profile" by an upgrade.
+
+    Collapsing ``None`` to ``False`` makes deletion skip the inferred profile
+    that is still on disk, and the next install of a profile-carrying version
+    then fails against it under ``on_conflict="fail"``.
+    """
+    _write_legacy_lock(manager, "legacy-plugin")
+
+    upgraded, _ = manager.record_market_upgrade(
+        root_id="user",
+        directory_name="legacy-plugin",
+        plugin_id="legacy-plugin",
+        market_detail={
+            "plugin_market_id": "legacy-plugin",
+            "version": "2.0.0",
+            "package_url": "https://example.com/v2.neko-plugin",
+            "channel": "stable",
+            "package_sha256": "c" * 64,
+            "payload_hash": None,
+            "published_at": "2026-01-01T00:00:00.000000Z",
+        },
+        package_id="legacy-package",
+        profile_dir="",
+    )
+
+    assert upgraded.profile_installed is None
+
+
+def test_import_upgrade_keeps_legacy_profile_ownership_unknown(
+    manager: InstallSourceManager,
+) -> None:
+    """The imported write path carries the same tri-state as the Market one."""
+    target = manager.user_root / "legacy-import"
+    target.mkdir(parents=True)
+    (target / "plugin.toml").write_text(
+        '[plugin]\nid = "legacy-import"\n',
+        encoding="utf-8",
+    )
+    _write_legacy_lock(manager, "legacy-import")
+
+    manager.record_import(
+        directory_path=target,
+        package_filename="v2.neko-plugin",
+        package_sha256="d" * 64,
+        package_id="legacy-package",
+        profile_dir="",
+    )
+
+    entry = manager.entry_for_directory(target, include_removed=False)
+    assert entry is not None
+    assert entry.profile_installed is None
