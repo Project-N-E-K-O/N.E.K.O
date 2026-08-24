@@ -1,4 +1,4 @@
-﻿name: N.E.K.O Plugin Market Release
+name: N.E.K.O Plugin Market Release
 
 on:
   workflow_call:
