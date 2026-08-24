@@ -2860,8 +2860,9 @@
             }
             const right = contentLeft + contentWidth;
             const bottom = contentTop + contentHeight;
-            const effectiveMinX = Math.min(Math.max(0, Number(minVisiblePixels) || 0), viewportWidth);
-            const effectiveMinY = Math.min(Math.max(0, Number(minVisiblePixels) || 0), viewportHeight);
+            const requestedMin = Math.max(0, Number(minVisiblePixels) || 0);
+            const effectiveMinX = Math.min(requestedMin, contentWidth, viewportWidth);
+            const effectiveMinY = Math.min(requestedMin, contentHeight, viewportHeight);
             const visibleWidth = Math.max(0, Math.min(viewportWidth, right) - Math.max(0, contentLeft));
             const visibleHeight = Math.max(0, Math.min(viewportHeight, bottom) - Math.max(0, contentTop));
             const needsClampH = horizontalDirection !== 0

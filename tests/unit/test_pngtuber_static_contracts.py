@@ -296,6 +296,13 @@ manager.scheduleSaveCurrentConfig = () => {{ scheduledSaves += 1; }};
   assert.ok(Math.abs(layeredTarget.offsetX - (-433.3333333333333)) < 0.001);
   manager.isLayeredActive = () => false;
 
+  // Content smaller than 200 px stops once it is fully visible.
+  modelWidth = 100;
+  manager.config.offset_x = -480;
+  const smallTarget = manager.getEdgeSnapTarget();
+  assert.equal(smallTarget.offsetX, -450);
+  modelWidth = 400;
+
   // State image geometry changes retarget an in-flight rebound.
   manager.config.offset_x = -750;
   modelWidth = 400;
