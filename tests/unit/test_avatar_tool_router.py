@@ -54,6 +54,7 @@ def test_post_then_get_returns_authoritative_item_without_meaning(tmp_path, monk
     response = client.post(
         "/api/avatar-tools",
         files=[
+            ("tool_id", (None, "local-12345678-1234-4123-8123-123456789abc")),
             ("name", (None, "Feather")),
             ("change_mode", (None, "click-advance")),
             ("change_meanings", (None, "a gentle feather touch")),
@@ -80,11 +81,57 @@ def test_post_then_get_returns_authoritative_item_without_meaning(tmp_path, monk
     assert (manager.avatar_tools_dir / item["id"] / "normal.mp3").is_file()
 
 
+def test_post_retry_with_the_same_tool_id_returns_the_original_creation(tmp_path, monkeypatch):
+    client, _manager = _client(tmp_path, monkeypatch, allow_mutation=True)
+    tool_id = "local-12345678-1234-4123-8123-123456789abc"
+
+    def create():
+        return client.post(
+            "/api/avatar-tools",
+            files=[
+                ("tool_id", (None, tool_id)),
+                ("name", (None, "Feather")),
+                ("change_mode", (None, "press-swap")),
+                ("change_meanings", (None, "a gentle touch")),
+                ("default_image", ("default.png", _png(), "image/png")),
+                ("change_images", ("change.png", _png(), "image/png")),
+            ],
+        )
+
+    first = create()
+    second = create()
+
+    assert first.status_code == 201
+    assert second.status_code == 201
+    assert first.json()["item"] == second.json()["item"]
+    assert [item["id"] for item in client.get("/api/avatar-tools").json()["items"]] == [tool_id]
+
+
+def test_post_rejects_a_non_local_client_tool_id(tmp_path, monkeypatch):
+    client, manager = _client(tmp_path, monkeypatch, allow_mutation=True)
+    response = client.post(
+        "/api/avatar-tools",
+        files=[
+            ("tool_id", (None, "local-not-a-uuid")),
+            ("name", (None, "Feather")),
+            ("change_mode", (None, "press-swap")),
+            ("change_meanings", (None, "a gentle touch")),
+            ("default_image", ("default.png", _png(), "image/png")),
+            ("change_images", ("change.png", _png(), "image/png")),
+        ],
+    )
+
+    assert response.status_code == 400
+    assert response.json()["error_code"] == "invalid_tool_id"
+    assert not manager.avatar_tools_dir.exists()
+
+
 def test_post_accepts_complete_special_block_and_keeps_meaning_private(tmp_path, monkeypatch):
     client, manager = _client(tmp_path, monkeypatch, allow_mutation=True)
     response = client.post(
         "/api/avatar-tools",
         files=[
+            ("tool_id", (None, "local-12345678-1234-4123-8123-123456789abc")),
             ("name", (None, "Surprise feather")),
             ("change_mode", (None, "press-swap")),
             ("change_meanings", (None, "a gentle touch")),
@@ -113,6 +160,7 @@ def test_post_rejects_partial_special_block_without_publishing(tmp_path, monkeyp
     response = client.post(
         "/api/avatar-tools",
         files=[
+            ("tool_id", (None, "local-12345678-1234-4123-8123-123456789abc")),
             ("name", (None, "Partial surprise")),
             ("change_mode", (None, "press-swap")),
             ("change_meanings", (None, "a gentle touch")),
@@ -134,6 +182,7 @@ def test_post_returns_field_and_index_for_invalid_change_meaning(tmp_path, monke
     response = client.post(
         "/api/avatar-tools",
         files=[
+            ("tool_id", (None, "local-12345678-1234-4123-8123-123456789abc")),
             ("name", (None, "Feather")),
             ("change_mode", (None, "click-advance")),
             ("change_meanings", (None, "first")),
@@ -158,7 +207,12 @@ def test_post_rejects_request_without_mutation_security(tmp_path, monkeypatch):
     client, _manager = _client(tmp_path, monkeypatch, allow_mutation=False)
     response = client.post(
         "/api/avatar-tools",
-        data={"name": "Feather", "change_mode": "press-swap", "change_meanings": "gentle"},
+        data={
+            "tool_id": "local-12345678-1234-4123-8123-123456789abc",
+            "name": "Feather",
+            "change_mode": "press-swap",
+            "change_meanings": "gentle",
+        },
         files=[
             ("default_image", ("default.png", _png(), "image/png")),
             ("change_images", ("change.png", _png(), "image/png")),
@@ -173,6 +227,7 @@ def test_delete_removes_the_created_tool_and_returns_its_id(tmp_path, monkeypatc
     created = client.post(
         "/api/avatar-tools",
         files=[
+            ("tool_id", (None, "local-12345678-1234-4123-8123-123456789abc")),
             ("name", (None, "Feather")),
             ("change_mode", (None, "press-swap")),
             ("change_meanings", (None, "gentle")),
@@ -217,6 +272,7 @@ def test_targeted_detail_returns_meanings_without_polluting_list(tmp_path, monke
     created = client.post(
         "/api/avatar-tools",
         files=[
+            ("tool_id", (None, "local-12345678-1234-4123-8123-123456789abc")),
             ("name", (None, "Feather")),
             ("change_mode", (None, "press-swap")),
             ("change_meanings", (None, "a private meaning")),
@@ -239,6 +295,7 @@ def test_put_updates_same_id_and_can_remove_optional_resources(tmp_path, monkeyp
     created = client.post(
         "/api/avatar-tools",
         files=[
+            ("tool_id", (None, "local-12345678-1234-4123-8123-123456789abc")),
             ("name", (None, "Feather")),
             ("change_mode", (None, "press-swap")),
             ("change_meanings", (None, "old meaning")),
@@ -281,6 +338,7 @@ def test_put_rejects_unowned_resource_reference_and_keeps_old_item(tmp_path, mon
     created = client.post(
         "/api/avatar-tools",
         files=[
+            ("tool_id", (None, "local-12345678-1234-4123-8123-123456789abc")),
             ("name", (None, "Feather")),
             ("change_mode", (None, "press-swap")),
             ("change_meanings", (None, "old meaning")),

@@ -5,6 +5,8 @@ import {
   deleteLocalAvatarTool,
   fetchLocalAvatarToolDetail,
   fetchLocalAvatarTools,
+  LocalAvatarToolCreateError,
+  LocalAvatarToolRevisionConflictError,
   updateLocalAvatarTool,
   type CreateLocalAvatarToolInput,
   type LocalAvatarToolDetail,
@@ -161,7 +163,21 @@ export function useLocalAvatarToolCatalog(): LocalAvatarToolCatalog {
   }, [authoritativeLoaded, registry]);
 
   const create = useCallback(async (input: CreateLocalAvatarToolInput) => {
-    const createdItem = await createLocalAvatarTool(input);
+    let createdItem: LocalAvatarToolDto | null;
+    try {
+      createdItem = await createLocalAvatarTool(input);
+    } catch (error) {
+      const staleRefresh = refreshInFlightRef.current;
+      refreshEpochRef.current += 1;
+      await staleRefresh?.catch(() => undefined);
+      let refreshed = false;
+      try {
+        await refresh();
+        refreshed = true;
+      } catch {}
+      if (refreshed && authoritativeRegistryRef.current?.has(input.toolId) === true) return;
+      throw error;
+    }
     const staleRefresh = refreshInFlightRef.current;
     refreshEpochRef.current += 1;
     if (createdItem) {
@@ -207,6 +223,13 @@ export function useLocalAvatarToolCatalog(): LocalAvatarToolCatalog {
           ]));
         }
         return;
+      }
+      if (
+        error instanceof LocalAvatarToolCreateError
+        && error.message === 'tool_revision_conflict'
+        && currentDetail
+      ) {
+        throw new LocalAvatarToolRevisionConflictError(currentDetail);
       }
       throw error;
     }

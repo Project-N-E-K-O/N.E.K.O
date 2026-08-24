@@ -881,6 +881,7 @@
         "avatarToolUpdateModify": "編集",
         "avatarToolUpdateLoading": "開いています…",
         "avatarToolUpdateLoadError": "この道具を開けませんでした。もう一度お試しください。",
+        "avatarToolRevisionConflict": "この道具は別のウィンドウで変更されました。最新の内容を読み込みました。",
         "avatarToolUpdateChooseImage": "画像を変更",
         "avatarToolUpdateCurrentImage": "現在の画像",
         "avatarToolUpdateChooseAudio": "MP3を変更",

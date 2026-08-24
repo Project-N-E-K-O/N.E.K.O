@@ -807,6 +807,32 @@ describe('useAvatarToolRuntime press lifecycle', () => {
     expect(screen.getByRole('status', { name: 'active tool' })).toHaveTextContent(LOCAL_TOOL_ID);
   });
 
+  it('clears a selected local tool when a refreshed registry no longer contains it', async () => {
+    const registry = localToolRegistry(1);
+    const item = registry.items.find(candidate => candidate.id === LOCAL_TOOL_ID)!;
+    const view = render(
+      <Harness
+        onInteraction={vi.fn()}
+        providers={createProviders()}
+        toolId={LOCAL_TOOL_ID}
+        registry={registry}
+      />,
+    );
+    selectTool();
+    expect(screen.getByRole('status', { name: 'active tool' })).toHaveTextContent(LOCAL_TOOL_ID);
+
+    view.rerender(
+      <Harness
+        onInteraction={vi.fn()}
+        providers={createProviders()}
+        item={item}
+        registry={BUILT_IN_AVATAR_TOOL_REGISTRY}
+      />,
+    );
+
+    await waitFor(() => expect(screen.getByRole('status', { name: 'active tool' })).toHaveTextContent('inactive'));
+  });
+
   it('publishes the new desktop descriptor without deactivating the selected same-id tool', async () => {
     (window as Window & { __NEKO_MULTI_WINDOW__?: boolean }).__NEKO_MULTI_WINDOW__ = true;
     const onStateChange = vi.fn<(payload: AvatarToolStatePayload) => void>();

@@ -5,20 +5,22 @@ import {
   type MouseEvent as ReactMouseEvent,
 } from 'react';
 import { i18n } from './i18n';
-import type {
-  CreateLocalAvatarToolInput,
-  LocalAvatarToolChangeMode,
-  LocalAvatarToolDetail,
-  LocalAvatarToolLimits,
-  UpdateLocalAvatarToolInput,
+import {
+  LocalAvatarToolCreateError,
+  createLocalAvatarToolId,
+  type CreateLocalAvatarToolInput,
+  type LocalAvatarToolChangeMode,
+  type LocalAvatarToolDetail,
+  type LocalAvatarToolLimits,
+  type UpdateLocalAvatarToolInput,
 } from './avatar-tools/localTools';
-import { LocalAvatarToolCreateError } from './avatar-tools/localTools';
 
 type AvatarToolCreatePageProps = {
   limits: LocalAvatarToolLimits | null;
   userName?: string;
   assistantName?: string;
   initialDetail?: LocalAvatarToolDetail;
+  notice?: string;
   onSpecialEnabledChange(enabled: boolean): void;
   onSave(input: CreateLocalAvatarToolInput | UpdateLocalAvatarToolInput): Promise<void>;
   onDelete?(): Promise<void>;
@@ -78,12 +80,15 @@ export default function AvatarToolCreatePage({
   userName = '',
   assistantName = '',
   initialDetail,
+  notice = '',
   onSpecialEnabledChange,
   onSave,
   onDelete,
   onCancel,
 }: AvatarToolCreatePageProps) {
   const editing = !!initialDetail;
+  const creationToolIdRef = useRef<ReturnType<typeof createLocalAvatarToolId> | null>(null);
+  if (!editing && !creationToolIdRef.current) creationToolIdRef.current = createLocalAvatarToolId();
   const initialChangeItems = initialDetail?.changeItems.map((item, index) => ({
     id: index,
     image: null,
@@ -485,6 +490,7 @@ export default function AvatarToolCreatePage({
         } satisfies UpdateLocalAvatarToolInput);
       } else {
         await onSave({
+          toolId: creationToolIdRef.current!,
           name: normalizedName,
           changeMode,
           defaultImage: defaultImage!,
@@ -567,6 +573,11 @@ export default function AvatarToolCreatePage({
               'Images and sounds stay on this device; during interactions, the name and matching description are sent to the model.',
             )}
         </p>
+        {notice ? (
+          <p id="avatar-tool-manager-notice" className="avatar-tool-manager-notice" role="status">
+            {notice}
+          </p>
+        ) : null}
         <label className="avatar-tool-create-field" data-error-key="name">
           <span>{i18n('chat.avatarToolCreateName', 'Tool name')}</span>
           <input

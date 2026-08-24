@@ -2,7 +2,11 @@ import { useState } from 'react';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import AvatarToolItemManager from './AvatarToolItemManager';
 import { AVAILABLE_COMPACT_AVATAR_TOOLS, type AvatarToolId, type AvatarToolItem } from './avatarTools';
-import { LocalAvatarToolCreateError, type LocalAvatarToolDetail } from './avatar-tools/localTools';
+import {
+  LocalAvatarToolCreateError,
+  LocalAvatarToolRevisionConflictError,
+  type LocalAvatarToolDetail,
+} from './avatar-tools/localTools';
 import chatStyles from './styles.css?raw';
 
 const LOCAL_ID = 'local-12345678-1234-4123-8123-123456789abc' as const;
@@ -289,6 +293,56 @@ describe('AvatarToolItemManager local creation', () => {
       }),
     })));
     expect(onUpdate.mock.calls[0][1]).not.toHaveProperty('normalSound');
+  });
+
+  it('keeps editing and reloads the authoritative values after a revision conflict', async () => {
+    const currentDetail: LocalAvatarToolDetail = {
+      ...DETAIL,
+      revision: '120-300',
+      name: 'Changed elsewhere',
+      changeItems: [{
+        ...DETAIL.changeItems[0],
+        url: '/user_avatar_tools/local/change-000.png?v=2',
+        meaning: 'Latest meaning',
+      }],
+    };
+    const onUpdate = vi.fn()
+      .mockRejectedValueOnce(new LocalAvatarToolRevisionConflictError(currentDetail))
+      .mockResolvedValueOnce(undefined);
+    render(
+      <AvatarToolItemManager
+        open
+        activeToolIds={[LOCAL_ID]}
+        availableTools={[...AVAILABLE_COMPACT_AVATAR_TOOLS, {
+          id: LOCAL_ID,
+          label: { kind: 'literal', value: 'My Feather' },
+          iconImagePath: DETAIL.defaultImage.url,
+          pointerImagePath: DETAIL.defaultImage.url,
+        }]}
+        onSave={vi.fn()}
+        onCancel={() => undefined}
+        createLimits={LIMITS}
+        onLoadDetail={async () => DETAIL}
+        onUpdate={onUpdate}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Edit My Feather' }));
+    await screen.findByRole('dialog', { name: 'Edit custom tool' });
+    fireEvent.change(screen.getByLabelText('Tool name'), { target: { value: 'My pending change' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+
+    await waitFor(() => expect(screen.getByLabelText('Tool name')).toHaveValue('Changed elsewhere'));
+    expect(screen.getByText('This tool changed in another window. The latest version has been loaded.')).toBeVisible();
+    expect(screen.getByRole('dialog', { name: 'Edit custom tool' })).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText('Tool name'), { target: { value: 'Merged change' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+    await waitFor(() => expect(onUpdate).toHaveBeenLastCalledWith(LOCAL_ID, expect.objectContaining({
+      baseRevision: '120-300',
+      name: 'Merged change',
+      changeItems: [{ resource: 'change-000.png', meaning: 'Latest meaning' }],
+    })));
   });
 
   it('keeps the library visible when edit details cannot be loaded', async () => {

@@ -149,7 +149,7 @@ app_docs_dir/
 
 必须保持以下不变量：
 
-- ID 由后端生成，严格为 `local-<lowercase-uuid-v4>`，删除后不复用。
+- ID 由 Compact 创建表单在一次创建会话开始时生成，严格为 `local-<lowercase-uuid-v4>`；不向用户显示或开放输入，删除后不复用。
 - 每个道具独占一个目录，所有资源只属于该道具。
 - 记录只引用应用生成的同目录相对文件名，不接受绝对路径、`..`、软链接或其它道具的资源。
 - 资源顺序来自 record 的有序列表，不依赖目录枚举或用户文件名。
@@ -183,7 +183,7 @@ interaction:
 
 - `GET /api/avatar-tools`：返回全部有效记录的公开运行投影和 limits；单条坏记录只记录日志并跳过。
 - `GET /api/avatar-tools/{tool_id}`：只为 Compact 修改页返回该 ID 的完整可编辑详情和受管理资源标识。
-- `POST /api/avatar-tools`：multipart 创建一个新道具。
+- `POST /api/avatar-tools`：multipart 携带本次创建会话的 `tool_id` 创建一个新道具；后端必须复验 ID 格式。
 - `PUT /api/avatar-tools/{tool_id}`：以详情 revision 为基线完整更新，保持同一 ID。
 - `DELETE /api/avatar-tools/{tool_id}`：删除合法本地 ID 的独占目录。
 - `/user_avatar_tools/...`：由 `AvatarToolStaticFiles` 只读暴露 allowlist 内的 PNG／MP3。
@@ -195,6 +195,7 @@ POST、PUT 和 DELETE 必须经过 loopback access、同源 mutation 校验和�
 ### 原子性与恢复
 
 - 创建在同父目录的 `.local-<uuid>.uploading` 中组成完整记录，校验通过后一次原子改名为正式目录。
+- 同一创建会话的保存和重试必须复用同一个 `tool_id`；正式目录已存在时返回原公开记录，不创建第二份，也不以重试内容覆盖原记录。
 - 修改在 `.local-<uuid>.updating` 中组成完整新目录；保留资源也复制为受管理副本，全部校验通过后通过 `.backup` 完成正式目录替换。
 - 任一步失败必须保留原正式记录，并清理本次可证明属于该操作的临时目录。
 - 删除先把正式目录改名为 `.local-<uuid>.deleting`，再清理目录；残留在启动初始化时处理。
@@ -215,7 +216,7 @@ POST、PUT 和 DELETE 必须经过 loopback access、同源 mutation 校验和�
 - 每个 surface 用“内置 registration + 当前有效本地 definition”生成不可变 registry snapshot。
 - 资源查询必须以 `(toolId, resourceId)` 为作用域，多个本地道具可以复用内部 sound/effect ID 而不串用资源。
 
-本地列表首次权威加载完成前，不能把保存槽位中的 `local-*` 当作未知 ID 清除。首次加载失败保留已保存槽位；已有 snapshot 刷新失败继续使用上一份 snapshot。创建、修改和删除后的请求代次必须使旧 GET 失效，迟到响应不能覆盖较新的权威结果。
+本地列表首次权威加载完成前，不能把保存槽位中的 `local-*` 当作未知 ID 清除。首次加载失败保留已保存槽位；已有 snapshot 刷新失败继续使用上一份 snapshot。创建、修改和删除后的请求代次必须使旧 GET 失效，迟到响应不能覆盖较新的权威结果。当前选择的本地 ID 若在新的权威 registry 中消失，当前 surface 必须安全停用该道具，不能在过渡渲染中继续读取已经不存在的 registration。
 
 ### definition v2
 
@@ -255,7 +256,7 @@ Web 和 PC 必须由同一 v2 profile 计算图片索引、声音、效果和事
 - PC consumer 严格校验有序帧、两种图片变化规则、可选声音、chance、effect 和资源闭包。
 - PC 只保存当前选择 session 的图片索引，不保存本地 record 或互动描述。
 - deactivate、dispose、renderer reload 和 surface handoff 必须清理未完成 press、timer、effect、sound 和旧 generation。
-- surface lease 重发本地 descriptor 前，要向权威公开列表核对 ID 与版本化资源 URL；已删除 ID 发布 inactive，版本过期只请求 renderer 刷新，不能重发旧 descriptor。
+- surface lease 重发本地 descriptor 前，要向权威公开列表核对 ID、有序版本化资源 URL、切图方式、可选音效和彩蛋概率/资源语义；已删除 ID 发布 inactive，任一内容过期只请求 renderer 刷新，不能重发旧 descriptor。
 - 列表暂时请求失败不能解释为删除，也不能回流未经确认的旧本地 descriptor。
 
 ### Host 与 Python
@@ -286,8 +287,10 @@ Host 只做静态 wire 校验和现有 dispatch/cooldown/ack 生命周期，不�
 | 场景 | 必须保持的结果 |
 | --- | --- |
 | 创建成功 | 当前 Compact snapshot 立即加入新 ID，随后 GET 校准；不自动装备，不改另一 surface 槽位。 |
+| 创建响应不确定 | 用本次创建会话的稳定 ID 刷新权威列表；该 ID 已存在则按创建成功收口，无法确认则保留表单，用户再次保存仍复用同一 ID。 |
 | 修改成功 | 同 ID definition 被替换；旧 session 副作用清理，保持选择并从新默认帧开始；槽位顺序不变。 |
 | 修改响应不确定 | 读取同 ID 详情和列表，以 revision 与提交内容判断权威结果；不能盲目重试产生分叉。 |
+| 修改 revision 冲突 | 保持修改页打开，载入并显示最新权威详情与 revision，明确提示内容已变化；不把过期草稿或文件猜测合并到新版本。 |
 | 删除成功 | 精确移除该 ID 的目录、registry、当前使用态和当前 surface 已保存槽位，并退出该道具的修改页。 |
 | 删除响应不确定 | 权威 GET 确认 ID 已不存在才按成功收口；GET 失败或 ID 仍在则保留真实状态。 |
 | 单条坏 record | 只隔离该项并记录日志；内置道具和其它本地道具继续工作。 |
@@ -350,9 +353,9 @@ Host 只做静态 wire 校验和现有 dispatch/cooldown/ack 生命周期，不�
 ### 自动化
 
 - Web：DTO/详情严格解码、固定 builder、动态 registry、表单增删排序和模式独立、资源保留/替换/移除、两种切图、末张封顶、session 复位、声音、chance、Full catalog 和 desktopContract。
-- 后端：名称/描述、模式、数量、图片/音频、multipart 上限、资源闭包、路径穿越、CSRF、详情隔离、同 ID PUT、revision 冲突、原子失败恢复、删除、维护态写围栏、总容量和坏记录隔离。
+- 后端：名称/描述、模式、数量、图片/音频、multipart 上限、资源闭包、路径穿越、CSRF、详情隔离、同 ID POST 重试、同 ID PUT、revision 冲突、原子失败恢复、删除、维护态写围栏、总容量和坏记录隔离。
 - Host/Python：local ID、`changeIndex`、`specialTriggered`、权威描述选择、缺失/损坏记录、八语言 prompt、prompt injection 边界、cooldown、ack 和 memory 去重。
-- PC：v1 回归、v2 strict decode、两种切图、Web/PC 索引一致、声音、chance、坏资源、deactivate/dispose、surface lease、删除和版本过期 descriptor。
+- PC：v1 回归、v2 strict decode、两种切图、Web/PC 索引一致、声音、chance、坏资源、deactivate/dispose、surface lease、删除，以及 URL 相同但切图方式或彩蛋概率已经变化的过期 descriptor。
 - 跨仓：同一 v2 fixture 必须同时通过 Web projector 与 PC consumer，并产生一致的帧和 payload 结果。
 - i18n：`en/es/ja/ko/pt/ru/zh-CN/zh-TW` JSON 可解析、key 集合一致、代码引用存在。
 

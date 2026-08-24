@@ -905,11 +905,12 @@ export function useAvatarToolRuntime({
       toolId: activeToolId,
       signature: activeDefinitionSignature,
     };
-    if (!activeToolId || previous.toolId !== activeToolId || !previous.signature) return;
+    if (!activeToolId) return;
     if (!activeDefinitionSignature) {
       clearTool();
       return;
     }
+    if (previous.toolId !== activeToolId || !previous.signature) return;
     if (previous.signature === activeDefinitionSignature) return;
 
     if (ownsLocalPointerRuntime) createSession(activeToolId);

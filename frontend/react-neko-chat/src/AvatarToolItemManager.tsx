@@ -11,11 +11,12 @@ import {
 import { createPortal } from 'react-dom';
 import { i18n } from './i18n';
 import AvatarToolCreatePage from './AvatarToolCreatePage';
-import type {
-  CreateLocalAvatarToolInput,
-  LocalAvatarToolDetail,
-  LocalAvatarToolLimits,
-  UpdateLocalAvatarToolInput,
+import {
+  LocalAvatarToolRevisionConflictError,
+  type CreateLocalAvatarToolInput,
+  type LocalAvatarToolDetail,
+  type LocalAvatarToolLimits,
+  type UpdateLocalAvatarToolInput,
 } from './avatar-tools/localTools';
 import {
   MAX_ACTIVE_AVATAR_TOOLS,
@@ -580,7 +581,7 @@ export default function AvatarToolItemManager({
   const draftFull = equippedIds.length >= MAX_ACTIVE_AVATAR_TOOLS;
   const catalogSaveBlocked = !catalogAuthoritativeLoaded && activeToolIds.some(isLocalAvatarToolId);
   const dialogTitleId = 'avatar-tool-manager-title';
-  const noticeId = notice ? 'avatar-tool-manager-notice' : undefined;
+  const noticeId = notice && view !== 'create' ? 'avatar-tool-manager-notice' : undefined;
 
   const startDrag = (source: AvatarToolDragSource, event: ReactPointerEvent<HTMLElement>) => {
     if (event.pointerType === 'mouse' && event.button !== 0) return;
@@ -872,20 +873,38 @@ export default function AvatarToolItemManager({
       {view !== 'library' && (view === 'create' ? !!onCreate : !!onUpdate && !!editDetail) ? (
         <div className="avatar-tool-manager-body avatar-tool-manager-create-body">
           <AvatarToolCreatePage
-            key={view === 'edit' ? editDetail?.id : 'create'}
+            key={view === 'edit' ? `${editDetail?.id}:${editDetail?.revision}` : 'create'}
             limits={createLimits}
             userName={userName}
             assistantName={assistantName}
             initialDetail={view === 'edit' ? editDetail ?? undefined : undefined}
+            notice={view === 'edit' ? notice : ''}
             onSpecialEnabledChange={setCreateSpecialEnabled}
             onCancel={() => {
               setCreateSpecialEnabled(false);
               setEditDetail(null);
+              setNotice('');
+              setNoticeIsError(false);
               setView('library');
             }}
             onSave={async (input) => {
               if (view === 'edit' && editDetail && onUpdate) {
-                await onUpdate(editDetail.id, input as UpdateLocalAvatarToolInput);
+                try {
+                  await onUpdate(editDetail.id, input as UpdateLocalAvatarToolInput);
+                } catch (cause) {
+                  if (cause instanceof LocalAvatarToolRevisionConflictError) {
+                    setEditDetail(cause.currentDetail);
+                    setCreateSpecialEnabled(!!cause.currentDetail.special);
+                    const fallback = 'This tool changed in another window. The latest version has been loaded.';
+                    setNotice(i18n(
+                      'chat.avatarToolRevisionConflict',
+                      fallback,
+                    ) || fallback);
+                    setNoticeIsError(false);
+                    return;
+                  }
+                  throw cause;
+                }
               } else if (view === 'create' && onCreate) {
                 await onCreate(input as CreateLocalAvatarToolInput);
               }
@@ -1016,6 +1035,8 @@ export default function AvatarToolItemManager({
                   data-avatar-tool-create
                   onClick={() => {
                     setCreateSpecialEnabled(false);
+                    setNotice('');
+                    setNoticeIsError(false);
                     setView('create');
                   }}
                 >

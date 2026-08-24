@@ -881,6 +881,7 @@
         "avatarToolUpdateModify": "Editar",
         "avatarToolUpdateLoading": "Abrindo…",
         "avatarToolUpdateLoadError": "Não foi possível abrir esta ferramenta. Tente novamente.",
+        "avatarToolRevisionConflict": "Esta ferramenta foi alterada em outra janela. A versão mais recente foi carregada.",
         "avatarToolUpdateChooseImage": "Alterar imagem",
         "avatarToolUpdateCurrentImage": "Imagem atual",
         "avatarToolUpdateChooseAudio": "Alterar MP3",

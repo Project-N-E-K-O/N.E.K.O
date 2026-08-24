@@ -78,7 +78,7 @@ describe('useLocalAvatarToolCatalog failure handling', () => {
 
   it('keeps a successful POST successful and publishes its item when the following GET fails', async () => {
     const createdItem = {
-      id: 'local-12345678-1234-4123-8123-123456789abc',
+      id: 'local-12345678-1234-4123-8123-123456789abc' as const,
       name: 'Feather',
       changeMode: 'press-swap',
       defaultUrl: '/default.png?v=1',
@@ -102,6 +102,7 @@ describe('useLocalAvatarToolCatalog failure handling', () => {
 
     await act(async () => {
       await expect(result.current.create({
+        toolId: createdItem.id,
         name: 'Feather',
         changeMode: 'press-swap',
         defaultImage: new File(['default'], 'default.png', { type: 'image/png' }),
@@ -114,6 +115,45 @@ describe('useLocalAvatarToolCatalog failure handling', () => {
 
     expect(result.current.registry.items.map(item => item.id)).toContain(createdItem.id);
     expect(result.current.refreshFailed).toBe(true);
+  });
+
+  it('treats a lost POST response as successful when the authoritative refresh contains its stable id', async () => {
+    const createdItem = {
+      id: 'local-12345678-1234-4123-8123-123456789abc' as const,
+      name: 'Feather',
+      changeMode: 'press-swap',
+      defaultUrl: '/default.png?v=1',
+      changeUrls: ['/change-000.png?v=1'],
+    };
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true, items: [], limits: LIMITS }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }))
+      .mockRejectedValueOnce(new TypeError('connection reset'))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true, items: [createdItem], limits: LIMITS }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }));
+    vi.stubGlobal('fetch', fetchMock);
+    const { result } = renderHook(() => useLocalAvatarToolCatalog());
+    await waitFor(() => expect(result.current.authoritativeLoaded).toBe(true));
+
+    await act(async () => {
+      await expect(result.current.create({
+        toolId: createdItem.id,
+        name: 'Feather',
+        changeMode: 'press-swap',
+        defaultImage: new File(['default'], 'default.png', { type: 'image/png' }),
+        changeItems: [{
+          image: new File(['pressed'], 'pressed.png', { type: 'image/png' }),
+          meaning: 'A gentle touch',
+        }],
+      })).resolves.toBeUndefined();
+    });
+
+    expect(result.current.registry.has(createdItem.id)).toBe(true);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
   });
 
   it('replaces the same registry id immediately after PUT when the follow-up GET fails', async () => {
@@ -220,6 +260,64 @@ describe('useLocalAvatarToolCatalog failure handling', () => {
     expect(fetchMock).toHaveBeenCalledTimes(4);
   });
 
+  it('returns the current detail when an edit revision conflicts', async () => {
+    const toolId = 'local-12345678-1234-4123-8123-123456789abc' as const;
+    const oldItem = {
+      id: toolId,
+      name: 'Feather',
+      changeMode: 'press-swap',
+      defaultUrl: '/default.png?v=1',
+      changeUrls: ['/change-000.png?v=1'],
+    };
+    const currentDetail = {
+      id: toolId,
+      revision: '120-300',
+      name: 'Changed elsewhere',
+      changeMode: 'press-swap',
+      defaultImage: { resource: 'default.png', url: '/default.png?v=2' },
+      changeItems: [{
+        resource: 'change-000.png',
+        url: '/change-000.png?v=2',
+        meaning: 'Changed elsewhere',
+      }],
+    };
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true, items: [oldItem], limits: LIMITS }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ error_code: 'tool_revision_conflict' }), {
+        status: 409,
+        headers: { 'Content-Type': 'application/json' },
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true, detail: currentDetail }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true, items: [{
+        ...oldItem,
+        name: currentDetail.name,
+        defaultUrl: currentDetail.defaultImage.url,
+        changeUrls: currentDetail.changeItems.map(item => item.url),
+      }], limits: LIMITS }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }));
+    vi.stubGlobal('fetch', fetchMock);
+    const { result } = renderHook(() => useLocalAvatarToolCatalog());
+    await waitFor(() => expect(result.current.registry.has(toolId)).toBe(true));
+
+    await act(async () => {
+      await expect(result.current.update(toolId, {
+        baseRevision: '100-200',
+        name: 'My pending change',
+        changeMode: 'press-swap',
+        defaultImage: { resource: 'default.png' },
+        changeItems: [{ resource: 'change-000.png', meaning: 'My pending change' }],
+      })).rejects.toMatchObject({ currentDetail });
+    });
+  });
+
   it('does not infer a lost replacement-file PUT succeeded from matching text fields', async () => {
     const toolId = 'local-12345678-1234-4123-8123-123456789abc' as const;
     const oldItem = {
@@ -275,7 +373,7 @@ describe('useLocalAvatarToolCatalog failure handling', () => {
 
   it('ignores a pre-create GET and confirms the created item with a newer GET', async () => {
     const createdItem = {
-      id: 'local-12345678-1234-4123-8123-123456789abc',
+      id: 'local-12345678-1234-4123-8123-123456789abc' as const,
       name: 'Feather',
       changeMode: 'press-swap',
       defaultUrl: '/default.png?v=1',
@@ -309,6 +407,7 @@ describe('useLocalAvatarToolCatalog failure handling', () => {
     let createPromise!: Promise<void>;
     act(() => {
       createPromise = result.current.create({
+        toolId: createdItem.id,
         name: 'Feather',
         changeMode: 'press-swap',
         defaultImage: new File(['default'], 'default.png', { type: 'image/png' }),

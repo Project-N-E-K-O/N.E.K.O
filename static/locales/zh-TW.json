@@ -881,6 +881,7 @@
         "avatarToolUpdateModify": "修改",
         "avatarToolUpdateLoading": "正在開啟…",
         "avatarToolUpdateLoadError": "無法開啟此道具，請稍後再試。",
+        "avatarToolRevisionConflict": "此道具已在其他視窗中修改，現已載入最新內容。",
         "avatarToolUpdateChooseImage": "更換圖片",
         "avatarToolUpdateCurrentImage": "目前圖片",
         "avatarToolUpdateChooseAudio": "更換 MP3",

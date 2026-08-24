@@ -5,6 +5,7 @@ import json
 import os
 import shutil
 import threading
+import uuid
 from pathlib import Path
 
 import pytest
@@ -43,11 +44,17 @@ def _mp3() -> bytes:
     ).read_bytes()
 
 
+def _create_tool(store: AvatarToolStore, **kwargs):
+    kwargs.setdefault("tool_id", f"local-{uuid.uuid4()}")
+    return store.create_tool(**kwargs)
+
+
 def test_create_publishes_ordered_public_dto_but_keeps_meanings_private(tmp_path, monkeypatch):
     monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
     store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
 
-    item = store.create_tool(
+    item = _create_tool(
+        store,
         name="  小 羽毛__01  ",
         change_mode="click-advance",
         change_meanings=["像羽毛一样\r\n轻轻挠一下", "轻轻扫过脸颊"],
@@ -82,7 +89,8 @@ def test_create_publishes_optional_normal_sound_without_exposing_private_meaning
     monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
     store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
 
-    item = store.create_tool(
+    item = _create_tool(
+        store,
         name="Lollipop",
         change_mode="press-swap",
         change_meanings=["takes a bite"],
@@ -102,7 +110,8 @@ def test_create_publishes_complete_special_runtime_projection_but_keeps_meaning_
     monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
     store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
 
-    item = store.create_tool(
+    item = _create_tool(
+        store,
         name="Surprise feather",
         change_mode="press-swap",
         change_meanings=["a gentle touch"],
@@ -153,7 +162,8 @@ def test_create_rejects_incomplete_or_invalid_special_configuration(
     store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
 
     with pytest.raises(AvatarToolStoreError) as raised:
-        store.create_tool(
+        _create_tool(
+            store,
             name="bad special",
             change_mode="press-swap",
             change_meanings=["meaning"],
@@ -182,7 +192,8 @@ def test_create_rejects_invalid_or_too_long_audio(
     store.limits["maxAudioDurationMs"] = duration_limit
 
     with pytest.raises(AvatarToolStoreError) as raised:
-        store.create_tool(
+        _create_tool(
+            store,
             name="bad sound",
             change_mode="press-swap",
             change_meanings=["meaning"],
@@ -200,7 +211,8 @@ def test_create_reports_invalid_special_audio_on_the_special_field(tmp_path, mon
     store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
 
     with pytest.raises(AvatarToolStoreError) as raised:
-        store.create_tool(
+        _create_tool(
+            store,
             name="bad surprise sound",
             change_mode="press-swap",
             change_meanings=["meaning"],
@@ -237,7 +249,8 @@ def test_read_record_rejects_null_options_and_non_numeric_probability(
 ):
     monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
     store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
-    item = store.create_tool(
+    item = _create_tool(
+        store,
         name="strict record",
         change_mode="press-swap",
         change_meanings=["meaning"],
@@ -270,7 +283,8 @@ def test_create_rejects_unsafe_images_without_publishing(tmp_path, monkeypatch, 
     store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
 
     with pytest.raises(AvatarToolStoreError) as raised:
-        store.create_tool(
+        _create_tool(
+            store,
             name="bad",
             change_mode="press-swap",
             change_meanings=["meaning"],
@@ -291,7 +305,8 @@ def test_create_translates_pillow_decompression_bomb_errors(tmp_path, monkeypatc
     )
 
     with pytest.raises(AvatarToolStoreError) as raised:
-        store.create_tool(
+        _create_tool(
+            store,
             name="bad",
             change_mode="press-swap",
             change_meanings=["meaning"],
@@ -329,7 +344,8 @@ def test_initialize_cleans_only_owned_transient_directories_and_list_stays_read_
 def test_list_skips_a_record_with_invalid_utf8_without_hiding_valid_tools(tmp_path, monkeypatch):
     monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
     store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
-    valid = store.create_tool(
+    valid = _create_tool(
+        store,
         name="Feather",
         change_mode="press-swap",
         change_meanings=["meaning"],
@@ -392,7 +408,8 @@ def test_create_rejects_control_characters(tmp_path, monkeypatch):
     store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
 
     with pytest.raises(AvatarToolStoreError) as raised:
-        store.create_tool(
+        _create_tool(
+            store,
             name="two\nlines",
             change_mode="press-swap",
             change_meanings=["meaning"],
@@ -404,7 +421,8 @@ def test_create_rejects_control_characters(tmp_path, monkeypatch):
     assert raised.value.field == "name"
 
     with pytest.raises(AvatarToolStoreError) as raised:
-        store.create_tool(
+        _create_tool(
+            store,
             name="Feather",
             change_mode="click-advance",
             change_meanings=["first", "invalid\x07meaning"],
@@ -430,7 +448,8 @@ def test_create_enforces_new_name_rules(tmp_path, monkeypatch, name, expected_co
     store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
 
     with pytest.raises(AvatarToolStoreError) as raised:
-        store.create_tool(
+        _create_tool(
+            store,
             name=name,
             change_mode="press-swap",
             change_meanings=["meaning"],
@@ -447,7 +466,8 @@ def test_create_reports_change_meaning_error_location(tmp_path, monkeypatch):
     store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
 
     with pytest.raises(AvatarToolStoreError) as raised:
-        store.create_tool(
+        _create_tool(
+            store,
             name="Feather",
             change_mode="click-advance",
             change_meanings=["first", "x" * 101],
@@ -470,7 +490,8 @@ def test_create_reports_change_meaning_error_location(tmp_path, monkeypatch):
 def test_read_enforces_current_v2_text_limits(tmp_path, monkeypatch, field, expected_code):
     monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
     store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
-    item = store.create_tool(
+    item = _create_tool(
+        store,
         name="Feather",
         change_mode="press-swap",
         change_meanings=["meaning"],
@@ -499,7 +520,8 @@ def test_create_counts_record_in_total_storage_limit(tmp_path, monkeypatch):
     store.limits["maxTotalBytes"] = len(default_image) + len(change_image)
 
     with pytest.raises(AvatarToolStoreError) as raised:
-        store.create_tool(
+        _create_tool(
+            store,
             name="Feather",
             change_mode="press-swap",
             change_meanings=["gentle"],
@@ -521,7 +543,8 @@ def test_create_checks_the_write_fence_before_creating_the_store_directory(tmp_p
     monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", reject_write)
 
     with pytest.raises(RuntimeError, match="maintenance"):
-        store.create_tool(
+        _create_tool(
+            store,
             name="Feather",
             change_mode="press-swap",
             change_meanings=["gentle"],
@@ -537,7 +560,8 @@ def test_press_swap_requires_exactly_one_change_item(tmp_path, monkeypatch):
     store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
 
     with pytest.raises(AvatarToolStoreError) as raised:
-        store.create_tool(
+        _create_tool(
+            store,
             name="Feather",
             change_mode="press-swap",
             change_meanings=["one", "two"],
@@ -576,14 +600,16 @@ def test_delete_removes_only_the_requested_tool_directory(tmp_path, monkeypatch)
         lambda *_a, **kwargs: fence_calls.append(kwargs),
     )
     store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
-    first = store.create_tool(
+    first = _create_tool(
+        store,
         name="First",
         change_mode="press-swap",
         change_meanings=["first"],
         default_image=_png(),
         change_images=[_png()],
     )
-    second = store.create_tool(
+    second = _create_tool(
+        store,
         name="Second",
         change_mode="press-swap",
         change_meanings=["second"],
@@ -640,14 +666,16 @@ def test_delete_rejects_symlink_without_touching_its_target(tmp_path):
 def test_delete_unpublishes_before_cleanup_and_initialize_retries_residue(tmp_path, monkeypatch):
     monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
     store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
-    deleted = store.create_tool(
+    deleted = _create_tool(
+        store,
         name="Deleted",
         change_mode="press-swap",
         change_meanings=["deleted"],
         default_image=_png(),
         change_images=[_png()],
     )
-    retained = store.create_tool(
+    retained = _create_tool(
+        store,
         name="Retained",
         change_mode="press-swap",
         change_meanings=["retained"],
@@ -684,7 +712,8 @@ def test_delete_unpublishes_before_cleanup_and_initialize_retries_residue(tmp_pa
 def test_detail_exposes_editable_meanings_without_changing_public_projection(tmp_path, monkeypatch):
     monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
     store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
-    item = store.create_tool(
+    item = _create_tool(
+        store,
         name="Feather",
         change_mode="press-swap",
         change_meanings=["a gentle touch"],
@@ -704,10 +733,34 @@ def test_detail_exposes_editable_meanings_without_changing_public_projection(tmp
     assert "meaning" not in json.dumps(store.list_items())
 
 
+def test_create_reuses_the_same_client_tool_id_after_a_lost_response(tmp_path, monkeypatch):
+    monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
+    store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
+    tool_id = "local-12345678-1234-4123-8123-123456789abc"
+
+    def create():
+        return _create_tool(
+            store,
+            tool_id=tool_id,
+            name="Feather",
+            change_mode="press-swap",
+            change_meanings=["a gentle touch"],
+            default_image=_png(),
+            change_images=[_png(size=(9, 8))],
+        )
+
+    first = create()
+    second = create()
+
+    assert first == second
+    assert [item["id"] for item in store.list_items()] == [tool_id]
+
+
 def test_update_keeps_id_reorders_retained_images_and_removes_optional_resources(tmp_path, monkeypatch):
     monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
     store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
-    created = store.create_tool(
+    created = _create_tool(
+        store,
         name="Feather",
         change_mode="click-advance",
         change_meanings=["first", "second"],
@@ -758,7 +811,8 @@ def test_update_keeps_id_reorders_retained_images_and_removes_optional_resources
 def test_update_rejects_foreign_resource_and_preserves_published_tool(tmp_path, monkeypatch):
     monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
     store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
-    created = store.create_tool(
+    created = _create_tool(
+        store,
         name="Feather",
         change_mode="press-swap",
         change_meanings=["meaning"],
@@ -788,7 +842,8 @@ def test_update_rejects_foreign_resource_and_preserves_published_tool(tmp_path, 
 def test_update_rejects_a_stale_edit_revision(tmp_path, monkeypatch):
     monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
     store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
-    created = store.create_tool(
+    created = _create_tool(
+        store,
         name="Feather",
         change_mode="press-swap",
         change_meanings=["meaning"],
@@ -817,7 +872,8 @@ def test_update_rejects_a_stale_edit_revision(tmp_path, monkeypatch):
 def test_initialize_restores_a_valid_backup_after_interrupted_update(tmp_path, monkeypatch):
     monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
     store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
-    created = store.create_tool(
+    created = _create_tool(
+        store,
         name="Feather",
         change_mode="press-swap",
         change_meanings=["meaning"],
@@ -842,7 +898,8 @@ def test_initialize_restores_a_valid_backup_after_interrupted_update(tmp_path, m
 def test_initialize_replaces_a_corrupt_final_directory_with_a_valid_backup(tmp_path, monkeypatch):
     monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
     store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
-    created = store.create_tool(
+    created = _create_tool(
+        store,
         name="Feather",
         change_mode="press-swap",
         change_meanings=["meaning"],
@@ -867,7 +924,8 @@ def test_initialize_replaces_a_corrupt_final_directory_with_a_valid_backup(tmp_p
 def test_list_waits_for_update_publication_instead_of_observing_an_empty_gap(tmp_path, monkeypatch):
     monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
     store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
-    created = store.create_tool(
+    created = _create_tool(
+        store,
         name="Before",
         change_mode="press-swap",
         change_meanings=["before"],
@@ -940,7 +998,8 @@ def test_list_waits_for_update_publication_instead_of_observing_an_empty_gap(tmp
 def test_detail_and_revision_are_from_one_snapshot_during_update(tmp_path, monkeypatch):
     monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
     store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
-    created = store.create_tool(
+    created = _create_tool(
+        store,
         name="Before",
         change_mode="press-swap",
         change_meanings=["before"],

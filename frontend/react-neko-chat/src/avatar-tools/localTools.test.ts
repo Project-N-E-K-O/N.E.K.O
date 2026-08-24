@@ -278,6 +278,7 @@ describe('local avatar tool image change modes', () => {
     vi.stubGlobal('fetch', fetchMock);
 
     const result = await createLocalAvatarTool({
+      toolId: TOOL_ID,
       name: 'Feather',
       changeMode: 'click-advance',
       defaultImage: new File(['default'], 'default.png', { type: 'image/png' }),
@@ -298,6 +299,9 @@ describe('local avatar tool image change modes', () => {
     expect(refreshToken).toHaveBeenCalledTimes(1);
     expect(getMutationHeaders).toHaveBeenCalledTimes(2);
     const firstForm = fetchMock.mock.calls[0][1]?.body as FormData;
+    const secondForm = fetchMock.mock.calls[1][1]?.body as FormData;
+    expect(firstForm.get('tool_id')).toBe(TOOL_ID);
+    expect(secondForm.get('tool_id')).toBe(TOOL_ID);
     expect(firstForm.get('change_mode')).toBe('click-advance');
     expect(firstForm.getAll('change_images')).toHaveLength(2);
     expect(firstForm.getAll('change_meanings')).toEqual(['First meaning', 'Second meaning']);
@@ -322,6 +326,7 @@ describe('local avatar tool image change modes', () => {
     let failure: unknown;
     try {
       await createLocalAvatarTool({
+        toolId: TOOL_ID,
         name: 'Feather',
         changeMode: 'click-advance',
         defaultImage: new File(['default'], 'default.png', { type: 'image/png' }),

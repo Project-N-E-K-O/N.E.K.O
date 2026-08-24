@@ -39,6 +39,7 @@ export type LocalAvatarToolList = {
 };
 
 export type CreateLocalAvatarToolInput = {
+  toolId: LocalAvatarToolId;
   name: string;
   changeMode: LocalAvatarToolChangeMode;
   defaultImage: File;
@@ -100,6 +101,16 @@ export class LocalAvatarToolCreateError extends Error {
   }
 }
 
+export class LocalAvatarToolRevisionConflictError extends LocalAvatarToolCreateError {
+  readonly currentDetail: LocalAvatarToolDetail;
+
+  constructor(currentDetail: LocalAvatarToolDetail) {
+    super('tool_revision_conflict');
+    this.name = 'LocalAvatarToolRevisionConflictError';
+    this.currentDetail = currentDetail;
+  }
+}
+
 export class LocalAvatarToolDeleteError extends Error {
   constructor(code: string) {
     super(code);
@@ -112,6 +123,14 @@ export class LocalAvatarToolDetailError extends Error {
     super(code);
     this.name = 'LocalAvatarToolDetailError';
   }
+}
+
+export function createLocalAvatarToolId(): LocalAvatarToolId {
+  const toolId = `local-${globalThis.crypto.randomUUID().toLowerCase()}`;
+  if (!LOCAL_AVATAR_TOOL_ID_PATTERN.test(toolId)) {
+    throw new Error('Could not create a local avatar tool ID');
+  }
+  return toolId as LocalAvatarToolId;
 }
 
 export const LOCAL_AVATAR_TOOL_SPECIAL_SCATTER_EFFECT_RECIPE = {
@@ -329,6 +348,7 @@ async function postLocalAvatarTool(
   retry: boolean,
 ): Promise<LocalAvatarToolDto | null> {
   const form = new FormData();
+  form.set('tool_id', input.toolId);
   form.set('name', input.name);
   form.set('change_mode', input.changeMode);
   form.set('default_image', input.defaultImage);

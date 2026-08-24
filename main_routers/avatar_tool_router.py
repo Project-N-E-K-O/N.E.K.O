@@ -74,6 +74,7 @@ async def list_avatar_tools():
 @router.post("")
 async def create_avatar_tool(
     request: Request,
+    tool_id: str = Form(...),
     name: str = Form(...),
     change_mode: str = Form(...),
     change_meanings: list[str] = Form(...),
@@ -155,6 +156,7 @@ async def create_avatar_tool(
             )
         item = await asyncio.to_thread(
             store.create_tool,
+            tool_id=tool_id,
             name=name,
             change_mode=change_mode,
             change_meanings=change_meanings,

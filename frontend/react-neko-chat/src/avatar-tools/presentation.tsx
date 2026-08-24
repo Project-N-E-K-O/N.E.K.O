@@ -487,7 +487,7 @@ export function deriveAvatarToolPresentation({
   const outsideRangeVariant = activeToolId ? outsideVariants[activeToolId] : 'primary';
   const withinAvatarRange = insideHostWindow && overAvatarRange && !overCompactZone;
   const imageFrameIndex = activeToolId ? imageFrameIndices?.[activeToolId] ?? 0 : 0;
-  const visual = activeToolId
+  const visual = activeTool && activeToolId
     ? resolveAvatarToolVisualPresentation({
       definition: registry.getRegistration(activeToolId).definition,
       rangeVariant: avatarRangeVariant,

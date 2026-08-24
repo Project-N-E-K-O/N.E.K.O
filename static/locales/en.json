@@ -881,6 +881,7 @@
         "avatarToolUpdateModify": "Edit",
         "avatarToolUpdateLoading": "Opening…",
         "avatarToolUpdateLoadError": "Could not open this tool. Please try again.",
+        "avatarToolRevisionConflict": "This tool changed in another window. The latest version has been loaded.",
         "avatarToolUpdateChooseImage": "Change image",
         "avatarToolUpdateCurrentImage": "Current image",
         "avatarToolUpdateChooseAudio": "Change MP3",

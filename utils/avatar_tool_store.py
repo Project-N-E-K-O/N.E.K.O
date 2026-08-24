@@ -17,7 +17,6 @@ import re
 import shutil
 import threading
 import unicodedata
-import uuid
 from pathlib import Path
 from pathlib import PurePosixPath
 from typing import Any
@@ -811,6 +810,7 @@ class AvatarToolStore:
     def create_tool(
         self,
         *,
+        tool_id: str,
         name: str,
         change_mode: str,
         change_meanings: list[str],
@@ -822,7 +822,8 @@ class AvatarToolStore:
         special_meaning: str | None = None,
         special_sound: bytes | None = None,
     ) -> dict[str, Any]:
-        tool_id = f"local-{uuid.uuid4()}"
+        if not is_local_avatar_tool_id(tool_id):
+            raise AvatarToolStoreError("invalid_tool_id", "Invalid local avatar tool ID")
         record, resources = self._prepare_tool_contents(
             tool_id=tool_id,
             name=name,
@@ -843,6 +844,9 @@ class AvatarToolStore:
                 target="avatar_tools",
             )
             self.ensure()
+            final = self.root / tool_id
+            if final.exists():
+                return self._public_item(self.read_record(tool_id))
             published = [
                 item for item in self.root.iterdir()
                 if item.is_dir() and not item.is_symlink() and is_local_avatar_tool_id(item.name)
@@ -850,7 +854,6 @@ class AvatarToolStore:
             if len(published) >= self.limits["maxTools"]:
                 raise AvatarToolStoreError("tool_limit_reached", "Avatar tool limit reached", status_code=409)
             temporary = self.root / f".{tool_id}.uploading"
-            final = self.root / tool_id
             try:
                 self._write_staged_tool(temporary, record, resources)
                 created_size = self._directory_bytes(temporary)

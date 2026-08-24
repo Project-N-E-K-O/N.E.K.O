@@ -881,6 +881,7 @@
         "avatarToolUpdateModify": "Изменить",
         "avatarToolUpdateLoading": "Открытие…",
         "avatarToolUpdateLoadError": "Не удалось открыть предмет. Повторите попытку.",
+        "avatarToolRevisionConflict": "Этот предмет был изменён в другом окне. Загружена последняя версия.",
         "avatarToolUpdateChooseImage": "Заменить изображение",
         "avatarToolUpdateCurrentImage": "Текущее изображение",
         "avatarToolUpdateChooseAudio": "Заменить MP3",
