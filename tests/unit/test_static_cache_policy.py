@@ -68,3 +68,34 @@ async def test_avatar_tool_static_files_accepts_windows_normalized_resource_path
     response = await static_files.get_response(f"{tool_id}\\default.png", scope)
 
     assert response.status_code == 200
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("query_string", "expected_cache_control"),
+    (
+        (f"v={'a1' * 32}".encode("ascii"), "public, max-age=31536000, immutable"),
+        (f"v={'A1' * 32}".encode("ascii"), None),
+        (f"v={'a1' * 32}&cache=1".encode("ascii"), None),
+    ),
+)
+async def test_avatar_tool_static_files_recognizes_exact_sha256_versions(
+    tmp_path, query_string, expected_cache_control
+):
+    tool_id = "local-12345678-1234-4123-8123-123456789abc"
+    static_files = AvatarToolStaticFiles(directory=tmp_path, check_dir=False)
+    asset = tmp_path / tool_id / "default.png"
+    asset.parent.mkdir()
+    asset.write_bytes(b"png")
+    scope = {
+        "type": "http",
+        "method": "GET",
+        "path": f"/{tool_id}/default.png",
+        "root_path": "",
+        "query_string": query_string,
+        "headers": [],
+    }
+
+    response = await static_files.get_response(f"{tool_id}/default.png", scope)
+
+    assert response.headers.get("cache-control") == expected_cache_control

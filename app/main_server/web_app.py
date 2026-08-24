@@ -17,6 +17,7 @@
 
 import asyncio
 import os
+import re
 import secrets
 from pathlib import Path
 from urllib.parse import parse_qsl
@@ -34,6 +35,7 @@ _get_app_root = runtime.get_app_root
 _resolve_user_plugin_base = runtime.resolve_user_plugin_base
 app = runtime.app
 logger = runtime.logger
+_AVATAR_TOOL_ASSET_DIGEST_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 
 
 def _has_generated_asset_version(query_string: bytes) -> bool:
@@ -50,6 +52,19 @@ def _has_generated_asset_version(query_string: bytes) -> bool:
         if version_tail.isascii() and version_tail.isdigit() and len(version_tail) >= 9:
             return True
     return False
+
+
+def _has_avatar_tool_asset_digest_version(query_string: bytes) -> bool:
+    """Return whether the query is one generated avatar-tool content digest."""
+    try:
+        query_params = parse_qsl(query_string.decode("ascii"), keep_blank_values=True)
+    except UnicodeDecodeError:
+        return False
+    return (
+        len(query_params) == 1
+        and query_params[0][0] == "v"
+        and _AVATAR_TOOL_ASSET_DIGEST_PATTERN.fullmatch(query_params[0][1]) is not None
+    )
 
 
 class CustomStaticFiles(StaticFiles):
@@ -72,7 +87,10 @@ class AvatarToolStaticFiles(CustomStaticFiles):
         normalized_path = str(path).replace("\\", "/")
         if not is_public_avatar_tool_resource_path(Path(self.directory), normalized_path):
             raise StarletteHTTPException(status_code=404)
-        return await super().get_response(normalized_path, scope)
+        response = await super().get_response(normalized_path, scope)
+        if _has_avatar_tool_asset_digest_version(scope.get("query_string", b"")):
+            response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+        return response
 
 
 # 确定 static 目录位置（使用 _get_app_root）

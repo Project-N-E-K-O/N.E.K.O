@@ -18,7 +18,6 @@ import re
 import shutil
 import threading
 import unicodedata
-from collections import OrderedDict
 from pathlib import Path
 from pathlib import PurePosixPath
 from typing import Any
@@ -68,15 +67,6 @@ _NAME_SPACES_PATTERN = re.compile(r" +")
 _REVISION_PATTERN = re.compile(r"^[0-9]+-[0-9]+$")
 _RESOURCE_DIGEST_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 _STORE_LOCK = threading.RLock()
-_RESOURCE_DIGEST_CACHE_MAX_ENTRIES = (
-    AVATAR_TOOL_LIMITS["maxTools"]
-    * (AVATAR_TOOL_LIMITS["maxChangeImages"] + 4)
-    * 2
-)
-_RESOURCE_DIGEST_CACHE: OrderedDict[
-    tuple[str, tuple[int, int, int, int, int]],
-    str,
-] = OrderedDict()
 logger = logging.getLogger(__name__)
 
 
@@ -518,7 +508,7 @@ class AvatarToolStore:
                 raise AvatarToolStoreError("record_invalid", "Avatar tool resource is invalid", status_code=404)
             if verify_resources:
                 try:
-                    actual_digest = self._cached_file_digest(resource)
+                    actual_digest = self._file_digest(resource)
                 except OSError as exc:
                     raise AvatarToolStoreError(
                         "record_invalid",
@@ -565,36 +555,6 @@ class AvatarToolStore:
             for chunk in iter(lambda: stream.read(1024 * 1024), b""):
                 digest.update(chunk)
         return digest.hexdigest()
-
-    @staticmethod
-    def _resource_fingerprint(path: Path) -> tuple[int, int, int, int, int]:
-        stat = path.stat()
-        return (
-            stat.st_dev,
-            stat.st_ino,
-            stat.st_size,
-            stat.st_mtime_ns,
-            stat.st_ctime_ns,
-        )
-
-    def _cached_file_digest(self, path: Path) -> str:
-        fingerprint = self._resource_fingerprint(path)
-        cache_key = (os.fspath(path), fingerprint)
-        with _STORE_LOCK:
-            cached = _RESOURCE_DIGEST_CACHE.get(cache_key)
-            if cached is not None:
-                _RESOURCE_DIGEST_CACHE.move_to_end(cache_key)
-                return cached
-
-        digest = self._file_digest(path)
-        if self._resource_fingerprint(path) != fingerprint:
-            raise OSError("Avatar tool resource changed while being verified")
-        with _STORE_LOCK:
-            _RESOURCE_DIGEST_CACHE[cache_key] = digest
-            _RESOURCE_DIGEST_CACHE.move_to_end(cache_key)
-            while len(_RESOURCE_DIGEST_CACHE) > _RESOURCE_DIGEST_CACHE_MAX_ENTRIES:
-                _RESOURCE_DIGEST_CACHE.popitem(last=False)
-        return digest
 
     @staticmethod
     def _record_revision(record: dict[str, Any]) -> str:
