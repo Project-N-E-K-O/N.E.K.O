@@ -33,6 +33,8 @@ SKIP_DIR_NAMES = frozenset(
     }
 )
 SKIP_FILE_NAMES = frozenset({"uv.lock", ".neko-plugin"})
+# Paths only required in the Market repo; never delete during CI mirror if absent from monorepo.
+PRESERVE_IN_TARGET = frozenset({".vscode"})
 
 
 def _run(cmd: list[str], *, cwd: Path, capture: bool = False) -> subprocess.CompletedProcess[str]:
@@ -89,6 +91,8 @@ def mirror_plugin_tree(*, source: Path, target_repo: Path) -> bool:
         if _should_skip(rel):
             continue
         if rel not in source_files:
+            if rel.parts and rel.parts[0] in PRESERVE_IN_TARGET:
+                continue
             path.unlink()
             changed = True
 
