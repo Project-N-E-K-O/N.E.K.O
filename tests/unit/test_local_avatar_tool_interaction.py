@@ -11,6 +11,7 @@ from config.prompts.prompts_avatar_interaction import (
     _build_avatar_interaction_instruction,
     _build_avatar_interaction_memory_meta,
 )
+from main_logic.cross_server import _should_persist_avatar_interaction_memory
 from utils.avatar_tool_store import AvatarToolStoreError
 
 
@@ -148,7 +149,41 @@ def test_authoritative_record_selects_special_or_current_image_meaning():
     with pytest.raises(ValueError):
         GreetingMixin._resolve_local_avatar_tool_prompt_record(
             without_fact, SPECIAL_RECORD
-        )
+            )
+
+
+@pytest.mark.unit
+def test_local_confirmed_special_fact_upgrades_memory_within_the_dedupe_window():
+    rapid_payload = normalize_avatar_interaction_payload(
+        _payload(intensity="rapid", specialTriggered=False)
+    )
+    special_payload = normalize_avatar_interaction_payload(
+        _payload(intensity="normal", specialTriggered=True)
+    )
+    assert rapid_payload is not None and special_payload is not None
+
+    rapid = _build_avatar_interaction_memory_meta(
+        "zh", rapid_payload, "Alice", SPECIAL_RECORD
+    )
+    special = _build_avatar_interaction_memory_meta(
+        "zh", special_payload, "Alice", SPECIAL_RECORD
+    )
+    assert rapid["memory_dedupe_rank"] == 2
+    assert special["memory_dedupe_rank"] == 3
+
+    cache: dict[str, dict[str, int | str]] = {}
+    assert _should_persist_avatar_interaction_memory(
+        cache,
+        rapid["memory_note"],
+        rapid["memory_dedupe_key"],
+        rapid["memory_dedupe_rank"],
+    ) is True
+    assert _should_persist_avatar_interaction_memory(
+        cache,
+        special["memory_note"],
+        special["memory_dedupe_key"],
+        special["memory_dedupe_rank"],
+    ) is True
 
 
 @pytest.mark.unit

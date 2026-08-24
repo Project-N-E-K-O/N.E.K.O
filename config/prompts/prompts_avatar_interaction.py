@@ -1121,7 +1121,11 @@ def _build_avatar_interaction_memory_meta(
         return {
             "memory_note": memory_note,
             "memory_dedupe_key": tool_id,
-            "memory_dedupe_rank": 2 if intensity == "rapid" else 1,
+            "memory_dedupe_rank": (
+                3 if payload.get("special_triggered") is True
+                else 2 if intensity == "rapid"
+                else 1
+            ),
         }
     if tool_id == "rps":
         _, _, round_result = _require_rps_round_facts(payload)

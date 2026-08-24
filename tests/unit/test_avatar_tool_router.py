@@ -107,8 +107,15 @@ def test_post_retry_with_the_same_tool_id_returns_the_original_creation(tmp_path
     assert [item["id"] for item in client.get("/api/avatar-tools").json()["items"]] == [tool_id]
 
 
-def test_post_rejects_a_non_local_client_tool_id(tmp_path, monkeypatch):
+def test_post_rejects_a_non_local_client_tool_id_before_reading_uploads(tmp_path, monkeypatch):
     client, manager = _client(tmp_path, monkeypatch, allow_mutation=True)
+    upload_reads = []
+
+    async def record_upload_read(*args, **kwargs):
+        upload_reads.append((args, kwargs))
+        raise AssertionError("invalid tool IDs must be rejected before upload reads")
+
+    monkeypatch.setattr(avatar_tool_router, "_read_upload_limited", record_upload_read)
     response = client.post(
         "/api/avatar-tools",
         files=[
@@ -123,6 +130,7 @@ def test_post_rejects_a_non_local_client_tool_id(tmp_path, monkeypatch):
 
     assert response.status_code == 400
     assert response.json()["error_code"] == "invalid_tool_id"
+    assert upload_reads == []
     assert not manager.avatar_tools_dir.exists()
 
 

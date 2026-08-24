@@ -167,6 +167,10 @@ export function useLocalAvatarToolCatalog(): LocalAvatarToolCatalog {
     try {
       createdItem = await createLocalAvatarTool(input);
     } catch (error) {
+      if (
+        error instanceof LocalAvatarToolCreateError
+        && error.message === 'tool_id_conflict'
+      ) throw error;
       const staleRefresh = refreshInFlightRef.current;
       refreshEpochRef.current += 1;
       await staleRefresh?.catch(() => undefined);

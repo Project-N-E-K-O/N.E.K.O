@@ -8,6 +8,7 @@ validated local interaction.
 
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import logging
@@ -491,6 +492,22 @@ class AvatarToolStore:
         stat = path.stat()
         return f"/user_avatar_tools/{tool_id}/{filename}?v={stat.st_size}-{stat.st_mtime_ns}"
 
+    @staticmethod
+    def _content_revision(directory: Path) -> str:
+        digest = hashlib.sha256()
+        files = sorted(
+            entry for entry in directory.iterdir()
+            if entry.is_file() and not entry.is_symlink()
+        )
+        for entry in files:
+            encoded_name = entry.name.encode("utf-8")
+            digest.update(len(encoded_name).to_bytes(4, "big"))
+            digest.update(encoded_name)
+            with entry.open("rb") as stream:
+                for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                    digest.update(chunk)
+        return f"{len(files)}-{int.from_bytes(digest.digest(), 'big')}"
+
     def _public_item(self, record: dict[str, Any]) -> dict[str, Any]:
         tool_id = record["id"]
         item = {
@@ -522,10 +539,10 @@ class AvatarToolStore:
     def get_detail(self, tool_id: str) -> dict[str, Any]:
         with _STORE_LOCK:
             record = self.read_record(tool_id)
-            record_stat = (self.root / tool_id / "record.json").stat()
+            directory = self.root / tool_id
             detail = {
                 "id": tool_id,
-                "revision": f"{record_stat.st_size}-{record_stat.st_mtime_ns}",
+                "revision": self._content_revision(directory),
                 "name": record["name"],
                 "changeMode": record["imageChange"]["mode"],
                 "defaultImage": {
@@ -846,7 +863,18 @@ class AvatarToolStore:
             self.ensure()
             final = self.root / tool_id
             if final.exists():
-                return self._public_item(self.read_record(tool_id))
+                current = self.read_record(tool_id)
+                exact_replay = current == record and all(
+                    (final / filename).read_bytes() == data
+                    for filename, data in resources.items()
+                )
+                if not exact_replay:
+                    raise AvatarToolStoreError(
+                        "tool_id_conflict",
+                        "Local avatar tool ID already belongs to a different creation",
+                        status_code=409,
+                    )
+                return self._public_item(current)
             published = [
                 item for item in self.root.iterdir()
                 if item.is_dir() and not item.is_symlink() and is_local_avatar_tool_id(item.name)
@@ -902,8 +930,7 @@ class AvatarToolStore:
             self.ensure()
             current = self.read_record(tool_id)
             final = self.root / tool_id
-            record_stat = (final / "record.json").stat()
-            current_revision = f"{record_stat.st_size}-{record_stat.st_mtime_ns}"
+            current_revision = self._content_revision(final)
             if not _REVISION_PATTERN.fullmatch(base_revision) or base_revision != current_revision:
                 raise AvatarToolStoreError(
                     "tool_revision_conflict",

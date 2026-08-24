@@ -156,6 +156,40 @@ describe('useLocalAvatarToolCatalog failure handling', () => {
     expect(fetchMock).toHaveBeenCalledTimes(3);
   });
 
+  it('does not treat a mismatched stable-id creation conflict as a lost response', async () => {
+    const toolId = 'local-12345678-1234-4123-8123-123456789abc' as const;
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true, items: [], limits: LIMITS }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        ok: false,
+        error_code: 'tool_id_conflict',
+      }), {
+        status: 409,
+        headers: { 'Content-Type': 'application/json' },
+      }));
+    vi.stubGlobal('fetch', fetchMock);
+    const { result } = renderHook(() => useLocalAvatarToolCatalog());
+    await waitFor(() => expect(result.current.authoritativeLoaded).toBe(true));
+
+    await act(async () => {
+      await expect(result.current.create({
+        toolId,
+        name: 'Changed feather',
+        changeMode: 'press-swap',
+        defaultImage: new File(['changed'], 'default.png', { type: 'image/png' }),
+        changeItems: [{
+          image: new File(['changed'], 'pressed.png', { type: 'image/png' }),
+          meaning: 'A different touch',
+        }],
+      })).rejects.toMatchObject({ message: 'tool_id_conflict' });
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
   it('replaces the same registry id immediately after PUT when the follow-up GET fails', async () => {
     const toolId = 'local-12345678-1234-4123-8123-123456789abc' as const;
     const oldItem = {

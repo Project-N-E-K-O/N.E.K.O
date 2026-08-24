@@ -11,7 +11,11 @@ from fastapi.responses import JSONResponse
 from main_routers.cookies_login_router import verify_local_access
 from main_routers.shared_state import get_config_manager
 from main_routers.system_router._shared import _validate_local_mutation_request
-from utils.avatar_tool_store import AvatarToolStoreError, get_avatar_tool_store
+from utils.avatar_tool_store import (
+    AvatarToolStoreError,
+    get_avatar_tool_store,
+    is_local_avatar_tool_id,
+)
 from utils.cloudsave_runtime import MaintenanceModeError, maintenance_error_payload
 
 
@@ -101,6 +105,11 @@ async def create_avatar_tool(
 
     store = get_avatar_tool_store(get_config_manager())
     try:
+        if not is_local_avatar_tool_id(tool_id):
+            raise AvatarToolStoreError(
+                "invalid_tool_id",
+                "Invalid local avatar tool ID",
+            )
         if len(change_images) > store.limits["maxChangeImages"]:
             raise AvatarToolStoreError(
                 "change_items_invalid",

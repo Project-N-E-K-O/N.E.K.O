@@ -756,6 +756,36 @@ def test_create_reuses_the_same_client_tool_id_after_a_lost_response(tmp_path, m
     assert [item["id"] for item in store.list_items()] == [tool_id]
 
 
+def test_create_rejects_a_different_submission_for_an_existing_client_tool_id(tmp_path, monkeypatch):
+    monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
+    store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
+    tool_id = "local-12345678-1234-4123-8123-123456789abc"
+    _create_tool(
+        store,
+        tool_id=tool_id,
+        name="Feather",
+        change_mode="press-swap",
+        change_meanings=["a gentle touch"],
+        default_image=_png(),
+        change_images=[_png(size=(9, 8))],
+    )
+
+    with pytest.raises(AvatarToolStoreError) as raised:
+        _create_tool(
+            store,
+            tool_id=tool_id,
+            name="Changed feather",
+            change_mode="press-swap",
+            change_meanings=["a different touch"],
+            default_image=_png(),
+            change_images=[_png(size=(9, 8))],
+        )
+
+    assert raised.value.code == "tool_id_conflict"
+    assert raised.value.status_code == 409
+    assert store.read_record(tool_id)["name"] == "Feather"
+
+
 def test_update_keeps_id_reorders_retained_images_and_removes_optional_resources(tmp_path, monkeypatch):
     monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
     store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
@@ -867,6 +897,50 @@ def test_update_rejects_a_stale_edit_revision(tmp_path, monkeypatch):
     assert raised.value.code == "tool_revision_conflict"
     assert raised.value.status_code == 409
     assert store.read_record(created["id"])["name"] == "Feather"
+
+
+def test_asset_only_update_changes_revision_independently_of_record_metadata(tmp_path, monkeypatch):
+    monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
+    store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
+    created = _create_tool(
+        store,
+        name="Feather",
+        change_mode="press-swap",
+        change_meanings=["meaning"],
+        default_image=_png(),
+        change_images=[_png(size=(9, 8))],
+    )
+    tool_id = created["id"]
+    before_record = store.read_record(tool_id)
+    before_revision = store.get_detail(tool_id)["revision"]
+
+    store.update_tool(
+        tool_id,
+        base_revision=before_revision,
+        name="Feather",
+        change_mode="press-swap",
+        change_meanings=["meaning"],
+        default_resource=None,
+        default_image=_png(alpha=254),
+        change_resources=["change-000.png"],
+        change_images=[],
+    )
+
+    assert store.read_record(tool_id) == before_record
+    assert store.get_detail(tool_id)["revision"] != before_revision
+    with pytest.raises(AvatarToolStoreError) as raised:
+        store.update_tool(
+            tool_id,
+            base_revision=before_revision,
+            name="Stale edit",
+            change_mode="press-swap",
+            change_meanings=["stale"],
+            default_resource="default.png",
+            default_image=None,
+            change_resources=["change-000.png"],
+            change_images=[],
+        )
+    assert raised.value.code == "tool_revision_conflict"
 
 
 def test_initialize_restores_a_valid_backup_after_interrupted_update(tmp_path, monkeypatch):

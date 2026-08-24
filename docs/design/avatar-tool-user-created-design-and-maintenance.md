@@ -195,8 +195,9 @@ POST、PUT 和 DELETE 必须经过 loopback access、同源 mutation 校验和�
 ### 原子性与恢复
 
 - 创建在同父目录的 `.local-<uuid>.uploading` 中组成完整记录，校验通过后一次原子改名为正式目录。
-- 同一创建会话的保存和重试必须复用同一个 `tool_id`；正式目录已存在时返回原公开记录，不创建第二份，也不以重试内容覆盖原记录。
+- 同一创建会话的保存和重试必须复用同一个 `tool_id`；正式目录已存在且规范化 record 与资源逐项一致时，按同一次创建的幂等重放返回原公开记录。相同 ID 携带不同内容时必须明确冲突并保留表单，不能把旧记录误报为本次保存成功，也不能用重试内容覆盖原记录。
 - 修改在 `.local-<uuid>.updating` 中组成完整新目录；保留资源也复制为受管理副本，全部校验通过后通过 `.backup` 完成正式目录替换。
+- 修改 revision 必须来自该道具完整 record 与资源的内容身份，不能只依赖文件大小或修改时间；仅替换资源也必须产生新 revision，并使旧修改页得到冲突。
 - 任一步失败必须保留原正式记录，并清理本次可证明属于该操作的临时目录。
 - 删除先把正式目录改名为 `.local-<uuid>.deleting`，再清理目录；残留在启动初始化时处理。
 - 创建、修改和删除由同一进程内 mutation lock 串行化，使数量、总占用和发布属于同一操作。
@@ -256,7 +257,7 @@ Web 和 PC 必须由同一 v2 profile 计算图片索引、声音、效果和事
 - PC consumer 严格校验有序帧、两种图片变化规则、可选声音、chance、effect 和资源闭包。
 - PC 只保存当前选择 session 的图片索引，不保存本地 record 或互动描述。
 - deactivate、dispose、renderer reload 和 surface handoff 必须清理未完成 press、timer、effect、sound 和旧 generation。
-- surface lease 重发本地 descriptor 前，要向权威公开列表核对 ID、有序版本化资源 URL、切图方式、可选音效和彩蛋概率/资源语义；已删除 ID 发布 inactive，任一内容过期只请求 renderer 刷新，不能重发旧 descriptor。
+- surface lease 下发布本地 descriptor 前，要向权威公开列表核对 ID、有序版本化资源 URL、切图方式、可选音效和彩蛋概率/资源语义；无论 lease 与页面状态谁先到，首次发布和重发都不能绕过校验。已删除 ID 发布 inactive，任一内容过期只请求 renderer 刷新，不能发送旧 descriptor；同一 lease 下较新的页面状态必须替代尚未完成的旧校验。
 - 列表暂时请求失败不能解释为删除，也不能回流未经确认的旧本地 descriptor。
 
 ### Host 与 Python
@@ -287,7 +288,7 @@ Host 只做静态 wire 校验和现有 dispatch/cooldown/ack 生命周期，不�
 | 场景 | 必须保持的结果 |
 | --- | --- |
 | 创建成功 | 当前 Compact snapshot 立即加入新 ID，随后 GET 校准；不自动装备，不改另一 surface 槽位。 |
-| 创建响应不确定 | 用本次创建会话的稳定 ID 刷新权威列表；该 ID 已存在则按创建成功收口，无法确认则保留表单，用户再次保存仍复用同一 ID。 |
+| 创建响应不确定 | 用本次创建会话的稳定 ID 刷新权威列表；该 ID 已存在则按原提交创建成功收口，无法确认则保留表单，用户再次保存仍复用同一 ID。再次保存的内容若已变化，后端必须与已存在记录判定冲突，不能静默丢弃新内容后关闭表单。 |
 | 修改成功 | 同 ID definition 被替换；旧 session 副作用清理，保持选择并从新默认帧开始；槽位顺序不变。 |
 | 修改响应不确定 | 读取同 ID 详情和列表，以 revision 与提交内容判断权威结果；不能盲目重试产生分叉。 |
 | 修改 revision 冲突 | 保持修改页打开，载入并显示最新权威详情与 revision，明确提示内容已变化；不把过期草稿或文件猜测合并到新版本。 |
