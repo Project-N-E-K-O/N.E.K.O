@@ -94,10 +94,9 @@ def main() -> int:
     host = args.host
     port = _pick_port(args.port)
 
-    import uvicorn
+    from embed_runtime import load_testbench_app_stack
 
-    from tests.testbench.pipeline import live_runtime_log
-    from tests.testbench.server import app
+    uvicorn, live_runtime_log, app = load_testbench_app_stack()
 
     live_runtime_log.rotate_for_boot()
     live_runtime_log.install()
