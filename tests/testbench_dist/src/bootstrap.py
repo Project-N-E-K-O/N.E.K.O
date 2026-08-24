@@ -2,7 +2,7 @@
 
 Must run **before** uvicorn / FastAPI routers load session data.
 
-See plan §审查补漏: import-time ``from config import DATA_DIR`` bindings and
+See plan gap-review notes: import-time ``from config import DATA_DIR`` bindings and
 ``ApiKeysRegistry`` default-arg traps require secondary assignment here.
 """
 from __future__ import annotations
