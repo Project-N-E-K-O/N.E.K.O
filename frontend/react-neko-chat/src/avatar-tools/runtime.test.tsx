@@ -805,6 +805,27 @@ describe('useAvatarToolRuntime press lifecycle', () => {
     }));
   });
 
+  it('keeps a press-swap local tool on its default frame for background presses', () => {
+    const onInteraction = vi.fn();
+    render(
+      <Harness
+        onInteraction={onInteraction}
+        providers={createProviders()}
+        toolId={LOCAL_TOOL_ID}
+        registry={localToolRegistry(1)}
+      />,
+    );
+    selectTool();
+
+    fireEvent.pointerDown(window, { button: 0, pointerId: 7, clientX: 400, clientY: 400 });
+    expect(screen.getByRole('status', { name: 'image frame index' })).toHaveTextContent('0');
+    fireEvent.pointerUp(window, { button: 0, pointerId: 7, clientX: 400, clientY: 400 });
+    expect(onInteraction).not.toHaveBeenCalled();
+
+    fireEvent.pointerDown(window, { button: 0, pointerId: 8, clientX: 150, clientY: 150 });
+    expect(screen.getByRole('status', { name: 'image frame index' })).toHaveTextContent('1');
+  });
+
   it('selects a local tool first loaded after the runtime mounted', async () => {
     const prepareVisuals = vi.fn(() => undefined);
     const providers = createProviders({ prepareVisuals });

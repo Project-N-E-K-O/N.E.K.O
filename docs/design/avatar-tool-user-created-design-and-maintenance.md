@@ -247,7 +247,7 @@ POST、PUT 和 DELETE 必须经过 loopback access、同源 mutation 校验和�
 所有自定义道具复用现有 press/release pointer session：
 
 1. 范围变化只改变当前帧大小。
-2. `press-swap` 在 pointer down 临时显示帧 `1`，但不提交；release 或 cancel 后恢复帧 `0`。
+2. `press-swap` 只在未锁定且命中 avatar 的 pointer down 临时显示帧 `1`，但不提交；release 或 cancel 后恢复帧 `0`，页面背景按下保持帧 `0`。
 3. `click-advance` 只在有效 release commit 时前进一帧并封顶；无效点击不前进。
 4. release 必须重新验证 bounds、UI exclusion、同一 pointer/button、移动阈值和 touch zone。
 5. `changeIndex` 始终表示本次有效互动对应的变化项索引，不是视觉帧索引。

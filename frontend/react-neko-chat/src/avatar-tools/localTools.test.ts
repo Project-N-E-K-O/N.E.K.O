@@ -87,6 +87,8 @@ describe('local avatar tool image change modes', () => {
       imageFrameIndex: 1,
       pressFeedback: 'until-pointer-release',
     });
+    expect(handlers.pointerDown({ ...context(0, 2), hit: null })).toEqual({});
+    expect(handlers.pointerDown({ ...context(0, 2), interactionLocked: true })).toEqual({});
     expect(handlers.commit(context(1, 2))).toEqual({
       commit: {
         toolId: TOOL_ID,

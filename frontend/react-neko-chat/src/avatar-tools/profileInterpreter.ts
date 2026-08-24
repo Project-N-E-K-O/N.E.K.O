@@ -94,7 +94,11 @@ function createPressReleaseHandlers(
 ): AvatarToolRuleHandlers {
   if (profile.imageChange) {
     return {
-      pointerDown: () => profile.imageChange.kind === 'press-swap'
+      pointerDown: (context: AvatarToolRuleContext) => (
+        profile.imageChange.kind === 'press-swap'
+        && context.hit
+        && !context.interactionLocked
+      )
         ? { imageFrameIndex: 1, pressFeedback: 'until-pointer-release' }
         : {},
       commit: (context: AvatarToolRuleContext): AvatarToolCommand => {
