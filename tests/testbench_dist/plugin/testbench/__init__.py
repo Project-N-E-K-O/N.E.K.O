@@ -5,6 +5,7 @@ Does not ship platform PyInstaller binaries.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import signal
@@ -186,6 +187,15 @@ def _resolve_code_layout(plugin_dir: Path, neko_root: Path) -> tuple[Path, Path]
         return src, neko_root
     raise FileNotFoundError(
         "Testbench code not found (bundled/tests/testbench or NEKO tests/testbench)."
+    )
+
+
+def _windows_taskkill(pid: int) -> None:
+    subprocess.run(
+        ["taskkill", "/PID", str(pid), "/T", "/F"],
+        check=False,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
     )
 
 
@@ -579,12 +589,7 @@ class TestbenchDriverPlugin(NekoPluginBase):
         if proc is not None and proc.poll() is None:
             try:
                 if sys.platform == "win32":
-                    subprocess.run(
-                        ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
-                        check=False,
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL,
-                    )
+                    await asyncio.to_thread(_windows_taskkill, proc.pid)
                 else:
                     os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
             except Exception:  # noqa: BLE001
@@ -598,12 +603,7 @@ class TestbenchDriverPlugin(NekoPluginBase):
         if pid and _pid_alive(int(pid)) and state.get("mode") == "A":
             try:
                 if sys.platform == "win32":
-                    subprocess.run(
-                        ["taskkill", "/PID", str(pid), "/T", "/F"],
-                        check=False,
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL,
-                    )
+                    await asyncio.to_thread(_windows_taskkill, int(pid))
                 else:
                     os.kill(int(pid), signal.SIGTERM)
             except OSError:
