@@ -73,6 +73,33 @@
             </div>
             <el-empty v-else :description="t('common.noData')" :image-size="72" />
           </el-tab-pane>
+          <el-tab-pane :label="t('market.detailComments')" name="comments">
+            <div v-if="comments.length" class="market-plugin-detail__comments">
+              <article v-for="comment in comments" :key="comment.id" class="market-plugin-detail__comment">
+                <el-avatar :size="30" :src="comment.author.avatar_url || ''">
+                  {{ commentAuthor(comment).slice(0, 1) }}
+                </el-avatar>
+                <div class="market-plugin-detail__comment-content">
+                  <div class="market-plugin-detail__comment-meta">
+                    <strong>{{ commentAuthor(comment) }}</strong>
+                    <time>{{ formatDate(comment.created_at) }}</time>
+                  </div>
+                  <p v-if="comment.reply_to" class="market-plugin-detail__comment-reply">
+                    {{ t('market.detailCommentReplyTo', { name: commentAuthor(comment.reply_to) }) }}
+                  </p>
+                  <p class="market-plugin-detail__comment-body">
+                    {{ comment.is_hidden ? t('market.detailCommentHidden') : (comment.body || t('market.detailCommentEmpty')) }}
+                  </p>
+                </div>
+              </article>
+            </div>
+            <el-empty v-else :description="t('market.detailCommentsEmpty')" :image-size="72" />
+            <div v-if="commentsNextCursor !== null" class="market-plugin-detail__comments-more">
+              <el-button :loading="commentsLoadingMore" @click="loadMoreComments">
+                {{ t('market.detailCommentsMore') }}
+              </el-button>
+            </div>
+          </el-tab-pane>
         </el-tabs>
 
         <section class="market-plugin-detail__section market-plugin-detail__facts">
@@ -113,9 +140,12 @@ import DOMPurify from 'dompurify'
 import { marked } from 'marked'
 import {
   fetchMarketPlugin,
+  fetchMarketPluginComments,
   fetchMarketPluginReadme,
   fetchMarketPluginVersions,
   type MarketPlugin,
+  type MarketPluginComment,
+  type MarketPluginComments,
   type MarketPluginReadme,
   type MarketPluginVersion,
 } from '@/api/market'
@@ -150,6 +180,9 @@ const loading = ref(false)
 const loadFailed = ref(false)
 const detail = ref<MarketPlugin | null>(null)
 const versions = ref<MarketPluginVersion[]>([])
+const comments = ref<MarketPluginComment[]>([])
+const commentsNextCursor = ref<number | null>(null)
+const commentsLoadingMore = ref(false)
 const repositoryReadme = ref<MarketPluginReadme | null>(null)
 const activeTab = ref('readme')
 let detailLoadSeq = 0
@@ -212,13 +245,17 @@ async function loadDetail() {
   loadFailed.value = false
   detail.value = null
   versions.value = []
+  comments.value = []
+  commentsNextCursor.value = null
+  commentsLoadingMore.value = false
   repositoryReadme.value = null
   activeTab.value = 'readme'
   try {
-    const [pluginDetail, versionList, readme] = await Promise.all([
+    const [pluginDetail, versionList, readme, commentThread] = await Promise.all([
       fetchMarketPlugin(props.plugin.rawId),
       fetchMarketPluginVersions(props.plugin.rawId, { channel: props.channel }),
       fetchMarketPluginReadme(props.plugin.rawId),
+      fetchMarketPluginComments(props.plugin.rawId),
     ])
     if (requestSeq !== detailLoadSeq) return
     if (!pluginDetail) {
@@ -228,6 +265,8 @@ async function loadDetail() {
     detail.value = pluginDetail
     versions.value = versionList || []
     repositoryReadme.value = readme
+    comments.value = (commentThread as MarketPluginComments | null)?.messages || []
+    commentsNextCursor.value = (commentThread as MarketPluginComments | null)?.next_cursor ?? null
   } catch {
     if (requestSeq === detailLoadSeq) loadFailed.value = true
   } finally {
@@ -262,6 +301,28 @@ function formatDate(value?: string): string {
   if (!value) return '-'
   const date = new Date(value)
   return Number.isNaN(date.getTime()) ? value : date.toLocaleDateString()
+}
+
+function commentAuthor(comment: Pick<MarketPluginComment, 'author'>): string {
+  return comment.author.display_name || comment.author.username || t('market.unknownAuthor')
+}
+
+async function loadMoreComments(): Promise<void> {
+  const cursor = commentsNextCursor.value
+  if (cursor === null || commentsLoadingMore.value) return
+
+  const requestSeq = detailLoadSeq
+  commentsLoadingMore.value = true
+  try {
+    const thread = await fetchMarketPluginComments(props.plugin.rawId, cursor)
+    if (!thread || requestSeq !== detailLoadSeq) return
+    const existingIds = new Set(comments.value.map((comment) => comment.id))
+    comments.value = [...comments.value, ...thread.messages.filter((comment) => !existingIds.has(comment.id))]
+      .sort((left, right) => left.id - right.id)
+    commentsNextCursor.value = thread.next_cursor
+  } finally {
+    if (requestSeq === detailLoadSeq) commentsLoadingMore.value = false
+  }
 }
 
 function handleReadmeClick(event: MouseEvent) {
@@ -356,6 +417,15 @@ function rewriteReadmeUrls(html: string): string {
 .market-plugin-detail__version > div { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
 .market-plugin-detail__version time { display: block; margin-top: 4px; color: var(--el-text-color-secondary); font-size: 12px; }
 .market-plugin-detail__version p { margin: 7px 0 0; white-space: pre-wrap; color: var(--el-text-color-regular); line-height: 1.5; }
+.market-plugin-detail__comments { display: grid; gap: 12px; }
+.market-plugin-detail__comments-more { display: flex; justify-content: center; margin-top: 12px; }
+.market-plugin-detail__comment { display: flex; gap: 10px; padding: 10px 0; border-bottom: 1px solid var(--el-border-color-lighter); }
+.market-plugin-detail__comment:last-child { border-bottom: 0; }
+.market-plugin-detail__comment-content { min-width: 0; flex: 1; }
+.market-plugin-detail__comment-meta { display: flex; align-items: baseline; flex-wrap: wrap; gap: 8px; }
+.market-plugin-detail__comment-meta time { color: var(--el-text-color-secondary); font-size: 12px; }
+.market-plugin-detail__comment-reply { margin: 4px 0 0; color: var(--el-text-color-secondary); font-size: 12px; }
+.market-plugin-detail__comment-body { margin: 6px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--el-text-color-regular); line-height: 1.55; }
 .market-plugin-detail__facts { display: flex; flex-wrap: wrap; gap: 8px 18px; font-size: 12px; color: var(--el-text-color-secondary); }
 @media (max-width: 520px) { .market-plugin-detail__hero { gap: 12px; } .market-plugin-detail__hero :deep(.el-avatar) { width: 48px !important; height: 48px !important; } }
 </style>

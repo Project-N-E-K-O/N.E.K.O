@@ -151,6 +151,37 @@ export interface MarketPluginReadme {
   source_ref?: string
 }
 
+/** Market public comment thread. Comments are displayed read-only in NEKO. */
+export interface MarketPluginComment {
+  id: number
+  author: {
+    id: number
+    username: string
+    display_name: string | null
+    avatar_url: string | null
+  }
+  reply_to: {
+    id: number
+    author: {
+      id: number
+      username: string
+      display_name: string | null
+      avatar_url: string | null
+    }
+    body: string | null
+    is_hidden: boolean
+  } | null
+  body: string | null
+  format: 'plain'
+  is_hidden: boolean
+  created_at: string
+}
+
+export interface MarketPluginComments {
+  messages: MarketPluginComment[]
+  next_cursor: number | null
+}
+
 const ZONE_BY_ID: Record<number, string> = {
   1: 'game',
   2: 'companion',
@@ -362,6 +393,25 @@ export async function fetchMarketPluginReadme(
     return res.data
   } catch (err) {
     console.warn('[Market] Failed to fetch plugin README:', err)
+    return null
+  }
+}
+
+/** Fetch the first page of the Market's public plugin comments. */
+export async function fetchMarketPluginComments(
+  pluginId: string | number,
+  afterId?: number,
+): Promise<MarketPluginComments | null> {
+  const client = await getClient()
+  if (!client) return null
+
+  try {
+    const res = await client.get<MarketPluginComments>(`/plugins/${pluginId}/comments`, {
+      params: afterId ? { after_id: afterId } : undefined,
+    })
+    return res.data
+  } catch (err) {
+    console.warn('[Market] Failed to fetch plugin comments:', err)
     return null
   }
 }

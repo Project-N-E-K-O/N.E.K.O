@@ -627,6 +627,24 @@ async def market_catalog_plugin_readme(
     )
 
 
+@router.get("/catalog/api/v1/plugins/{plugin_id}/comments")
+async def market_catalog_plugin_comments(
+    request: Request,
+    plugin_id: str,
+) -> Response:
+    """Proxy the public Market comment thread for an in-app detail view.
+
+    This intentionally exposes only the Market's read-only conversation
+    endpoint. Posting and moderation continue to happen in the Market web app,
+    where its authenticated session and permission checks are available.
+    """
+
+    return await _proxy_market_catalog(
+        request,
+        f"/plugins/{quote(plugin_id, safe='')}/comments",
+    )
+
+
 @router.get("/catalog/api/v1/plugins/{plugin_id}")
 async def market_catalog_plugin(request: Request, plugin_id: str) -> Response:
     return await _proxy_market_catalog(

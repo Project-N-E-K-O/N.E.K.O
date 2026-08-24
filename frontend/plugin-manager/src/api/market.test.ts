@@ -14,6 +14,7 @@ vi.mock('axios', () => ({
 }))
 
 import {
+  fetchMarketPluginComments,
   fetchMarketPluginReadme,
   fetchMarketPlugins,
   normalizeMarketPlugin,
@@ -114,5 +115,19 @@ describe('Market API transport', () => {
       content: '# Reviewed README',
     })
     expect(mocks.marketGet).toHaveBeenCalledWith('/plugins/15/readme')
+  })
+
+  it('fetches public plugin comments through the local catalog bridge', async () => {
+    mocks.marketGet.mockResolvedValueOnce({
+      data: { messages: [], next_cursor: null },
+    })
+
+    await expect(fetchMarketPluginComments(15)).resolves.toEqual({
+      messages: [],
+      next_cursor: null,
+    })
+    expect(mocks.marketGet).toHaveBeenCalledWith('/plugins/15/comments', {
+      params: undefined,
+    })
   })
 })
