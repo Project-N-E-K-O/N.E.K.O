@@ -13,7 +13,7 @@
 [![License](https://img.shields.io/badge/License-Apache%202.0-green.svg)](LICENSE)
 [![Commit](https://img.shields.io/github/last-commit/wehos/N.E.K.O?color=green)](https://github.com/Project-N-E-K-O/N.E.K.O/commits)
 [![Discord](https://img.shields.io/badge/Discord-Join%20Us-5865F2?style=flat&logo=discord&logoColor=white)](https://discord.gg/5kgHfepNJr)
-![QQ群](https://custom-icon-badges.demolab.com/badge/QQ群-995414391-00BFFF?style=flat&logo=tencent-qq)
+![QQ群](https://custom-icon-badges.demolab.com/badge/QQ群-1092413003-00BFFF?style=flat&logo=tencent-qq)
 [![Steam](https://img.shields.io/badge/Steam-%23000000.svg?logo=steam&logoColor=white)](https://store.steampowered.com/app/4099310/__NEKO/)
 
 [![Docs](https://img.shields.io/badge/📖_开发者文档-project--neko.online-40C5F1?style=for-the-badge)](https://project-neko.online)
@@ -96,7 +96,7 @@
 * **创作者：** 画师、Live2D/3D建模师、配音演员、文案写手——你们赋予"她"灵魂。
 * **梦想家：** 你的反馈和传播也是宝贵的贡献。
 
-**QQ群**：995414391 | **Discord**：[加入我们](https://discord.gg/5kgHfepNJr)
+**QQ群**：1092413003 | **Discord**：[加入我们](https://discord.gg/5kgHfepNJr)
 
 ## 快速开始
 
@@ -603,7 +603,7 @@ localStorage.removeItem('neko.reactChatWindow.chatSurfaceMode');        location
 
 形态说明、各形态自测点与三端验证详见 [`docs/design/compact-chat-mode-design.md`](docs/design/compact-chat-mode-design.md) 的「形态切换与本地测试」。
 
-开发者建议加入企鹅群 995414391 交流。
+开发者建议加入企鹅群 1092413003 交流。
 
 </details>
 
@@ -709,9 +709,9 @@ v0.7: ✅ 初步完成Agent相关功能。**第一阶段已完成。等待后续
 
 v0.8: ✅ 完善记忆相关功能和桌宠模式，内置多款双人小游戏。**第一阶段已完成。等待后续优化**
 
-v0.9：完善多系统适配，包括linux，手机。猫娘网络上线。预计2026年7月初完成。
+v0.9: ✅ 完善多系统适配，包括linux，手机。猫娘网络上线。**第一阶段已完成。手机端已经开始内测，详情见project-neko.cn。**
 
-v1.0：放弃部分模型供应商的适配，专注于自研大模型和智能体系统。预计2026年8月底完成。
+v1.0：~~放弃部分模型供应商的适配，专注于自研大模型和智能体系统。~~完善社区和插件市场功能，完成之前遗留的优化工作。预计9月底上线正式版。（自研模型计划已延期至正式版上线以后）
 
 ### 遥测说明 (Telemetry)
 
