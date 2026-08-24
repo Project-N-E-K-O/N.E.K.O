@@ -74,26 +74,35 @@
             <el-empty v-else :description="t('common.noData')" :image-size="72" />
           </el-tab-pane>
           <el-tab-pane :label="t('market.detailComments')" name="comments">
-            <div v-if="comments.length" class="market-plugin-detail__comments">
-              <article v-for="comment in comments" :key="comment.id" class="market-plugin-detail__comment">
-                <el-avatar :size="30" :src="comment.author.avatar_url || ''">
-                  {{ commentAuthor(comment).slice(0, 1) }}
-                </el-avatar>
-                <div class="market-plugin-detail__comment-content">
-                  <div class="market-plugin-detail__comment-meta">
-                    <strong>{{ commentAuthor(comment) }}</strong>
-                    <time>{{ formatDate(comment.created_at) }}</time>
+            <div v-loading="commentsLoading" class="market-plugin-detail__comments-area">
+              <div v-if="comments.length" class="market-plugin-detail__comments">
+                <article v-for="comment in comments" :key="comment.id" class="market-plugin-detail__comment">
+                  <el-avatar :size="30" :src="comment.author.avatar_url || ''">
+                    {{ commentAuthor(comment).slice(0, 1) }}
+                  </el-avatar>
+                  <div class="market-plugin-detail__comment-content">
+                    <div class="market-plugin-detail__comment-meta">
+                      <strong>{{ commentAuthor(comment) }}</strong>
+                      <time>{{ formatDate(comment.created_at) }}</time>
+                    </div>
+                    <p v-if="comment.reply_to" class="market-plugin-detail__comment-reply">
+                      {{ t('market.detailCommentReplyTo', { name: commentAuthor(comment.reply_to) }) }}
+                    </p>
+                    <p class="market-plugin-detail__comment-body">
+                      {{ comment.is_hidden ? t('market.detailCommentHidden') : (comment.body || t('market.detailCommentEmpty')) }}
+                    </p>
                   </div>
-                  <p v-if="comment.reply_to" class="market-plugin-detail__comment-reply">
-                    {{ t('market.detailCommentReplyTo', { name: commentAuthor(comment.reply_to) }) }}
-                  </p>
-                  <p class="market-plugin-detail__comment-body">
-                    {{ comment.is_hidden ? t('market.detailCommentHidden') : (comment.body || t('market.detailCommentEmpty')) }}
-                  </p>
-                </div>
-              </article>
+                </article>
+              </div>
+              <el-alert
+                v-else-if="commentsLoadFailed"
+                :title="t('market.detailLoadFailed')"
+                type="error"
+                :closable="false"
+                show-icon
+              />
+              <el-empty v-else-if="commentsLoaded" :description="t('market.detailCommentsEmpty')" :image-size="72" />
             </div>
-            <el-empty v-else :description="t('market.detailCommentsEmpty')" :image-size="72" />
             <div v-if="commentsNextCursor !== null" class="market-plugin-detail__comments-more">
               <el-button :loading="commentsLoadingMore" @click="loadMoreComments">
                 {{ t('market.detailCommentsMore') }}
@@ -145,7 +154,6 @@ import {
   fetchMarketPluginVersions,
   type MarketPlugin,
   type MarketPluginComment,
-  type MarketPluginComments,
   type MarketPluginReadme,
   type MarketPluginVersion,
 } from '@/api/market'
@@ -182,10 +190,14 @@ const detail = ref<MarketPlugin | null>(null)
 const versions = ref<MarketPluginVersion[]>([])
 const comments = ref<MarketPluginComment[]>([])
 const commentsNextCursor = ref<number | null>(null)
+const commentsLoaded = ref(false)
+const commentsLoadFailed = ref(false)
+const commentsLoading = ref(false)
 const commentsLoadingMore = ref(false)
 const repositoryReadme = ref<MarketPluginReadme | null>(null)
 const activeTab = ref('readme')
 let detailLoadSeq = 0
+let commentsLoadSeq = 0
 const displayPlugin = computed(() => detail.value || props.plugin)
 const actionablePlugin = computed<MarketWorkbenchItem>(() => ({
   ...props.plugin,
@@ -245,17 +257,20 @@ async function loadDetail() {
   loadFailed.value = false
   detail.value = null
   versions.value = []
+  commentsLoadSeq++
   comments.value = []
   commentsNextCursor.value = null
+  commentsLoaded.value = false
+  commentsLoadFailed.value = false
+  commentsLoading.value = false
   commentsLoadingMore.value = false
   repositoryReadme.value = null
   activeTab.value = 'readme'
   try {
-    const [pluginDetail, versionList, readme, commentThread] = await Promise.all([
+    const [pluginDetail, versionList, readme] = await Promise.all([
       fetchMarketPlugin(props.plugin.rawId),
       fetchMarketPluginVersions(props.plugin.rawId, { channel: props.channel }),
       fetchMarketPluginReadme(props.plugin.rawId),
-      fetchMarketPluginComments(props.plugin.rawId),
     ])
     if (requestSeq !== detailLoadSeq) return
     if (!pluginDetail) {
@@ -265,8 +280,6 @@ async function loadDetail() {
     detail.value = pluginDetail
     versions.value = versionList || []
     repositoryReadme.value = readme
-    comments.value = (commentThread as MarketPluginComments | null)?.messages || []
-    commentsNextCursor.value = (commentThread as MarketPluginComments | null)?.next_cursor ?? null
   } catch {
     if (requestSeq === detailLoadSeq) loadFailed.value = true
   } finally {
@@ -282,12 +295,19 @@ watch(
     } else {
       // 让关闭时仍在途的请求无法写回状态；下次打开会拥有新的序号。
       detailLoadSeq++
+      commentsLoadSeq++
       loading.value = false
       loadFailed.value = false
+      commentsLoading.value = false
+      commentsLoadingMore.value = false
     }
   },
   { immediate: true },
 )
+
+watch(activeTab, (tab) => {
+  if (tab === 'comments') void loadComments()
+})
 
 function formatCount(value: number): string {
   return value >= 1000 ? `${(value / 1000).toFixed(1)}k` : String(value || 0)
@@ -307,21 +327,42 @@ function commentAuthor(comment: Pick<MarketPluginComment, 'author'>): string {
   return comment.author.display_name || comment.author.username || t('market.unknownAuthor')
 }
 
+async function loadComments(): Promise<void> {
+  if (commentsLoading.value || commentsLoaded.value) return
+
+  const requestSeq = ++commentsLoadSeq
+  commentsLoading.value = true
+  commentsLoadFailed.value = false
+  try {
+    const thread = await fetchMarketPluginComments(props.plugin.rawId)
+    if (requestSeq !== commentsLoadSeq) return
+    if (!thread) {
+      commentsLoadFailed.value = true
+      return
+    }
+    comments.value = thread.messages
+    commentsNextCursor.value = thread.next_cursor
+    commentsLoaded.value = true
+  } finally {
+    if (requestSeq === commentsLoadSeq) commentsLoading.value = false
+  }
+}
+
 async function loadMoreComments(): Promise<void> {
   const cursor = commentsNextCursor.value
   if (cursor === null || commentsLoadingMore.value) return
 
-  const requestSeq = detailLoadSeq
+  const requestSeq = commentsLoadSeq
   commentsLoadingMore.value = true
   try {
     const thread = await fetchMarketPluginComments(props.plugin.rawId, cursor)
-    if (!thread || requestSeq !== detailLoadSeq) return
+    if (!thread || requestSeq !== commentsLoadSeq) return
     const existingIds = new Set(comments.value.map((comment) => comment.id))
     comments.value = [...comments.value, ...thread.messages.filter((comment) => !existingIds.has(comment.id))]
       .sort((left, right) => left.id - right.id)
     commentsNextCursor.value = thread.next_cursor
   } finally {
-    if (requestSeq === detailLoadSeq) commentsLoadingMore.value = false
+    if (requestSeq === commentsLoadSeq) commentsLoadingMore.value = false
   }
 }
 
@@ -418,6 +459,7 @@ function rewriteReadmeUrls(html: string): string {
 .market-plugin-detail__version time { display: block; margin-top: 4px; color: var(--el-text-color-secondary); font-size: 12px; }
 .market-plugin-detail__version p { margin: 7px 0 0; white-space: pre-wrap; color: var(--el-text-color-regular); line-height: 1.5; }
 .market-plugin-detail__comments { display: grid; gap: 12px; }
+.market-plugin-detail__comments-area { min-height: 72px; }
 .market-plugin-detail__comments-more { display: flex; justify-content: center; margin-top: 12px; }
 .market-plugin-detail__comment { display: flex; gap: 10px; padding: 10px 0; border-bottom: 1px solid var(--el-border-color-lighter); }
 .market-plugin-detail__comment:last-child { border-bottom: 0; }
