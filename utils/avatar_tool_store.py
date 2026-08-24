@@ -1264,7 +1264,16 @@ class AvatarToolStore:
             except BaseException:
                 self._cleanup_failed_staging(updating)
                 if published_backup and not final.exists() and backup.exists():
-                    os.replace(backup, final)
+                    try:
+                        os.replace(backup, final)
+                    except OSError:
+                        _RECOVERY_PENDING_ROOTS.add(self._root_key())
+                        logger.warning(
+                            "Could not restore avatar tool update backup %s",
+                            backup,
+                            exc_info=True,
+                        )
+                        raise
                 raise
             try:
                 shutil.rmtree(backup)

@@ -1350,6 +1350,72 @@ def test_failed_staging_cleanup_blocks_more_mutations_until_recovery(
     assert not staging.exists()
 
 
+def test_failed_update_rollback_blocks_create_until_backup_recovery(tmp_path, monkeypatch):
+    monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
+    store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
+    created = _create_tool(
+        store,
+        name="Before",
+        change_mode="press-swap",
+        change_meanings=["before"],
+        default_image=_png(),
+        change_images=[_png()],
+    )
+    tool_id = created["id"]
+    final = store.root / tool_id
+    updating = store.root / f".{tool_id}.updating"
+    backup = store.root / f".{tool_id}.backup"
+    base_revision = store.get_detail(tool_id)["revision"]
+    real_replace = os.replace
+    publish_error = OSError("publish interrupted")
+    rollback_error = OSError("rollback interrupted")
+
+    def interrupt_publish_and_rollback(source, destination, *args, **kwargs):
+        source_path = Path(source)
+        destination_path = Path(destination)
+        if source_path == updating and destination_path == final:
+            raise publish_error
+        if source_path == backup and destination_path == final:
+            raise rollback_error
+        return real_replace(source, destination, *args, **kwargs)
+
+    monkeypatch.setattr("utils.avatar_tool_store.os.replace", interrupt_publish_and_rollback)
+    with pytest.raises(OSError) as failed_update:
+        store.update_tool(
+            tool_id,
+            base_revision=base_revision,
+            name="After",
+            change_mode="press-swap",
+            change_meanings=["after"],
+            default_resource="default.png",
+            default_image=None,
+            change_resources=["change-000.png"],
+            change_images=[],
+        )
+
+    assert failed_update.value is rollback_error
+    assert failed_update.value.__context__ is publish_error
+    assert not final.exists()
+    assert not updating.exists()
+    assert backup.is_dir()
+
+    with pytest.raises(AvatarToolStoreError) as blocked_create:
+        _create_tool(
+            store,
+            name="Wait for rollback",
+            change_mode="press-swap",
+            change_meanings=["wait"],
+            default_image=_png(),
+            change_images=[_png()],
+        )
+
+    assert blocked_create.value.code == "avatar_tools_directory_unavailable"
+    monkeypatch.setattr("utils.avatar_tool_store.os.replace", real_replace)
+    assert [item["name"] for item in store.list_items()] == ["Before"]
+    assert final.is_dir()
+    assert not backup.exists()
+
+
 def test_initialize_replaces_a_corrupt_final_directory_with_a_valid_backup(tmp_path, monkeypatch):
     monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
     store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
