@@ -40,23 +40,36 @@ def _ignore(directory: str, names: list[str]) -> set[str]:
     return skipped
 
 
-def snapshot_testbench(*, force: bool = True) -> Path:
+def snapshot_testbench(*, force: bool = True, plugin_dir: Path | None = None) -> Path:
     if not _SRC_TESTBENCH.is_dir():
         raise FileNotFoundError(f"missing source testbench: {_SRC_TESTBENCH}")
-    if _BUNDLED_ROOT.exists() and force:
-        shutil.rmtree(_BUNDLED_ROOT)
-    _BUNDLED_TB.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copytree(_SRC_TESTBENCH, _BUNDLED_TB, ignore=_ignore)
-    init_tests = _BUNDLED_ROOT / "tests" / "__init__.py"
+    target_plugin = (plugin_dir or _PLUGIN).resolve()
+    bundled_root = target_plugin / "bundled"
+    bundled_tb = bundled_root / "tests" / "testbench"
+    if bundled_root.exists() and force:
+        shutil.rmtree(bundled_root)
+    bundled_tb.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(_SRC_TESTBENCH, bundled_tb, ignore=_ignore)
+    init_tests = bundled_root / "tests" / "__init__.py"
     if not init_tests.exists():
         init_tests.write_text("# namespace for bundled tests.testbench\n", encoding="utf-8")
-    print(f"[build_plugin] snapshot -> {_BUNDLED_TB}")
-    return _BUNDLED_TB
+    print(f"[build_plugin] snapshot -> {bundled_tb}")
+    return bundled_tb
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--skip-snapshot", action="store_true")
+    parser.add_argument(
+        "--target-plugin-dir",
+        default=None,
+        help="Snapshot bundled/ into this plugin directory (for market CI mount path)",
+    )
+    parser.add_argument(
+        "--snapshot-only",
+        action="store_true",
+        help="Only snapshot bundled sources; do not build .neko-plugin",
+    )
     parser.add_argument(
         "-o",
         "--out",
@@ -65,18 +78,23 @@ def main() -> int:
     )
     args = parser.parse_args()
 
+    target_plugin = Path(args.target_plugin_dir).resolve() if args.target_plugin_dir else _PLUGIN
+
     if not args.skip_snapshot:
-        snapshot_testbench()
+        snapshot_testbench(plugin_dir=target_plugin)
+
+    if args.snapshot_only:
+        return 0
 
     # Drop legacy exe runtime tree if present (no longer packaged).
-    legacy_runtime = _PLUGIN / "runtime"
+    legacy_runtime = target_plugin / "runtime"
     if legacy_runtime.is_dir():
         print(f"[build_plugin] removing legacy {legacy_runtime}")
         shutil.rmtree(legacy_runtime)
 
     _OUT.mkdir(parents=True, exist_ok=True)
     out = Path(args.out).resolve()
-    cmd = ["uv", "run", "neko-plugin", "build", str(_PLUGIN), "-o", str(out)]
+    cmd = ["uv", "run", "neko-plugin", "build", str(target_plugin), "-o", str(out)]
     print("[build_plugin]", " ".join(cmd))
     return subprocess.call(cmd, cwd=str(_PROJECT))
 

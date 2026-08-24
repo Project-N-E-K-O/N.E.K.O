@@ -11,7 +11,6 @@ def _noop() -> None:
 
 def _umap_stub() -> dict[str, Any]:
     try:
-        import umap  # noqa: F401
 
         available = True
         msg = "umap-learn 可用（插件路径不联网安装）。"

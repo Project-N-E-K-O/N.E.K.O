@@ -94,8 +94,9 @@ def main() -> int:
     host = args.host
     port = _pick_port(args.port)
 
-    from tests.testbench.pipeline import live_runtime_log
     import uvicorn
+
+    from tests.testbench.pipeline import live_runtime_log
     from tests.testbench.server import app
 
     live_runtime_log.rotate_for_boot()

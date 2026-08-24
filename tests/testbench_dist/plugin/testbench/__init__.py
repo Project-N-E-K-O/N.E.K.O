@@ -547,6 +547,7 @@ class TestbenchDriverPlugin(NekoPluginBase):
         url = f"http://{host}:{port}"
 
         import uvicorn
+
         from tests.testbench.pipeline import live_runtime_log
         from tests.testbench.server import app
 

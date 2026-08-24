@@ -1,4 +1,4 @@
-name: N.E.K.O Plugin Market Release
+﻿name: N.E.K.O Plugin Market Release
 
 on:
   workflow_call:
@@ -63,6 +63,14 @@ jobs:
           rm -rf "neko/plugin/plugins/${PLUGIN_ID}"
           mkdir -p neko/plugin/plugins
           cp -R plugin-repo "neko/plugin/plugins/${PLUGIN_ID}"
+
+      - name: Snapshot Testbench bundled sources
+        if: env.PLUGIN_ID == 'testbench'
+        working-directory: neko
+        run: >-
+          uv run python tests/testbench_dist/scripts/build_plugin.py
+          --target-plugin-dir "plugin/plugins/${{ env.PLUGIN_ID }}"
+          --snapshot-only
 
       - name: Sync plugin dependencies
         working-directory: neko
