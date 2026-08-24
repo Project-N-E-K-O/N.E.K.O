@@ -127,6 +127,124 @@ def test_pngtuber_drag_uses_the_shared_multiscreen_transfer_contract():
     assert "result.windowBounds" in drag_block
     assert "this.moveModelCenterToWindowPoint(desiredCenterX, desiredCenterY);" in drag_block
     assert "helper.markDisplaySwitchSuccess('pngtuber');" in drag_block
+    assert "await this.snapModelIntoScreen({ animate: true });" in drag_block
+    assert drag_block.index("await this.recordDragHintPointerEdgeRelease(state);") < drag_block.index(
+        "await this.snapModelIntoScreen({ animate: true });"
+    )
+    assert drag_block.index("await this.snapModelIntoScreen({ animate: true });") < drag_block.index(
+        "await this.saveCurrentConfig();"
+    )
+
+
+def test_pngtuber_drag_snaps_back_when_less_than_200_pixels_remain_visible():
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("Node.js is required for PNGTuber edge snap tests")
+
+    source = PNGTUBER_CORE_PATH.read_text(encoding="utf-8")
+    script = f"""
+const assert = require('node:assert/strict');
+const vm = require('node:vm');
+
+const frames = [];
+const requestAnimationFrame = (callback) => {{
+  frames.push(callback);
+  return frames.length;
+}};
+const cancelAnimationFrame = () => {{}};
+const window = {{
+  location: {{ pathname: '/' }},
+  innerWidth: 1000,
+  innerHeight: 800,
+  lanlan_config: {{ model_type: 'pngtuber' }},
+}};
+const document = {{
+  body: {{ classList: {{ contains() {{ return false; }} }} }},
+  getElementById() {{ return null; }},
+  querySelectorAll() {{ return []; }},
+}};
+const context = {{
+  cancelAnimationFrame,
+  console,
+  document,
+  performance: {{ now: () => 0 }},
+  requestAnimationFrame,
+  window,
+}};
+vm.runInNewContext({json.dumps(source)}, context, {{ filename: 'pngtuber-core.js' }});
+
+const manager = new window.PNGTuberManager();
+manager.config = {{
+  scale: 1,
+  offset_x: 0,
+  offset_y: 0,
+  mobile_scale: 1,
+  mobile_offset_x: 0,
+  mobile_offset_y: 0,
+  position_anchor: 'center',
+  mirror: false,
+}};
+manager.image = {{
+  getBoundingClientRect() {{
+    const centerX = window.innerWidth / 2 + manager.config.offset_x;
+    const centerY = window.innerHeight / 2 + manager.config.offset_y;
+    return {{ left: centerX - 200, top: centerY - 200, width: 400, height: 400 }};
+  }},
+}};
+manager.applyTransform = () => {{}};
+manager.isLayeredActive = () => false;
+manager.syncGlobalConfig = () => {{}};
+manager.updateFloatingButtonsPosition = () => {{}};
+manager.updateLockIconPosition = () => {{}};
+
+(async () => {{
+  manager.config.offset_x = -750;
+  let target = manager.getEdgeSnapTarget();
+  assert.equal(target.offsetX, -500);
+  assert.equal(target.offsetY, 0);
+  assert.equal(await manager.snapModelIntoScreen({{ animate: false }}), true);
+  assert.equal(manager.config.offset_x, -500);
+
+  // Exactly 200 px remains visible, so ordinary edge placement is preserved.
+  assert.equal(manager.getEdgeSnapTarget(), null);
+  assert.equal(await manager.snapModelIntoScreen({{ animate: false }}), false);
+
+  manager.config.offset_x = 750;
+  target = manager.getEdgeSnapTarget();
+  assert.equal(target.offsetX, 500);
+  assert.equal(await manager.snapModelIntoScreen({{ animate: false }}), true);
+  assert.equal(manager.config.offset_x, 500);
+
+  manager.config.offset_x = 0;
+  manager.config.offset_y = -650;
+  target = manager.getEdgeSnapTarget();
+  assert.equal(target.offsetY, -400);
+  assert.equal(await manager.snapModelIntoScreen({{ animate: false }}), true);
+  assert.equal(manager.config.offset_y, -400);
+
+  manager.config.offset_y = 650;
+  target = manager.getEdgeSnapTarget();
+  assert.equal(target.offsetY, 400);
+  assert.equal(await manager.snapModelIntoScreen({{ animate: false }}), true);
+  assert.equal(manager.config.offset_y, 400);
+
+  manager.config.offset_x = -750;
+  manager.config.offset_y = 0;
+  const animatedSnap = manager.snapModelIntoScreen();
+  assert.equal(frames.length, 1);
+  frames.shift()(0);
+  frames.shift()(130);
+  assert.ok(manager.config.offset_x > -500, 'easeOutBack should briefly overshoot the target');
+  frames.shift()(260);
+  assert.equal(await animatedSnap, true);
+  assert.equal(manager.config.offset_x, -500);
+  assert.equal(manager.config.offset_y, 0);
+}})().catch((error) => {{
+  console.error(error);
+  process.exit(1);
+}});
+"""
+    run_node_script(node, script, check=True, cwd=PROJECT_ROOT)
 
 
 def test_pngtuber_drag_hint_edge_approach_allows_only_one_in_flight_call():

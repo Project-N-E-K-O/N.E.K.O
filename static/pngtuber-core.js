@@ -24,6 +24,8 @@
     const REMIX_LAYERED_CANVAS_PADDING_MIN = 48;
     const REMIX_LAYERED_CANVAS_PADDING_MAX = 160;
     const PNGTUBER_LAYERED_CANVAS_MAX_RENDER_EDGE = 1024;
+    const PNGTUBER_EDGE_SNAP_MIN_VISIBLE_PX = 200;
+    const PNGTUBER_EDGE_SNAP_DURATION_MS = 260;
     const REMIX_MESH_DEFORM_STRENGTH = 0.28;
     const PNGTUBER_PLUS_VISIBLE_VALUES = new Set([0, 10, 20, 30, 1, 21, 12, 32, 3, 13, 4, 15, 26, 36, 27, 38]);
     // 空闲低频驱动（对齐 live2d-core.js round-2 模式）：呼吸是 0.32Hz 正弦、
@@ -207,6 +209,8 @@
             this._dragSequence = 0;
             this._isDraggingModel = false;
             this.isDragging = false;
+            this._edgeSnapAnimationFrame = null;
+            this._edgeSnapResolve = null;
             this._saveInFlight = null;
             this._lastSavedPositionKey = '';
             this._saveTimer = null;
@@ -326,6 +330,7 @@
             this._dragListenersAttached = false;
             this._dragState = null;
             this._dragSequence += 1;
+            this.cancelEdgeSnapAnimation();
             this._touchZoomState = null;
             this.setModelDraggingState(false);
         }
@@ -2819,6 +2824,118 @@
             return true;
         }
 
+        getEdgeSnapTarget({ minVisiblePixels = PNGTUBER_EDGE_SNAP_MIN_VISIBLE_PX } = {}) {
+            if (!this.image || typeof this.image.getBoundingClientRect !== 'function') return null;
+            const rect = this.image.getBoundingClientRect();
+            const left = Number(rect?.left);
+            const top = Number(rect?.top);
+            const width = Number(rect?.width);
+            const height = Number(rect?.height);
+            const viewportWidth = Number(window.innerWidth);
+            const viewportHeight = Number(window.innerHeight);
+            if (![left, top, width, height, viewportWidth, viewportHeight].every(Number.isFinite)
+                || width <= 0 || height <= 0 || viewportWidth <= 0 || viewportHeight <= 0) {
+                return null;
+            }
+
+            const right = left + width;
+            const bottom = top + height;
+            const effectiveMinX = Math.min(Math.max(0, Number(minVisiblePixels) || 0), viewportWidth);
+            const effectiveMinY = Math.min(Math.max(0, Number(minVisiblePixels) || 0), viewportHeight);
+            const visibleWidth = Math.max(0, Math.min(viewportWidth, right) - Math.max(0, left));
+            const visibleHeight = Math.max(0, Math.min(viewportHeight, bottom) - Math.max(0, top));
+            const needsClampH = (left < 0 || right > viewportWidth) && visibleWidth < effectiveMinX;
+            const needsClampV = (top < 0 || bottom > viewportHeight) && visibleHeight < effectiveMinY;
+            if (!needsClampH && !needsClampV) return null;
+
+            let moveX = 0;
+            let moveY = 0;
+            if (needsClampH) {
+                if (right < effectiveMinX) {
+                    moveX = effectiveMinX - right;
+                } else if (left > viewportWidth - effectiveMinX) {
+                    moveX = (viewportWidth - effectiveMinX) - left;
+                }
+            }
+            if (needsClampV) {
+                if (bottom < effectiveMinY) {
+                    moveY = effectiveMinY - bottom;
+                } else if (top > viewportHeight - effectiveMinY) {
+                    moveY = (viewportHeight - effectiveMinY) - top;
+                }
+            }
+            if (!moveX && !moveY) return null;
+
+            const placement = this.getActivePlacement();
+            return {
+                offsetX: placement.offsetX + moveX,
+                offsetY: placement.offsetY + moveY
+            };
+        }
+
+        cancelEdgeSnapAnimation() {
+            if (this._edgeSnapAnimationFrame !== null) {
+                cancelAnimationFrame(this._edgeSnapAnimationFrame);
+                this._edgeSnapAnimationFrame = null;
+            }
+            if (this._edgeSnapResolve) {
+                const resolve = this._edgeSnapResolve;
+                this._edgeSnapResolve = null;
+                resolve(false);
+            }
+        }
+
+        applyEdgeSnapOffsets(offsetX, offsetY) {
+            this.setActiveOffsets(offsetX, offsetY);
+            this.applyTransform();
+            if (this.isLayeredActive()) this.drawLayeredState();
+            this.syncGlobalConfig();
+            if (typeof this.updateFloatingButtonsPosition === 'function') {
+                this.updateFloatingButtonsPosition();
+            }
+            this.updateLockIconPosition();
+        }
+
+        snapModelIntoScreen({ animate = true, durationMs = PNGTUBER_EDGE_SNAP_DURATION_MS } = {}) {
+            this.cancelEdgeSnapAnimation();
+            const target = this.getEdgeSnapTarget();
+            if (!target) return Promise.resolve(false);
+
+            const placement = this.getActivePlacement();
+            const startOffsetX = placement.offsetX;
+            const startOffsetY = placement.offsetY;
+            const duration = Math.max(0, Number(durationMs) || 0);
+            if (!animate || duration === 0) {
+                this.applyEdgeSnapOffsets(target.offsetX, target.offsetY);
+                return Promise.resolve(true);
+            }
+
+            const startedAt = performance.now();
+            return new Promise((resolve) => {
+                this._edgeSnapResolve = resolve;
+                const step = (timestamp) => {
+                    const elapsed = Math.max(0, Number(timestamp) - startedAt);
+                    const progress = Math.min(1, elapsed / duration);
+                    const c1 = 1.70158;
+                    const c3 = c1 + 1;
+                    const eased = 1 + c3 * Math.pow(progress - 1, 3) + c1 * Math.pow(progress - 1, 2);
+                    this.applyEdgeSnapOffsets(
+                        startOffsetX + (target.offsetX - startOffsetX) * eased,
+                        startOffsetY + (target.offsetY - startOffsetY) * eased
+                    );
+                    if (progress < 1) {
+                        this._edgeSnapAnimationFrame = requestAnimationFrame(step);
+                        return;
+                    }
+                    this._edgeSnapAnimationFrame = null;
+                    this._edgeSnapResolve = null;
+                    this.applyEdgeSnapOffsets(target.offsetX, target.offsetY);
+                    resolve(true);
+                };
+                this._edgeSnapAnimationFrame = requestAnimationFrame(step);
+            });
+        }
+
         async checkAndSwitchDisplayAfterDrag(state) {
             const bridge = window.electronScreen;
             if (isModelManagerPage() || !bridge
@@ -2936,6 +3053,7 @@
             if (event.target && event.target.closest && event.target.closest('[id$="-floating-buttons"], [id$="-lock-icon"], [id$="-return-button-container"]')) return;
             event.preventDefault();
             event.stopPropagation();
+            this.cancelEdgeSnapAnimation();
             const placement = this.getActivePlacement();
             this._dragSequence += 1;
             this._dragState = {
@@ -3019,6 +3137,10 @@
                     await this.recordDragHintPointerEdgeRelease(state);
                 }
                 if (!this.isDragCompletionCurrent(state)) return;
+                if (!displaySwitched) {
+                    await this.snapModelIntoScreen({ animate: true });
+                }
+                if (!this.isDragCompletionCurrent(state)) return;
                 await this.saveCurrentConfig();
             }
         }
@@ -3077,6 +3199,7 @@
             if (!event.touches || event.touches.length !== 2) return;
             event.preventDefault();
             event.stopPropagation();
+            this.cancelEdgeSnapAnimation();
             const center = this.getTouchCenter(event.touches[0], event.touches[1]);
             const placement = this.getActivePlacement();
             this._dragSequence += 1;
