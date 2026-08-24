@@ -2739,9 +2739,10 @@
         }
 
         isDragCompletionCurrent(state) {
+            const activeDrag = this._dragState;
             return !!state
                 && state.dragSequence === this._dragSequence
-                && this._dragState === null;
+                && (!activeDrag || activeDrag.dragSequence === null);
         }
 
         async recordDragHintPointerEdgeApproach(state) {
@@ -2908,7 +2909,7 @@
 
         snapModelIntoScreen({ animate = true, durationMs = PNGTUBER_EDGE_SNAP_DURATION_MS } = {}) {
             this.cancelEdgeSnapAnimation();
-            const target = this.getEdgeSnapTarget();
+            let target = this.getEdgeSnapTarget();
             if (!target) return Promise.resolve(false);
 
             const placement = this.getActivePlacement();
@@ -2924,6 +2925,8 @@
             return new Promise((resolve) => {
                 this._edgeSnapResolve = resolve;
                 const step = (timestamp) => {
+                    const refreshedTarget = this.getEdgeSnapTarget();
+                    if (refreshedTarget) target = refreshedTarget;
                     const elapsed = Math.max(0, Number(timestamp) - startedAt);
                     const progress = Math.min(1, elapsed / duration);
                     const c1 = 1.70158;
@@ -3162,7 +3165,7 @@
                     await this.snapModelIntoScreen({ animate: true });
                 }
                 if (!this.isDragCompletionCurrent(state)) return;
-                await this.saveCurrentConfig();
+                await this.saveOrStageCurrentConfig();
             }
         }
 
@@ -3302,7 +3305,7 @@
                 if (!this.isDragCompletionCurrent(state)) return;
                 await this.snapModelIntoScreen({ animate: true });
                 if (!this.isDragCompletionCurrent(state)) return;
-                await this.saveCurrentConfig();
+                await this.saveOrStageCurrentConfig();
             }
         }
 
@@ -3452,6 +3455,17 @@
             } catch (_) {
                 return '';
             }
+        }
+
+        async saveOrStageCurrentConfig() {
+            if (isModelManagerPage()) {
+                if (typeof window.stageModelManagerPNGTuberPlacement === 'function') {
+                    window.stageModelManagerPNGTuberPlacement(this.config);
+                    return true;
+                }
+                return false;
+            }
+            return this.saveCurrentConfig();
         }
 
         async saveCurrentConfig() {

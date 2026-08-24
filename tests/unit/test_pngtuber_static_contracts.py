@@ -68,6 +68,10 @@ def test_pngtuber_transform_and_interactions_use_active_layout_fields():
         source.index("async endTouchZoom()")
     ]
     save_block = source[
+        source.index("async saveOrStageCurrentConfig()"):
+        source.index("        scheduleSaveCurrentConfig")
+    ]
+    runtime_save_block = source[
         source.index("async saveCurrentConfig()"):
         source.index("        scheduleSaveCurrentConfig")
     ]
@@ -95,11 +99,12 @@ def test_pngtuber_transform_and_interactions_use_active_layout_fields():
     assert "window.stageModelManagerPNGTuberPlacement(this.config);" in wheel_block
     assert "initialScale: placement.scale" in touch_block
     assert "this.setActiveOffsets(state.startOffsetX + dx, state.startOffsetY + dy);" in touch_block
-    assert "this.config.mobile_offset_x" in save_block
-    assert "this.config.mobile_offset_y" in save_block
-    assert "this.config.mobile_scale" in save_block
-    assert "this.config.position_anchor" in save_block
-    assert "apply_runtime: false" in save_block
+    assert "window.stageModelManagerPNGTuberPlacement(this.config);" in save_block
+    assert "this.config.mobile_offset_x" in runtime_save_block
+    assert "this.config.mobile_offset_y" in runtime_save_block
+    assert "this.config.mobile_scale" in runtime_save_block
+    assert "this.config.position_anchor" in runtime_save_block
+    assert "apply_runtime: false" in runtime_save_block
 
 
 def test_pngtuber_drag_uses_the_shared_multiscreen_transfer_contract():
@@ -133,7 +138,7 @@ def test_pngtuber_drag_uses_the_shared_multiscreen_transfer_contract():
         "await this.snapModelIntoScreen({ animate: true });"
     )
     assert drag_block.index("await this.snapModelIntoScreen({ animate: true });") < drag_block.index(
-        "await this.saveCurrentConfig();"
+        "await this.saveOrStageCurrentConfig();"
     )
     touch_end_block = source[
         source.index("        async endTouchZoom() {"):
@@ -145,7 +150,7 @@ def test_pngtuber_drag_uses_the_shared_multiscreen_transfer_contract():
         "await this.snapModelIntoScreen({ animate: true });"
     )
     assert touch_end_block.index("await this.snapModelIntoScreen({ animate: true });") < touch_end_block.index(
-        "await this.saveCurrentConfig();"
+        "await this.saveOrStageCurrentConfig();"
     )
 
 
@@ -175,6 +180,7 @@ const runNextFrame = (timestamp) => {{
   callback(timestamp);
 }};
 let stagedPlacement = null;
+let modelWidth = 400;
 const window = {{
   location: {{ pathname: '/' }},
   innerWidth: 1000,
@@ -215,7 +221,7 @@ manager.image = {{
   removeAttribute() {{}},
   setPointerCapture() {{}},
   getBoundingClientRect() {{
-    const width = 400 * manager.config.scale;
+    const width = modelWidth * manager.config.scale;
     const height = 400 * manager.config.scale;
     const centerX = window.innerWidth / 2 + manager.config.offset_x;
     const centerY = window.innerHeight / 2 + manager.config.offset_y;
@@ -276,6 +282,18 @@ manager.scheduleSaveCurrentConfig = () => {{ scheduledSaves += 1; }};
   assert.equal(await animatedSnap, true);
   assert.equal(manager.config.offset_x, -500);
   assert.equal(manager.config.offset_y, 0);
+
+  // State image geometry changes retarget an in-flight rebound.
+  manager.config.offset_x = -750;
+  modelWidth = 400;
+  const resizedImageSnap = manager.snapModelIntoScreen();
+  runNextFrame(0);
+  modelWidth = 200;
+  runNextFrame(130);
+  runNextFrame(260);
+  assert.equal(await resizedImageSnap, true);
+  assert.equal(manager.config.offset_x, -400);
+  modelWidth = 400;
 
   // Wheel zoom cancels the old rebound and targets the resized model geometry.
   manager.config.offset_x = -750;
@@ -639,6 +657,30 @@ function pointer(type, clientX, clientY, screenX, screenY, pointerId = 7) {{
   assert.equal(await manager.checkAndSwitchDisplayAfterDrag(invalidWindowState), false);
   assert.equal(movedPoint, null);
   manager.getModelCenterInWindow = getModelCenterInWindow;
+
+  // A second pointerdown without movement must not invalidate the prior completion.
+  currentDisplay = primary;
+  currentWindowBounds = {{ ...primaryWindowBounds }};
+  window.innerWidth = currentWindowBounds.width;
+  window.innerHeight = currentWindowBounds.height;
+  manager.config.offset_x = -700;
+  manager.config.offset_y = 0;
+  movedPoint = null;
+  saves = 0;
+  deferredFrames = [];
+  manager.startDrag(pointer('pointerdown', 154, 534, 155, 535));
+  manager.moveDrag(pointer('pointermove', -201, 534, -200, 535));
+  const pendingClickEnd = manager.endDrag(pointer('pointerup', -201, 534, -200, 535));
+  while (deferredFrames.length === 0) await new Promise(setImmediate);
+  manager.startDrag(pointer('pointerdown', 100, 100, -2459, 101, 8));
+  deferredFrames.shift()(0);
+  await new Promise(setImmediate);
+  deferredFrames.shift()(0);
+  await pendingClickEnd;
+  assert.equal(manager._dragState.pointerId, 8);
+  assert.equal(manager._dragState.dragSequence, null);
+  assert.equal(saves, 1);
+  await manager.endDrag(pointer('pointerup', 100, 100, -2459, 101, 8));
 
   currentDisplay = primary;
   currentWindowBounds = {{ ...primaryWindowBounds }};
