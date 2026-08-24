@@ -1143,6 +1143,11 @@ function CompactChatApp({
     }
   }, [activeAvatarToolId, clearActiveAvatarToolSelection, localAvatarToolCatalog.registry]);
 
+  const handleLocalAvatarToolDelete = useCallback(async (toolId: `local-${string}`) => {
+    if (activeAvatarToolId === toolId) clearActiveAvatarToolSelection();
+    await localAvatarToolCatalog.remove(toolId);
+  }, [activeAvatarToolId, clearActiveAvatarToolSelection, localAvatarToolCatalog.remove]);
+
   useEffect(() => {
     if (!localAvatarToolCatalog.authoritativeLoaded) return;
     setActiveAvatarToolIds((current) => {
@@ -6039,6 +6044,10 @@ function CompactChatApp({
         userName={userName}
         assistantName={assistantName}
         onCreate={localAvatarToolCatalog.create}
+        onLoadDetail={localAvatarToolCatalog.detail}
+        onUpdate={localAvatarToolCatalog.update}
+        onDelete={handleLocalAvatarToolDelete}
+        catalogAuthoritativeLoaded={localAvatarToolCatalog.authoritativeLoaded}
         catalogRefreshFailed={localAvatarToolCatalog.refreshFailed}
       />
       <AvatarToolVisuals model={avatarToolRuntime.visualModel} />

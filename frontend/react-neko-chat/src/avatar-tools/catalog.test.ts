@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
   AVAILABLE_COMPACT_AVATAR_TOOLS,
-  AVAILABLE_FULL_AVATAR_TOOLS,
   DEFAULT_ACTIVE_AVATAR_TOOL_IDS,
   MAX_ACTIVE_AVATAR_TOOLS,
   sanitizeAvatarToolIds,
@@ -32,11 +31,8 @@ describe('avatar tool definitions', () => {
     });
   });
 
-  it('projects all definitions into both chat surfaces', () => {
+  it('projects all built-in definitions into the shared catalog', () => {
     expect(AVAILABLE_COMPACT_AVATAR_TOOLS.map(tool => tool.id)).toEqual(
-      AVATAR_TOOL_DEFINITIONS.map(definition => definition.id),
-    );
-    expect(AVAILABLE_FULL_AVATAR_TOOLS.map(tool => tool.id)).toEqual(
       AVATAR_TOOL_DEFINITIONS.map(definition => definition.id),
     );
     AVATAR_TOOL_DEFINITIONS.forEach((definition) => {

@@ -2,12 +2,21 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   buildLocalAvatarToolDefinition,
   createLocalAvatarTool,
+  deleteLocalAvatarTool,
+  fetchLocalAvatarToolDetail,
   fetchLocalAvatarTools,
+  updateLocalAvatarTool,
   type CreateLocalAvatarToolInput,
+  type LocalAvatarToolDetail,
   type LocalAvatarToolDto,
   type LocalAvatarToolLimits,
+  type UpdateLocalAvatarToolInput,
 } from './localTools';
-import { validateAvatarToolDefinition, type AvatarToolDefinition } from './catalog';
+import {
+  validateAvatarToolDefinition,
+  type AvatarToolDefinition,
+  type LocalAvatarToolId,
+} from './catalog';
 import {
   BUILT_IN_AVATAR_TOOL_REGISTRY,
   createAvatarToolRegistrySnapshot,
@@ -21,6 +30,9 @@ export type LocalAvatarToolCatalog = {
   refreshFailed: boolean;
   refresh(): Promise<void>;
   create(input: CreateLocalAvatarToolInput): Promise<void>;
+  detail(toolId: LocalAvatarToolId): Promise<LocalAvatarToolDetail>;
+  update(toolId: LocalAvatarToolId, input: UpdateLocalAvatarToolInput): Promise<void>;
+  remove(toolId: LocalAvatarToolId): Promise<void>;
 };
 
 function buildValidLocalDefinitions(items: ReadonlyArray<LocalAvatarToolDto>): AvatarToolDefinition[] {
@@ -35,25 +47,63 @@ function buildValidLocalDefinitions(items: ReadonlyArray<LocalAvatarToolDto>): A
   });
 }
 
+function detailMatchesUpdate(detail: LocalAvatarToolDetail, input: UpdateLocalAvatarToolInput): boolean {
+  if (
+    detail.name !== input.name
+    || detail.changeMode !== input.changeMode
+    || detail.changeItems.length !== input.changeItems.length
+    || detail.changeItems.some((item, index) => item.meaning !== input.changeItems[index]?.meaning.trim())
+    || !!detail.normalSound !== !!input.normalSound
+    || !!detail.special !== !!input.special
+  ) return false;
+  if (!detail.special || !input.special) return true;
+  return detail.special.probability === input.special.probability
+    && detail.special.meaning === input.special.meaning.trim()
+    && !!detail.special.sound === !!input.special.sound;
+}
+
+function detailToPublicItem(detail: LocalAvatarToolDetail): LocalAvatarToolDto {
+  return {
+    id: detail.id,
+    name: detail.name,
+    changeMode: detail.changeMode,
+    defaultUrl: detail.defaultImage.url,
+    changeUrls: detail.changeItems.map(item => item.url),
+    ...(detail.normalSound ? { normalSoundUrl: detail.normalSound.url } : {}),
+    ...(detail.special ? {
+      special: {
+        probability: detail.special.probability,
+        imageUrl: detail.special.image.url,
+        ...(detail.special.sound ? { soundUrl: detail.special.sound.url } : {}),
+      },
+    } : {}),
+  };
+}
+
 export function useLocalAvatarToolCatalog(): LocalAvatarToolCatalog {
   const [registry, setRegistry] = useState(BUILT_IN_AVATAR_TOOL_REGISTRY);
   const [limits, setLimits] = useState<LocalAvatarToolLimits | null>(null);
   const [authoritativeLoaded, setAuthoritativeLoaded] = useState(false);
   const [refreshFailed, setRefreshFailed] = useState(false);
   const refreshInFlightRef = useRef<Promise<void> | null>(null);
+  const refreshEpochRef = useRef(0);
+  const authoritativeRegistryRef = useRef<AvatarToolRegistrySnapshot | null>(null);
 
   const refresh = useCallback(() => {
     if (refreshInFlightRef.current) return refreshInFlightRef.current;
+    const requestEpoch = refreshEpochRef.current;
     const request = (async () => {
       try {
         const response = await fetchLocalAvatarTools();
         const next = createAvatarToolRegistrySnapshot(buildValidLocalDefinitions(response.items));
+        if (requestEpoch !== refreshEpochRef.current) return;
+        authoritativeRegistryRef.current = next;
         setRegistry(next);
         setLimits(response.limits);
         setAuthoritativeLoaded(true);
         setRefreshFailed(false);
       } catch (error) {
-        setRefreshFailed(true);
+        if (requestEpoch === refreshEpochRef.current) setRefreshFailed(true);
         throw error;
       }
     })();
@@ -78,16 +128,28 @@ export function useLocalAvatarToolCatalog(): LocalAvatarToolCatalog {
       if (document.visibilityState === 'hidden') return;
       refresh().catch(() => undefined);
     };
+    const refreshRequested = () => {
+      refresh().catch(() => undefined);
+    };
     window.addEventListener('focus', refreshWhenActive);
+    window.addEventListener('neko:refresh-local-avatar-tools', refreshRequested);
     document.addEventListener('visibilitychange', refreshWhenActive);
     return () => {
       window.removeEventListener('focus', refreshWhenActive);
+      window.removeEventListener('neko:refresh-local-avatar-tools', refreshRequested);
       document.removeEventListener('visibilitychange', refreshWhenActive);
     };
   }, [refresh]);
 
+  useEffect(() => {
+    if (!authoritativeLoaded) return;
+    window.dispatchEvent(new Event('neko:republish-avatar-tool-state'));
+  }, [authoritativeLoaded, registry]);
+
   const create = useCallback(async (input: CreateLocalAvatarToolInput) => {
     const createdItem = await createLocalAvatarTool(input);
+    const staleRefresh = refreshInFlightRef.current;
+    refreshEpochRef.current += 1;
     if (createdItem) {
       const definitions = buildValidLocalDefinitions([createdItem]);
       if (definitions.length === 1) {
@@ -97,8 +159,81 @@ export function useLocalAvatarToolCatalog(): LocalAvatarToolCatalog {
         ]));
       }
     }
+    await staleRefresh?.catch(() => undefined);
     await refresh().catch(() => undefined);
   }, [refresh]);
 
-  return { registry, limits, authoritativeLoaded, refreshFailed, refresh, create };
+  const detail = useCallback(async (toolId: LocalAvatarToolId) => (
+    fetchLocalAvatarToolDetail(toolId, limits?.maxChangeImages ?? 16)
+  ), [limits?.maxChangeImages]);
+
+  const update = useCallback(async (toolId: LocalAvatarToolId, input: UpdateLocalAvatarToolInput) => {
+    let updatedItem: LocalAvatarToolDto | null;
+    try {
+      updatedItem = await updateLocalAvatarTool(toolId, input);
+    } catch (error) {
+      const staleRefresh = refreshInFlightRef.current;
+      refreshEpochRef.current += 1;
+      await staleRefresh?.catch(() => undefined);
+      let currentDetail: LocalAvatarToolDetail | null = null;
+      try {
+        currentDetail = await fetchLocalAvatarToolDetail(toolId, limits?.maxChangeImages ?? 16);
+      } catch {}
+      await refresh().catch(() => undefined);
+      if (
+        currentDetail
+        && currentDetail.revision !== input.baseRevision
+        && detailMatchesUpdate(currentDetail, input)
+      ) {
+        const definitions = buildValidLocalDefinitions([detailToPublicItem(currentDetail)]);
+        if (definitions.length === 1) {
+          setRegistry((current) => createAvatarToolRegistrySnapshot([
+            ...current.definitions.filter(definition => definition.definitionVersion === 2 && definition.id !== toolId),
+            definitions[0],
+          ]));
+        }
+        return;
+      }
+      throw error;
+    }
+    const staleRefresh = refreshInFlightRef.current;
+    refreshEpochRef.current += 1;
+    if (updatedItem) {
+      const definitions = buildValidLocalDefinitions([updatedItem]);
+      if (definitions.length === 1) {
+        setRegistry((current) => createAvatarToolRegistrySnapshot([
+          ...current.definitions.filter(definition => definition.definitionVersion === 2 && definition.id !== toolId),
+          definitions[0],
+        ]));
+      }
+    }
+    await staleRefresh?.catch(() => undefined);
+    await refresh().catch(() => undefined);
+  }, [limits?.maxChangeImages, refresh]);
+
+  const remove = useCallback(async (toolId: LocalAvatarToolId) => {
+    try {
+      await deleteLocalAvatarTool(toolId);
+    } catch (error) {
+      const staleRefresh = refreshInFlightRef.current;
+      refreshEpochRef.current += 1;
+      await staleRefresh?.catch(() => undefined);
+      let refreshed = false;
+      try {
+        await refresh();
+        refreshed = true;
+      } catch {}
+      if (refreshed && authoritativeRegistryRef.current?.has(toolId) === false) return;
+      throw error;
+    }
+    const staleRefresh = refreshInFlightRef.current;
+    refreshEpochRef.current += 1;
+    setRegistry((current) => createAvatarToolRegistrySnapshot(
+      current.definitions.filter(definition => definition.definitionVersion === 2 && definition.id !== toolId),
+    ));
+    await staleRefresh?.catch(() => undefined);
+    await refresh().catch(() => undefined);
+  }, [refresh]);
+
+  return { registry, limits, authoritativeLoaded, refreshFailed, refresh, create, detail, update, remove };
 }

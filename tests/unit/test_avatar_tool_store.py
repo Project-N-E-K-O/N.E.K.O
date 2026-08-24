@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import io
 import json
+import os
+import shutil
+import threading
 from pathlib import Path
 
 import pytest
@@ -45,15 +48,15 @@ def test_create_publishes_ordered_public_dto_but_keeps_meanings_private(tmp_path
     store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
 
     item = store.create_tool(
-        name="小羽毛",
+        name="  小 羽毛__01  ",
         change_mode="click-advance",
-        change_meanings=["像羽毛一样轻轻挠一下", "轻轻扫过脸颊"],
+        change_meanings=["像羽毛一样\r\n轻轻挠一下", "轻轻扫过脸颊"],
         default_image=_png(),
         change_images=[_png(size=(12, 9)), _png(size=(10, 11))],
     )
 
     assert item["id"].startswith("local-")
-    assert item["name"] == "小羽毛"
+    assert item["name"] == "小 羽毛__01"
     assert "meaning" not in json.dumps(item, ensure_ascii=False).lower()
     assert item["changeMode"] == "click-advance"
     assert item["defaultUrl"].startswith(
@@ -67,7 +70,7 @@ def test_create_publishes_ordered_public_dto_but_keeps_meanings_private(tmp_path
     assert record["imageChange"] == {
         "mode": "click-advance",
         "items": [
-            {"image": "change-000.png", "meaning": "像羽毛一样轻轻挠一下"},
+            {"image": "change-000.png", "meaning": "像羽毛一样\n轻轻挠一下"},
             {"image": "change-001.png", "meaning": "轻轻扫过脸颊"},
         ],
     }
@@ -279,11 +282,13 @@ def test_create_rejects_unsafe_images_without_publishing(tmp_path, monkeypatch, 
     assert not store.root.exists() or not list(store.root.iterdir())
 
 
-def test_list_skips_bad_records_and_cleans_only_owned_upload_directories(tmp_path):
+def test_initialize_cleans_only_owned_transient_directories_and_list_stays_read_only(tmp_path):
     root = tmp_path / "avatar_tools"
     root.mkdir()
-    owned = root / ".local-12345678-1234-4123-8123-123456789abc.uploading"
-    owned.mkdir()
+    owned_upload = root / ".local-12345678-1234-4123-8123-123456789abc.uploading"
+    owned_delete = root / ".local-22345678-1234-4123-8123-123456789abc.deleting"
+    owned_upload.mkdir()
+    owned_delete.mkdir()
     unrelated = root / ".keep-me"
     unrelated.mkdir()
     invalid = root / "local-12345678-1234-4123-8123-123456789abc"
@@ -293,8 +298,28 @@ def test_list_skips_bad_records_and_cleans_only_owned_upload_directories(tmp_pat
     store = AvatarToolStore(_ConfigManager(root))
 
     assert store.list_items() == []
-    assert not owned.exists()
+    assert owned_upload.exists()
+    assert owned_delete.exists()
+    store.initialize()
+    assert not owned_upload.exists()
+    assert not owned_delete.exists()
     assert unrelated.exists()
+
+
+def test_initialize_and_list_wrap_unreadable_store_errors(tmp_path, monkeypatch):
+    store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
+    store.ensure()
+
+    def reject_listing(_path):
+        raise PermissionError("blocked")
+
+    monkeypatch.setattr(Path, "iterdir", reject_listing)
+
+    for operation in (store.initialize, store.list_items):
+        with pytest.raises(AvatarToolStoreError) as raised:
+            operation()
+        assert raised.value.code == "avatar_tools_directory_unavailable"
+        assert raised.value.status_code == 503
 
 
 def test_public_resource_allowlist_rejects_private_and_unsafe_paths(tmp_path):
@@ -338,6 +363,94 @@ def test_create_rejects_control_characters(tmp_path, monkeypatch):
         )
 
     assert raised.value.code == "name_invalid"
+    assert raised.value.field == "name"
+
+    with pytest.raises(AvatarToolStoreError) as raised:
+        store.create_tool(
+            name="Feather",
+            change_mode="click-advance",
+            change_meanings=["first", "invalid\x07meaning"],
+            default_image=_png(),
+            change_images=[_png(), _png()],
+        )
+
+    assert raised.value.code == "change_meaning_invalid"
+    assert raised.value.field == "change_meaning"
+    assert raised.value.index == 1
+
+
+@pytest.mark.parametrize(
+    ("name", "expected_code"),
+    [
+        ("a" * 21, "name_too_long"),
+        ("羽毛!", "name_invalid"),
+        ("羽毛🪶", "name_invalid"),
+    ],
+)
+def test_create_enforces_new_name_rules(tmp_path, monkeypatch, name, expected_code):
+    monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
+    store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
+
+    with pytest.raises(AvatarToolStoreError) as raised:
+        store.create_tool(
+            name=name,
+            change_mode="press-swap",
+            change_meanings=["meaning"],
+            default_image=_png(),
+            change_images=[_png()],
+        )
+
+    assert raised.value.code == expected_code
+    assert raised.value.field == "name"
+
+
+def test_create_reports_change_meaning_error_location(tmp_path, monkeypatch):
+    monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
+    store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
+
+    with pytest.raises(AvatarToolStoreError) as raised:
+        store.create_tool(
+            name="Feather",
+            change_mode="click-advance",
+            change_meanings=["first", "x" * 101],
+            default_image=_png(),
+            change_images=[_png(), _png()],
+        )
+
+    assert raised.value.code == "change_meaning_too_long"
+    assert raised.value.field == "change_meaning"
+    assert raised.value.index == 1
+
+
+@pytest.mark.parametrize(
+    ("field", "expected_code"),
+    [
+        ("name", "name_too_long"),
+        ("meaning", "meaning_too_long"),
+    ],
+)
+def test_read_enforces_current_v2_text_limits(tmp_path, monkeypatch, field, expected_code):
+    monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
+    store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
+    item = store.create_tool(
+        name="Feather",
+        change_mode="press-swap",
+        change_meanings=["meaning"],
+        default_image=_png(),
+        change_images=[_png()],
+    )
+    record_path = store.root / item["id"] / "record.json"
+    record = json.loads(record_path.read_text(encoding="utf-8"))
+    if field == "name":
+        record["name"] = "n" * 21
+    else:
+        record["imageChange"]["items"][0]["meaning"] = "m" * 101
+    record_path.write_text(json.dumps(record), encoding="utf-8")
+
+    with pytest.raises(AvatarToolStoreError) as raised:
+        store.read_record(item["id"])
+
+    assert raised.value.code == expected_code
 
 
 def test_create_counts_record_in_total_storage_limit(tmp_path, monkeypatch):
@@ -358,6 +471,27 @@ def test_create_counts_record_in_total_storage_limit(tmp_path, monkeypatch):
 
     assert raised.value.code == "storage_limit_reached"
     assert not list(store.root.iterdir())
+
+
+def test_create_checks_the_write_fence_before_creating_the_store_directory(tmp_path, monkeypatch):
+    root = tmp_path / "avatar_tools"
+    store = AvatarToolStore(_ConfigManager(root))
+
+    def reject_write(*_args, **_kwargs):
+        raise RuntimeError("maintenance")
+
+    monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", reject_write)
+
+    with pytest.raises(RuntimeError, match="maintenance"):
+        store.create_tool(
+            name="Feather",
+            change_mode="press-swap",
+            change_meanings=["gentle"],
+            default_image=_png(),
+            change_images=[_png()],
+        )
+
+    assert not root.exists()
 
 
 def test_press_swap_requires_exactly_one_change_item(tmp_path, monkeypatch):
@@ -395,3 +529,421 @@ def test_old_development_record_is_skipped_without_deletion(tmp_path):
 
     assert store.list_items() == []
     assert directory.is_dir()
+
+
+def test_delete_removes_only_the_requested_tool_directory(tmp_path, monkeypatch):
+    fence_calls = []
+    monkeypatch.setattr(
+        "utils.avatar_tool_store.assert_cloudsave_writable",
+        lambda *_a, **kwargs: fence_calls.append(kwargs),
+    )
+    store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
+    first = store.create_tool(
+        name="First",
+        change_mode="press-swap",
+        change_meanings=["first"],
+        default_image=_png(),
+        change_images=[_png()],
+    )
+    second = store.create_tool(
+        name="Second",
+        change_mode="press-swap",
+        change_meanings=["second"],
+        default_image=_png(),
+        change_images=[_png()],
+    )
+    fence_calls.clear()
+
+    assert store.delete_tool(first["id"]) == first["id"]
+
+    assert not (store.root / first["id"]).exists()
+    assert (store.root / second["id"] / "record.json").is_file()
+    assert [item["id"] for item in store.list_items()] == [second["id"]]
+    assert fence_calls == [{
+        "operation": "delete",
+        "target": f"avatar_tools/{first['id']}",
+    }]
+
+
+@pytest.mark.parametrize(
+    ("tool_id", "expected_code", "expected_status"),
+    [
+        ("lollipop", "invalid_tool_id", 400),
+        ("local-12345678-1234-4123-8123-123456789abc", "tool_not_found", 404),
+    ],
+)
+def test_delete_rejects_invalid_or_missing_tool(tmp_path, tool_id, expected_code, expected_status):
+    store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
+
+    with pytest.raises(AvatarToolStoreError) as raised:
+        store.delete_tool(tool_id)
+
+    assert raised.value.code == expected_code
+    assert raised.value.status_code == expected_status
+
+
+def test_delete_rejects_symlink_without_touching_its_target(tmp_path):
+    root = tmp_path / "avatar_tools"
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "keep.txt").write_text("keep", encoding="utf-8")
+    root.mkdir()
+    tool_id = "local-12345678-1234-4123-8123-123456789abc"
+    (root / tool_id).symlink_to(outside, target_is_directory=True)
+    store = AvatarToolStore(_ConfigManager(root))
+
+    with pytest.raises(AvatarToolStoreError) as raised:
+        store.delete_tool(tool_id)
+
+    assert raised.value.code == "tool_not_found"
+    assert (outside / "keep.txt").read_text(encoding="utf-8") == "keep"
+
+
+def test_delete_unpublishes_before_cleanup_and_initialize_retries_residue(tmp_path, monkeypatch):
+    monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
+    store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
+    deleted = store.create_tool(
+        name="Deleted",
+        change_mode="press-swap",
+        change_meanings=["deleted"],
+        default_image=_png(),
+        change_images=[_png()],
+    )
+    retained = store.create_tool(
+        name="Retained",
+        change_mode="press-swap",
+        change_meanings=["retained"],
+        default_image=_png(),
+        change_images=[_png()],
+    )
+    deleting = store.root / f".{deleted['id']}.deleting"
+    real_rmtree = shutil.rmtree
+
+    def interrupt_cleanup(path, *args, **kwargs):
+        if Path(path).resolve(strict=False) == deleting.resolve(strict=False):
+            (deleting / "record.json").unlink()
+            raise OSError("cleanup interrupted")
+        return real_rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr("utils.avatar_tool_store.shutil.rmtree", interrupt_cleanup)
+
+    assert store.delete_tool(deleted["id"]) == deleted["id"]
+    assert not (store.root / deleted["id"]).exists()
+    assert deleting.is_dir()
+    assert [item["id"] for item in store.list_items()] == [retained["id"]]
+    assert store._current_storage_bytes() == (
+        store._directory_bytes(store.root / retained["id"])
+        + store._directory_bytes(deleting)
+    )
+
+    monkeypatch.setattr("utils.avatar_tool_store.shutil.rmtree", real_rmtree)
+    store.initialize()
+
+    assert not deleting.exists()
+    assert (store.root / retained["id"] / "record.json").is_file()
+
+
+def test_detail_exposes_editable_meanings_without_changing_public_projection(tmp_path, monkeypatch):
+    monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
+    store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
+    item = store.create_tool(
+        name="Feather",
+        change_mode="press-swap",
+        change_meanings=["a gentle touch"],
+        default_image=_png(),
+        change_images=[_png(size=(9, 8))],
+        special_probability=0.2,
+        special_image=_png(size=(10, 8)),
+        special_meaning="a surprise appears",
+    )
+
+    detail = store.get_detail(item["id"])
+
+    assert detail["id"] == item["id"]
+    assert detail["defaultImage"]["resource"] == "default.png"
+    assert detail["changeItems"][0]["meaning"] == "a gentle touch"
+    assert detail["special"]["meaning"] == "a surprise appears"
+    assert "meaning" not in json.dumps(store.list_items())
+
+
+def test_update_keeps_id_reorders_retained_images_and_removes_optional_resources(tmp_path, monkeypatch):
+    monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
+    store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
+    created = store.create_tool(
+        name="Feather",
+        change_mode="click-advance",
+        change_meanings=["first", "second"],
+        default_image=_png(size=(8, 8)),
+        change_images=[_png(size=(9, 8)), _png(size=(10, 8))],
+        normal_sound=_mp3(),
+        special_probability=0.1,
+        special_image=_png(size=(11, 8)),
+        special_meaning="surprise",
+        special_sound=_mp3(),
+    )
+    tool_id = created["id"]
+    base_revision = store.get_detail(tool_id)["revision"]
+
+    updated = store.update_tool(
+        tool_id,
+        base_revision=base_revision,
+        name="Soft Feather",
+        change_mode="click-advance",
+        change_meanings=["second retained", "new image"],
+        default_resource="default.png",
+        default_image=None,
+        change_resources=["change-001.png", ""],
+        change_images=[_png(size=(12, 8))],
+    )
+
+    assert updated["id"] == tool_id
+    assert updated["name"] == "Soft Feather"
+    assert "normalSoundUrl" not in updated
+    assert "special" not in updated
+    record = store.read_record(tool_id)
+    assert record["imageChange"]["items"] == [
+        {"image": "change-000.png", "meaning": "second retained"},
+        {"image": "change-001.png", "meaning": "new image"},
+    ]
+    directory = store.root / tool_id
+    assert not (directory / "normal.mp3").exists()
+    assert not (directory / "special.png").exists()
+    assert not (directory / "special.mp3").exists()
+    with Image.open(directory / "change-000.png") as retained:
+        assert retained.size == (10, 8)
+    with Image.open(directory / "change-001.png") as replacement:
+        assert replacement.size == (12, 8)
+    assert not (store.root / f".{tool_id}.updating").exists()
+    assert not (store.root / f".{tool_id}.backup").exists()
+
+
+def test_update_rejects_foreign_resource_and_preserves_published_tool(tmp_path, monkeypatch):
+    monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
+    store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
+    created = store.create_tool(
+        name="Feather",
+        change_mode="press-swap",
+        change_meanings=["meaning"],
+        default_image=_png(),
+        change_images=[_png()],
+    )
+    before = store.read_record(created["id"])
+    base_revision = store.get_detail(created["id"])["revision"]
+
+    with pytest.raises(AvatarToolStoreError) as raised:
+        store.update_tool(
+            created["id"],
+            base_revision=base_revision,
+            name="Changed",
+            change_mode="press-swap",
+            change_meanings=["changed"],
+            default_resource="../default.png",
+            default_image=None,
+            change_resources=["change-000.png"],
+            change_images=[],
+        )
+
+    assert raised.value.code == "resource_reference_invalid"
+    assert store.read_record(created["id"]) == before
+
+
+def test_update_rejects_a_stale_edit_revision(tmp_path, monkeypatch):
+    monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
+    store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
+    created = store.create_tool(
+        name="Feather",
+        change_mode="press-swap",
+        change_meanings=["meaning"],
+        default_image=_png(),
+        change_images=[_png()],
+    )
+
+    with pytest.raises(AvatarToolStoreError) as raised:
+        store.update_tool(
+            created["id"],
+            base_revision="1-1",
+            name="Changed",
+            change_mode="press-swap",
+            change_meanings=["changed"],
+            default_resource="default.png",
+            default_image=None,
+            change_resources=["change-000.png"],
+            change_images=[],
+        )
+
+    assert raised.value.code == "tool_revision_conflict"
+    assert raised.value.status_code == 409
+    assert store.read_record(created["id"])["name"] == "Feather"
+
+
+def test_initialize_restores_a_valid_backup_after_interrupted_update(tmp_path, monkeypatch):
+    monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
+    store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
+    created = store.create_tool(
+        name="Feather",
+        change_mode="press-swap",
+        change_meanings=["meaning"],
+        default_image=_png(),
+        change_images=[_png()],
+    )
+    tool_id = created["id"]
+    final = store.root / tool_id
+    backup = store.root / f".{tool_id}.backup"
+    updating = store.root / f".{tool_id}.updating"
+    shutil.copytree(final, backup)
+    shutil.copytree(final, updating)
+    shutil.rmtree(final)
+
+    store.initialize()
+
+    assert store.read_record(tool_id)["name"] == "Feather"
+    assert not backup.exists()
+    assert not updating.exists()
+
+
+def test_list_waits_for_update_publication_instead_of_observing_an_empty_gap(tmp_path, monkeypatch):
+    monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
+    store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
+    created = store.create_tool(
+        name="Before",
+        change_mode="press-swap",
+        change_meanings=["before"],
+        default_image=_png(),
+        change_images=[_png()],
+    )
+    tool_id = created["id"]
+    final = store.root / tool_id
+    backup = store.root / f".{tool_id}.backup"
+    base_revision = store.get_detail(tool_id)["revision"]
+    backup_published = threading.Event()
+    release_update = threading.Event()
+    reader_done = threading.Event()
+    update_errors = []
+    reader_errors = []
+    listed_items = []
+    real_replace = os.replace
+
+    def paused_replace(source, destination):
+        real_replace(source, destination)
+        if Path(source) == final and Path(destination) == backup:
+            backup_published.set()
+            release_update.wait()
+
+    monkeypatch.setattr("utils.avatar_tool_store.os.replace", paused_replace)
+
+    def update():
+        try:
+            store.update_tool(
+                tool_id,
+                base_revision=base_revision,
+                name="After",
+                change_mode="press-swap",
+                change_meanings=["after"],
+                default_resource="default.png",
+                default_image=None,
+                change_resources=["change-000.png"],
+                change_images=[],
+            )
+        except BaseException as exc:  # pragma: no cover - asserted below
+            update_errors.append(exc)
+
+    def read_list():
+        try:
+            listed_items.extend(store.list_items())
+        except BaseException as exc:  # pragma: no cover - asserted below
+            reader_errors.append(exc)
+        finally:
+            reader_done.set()
+
+    update_thread = threading.Thread(target=update, daemon=True)
+    reader_thread = threading.Thread(target=read_list, daemon=True)
+    update_thread.start()
+    assert backup_published.wait(5)
+    reader_thread.start()
+    try:
+        assert not reader_done.wait(0.1)
+    finally:
+        release_update.set()
+    update_thread.join(5)
+    reader_thread.join(5)
+
+    assert not update_thread.is_alive()
+    assert not reader_thread.is_alive()
+    assert update_errors == []
+    assert reader_errors == []
+    assert [item["name"] for item in listed_items] == ["After"]
+
+
+def test_detail_and_revision_are_from_one_snapshot_during_update(tmp_path, monkeypatch):
+    monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
+    store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
+    created = store.create_tool(
+        name="Before",
+        change_mode="press-swap",
+        change_meanings=["before"],
+        default_image=_png(),
+        change_images=[_png()],
+    )
+    tool_id = created["id"]
+    before = store.get_detail(tool_id)
+    record_read = threading.Event()
+    release_detail = threading.Event()
+    update_done = threading.Event()
+    detail_errors = []
+    update_errors = []
+    details = []
+    original_read_record = store.read_record
+
+    def paused_read_record(requested_tool_id):
+        record = original_read_record(requested_tool_id)
+        if threading.current_thread().name == "detail-reader":
+            record_read.set()
+            release_detail.wait()
+        return record
+
+    monkeypatch.setattr(store, "read_record", paused_read_record)
+
+    def read_detail():
+        try:
+            details.append(store.get_detail(tool_id))
+        except BaseException as exc:  # pragma: no cover - asserted below
+            detail_errors.append(exc)
+
+    def update():
+        try:
+            store.update_tool(
+                tool_id,
+                base_revision=before["revision"],
+                name="After",
+                change_mode="press-swap",
+                change_meanings=["after"],
+                default_resource="default.png",
+                default_image=None,
+                change_resources=["change-000.png"],
+                change_images=[],
+            )
+        except BaseException as exc:  # pragma: no cover - asserted below
+            update_errors.append(exc)
+        finally:
+            update_done.set()
+
+    detail_thread = threading.Thread(target=read_detail, name="detail-reader", daemon=True)
+    update_thread = threading.Thread(target=update, daemon=True)
+    detail_thread.start()
+    assert record_read.wait(5)
+    update_thread.start()
+    try:
+        assert not update_done.wait(0.1)
+    finally:
+        release_detail.set()
+    detail_thread.join(5)
+    update_thread.join(5)
+
+    assert not detail_thread.is_alive()
+    assert not update_thread.is_alive()
+    assert detail_errors == []
+    assert update_errors == []
+    assert details[0]["name"] == "Before"
+    assert details[0]["changeItems"][0]["meaning"] == "before"
+    assert details[0]["revision"] == before["revision"]
+    assert store.get_detail(tool_id)["name"] == "After"

@@ -4,15 +4,20 @@ import { validateAvatarToolDefinition } from './catalog';
 import {
   buildLocalAvatarToolDefinition,
   createLocalAvatarTool,
+  deleteLocalAvatarTool,
+  fetchLocalAvatarToolDetail,
   fetchLocalAvatarTools,
+  LocalAvatarToolCreateError,
+  LocalAvatarToolDeleteError,
+  updateLocalAvatarTool,
   type LocalAvatarToolDto,
 } from './localTools';
 
 const TOOL_ID = 'local-12345678-1234-4123-8123-123456789abc' as const;
 const LIMITS = {
   maxTools: 64,
-  maxNameChars: 80,
-  maxMeaningChars: 1200,
+  maxNameChars: 20,
+  maxMeaningChars: 100,
   maxChangeImages: 16,
   maxImageBytes: 8_388_608,
   maxImagePixels: 16_000_000,
@@ -228,6 +233,20 @@ describe('local avatar tool image change modes', () => {
     });
   });
 
+  it('validates item image counts against the authoritative response limit', async () => {
+    const limits = { ...LIMITS, maxChangeImages: 1 };
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      ok: true,
+      items: [dto({
+        changeMode: 'click-advance',
+        changeUrls: ['/change-000.png?v=1', '/change-001.png?v=1'],
+      })],
+      limits,
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } })));
+
+    await expect(fetchLocalAvatarTools()).resolves.toEqual({ items: [], limits });
+  });
+
   it('posts ordered image/meaning pairs and retries csrf failure exactly once', async () => {
     const getMutationHeaders = vi.fn()
       .mockResolvedValueOnce({ 'X-CSRF-Token': 'old' })
@@ -278,5 +297,160 @@ describe('local avatar tool image change modes', () => {
     expect((firstForm.get('special_image') as File).name).toBe('special.png');
     expect(firstForm.get('special_meaning')).toBe('Surprise meaning');
     expect((firstForm.get('special_sound') as File).name).toBe('special.mp3');
+  });
+
+  it('preserves the server field and item index on create errors', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      error_code: 'image_too_large',
+      field: 'change_image',
+      index: 1,
+    }), {
+      status: 413,
+      headers: { 'Content-Type': 'application/json' },
+    })));
+
+    let failure: unknown;
+    try {
+      await createLocalAvatarTool({
+        name: 'Feather',
+        changeMode: 'click-advance',
+        defaultImage: new File(['default'], 'default.png', { type: 'image/png' }),
+        changeItems: [
+          { image: new File(['one'], 'one.png', { type: 'image/png' }), meaning: 'One' },
+          { image: new File(['two'], 'two.png', { type: 'image/png' }), meaning: 'Two' },
+        ],
+      });
+    } catch (cause) {
+      failure = cause;
+    }
+
+    expect(failure).toBeInstanceOf(LocalAvatarToolCreateError);
+    expect(failure).toMatchObject({
+      message: 'image_too_large',
+      field: 'change_image',
+      index: 1,
+    });
+  });
+
+  it('loads private edit details only from the targeted endpoint', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      ok: true,
+      detail: {
+        id: TOOL_ID,
+        revision: '100-200',
+        name: 'Feather',
+        changeMode: 'press-swap',
+        defaultImage: { resource: 'default.png', url: '/default.png?v=1' },
+        changeItems: [{
+          resource: 'change-000.png',
+          url: '/change-000.png?v=1',
+          meaning: 'A gentle touch',
+        }],
+      },
+      limits: LIMITS,
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(fetchLocalAvatarToolDetail(TOOL_ID, 16)).resolves.toMatchObject({
+      id: TOOL_ID,
+      changeItems: [{ meaning: 'A gentle touch' }],
+    });
+    expect(fetchMock).toHaveBeenCalledWith(`/api/avatar-tools/${TOOL_ID}`, {
+      credentials: 'same-origin',
+      cache: 'no-store',
+    });
+  });
+
+  it('puts retained resources, replacements, removals, and ordering under the same id', async () => {
+    window.nekoLocalMutationSecurity = {
+      getMutationHeaders: () => ({ 'X-CSRF-Token': 'token' }),
+    };
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      ok: true,
+      item: dto({
+        name: 'Soft Feather',
+        changeMode: 'click-advance',
+        changeUrls: ['/change-000.png?v=2', '/change-001.png?v=2'],
+      }),
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+    vi.stubGlobal('fetch', fetchMock);
+    const replacement = new File(['new'], 'new.png', { type: 'image/png' });
+
+    await expect(updateLocalAvatarTool(TOOL_ID, {
+      baseRevision: '100-200',
+      name: 'Soft Feather',
+      changeMode: 'click-advance',
+      defaultImage: { resource: 'default.png' },
+      changeItems: [
+        { resource: 'change-000.png', meaning: 'Retained' },
+        { file: replacement, meaning: 'Replacement' },
+      ],
+      special: {
+        probability: 0.25,
+        image: { resource: 'special.png' },
+        meaning: 'Surprise',
+      },
+    })).resolves.toMatchObject({ id: TOOL_ID, name: 'Soft Feather' });
+
+    const [url, options] = fetchMock.mock.calls[0];
+    expect(url).toBe(`/api/avatar-tools/${TOOL_ID}`);
+    expect(options).toMatchObject({ method: 'PUT', headers: { 'X-CSRF-Token': 'token' } });
+    const form = options.body as FormData;
+    expect(form.get('default_resource')).toBe('default.png');
+    expect(form.get('base_revision')).toBe('100-200');
+    expect(form.getAll('change_resources')).toEqual(['change-000.png', '']);
+    expect(form.getAll('change_meanings')).toEqual(['Retained', 'Replacement']);
+    expect(form.getAll('change_images')).toEqual([replacement]);
+    expect(form.has('normal_sound_resource')).toBe(false);
+    expect(form.get('special_image_resource')).toBe('special.png');
+    expect(form.has('special_sound_resource')).toBe(false);
+  });
+
+  it('deletes a local tool with mutation headers and retries csrf failure once', async () => {
+    const getMutationHeaders = vi.fn()
+      .mockResolvedValueOnce({ 'X-CSRF-Token': 'old' })
+      .mockResolvedValueOnce({ 'X-CSRF-Token': 'new' });
+    const refreshToken = vi.fn().mockResolvedValue(undefined);
+    window.nekoLocalMutationSecurity = { getMutationHeaders, refreshToken };
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ error_code: 'csrf_validation_failed' }), {
+        status: 403,
+        headers: { 'Content-Type': 'application/json' },
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true, deletedId: TOOL_ID }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(deleteLocalAvatarTool(TOOL_ID)).resolves.toBeUndefined();
+
+    expect(refreshToken).toHaveBeenCalledTimes(1);
+    expect(getMutationHeaders).toHaveBeenCalledTimes(2);
+    expect(fetchMock).toHaveBeenNthCalledWith(1, `/api/avatar-tools/${TOOL_ID}`, expect.objectContaining({
+      method: 'DELETE',
+      credentials: 'same-origin',
+      headers: { 'X-CSRF-Token': 'old' },
+    }));
+  });
+
+  it('rejects malformed delete success responses', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      ok: true,
+      deletedId: 'local-aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    })));
+
+    await expect(deleteLocalAvatarTool(TOOL_ID)).rejects.toEqual(
+      expect.objectContaining({
+        name: 'LocalAvatarToolDeleteError',
+        message: 'avatar_tool_delete_failed',
+      }),
+    );
+    await expect(deleteLocalAvatarTool('lollipop' as `local-${string}`)).rejects.toBeInstanceOf(
+      LocalAvatarToolDeleteError,
+    );
   });
 });

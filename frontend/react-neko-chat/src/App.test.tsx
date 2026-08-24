@@ -506,6 +506,130 @@ describe('App', () => {
     })));
   });
 
+  it('loads a local avatar tool into Full without exposing the create entry', async () => {
+    const localToolId = 'local-12345678-1234-4123-8123-123456789abc';
+    const onAvatarToolStateChange = vi.fn();
+    (window as Window & { __NEKO_MULTI_WINDOW__?: boolean }).__NEKO_MULTI_WINDOW__ = true;
+    window.localStorage.setItem(ACTIVE_AVATAR_TOOLS_STORAGE_KEY, JSON.stringify([localToolId]));
+    const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(new Response(JSON.stringify({
+      ok: true,
+      items: [{
+        id: localToolId,
+        name: 'Feather',
+        changeMode: 'click-advance',
+        defaultUrl: `/user_avatar_tools/${localToolId}/default.png?v=1`,
+        changeUrls: [
+          `/user_avatar_tools/${localToolId}/change-000.png?v=1`,
+          `/user_avatar_tools/${localToolId}/change-001.png?v=1`,
+        ],
+        normalSoundUrl: `/user_avatar_tools/${localToolId}/normal.mp3?v=1`,
+        special: {
+          probability: 0.1,
+          imageUrl: `/user_avatar_tools/${localToolId}/special.png?v=1`,
+          soundUrl: `/user_avatar_tools/${localToolId}/special.mp3?v=1`,
+        },
+      }],
+      limits: {
+        maxTools: 20,
+        maxNameChars: 20,
+        maxMeaningChars: 100,
+        maxChangeImages: 16,
+        maxImageBytes: 10_000_000,
+        maxImagePixels: 16_000_000,
+        maxAudioBytes: 10_000_000,
+        maxAudioDurationMs: 60_000,
+        maxTotalBytes: 100_000_000,
+      },
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } })));
+    vi.stubGlobal('fetch', fetchMock);
+
+    try {
+      render(
+        <App
+          chatSurfaceMode="full"
+          onAvatarToolStateChange={onAvatarToolStateChange}
+        />,
+      );
+
+      await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+      fireEvent.click(screen.getByRole('button', { name: 'Emoji' }));
+      const localToolButton = await screen.findByRole('button', { name: 'Feather' });
+      fireEvent.click(localToolButton);
+
+      await waitFor(() => expect(onAvatarToolStateChange).toHaveBeenLastCalledWith(expect.objectContaining({
+        active: true,
+        toolId: localToolId,
+        desktopContract: expect.objectContaining({
+          wireVersion: 1,
+          definition: expect.objectContaining({
+            id: localToolId,
+            definitionVersion: 2,
+            visual: expect.objectContaining({
+              frames: expect.arrayContaining([
+                expect.objectContaining({ pointerImagePath: expect.stringContaining('/default.png?v=1') }),
+                expect.objectContaining({ pointerImagePath: expect.stringContaining('/change-001.png?v=1') }),
+              ]),
+            }),
+            interaction: expect.objectContaining({
+              profile: expect.objectContaining({
+                imageChange: { kind: 'click-advance' },
+                chance: expect.objectContaining({ probability: 0.1 }),
+              }),
+            }),
+          }),
+        }),
+      })));
+
+      fireEvent.click(screen.getByRole('button', { name: 'Emoji: Feather' }));
+      fireEvent.click(await screen.findByRole('button', { name: 'Emoji' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Edit quick tools' }));
+      const dialog = await screen.findByRole('dialog', { name: 'Manage tools' });
+      expect(dialog.querySelector(`[data-avatar-tool-library-id="${localToolId}"]`)).not.toBeNull();
+      expect(dialog.querySelector('[data-avatar-tool-create]')).toBeNull();
+      expect(dialog.querySelector('.avatar-tool-manager-modify')).toBeNull();
+      expect(dialog.querySelector('.avatar-tool-manager-delete')).toBeNull();
+    } finally {
+      vi.unstubAllGlobals();
+      delete (window as Window & { __NEKO_MULTI_WINDOW__?: boolean }).__NEKO_MULTI_WINDOW__;
+    }
+  });
+
+  it('does not clean Full local slots until the catalog has loaded successfully', async () => {
+    const localToolId = 'local-12345678-1234-4123-8123-123456789abc';
+    const stored = JSON.stringify([localToolId]);
+    window.localStorage.setItem(ACTIVE_AVATAR_TOOLS_STORAGE_KEY, stored);
+    const fetchMock = vi.fn()
+      .mockRejectedValueOnce(new Error('offline'))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        ok: true,
+        items: [],
+        limits: {
+          maxTools: 20,
+          maxNameChars: 20,
+          maxMeaningChars: 100,
+          maxChangeImages: 16,
+          maxImageBytes: 10_000_000,
+          maxImagePixels: 16_000_000,
+          maxAudioBytes: 10_000_000,
+          maxAudioDurationMs: 60_000,
+          maxTotalBytes: 100_000_000,
+        },
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    try {
+      render(<App chatSurfaceMode="full" />);
+      await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+      expect(window.localStorage.getItem(ACTIVE_AVATAR_TOOLS_STORAGE_KEY)).toBe(stored);
+
+      act(() => window.dispatchEvent(new Event('focus')));
+      await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+      await waitFor(() => expect(window.localStorage.getItem(ACTIVE_AVATAR_TOOLS_STORAGE_KEY)).toBe('[]'));
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it('publishes only the strict desktop descriptor from the full chat surface', async () => {
     (window as Window & { __NEKO_MULTI_WINDOW__?: boolean }).__NEKO_MULTI_WINDOW__ = true;
     const onAvatarInteraction = vi.fn();
@@ -5903,6 +6027,113 @@ describe('App', () => {
       active: false,
       toolId: null,
     })));
+  });
+
+  it('deletes an equipped local tool from Compact and clears its saved slot', async () => {
+    const localToolId = 'local-12345678-1234-4123-8123-123456789abc';
+    const localItem = {
+      id: localToolId,
+      name: 'Feather',
+      changeMode: 'press-swap',
+      defaultUrl: `/user_avatar_tools/${localToolId}/default.png?v=1`,
+      changeUrls: [`/user_avatar_tools/${localToolId}/change-000.png?v=1`],
+    };
+    const limits = {
+      maxTools: 64,
+      maxNameChars: 20,
+      maxMeaningChars: 100,
+      maxChangeImages: 16,
+      maxImageBytes: 8_388_608,
+      maxImagePixels: 16_000_000,
+      maxAudioBytes: 5_242_880,
+      maxAudioDurationMs: 10_000,
+      maxTotalBytes: 268_435_456,
+    };
+    const localDetail = {
+      id: localToolId,
+      revision: '100-200',
+      name: 'Feather',
+      changeMode: 'press-swap',
+      defaultImage: {
+        resource: 'default.png',
+        url: localItem.defaultUrl,
+      },
+      changeItems: [{
+        resource: 'change-000.png',
+        url: localItem.changeUrls[0],
+        meaning: 'The user touches the feather.',
+      }],
+    };
+    let deleted = false;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (init?.method === 'DELETE') {
+        deleted = true;
+        return new Response(JSON.stringify({ ok: true, deletedId: localToolId }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      if (url.endsWith(`/api/avatar-tools/${localToolId}`)) {
+        return new Response(JSON.stringify({ ok: true, detail: localDetail, limits }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      return new Response(JSON.stringify({
+        ok: true,
+        items: deleted ? [] : [localItem],
+        limits,
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    });
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    const onAvatarToolStateChange = vi.fn();
+    (window as Window & { __NEKO_MULTI_WINDOW__?: boolean }).__NEKO_MULTI_WINDOW__ = true;
+    window.localStorage.setItem(ACTIVE_AVATAR_TOOLS_STORAGE_KEY, JSON.stringify([localToolId]));
+    vi.stubGlobal('fetch', fetchMock);
+
+    try {
+      const { container } = render(
+        <App
+          chatSurfaceMode="compact"
+          compactChatState="input"
+          onAvatarToolStateChange={onAvatarToolStateChange}
+        />,
+      );
+      await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+      await openCompactInputTools();
+      fireEvent.click(screen.getByRole('button', { name: 'Avatar tools' }));
+      fireEvent.click(await screen.findByRole('button', { name: 'Feather' }));
+      await waitFor(() => expect(onAvatarToolStateChange).toHaveBeenLastCalledWith(expect.objectContaining({
+        active: true,
+        toolId: localToolId,
+      })));
+
+      // The avatar-tool button first exits the active interaction. Opening it
+      // again exposes the equipped-tool manager, matching the actual UI flow.
+      await openCompactInputTools();
+      fireEvent.click(screen.getByRole('button', { name: 'Avatar tools' }));
+      await waitFor(() => expect(onAvatarToolStateChange).toHaveBeenLastCalledWith(expect.objectContaining({
+        active: false,
+        toolId: null,
+      })));
+      await openCompactInputTools();
+      fireEvent.click(screen.getByRole('button', { name: 'Avatar tools' }));
+      fireEvent.click(container.querySelector('.avatar-tool-quickbar-edit') as HTMLButtonElement);
+      const dialog = await screen.findByRole('dialog', { name: 'Manage tools' });
+      fireEvent.click(screen.getByRole('button', { name: 'Edit Feather' }));
+      await screen.findByRole('dialog', { name: 'Edit custom tool' });
+      fireEvent.click(screen.getByRole('button', { name: 'Delete tool' }));
+
+      await waitFor(() => expect(dialog.querySelector(`[data-avatar-tool-library-id="${localToolId}"]`)).toBeNull());
+      await waitFor(() => expect(window.localStorage.getItem(ACTIVE_AVATAR_TOOLS_STORAGE_KEY)).toBe('[]'));
+      expect(fetchMock.mock.calls.some(([, init]) => init?.method === 'DELETE')).toBe(true);
+      expect(confirm).toHaveBeenCalledTimes(1);
+    } finally {
+      confirm.mockRestore();
+      vi.unstubAllGlobals();
+      delete (window as Window & { __NEKO_MULTI_WINDOW__?: boolean }).__NEKO_MULTI_WINDOW__;
+    }
   });
 
   it('sizes compact avatar tool manager against the desktop work area when the carrier is small', async () => {

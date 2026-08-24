@@ -258,6 +258,10 @@ export function useAvatarToolRuntime({
   const [roundChoiceAvatarGestureState, setRoundChoiceAvatarGestureState] =
     useState<AvatarToolRoundChoiceAvatarGestureState | null>(null);
   const [localeRevision, setLocaleRevision] = useState(0);
+  const activeDefinitionSignature = useMemo(() => {
+    if (!activeToolId || !registry.has(activeToolId)) return '';
+    return JSON.stringify(registry.getRegistration(activeToolId).definition);
+  }, [activeToolId, registry]);
 
   const generationRef = useRef(0);
   const sessionRef = useRef<RuntimeSession | null>(null);
@@ -277,8 +281,14 @@ export function useAvatarToolRuntime({
   const stateCallbackRef = useRef(onStateChange);
   const deactivateCallbackRef = useRef(onDeactivate);
   const toolLabelCallbackRef = useRef(getToolLabel);
+  const publishStateCallbackRef = useRef<() => void>(() => {});
+  const publishInactiveStateCallbackRef = useRef<() => void>(() => {});
   const lastStateKeyRef = useRef('');
   const lastDeactivationKeyRef = useRef('');
+  const selectedDefinitionRef = useRef<{ toolId: AvatarToolId | null; signature: string }>({
+    toolId: null,
+    signature: '',
+  });
   const boundsCacheRef = useRef<{ expiresAt: number; lastAvailableAt: number; bounds: AvatarToolBounds[] }>({
     expiresAt: 0,
     lastAvailableAt: 0,
@@ -509,6 +519,11 @@ export function useAvatarToolRuntime({
     lastStateKeyRef.current = key;
     callback(payload);
   }, [ownsLocalPointerRuntime]);
+
+  useLayoutEffect(() => {
+    publishStateCallbackRef.current = publishState;
+    publishInactiveStateCallbackRef.current = publishInactiveState;
+  }, [publishInactiveState, publishState]);
 
   const disposeSession = useCallback(() => {
     generationRef.current += 1;
@@ -879,6 +894,45 @@ export function useAvatarToolRuntime({
     ownsLocalPointerRuntime,
     publishState,
     setRange,
+    updateOverlayPosition,
+  ]);
+
+  useEffect(() => {
+    const previous = selectedDefinitionRef.current;
+    selectedDefinitionRef.current = {
+      toolId: activeToolId,
+      signature: activeDefinitionSignature,
+    };
+    if (!activeToolId || previous.toolId !== activeToolId || !previous.signature) return;
+    if (!activeDefinitionSignature) {
+      clearTool();
+      return;
+    }
+    if (previous.signature === activeDefinitionSignature) return;
+
+    if (ownsLocalPointerRuntime) createSession(activeToolId);
+    else destroySession();
+    const initialVariant = registry.getRegistration(activeToolId).definition.visual.initialVariant;
+    const nextRange = { ...rangeVariantsRef.current, [activeToolId]: initialVariant };
+    const nextOutside = { ...outsideVariantsRef.current, [activeToolId]: initialVariant };
+    rangeVariantsRef.current = nextRange;
+    outsideVariantsRef.current = nextOutside;
+    setRangeVariants(nextRange);
+    setOutsideVariants(nextOutside);
+    lastStateKeyRef.current = '';
+    window.queueMicrotask(() => {
+      updateOverlayPosition();
+      publishState();
+    });
+  }, [
+    activeDefinitionSignature,
+    activeToolId,
+    clearTool,
+    createSession,
+    destroySession,
+    ownsLocalPointerRuntime,
+    publishState,
+    registry,
     updateOverlayPosition,
   ]);
 
@@ -1357,10 +1411,20 @@ export function useAvatarToolRuntime({
   }, [clearTool]);
 
   useEffect(() => {
-    const publishInactive = () => publishInactiveState();
-    const republishCurrent = () => {
+    if (ownsLocalPointerRuntime) return undefined;
+    const republish = () => {
       lastStateKeyRef.current = '';
       publishState();
+    };
+    window.addEventListener('neko:republish-avatar-tool-state', republish);
+    return () => window.removeEventListener('neko:republish-avatar-tool-state', republish);
+  }, [ownsLocalPointerRuntime, publishState]);
+
+  useEffect(() => {
+    const publishInactive = () => publishInactiveStateCallbackRef.current();
+    const republishCurrent = () => {
+      lastStateKeyRef.current = '';
+      publishStateCallbackRef.current();
     };
     window.addEventListener('beforeunload', publishInactive);
     window.addEventListener('pagehide', publishInactive);
@@ -1369,10 +1433,10 @@ export function useAvatarToolRuntime({
       window.removeEventListener('beforeunload', publishInactive);
       window.removeEventListener('pagehide', publishInactive);
       window.removeEventListener('pageshow', republishCurrent);
-      publishInactiveState();
+      publishInactiveStateCallbackRef.current();
       disposeSession();
     };
-  }, [disposeSession, publishInactiveState, publishState]);
+  }, [disposeSession]);
 
   const visualModel = buildAvatarToolVisualModel({
     activeTool,

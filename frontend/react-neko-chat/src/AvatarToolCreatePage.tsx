@@ -8,15 +8,20 @@ import { i18n } from './i18n';
 import type {
   CreateLocalAvatarToolInput,
   LocalAvatarToolChangeMode,
+  LocalAvatarToolDetail,
   LocalAvatarToolLimits,
+  UpdateLocalAvatarToolInput,
 } from './avatar-tools/localTools';
+import { LocalAvatarToolCreateError } from './avatar-tools/localTools';
 
 type AvatarToolCreatePageProps = {
   limits: LocalAvatarToolLimits | null;
   userName?: string;
   assistantName?: string;
+  initialDetail?: LocalAvatarToolDetail;
   onSpecialEnabledChange(enabled: boolean): void;
-  onCreate(input: CreateLocalAvatarToolInput): Promise<void>;
+  onSave(input: CreateLocalAvatarToolInput | UpdateLocalAvatarToolInput): Promise<void>;
+  onDelete?(): Promise<void>;
   onCancel(): void;
 };
 
@@ -30,8 +35,25 @@ type HostFilePickerResult = {
 type ChangeItemDraft = {
   id: number;
   image: File | null;
+  imageResource?: string;
   meaning: string;
 };
+
+type FieldErrors = Record<string, string>;
+
+const NAME_ALLOWED_PATTERN = /^[\p{L}\p{M}\p{N} _-]+$/u;
+
+function normalizeToolName(value: string): string {
+  return value.normalize('NFC').trim().replace(/ +/g, ' ');
+}
+
+function characterCount(value: string): number {
+  return Array.from(value).length;
+}
+
+function FieldError({ message }: { message?: string }) {
+  return message ? <small className="avatar-tool-create-field-error" role="alert">{message}</small> : null;
+}
 
 declare global {
   interface Window {
@@ -51,33 +73,53 @@ export default function AvatarToolCreatePage({
   limits,
   userName = '',
   assistantName = '',
+  initialDetail,
   onSpecialEnabledChange,
-  onCreate,
+  onSave,
+  onDelete,
   onCancel,
 }: AvatarToolCreatePageProps) {
-  const nextItemIdRef = useRef(2);
+  const editing = !!initialDetail;
+  const initialChangeItems = initialDetail?.changeItems.map((item, index) => ({
+    id: index,
+    image: null,
+    imageResource: item.resource,
+    meaning: item.meaning,
+  }));
+  const nextItemIdRef = useRef((initialChangeItems?.length ?? 0) + 2);
   const createFieldsRef = useRef<HTMLDivElement | null>(null);
-  const [name, setName] = useState('');
-  const [changeMode, setChangeMode] = useState<LocalAvatarToolChangeMode>('press-swap');
+  const [name, setName] = useState(initialDetail?.name ?? '');
+  const [changeMode, setChangeMode] = useState<LocalAvatarToolChangeMode>(initialDetail?.changeMode ?? 'press-swap');
   const [defaultImage, setDefaultImage] = useState<File | null>(null);
+  const [defaultImageResource] = useState(initialDetail?.defaultImage.resource);
   const [normalSound, setNormalSound] = useState<File | null>(null);
-  const [specialEnabled, setSpecialEnabled] = useState(false);
-  const [specialProbabilityPercent, setSpecialProbabilityPercent] = useState(10);
+  const [normalSoundResource, setNormalSoundResource] = useState(initialDetail?.normalSound?.resource);
+  const [specialEnabled, setSpecialEnabled] = useState(!!initialDetail?.special);
+  const [specialProbabilityPercent, setSpecialProbabilityPercent] = useState(
+    Math.round((initialDetail?.special?.probability ?? 0.1) * 100),
+  );
   const [specialImage, setSpecialImage] = useState<File | null>(null);
-  const [specialMeaning, setSpecialMeaning] = useState('');
+  const [specialImageResource] = useState(initialDetail?.special?.image.resource);
+  const [specialMeaning, setSpecialMeaning] = useState(initialDetail?.special?.meaning ?? '');
   const [specialSound, setSpecialSound] = useState<File | null>(null);
+  const [specialSoundResource, setSpecialSoundResource] = useState(initialDetail?.special?.sound?.resource);
   const [changeItemsByMode, setChangeItemsByMode] = useState<Record<LocalAvatarToolChangeMode, ChangeItemDraft[]>>({
-    'press-swap': [{ id: 0, image: null, meaning: '' }],
-    'click-advance': [{ id: 1, image: null, meaning: '' }],
+    'press-swap': initialDetail?.changeMode === 'press-swap' && initialChangeItems
+      ? initialChangeItems
+      : [{ id: 0, image: null, meaning: '' }],
+    'click-advance': initialDetail?.changeMode === 'click-advance' && initialChangeItems
+      ? initialChangeItems
+      : [{ id: 1, image: null, meaning: '' }],
   });
   const [submitting, setSubmitting] = useState(false);
+  const [deleting, setDeleting] = useState(false);
   const [error, setError] = useState('');
-  const [audioError, setAudioError] = useState('');
-  const [specialAudioError, setSpecialAudioError] = useState('');
+  const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
   const changeItems = changeItemsByMode[changeMode];
+  const busy = submitting || deleting;
   const meaningExample = i18n(
     'chat.avatarToolCreateImageMeaningPlaceholder',
-    'For example: “{{user}}” offers a lollipop to “{{character}}”, and “{{character}}” takes a bite.',
+    'For example: “{{user}}” brings a lollipop to “{{character}}”, and “{{character}}” takes a bite.',
     {
       user: userName.trim() || i18n('chat.avatarToolCreateExampleUser', 'the user'),
       character: assistantName.trim() || i18n('chat.avatarToolCreateExampleCharacter', 'the character'),
@@ -85,12 +127,44 @@ export default function AvatarToolCreatePage({
   );
   const specialMeaningExample = i18n(
     'chat.avatarToolCreateSpecialMeaningPlaceholder',
-    'For example: “{{user}}” lightly interacts with this tool, and a reward drops.',
+    'For example: “{{user}}” lightly taps “{{character}}” with a cat paw and a reward drops.',
     {
       user: userName.trim() || i18n('chat.avatarToolCreateExampleUser', 'the user'),
       character: assistantName.trim() || i18n('chat.avatarToolCreateExampleCharacter', 'the character'),
     },
   );
+
+  const clearFieldError = (key: string) => {
+    setFieldErrors((current) => {
+      if (!current[key]) return current;
+      const next = { ...current };
+      delete next[key];
+      return next;
+    });
+  };
+
+  const setFieldError = (key: string, message: string) => {
+    setFieldErrors((current) => ({ ...current, [key]: message }));
+  };
+
+  const showFieldErrors = (next: FieldErrors) => {
+    setFieldErrors(next);
+    const firstKey = Object.keys(next)[0];
+    if (!firstKey) return;
+    window.requestAnimationFrame(() => {
+      const field = Array.from(
+        createFieldsRef.current?.querySelectorAll<HTMLElement>('[data-error-key]') ?? [],
+      ).find(candidate => candidate.dataset.errorKey === firstKey);
+      if (!field) return;
+      if (typeof field.scrollIntoView === 'function') {
+        field.scrollIntoView({ block: 'nearest' });
+      }
+      const focusTarget = field.matches('input, textarea, button')
+        ? field
+        : field.querySelector<HTMLElement>('input, textarea, button');
+      focusTarget?.focus();
+    });
+  };
 
   const updateChangeItem = (id: number, patch: Partial<Omit<ChangeItemDraft, 'id'>>) => {
     setChangeItemsByMode(current => ({
@@ -102,6 +176,7 @@ export default function AvatarToolCreatePage({
   const pickImageWithDesktopHost = async (
     event: ReactMouseEvent<HTMLInputElement>,
     title: string,
+    errorKey: string,
     setFile: (file: File) => void,
   ) => {
     const picker = window.nekoHost?.pickImage;
@@ -128,9 +203,17 @@ export default function AvatarToolCreatePage({
         // File 已进入 React 状态即可保存；这里仅用于让 Chromium 原生控件显示文件名。
       }
       setFile(file);
+      clearFieldError(errorKey);
       setError('');
     } catch {
-      setError(i18n('chat.avatarToolCreateImagePickError', 'Could not open this PNG image. Please try another file.'));
+      setFieldError(
+        errorKey,
+        i18n(
+          'chat.avatarToolCreateImageInvalidError',
+          'This image cannot be used. Please choose another PNG.',
+        ),
+      );
+      setError('');
     }
   };
 
@@ -138,7 +221,7 @@ export default function AvatarToolCreatePage({
     event: ReactMouseEvent<HTMLInputElement>,
     title: string,
     setFile: (file: File) => void,
-    setFieldError: (message: string) => void,
+    errorKey: string,
   ) => {
     const picker = window.nekoHost?.pickAudio;
     if (!picker) return;
@@ -167,9 +250,14 @@ export default function AvatarToolCreatePage({
         // File 已进入 React 状态即可保存；这里只同步 Chromium 原生控件的文件名。
       }
       setFile(file);
-      setFieldError('');
+      clearFieldError(errorKey);
+      setError('');
     } catch {
-      setFieldError(i18n('chat.avatarToolCreateAudioPickError', 'Could not open this MP3. Please try another file.'));
+      setFieldError(
+        errorKey,
+        i18n('chat.avatarToolCreateAudioPickError', 'Could not open this MP3. Please try another file.'),
+      );
+      setError('');
     }
   };
 
@@ -206,133 +294,339 @@ export default function AvatarToolCreatePage({
       ...current,
       'click-advance': current['click-advance'].filter(item => item.id !== id),
     }));
+    clearFieldError(`change_image:${id}`);
+    clearFieldError(`change_meaning:${id}`);
     setError('');
+  };
+
+  const changeImageRequired = (index: number) => changeMode === 'click-advance'
+    ? i18n('chat.avatarToolCreateChangeImageRequiredNumber', 'Please choose change image {{number}}.', {
+      number: String(index + 1),
+    })
+    : i18n('chat.avatarToolCreateChangeImageRequired', 'Please choose a change image.');
+
+  const changeMeaningRequired = (index: number) => changeMode === 'click-advance'
+    ? i18n('chat.avatarToolCreateMeaningRequiredNumber', 'Please describe change image {{number}}.', {
+      number: String(index + 1),
+    })
+    : i18n('chat.avatarToolCreateMeaningRequired', 'Please enter an interaction description.');
+
+  const meaningLengthError = () => i18n(
+    'chat.avatarToolCreateMeaningLengthError',
+    'The interaction description must be 1–{{count}} characters.',
+    { count: String(limits?.maxMeaningChars ?? 100) },
+  );
+
+  const meaningInvalidError = () => i18n(
+    'chat.avatarToolCreateMeaningInvalidError',
+    'The interaction description contains unsupported characters.',
+  );
+
+  const validateMeaning = (value: string, requiredError: string): string => {
+    const normalized = value.replace(/\r\n?/g, '\n').trim();
+    if (!normalized) return requiredError;
+    if (characterCount(normalized) > (limits?.maxMeaningChars ?? 100)) return meaningLengthError();
+    return '';
+  };
+
+  const fieldKeyFromCreateError = (cause: LocalAvatarToolCreateError): string | null => {
+    if (cause.field === 'change_image' || cause.field === 'change_meaning') {
+      const item = cause.index === undefined ? undefined : changeItems[cause.index];
+      return item ? `${cause.field}:${item.id}` : null;
+    }
+    return cause.field ?? null;
+  };
+
+  const messageFromCreateError = (cause: LocalAvatarToolCreateError): string => {
+    if (cause.message === 'name_required') {
+      return i18n('chat.avatarToolCreateNameRequired', 'Please enter a tool name.');
+    }
+    if (cause.message === 'name_too_long') {
+      return i18n('chat.avatarToolCreateNameLengthError', 'The tool name must be 1–{{count}} characters.', {
+        count: String(limits?.maxNameChars ?? 20),
+      });
+    }
+    if (cause.message === 'name_invalid') {
+      return i18n(
+        'chat.avatarToolCreateNameInvalidError',
+        'Use letters, numbers, spaces, “-”, or “_” in the tool name.',
+      );
+    }
+    if (cause.field === 'change_meaning' || cause.field === 'special_meaning') {
+      if (cause.message.endsWith('_required')) {
+        return cause.field === 'special_meaning'
+          ? i18n('chat.avatarToolCreateMeaningRequired', 'Please enter an interaction description.')
+          : changeMeaningRequired(cause.index ?? 0);
+      }
+      if (cause.message.endsWith('_too_long')) {
+        return meaningLengthError();
+      }
+      return meaningInvalidError();
+    }
+    if (cause.field === 'default_image' || cause.field === 'change_image' || cause.field === 'special_image') {
+      if (cause.message.endsWith('_required')) {
+        if (cause.field === 'default_image') {
+          return i18n('chat.avatarToolCreateDefaultImageRequired', 'Please choose a default image.');
+        }
+        if (cause.field === 'special_image') {
+          return i18n('chat.avatarToolCreateSpecialImageRequired', 'Please choose a surprise image.');
+        }
+        return changeImageRequired(cause.index ?? 0);
+      }
+      if (cause.message === 'image_too_large') {
+        return i18n('chat.avatarToolCreateImageSizeError', 'The image must be no larger than {{size}}.', {
+          size: formatLimit(limits?.maxImageBytes),
+        });
+      }
+      return i18n(
+        'chat.avatarToolCreateImageInvalidError',
+        'This image cannot be used. Please choose another PNG.',
+      );
+    }
+    if (cause.field === 'normal_sound' || cause.field === 'special_sound') {
+      if (cause.message.endsWith('too_large')) {
+        return i18n('chat.avatarToolCreateAudioSizeError', 'The MP3 must be no larger than {{size}}.', {
+          size: formatLimit(limits?.maxAudioBytes),
+        });
+      }
+      if (cause.message.endsWith('too_long')) {
+        return i18n('chat.avatarToolCreateAudioDurationError', 'The MP3 must be no longer than {{seconds}} seconds.', {
+          seconds: String(Math.round((limits?.maxAudioDurationMs ?? 10_000) / 1000)),
+        });
+      }
+      return i18n('chat.avatarToolCreateAudioInvalidError', 'This sound cannot be used. Please choose another MP3.');
+    }
+    if (cause.field === 'special_probability') {
+      return i18n('chat.avatarToolCreateSpecialProbabilityInvalid', 'Choose a trigger chance from 1% to 100%.');
+    }
+    return i18n('chat.avatarToolCreateSaveError', 'Could not save this tool. Please try again.');
   };
 
   const submit = async (event: FormEvent) => {
     event.preventDefault();
-    if (submitting) return;
-    const completeItems = changeItems.every(item => item.image && item.meaning.trim());
-    if (
-      !name.trim()
-      || !defaultImage
-      || !completeItems
-      || (changeMode === 'press-swap' && changeItems.length !== 1)
-      || (specialEnabled && (!specialImage || !specialMeaning.trim()))
-    ) {
-      setError(i18n('chat.avatarToolCreateRequiredError', 'Please complete all required fields.'));
+    if (busy) return;
+    const nextErrors: FieldErrors = {};
+    const normalizedName = normalizeToolName(name);
+    const nameLength = characterCount(normalizedName);
+    const maximumNameLength = limits?.maxNameChars ?? 20;
+    if (!normalizedName) {
+      nextErrors.name = i18n('chat.avatarToolCreateNameRequired', 'Please enter a tool name.');
+    } else if (nameLength > maximumNameLength) {
+      nextErrors.name = i18n(
+        'chat.avatarToolCreateNameLengthError',
+        'The tool name must be 1–{{count}} characters.',
+        { count: String(maximumNameLength) },
+      );
+    } else if (!NAME_ALLOWED_PATTERN.test(normalizedName)) {
+      nextErrors.name = i18n(
+        'chat.avatarToolCreateNameInvalidError',
+        'Use letters, numbers, spaces, “-”, or “_” in the tool name.',
+      );
+    }
+    if (!defaultImage && !defaultImageResource) {
+      nextErrors.default_image = i18n(
+        'chat.avatarToolCreateDefaultImageRequired',
+        'Please choose a default image.',
+      );
+    }
+    changeItems.forEach((item, index) => {
+      if (!item.image && !item.imageResource) nextErrors[`change_image:${item.id}`] = changeImageRequired(index);
+      const meaningError = validateMeaning(item.meaning, changeMeaningRequired(index));
+      if (meaningError) nextErrors[`change_meaning:${item.id}`] = meaningError;
+    });
+    if (specialEnabled) {
+      if (!specialImage && !specialImageResource) {
+        nextErrors.special_image = i18n(
+          'chat.avatarToolCreateSpecialImageRequired',
+          'Please choose a surprise image.',
+        );
+      }
+      const meaningError = validateMeaning(
+        specialMeaning,
+        i18n('chat.avatarToolCreateMeaningRequired', 'Please enter an interaction description.'),
+      );
+      if (meaningError) nextErrors.special_meaning = meaningError;
+    }
+    if (Object.keys(nextErrors).length) {
+      showFieldErrors(nextErrors);
       return;
     }
     setSubmitting(true);
     setError('');
+    setFieldErrors({});
     try {
-      await onCreate({
-        name,
-        changeMode,
-        defaultImage,
-        changeItems: changeItems.map(item => ({
-          image: item.image!,
-          meaning: item.meaning,
-        })),
-        ...(normalSound ? { normalSound } : {}),
-        ...(specialEnabled ? {
-          special: {
-            probability: specialProbabilityPercent / 100,
-            image: specialImage!,
-            meaning: specialMeaning,
-            ...(specialSound ? { sound: specialSound } : {}),
-          },
-        } : {}),
-      });
-    } catch (cause) {
-      const code = cause instanceof Error ? cause.message : '';
-      if (code === 'special_audio_too_large') {
-        setSpecialAudioError(i18n('chat.avatarToolCreateAudioSizeError', 'The MP3 must be no larger than {{size}}.', {
-          size: formatLimit(limits?.maxAudioBytes),
-        }));
-      } else if (code === 'special_audio_too_long') {
-        setSpecialAudioError(i18n('chat.avatarToolCreateAudioDurationError', 'The MP3 must be no longer than {{seconds}} seconds.', {
-          seconds: String(Math.round((limits?.maxAudioDurationMs ?? 10_000) / 1000)),
-        }));
-      } else if (code.startsWith('special_audio_')) {
-        setSpecialAudioError(i18n('chat.avatarToolCreateAudioInvalidError', 'This file is not a valid MP3 with playable audio.'));
-      } else if (code === 'audio_too_large') {
-        setAudioError(i18n('chat.avatarToolCreateAudioSizeError', 'The MP3 must be no larger than {{size}}.', {
-          size: formatLimit(limits?.maxAudioBytes),
-        }));
-      } else if (code === 'audio_too_long') {
-        setAudioError(i18n('chat.avatarToolCreateAudioDurationError', 'The MP3 must be no longer than {{seconds}} seconds.', {
-          seconds: String(Math.round((limits?.maxAudioDurationMs ?? 10_000) / 1000)),
-        }));
-      } else if (code.startsWith('audio_')) {
-        setAudioError(i18n('chat.avatarToolCreateAudioInvalidError', 'This file is not a valid MP3 with playable audio.'));
-      } else if (code.startsWith('special_')) {
-        setError(i18n('chat.avatarToolCreateSpecialInvalidError', 'Please complete the surprise settings and try again.'));
+      if (editing) {
+        await onSave({
+          baseRevision: initialDetail!.revision,
+          name: normalizedName,
+          changeMode,
+          defaultImage: defaultImage ? { file: defaultImage } : { resource: defaultImageResource },
+          changeItems: changeItems.map(item => ({
+            ...(item.image ? { file: item.image } : { resource: item.imageResource }),
+            meaning: item.meaning,
+          })),
+          ...((normalSound || normalSoundResource) ? {
+            normalSound: normalSound ? { file: normalSound } : { resource: normalSoundResource },
+          } : {}),
+          ...(specialEnabled ? {
+            special: {
+              probability: specialProbabilityPercent / 100,
+              image: specialImage ? { file: specialImage } : { resource: specialImageResource },
+              meaning: specialMeaning,
+              ...((specialSound || specialSoundResource) ? {
+                sound: specialSound ? { file: specialSound } : { resource: specialSoundResource },
+              } : {}),
+            },
+          } : {}),
+        } satisfies UpdateLocalAvatarToolInput);
       } else {
-        setError(i18n('chat.avatarToolCreateSaveError', 'Could not save this tool. Check the fields and try again.'));
+        await onSave({
+          name: normalizedName,
+          changeMode,
+          defaultImage: defaultImage!,
+          changeItems: changeItems.map(item => ({
+            image: item.image!,
+            meaning: item.meaning,
+          })),
+          ...(normalSound ? { normalSound } : {}),
+          ...(specialEnabled ? {
+            special: {
+              probability: specialProbabilityPercent / 100,
+              image: specialImage!,
+              meaning: specialMeaning,
+              ...(specialSound ? { sound: specialSound } : {}),
+            },
+          } : {}),
+        } satisfies CreateLocalAvatarToolInput);
+      }
+    } catch (cause) {
+      if (cause instanceof LocalAvatarToolCreateError) {
+        const key = fieldKeyFromCreateError(cause);
+        if (key) {
+          showFieldErrors({ [key]: messageFromCreateError(cause) });
+        } else if (cause.message === 'tool_limit_reached') {
+          setError(i18n('chat.avatarToolCreateToolLimitError', 'The custom tool library is full.'));
+        } else if (cause.message === 'storage_limit_reached') {
+          setError(i18n('chat.avatarToolCreateStorageLimitError', 'There is not enough space for another custom tool.'));
+        } else {
+          setError(messageFromCreateError(cause));
+        }
+      } else {
+        setError(i18n('chat.avatarToolCreateSaveError', 'Could not save this tool. Please try again.'));
       }
     } finally {
       setSubmitting(false);
     }
   };
 
+  const removeNormalSound = () => {
+    setNormalSound(null);
+    setNormalSoundResource(undefined);
+    clearFieldError('normal_sound');
+  };
+
+  const removeSpecialSound = () => {
+    setSpecialSound(null);
+    setSpecialSoundResource(undefined);
+    clearFieldError('special_sound');
+  };
+
+  const deleteTool = async () => {
+    if (!onDelete || busy) return;
+    if (!window.confirm(i18n(
+      'chat.avatarToolDeleteConfirm',
+      'Delete “{{name}}”? This cannot be undone.',
+      { name: initialDetail?.name ?? name },
+    ))) return;
+    setDeleting(true);
+    setError('');
+    try {
+      await onDelete();
+    } catch {
+      setError(i18n('chat.avatarToolDeleteError', 'Could not delete this tool. Please try again.'));
+    } finally {
+      setDeleting(false);
+    }
+  };
+
   return (
-    <form className={`avatar-tool-create-page${specialEnabled ? ' has-special' : ''}`} onSubmit={submit}>
+    <form className={`avatar-tool-create-page${specialEnabled ? ' has-special' : ''}`} noValidate onSubmit={submit}>
       <div className="avatar-tool-create-fields" ref={createFieldsRef}>
-      <p
-        className={error ? 'avatar-tool-create-error' : 'avatar-tool-create-privacy'}
-        {...(error ? { role: 'alert' } : {})}
-      >
-        {error
-          ? error
-          : i18n(
-            'chat.avatarToolCreatePrivacy',
-            'Images and sounds stay on this device; during interactions, the name and matching description are sent to the model.',
-          )}
-      </p>
-      <label className="avatar-tool-create-field">
-        <span>{i18n('chat.avatarToolCreateName', 'Tool name')}</span>
-        <input
-          value={name}
-          maxLength={limits?.maxNameChars}
-          disabled={submitting}
-          onChange={event => setName(event.target.value)}
-          required
-        />
-      </label>
-      <div className="avatar-tool-create-field">
+        <p
+          className={error ? 'avatar-tool-create-error' : 'avatar-tool-create-privacy'}
+          {...(error ? { role: 'alert' } : {})}
+        >
+          {error
+            ? error
+            : i18n(
+              'chat.avatarToolCreatePrivacy',
+              'Images and sounds stay on this device; during interactions, the name and matching description are sent to the model.',
+            )}
+        </p>
+        <label className="avatar-tool-create-field" data-error-key="name">
+          <span>{i18n('chat.avatarToolCreateName', 'Tool name')}</span>
+          <input
+            value={name}
+            aria-label={i18n('chat.avatarToolCreateName', 'Tool name')}
+            aria-invalid={fieldErrors.name ? 'true' : undefined}
+            disabled={busy}
+            onChange={(event) => {
+              setName(event.target.value);
+              clearFieldError('name');
+            }}
+            placeholder={i18n(
+              'chat.avatarToolCreateNamePlaceholder',
+              '1–{{count}} characters; use letters, numbers, spaces, “-”, or “_”',
+              { count: String(limits?.maxNameChars ?? 20) },
+            )}
+          />
+          <FieldError message={fieldErrors.name} />
+        </label>
+        <div className="avatar-tool-create-field" data-error-key="default_image">
         <span>{i18n('chat.avatarToolCreateDefaultImage', 'Default image')}</span>
-        <label className={`avatar-tool-create-file-control${submitting ? ' is-disabled' : ''}`}>
+        <label
+          className={`avatar-tool-create-file-control${busy ? ' is-disabled' : ''}`}
+          aria-invalid={fieldErrors.default_image ? 'true' : undefined}
+        >
           <input
             className="avatar-tool-create-file-input"
             type="file"
             accept="image/png,.png"
             aria-label={i18n('chat.avatarToolCreateDefaultImage', 'Default image')}
-            disabled={submitting}
+            disabled={busy}
             onClick={(event) => {
               void pickImageWithDesktopHost(
                 event,
                 i18n('chat.avatarToolCreateDefaultImage', 'Default image'),
+                'default_image',
                 setDefaultImage,
               );
             }}
-            onChange={event => setDefaultImage(event.target.files?.[0] ?? null)}
-            required
+            onChange={(event) => {
+              setDefaultImage(event.target.files?.[0] ?? null);
+              clearFieldError('default_image');
+            }}
           />
           <span className="avatar-tool-create-file-button">
-            {i18n('chat.avatarToolCreateChooseImage', 'Choose image')}
+            {editing
+              ? i18n('chat.avatarToolUpdateChooseImage', 'Change image')
+              : i18n('chat.avatarToolCreateChooseImage', 'Choose image')}
           </span>
-          <span className={`avatar-tool-create-file-name${defaultImage ? ' has-file' : ''}`}>
-            {defaultImage?.name ?? i18n('chat.avatarToolCreateNoImage', 'No image selected')}
+          <span className={`avatar-tool-create-file-name${defaultImage || defaultImageResource ? ' has-file' : ''}`}>
+            {defaultImage?.name
+              ?? (defaultImageResource
+                ? i18n('chat.avatarToolUpdateCurrentImage', 'Current image')
+                : i18n('chat.avatarToolCreateNoImage', 'No image selected'))}
           </span>
         </label>
         <small>
-          {i18n('chat.avatarToolCreateDefaultImageHint', 'Shown until an image change is triggered; entering the character interaction area only changes its size.')}
+          {i18n('chat.avatarToolCreateDefaultImageHint', 'Shown until an image change is triggered; it grows when entering the character interaction area.')}
           {limits ? ` ${i18n('chat.avatarToolCreateImageLimit', 'PNG, up to {{size}} per image', { size: formatLimit(limits.maxImageBytes) })}` : ''}
         </small>
-      </div>
+        <FieldError message={fieldErrors.default_image} />
+        </div>
 
-      <fieldset className="avatar-tool-create-mode" disabled={submitting}>
+      <fieldset className="avatar-tool-create-mode" disabled={busy}>
         <legend>{i18n('chat.avatarToolCreateChangeMode', 'Image switching')}</legend>
         <div className="avatar-tool-create-mode-options">
           <button
@@ -367,50 +661,66 @@ export default function AvatarToolCreatePage({
                   <div className="avatar-tool-create-change-controls">
                     <button
                       type="button"
-                      disabled={submitting || index === 0}
+                      disabled={busy || index === 0}
                       aria-label={i18n('chat.avatarToolCreateMoveUp', 'Move image up')}
                       onClick={() => moveChangeItem(index, -1)}
                     >↑</button>
                     <button
                       type="button"
-                      disabled={submitting || index === changeItems.length - 1}
+                      disabled={busy || index === changeItems.length - 1}
                       aria-label={i18n('chat.avatarToolCreateMoveDown', 'Move image down')}
                       onClick={() => moveChangeItem(index, 1)}
                     >↓</button>
                     <button
                       type="button"
-                      disabled={submitting || changeItems.length === 1}
+                      disabled={busy || changeItems.length === 1}
                       aria-label={i18n('chat.avatarToolCreateRemoveImage', 'Remove image')}
                       onClick={() => removeChangeItem(item.id)}
                     >×</button>
                   </div>
                 ) : null}
               </div>
-              <label className={`avatar-tool-create-file-control${submitting ? ' is-disabled' : ''}`}>
+              <label
+                className={`avatar-tool-create-file-control${busy ? ' is-disabled' : ''}`}
+                data-error-key={`change_image:${item.id}`}
+                aria-invalid={fieldErrors[`change_image:${item.id}`] ? 'true' : undefined}
+              >
                 <input
                   className="avatar-tool-create-file-input"
                   type="file"
                   accept="image/png,.png"
                   aria-label={imageTitle}
-                  disabled={submitting}
+                  disabled={busy}
                   onClick={(event) => {
                     void pickImageWithDesktopHost(
                       event,
                       imageTitle,
+                      `change_image:${item.id}`,
                       image => updateChangeItem(item.id, { image }),
                     );
                   }}
-                  onChange={event => updateChangeItem(item.id, { image: event.target.files?.[0] ?? null })}
-                  required
+                  onChange={(event) => {
+                    updateChangeItem(item.id, { image: event.target.files?.[0] ?? null });
+                    clearFieldError(`change_image:${item.id}`);
+                  }}
                 />
                 <span className="avatar-tool-create-file-button">
-                  {i18n('chat.avatarToolCreateChooseImage', 'Choose image')}
+                  {editing
+                    ? i18n('chat.avatarToolUpdateChooseImage', 'Change image')
+                    : i18n('chat.avatarToolCreateChooseImage', 'Choose image')}
                 </span>
-                <span className={`avatar-tool-create-file-name${item.image ? ' has-file' : ''}`}>
-                  {item.image?.name ?? i18n('chat.avatarToolCreateNoImage', 'No image selected')}
+                <span className={`avatar-tool-create-file-name${item.image || item.imageResource ? ' has-file' : ''}`}>
+                  {item.image?.name
+                    ?? (item.imageResource
+                      ? i18n('chat.avatarToolUpdateCurrentImage', 'Current image')
+                      : i18n('chat.avatarToolCreateNoImage', 'No image selected'))}
                 </span>
               </label>
-              <label className="avatar-tool-create-field avatar-tool-create-item-meaning">
+              <FieldError message={fieldErrors[`change_image:${item.id}`]} />
+              <label
+                className="avatar-tool-create-field avatar-tool-create-item-meaning"
+                data-error-key={`change_meaning:${item.id}`}
+              >
                 <span>{i18n('chat.avatarToolCreateImageMeaning', 'Interaction description')}</span>
                 <textarea
                   value={item.meaning}
@@ -419,13 +729,16 @@ export default function AvatarToolCreatePage({
                     : i18n('chat.avatarToolCreateImageMeaningNumber', 'Interaction description for change image {{number}}', {
                       number: String(index + 1),
                     })}
-                  maxLength={limits?.maxMeaningChars}
-                  disabled={submitting}
-                  onChange={event => updateChangeItem(item.id, { meaning: event.target.value })}
+                  aria-invalid={fieldErrors[`change_meaning:${item.id}`] ? 'true' : undefined}
+                  disabled={busy}
+                  onChange={(event) => {
+                    updateChangeItem(item.id, { meaning: event.target.value });
+                    clearFieldError(`change_meaning:${item.id}`);
+                  }}
                   placeholder={meaningExample}
-                  required
                   rows={3}
                 />
+                <FieldError message={fieldErrors[`change_meaning:${item.id}`]} />
               </label>
             </section>
           );
@@ -434,7 +747,7 @@ export default function AvatarToolCreatePage({
           <button
             className="avatar-tool-create-add-image"
             type="button"
-            disabled={submitting || changeItems.length >= (limits?.maxChangeImages ?? 16)}
+            disabled={busy || changeItems.length >= (limits?.maxChangeImages ?? 16)}
             onClick={addChangeItem}
           >
             {i18n('chat.avatarToolCreateAddImage', '＋ Add another image')}
@@ -442,44 +755,61 @@ export default function AvatarToolCreatePage({
         ) : null}
       </div>
 
-      <div className="avatar-tool-create-field avatar-tool-create-audio-field">
+      <div className="avatar-tool-create-field avatar-tool-create-audio-field" data-error-key="normal_sound">
         <span>{i18n('chat.avatarToolCreateNormalSound', 'Interaction sound (optional)')}</span>
-        <label className={`avatar-tool-create-file-control${submitting ? ' is-disabled' : ''}`}>
+        <div className="avatar-tool-create-file-row">
+        <label className={`avatar-tool-create-file-control${busy ? ' is-disabled' : ''}`}>
           <input
             className="avatar-tool-create-file-input"
             type="file"
             accept="audio/mpeg,.mp3"
             aria-label={i18n('chat.avatarToolCreateNormalSound', 'Interaction sound (optional)')}
-            disabled={submitting}
+            disabled={busy}
             onClick={(event) => {
               void pickAudioWithDesktopHost(
                 event,
                 i18n('chat.avatarToolCreateNormalSound', 'Interaction sound (optional)'),
                 setNormalSound,
-                setAudioError,
+                'normal_sound',
               );
             }}
             onChange={(event) => {
               const file = event.target.files?.[0] ?? null;
               setNormalSound(file);
-              setAudioError('');
+              clearFieldError('normal_sound');
             }}
           />
           <span className="avatar-tool-create-file-button">
-            {i18n('chat.avatarToolCreateChooseAudio', 'Choose MP3')}
+            {editing
+              ? i18n('chat.avatarToolUpdateChooseAudio', 'Change MP3')
+              : i18n('chat.avatarToolCreateChooseAudio', 'Choose MP3')}
           </span>
-          <span className={`avatar-tool-create-file-name${normalSound ? ' has-file' : ''}`}>
-            {normalSound?.name ?? i18n('chat.avatarToolCreateNoAudio', 'No sound selected')}
+          <span className={`avatar-tool-create-file-name${normalSound || normalSoundResource ? ' has-file' : ''}`}>
+            {normalSound?.name
+              ?? (normalSoundResource
+                ? i18n('chat.avatarToolUpdateCurrentAudio', 'Current sound')
+                : i18n('chat.avatarToolCreateNoAudio', 'No sound selected'))}
           </span>
         </label>
+        {editing && (normalSound || normalSoundResource) ? (
+          <button
+            className="avatar-tool-create-remove-file"
+            type="button"
+            disabled={busy}
+            onClick={removeNormalSound}
+          >
+            {i18n('chat.avatarToolUpdateRemoveAudio', 'Remove')}
+          </button>
+        ) : null}
+        </div>
         <small>
-          {i18n('chat.avatarToolCreateNormalSoundHint', 'Played once after each successful interaction.')}
+          {i18n('chat.avatarToolCreateNormalSoundHint', 'Played once when an interaction succeeds.')}
           {limits ? ` ${i18n('chat.avatarToolCreateAudioLimit', 'MP3, up to {{size}} and {{seconds}} seconds', {
             size: formatLimit(limits.maxAudioBytes),
             seconds: String(Math.round(limits.maxAudioDurationMs / 1000)),
           })}` : ''}
         </small>
-        {audioError ? <small className="avatar-tool-create-audio-error" role="alert">{audioError}</small> : null}
+        <FieldError message={fieldErrors.normal_sound} />
       </div>
 
       <section className={`avatar-tool-create-special${specialEnabled ? ' is-enabled' : ''}`}>
@@ -488,7 +818,7 @@ export default function AvatarToolCreatePage({
           <input
             type="checkbox"
             checked={specialEnabled}
-            disabled={submitting}
+            disabled={busy}
             onChange={(event) => {
               const enabled = event.target.checked;
               setSpecialEnabled(enabled);
@@ -500,9 +830,12 @@ export default function AvatarToolCreatePage({
                     fields.scrollTop = fields.scrollHeight;
                   }
                 });
+              } else {
+                setFieldErrors((current) => Object.fromEntries(
+                  Object.entries(current).filter(([key]) => !key.startsWith('special_')),
+                ));
               }
               setError('');
-              setSpecialAudioError('');
             }}
           />
           <span className="avatar-tool-create-special-switch" aria-hidden="true" />
@@ -510,7 +843,10 @@ export default function AvatarToolCreatePage({
 
         {specialEnabled ? (
           <div className="avatar-tool-create-special-fields">
-            <label className="avatar-tool-create-field avatar-tool-create-special-probability">
+            <label
+              className="avatar-tool-create-field avatar-tool-create-special-probability"
+              data-error-key="special_probability"
+            >
               <span>{i18n('chat.avatarToolCreateSpecialProbability', 'Trigger chance')}</span>
               <input
                 type="range"
@@ -519,100 +855,153 @@ export default function AvatarToolCreatePage({
                 step="1"
                 value={specialProbabilityPercent}
                 aria-valuetext={`${specialProbabilityPercent}%`}
-                disabled={submitting}
-                onChange={event => setSpecialProbabilityPercent(Number(event.target.value))}
+                disabled={busy}
+                onChange={(event) => {
+                  setSpecialProbabilityPercent(Number(event.target.value));
+                  clearFieldError('special_probability');
+                }}
               />
               <strong>{specialProbabilityPercent}%</strong>
             </label>
+            <FieldError message={fieldErrors.special_probability} />
 
-            <div className="avatar-tool-create-field">
+            <div className="avatar-tool-create-field" data-error-key="special_image">
               <span>{i18n('chat.avatarToolCreateSpecialImage', 'Surprise image')}</span>
-              <label className={`avatar-tool-create-file-control${submitting ? ' is-disabled' : ''}`}>
+              <label
+                className={`avatar-tool-create-file-control${busy ? ' is-disabled' : ''}`}
+                aria-invalid={fieldErrors.special_image ? 'true' : undefined}
+              >
                 <input
                   className="avatar-tool-create-file-input"
                   type="file"
                   accept="image/png,.png"
                   aria-label={i18n('chat.avatarToolCreateSpecialImage', 'Surprise image')}
-                  disabled={submitting}
+                  disabled={busy}
                   onClick={(event) => {
                     void pickImageWithDesktopHost(
                       event,
                       i18n('chat.avatarToolCreateSpecialImage', 'Surprise image'),
+                      'special_image',
                       setSpecialImage,
                     );
                   }}
-                  onChange={event => setSpecialImage(event.target.files?.[0] ?? null)}
-                  required={specialEnabled}
+                  onChange={(event) => {
+                    setSpecialImage(event.target.files?.[0] ?? null);
+                    clearFieldError('special_image');
+                  }}
                 />
                 <span className="avatar-tool-create-file-button">
-                  {i18n('chat.avatarToolCreateChooseImage', 'Choose image')}
+                  {editing
+                    ? i18n('chat.avatarToolUpdateChooseImage', 'Change image')
+                    : i18n('chat.avatarToolCreateChooseImage', 'Choose image')}
                 </span>
-                <span className={`avatar-tool-create-file-name${specialImage ? ' has-file' : ''}`}>
-                  {specialImage?.name ?? i18n('chat.avatarToolCreateNoImage', 'No image selected')}
+                <span className={`avatar-tool-create-file-name${specialImage || specialImageResource ? ' has-file' : ''}`}>
+                  {specialImage?.name
+                    ?? (specialImageResource
+                      ? i18n('chat.avatarToolUpdateCurrentImage', 'Current image')
+                      : i18n('chat.avatarToolCreateNoImage', 'No image selected'))}
                 </span>
               </label>
+              <FieldError message={fieldErrors.special_image} />
             </div>
 
-            <label className="avatar-tool-create-field avatar-tool-create-special-meaning">
+            <label
+              className="avatar-tool-create-field avatar-tool-create-special-meaning"
+              data-error-key="special_meaning"
+            >
               <span>{i18n('chat.avatarToolCreateImageMeaning', 'Interaction description')}</span>
               <textarea
                 value={specialMeaning}
-                maxLength={limits?.maxMeaningChars}
-                disabled={submitting}
-                onChange={event => setSpecialMeaning(event.target.value)}
+                aria-invalid={fieldErrors.special_meaning ? 'true' : undefined}
+                disabled={busy}
+                onChange={(event) => {
+                  setSpecialMeaning(event.target.value);
+                  clearFieldError('special_meaning');
+                }}
                 placeholder={specialMeaningExample}
-                required={specialEnabled}
                 rows={3}
               />
+              <FieldError message={fieldErrors.special_meaning} />
             </label>
 
-            <div className="avatar-tool-create-field">
+            <div className="avatar-tool-create-field" data-error-key="special_sound">
               <span>{i18n('chat.avatarToolCreateSpecialSound', 'Surprise sound (optional)')}</span>
-              <label className={`avatar-tool-create-file-control${submitting ? ' is-disabled' : ''}`}>
+              <div className="avatar-tool-create-file-row">
+              <label className={`avatar-tool-create-file-control${busy ? ' is-disabled' : ''}`}>
                 <input
                   className="avatar-tool-create-file-input"
                   type="file"
                   accept="audio/mpeg,.mp3"
                   aria-label={i18n('chat.avatarToolCreateSpecialSound', 'Surprise sound (optional)')}
-                  disabled={submitting}
+                  disabled={busy}
                   onClick={(event) => {
                     void pickAudioWithDesktopHost(
                       event,
                       i18n('chat.avatarToolCreateSpecialSound', 'Surprise sound (optional)'),
                       setSpecialSound,
-                      setSpecialAudioError,
+                      'special_sound',
                     );
                   }}
                   onChange={(event) => {
                     setSpecialSound(event.target.files?.[0] ?? null);
-                    setSpecialAudioError('');
+                    clearFieldError('special_sound');
                   }}
                 />
                 <span className="avatar-tool-create-file-button">
-                  {i18n('chat.avatarToolCreateChooseAudio', 'Choose MP3')}
+                  {editing
+                    ? i18n('chat.avatarToolUpdateChooseAudio', 'Change MP3')
+                    : i18n('chat.avatarToolCreateChooseAudio', 'Choose MP3')}
                 </span>
-                <span className={`avatar-tool-create-file-name${specialSound ? ' has-file' : ''}`}>
-                  {specialSound?.name ?? i18n('chat.avatarToolCreateNoAudio', 'No sound selected')}
+                <span className={`avatar-tool-create-file-name${specialSound || specialSoundResource ? ' has-file' : ''}`}>
+                  {specialSound?.name
+                    ?? (specialSoundResource
+                      ? i18n('chat.avatarToolUpdateCurrentAudio', 'Current sound')
+                      : i18n('chat.avatarToolCreateNoAudio', 'No sound selected'))}
                 </span>
               </label>
-              {specialAudioError ? (
-                <small className="avatar-tool-create-audio-error" role="alert">{specialAudioError}</small>
+              {editing && (specialSound || specialSoundResource) ? (
+                <button
+                  className="avatar-tool-create-remove-file"
+                  type="button"
+                  disabled={busy}
+                  onClick={removeSpecialSound}
+                >
+                  {i18n('chat.avatarToolUpdateRemoveAudio', 'Remove')}
+                </button>
               ) : null}
+              </div>
+              <FieldError message={fieldErrors.special_sound} />
             </div>
           </div>
         ) : null}
       </section>
       </div>
 
-      <div className="avatar-tool-manager-actions avatar-tool-create-actions">
-        <button className="avatar-tool-manager-action secondary" type="button" disabled={submitting} onClick={onCancel}>
-          {i18n('chat.avatarToolCreateBack', 'Back')}
-        </button>
-        <button className="avatar-tool-manager-action primary" type="submit" disabled={submitting}>
-          {submitting
-            ? i18n('chat.avatarToolCreateSaving', 'Saving…')
-            : i18n('chat.avatarToolCreateSave', 'Save tool')}
-        </button>
+      <div className={`avatar-tool-manager-actions avatar-tool-create-actions${editing ? ' is-editing' : ''}`}>
+        {editing && onDelete ? (
+          <button
+            className="avatar-tool-manager-action danger"
+            type="button"
+            disabled={busy}
+            onClick={() => void deleteTool()}
+          >
+            {deleting
+              ? i18n('chat.avatarToolUpdateDeleting', 'Deleting…')
+              : i18n('chat.avatarToolUpdateDelete', 'Delete tool')}
+          </button>
+        ) : null}
+        <div className="avatar-tool-create-action-group">
+          <button className="avatar-tool-manager-action secondary" type="button" disabled={busy} onClick={onCancel}>
+            {i18n('chat.avatarToolCreateBack', 'Back')}
+          </button>
+          <button className="avatar-tool-manager-action primary" type="submit" disabled={busy}>
+            {submitting
+              ? i18n('chat.avatarToolCreateSaving', 'Saving…')
+              : editing
+                ? i18n('chat.avatarToolUpdateSave', 'Save changes')
+                : i18n('chat.avatarToolCreateSave', 'Save tool')}
+          </button>
+        </div>
       </div>
     </form>
   );

@@ -125,7 +125,33 @@ def test_post_rejects_partial_special_block_without_publishing(tmp_path, monkeyp
 
     assert response.status_code == 400
     assert response.json()["error_code"] == "special_image_required"
+    assert response.json()["field"] == "special_image"
     assert not manager.avatar_tools_dir.exists() or not list(manager.avatar_tools_dir.iterdir())
+
+
+def test_post_returns_field_and_index_for_invalid_change_meaning(tmp_path, monkeypatch):
+    client, _manager = _client(tmp_path, monkeypatch, allow_mutation=True)
+    response = client.post(
+        "/api/avatar-tools",
+        files=[
+            ("name", (None, "Feather")),
+            ("change_mode", (None, "click-advance")),
+            ("change_meanings", (None, "first")),
+            ("change_meanings", (None, "x" * 101)),
+            ("default_image", ("default.png", _png(), "image/png")),
+            ("change_images", ("first.png", _png(), "image/png")),
+            ("change_images", ("second.png", _png(), "image/png")),
+        ],
+    )
+
+    assert response.status_code == 400
+    assert response.json() == {
+        "ok": False,
+        "error_code": "change_meaning_too_long",
+        "error": "change_meaning is too long",
+        "field": "change_meaning",
+        "index": 1,
+    }
 
 
 def test_post_rejects_request_without_mutation_security(tmp_path, monkeypatch):
@@ -140,3 +166,142 @@ def test_post_rejects_request_without_mutation_security(tmp_path, monkeypatch):
     )
     assert response.status_code == 403
     assert response.json()["error_code"] == "csrf_validation_failed"
+
+
+def test_delete_removes_the_created_tool_and_returns_its_id(tmp_path, monkeypatch):
+    client, manager = _client(tmp_path, monkeypatch, allow_mutation=True)
+    created = client.post(
+        "/api/avatar-tools",
+        files=[
+            ("name", (None, "Feather")),
+            ("change_mode", (None, "press-swap")),
+            ("change_meanings", (None, "gentle")),
+            ("default_image", ("default.png", _png(), "image/png")),
+            ("change_images", ("change.png", _png(), "image/png")),
+        ],
+    ).json()["item"]
+
+    response = client.delete(f"/api/avatar-tools/{created['id']}")
+
+    assert response.status_code == 200
+    assert response.json() == {"ok": True, "deletedId": created["id"]}
+    assert not (manager.avatar_tools_dir / created["id"]).exists()
+    assert client.get("/api/avatar-tools").json()["items"] == []
+
+
+def test_delete_reports_missing_and_invalid_ids(tmp_path, monkeypatch):
+    client, _manager = _client(tmp_path, monkeypatch, allow_mutation=True)
+    missing = "local-12345678-1234-4123-8123-123456789abc"
+
+    missing_response = client.delete(f"/api/avatar-tools/{missing}")
+    invalid_response = client.delete("/api/avatar-tools/lollipop")
+
+    assert missing_response.status_code == 404
+    assert missing_response.json()["error_code"] == "tool_not_found"
+    assert invalid_response.status_code == 400
+    assert invalid_response.json()["error_code"] == "invalid_tool_id"
+
+
+def test_delete_requires_mutation_security(tmp_path, monkeypatch):
+    client, _manager = _client(tmp_path, monkeypatch, allow_mutation=False)
+    response = client.delete(
+        "/api/avatar-tools/local-12345678-1234-4123-8123-123456789abc"
+    )
+
+    assert response.status_code == 403
+    assert response.json()["error_code"] == "csrf_validation_failed"
+
+
+def test_targeted_detail_returns_meanings_without_polluting_list(tmp_path, monkeypatch):
+    client, _manager = _client(tmp_path, monkeypatch, allow_mutation=True)
+    created = client.post(
+        "/api/avatar-tools",
+        files=[
+            ("name", (None, "Feather")),
+            ("change_mode", (None, "press-swap")),
+            ("change_meanings", (None, "a private meaning")),
+            ("default_image", ("default.png", _png(), "image/png")),
+            ("change_images", ("change.png", _png(), "image/png")),
+        ],
+    ).json()["item"]
+
+    detail = client.get(f"/api/avatar-tools/{created['id']}")
+    listing = client.get("/api/avatar-tools")
+
+    assert detail.status_code == 200
+    assert detail.json()["detail"]["changeItems"][0]["meaning"] == "a private meaning"
+    assert detail.json()["detail"]["defaultImage"]["resource"] == "default.png"
+    assert "a private meaning" not in listing.text
+
+
+def test_put_updates_same_id_and_can_remove_optional_resources(tmp_path, monkeypatch):
+    client, manager = _client(tmp_path, monkeypatch, allow_mutation=True)
+    created = client.post(
+        "/api/avatar-tools",
+        files=[
+            ("name", (None, "Feather")),
+            ("change_mode", (None, "press-swap")),
+            ("change_meanings", (None, "old meaning")),
+            ("default_image", ("default.png", _png(), "image/png")),
+            ("change_images", ("change.png", _png(), "image/png")),
+            ("normal_sound", ("normal.mp3", _mp3(), "audio/mpeg")),
+            ("special_probability", (None, "0.1")),
+            ("special_image", ("special.png", _png(), "image/png")),
+            ("special_meaning", (None, "old surprise")),
+        ],
+    ).json()["item"]
+    revision = client.get(f"/api/avatar-tools/{created['id']}").json()["detail"]["revision"]
+
+    response = client.put(
+        f"/api/avatar-tools/{created['id']}",
+        files=[
+            ("base_revision", (None, revision)),
+            ("name", (None, "Soft Feather")),
+            ("change_mode", (None, "press-swap")),
+            ("change_meanings", (None, "new meaning")),
+            ("change_resources", (None, "change-000.png")),
+            ("default_resource", (None, "default.png")),
+        ],
+    )
+
+    assert response.status_code == 200
+    updated = response.json()["item"]
+    assert updated["id"] == created["id"]
+    assert updated["name"] == "Soft Feather"
+    assert "normalSoundUrl" not in updated
+    assert "special" not in updated
+    directory = manager.avatar_tools_dir / created["id"]
+    assert not (directory / "normal.mp3").exists()
+    assert not (directory / "special.png").exists()
+    assert client.get(f"/api/avatar-tools/{created['id']}").json()["detail"]["changeItems"][0]["meaning"] == "new meaning"
+
+
+def test_put_rejects_unowned_resource_reference_and_keeps_old_item(tmp_path, monkeypatch):
+    client, _manager = _client(tmp_path, monkeypatch, allow_mutation=True)
+    created = client.post(
+        "/api/avatar-tools",
+        files=[
+            ("name", (None, "Feather")),
+            ("change_mode", (None, "press-swap")),
+            ("change_meanings", (None, "old meaning")),
+            ("default_image", ("default.png", _png(), "image/png")),
+            ("change_images", ("change.png", _png(), "image/png")),
+        ],
+    ).json()["item"]
+    revision = client.get(f"/api/avatar-tools/{created['id']}").json()["detail"]["revision"]
+
+    response = client.put(
+        f"/api/avatar-tools/{created['id']}",
+        files=[
+            ("base_revision", (None, revision)),
+            ("name", (None, "Changed")),
+            ("change_mode", (None, "press-swap")),
+            ("change_meanings", (None, "changed")),
+            ("change_resources", (None, "change-000.png")),
+            ("default_resource", (None, "../default.png")),
+        ],
+    )
+
+    assert response.status_code == 400
+    assert response.json()["error_code"] == "resource_reference_invalid"
+    assert client.get("/api/avatar-tools").json()["items"][0]["name"] == "Feather"

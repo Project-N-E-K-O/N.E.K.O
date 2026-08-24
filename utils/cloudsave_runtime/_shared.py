@@ -153,6 +153,7 @@ LEGACY_RUNTIME_DIR_NAMES = (
     "workshop",
     "character_cards",
     "card_faces",
+    "avatar_tools",
     "cloudsave",
     "cloudsave_backups",
     ".cloudsave_staging",

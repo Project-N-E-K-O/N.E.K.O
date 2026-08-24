@@ -2,19 +2,32 @@ import { useState } from 'react';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import AvatarToolItemManager from './AvatarToolItemManager';
 import { AVAILABLE_COMPACT_AVATAR_TOOLS, type AvatarToolId, type AvatarToolItem } from './avatarTools';
+import { LocalAvatarToolCreateError, type LocalAvatarToolDetail } from './avatar-tools/localTools';
 import chatStyles from './styles.css?raw';
 
-const LOCAL_ID = 'local-12345678-1234-4123-8123-123456789abc' as AvatarToolId;
+const LOCAL_ID = 'local-12345678-1234-4123-8123-123456789abc' as const;
 const LIMITS = {
   maxTools: 64,
-  maxNameChars: 80,
-  maxMeaningChars: 1200,
+  maxNameChars: 20,
+  maxMeaningChars: 100,
   maxChangeImages: 16,
   maxImageBytes: 8_388_608,
   maxImagePixels: 16_000_000,
   maxAudioBytes: 5_242_880,
   maxAudioDurationMs: 10_000,
   maxTotalBytes: 268_435_456,
+};
+const DETAIL: LocalAvatarToolDetail = {
+  id: LOCAL_ID,
+  revision: '100-200',
+  name: 'My Feather',
+  changeMode: 'press-swap',
+  defaultImage: { resource: 'default.png', url: '/user_avatar_tools/local/default.png?v=1' },
+  changeItems: [{
+    resource: 'change-000.png',
+    url: '/user_avatar_tools/local/change-000.png?v=1',
+    meaning: 'A gentle touch',
+  }],
 };
 
 describe('AvatarToolItemManager local creation', () => {
@@ -31,8 +44,15 @@ describe('AvatarToolItemManager local creation', () => {
       onCancel: vi.fn(),
     };
     const { rerender } = render(
-      <AvatarToolItemManager {...props} availableTools={AVAILABLE_COMPACT_AVATAR_TOOLS} />,
+      <AvatarToolItemManager
+        {...props}
+        availableTools={AVAILABLE_COMPACT_AVATAR_TOOLS}
+        catalogAuthoritativeLoaded={false}
+      />,
     );
+
+    expect(screen.getByRole('button', { name: 'Save changes' })).toBeDisabled();
+    expect(screen.getByRole('status')).toHaveTextContent('Loading custom tools');
 
     rerender(
       <AvatarToolItemManager
@@ -43,10 +63,12 @@ describe('AvatarToolItemManager local creation', () => {
           iconImagePath: '/user_avatar_tools/local/default.png?v=1',
           pointerImagePath: '/user_avatar_tools/local/default.png?v=1',
         }]}
+        catalogAuthoritativeLoaded
       />,
     );
 
     expect(document.querySelector(`[data-avatar-tool-library-id="${LOCAL_ID}"]`)).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByRole('button', { name: 'Save changes' })).toBeEnabled();
   });
 
   it('keeps focus, scrolling, and close visibility inside the create surface', () => {
@@ -96,6 +118,202 @@ describe('AvatarToolItemManager local creation', () => {
     expect(screen.getByRole('button', { name: /棒棒糖/ })).toBeInTheDocument();
   });
 
+  it('opens one edit entry for local tools and deletes only from the edit page', async () => {
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    const onDelete = vi.fn().mockResolvedValue(undefined);
+    const onSave = vi.fn();
+    const localTool: AvatarToolItem = {
+      id: LOCAL_ID,
+      label: { kind: 'literal', value: 'My Feather' },
+      iconImagePath: '/user_avatar_tools/local/default.png?v=1',
+      pointerImagePath: '/user_avatar_tools/local/default.png?v=1',
+    };
+
+    render(
+      <AvatarToolItemManager
+        open
+        activeToolIds={[LOCAL_ID]}
+        availableTools={[...AVAILABLE_COMPACT_AVATAR_TOOLS, localTool]}
+        onSave={onSave}
+        onCancel={() => undefined}
+        createLimits={LIMITS}
+        onLoadDetail={async () => DETAIL}
+        onUpdate={vi.fn()}
+        onDelete={onDelete}
+      />,
+    );
+
+    expect(screen.queryByRole('button', { name: /Edit 棒棒糖/ })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Delete My Feather' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Edit My Feather' }));
+    await screen.findByRole('dialog', { name: 'Edit custom tool' });
+    fireEvent.click(screen.getByRole('button', { name: 'Delete tool' }));
+    await waitFor(() => expect(onDelete).toHaveBeenCalledWith(LOCAL_ID));
+    expect(confirm).toHaveBeenCalledWith('Delete “My Feather”? This cannot be undone.');
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+    expect(onSave).toHaveBeenCalledWith([]);
+    confirm.mockRestore();
+  });
+
+  it('keeps the local card and draft when deletion fails', async () => {
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    const onDelete = vi.fn().mockRejectedValue(new Error('failed'));
+    const onSave = vi.fn();
+    render(
+      <AvatarToolItemManager
+        open
+        activeToolIds={[LOCAL_ID]}
+        availableTools={[...AVAILABLE_COMPACT_AVATAR_TOOLS, {
+          id: LOCAL_ID,
+          label: { kind: 'literal', value: 'My Feather' },
+          iconImagePath: '/user_avatar_tools/local/default.png?v=1',
+          pointerImagePath: '/user_avatar_tools/local/default.png?v=1',
+        }]}
+        onSave={onSave}
+        onCancel={() => undefined}
+        createLimits={LIMITS}
+        onLoadDetail={async () => DETAIL}
+        onUpdate={vi.fn()}
+        onDelete={onDelete}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Edit My Feather' }));
+    await screen.findByRole('dialog', { name: 'Edit custom tool' });
+    fireEvent.click(screen.getByRole('button', { name: 'Delete tool' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('Could not delete this tool');
+    expect(screen.getByRole('dialog', { name: 'Edit custom tool' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Back' }));
+    expect(document.querySelector(`[data-avatar-tool-library-id="${LOCAL_ID}"]`)).not.toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+    expect(onSave).toHaveBeenCalledWith([LOCAL_ID]);
+    confirm.mockRestore();
+  });
+
+  it('keeps other unsaved slot changes when deleting a saved local tool', async () => {
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    const onSave = vi.fn();
+    const localTool: AvatarToolItem = {
+      id: LOCAL_ID,
+      label: { kind: 'literal', value: 'My Feather' },
+      iconImagePath: '/user_avatar_tools/local/default.png?v=1',
+      pointerImagePath: '/user_avatar_tools/local/default.png?v=1',
+    };
+
+    function Harness() {
+      const [activeToolIds, setActiveToolIds] = useState<AvatarToolId[]>([LOCAL_ID, 'lollipop']);
+      const [availableTools, setAvailableTools] = useState<ReadonlyArray<AvatarToolItem>>([
+        ...AVAILABLE_COMPACT_AVATAR_TOOLS,
+        localTool,
+      ]);
+      return (
+        <AvatarToolItemManager
+          open
+          activeToolIds={activeToolIds}
+          availableTools={availableTools}
+          onSave={onSave}
+          onCancel={() => undefined}
+          createLimits={LIMITS}
+          onLoadDetail={async () => DETAIL}
+          onUpdate={vi.fn()}
+          onDelete={async () => {
+            setActiveToolIds(['lollipop']);
+            setAvailableTools(AVAILABLE_COMPACT_AVATAR_TOOLS);
+          }}
+        />
+      );
+    }
+
+    render(<Harness />);
+    fireEvent.click(screen.getByRole('button', { name: 'Remove 棒棒糖' }));
+    fireEvent.click(document.querySelector('[data-avatar-tool-library-id="fist"]')!);
+    fireEvent.click(screen.getByRole('button', { name: 'Edit My Feather' }));
+    await screen.findByRole('dialog', { name: 'Edit custom tool' });
+    fireEvent.click(screen.getByRole('button', { name: 'Delete tool' }));
+    await screen.findByRole('dialog', { name: 'Manage tools' });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+    expect(onSave).toHaveBeenCalledWith(['fist']);
+    confirm.mockRestore();
+  });
+
+  it('loads the existing values and saves an in-place update with retained resources', async () => {
+    const onUpdate = vi.fn().mockResolvedValue(undefined);
+    const detailed: LocalAvatarToolDetail = {
+      ...DETAIL,
+      normalSound: { resource: 'normal.mp3', url: '/user_avatar_tools/local/normal.mp3?v=1' },
+      special: {
+        probability: 0.2,
+        image: { resource: 'special.png', url: '/user_avatar_tools/local/special.png?v=1' },
+        meaning: 'A surprise appears',
+        sound: { resource: 'special.mp3', url: '/user_avatar_tools/local/special.mp3?v=1' },
+      },
+    };
+    render(
+      <AvatarToolItemManager
+        open
+        activeToolIds={[LOCAL_ID]}
+        availableTools={[...AVAILABLE_COMPACT_AVATAR_TOOLS, {
+          id: LOCAL_ID,
+          label: { kind: 'literal', value: 'My Feather' },
+          iconImagePath: DETAIL.defaultImage.url,
+          pointerImagePath: DETAIL.defaultImage.url,
+        }]}
+        onSave={vi.fn()}
+        onCancel={() => undefined}
+        createLimits={LIMITS}
+        onLoadDetail={async () => detailed}
+        onUpdate={onUpdate}
+        onDelete={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Edit My Feather' }));
+    await screen.findByRole('dialog', { name: 'Edit custom tool' });
+    expect(screen.getByLabelText('Tool name')).toHaveValue('My Feather');
+    expect(screen.getAllByText('Current image')).toHaveLength(3);
+    expect(screen.getAllByText('Current sound')).toHaveLength(2);
+    fireEvent.change(screen.getByLabelText('Tool name'), { target: { value: 'Soft Feather' } });
+    fireEvent.click(screen.getAllByRole('button', { name: 'Remove' })[0]);
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+
+    await waitFor(() => expect(onUpdate).toHaveBeenCalledWith(LOCAL_ID, expect.objectContaining({
+      name: 'Soft Feather',
+      baseRevision: '100-200',
+      changeMode: 'press-swap',
+      defaultImage: { resource: 'default.png' },
+      changeItems: [{ resource: 'change-000.png', meaning: 'A gentle touch' }],
+      special: expect.objectContaining({
+        image: { resource: 'special.png' },
+        sound: { resource: 'special.mp3' },
+      }),
+    })));
+    expect(onUpdate.mock.calls[0][1]).not.toHaveProperty('normalSound');
+  });
+
+  it('keeps the library visible when edit details cannot be loaded', async () => {
+    render(
+      <AvatarToolItemManager
+        open
+        activeToolIds={[]}
+        availableTools={[...AVAILABLE_COMPACT_AVATAR_TOOLS, {
+          id: LOCAL_ID,
+          label: { kind: 'literal', value: 'My Feather' },
+          iconImagePath: DETAIL.defaultImage.url,
+          pointerImagePath: DETAIL.defaultImage.url,
+        }]}
+        onSave={vi.fn()}
+        onCancel={() => undefined}
+        onLoadDetail={async () => { throw new Error('missing'); }}
+        onUpdate={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Edit My Feather' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('Could not open this tool');
+    expect(screen.getByRole('dialog', { name: 'Manage tools' })).toBeInTheDocument();
+  });
+
   it('uses the same dialog, keeps draft slots, and inserts the authoritative card before plus', async () => {
     const onSave = vi.fn();
     const onCreate = vi.fn();
@@ -131,9 +349,16 @@ describe('AvatarToolItemManager local creation', () => {
     expect(screen.getByRole('dialog', { name: 'Create custom tool' })).toBe(dialog);
     expect(dialog).toHaveClass('is-create-view');
     expect(document.querySelector('.avatar-tool-create-page img')).toBeNull();
+    expect(screen.getByLabelText('Tool name')).toHaveAttribute(
+      'placeholder',
+      '1–20 characters; use letters, numbers, spaces, “-”, or “_”',
+    );
 
     fireEvent.submit(document.querySelector('.avatar-tool-create-page')!);
-    expect(await screen.findByRole('alert')).toHaveTextContent('Please complete all required fields.');
+    expect(await screen.findByText('Please enter a tool name.')).toHaveAttribute('role', 'alert');
+    expect(screen.getByText('Please choose a default image.')).toHaveAttribute('role', 'alert');
+    expect(screen.getByText('Please choose a change image.')).toHaveAttribute('role', 'alert');
+    expect(screen.getByText('Please enter an interaction description.')).toHaveAttribute('role', 'alert');
 
     fireEvent.change(screen.getByLabelText('Tool name'), { target: { value: 'My Feather' } });
     const fileInputs = document.querySelectorAll<HTMLInputElement>('input[type="file"]');
@@ -260,7 +485,7 @@ describe('AvatarToolItemManager local creation', () => {
     await waitFor(() => expect(pickImage).toHaveBeenCalledTimes(2));
     fireEvent.click(fileInputs[2]);
     await waitFor(() => expect(pickAudio).toHaveBeenCalledTimes(1));
-    expect(screen.getByText(/Played once after each successful interaction\./)).toBeInTheDocument();
+    expect(screen.getByText(/Played once when an interaction succeeds\./)).toBeInTheDocument();
     fireEvent.submit(document.querySelector('.avatar-tool-create-page')!);
 
     await waitFor(() => expect(onCreate).toHaveBeenCalledTimes(1));
@@ -358,13 +583,16 @@ describe('AvatarToolItemManager local creation', () => {
     );
 
     fireEvent.click(screen.getByRole('button', { name: 'Create tool' }));
-    expect(screen.getByPlaceholderText('For example: “Ming” offers a lollipop to “Yui”, and “Yui” takes a bite.')).toBeInTheDocument();
+    fireEvent.submit(document.querySelector('.avatar-tool-create-page')!);
+    expect(screen.getByText('Please enter a tool name.')).toBeInTheDocument();
+    expect(screen.getByPlaceholderText('For example: “Ming” brings a lollipop to “Yui”, and “Yui” takes a bite.')).toBeInTheDocument();
     expect(screen.getByLabelText('Change image')).toBeInTheDocument();
     expect(screen.queryByLabelText('Change image 1')).toBeNull();
     fireEvent.change(screen.getByLabelText('Interaction description'), {
       target: { value: 'Press meaning' },
     });
     fireEvent.click(screen.getByRole('button', { name: 'Switch after clicking' }));
+    expect(screen.getByText('Please enter a tool name.')).toBeInTheDocument();
 
     const singleItemList = document.querySelector('.avatar-tool-create-change-list')!;
     expect(singleItemList).not.toHaveClass('has-multiple-items');
@@ -374,6 +602,7 @@ describe('AvatarToolItemManager local creation', () => {
       target: { value: 'First click meaning' },
     });
     fireEvent.click(screen.getByRole('button', { name: '＋ Add another image' }));
+    expect(screen.getByText('Please enter a tool name.')).toBeInTheDocument();
 
     expect(singleItemList).toHaveClass('has-multiple-items');
     expect(screen.getByLabelText('Change image 1')).toBeInTheDocument();
@@ -430,5 +659,67 @@ describe('AvatarToolItemManager local creation', () => {
       changeItems: [expect.objectContaining({ meaning: 'First click' })],
     }));
     expect(onCreate.mock.calls[0][0].changeItems[0].image.name).toBe('next.png');
+  });
+
+  it('rejects unsupported tool-name characters without clearing the form', () => {
+    const onCreate = vi.fn().mockResolvedValue(undefined);
+    render(
+      <AvatarToolItemManager
+        open
+        activeToolIds={[]}
+        availableTools={AVAILABLE_COMPACT_AVATAR_TOOLS}
+        onSave={() => undefined}
+        onCancel={() => undefined}
+        createLimits={LIMITS}
+        onCreate={onCreate}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Create tool' }));
+    const nameInput = screen.getByLabelText('Tool name');
+    expect(nameInput).not.toHaveAttribute('maxlength');
+    fireEvent.change(nameInput, { target: { value: 'Feather!' } });
+    fireEvent.submit(document.querySelector('.avatar-tool-create-page')!);
+
+    expect(screen.getByText('Use letters, numbers, spaces, “-”, or “_” in the tool name.')).toHaveAttribute(
+      'role',
+      'alert',
+    );
+    expect(nameInput).toHaveValue('Feather!');
+    expect(onCreate).not.toHaveBeenCalled();
+  });
+
+  it('places a structured server error on the matching change item', async () => {
+    const onCreate = vi.fn().mockRejectedValue(new LocalAvatarToolCreateError(
+      'image_too_large',
+      { field: 'change_image', index: 0 },
+    ));
+    render(
+      <AvatarToolItemManager
+        open
+        activeToolIds={[]}
+        availableTools={AVAILABLE_COMPACT_AVATAR_TOOLS}
+        onSave={() => undefined}
+        onCancel={() => undefined}
+        createLimits={LIMITS}
+        onCreate={onCreate}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Create tool' }));
+    fireEvent.change(screen.getByLabelText('Tool name'), { target: { value: 'Feather' } });
+    fireEvent.change(screen.getByLabelText('Default image'), {
+      target: { files: [new File(['default'], 'default.png', { type: 'image/png' })] },
+    });
+    fireEvent.change(screen.getByLabelText('Change image'), {
+      target: { files: [new File(['change'], 'change.png', { type: 'image/png' })] },
+    });
+    fireEvent.change(screen.getByLabelText('Interaction description'), {
+      target: { value: 'A gentle touch' },
+    });
+    fireEvent.submit(document.querySelector('.avatar-tool-create-page')!);
+
+    expect(await screen.findByText('The image must be no larger than 8 MB.')).toHaveAttribute('role', 'alert');
+    expect(screen.getByLabelText('Change image').closest('label')).toHaveAttribute('aria-invalid', 'true');
   });
 });

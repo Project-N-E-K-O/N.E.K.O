@@ -27,8 +27,8 @@ import { useFocusGlow } from './useFocusGlow';
 import AvatarToolItemManager, { type AvatarToolManagerAnchorRect } from './AvatarToolItemManager';
 import AvatarToolVisuals from './avatar-tools/presentation';
 import { useAvatarToolRuntime } from './avatar-tools/runtime';
+import { useLocalAvatarToolCatalog } from './avatar-tools/useLocalAvatarToolCatalog';
 import {
-  AVAILABLE_FULL_AVATAR_TOOLS,
   getAvatarToolItemLabel,
   persistActiveAvatarToolIds,
   readPersistedActiveAvatarToolIds,
@@ -388,8 +388,6 @@ function getCompactMessagePreview(messages: ChatMessage[]): CompactMessagePrevie
 
 type ToolIconItem = AvatarToolItem;
 
-const toolIconItems = AVAILABLE_FULL_AVATAR_TOOLS;
-
 function getToolItemLabel(item: ToolIconItem): string {
   return getAvatarToolItemLabel(item);
 }
@@ -487,6 +485,8 @@ export default function FullChatSurface({
   _avatarToolDeactivationKey,
 }: ChatWindowProps) {
   useCompactToolWheelAudioPreload();
+  const localAvatarToolCatalog = useLocalAvatarToolCatalog();
+  const toolIconItems = localAvatarToolCatalog.registry.items;
 
   const [draft, setDraft] = useState('');
   const [catDraft, setCatDraft] = useState('');
@@ -579,6 +579,7 @@ export default function FullChatSurface({
     getToolLabel: getToolItemLabel,
     avatarName: assistantName,
     onDeactivate: () => setToolMenuOpen(false),
+    registry: localAvatarToolCatalog.registry,
   });
   const activeAvatarToolId = avatarToolRuntime.activeToolId;
   const activeToolItem = avatarToolRuntime.activeTool;
@@ -590,18 +591,34 @@ export default function FullChatSurface({
     return activeAvatarToolIds
       .map(toolId => availableById.get(toolId))
       .filter((item): item is AvatarToolItem => !!item);
-  }, [activeAvatarToolIds]);
+  }, [activeAvatarToolIds, toolIconItems]);
 
   const handleAvatarToolManagerSave = useCallback((toolIds: AvatarToolId[]) => {
-    const nextToolIds = sanitizeAvatarToolIds(toolIds);
+    const nextToolIds = sanitizeAvatarToolIds(toolIds, localAvatarToolCatalog.registry.validIds);
     setActiveAvatarToolIds(nextToolIds);
-    persistActiveAvatarToolIds(nextToolIds);
+    persistActiveAvatarToolIds(nextToolIds, localAvatarToolCatalog.registry);
     setAvatarToolManagerOpen(false);
     setAvatarToolManagerAnchorRect(null);
     if (activeAvatarToolId && !nextToolIds.includes(activeAvatarToolId as AvatarToolId)) {
       clearAvatarTool();
     }
-  }, [activeAvatarToolId, clearAvatarTool]);
+  }, [activeAvatarToolId, clearAvatarTool, localAvatarToolCatalog.registry]);
+
+  useEffect(() => {
+    if (!localAvatarToolCatalog.authoritativeLoaded) return;
+    setActiveAvatarToolIds((current) => {
+      const next = sanitizeAvatarToolIds(current, localAvatarToolCatalog.registry.validIds);
+      persistActiveAvatarToolIds(next, localAvatarToolCatalog.registry);
+      return next.length === current.length && next.every((toolId, index) => toolId === current[index])
+        ? current
+        : next;
+    });
+  }, [localAvatarToolCatalog.authoritativeLoaded, localAvatarToolCatalog.registry]);
+
+  useEffect(() => {
+    if (!avatarToolManagerOpen) return;
+    localAvatarToolCatalog.refresh().catch(() => undefined);
+  }, [avatarToolManagerOpen, localAvatarToolCatalog.refresh]);
 
   useEffect(() => {
     if (!activeAvatarToolId) return;
@@ -3176,6 +3193,8 @@ export default function FullChatSurface({
           setAvatarToolManagerOpen(false);
           setAvatarToolManagerAnchorRect(null);
         }}
+        catalogAuthoritativeLoaded={localAvatarToolCatalog.authoritativeLoaded}
+        catalogRefreshFailed={localAvatarToolCatalog.refreshFailed}
       />
       <section
         className={`chat-window ${surfaceModeClassName}`}

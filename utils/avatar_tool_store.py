@@ -16,6 +16,7 @@ import os
 import re
 import shutil
 import threading
+import unicodedata
 import uuid
 from pathlib import Path
 from pathlib import PurePosixPath
@@ -33,6 +34,15 @@ LOCAL_AVATAR_TOOL_ID_PATTERN = re.compile(
 LOCAL_AVATAR_TOOL_UPLOAD_PATTERN = re.compile(
     r"^\.local-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.uploading$"
 )
+LOCAL_AVATAR_TOOL_UPDATE_PATTERN = re.compile(
+    r"^\.(local-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\.updating$"
+)
+LOCAL_AVATAR_TOOL_BACKUP_PATTERN = re.compile(
+    r"^\.(local-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\.backup$"
+)
+LOCAL_AVATAR_TOOL_DELETING_PATTERN = re.compile(
+    r"^\.(local-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\.deleting$"
+)
 PUBLIC_AVATAR_TOOL_FIXED_RESOURCE_NAMES = frozenset(
     {"default.png", "normal.mp3", "special.png", "special.mp3"}
 )
@@ -41,8 +51,8 @@ LOCAL_AVATAR_TOOL_CHANGE_MODES = frozenset({"press-swap", "click-advance"})
 
 AVATAR_TOOL_LIMITS: dict[str, int] = {
     "maxTools": 64,
-    "maxNameChars": 80,
-    "maxMeaningChars": 1200,
+    "maxNameChars": 20,
+    "maxMeaningChars": 100,
     "maxChangeImages": 16,
     "maxImageBytes": 8 * 1024 * 1024,
     "maxImagePixels": 16_000_000,
@@ -52,15 +62,28 @@ AVATAR_TOOL_LIMITS: dict[str, int] = {
 }
 
 _CONTROL_CHARACTER_PATTERN = re.compile(r"[\x00-\x1f\x7f-\x9f]")
-_MUTATION_LOCK = threading.RLock()
+_MEANING_CONTROL_CHARACTER_PATTERN = re.compile(r"[\x00-\x09\x0b\x0c\x0e-\x1f\x7f-\x9f]")
+_NAME_SPACES_PATTERN = re.compile(r" +")
+_REVISION_PATTERN = re.compile(r"^[0-9]+-[0-9]+$")
+_STORE_LOCK = threading.RLock()
 logger = logging.getLogger(__name__)
 
 
 class AvatarToolStoreError(ValueError):
-    def __init__(self, code: str, message: str, *, status_code: int = 400):
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        *,
+        status_code: int = 400,
+        field: str | None = None,
+        index: int | None = None,
+    ):
         super().__init__(message)
         self.code = code
         self.status_code = status_code
+        self.field = field
+        self.index = index
 
 
 def is_local_avatar_tool_id(value: object) -> bool:
@@ -93,31 +116,76 @@ def is_public_avatar_tool_resource_path(root: Path | str, path: object) -> bool:
     return candidate.is_file()
 
 
-def _validate_text(value: object, *, field: str, maximum: int) -> str:
+def _validate_name(value: object, *, maximum: int) -> str:
     if not isinstance(value, str):
-        raise AvatarToolStoreError(f"{field}_required", f"{field} is required")
-    normalized = value.strip()
+        raise AvatarToolStoreError("name_required", "name is required", field="name")
+    if _CONTROL_CHARACTER_PATTERN.search(value):
+        raise AvatarToolStoreError("name_invalid", "name contains unsupported characters", field="name")
+    normalized = _NAME_SPACES_PATTERN.sub(" ", unicodedata.normalize("NFC", value).strip())
     if not normalized:
-        raise AvatarToolStoreError(f"{field}_required", f"{field} is required")
+        raise AvatarToolStoreError("name_required", "name is required", field="name")
     if len(normalized) > maximum:
-        raise AvatarToolStoreError(f"{field}_too_long", f"{field} is too long")
-    if _CONTROL_CHARACTER_PATTERN.search(normalized):
-        raise AvatarToolStoreError(f"{field}_invalid", f"{field} contains control characters")
+        raise AvatarToolStoreError("name_too_long", "name is too long", field="name")
+    for character in normalized:
+        category = unicodedata.category(character)
+        if character in {" ", "-", "_"} or category[0] in {"L", "M", "N"}:
+            continue
+        raise AvatarToolStoreError("name_invalid", "name contains unsupported characters", field="name")
     return normalized
 
 
-def _validate_probability(value: object) -> float:
+def _validate_meaning(
+    value: object,
+    *,
+    field: str,
+    maximum: int,
+    index: int | None = None,
+) -> str:
+    if not isinstance(value, str):
+        raise AvatarToolStoreError(f"{field}_required", f"{field} is required", field=field, index=index)
+    normalized = value.replace("\r\n", "\n").replace("\r", "\n").strip()
+    if not normalized:
+        raise AvatarToolStoreError(f"{field}_required", f"{field} is required", field=field, index=index)
+    if len(normalized) > maximum:
+        raise AvatarToolStoreError(f"{field}_too_long", f"{field} is too long", field=field, index=index)
+    if _MEANING_CONTROL_CHARACTER_PATTERN.search(normalized):
+        raise AvatarToolStoreError(f"{field}_invalid", f"{field} contains control characters", field=field, index=index)
+    return normalized
+
+
+def _validate_resource(
+    validator,
+    data: bytes,
+    *,
+    limits: dict[str, int],
+    field: str,
+    index: int | None = None,
+) -> bytes:
+    try:
+        return validator(data, limits=limits)
+    except AvatarToolStoreError as exc:
+        raise AvatarToolStoreError(
+            exc.code,
+            str(exc),
+            status_code=exc.status_code,
+            field=field,
+            index=index,
+        ) from exc
+
+
+def _validate_probability(value: object, *, field: str | None = None) -> float:
     if isinstance(value, bool):
-        raise AvatarToolStoreError("special_probability_invalid", "Special probability is invalid")
+        raise AvatarToolStoreError("special_probability_invalid", "Special probability is invalid", field=field)
     try:
         probability = float(value)
     except (TypeError, ValueError) as exc:
         raise AvatarToolStoreError(
             "special_probability_invalid",
             "Special probability is invalid",
+            field=field,
         ) from exc
     if not math.isfinite(probability) or probability <= 0 or probability > 1:
-        raise AvatarToolStoreError("special_probability_invalid", "Special probability is invalid")
+        raise AvatarToolStoreError("special_probability_invalid", "Special probability is invalid", field=field)
     return probability
 
 
@@ -225,40 +293,92 @@ class AvatarToolStore:
                 "Avatar tool storage is unavailable",
                 status_code=503,
             )
-        self._cleanup_unpublished_directories()
 
-    def _cleanup_unpublished_directories(self) -> None:
-        with _MUTATION_LOCK:
-            for candidate in self.root.iterdir():
-                if not LOCAL_AVATAR_TOOL_UPLOAD_PATTERN.fullmatch(candidate.name):
-                    continue
-                if candidate.is_symlink() or not candidate.is_dir():
-                    continue
-                shutil.rmtree(candidate, ignore_errors=True)
+    def initialize(self) -> None:
+        """Prepare the store once and recover interrupted mutations."""
+        with _STORE_LOCK:
+            self.ensure()
+            try:
+                self._recover_interrupted_mutations()
+            except OSError as exc:
+                raise AvatarToolStoreError(
+                    "avatar_tools_directory_unavailable",
+                    "Avatar tool storage is unavailable",
+                    status_code=503,
+                ) from exc
 
-    def _record_path(self, tool_id: str) -> Path:
-        if not is_local_avatar_tool_id(tool_id):
-            raise AvatarToolStoreError("invalid_tool_id", "Invalid local avatar tool ID")
-        return self.root / tool_id / "record.json"
+    def _recover_interrupted_mutations(self) -> None:
+        candidates = list(self.root.iterdir())
+        tool_ids = {
+            match.group(1)
+            for candidate in candidates
+            for pattern in (LOCAL_AVATAR_TOOL_UPDATE_PATTERN, LOCAL_AVATAR_TOOL_BACKUP_PATTERN)
+            if (match := pattern.fullmatch(candidate.name)) is not None
+        }
+        for tool_id in tool_ids:
+            final = self.root / tool_id
+            updating = self.root / f".{tool_id}.updating"
+            backup = self.root / f".{tool_id}.backup"
+            if final.is_dir() and not final.is_symlink():
+                try:
+                    self.read_record(tool_id)
+                except AvatarToolStoreError:
+                    pass
+                else:
+                    shutil.rmtree(updating, ignore_errors=True)
+                    shutil.rmtree(backup, ignore_errors=True)
+                    continue
+            if not final.exists() and backup.is_dir() and not backup.is_symlink():
+                try:
+                    self._read_record_from_directory(tool_id, backup)
+                except AvatarToolStoreError:
+                    pass
+                else:
+                    os.replace(backup, final)
+                    shutil.rmtree(updating, ignore_errors=True)
+                    continue
+            shutil.rmtree(updating, ignore_errors=True)
+
+        for candidate in self.root.iterdir():
+            if not (
+                LOCAL_AVATAR_TOOL_UPLOAD_PATTERN.fullmatch(candidate.name)
+                or LOCAL_AVATAR_TOOL_DELETING_PATTERN.fullmatch(candidate.name)
+            ):
+                continue
+            if candidate.is_symlink() or not candidate.is_dir():
+                continue
+            shutil.rmtree(candidate, ignore_errors=True)
 
     def read_record(self, tool_id: str) -> dict[str, Any]:
-        path = self._record_path(tool_id)
+        with _STORE_LOCK:
+            return self._read_record_from_directory(tool_id, self.root / tool_id)
+
+    def _read_record_from_directory(self, tool_id: str, directory: Path) -> dict[str, Any]:
+        if not is_local_avatar_tool_id(tool_id):
+            raise AvatarToolStoreError("invalid_tool_id", "Invalid local avatar tool ID")
+        path = directory / "record.json"
         if path.is_symlink() or not path.is_file():
             raise AvatarToolStoreError("tool_not_found", "Avatar tool does not exist", status_code=404)
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
             raise AvatarToolStoreError("record_invalid", "Avatar tool record is invalid", status_code=404) from exc
-        return self._validate_record(payload, expected_id=tool_id)
+        return self._validate_record(payload, expected_id=tool_id, directory=directory)
 
-    def _validate_record(self, payload: object, *, expected_id: str) -> dict[str, Any]:
+    def _validate_record(
+        self,
+        payload: object,
+        *,
+        expected_id: str,
+        directory: Path | None = None,
+    ) -> dict[str, Any]:
         if not isinstance(payload, dict) or set(payload) != {
             "recordVersion", "id", "name", "defaultImage", "imageChange", "interaction"
         }:
             raise AvatarToolStoreError("record_invalid", "Avatar tool record is invalid", status_code=404)
         if payload.get("recordVersion") != 2 or payload.get("id") != expected_id:
             raise AvatarToolStoreError("record_invalid", "Avatar tool record is invalid", status_code=404)
-        name = _validate_text(payload.get("name"), field="name", maximum=self.limits["maxNameChars"])
+        name = _validate_name(payload.get("name"), maximum=self.limits["maxNameChars"])
         default_image = payload.get("defaultImage")
         image_change = payload.get("imageChange")
         interaction = payload.get("interaction")
@@ -283,7 +403,7 @@ class AvatarToolStore:
                 raise AvatarToolStoreError("record_invalid", "Avatar tool record is invalid", status_code=404)
             clean_items.append({
                 "image": expected_image,
-                "meaning": _validate_text(
+                "meaning": _validate_meaning(
                     item.get("meaning"),
                     field="meaning",
                     maximum=self.limits["maxMeaningChars"],
@@ -317,14 +437,14 @@ class AvatarToolStore:
             clean_special = {
                 "probability": _validate_probability(special_probability),
                 "image": "special.png",
-                "meaning": _validate_text(
+                "meaning": _validate_meaning(
                     special.get("meaning"),
                     field="special_meaning",
                     maximum=self.limits["maxMeaningChars"],
                 ),
                 **({"sound": "special.mp3"} if special_sound else {}),
             }
-        directory = self.root / expected_id
+        directory = directory or self.root / expected_id
         if directory.is_symlink() or not directory.is_dir():
             raise AvatarToolStoreError("record_invalid", "Avatar tool record is invalid", status_code=404)
         resource_names = ["default.png", *(item["image"] for item in clean_items)]
@@ -338,6 +458,17 @@ class AvatarToolStore:
             resource = directory / filename
             if resource.is_symlink() or not resource.is_file():
                 raise AvatarToolStoreError("record_invalid", "Avatar tool resource is invalid", status_code=404)
+        expected_entries = {"record.json", *resource_names}
+        try:
+            actual_entries = {
+                entry.name
+                for entry in directory.iterdir()
+                if entry.is_file() and not entry.is_symlink()
+            }
+        except OSError as exc:
+            raise AvatarToolStoreError("record_invalid", "Avatar tool resource is invalid", status_code=404) from exc
+        if actual_entries != expected_entries:
+            raise AvatarToolStoreError("record_invalid", "Avatar tool resource closure is invalid", status_code=404)
         return {
             "recordVersion": 2,
             "id": expected_id,
@@ -383,28 +514,293 @@ class AvatarToolStore:
             }
         return item
 
+    def get_detail(self, tool_id: str) -> dict[str, Any]:
+        with _STORE_LOCK:
+            record = self.read_record(tool_id)
+            record_stat = (self.root / tool_id / "record.json").stat()
+            detail = {
+                "id": tool_id,
+                "revision": f"{record_stat.st_size}-{record_stat.st_mtime_ns}",
+                "name": record["name"],
+                "changeMode": record["imageChange"]["mode"],
+                "defaultImage": {
+                    "resource": record["defaultImage"],
+                    "url": self._asset_url(tool_id, record["defaultImage"]),
+                },
+                "changeItems": [
+                    {
+                        "resource": item["image"],
+                        "url": self._asset_url(tool_id, item["image"]),
+                        "meaning": item["meaning"],
+                    }
+                    for item in record["imageChange"]["items"]
+                ],
+            }
+            normal_sound = record["interaction"].get("normalSound")
+            if normal_sound:
+                detail["normalSound"] = {
+                    "resource": normal_sound,
+                    "url": self._asset_url(tool_id, normal_sound),
+                }
+            special = record["interaction"].get("special")
+            if special:
+                detail["special"] = {
+                    "probability": special["probability"],
+                    "image": {
+                        "resource": special["image"],
+                        "url": self._asset_url(tool_id, special["image"]),
+                    },
+                    "meaning": special["meaning"],
+                    **(
+                        {
+                            "sound": {
+                                "resource": special["sound"],
+                                "url": self._asset_url(tool_id, special["sound"]),
+                            }
+                        }
+                        if special.get("sound")
+                        else {}
+                    ),
+                }
+            return detail
+
     def list_items(self) -> list[dict[str, Any]]:
-        self.ensure()
-        items: list[dict[str, Any]] = []
-        for candidate in sorted(self.root.iterdir(), key=lambda item: item.name):
-            if candidate.is_symlink() or not candidate.is_dir() or not is_local_avatar_tool_id(candidate.name):
-                continue
+        with _STORE_LOCK:
+            self.ensure()
+            items: list[dict[str, Any]] = []
             try:
-                items.append(self._public_item(self.read_record(candidate.name)))
-            except (AvatarToolStoreError, OSError) as exc:
-                logger.warning("Skipping invalid local avatar tool %s: %s", candidate.name, exc)
-                continue
-        return items
+                candidates = sorted(self.root.iterdir(), key=lambda item: item.name)
+            except OSError as exc:
+                raise AvatarToolStoreError(
+                    "avatar_tools_directory_unavailable",
+                    "Avatar tool storage is unavailable",
+                    status_code=503,
+                ) from exc
+            for candidate in candidates:
+                if candidate.is_symlink() or not candidate.is_dir() or not is_local_avatar_tool_id(candidate.name):
+                    continue
+                try:
+                    items.append(self._public_item(self.read_record(candidate.name)))
+                except (AvatarToolStoreError, OSError) as exc:
+                    logger.warning("Skipping invalid local avatar tool %s: %s", candidate.name, exc)
+                    continue
+            return items
 
     def _current_storage_bytes(self) -> int:
         total = 0
         for directory in self.root.iterdir():
-            if directory.is_symlink() or not directory.is_dir() or not is_local_avatar_tool_id(directory.name):
+            is_published = is_local_avatar_tool_id(directory.name)
+            is_pending_delete = LOCAL_AVATAR_TOOL_DELETING_PATTERN.fullmatch(directory.name) is not None
+            if (
+                directory.is_symlink()
+                or not directory.is_dir()
+                or not (is_published or is_pending_delete)
+            ):
                 continue
             for entry in directory.iterdir():
                 if entry.is_file() and not entry.is_symlink():
                     total += entry.stat().st_size
         return total
+
+    def delete_tool(self, tool_id: str) -> str:
+        if not is_local_avatar_tool_id(tool_id):
+            raise AvatarToolStoreError("invalid_tool_id", "Invalid local avatar tool ID")
+
+        with _STORE_LOCK:
+            directory = self.root / tool_id
+            if directory.is_symlink() or not directory.is_dir():
+                raise AvatarToolStoreError(
+                    "tool_not_found",
+                    "Avatar tool does not exist",
+                    status_code=404,
+                )
+            try:
+                root = self.root.resolve(strict=True)
+                target = directory.resolve(strict=True)
+            except OSError as exc:
+                raise AvatarToolStoreError(
+                    "tool_not_found",
+                    "Avatar tool does not exist",
+                    status_code=404,
+                ) from exc
+            if target.parent != root:
+                raise AvatarToolStoreError("invalid_tool_path", "Invalid local avatar tool path")
+
+            assert_cloudsave_writable(
+                self.config_manager,
+                operation="delete",
+                target=f"avatar_tools/{tool_id}",
+            )
+            deleting = self.root / f".{tool_id}.deleting"
+            if deleting.is_symlink() or deleting.exists():
+                raise AvatarToolStoreError(
+                    "tool_delete_failed",
+                    "Avatar tool could not be deleted",
+                    status_code=500,
+                )
+            try:
+                os.replace(target, deleting)
+            except FileNotFoundError as exc:
+                raise AvatarToolStoreError(
+                    "tool_not_found",
+                    "Avatar tool does not exist",
+                    status_code=404,
+                ) from exc
+            except OSError as exc:
+                raise AvatarToolStoreError(
+                    "tool_delete_failed",
+                    "Avatar tool could not be deleted",
+                    status_code=500,
+                ) from exc
+            try:
+                shutil.rmtree(deleting)
+            except OSError:
+                logger.warning("Could not clean deleted avatar tool %s", deleting)
+            return tool_id
+
+    def _prepare_tool_contents(
+        self,
+        *,
+        tool_id: str,
+        name: str,
+        change_mode: str,
+        change_meanings: list[str],
+        default_image: bytes,
+        change_images: list[bytes],
+        normal_sound: bytes | None,
+        special_probability: object | None,
+        special_image: bytes | None,
+        special_meaning: str | None,
+        special_sound: bytes | None,
+    ) -> tuple[dict[str, Any], dict[str, bytes]]:
+        clean_name = _validate_name(name, maximum=self.limits["maxNameChars"])
+        if change_mode not in LOCAL_AVATAR_TOOL_CHANGE_MODES:
+            raise AvatarToolStoreError("change_mode_invalid", "Image change mode is invalid")
+        if len(change_images) != len(change_meanings):
+            raise AvatarToolStoreError("change_items_mismatch", "Images and meanings must match")
+        if not 1 <= len(change_images) <= self.limits["maxChangeImages"]:
+            raise AvatarToolStoreError("change_items_invalid", "Image change item count is invalid")
+        if change_mode == "press-swap" and len(change_images) != 1:
+            raise AvatarToolStoreError("change_items_invalid", "Press-swap requires one change image")
+        clean_meanings = [
+            _validate_meaning(
+                meaning,
+                field="change_meaning",
+                maximum=self.limits["maxMeaningChars"],
+                index=index,
+            )
+            for index, meaning in enumerate(change_meanings)
+        ]
+        resources = {
+            "default.png": _validate_resource(
+                _decode_static_png,
+                default_image,
+                limits=self.limits,
+                field="default_image",
+            ),
+            **{
+                f"change-{index:03d}.png": _validate_resource(
+                    _decode_static_png,
+                    image,
+                    limits=self.limits,
+                    field="change_image",
+                    index=index,
+                )
+                for index, image in enumerate(change_images)
+            },
+        }
+        if normal_sound is not None:
+            resources["normal.mp3"] = _validate_resource(
+                _validate_mp3,
+                normal_sound,
+                limits=self.limits,
+                field="normal_sound",
+            )
+
+        special_values = (special_probability, special_image, special_meaning, special_sound)
+        special_enabled = any(value is not None for value in special_values)
+        clean_special = None
+        if special_enabled:
+            if special_probability is None:
+                raise AvatarToolStoreError(
+                    "special_probability_required",
+                    "Special probability is required",
+                    field="special_probability",
+                )
+            if special_image is None:
+                raise AvatarToolStoreError(
+                    "special_image_required",
+                    "Special image is required",
+                    field="special_image",
+                )
+            if special_meaning is None:
+                raise AvatarToolStoreError(
+                    "special_meaning_required",
+                    "Special meaning is required",
+                    field="special_meaning",
+                )
+            resources["special.png"] = _validate_resource(
+                _decode_static_png,
+                special_image,
+                limits=self.limits,
+                field="special_image",
+            )
+            clean_special = {
+                "probability": _validate_probability(special_probability, field="special_probability"),
+                "image": "special.png",
+                "meaning": _validate_meaning(
+                    special_meaning,
+                    field="special_meaning",
+                    maximum=self.limits["maxMeaningChars"],
+                ),
+                **({"sound": "special.mp3"} if special_sound is not None else {}),
+            }
+            if special_sound is not None:
+                resources["special.mp3"] = _validate_resource(
+                    _validate_special_mp3,
+                    special_sound,
+                    limits=self.limits,
+                    field="special_sound",
+                )
+
+        record = {
+            "recordVersion": 2,
+            "id": tool_id,
+            "name": clean_name,
+            "defaultImage": "default.png",
+            "imageChange": {
+                "mode": change_mode,
+                "items": [
+                    {"image": f"change-{index:03d}.png", "meaning": meaning}
+                    for index, meaning in enumerate(clean_meanings)
+                ],
+            },
+            "interaction": {
+                **({"normalSound": "normal.mp3"} if normal_sound is not None else {}),
+                **({"special": clean_special} if clean_special else {}),
+            },
+        }
+        return record, resources
+
+    @staticmethod
+    def _directory_bytes(directory: Path) -> int:
+        return sum(
+            entry.stat().st_size
+            for entry in directory.iterdir()
+            if entry.is_file() and not entry.is_symlink()
+        )
+
+    def _write_staged_tool(
+        self,
+        directory: Path,
+        record: dict[str, Any],
+        resources: dict[str, bytes],
+    ) -> None:
+        directory.mkdir(mode=0o700)
+        for filename, data in resources.items():
+            (directory / filename).write_bytes(data)
+        atomic_write_json(directory / "record.json", record, ensure_ascii=False, indent=2)
+        self._read_record_from_directory(record["id"], directory)
 
     def create_tool(
         self,
@@ -420,109 +816,38 @@ class AvatarToolStore:
         special_meaning: str | None = None,
         special_sound: bytes | None = None,
     ) -> dict[str, Any]:
-        clean_name = _validate_text(name, field="name", maximum=self.limits["maxNameChars"])
-        if change_mode not in LOCAL_AVATAR_TOOL_CHANGE_MODES:
-            raise AvatarToolStoreError("change_mode_invalid", "Image change mode is invalid")
-        if len(change_images) != len(change_meanings):
-            raise AvatarToolStoreError("change_items_mismatch", "Images and meanings must match")
-        if not 1 <= len(change_images) <= self.limits["maxChangeImages"]:
-            raise AvatarToolStoreError("change_items_invalid", "Image change item count is invalid")
-        if change_mode == "press-swap" and len(change_images) != 1:
-            raise AvatarToolStoreError("change_items_invalid", "Press-swap requires one change image")
-        clean_meanings = [
-            _validate_text(
-                meaning,
-                field="meaning",
-                maximum=self.limits["maxMeaningChars"],
-            )
-            for meaning in change_meanings
-        ]
-        default_png = _decode_static_png(default_image, limits=self.limits)
-        change_pngs = [
-            _decode_static_png(image, limits=self.limits)
-            for image in change_images
-        ]
-        normal_mp3 = _validate_mp3(normal_sound, limits=self.limits) if normal_sound is not None else None
-        special_values = (special_probability, special_image, special_meaning, special_sound)
-        special_enabled = any(value is not None for value in special_values)
-        clean_special = None
-        special_png = None
-        special_mp3 = None
-        if special_enabled:
-            if special_probability is None:
-                raise AvatarToolStoreError("special_probability_required", "Special probability is required")
-            if special_image is None:
-                raise AvatarToolStoreError("special_image_required", "Special image is required")
-            if special_meaning is None:
-                raise AvatarToolStoreError("special_meaning_required", "Special meaning is required")
-            probability = _validate_probability(special_probability)
-            special_png = _decode_static_png(special_image, limits=self.limits)
-            clean_special = {
-                "probability": probability,
-                "image": "special.png",
-                "meaning": _validate_text(
-                    special_meaning,
-                    field="special_meaning",
-                    maximum=self.limits["maxMeaningChars"],
-                ),
-                **({"sound": "special.mp3"} if special_sound is not None else {}),
-            }
-            special_mp3 = (
-                _validate_special_mp3(special_sound, limits=self.limits)
-                if special_sound is not None
-                else None
-            )
-
-        with _MUTATION_LOCK:
-            self.ensure()
+        tool_id = f"local-{uuid.uuid4()}"
+        record, resources = self._prepare_tool_contents(
+            tool_id=tool_id,
+            name=name,
+            change_mode=change_mode,
+            change_meanings=change_meanings,
+            default_image=default_image,
+            change_images=change_images,
+            normal_sound=normal_sound,
+            special_probability=special_probability,
+            special_image=special_image,
+            special_meaning=special_meaning,
+            special_sound=special_sound,
+        )
+        with _STORE_LOCK:
             assert_cloudsave_writable(
                 self.config_manager,
                 operation="create",
                 target="avatar_tools",
             )
+            self.ensure()
             published = [
                 item for item in self.root.iterdir()
                 if item.is_dir() and not item.is_symlink() and is_local_avatar_tool_id(item.name)
             ]
             if len(published) >= self.limits["maxTools"]:
                 raise AvatarToolStoreError("tool_limit_reached", "Avatar tool limit reached", status_code=409)
-            tool_id = f"local-{uuid.uuid4()}"
             temporary = self.root / f".{tool_id}.uploading"
             final = self.root / tool_id
-            record = {
-                "recordVersion": 2,
-                "id": tool_id,
-                "name": clean_name,
-                "defaultImage": "default.png",
-                "imageChange": {
-                    "mode": change_mode,
-                    "items": [
-                        {"image": f"change-{index:03d}.png", "meaning": meaning}
-                        for index, meaning in enumerate(clean_meanings)
-                    ],
-                },
-                "interaction": {
-                    **({"normalSound": "normal.mp3"} if normal_mp3 is not None else {}),
-                    **({"special": clean_special} if clean_special else {}),
-                },
-            }
             try:
-                temporary.mkdir(mode=0o700)
-                (temporary / "default.png").write_bytes(default_png)
-                for index, image in enumerate(change_pngs):
-                    (temporary / f"change-{index:03d}.png").write_bytes(image)
-                if normal_mp3 is not None:
-                    (temporary / "normal.mp3").write_bytes(normal_mp3)
-                if special_png is not None:
-                    (temporary / "special.png").write_bytes(special_png)
-                if special_mp3 is not None:
-                    (temporary / "special.mp3").write_bytes(special_mp3)
-                atomic_write_json(temporary / "record.json", record, ensure_ascii=False, indent=2)
-                created_size = sum(
-                    entry.stat().st_size
-                    for entry in temporary.iterdir()
-                    if entry.is_file() and not entry.is_symlink()
-                )
+                self._write_staged_tool(temporary, record, resources)
+                created_size = self._directory_bytes(temporary)
                 if self._current_storage_bytes() + created_size > self.limits["maxTotalBytes"]:
                     raise AvatarToolStoreError(
                         "storage_limit_reached",
@@ -533,6 +858,203 @@ class AvatarToolStore:
             except BaseException:
                 shutil.rmtree(temporary, ignore_errors=True)
                 raise
+            return self._public_item(record)
+
+    def update_tool(
+        self,
+        tool_id: str,
+        *,
+        base_revision: str,
+        name: str,
+        change_mode: str,
+        change_meanings: list[str],
+        default_resource: str | None,
+        default_image: bytes | None,
+        change_resources: list[str],
+        change_images: list[bytes],
+        normal_sound_resource: str | None = None,
+        normal_sound: bytes | None = None,
+        special_probability: object | None = None,
+        special_image_resource: str | None = None,
+        special_image: bytes | None = None,
+        special_meaning: str | None = None,
+        special_sound_resource: str | None = None,
+        special_sound: bytes | None = None,
+    ) -> dict[str, Any]:
+        if not is_local_avatar_tool_id(tool_id):
+            raise AvatarToolStoreError("invalid_tool_id", "Invalid local avatar tool ID")
+
+        with _STORE_LOCK:
+            assert_cloudsave_writable(
+                self.config_manager,
+                operation="update",
+                target=f"avatar_tools/{tool_id}",
+            )
+            self.ensure()
+            current = self.read_record(tool_id)
+            final = self.root / tool_id
+            record_stat = (final / "record.json").stat()
+            current_revision = f"{record_stat.st_size}-{record_stat.st_mtime_ns}"
+            if not _REVISION_PATTERN.fullmatch(base_revision) or base_revision != current_revision:
+                raise AvatarToolStoreError(
+                    "tool_revision_conflict",
+                    "Avatar tool changed after the edit page was opened",
+                    status_code=409,
+                )
+
+            def retained_bytes(resource: str | None, allowed: set[str], *, field: str) -> bytes:
+                if not resource or resource not in allowed:
+                    raise AvatarToolStoreError(
+                        "resource_reference_invalid",
+                        "Retained resource is invalid",
+                        field=field,
+                    )
+                candidate = final / resource
+                if candidate.is_symlink() or not candidate.is_file():
+                    raise AvatarToolStoreError(
+                        "resource_reference_invalid",
+                        "Retained resource is invalid",
+                        field=field,
+                    )
+                return candidate.read_bytes()
+
+            current_change_resources = {
+                item["image"] for item in current["imageChange"]["items"]
+            }
+            if (default_resource is None) == (default_image is None):
+                raise AvatarToolStoreError(
+                    "default_image_source_invalid",
+                    "Choose either the current or a replacement default image",
+                    field="default_image",
+                )
+            next_default = default_image if default_image is not None else retained_bytes(
+                default_resource,
+                {current["defaultImage"]},
+                field="default_image",
+            )
+
+            if len(change_resources) != len(change_meanings):
+                raise AvatarToolStoreError("change_items_mismatch", "Images and meanings must match")
+            replacement_index = 0
+            next_change_images: list[bytes] = []
+            for index, resource in enumerate(change_resources):
+                if resource:
+                    next_change_images.append(retained_bytes(
+                        resource,
+                        current_change_resources,
+                        field="change_image",
+                    ))
+                    continue
+                if replacement_index >= len(change_images):
+                    raise AvatarToolStoreError(
+                        "change_image_required",
+                        "Change image is required",
+                        field="change_image",
+                        index=index,
+                    )
+                next_change_images.append(change_images[replacement_index])
+                replacement_index += 1
+            if replacement_index != len(change_images):
+                raise AvatarToolStoreError("change_items_mismatch", "Images and meanings must match")
+
+            current_normal_sound = current["interaction"].get("normalSound")
+            if normal_sound is not None and normal_sound_resource is not None:
+                raise AvatarToolStoreError(
+                    "normal_sound_source_invalid",
+                    "Choose either the current or a replacement sound",
+                    field="normal_sound",
+                )
+            next_normal_sound = normal_sound
+            if normal_sound_resource is not None:
+                next_normal_sound = retained_bytes(
+                    normal_sound_resource,
+                    {current_normal_sound} if current_normal_sound else set(),
+                    field="normal_sound",
+                )
+
+            special_enabled = any(value is not None for value in (
+                special_probability,
+                special_image_resource,
+                special_image,
+                special_meaning,
+                special_sound_resource,
+                special_sound,
+            ))
+            next_special_image = None
+            next_special_sound = None
+            if special_enabled:
+                if special_image is not None and special_image_resource is not None:
+                    raise AvatarToolStoreError(
+                        "special_image_source_invalid",
+                        "Choose either the current or a replacement special image",
+                        field="special_image",
+                    )
+                current_special = current["interaction"].get("special")
+                next_special_image = special_image
+                if special_image_resource is not None:
+                    next_special_image = retained_bytes(
+                        special_image_resource,
+                        {current_special["image"]} if current_special else set(),
+                        field="special_image",
+                    )
+                if special_sound is not None and special_sound_resource is not None:
+                    raise AvatarToolStoreError(
+                        "special_sound_source_invalid",
+                        "Choose either the current or a replacement special sound",
+                        field="special_sound",
+                    )
+                next_special_sound = special_sound
+                if special_sound_resource is not None:
+                    next_special_sound = retained_bytes(
+                        special_sound_resource,
+                        {current_special.get("sound")} if current_special and current_special.get("sound") else set(),
+                        field="special_sound",
+                    )
+
+            record, resources = self._prepare_tool_contents(
+                tool_id=tool_id,
+                name=name,
+                change_mode=change_mode,
+                change_meanings=change_meanings,
+                default_image=next_default,
+                change_images=next_change_images,
+                normal_sound=next_normal_sound,
+                special_probability=special_probability,
+                special_image=next_special_image,
+                special_meaning=special_meaning,
+                special_sound=next_special_sound,
+            )
+
+            updating = self.root / f".{tool_id}.updating"
+            backup = self.root / f".{tool_id}.backup"
+            for transient in (updating, backup):
+                if transient.is_symlink():
+                    raise AvatarToolStoreError("invalid_tool_path", "Invalid local avatar tool path")
+                if transient.exists():
+                    shutil.rmtree(transient)
+            published_backup = False
+            try:
+                self._write_staged_tool(updating, record, resources)
+                current_size = self._directory_bytes(final)
+                updated_size = self._directory_bytes(updating)
+                if self._current_storage_bytes() - current_size + updated_size > self.limits["maxTotalBytes"]:
+                    raise AvatarToolStoreError(
+                        "storage_limit_reached",
+                        "Avatar tool storage limit reached",
+                        status_code=413,
+                    )
+                os.replace(final, backup)
+                published_backup = True
+                os.replace(updating, final)
+            except BaseException:
+                shutil.rmtree(updating, ignore_errors=True)
+                if published_backup and not final.exists() and backup.exists():
+                    os.replace(backup, final)
+                raise
+            try:
+                shutil.rmtree(backup)
+            except OSError:
+                logger.warning("Could not remove avatar tool update backup %s", backup)
             return self._public_item(record)
 
 

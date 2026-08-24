@@ -34,7 +34,6 @@ export function getAvatarToolItemLabel(item: AvatarToolItem): string {
 const REGISTERED_AVATAR_TOOLS: ReadonlyArray<AvatarToolItem> = BUILT_IN_AVATAR_TOOL_REGISTRY.items;
 
 export const AVAILABLE_COMPACT_AVATAR_TOOLS: ReadonlyArray<AvatarToolItem> = REGISTERED_AVATAR_TOOLS;
-export const AVAILABLE_FULL_AVATAR_TOOLS: ReadonlyArray<AvatarToolItem> = REGISTERED_AVATAR_TOOLS;
 
 const AVAILABLE_AVATAR_TOOL_IDS = new Set<AvatarToolId>(REGISTERED_AVATAR_TOOLS.map(item => item.id));
 
@@ -43,6 +42,10 @@ export function isAvatarToolId(value: unknown): value is AvatarToolId {
     AVAILABLE_AVATAR_TOOL_IDS.has(value as AvatarToolId)
     || LOCAL_AVATAR_TOOL_ID_PATTERN.test(value)
   );
+}
+
+export function isLocalAvatarToolId(value: unknown): value is `local-${string}` {
+  return typeof value === 'string' && LOCAL_AVATAR_TOOL_ID_PATTERN.test(value);
 }
 
 export function sanitizeAvatarToolIds(

@@ -655,6 +655,19 @@ def test_runtime_root_summary_ignores_dotfiles_in_memory(tmp_path):
 
 
 @pytest.mark.unit
+def test_runtime_root_detects_user_created_avatar_tools(tmp_path):
+    cm = _make_config_manager(tmp_path)
+
+    from utils.cloudsave_runtime import _runtime_root_has_user_content
+
+    tool_dir = Path(cm.app_docs_dir) / "avatar_tools" / "local-12345678-1234-4123-8123-123456789abc"
+    tool_dir.mkdir(parents=True)
+    (tool_dir / "record.json").write_text('{"recordVersion":2}', encoding="utf-8")
+
+    assert _runtime_root_has_user_content(Path(cm.app_docs_dir)) is True
+
+
+@pytest.mark.unit
 def test_bootstrap_recovers_stale_blocking_mode(tmp_path):
     cm = _make_config_manager(tmp_path)
 

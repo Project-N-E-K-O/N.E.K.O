@@ -11,11 +11,17 @@ import {
 import { createPortal } from 'react-dom';
 import { i18n } from './i18n';
 import AvatarToolCreatePage from './AvatarToolCreatePage';
-import type { CreateLocalAvatarToolInput, LocalAvatarToolLimits } from './avatar-tools/localTools';
+import type {
+  CreateLocalAvatarToolInput,
+  LocalAvatarToolDetail,
+  LocalAvatarToolLimits,
+  UpdateLocalAvatarToolInput,
+} from './avatar-tools/localTools';
 import {
   MAX_ACTIVE_AVATAR_TOOLS,
   getAvatarToolItemLabel,
   isAvatarToolId,
+  isLocalAvatarToolId,
   type AvatarToolId,
   type AvatarToolItem,
   sanitizeAvatarToolIds,
@@ -51,6 +57,10 @@ type AvatarToolItemManagerProps = {
   userName?: string;
   assistantName?: string;
   onCreate?: (input: CreateLocalAvatarToolInput) => Promise<void>;
+  onLoadDetail?: (toolId: `local-${string}`) => Promise<LocalAvatarToolDetail>;
+  onUpdate?: (toolId: `local-${string}`, input: UpdateLocalAvatarToolInput) => Promise<void>;
+  onDelete?: (toolId: `local-${string}`) => Promise<void>;
+  catalogAuthoritativeLoaded?: boolean;
   catalogRefreshFailed?: boolean;
 };
 
@@ -395,6 +405,10 @@ export default function AvatarToolItemManager({
   userName = '',
   assistantName = '',
   onCreate,
+  onLoadDetail,
+  onUpdate,
+  onDelete,
+  catalogAuthoritativeLoaded = true,
   catalogRefreshFailed = false,
 }: AvatarToolItemManagerProps) {
   const validToolIds = useMemo(
@@ -402,13 +416,16 @@ export default function AvatarToolItemManager({
     [availableTools],
   );
   const [draftSlots, setDraftSlots] = useState<AvatarToolSlotValue[]>(() => createSlots(activeToolIds));
-  const [view, setView] = useState<'library' | 'create'>('library');
+  const [view, setView] = useState<'library' | 'create' | 'edit'>('library');
+  const [editDetail, setEditDetail] = useState<LocalAvatarToolDetail | null>(null);
+  const [loadingEditToolId, setLoadingEditToolId] = useState<AvatarToolId | null>(null);
   const [createSpecialEnabled, setCreateSpecialEnabled] = useState(false);
   const [notice, setNotice] = useState('');
+  const [noticeIsError, setNoticeIsError] = useState(false);
   const [dragSession, setDragSession] = useState<AvatarToolDragSession | null>(null);
   const [dialogPosition, setDialogPosition] = useState<AvatarToolManagerPosition | null>(null);
   const [dialogDragSession, setDialogDragSession] = useState<AvatarToolManagerDialogDragSession | null>(null);
-  const preferredDialogHeight = view === 'create'
+  const preferredDialogHeight = view !== 'library'
     ? (createSpecialEnabled
       ? AVATAR_TOOL_CREATE_SPECIAL_FALLBACK_HEIGHT
       : AVATAR_TOOL_CREATE_FALLBACK_HEIGHT)
@@ -417,13 +434,24 @@ export default function AvatarToolItemManager({
   const closeButtonRef = useRef<HTMLButtonElement | null>(null);
   const prevActiveElementRef = useRef<HTMLElement | null>(null);
   const suppressClickRef = useRef(false);
+  const wasOpenRef = useRef(false);
+  const editRequestRef = useRef(0);
 
   useEffect(() => {
-    if (!open) return;
+    if (!open) {
+      wasOpenRef.current = false;
+      return;
+    }
+    if (wasOpenRef.current) return;
+    wasOpenRef.current = true;
     setDraftSlots(createSlots(activeToolIds));
     setView('library');
+    setEditDetail(null);
+    setLoadingEditToolId(null);
     setCreateSpecialEnabled(false);
     setNotice('');
+    setNoticeIsError(false);
+    editRequestRef.current += 1;
     setDragSession(null);
     setDialogDragSession(null);
     suppressClickRef.current = false;
@@ -459,7 +487,7 @@ export default function AvatarToolItemManager({
         if (!isElectronDesktopEnvironment() && viewport.width <= 640) return null;
         if (!position) return position;
         const dialogSize = getDialogSize(dialogRef.current, viewport, preferredDialogHeight);
-        return view === 'create'
+        return view !== 'library'
           ? clampCreateDialogPosition(position, dialogSize, viewport)
           : clampDialogPosition(position, dialogSize, viewport);
       });
@@ -550,6 +578,7 @@ export default function AvatarToolItemManager({
   const equippedIds = compactSlots(draftSlots, validToolIds);
   const equippedIdSet = new Set(equippedIds);
   const draftFull = equippedIds.length >= MAX_ACTIVE_AVATAR_TOOLS;
+  const catalogSaveBlocked = !catalogAuthoritativeLoaded && activeToolIds.some(isLocalAvatarToolId);
   const dialogTitleId = 'avatar-tool-manager-title';
   const noticeId = notice ? 'avatar-tool-manager-notice' : undefined;
 
@@ -608,6 +637,7 @@ export default function AvatarToolItemManager({
           return placeLibraryToolInSlot(slots, session.toolId, targetSlotIndex);
         });
         setNotice('');
+        setNoticeIsError(false);
       }
       window.setTimeout(() => {
         suppressClickRef.current = false;
@@ -631,6 +661,7 @@ export default function AvatarToolItemManager({
     const firstEmptyIndex = draftSlots.findIndex(slotToolId => slotToolId === null);
     if (firstEmptyIndex < 0 || draftFull) {
       setNotice(i18n('chat.avatarToolSlotFull', 'Unequip a tool first.'));
+      setNoticeIsError(false);
       return;
     }
     setDraftSlots((slots) => {
@@ -639,6 +670,7 @@ export default function AvatarToolItemManager({
       return next;
     });
     setNotice('');
+    setNoticeIsError(false);
   };
 
   const handleRemoveSlot = (index: number) => {
@@ -648,6 +680,37 @@ export default function AvatarToolItemManager({
       return next;
     });
     setNotice('');
+    setNoticeIsError(false);
+  };
+
+  const openEdit = async (toolId: `local-${string}`) => {
+    if (!onLoadDetail || loadingEditToolId) return;
+    const request = ++editRequestRef.current;
+    setLoadingEditToolId(toolId);
+    setNotice('');
+    setNoticeIsError(false);
+    try {
+      const detail = await onLoadDetail(toolId);
+      if (request !== editRequestRef.current || detail.id !== toolId) return;
+      setEditDetail(detail);
+      setCreateSpecialEnabled(!!detail.special);
+      setView('edit');
+    } catch {
+      if (request !== editRequestRef.current) return;
+      setNotice(i18n('chat.avatarToolUpdateLoadError', 'Could not open this tool. Please try again.'));
+      setNoticeIsError(true);
+    } finally {
+      if (request === editRequestRef.current) setLoadingEditToolId(null);
+    }
+  };
+
+  const deleteEditedTool = async () => {
+    if (!onDelete || !editDetail) return;
+    await onDelete(editDetail.id);
+    setDraftSlots(slots => slots.map(toolId => toolId === editDetail.id ? null : toolId));
+    setEditDetail(null);
+    setCreateSpecialEnabled(false);
+    setView('library');
   };
 
   const handleSave = () => {
@@ -687,7 +750,7 @@ export default function AvatarToolItemManager({
         top: session.startTop + event.clientY - session.startY,
       };
       const dialogSize = getDialogSize(dialogRef.current, viewport, preferredDialogHeight);
-      setDialogPosition(view === 'create'
+      setDialogPosition(view !== 'library'
         ? clampCreateDialogPosition(nextPosition, dialogSize, viewport)
         : clampDialogPosition(nextPosition, dialogSize, viewport));
       return {
@@ -724,7 +787,7 @@ export default function AvatarToolItemManager({
   const isDesktopMode = dialogPosition !== null;
   const dialogViewport = getDialogViewport();
   const dialogSize = getDialogSize(dialogRef.current, dialogViewport, preferredDialogHeight);
-  const positionedCreateHeight = dialogPosition && view === 'create'
+  const positionedCreateHeight = dialogPosition && view !== 'library'
     ? Math.max(
       1,
       Math.min(
@@ -761,7 +824,7 @@ export default function AvatarToolItemManager({
 
   const dialogElement = (
     <section
-      className={`avatar-tool-manager-dialog${view === 'create' ? ' is-create-view' : ''}${createSpecialEnabled ? ' is-special-enabled' : ''}${dialogPosition ? ' is-positioned' : ''}${isDesktopCompactDialog ? ' is-desktop-compact-layout' : ''}${managerDragging ? ' is-dragging' : ''}`}
+      className={`avatar-tool-manager-dialog${view !== 'library' ? ' is-create-view' : ''}${view === 'edit' ? ' is-edit-view' : ''}${createSpecialEnabled ? ' is-special-enabled' : ''}${dialogPosition ? ' is-positioned' : ''}${isDesktopCompactDialog ? ' is-desktop-compact-layout' : ''}${managerDragging ? ' is-dragging' : ''}`}
       ref={dialogRef}
       style={dialogStyle}
       role="dialog"
@@ -786,7 +849,9 @@ export default function AvatarToolItemManager({
           <h2 id={dialogTitleId}>
             {view === 'create'
               ? i18n('chat.avatarToolCreateTitle', 'Create custom tool')
-              : i18n('chat.avatarToolManagerTitle', 'Manage tools')}
+              : view === 'edit'
+                ? i18n('chat.avatarToolUpdateTitle', 'Edit custom tool')
+                : i18n('chat.avatarToolManagerTitle', 'Manage tools')}
           </h2>
           {view === 'library' ? (
             <p>{i18n('chat.avatarToolManagerSubtitle', 'Choose up to 3 quick tools.')}</p>
@@ -804,22 +869,31 @@ export default function AvatarToolItemManager({
         </button>
       </header>
 
-      {view === 'create' && onCreate ? (
+      {view !== 'library' && (view === 'create' ? !!onCreate : !!onUpdate && !!editDetail) ? (
         <div className="avatar-tool-manager-body avatar-tool-manager-create-body">
           <AvatarToolCreatePage
+            key={view === 'edit' ? editDetail?.id : 'create'}
             limits={createLimits}
             userName={userName}
             assistantName={assistantName}
+            initialDetail={view === 'edit' ? editDetail ?? undefined : undefined}
             onSpecialEnabledChange={setCreateSpecialEnabled}
             onCancel={() => {
               setCreateSpecialEnabled(false);
+              setEditDetail(null);
               setView('library');
             }}
-            onCreate={async (input) => {
-              await onCreate(input);
+            onSave={async (input) => {
+              if (view === 'edit' && editDetail && onUpdate) {
+                await onUpdate(editDetail.id, input as UpdateLocalAvatarToolInput);
+              } else if (view === 'create' && onCreate) {
+                await onCreate(input as CreateLocalAvatarToolInput);
+              }
               setCreateSpecialEnabled(false);
+              setEditDetail(null);
               setView('library');
             }}
+            onDelete={view === 'edit' && onDelete ? deleteEditedTool : undefined}
           />
         </div>
       ) : (
@@ -884,33 +958,55 @@ export default function AvatarToolItemManager({
               {availableTools.map((tool) => {
                 const label = getToolLabel(tool);
                 const equipped = equippedIdSet.has(tool.id);
+                const localToolId = isLocalAvatarToolId(tool.id) ? tool.id : null;
+                const loadingEdit = loadingEditToolId === tool.id;
                 return (
-                  <button
-                    key={tool.id}
-                    className={`avatar-tool-manager-library-card${equipped ? ' is-equipped' : ''}`}
-                    type="button"
-                    aria-pressed={equipped}
-                    data-avatar-tool-library-id={tool.id}
-                    onClick={() => handleLibraryClick(tool.id)}
-                    onPointerDown={equipped ? undefined : (event) => startDrag({ kind: 'library', toolId: tool.id }, event)}
-                    onPointerMove={updateDrag}
-                    onPointerUp={finishDrag}
-                    onPointerCancel={cancelDrag}
-                  >
-                    <img
-                      className="avatar-tool-manager-tool-image"
-                      src={withAvatarToolAssetVersion(tool.iconImagePath)}
-                      style={getToolImageStyle(tool)}
-                      alt=""
-                      aria-hidden="true"
-                    />
-                    <span className="avatar-tool-manager-library-label">{label}</span>
-                    <span className="avatar-tool-manager-library-status">
-                      {equipped
-                        ? i18n('chat.avatarToolEquipped', 'Equipped')
-                        : i18n('chat.avatarToolEquip', 'Equip')}
-                    </span>
-                  </button>
+                  <div className="avatar-tool-manager-library-item" key={tool.id}>
+                    <button
+                      className={`avatar-tool-manager-library-card${equipped ? ' is-equipped' : ''}`}
+                      type="button"
+                      aria-pressed={equipped}
+                      disabled={loadingEdit}
+                      data-avatar-tool-library-id={tool.id}
+                      onClick={() => handleLibraryClick(tool.id)}
+                      onPointerDown={equipped ? undefined : (event) => startDrag({ kind: 'library', toolId: tool.id }, event)}
+                      onPointerMove={updateDrag}
+                      onPointerUp={finishDrag}
+                      onPointerCancel={cancelDrag}
+                    >
+                      <img
+                        className="avatar-tool-manager-tool-image"
+                        src={withAvatarToolAssetVersion(tool.iconImagePath)}
+                        style={getToolImageStyle(tool)}
+                        alt=""
+                        aria-hidden="true"
+                      />
+                      <span className="avatar-tool-manager-library-label">{label}</span>
+                      <span className="avatar-tool-manager-library-status">
+                        {equipped
+                          ? i18n('chat.avatarToolEquipped', 'Equipped')
+                          : i18n('chat.avatarToolEquip', 'Equip')}
+                      </span>
+                    </button>
+                    {localToolId && onLoadDetail && onUpdate ? (
+                      <button
+                        className="avatar-tool-manager-modify"
+                        type="button"
+                        disabled={!!loadingEditToolId}
+                        aria-label={i18n('chat.avatarToolUpdateOpen', 'Edit {{name}}', { name: label })}
+                        data-neko-tooltip={i18n('chat.avatarToolUpdateOpen', 'Edit {{name}}', { name: label })}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          void openEdit(localToolId);
+                        }}
+                        onPointerDown={event => event.stopPropagation()}
+                      >
+                        {loadingEdit
+                          ? i18n('chat.avatarToolUpdateLoading', 'Opening…')
+                          : i18n('chat.avatarToolUpdateModify', 'Edit')}
+                      </button>
+                    ) : null}
+                  </div>
                 );
               })}
               {onCreate ? (
@@ -939,14 +1035,20 @@ export default function AvatarToolItemManager({
       </div>
 
       {notice ? (
-        <p id="avatar-tool-manager-notice" className="avatar-tool-manager-notice" role="status">
+        <p id="avatar-tool-manager-notice" className="avatar-tool-manager-notice" role={noticeIsError ? 'alert' : 'status'}>
           {notice}
         </p>
       ) : null}
 
       {catalogRefreshFailed ? (
         <p className="avatar-tool-manager-notice" role="alert">
-          {i18n('chat.avatarToolRefreshError', 'Could not refresh local tools. The previous list is still available.')}
+          {catalogAuthoritativeLoaded
+            ? i18n('chat.avatarToolRefreshError', 'Could not refresh local tools. The previous list is still available.')
+            : i18n('chat.avatarToolLoadError', 'Could not load custom tools. Please try again.')}
+        </p>
+      ) : !catalogAuthoritativeLoaded ? (
+        <p className="avatar-tool-manager-notice" role="status">
+          {i18n('chat.avatarToolLoading', 'Loading custom tools…')}
         </p>
       ) : null}
 
@@ -954,7 +1056,12 @@ export default function AvatarToolItemManager({
         <button className="avatar-tool-manager-action secondary" type="button" onClick={onCancel}>
           {i18n('chat.avatarToolCancel', 'Cancel')}
         </button>
-        <button className="avatar-tool-manager-action primary" type="button" onClick={handleSave}>
+        <button
+          className="avatar-tool-manager-action primary"
+          type="button"
+          disabled={catalogSaveBlocked}
+          onClick={handleSave}
+        >
           {i18n('chat.avatarToolSave', 'Save changes')}
         </button>
       </footer>

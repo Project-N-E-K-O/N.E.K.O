@@ -81,11 +81,16 @@ app.mount("/static", CustomStaticFiles(directory=static_dir), name="static")
 
 # 挂载用户文档下的live2d目录（只在主进程中执行，子进程不提供HTTP服务）
 if _IS_MAIN_PROCESS:
+    from utils.avatar_tool_store import AvatarToolStoreError, get_avatar_tool_store
+
     _config_manager.ensure_live2d_directory()
     _config_manager.ensure_vrm_directory()
     _config_manager.ensure_mmd_directory()
     _config_manager.ensure_pngtuber_directory()
-    _config_manager.ensure_avatar_tools_directory()
+    try:
+        get_avatar_tool_store(_config_manager).initialize()
+    except AvatarToolStoreError as exc:
+        logger.warning("初始化本地 Avatar Tool 存储失败: %s", exc)
     _config_manager.ensure_chara_directory()
 
     # CFA (反勒索防护) 感知挂载：
