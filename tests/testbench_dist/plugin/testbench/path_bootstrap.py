@@ -1,6 +1,7 @@
 """Path patches for plugin-driven Testbench (no edits to tests/testbench/)."""
 from __future__ import annotations
 
+import importlib
 from pathlib import Path
 from typing import Any
 
@@ -11,7 +12,7 @@ def _noop() -> None:
 
 def _umap_stub() -> dict[str, Any]:
     try:
-        import umap  # noqa: F401
+        importlib.import_module("umap")
         available = True
         msg = "umap-learn 可用（插件路径不联网安装）。"
     except Exception as exc:  # noqa: BLE001

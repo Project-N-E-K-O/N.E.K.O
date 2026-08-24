@@ -7,6 +7,7 @@ See plan gap-review notes: import-time ``from config import DATA_DIR`` bindings 
 """
 from __future__ import annotations
 
+import importlib
 import os
 from pathlib import Path
 from typing import Any, Callable
@@ -19,7 +20,7 @@ def _noop() -> None:
 def _frozen_install_umap_stub() -> dict[str, Any]:
     """UMAP is pre-bundled in standalone builds; never call pip at runtime."""
     try:
-        import umap  # noqa: F401
+        importlib.import_module("umap")
         available = True
         msg = "本安装包已内置 umap-learn，无需联网安装。"
     except Exception as exc:  # noqa: BLE001
