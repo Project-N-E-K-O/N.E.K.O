@@ -3110,15 +3110,12 @@
                 const placement = this.getActivePlacement();
                 state.startOffsetX = placement.offsetX;
                 state.startOffsetY = placement.offsetY;
-                if (takingOverSnap) {
-                    this.rememberDragScreenPoint(state, event, { start: true });
-                }
+                state.refreshGrabOffset = takingOverSnap;
                 state.moved = true;
                 this.setModelDraggingState(true, true);
                 this.showDragImage();
             }
             if (!state.moved) return;
-            void this.recordDragHintPointerEdgeApproach(state);
             this.setActiveOffsets(state.startOffsetX + dx, state.startOffsetY + dy);
             this.applyTransform();
             if (this.isLayeredActive()) this.drawLayeredState();
@@ -3127,6 +3124,11 @@
                 this.updateFloatingButtonsPosition();
             }
             this.updateLockIconPosition();
+            if (state.refreshGrabOffset) {
+                this.rememberDragScreenPoint(state, event, { start: true });
+                state.refreshGrabOffset = false;
+            }
+            void this.recordDragHintPointerEdgeApproach(state);
         }
 
         async endDrag(event) {

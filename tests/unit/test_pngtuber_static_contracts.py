@@ -345,7 +345,6 @@ manager.scheduleSaveCurrentConfig = () => {{ scheduledSaves += 1; }};
   assert.equal(frames.size, 1, 'pointerdown alone must not cancel the rebound');
   runNextFrame(0);
   runNextFrame(130);
-  const centerBeforeTakeover = manager.getModelCenterInWindow();
   manager.moveDrag({{
     pointerId: 9,
     clientX: 110,
@@ -354,8 +353,9 @@ manager.scheduleSaveCurrentConfig = () => {{ scheduledSaves += 1; }};
     screenY: 100,
     preventDefault() {{}},
   }});
-  assert.equal(manager._dragState.modelCenterPointerOffset.x, centerBeforeTakeover.x - 110);
-  assert.equal(manager._dragState.modelCenterPointerOffset.y, centerBeforeTakeover.y - 100);
+  const centerAfterTakeover = manager.getModelCenterInWindow();
+  assert.equal(manager._dragState.modelCenterPointerOffset.x, centerAfterTakeover.x - 110);
+  assert.equal(manager._dragState.modelCenterPointerOffset.y, centerAfterTakeover.y - 100);
   manager.setActiveOffsets(-123, 45);
   assert.equal(await cancelledSnap, false);
   assert.equal(frames.size, 0);
