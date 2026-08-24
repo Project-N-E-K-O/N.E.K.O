@@ -208,6 +208,11 @@
                 if (typeof manager.restartLayeredAnimationLoop === 'function') {
                     manager.restartLayeredAnimationLoop();
                 }
+                if (dragSequence !== null &&
+                    typeof manager.isExternalPositionDragCurrent === 'function' &&
+                    !manager.isExternalPositionDragCurrent(dragSequence)) {
+                    return;
+                }
                 if (typeof manager.snapModelIntoScreen === 'function') {
                     await manager.snapModelIntoScreen({ animate: true });
                 }

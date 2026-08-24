@@ -140,6 +140,9 @@ def test_pngtuber_drag_uses_the_shared_multiscreen_transfer_contract():
     ]
     assert "await this.snapModelIntoScreen({ animate: true });" in touch_end_block
     assert "if (!this.isDragCompletionCurrent(state)) return;" in touch_end_block
+    assert touch_end_block.index("if (!this.isDragCompletionCurrent(state)) return;") < touch_end_block.index(
+        "await this.snapModelIntoScreen({ animate: true });"
+    )
     assert touch_end_block.index("await this.snapModelIntoScreen({ animate: true });") < touch_end_block.index(
         "await this.saveCurrentConfig();"
     )
@@ -289,8 +292,7 @@ manager.scheduleSaveCurrentConfig = () => {{ scheduledSaves += 1; }};
 
   manager.config.offset_x = -750;
   const cancelledSnap = manager.snapModelIntoScreen();
-  runNextFrame(0);
-  runNextFrame(130);
+  assert.equal(frames.size, 1);
   manager.startDrag({{
     target: manager.image,
     button: 0,
@@ -301,6 +303,17 @@ manager.scheduleSaveCurrentConfig = () => {{ scheduledSaves += 1; }};
     screenY: 100,
     preventDefault() {{}},
     stopPropagation() {{}},
+  }});
+  assert.equal(frames.size, 1, 'pointerdown alone must not cancel the rebound');
+  runNextFrame(0);
+  runNextFrame(130);
+  manager.moveDrag({{
+    pointerId: 9,
+    clientX: 110,
+    clientY: 100,
+    screenX: 110,
+    screenY: 100,
+    preventDefault() {{}},
   }});
   manager.setActiveOffsets(-123, 45);
   assert.equal(await cancelledSnap, false);

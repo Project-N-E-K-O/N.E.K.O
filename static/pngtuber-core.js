@@ -3063,11 +3063,9 @@
             if (event.target && event.target.closest && event.target.closest('[id$="-floating-buttons"], [id$="-lock-icon"], [id$="-return-button-container"]')) return;
             event.preventDefault();
             event.stopPropagation();
-            this.cancelEdgeSnapAnimation();
             const placement = this.getActivePlacement();
-            this._dragSequence += 1;
             this._dragState = {
-                dragSequence: this._dragSequence,
+                dragSequence: null,
                 pointerId: event.pointerId,
                 startX: event.clientX,
                 startY: event.clientY,
@@ -3105,11 +3103,18 @@
             state.lastAt = now;
             this.rememberDragScreenPoint(state, event);
             if (Math.hypot(dx, dy) > 4 && !state.moved) {
+                this.cancelEdgeSnapAnimation();
+                this._dragSequence += 1;
+                state.dragSequence = this._dragSequence;
+                const placement = this.getActivePlacement();
+                state.startOffsetX = placement.offsetX;
+                state.startOffsetY = placement.offsetY;
                 state.moved = true;
                 this.setModelDraggingState(true, true);
                 this.showDragImage();
             }
-            if (state.moved) void this.recordDragHintPointerEdgeApproach(state);
+            if (!state.moved) return;
+            void this.recordDragHintPointerEdgeApproach(state);
             this.setActiveOffsets(state.startOffsetX + dx, state.startOffsetY + dy);
             this.applyTransform();
             if (this.isLayeredActive()) this.drawLayeredState();
@@ -3273,6 +3278,7 @@
             }
             this.updateLockIconPosition();
             if (state.changed) {
+                if (!this.isDragCompletionCurrent(state)) return;
                 await this.snapModelIntoScreen({ animate: true });
                 if (!this.isDragCompletionCurrent(state)) return;
                 await this.saveCurrentConfig();

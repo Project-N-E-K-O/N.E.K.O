@@ -232,6 +232,16 @@ function pointer(x, y) {{
   assert.equal(snapCalls, 1);
   assert.equal(stagedConfig.offset_x, 15);
   assert.equal(stagedConfig.offset_y, 10);
+
+  stagedConfig = null;
+  snapCalls = 0;
+  documentListeners.get('pointerdown')(pointer(400, 300));
+  windowListeners.get('pointermove')(pointer(430, 320));
+  externalDrags += 1; // A newer position interaction invalidates this completion.
+  windowListeners.get('pointerup')(pointer(430, 320));
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(snapCalls, 0);
+  assert.equal(stagedConfig, null);
 }})().catch(error => {{ console.error(error); process.exit(1); }});
 """
     run_node_script(node, script, check=True, cwd=Path.cwd())
