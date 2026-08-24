@@ -35,6 +35,4 @@ uv run neko-plugin publish tests/testbench_dist/plugin/testbench
 
 See [Plugin CLI — 把插件发布到 N.E.K.O 插件市场](https://project-neko.online/zh-CN/plugins/cli).
 
-## Sync with N.E.K.O monorepo
-
-Driver sources are developed in `N.E.K.O/tests/testbench_dist/plugin/testbench/` and mirrored here for Market release. Latest sync includes PR #2953 review fixes: `embed_runtime` (Ruff CI), Mode B liveness reconciliation, WebView preflight, standard verify/release workflows, and expanded smoke tests.
+维护者详见 N.E.K.O 主仓：[docs/PLUGIN_MARKET_REPO.md](../../docs/PLUGIN_MARKET_REPO.md)（独立仓库、双端同步、发布检查清单）。

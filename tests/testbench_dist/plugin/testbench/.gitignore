@@ -6,3 +6,5 @@ runtime/
 bundled/
 vendor/
 *.neko-plugin
+uv.lock
+.venv/

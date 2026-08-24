@@ -12,7 +12,8 @@
 - Hosted 面板只负责启停与状态，**不是** Testbench 界面重写版
 
 源码：`tests/testbench_dist/plugin/testbench/`（**不**进内置 `plugin/plugins/`）。  
-细节：[docs/PLAN.md](docs/PLAN.md)「NEKO 插件版」。
+细节：[docs/PLAN.md](docs/PLAN.md)「NEKO 插件版」。  
+**Market 独立仓库**（审核/发布用）：见 [docs/PLUGIN_MARKET_REPO.md](docs/PLUGIN_MARKET_REPO.md)。
 
 ## 构建
 
