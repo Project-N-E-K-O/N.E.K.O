@@ -16,6 +16,7 @@ from utils.avatar_tool_store import (
     AvatarToolStoreError,
     is_public_avatar_tool_resource_path,
 )
+from utils.cloudsave_runtime import MaintenanceModeError
 
 
 class _ConfigManager:
@@ -372,7 +373,8 @@ def test_create_reapplies_image_limit_after_canonical_encoding(tmp_path, monkeyp
     assert not store.root.exists() or not list(store.root.iterdir())
 
 
-def test_initialize_cleans_only_owned_transient_directories_and_list_stays_read_only(tmp_path):
+def test_initialize_cleans_only_owned_transient_directories_and_list_stays_read_only(tmp_path, monkeypatch):
+    monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
     root = tmp_path / "avatar_tools"
     root.mkdir()
     owned_upload = root / ".local-12345678-1234-4123-8123-123456789abc.uploading"
@@ -1085,6 +1087,43 @@ def test_initialize_restores_a_valid_backup_after_interrupted_update(tmp_path, m
     assert not updating.exists()
 
 
+def test_initialize_defers_recovery_while_the_write_fence_is_active(tmp_path, monkeypatch):
+    root = tmp_path / "avatar_tools"
+    monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
+    store = AvatarToolStore(_ConfigManager(root))
+    created = _create_tool(
+        store,
+        name="Feather",
+        change_mode="press-swap",
+        change_meanings=["meaning"],
+        default_image=_png(),
+        change_images=[_png()],
+    )
+    tool_id = created["id"]
+    final = root / tool_id
+    backup = root / f".{tool_id}.backup"
+    updating = root / f".{tool_id}.updating"
+    shutil.copytree(final, backup)
+    shutil.copytree(final, updating)
+    shutil.rmtree(final)
+
+    def reject_recovery(*_args, **_kwargs):
+        raise MaintenanceModeError("maintenance_readonly", operation="recover", target="avatar_tools")
+
+    monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", reject_recovery)
+    store.initialize()
+
+    assert not final.exists()
+    assert backup.is_dir()
+    assert updating.is_dir()
+
+    monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
+    assert [item["id"] for item in store.list_items()] == [tool_id]
+    assert final.is_dir()
+    assert not backup.exists()
+    assert not updating.exists()
+
+
 @pytest.mark.parametrize("first_operation", ("list", "detail", "delete"))
 @pytest.mark.parametrize("valid_final", (False, True))
 def test_first_available_request_retries_a_failed_startup_recovery(
@@ -1181,6 +1220,37 @@ def test_delete_cleans_a_stale_update_backup_without_resurrection(tmp_path, monk
     store.initialize()
     assert not (store.root / tool_id).exists()
     assert store.list_items() == []
+
+
+def test_stale_update_backup_counts_toward_the_total_storage_limit(tmp_path, monkeypatch):
+    monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
+    store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
+    created = _create_tool(
+        store,
+        name="Feather",
+        change_mode="press-swap",
+        change_meanings=["meaning"],
+        default_image=_png(),
+        change_images=[_png()],
+    )
+    final = store.root / created["id"]
+    backup = store.root / f".{created['id']}.backup"
+    shutil.copytree(final, backup)
+    directory_size = store._directory_bytes(final)
+    store.limits["maxTotalBytes"] = directory_size * 2
+
+    assert store._current_storage_bytes() == directory_size * 2
+    with pytest.raises(AvatarToolStoreError) as raised:
+        _create_tool(
+            store,
+            name="Feather",
+            change_mode="press-swap",
+            change_meanings=["meaning"],
+            default_image=_png(),
+            change_images=[_png()],
+        )
+
+    assert raised.value.code == "storage_limit_reached"
 
 
 def test_initialize_replaces_a_corrupt_final_directory_with_a_valid_backup(tmp_path, monkeypatch):

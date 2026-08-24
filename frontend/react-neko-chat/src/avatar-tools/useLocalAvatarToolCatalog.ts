@@ -152,11 +152,7 @@ export function useLocalAvatarToolCatalog(): LocalAvatarToolCatalog {
   }, [refresh]);
 
   useEffect(() => {
-    const refreshWhenActive = () => {
-      if (document.visibilityState === 'hidden') return;
-      refresh().catch(() => undefined);
-    };
-    const refreshRequested = () => {
+    const requestFreshRefresh = () => {
       const staleRefresh = refreshInFlightRef.current;
       refreshEpochRef.current += 1;
       void (async () => {
@@ -164,12 +160,16 @@ export function useLocalAvatarToolCatalog(): LocalAvatarToolCatalog {
         await refresh().catch(() => undefined);
       })();
     };
+    const refreshWhenActive = () => {
+      if (document.visibilityState === 'hidden') return;
+      requestFreshRefresh();
+    };
     window.addEventListener('focus', refreshWhenActive);
-    window.addEventListener('neko:refresh-local-avatar-tools', refreshRequested);
+    window.addEventListener('neko:refresh-local-avatar-tools', requestFreshRefresh);
     document.addEventListener('visibilitychange', refreshWhenActive);
     return () => {
       window.removeEventListener('focus', refreshWhenActive);
-      window.removeEventListener('neko:refresh-local-avatar-tools', refreshRequested);
+      window.removeEventListener('neko:refresh-local-avatar-tools', requestFreshRefresh);
       document.removeEventListener('visibilitychange', refreshWhenActive);
     };
   }, [refresh]);

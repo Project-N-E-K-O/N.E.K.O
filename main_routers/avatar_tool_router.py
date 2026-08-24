@@ -72,6 +72,8 @@ async def list_avatar_tools():
         items = await asyncio.to_thread(store.list_items)
     except AvatarToolStoreError as exc:
         return _error_response(exc)
+    except MaintenanceModeError as exc:
+        return JSONResponse(status_code=409, content=maintenance_error_payload(exc))
     return {"ok": True, "items": items, "limits": store.limits}
 
 
@@ -202,6 +204,8 @@ async def get_avatar_tool_detail(tool_id: str):
         detail = await asyncio.to_thread(store.get_detail, tool_id)
     except AvatarToolStoreError as exc:
         return _error_response(exc)
+    except MaintenanceModeError as exc:
+        return JSONResponse(status_code=409, content=maintenance_error_payload(exc))
     return {"ok": True, "detail": detail, "limits": store.limits}
 
 

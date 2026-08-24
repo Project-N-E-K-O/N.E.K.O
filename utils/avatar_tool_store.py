@@ -24,7 +24,7 @@ from typing import Any
 
 from PIL import Image, UnidentifiedImageError
 
-from utils.cloudsave_runtime import assert_cloudsave_writable
+from utils.cloudsave_runtime import MaintenanceModeError, assert_cloudsave_writable
 from utils.file_utils import atomic_write_json
 
 
@@ -344,6 +344,15 @@ class AvatarToolStore:
         """Prepare the store once and recover interrupted mutations."""
         with _STORE_LOCK:
             root_key = self._root_key()
+            try:
+                assert_cloudsave_writable(
+                    self.config_manager,
+                    operation="recover",
+                    target="avatar_tools",
+                )
+            except MaintenanceModeError:
+                _RECOVERY_PENDING_ROOTS.add(root_key)
+                return
             try:
                 self._ensure_directory()
                 self._recover_interrupted_mutations()
@@ -738,10 +747,11 @@ class AvatarToolStore:
         for directory in self.root.iterdir():
             is_published = is_local_avatar_tool_id(directory.name)
             is_pending_delete = LOCAL_AVATAR_TOOL_DELETING_PATTERN.fullmatch(directory.name) is not None
+            is_update_backup = LOCAL_AVATAR_TOOL_BACKUP_PATTERN.fullmatch(directory.name) is not None
             if (
                 directory.is_symlink()
                 or not directory.is_dir()
-                or not (is_published or is_pending_delete)
+                or not (is_published or is_pending_delete or is_update_backup)
             ):
                 continue
             for entry in directory.iterdir():

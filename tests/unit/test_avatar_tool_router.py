@@ -9,6 +9,7 @@ from PIL import Image
 
 import main_routers.avatar_tool_router as avatar_tool_router
 from main_routers.cookies_login_router import verify_local_access
+from utils.cloudsave_runtime import MaintenanceModeError
 
 
 class _ConfigManager:
@@ -79,6 +80,38 @@ def test_post_then_get_returns_authoritative_item_without_meaning(tmp_path, monk
     assert listing.json()["limits"]["maxAudioDurationMs"] == 10_000
     assert (manager.avatar_tools_dir / item["id"] / "record.json").is_file()
     assert (manager.avatar_tools_dir / item["id"] / "normal.mp3").is_file()
+
+
+def test_read_endpoints_report_a_deferred_recovery_write_fence(tmp_path, monkeypatch):
+    client, _manager = _client(tmp_path, monkeypatch, allow_mutation=False)
+
+    class FencedStore:
+        limits = {"maxChangeImages": 16}
+
+        @staticmethod
+        def _raise_fence():
+            raise MaintenanceModeError(
+                "maintenance_readonly",
+                operation="recover",
+                target="avatar_tools",
+            )
+
+        def list_items(self):
+            self._raise_fence()
+
+        def get_detail(self, _tool_id):
+            self._raise_fence()
+
+    monkeypatch.setattr(avatar_tool_router, "get_avatar_tool_store", lambda _manager: FencedStore())
+
+    for path in (
+        "/api/avatar-tools",
+        "/api/avatar-tools/local-12345678-1234-4123-8123-123456789abc",
+    ):
+        response = client.get(path)
+        assert response.status_code == 409
+        assert response.json()["code"] == "CLOUDSAVE_WRITE_FENCE_ACTIVE"
+        assert response.json()["operation"] == "recover"
 
 
 def test_post_retry_with_the_same_tool_id_returns_the_original_creation(tmp_path, monkeypatch):
