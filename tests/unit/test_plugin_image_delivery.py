@@ -480,7 +480,7 @@ async def test_plugin_image_fetch_stops_at_the_model_input_byte_limit(monkeypatc
         lambda: client,
     )
 
-    with pytest.raises(ValueError, match="8 MiB model input limit"):
+    with pytest.raises(ValueError, match="remaining model input budget"):
         await _fetch_plugin_image_base64(_IMAGE_URL)
 
     assert response.chunks_read == 9
@@ -778,7 +778,7 @@ async def test_multiple_plugin_image_urls_are_fetched_concurrently(monkeypatch) 
     active_fetches = 0
     max_active_fetches = 0
 
-    async def _fetch(url: str) -> str:
+    async def _fetch(url: str, *, max_bytes: int | None = None) -> str:
         nonlocal active_fetches, max_active_fetches
         active_fetches += 1
         max_active_fetches = max(max_active_fetches, active_fetches)
@@ -1037,7 +1037,7 @@ async def test_model_path_caps_image_count_per_push(monkeypatch) -> None:
 
     manager = _manager()
 
-    async def _fake_fetch(url: str) -> str:
+    async def _fake_fetch(url: str, *, max_bytes: int | None = None) -> str:
         return "b64-" + url.rsplit("/", 1)[-1]
 
     fetch = AsyncMock(side_effect=_fake_fetch)
@@ -1162,6 +1162,59 @@ async def test_respond_callback_media_images_obey_the_byte_budget(monkeypatch) -
     callback = manager.submit_proactive_callback.call_args.args[0]
     assert callback["summary"] == "heavy respond"
     assert callback["media_images"] == [two_mib_b64]
+
+
+@pytest.mark.asyncio
+async def test_fetch_cap_tightens_to_the_remaining_push_budget(monkeypatch) -> None:
+    """Each in-flight transfer is capped by what the push can still keep.
+
+    The batch runs concurrently, so a flat per-image ceiling let four near-limit
+    transfers buffer at once for a budget that can retain one. Capping the
+    transfer itself bounds that without serialising the batch.
+    """
+    from app import main_server
+    from app.main_server import character_runtime
+
+    manager = _manager()
+    seen_caps: list[int] = []
+
+    async def _fetch(url: str, *, max_bytes: int | None = None) -> str:
+        seen_caps.append(max_bytes)
+        # 2 MiB decoded, so the budget shrinks between batches.
+        return "A" * (2 * 1024 * 1024 * 4 // 3)
+
+    monkeypatch.setattr(
+        "app.main_server.character_runtime._get_session_manager",
+        lambda _name: manager,
+    )
+    monkeypatch.setattr(
+        "app.main_server.character_runtime._fetch_plugin_image_base64", _fetch
+    )
+
+    await main_server._handle_agent_event({
+        "event_type": "proactive_message",
+        "lanlan_name": "Test",
+        "text": "many",
+        "channel": "plugin:demo",
+        "delivery_mode": "passive",
+        "ai_behavior": "read",
+        "visibility": [],
+        "media_parts": [
+            {
+                "type": "image",
+                "url": "http://127.0.0.1:48916/media/i%d" % i,
+                "mime": "image/jpeg",
+            }
+            for i in range(8)
+        ],
+    })
+
+    # First batch: nothing spent yet, so the flat per-image ceiling applies.
+    assert seen_caps[0] == character_runtime._PLUGIN_IMAGE_MAX_BYTES
+    # Second batch: four 2 MiB images consumed the budget, so the cap is now
+    # strictly tighter than the per-image ceiling.
+    assert len(seen_caps) > 4
+    assert seen_caps[4] < character_runtime._PLUGIN_IMAGE_MAX_BYTES
 
 
 def test_chat_blocks_cap_image_count_and_keep_text_in_order() -> None:

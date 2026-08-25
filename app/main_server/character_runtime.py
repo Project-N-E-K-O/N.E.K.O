@@ -163,15 +163,24 @@ def _is_local_plugin_media_url(url: str) -> bool:
         return False
 
 
-async def _resolve_plugin_model_image(part: dict[str, Any]) -> str:
-    """Resolve one canonical image part to the model's base64 input."""
+async def _resolve_plugin_model_image(
+    part: dict[str, Any],
+    *,
+    max_bytes: int = _PLUGIN_IMAGE_MAX_BYTES,
+) -> str:
+    """Resolve one canonical image part to the model's base64 input.
+
+    ``max_bytes`` is the caller's REMAINING per-push budget, not just the
+    per-image ceiling: a fetch that cannot possibly be retained should abandon
+    the transfer rather than buffer a payload the budget will reject anyway.
+    """
     encoded = part.get("binary_base64")
     if isinstance(encoded, str) and encoded:
         return encoded
     url = part.get("url")
     if not isinstance(url, str) or not url:
         raise ValueError("plugin image part has no usable payload")
-    return await _fetch_plugin_image_base64(url)
+    return await _fetch_plugin_image_base64(url, max_bytes=max_bytes)
 
 
 def _build_plugin_chat_blocks(
@@ -270,7 +279,11 @@ def _ordered_plugin_chat_blocks(parts: list[Any], mgr: Any) -> list[dict[str, st
     return blocks
 
 
-async def _fetch_plugin_image_base64(url: str) -> str:
+async def _fetch_plugin_image_base64(
+    url: str,
+    *,
+    max_bytes: int = _PLUGIN_IMAGE_MAX_BYTES,
+) -> str:
     """Fetch one temporary plugin image without blocking the event loop."""
     if not _is_local_plugin_media_url(url):
         raise ValueError("image URL is not served by the local plugin media store")
@@ -291,15 +304,15 @@ async def _fetch_plugin_image_base64(url: str) -> str:
                 content_length = int(raw_content_length)
             except ValueError:
                 content_length = 0
-            if content_length > _PLUGIN_IMAGE_MAX_BYTES:
-                raise ValueError("plugin image exceeds the 8 MiB model input limit")
+            if content_length > max_bytes:
+                raise ValueError("plugin image exceeds the remaining model input budget")
         buffered = bytearray()
         async for chunk in response.aiter_bytes():
             if not chunk:
                 continue
             buffered.extend(chunk)
-            if len(buffered) > _PLUGIN_IMAGE_MAX_BYTES:
-                raise ValueError("plugin image exceeds the 8 MiB model input limit")
+            if len(buffered) > max_bytes:
+                raise ValueError("plugin image exceeds the remaining model input budget")
         content = bytes(buffered)
     if not content:
         raise ValueError("plugin media store returned an empty image")
@@ -883,8 +896,20 @@ async def _handle_agent_event(event: dict):
                         )
                         break
                     batch = image_indexes[offset : offset + _PLUGIN_IMAGE_FETCH_BATCH_SIZE]
+                    # Cap each in-flight fetch at what the push could still
+                    # retain, not at the flat per-image ceiling: with the batch
+                    # running concurrently the flat cap let four near-limit
+                    # transfers buffer together for a budget that can keep one
+                    # (Codex P2). This tightens the transfer; it does not make
+                    # the batch sequential, which would multiply handler latency.
+                    _fetch_cap = min(_PLUGIN_IMAGE_MAX_BYTES, remaining_image_bytes)
                     results = await asyncio.gather(
-                        *(_resolve_plugin_model_image(media_parts[index]) for index in batch),
+                        *(
+                            _resolve_plugin_model_image(
+                                media_parts[index], max_bytes=_fetch_cap
+                            )
+                            for index in batch
+                        ),
                         return_exceptions=True,
                     )
                     for index, result in zip(batch, results):

@@ -194,10 +194,18 @@ def test_structured_passthrough_image_uses_the_existing_assistant_lifecycle(
 
 
 @pytest.mark.frontend
-def test_structured_passthrough_keeps_existing_pending_status_behavior(
+def test_structured_passthrough_pending_message_receives_its_turn_end(
     mock_page: Page,
     running_server: str,
 ) -> None:
+    """A message queued before the host mounts must still reach a terminal state.
+
+    This previously pinned ``streaming``: setReactMessageStatus bailed out when
+    the host was absent and never touched the pending queue, so the turn end
+    was dropped and the flush produced a bubble stuck mid-stream. The adapter
+    now patches the queued message in place, so the terminal status is the
+    contract.
+    """
     _open_chat(mock_page, running_server)
 
     result = mock_page.evaluate(
@@ -226,7 +234,7 @@ def test_structured_passthrough_keeps_existing_pending_status_behavior(
     assert result["accepted"] is True
     assert result["beforeRestore"] == 0
     assert len(result["messages"]) == 1
-    assert result["messages"][0]["status"] == "streaming"
+    assert result["messages"][0]["status"] == "sent"
     assert result["messages"][0]["blocks"] == [
         {"type": "text", "text": "caption"},
         {"type": "image", "url": _ONE_PIXEL_PNG},
