@@ -9,12 +9,62 @@ import pytest
 
 from plugin.core.plugin_layout import resolve_plugin_layout
 from plugin.neko_plugin_cli.public import build_plugin
-from plugin.server.application.plugin_cli.service import PluginCliService
+from plugin.server.application.plugin_cli.service import (
+    PluginCliService,
+    _replacement_error_details,
+)
 from plugin.server.application.plugins import upgrade_support
 from plugin.server.application.plugins.upgrade_support import ReplacePluginError, replace_plugin
 from plugin.server.domain.errors import ServerDomainError
 
 pytestmark = pytest.mark.plugin_unit
+
+
+@pytest.mark.parametrize(
+    ("error", "expected_code"),
+    [
+        (
+            ValueError("payload hash mismatch between archive payload and metadata.toml"),
+            "PLUGIN_PACKAGE_HASH_MISMATCH",
+        ),
+        (
+            ValueError("plugin folder 'demo' does not match plugin.toml id 'other'"),
+            "PLUGIN_PACKAGE_IDENTITY_MISMATCH",
+        ),
+        (
+            ValueError(
+                "package archive contains paths that are equivalent on common filesystems"
+            ),
+            "PLUGIN_PACKAGE_INVALID_ARCHIVE",
+        ),
+    ],
+)
+def test_package_validation_errors_use_stable_codes(
+    error: Exception,
+    expected_code: str,
+) -> None:
+    domain_error = PluginCliService()._domain_error_from_exception(error, action="inspect")
+
+    assert domain_error.code == expected_code
+    assert domain_error.status_code == 400
+
+
+def test_hash_mismatch_reason_survives_upgrade_rollback() -> None:
+    error = ReplacePluginError(
+        stage="install",
+        rollback_status="completed",
+        cause=ServerDomainError(
+            code="PLUGIN_PACKAGE_HASH_MISMATCH",
+            message="package bytes do not match metadata",
+            status_code=400,
+        ),
+    )
+
+    assert _replacement_error_details(error) == {
+        "stage": "install",
+        "rollback_status": "completed",
+        "cause_code": "PLUGIN_PACKAGE_HASH_MISMATCH",
+    }
 
 
 @pytest.mark.asyncio
@@ -246,19 +296,38 @@ def _rewrite_package_manifest_id(package_path: Path, package_id: str) -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("target_version", ["2.0.0", "1.0.0", "0.5.0"])
+@pytest.mark.parametrize(
+    ("target_version", "expected_operation"),
+    [
+        ("2.0.0", "upgrade"),
+        ("1.0.0", "reinstall"),
+        ("0.5.0", "downgrade"),
+    ],
+)
 async def test_service_replaces_with_new_same_or_old_version_without_touching_user_state(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     target_version: str,
+    expected_operation: str,
 ) -> None:
     source = _write_plugin(tmp_path / "source", "demo", target_version)
+    (source / "data").mkdir()
+    (source / "data" / "resource.json").write_text("new-package-resource\n", encoding="utf-8")
     packages_root = tmp_path / "packages"
     packages_root.mkdir()
     package_path = packages_root / f"demo-{target_version}.neko-plugin"
     build_plugin(source, package_path)
     plugins_root = tmp_path / "plugins"
-    _write_plugin(plugins_root, "demo", "1.0.0")
+    installed_plugin = _write_plugin(plugins_root, "demo", "1.0.0")
+    (installed_plugin / "data").mkdir()
+    (installed_plugin / "data" / "resource.json").write_text(
+        "old-package-resource\n",
+        encoding="utf-8",
+    )
+    (installed_plugin / "data" / "removed.json").write_text(
+        "removed-package-resource\n",
+        encoding="utf-8",
+    )
     profiles_root = tmp_path / "profiles"
     storage_root = tmp_path / "state"
     monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(storage_root))
@@ -282,7 +351,7 @@ async def test_service_replaces_with_new_same_or_old_version_without_touching_us
 
     service = PluginCliService()
     plan = await service.plan_install(package=str(package_path))
-    assert plan["action"] == "upgrade"
+    assert plan["action"] == expected_operation
 
     result = await service.install(
         package=str(package_path),
@@ -290,9 +359,13 @@ async def test_service_replaces_with_new_same_or_old_version_without_touching_us
         confirmation_token=str(plan["confirmation_token"]),
     )
 
-    assert result["operation"] == "upgrade"
+    assert result["operation"] == expected_operation
     installed_manifest = (plugins_root / "demo" / "plugin.toml").read_text(encoding="utf-8")
     assert f'version = "{target_version}"' in installed_manifest
+    assert (plugins_root / "demo" / "data" / "resource.json").read_text(
+        encoding="utf-8"
+    ) == "new-package-resource\n"
+    assert not (plugins_root / "demo" / "data" / "removed.json").exists()
     for path, content in expected_state.items():
         assert path.read_text(encoding="utf-8") == content
 
@@ -549,14 +622,16 @@ async def test_service_rejects_legacy_package_rename_despite_stale_incoming_prof
 
 
 @pytest.mark.asyncio
-async def test_service_blocks_package_id_change_before_upgrade(
+@pytest.mark.parametrize("target_version", ["2.0.0", "1.0.0", "0.5.0"])
+async def test_service_blocks_package_id_change_before_replacement(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    target_version: str,
 ) -> None:
-    source = _write_plugin(tmp_path / "source", "demo", "2.0.0")
+    source = _write_plugin(tmp_path / "source", "demo", target_version)
     packages_root = tmp_path / "packages"
     packages_root.mkdir()
-    package_path = packages_root / "demo-2.0.0.neko-plugin"
+    package_path = packages_root / f"demo-{target_version}.neko-plugin"
     build_plugin(source, package_path)
     _rewrite_package_manifest_id(package_path, "new-package")
 

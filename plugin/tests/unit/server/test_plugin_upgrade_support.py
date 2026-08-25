@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from plugin.core.plugin_layout import resolve_plugin_layout
+from plugin.server.application.plugins import upgrade_support
 from plugin.server.application.plugins.upgrade_support import (
     ReplacePluginError,
     plugin_is_running,
@@ -12,6 +13,7 @@ from plugin.server.application.plugins.upgrade_support import (
     remove_directory,
     run_rollback,
 )
+from plugin.server.infrastructure.config_profiles import load_profiles_cfg_from_file
 
 pytestmark = pytest.mark.plugin_unit
 
@@ -22,6 +24,13 @@ async def _async_none() -> None:
 
 async def _async_false() -> bool:
     return False
+
+
+def test_legacy_profile_case_variants_cannot_share_one_canonical_target() -> None:
+    with pytest.raises(OSError, match="multiple legacy profile paths map to profiles.toml"):
+        upgrade_support._canonical_profile_sources(
+            [Path("profiles.toml"), Path("Profiles.toml")]
+        )
 
 
 @pytest.mark.asyncio
@@ -107,6 +116,85 @@ async def test_replace_plugin_preserves_manifest_adjacent_user_profiles(
     assert (target / "profiles" / "dev.toml").read_text(encoding="utf-8") == (
         "[feature]\nenabled = true\n"
     )
+
+
+@pytest.mark.asyncio
+async def test_replace_plugin_canonicalizes_legacy_profile_path_case_for_reader(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "plugins" / "demo"
+    target.mkdir(parents=True)
+    (target / "plugin.toml").write_text("version = 1\n", encoding="utf-8")
+    (target / "Profiles.toml").write_text(
+        "[config_profiles]\nactive = 'dev'\n[config_profiles.files]\ndev = 'profiles/dev.toml'\n",
+        encoding="utf-8",
+    )
+    (target / "Profiles").mkdir()
+    (target / "Profiles" / "dev.toml").write_text(
+        "[feature]\nenabled = true\n",
+        encoding="utf-8",
+    )
+
+    async def install_new() -> dict[str, object]:
+        target.mkdir()
+        (target / "plugin.toml").write_text("version = 2\n", encoding="utf-8")
+        return {"installed": True}
+
+    await replace_plugin(
+        layout=resolve_plugin_layout("demo", target),
+        install_new=install_new,
+        validate_new=_async_none,
+        is_running=lambda _plugin_id: _async_false(),
+        stop=lambda _plugin_id: _async_none(),
+        start=lambda _plugin_id: _async_none(),
+        cleanup_backup=remove_directory,
+    )
+
+    restored_names = {path.name for path in target.iterdir()}
+    assert "profiles.toml" in restored_names
+    assert "profiles" in restored_names
+    assert load_profiles_cfg_from_file("demo", target / "plugin.toml") == {
+        "active": "dev",
+        "files": {"dev": "profiles/dev.toml"},
+    }
+
+
+@pytest.mark.asyncio
+async def test_replace_plugin_rejects_duplicate_casefolded_profile_paths(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "plugins" / "demo"
+    target.mkdir(parents=True)
+    (target / "plugin.toml").write_text("version = 1\n", encoding="utf-8")
+    (target / "profiles.toml").write_text("canonical\n", encoding="utf-8")
+    (target / "Profiles.toml").write_text("variant\n", encoding="utf-8")
+    variants = [
+        path
+        for path in target.iterdir()
+        if path.name.casefold() == "profiles.toml"
+    ]
+    if len(variants) < 2:
+        pytest.skip("filesystem does not support case-distinct profile paths")
+
+    async def install_new() -> dict[str, object]:
+        target.mkdir()
+        (target / "plugin.toml").write_text("version = 2\n", encoding="utf-8")
+        return {"installed": True}
+
+    with pytest.raises(ReplacePluginError) as exc_info:
+        await replace_plugin(
+            layout=resolve_plugin_layout("demo", target),
+            install_new=install_new,
+            validate_new=_async_none,
+            is_running=lambda _plugin_id: _async_false(),
+            stop=lambda _plugin_id: _async_none(),
+            start=lambda _plugin_id: _async_none(),
+            cleanup_backup=remove_directory,
+        )
+
+    assert exc_info.value.stage == "preserve"
+    assert exc_info.value.rollback_status == "completed"
+    assert (target / "plugin.toml").read_text(encoding="utf-8") == "version = 1\n"
 
 
 @pytest.mark.asyncio

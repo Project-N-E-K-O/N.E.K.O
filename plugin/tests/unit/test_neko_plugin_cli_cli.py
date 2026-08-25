@@ -68,7 +68,7 @@ def _tamper_package(package_path: Path, target_name: str) -> None:
             dst.writestr(info, data)
 
 
-def test_cli_build_and_install_preserve_payload_verification(
+def test_cli_runtime_install_is_disabled_without_writing_plugin_directories(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -96,13 +96,13 @@ def test_cli_build_and_install_preserve_payload_verification(
             "fail",
         ]
     )
-    assert install_exit == 0
-    assert (plugins_root / "cli_demo" / "plugin.toml").is_file()
-    assert (profiles_root / "cli_demo" / "default.toml").is_file()
+    assert install_exit == 2
+    assert not plugins_root.exists()
+    assert not profiles_root.exists()
 
     captured = capsys.readouterr()
-    assert "[OK] cli_demo" in captured.out
-    assert "payload_hash_verified=True" in captured.out
+    assert "Plugin Center" in captured.err
+    assert "does not write plugin runtime directories" in captured.err
 
 
 def test_cli_build_profile_prefers_config_example_over_legacy_manifest_config(tmp_path: Path) -> None:
@@ -128,7 +128,7 @@ def test_cli_build_profile_prefers_config_example_over_legacy_manifest_config(tm
     assert 'token = "demo"' not in profile
 
 
-def test_cli_install_rejects_tampered_package_hash(
+def test_cli_runtime_install_is_disabled_before_reading_package_payload(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -148,9 +148,12 @@ def test_cli_install_rejects_tampered_package_hash(
         ]
     )
 
-    assert exit_code == 1
+    assert exit_code == 2
     captured = capsys.readouterr()
-    assert "payload hash mismatch" in captured.err
+    assert "Plugin Center" in captured.err
+    assert "payload hash mismatch" not in captured.err
+    assert not (tmp_path / "plugins").exists()
+    assert not (tmp_path / "profiles").exists()
 
 
 def test_cli_build_bundle_reports_package_shape(

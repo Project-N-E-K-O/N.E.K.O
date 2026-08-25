@@ -1256,36 +1256,14 @@ def _collect_plugin_contexts_from_roots(
 
 
 def _prepare_plugin_import_roots(plugin_config_roots: Iterable[Path], logger: Any) -> None:
-    """为用户插件根注入 import 根目录，内置插件保持包内导入。"""
-    try:
-        builtin_root = BUILTIN_PLUGIN_CONFIG_ROOT.resolve()
-    except Exception:
-        builtin_root = BUILTIN_PLUGIN_CONFIG_ROOT
+    """Compatibility hook that intentionally avoids shared plugin roots.
 
-    def _is_same_or_within(path: Path, base: Path) -> bool:
-        try:
-            if path == base:
-                return True
-            if hasattr(path, "is_relative_to"):
-                return path.is_relative_to(base)  # type: ignore[attr-defined]
-            return str(path).startswith(str(base))
-        except Exception:
-            return False
+    User plugins are loaded from their selected ``plugin.toml`` directory by
+    :func:`plugin.core.host._import_plugin_module`.  Adding a shared root here
+    would also expose every unselected sibling as a top-level Python module.
+    """
 
-    for plugin_config_root in plugin_config_roots:
-        try:
-            root = plugin_config_root.resolve()
-        except Exception:
-            root = plugin_config_root
-
-        project_root = root.parent
-        if _is_same_or_within(root, builtin_root) or _is_same_or_within(project_root, builtin_root):
-            logger.debug("Skipping built-in plugin import root: {}", root)
-            continue
-        if str(project_root) in sys.path:
-            continue
-        sys.path.insert(0, str(project_root))
-        logger.info("Added plugin import root to sys.path: {}", project_root)
+    del plugin_config_roots, logger
 
 
 def _shutdown_host_safely(host: Any, logger: Any, plugin_id: str) -> None:

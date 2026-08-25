@@ -2,12 +2,12 @@
  * neko-plugin-cli 相关 API
  */
 import type { AxiosRequestConfig } from 'axios'
-import { get, post } from './index'
+import { del, get, post } from './index'
 import { API_BASE_URL } from '@/utils/constants'
 
 export type PluginCliConflictStrategy = 'fail'
 export type PluginCliBuildMode = 'selected' | 'single' | 'bundle' | 'all'
-export type PluginCliInstallAction = 'install' | 'upgrade' | 'blocked'
+export type PluginCliInstallAction = 'install' | 'upgrade' | 'reinstall' | 'downgrade' | 'blocked'
 
 export interface PluginCliPluginRef {
   root_id: 'builtin' | 'user'
@@ -134,12 +134,13 @@ export interface PluginCliInstallResponse {
   profiles_root?: string | null
   installed_plugins: PluginCliInstalledPlugin[]
   profile_dir?: string | null
+  profile_reused?: boolean
   metadata_found: boolean
   payload_hash: string
   payload_hash_verified: boolean | null
   conflict_strategy: PluginCliConflictStrategy
   installed_plugin_count: number
-  operation: 'install' | 'upgrade'
+  operation: 'install' | 'upgrade' | 'reinstall' | 'downgrade'
   restarted: boolean
   rollback_status: 'not_needed' | 'completed' | 'incomplete'
   install_source_warning?: string | null
@@ -221,14 +222,14 @@ export function buildPluginCli(payload: PluginCliBuildRequest): Promise<PluginCl
  * 检查包内容
  */
 export function inspectPluginPackage(payload: PluginCliPackageRef): Promise<PluginCliInspectResponse> {
-  return post('/plugin-cli/inspect', payload)
+  return post('/plugin-cli/inspect', payload, { suppressErrorMessage: true })
 }
 
 /**
  * 校验包的 payload hash
  */
 export function verifyPluginPackage(payload: PluginCliPackageRef): Promise<PluginCliVerifyResponse> {
-  return post('/plugin-cli/verify', payload)
+  return post('/plugin-cli/verify', payload, { suppressErrorMessage: true })
 }
 
 /**
@@ -237,6 +238,7 @@ export function verifyPluginPackage(payload: PluginCliPackageRef): Promise<Plugi
 export function installPluginPackage(payload: PluginCliInstallRequest): Promise<PluginCliInstallResponse> {
   return post('/plugin-cli/install', payload, {
     timeout: 300_000,
+    suppressErrorMessage: true,
   })
 }
 
@@ -246,6 +248,7 @@ export function installPluginPackage(payload: PluginCliInstallRequest): Promise<
 export function planPluginInstall(payload: PluginCliInstallPlanRequest): Promise<PluginCliInstallPlanResponse> {
   return post('/plugin-cli/install-plan', payload, {
     timeout: 300_000,
+    suppressErrorMessage: true,
   })
 }
 
@@ -265,6 +268,12 @@ export interface PluginCliUploadResult {
   modified_at: string
 }
 
+export interface PluginCliDiscardUploadResult {
+  success: boolean
+  removed: boolean
+  name: string
+}
+
 export interface PluginCliUploadAndInstallResult {
   upload: PluginCliUploadResult
   install: PluginCliInstallResponse
@@ -278,6 +287,14 @@ export function uploadPluginPackage(file: File): Promise<PluginCliUploadResult> 
   formData.append('file', file)
   return post('/plugin-cli/upload', formData, {
     timeout: 300_000,
+    suppressErrorMessage: true,
+  })
+}
+
+export function discardUploadedPluginPackage(packagePath: string): Promise<PluginCliDiscardUploadResult> {
+  const query = new URLSearchParams({ package: packagePath })
+  return del(`/plugin-cli/upload?${query.toString()}`, {
+    suppressErrorMessage: true,
   })
 }
 
@@ -298,6 +315,7 @@ export function uploadAndInstallPlugin(
   const url = `/plugin-cli/upload-and-install${query ? `?${query}` : ''}`
   return post(url, formData, {
     timeout: 300_000,
+    suppressErrorMessage: true,
   })
 }
 

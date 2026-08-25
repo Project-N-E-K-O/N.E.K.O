@@ -18,6 +18,7 @@
         :show-metrics="showMetrics"
         :show-source-detail="showSourceDetail"
         :enable-ui-action="true"
+        v-bind="mode === 'list' ? {} : { showIdentity: identityPluginIds.includes(item.id) }"
         @click="$emit('item-click', item.id)"
         @open-ui="$emit('item-open-ui', item, $event)"
         @contextmenu="$emit('item-contextmenu', $event, item)"
@@ -43,6 +44,7 @@ defineProps<{
   selectedPluginIds: string[]
   showMetrics: boolean
   showSourceDetail?: boolean
+  identityPluginIds: string[]
   variant?: 'default' | 'adapter'
 }>()
 

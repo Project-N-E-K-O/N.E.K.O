@@ -4,8 +4,10 @@ import asyncio
 from dataclasses import asdict, replace
 import hashlib
 import shutil
+import stat
 import tomllib
 import uuid
+import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, BinaryIO, Literal
@@ -28,7 +30,12 @@ from plugin.server.application.install_source import (
     get_install_source_manager,
 )
 from plugin.server.application.plugin_cli.paths import PluginCliPathPolicy
-from plugin.server.application.plugin_cli.install_plan import PluginInstallPlan, build_install_plan
+from plugin.server.application.plugin_cli.install_plan import (
+    REPLACEMENT_ACTIONS,
+    PluginInstallPlan,
+    build_install_plan,
+    is_manifestless_state_directory,
+)
 from plugin.server.application.plugins import upgrade_support
 from plugin.server.application.plugins.operation_lock import serialized_plugin_operation
 from plugin.server.application.plugin_cli.source_resolver import (
@@ -58,6 +65,150 @@ _UPLOAD_MAX_BYTES = 500 * 1024 * 1024
 _UPLOAD_COPY_CHUNK_BYTES = 1024 * 1024
 
 logger = get_logger("server.application.plugin_cli")
+
+_PACKAGE_ERROR_PATTERNS = (
+    (
+        "PLUGIN_PACKAGE_NESTED_ROOT",
+        (("extra parent folder",), ("manifest.toml is nested",)),
+    ),
+    (
+        "PLUGIN_PACKAGE_MANIFEST_MISSING",
+        (
+            ("required file 'manifest.toml' not found",),
+            ("package manifest.toml is missing",),
+        ),
+    ),
+    (
+        "PLUGIN_PACKAGE_PLUGIN_MANIFEST_MISSING",
+        (("missing the required 'plugin.toml'",),),
+    ),
+    (
+        "PLUGIN_PACKAGE_PLUGIN_MANIFEST_INVALID",
+        (("plugin.toml", "invalid toml"),),
+    ),
+    (
+        "PLUGIN_PACKAGE_IDENTITY_MISMATCH",
+        (("does not match plugin.toml id",), ("plugin identity mismatch",)),
+    ),
+    (
+        "PLUGIN_PACKAGE_HASH_MISMATCH",
+        (("payload hash mismatch",), ("content verification hash",)),
+    ),
+)
+
+
+def _is_link_or_reparse(path: Path) -> bool:
+    """Return whether ``path`` is a symlink or Windows reparse point."""
+    try:
+        metadata = path.lstat()
+    except FileNotFoundError:
+        return False
+    file_attributes = getattr(metadata, "st_file_attributes", 0)
+    reparse_attribute = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+    return path.is_symlink() or bool(file_attributes & reparse_attribute)
+
+
+def _validate_existing_profile_ownership(
+    *,
+    profile_dir: Path,
+    profiles_root: Path,
+    package_id: str,
+    plugin_ids: set[str],
+) -> None:
+    """Fail closed unless install-source history owns an existing profile.
+
+    A profile directory name is selected by the package manifest and is not
+    proof that the directory belongs to the incoming package. Removed entries
+    remain in the source ledger, so a legitimate reinstall can reuse its
+    retained profile without letting an unrelated package claim orphaned state.
+    """
+
+    manager = get_install_source_manager()
+    if manager is None:
+        raise ServerDomainError(
+            code="INSTALL_SOURCE_NOT_READY",
+            message="install source manager is not initialised",
+            status_code=503,
+            details={"hint": "wait for FastAPI lifespan startup to complete"},
+        )
+    owners = []
+    resolved_profile = profile_dir.resolve(strict=False)
+    for entry in manager.list_entries(include_removed=True):
+        # Only an explicit modern ownership record is proof. ``None`` is
+        # a legacy row whose profile ownership was never recorded.
+        if entry.profile_installed is not True:
+            continue
+        recorded_key = entry.package_id
+        if entry.profile_dir:
+            recorded_profile = Path(entry.profile_dir).expanduser()
+        elif recorded_key:
+            recorded_profile = profiles_root / recorded_key
+        else:
+            continue
+        if recorded_profile.resolve(strict=False) == resolved_profile:
+            owners.append(entry)
+
+    ownership_matches = bool(owners) and all(
+        owner.plugin_id in plugin_ids and owner.package_id == package_id
+        for owner in owners
+    )
+    if ownership_matches:
+        return
+
+    raise ServerDomainError(
+        code="PLUGIN_PACKAGE_PROFILE_OWNERSHIP_CONFLICT",
+        message="existing package profile ownership does not match the incoming package",
+        status_code=409,
+        details={
+            "package_id": package_id,
+            "plugin_ids": sorted(plugin_ids),
+            "recorded_plugin_ids": sorted(
+                {owner.plugin_id for owner in owners if owner.plugin_id}
+            ),
+        },
+    )
+
+
+def _classify_package_error(exc: Exception) -> str | None:
+    if isinstance(exc, ServerDomainError) and exc.code.startswith("PLUGIN_PACKAGE_"):
+        return exc.code
+    if isinstance(exc, zipfile.BadZipFile):
+        return "PLUGIN_PACKAGE_INVALID_ARCHIVE"
+
+    message = str(exc).lower()
+    for code, alternatives in _PACKAGE_ERROR_PATTERNS:
+        if any(
+            all(fragment in message for fragment in fragments)
+            for fragments in alternatives
+        ):
+            return code
+    if any(
+        fragment in message
+        for fragment in (
+            "too many entries",
+            "package archive expands to",
+            "single-member limit",
+            "compression ratio",
+            "-byte read limit",
+            "equivalent on common filesystems",
+            "file/directory path conflict",
+        )
+    ):
+        return "PLUGIN_PACKAGE_INVALID_ARCHIVE"
+    return None
+
+
+def _replacement_error_details(
+    exc: upgrade_support.ReplacePluginError,
+) -> dict[str, object]:
+    details: dict[str, object] = {
+        "stage": exc.stage,
+        "rollback_status": exc.rollback_status,
+    }
+    cause_code = _classify_package_error(exc.cause)
+    if cause_code:
+        details["cause_code"] = cause_code
+    return details
 
 
 def _require_within(path: Path, root: Path, *, field: str) -> Path:
@@ -191,14 +342,14 @@ class PluginCliService:
         if not confirm_upgrade or not confirmation_token:
             raise ServerDomainError(
                 code="PLUGIN_UPGRADE_CONFIRMATION_REQUIRED",
-                message="plugin upgrade requires explicit confirmation",
+                message="plugin replacement requires explicit confirmation",
                 status_code=409,
                 details=plan_dict,
             )
         if confirmation_token != str(plan_dict["confirmation_token"]):
             raise ServerDomainError(
                 code="PLUGIN_UPGRADE_PLAN_CHANGED",
-                message="installed plugin changed after upgrade confirmation",
+                message="installed plugin changed after replacement confirmation",
                 status_code=409,
                 details=plan_dict,
             )
@@ -248,6 +399,20 @@ class PluginCliService:
             target_root=target_root,
             profiles_root=profiles_root_path,
         )
+        if (
+            plan.action not in REPLACEMENT_ACTIONS
+            or plan.confirmation_token != confirmation_token
+        ):
+            raise ServerDomainError(
+                code="PLUGIN_UPGRADE_PLAN_CHANGED",
+                message="installed plugin changed after replacement confirmation",
+                status_code=409,
+                details=asdict(plan),
+            )
+
+        async def validate_manifestless_backup(backup_dir: Path) -> None:
+            if not await asyncio.to_thread(is_manifestless_state_directory, backup_dir):
+                raise ValueError("manifest-less plugin state changed before installation")
 
         async def install_new() -> dict[str, object]:
             return await asyncio.to_thread(
@@ -279,21 +444,31 @@ class PluginCliService:
                 start=start,
                 cleanup_backup=upgrade_support.remove_directory,
                 additional_targets=(profile_dir,),
-                preserve_targets=(profile_dir,),
+                preserve_targets=(
+                    (target_dir, profile_dir)
+                    if plan.manifestless_state
+                    else (profile_dir,)
+                ),
+                initialize_runtime_config=not plan.manifestless_state,
+                validate_backup=(
+                    validate_manifestless_backup
+                    if plan.manifestless_state
+                    else None
+                ),
             )
         except upgrade_support.ReplacePluginError as exc:
             raise ServerDomainError(
                 code="PLUGIN_UPGRADE_ROLLED_BACK",
                 message="plugin upgrade failed and rollback was attempted",
                 status_code=500,
-                details={"stage": exc.stage, "rollback_status": exc.rollback_status},
+                details=_replacement_error_details(exc),
             ) from exc
 
         response = {
             **result.install_result,
             # Compatibility response for the existing Package Manager UI.
             # The shared file transaction itself is version-agnostic replace.
-            "operation": "upgrade",
+            "operation": plan.action,
             "restarted": result.restarted,
             "rollback_status": result.rollback_status,
         }
@@ -367,6 +542,11 @@ class PluginCliService:
             filename=filename,
             source_file=source_file,
         )
+
+    @serialized_plugin_operation
+    async def discard_uploaded_package(self, *, package: str) -> dict[str, object]:
+        """Remove one upload owned by an abandoned Plugin Center workflow."""
+        return await asyncio.to_thread(self._discard_uploaded_package_sync, package=package)
 
     @serialized_plugin_operation
     async def upload_and_install(
@@ -732,6 +912,8 @@ class PluginCliService:
     def _extract_unpack_profile_dirs(unpack_result: dict[str, object]) -> list[Path]:
         """Return promoted profile dirs created by the unpack operation."""
 
+        if unpack_result.get("profile_reused") is True:
+            return []
         profile_dir_raw = unpack_result.get("profile_dir")
         if isinstance(profile_dir_raw, str) and profile_dir_raw:
             return [Path(profile_dir_raw)]
@@ -1138,7 +1320,7 @@ class PluginCliService:
         target_root: Path,
         profiles_root: Path,
     ) -> PluginInstallPlan:
-        if plan.action != "upgrade":
+        if plan.action not in REPLACEMENT_ACTIONS:
             return plan
 
         target_dir = target_root / plan.directory_name
@@ -1242,6 +1424,7 @@ class PluginCliService:
         installer = PackageInstaller()
         promoted_plugins: list[InstalledPlugin] = []
         promoted_profile: Path | None = None
+        profile_reused = False
 
         try:
             staged = install_package(
@@ -1274,14 +1457,42 @@ class PluginCliService:
 
             if staged.profile_dir is not None:
                 source_profile = Path(staged.profile_dir)
-                desired_profile = installer.resolve_target_dir(
-                    profiles_root / source_profile.name,
-                    on_conflict=on_conflict,
-                )
-                if source_profile.resolve() != desired_profile.resolve():
-                    desired_profile.parent.mkdir(parents=True, exist_ok=True)
-                    source_profile.rename(desired_profile)
-                promoted_profile = desired_profile
+                desired_profile = profiles_root / source_profile.name
+                if _is_link_or_reparse(desired_profile):
+                    raise ValueError(
+                        "existing package profile path is a link or reparse point: "
+                        f"{desired_profile.name}"
+                    )
+                if desired_profile.exists():
+                    if not desired_profile.is_dir():
+                        raise ValueError(
+                            "existing package profile path is not a directory: "
+                            f"{desired_profile.name}"
+                        )
+                    _validate_existing_profile_ownership(
+                        profile_dir=desired_profile,
+                        profiles_root=profiles_root,
+                        package_id=staged.package_id,
+                        plugin_ids={
+                            self._read_installed_plugin_toml_id(Path(item.target_dir))
+                            for item in promoted_plugins
+                        },
+                    )
+                    # A verified prior install can leave its package profile
+                    # behind after executable deletion. Reuse it byte-for-byte. The
+                    # staged defaults are intentionally not merged here, so a
+                    # failed fresh install never mutates legacy state.
+                    promoted_profile = desired_profile.resolve()
+                    profile_reused = True
+                else:
+                    desired_profile = installer.resolve_target_dir(
+                        desired_profile,
+                        on_conflict=on_conflict,
+                    )
+                    if source_profile.resolve() != desired_profile.resolve():
+                        desired_profile.parent.mkdir(parents=True, exist_ok=True)
+                        source_profile.rename(desired_profile)
+                    promoted_profile = desired_profile
 
             return InstallResult(
                 package_path=staged.package_path,
@@ -1291,6 +1502,7 @@ class PluginCliService:
                 profiles_root=profiles_root,
                 installed_plugins=promoted_plugins,
                 profile_dir=promoted_profile,
+                profile_reused=profile_reused,
                 metadata_found=staged.metadata_found,
                 payload_hash=staged.payload_hash,
                 payload_hash_verified=staged.payload_hash_verified,
@@ -1299,7 +1511,7 @@ class PluginCliService:
         except Exception:
             for item in promoted_plugins:
                 shutil.rmtree(item.target_dir, ignore_errors=True)
-            if promoted_profile is not None:
+            if promoted_profile is not None and not profile_reused:
                 shutil.rmtree(promoted_profile, ignore_errors=True)
             raise
         finally:
@@ -1409,6 +1621,18 @@ class PluginCliService:
             return self._upload_metadata(dest)
         except Exception as exc:
             raise self._domain_error_from_exception(exc, action="upload") from exc
+
+    def _discard_uploaded_package_sync(self, *, package: str) -> dict[str, object]:
+        """Remove one direct upload using the existing package-path policy."""
+        try:
+            target_root = self._path_policy().package_artifacts_root.resolve()
+            target = self._resolve_package_path(package)
+            if target.parent != target_root:
+                raise ValueError("only a directly uploaded plugin package can be discarded")
+            target.unlink()
+            return {"success": True, "removed": True, "name": target.name}
+        except Exception as exc:
+            raise self._domain_error_from_exception(exc, action="discard-upload") from exc
 
     def _save_uploaded_file_sync(self, *, filename: str, source_file: BinaryIO) -> dict[str, object]:
         """Copy an incoming upload in bounded chunks and enforce the size limit."""
@@ -1613,7 +1837,11 @@ class PluginCliService:
     def _domain_error_from_exception(self, exc: Exception, *, action: str) -> ServerDomainError:
         if isinstance(exc, ServerDomainError):
             return exc
-        if isinstance(exc, FileNotFoundError):
+        package_error_code = _classify_package_error(exc)
+        if package_error_code:
+            status_code = 400
+            code = package_error_code
+        elif isinstance(exc, FileNotFoundError):
             status_code = 404
             code = "PLUGIN_CLI_NOT_FOUND"
         elif isinstance(exc, FileExistsError):

@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import zipfile
 
 import pytest
@@ -126,6 +127,7 @@ def test_init_custom_output_generates_runnable_vscode_check_task(
         check=False,
         capture_output=True,
         text=True,
+        timeout=120,
     )
 
     assert completed.returncode == 0, completed.stdout + completed.stderr
@@ -264,7 +266,7 @@ def test_public_bundle_workflow_covers_analysis_build_and_install(tmp_path: Path
 
 
 @pytest.mark.plugin_integration
-def test_cli_workflow_rejects_repeated_executable_install_without_renaming(tmp_path: Path) -> None:
+def test_cli_workflow_refuses_runtime_install_and_keeps_built_package(tmp_path: Path) -> None:
     plugin_dir = _copy_fixture_plugin(tmp_path, "simple_plugin")
     target_dir = tmp_path / "target"
     plugins_root = tmp_path / "plugins"
@@ -286,23 +288,42 @@ def test_cli_workflow_rejects_repeated_executable_install_without_renaming(tmp_p
                 str(profiles_root),
             ]
         )
-        == 0
-    )
-    assert (
-        neko_plugin_cli.main(
-            [
-                "install",
-                str(package_path),
-                "--plugins-root",
-                str(plugins_root),
-                "--profiles-root",
-                str(profiles_root),
-            ]
-        )
-        == 1
+        == 2
     )
 
-    assert (plugins_root / "simple_plugin" / "plugin.toml").is_file()
-    assert not (plugins_root / "simple_plugin_1").exists()
-    assert (profiles_root / "simple_plugin" / "default.toml").is_file()
-    assert not (profiles_root / "simple_plugin_1").exists()
+    assert package_path.is_file()
+    assert not plugins_root.exists()
+    assert not profiles_root.exists()
+
+
+@pytest.mark.plugin_integration
+def test_cli_subprocess_cannot_bypass_core_runtime_installation(tmp_path: Path) -> None:
+    plugin_dir = _copy_fixture_plugin(tmp_path, "simple_plugin")
+    package_path = tmp_path / "simple_plugin.neko-plugin"
+    build_plugin(plugin_dir, package_path)
+    plugins_root = tmp_path / "runtime-plugins"
+    profiles_root = tmp_path / "runtime-profiles"
+    repo_root = Path(__file__).resolve().parents[3]
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "plugin.neko_plugin_cli",
+            "install",
+            str(package_path),
+            "--plugins-root",
+            str(plugins_root),
+            "--profiles-root",
+            str(profiles_root),
+        ],
+        cwd=repo_root,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 2
+    assert "Plugin Center" in completed.stderr
+    assert not plugins_root.exists()
+    assert not profiles_root.exists()

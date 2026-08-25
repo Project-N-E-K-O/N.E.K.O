@@ -4,8 +4,10 @@ import asyncio
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
+import os
 from pathlib import Path
 import shutil
+import stat
 
 from plugin.core.plugin_layout import PluginLayout
 from plugin.logging_config import get_logger
@@ -14,7 +16,10 @@ from plugin.server.infrastructure.config_paths import ensure_plugin_layout_runti
 
 logger = get_logger("server.application.plugins.upgrade_support")
 
-_MANIFEST_ADJACENT_PROFILE_PATHS = (Path("profiles.toml"), Path("profiles"))
+_MANIFEST_ADJACENT_PROFILE_NAMES = {
+    "profiles.toml": "profiles.toml",
+    "profiles": "profiles",
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -115,14 +120,42 @@ async def merge_directory_contents(source_dir: Path, target_dir: Path) -> None:
     await asyncio.to_thread(shutil.copytree, source_dir, target_dir, dirs_exist_ok=True)
 
 
-async def _restore_manifest_adjacent_profiles(backup_dir: Path, target_dir: Path) -> None:
-    for relative_path in _MANIFEST_ADJACENT_PROFILE_PATHS:
-        source = backup_dir / relative_path
-        if source.is_symlink():
-            raise OSError(f"symbolic links are not supported for profile paths: {source}")
-        if not source.exists():
+def _assert_preserved_tree_has_no_links_or_reparse_points(source: Path) -> None:
+    pending = [source]
+    while pending:
+        current = pending.pop()
+        metadata = current.lstat()
+        file_attributes = getattr(metadata, "st_file_attributes", 0)
+        reparse_attribute = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+        if stat.S_ISLNK(metadata.st_mode) or bool(file_attributes & reparse_attribute):
+            raise OSError(
+                f"links and reparse points are not supported for preserved plugin state: {current.name}"
+            )
+        if not stat.S_ISDIR(metadata.st_mode):
             continue
-        target = target_dir / relative_path
+        with os.scandir(current) as entries:
+            pending.extend(Path(entry.path) for entry in entries)
+
+
+def _canonical_profile_sources(sources: list[Path]) -> dict[str, Path]:
+    sources_by_name: dict[str, Path] = {}
+    for source in sources:
+        canonical_name = _MANIFEST_ADJACENT_PROFILE_NAMES.get(source.name.casefold())
+        if canonical_name is None:
+            continue
+        if canonical_name in sources_by_name:
+            raise OSError(f"multiple legacy profile paths map to {canonical_name}")
+        sources_by_name[canonical_name] = source
+    return sources_by_name
+
+
+async def _restore_manifest_adjacent_profiles(backup_dir: Path, target_dir: Path) -> None:
+    sources = await asyncio.to_thread(lambda: list(backup_dir.iterdir()))
+    sources_by_name = _canonical_profile_sources(sources)
+
+    for canonical_name, source in sources_by_name.items():
+        await asyncio.to_thread(_assert_preserved_tree_has_no_links_or_reparse_points, source)
+        target = target_dir / canonical_name
         if source.is_dir():
             await merge_directory_contents(source, target)
             continue
@@ -221,6 +254,8 @@ async def replace_plugin(
     cleanup_backup: Callable[[Path], Awaitable[None]],
     additional_targets: tuple[Path, ...] = (),
     preserve_targets: tuple[Path, ...] = (),
+    initialize_runtime_config: bool = True,
+    validate_backup: Callable[[Path], Awaitable[None]] | None = None,
     on_rollback_start: Callable[[], None] | None = None,
 ) -> ReplacePluginResult:
     plugin_id = layout.plugin_id
@@ -233,10 +268,11 @@ async def replace_plugin(
     if any(target not in targets for target in preserve_targets):
         raise ValueError("preserve targets must also be replacement targets")
 
-    await asyncio.to_thread(
-        ensure_plugin_layout_runtime_config,
-        layout,
-    )
+    if initialize_runtime_config:
+        await asyncio.to_thread(
+            ensure_plugin_layout_runtime_config,
+            layout,
+        )
     was_running = await is_running(plugin_id)
     if was_running:
         await stop(plugin_id)
@@ -277,8 +313,11 @@ async def replace_plugin(
             rollback_status="completed" if recovered else "incomplete",
             cause=exc,
         ) from exc
-    stage = "install"
+    stage = "backup_validation"
     try:
+        if validate_backup is not None:
+            await validate_backup(backups[target_dir])
+        stage = "install"
         install_result = await install_new()
         stage = "validate"
         await validate_new()

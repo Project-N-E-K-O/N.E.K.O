@@ -39,6 +39,7 @@ function makePlugin(
 async function mountEntry(
   component: Component,
   plugin: ReturnType<typeof makePlugin>,
+  props: Record<string, unknown> = {},
 ) {
   const container = document.createElement('div')
   document.body.appendChild(container)
@@ -50,6 +51,7 @@ async function mountEntry(
         h(component, {
           plugin,
           enableUiAction: true,
+          ...props,
           onClick: click,
           onOpenUi: openUi,
         })
@@ -86,6 +88,18 @@ async function mountEntry(
 afterEach(() => {
   while (mountedApps.length) mountedApps.pop()?.()
   vi.restoreAllMocks()
+})
+
+describe('plugin card identity', () => {
+  it('shows the logical ID only when the parent identifies a display-name collision', async () => {
+    const hidden = await mountEntry(PluginCard, makePlugin(null))
+    expect(hidden.container.querySelector('[data-testid="plugin-identity"]')).toBeNull()
+
+    const shown = await mountEntry(PluginCard, makePlugin(null), { showIdentity: true })
+    expect(shown.container.querySelector('[data-testid="plugin-identity"]')?.textContent).toContain(
+      'generic-plugin',
+    )
+  })
 })
 
 describe.each([

@@ -191,6 +191,24 @@ describe('hosted panel error suppression', () => {
     consoleError.mockRestore()
   })
 
+  it('lets a domain caller replace the generic error toast', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+
+    await expect(rejectWith({
+      message: 'Request failed with status code 500',
+      response: {
+        status: 500,
+        data: { detail: 'C:\\Users\\name\\private.neko-plugin is invalid' },
+      },
+    }, {
+      suppressErrorMessage: true,
+    } as AxiosRequestConfig)).rejects.toThrow('Request failed with status code 500')
+
+    expect(consoleError).not.toHaveBeenCalled()
+    expect(requestMocks.errorMessage).not.toHaveBeenCalled()
+    consoleError.mockRestore()
+  })
+
   it('keeps PLUGIN_NOT_RUNNING visible for a user-initiated panel request', async () => {
     const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined)
 

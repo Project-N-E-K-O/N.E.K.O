@@ -8,7 +8,17 @@
     <template #header>
       <div class="plugin-card-header">
         <div class="plugin-info">
-          <h3 class="plugin-name">{{ displayText.name }}</h3>
+          <div class="plugin-heading">
+            <h3 class="plugin-name">{{ displayText.name }}</h3>
+            <span
+              v-if="showIdentity"
+              class="plugin-identity"
+              data-testid="plugin-identity"
+              :title="plugin.id"
+            >
+              ID: {{ plugin.id }}
+            </span>
+          </div>
           <StatusIndicator :status="plugin.status || 'stopped'" />
           <el-tag v-if="plugin.autoStart === false" size="small" type="warning">
             {{ t('plugins.manualStart') }}
@@ -78,6 +88,7 @@ interface Props {
   showMetrics?: boolean
   showSourceDetail?: boolean
   enableUiAction?: boolean
+  showIdentity?: boolean
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -85,6 +96,7 @@ const props = withDefaults(defineProps<Props>(), {
   showMetrics: false,
   showSourceDetail: false,
   enableUiAction: false,
+  showIdentity: false,
 })
 
 const { t, locale } = useI18n()
@@ -175,6 +187,25 @@ const hasUpdate = computed<boolean>(() => {
   color: var(--el-text-color-primary);
   line-height: 1.35;
   word-break: break-word;
+}
+
+.plugin-heading {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+  min-width: 0;
+}
+
+.plugin-identity {
+  max-width: 100%;
+  overflow: hidden;
+  color: var(--el-text-color-secondary);
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+  font-size: 11px;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .plugin-card-body {

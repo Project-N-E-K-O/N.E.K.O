@@ -78,7 +78,8 @@ def build_parser() -> argparse.ArgumentParser:
               neko-plugin publish <plugin>         Publish on GitHub, then notify Market / 发布并通知 Market / 公開後 Market に通知
 
             Package/debug commands:
-              build, install, analyze
+              build, analyze
+              install                              Import guidance only; runtime writes go through Plugin Center
             """
         ),
     )

@@ -21,8 +21,7 @@ def _write_plugin_fixture(tmp_path: Path, plugin_id: str) -> Path:
     root = tmp_path / "plugins"
     plugin_dir = root / plugin_id
     plugin_dir.mkdir(parents=True, exist_ok=True)
-    module_name = f"{plugin_id}_entry"
-    (tmp_path / f"{module_name}.py").write_text(
+    (plugin_dir / "__init__.py").write_text(
         "\n".join(
             [
                 "from plugin.sdk.plugin.decorators import plugin_entry",
@@ -43,7 +42,7 @@ def _write_plugin_fixture(tmp_path: Path, plugin_id: str) -> Path:
                 f"id = '{plugin_id}'",
                 f"name = '{plugin_id}'",
                 "type = 'plugin'",
-                f"entry = '{module_name}:DemoPlugin'",
+                f"entry = 'plugins.{plugin_id}:DemoPlugin'",
                 "version = '0.1.0'",
                 "",
                 "[plugin_runtime]",

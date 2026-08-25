@@ -261,6 +261,7 @@
               :selected-plugin-ids="selectedPluginIds"
               :show-metrics="showMetrics"
               :show-source-detail="showSourceDetail"
+              :identity-plugin-ids="duplicateDisplayNamePluginIds"
               :variant="section.variant"
               @item-click="handlePluginPrimaryAction"
               @item-open-ui="handlePluginUiAction"
@@ -504,7 +505,9 @@ import { usePluginWorkbench } from '@/composables/usePluginWorkbench'
 import { useMarketAuth } from '@/composables/useMarketAuth'
 import { METRICS_REFRESH_INTERVAL } from '@/utils/constants'
 import { formatHttpError } from '@/utils/request'
+import { resolvePluginPackageErrorMessage } from '@/utils/pluginPackageError'
 import { resolveLocalizedText } from '@/utils/i18nLabel'
+import { findDuplicatePluginDisplayNameIds } from '@/utils/pluginDisplay'
 import { openExternalUrl } from '@/utils/openExternal'
 import { isOpenUiNavigationAction } from '@/utils/pluginListActions'
 import { useI18n } from 'vue-i18n'
@@ -595,6 +598,9 @@ const dangerDialogMessage = computed(() => {
 
 const rawPlugins = computed(() => pluginStore.pluginsWithStatus)
 const rawNormalPlugins = computed(() => pluginStore.normalPlugins)
+const duplicateDisplayNamePluginIds = computed(() => [
+  ...findDuplicatePluginDisplayNameIds(rawPlugins.value, locale.value),
+])
 const {
   filterText,
   useRegex,
@@ -1110,7 +1116,10 @@ async function importSelectedPluginPackage() {
   importing.value = true
   try {
     const upload = await uploadPluginPackage(file)
-    const result = await installImportedPackage(upload.path, { installSource: 'imported' })
+    const result = await installImportedPackage(upload.path, {
+      installSource: 'imported',
+      discardOnFailure: true,
+    })
     if (!result) return
     const count = result.installed_plugin_count ?? 0
     ElMessage.success(t('plugins.importSuccess', { name: file.name, count }))
@@ -1118,8 +1127,7 @@ async function importSelectedPluginPackage() {
     await refreshAfterPluginChange()
   } catch (error: any) {
     console.error('Failed to import plugin package:', error)
-    const detail = formatHttpError(error)
-    ElMessage.error(detail ? t('plugins.importFailed') + ': ' + detail : t('plugins.importFailed'))
+    ElMessage.error(resolvePluginPackageErrorMessage(error, t, 'upload'))
   } finally {
     importing.value = false
   }

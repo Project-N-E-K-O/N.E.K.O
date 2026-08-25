@@ -21,9 +21,9 @@ def normalize_plugin_entry_point(
     """Normalize canonical manifest entries for user-installed plugins.
 
     Plugin manifests use ``plugin.plugins.<plugin_id>:Class`` as the canonical
-    source-tree entry path. Market packages are installed under the user plugin
-    root as ``plugins/<plugin_id>`` at runtime, so entries found outside the
-    built-in root are rewritten to the user-root import namespace.
+    source-tree entry path. External installations remain below an isolated
+    ``plugins`` namespace and are loaded from the selected plugin directory;
+    their shared root is never placed on the host process import path.
     """
 
     if ":" not in entry_point:

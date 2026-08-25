@@ -71,7 +71,7 @@ class PluginCliInstallPlanRequest(BaseModel):
 
 
 class PluginCliInstallPlanResponse(BaseModel):
-    action: str = Field(pattern="^(install|upgrade|blocked)$")
+    action: str = Field(pattern="^(install|upgrade|reinstall|downgrade|blocked)$")
     package_type: str = Field(pattern="^(plugin|bundle)$")
     plugin_id: str
     directory_name: str
@@ -197,6 +197,7 @@ class PluginCliInstallResponse(BaseModel):
     profiles_root: str | None = None
     installed_plugins: list[PluginCliInstalledPluginResponse]
     profile_dir: str | None = None
+    profile_reused: bool = False
     metadata_found: bool
     payload_hash: str = ""
     payload_hash_verified: bool | None = None
@@ -238,6 +239,12 @@ class PluginCliUploadResponse(BaseModel):
     path: str
     size_bytes: int
     modified_at: str
+
+
+class PluginCliDiscardUploadResponse(BaseModel):
+    success: bool
+    removed: bool
+    name: str
 
 
 class PluginCliUploadAndInstallResponse(BaseModel):
@@ -385,6 +392,18 @@ async def plugin_cli_upload(
     except Exception:
         logger.exception("Unexpected error during plugin package upload")
         raise HTTPException(status_code=500, detail="Internal server error during upload")
+
+
+@router.delete("/plugin-cli/upload", response_model=PluginCliDiscardUploadResponse)
+async def plugin_cli_discard_upload(
+    package: str = Query(...),
+    _: str = require_admin,
+) -> dict[str, object]:
+    """Discard one package uploaded by an abandoned local import workflow."""
+    try:
+        return await service.discard_uploaded_package(package=package)
+    except ServerDomainError as error:
+        raise_http_from_domain(error, logger=logger)
 
 
 @router.post("/plugin-cli/upload-and-install", response_model=PluginCliUploadAndInstallResponse)

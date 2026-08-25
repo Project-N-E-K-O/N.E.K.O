@@ -26,6 +26,7 @@ import {
 } from '@/composables/usePluginWorkbench'
 import { resolvePluginDisplayText } from '@/utils/pluginDisplay'
 import { formatHttpError } from '@/utils/request'
+import { resolvePluginPackageErrorMessage } from '@/utils/pluginPackageError'
 import { usePluginPackageInstaller } from '@/composables/usePluginPackageInstaller'
 
 export type LayoutMode = PluginWorkbenchLayoutMode
@@ -722,7 +723,7 @@ export function usePackageManager(options: UsePackageManagerOptions = {}) {
       setResult('inspect', response)
       ElMessage.success('包检查完成')
     } catch (error) {
-      ElMessage.error(`包检查失败：${formatHttpError(error)}`)
+      ElMessage.error(resolvePluginPackageErrorMessage(error, t, 'inspect'))
     } finally {
       inspecting.value = false
     }
@@ -740,7 +741,7 @@ export function usePackageManager(options: UsePackageManagerOptions = {}) {
       setResult('verify', response)
       ElMessage[response.ok ? 'success' : 'warning'](response.ok ? '包校验通过' : '包未通过校验')
     } catch (error) {
-      ElMessage.error(`包校验失败：${formatHttpError(error)}`)
+      ElMessage.error(resolvePluginPackageErrorMessage(error, t, 'verify'))
     } finally {
       verifying.value = false
     }
@@ -756,9 +757,13 @@ export function usePackageManager(options: UsePackageManagerOptions = {}) {
       return
     }
     setResult('install', response)
-    if (response.operation === 'upgrade') {
+    if (
+      response.operation === 'upgrade'
+      || response.operation === 'reinstall'
+      || response.operation === 'downgrade'
+    ) {
       const plan = installPlan.value
-      ElMessage.success(t('package.install.upgradeSucceeded', {
+      ElMessage.success(t(`package.install.${response.operation}Succeeded`, {
         plugin: plan?.plugin_id || plan?.directory_name || '',
       }))
     } else {

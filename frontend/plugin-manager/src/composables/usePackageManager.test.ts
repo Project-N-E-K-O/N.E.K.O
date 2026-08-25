@@ -185,6 +185,29 @@ describe('usePackageManager safe installation flow', () => {
     )
   })
 
+  it.each([
+    ['reinstall', 'package.install.reinstallSucceeded'],
+    ['downgrade', 'package.install.downgradeSucceeded'],
+  ] as const)('reports a distinct success message for %s', async (operation, messageKey) => {
+    const manager = usePackageManager()
+    manager.installForm.value.package = 'demo.neko-plugin'
+    vi.mocked(planPluginInstall).mockResolvedValue({
+      ...upgradePlan,
+      action: operation,
+    })
+    vi.mocked(ElMessageBox.confirm).mockResolvedValue({ action: 'confirm', value: '' } as any)
+    vi.mocked(installPluginPackage).mockResolvedValue({
+      ...installResponse,
+      operation,
+    })
+
+    await manager.handleInstall()
+
+    expect(ElMessage.success).toHaveBeenCalledWith(
+      `${messageKey}{"plugin":"demo_plugin"}`,
+    )
+  })
+
   it('installs a new plugin without upgrade credentials', async () => {
     const manager = usePackageManager()
     manager.installForm.value.package = 'demo.neko-plugin'

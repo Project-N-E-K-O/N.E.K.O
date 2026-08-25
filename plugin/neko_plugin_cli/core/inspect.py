@@ -11,6 +11,7 @@ from .archive_utils import (
     read_manifest,
     read_metadata,
     validate_dependency_layout,
+    validate_archive_structure,
     validate_plugin_manifest_types,
     validate_package_type,
     validate_plugin_layout,
@@ -44,6 +45,7 @@ class PackageInspector:
     ) -> PackageInspectResult:
         """Inspect and validate an already-open package archive."""
 
+        validate_archive_structure(archive)
         manifest = read_manifest(archive)
         metadata = read_metadata(archive)
 

@@ -37,7 +37,7 @@ Current commands:
 - `check` (use `check -r` / `check --release` for the pre-release readiness check, `check --release --market-release` for the Market-publication variant)
 - `sync` (deps): reinstall all declared dependencies into `vendor/` from `pyproject.toml`
 - `build`
-- `install`
+- `install` (compatibility command; runtime installation is handled by Plugin Center)
 - `analyze`
 - `publish`
 
@@ -49,9 +49,13 @@ uv run neko-plugin check -r qq_auto_reply
 uv run neko-plugin check --release --market-release qq_auto_reply
 uv run neko-plugin sync qq_auto_reply --clean
 uv run neko-plugin build qq_auto_reply
-uv run neko-plugin install qq_auto_reply.neko-plugin
 uv run neko-plugin analyze qq_auto_reply mijia
 ```
+
+To install a built package, open the N.E.K.O Plugin Center and use **Import**.
+The compatibility `neko-plugin install` command intentionally refuses to write
+plugin runtime directories so command-line tools cannot bypass the same
+confirmation, rollback, locking, and source-tracking workflow used by Core.
 
 To add or safely upgrade the standard Market GitHub Actions files in an
 existing plugin repository, run from the N.E.K.O checkout:
