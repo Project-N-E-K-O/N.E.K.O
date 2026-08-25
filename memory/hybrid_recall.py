@@ -385,9 +385,10 @@ _VEC_CACHE_BYTES = 0
 
 # Per-entry bookkeeping that ``sys.getsizeof`` on the payload does not see:
 # the 7-tuple, the OrderedDict link node, the ndarray object header. Measured
-# ~300B on CPython 3.11/x64; rounded up so the cap stays an over-estimate of
-# resident bytes rather than an under-estimate.
-_VEC_ENTRY_OVERHEAD_BYTES = 320
+# at 351B via ``tracemalloc`` on CPython 3.11/x64 (3000 entries holding a
+# 1-float vector, so the bookkeeping is what dominates); rounded up so this
+# term over-estimates rather than under-estimates.
+_VEC_ENTRY_OVERHEAD_BYTES = 384
 
 
 class _ScanState:
