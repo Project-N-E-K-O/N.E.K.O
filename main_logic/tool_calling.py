@@ -35,10 +35,15 @@ provider-agnostic.
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import json
 import time
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable, Dict, List, Optional, Union
+from io import BytesIO
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple, Union
+
+from PIL import Image
 
 from utils.logger_config import get_module_logger
 
@@ -46,6 +51,16 @@ logger = get_module_logger(__name__, "Main")
 
 
 ToolHandler = Callable[[Dict[str, Any]], Union[Awaitable[Any], Any]]
+
+# Ceilings on the image channel of a tool result. A handler that hands back a
+# 4K frame would stall the whole tool loop, so the limit is enforced here for
+# both in-process handlers and remote plugin callbacks.
+_MAX_TOOL_IMAGE_B64_BYTES = 2 * 1024 * 1024
+_MAX_TOOL_IMAGES = 2
+_MAX_TOOL_IMAGE_PIXELS = 16 * 1024 * 1024
+_ALLOWED_TOOL_IMAGE_MIMES = frozenset({"image/jpeg", "image/png"})
+_JPEG_MAGIC = b"\xff\xd8"
+_PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
 
 
 @dataclass
@@ -126,6 +141,23 @@ class ToolCall:
 
 
 @dataclass
+class ToolImage:
+    """One picture a tool wants the model to see.
+
+    ``data_b64`` is raw base64 with no ``data:`` prefix. ``vision_prompt``
+    says what the model should look for, and is deliberately used by both
+    delivery paths: it becomes the text part next to the image when the
+    picture is injected directly, and the extra instruction handed to the
+    vision model when the picture has to be transcribed instead. One
+    sentence, so the two paths cannot drift apart.
+    """
+
+    data_b64: str
+    mime: str = "image/jpeg"
+    vision_prompt: str = ""
+
+
+@dataclass
 class ToolResult:
     """Outcome of executing a ``ToolCall``."""
 
@@ -137,6 +169,12 @@ class ToolResult:
     output: Any
     is_error: bool = False
     error_message: str = ""
+    # Pictures ride beside ``output``, never inside it: they must not be
+    # serialized into the string the model reads. ``LLMSessionManager.
+    # _on_tool_call`` decides whether they are injected as a multimodal
+    # message or transcribed into text, and clears the list in the latter
+    # case.
+    images: List["ToolImage"] = field(default_factory=list)
 
     def output_as_json_string(self) -> str:
         """Render ``output`` as the JSON string that OpenAI Realtime / GLM /
@@ -147,6 +185,176 @@ class ToolResult:
             return json.dumps(self.output, ensure_ascii=False)
         except (TypeError, ValueError):
             return json.dumps({"result": str(self.output)}, ensure_ascii=False)
+
+    def merge_into_output(self, **fields: Any) -> None:
+        """Add fields to ``output``, normalizing it to a dict first.
+
+        ``output`` is whatever the tool returned — a plugin may well hand
+        back a bare string. Non-dict payloads are wrapped as
+        ``{"result": <original>}`` so there is one shape for every caller
+        that needs to annotate a result (image warnings, transcriptions).
+
+        Normalization runs even with no fields to add, so the payload shape
+        does not depend on whether the caller happened to have something to
+        say.
+        """
+        if not isinstance(self.output, dict):
+            self.output = {"result": self.output}
+        self.output.update(fields)
+
+
+def tool_result_output_payload(body: Dict[str, Any]) -> Any:
+    """Pick the model-readable ``output`` from a tool result envelope.
+
+    When the handler omits ``output``, fall back to the rest of the body —
+    but never the ``images`` channel. Those pixels ride ``ToolResult.images``.
+    """
+    if "output" in body:
+        return body["output"]
+    return {k: v for k, v in body.items() if k != "images"}
+
+
+def _decode_tool_image_b64(data_b64: str) -> Tuple[bytes, str] | None:
+    """Decode base64 image bytes and return ``(raw, detected_mime)``."""
+    try:
+        raw = base64.b64decode(data_b64, validate=True)
+    except (binascii.Error, ValueError):
+        return None
+    if not raw:
+        return None
+    if raw.startswith(_JPEG_MAGIC):
+        detected_mime = "image/jpeg"
+        expected_format = "JPEG"
+    elif raw.startswith(_PNG_MAGIC):
+        detected_mime = "image/png"
+        expected_format = "PNG"
+    else:
+        return None
+
+    try:
+        with Image.open(BytesIO(raw)) as image:
+            if image.format != expected_format:
+                return None
+            width, height = image.size
+            if width <= 0 or height <= 0 or width * height > _MAX_TOOL_IMAGE_PIXELS:
+                return None
+            image.verify()
+        # JPEG's lightweight ``verify`` does not decode entropy data and can
+        # accept a missing EOI marker, so force a bounded full decode too.
+        with Image.open(BytesIO(raw)) as image:
+            image.load()
+    except Exception:
+        return None
+    return raw, detected_mime
+
+
+def _normalize_tool_image_mime(mime: Any) -> str | None:
+    """Strip parameters / case so ``Image/PNG; charset=binary`` can match."""
+    if not isinstance(mime, str):
+        return None
+    normalized = mime.strip().lower().split(";", 1)[0].strip()
+    if normalized not in _ALLOWED_TOOL_IMAGE_MIMES:
+        return None
+    return normalized
+
+
+def parse_tool_images(body: Dict[str, Any]) -> Tuple[List[ToolImage], List[str]]:
+    """Extract the optional ``images`` array from a tool result envelope.
+
+    Returns the accepted images plus human-readable warnings for whatever was
+    rejected. A body with no ``images`` key yields ``([], [])`` — that is the
+    entire backward-compatibility contract for tools written before the image
+    channel existed.
+    """
+    if "images" not in body:
+        return [], []
+    raw = body["images"]
+    if not isinstance(raw, list):
+        return [], ["tool images must be a list; ignored"]
+
+    images: List[ToolImage] = []
+    warnings: List[str] = []
+    if len(raw) > _MAX_TOOL_IMAGES:
+        warnings.append(
+            f"a tool may return at most {_MAX_TOOL_IMAGES} image(s); "
+            f"{len(raw) - _MAX_TOOL_IMAGES} dropped"
+        )
+    for index, entry in enumerate(raw[:_MAX_TOOL_IMAGES]):
+        if not isinstance(entry, dict):
+            warnings.append(f"image #{index} is not an object; dropped")
+            continue
+        data_b64 = entry.get("data_b64")
+        if not isinstance(data_b64, str) or not data_b64:
+            warnings.append(f"image #{index} has empty data_b64; dropped")
+            continue
+        if len(data_b64) > _MAX_TOOL_IMAGE_B64_BYTES:
+            warnings.append(
+                f"image #{index} is too large "
+                f"({len(data_b64)} > {_MAX_TOOL_IMAGE_B64_BYTES} base64 bytes); dropped"
+            )
+            continue
+        decoded = _decode_tool_image_b64(data_b64)
+        if decoded is None:
+            warnings.append(
+                f"image #{index} has invalid base64 or non-image bytes; dropped"
+            )
+            continue
+        _, detected_mime = decoded
+        declared = entry.get("mime")
+        mime = (
+            detected_mime
+            if declared is None or declared == ""
+            else _normalize_tool_image_mime(declared)
+        )
+        if mime is None:
+            warnings.append(f"image #{index} has unsupported mime {declared!r}; dropped")
+            continue
+        if mime != detected_mime:
+            warnings.append(
+                f"image #{index} mime does not match image bytes; dropped"
+            )
+            continue
+        vision_prompt = entry.get("vision_prompt")
+        images.append(ToolImage(
+            data_b64=data_b64,
+            mime=mime,
+            vision_prompt=vision_prompt if isinstance(vision_prompt, str) else "",
+        ))
+    return images, warnings
+
+
+def tool_result_from_envelope(call: "ToolCall", body: Any) -> ToolResult:
+    """Normalize a local/remote handler return value into ``ToolResult``.
+
+    Dict envelopes may carry ``images`` beside ``output`` (the plugin wire
+    shape). Non-dict values become ``output`` as-is with no images, preserving
+    handlers that return a bare string or list.
+    """
+    if not isinstance(body, dict):
+        return ToolResult(
+            call_id=call.call_id,
+            name=call.name,
+            output=body,
+            is_error=False,
+        )
+    images, image_warnings = parse_tool_images(body)
+    result = ToolResult(
+        call_id=call.call_id,
+        name=call.name,
+        output=tool_result_output_payload(body),
+        is_error=bool(body.get("is_error", False)),
+        error_message=(
+            str(body.get("error") or "") if body.get("is_error") else ""
+        ),
+        images=images,
+    )
+    if image_warnings:
+        logger.warning(
+            "tool '%s' returned %d unusable image(s): %s",
+            call.name, len(image_warnings), "; ".join(image_warnings),
+        )
+        result.merge_into_output(_image_warnings=image_warnings)
+    return result
 
 
 # Callback shape exposed to the clients. Clients invoke this when the
@@ -251,6 +459,13 @@ class ToolRegistry:
                 result_value = tool.handler(call.arguments or {})
                 if asyncio.iscoroutine(result_value) or isinstance(result_value, asyncio.Future):
                     result_value = await result_value
+                # ``images`` / ``is_error`` mark the plugin envelope, matching
+                # the remote callback route. A data dict that merely contains
+                # ``output`` stays intact so sibling fields reach the model.
+                if isinstance(result_value, dict) and (
+                    "images" in result_value or "is_error" in result_value
+                ):
+                    return tool_result_from_envelope(call, result_value)
                 return ToolResult(
                     call_id=call.call_id,
                     name=call.name,

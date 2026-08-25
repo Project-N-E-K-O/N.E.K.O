@@ -182,9 +182,33 @@ async def llm_tool_callback(
     #  - A dict already shaped {"output": ..., "is_error": ...} →
     #    pass through verbatim. This is the path used when a handler
     #    wraps its own error semantics, e.g. via the SDK's Result type.
-    if isinstance(result, dict) and "is_error" in result and "output" in result:
-        out = {"output": result["output"], "is_error": bool(result["is_error"])}
+    #
+    # ``images`` / ``is_error`` mark the envelope shape. ``output`` may be
+    # omitted (image-only replies); main_server's parser then uses the
+    # remaining body fields minus ``images``. A bare dict carrying only
+    # ``output`` stays data, not an envelope — otherwise a tool whose
+    # result happens to have an ``output`` field would get silently
+    # unwrapped.
+    if isinstance(result, dict) and (
+        "is_error" in result or "images" in result
+    ):
+        out = {"is_error": bool(result.get("is_error", False))}
+        if "output" in result:
+            out["output"] = result["output"]
+        else:
+            out.update({
+                key: value
+                for key, value in result.items()
+                if key not in {"output", "is_error", "error", "images"}
+            })
         if result.get("error"):
             out["error"] = str(result["error"])
+        # Keep omitting an empty list for wire compatibility. Malformed values
+        # must still reach main_server's shared validator so it can attach an
+        # ``_image_warnings`` entry instead of silently losing the field.
+        if "images" in result:
+            images = result["images"]
+            if not isinstance(images, list) or images:
+                out["images"] = images
         return out
     return {"output": result, "is_error": False}

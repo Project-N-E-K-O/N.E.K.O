@@ -179,6 +179,35 @@ def llm_tool(
     a dict shaped ``{"output": ..., "is_error": True, "error": "..."}``
     if the handler wants to flag a tool-level error to the model
     without raising.
+
+    Returning images
+    ----------------
+    A handler may also hand back pictures by returning the envelope
+    shape with an ``images`` list::
+
+        return {
+            "output": {"shot_id": "shot_7"},
+            "images": [{
+                "data_b64": "<base64, no data: prefix>",
+                "mime": "image/jpeg",          # or image/png
+                "vision_prompt": "what to look for in this frame",
+            }],
+        }
+
+    The host decides how each picture reaches the model: injected as a
+    multimodal message when the conversation model has vision, or run
+    through the vision model and folded into the tool output as text
+    when it does not (realtime voice sessions always take the latter
+    path). ``vision_prompt`` is used by both, so write it once as the
+    single description of what matters in the frame.
+
+    Limits enforced by ``main_server``: at most 2 images per call, 2 MB
+    of base64 each, ``image/jpeg`` or ``image/png`` only. Anything
+    rejected is reported to the model under ``_image_warnings`` rather
+    than silently dropped. Injected images are removed from conversation
+    history at the end of the turn, so do not rely on the model still
+    seeing a frame on a later turn — give it a handle and a way to ask
+    for the picture again.
     """
 
     def decorator(func: Callable[..., Any]) -> Callable[..., Any]:

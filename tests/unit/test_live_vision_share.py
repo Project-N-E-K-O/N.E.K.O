@@ -1,0 +1,510 @@
+"""Handing a plugin's call-out the screen the user is already sharing.
+
+The point of the path is that it costs nothing: the frame exists, the turn
+exists, and joining them saves a tool round trip plus a vision-model call. So
+the tests here mostly guard the conditions under which it must NOT fire -- a
+frame sent to a model that cannot read pixels, or a camera pointed at the room,
+buys the cost back and gives nothing -- and the one rule that matters when it
+does fail: the character still speaks.
+"""
+
+from __future__ import annotations
+
+import asyncio
+from queue import Queue
+from types import SimpleNamespace
+
+import pytest
+
+from main_logic.core._shared import _LIVE_VISION_STALE_SECONDS
+from main_logic.core.proactive import ProactiveMixin
+from main_logic.core.streaming import StreamingMixin
+from tests.fake_clock import patch_module_clock
+
+pytestmark = pytest.mark.unit
+
+
+class _FakeRealtime:
+    """Stands in for OmniRealtimeClient's vision surface."""
+
+    def __init__(self, *, native=True, frame="cached-frame", fail=False):
+        self._supports_native_image = native
+        self._latest_image_b64 = frame
+        self._fail = fail
+        self.sent = []
+
+    async def stream_image(self, b64, *, bypass_rate_limit=False,
+                           cache_latest=True, on_rejected=None):
+        if self._fail:
+            raise RuntimeError("provider closed the socket")
+        self.sent.append(
+            {
+                "b64": b64,
+                "bypass_rate_limit": bypass_rate_limit,
+                "cache_latest": cache_latest,
+                "on_rejected": on_rejected,
+            }
+        )
+        return None
+
+
+def _mgr(session, *, snapshot, frame="cached-frame"):
+    mgr = SimpleNamespace(
+        lanlan_name="lanlan",
+        session=session,
+        live_vision_snapshot=lambda: snapshot,
+        live_vision_frame_b64=lambda: frame if snapshot.get("active") else "",
+    )
+    mgr._resolve_cb_live_frame_b64 = (
+        lambda cb: ProactiveMixin._resolve_cb_live_frame_b64(mgr, cb)
+    )
+    mgr._collect_text_proactive_images = (
+        lambda cbs: ProactiveMixin._collect_text_proactive_images(mgr, cbs)
+    )
+    mgr._stream_cb_live_frame = (
+        lambda cb, sess, si: ProactiveMixin._stream_cb_live_frame(mgr, cb, sess, si)
+    )
+    return mgr
+
+
+def _sharing(**over):
+    return {
+        "active": True,
+        "source": "screen",
+        "age_seconds": 0.5,
+        "native_vision": True,
+        **over,
+    }
+
+
+async def _attach(mgr, cb, session):
+    return await ProactiveMixin._stream_cb_live_frame(
+        mgr, cb, session, session.stream_image)
+
+
+def _token_cb(token="generation-one"):
+    return {
+        "attach_live_frame": True,
+        "source_name": "demo_plugin",
+        "metadata": {"live_frame_permission_token": token},
+    }
+
+
+def _authorize(token="generation-one"):
+    from main_logic.core.live_frame_permissions import set_live_frame_permission
+
+    set_live_frame_permission("demo_plugin", token, enabled=True)
+
+
+# ------------------------------------------------------- when it does fire
+async def test_the_shared_frame_joins_the_turn_the_plugin_speaks_in():
+    _authorize()
+    session = _FakeRealtime()
+    mgr = _mgr(session, snapshot=_sharing())
+
+    assert await _attach(mgr, _token_cb(), session) is True
+    sent = session.sent[0]
+    assert sent["b64"] == "cached-frame"
+    # Bypass is the whole trick: without it the frame is held back until the
+    # user happens to be speaking, which during a quiet battle is never.
+    assert sent["bypass_rate_limit"] is True
+    # Not cached: this frame belongs to the cue, and claiming it as the
+    # ambient latest would let the next proactive nudge reuse it.
+    assert sent["cache_latest"] is False
+    # No rejection handler: an opportunistic frame must not drag the callback
+    # into the retry machinery meant for its own pictures.
+    assert sent["on_rejected"] is None
+
+
+# ------------------------------------------------- when it must not fire
+@pytest.mark.parametrize(
+    ("cb", "snapshot", "session_kwargs", "why"),
+    [
+        ({}, _sharing(), {}, "plugin did not ask"),
+        ({"attach_live_frame": False}, _sharing(), {}, "plugin opted out"),
+        (_token_cb(), _sharing(active=False), {}, "not sharing"),
+        (
+            _token_cb(),
+            _sharing(source="camera"),
+            {},
+            "a room, not a screen",
+        ),
+        (
+            _token_cb(),
+            _sharing(),
+            {"native": False},
+            "model would need the vision detour anyway",
+        ),
+    ],
+)
+async def test_no_frame_is_attached(cb, snapshot, session_kwargs, why):
+    _authorize()
+    session = _FakeRealtime(**session_kwargs)
+    mgr = _mgr(session, snapshot=snapshot)
+
+    assert await _attach(mgr, cb, session) is False, why
+    assert session.sent == []
+
+
+async def test_nothing_is_attached_when_the_host_holds_no_frame():
+    _authorize()
+    session = _FakeRealtime()
+    mgr = _mgr(session, snapshot=_sharing(), frame="")
+
+    assert await _attach(mgr, _token_cb(), session) is False
+    assert session.sent == []
+
+
+@pytest.fixture(autouse=True)
+def _isolated_live_frame_permissions():
+    try:
+        from main_logic.core.live_frame_permissions import (
+            clear_live_frame_permissions,
+        )
+    except ImportError:
+        yield
+        return
+    clear_live_frame_permissions()
+    yield
+    clear_live_frame_permissions()
+
+
+async def test_a_token_bearing_callback_is_denied_until_the_host_authorizes_it():
+    """Token-bearing requests fail closed when their generation is unknown."""
+    session = _FakeRealtime()
+    mgr = _mgr(session, snapshot=_sharing())
+
+    assert await _attach(mgr, _token_cb(), session) is False
+    assert session.sent == []
+
+
+async def test_a_callback_without_a_permission_token_is_denied():
+    """Plugins must not gain screen access by omitting the capability token."""
+    session = _FakeRealtime()
+    mgr = _mgr(session, snapshot=_sharing())
+
+    assert await _attach(
+        mgr,
+        {"attach_live_frame": True, "source_name": "demo_plugin"},
+        session,
+    ) is False
+    assert session.sent == []
+
+
+async def test_an_authorized_generation_is_attached():
+    from main_logic.core.live_frame_permissions import set_live_frame_permission
+
+    set_live_frame_permission("demo_plugin", "generation-one", enabled=True)
+    session = _FakeRealtime()
+    mgr = _mgr(session, snapshot=_sharing())
+
+    assert await _attach(mgr, _token_cb(), session) is True
+    assert session.sent[0]["b64"] == "cached-frame"
+
+
+async def test_a_queued_frame_is_not_attached_after_reuse_is_revoked():
+    """The panel switch cannot un-queue a callback the host already accepted.
+
+    Delivery must re-check the generation that was live when the cue was
+    built; replacing it with a disabled generation is how turning the
+    switch off retracts a frozen attach_live_frame request.
+    """
+    from main_logic.core.live_frame_permissions import set_live_frame_permission
+
+    set_live_frame_permission("demo_plugin", "generation-one", enabled=True)
+    session = _FakeRealtime()
+    mgr = _mgr(session, snapshot=_sharing())
+    queued = _token_cb("generation-one")
+
+    set_live_frame_permission("demo_plugin", "generation-two", enabled=False)
+
+    assert await _attach(mgr, queued, session) is False
+    assert session.sent == []
+
+
+async def test_the_delivered_frame_is_the_share_not_the_ambient_cache():
+    """An avatar drop, a pasted image or another plugin's picture all land in
+    the session's ``_latest_image_b64``. Delivering that as "your screen" would
+    be a different picture entirely, so the share is read from its own slot."""
+    _authorize()
+    session = _FakeRealtime(frame="somebody-dropped-this")
+    mgr = _mgr(session, snapshot=_sharing(), frame="the-actual-screen")
+
+    await _attach(mgr, _token_cb(), session)
+
+    assert session.sent[0]["b64"] == "the-actual-screen"
+
+
+async def test_a_failed_send_is_swallowed_rather_than_raised():
+    _authorize()
+    session = _FakeRealtime(fail=True)
+    mgr = _mgr(session, snapshot=_sharing())
+
+    assert await _attach(mgr, _token_cb(), session) is False
+
+
+# ------------------------------------------------- inside _stream_cb_media
+async def test_a_failed_live_frame_still_lets_the_call_out_go_out():
+    """Unlike media_images, whose failure defers the whole delivery."""
+    _authorize()
+    session = _FakeRealtime(fail=True)
+    mgr = _mgr(session, snapshot=_sharing())
+    cb = _token_cb()
+
+    ok = await ProactiveMixin._stream_cb_media(mgr, [cb], session)
+
+    assert ok is True
+
+
+async def test_a_batch_shares_one_frame_rather_than_one_each():
+    """Cues released together land in one turn; a second copy buys nothing."""
+    _authorize()
+    session = _FakeRealtime()
+    mgr = _mgr(session, snapshot=_sharing())
+    cbs = [_token_cb() for _ in range(3)]
+
+    await ProactiveMixin._stream_cb_media(mgr, cbs, session)
+
+    assert len(session.sent) == 1
+
+
+def test_text_path_collects_the_live_frame_before_media_images():
+    """Offline prompt_ephemeral never calls stream_image; the frame must ride
+    the explicit images list instead of being promised but omitted."""
+    _authorize()
+    session = SimpleNamespace(
+        _supports_native_image=False,
+        vision_model="vision-model",
+    )
+    mgr = _mgr(session, snapshot=_sharing(), frame="shared-screen")
+    cbs = [{**_token_cb(), "media_images": ["plugin-shot"]}]
+
+    images = mgr._collect_text_proactive_images(cbs)
+
+    assert images == ["shared-screen", "plugin-shot"]
+
+
+def test_text_path_denies_an_unknown_generation_but_keeps_plugin_media():
+    session = SimpleNamespace(
+        _supports_native_image=False,
+        vision_model="vision-model",
+    )
+    mgr = _mgr(session, snapshot=_sharing(), frame="shared-screen")
+    cbs = [{**_token_cb(), "media_images": ["plugin-shot"]}]
+
+    assert mgr._collect_text_proactive_images(cbs) == ["plugin-shot"]
+
+
+def test_text_path_attaches_an_authorized_generation_before_plugin_media():
+    from main_logic.core.live_frame_permissions import set_live_frame_permission
+
+    set_live_frame_permission("demo_plugin", "generation-one", enabled=True)
+    session = SimpleNamespace(
+        _supports_native_image=False,
+        vision_model="vision-model",
+    )
+    mgr = _mgr(session, snapshot=_sharing(), frame="shared-screen")
+    cbs = [{**_token_cb(), "media_images": ["plugin-shot"]}]
+
+    assert mgr._collect_text_proactive_images(cbs) == [
+        "shared-screen", "plugin-shot"]
+
+
+def test_text_path_uses_an_offline_models_native_vision_capability():
+    from main_logic.core.live_frame_permissions import set_live_frame_permission
+
+    set_live_frame_permission("demo_plugin", "generation-one", enabled=True)
+    session = SimpleNamespace(
+        _supports_native_image=False,
+        vision_model=None,
+        model="gpt-4o",
+    )
+    mgr = _mgr(session, snapshot=_sharing(), frame="shared-screen")
+    cbs = [{**_token_cb(), "media_images": ["plugin-shot"]}]
+
+    assert mgr._collect_text_proactive_images(cbs) == [
+        "shared-screen", "plugin-shot"]
+
+
+def test_text_path_drops_the_share_after_reuse_is_revoked():
+    from main_logic.core.live_frame_permissions import set_live_frame_permission
+
+    set_live_frame_permission("demo_plugin", "generation-one", enabled=True)
+    session = SimpleNamespace(
+        _supports_native_image=False,
+        vision_model="vision-model",
+    )
+    mgr = _mgr(session, snapshot=_sharing(), frame="shared-screen")
+    cbs = [{**_token_cb(), "media_images": ["plugin-shot"]}]
+    set_live_frame_permission("demo_plugin", "generation-two", enabled=False)
+
+    assert mgr._collect_text_proactive_images(cbs) == ["plugin-shot"]
+
+
+# ------------------------------------------------------------- the liveness
+def _liveness(
+    *,
+    last_at,
+    source="screen",
+    native=True,
+    frame="shared-frame",
+    model="",
+):
+    mgr = SimpleNamespace(
+        session=SimpleNamespace(_supports_native_image=native, model=model),
+        _live_vision_source=source,
+        _live_vision_last_frame_at=last_at,
+        _live_vision_frame_b64=frame,
+    )
+    mgr.live_vision_snapshot = lambda: StreamingMixin.live_vision_snapshot(mgr)
+    return mgr
+
+
+def test_a_session_that_never_saw_a_frame_is_not_sharing():
+    state = StreamingMixin.live_vision_snapshot(_liveness(last_at=0.0))
+
+    assert state == {
+        "active": False,
+        "source": "",
+        "age_seconds": None,
+        "native_vision": True,
+    }
+
+
+def test_a_recent_frame_means_sharing(monkeypatch):
+    import main_logic.core.streaming as streaming
+
+    patch_module_clock(monkeypatch, streaming, monotonic=lambda: 500.0)
+    state = StreamingMixin.live_vision_snapshot(_liveness(last_at=499.0))
+
+    assert state["active"] is True
+    assert state["source"] == "screen"
+    assert state["age_seconds"] == pytest.approx(1.0)
+
+
+def test_offline_vision_model_is_reported_as_native_vision(monkeypatch):
+    import main_logic.core.streaming as streaming
+
+    patch_module_clock(monkeypatch, streaming, monotonic=lambda: 500.0)
+    state = StreamingMixin.live_vision_snapshot(
+        _liveness(last_at=499.0, native=False, model="gpt-4o")
+    )
+
+    assert state["native_vision"] is True
+
+
+def test_frames_that_stopped_arriving_stop_counting(monkeypatch):
+    """Minimized window, closed tab, idle release -- all look the same here."""
+    import main_logic.core.streaming as streaming
+
+    patch_module_clock(
+        monkeypatch,
+        streaming,
+        monotonic=lambda: 500.0 + _LIVE_VISION_STALE_SECONDS + 1.0,
+    )
+    state = StreamingMixin.live_vision_snapshot(_liveness(last_at=500.0))
+
+    assert state["active"] is False
+    # Blanked with the liveness: a stale source would read as "still on screen".
+    assert state["source"] == ""
+
+
+def test_only_an_accepted_share_frame_reaches_the_slot(monkeypatch):
+    """One writer, so nothing else can pass itself off as the shared screen."""
+    import main_logic.core.streaming as streaming
+
+    patch_module_clock(monkeypatch, streaming, monotonic=lambda: 500.0)
+    mgr = _liveness(last_at=0.0, source="", frame="")
+
+    StreamingMixin._note_live_vision_frame(mgr, "screen", "frame-one")
+
+    assert mgr._live_vision_frame_b64 == "frame-one"
+    assert StreamingMixin.live_vision_frame_b64(mgr) == "frame-one"
+
+
+def test_a_frame_from_a_finished_share_is_never_handed_out(monkeypatch):
+    import main_logic.core.streaming as streaming
+
+    patch_module_clock(
+        monkeypatch,
+        streaming,
+        monotonic=lambda: 500.0 + _LIVE_VISION_STALE_SECONDS + 1.0,
+    )
+    mgr = _liveness(last_at=500.0)
+
+    assert StreamingMixin.live_vision_frame_b64(mgr) == ""
+
+
+def test_an_expired_frame_is_dropped_rather_than_kept_in_memory(monkeypatch):
+    """It is a picture of somebody's desktop; once unanswerable, let it go."""
+    import main_logic.core.streaming as streaming
+
+    patch_module_clock(
+        monkeypatch,
+        streaming,
+        monotonic=lambda: 500.0 + _LIVE_VISION_STALE_SECONDS + 1.0,
+    )
+    mgr = _liveness(last_at=500.0)
+
+    StreamingMixin.live_vision_snapshot(mgr)
+
+    assert mgr._live_vision_frame_b64 == ""
+
+
+def _ended_manager(*, session=None):
+    from main_logic.core import LLMSessionManager
+
+    mgr = LLMSessionManager.__new__(LLMSessionManager)
+    mgr.lock = asyncio.Lock()
+    mgr.input_cache_lock = asyncio.Lock()
+    mgr.is_active = False
+    mgr.session = session
+    mgr._starting_session_count = 0
+    mgr.session_ready = False
+    mgr.pending_input_data = []
+    mgr.tts_handler_task = None
+    mgr.tts_thread = None
+    mgr.tts_request_queue = Queue()
+    mgr.tts_response_queue = Queue()
+    mgr._audio_stream_epoch = 0
+    mgr._user_session_abandon_epoch = 0
+    mgr._reset_tts_retry_state = lambda: None
+    mgr._clear_audio_stream_queue = lambda reason: None
+    mgr._cancel_audio_stream_worker = lambda reason: None
+
+    async def _teardown_tts_runtime(*_args, **_kwargs):
+        return None
+
+    mgr._teardown_tts_runtime = _teardown_tts_runtime
+    mgr._live_vision_source = "screen"
+    mgr._live_vision_last_frame_at = 499.0
+    mgr._live_vision_frame_b64 = "previous-desktop"
+    return mgr
+
+
+async def test_ending_the_session_forgets_a_fresh_share():
+    """The manager is reused. A timestamp still inside the five-second
+    window would otherwise keep reporting the previous desktop as live."""
+    from main_logic.core import LLMSessionManager
+
+    mgr = _ended_manager()
+
+    await LLMSessionManager.end_session(mgr)
+
+    assert mgr._live_vision_source == ""
+    assert mgr._live_vision_last_frame_at == 0.0
+    assert mgr._live_vision_frame_b64 == ""
+    assert StreamingMixin.live_vision_snapshot(mgr)["active"] is False
+    assert StreamingMixin.live_vision_frame_b64(mgr) == ""
+
+
+async def test_a_stale_end_session_does_not_forget_the_current_share():
+    from main_logic.core import LLMSessionManager
+
+    mgr = _ended_manager(session=object())
+
+    await LLMSessionManager.end_session(mgr, expected_session=object())
+
+    assert mgr._live_vision_source == "screen"
+    assert mgr._live_vision_last_frame_at == 499.0
+    assert mgr._live_vision_frame_b64 == "previous-desktop"

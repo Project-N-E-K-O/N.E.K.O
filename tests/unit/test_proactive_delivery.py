@@ -887,6 +887,101 @@ def test_passive_drain_drops_expired_callback_and_voice_mirror():
     assert mgr.pending_extra_replies == []
 
 
+def test_filter_deliverable_callbacks_drops_an_invalidated_plugin_generation():
+    from main_logic.core.live_frame_permissions import (
+        clear_plugin_delivery_permissions,
+        set_plugin_delivery_permission,
+    )
+
+    clear_plugin_delivery_permissions()
+    set_plugin_delivery_permission(
+        "demo_plugin", "generation-one", enabled=True)
+    mgr = _make_session_mgr()
+    future = _FakeAckFuture()
+    queued = _proactive_cb(
+        "you are sinking",
+        source_name="demo_plugin",
+        metadata={"plugin_delivery_token": "generation-one"},
+        **{DELIVERY_ACK_FUTURE_KEY: future},
+    )
+    other = _proactive_cb("unrelated plugin")
+    mgr.enqueue_agent_callback(queued)
+    mgr.enqueue_agent_callback(other)
+
+    set_plugin_delivery_permission(
+        "demo_plugin", "generation-two", enabled=False)
+
+    deliverable = core_module.LLMSessionManager.filter_deliverable_callbacks(
+        mgr,
+        list(mgr.pending_agent_callbacks),
+    )
+
+    assert deliverable == [other]
+    assert mgr.pending_agent_callbacks == [other]
+    assert future.done() and future.result is False
+    clear_plugin_delivery_permissions()
+
+
+async def test_retract_from_source_drops_only_that_plugin_queue():
+    delivered = []
+    mgr = _make(delivered)
+    mgr.on_playback_start()
+    mgr.submit(
+        {"id": "demo", "source_name": "demo_plugin"},
+        priority=5,
+        coalesce_key="demo_alert",
+    )
+    mgr.submit(
+        {"id": "other", "source_name": "neko_live"},
+        priority=5,
+        coalesce_key="other",
+    )
+
+    assert mgr.retract_from_source("demo_plugin") == 1
+    mgr.on_playback_end()
+    await _settle()
+    assert [c["id"] for c in delivered] == ["other"]
+
+
+def test_retract_callbacks_from_source_keeps_other_pending_sources():
+    mgr = _make_session_mgr()
+    demo = _proactive_cb("you are sinking", source_name="demo_plugin")
+    other = _proactive_cb("unrelated plugin", source_name="neko_live")
+    mgr.enqueue_agent_callback(demo)
+    mgr.enqueue_agent_callback(other)
+
+    assert core_module.LLMSessionManager.retract_callbacks_from_source(
+        mgr, "demo_plugin") == 1
+
+    assert mgr.pending_agent_callbacks == [other]
+    assert demo.get(DELIVERY_RETRACTED_KEY) is True
+
+
+def test_retract_callbacks_from_source_skips_committed_cues():
+    mgr = _make_session_mgr()
+    future = _FakeAckFuture()
+    queued = _proactive_cb(
+        "queued",
+        source_name="demo_plugin",
+        **{DELIVERY_ACK_FUTURE_KEY: future},
+    )
+    committed = _proactive_cb("speaking", source_name="demo_plugin")
+    committed[VOICE_DELIVERY_COMMITTED_KEY] = True
+    claimed = _proactive_cb("claimed", source_name="demo_plugin")
+    claimed[SWAP_PRIME_DELIVERY_CLAIM_KEY] = True
+    mgr.enqueue_agent_callback(queued)
+    mgr.enqueue_agent_callback(committed)
+    mgr.enqueue_agent_callback(claimed)
+
+    assert core_module.LLMSessionManager.retract_callbacks_from_source(
+        mgr, "demo_plugin") == 1
+
+    assert mgr.pending_agent_callbacks == [committed, claimed]
+    assert future.done() and future.result is False
+    assert committed.get(DELIVERY_RETRACTED_KEY) is not True
+    assert claimed.get(DELIVERY_RETRACTED_KEY) is not True
+
+
 def test_filter_deliverable_callbacks_drops_expired_and_paired_mirror():
     mgr = _make_session_mgr()
     future = _FakeAckFuture()

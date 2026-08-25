@@ -261,6 +261,27 @@ class ProactiveDeliveryManager:
         self._queue = remaining
         return removed
 
+    def retract_from_source(self, source_name: str) -> int:
+        """Remove every not-yet-released cue that still names ``source_name``."""
+        source = str(source_name or "").strip()
+        if not source:
+            return 0
+        remaining: list[_QueuedCue] = []
+        removed = 0
+        for cue in self._queue:
+            queued = cue.callback
+            if (
+                isinstance(queued, dict)
+                and str(queued.get("source_name") or "").strip() == source
+            ):
+                queued[DELIVERY_RETRACTED_KEY] = True
+                resolve_callback_delivery_ack(queued, False)
+                removed += 1
+                continue
+            remaining.append(cue)
+        self._queue = remaining
+        return removed
+
     # ── lifecycle signals (from LifecycleEventBus) ───────────────────────
     def on_playback_start(self, **_: Any) -> None:
         self._playing = True
