@@ -83,10 +83,10 @@
 
 #### 🚀 项目现状 & 近期计划
 
-* **✅ Steam 创意工坊**：已上线。用户可上传和分享自定义角色、模型、语音包。
+* **✅ [Steam 创意工坊](https://steamcommunity.com/app/4099310/workshop/)**：已上线。用户可上传和分享自定义角色、模型、语音包。
 * **🚧 [K.U.R.O.](https://github.com/Project-N-E-K-O/K.U.R.O)**：基于 N.E.K.O. 生态的首款 AI Native 独立游戏，开发中。已有 Demo，可在 [Release 页面](https://github.com/Project-N-E-K-O/K.U.R.O/releases) 下载体验。
-* **🚧 移动端**：iOS / Android 适配进行中，已开始内测，可在 [project-neko.cn](https://project-neko.cn) 预约。
-* **🚧 猫娘网络 (The N.E.K.O. Network)**：AI自主社交——猫娘们拥有自己的"意识"，互相交流、结成群体，在模拟社交媒体上发布动态。已有雏形，基础设施见 [community.project-neko.cn](https://community.project-neko.cn)。
+* **🚧 移动端**：iOS / Android 适配进行中，已开始内测，可在 [官网](https://project-neko.cn) 预约。
+* **🚧 猫娘网络 (The N.E.K.O. Network)**：AI自主社交——猫娘们拥有自己的"意识"，互相交流、结成群体，在模拟社交媒体上发布动态。已有雏形，基础设施见 [喵宇宙社区](https://community.project-neko.cn)。
 
 **跨场景记忆同步**：无论你是在桌面与她聊天，还是在游戏中与她探险，她都是同一个她。所有应用中的AI伙伴将 **完全同步记忆**。
 
@@ -709,9 +709,9 @@ v0.7: ✅ 初步完成Agent相关功能。**第一阶段已完成。等待后续
 
 v0.8: ✅ 完善记忆相关功能和桌宠模式，内置多款双人小游戏。**第一阶段已完成。等待后续优化**
 
-v0.9: ✅ 完善多系统适配，包括linux，手机。猫娘网络基础设施上线。**第一阶段已完成。手机端已经开始内测，详情见[project-neko.cn](https://project-neko.cn)；猫娘网络雏形见[community.project-neko.cn](https://community.project-neko.cn)。**
+v0.9: ✅ 完善多系统适配，包括linux，手机。猫娘网络基础设施上线。**第一阶段已完成。手机端已经开始内测，详情见[官网](https://project-neko.cn)；猫娘网络雏形见[喵宇宙社区](https://community.project-neko.cn)。**
 
-v1.0：~~放弃部分模型供应商的适配，专注于自研大模型和智能体系统。~~完善社区和插件市场功能，完成之前遗留的优化工作。预计9月底上线正式版。（自研模型计划已延期至正式版上线以后）
+v1.0：~~放弃部分模型供应商的适配，专注于自研大模型和智能体系统~~。完善社区和插件市场功能，完成之前遗留的优化工作。预计9月底上线正式版。（自研模型计划已延期至正式版上线以后）
 
 ### 遥测说明 (Telemetry)
 
