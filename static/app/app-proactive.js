@@ -24,6 +24,7 @@
     const NEW_USER_ICEBREAKER_STORAGE_KEY = 'neko.new_user_icebreaker.v1';
     const NEW_USER_ICEBREAKER_BLOCKING_WINDOW_MS = 2 * 60 * 60 * 1000;
     const MEME_LOAD_FAILED_STICKER_URL = '/static/icons/meme-image-load-failed-sticker.png';
+    const PERSONAL_PLATFORM_EMPTY_CACHE_MS = 5 * 60 * 1000;
 
     function isMusicOccupiedNow() {
         if (typeof window.isMusicOccupied === 'function') return window.isMusicOccupied();
@@ -976,10 +977,32 @@
 
     // ======================== getAvailablePersonalPlatforms ========================
 
+    let _personalPlatformsEmptyUntil = 0;
+    let _personalPlatformsRequest = null;
+
+    // Returning from the credential manager is the important invalidation path:
+    // a newly saved login should be visible on the next proactive tick instead
+    // of waiting for the negative cache to expire.
+    window.addEventListener('focus', function () {
+        _personalPlatformsEmptyUntil = 0;
+    });
+
     /**
      * 获取个人媒体cookies所有可用平台的函数
      */
     async function getAvailablePersonalPlatforms() {
+        if (Date.now() < _personalPlatformsEmptyUntil) return [];
+        if (_personalPlatformsRequest) return _personalPlatformsRequest;
+
+        _personalPlatformsRequest = _fetchAvailablePersonalPlatforms();
+        try {
+            return await _personalPlatformsRequest;
+        } finally {
+            _personalPlatformsRequest = null;
+        }
+    }
+
+    async function _fetchAvailablePersonalPlatforms() {
         try {
             var response = await fetch('/api/auth/cookies/status');
             if (!response.ok) return [];
@@ -999,6 +1022,9 @@
                         availablePlatforms.push(platform);
                     }
                 }
+                _personalPlatformsEmptyUntil = availablePlatforms.length === 0
+                    ? Date.now() + PERSONAL_PLATFORM_EMPTY_CACHE_MS
+                    : 0;
             }
             return availablePlatforms;
         } catch (error) {

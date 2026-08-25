@@ -29,6 +29,7 @@ import asyncio
 import re
 import io
 import base64
+from functools import lru_cache
 from typing import Dict, Optional
 from urllib.parse import parse_qsl, urlparse
 
@@ -87,6 +88,54 @@ PERSONAL_DYNAMIC_PLATFORMS = frozenset({
     "reddit",
     "twitter",
 })
+
+
+def _credential_file_signature(path):
+    """Return cheap metadata that changes when a credential file is replaced."""
+    try:
+        stat = path.stat()
+    except FileNotFoundError:
+        return (False, 0, 0, 0, 0, 0)
+    except OSError:
+        # If metadata cannot be read, skip caching so a transient permission or
+        # filesystem error cannot pin a false-negative status.
+        return None
+    return (
+        True,
+        stat.st_dev,
+        stat.st_ino,
+        stat.st_size,
+        stat.st_mtime_ns,
+        stat.st_ctime_ns,
+    )
+
+
+def _credential_status_signature(platform: str):
+    cookie_file = COOKIE_FILES.get(platform)
+    if cookie_file is None:
+        return None
+
+    cookie_signature = _credential_file_signature(cookie_file)
+    key_signature = _credential_file_signature(get_cookie_key_file(platform))
+    if cookie_signature is None or key_signature is None:
+        return None
+    return cookie_signature, key_signature
+
+
+@lru_cache(maxsize=128)
+def _load_cookie_status_cached(platform: str, _signature) -> tuple[bool, int]:
+    """Decrypt once per immutable credential/key file snapshot."""
+    cookies = load_cookies_from_file(platform)
+    return bool(cookies), len(cookies) if cookies else 0
+
+
+def _get_cookie_status(platform: str) -> tuple[bool, int]:
+    signature = _credential_status_signature(platform)
+    if signature is not None:
+        return _load_cookie_status_cached(platform, signature)
+
+    cookies = load_cookies_from_file(platform)
+    return bool(cookies), len(cookies) if cookies else 0
 
 # ============ 0. 数据模型与校验 ============
 
@@ -256,16 +305,16 @@ async def get_all_cookies_status():
     """Return cookie presence status for each supported platform (used by the frontend personal-feed feature)."""
     try:
         platforms = login_manager.get_supported_platforms()
-        loaded = await asyncio.gather(
-            *(asyncio.to_thread(load_cookies_from_file, p) for p in platforms)
+        statuses = await asyncio.gather(
+            *(asyncio.to_thread(_get_cookie_status, p) for p in platforms)
         )
         result = {
             platform_key: {
-                "has_cookies": bool(cookies),
-                "cookies_count": len(cookies) if cookies else 0,
+                "has_cookies": has_cookies,
+                "cookies_count": cookies_count,
                 "supports_personal_dynamic": platform_key in PERSONAL_DYNAMIC_PLATFORMS,
             }
-            for platform_key, cookies in zip(platforms, loaded)
+            for platform_key, (has_cookies, cookies_count) in zip(platforms, statuses)
         }
         return {"success": True, "data": result}
     except Exception as e:
