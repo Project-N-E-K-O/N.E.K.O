@@ -558,7 +558,9 @@ class PluginCommunicationResourceManager:
             from plugin.core.state import state
             comm_queue = state.plugin_comm_queue
             if comm_queue is not None:
-                await comm_queue.put(msg)
+                trusted_msg = dict(msg)
+                trusted_msg["from_plugin"] = self.plugin_id
+                await comm_queue.put(trusted_msg)
         except Exception as e:
             self.logger.warning("Failed to route comm message from plugin {}: {}", self.plugin_id, e)
 

@@ -5,8 +5,10 @@ Replaces ``multiprocessing.Queue`` with a pair of ZMQ PUSH/PULL sockets:
 * **Downlink** (host → child): commands, plugin-to-plugin responses
 * **Uplink** (child → host): results, status, messages, plugin-to-plugin requests
 
-All messages are serialised with :mod:`pickle` (same as ``mp.Queue``) and
-carry a *channel tag* so the receiver can demux.
+Downlink messages are serialised with :mod:`pickle` for compatibility with
+existing host commands. Uplink messages, which cross from untrusted plugin code
+into the host, use MessagePack so decoding cannot execute plugin-controlled
+objects. Both directions carry a *channel tag* so the receiver can demux.
 
 Channel tags
 ~~~~~~~~~~~~
@@ -20,9 +22,11 @@ Channel tags
 from __future__ import annotations
 
 import pickle
+import secrets
 import threading
 from typing import Any, Optional, Tuple
 
+import ormsgpack
 import zmq
 import zmq.asyncio
 
@@ -35,6 +39,46 @@ CH_COMM = "comm"
 CH_RESP = "resp"
 
 _LINGER_MS = 1000
+_UPLINK_CHANNELS = frozenset({CH_RES, CH_STS, CH_MSG, CH_COMM})
+_UPLINK_PACK_OPTIONS = (
+    ormsgpack.OPT_NON_STR_KEYS
+    | ormsgpack.OPT_SERIALIZE_NUMPY
+    | ormsgpack.OPT_SERIALIZE_PYDANTIC
+)
+
+
+def _encode_uplink(token: str, channel: str, payload: Any) -> bytes:
+    if not token or channel not in _UPLINK_CHANNELS or not isinstance(payload, dict):
+        raise TypeError("invalid uplink message")
+    try:
+        return ormsgpack.packb(
+            (token, channel, payload),
+            option=_UPLINK_PACK_OPTIONS,
+        )
+    except Exception as exc:
+        raise TypeError("uplink payload must be MessagePack-serializable") from exc
+
+
+def _decode_uplink(raw: bytes, *, expected_token: str) -> Tuple[str, dict]:
+    try:
+        decoded = ormsgpack.unpackb(raw)
+    except Exception as exc:
+        raise ValueError("invalid uplink payload") from exc
+    if not isinstance(decoded, list) or len(decoded) != 3:
+        raise ValueError("invalid uplink payload")
+    supplied_token, channel, payload = decoded
+    if (
+        not isinstance(supplied_token, str)
+        or not expected_token
+        or not secrets.compare_digest(
+            supplied_token.encode("utf-8"),
+            expected_token.encode("utf-8"),
+        )
+    ):
+        raise ValueError("invalid uplink credential")
+    if channel not in _UPLINK_CHANNELS or not isinstance(payload, dict):
+        raise ValueError("invalid uplink payload")
+    return channel, payload
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -53,6 +97,7 @@ class HostTransport:
 
     def __init__(self) -> None:
         self._ctx = zmq.asyncio.Context()
+        self._uplink_token = secrets.token_urlsafe(32)
 
         # Downlink: host → child (PUSH/PULL)
         self._dl_sock = self._ctx.socket(zmq.PUSH)
@@ -70,6 +115,10 @@ class HostTransport:
 
         self._closed = False
 
+    @property
+    def uplink_token(self) -> str:
+        return self._uplink_token
+
     # ── send helpers ─────────────────────────────────────────────
 
     async def send_command(self, msg: dict) -> None:
@@ -86,7 +135,7 @@ class HostTransport:
         """Receive one ``(channel, payload)`` from the uplink, or *None* on timeout."""
         if await self._ul_sock.poll(timeout=timeout_ms):
             raw = await self._ul_sock.recv()
-            return pickle.loads(raw)  # type: ignore[return-value]
+            return _decode_uplink(raw, expected_token=self._uplink_token)
         return None
 
     # ── lifecycle ────────────────────────────────────────────────
@@ -120,7 +169,12 @@ class ChildTransport:
       event-loop thread.
     """
 
-    def __init__(self, downlink_endpoint: str, uplink_endpoint: str) -> None:
+    def __init__(
+        self,
+        downlink_endpoint: str,
+        uplink_endpoint: str,
+        uplink_token: str,
+    ) -> None:
         # Sync context — used for the uplink PUSH socket (thread-safe via lock)
         self._sync_ctx = zmq.Context()
 
@@ -138,6 +192,7 @@ class ChildTransport:
 
         self._downlink_endpoint = downlink_endpoint
         self._uplink_endpoint = uplink_endpoint
+        self._uplink_token = uplink_token
         self._closed = False
 
     # ── downlink (async, event-loop only) ────────────────────────
@@ -153,13 +208,13 @@ class ChildTransport:
 
     def send_uplink(self, channel: str, msg: Any, *, timeout: float = 10.0) -> None:
         """Thread-safe blocking send on the uplink."""
-        data = pickle.dumps((channel, msg))
+        data = _encode_uplink(self._uplink_token, channel, msg)
         with self._ul_lock:
             self._ul_sock.send(data)
 
     def send_uplink_nowait(self, channel: str, msg: Any) -> None:
         """Thread-safe non-blocking send on the uplink."""
-        data = pickle.dumps((channel, msg))
+        data = _encode_uplink(self._uplink_token, channel, msg)
         with self._ul_lock:
             self._ul_sock.send(data, zmq.NOBLOCK)
 

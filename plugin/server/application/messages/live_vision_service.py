@@ -5,6 +5,7 @@ import math
 import httpx
 
 from plugin.logging_config import get_logger
+from utils.plugin_host_auth import plugin_host_auth_headers
 
 logger = get_logger("server.application.messages.live_vision")
 
@@ -109,6 +110,7 @@ class LiveVisionQueryService:
             ) as client:
                 response = await client.post(
                     url,
+                    headers=plugin_host_auth_headers(),
                     json={
                         "source_name": str(source_name or ""),
                         "token": str(token or ""),
@@ -150,6 +152,7 @@ class LiveVisionQueryService:
             ) as client:
                 response = await client.post(
                     url,
+                    headers=plugin_host_auth_headers(),
                     json={
                         "source_name": str(source_name or ""),
                         "token": str(token or ""),
@@ -189,6 +192,7 @@ class LiveVisionQueryService:
             ) as client:
                 response = await client.post(
                     url,
+                    headers=plugin_host_auth_headers(),
                     json={"source_name": str(source_name or "")},
                 )
                 response.raise_for_status()

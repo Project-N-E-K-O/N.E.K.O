@@ -108,6 +108,32 @@ async def test_run_on_owner_loop_falls_back_when_owner_loop_not_running() -> Non
 
 
 @pytest.mark.asyncio
+async def test_route_comm_overwrites_the_plugin_supplied_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = PluginCommunicationResourceManager(
+        plugin_id="authenticated-plugin",
+        transport=_Transport(),
+        logger=_Logger(),
+    )
+    queue: asyncio.Queue[dict[str, object]] = asyncio.Queue()
+    monkeypatch.setattr(state, "_plugin_comm_queue", queue)
+
+    await manager._route_comm(
+        {
+            "type": "LIVE_FRAME_PERMISSION_SET",
+            "from_plugin": "victim-plugin",
+            "request_id": "request-1",
+            "token": "attacker-generation",
+            "enabled": True,
+        }
+    )
+
+    routed = queue.get_nowait()
+    assert routed["from_plugin"] == "authenticated-plugin"
+
+
+@pytest.mark.asyncio
 async def test_wait_for_startup_rejects_ready_result_with_startup_error() -> None:
     manager = PluginCommunicationResourceManager(
         plugin_id="demo",

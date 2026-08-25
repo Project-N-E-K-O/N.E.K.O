@@ -64,6 +64,44 @@ async def test_get_request_from_queue_normalize_and_handle_request(monkeypatch: 
 
 @pytest.mark.plugin_unit
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "request_type",
+    ["LIVE_FRAME_PERMISSION_SET", "PLUGIN_DELIVERY_PERMISSION_SET"],
+)
+async def test_shared_zmq_rejects_host_only_permission_mutations(
+    monkeypatch: pytest.MonkeyPatch,
+    request_type: str,
+) -> None:
+    called = False
+
+    async def _handler(request, send_response) -> None:  # type: ignore[no-untyped-def]
+        nonlocal called
+        called = True
+        send_response("victim-plugin", "request-1", {"ok": True}, None)
+
+    monkeypatch.setattr(
+        request_router_module,
+        "build_request_handlers",
+        lambda: {request_type: _handler},
+    )
+    router = request_router_module.PluginRouter()
+
+    response = await router._handle_zmq_request(
+        {
+            "type": request_type,
+            "from_plugin": "victim-plugin",
+            "request_id": "request-1",
+            "token": "attacker-generation",
+            "enabled": True,
+        }
+    )
+
+    assert called is False
+    assert response["error"] == "host-authenticated channel required"
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
 async def test_start_and_stop_without_zmq(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(request_router_module, "build_request_handlers", lambda: {})
     monkeypatch.setattr(request_router_module, "PLUGIN_ZMQ_IPC_ENABLED", False)

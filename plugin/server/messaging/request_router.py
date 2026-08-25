@@ -23,6 +23,13 @@ logger = get_logger("server.messaging.request_router")
 
 JsonObject = dict[str, object]
 
+_HOST_ONLY_REQUEST_TYPES = frozenset(
+    {
+        "LIVE_FRAME_PERMISSION_SET",
+        "PLUGIN_DELIVERY_PERMISSION_SET",
+    }
+)
+
 try:
     from zmq.error import ZMQError
 except (ImportError, ModuleNotFoundError):
@@ -219,6 +226,15 @@ class PluginRouter:
                 "request_id": str(request_id or ""),
                 "result": None,
                 "error": "missing request_id",
+            }
+
+        if request_type in _HOST_ONLY_REQUEST_TYPES:
+            return {
+                "type": "PLUGIN_TO_PLUGIN_RESPONSE",
+                "to_plugin": from_plugin,
+                "request_id": request_id,
+                "result": None,
+                "error": "host-authenticated channel required",
             }
 
         if handler is None:
@@ -489,4 +505,3 @@ class PluginRouter:
 
 
 plugin_router = PluginRouter()
-

@@ -523,11 +523,17 @@ def _plugin_process_runner(
     config_path: Path,
     downlink_endpoint: str,
     uplink_endpoint: str,
+    uplink_token: str = "",
     stop_event: Any | None = None,
     startup_options: dict[str, object] | None = None,
 ) -> None:
     """独立进程中的运行函数。通过 ZMQ 与宿主进程通信。"""
     # 保存进程级 stop event
+    # This credential authorizes host-only mutations in main_server. Plugin
+    # children inherit the agent process environment, so remove it before any
+    # plugin-controlled module is loaded.
+    os.environ.pop("NEKO_PLUGIN_HOST_API_TOKEN", None)
+
     process_stop_event = stop_event
     startup_failure_policy = str((startup_options or {}).get("startup_failure") or "warn").strip().lower()
     
@@ -542,7 +548,14 @@ def _plugin_process_runner(
         logger.warning("[Plugin Process] Failed to setup logging interception: {}", e)
     
     # ── ZMQ child-side transport ─────────────────────────────────
-    child_transport = ChildTransport(downlink_endpoint, uplink_endpoint)
+    if uplink_token:
+        child_transport = ChildTransport(
+            downlink_endpoint,
+            uplink_endpoint,
+            uplink_token,
+        )
+    else:
+        child_transport = ChildTransport(downlink_endpoint, uplink_endpoint)
     res_sender = child_transport.channel_sender(CH_RES)
     status_sender = child_transport.channel_sender(CH_STS)
     message_sender = child_transport.channel_sender(CH_MSG)
@@ -1590,6 +1603,7 @@ class PluginHost:
                 config_path,
                 self.transport.downlink_endpoint,
                 self.transport.uplink_endpoint,
+                getattr(self.transport, "uplink_token", ""),
                 self._process_stop_event,
                 self._startup_options,
             ),

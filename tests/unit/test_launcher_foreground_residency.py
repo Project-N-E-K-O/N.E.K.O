@@ -138,6 +138,21 @@ def test_cleanup_does_not_close_the_job_handle_it_is_a_member_of():
     assert "CloseHandle(JOB_HANDLE)" not in cleanup
 
 
+@pytest.mark.unit
+def test_launcher_creates_a_dedicated_plugin_host_api_token(monkeypatch):
+    from launcher_core import runtime as launcher
+
+    monkeypatch.setattr(launcher, "LAUNCH_ID", "")
+    monkeypatch.setattr(launcher, "INSTANCE_ID", "test-instance")
+    monkeypatch.delenv("NEKO_PLUGIN_HOST_API_TOKEN", raising=False)
+
+    launcher._initialize_launcher_context()
+
+    token = os.environ["NEKO_PLUGIN_HOST_API_TOKEN"]
+    assert len(token) >= 32
+    assert token != launcher.INSTANCE_ID
+
+
 # ---------------------------------------------------------------------------
 #  Relaunch stays attached
 # ---------------------------------------------------------------------------

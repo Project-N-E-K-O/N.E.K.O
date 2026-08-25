@@ -15,6 +15,9 @@ from main_routers.system_router import live_vision as live_vision_module
 
 ENDPOINT = "/api/system/live-vision"
 PERMISSION_ENDPOINT = "/api/system/live-vision/attachment-permission"
+HOST_TOKEN_ENV = "NEKO_PLUGIN_HOST_API_TOKEN"
+HOST_TOKEN_HEADER = "X-NEKO-Plugin-Host-Token"
+HOST_TOKEN = "test-plugin-host-token"
 
 pytestmark = pytest.mark.unit
 
@@ -51,12 +54,16 @@ def _idle():
     }
 
 
-def _client(managers, monkeypatch, *, host="127.0.0.1"):
+def _client(managers, monkeypatch, *, host="127.0.0.1", authenticated=False):
+    monkeypatch.setenv(HOST_TOKEN_ENV, HOST_TOKEN)
     monkeypatch.setattr(
         live_vision_module, "get_session_manager", lambda: dict(managers))
     app = FastAPI()
     app.include_router(live_vision_module.router)
-    return TestClient(app, client=(host, 51234))
+    client = TestClient(app, client=(host, 51234))
+    if authenticated:
+        client.headers[HOST_TOKEN_HEADER] = HOST_TOKEN
+    return client
 
 
 def test_a_sharing_session_is_reported_without_the_pixels(monkeypatch):
@@ -74,7 +81,11 @@ def test_a_sharing_session_is_reported_without_the_pixels(monkeypatch):
 
 
 def test_the_frame_comes_only_when_asked_for(monkeypatch):
-    client = _client({"lanlan": _Manager("lanlan", _sharing())}, monkeypatch)
+    client = _client(
+        {"lanlan": _Manager("lanlan", _sharing())},
+        monkeypatch,
+        authenticated=True,
+    )
     client.post(
         PERMISSION_ENDPOINT,
         json={
@@ -246,7 +257,7 @@ def _isolated_live_frame_permissions():
 def test_a_local_permission_update_is_installed_before_it_is_acknowledged(
     monkeypatch,
 ):
-    client = _client({}, monkeypatch)
+    client = _client({}, monkeypatch, authenticated=True)
 
     response = client.post(
         PERMISSION_ENDPOINT,
@@ -273,7 +284,7 @@ def test_a_local_permission_update_is_installed_before_it_is_acknowledged(
 def test_authorizing_a_generation_allows_that_token_only(monkeypatch):
     from main_logic.core.live_frame_permissions import allows_live_frame
 
-    client = _client({}, monkeypatch)
+    client = _client({}, monkeypatch, authenticated=True)
     response = client.post(
         PERMISSION_ENDPOINT,
         json={
@@ -288,10 +299,54 @@ def test_authorizing_a_generation_allows_that_token_only(monkeypatch):
     assert allows_live_frame("demo_plugin", "generation-two") is False
 
 
+def test_local_plugin_cannot_replace_an_existing_grant_without_host_credential(
+    monkeypatch,
+):
+    from main_logic.core.live_frame_permissions import (
+        allows_live_frame,
+        set_live_frame_permission,
+    )
+
+    set_live_frame_permission("victim_plugin", "victim-generation", enabled=True)
+    client = _client({}, monkeypatch, authenticated=False)
+
+    response = client.post(
+        PERMISSION_ENDPOINT,
+        json={
+            "source_name": "victim_plugin",
+            "token": "attacker-generation",
+            "enabled": True,
+        },
+    )
+
+    assert response.status_code == 403
+    assert allows_live_frame("victim_plugin", "victim-generation") is True
+    assert allows_live_frame("victim_plugin", "attacker-generation") is False
+
+
+def test_incorrect_host_credential_cannot_install_a_grant(monkeypatch):
+    from main_logic.core.live_frame_permissions import allows_live_frame
+
+    client = _client({}, monkeypatch, authenticated=False)
+
+    response = client.post(
+        PERMISSION_ENDPOINT,
+        headers={HOST_TOKEN_HEADER: "wrong-token"},
+        json={
+            "source_name": "victim_plugin",
+            "token": "attacker-generation",
+            "enabled": True,
+        },
+    )
+
+    assert response.status_code == 403
+    assert allows_live_frame("victim_plugin", "attacker-generation") is False
+
+
 def test_unknown_disable_does_not_replace_the_current_frame_generation(monkeypatch):
     from main_logic.core.live_frame_permissions import allows_live_frame
 
-    client = _client({}, monkeypatch)
+    client = _client({}, monkeypatch, authenticated=True)
     client.post(
         PERMISSION_ENDPOINT,
         json={
@@ -330,6 +385,30 @@ DELIVERY_ENDPOINT = "/api/system/plugin-callbacks/delivery-permission"
 REVOKE_ENDPOINT = "/api/system/plugin-permissions/revoke"
 
 
+@pytest.mark.parametrize(
+    ("endpoint", "payload"),
+    [
+        (
+            DELIVERY_ENDPOINT,
+            {
+                "source_name": "victim_plugin",
+                "token": "attacker-generation",
+                "enabled": True,
+            },
+        ),
+        (REVOKE_ENDPOINT, {"source_name": "victim_plugin"}),
+    ],
+)
+def test_all_permission_mutations_require_the_host_credential(
+    monkeypatch,
+    endpoint,
+    payload,
+):
+    client = _client({}, monkeypatch, authenticated=False)
+
+    assert client.post(endpoint, json=payload).status_code == 403
+
+
 def test_disabling_current_delivery_generation_retracts(
     monkeypatch,
 ):
@@ -341,7 +420,7 @@ def test_disabling_current_delivery_generation_retracts(
         def retract_callbacks_from_source(self, source_name):
             retracted.append(source_name)
 
-    client = _client({"lanlan": _Session()}, monkeypatch)
+    client = _client({"lanlan": _Session()}, monkeypatch, authenticated=True)
     client.post(
         DELIVERY_ENDPOINT,
         json={
@@ -377,7 +456,7 @@ def test_stale_delivery_disable_does_not_revoke_or_retract_the_new_generation(
         def retract_callbacks_from_source(self, source_name):
             retracted.append(source_name)
 
-    client = _client({"lanlan": _Session()}, monkeypatch)
+    client = _client({"lanlan": _Session()}, monkeypatch, authenticated=True)
     for token in ("generation-one", "generation-two"):
         client.post(
             DELIVERY_ENDPOINT,
@@ -412,7 +491,7 @@ def test_an_empty_delivery_token_does_not_retract(monkeypatch):
         def retract_callbacks_from_source(self, source_name):
             retracted.append(source_name)
 
-    client = _client({"lanlan": _Session()}, monkeypatch)
+    client = _client({"lanlan": _Session()}, monkeypatch, authenticated=True)
     client.post(
         DELIVERY_ENDPOINT,
         json={
@@ -447,7 +526,7 @@ def test_source_revoke_clears_frame_and_delivery_permissions(monkeypatch):
         def retract_callbacks_from_source(self, source_name):
             retracted.append(source_name)
 
-    client = _client({"lanlan": _Session()}, monkeypatch)
+    client = _client({"lanlan": _Session()}, monkeypatch, authenticated=True)
     client.post(
         PERMISSION_ENDPOINT,
         json={

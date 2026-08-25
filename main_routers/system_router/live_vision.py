@@ -35,6 +35,7 @@ from main_logic.core.live_frame_permissions import (
     set_plugin_delivery_permission,
 )
 from main_routers.cookies_login_router import verify_local_access
+from utils.plugin_host_auth import require_plugin_host_access
 
 from ..shared_state import get_session_manager
 from ._shared import _set_no_store_headers, logger, router
@@ -140,7 +141,7 @@ async def get_live_vision_state(
 
 @router.post(
     "/system/live-vision/attachment-permission",
-    dependencies=[Depends(verify_local_access)],
+    dependencies=[Depends(verify_local_access), Depends(require_plugin_host_access)],
 )
 async def set_live_frame_attachment_permission(
     request: Request,
@@ -180,7 +181,7 @@ def _retract_plugin_deliveries(source_name: str) -> None:
 
 @router.post(
     "/system/plugin-callbacks/delivery-permission",
-    dependencies=[Depends(verify_local_access)],
+    dependencies=[Depends(verify_local_access), Depends(require_plugin_host_access)],
 )
 async def set_plugin_callback_delivery_permission(
     request: Request,
@@ -208,7 +209,7 @@ async def set_plugin_callback_delivery_permission(
 
 @router.post(
     "/system/plugin-permissions/revoke",
-    dependencies=[Depends(verify_local_access)],
+    dependencies=[Depends(verify_local_access), Depends(require_plugin_host_access)],
 )
 async def revoke_plugin_host_permissions(
     request: Request,

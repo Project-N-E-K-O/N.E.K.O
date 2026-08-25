@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -82,6 +83,7 @@ def test_plugin_router_entry_closes_context_and_transport_before_returning(
     tmp_path: Path,
 ) -> None:
     closed: list[str] = []
+    host_tokens_seen_during_import: list[str | None] = []
     payloads: list[dict[str, object]] = []
     config_path = tmp_path / "demo" / "plugin.toml"
     config_path.parent.mkdir(parents=True, exist_ok=True)
@@ -113,12 +115,19 @@ def test_plugin_router_entry_closes_context_and_transport_before_returning(
             closed.append("context")
 
     monkeypatch.setenv("NEKO_PLUGIN_ZMQ_IPC_ENABLED", "0")
+    monkeypatch.setenv("NEKO_PLUGIN_HOST_API_TOKEN", "host-secret")
     monkeypatch.setattr(host_module, "_setup_plugin_logger", lambda *args, **kwargs: _FakeLogger())
     monkeypatch.setattr(host_module, "_setup_logging_interception", lambda *args, **kwargs: None)
     monkeypatch.setattr(host_module, "_prepare_child_plugin_import_roots", lambda *args, **kwargs: None)
     monkeypatch.setattr(host_module, "_prepare_child_current_plugin_import_root", lambda *args, **kwargs: None)
     monkeypatch.setattr(host_module, "_prepare_child_plugin_vendor_path", lambda *args, **kwargs: None)
-    monkeypatch.setattr(host_module, "_import_plugin_module", lambda *args, **kwargs: SimpleNamespace(DemoRouter=_Router))
+    def _import_plugin_module(*args, **kwargs):
+        host_tokens_seen_during_import.append(
+            os.getenv("NEKO_PLUGIN_HOST_API_TOKEN")
+        )
+        return SimpleNamespace(DemoRouter=_Router)
+
+    monkeypatch.setattr(host_module, "_import_plugin_module", _import_plugin_module)
     monkeypatch.setattr(host_module, "ChildTransport", _ChildTransport)
     monkeypatch.setattr(host_module, "PluginContext", _Context)
 
@@ -132,6 +141,7 @@ def test_plugin_router_entry_closes_context_and_transport_before_returning(
 
     assert closed == ["context", "transport"]
     assert payloads[-1]["status"] == "error"
+    assert host_tokens_seen_during_import == [None]
 
 
 @pytest.mark.plugin_unit

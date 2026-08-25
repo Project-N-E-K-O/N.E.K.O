@@ -40,6 +40,7 @@ import atexit
 import signal
 import json
 import logging
+import secrets
 import uuid
 import importlib
 import multiprocessing
@@ -335,6 +336,9 @@ def _initialize_launcher_context() -> None:
         INSTANCE_ID = os.environ.get("NEKO_INSTANCE_ID") or uuid.uuid4().hex
         os.environ.setdefault("NEKO_INSTANCE_ID", INSTANCE_ID)
         _sync_runtime_config_globals()
+
+    if not os.environ.get("NEKO_PLUGIN_HOST_API_TOKEN"):
+        os.environ["NEKO_PLUGIN_HOST_API_TOKEN"] = secrets.token_urlsafe(32)
 
     # 确保本地服务间通信不走系统代理（防止 Clash/Surge 等代理软件拦截 localhost 请求）
     # httpx 优先读小写 no_proxy，因此大小写都需要设置

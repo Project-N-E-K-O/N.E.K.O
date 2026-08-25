@@ -206,8 +206,8 @@ async def test_a_queued_frame_is_not_attached_after_reuse_is_revoked():
     """The panel switch cannot un-queue a callback the host already accepted.
 
     Delivery must re-check the generation that was live when the cue was
-    built; replacing it with a disabled generation is how turning the
-    switch off retracts a frozen attach_live_frame request.
+    built; marking that generation disabled is how turning the switch off
+    retracts a frozen attach_live_frame request.
     """
     from main_logic.core.live_frame_permissions import set_live_frame_permission
 
@@ -216,7 +216,7 @@ async def test_a_queued_frame_is_not_attached_after_reuse_is_revoked():
     mgr = _mgr(session, snapshot=_sharing())
     queued = _token_cb("generation-one")
 
-    set_live_frame_permission("demo_plugin", "generation-two", enabled=False)
+    set_live_frame_permission("demo_plugin", "generation-one", enabled=False)
 
     assert await _attach(mgr, queued, session) is False
     assert session.sent == []
@@ -336,7 +336,7 @@ def test_text_path_drops_the_share_after_reuse_is_revoked():
     )
     mgr = _mgr(session, snapshot=_sharing(), frame="shared-screen")
     cbs = [{**_token_cb(), "media_images": ["plugin-shot"]}]
-    set_live_frame_permission("demo_plugin", "generation-two", enabled=False)
+    set_live_frame_permission("demo_plugin", "generation-one", enabled=False)
 
     assert mgr._collect_text_proactive_images(cbs) == ["plugin-shot"]
 
