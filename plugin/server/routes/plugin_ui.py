@@ -22,6 +22,7 @@ import json
 import mimetypes
 import os
 import re
+from collections.abc import Awaitable
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -29,6 +30,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 
+from plugin.core.state import state
 from plugin.logging_config import get_logger
 from plugin.server.application.plugins.ui_query_service import PluginUiQueryService
 from plugin.server.domain.errors import ServerDomainError
@@ -55,6 +57,64 @@ _SSE_QUEUE_MAX = 100
 _PUSH_MAX_BODY = 1024 * 1024
 # 可信 Origin 主机（本机回环）：push 广播只接受无 Origin（插件后端/非浏览器）或本机页面
 _TRUSTED_ORIGIN_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
+
+# ---- runs bus → SSE 桥：把 run 状态迁移事件推给对应插件的 SSE 客户端 ----
+# run 协议本就通过 state.bus_change_hub（bus "runs"）在每次迁移发出事件
+# （plugin/runs/manager.py _emit_runs）。这里订阅它并桥接进 _sse_clients，
+# 让前端 call() 不必紧轮询 /runs/{id}。只桥接终端状态（succeeded/failed/
+# canceled/timeout），前端只关心这些。
+_SSE_RUNS_BRIDGE_INSTALLED = False
+_SSE_RUNS_BRIDGE_SUB = None
+_SSE_RUN_TERMINAL_STATUSES = frozenset({"succeeded", "failed", "canceled", "timeout"})
+
+
+def _sse_queue_put_best_effort(queue: asyncio.Queue, frame: str) -> None:
+    try:
+        queue.put_nowait(frame)
+    except asyncio.QueueFull:
+        pass  # 慢客户端丢帧，SSE 本来就是尽力而为
+
+
+def _bridge_runs_event(op: str, payload: object) -> None:
+    """runs bus 事件 → 对应 plugin_id 的 SSE 队列（仅终端状态）。
+
+    run 在事件循环内执行（asyncio.create_task），emit 也发生在事件循环线程，
+    因此这里直接 put_nowait 是线程安全的。
+    """
+    try:
+        if not isinstance(payload, dict):
+            return
+        plugin_id = payload.get("plugin_id")
+        if not isinstance(plugin_id, str) or not plugin_id:
+            return
+        status = str(payload.get("status") or "").strip()
+        if status not in _SSE_RUN_TERMINAL_STATUSES:
+            return
+        clients = _sse_clients.get(plugin_id)
+        if not clients:
+            return
+        frame = "data: " + json.dumps({
+            "type": "run",
+            "plugin_id": plugin_id,
+            "run_id": payload.get("run_id"),
+            "status": status,
+        }, ensure_ascii=False) + "\n\n"
+        for queue_obj in list(clients):
+            _sse_queue_put_best_effort(queue_obj, frame)
+    except Exception:
+        return
+
+
+def _ensure_runs_sse_bridge() -> None:
+    """懒安装：首个 SSE 客户端连接时订阅 runs bus。幂等。"""
+    global _SSE_RUNS_BRIDGE_INSTALLED, _SSE_RUNS_BRIDGE_SUB
+    if _SSE_RUNS_BRIDGE_INSTALLED:
+        return
+    try:
+        _SSE_RUNS_BRIDGE_SUB = state.bus_change_hub.subscribe("runs", _bridge_runs_event)
+        _SSE_RUNS_BRIDGE_INSTALLED = True
+    except Exception:
+        _SSE_RUNS_BRIDGE_INSTALLED = False
 
 
 def _origin_is_trusted(origin: str) -> bool:
@@ -128,6 +188,35 @@ class HostedUiActionRequest(BaseModel):
     kind: str = "panel"
     surface_id: str = "main"
     locale: str | None = None
+
+
+async def _wait_for_request_disconnect(request: Request) -> None:
+    while not await request.is_disconnected():
+        await asyncio.sleep(0.05)
+
+
+async def _await_action_or_disconnect(
+    request: Request,
+    action: Awaitable[dict[str, object]],
+) -> dict[str, object]:
+    action_task = asyncio.create_task(action)
+    disconnect_task = asyncio.create_task(_wait_for_request_disconnect(request))
+    try:
+        done, _pending = await asyncio.wait(
+            {action_task, disconnect_task},
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        if action_task in done:
+            return await action_task
+        raise HTTPException(
+            status_code=499,
+            detail={"code": "hosted_action_client_disconnected"},
+        )
+    finally:
+        for task in (action_task, disconnect_task):
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(action_task, disconnect_task, return_exceptions=True)
 
 
 async def _get_plugin_static_dir(plugin_id: str) -> Path | None:
@@ -300,10 +389,13 @@ async def plugin_ui_api_i18n_bundle(plugin_id: str, locale: str) -> Response:
 async def plugin_ui_sse_events(plugin_id: str):
     """插件静态 UI 的 SSE 事件流（后端 → 前端实时推送）。
 
-    前端页面用 EventSource 连这里，即时接收 /ui-api/push 广播的实时更新。
+    前端页面用 EventSource 连这里，即时接收 /ui-api/push 广播的实时更新；
+    同时订阅 runs bus，run 完成后台推送 ``type:run`` 事件，替代前端紧轮询。
     """
     # 有界队列：慢/阻塞客户端不被无限缓冲（满时由 push 侧丢弃新消息）
     queue_obj: asyncio.Queue = asyncio.Queue(maxsize=_SSE_QUEUE_MAX)
+    # 首个客户端连接时安装 runs bus → SSE 桥（幂等）
+    _ensure_runs_sse_bridge()
 
     async def event_stream():
         await _sse_clients_lock.acquire()
@@ -534,16 +626,24 @@ async def plugin_hosted_ui_context(plugin_id: str, kind: str = "panel", id: str 
 
 
 @router.post("/plugin/{plugin_id}/hosted-ui/action/{action_id}")
-async def plugin_hosted_ui_action(plugin_id: str, action_id: str, request: HostedUiActionRequest):
+async def plugin_hosted_ui_action(
+    plugin_id: str,
+    action_id: str,
+    http_request: Request,
+    request: HostedUiActionRequest,
+):
     """执行 hosted surface 动作；第一版复用本插件 plugin_entry。"""
     try:
-        result = await plugin_ui_query_service.call_surface_action(
-            plugin_id,
-            action_id=action_id,
-            args=request.args,
-            kind=request.kind,
-            surface_id=request.surface_id,
-            locale=request.locale,
+        result = await _await_action_or_disconnect(
+            http_request,
+            plugin_ui_query_service.call_surface_action(
+                plugin_id,
+                action_id=action_id,
+                args=request.args,
+                kind=request.kind,
+                surface_id=request.surface_id,
+                locale=request.locale,
+            ),
         )
     except ServerDomainError as error:
         raise_http_from_domain(error, logger=logger)

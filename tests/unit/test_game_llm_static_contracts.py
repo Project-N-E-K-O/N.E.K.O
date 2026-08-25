@@ -1,5 +1,6 @@
 import json
 import re
+import shutil
 from pathlib import Path
 
 import pytest
@@ -13,6 +14,7 @@ from config.prompts.prompts_soccer import (
 )
 from main_routers.game_router import runtime as gr_runtime
 from scripts import check_no_temperature
+from tests.node_harness import run_node_stdin
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -59,6 +61,118 @@ def test_soccer_template_renders_runtime_config_and_asset_version():
     assert json.loads(config_match.group(1))["vrm_defaults"]["ambientIntensity"] == 1.25
     assert "soccer-demo.css?v=test-version" in rendered
     assert "soccer-demo.js?v=test-version" in rendered
+
+
+@pytest.mark.unit
+def test_soccer_first_language_payload_waits_for_character_response():
+    script = SOCCER_SCRIPT_PATH.read_text(encoding="utf-8")
+    quick_start = script.index("async function loadGeneratedQuickLines()")
+    quick_section = script[quick_start:script.index("loadGeneratedQuickLines();", quick_start)]
+    route_start = script.index("async function _startGameRoute()")
+    route_section = script[route_start:script.index("function _deliverPendingOpeningLine()", route_start)]
+
+    resolver_start = script.index("window.SoccerExplicitConversationLang = function (characterName)")
+    resolver_section = script[resolver_start:script.index("const _currentI18nLang", resolver_start)]
+
+    assert "let soccerCharacterLanguagePreferenceResolved = false;" in script
+    assert "characterInfo?.language_preference_resolved === true" in script
+    assert "soccerCharacterExplicitLanguage = normalizeSoccerExplicitLanguage(characterInfo?.language);" in script
+    assert "soccerCharacterLanguageRevision === languageRevision" in script
+    assert script.count("soccerCharacterLanguageRevision += 1;") == 4
+    assert script.count("soccerCharacterLanguagePreferenceResolved = true;") == 3
+    assert "if (!currentCharacterName)" in script
+    assert resolver_section.index("if (soccerCharacterLanguagePreferenceResolved)") < resolver_section.index(
+        "window.getExplicitConversationLanguagePreference(characterName)"
+    )
+    assert "if (characterName !== _soccerConversationCharacterName()) return '';" in resolver_section
+    assert "if (explicitLanguage) payload.i18n_language = explicitLanguage;" in script
+    assert "window.hydrateExplicitConversationLanguagePreference" not in script
+    assert quick_section.index("await ensureSoccerCharacterInfo();") < quick_section.index(
+        "..._conversationLanguagePayload()"
+    )
+    assert route_section.index("await ensureSoccerCharacterInfo();") < route_section.index(
+        "_gameRoutePayload("
+    )
+    assert "window.getExplicitConversationLanguagePreference(characterName)" in script
+    assert "neko:conversation-language-changed" in script
+    assert "neko:conversation-language-cleared" in script
+
+
+@pytest.mark.unit
+def test_soccer_direct_open_language_change_wins_inflight_character_response():
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is required for the soccer language race harness")
+
+    script = SOCCER_SCRIPT_PATH.read_text(encoding="utf-8")
+    state_start = script.index("const normalizeSoccerExplicitLanguage")
+    state_end = script.index("    (async () => {", state_start)
+    listener_start = script.index(
+        "window.SoccerExplicitConversationLang = function (characterName)"
+    )
+    listener_end = script.index("      const canvas =", listener_start)
+    behavior_source = script[state_start:state_end] + script[listener_start:listener_end]
+
+    harness = f"""
+(async () => {{
+  const listeners = {{}}, trustedLanguages = new Map();
+  globalThis.window = globalThis;
+  window.location = {{ origin: 'http://127.0.0.1', search: '' }};
+  window.lanlan_config = {{ lanlan_name: 'soccer_demo' }};
+  window.__SoccerResolvedLanlanName = '';
+  window.i18next = {{ language: 'en' }};
+  window.SoccerCurrentI18nLang = () => 'en';
+  window.addEventListener = (name, listener) => {{ listeners[name] = listener; }};
+  window.getExplicitConversationLanguagePreference = (name) => trustedLanguages.get(name) || '';
+
+  let releaseCharacterResponse;
+  globalThis.fetch = () => new Promise((resolve) => {{
+    releaseCharacterResponse = () => resolve({{
+      ok: true,
+      json: async () => ({{ lanlan_name: 'Mimi', language: 'en', language_preference_resolved: true }}),
+    }});
+  }});
+
+  eval({json.dumps(behavior_source)} + `
+    globalThis.__loadSoccerCharacter = ensureSoccerCharacterInfo;
+    globalThis.__soccerLanguagePayload = _conversationLanguagePayload;
+    globalThis.__soccerLanguageState = () => ({{
+      explicit: soccerCharacterExplicitLanguage,
+      resolved: soccerCharacterLanguagePreferenceResolved,
+      revision: soccerCharacterLanguageRevision,
+      characterName: _soccerConversationCharacterName(),
+    }});
+  `);
+
+  const pending = globalThis.__loadSoccerCharacter();
+  trustedLanguages.set('Mimi', 'ja');
+  listeners['neko:conversation-language-changed']({{ detail: {{ character_name: 'Mimi', language: 'ja' }} }});
+  const duringRequest = globalThis.__soccerLanguageState();
+  if (duringRequest.revision !== 1 || duringRequest.resolved || duringRequest.explicit) {{
+    throw new Error('unknown-identity event must only invalidate the response');
+  }}
+
+  releaseCharacterResponse();
+  await pending;
+  const afterResponse = globalThis.__soccerLanguageState();
+  const payload = globalThis.__soccerLanguagePayload();
+  if (afterResponse.characterName !== 'Mimi' || afterResponse.resolved) {{
+    throw new Error('late response must resolve identity without resolving stale language');
+  }}
+  if (payload.i18n_language !== 'ja') {{
+    throw new Error('trusted changed language did not win: ' + JSON.stringify(payload));
+  }}
+}})().catch((error) => {{ console.error(error); process.exit(1); }});
+"""
+    result = run_node_stdin(
+        node,
+        harness,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=10,
+    )
+    assert result.returncode == 0, result.stderr
 
 
 @pytest.mark.unit

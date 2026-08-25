@@ -516,20 +516,20 @@ def _get_explicit_session_user_language(name):
     return getattr(manager, "user_language", None)
 
 
+def _get_session_render_language(name):
+    """Return the current renderer locale without promoting it to a preference."""
+    manager = _get_session_manager(name)
+    if manager is None:
+        return None
+    return getattr(manager, "_conversation_render_language", None)
+
+
 try:
     from main_logic.topic.delivery import register_topic_session_manager_getter
 
     register_topic_session_manager_getter(_get_session_manager)
 except Exception:
     logger.warning("Failed to register topic session manager getter", exc_info=True)
-
-try:
-    from main_logic.music_playback import register_music_session_manager_getter
-
-    register_music_session_manager_getter(_get_session_manager)
-except Exception:
-    logger.warning("Failed to register music session manager getter", exc_info=True)
-
 
 def _select_fallback_session_manager():
     """Return a single connected session manager as a safe fallback, if unambiguous."""
@@ -700,6 +700,8 @@ async def _handle_agent_event(event: dict):
                 "type": "music_allowlist_add",
                 "domains": event.get("domains")
                 or event.get("metadata", {}).get("domains", []),
+                "http_urls": event.get("http_urls")
+                or event.get("metadata", {}).get("http_urls", []),
             }
 
             async def _send_allowlist(target_mgr):
@@ -1607,6 +1609,9 @@ async def _init_character_resources(k: str, is_new_character: bool):
                     _status_cb,
                     user_language_provider=(
                         lambda _name=k: _get_explicit_session_user_language(_name)
+                    ),
+                    render_language_provider=(
+                        lambda _name=k: _get_session_render_language(_name)
                     ),
                 ),
                 name=f"SyncConnector-{k}",

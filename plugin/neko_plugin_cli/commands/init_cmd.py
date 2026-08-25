@@ -1,11 +1,4 @@
-"""neko-plugin init — interactive plugin scaffolding.
-
-Flow:
-  Page 1: plugin_id → name → type → quick start?
-  If quick start: generate hello-world template and exit.
-  Page 2: description → author → features → pyproject
-  Generate files.
-"""
+"""Create complete, Market-ready plugin source directories."""
 
 from __future__ import annotations
 
@@ -16,70 +9,63 @@ import subprocess
 import sys
 from pathlib import Path
 
-from plugin._types.plugin_types import (
-    SCAFFOLDABLE_PLUGIN_TYPES,
-    format_unsupported_scaffold_type,
-)
+from plugin._types.plugin_types import SCAFFOLDABLE_PLUGIN_TYPES
 
 from ..paths import CliDefaults
 from ..repo_action_migration import ActionFileStatus, migrate_github_actions
 from ..templates.generator import PluginSpec, generate_plugin, generate_repo_support_files
 from ..core.plugin_source import load_plugin_source
-from ._prompt import ask_checkbox, ask_confirm, ask_select, ask_text
+from ._resolve import parse_github_repository_remote
 
-_PLUGIN_ID_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-_MARKET_PLUGIN_ID_RE = re.compile(r"^[a-z_][a-z0-9_]*$")
+_MARKET_PLUGIN_ID_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 _MARKET_REPO_PREFIX = "n.e.k.o_plugin_"
-_DEFAULT_NEKO_REPOSITORY = "Project-N-E-K-O/N.E.K.O"
-_SCAFFOLD_TYPE_LABELS = {
-    "plugin": "Plugin — 独立功能插件",
-    "adapter": "Adapter — 对接外部协议 (MCP 等)",
-}
+
+
+def _tri(english: str, chinese: str, japanese: str) -> str:
+    return f"{english} / {chinese} / {japanese}"
 
 
 def register(subparsers: argparse._SubParsersAction, *, defaults: CliDefaults) -> None:
-    parser = subparsers.add_parser("init", help="Create a new plugin from template")
-    parser.add_argument("plugin_id", nargs="?", help="Plugin ID (optional, will prompt if omitted)")
+    parser = subparsers.add_parser(
+        "init",
+        help=_tri(
+            "Create a Market-ready plugin in the N.E.K.O source tree",
+            "在 N.E.K.O 源码目录中创建可发布到 Market 的插件",
+            "N.E.K.O ソースツリーに Market 公開可能なプラグインを作成",
+        ),
+    )
+    parser.add_argument(
+        "plugin_id",
+        help=_tri("Market plugin ID", "Market 插件 ID", "Market プラグイン ID"),
+    )
     parser.add_argument(
         "--type",
         dest="plugin_type",
         choices=tuple(sorted(SCAFFOLDABLE_PLUGIN_TYPES)),
-        help="Plugin type",
-    )
-    parser.add_argument("--name", help="Display name")
-    parser.add_argument("--plugins-root", help="Plugin root directory (default: N.E.K.O/plugin/plugins)")
-    parser.add_argument("--git", action="store_true", help="Initialize a git repository in the generated plugin directory")
-    parser.add_argument("--remote", help="Add a git remote named origin after --git initialization")
-    parser.add_argument("--github-actions", action="store_true", help="Generate a GitHub Actions verification workflow")
-    parser.add_argument("--neko-repo", default=_DEFAULT_NEKO_REPOSITORY, help="N.E.K.O repository used by generated GitHub Actions")
-    parser.add_argument("--neko-ref", default="main", help="N.E.K.O git ref used by generated GitHub Actions")
-    parser.add_argument("--no-readme", action="store_true", help="Do not generate README.md")
-    parser.add_argument("--no-tests", action="store_true", help="Do not generate tests/test_smoke.py")
-    parser.add_argument("--no-gitignore", action="store_true", help="Do not generate .gitignore")
-    parser.add_argument("--no-vscode", action="store_true", help="Do not generate VSCode settings and tasks")
-    parser.add_argument("--no-interactive", action="store_true", help="Skip interactive prompts")
-    parser.set_defaults(handler=handle, _defaults=defaults)
-
-    repo_parser = subparsers.add_parser(
-        "init-repo",
-        help="Create a ready-to-use standalone plugin repository",
-    )
-    repo_parser.add_argument("plugin_id", help="Plugin ID")
-    repo_parser.add_argument(
-        "--type",
-        dest="plugin_type",
-        choices=tuple(sorted(SCAFFOLDABLE_PLUGIN_TYPES)),
         default="plugin",
-        help="Plugin type",
+        help=_tri("Plugin type", "插件类型", "プラグイン種別"),
     )
-    repo_parser.add_argument("--name", help="Display name")
-    repo_parser.add_argument("--plugins-root", help="Plugin root directory (default: N.E.K.O/plugin/plugins)")
-    repo_parser.add_argument("--remote", help="Add a git remote named origin after git initialization")
-    repo_parser.add_argument("--no-git", action="store_true", help="Do not initialize a git repository")
-    repo_parser.add_argument("--no-github-actions", action="store_true", help="Do not generate the GitHub Actions verification workflow")
-    repo_parser.add_argument("--neko-repo", default=_DEFAULT_NEKO_REPOSITORY, help="N.E.K.O repository used by generated GitHub Actions")
-    repo_parser.add_argument("--neko-ref", default="main", help="N.E.K.O git ref used by generated GitHub Actions")
-    repo_parser.set_defaults(handler=handle_init_repo, _defaults=defaults)
+    parser.add_argument(
+        "--name",
+        help=_tri("Display name", "显示名称", "表示名"),
+    )
+    parser.add_argument(
+        "--output",
+        help=_tri(
+            "Exact plugin source directory (default: N.E.K.O/plugin/plugins/<id>)",
+            "插件源码目录（默认：N.E.K.O/plugin/plugins/<id>）",
+            "プラグインのソースディレクトリ（既定値：N.E.K.O/plugin/plugins/<id>）",
+        ),
+    )
+    parser.add_argument(
+        "--remote",
+        help=_tri(
+            "Add a matching GitHub repository as origin",
+            "将匹配的 GitHub 仓库添加为 origin",
+            "一致する GitHub リポジトリを origin として追加",
+        ),
+    )
+    parser.set_defaults(handler=handle, _defaults=defaults)
 
     setup_parser = subparsers.add_parser(
         "setup-repo",
@@ -104,8 +90,6 @@ def register(subparsers: argparse._SubParsersAction, *, defaults: CliDefaults) -
             "プレビューのみ（書き込みなし）"
         ),
     )
-    setup_parser.add_argument("--neko-repo", default=_DEFAULT_NEKO_REPOSITORY, help="N.E.K.O repository used by generated GitHub Actions")
-    setup_parser.add_argument("--neko-ref", default="main", help="N.E.K.O git ref used by generated GitHub Actions")
     setup_parser.add_argument("--overwrite", action="store_true", help="Overwrite existing support files")
     setup_parser.add_argument("--git", action="store_true", help="Initialize a git repository if this plugin directory is not already inside one")
     setup_parser.add_argument("--remote", help="Add a git remote named origin after --git initialization")
@@ -118,40 +102,120 @@ def register(subparsers: argparse._SubParsersAction, *, defaults: CliDefaults) -
 
 def handle(args: argparse.Namespace) -> int:
     defaults: CliDefaults = args._defaults
-    if getattr(args, "remote", None) and not getattr(args, "git", False):
-        print("[FAIL] --remote requires --git", file=sys.stderr)
+    plugin_id = args.plugin_id.strip()
+    if not _MARKET_PLUGIN_ID_RE.fullmatch(plugin_id):
+        print(
+            "[FAIL] "
+            + _tri(
+                f"invalid Market plugin ID: '{plugin_id}' "
+                "(use lowercase letters, numbers, and underscores; start with a letter)",
+                f"无效的 Market 插件 ID：'{plugin_id}'（使用小写字母、数字和下划线，且以字母开头）",
+                f"無効な Market プラグイン ID：'{plugin_id}'（小文字、数字、アンダースコアを使用し、文字で始めてください）",
+            ),
+            file=sys.stderr,
+        )
         return 1
 
-    if args.no_interactive:
-        return _handle_non_interactive(args, defaults=defaults)
-
-    return _handle_interactive(args, defaults=defaults)
-
-
-def handle_init_repo(args: argparse.Namespace) -> int:
-    defaults: CliDefaults = args._defaults
-    initialize_git = not args.no_git
-    if args.remote and not initialize_git:
-        print("[FAIL] --remote requires git initialization; remove --no-git", file=sys.stderr)
-        return 1
-
-    init_args = argparse.Namespace(
-        plugin_id=args.plugin_id,
-        plugin_type=args.plugin_type,
-        name=args.name,
-        plugins_root=args.plugins_root,
-        git=initialize_git,
-        remote=args.remote,
-        github_actions=not args.no_github_actions,
-        neko_repo=args.neko_repo,
-        neko_ref=args.neko_ref,
-        no_readme=False,
-        no_tests=False,
-        no_gitignore=False,
-        no_vscode=False,
-        market_repo=True,
+    target_dir = (
+        Path(args.output).expanduser().resolve()
+        if args.output
+        else (defaults.plugins_root / plugin_id).resolve()
     )
-    return _handle_non_interactive(init_args, defaults=defaults)
+    if target_dir.exists():
+        print(
+            "[FAIL] "
+            + _tri(
+                f"directory already exists: {target_dir}",
+                f"目录已存在：{target_dir}",
+                f"ディレクトリは既に存在します：{target_dir}",
+            ),
+            file=sys.stderr,
+        )
+        return 1
+    if shutil.which("git") is None:
+        print(
+            "[FAIL] "
+            + _tri(
+                "git executable not found",
+                "未找到 Git 可执行文件",
+                "Git 実行ファイルが見つかりません",
+            ),
+            file=sys.stderr,
+        )
+        return 1
+    if args.remote and not _remote_matches_plugin(args.remote, plugin_id=plugin_id):
+        print(
+            "[FAIL] "
+            + _tri(
+                f"remote must be a GitHub repository named {_market_repo_name(plugin_id)}",
+                f"remote 必须是名为 {_market_repo_name(plugin_id)} 的 GitHub 仓库",
+                f"remote は {_market_repo_name(plugin_id)} という名前の GitHub リポジトリである必要があります",
+            ),
+            file=sys.stderr,
+        )
+        return 1
+
+    spec = PluginSpec(
+        plugin_id=plugin_id,
+        name=args.name or plugin_id,
+        plugin_type=args.plugin_type,
+        quick_start=True,
+        features=["entry_point"],
+        create_github_actions=True,
+    )
+    target_created = False
+    try:
+        target_dir.mkdir(parents=True, exist_ok=False)
+        target_created = True
+        created = generate_plugin(
+            spec,
+            target_dir,
+            repo_root=defaults.repo_root,
+        )
+        _run_git(["init"], cwd=target_dir)
+        _run_git(["symbolic-ref", "HEAD", "refs/heads/main"], cwd=target_dir)
+        if args.remote:
+            _run_git(["remote", "add", "origin", args.remote], cwd=target_dir)
+    except Exception as exc:
+        if target_created and target_dir.exists():
+            shutil.rmtree(target_dir)
+        print(
+            "[FAIL] "
+            + _tri(
+                f"repository creation failed: {exc}",
+                f"创建仓库失败：{exc}",
+                f"リポジトリの作成に失敗しました：{exc}",
+            ),
+            file=sys.stderr,
+        )
+        return 1
+
+    print(
+        "\n[OK] "
+        + _tri(
+            f"created {target_dir}/",
+            f"已创建 {target_dir}/",
+            f"{target_dir}/ を作成しました",
+        )
+    )
+    for path in created:
+        print(f"  └── {path.relative_to(target_dir)}")
+    print(f"\n  {_tri('plugin', '插件', 'プラグイン')}: {plugin_id}")
+    print(f"  {_tri('repository', '仓库', 'リポジトリ')}: {_market_repo_name(plugin_id)}")
+    print(f"  {_tri('entry', '入口', 'エントリ')}: {spec.entry_point}")
+    print(f"  Git: {_tri('initialized (main)', '已初始化（main）', '初期化済み（main）')}")
+    if args.remote:
+        print(f"  Git remote: {args.remote}")
+    else:
+        print(
+            "  " + _tri("next", "下一步", "次の手順") + ": "
+            + _tri(
+                "add the matching GitHub repository as origin",
+                "将匹配的 GitHub 仓库添加为 origin",
+                "一致する GitHub リポジトリを origin として追加してください",
+            )
+        )
+    return 0
 
 
 def handle_setup_repo(args: argparse.Namespace) -> int:
@@ -195,8 +259,6 @@ def handle_setup_repo(args: argparse.Namespace) -> int:
             create_gitignore=not args.no_gitignore,
             create_vscode=not args.no_vscode,
             create_github_actions=args.github_actions or args.upgrade_github_actions,
-            neko_repository=args.neko_repo,
-            neko_ref=args.neko_ref,
         )
         if args.upgrade_github_actions:
             changes = migrate_github_actions(spec, plugin_dir, dry_run=args.dry_run)
@@ -230,7 +292,12 @@ def handle_setup_repo(args: argparse.Namespace) -> int:
                 )
             return 0
         _preflight_git_request(plugin_dir, initialize_git=args.git, remote=args.remote)
-        created = generate_repo_support_files(spec, plugin_dir, overwrite=args.overwrite)
+        created = generate_repo_support_files(
+            spec,
+            plugin_dir,
+            repo_root=defaults.repo_root,
+            overwrite=args.overwrite,
+        )
         git_initialized = False
         if args.git:
             git_initialized = _initialize_git_repo(plugin_dir, remote=args.remote)
@@ -255,230 +322,17 @@ def handle_setup_repo(args: argparse.Namespace) -> int:
     return 0
 
 
-# ---------------------------------------------------------------------------
-# Interactive flow
-# ---------------------------------------------------------------------------
-
-def _handle_interactive(args: argparse.Namespace, *, defaults: CliDefaults) -> int:
-    # ── Page 1: Basic info ──
-
-    # Plugin ID
-    plugin_id = args.plugin_id
-    if not plugin_id:
-        plugin_id = ask_text(
-            "插件 ID (Plugin ID)",
-            validate=_validate_plugin_id,
-        )
-    if not plugin_id:
-        return _cancelled()
-    plugin_id = plugin_id.strip()
-    if not _PLUGIN_ID_RE.fullmatch(plugin_id):
-        print(f"[FAIL] invalid plugin ID: '{plugin_id}' (use a valid Python package name: A-Z, a-z, 0-9, _)", file=sys.stderr)
-        return 1
-
-    # Check if directory already exists
-    plugins_root = _resolve_plugins_root(args, defaults=defaults)
-    target_dir = plugins_root / plugin_id
-    if target_dir.exists():
-        print(f"[FAIL] directory already exists: {target_dir}", file=sys.stderr)
-        return 1
-
-    # Display name
-    name = args.name
-    if not name:
-        name = ask_text("显示名称 (Display Name)", default=plugin_id)
-    if name is None:
-        return _cancelled()
-
-    # Plugin type
-    plugin_type = args.plugin_type
-    if not plugin_type:
-        plugin_type = ask_select(
-            "插件类型 (Plugin Type)",
-            choices=[
-                {"value": value, "name": name}
-                for value, name in _SCAFFOLD_TYPE_LABELS.items()
-                if value in SCAFFOLDABLE_PLUGIN_TYPES
-            ],
-            default="plugin",
-        )
-    if not plugin_type:
-        return _cancelled()
-    if plugin_type not in SCAFFOLDABLE_PLUGIN_TYPES:
-        print(f"[FAIL] {format_unsupported_scaffold_type(plugin_type)}", file=sys.stderr)
-        return 1
-
-    quick_start = ask_confirm("快速开始? (生成 Hello World 模板，跳过高级配置)", default=True)
-    if quick_start is None:
-        return _cancelled()
-
-    if quick_start:
-        spec = PluginSpec(
-            plugin_id=plugin_id,
-            name=name,
-            plugin_type=plugin_type,
-            quick_start=True,
-            features=["lifecycle", "entry_point"],
-            create_readme=not getattr(args, "no_readme", False),
-            create_tests=not getattr(args, "no_tests", False),
-            create_gitignore=not getattr(args, "no_gitignore", False),
-            create_vscode=not getattr(args, "no_vscode", False),
-            create_github_actions=getattr(args, "github_actions", False),
-            neko_repository=getattr(args, "neko_repo", _DEFAULT_NEKO_REPOSITORY),
-            neko_ref=getattr(args, "neko_ref", "main"),
-        )
-        return _generate_and_report(
-            spec,
-            target_dir,
-            initialize_git=getattr(args, "git", False),
-            remote=getattr(args, "remote", None),
-        )
-
-    # ── Page 2: Advanced config ──
-
-    # Description
-    description = ask_text("插件描述 (Description)", default="")
-    if description is None:
-        return _cancelled()
-
-    # Author
-    author_name = ask_text("作者名称 (Author Name)", default="")
-    if author_name is None:
-        return _cancelled()
-
-    author_email = ""
-    if author_name:
-        author_email_value = ask_text("作者邮箱 (Author Email)", default="")
-        if author_email_value is None:
-            return _cancelled()
-        author_email = author_email_value
-
-    # Features
-    feature_choices = _get_feature_choices()
-    default_features = ["lifecycle", "entry_point"]
-    features = ask_checkbox(
-        "选择功能 (Features)",
-        choices=feature_choices,
-        defaults=default_features,
-    )
-    if features is None:
-        return _cancelled()
-
-    # pyproject.toml
-    create_pyproject = ask_confirm("创建 pyproject.toml?", default=True)
-    if create_pyproject is None:
-        return _cancelled()
-
-    spec = PluginSpec(
-        plugin_id=plugin_id,
-        name=name,
-        plugin_type=plugin_type,
-        description=description,
-        author_name=author_name,
-        author_email=author_email,
-        features=features,
-        create_pyproject=create_pyproject,
-        create_readme=not getattr(args, "no_readme", False),
-        create_tests=not getattr(args, "no_tests", False),
-        create_gitignore=not getattr(args, "no_gitignore", False),
-        create_vscode=not getattr(args, "no_vscode", False),
-        create_github_actions=getattr(args, "github_actions", False),
-        neko_repository=getattr(args, "neko_repo", _DEFAULT_NEKO_REPOSITORY),
-        neko_ref=getattr(args, "neko_ref", "main"),
-    )
-    return _generate_and_report(
-        spec,
-        target_dir,
-        initialize_git=getattr(args, "git", False),
-        remote=getattr(args, "remote", None),
-    )
+def _market_repo_name(plugin_id: str) -> str:
+    return f"{_MARKET_REPO_PREFIX}{plugin_id}"
 
 
-# ---------------------------------------------------------------------------
-# Non-interactive flow
-# ---------------------------------------------------------------------------
-
-def _handle_non_interactive(args: argparse.Namespace, *, defaults: CliDefaults) -> int:
-    plugin_id = args.plugin_id
-    if not plugin_id:
-        print("[FAIL] plugin_id is required in non-interactive mode", file=sys.stderr)
-        return 1
-    if not _PLUGIN_ID_RE.fullmatch(plugin_id):
-        print(f"[FAIL] invalid plugin ID: '{plugin_id}'", file=sys.stderr)
-        return 1
-    if getattr(args, "market_repo", False) and not _MARKET_PLUGIN_ID_RE.fullmatch(plugin_id):
-        print(
-            f"[FAIL] invalid market plugin ID: '{plugin_id}' "
-            "(use lowercase letters, numbers, and underscores)",
-            file=sys.stderr,
-        )
-        return 1
-
-    plugins_root = _resolve_plugins_root(args, defaults=defaults)
-    target_dir = plugins_root / (_market_repo_name(plugin_id) if getattr(args, "market_repo", False) else plugin_id)
-    if target_dir.exists():
-        print(f"[FAIL] directory already exists: {target_dir}", file=sys.stderr)
-        return 1
-
-    plugin_type = args.plugin_type or "plugin"
-    initialize_git = getattr(args, "git", False)
-    if plugin_type not in SCAFFOLDABLE_PLUGIN_TYPES:
-        print(f"[FAIL] {format_unsupported_scaffold_type(plugin_type)}", file=sys.stderr)
-        return 1
-
-    spec = PluginSpec(
-        plugin_id=plugin_id,
-        name=args.name or plugin_id,
-        plugin_type=plugin_type,
-        quick_start=True,
-        features=["lifecycle", "entry_point"],
-        create_readme=not getattr(args, "no_readme", False),
-        create_tests=not getattr(args, "no_tests", False),
-        create_gitignore=not getattr(args, "no_gitignore", False),
-        create_vscode=not getattr(args, "no_vscode", False),
-        create_github_actions=getattr(args, "github_actions", False),
-        neko_repository=getattr(args, "neko_repo", _DEFAULT_NEKO_REPOSITORY),
-        neko_ref=getattr(args, "neko_ref", "main"),
-    )
-    return _generate_and_report(spec, target_dir, initialize_git=initialize_git, remote=getattr(args, "remote", None))
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-def _generate_and_report(
-    spec: PluginSpec,
-    target_dir: Path,
-    *,
-    initialize_git: bool = False,
-    remote: str | None = None,
-) -> int:
-    try:
-        _preflight_git_request(target_dir, initialize_git=initialize_git, remote=remote)
-        created = generate_plugin(spec, target_dir)
-        git_initialized = False
-        if initialize_git:
-            git_initialized = _initialize_git_repo(target_dir, remote=remote)
-    except Exception as exc:
-        print(f"[FAIL] {exc}", file=sys.stderr)
-        return 1
-
-    print(f"\n[OK] 已创建 {target_dir}/")
-    for path in created:
-        print(f"  └── {path.relative_to(target_dir)}")
-    print(f"\n  入口类: {spec.class_name}")
-    if target_dir.name.startswith(_MARKET_REPO_PREFIX):
-        print(f"  repo:   {target_dir.name}")
-        print(f"  plugin: {spec.plugin_id}")
-    print(f"  entry:  {spec.entry_point}")
-    if git_initialized:
-        print("  git:    initialized")
-        if remote:
-            print(f"  remote: {remote}")
-    elif initialize_git:
-        print("  git:    skipped (already inside an existing repository)")
-    return 0
+def _remote_matches_plugin(remote: str, *, plugin_id: str) -> bool:
+    repository = parse_github_repository_remote(remote)
+    if repository is None:
+        return False
+    return repository.rsplit("/", 1)[-1].casefold() == _market_repo_name(
+        plugin_id
+    ).casefold()
 
 
 def _resolve_plugins_root(args: argparse.Namespace, *, defaults: CliDefaults) -> Path:
@@ -486,10 +340,6 @@ def _resolve_plugins_root(args: argparse.Namespace, *, defaults: CliDefaults) ->
     if plugins_root:
         return Path(plugins_root).expanduser().resolve()
     return defaults.plugins_root
-
-
-def _market_repo_name(plugin_id: str) -> str:
-    return f"{_MARKET_REPO_PREFIX}{plugin_id}"
 
 
 def _resolve_existing_plugin_dir(raw: str, *, args: argparse.Namespace, defaults: CliDefaults) -> Path:
@@ -553,36 +403,3 @@ def _run_git(command: list[str], *, cwd: Path) -> None:
     except subprocess.CalledProcessError as exc:
         message = (exc.stderr or exc.stdout or str(exc)).strip()
         raise RuntimeError(f"git {' '.join(command)} failed: {message}") from exc
-
-
-def _cancelled() -> int:
-    print("\n已取消。", file=sys.stderr)
-    return 1
-
-
-def _validate_plugin_id(text: str) -> bool | str:
-    text = text.strip()
-    if not text:
-        return "Plugin ID 不能为空"
-    if not _PLUGIN_ID_RE.fullmatch(text):
-        return "必须是合法 Python 包名：字母或下划线开头，只允许字母、数字、下划线"
-    return True
-
-
-def _get_feature_choices() -> list[dict[str, str]]:
-    """Return feature choices for newly scaffoldable plugin types."""
-    return [
-        {"value": "lifecycle", "name": "生命周期 (startup/shutdown)"},
-        {"value": "entry_point", "name": "入口点 (plugin_entry)"},
-        {"value": "timer", "name": "定时任务 (timer_interval)"},
-        {"value": "message", "name": "消息处理 (message handler)"},
-        {"value": "store", "name": "持久化存储 (PluginStore)"},
-        {"value": "cross_plugin", "name": "跨插件调用 (self.plugins)"},
-        {"value": "static_ui", "name": "静态 Web UI"},
-        {"value": "async_support", "name": "异步支持 (async entry points)"},
-        {
-            "value": "bus_events",
-            "name": "总线读取/监听 / Bus read/watch / バスの読み取り・監視",
-        },
-        {"value": "settings", "name": "类型安全配置 (PluginSettings)"},
-    ]

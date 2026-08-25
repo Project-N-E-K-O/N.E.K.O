@@ -257,8 +257,10 @@ class QQAttentionGateService:
             )
             return GateDecision("ignore", reason=f"non_focus(focus={focus_group or '无'},score={current_score:.1f})")
 
-        # 5. 焦点群：检查注意力是否足够（焦点线而非最低线）
-        min_threshold = attention._focus_threshold()
+        # 5. 焦点群：检查注意力是否足够——用「焦点保持线」（低于焦点线）而非
+        #    焦点线本身。焦点线是赢得焦点的资格线；发送门控若也用焦点线，焦点
+        #    群回一条就跌破线、立刻被门控。低于焦点保持线（默认 2.0）才算过低。
+        min_threshold = attention._focus_send_threshold()
         if current_score < min_threshold:
             self.plugin._emit_log("INFO", f"[Gate] 焦点群{normalized_group_id} 注意力过低({current_score:.1f}<{min_threshold}), 忽略")
             return GateDecision("ignore", reason=f"focus_low_attention({current_score:.1f})")
@@ -437,7 +439,9 @@ class QQAttentionGateService:
         lines: list[str] = []
         for i, msg in enumerate(messages, 1):
             nickname = str(msg.get("sender_nickname") or msg.get("sender_id") or "未知")
-            text = str(msg.get("message_text") or "").strip()
+            # backlog 存储项来自 QQBacklogMessage.to_dict()，内容键是 text；
+            # message_text 是旧键名（无历史数据），保留作兜底。
+            text = str(msg.get("text") or msg.get("message_text") or "").strip()
             if len(text) > 100:
                 text = text[:97] + "..."
             msg_id = str(msg.get("message_id") or "").strip()

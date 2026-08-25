@@ -50,8 +50,10 @@ from .balance import (
     _build_soccer_balance_hint,
 )
 from .char_info import (
+    _apply_request_render_language,
     _absorb_request_language,
     _extract_request_language_full,
+    _extract_request_render_language_full,
     _get_character_info,
     _get_current_character_info,
     _get_game_route_summary_llm_info,
@@ -558,6 +560,7 @@ async def _run_game_chat(
     allow_postgame: bool = False,
     postgame_snapshot: Optional[dict] = None,
     postgame_meta_out: Optional[Dict[str, Any]] = None,
+    prompt_locale: str | None = None,
 ) -> Dict[str, Any]:
     """Run A-layer game LLM for both HTTP game events and hijacked external text.
 
@@ -638,6 +641,7 @@ async def _run_game_chat(
         entry = await _get_or_create_session(
             game_type, chat_session_id, lanlan_name,
             postgame_snapshot=postgame_snapshot if allow_postgame else None,
+            prompt_locale=prompt_locale,
         )
     except Exception as e:
         logger.error("🎮 创建游戏 session 失败: %s", e)
@@ -721,6 +725,7 @@ async def _run_game_chat(
                 await _refresh_game_session_instructions(
                     entry, game_type, chat_session_id, lanlan_name,
                     postgame_snapshot=postgame_snapshot if allow_postgame else None,
+                    prompt_locale=prompt_locale,
                 )
             except Exception as e:
                 logger.error("🎮 更新游戏 session 指令失败: %s", e)
@@ -958,8 +963,9 @@ async def _run_soccer_passive_guard_ai(data: Dict[str, Any], lanlan_name: str) -
     char_info = _get_game_route_summary_llm_info(lanlan_name)
     # 全码：短码会把 zh-TW 塌成 zh，让 soccer prompt 的繁体模板变成够不到的死数据
     # （#2500 第 2 步）。``_resolve_game_prompt_locale`` 是 ``_absorb_request_language``
-    # 那条优先级链的全码孪生——请求体 > mgr.user_language > 全局缓存，并且同样在请求体
-    # 带 i18n 真值时回写 mgr.user_language。
+    # 那条优先级链的全码孪生——显式请求语言 > 显式 mgr 偏好 > render-only
+    # 请求语言 > 非显式 mgr.user_language > 全局缓存，并且只有显式请求语言
+    # 会回写 mgr.user_language。
     language = _resolve_game_prompt_locale(lanlan_name, data) or char_info.get("user_language_full")
     stage = data.get("stage")
     prompt_type = str(data.get("promptType") or "surrender").strip()
@@ -1050,10 +1056,6 @@ async def game_chat(game_type: str, request: Request):
     session_id = str(data.get('session_id', 'default'))
     event = data.get('event', {})
     lanlan_name = _resolve_lanlan_name(data.get("lanlan_name"))
-    # 把请求体里的 i18n 真值同步进 mgr.user_language，让本次 game_chat → _run_game_chat
-    # → _get_character_info 链上 _resolve_game_prompt_locale 拿到的 user_language_full
-    # 与前端 i18n 保持一致，而不是被早期 start_session 覆盖回去的全局缓存值。
-    _absorb_request_language(data, lanlan_name)
     state = _get_active_game_route_state(lanlan_name, game_type) if lanlan_name else None
     if state and state.get("session_id") == session_id:
         _update_game_memory_enabled_from_payload(state, data, game_type=game_type)
@@ -1085,10 +1087,22 @@ async def game_chat(game_type: str, request: Request):
         event, validation_error = _sanitize_badminton_event(event)
         if event is None:
             return {"error": validation_error or "invalid_event", "line": "", "control": {}}
+    # Only a request that is eligible to reach the game LLM may heal the live
+    # manager. Stale/inactive badminton tabs must remain side-effect free even
+    # when they still carry an old explicit language.
+    _absorb_request_language(data, lanlan_name)
+    if state and str(state.get("session_id") or "") == session_id:
+        _update_game_route_language_from_payload(state, data)
+    prompt_locale = _resolve_game_prompt_locale(lanlan_name, data=data)
     if isinstance(event, dict) and lanlan_name:
         event = dict(event)
         event.setdefault("lanlan_name", lanlan_name)
-    result = await _run_game_chat(game_type, session_id, event)
+    result = await _run_game_chat(
+        game_type,
+        session_id,
+        event,
+        prompt_locale=prompt_locale,
+    )
 
     if state and state.get("session_id") == session_id and isinstance(event, dict):
         current_state = event.get("currentState")
@@ -1165,10 +1179,9 @@ async def game_route_start(game_type: str, request: Request):
     lanlan_name = _resolve_lanlan_name(data.get("lanlan_name"))
     if not lanlan_name:
         return {"ok": False, "reason": "missing_lanlan_name"}
-    # 把请求体里的 i18n 真值同步进 mgr.user_language（详见 _absorb_request_language
-    # 文档）：route/start 是 game-route 整段生命周期的入口，越早 heal 越多下游受益。
-    request_language_full = _extract_request_language_full(data)
-    _absorb_request_language(data, lanlan_name)
+    # route/start 是有效的新路由入口；解析 prompt locale 时会同步请求中的
+    # 显式偏好，并按 session explicit > render fallback 选择本局模板语言。
+    request_prompt_language_full = _resolve_game_prompt_locale(lanlan_name, data)
 
     session_id = str(data.get("session_id") or "default")
     # 同一角色同一时刻只允许一个 active 游戏路由：启动新路由前先结束所有其它仍活跃的
@@ -1250,8 +1263,7 @@ async def game_route_start(game_type: str, request: Request):
                 lanlan_name,
                 data.get("game_last_full_dialogue_count"),
             )
-            if request_language_full:
-                state["user_language"] = request_language_full
+            _update_game_route_language_from_payload(state, data)
             # Take over the SessionManager: ordinary chat LLM output handlers must
             # stay silent during the game, and any voice transcript that reaches
             # the SessionManager must be redirected into route_external_voice_transcript.
@@ -1317,7 +1329,7 @@ async def game_route_start(game_type: str, request: Request):
                     lanlan_name=lanlan_name,
                     neko_initiated=neko_initiated,
                     neko_invite_text=neko_invite_text,
-                    prompt_locale=request_language_full,
+                    prompt_locale=request_prompt_language_full,
                 )
             else:
                 context, source, error = await _build_badminton_pregame_context(
@@ -1327,7 +1339,7 @@ async def game_route_start(game_type: str, request: Request):
                     neko_initiated=neko_initiated,
                     neko_invite_text=neko_invite_text,
                     mode=str(state.get("mode") or data.get("mode") or "spectator"),
-                    prompt_locale=request_language_full,
+                    prompt_locale=request_prompt_language_full,
                 )
         except Exception as exc:
             logger.warning("🎮 开局上下文构建异常，使用普通陪玩兜底: lanlan=%s err=%s", lanlan_name, exc)
@@ -1424,7 +1436,6 @@ async def game_route_drain(game_type: str, request: Request):
     except Exception:
         data = {}
     lanlan_name = _resolve_lanlan_name(data.get("lanlan_name"))
-    _absorb_request_language(data, lanlan_name)
     state = _get_active_game_route_state(lanlan_name, game_type) if lanlan_name else None
     if not state:
         return {"ok": True, "outputs": [], "state": {"game_route_active": False}}
@@ -1433,6 +1444,8 @@ async def game_route_drain(game_type: str, request: Request):
     if session_id and session_id != str(state.get("session_id") or ""):
         return {"ok": True, "outputs": [], "state": _public_route_state(state)}
 
+    _absorb_request_language(data, lanlan_name)
+    _update_game_route_language_from_payload(state, data)
     _update_game_memory_enabled_from_payload(state, data, game_type=game_type)
     outputs = list(state.get("pending_outputs") or [])
     state["pending_outputs"] = []
@@ -1454,7 +1467,6 @@ async def game_route_voice_transcript(game_type: str, request: Request):
     lanlan_name = _resolve_lanlan_name(data.get("lanlan_name"))
     if not lanlan_name:
         return {"ok": False, "reason": "missing_lanlan_name"}
-    _absorb_request_language(data, lanlan_name)
 
     session_id = str(data.get("session_id") or "")
     state = _get_active_game_route_state(lanlan_name, game_type)
@@ -1462,6 +1474,9 @@ async def game_route_voice_transcript(game_type: str, request: Request):
         return {"ok": True, "handled": False, "reason": "game_route_inactive"}
     if session_id and session_id != str(state.get("session_id") or ""):
         return {"ok": True, "handled": False, "reason": "session_id_mismatch"}
+
+    _absorb_request_language(data, lanlan_name)
+    _update_game_route_language_from_payload(state, data)
 
     current_state = data.get("currentState")
     if isinstance(current_state, dict):
@@ -1479,6 +1494,56 @@ async def game_route_voice_transcript(game_type: str, request: Request):
     return {"ok": True, "handled": handled, "state": _public_route_state(state)}
 
 
+def _update_game_route_language_from_payload(state: dict, data: dict) -> None:
+    """Refresh route-local prompt locale using the live preference precedence."""
+    request_language_full = _extract_request_language_full(data)
+    if request_language_full:
+        state["user_language"] = request_language_full
+        state["user_language_source"] = "request"
+        return
+
+    manager_language_full = None
+    manager_render_language_full = None
+    manager_language_is_explicit = False
+    try:
+        lanlan_name = str(state.get("lanlan_name") or "").strip()
+        manager = get_session_manager().get(lanlan_name) if lanlan_name else None
+        if manager is not None:
+            manager_language_is_explicit = bool(
+                getattr(manager, "_user_language_explicit", False)
+            )
+            manager_language_full = _extract_request_language_full({
+                "language": getattr(manager, "user_language", None),
+            })
+            manager_render_language_full = _extract_request_render_language_full({
+                "render_language": getattr(
+                    manager,
+                    "_conversation_render_language",
+                    None,
+                ),
+            })
+    except Exception:
+        logger.debug(
+            "game route language refresh failed to inspect explicit manager locale: lanlan=%s",
+            state.get("lanlan_name"),
+            exc_info=True,
+        )
+    if manager_language_is_explicit and manager_language_full:
+        state["user_language"] = manager_language_full
+        state["user_language_source"] = "session"
+        return
+
+    request_render_language_full = _extract_request_render_language_full(data)
+    if request_render_language_full:
+        state["user_language"] = request_render_language_full
+        state["user_language_source"] = "render"
+        return
+
+    if manager_render_language_full:
+        state["user_language"] = manager_render_language_full
+        state["user_language_source"] = "render"
+
+
 @router.post("/{game_type}/route/heartbeat")
 async def game_route_heartbeat(game_type: str, request: Request):
     """Refresh the game page heartbeat used to detect missed exit cleanup."""
@@ -1488,7 +1553,6 @@ async def game_route_heartbeat(game_type: str, request: Request):
         data = {}
 
     lanlan_name = _resolve_lanlan_name(data.get("lanlan_name"))
-    _absorb_request_language(data, lanlan_name)
     state = _get_active_game_route_state(lanlan_name, game_type) if lanlan_name else None
     if not state:
         return {"ok": True, "active": False, "state": {"game_route_active": False}}
@@ -1496,6 +1560,9 @@ async def game_route_heartbeat(game_type: str, request: Request):
     session_id = str(data.get("session_id") or "")
     if session_id and session_id != str(state.get("session_id") or ""):
         return {"ok": True, "active": False, "reason": "session_id_mismatch", "state": _public_route_state(state)}
+
+    _absorb_request_language(data, lanlan_name)
+    _update_game_route_language_from_payload(state, data)
 
     now = time.time()
     state["last_heartbeat_at"] = now
@@ -1656,11 +1723,6 @@ async def game_project_mirror_assistant(game_type: str, request: Request):
     lanlan_name = _resolve_lanlan_name(data.get("lanlan_name"))
     if not lanlan_name:
         return {"ok": False, "reason": "missing_lanlan_name"}
-    _absorb_request_language(data, lanlan_name)
-
-    mgr = get_session_manager().get(lanlan_name)
-    if not mgr:
-        return {"ok": False, "reason": "no_session_manager", "lanlan_name": lanlan_name}
 
     session_id = str(data.get("session_id") or "")
     state = _get_active_game_route_state(lanlan_name, game_type)
@@ -1681,6 +1743,11 @@ async def game_project_mirror_assistant(game_type: str, request: Request):
     )
     if stale_response:
         return stale_response
+    _absorb_request_language(data, lanlan_name)
+    mgr = get_session_manager().get(lanlan_name)
+    if not mgr:
+        return {"ok": False, "reason": "no_session_manager", "lanlan_name": lanlan_name}
+    _apply_request_render_language(data, mgr)
     event = _attach_game_memory_flag_to_event(
         data.get("event") if isinstance(data.get("event"), dict) else {},
         state,
@@ -1739,11 +1806,6 @@ async def game_project_speak(game_type: str, request: Request):
     lanlan_name = _resolve_lanlan_name(data.get("lanlan_name"))
     if not lanlan_name:
         return {"ok": False, "reason": "missing_lanlan_name"}
-    _absorb_request_language(data, lanlan_name)
-
-    mgr = get_session_manager().get(lanlan_name)
-    if not mgr:
-        return {"ok": False, "reason": "no_session_manager", "lanlan_name": lanlan_name}
 
     interrupt_audio = _coerce_payload_bool(data.get("interrupt_audio")) is True
     session_id = str(data.get("session_id") or "")
@@ -1775,6 +1837,11 @@ async def game_project_speak(game_type: str, request: Request):
             details={"reason": stale_response.get("reason"), "method": "project_tts"},
         )
         return stale_response
+    _absorb_request_language(data, lanlan_name)
+    mgr = get_session_manager().get(lanlan_name)
+    if not mgr:
+        return {"ok": False, "reason": "no_session_manager", "lanlan_name": lanlan_name}
+    _apply_request_render_language(data, mgr)
     _append_game_session_debug_log(
         game_type,
         session_id,
@@ -2073,7 +2140,22 @@ async def _route_external_transcript_to_game(
         },
     })
     llm_started_at = time.time()
-    result = await _run_game_chat(game_type, session_id, event)
+    # Main-window text/realtime voice can arrive without a route-page payload.
+    # Refresh from the live manager so a WebSocket render-language update is
+    # visible immediately instead of waiting for the next route heartbeat.
+    _update_game_route_language_from_payload(state, {})
+    route_prompt_locale = str(state.get("user_language") or "").strip()
+    game_chat_kwargs = (
+        {"prompt_locale": route_prompt_locale}
+        if route_prompt_locale
+        else {}
+    )
+    result = await _run_game_chat(
+        game_type,
+        session_id,
+        event,
+        **game_chat_kwargs,
+    )
     result_ts = time.time()
     _append_game_dialog(state, {
         "type": "assistant",
@@ -2531,9 +2613,6 @@ async def _complete_game_end_from_payload(
         )
     session_id = str(data.get('session_id', 'default'))
     lanlan_name = _resolve_lanlan_name(data.get("lanlan_name"))
-    # 包括 /route/end 与 /end 两条入口；postgame 投递依赖 mgr.user_language
-    # 决定旁白语言，所以这里也要 heal 一次（详见 _absorb_request_language）。
-    _absorb_request_language(data, lanlan_name)
     exit_reason = str(data.get("reason") or default_reason)
     postgame_options = _normalize_postgame_options(data.get("postgameProactive"), reason=exit_reason)
     state = _get_active_game_route_state(lanlan_name, game_type) if lanlan_name else None
@@ -2554,6 +2633,10 @@ async def _complete_game_end_from_payload(
     archive_memory = None
     postgame_result = None
     if state and str(state.get("session_id") or "") == session_id:
+        # Only the matching active route may heal the manager before its
+        # postgame delivery; stale end requests must remain side-effect free.
+        _absorb_request_language(data, lanlan_name)
+        _update_game_route_language_from_payload(state, data)
         score_session_mode = _normalize_badminton_mode(state.get("mode")) if _is_badminton_game_type(game_type) else ""
         _update_route_start_state_from_payload(state, data, exiting=True)
         current_state = data.get("currentState")
@@ -2708,23 +2791,11 @@ async def game_quick_lines(game_type: str, request: Request):
         except Exception:
             current_name = ""
         requested_name = _resolve_lanlan_name(data.get("lanlan_name") or current_name)
-        # quick-lines 是 soccer 流程里第一个 LLM 端点：请求体里的语言要直接用，而不是
-        # 只信 char_info —— SessionManager 还没 ready / mgr 拿不到的窗口下，char_info 的
-        # user_language 仍 stale 在全局缓存的旧值（首批 quick lines 落英文）。这里调
-        # _absorb_request_language 只为它的回写副作用（把真值同步进 mgr.user_language）；
-        # 本次要用的值由下面的 _extract_request_language_full 从同一个请求体取，取全码。
-        _absorb_request_language(data, requested_name)
-        # 全码，且不再只给 badminton 算：soccer 的 quick-lines 表自 #2706 起也有
-        # zh-TW 行，短码会把它塌掉。这个门原本无害，是因为 soccer 侧的 normalizer
-        # 当时本来就塌繁体；#2500 第 2 步把它翻成保留字形之后，这个门就成了繁中
-        # 用户开局第一批台词落简体的唯一原因。
-        request_language_full = _extract_request_language_full(data)
+        # quick-lines 是 soccer 流程里第一个 LLM 端点：显式偏好可同步到 session，
+        # render-only 兜底则只选择本次模板，避免首批台词落到旧缓存语言。统一使用
+        # 全码解析，确保 soccer 与 badminton 都保留 zh-TW 等区域变体。
+        language = _resolve_game_prompt_locale(requested_name, data=data)
         char_info = _get_character_info(requested_name)
-        language = (
-            request_language_full
-            or char_info.get("user_language_full")
-            or char_info.get("user_language")
-        )
         fallback_language = language
         cache_key = ""
         if _is_badminton_game_type(game_type):
@@ -2845,6 +2916,45 @@ async def game_quick_lines(game_type: str, request: Request):
         return {"ok": False, "error": str(e), "lines": {}}
 
 
+async def _load_game_character_prompt_locale(lanlan_name: str) -> tuple[str, bool]:
+    """Read the durable template locale and report whether the read was authoritative."""
+    if not lanlan_name:
+        return "", False
+    try:
+        from urllib.parse import quote
+
+        from config import MEMORY_SERVER_PORT
+        from utils.internal_http_client import get_internal_http_client
+        from utils.language_utils import (
+            is_supported_language_code,
+            normalize_language_code,
+        )
+
+        response = await get_internal_http_client().get(
+            f"http://127.0.0.1:{MEMORY_SERVER_PORT}/prompt-locale/"
+            f"{quote(lanlan_name, safe='')}",
+            timeout=2.5,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        if not isinstance(payload, dict) or payload.get("success") is not True:
+            return "", False
+        if "language" not in payload:
+            return "", False
+        language = payload["language"]
+        if language is None or language == "":
+            return "", True
+        if not is_supported_language_code(language):
+            return "", False
+        return normalize_language_code(language, format="full"), True
+    except Exception as exc:
+        logger.debug(
+            "game character prompt locale unavailable: %s",
+            type(exc).__name__,
+        )
+        return "", False
+
+
 @router.get("/{game_type}/character")
 async def game_character(game_type: str, request: Request = None):
     """Return current character information for model replacement.
@@ -2921,8 +3031,13 @@ async def game_character(game_type: str, request: Request = None):
 
                     vrm_path = _resolve_vrm_path(raw, config_manager, current_name)
 
+        language, language_preference_resolved = (
+            await _load_game_character_prompt_locale(current_name)
+        )
         return {
             'lanlan_name': current_name,
+            'language': language,
+            'language_preference_resolved': language_preference_resolved,
             'model_type': model_type,
             'live3d_sub_type': live3d_sub_type,
             'live2d_path': live2d_path,

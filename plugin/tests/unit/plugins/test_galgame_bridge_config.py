@@ -22,6 +22,7 @@ from _galgame_test_support import (
     _make_effective_config,
     _make_plugin_dirs,
     _noop_install_entry_poll,
+    _ocr_reader_session,
     _session,
     _session_state,
     _shared_state,
@@ -42,6 +43,24 @@ from _galgame_test_support import (
     threading,
     time,
 )
+from plugin.plugins.galgame_plugin.reader import (
+    EventStreamBoundary,
+    read_stream_checkpoint as read_events_checkpoint,
+    snapshot_events_boundary as read_events_boundary,
+)
+
+
+def _append_event(events_path: Path, event: dict[str, object]) -> None:
+    with events_path.open("ab") as handle:
+        handle.write(
+            json.dumps(
+                event,
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ).encode("utf-8")
+            + b"\n"
+        )
+
 
 @pytest.mark.asyncio
 async def test_install_progress_callback_uses_supported_run_update_fields() -> None:
@@ -120,6 +139,36 @@ def test_screen_classified_event_updates_snapshot_state() -> None:
     assert updated["screen_ui_elements"][0]["text"] == "Start Game"
     assert updated["screen_debug"]["reason"] == "title_keywords"
     assert updated["ts"] == "2026-04-29T03:00:00Z"
+
+
+@pytest.mark.plugin_unit
+def test_preexisting_session_reattachment_state_is_count_bounded(
+    tmp_path: Path,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    plugin = GalgameBridgePlugin(_Ctx(plugin_dir, _make_effective_config(bridge_root)))
+    plugin._startup_existing_session_ids = set()
+
+    for index in range(20):
+        session_id = f"preexisting-{index}"
+        identity = (DATA_SOURCE_BRIDGE_SDK, "demo.alpha", session_id)
+        plugin._startup_existing_session_ids.add(identity)
+        plugin._remember_active_preexisting_session_state(
+            {
+                "active_data_source": DATA_SOURCE_BRIDGE_SDK,
+                "active_game_id": "demo.alpha",
+                "active_session_id": session_id,
+                "history_events": [{"seq": index + 1}],
+                "last_seq": index + 1,
+            }
+        )
+
+    expected = {
+        (DATA_SOURCE_BRIDGE_SDK, "demo.alpha", f"preexisting-{index}")
+        for index in range(4, 20)
+    }
+    assert set(plugin._startup_preexisting_session_states) == expected
+    assert plugin._startup_existing_session_ids == expected
 
 
 @pytest.mark.plugin_unit
@@ -276,9 +325,27 @@ def test_tail_events_handles_utf8_crlf_and_partial_line(tmp_path: Path) -> None:
     assert resumed.line_buffer == b""
 
 
+@pytest.mark.plugin_unit
+def test_tail_events_detects_nonempty_stream_truncated_before_cursor(
+    tmp_path: Path,
+) -> None:
+    events_path = tmp_path / "events.jsonl"
+    events_path.write_bytes(b'{"session_id":"sess-a","seq":2}\n')
+
+    result = tail_events_jsonl(
+        events_path,
+        offset=events_path.stat().st_size + 128,
+        line_buffer=b"partial",
+    )
+
+    assert result.reset_detected is True
+    assert result.file_size == events_path.stat().st_size
+    assert result.line_buffer == b""
+
+
 @pytest.mark.asyncio
 @pytest.mark.plugin_unit
-async def test_startup_binds_latest_session_and_exposes_ui(tmp_path: Path) -> None:
+async def test_first_bridge_poll_binds_latest_session_and_exposes_ui(tmp_path: Path) -> None:
     plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
     _create_game_dir(
         bridge_root,
@@ -305,6 +372,8 @@ async def test_startup_binds_latest_session_and_exposes_ui(tmp_path: Path) -> No
     plugin = GalgameBridgePlugin(ctx)
     startup = await plugin.startup()
     assert isinstance(startup, Ok)
+    assert startup.value["result"]["available_game_ids"] == []
+    await plugin._poll_bridge(force=True)
 
     status = await plugin.galgame_get_status()
     snapshot = await plugin.galgame_get_snapshot()
@@ -364,6 +433,42 @@ async def test_startup_auto_opens_ui_only_when_enabled(
 
     assert isinstance(enabled_startup, Ok)
     assert opened_urls == ["http://127.0.0.1:49001/plugin/galgame_plugin/ui/"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
+async def test_bridge_tick_initializes_vision_once_outside_event_loop(tmp_path: Path) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    plugin = GalgameBridgePlugin(_Ctx(plugin_dir, _make_effective_config(bridge_root)))
+    plugin._cfg = build_config(_make_effective_config(bridge_root))
+    event_loop_thread_id = threading.get_ident()
+
+    class _LazyVisionManager:
+        def __init__(self) -> None:
+            self.calls = 0
+            self.initialized = False
+            self.thread_id = 0
+
+        def vision_classifier_initialization_pending(self) -> bool:
+            return not self.initialized
+
+        def initialize_vision_classifier_if_needed(self) -> None:
+            self.calls += 1
+            self.thread_id = threading.get_ident()
+            self.initialized = True
+
+    manager = _LazyVisionManager()
+    plugin._ocr_reader_manager = manager  # type: ignore[assignment]
+    plugin._refresh_ocr_foreground_state = lambda: None  # type: ignore[method-assign]
+    plugin._ocr_foreground_advance_monitor_active = lambda: True  # type: ignore[method-assign]
+    plugin._start_background_bridge_poll = lambda: False  # type: ignore[method-assign]
+    plugin._start_ocr_fast_loop = lambda: False  # type: ignore[method-assign]
+
+    await plugin.bridge_tick()
+    await plugin.bridge_tick()
+
+    assert manager.calls == 1
+    assert manager.thread_id != event_loop_thread_id
 
 
 @pytest.mark.asyncio
@@ -699,6 +804,52 @@ async def test_shutdown_logs_noncritical_cleanup_failures(tmp_path: Path) -> Non
 
 @pytest.mark.asyncio
 @pytest.mark.plugin_unit
+async def test_shutdown_defers_ocr_cancellation_until_all_resources_close(
+    tmp_path: Path,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
+    plugin = GalgameBridgePlugin(ctx)
+    cleanup_order: list[str] = []
+
+    class _CancellingOcrReader:
+        async def shutdown(self) -> None:
+            cleanup_order.append("ocr")
+            raise asyncio.CancelledError()
+
+    class _GameAgent:
+        async def drain_summary_tasks(self, *, timeout: float) -> None:
+            assert timeout == 5.0
+            cleanup_order.append("agent-drain")
+
+        async def shutdown(self) -> None:
+            cleanup_order.append("agent")
+
+    class _ShutdownResource:
+        def __init__(self, label: str) -> None:
+            self.label = label
+
+        async def shutdown(self) -> None:
+            cleanup_order.append(self.label)
+
+    class _Store:
+        async def close(self) -> None:
+            cleanup_order.append("store")
+
+    plugin._ocr_reader_manager = _CancellingOcrReader()
+    plugin._game_agent = _GameAgent()
+    plugin._llm_gateway = _ShutdownResource("llm")
+    plugin._host_agent_adapter = _ShutdownResource("host")
+    plugin.store = _Store()
+
+    with pytest.raises(asyncio.CancelledError):
+        await plugin.shutdown()
+
+    assert cleanup_order == ["ocr", "agent-drain", "agent", "llm", "host", "store"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
 async def test_bridge_tick_cancels_stale_background_poll(tmp_path: Path) -> None:
     plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
     ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
@@ -828,6 +979,41 @@ def test_config_service_persist_runtime_state_uses_defaults_for_missing_keys() -
     }
 
 
+@pytest.mark.plugin_unit
+def test_runtime_restore_keeps_cursor_but_discards_persisted_dedupe_window(
+    tmp_path: Path,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    plugin = GalgameBridgePlugin(_Ctx(plugin_dir, _make_effective_config(bridge_root)))
+
+    plugin._set_runtime_from_store(
+        {
+            "bound_game_id": "demo.alpha",
+            "session_id": "sess-a",
+            "events_byte_offset": 321,
+            "events_file_size": 654,
+            "last_seq": 7,
+            "dedupe_window": [
+                {
+                    "game_id": "demo.alpha",
+                    "scene_id": "scene-a",
+                    "line_id": "line-old",
+                    "normalized_text": "旧台词",
+                }
+            ],
+        },
+        [],
+    )
+
+    restored = plugin._snapshot_state()
+    assert restored["bound_game_id"] == "demo.alpha"
+    assert restored["active_session_id"] == "sess-a"
+    assert restored["events_byte_offset"] == 321
+    assert restored["events_file_size"] == 654
+    assert restored["last_seq"] == 7
+    assert restored["dedupe_window"] == []
+
+
 @pytest.mark.asyncio
 @pytest.mark.plugin_unit
 async def test_set_mode_and_bind_game_persist_across_restart(tmp_path: Path) -> None:
@@ -856,6 +1042,7 @@ async def test_set_mode_and_bind_game_persist_across_restart(tmp_path: Path) -> 
     ctx1 = _Ctx(plugin_dir, _make_effective_config(bridge_root))
     plugin1 = GalgameBridgePlugin(ctx1)
     await plugin1.startup()
+    await plugin1._poll_bridge(force=True)
 
     mode_result = await plugin1.galgame_set_mode(
         mode="choice_advisor",
@@ -868,6 +1055,7 @@ async def test_set_mode_and_bind_game_persist_across_restart(tmp_path: Path) -> 
     ctx2 = _Ctx(plugin_dir, _make_effective_config(bridge_root))
     plugin2 = GalgameBridgePlugin(ctx2)
     await plugin2.startup()
+    await plugin2._poll_bridge(force=True)
     status = await plugin2.galgame_get_status()
     assert isinstance(status, Ok)
     assert status.value["mode"] == "choice_advisor"
@@ -882,6 +1070,13 @@ async def test_save_loaded_and_repeated_line_do_not_duplicate_stable_history(tmp
     plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
     game_id = "demo.alpha"
     session_id = "sess-a"
+    ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
+    plugin = GalgameBridgePlugin(ctx)
+    await plugin.startup()
+    session_started_at = time.strftime(
+        "%Y-%m-%dT%H:%M:%SZ",
+        time.gmtime(plugin._plugin_run_started_at + 1.0),
+    )
     events = [
         _event(
             seq=1,
@@ -892,7 +1087,7 @@ async def test_save_loaded_and_repeated_line_do_not_duplicate_stable_history(tmp
                 "game_title": "demo.alpha",
                 "engine": "renpy",
                 "locale": "ja-JP",
-                "started_at": "2026-04-21T08:30:00Z",
+                "started_at": session_started_at,
                 "scene_id": "boot",
                 "line_id": "",
                 "route_id": "",
@@ -954,6 +1149,7 @@ async def test_save_loaded_and_repeated_line_do_not_duplicate_stable_history(tmp
             game_id=game_id,
             session_id=session_id,
             last_seq=4,
+            started_at=session_started_at,
             state=_session_state(
                 speaker="雪乃",
                 text="今天也一起回家吧。",
@@ -965,9 +1161,7 @@ async def test_save_loaded_and_repeated_line_do_not_duplicate_stable_history(tmp
         events=events,
     )
 
-    ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
-    plugin = GalgameBridgePlugin(ctx)
-    await plugin.startup()
+    await plugin._poll_bridge(force=True)
     history = await plugin.galgame_get_history(limit=20, include_events=True)
     assert isinstance(history, Ok)
     assert len(history.value["events"]) == 4
@@ -977,15 +1171,120 @@ async def test_save_loaded_and_repeated_line_do_not_duplicate_stable_history(tmp
 
 @pytest.mark.asyncio
 @pytest.mark.plugin_unit
+async def test_current_session_poll_preserves_internal_save_boundary(
+    tmp_path: Path,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    game_id = "demo.load-boundary"
+    session_id = "sess-load-boundary"
+    plugin = GalgameBridgePlugin(
+        _Ctx(plugin_dir, _make_effective_config(bridge_root))
+    )
+    await plugin.startup()
+    try:
+        session_started_at = time.strftime(
+            "%Y-%m-%dT%H:%M:%SZ",
+            time.gmtime(plugin._plugin_run_started_at + 1.0),
+        )
+        source_state = _session_state(
+            scene_id="scene-a",
+            route_id="route-a",
+            ts="2026-04-21T08:31:02Z",
+        )
+        source_state["save_context"] = {
+            "kind": "load",
+            "slot_id": "slot-a",
+            "display_name": "Slot A",
+        }
+        game_dir = _create_game_dir(
+            bridge_root,
+            game_id=game_id,
+            session_payload=_session(
+                game_id=game_id,
+                session_id=session_id,
+                last_seq=1,
+                started_at=session_started_at,
+                state=source_state,
+            ),
+            events=[
+                _event(
+                    seq=1,
+                    event_type="session_started",
+                    session_id=session_id,
+                    game_id=game_id,
+                    payload={
+                        "scene_id": "scene-a",
+                        "route_id": "route-a",
+                        "save_context": {"kind": "unknown"},
+                    },
+                    ts="2026-04-21T08:31:01Z",
+                ),
+            ],
+        )
+
+        await plugin._poll_bridge(force=True)
+        _append_event(
+            game_dir / "events.jsonl",
+            _event(
+                seq=2,
+                event_type="save_loaded",
+                session_id=session_id,
+                game_id=game_id,
+                payload={
+                    "reason": "load",
+                    "scene_id": "scene-a",
+                    "route_id": "route-a",
+                    "save_context": source_state["save_context"],
+                },
+                ts="2026-04-21T08:31:02Z",
+            ),
+        )
+        _write_session(
+            game_dir / "session.json",
+            _session(
+                game_id=game_id,
+                session_id=session_id,
+                last_seq=2,
+                started_at=session_started_at,
+                state=source_state,
+            ),
+        )
+        await plugin._poll_bridge(force=True)
+        first_boundary = plugin._snapshot_state()["latest_snapshot"][
+            "save_boundary"
+        ]
+        assert first_boundary == {
+            "kind": "load",
+            "seq": 2,
+            "ts": "2026-04-21T08:31:02Z",
+        }
+
+        await plugin._poll_bridge(force=True)
+        assert plugin._snapshot_state()["latest_snapshot"][
+            "save_boundary"
+        ] == first_boundary
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
 async def test_bridge_fixture_manual_load_round_exposes_bridge_sdk_status_snapshot_and_history(
     tmp_path: Path,
 ) -> None:
     plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
-    _copy_bridge_fixture_scenario(bridge_root, "manual_load")
-
     ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
     plugin = GalgameBridgePlugin(ctx)
     await plugin.startup()
+    game_dir = _copy_bridge_fixture_scenario(bridge_root, "manual_load")
+    session_read = read_session_json(game_dir / "session.json")
+    assert session_read.session is not None
+    current_session = dict(session_read.session)
+    current_session["started_at"] = time.strftime(
+        "%Y-%m-%dT%H:%M:%SZ",
+        time.gmtime(plugin._plugin_run_started_at + 1.0),
+    )
+    _write_session(game_dir / "session.json", current_session)
     await plugin._poll_bridge(force=True)
 
     status = await plugin.galgame_get_status()
@@ -1019,8 +1318,6 @@ async def test_bridge_fixture_rollback_round_preserves_history_and_supports_phas
     tmp_path: Path,
 ) -> None:
     plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
-    _copy_bridge_fixture_scenario(bridge_root, "rollback")
-
     ctx = _Ctx(
         plugin_dir,
         _make_effective_config(
@@ -1059,6 +1356,15 @@ async def test_bridge_fixture_rollback_round_preserves_history_and_supports_phas
     ctx.entry_handler = _handler
     plugin = GalgameBridgePlugin(ctx)
     await plugin.startup()
+    game_dir = _copy_bridge_fixture_scenario(bridge_root, "rollback")
+    session_read = read_session_json(game_dir / "session.json")
+    assert session_read.session is not None
+    current_session = dict(session_read.session)
+    current_session["started_at"] = time.strftime(
+        "%Y-%m-%dT%H:%M:%SZ",
+        time.gmtime(plugin._plugin_run_started_at + 1.0),
+    )
+    _write_session(game_dir / "session.json", current_session)
     await plugin._poll_bridge(force=True)
 
     snapshot = await plugin.galgame_get_snapshot()
@@ -1097,23 +1403,36 @@ async def test_bridge_fixture_rollback_round_preserves_history_and_supports_phas
 
 @pytest.mark.asyncio
 @pytest.mark.plugin_unit
-async def test_restart_restores_cursor_and_processes_new_tail(tmp_path: Path) -> None:
+async def test_restart_baselines_existing_session_and_processes_only_post_mount_tail_once(
+    tmp_path: Path,
+) -> None:
     plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
     game_id = "demo.alpha"
     session_id = "sess-a"
+    old_choices = [
+        {
+            "choice_id": "line-old#choice0",
+            "text": "旧选项",
+            "index": 0,
+            "enabled": True,
+        }
+    ]
     game_dir = _create_game_dir(
         bridge_root,
         game_id=game_id,
         session_payload=_session(
             game_id=game_id,
             session_id=session_id,
-            last_seq=2,
+            last_seq=3,
+            started_at="2000-01-01T00:00:00Z",
             state=_session_state(
                 speaker="雪乃",
                 text="旧台词",
-                line_id="line-1",
+                choices=old_choices,
+                line_id="line-old",
                 scene_id="scene-a",
-                ts="2026-04-21T08:30:02Z",
+                is_menu_open=True,
+                ts="2000-01-01T00:00:02Z",
             ),
         ),
         events=[
@@ -1126,7 +1445,7 @@ async def test_restart_restores_cursor_and_processes_new_tail(tmp_path: Path) ->
                     "game_title": game_id,
                     "engine": "renpy",
                     "locale": "ja-JP",
-                    "started_at": "2026-04-21T08:30:00Z",
+                    "started_at": "2000-01-01T00:00:00Z",
                     "scene_id": "boot",
                     "line_id": "",
                     "route_id": "",
@@ -1136,7 +1455,7 @@ async def test_restart_restores_cursor_and_processes_new_tail(tmp_path: Path) ->
                     "choices": [],
                     "save_context": {"kind": "unknown", "slot_id": "", "display_name": ""},
                 },
-                ts="2026-04-21T08:30:00Z",
+                ts="2000-01-01T00:00:00Z",
             ),
             _event(
                 seq=2,
@@ -1146,66 +1465,1448 @@ async def test_restart_restores_cursor_and_processes_new_tail(tmp_path: Path) ->
                 payload={
                     "speaker": "雪乃",
                     "text": "旧台词",
-                    "line_id": "line-1",
+                    "line_id": "line-old",
                     "scene_id": "scene-a",
                     "route_id": "",
                 },
-                ts="2026-04-21T08:30:02Z",
+                ts="2000-01-01T00:00:02Z",
+            ),
+            _event(
+                seq=3,
+                event_type="choices_shown",
+                session_id=session_id,
+                game_id=game_id,
+                payload={
+                    "line_id": "line-old",
+                    "scene_id": "scene-a",
+                    "route_id": "",
+                    "choices": old_choices,
+                },
+                ts="2000-01-01T00:00:03Z",
             ),
         ],
     )
+    events_path = game_dir / "events.jsonl"
+    events_before_mount = events_path.read_bytes()
 
-    ctx1 = _Ctx(plugin_dir, _make_effective_config(bridge_root))
-    plugin1 = GalgameBridgePlugin(ctx1)
-    await plugin1.startup()
+    ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
+    plugin = GalgameBridgePlugin(ctx)
+    await plugin.startup()
+    try:
+        await plugin._poll_bridge(force=True)
 
-    new_event = _event(
-        seq=3,
-        event_type="line_changed",
-        session_id=session_id,
-        game_id=game_id,
-        payload={
-            "speaker": "雪乃",
-            "text": "重启后新增台词",
-            "line_id": "line-2",
-            "scene_id": "scene-a",
-            "route_id": "",
-        },
-        ts="2026-04-21T08:30:05Z",
-    )
-    with (game_dir / "events.jsonl").open("ab") as handle:
-        handle.write(
-            json.dumps(new_event, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-            + b"\n"
+        mounted = plugin._snapshot_state()
+        assert mounted["history_events"] == []
+        assert mounted["history_lines"] == []
+        assert mounted["history_observed_lines"] == []
+        assert mounted["history_choices"] == []
+        assert mounted["dedupe_window"] == []
+        assert mounted["line_buffer"] == b""
+        assert mounted["events_byte_offset"] == len(events_before_mount)
+        assert mounted["events_file_size"] == len(events_before_mount)
+        assert mounted["last_seq"] == 3
+        assert mounted["latest_snapshot"].get("speaker", "") == ""
+        assert mounted["latest_snapshot"].get("text", "") == ""
+        assert mounted["latest_snapshot"].get("line_id", "") == ""
+        assert mounted["latest_snapshot"].get("stability", "") == ""
+        assert mounted["latest_snapshot"].get("choices", []) == []
+
+        status = await plugin.galgame_get_status()
+        snapshot = await plugin.galgame_get_snapshot()
+        history = await plugin.galgame_get_history(limit=20, include_events=True)
+        assert isinstance(status, Ok)
+        assert isinstance(snapshot, Ok)
+        assert isinstance(history, Ok)
+        assert status.value["effective_current_line"] == {}
+        assert snapshot.value["effective_current_line"] == {}
+        assert history.value["events"] == []
+        assert history.value["stable_lines"] == []
+        assert history.value["observed_lines"] == []
+        assert history.value["choices"] == []
+        assert events_path.read_bytes() == events_before_mount
+
+        assert plugin._game_agent is not None
+        agent_context = plugin._game_agent._build_agent_reply_context(
+            mounted,
+            prompt="当前台词是什么？",
         )
-    _write_session(
-        game_dir / "session.json",
-        _session(
-            game_id=game_id,
-            session_id=session_id,
-            last_seq=3,
-            state=_session_state(
-                speaker="雪乃",
-                text="重启后新增台词",
-                line_id="line-2",
-                scene_id="scene-a",
-                ts="2026-04-21T08:30:05Z",
-            ),
-        ),
-    )
+        public_context = agent_context["public_context"]
+        assert public_context["current_line"]["text"] == ""
+        assert public_context["latest_line"] == ""
+        assert public_context["recent_lines"] == []
+        assert public_context["recent_choices"] == []
+        assert ctx.pushed_messages == []
 
-    ctx2 = _Ctx(plugin_dir, _make_effective_config(bridge_root))
-    plugin2 = GalgameBridgePlugin(ctx2)
-    await plugin2.startup()
-    history = await plugin2.galgame_get_history(limit=20, include_events=True)
-    assert isinstance(history, Ok)
-    assert history.value["events"][-1]["seq"] == 3
-    assert history.value["stable_lines"][-1]["line_id"] == "line-2"
+        heartbeat = _event(
+            seq=4,
+            event_type="heartbeat",
+            session_id=session_id,
+            game_id=game_id,
+            payload={
+                "state_ts": "2026-04-21T08:30:04Z",
+                "idle_seconds": 2,
+            },
+            ts="2026-04-21T08:30:04Z",
+        )
+        with events_path.open("ab") as handle:
+            handle.write(
+                json.dumps(heartbeat, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+                + b"\n"
+            )
+        _write_session(
+            game_dir / "session.json",
+            _session(
+                game_id=game_id,
+                session_id=session_id,
+                last_seq=4,
+                started_at="2000-01-01T00:00:00Z",
+                state=_session_state(
+                    speaker="雪乃",
+                    text="旧台词",
+                    choices=old_choices,
+                    line_id="line-old",
+                    scene_id="scene-a",
+                    is_menu_open=True,
+                    ts="2000-01-01T00:00:03Z",
+                ),
+            ),
+        )
+
+        await plugin._poll_bridge(force=True)
+        after_heartbeat = plugin._snapshot_state()
+        heartbeat_status = await plugin.galgame_get_status()
+        heartbeat_snapshot = await plugin.galgame_get_snapshot()
+        assert after_heartbeat["latest_snapshot"] == {}
+        assert after_heartbeat["history_lines"] == []
+        assert after_heartbeat["history_observed_lines"] == []
+        assert after_heartbeat["history_choices"] == []
+        assert [event["seq"] for event in after_heartbeat["history_events"]] == [4]
+        assert isinstance(heartbeat_status, Ok)
+        assert isinstance(heartbeat_snapshot, Ok)
+        assert heartbeat_status.value["effective_current_line"] == {}
+        assert heartbeat_snapshot.value["effective_current_line"] == {}
+
+        new_event = _event(
+            seq=5,
+            event_type="line_changed",
+            session_id=session_id,
+            game_id=game_id,
+            payload={
+                "speaker": "雪乃",
+                "text": "挂载后新增台词",
+                "line_id": "line-new",
+                "scene_id": "scene-a",
+                "route_id": "",
+            },
+            ts="2026-04-21T08:30:05Z",
+        )
+        with events_path.open("ab") as handle:
+            handle.write(
+                json.dumps(new_event, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+                + b"\n"
+            )
+        _write_session(
+            game_dir / "session.json",
+            _session(
+                game_id=game_id,
+                session_id=session_id,
+                last_seq=5,
+                started_at="2000-01-01T00:00:00Z",
+                state=_session_state(
+                    speaker="雪乃",
+                    text="挂载后新增台词",
+                    line_id="line-new",
+                    scene_id="scene-a",
+                    ts="2026-04-21T08:30:05Z",
+                ),
+            ),
+        )
+
+        await plugin._poll_bridge(force=True)
+        await plugin._poll_bridge(force=True)
+        history_after_new_line = await plugin.galgame_get_history(limit=20, include_events=True)
+        assert isinstance(history_after_new_line, Ok)
+        assert [event["seq"] for event in history_after_new_line.value["events"]] == [4, 5]
+        assert [line["line_id"] for line in history_after_new_line.value["stable_lines"]] == [
+            "line-new"
+        ]
+        assert history_after_new_line.value["stable_lines"][0]["text"] == "挂载后新增台词"
+    finally:
+        await plugin.shutdown()
 
 
 @pytest.mark.asyncio
 @pytest.mark.plugin_unit
-async def test_truncation_sets_stream_reset_pending(tmp_path: Path) -> None:
+async def test_preexisting_session_resumes_cursor_after_candidate_gap(
+    tmp_path: Path,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    session_id = "sess-a"
+    game_id = "demo.alpha"
+    old_line = _event(
+        seq=1,
+        event_type="line_changed",
+        session_id=session_id,
+        game_id=game_id,
+        ts="2000-01-01T00:00:01Z",
+        payload={
+            "speaker": "Yukino",
+            "text": "pre-start line",
+            "line_id": "line-old",
+            "scene_id": "scene-a",
+            "route_id": "",
+        },
+    )
+    game_dir = _create_game_dir(
+        bridge_root,
+        game_id=game_id,
+        session_payload=_session(
+            game_id=game_id,
+            session_id=session_id,
+            last_seq=1,
+            started_at="2000-01-01T00:00:00Z",
+            state=_session_state(
+                text="pre-start line",
+                line_id="line-old",
+                scene_id="scene-a",
+            ),
+        ),
+        events=[old_line],
+    )
+    session_path = game_dir / "session.json"
+    events_path = game_dir / "events.jsonl"
+    plugin = GalgameBridgePlugin(_Ctx(plugin_dir, _make_effective_config(bridge_root)))
+    await plugin.startup()
+    try:
+        await plugin._poll_bridge(force=True)
+        first_new_line = _event(
+            seq=2,
+            event_type="line_changed",
+            session_id=session_id,
+            game_id=game_id,
+            ts="2026-04-21T08:35:02Z",
+            payload={
+                "speaker": "Yukino",
+                "text": "line before candidate gap",
+                "line_id": "line-before-gap",
+                "scene_id": "scene-a",
+                "route_id": "",
+            },
+        )
+        _append_event(events_path, first_new_line)
+        _write_session(
+            session_path,
+            _session(
+                game_id=game_id,
+                session_id=session_id,
+                last_seq=2,
+                started_at="2000-01-01T00:00:00Z",
+                state=_session_state(
+                    text="line before candidate gap",
+                    line_id="line-before-gap",
+                    scene_id="scene-a",
+                ),
+            ),
+        )
+        await plugin._poll_bridge(force=True)
+        before_gap = plugin._snapshot_state()
+        assert before_gap["last_seq"] == 2
+
+        session_path.unlink()
+        await plugin._poll_bridge(force=True)
+        during_gap = plugin._snapshot_state()
+        assert during_gap["active_session_id"] == ""
+        assert during_gap["last_seq"] == 2
+
+        gap_line = _event(
+            seq=3,
+            event_type="line_changed",
+            session_id=session_id,
+            game_id=game_id,
+            ts="2026-04-21T08:35:03Z",
+            payload={
+                "speaker": "Yukino",
+                "text": "line during candidate gap",
+                "line_id": "line-during-gap",
+                "scene_id": "scene-a",
+                "route_id": "",
+            },
+        )
+        _append_event(events_path, gap_line)
+        _write_session(
+            session_path,
+            _session(
+                game_id=game_id,
+                session_id=session_id,
+                last_seq=3,
+                started_at="2000-01-01T00:00:00Z",
+                state=_session_state(
+                    text="line during candidate gap",
+                    line_id="line-during-gap",
+                    scene_id="scene-a",
+                ),
+            ),
+        )
+        await plugin._poll_bridge(force=True)
+
+        resumed = plugin._snapshot_state()
+        history = await plugin.galgame_get_history(limit=20, include_events=True)
+        assert resumed["active_session_id"] == session_id
+        assert resumed["last_seq"] == 3
+        assert isinstance(history, Ok)
+        assert [event["seq"] for event in history.value["events"]] == [2, 3]
+        assert [line["line_id"] for line in history.value["stable_lines"]] == [
+            "line-before-gap",
+            "line-during-gap",
+        ]
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
+async def test_current_process_new_session_warmup_keeps_first_line(tmp_path: Path) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
+    plugin = GalgameBridgePlugin(ctx)
+    await plugin.startup()
+    try:
+        game_id = "demo.new"
+        session_id = "sess-new"
+        first_line = _event(
+            seq=1,
+            event_type="line_changed",
+            session_id=session_id,
+            game_id=game_id,
+            payload={
+                "speaker": "雪乃",
+                "text": "本次运行首句",
+                "line_id": "line-first",
+                "scene_id": "scene-new",
+                "route_id": "",
+            },
+            ts="2099-01-01T00:00:01Z",
+        )
+        game_dir = _create_game_dir(
+            bridge_root,
+            game_id=game_id,
+            session_payload=_session(
+                game_id=game_id,
+                session_id=session_id,
+                last_seq=1,
+                started_at="2099-01-01T00:00:00Z",
+                state=_session_state(
+                    speaker="雪乃",
+                    text="本次运行首句",
+                    line_id="line-first",
+                    scene_id="scene-new",
+                    ts="2099-01-01T00:00:01Z",
+                ),
+            ),
+            events=[first_line],
+        )
+        events_before_poll = (game_dir / "events.jsonl").read_bytes()
+
+        await plugin._poll_bridge(force=True)
+
+        history = await plugin.galgame_get_history(limit=20, include_events=True)
+        snapshot = await plugin.galgame_get_snapshot()
+        assert isinstance(history, Ok)
+        assert isinstance(snapshot, Ok)
+        assert [event["seq"] for event in history.value["events"]] == [1]
+        assert [line["line_id"] for line in history.value["stable_lines"]] == ["line-first"]
+        assert snapshot.value["effective_current_line"]["text"] == "本次运行首句"
+        assert (game_dir / "events.jsonl").read_bytes() == events_before_poll
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
+async def test_current_process_ocr_warmup_ignores_other_session_events(
+    tmp_path: Path,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
+    plugin = GalgameBridgePlugin(ctx)
+    await plugin.startup()
+    try:
+        game_id = "ocr-demo.shared"
+        session_id = "ocr-current"
+        foreign_line = _event(
+            seq=99,
+            event_type="line_changed",
+            session_id="ocr-previous",
+            game_id=game_id,
+            payload={
+                "speaker": "旧角色",
+                "text": "另一会话的旧台词",
+                "line_id": "foreign-line",
+                "scene_id": "foreign-scene",
+                "route_id": "ocr",
+            },
+            ts="2000-01-01T00:00:01Z",
+        )
+        current_line = _event(
+            seq=1,
+            event_type="line_changed",
+            session_id=session_id,
+            game_id=game_id,
+            payload={
+                "speaker": "雪乃",
+                "text": "本次 OCR 首句",
+                "line_id": "ocr-current-line",
+                "scene_id": "ocr-current-scene",
+                "route_id": "ocr",
+            },
+            ts="2099-01-01T00:00:01Z",
+        )
+        session_payload = _ocr_reader_session(
+            game_id=game_id,
+            session_id=session_id,
+            last_seq=1,
+            state=_session_state(
+                speaker="雪乃",
+                text="本次 OCR 首句",
+                line_id="ocr-current-line",
+                scene_id="ocr-current-scene",
+                route_id="ocr",
+                ts="2099-01-01T00:00:01Z",
+            ),
+        )
+        session_payload["started_at"] = "2099-01-01T00:00:00Z"
+        game_dir = _create_game_dir(
+            bridge_root,
+            game_id=game_id,
+            session_payload=session_payload,
+            events=[foreign_line, current_line],
+        )
+        events_before_poll = (game_dir / "events.jsonl").read_bytes()
+
+        await plugin._poll_bridge(force=True)
+
+        status = await plugin.galgame_get_status()
+        history = await plugin.galgame_get_history(limit=20, include_events=True)
+        snapshot = await plugin.galgame_get_snapshot()
+        assert isinstance(status, Ok)
+        assert isinstance(history, Ok)
+        assert isinstance(snapshot, Ok)
+        assert status.value["active_data_source"] == DATA_SOURCE_OCR_READER
+        assert [event["seq"] for event in history.value["events"]] == [1]
+        assert [line["line_id"] for line in history.value["stable_lines"]] == [
+            "ocr-current-line"
+        ]
+        assert history.value["stable_lines"][0]["text"] == "本次 OCR 首句"
+        assert snapshot.value["effective_current_line"]["text"] == "本次 OCR 首句"
+        assert (game_dir / "events.jsonl").read_bytes() == events_before_poll
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
+async def test_preexisting_empty_event_stream_processes_first_appended_line(
+    tmp_path: Path,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    game_id = "demo.empty"
+    session_id = "sess-empty"
+    game_dir = _create_game_dir(
+        bridge_root,
+        game_id=game_id,
+        session_payload=_session(
+            game_id=game_id,
+            session_id=session_id,
+            last_seq=0,
+            started_at="2000-01-01T00:00:00Z",
+            state=_session_state(
+                speaker="雪乃",
+                text="不应恢复的旧快照",
+                line_id="old-snapshot-line",
+                scene_id="scene-a",
+                ts="2000-01-01T00:00:00Z",
+            ),
+        ),
+        events=[],
+    )
+    events_path = game_dir / "events.jsonl"
+    assert events_path.read_bytes() == b""
+
+    plugin = GalgameBridgePlugin(_Ctx(plugin_dir, _make_effective_config(bridge_root)))
+    await plugin.startup()
+    try:
+        await plugin._poll_bridge(force=True)
+        mounted = plugin._snapshot_state()
+        assert mounted["latest_snapshot"] == {}
+        assert mounted["history_events"] == []
+        assert mounted["events_byte_offset"] == 0
+        assert mounted["events_file_size"] == 0
+        assert mounted["last_seq"] == 0
+
+        first_line = _event(
+            seq=1,
+            event_type="line_changed",
+            session_id=session_id,
+            game_id=game_id,
+            payload={
+                "speaker": "雪乃",
+                "text": "空文件挂载后的第一句",
+                "line_id": "line-first",
+                "scene_id": "scene-a",
+                "route_id": "",
+            },
+            ts="2026-04-21T08:30:01Z",
+        )
+        with events_path.open("ab") as handle:
+            handle.write(
+                json.dumps(first_line, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+                + b"\n"
+            )
+        _write_session(
+            game_dir / "session.json",
+            _session(
+                game_id=game_id,
+                session_id=session_id,
+                last_seq=1,
+                started_at="2000-01-01T00:00:00Z",
+                state=_session_state(
+                    speaker="雪乃",
+                    text="空文件挂载后的第一句",
+                    line_id="line-first",
+                    scene_id="scene-a",
+                    ts="2026-04-21T08:30:01Z",
+                ),
+            ),
+        )
+
+        await plugin._poll_bridge(force=True)
+
+        after_first_line = plugin._snapshot_state()
+        history = await plugin.galgame_get_history(limit=20, include_events=True)
+        assert after_first_line["stream_reset_pending"] is False
+        assert isinstance(history, Ok)
+        assert [event["seq"] for event in history.value["events"]] == [1]
+        assert [line["line_id"] for line in history.value["stable_lines"]] == ["line-first"]
+        assert history.value["stable_lines"][0]["text"] == "空文件挂载后的第一句"
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
+@pytest.mark.parametrize("event_type", ["line_changed", "choices_shown"])
+async def test_preexisting_first_event_inherits_only_hidden_snapshot_identity(
+    tmp_path: Path,
+    event_type: str,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    game_id = "demo.hidden-baseline"
+    session_id = "sess-hidden-baseline"
+    old_state = _session_state(
+        speaker="旧角色",
+        text="不得暴露的启动前台词",
+        choices=[{"choice_id": "old-choice", "text": "旧选项", "index": 0}],
+        line_id="line-old",
+        scene_id="scene-a",
+        route_id="route-a",
+        is_menu_open=True,
+        ts="2000-01-01T00:00:00Z",
+    )
+    game_dir = _create_game_dir(
+        bridge_root,
+        game_id=game_id,
+        session_payload=_session(
+            game_id=game_id,
+            session_id=session_id,
+            last_seq=0,
+            started_at="2000-01-01T00:00:00Z",
+            state=old_state,
+        ),
+        events=[],
+    )
+    events_path = game_dir / "events.jsonl"
+    plugin = GalgameBridgePlugin(_Ctx(plugin_dir, _make_effective_config(bridge_root)))
+    await plugin.startup()
+    try:
+        await plugin._poll_bridge(force=True)
+        assert plugin._snapshot_state()["latest_snapshot"] == {}
+
+        new_choices = [
+            {
+                "choice_id": "new-choice",
+                "text": "新选项",
+                "index": 0,
+                "enabled": True,
+            }
+        ]
+        payload = (
+            {
+                "speaker": "雪乃",
+                "text": "启动后的第一句",
+                "line_id": "line-new",
+            }
+            if event_type == "line_changed"
+            else {"choices": new_choices}
+        )
+        first_event = _event(
+            seq=1,
+            event_type=event_type,
+            session_id=session_id,
+            game_id=game_id,
+            payload=payload,
+            ts="2026-04-21T08:30:01Z",
+        )
+        await asyncio.to_thread(_write_events, events_path, [first_event])
+        current_state = (
+            _session_state(
+                speaker="雪乃",
+                text="启动后的第一句",
+                line_id="line-new",
+                scene_id="scene-a",
+                route_id="route-a",
+                ts="2026-04-21T08:30:01Z",
+            )
+            if event_type == "line_changed"
+            else _session_state(
+                speaker="旧角色",
+                text="不得暴露的启动前台词",
+                choices=new_choices,
+                line_id="line-old",
+                scene_id="scene-a",
+                route_id="route-a",
+                is_menu_open=True,
+                ts="2026-04-21T08:30:01Z",
+            )
+        )
+        await asyncio.to_thread(
+            _write_session,
+            game_dir / "session.json",
+            _session(
+                game_id=game_id,
+                session_id=session_id,
+                last_seq=1,
+                started_at="2000-01-01T00:00:00Z",
+                state=current_state,
+            ),
+        )
+
+        await plugin._poll_bridge(force=True)
+
+        snapshot = plugin._snapshot_state()["latest_snapshot"]
+        assert snapshot["scene_id"] == "scene-a"
+        assert snapshot["route_id"] == "route-a"
+        assert snapshot["text"] != "不得暴露的启动前台词"
+        if event_type == "line_changed":
+            assert snapshot["text"] == "启动后的第一句"
+            assert snapshot["line_id"] == "line-new"
+            assert snapshot["choices"] == []
+        else:
+            assert snapshot["text"] == ""
+            assert snapshot["line_id"] == "line-old"
+            assert snapshot["choices"] == new_choices
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
+@pytest.mark.parametrize("started_at", ["2000-01-01T00:00:00Z", "invalid"])
+async def test_session_appearing_after_empty_startup_scan_still_baselines_old_data(
+    tmp_path: Path,
+    started_at: str,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    plugin = GalgameBridgePlugin(_Ctx(plugin_dir, _make_effective_config(bridge_root)))
+    await plugin.startup()
+    try:
+        await plugin._poll_bridge(force=True)
+        assert plugin._startup_existing_session_ids == set()
+
+        game_id = "demo.late-old"
+        session_id = "sess-late-old"
+        old_choices = [
+            {
+                "choice_id": "old-line#choice0",
+                "text": "旧选项",
+                "index": 0,
+                "enabled": True,
+            }
+        ]
+        old_line = _event(
+            seq=1,
+            event_type="line_changed",
+            session_id=session_id,
+            game_id=game_id,
+            payload={
+                "speaker": "雪乃",
+                "text": "启动扫描后才出现的旧台词",
+                "line_id": "old-line",
+                "scene_id": "old-scene",
+                "route_id": "",
+            },
+            ts="2000-01-01T00:00:01Z",
+        )
+        old_choice_event = _event(
+            seq=2,
+            event_type="choices_shown",
+            session_id=session_id,
+            game_id=game_id,
+            payload={
+                "line_id": "old-line",
+                "scene_id": "old-scene",
+                "route_id": "",
+                "choices": old_choices,
+            },
+            ts="2000-01-01T00:00:02Z",
+        )
+        game_dir = _create_game_dir(
+            bridge_root,
+            game_id=game_id,
+            session_payload=_session(
+                game_id=game_id,
+                session_id=session_id,
+                last_seq=2,
+                started_at=started_at,
+                state=_session_state(
+                    speaker="雪乃",
+                    text="启动扫描后才出现的旧台词",
+                    choices=old_choices,
+                    line_id="old-line",
+                    scene_id="old-scene",
+                    is_menu_open=True,
+                    ts="2000-01-01T00:00:02Z",
+                ),
+            ),
+            events=[old_line, old_choice_event],
+        )
+        events_before_poll = (game_dir / "events.jsonl").read_bytes()
+
+        await plugin._poll_bridge(force=True)
+
+        mounted = plugin._snapshot_state()
+        status = await plugin.galgame_get_status()
+        snapshot = await plugin.galgame_get_snapshot()
+        history = await plugin.galgame_get_history(limit=20, include_events=True)
+        assert mounted["active_session_id"] == session_id
+        assert mounted["latest_snapshot"] == {}
+        assert mounted["history_events"] == []
+        assert mounted["history_lines"] == []
+        assert mounted["history_observed_lines"] == []
+        assert mounted["history_choices"] == []
+        assert mounted["events_byte_offset"] == len(events_before_poll)
+        assert mounted["last_seq"] == 2
+        assert isinstance(status, Ok)
+        assert isinstance(snapshot, Ok)
+        assert isinstance(history, Ok)
+        assert status.value["effective_current_line"] == {}
+        assert snapshot.value["effective_current_line"] == {}
+        assert history.value["stable_lines"] == []
+        assert history.value["choices"] == []
+        assert (game_dir / "events.jsonl").read_bytes() == events_before_poll
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
+async def test_late_discovered_preexisting_session_resumes_after_candidate_gap(
+    tmp_path: Path,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    plugin = GalgameBridgePlugin(_Ctx(plugin_dir, _make_effective_config(bridge_root)))
+    await plugin.startup()
+    try:
+        await plugin._poll_bridge(force=True)
+        assert plugin._startup_existing_session_ids == set()
+        session_id = "late-preexisting"
+        game_id = "demo.alpha"
+        game_dir = _create_game_dir(
+            bridge_root,
+            game_id=game_id,
+            session_payload=_session(
+                game_id=game_id,
+                session_id=session_id,
+                last_seq=1,
+                started_at="2000-01-01T00:00:00Z",
+                state=_session_state(
+                    text="old line",
+                    line_id="line-old",
+                    scene_id="scene-a",
+                ),
+            ),
+            events=[
+                _event(
+                    seq=1,
+                    event_type="line_changed",
+                    session_id=session_id,
+                    game_id=game_id,
+                    ts="2000-01-01T00:00:01Z",
+                    payload={
+                        "text": "old line",
+                        "line_id": "line-old",
+                        "scene_id": "scene-a",
+                    },
+                )
+            ],
+        )
+        session_path = game_dir / "session.json"
+        events_path = game_dir / "events.jsonl"
+
+        await plugin._poll_bridge(force=True)
+        _append_event(
+            events_path,
+            _event(
+                seq=2,
+                event_type="line_changed",
+                session_id=session_id,
+                game_id=game_id,
+                ts="2026-04-21T08:35:02Z",
+                payload={
+                    "text": "before gap",
+                    "line_id": "line-before-gap",
+                    "scene_id": "scene-a",
+                },
+            ),
+        )
+        _write_session(
+            session_path,
+            _session(
+                game_id=game_id,
+                session_id=session_id,
+                last_seq=2,
+                started_at="2000-01-01T00:00:00Z",
+                state=_session_state(
+                    text="before gap",
+                    line_id="line-before-gap",
+                    scene_id="scene-a",
+                ),
+            ),
+        )
+        await plugin._poll_bridge(force=True)
+
+        session_path.unlink()
+        await plugin._poll_bridge(force=True)
+        assert plugin._snapshot_state()["last_seq"] == 2
+
+        _append_event(
+            events_path,
+            _event(
+                seq=3,
+                event_type="line_changed",
+                session_id=session_id,
+                game_id=game_id,
+                ts="2026-04-21T08:35:03Z",
+                payload={
+                    "text": "during gap",
+                    "line_id": "line-during-gap",
+                    "scene_id": "scene-a",
+                },
+            ),
+        )
+        _write_session(
+            session_path,
+            _session(
+                game_id=game_id,
+                session_id=session_id,
+                last_seq=3,
+                started_at="2000-01-01T00:00:00Z",
+                state=_session_state(
+                    text="during gap",
+                    line_id="line-during-gap",
+                    scene_id="scene-a",
+                ),
+            ),
+        )
+        await plugin._poll_bridge(force=True)
+
+        history = await plugin.galgame_get_history(limit=20, include_events=True)
+        assert isinstance(history, Ok)
+        assert [event["seq"] for event in history.value["events"]] == [2, 3]
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
+async def test_preexisting_boundary_keeps_event_appended_after_candidate_snapshot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    plugin = GalgameBridgePlugin(_Ctx(plugin_dir, _make_effective_config(bridge_root)))
+    await plugin.startup()
+    try:
+        await plugin._poll_bridge(force=True)
+        game_id = "demo.boundary-race"
+        session_id = "sess-boundary-race"
+        old_line = _event(
+            seq=1,
+            event_type="line_changed",
+            session_id=session_id,
+            game_id=game_id,
+            payload={
+                "speaker": "雪乃",
+                "text": "候选快照内的旧台词",
+                "line_id": "line-old",
+                "scene_id": "scene-a",
+                "route_id": "",
+            },
+            ts="2000-01-01T00:00:01Z",
+        )
+        new_line = _event(
+            seq=2,
+            event_type="line_changed",
+            session_id=session_id,
+            game_id=game_id,
+            payload={
+                "speaker": "雪乃",
+                "text": "候选读取后追加的新台词",
+                "line_id": "line-new",
+                "scene_id": "scene-a",
+                "route_id": "",
+            },
+            ts="2026-04-21T08:30:02Z",
+        )
+        game_dir = _create_game_dir(
+            bridge_root,
+            game_id=game_id,
+            session_payload=_session(
+                game_id=game_id,
+                session_id=session_id,
+                last_seq=1,
+                started_at="2000-01-01T00:00:00Z",
+                state=_session_state(
+                    speaker="雪乃",
+                    text="候选快照内的旧台词",
+                    line_id="line-old",
+                    scene_id="scene-a",
+                    ts="2000-01-01T00:00:01Z",
+                ),
+            ),
+            events=[old_line],
+        )
+        events_path = game_dir / "events.jsonl"
+        boundary_calls = 0
+
+        def _append_during_boundary(path: Path, **kwargs: object) -> EventStreamBoundary:
+            nonlocal boundary_calls
+            boundary_calls += 1
+            if boundary_calls == 1:
+                _append_event(events_path, new_line)
+            return read_events_boundary(path, **kwargs)
+
+        monkeypatch.setattr(
+            "plugin.plugins.galgame_plugin.plugin_core.snapshot_events_boundary",
+            _append_during_boundary,
+        )
+
+        await plugin._poll_bridge(force=True)
+
+        mounted = plugin._snapshot_state()
+        history = await plugin.galgame_get_history(limit=20, include_events=True)
+        assert boundary_calls == 1
+        assert mounted["last_seq"] == 2
+        assert mounted["latest_snapshot"]["line_id"] == "line-new"
+        assert mounted["events_byte_offset"] == events_path.stat().st_size
+        assert isinstance(history, Ok)
+        assert [event["seq"] for event in history.value["events"]] == [2]
+        assert [line["line_id"] for line in history.value["stable_lines"]] == [
+            "line-new"
+        ]
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
+async def test_preexisting_boundary_uses_seq_high_water_from_captured_bytes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    plugin = GalgameBridgePlugin(_Ctx(plugin_dir, _make_effective_config(bridge_root)))
+    await plugin.startup()
+    try:
+        await plugin._poll_bridge(force=True)
+        game_id = "demo.checkpoint-ahead"
+        session_id = "sess-checkpoint-ahead"
+        old_line = _event(
+            seq=1,
+            event_type="line_changed",
+            session_id=session_id,
+            game_id=game_id,
+            payload={"text": "old line", "line_id": "line-old", "scene_id": "scene-a"},
+            ts="2000-01-01T00:00:01Z",
+        )
+        new_line = _event(
+            seq=2,
+            event_type="line_changed",
+            session_id=session_id,
+            game_id=game_id,
+            payload={"text": "checkpoint ahead line", "line_id": "line-new", "scene_id": "scene-a"},
+            ts="2026-04-21T08:30:02Z",
+        )
+        game_dir = _create_game_dir(
+            bridge_root,
+            game_id=game_id,
+            session_payload=_session(
+                game_id=game_id,
+                session_id=session_id,
+                last_seq=2,
+                started_at="2000-01-01T00:00:00Z",
+                state=_session_state(
+                    text="checkpoint ahead line",
+                    line_id="line-new",
+                    scene_id="scene-a",
+                ),
+            ),
+            events=[old_line],
+        )
+        events_path = game_dir / "events.jsonl"
+        captured_size = events_path.stat().st_size
+        _append_event(events_path, new_line)
+
+        def _captured_boundary(path: Path, **kwargs: object) -> EventStreamBoundary:
+            return read_events_boundary(
+                path,
+                **{**kwargs, "snapshot_file_size": captured_size},
+            )
+
+        monkeypatch.setattr(
+            "plugin.plugins.galgame_plugin.plugin_core.snapshot_events_boundary",
+            _captured_boundary,
+        )
+
+        await plugin._poll_bridge(force=True)
+
+        mounted = plugin._snapshot_state()
+        assert mounted["last_seq"] == 2
+        assert mounted["latest_snapshot"]["line_id"] == "line-new"
+        assert [event["seq"] for event in mounted["history_events"]] == [2]
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
+async def test_first_attachment_validates_boundary_checkpoint_before_tailing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    plugin = GalgameBridgePlugin(_Ctx(plugin_dir, _make_effective_config(bridge_root)))
+    await plugin.startup()
+    try:
+        await plugin._poll_bridge(force=True)
+        game_id = "demo.attachment-rewrite"
+        session_id = "sess-attachment-rewrite"
+        old_line = _event(
+            seq=1,
+            event_type="line_changed",
+            session_id=session_id,
+            game_id=game_id,
+            payload={"text": "old attachment line", "line_id": "line-old", "scene_id": "scene-a"},
+            ts="2000-01-01T00:00:01Z",
+        )
+        game_dir = _create_game_dir(
+            bridge_root,
+            game_id=game_id,
+            session_payload=_session(
+                game_id=game_id,
+                session_id=session_id,
+                last_seq=1,
+                started_at="2000-01-01T00:00:00Z",
+                state=_session_state(text="old attachment line", line_id="line-old"),
+            ),
+            events=[old_line],
+        )
+        events_path = game_dir / "events.jsonl"
+        old_size = events_path.stat().st_size
+        replacement = _event(
+            seq=1,
+            event_type="line_changed",
+            session_id=session_id,
+            game_id=game_id,
+            payload={
+                "text": "replacement " + ("x" * old_size),
+                "line_id": "line-replacement",
+                "scene_id": "scene-a",
+            },
+            ts="2026-04-21T08:31:01Z",
+        )
+        real_tail = tail_events_jsonl
+        tail_calls = 0
+
+        def _rewrite_before_first_tail(path: Path, **kwargs: object):
+            nonlocal tail_calls
+            tail_calls += 1
+            if tail_calls == 1:
+                _write_events(events_path, [replacement])
+                _write_session(
+                    game_dir / "session.json",
+                    _session(
+                        game_id=game_id,
+                        session_id=session_id,
+                        last_seq=1,
+                        started_at="2000-01-01T00:00:00Z",
+                        state=_session_state(
+                            text=str(replacement["payload"]["text"]),
+                            line_id="line-replacement",
+                            scene_id="scene-a",
+                        ),
+                    ),
+                )
+                assert events_path.stat().st_size >= old_size
+            return real_tail(path, **kwargs)
+
+        monkeypatch.setattr(
+            "plugin.plugins.galgame_plugin.plugin_core.tail_events_jsonl",
+            _rewrite_before_first_tail,
+        )
+
+        await plugin._poll_bridge(force=True)
+        resetting = plugin._snapshot_state()
+        assert resetting["stream_reset_pending"] is True
+        assert resetting["history_events"] == []
+
+        await plugin._poll_bridge(force=True)
+        recovered = plugin._snapshot_state()
+        assert recovered["stream_reset_pending"] is False
+        assert recovered["latest_snapshot"]["line_id"] == "line-replacement"
+        assert [event["seq"] for event in recovered["history_events"]] == [1]
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.plugin_unit
+def test_positive_checkpoint_scan_stops_at_candidate_snapshot(tmp_path: Path) -> None:
+    events_path = tmp_path / "events.jsonl"
+    game_id = "demo.positive-checkpoint"
+    session_id = "sess-positive-checkpoint"
+    _append_event(
+        events_path,
+        _event(
+            seq=1,
+            event_type="line_changed",
+            session_id=session_id,
+            game_id=game_id,
+            payload={"text": "candidate snapshot", "line_id": "line-1"},
+            ts="2026-04-21T08:30:01Z",
+        ),
+    )
+    snapshot_file_size = events_path.stat().st_size
+    for seq in (2, 3):
+        _append_event(
+            events_path,
+            _event(
+                seq=seq,
+                event_type="line_changed",
+                session_id=session_id,
+                game_id=game_id,
+                payload={"text": f"racing event {seq}", "line_id": f"line-{seq}"},
+                ts=f"2026-04-21T08:30:0{seq}Z",
+            ),
+        )
+
+    boundary = read_events_boundary(
+        events_path,
+        session_id=session_id,
+        last_seq=1,
+        events_limit=1,
+        snapshot_file_size=snapshot_file_size,
+    )
+
+    assert boundary.offset == snapshot_file_size
+    assert boundary.file_size == events_path.stat().st_size
+    tail = tail_events_jsonl(
+        events_path,
+        offset=boundary.offset,
+        line_buffer=b"",
+    )
+    assert [int(event.get("seq") or 0) for event in tail.events] == [2, 3]
+
+
+@pytest.mark.plugin_unit
+def test_candidate_scan_captures_events_boundary_before_session_snapshot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bridge_root = tmp_path / "bridge"
+    game_id = "demo.candidate-snapshot-race"
+    session_id = "sess-candidate-snapshot-race"
+    initial_event = _event(
+        seq=1,
+        event_type="line_changed",
+        session_id=session_id,
+        game_id=game_id,
+        payload={"text": "candidate snapshot", "line_id": "line-1"},
+        ts="2026-04-21T08:30:01Z",
+    )
+    game_dir = _create_game_dir(
+        bridge_root,
+        game_id=game_id,
+        session_payload=_session(
+            game_id=game_id,
+            session_id=session_id,
+            last_seq=1,
+            started_at="2000-01-01T00:00:00Z",
+            state=_session_state(text="candidate snapshot", line_id="line-1"),
+        ),
+        events=[initial_event],
+    )
+    events_path = game_dir / "events.jsonl"
+    initial_file_size = events_path.stat().st_size
+    original_read_session_json = galgame_service.read_session_json
+
+    def _read_session_after_racing_events(path: Path):
+        result = original_read_session_json(path)
+        for seq in (2, 3):
+            _append_event(
+                events_path,
+                _event(
+                    seq=seq,
+                    event_type="line_changed",
+                    session_id=session_id,
+                    game_id=game_id,
+                    payload={
+                        "text": f"racing event {seq}",
+                        "line_id": f"line-{seq}",
+                    },
+                    ts=f"2026-04-21T08:30:0{seq}Z",
+                ),
+            )
+        return result
+
+    monkeypatch.setattr(
+        galgame_service,
+        "read_session_json",
+        _read_session_after_racing_events,
+    )
+
+    _game_ids, candidates, warnings = galgame_service.scan_session_candidates(
+        bridge_root
+    )
+
+    assert warnings == []
+    candidate = candidates[game_id]
+    assert candidate.events_file_size == initial_file_size
+    boundary = read_events_boundary(
+        candidate.events_path,
+        session_id=session_id,
+        last_seq=1,
+        events_limit=1,
+        snapshot_file_size=candidate.events_file_size,
+    )
+    tail = tail_events_jsonl(
+        candidate.events_path,
+        offset=boundary.offset,
+        line_buffer=b"",
+    )
+    assert [int(event.get("seq") or 0) for event in tail.events] == [2, 3]
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
+async def test_startup_session_id_normalization_preserves_preexisting_boundary(
+    tmp_path: Path,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    game_id = "demo.spaced-session"
+    raw_session_id = "  sess-spaced  "
+    old_line = _event(
+        seq=1,
+        event_type="line_changed",
+        session_id=raw_session_id,
+        game_id=game_id,
+        payload={
+            "speaker": "雪乃",
+            "text": "启动前旧台词",
+            "line_id": "line-old",
+            "scene_id": "scene-a",
+            "route_id": "",
+        },
+        ts="2000-01-01T00:00:01Z",
+    )
+    game_dir = _create_game_dir(
+        bridge_root,
+        game_id=game_id,
+        session_payload=_session(
+            game_id=game_id,
+            session_id=raw_session_id,
+            last_seq=1,
+            started_at="2000-01-01T00:00:00Z",
+            state=_session_state(
+                text="启动前旧台词",
+                line_id="line-old",
+                scene_id="scene-a",
+            ),
+        ),
+        events=[old_line],
+    )
+    plugin = GalgameBridgePlugin(_Ctx(plugin_dir, _make_effective_config(bridge_root)))
+    await plugin.startup()
+    try:
+        await plugin._poll_bridge(force=True)
+        assert plugin._startup_existing_session_ids == {
+            ("bridge_sdk", game_id, "sess-spaced")
+        }
+        assert plugin._snapshot_state()["latest_snapshot"] == {}
+
+        _write_session(
+            game_dir / "session.json",
+            _session(
+                game_id=game_id,
+                session_id=raw_session_id,
+                last_seq=1,
+                started_at="2999-01-01T00:00:00Z",
+                state=_session_state(
+                    text="不应因时间戳变化越过启动边界",
+                    line_id="line-future",
+                    scene_id="scene-a",
+                ),
+            ),
+        )
+
+        await plugin._poll_bridge(force=True)
+
+        assert plugin._snapshot_state()["latest_snapshot"] == {}
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
+async def test_boundary_retry_discards_stale_checkpoint_before_processing_new_tail(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    game_id = "demo.boundary-retry"
+    session_id = "sess-boundary-retry"
+    game_dir = _create_game_dir(
+        bridge_root,
+        game_id=game_id,
+        session_payload=_session(
+            game_id=game_id,
+            session_id=session_id,
+            last_seq=3,
+            started_at="2000-01-01T00:00:00Z",
+            state=_session_state(
+                speaker="雪乃",
+                text="边界建立前的旧台词",
+                line_id="line-old",
+                scene_id="scene-a",
+                ts="2000-01-01T00:00:03Z",
+            ),
+        ),
+        events=[
+            _event(
+                seq=3,
+                event_type="line_changed",
+                session_id=session_id,
+                game_id=game_id,
+                payload={
+                    "speaker": "雪乃",
+                    "text": "边界建立前的旧台词",
+                    "line_id": "line-old",
+                    "scene_id": "scene-a",
+                    "route_id": "",
+                },
+                ts="2000-01-01T00:00:03Z",
+            )
+        ],
+    )
+    events_path = game_dir / "events.jsonl"
+    plugin = GalgameBridgePlugin(_Ctx(plugin_dir, _make_effective_config(bridge_root)))
+    plugin._persist.persist_runtime(
+        session_id=session_id,
+        events_byte_offset=0,
+        events_file_size=0,
+        last_seq=100,
+        dedupe_window=[],
+        last_error={},
+    )
+    boundary_calls = 0
+
+    def _flaky_boundary(path: Path, **kwargs: object) -> EventStreamBoundary:
+        nonlocal boundary_calls
+        boundary_calls += 1
+        if boundary_calls == 1:
+            return EventStreamBoundary(error="simulated boundary read failure")
+        return read_events_boundary(path, **kwargs)
+
+    monkeypatch.setattr(
+        "plugin.plugins.galgame_plugin.plugin_core.snapshot_events_boundary",
+        _flaky_boundary,
+    )
+    await plugin.startup()
+    try:
+        await plugin._poll_bridge(force=True)
+        after_failure = plugin._snapshot_state()
+        assert boundary_calls == 1
+        assert after_failure["warmup_session_id"] == ""
+        assert after_failure["last_seq"] == 100
+
+        await plugin._poll_bridge(force=True)
+        after_recovery = plugin._snapshot_state()
+        assert boundary_calls == 2
+        assert after_recovery["warmup_session_id"] == session_id
+        assert after_recovery["history_lines"] == []
+        assert after_recovery["last_seq"] == 3
+
+        new_line = _event(
+            seq=4,
+            event_type="line_changed",
+            session_id=session_id,
+            game_id=game_id,
+            payload={
+                "speaker": "雪乃",
+                "text": "边界恢复后的新台词",
+                "line_id": "line-new",
+                "scene_id": "scene-a",
+                "route_id": "",
+            },
+            ts="2026-04-21T08:30:04Z",
+        )
+        with events_path.open("ab") as handle:
+            handle.write(
+                json.dumps(new_line, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+                + b"\n"
+            )
+        _write_session(
+            game_dir / "session.json",
+            _session(
+                game_id=game_id,
+                session_id=session_id,
+                last_seq=4,
+                started_at="2000-01-01T00:00:00Z",
+                state=_session_state(
+                    speaker="雪乃",
+                    text="边界恢复后的新台词",
+                    line_id="line-new",
+                    scene_id="scene-a",
+                    ts="2026-04-21T08:30:04Z",
+                ),
+            ),
+        )
+
+        await plugin._poll_bridge(force=True)
+
+        history = await plugin.galgame_get_history(limit=20, include_events=True)
+        assert isinstance(history, Ok)
+        assert [event["seq"] for event in history.value["events"]] == [4]
+        assert [line["line_id"] for line in history.value["stable_lines"]] == ["line-new"]
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
+@pytest.mark.parametrize("replacement_prefix", [b"", b'{"seq":1'])
+async def test_truncation_sets_stream_reset_pending(
+    tmp_path: Path,
+    replacement_prefix: bytes,
+) -> None:
     plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
     game_id = "demo.alpha"
     session_id = "sess-a"
@@ -1260,11 +2961,244 @@ async def test_truncation_sets_stream_reset_pending(tmp_path: Path) -> None:
     ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
     plugin = GalgameBridgePlugin(ctx)
     await plugin.startup()
-    (game_dir / "events.jsonl").write_bytes(b"")
+    await plugin._poll_bridge(force=True)
+    active_line = _event(
+        seq=3,
+        event_type="line_changed",
+        session_id=session_id,
+        game_id=game_id,
+        payload={
+            "speaker": "雪乃",
+            "text": "活跃流台词",
+            "line_id": "line-active",
+            "scene_id": "scene-a",
+            "route_id": "",
+        },
+        ts="2026-04-21T08:30:03Z",
+    )
+    _append_event(game_dir / "events.jsonl", active_line)
+    _write_session(
+        game_dir / "session.json",
+        _session(
+            game_id=game_id,
+            session_id=session_id,
+            last_seq=3,
+            state=_session_state(
+                speaker="雪乃",
+                text="活跃流台词",
+                line_id="line-active",
+                scene_id="scene-a",
+                ts="2026-04-21T08:30:03Z",
+            ),
+        ),
+    )
+    await plugin._poll_bridge(force=True)
+    before_reset = plugin._snapshot_state()
+    assert before_reset["latest_snapshot"]
+    assert before_reset["history_events"]
+    assert before_reset["history_lines"]
+
+    (game_dir / "events.jsonl").write_bytes(replacement_prefix)
     await plugin._poll_bridge(force=True)
     status = await plugin.galgame_get_status()
     assert isinstance(status, Ok)
     assert status.value["stream_reset_pending"] is True
+    resetting = plugin._snapshot_state()
+    assert resetting["active_session_meta"]["stream_generation"] == 1
+    assert resetting["latest_snapshot"] == {}
+    assert resetting["history_events"] == []
+    assert resetting["history_lines"] == []
+    assert resetting["history_observed_lines"] == []
+    assert resetting["history_choices"] == []
+    assert resetting["dedupe_window"] == []
+    assert resetting["events_byte_offset"] == 0
+
+    await plugin._poll_bridge(force=True)
+    still_resetting = plugin._snapshot_state()
+    assert still_resetting["stream_reset_pending"] is True
+    assert still_resetting["active_session_meta"]["stream_generation"] == 1
+
+    replacement = _event(
+        seq=1,
+        event_type="line_changed",
+        session_id=session_id,
+        game_id=game_id,
+        payload={
+            "speaker": "雪乃",
+            "text": "旧台词",
+            "line_id": "line-1",
+            "scene_id": "scene-a",
+            "route_id": "",
+        },
+        ts="2026-04-21T08:31:01Z",
+    )
+    _write_events(game_dir / "events.jsonl", [replacement])
+    _write_session(
+        game_dir / "session.json",
+        _session(
+            game_id=game_id,
+            session_id=session_id,
+            last_seq=1,
+            state=_session_state(
+                speaker="雪乃",
+                text="旧台词",
+                line_id="line-1",
+                scene_id="scene-a",
+                ts="2026-04-21T08:31:01Z",
+            ),
+        ),
+    )
+
+    await plugin._poll_bridge(force=True)
+
+    recovered = plugin._snapshot_state()
+    assert recovered["stream_reset_pending"] is False
+    assert recovered["active_session_meta"]["stream_generation"] == 1
+    assert [event["seq"] for event in recovered["history_events"]] == [1]
+
+    await plugin._poll_bridge(force=True)
+    assert plugin._snapshot_state()["active_session_meta"]["stream_generation"] == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
+async def test_empty_partial_stream_reset_rearms_same_session_generation(
+    tmp_path: Path,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    game_id = "demo.partial-reset"
+    session_id = "sess-partial-reset"
+    game_dir = _create_game_dir(
+        bridge_root,
+        game_id=game_id,
+        session_payload=_session(
+            game_id=game_id,
+            session_id=session_id,
+            last_seq=0,
+            started_at="2000-01-01T00:00:00Z",
+            state=_session_state(text="", line_id=""),
+        ),
+        events=[],
+    )
+    events_path = game_dir / "events.jsonl"
+    first_partial = b'{"session_id":"sess-partial-reset","seq":1'
+    events_path.write_bytes(first_partial)
+    plugin = GalgameBridgePlugin(_Ctx(plugin_dir, _make_effective_config(bridge_root)))
+    await plugin.startup()
+    try:
+        await plugin._poll_bridge(force=True)
+        assert plugin._snapshot_state()["events_byte_offset"] == len(first_partial)
+
+        events_path.write_bytes(b"")
+        await plugin._poll_bridge(force=True)
+        assert plugin._snapshot_state()["active_session_meta"]["stream_generation"] == 1
+        await plugin._poll_bridge(force=True)
+        assert plugin._snapshot_state()["stream_reset_pending"] is False
+
+        second_partial = b'{"session_id":"sess-partial-reset","seq":1,"type"'
+        events_path.write_bytes(second_partial)
+        await plugin._poll_bridge(force=True)
+        assert plugin._snapshot_state()["events_byte_offset"] == len(second_partial)
+
+        events_path.write_bytes(b"")
+        await plugin._poll_bridge(force=True)
+        resetting_again = plugin._snapshot_state()
+        assert resetting_again["stream_reset_pending"] is True
+        assert resetting_again["active_session_meta"]["stream_generation"] == 2
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
+async def test_same_session_rewrite_detected_after_file_size_catches_up(
+    tmp_path: Path,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    game_id = "demo.rewritten"
+    session_id = "sess-rewritten"
+    game_dir = _create_game_dir(
+        bridge_root,
+        game_id=game_id,
+        session_payload=_session(
+            game_id=game_id,
+            session_id=session_id,
+            last_seq=1,
+            state=_session_state(text="startup line", line_id="line-1"),
+        ),
+        events=[
+            _event(
+                seq=1,
+                event_type="line_changed",
+                session_id=session_id,
+                game_id=game_id,
+                payload={"text": "startup line", "line_id": "line-1"},
+                ts="2026-04-21T08:30:01Z",
+            )
+        ],
+    )
+    plugin = GalgameBridgePlugin(_Ctx(plugin_dir, _make_effective_config(bridge_root)))
+    await plugin.startup()
+    await plugin._poll_bridge(force=True)
+    active_event = _event(
+        seq=2,
+        event_type="line_changed",
+        session_id=session_id,
+        game_id=game_id,
+        payload={"text": "active line", "line_id": "line-2"},
+        ts="2026-04-21T08:30:02Z",
+    )
+    _append_event(game_dir / "events.jsonl", active_event)
+    _write_session(
+        game_dir / "session.json",
+        _session(
+            game_id=game_id,
+            session_id=session_id,
+            last_seq=2,
+            state=_session_state(text="active line", line_id="line-2"),
+        ),
+    )
+    await plugin._poll_bridge(force=True)
+    old_offset = int(plugin._snapshot_state()["events_byte_offset"])
+
+    replacement = _event(
+        seq=1,
+        event_type="line_changed",
+        session_id=session_id,
+        game_id=game_id,
+        payload={
+            "text": "replacement line " + ("x" * old_offset),
+            "line_id": "replacement-1",
+        },
+        ts="2026-04-21T08:31:01Z",
+    )
+    _write_events(game_dir / "events.jsonl", [replacement])
+    assert (game_dir / "events.jsonl").stat().st_size >= old_offset
+    _write_session(
+        game_dir / "session.json",
+        _session(
+            game_id=game_id,
+            session_id=session_id,
+            last_seq=1,
+            state=_session_state(
+                text=str(replacement["payload"]["text"]),
+                line_id="replacement-1",
+            ),
+        ),
+    )
+
+    await plugin._poll_bridge(force=True)
+    resetting = plugin._snapshot_state()
+    assert resetting["stream_reset_pending"] is True
+    assert resetting["active_session_meta"]["stream_generation"] == 1
+    assert resetting["latest_snapshot"] == {}
+    assert resetting["history_events"] == []
+
+    await plugin._poll_bridge(force=True)
+    recovered = plugin._snapshot_state()
+    assert recovered["stream_reset_pending"] is False
+    assert recovered["active_session_meta"]["stream_generation"] == 1
+    assert [event["seq"] for event in recovered["history_events"]] == [1]
 
 
 @pytest.mark.asyncio
@@ -1303,6 +3237,7 @@ async def test_stale_then_new_event_recovers_to_active(tmp_path: Path) -> None:
     ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
     plugin = GalgameBridgePlugin(ctx)
     await plugin.startup()
+    await plugin._poll_bridge(force=True)
 
     with plugin._state_lock:
         plugin._state.last_seen_data_monotonic = time.monotonic() - 5.0
@@ -1312,28 +3247,23 @@ async def test_stale_then_new_event_recovers_to_active(tmp_path: Path) -> None:
     assert isinstance(stale_status, Ok)
     assert stale_status.value["connection_state"] == "stale"
 
-    with (game_dir / "events.jsonl").open("ab") as handle:
-        handle.write(
-            json.dumps(
-                _event(
-                    seq=2,
-                    event_type="line_changed",
-                    session_id=session_id,
-                    game_id=game_id,
-                    payload={
-                        "speaker": "雪乃",
-                        "text": "新台词",
-                        "line_id": "line-2",
-                        "scene_id": "scene-a",
-                        "route_id": "",
-                    },
-                    ts="2026-04-21T08:30:06Z",
-                ),
-                ensure_ascii=False,
-                separators=(",", ":"),
-            ).encode("utf-8")
-            + b"\n"
-        )
+    _append_event(
+        game_dir / "events.jsonl",
+        _event(
+            seq=2,
+            event_type="line_changed",
+            session_id=session_id,
+            game_id=game_id,
+            payload={
+                "speaker": "雪乃",
+                "text": "新台词",
+                "line_id": "line-2",
+                "scene_id": "scene-a",
+                "route_id": "",
+            },
+            ts="2026-04-21T08:30:06Z",
+        ),
+    )
     _write_session(
         game_dir / "session.json",
         _session(
@@ -1386,7 +3316,8 @@ def test_summarize_context_uses_observed_lines_when_stable_history_is_empty() ->
     assert context["stable_lines"] == []
     assert len(context["observed_lines"]) == 1
     assert context["recent_lines"][0]["stability"] == "tentative"
-    assert "算了，没事。" in context["scene_summary_seed"]
+    assert "算了，没事。" not in context["scene_summary_seed"]
+    assert "暂时没有足够台词上下文" in context["scene_summary_seed"]
 
 
 @pytest.mark.plugin_unit
@@ -1422,3 +3353,593 @@ def test_effective_current_line_and_explain_context_fall_back_to_observed() -> N
     assert context["line_id"] == "ocr:line-1"
     assert context["text"] == "算了，没事。"
     assert context["observed_lines"][0]["text"] == "算了，没事。"
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
+async def test_preexisting_session_resumes_saved_cursor_after_reattach(
+    tmp_path: Path,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    alpha_old = _event(
+        seq=1,
+        event_type="line_changed",
+        session_id="sess-alpha",
+        game_id="demo.alpha",
+        ts="2000-01-01T00:00:01Z",
+        payload={
+            "speaker": "Yukino",
+            "text": "alpha pre-start line",
+            "line_id": "alpha-old",
+            "scene_id": "scene-alpha",
+            "route_id": "",
+        },
+    )
+    beta_old = _event(
+        seq=1,
+        event_type="line_changed",
+        session_id="sess-beta",
+        game_id="demo.beta",
+        ts="2000-01-01T00:00:01Z",
+        payload={
+            "speaker": "Yukino",
+            "text": "beta pre-start line",
+            "line_id": "beta-old",
+            "scene_id": "scene-beta",
+            "route_id": "",
+        },
+    )
+    alpha_dir = _create_game_dir(
+        bridge_root,
+        game_id="demo.alpha",
+        session_payload=_session(
+            game_id="demo.alpha",
+            session_id="sess-alpha",
+            last_seq=1,
+            started_at="2000-01-01T00:00:00Z",
+            state=_session_state(
+                text="alpha pre-start line",
+                line_id="alpha-old",
+                scene_id="scene-alpha",
+            ),
+        ),
+        events=[alpha_old],
+    )
+    _create_game_dir(
+        bridge_root,
+        game_id="demo.beta",
+        session_payload=_session(
+            game_id="demo.beta",
+            session_id="sess-beta",
+            last_seq=1,
+            started_at="2000-01-01T00:00:00Z",
+            state=_session_state(
+                text="beta pre-start line",
+                line_id="beta-old",
+                scene_id="scene-beta",
+            ),
+        ),
+        events=[beta_old],
+    )
+
+    plugin = GalgameBridgePlugin(_Ctx(plugin_dir, _make_effective_config(bridge_root)))
+    await plugin.startup()
+    try:
+        await plugin._poll_bridge(force=True)
+        assert isinstance(await plugin.galgame_bind_game(game_id="demo.alpha"), Ok)
+        await plugin._poll_bridge(force=True)
+        alpha_boundary = plugin._snapshot_state()["events_byte_offset"]
+
+        assert isinstance(await plugin.galgame_bind_game(game_id="demo.beta"), Ok)
+        await plugin._poll_bridge(force=True)
+
+        alpha_new = _event(
+            seq=2,
+            event_type="line_changed",
+            session_id="sess-alpha",
+            game_id="demo.alpha",
+            ts="2026-04-21T08:35:02Z",
+            payload={
+                "speaker": "Yukino",
+                "text": "alpha line while inactive",
+                "line_id": "alpha-new",
+                "scene_id": "scene-alpha",
+                "route_id": "",
+            },
+        )
+        _append_event(alpha_dir / "events.jsonl", alpha_new)
+        _write_session(
+            alpha_dir / "session.json",
+            _session(
+                game_id="demo.alpha",
+                session_id="sess-alpha",
+                last_seq=2,
+                started_at="2000-01-01T00:00:00Z",
+                state=_session_state(
+                    text="alpha line while inactive",
+                    line_id="alpha-new",
+                    scene_id="scene-alpha",
+                    ts="2026-04-21T08:35:02Z",
+                ),
+            ),
+        )
+
+        assert isinstance(await plugin.galgame_bind_game(game_id="demo.alpha"), Ok)
+        await plugin._poll_bridge(force=True)
+
+        resumed = plugin._snapshot_state()
+        history = await plugin.galgame_get_history(limit=20, include_events=True)
+        assert resumed["events_byte_offset"] > alpha_boundary
+        assert resumed["active_session_id"] == "sess-alpha"
+        assert resumed["last_seq"] == 2
+        assert isinstance(history, Ok)
+        assert [event["seq"] for event in history.value["events"]] == [2]
+        assert [line["line_id"] for line in history.value["stable_lines"]] == [
+            "alpha-new"
+        ]
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
+async def test_preexisting_reattach_validates_saved_checkpoint_in_tail(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    alpha_dir = _create_game_dir(
+        bridge_root,
+        game_id="demo.alpha",
+        session_payload=_session(
+            game_id="demo.alpha",
+            session_id="sess-alpha",
+            last_seq=1,
+            started_at="2000-01-01T00:00:00Z",
+            state=_session_state(
+                text="alpha cached line",
+                line_id="alpha-old",
+                scene_id="scene-alpha",
+            ),
+        ),
+        events=[
+            _event(
+                seq=1,
+                event_type="line_changed",
+                session_id="sess-alpha",
+                game_id="demo.alpha",
+                ts="2000-01-01T00:00:01Z",
+                payload={
+                    "speaker": "Yukino",
+                    "text": "alpha cached line",
+                    "line_id": "alpha-old",
+                    "scene_id": "scene-alpha",
+                    "route_id": "",
+                },
+            )
+        ],
+    )
+    _create_game_dir(
+        bridge_root,
+        game_id="demo.beta",
+        session_payload=_session(
+            game_id="demo.beta",
+            session_id="sess-beta",
+            last_seq=1,
+            started_at="2000-01-01T00:00:00Z",
+            state=_session_state(
+                text="beta cached line",
+                line_id="beta-old",
+                scene_id="scene-beta",
+            ),
+        ),
+        events=[
+            _event(
+                seq=1,
+                event_type="line_changed",
+                session_id="sess-beta",
+                game_id="demo.beta",
+                ts="2000-01-01T00:00:01Z",
+                payload={
+                    "speaker": "Yukino",
+                    "text": "beta cached line",
+                    "line_id": "beta-old",
+                    "scene_id": "scene-beta",
+                    "route_id": "",
+                },
+            )
+        ],
+    )
+
+    plugin = GalgameBridgePlugin(_Ctx(plugin_dir, _make_effective_config(bridge_root)))
+    await plugin.startup()
+    try:
+        await plugin._poll_bridge(force=True)
+        assert isinstance(await plugin.galgame_bind_game(game_id="demo.alpha"), Ok)
+        await plugin._poll_bridge(force=True)
+        saved_offset = int(plugin._snapshot_state()["events_byte_offset"])
+
+        assert isinstance(await plugin.galgame_bind_game(game_id="demo.beta"), Ok)
+        await plugin._poll_bridge(force=True)
+
+        events_path = alpha_dir / "events.jsonl"
+        replacement = _event(
+            seq=1,
+            event_type="line_changed",
+            session_id="sess-alpha",
+            game_id="demo.alpha",
+            ts="2026-04-21T08:36:01Z",
+            payload={
+                "speaker": "Yukino",
+                "text": "replacement after checkpoint " + ("x" * saved_offset),
+                "line_id": "alpha-replacement",
+                "scene_id": "scene-alpha",
+                "route_id": "",
+            },
+        )
+        rewrote_stream = False
+        alpha_tail_checkpoints: list[str] = []
+        alpha_tail_reset_results: list[bool] = []
+        standalone_checkpoints: list[str] = []
+        real_tail = tail_events_jsonl
+
+        def _rewrite_after_saved_checkpoint(path: Path, *, offset: int) -> str:
+            nonlocal rewrote_stream
+            checkpoint = read_events_checkpoint(path, offset=offset)
+            if path == events_path and offset == saved_offset and not rewrote_stream:
+                standalone_checkpoints.append(checkpoint)
+                rewrote_stream = True
+                _write_events(events_path, [replacement])
+                _write_session(
+                    alpha_dir / "session.json",
+                    _session(
+                        game_id="demo.alpha",
+                        session_id="sess-alpha",
+                        last_seq=1,
+                        started_at="2000-01-01T00:00:00Z",
+                        state=_session_state(
+                            text=str(replacement["payload"]["text"]),
+                            line_id="alpha-replacement",
+                            scene_id="scene-alpha",
+                            ts="2026-04-21T08:36:01Z",
+                        ),
+                    ),
+                )
+                assert events_path.stat().st_size >= saved_offset
+                assert read_events_checkpoint(
+                    events_path,
+                    offset=saved_offset,
+                ) != checkpoint
+            return checkpoint
+
+        def _capture_alpha_tail_checkpoint(path: Path, **kwargs: object):
+            if path == events_path:
+                alpha_tail_checkpoints.append(
+                    str(kwargs.get("expected_checkpoint") or "")
+                )
+            result = real_tail(path, **kwargs)
+            if path == events_path:
+                alpha_tail_reset_results.append(bool(result.reset_detected))
+            return result
+
+        monkeypatch.setattr(
+            "plugin.plugins.galgame_plugin.plugin_core.read_stream_checkpoint",
+            _rewrite_after_saved_checkpoint,
+        )
+        monkeypatch.setattr(
+            "plugin.plugins.galgame_plugin.plugin_core.tail_events_jsonl",
+            _capture_alpha_tail_checkpoint,
+        )
+
+        assert isinstance(await plugin.galgame_bind_game(game_id="demo.alpha"), Ok)
+        resetting = plugin._snapshot_state()
+        assert resetting["stream_reset_pending"] is True
+        assert resetting["latest_snapshot"] == {}
+        assert resetting["history_events"] == []
+        assert resetting["history_lines"] == []
+        assert resetting["history_observed_lines"] == []
+        assert resetting["history_choices"] == []
+        assert resetting["dedupe_window"] == []
+        await plugin._poll_bridge(force=True)
+        recovered = plugin._snapshot_state()
+        assert rewrote_stream is True
+        assert alpha_tail_checkpoints and alpha_tail_checkpoints[0]
+        assert alpha_tail_checkpoints[0] == standalone_checkpoints[0]
+        assert alpha_tail_reset_results[:2] == [True, False]
+        assert recovered["stream_reset_pending"] is False
+        assert recovered["latest_snapshot"]["line_id"] == "alpha-replacement"
+        assert [event["seq"] for event in recovered["history_events"]] == [1]
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
+@pytest.mark.parametrize(
+    "replacement_padding",
+    [0, 1024],
+    ids=["shrunk", "regrown-past-cursor"],
+)
+async def test_preexisting_session_rebases_saved_cursor_after_inactive_truncation(
+    tmp_path: Path,
+    replacement_padding: int,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    alpha_dir = _create_game_dir(
+        bridge_root,
+        game_id="demo.alpha",
+        session_payload=_session(
+            game_id="demo.alpha",
+            session_id="sess-alpha",
+            last_seq=1,
+            started_at="2000-01-01T00:00:00Z",
+            state=_session_state(
+                text="alpha old " + "x" * 512,
+                line_id="alpha-old",
+                scene_id="scene-alpha",
+            ),
+        ),
+        events=[
+            _event(
+                seq=1,
+                event_type="line_changed",
+                session_id="sess-alpha",
+                game_id="demo.alpha",
+                ts="2000-01-01T00:00:01Z",
+                payload={
+                    "speaker": "Yukino",
+                    "text": "alpha old " + "x" * 512,
+                    "line_id": "alpha-old",
+                    "scene_id": "scene-alpha",
+                    "route_id": "",
+                },
+            )
+        ],
+    )
+    _create_game_dir(
+        bridge_root,
+        game_id="demo.beta",
+        session_payload=_session(
+            game_id="demo.beta",
+            session_id="sess-beta",
+            last_seq=1,
+            started_at="2000-01-01T00:00:00Z",
+            state=_session_state(
+                text="beta old",
+                line_id="beta-old",
+                scene_id="scene-beta",
+            ),
+        ),
+        events=[
+            _event(
+                seq=1,
+                event_type="line_changed",
+                session_id="sess-beta",
+                game_id="demo.beta",
+                ts="2000-01-01T00:00:01Z",
+                payload={
+                    "speaker": "Yukino",
+                    "text": "beta old",
+                    "line_id": "beta-old",
+                    "scene_id": "scene-beta",
+                    "route_id": "",
+                },
+            )
+        ],
+    )
+
+    plugin = GalgameBridgePlugin(_Ctx(plugin_dir, _make_effective_config(bridge_root)))
+    await plugin.startup()
+    try:
+        await plugin._poll_bridge(force=True)
+        assert isinstance(await plugin.galgame_bind_game(game_id="demo.alpha"), Ok)
+        await plugin._poll_bridge(force=True)
+        saved_offset = plugin._snapshot_state()["events_byte_offset"]
+
+        assert isinstance(await plugin.galgame_bind_game(game_id="demo.beta"), Ok)
+        await plugin._poll_bridge(force=True)
+
+        alpha_new = _event(
+            seq=2,
+            event_type="line_changed",
+            session_id="sess-alpha",
+            game_id="demo.alpha",
+            ts="2026-04-21T08:36:02Z",
+            payload={
+                "speaker": "Yukino",
+                "text": "alpha after rotation",
+                "line_id": "alpha-new",
+                "scene_id": "scene-alpha",
+                "route_id": "",
+                "padding": "y" * replacement_padding,
+            },
+        )
+        events_path = alpha_dir / "events.jsonl"
+        _write_events(events_path, [alpha_new])
+        if replacement_padding:
+            assert events_path.stat().st_size >= saved_offset
+        else:
+            assert events_path.stat().st_size < saved_offset
+        _write_session(
+            alpha_dir / "session.json",
+            _session(
+                game_id="demo.alpha",
+                session_id="sess-alpha",
+                last_seq=2,
+                started_at="2000-01-01T00:00:00Z",
+                state=_session_state(
+                    text="alpha after rotation",
+                    line_id="alpha-new",
+                    scene_id="scene-alpha",
+                    ts="2026-04-21T08:36:02Z",
+                ),
+            ),
+        )
+
+        assert isinstance(await plugin.galgame_bind_game(game_id="demo.alpha"), Ok)
+        await plugin._poll_bridge(force=True)
+
+        resumed = plugin._snapshot_state()
+        history = await plugin.galgame_get_history(limit=20, include_events=True)
+        assert resumed["events_byte_offset"] == events_path.stat().st_size
+        assert resumed["stream_reset_pending"] is False
+        assert resumed["last_seq"] == 2
+        assert isinstance(history, Ok)
+        assert [event["seq"] for event in history.value["events"]] == [2]
+        assert [line["line_id"] for line in history.value["stable_lines"]] == [
+            "alpha-new"
+        ]
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
+@pytest.mark.parametrize(
+    "replacement_bytes",
+    [b"", b'{"seq":2,"type":"line_changed"'],
+    ids=["empty", "partial-record"],
+)
+async def test_invalid_reattach_checkpoint_clears_cached_gameplay_immediately(
+    tmp_path: Path,
+    replacement_bytes: bytes,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    old_line = _event(
+        seq=1,
+        event_type="line_changed",
+        session_id="sess-alpha",
+        game_id="demo.alpha",
+        ts="2000-01-01T00:00:01Z",
+        payload={
+            "speaker": "Yukino",
+            "text": "abandoned cached line",
+            "line_id": "alpha-old",
+            "scene_id": "scene-alpha",
+            "route_id": "",
+        },
+    )
+    alpha_dir = _create_game_dir(
+        bridge_root,
+        game_id="demo.alpha",
+        session_payload=_session(
+            game_id="demo.alpha",
+            session_id="sess-alpha",
+            last_seq=1,
+            started_at="2000-01-01T00:00:00Z",
+            state=_session_state(
+                text="abandoned cached line",
+                line_id="alpha-old",
+                scene_id="scene-alpha",
+            ),
+        ),
+        events=[old_line],
+    )
+    _create_game_dir(
+        bridge_root,
+        game_id="demo.beta",
+        session_payload=_session(
+            game_id="demo.beta",
+            session_id="sess-beta",
+            last_seq=1,
+            started_at="2000-01-01T00:00:00Z",
+            state=_session_state(
+                text="beta line",
+                line_id="beta-old",
+                scene_id="scene-beta",
+            ),
+        ),
+        events=[
+            _event(
+                seq=1,
+                event_type="line_changed",
+                session_id="sess-beta",
+                game_id="demo.beta",
+                ts="2000-01-01T00:00:01Z",
+                payload={
+                    "text": "beta line",
+                    "line_id": "beta-old",
+                    "scene_id": "scene-beta",
+                },
+            )
+        ],
+    )
+    plugin = GalgameBridgePlugin(_Ctx(plugin_dir, _make_effective_config(bridge_root)))
+    await plugin.startup()
+    try:
+        await plugin._poll_bridge(force=True)
+        assert isinstance(await plugin.galgame_bind_game(game_id="demo.alpha"), Ok)
+        await plugin._poll_bridge(force=True)
+        active_line = _event(
+            seq=2,
+            event_type="line_changed",
+            session_id="sess-alpha",
+            game_id="demo.alpha",
+            ts="2026-04-21T08:35:02Z",
+            payload={
+                "speaker": "Yukino",
+                "text": "cached active line",
+                "line_id": "alpha-active",
+                "scene_id": "scene-alpha",
+                "route_id": "",
+            },
+        )
+        _append_event(alpha_dir / "events.jsonl", active_line)
+        _write_session(
+            alpha_dir / "session.json",
+            _session(
+                game_id="demo.alpha",
+                session_id="sess-alpha",
+                last_seq=2,
+                started_at="2000-01-01T00:00:00Z",
+                state=_session_state(
+                    text="cached active line",
+                    line_id="alpha-active",
+                    scene_id="scene-alpha",
+                    ts="2026-04-21T08:35:02Z",
+                ),
+            ),
+        )
+        await plugin._poll_bridge(force=True)
+        assert (
+            plugin._snapshot_state()["latest_snapshot"]["line_id"]
+            == "alpha-active"
+        )
+
+        assert isinstance(await plugin.galgame_bind_game(game_id="demo.beta"), Ok)
+        await plugin._poll_bridge(force=True)
+
+        events_path = alpha_dir / "events.jsonl"
+        events_path.write_bytes(replacement_bytes)
+        _write_session(
+            alpha_dir / "session.json",
+            _session(
+                game_id="demo.alpha",
+                session_id="sess-alpha",
+                last_seq=3,
+                started_at="2000-01-01T00:00:00Z",
+                state=_session_state(
+                    text="replacement not complete",
+                    line_id="alpha-new",
+                    scene_id="scene-alpha",
+                ),
+            ),
+        )
+
+        assert isinstance(await plugin.galgame_bind_game(game_id="demo.alpha"), Ok)
+        await plugin._poll_bridge(force=True)
+
+        resumed = plugin._snapshot_state()
+        assert resumed["active_session_id"] == "sess-alpha"
+        assert resumed["stream_reset_pending"] is bool(replacement_bytes)
+        assert resumed["events_byte_offset"] == 0
+        assert resumed["events_file_size"] == len(replacement_bytes)
+        assert resumed["last_seq"] == 0
+        assert resumed["latest_snapshot"] == {}
+        assert resumed["history_events"] == []
+        assert resumed["history_lines"] == []
+        assert resumed["history_observed_lines"] == []
+        assert resumed["history_choices"] == []
+        assert resumed["dedupe_window"] == []
+    finally:
+        await plugin.shutdown()

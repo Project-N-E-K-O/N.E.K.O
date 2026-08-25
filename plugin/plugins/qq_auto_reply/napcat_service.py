@@ -13,18 +13,40 @@ class QQNapcatService:
     #: 之后会自动连上。它不该被当作硬失败短路后续重试，否则 NapCat 明明在起，
     #: 重试却不再轮询等待迟来的连接。
     TRANSIENT_TIMEOUT_ERROR = "NapCat 已尝试启动，但没有客户端连接到反向 WS 服务器"
+    FORWARD_TRANSIENT_TIMEOUT_ERROR = "NapCat 已启动，但正向 WebSocket 连接未建立（NapCat 可能仍在登录，或未开启 WebSocket 服务器）"
 
     def __init__(self, plugin: Any):
         self.plugin = plugin
 
+    def _transient_timeout_errors(self) -> set[str]:
+        """所有模式的瞬态超时文案（反向 + 正向）。
+
+        判定「已保存的超时错误是否瞬态」必须**独立于当前连接模式**：正向模式先
+        写入正向超时文案后切到反向，若按当前模式解释，旧文案会被当成硬失败，
+        wait_for_onebot_ready() 提前短路、不再轮询迟来的连接。
+        """
+        return {self.TRANSIENT_TIMEOUT_ERROR, self.FORWARD_TRANSIENT_TIMEOUT_ERROR}
+
+    def _transient_timeout_error(self) -> str:
+        """OneBot 连接超时的文案，按连接模式区分（写入时用的文案）。
+
+        反向：NapCat 没有客户端连到我们的反向 WS 服务器；
+        正向：我们的正向拨出还没连上 NapCat（进程可能仍在启动/登录，或
+        NapCat 未开启 WebSocket 服务器）。两者都是瞬态，不算硬失败。
+        """
+        mode = str((self.plugin._qq_settings or {}).get("qq_connection_mode") or "napcat").strip()
+        if mode == "napcat_forward":
+            return self.FORWARD_TRANSIENT_TIMEOUT_ERROR
+        return self.TRANSIENT_TIMEOUT_ERROR
+
     def has_hard_startup_error(self) -> bool:
         """启动失败是否属于「硬失败」——重试无意义（目录缺失/启动器缺失/进程起不来）。
 
-        OneBot 连接超时（TRANSIENT_TIMEOUT_ERROR）是瞬态，NapCat 可能还在启动，
+        OneBot 连接超时（反向/正向两种文案）都是瞬态，NapCat 可能还在启动，
         不算硬失败：重试时应继续轮询等待迟来的连接，而不是立即短路。
         """
         err = self.get_startup_error()
-        return bool(err) and err != self.TRANSIENT_TIMEOUT_ERROR
+        return bool(err) and err not in self._transient_timeout_errors()
 
     def get_configured_napcat_path(self) -> str:
         return str((self.plugin._qq_settings or {}).get("napcat_directory") or "").strip()
@@ -140,7 +162,7 @@ class QQNapcatService:
                 return True
             if self.has_hard_startup_error():
                 return False
-        self._set_startup_error(self.TRANSIENT_TIMEOUT_ERROR)
+        self._set_startup_error(self._transient_timeout_error())
         return False
 
     def _napcat_log_dir(self) -> Path:
@@ -190,6 +212,13 @@ class QQNapcatService:
             return
         launcher = self.find_napcat_launcher()
         if launcher is None:
+            mode = str((self.plugin._qq_settings or {}).get("qq_connection_mode") or "napcat").strip()
+            if mode == "napcat_forward":
+                # 正向模式本地 NapCat 启动是**尽力而为**：启动器缺失只告警、不设硬
+                # 错误——正向仍可连远端/手动启动的 NapCat，bootstrap() 不应因此进入
+                # 失败分支（wait_for_onebot_ready 会轮询正向拨号结果）。
+                self.plugin._emit_log("WARN", self._build_missing_launcher_error())
+                return
             self._set_startup_error(self._build_missing_launcher_error())
             return
         try:

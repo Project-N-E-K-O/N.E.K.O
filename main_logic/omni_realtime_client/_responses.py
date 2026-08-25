@@ -29,10 +29,12 @@ from ._shared import (
 from config.prompts.prompts_proactive import (
     REALTIME_PROACTIVE_GENERAL_TRIGGER_PROMPTS,
     REALTIME_PROACTIVE_VISION_TRIGGER_PROMPTS,
+    normalize_proactive_prompt_locale,
 )
 from config.prompts.prompts_sys import _loc
 
 from ._response_arbiter import RealtimeResponseArbiter, ResponseTicket
+from ._protocol_capabilities import STRICT_REALTIME_PROTOCOL_CAPABILITIES
 
 
 # A missing response.done must fail conservatively instead of acknowledging a
@@ -45,7 +47,7 @@ _PROACTIVE_TICKET_CANCEL_OBSERVE_TIMEOUT_SECONDS = 0.5
 
 
 def _proactive_text_instruction(language: str, *, has_vision: bool) -> str:
-    lang = (language or "en").strip().lower().replace("_", "-").split("-", 1)[0]
+    lang = normalize_proactive_prompt_locale(language or "en")
     prompts = (
         REALTIME_PROACTIVE_VISION_TRIGGER_PROMPTS
         if has_vision
@@ -63,6 +65,11 @@ class _ResponseMixin:
                 abort_transport=getattr(self, "_abort_failed_transport", None),
                 fail_open=response_arbiter_fail_open_enabled(),
                 on_stuck_release=getattr(self, "_on_arbiter_stuck_release", None),
+                protocol_capabilities=getattr(
+                    self,
+                    "_realtime_protocol_capabilities",
+                    STRICT_REALTIME_PROTOCOL_CAPABILITIES,
+                ),
             )
             self._response_arbiter = arbiter
         return arbiter

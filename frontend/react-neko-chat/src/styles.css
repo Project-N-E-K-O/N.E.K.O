@@ -21,6 +21,10 @@
   -moz-osx-font-smoothing: grayscale;
 }
 
+:root[data-neko-chat-font-preset="system"] {
+  --neko-chat-content-font: var(--neko-ui-font);
+}
+
 * {
   box-sizing: border-box;
 }
@@ -2138,6 +2142,10 @@ body.neko-electron-runtime .app-shell:not(.chat-surface-mode-compact)[data-focus
   backdrop-filter: blur(6px);
   animation: bubbleFloat 3.2s ease-in-out infinite;
   transition: background 0.16s ease, border-color 0.16s ease, transform 0.16s ease, box-shadow 0.16s ease;
+}
+
+.composer-icon-popover .composer-icon-button:is(:hover, :focus-visible) {
+  animation-play-state: paused;
 }
 
 .composer-icon-button::before,

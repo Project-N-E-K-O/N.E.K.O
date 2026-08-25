@@ -274,9 +274,13 @@ class CheckinConfig:
 @dataclass(slots=True)
 class CommunicationConfig:
     enabled: bool = True
+    solution_narration_enabled: bool = True
+    general_narration_enabled: bool = True
 
     def __post_init__(self) -> None:
         self.enabled = bool(self.enabled)
+        self.solution_narration_enabled = bool(self.solution_narration_enabled)
+        self.general_narration_enabled = bool(self.general_narration_enabled)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -337,7 +341,8 @@ class StudyConfig:
     default_mode: StudyMode = MODE_COMPANION
     language: str = "zh-CN"
     history_limit: int = 50
-    auto_open_ui: bool = True
+    # Deprecated compatibility field. Plugin lifecycle never opens external UI.
+    auto_open_ui: bool = False
     ocr_enabled: bool = True
     ocr_backend_selection: str = "rapidocr"
     ocr_capture_backend: str = "auto"
@@ -467,6 +472,32 @@ class StudyConfig:
 
 
 @dataclass(slots=True)
+class PracticeScopeV1:
+    schema_version: int = 1
+    mode: str = "explicit_scope"
+    stage: str = ""
+    subject: str = ""
+    course_family: str = ""
+    chapter: str = ""
+    unit: str = ""
+    topic_id: str = ""
+    scope_key: str = ""
+    scope_revision: int = 0
+    display_path: list[str] = field(default_factory=list)
+    source: str = "knowledge_map"
+    set_at: str = ""
+    eligible_topic_ids: list[str] = field(default_factory=list, repr=False)
+
+    def to_public_dict(self) -> dict[str, Any]:
+        payload = asdict(self)
+        payload.pop("eligible_topic_ids", None)
+        return payload
+
+    def to_state_dict(self) -> dict[str, Any]:
+        return self.to_public_dict()
+
+
+@dataclass(slots=True)
 class StudyState:
     status: str = STATUS_STOPPED
     active_mode: str = MODE_COMPANION
@@ -492,6 +523,8 @@ class StudyState:
     last_session_summary_at: str = ""
     checkpoint: dict[str, Any] = field(default_factory=dict)
     dependency_status: dict[str, Any] = field(default_factory=dict)
+    active_practice_scope: dict[str, Any] = field(default_factory=dict)
+    practice_scope_revision: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         payload = asdict(self)
@@ -658,7 +691,7 @@ def build_config(raw: dict[str, Any]) -> StudyConfig:
         default_mode=default_mode,
         language=_str(study, "language", "zh-CN", "language"),
         history_limit=max(1, _int(study, "history_limit", 50, "history_limit")),
-        auto_open_ui=_bool(study, "auto_open_ui", True, "auto_open_ui"),
+        auto_open_ui=_bool(study, "auto_open_ui", False, "auto_open_ui"),
         ocr_enabled=_bool(ocr, "enabled", True, "ocr_enabled"),
         ocr_backend_selection=_str(
             ocr, "backend_selection", "rapidocr", "ocr_backend_selection"
@@ -845,6 +878,18 @@ def build_config(raw: dict[str, Any]) -> StudyConfig:
                 "enabled",
                 True,
                 "communication_enabled",
+            ),
+            solution_narration_enabled=_bool(
+                communication,
+                "solution_narration_enabled",
+                True,
+                "solution_narration_enabled",
+            ),
+            general_narration_enabled=_bool(
+                communication,
+                "general_narration_enabled",
+                True,
+                "general_narration_enabled",
             ),
         ),
         awareness=AwarenessConfig(

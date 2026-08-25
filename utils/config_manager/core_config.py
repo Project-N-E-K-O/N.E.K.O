@@ -80,6 +80,8 @@ _OPENCLAW_MIGRATION_ATTEMPTS = 3
 _OPENCLAW_MIGRATION_RETRY_DELAY_S = 0.1
 
 
+from utils.http.url import same_endpoint
+
 class CoreConfigMixin:
     """Core config snapshot, geo checks and model API resolution."""
 
@@ -889,6 +891,43 @@ class CoreConfigMixin:
         candidates = set(self._provider_url_candidates(profile, url_key, list_key))
         return saved_url if saved_url in candidates else ''
 
+    @staticmethod
+    def _normalize_realtime_provider(provider: str) -> str:
+        """Drop a named provider from the omni slot.
+
+        The omni dropdown used to be filled from the assist (text-LLM) provider
+        table, so it offered a per-slot realtime provider. Picking one was then
+        honoured downstream: the frontend auto-fills the slot URL,
+        ``get_model_api_config`` sees a complete custom triple and stamps an
+        ``api_type`` that becomes the process-wide core api type — which also
+        drives TTS worker selection, native-voice routing and the audio
+        credential. Those follow the core provider, so a divergent pick tore
+        the audio stack in half (see ``_resolved_realtime_api_type``).
+
+        The audio stack carries exactly one provider identity, so this slot
+        cannot express a second one. A named pick is therefore treated as "not
+        selected" and falls back to the core API — which is what the user
+        effectively got before, minus the broken realtime session and the
+        cross-vendor credential.
+
+        ``follow_*``, ``custom`` and the empty legacy value pass through:
+        neither claims a provider identity of its own.
+        """
+        candidate = (provider or '').strip()
+        # follow_assist 在这个槽上没有独立含义：实时会话跟的是核心 API。前端早就
+        # 这么做了（omni 分支的 follow_assist 取的是**核心** provider 的 url/key），
+        # 只有后端的 Key 派生还在按 assist 走，于是快照里留下一把「assist 的 Key
+        # 配核心的端点」。目前它到不了下游（follow_* 下 REALTIME_MODEL_URL 恒为空，
+        # 自定义三元组凑不齐），但那是个只等一次改动就会点着的陷阱。归一掉。
+        if candidate == 'follow_assist':
+            return 'follow_core'
+        if not candidate or candidate == 'custom' or candidate.startswith('follow_'):
+            return candidate
+        # 落回 follow_core 而不是空串：空串会让下面的 URL/模型/Key 覆盖分支照旧
+        # 写入前端自动填好的残留值，follow_core 才是「等同于没选」的既有路径
+        # （URL 跳过、模型回落 CORE_MODEL、Key 取 CORE_API_KEY）。
+        return 'follow_core'
+
     def get_core_config(self):
         """Read core config dynamically"""
         # Late-bound through the package facade so existing
@@ -1093,6 +1132,19 @@ class CoreConfigMixin:
         core_api_profiles = get_core_api_profiles()
         assist_api_profiles = get_assist_api_profiles()
         assist_api_key_fields = get_assist_api_key_fields()
+        # provider → 管理簿在 core_config.json 里的**原始**字段名（assistApiKeyQwen 之类）。
+        # 用来区分「管理簿里真存了一条」和「ASSIST_API_KEY_* 只是被 _fb() 派生成了
+        # CORE_API_KEY」——后者不该压过用户存在槽位里的 Key。
+        try:
+            from utils.api_config_loader import get_config as _get_api_config
+            _api_key_registry = _get_api_config().get('api_key_registry', {}) or {}
+        except Exception:
+            _api_key_registry = {}
+        assist_api_key_raw_fields = {
+            _pk: _entry.get('config_field', '')
+            for _pk, _entry in _api_key_registry.items()
+            if isinstance(_entry, dict) and _entry.get('config_field')
+        }
 
         # Core API profile
         core_api_value = core_cfg.get('coreApi') or config['CORE_API_TYPE']
@@ -1222,9 +1274,18 @@ class CoreConfigMixin:
             'conversation', 'summary', 'gameMain', 'gameSummary', 'correction',
             'emotion', 'vision', 'agent', 'omni', 'tts',
         ):
-            config[f'{_model_provider_prefix}ModelProvider'] = str(
+            _raw_provider = str(
                 core_cfg.get(f'{_model_provider_prefix}ModelProvider', '') or ''
             )
+            config[f'{_model_provider_prefix}ModelProvider'] = (
+                self._normalize_realtime_provider(_raw_provider)
+                if _model_provider_prefix == 'omni'
+                else _raw_provider
+            )
+        # omniModelUrl 的**原始存盘值**（不是解析后的 REALTIME_MODEL_URL）：用来区分
+        # 「用户真的手填过一个实时端点」和「URL 只是从 provider profile 默认值填出来的」。
+        # 老配置在 omniModelProvider 这个键存在之前就能手填 URL，那种必须继续按 local 处理。
+        config['omniModelUrl'] = str(core_cfg.get('omniModelUrl', '') or '')
         config['ttsModelUrl'] = str(core_cfg.get('ttsModelUrl', '') or '')
         config['ttsModelId'] = str(core_cfg.get('ttsModelId', '') or '')
         config['ttsVoiceId'] = str(core_cfg.get('ttsVoiceId', '') or '')
@@ -1327,7 +1388,10 @@ class CoreConfigMixin:
                 ('tts',          'TTS_MODEL',           'TTS_MODEL_URL',          'TTS_MODEL_API_KEY'),
             ]
             for prefix, model_key, url_key, apikey_key in _custom_api_fields:
-                provider = core_cfg.get(f'{prefix}ModelProvider', '')
+                # 读上面归一化过的快照值而不是 core_cfg 原值：omni 槽选了一个没有
+                # realtime 实现的服务商时，快照已把它落回 follow_core，URL/模型/Key
+                # 三条覆盖必须跟着走同一条路，否则残留的自动填充值还是会被写进去。
+                provider = config.get(f'{prefix}ModelProvider', '')
                 # follow_core / follow_assist 的 URL 是前端联动 readonly 自填的提示值
                 # （static/js/api_key_settings.js: onCustomModelProviderChange），不代表
                 # 用户选择"自定义部署"。但只在 omni/tts 才会出问题：
@@ -1392,7 +1456,8 @@ class CoreConfigMixin:
                 # API Key 处理：
                 #   follow_core   → 从核心 API Key 派生
                 #   follow_assist → 从辅助 API Key 派生（OPENROUTER_API_KEY 已含 assist→core 回退）
-                #   具体服务商/custom/''(老配置) → 使用存储值（空串合法，本地服务商不需要 key）
+                #   具名服务商    → 从 API 管理簿（ASSIST_API_KEY_*）解析，见下方 _book_key
+                #   custom/''(老配置) → 使用存储值（空串合法，本地服务商不需要 key）
                 #
                 # GSV 启用 + prefix='tts' + ttsModelProvider 默认 'follow_*' 时跳过派生：
                 # 派生会把 TTS_MODEL_API_KEY 写成 OPENROUTER_API_KEY / CORE_API_KEY（这俩是
@@ -1417,8 +1482,88 @@ class CoreConfigMixin:
                 elif provider == 'follow_summary':
                     config[apikey_key] = config.get('SUMMARY_MODEL_API_KEY', '')
                 else:
-                    cfg_key = core_cfg.get(f'{prefix}ModelApiKey')
-                    if cfg_key is not None:
+                    # 具名服务商槽：Key 的唯一真相是 API 管理簿（ASSIST_API_KEY_*），
+                    # 不是槽位字段。前端在选中服务商时把管理簿的值拷进只读的槽位输入框
+                    # （api_key_settings.js: onCustomModelProviderChange → setKeyReadonly），
+                    # 但 GET /core_api 已把管理簿脱敏成哨兵（#2559），拷过去的是哨兵，
+                    # 保存时被 apply_core_config_secret_update 拒写 —— 槽位字段因此永远
+                    # 停在空串，运行时拿空 Key 请求。改为在这里直接读管理簿：
+                    #   - 存量已经写坏的配置无需重新保存即可自愈；
+                    #   - 与「Key 从 API 管理簿自动填充」这个只读 UI 语义对齐；
+                    #   - 不碰哨兵不落盘这条安全不变量。
+                    # 管理簿没有该服务商（custom / 老配置的 '' / gptsovits 这类只在 TTS
+                    # 注册表里的 provider）时回落到槽位存储值，保住这些既有路径。
+                    # 优先级：管理簿里真存的那条 > 槽位存量值 > 管理簿派生值。
+                    #
+                    # 中间那级不能省：ASSIST_API_KEY_* 对匹配 coreApi/assistApi 的
+                    # 服务商会被 _fb() 派生成 CORE_API_KEY。那是「默认值」不是「用户
+                    # 存过」，拿它压掉老配置里槽位自己的 Key 会把能用的配置改坏。
+                    #
+                    # 三处都先转字符串再 strip：core_config.json 用户可手改，字段里
+                    # 可能落进任意 JSON 类型，直接 .strip() 会让整个 get_core_config()
+                    # 抛 AttributeError —— 那是启动即崩，不是某个槽降级。
+                    _raw_cfg_key = core_cfg.get(f'{prefix}ModelApiKey')
+                    cfg_key = (
+                        str(_raw_cfg_key).strip() if _raw_cfg_key is not None else None
+                    )
+                    # 豆包语音例外：它虽然在管理簿映射里，但凭证真相是槽位字段——
+                    # voice_storage.get_tts_api_key('doubao_tts') 槽位优先、管理簿兜底，
+                    # POST 侧的仲裁也刻意保住「只存在 ttsModelApiKey 的 legacy key」。
+                    # 这里跟着走管理簿优先就会让同一份凭证出现两条反向的解析路径。
+                    # TTS 槽整体不走管理簿改道。这个槽的下拉里有一批「注册表认得、
+                    # 但派发根本不读 ttsModelProvider」的伪选项（minimax / elevenlabs /
+                    # cosyvoice…），选中它们时 worker 仍由核心 API 决定；一旦这里把
+                    # 该厂商的真实 Key 解析进 TTS_MODEL_API_KEY，那把 Key 就会被送给
+                    # 核心厂商的 TTS 端点——又一次跨厂商凭证外发。
+                    # TTS 的凭证真相本来就在槽位字段与各 provider 自己的解析路径上
+                    # （voice_storage.get_tts_api_key / workers 直接读 raw ttsModelApiKey），
+                    # 保持原样即可。
+                    _uses_key_book = bool(provider) and prefix != 'tts'
+                    _raw_book_field = (
+                        assist_api_key_raw_fields.get(provider, '') if _uses_key_book else ''
+                    )
+                    _explicit_book = (
+                        str(core_cfg.get(_raw_book_field) or '').strip() if _raw_book_field else ''
+                    )
+                    _book_field = assist_api_key_fields.get(provider) if _uses_key_book else ''
+                    _derived_book = (
+                        str(config.get(_book_field) or '').strip() if _book_field else ''
+                    )
+                    # 管理簿里这家的 Key 只能配这家的端点。走过 UI 的配置里两者
+                    # 一定同源（选中服务商时 URL 被自动填成该家地址且只读），但
+                    # 存量 / 导入 / 手改的配置可能留着另一家的 URL —— 那时把这家的
+                    # 真 Key 解析出来，就是把 A 家的凭证发给 B 家。
+                    # URL 为空不构成风险：自定义三元组凑不齐，下游整体回退。
+                    # 两个来源装的是**同一把**密钥（_derived_book 只是多一层
+                    # ASSIST_API_KEY_* 派生），所以要一起把关：只 gate 显式那个
+                    # 会从派生那条漏出去。
+                    _slot_url = str(config.get(url_key) or '').strip()
+                    if (_explicit_book or _derived_book) and _slot_url:
+                        _profile = assist_api_profiles.get(provider)
+                        _candidates = (
+                            self._provider_url_candidates(
+                                _profile, 'OPENROUTER_URL', 'OPENROUTER_URLS'
+                            )
+                            if isinstance(_profile, dict)
+                            else []
+                        )
+                        # 同源判据用 utils.http.url.same_endpoint，不在这里另搓一份：
+                        # 视觉槽的凭证继承已经为这件事打磨过六轮（尾斜杠 / path 大小写 /
+                        # userinfo / 畸形端口 / 默认端口 / 畸形 IPv6），本地再写一个
+                        # 「转小写去尾斜杠」只会把同样的坑重踩一遍——事实上第一版就
+                        # 踩了：把 /V1 当成 /v1，也认不出显式写出的 :443。
+                        if not any(same_endpoint(_slot_url, c) for c in _candidates):
+                            # 端点不是这家的 → 不交出这家的 Key。回落到槽位存量值，
+                            # 请求不带（或带旧的）凭证会 401，比静默发错家可诊断。
+                            _explicit_book = ''
+                            _derived_book = ''
+                    if _explicit_book:
+                        config[apikey_key] = _explicit_book
+                    elif cfg_key:
+                        config[apikey_key] = cfg_key
+                    elif _derived_book:
+                        config[apikey_key] = _derived_book
+                    elif cfg_key is not None:
                         config[apikey_key] = cfg_key
 
             # TTS Voice ID 作为角色 voice_id 的回退
@@ -1662,6 +1807,42 @@ class CoreConfigMixin:
                 return _provider_type_from_core_key(core_config.get('CORE_API_TYPE', ''))
             if provider == 'follow_assist':
                 return _normalize_provider_type_value(core_config.get('PROVIDER_TYPE'))
+            def _fallback_provider_type() -> str:
+                """Protocol of whatever this slot actually falls back to."""
+                fallback_type = model_type_mapping.get(target_model_type, {}).get('fallback_type')
+                if fallback_type == 'core':
+                    return _provider_type_from_core_key(core_config.get('CORE_API_TYPE', ''))
+                if fallback_type == 'conversation':
+                    return _resolved_provider_type_for_model('conversation', seen)
+                if fallback_type == 'summary':
+                    return _resolved_provider_type_for_model('summary', seen)
+                return _normalize_provider_type_value(core_config.get('PROVIDER_TYPE'))
+
+            # 具名服务商的**协议**同样只在「这个槽的 URL 确实属于它」时才成立。
+            # 槽位没填完时上游会把 URL 回填成 assist 的地址（AGENT_MODEL_URL 尤其
+            # 明显：它有一条 VISION → OPENROUTER 的兜底链），此时仍按下拉值取协议，
+            # 就造出「assist 地址 + Anthropic 协议」——这正是 Fix D 要消灭的错配，
+            # 只是从「关掉自定义 API」换成了「开着但槽位没填完」这条入口。
+            #
+            # 判据与凭证那一处共用（same_endpoint + provider 候选集）：协议和凭证
+            # 要么一起给、要么一起不给，不会出现「按 A 家协议、拿 B 家的 key」。
+            if provider:
+                _slot_url = str(
+                    core_config.get(
+                        model_type_mapping.get(target_model_type, {}).get('custom_url', '')
+                    ) or ''
+                ).strip()
+                if _slot_url:
+                    _profile = get_assist_api_profiles().get(provider)
+                    _candidates = (
+                        self._provider_url_candidates(
+                            _profile, 'OPENROUTER_URL', 'OPENROUTER_URLS'
+                        )
+                        if isinstance(_profile, dict)
+                        else []
+                    )
+                    if not any(same_endpoint(_slot_url, c) for c in _candidates):
+                        return _fallback_provider_type()
             if not provider:
                 fallback_type = model_type_mapping.get(target_model_type, {}).get('fallback_type')
                 if fallback_type == 'core':
@@ -1672,6 +1853,35 @@ class CoreConfigMixin:
                     return _resolved_provider_type_for_model('summary', seen)
                 return _normalize_provider_type_value(core_config.get('PROVIDER_TYPE'))
             return _provider_type_from_assist_key(provider)
+
+        def _resolved_realtime_api_type() -> str:
+            """Wire dialect for a custom-configured realtime session.
+
+            Only two answers are coherent here. ``local`` means an endpoint the
+            user typed themselves. Everything else follows the core provider —
+            including an explicitly named one.
+
+            Returning a named provider's own identity looks like honouring the
+            user's pick, but this value is not just the realtime dialect: it
+            becomes the process-wide core api type, which also selects the TTS
+            worker, the native-voice catalog and the audio credential. Those
+            still resolve against the core provider, so a divergent pick
+            produced e.g. a Qwen TTS worker holding the OpenAI core key —
+            silence, plus one vendor's credential sent to another. The audio
+            stack has exactly one provider identity; a per-slot override cannot
+            express a second one, so it is not offered (the omni dropdown lists
+            only the follow options and the custom entry) and not honoured here.
+            """
+            omni_provider = str(core_config.get('omniModelProvider') or '').strip()
+            if omni_provider == 'custom':
+                return 'local'
+            # 老配置在 omniModelProvider 这个键出现之前就能手填实时端点，那种存量
+            # 没有 provider 值可读，但它确实是自配端点，行为必须与改动前一致。
+            # 判据是「存盘里真有 omniModelUrl」——profile 默认值填出来的 URL 不进
+            # 这个键，所以不会把「什么都没选」误判成自配。
+            if not omni_provider and str(core_config.get('omniModelUrl') or '').strip():
+                return 'local'
+            return str(core_config.get('CORE_API_TYPE', '') or '')
 
         if model_type == 'game_main':
             provider = str(core_config.get('gameMainModelProvider') or 'follow_conversation').strip()
@@ -1713,10 +1923,26 @@ class CoreConfigMixin:
                     'api_key': resolved_api_key,
                     'base_url': custom_url,
                     'is_custom': treat_as_custom,
-                    'provider_type': _resolved_provider_type_for_model(model_type),
-                    # 对于 realtime 模型，自定义配置时 api_type 设为 'local'
-                    # TODO: 后续完善 'local' 类型的具体实现（如本地推理服务等）
-                    'api_type': 'local' if model_type == 'realtime' else None,
+                    # 槽位下拉值只在「该槽的自定义配置真的生效」时才代表协议。
+                    # agent 槽是唯一会绕过 treat_as_custom 直接进这个分支的
+                    # （上面的 `if treat_as_custom or model_type == 'agent'`），
+                    # 关掉自定义 API 后它的 URL/Key 已经回落 assist，协议必须跟着回落，
+                    # 否则残留的 claude/kimi_code 会配出「assist 地址 + Anthropic 协议」。
+                    # GSV 那条路 treat_as_custom 为真（= enable_custom_api or gsv_enabled），
+                    # 不受影响。
+                    'provider_type': (
+                        _resolved_provider_type_for_model(model_type)
+                        if treat_as_custom
+                        else _normalize_provider_type_value(core_config.get('PROVIDER_TYPE'))
+                    ),
+                    # realtime 的 api_type 必须表达「这个 WebSocket 说的是谁家的方言」。
+                    # 原来这里无条件写 'local'，而 'local' 至今没有实现，还会经
+                    # lifecycle 的 core_api_type 赋值污染全局（TTS 因此落 dummy）。
+                    # 只有用户自己填的端点才是真 'local'；显式选中的具名服务商要保住
+                    # 自己的身份，其余（follow_core / 老配置空值）跟随核心 API。
+                    'api_type': (
+                        _resolved_realtime_api_type() if model_type == 'realtime' else None
+                    ),
                 }
         
         # 自定义音色(CosyVoice)的特殊回退逻辑：优先尝试用户保存的 Qwen Cosyvoice API，
@@ -1765,6 +1991,12 @@ class CoreConfigMixin:
                 }
 
         # 根据 fallback_type 回退到不同的 API
+        #
+        # 协议必须与地址同源。这里返回的 base_url / api_key 全部来自 core（或下面的
+        # assist），而 provider_type 原本走 _resolved_provider_type_for_model —— 那是
+        # 按槽位下拉值解析的，且下拉值不受 ENABLE_CUSTOM_API 门控。于是「把某槽选成
+        # claude/kimi_code 之后再关掉自定义 API」会得到 assist 的地址+Key 配 Anthropic
+        # 协议，该槽的请求直接打死。回退分支按回退目标取协议，错配就不可能构造出来。
         if mapping['fallback_type'] == 'core':
             # 回退到核心 API 配置
             return {
@@ -1772,7 +2004,9 @@ class CoreConfigMixin:
                 'api_key': core_config.get('CORE_API_KEY', ''),
                 'base_url': core_config.get('CORE_URL', ''),
                 'is_custom': False,
-                'provider_type': _resolved_provider_type_for_model(model_type),
+                'provider_type': _provider_type_from_core_key(
+                    core_config.get('CORE_API_TYPE', '')
+                ),
                 # 对于 realtime 模型，回退到核心API时使用配置的 CORE_API_TYPE
                 'api_type': core_config.get('CORE_API_TYPE', '') if model_type == 'realtime' else None,
             }
@@ -1781,13 +2015,15 @@ class CoreConfigMixin:
         elif mapping['fallback_type'] == 'summary':
             return self.get_model_api_config('summary', _core_config=core_config)
         else:
-            # 回退到辅助 API 配置
+            # 回退到辅助 API 配置（协议同源，理由见上面 fallback 分支的注释）
             return {
                 'model': core_config.get(mapping['default_model'], ''),
                 'api_key': core_config.get('OPENROUTER_API_KEY', ''),
                 'base_url': core_config.get('OPENROUTER_URL', ''),
                 'is_custom': False,
-                'provider_type': _resolved_provider_type_for_model(model_type),
+                'provider_type': _normalize_provider_type_value(
+                    core_config.get('PROVIDER_TYPE')
+                ),
             }
 
     def is_agent_api_ready(self) -> tuple[bool, list[str]]:

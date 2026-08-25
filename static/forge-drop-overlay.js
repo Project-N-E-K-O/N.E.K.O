@@ -8,7 +8,7 @@
  * 同时：
  *   - 「猫娘社区」按钮右下角蓝色券数角标（.neko-social-forge-badge）
  *   - 掉券卡片飞向该按钮中心
- *   - 启动时 GET /api/card-drop/credits/local-summary 拉初始券数
+ *   - 券数和到期时间只接收 PC 主进程推送的云端快照
  *
  * 硬约束：必须在 Pet 透明窗内渲染（独立 Toast 窗在部分 macOS 上不可见）。
  * pointer-events: none，不破坏穿透 hitTest。
@@ -23,21 +23,21 @@
   var QUEUE_GAP_MS = 400;
   var HOLD_MS = 3200;
   var FLY_MS = 700;
-  var PASSIVE_REFRESH_MS = 10 * 60 * 1000;
-  var INTERACTIVE_REFRESH_THROTTLE_MS = 15 * 1000;
-  var STARTUP_RETRY_DELAYS_MS = [2000, 10000, 30000];
+  // 只有这两档贴角色右下方；其余稀有度沿用屏幕中央的原始演出。
+  var AVATAR_ANCHORED_RARITIES = { N: true, R: true };
+  var ANCHOR_CARD_MAX_W = 280;
+  var ANCHOR_CARD_MIN_W = 180;
+  var CENTER_CARD_MAX_W = 360;
+  var CARD_MARGIN = 12;
+  var CARD_ASPECT = 1192 / 445;
   var queue = Promise.resolve();
   var cachedCredits = 0;
   var creditStateRevision = 0;
-  var creditFetchInFlight = null;
-  var creditRefreshAfterInFlight = false;
-  var lastCreditFetchStartedAt = 0;
-  var startupRetryTimer = null;
-  var startupRetryIndex = 0;
-  var passiveRefreshTimer = null;
   var expiryRefreshTimer = null;
   var forgeBadgeObserver = null;
   var dropSoundAudioByRarity = {};
+  var dropEffectsGeneration = 0;
+  var activeAnimationCompleters = {};
   // 浮动按钮栏未聚焦时会被 display:none；此时 getBoundingClientRect=0 → 会误飞左上角。
   // 缓存上次可见位置，并在隐藏时用 style.left/top 估算。
   var lastSocialCenter = null;
@@ -90,6 +90,7 @@
 
   function playDropSound(rarity) {
     try {
+      if (window.forgeDropEffectsEnabled === false) return;
       var normalized = tokens().normalizeRarity(rarity);
       var audio = dropSoundAudioByRarity[normalized] || createDropSoundAudio(normalized);
       if (!audio) return;
@@ -104,7 +105,7 @@
   function ensureStyles() {
     // 版本号覆盖，避免 Pet 残留旧样式（右下角 HUD / 错误 transform 飞出）。
     var STYLE_ID = 'neko-forge-drop-styles';
-    var STYLE_VER = 'v9-prominent-hd-ticket';
+    var STYLE_VER = 'v10-avatar-lower-right';
     var existing = document.getElementById(STYLE_ID);
     if (existing && existing.getAttribute('data-ver') === STYLE_VER) return;
     if (existing) try { existing.remove(); } catch (_) {}
@@ -246,6 +247,8 @@
     try {
       var cs = window.getComputedStyle(btn);
       if (cs && cs.position === 'static') btn.style.position = 'relative';
+      btn.style.overflow = 'visible';
+      if (btn.parentElement) btn.parentElement.style.overflow = 'visible';
     } catch (_) {}
     var badge = btn.querySelector('.neko-social-forge-badge');
     if (!badge) {
@@ -305,9 +308,164 @@
     };
   }
 
+  function normalizeAvatarBounds(bounds) {
+    if (!bounds) return null;
+    var left = Number(bounds.left != null ? bounds.left : bounds.x);
+    var top = Number(bounds.top != null ? bounds.top : bounds.y);
+    var right = Number(bounds.right != null ? bounds.right : left + Number(bounds.width));
+    var bottom = Number(bounds.bottom != null ? bounds.bottom : top + Number(bounds.height));
+    if (![left, top, right, bottom].every(Number.isFinite)) return null;
+    if (right <= left || bottom <= top) return null;
+    return {
+      left: left,
+      top: top,
+      right: right,
+      bottom: bottom,
+      width: right - left,
+      height: bottom - top,
+    };
+  }
+
+  /** 读取当前模型的真实屏幕边界，四种模型共用同一套掉券定位。 */
+  function getActiveAvatarBounds() {
+    var configuredType = String(window.lanlan_config && window.lanlan_config.model_type || '').toLowerCase();
+    var live3dSubType = String(window.lanlan_config && window.lanlan_config.live3d_sub_type || '').toLowerCase();
+    var managers = {
+      live2d: window.live2dManager,
+      vrm: window.vrmManager,
+      mmd: window.mmdManager,
+    };
+    function getPngtuberBounds() {
+      var pngAvatar = document.querySelector(
+        '#pngtuber-container .pngtuber-image:not([style*="display: none"]), ' +
+        '#pngtuber-container .pngtuber-layered-canvas:not([style*="display: none"])'
+      );
+      if (!pngAvatar) return null;
+      try { return normalizeAvatarBounds(pngAvatar.getBoundingClientRect()); } catch (_) { return null; }
+    }
+    // 当前配置明确为 PNGtuber 时必须优先使用它的 DOM；其他 manager 可能仍是
+    // 上一次模型切换留下的实例，不能让旧边界抢走当前模型的掉券定位。
+    if (configuredType === 'pngtuber') {
+      var configuredPngBounds = getPngtuberBounds();
+      if (configuredPngBounds) return configuredPngBounds;
+    }
+    var activeLive3dManager = live3dSubType === 'mmd' ? managers.mmd : managers.vrm;
+    var order = configuredType === 'live3d'
+      ? [activeLive3dManager, live3dSubType === 'mmd' ? managers.vrm : managers.mmd]
+      : (configuredType && managers[configuredType]
+        ? [managers[configuredType]]
+        : [managers.live2d, managers.vrm, managers.mmd]);
+    for (var i = 0; i < order.length; i += 1) {
+      var manager = order[i];
+      if (!manager || typeof manager.getModelScreenBounds !== 'function') continue;
+      try {
+        var bounds = normalizeAvatarBounds(manager.getModelScreenBounds());
+        if (bounds) return bounds;
+      } catch (_) {}
+    }
+
+    // PNGtuber 没有统一的 manager 边界 API，直接使用当前可见形象的 DOM 边界。
+    return getPngtuberBounds();
+  }
+
+  function clampCardCoordinate(value, size, viewportSize, margin) {
+    var max = Math.max(0, viewportSize - size);
+    var min = Math.min(margin, max);
+    return Math.round(Math.max(min, Math.min(value, max)));
+  }
+
+  /**
+   * N/R 是高频掉落，贴到角色右下方以免反复挡住画面中央；
+   * SR 及以上保持原来的屏幕中央大卡演出，保留稀有掉落的仪式感。
+   */
+  function shouldAnchorToAvatar(rarity) {
+    return AVATAR_ANCHORED_RARITIES[String(rarity || '').toUpperCase()] === true;
+  }
+
+  function resolveCardWidth(rarity, avatarBounds) {
+    var availableWidth = Math.max(1, window.innerWidth - CARD_MARGIN * 2);
+    if (!shouldAnchorToAvatar(rarity)) {
+      return Math.max(1, Math.min(CENTER_CARD_MAX_W, availableWidth));
+    }
+    var avatarCardWidth = avatarBounds ? avatarBounds.width * 0.55 : ANCHOR_CARD_MAX_W;
+    return Math.max(1, Math.min(
+      ANCHOR_CARD_MAX_W,
+      availableWidth,
+      Math.max(ANCHOR_CARD_MIN_W, avatarCardWidth)
+    ));
+  }
+
+  function getCardPlacement(cardWidth, cardHeight, avatarBounds) {
+    var margin = CARD_MARGIN;
+    if (!avatarBounds) {
+      return {
+        left: clampCardCoordinate(
+          window.innerWidth * 0.5 - cardWidth / 2,
+          cardWidth,
+          window.innerWidth,
+          margin
+        ),
+        top: clampCardCoordinate(
+          window.innerHeight * 0.42 - cardHeight / 2,
+          cardHeight,
+          window.innerHeight,
+          margin
+        ),
+      };
+    }
+    // 券卡从角色右下侧探出：保留少量重叠，视觉上仍与 N.E.K.O 绑定。
+    var overlapX = cardWidth * 0.18;
+    var liftY = Math.max(28, Math.min(64, avatarBounds.height * 0.08));
+    return {
+      left: clampCardCoordinate(
+        avatarBounds.right - overlapX,
+        cardWidth,
+        window.innerWidth,
+        margin
+      ),
+      top: clampCardCoordinate(
+        avatarBounds.bottom - cardHeight - liftY,
+        cardHeight,
+        window.innerHeight,
+        margin
+      ),
+    };
+  }
+
   function playOne(payload) {
     return new Promise(function (resolve) {
+      var completed = false;
+      function complete() {
+        if (completed) return;
+        completed = true;
+        var eventId = payload && payload.event_id;
+        if (typeof eventId === 'string' && eventId) delete activeAnimationCompleters[eventId];
+        if (typeof eventId === 'string' && eventId) {
+          try {
+            window.dispatchEvent(new window.CustomEvent(
+              'neko-forge-credit-animation-complete',
+              { detail: { event_id: eventId } }
+            ));
+          } catch (_) {}
+        }
+        resolve();
+      }
+      if (payload && typeof payload.event_id === 'string' && payload.event_id) {
+        activeAnimationCompleters[payload.event_id] = complete;
+      }
       try {
+        var payloadRevision = Number(payload && payload.__credit_state_revision) || 0;
+        if (window.forgeDropEffectsEnabled === false) {
+          // 排队期间可能已有权威刷新推进过 revision；此时这张队尾券的
+          // active_count 已经陈旧，不能用它覆盖角标。
+          var entryRevisionFresh = !payloadRevision || payloadRevision === creditStateRevision;
+          if (payload && typeof payload.active_count === 'number' && entryRevisionFresh) {
+            renderForgeBadge(payload.active_count, true);
+          }
+          complete();
+          return;
+        }
+        var playGeneration = dropEffectsGeneration;
         ensureStyles();
         var t = tokens();
         var rarity = t.normalizeRarity(payload && payload.rarity);
@@ -318,7 +476,6 @@
         var active = typeof (payload && payload.active_count) === 'number'
           ? payload.active_count
           : (cachedCredits > 0 ? cachedCredits + 1 : 1);
-        var payloadRevision = Number(payload && payload.__credit_state_revision) || 0;
 
         var layer = document.querySelector('.neko-forge-drop-layer');
         if (!layer) {
@@ -327,15 +484,12 @@
           (document.body || document.documentElement).appendChild(layer);
         }
 
-        var CARD_MAX_W = 360;
-        var CARD_MARGIN = 12;
-        var CARD_ASPECT = 1192 / 445;
-        var CARD_W = Math.max(1, Math.min(CARD_MAX_W, window.innerWidth - CARD_MARGIN * 2));
+        var avatarBounds = shouldAnchorToAvatar(rarity) ? getActiveAvatarBounds() : null;
+        var CARD_W = resolveCardWidth(rarity, avatarBounds);
         var CARD_H = Math.round(CARD_W / CARD_ASPECT);
-        var originX = window.innerWidth * 0.5;
-        var originY = window.innerHeight * 0.42;
-        var startLeft = Math.round(originX - CARD_W / 2);
-        var startTop = Math.round(originY - CARD_H / 2);
+        var placement = getCardPlacement(CARD_W, CARD_H, avatarBounds);
+        var startLeft = placement.left;
+        var startTop = placement.top;
 
         var card = document.createElement('div');
         card.className = 'neko-forge-card';
@@ -402,6 +556,14 @@
 
         var hold = reduced ? 1200 : HOLD_MS;
         setTimeout(function () {
+          if (playGeneration !== dropEffectsGeneration || window.forgeDropEffectsEnabled === false) {
+            try { card.remove(); } catch (_) {}
+            if (!payloadRevision || payloadRevision === creditStateRevision) {
+              renderForgeBadge(active, true);
+            }
+            complete();
+            return;
+          }
           var prevBtnStyle = null;
           try {
             // 0) 短暂亮起浮动栏，避免隐藏时 rect=0 飞向左上，也让终点可见
@@ -450,7 +612,7 @@
               }
               // 角标 bump 后再收起浮动栏，稍留一点时间让用户看到数字变化
               setTimeout(function () { restoreFloatingButtons(prevBtnStyle); }, 600);
-              resolve();
+              complete();
             }, flyMs + 40);
           } catch (_) {
             try { card.remove(); } catch (_) {}
@@ -458,12 +620,12 @@
               renderForgeBadge(active, true);
             }
             restoreFloatingButtons(prevBtnStyle);
-            resolve();
+            complete();
           }
         }, hold);
 
       } catch (_) {
-        resolve();
+        complete();
       }
     });
   }
@@ -482,7 +644,7 @@
     if (timer) try { clearTimeout(timer); } catch (_) {}
   }
 
-  function scheduleExpiryRefresh(nextExpiresAt) {
+  function scheduleExpiryClear(nextExpiresAt) {
     clearTimer(expiryRefreshTimer);
     expiryRefreshTimer = null;
     if (!nextExpiresAt) return;
@@ -494,86 +656,16 @@
     var delay = Math.min(0x7fffffff, Math.max(1000, earliest - now + 1000));
     expiryRefreshTimer = setTimeout(function () {
       expiryRefreshTimer = null;
-      refreshCreditsWithRetry();
+      creditStateRevision += 1;
+      // 到期只说明最早的一张券失效，不能据此推断全部券都已清空。
+      // 请求 Electron 主进程重新读取云端权威状态；本体不访问本地券账本。
+      requestCreditStateRefresh();
     }, delay);
-  }
-
-  function fetchCredits(force) {
-    var now = Date.now();
-    if (creditFetchInFlight) return creditFetchInFlight;
-    if (!force && now - lastCreditFetchStartedAt < INTERACTIVE_REFRESH_THROTTLE_MS) {
-      return Promise.resolve(true);
-    }
-    lastCreditFetchStartedAt = now;
-    var requestRevision = creditStateRevision;
-    try {
-      creditFetchInFlight = fetch('/api/card-drop/credits/local-summary', { cache: 'no-store' })
-        .then(function (res) {
-          if (!res.ok) throw new Error('credits_http_' + res.status);
-          return res.json();
-        })
-        .then(function (data) {
-          if (!data) throw new Error('credits_empty_response');
-          // 请求发出后若收到掉券事件，这个响应可能是事件提交前的旧快照。
-          // 丢弃它并在当前请求收尾后再拉一次，避免旧 count 压过新事件。
-          if (requestRevision !== creditStateRevision) {
-            creditRefreshAfterInFlight = true;
-            return true;
-          }
-          var count = typeof data.count === 'number'
-            ? data.count
-            : (Array.isArray(data.credits) ? data.credits.length : 0);
-          creditStateRevision += 1;
-          renderForgeBadge(count, false);
-          scheduleExpiryRefresh(data.next_expires_at);
-          clearTimer(startupRetryTimer);
-          startupRetryTimer = null;
-          startupRetryIndex = 0;
-          return true;
-        })
-        .catch(function () { return false; })
-        .then(function (ok) {
-          creditFetchInFlight = null;
-          if (creditRefreshAfterInFlight) {
-            creditRefreshAfterInFlight = false;
-            setTimeout(function () { refreshCreditsWithRetry(); }, 250);
-          }
-          return ok;
-        });
-      return creditFetchInFlight;
-    } catch (_) {
-      creditFetchInFlight = null;
-      return Promise.resolve(false);
-    }
-  }
-
-  function refreshCreditsWithRetry() {
-    clearTimer(startupRetryTimer);
-    startupRetryTimer = null;
-    return fetchCredits(true).then(function (ok) {
-      if (ok) {
-        startupRetryIndex = 0;
-        return true;
-      }
-      if (startupRetryIndex >= STARTUP_RETRY_DELAYS_MS.length) return false;
-      var delay = STARTUP_RETRY_DELAYS_MS[startupRetryIndex++];
-      startupRetryTimer = setTimeout(function () {
-        startupRetryTimer = null;
-        refreshCreditsWithRetry();
-      }, delay);
-      return false;
-    });
-  }
-
-  function requestInteractiveRefresh() {
-    if (document.visibilityState === 'hidden') return;
-    fetchCredits(false);
   }
 
   function onCreditDropEvent(event) {
     var detail = (event && event.detail) || {};
     creditStateRevision += 1;
-    if (creditFetchInFlight) creditRefreshAfterInFlight = true;
     var queuedDetail = Object.assign({}, detail, {
       __credit_state_revision: creditStateRevision,
     });
@@ -581,7 +673,47 @@
       // 动画飞入结束后再 bump；这里先缓存，避免角标抢先跳
       cachedCredits = Math.max(0, detail.active_count - 1);
     }
+    // 关闭效果时仍经 playOne 的 disabled 分支，以便立即派发动画完成 ACK。
     play(queuedDetail);
+  }
+
+  function requestCreditStateRefresh() {
+    // 到期 / 晚挂载必须走 PC 的云端权威刷新（CREDIT_STATE_REFRESH）。
+    // 不要回放 SSE 缓存快照：那只会重播过期的 lastForgeCredit。
+    try {
+      window.dispatchEvent(new window.CustomEvent('neko-forge-credit-state-refresh'));
+    } catch (_) {}
+  }
+
+  function onCreditStateEvent(event) {
+    var detail = (event && event.detail) || {};
+    creditStateRevision += 1;
+    renderForgeBadge(
+      typeof detail.active_count === 'number' ? detail.active_count : 0,
+      false
+    );
+    scheduleExpiryClear(detail.next_expires_at);
+  }
+
+  function onDropEffectsChanged(event) {
+    if (!event || !event.detail || event.detail.enabled !== false) return;
+    dropEffectsGeneration += 1;
+    Object.keys(activeAnimationCompleters).forEach(function (eventId) {
+      try { activeAnimationCompleters[eventId](); } catch (_) {}
+    });
+    try {
+      var layer = document.querySelector('.neko-forge-drop-layer');
+      if (layer) layer.replaceChildren();
+    } catch (_) {}
+    Object.keys(dropSoundAudioByRarity).forEach(function (rarity) {
+      try {
+        var audio = dropSoundAudioByRarity[rarity];
+        if (audio) {
+          audio.pause();
+          audio.currentTime = 0;
+        }
+      } catch (_) {}
+    });
   }
 
   function boot() {
@@ -590,21 +722,10 @@
     preloadDropSounds();
     startForgeBadgeObserver();
     renderForgeBadge(cachedCredits || 0, false);
-    refreshCreditsWithRetry();
     window.addEventListener('neko-forge-credit-drop', onCreditDropEvent);
-    // 从外部社区页兑券返回时尽快校准；节流避免 focus/visibilitychange 连发。
-    window.addEventListener('focus', requestInteractiveRefresh);
-    window.addEventListener('pageshow', requestInteractiveRefresh);
-    document.addEventListener('visibilitychange', function () {
-      if (document.visibilityState === 'visible') requestInteractiveRefresh();
-    });
-    // Pet 窗口可能始终不获取焦点；用唯一一个 10 分钟低频兜底，
-    // 解决兑券、跨页过期及启动快速重试耗尽后的最终一致性。
-    if (!passiveRefreshTimer) {
-      passiveRefreshTimer = setInterval(function () {
-        if (document.visibilityState !== 'hidden') fetchCredits(true);
-      }, PASSIVE_REFRESH_MS);
-    }
+    window.addEventListener('neko-forge-credit-state', onCreditStateEvent);
+    window.addEventListener('neko-forge-drop-effects-changed', onDropEffectsChanged);
+    requestCreditStateRefresh();
     // 按钮可见时持续刷新缓存位置，隐藏后飞出仍能对准
     try {
       setInterval(function () { readVisibleSocialCenter(); }, 1000);
@@ -614,6 +735,7 @@
       window.addEventListener('live2d-floating-buttons-ready', function () {
         setTimeout(readVisibleSocialCenter, 50);
         setTimeout(readVisibleSocialCenter, 500);
+        setTimeout(requestCreditStateRefresh, 80);
       });
     } catch (_) {}
     setTimeout(readVisibleSocialCenter, 300);
@@ -625,7 +747,7 @@
       creditStateRevision += 1;
       renderForgeBadge(n, true);
     },
-    refreshCredits: function () { return fetchCredits(true); },
+    refreshCredits: function () { return Promise.resolve(false); },
   };
 
   if (document.readyState === 'loading') {

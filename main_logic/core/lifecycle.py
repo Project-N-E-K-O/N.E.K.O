@@ -20,13 +20,18 @@ Method-only mixin: every instance attribute is assigned in
 """
 
 import asyncio
+import inspect
 import json
 import time
 from datetime import datetime
 from websockets import exceptions as web_exceptions
 from fastapi import WebSocket, WebSocketDisconnect
 from main_logic.omni_realtime_client import OmniRealtimeClient
-from main_logic.omni_offline_client import OmniOfflineClient, _is_safety_violation_signal
+from main_logic.omni_offline_client import OmniOfflineClient
+from main_logic.provider_failure_signals import (
+    CODES_REQUIRING_MSG_DETAIL,
+    classify_provider_failure_text,
+)
 from main_logic.proactive_delivery import (
     DELIVERY_RETRACTED_KEY,
     SWAP_PRIME_DELIVERY_CLAIM_KEY,
@@ -231,6 +236,12 @@ class LifecycleMixin:
             logger.error(f"处理静默超时时出错: {e}")
     
     async def handle_connection_error(self, message=None, *, expected_session=None):
+        message_text = str(message) if message is not None else ""
+        try:
+            _parsed = json.loads(message_text) if message_text.startswith('{') else None
+        except (json.JSONDecodeError, TypeError):
+            _parsed = None
+
         async with self.lock:
             is_pending = False
             if expected_session is not None:
@@ -238,6 +249,27 @@ class LifecycleMixin:
                     is_pending = True
                 elif expected_session is not self.session:
                     logger.info("⏭️ handle_connection_error: expected_session stale (not current session), skipping")
+                    return
+                details = _parsed.get('details') if isinstance(_parsed, dict) else None
+                failure_generation = (
+                    details.get('connection_generation')
+                    if isinstance(details, dict)
+                    else None
+                )
+                current_generation = getattr(
+                    expected_session, '_connection_generation', None
+                )
+                if (
+                    isinstance(failure_generation, int)
+                    and isinstance(current_generation, int)
+                    and failure_generation != current_generation
+                ):
+                    logger.info(
+                        "⏭️ handle_connection_error: connection generation stale "
+                        "(failure=%s current=%s), skipping",
+                        failure_generation,
+                        current_generation,
+                    )
                     return
             # Only flag the manager-level flag for main session errors (or unguarded calls).
             # A pending_session failure must not misclassify the main session as closed.
@@ -250,36 +282,30 @@ class LifecycleMixin:
             return
         
         if message:
-            message_text = str(message)
-            message_text_lower = message_text.lower()
-
             # Pre-classified structured errors from omni_realtime_client (JSON with "code")
             # Forward them directly so the frontend sees the original code.
-            try:
-                _parsed = json.loads(message_text) if message_text.startswith('{') else None
-            except (json.JSONDecodeError, TypeError):
-                _parsed = None
             if _parsed and isinstance(_parsed, dict) and _parsed.get('code'):
-                await self.send_status(message_text)
-            elif '欠费' in message_text_lower or 'standing' in message_text_lower:
-                await self.send_status(json.dumps({"code": "API_ARREARS"}))
-            elif 'quota' in message_text_lower or 'time limit' in message_text_lower:
-                await self.send_status(json.dumps({"code": "API_QUOTA_TIME"}))
-            elif '429' in message_text_lower or 'too many' in message_text_lower:
-                await self.send_status(json.dumps({"code": "API_RATE_LIMIT"}))
-            elif ('401' in message_text_lower or 'unauthorized' in message_text_lower
-                    or 'authentication' in message_text_lower
-                    or 'incorrect api key' in message_text_lower
-                    or 'invalid_api_key' in message_text_lower
-                    or ('invalid' in message_text_lower and 'key' in message_text_lower)):
-                await self.send_status(json.dumps({"code": "API_KEY_REJECTED"}))
-            elif _is_safety_violation_signal(message_text_lower):
-                await self.send_status(json.dumps({"code": "API_POLICY_VIOLATION", "details": {"msg": message_text}}))
-            elif '1008' in message_text_lower:
-                await self.send_status(json.dumps({"code": "API_1008_FALLBACK", "details": {"msg": message_text}}))
+                # Peer disconnects use the existing recovery below, which
+                # supplies CHARACTER_DISCONNECTED with the configured name.
+                # Forwarding this marker here would show the same toast twice.
+                if _parsed.get('code') != 'CHARACTER_DISCONNECTED':
+                    await self.send_status(message_text)
             else:
-                await self.send_status(json.dumps({"code": "API_UNKNOWN_ERROR", "details": {"msg": message_text}}))
-        logger.info("💥 Session closed by API Server.")
+                # Same criteria, and the same ordering, the realtime close
+                # path reads — from one place, so a keyword added for one
+                # provider never goes missing on the other side. The details
+                # payload stays this side's own: here we are holding a real
+                # upstream diagnostic and echo it, where a peer-controlled
+                # close reason is deliberately withheld.
+                status_code = (
+                    classify_provider_failure_text(message_text)
+                    or "API_UNKNOWN_ERROR"
+                )
+                status_payload = {"code": status_code}
+                if status_code in CODES_REQUIRING_MSG_DETAIL:
+                    status_payload["details"] = {"msg": message_text}
+                await self.send_status(json.dumps(status_payload))
+        logger.info("💥 Realtime connection recovery requested.")
         await self.disconnected_by_server(expected_session=expected_session)
     
     async def handle_repetition_detected(self):
@@ -1363,6 +1389,10 @@ class LifecycleMixin:
         request_kwargs = {"timeout": 5.0}
         if getattr(self, "_user_language_explicit", False):
             request_kwargs["params"] = {"language": self.user_language}
+        elif getattr(self, "_conversation_render_language", None):
+            request_kwargs["params"] = {
+                "render_language": self._conversation_render_language,
+            }
         return request_kwargs
 
     async def _start_session_fetch_new_dialog(self, lanlan_name, port):
@@ -2741,7 +2771,86 @@ class LifecycleMixin:
         self.sync_message_queue.put({'type': 'system', 'data': 'API server disconnected'})
         await self.cleanup(expected_session=expected_session)
 
-    async def end_session(self, by_server=False, *, expected_session=None, reset_starting_count=True):  # 与Core API断开连接
+    def _queue_session_end_memory_barrier(self, callback):
+        """Queue a terminal memory settlement followed by one local callback."""
+        completion = asyncio.get_running_loop().create_future()
+        self.sync_message_queue.put({
+            'type': 'system',
+            'data': 'session end',
+            '_after_memory_settlement': callback,
+            '_memory_settlement_done': completion,
+        })
+        return completion
+
+    async def _wait_for_session_end_memory_barrier(
+        self,
+        completion,
+        callback,
+        *,
+        timeout_seconds: float,
+    ) -> None:
+        """Wait for connector settlement, with an idempotent immediate fallback.
+
+        The queue item retains the callback after a timeout.  Therefore a slow or
+        temporarily stopped connector will run it again *after* its eventual
+        memory write, closing the late-write window that motivated the barrier.
+        """
+        try:
+            await asyncio.wait_for(
+                asyncio.shield(completion),
+                timeout=max(0.1, float(timeout_seconds)),
+            )
+            return
+        except asyncio.TimeoutError:
+            logger.warning(
+                "[%s] memory settlement barrier timed out; clearing recent "
+                "context now and leaving a queued post-settlement cleanup",
+                self.lanlan_name,
+            )
+
+            # The caller no longer awaits this future after the fallback. Consume
+            # a possible late callback exception to avoid an unhandled-future log;
+            # the connector logs the failure at its source as well.
+            def _consume_late_completion(future):
+                if future.cancelled():
+                    return
+                try:
+                    future.exception()
+                except Exception:
+                    pass
+
+            completion.add_done_callback(_consume_late_completion)
+            result = callback()
+            if inspect.isawaitable(result):
+                await result
+
+    async def settle_session_memory_if_idle(
+        self,
+        callback,
+        *,
+        timeout_seconds: float = 15.0,
+    ) -> bool:
+        """Queue a memory barrier only while this manager is still idle."""
+        async with self.lock:
+            if self.is_active or self.is_starting:
+                return False
+            completion = self._queue_session_end_memory_barrier(callback)
+        await self._wait_for_session_end_memory_barrier(
+            completion,
+            callback,
+            timeout_seconds=timeout_seconds,
+        )
+        return True
+
+    async def end_session(
+        self,
+        by_server=False,
+        *,
+        expected_session=None,
+        reset_starting_count=True,
+        after_memory_settlement=None,
+        memory_settlement_timeout=15.0,
+    ):  # 与Core API断开连接
         # 「用户/前端主动结束启动」信号：只有前端发来的 end_session / pause_session
         # （by_server=False 且 reset_starting_count=True，见 websocket_router）才计。
         # 内部 recovery（reset_starting_count=False）与各类 by_server=True cleanup
@@ -2750,6 +2859,7 @@ class LifecycleMixin:
         # 早退之前，确保 in-flight（尚未 active）期间前端 end_session 也能计上。
         if not by_server and reset_starting_count:
             self._user_session_abandon_epoch += 1
+        memory_barrier_completion = None
         # Pre-check: no-side-effect guard before _init_renew_status which mutates
         # pending/prewarm state.  A stale callback must not nuke preparation state.
         _inactive_early = False
@@ -2810,50 +2920,74 @@ class LifecycleMixin:
             await self._teardown_tts_runtime(
                 _orphan_tts_handler, _orphan_tts_thread,
                 _orphan_tts_rq, _orphan_tts_rsq)
+            if callable(after_memory_settlement):
+                memory_barrier_completion = self._queue_session_end_memory_barrier(
+                    after_memory_settlement,
+                )
+                await self._wait_for_session_end_memory_barrier(
+                    memory_barrier_completion,
+                    after_memory_settlement,
+                    timeout_seconds=memory_settlement_timeout,
+                )
             return
 
         await self._init_renew_status()
 
+        _post_init_inactive = False
         async with self.lock:
             # Re-check after await: another task may have deactivated or swapped session.
+            if expected_session is not None and expected_session is not self.session:
+                logger.info("⏭️ end_session: expected_session stale (post-init), skipping")
+                return
             if not self.is_active:
                 self._audio_stream_epoch += 1
                 self._clear_audio_stream_queue("end_session_post_init_inactive")
                 self._cancel_audio_stream_worker("end_session_post_init_inactive")
                 self._reset_voice_echo_suppression_cache()
-                return
-            if expected_session is not None and expected_session is not self.session:
-                logger.info("⏭️ end_session: expected_session stale (post-init), skipping")
-                return
-            self.is_active = False
-            # 重置 _starting_session_count：如果 start_session 正在执行中（比如卡在预热），
-            # 前端超时后发来 end_session，必须解除这个 guard，否则用户手动重试会被
-            # 静默丢弃（_starting_session_count>0 → return），导致"必须重启应用才能恢复"。
-            # 但 start_session 内部自己调 end_session 清理旧 session 时必须传
-            # reset_starting_count=False，否则 guard 被清零后并发的第二次 start_session
-            # 会穿过，产生孤儿 OmniRealtimeClient（silence_check_task/ws 泄漏）。
-            if reset_starting_count:
-                self._starting_session_count = 0
-                self._starting_input_mode = None
-            self._audio_stream_epoch += 1
-            self._clear_audio_stream_queue("end_session")
-            self._cancel_audio_stream_worker("end_session")
-            self._reset_voice_echo_suppression_cache()
+                _post_init_inactive = True
+            else:
+                self.is_active = False
+                # 重置 _starting_session_count：如果 start_session 正在执行中（比如卡在预热），
+                # 前端超时后发来 end_session，必须解除这个 guard，否则用户手动重试会被
+                # 静默丢弃（_starting_session_count>0 → return），导致"必须重启应用才能恢复"。
+                # 但 start_session 内部自己调 end_session 清理旧 session 时必须传
+                # reset_starting_count=False，否则 guard 被清零后并发的第二次 start_session
+                # 会穿过，产生孤儿 OmniRealtimeClient（silence_check_task/ws 泄漏）。
+                if reset_starting_count:
+                    self._starting_session_count = 0
+                    self._starting_input_mode = None
+                self._audio_stream_epoch += 1
+                self._clear_audio_stream_queue("end_session")
+                self._cancel_audio_stream_worker("end_session")
+                self._reset_voice_echo_suppression_cache()
 
-            # Activity tracker：session 关闭，voice_engaged 不再可能触发。
-            self._activity_tracker.on_voice_mode(False)
+                # Activity tracker：session 关闭，voice_engaged 不再可能触发。
+                self._activity_tracker.on_voice_mode(False)
 
-            # Snapshot all mutable resource refs while holding the lock,
-            # then operate only on locals to prevent killing newly created resources.
-            main_session_ref = self.session
-            message_handler_task_ref = self.message_handler_task
-            tts_handler_task_ref = self.tts_handler_task
-            tts_thread_ref = self.tts_thread
-            tts_request_queue_ref = self.tts_request_queue
-            tts_response_queue_ref = self.tts_response_queue
+                # Snapshot all mutable resource refs while holding the lock,
+                # then operate only on locals to prevent killing newly created resources.
+                main_session_ref = self.session
+                message_handler_task_ref = self.message_handler_task
+                tts_handler_task_ref = self.tts_handler_task
+                tts_thread_ref = self.tts_thread
+                tts_request_queue_ref = self.tts_request_queue
+                tts_response_queue_ref = self.tts_response_queue
+
+        if _post_init_inactive:
+            if callable(after_memory_settlement):
+                memory_barrier_completion = self._queue_session_end_memory_barrier(
+                    after_memory_settlement,
+                )
+                await self._wait_for_session_end_memory_barrier(
+                    memory_barrier_completion,
+                    after_memory_settlement,
+                    timeout_seconds=memory_settlement_timeout,
+                )
+            return
 
         logger.info("End Session: Starting cleanup...")
-        self.sync_message_queue.put({'type': 'system', 'data': 'session end'})
+        if not callable(after_memory_settlement):
+            self.sync_message_queue.put({'type': 'system', 'data': 'session end'})
 
         if message_handler_task_ref:
             message_handler_task_ref.cancel()
@@ -2901,6 +3035,19 @@ class LifecycleMixin:
             self._clear_pending_context_appends()
 
         self.last_time = None
+        if callable(after_memory_settlement):
+            # The isolation barrier is intentionally queued only after every
+            # session producer has been stopped.  Otherwise an output callback
+            # racing with teardown could enqueue old text *behind* the barrier
+            # and survive its post-settlement clear.
+            memory_barrier_completion = self._queue_session_end_memory_barrier(
+                after_memory_settlement,
+            )
+            await self._wait_for_session_end_memory_barrier(
+                memory_barrier_completion,
+                after_memory_settlement,
+                timeout_seconds=memory_settlement_timeout,
+            )
         if not by_server:
             await self.send_status(json.dumps({"code": "CHARACTER_LEFT", "details": {"name": self.lanlan_name}}))
             logger.info("End Session: Resources cleaned up.")

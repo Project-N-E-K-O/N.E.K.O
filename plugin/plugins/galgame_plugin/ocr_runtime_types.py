@@ -1312,6 +1312,7 @@ class OcrReaderCaptureRuntime:
     last_capture_source_size: dict[str, float] = field(default_factory=dict)
     last_capture_rect: dict[str, float] = field(default_factory=dict)
     last_capture_window_rect: dict[str, float] = field(default_factory=dict)
+    capture_region_occluded: bool = False
     consecutive_same_capture_frames: int = 0
     stale_capture_backend: bool = False
     last_capture_total_duration_seconds: float = 0.0
@@ -1476,6 +1477,7 @@ class OcrReaderRuntime:
         "last_capture_source_size": ("capture", "last_capture_source_size"),
         "last_capture_rect": ("capture", "last_capture_rect"),
         "last_capture_window_rect": ("capture", "last_capture_window_rect"),
+        "capture_region_occluded": ("capture", "capture_region_occluded"),
         "consecutive_same_capture_frames": ("capture", "consecutive_same_capture_frames"),
         "stale_capture_backend": ("capture", "stale_capture_backend"),
         "foreground_refresh_at": ("target", "foreground_refresh_at"),
@@ -1703,6 +1705,7 @@ class OcrReaderRuntime:
             "last_capture_source_size": dict(self.last_capture_source_size),
             "last_capture_rect": dict(self.last_capture_rect),
             "last_capture_window_rect": dict(self.last_capture_window_rect),
+            "capture_region_occluded": bool(self.capture_region_occluded),
             "consecutive_same_capture_frames": self.consecutive_same_capture_frames,
             "stale_capture_backend": self.stale_capture_backend,
             "foreground_refresh_at": self.foreground_refresh_at,
@@ -1841,6 +1844,10 @@ class OcrExtractionResult:
     window_rect: dict[str, float] = field(default_factory=dict)
     capture_backend_kind: str = ""
     capture_backend_detail: str = ""
+    target_foreground: bool = False
+    capture_region_occluded: bool = False
+    capture_content_trusted: bool = True
+    capture_untrusted_reason: str = ""
     capture_image: Any | None = None
     capture_image_hash: str = ""
     background_hash: str = ""

@@ -1,0 +1,17 @@
+{
+  "plugin.name": "Anonymous NetEase Music",
+  "plugin.description": "Search NetEase Music anonymously and play the first result, with a gentle notice when uncertain",
+  "plugin.short_description": "Anonymously search and play an exact NetEase Music match",
+  "entry.play.name": "Play a NetEase Music song",
+  "entry.play.description": "Call only when the user explicitly asks to play a specific song on NetEase Music. Format query as “title artist” and preserve live, cover, or version qualifiers. Do not use for lyrics, song facts, general recommendations, playlists, pause, stop, skip, or next-track requests.",
+  "entry.play.param.query": "Song search phrase, preferably “title artist”, with at most 100 characters",
+  "messages.no_results": "No matching NetEase Music song was found. Try a more specific title or artist.",
+  "messages.unavailable": "This song has no publicly available source for anonymous playback. It may require sign-in or a membership.",
+  "messages.submitted": "The playback action was submitted.",
+  "messages.fallback": "I'm not completely sure this is the version you wanted, but I'll play the first search result for you.",
+  "errors.missing_target": "The current playback session could not be determined, so the request was cancelled.",
+  "errors.search_failed": "NetEase Music search is temporarily unavailable. Please try again later.",
+  "errors.media_failed": "The NetEase Music source could not be validated, so no playback was submitted.",
+  "errors.delivery_failed": "The playback action could not be submitted, and playback did not start.",
+  "errors.message_delivery_failed": "The result message could not be delivered."
+}

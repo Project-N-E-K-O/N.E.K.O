@@ -40,6 +40,15 @@ from ._streaming import _StreamingMixin
 from ._media import _MediaMixin
 from ._lifecycle import _LifecycleMixin
 
+from utils.http.url import same_endpoint
+
+
+# 端点同源判据收口到 utils.http.url：视觉槽的凭证继承与配置层「管理簿 Key 只能
+# 配该服务商自己的端点」问的是同一个问题。这里曾经手搓过一份，前后被评审挑出
+# 尾斜杠 / path 大小写 / userinfo / 畸形端口 / 默认端口 / 畸形 IPv6 六类边界；
+# 配置层后来又独立搓了第二份、把同样的坑重踩一遍。共用一份才是解法。
+_same_endpoint = same_endpoint
+
 
 class OmniOfflineClient(_ToolingMixin, _GenaiMixin, _StreamingMixin, _MediaMixin, _LifecycleMixin):
     """
@@ -115,9 +124,23 @@ class OmniOfflineClient(_ToolingMixin, _GenaiMixin, _StreamingMixin, _MediaMixin
         self.api_key = api_key if api_key and api_key != '' else None
         self.model = model
         self.vision_model = vision_model  # Store vision model for temporary switching
-        # 视觉模型独立配置（如果未指定则回退到主配置）
-        self.vision_base_url = vision_base_url if vision_base_url else base_url
-        self.vision_api_key = vision_api_key if vision_api_key else api_key
+        # 视觉模型独立配置：URL 与 Key 必须**成对**回退。
+        #
+        # 这两行原本各自独立判空，于是「视觉槽填了自己的 URL、Key 留空」时
+        # URL 停在视觉那一家的域名、Key 却继承了对话 provider 的凭证 —— 把用户
+        # 的付费 Key 发给了另一个厂商，既是路由错误也是凭证越界。留空 Key 让请求
+        # 不带 Authorization：本地无鉴权端点本就该如此，付费端点则会直接 401
+        # 报错，比静默把凭证送出去可诊断得多。
+        # 同源判定按归一化后的 URL 比：两个槽都指向同一家时，配置里常见的尾斜杠 /
+        # 大小写差异不该被当成「换了一家」而把继承掐掉（那会让原本能用的配置开始 401）。
+        _vision_url = vision_base_url or base_url
+        self.vision_base_url = _vision_url
+        # 「无凭证」统一表示成 None，与上面 self.api_key 的归一化对齐——
+        # 否则视觉侧会出现 '' 而主侧是 None，同一个状态两种写法。
+        if _same_endpoint(_vision_url, base_url):
+            self.vision_api_key = (vision_api_key or None) or self.api_key
+        else:
+            self.vision_api_key = vision_api_key or None
         self.provider_type = provider_type
         self.vision_provider_type = vision_provider_type or provider_type
         self._model_switch_lock = asyncio.Lock()

@@ -37,6 +37,16 @@ const PLATFORM_CONFIG_DATA = {
             { key: 'NMTID', labelKey: 'cookiesLogin.fields.NMTID.label', descKey: 'cookiesLogin.fields.NMTID.desc', required: false }
         ]
     },
+    'qqmusic': {
+        name: 'QQ音乐',
+        nameKey: 'cookiesLogin.qqmusic',
+        theme: '#31c27c',
+        instructionKey: 'cookiesLogin.instructions.qqmusic',
+        fields: [
+            { key: 'uin', labelKey: 'cookiesLogin.fields.qqmusicUin.label', descKey: 'cookiesLogin.fields.qqmusicUin.desc', required: true },
+            { key: 'qqmusic_key', labelKey: 'cookiesLogin.fields.qqmusicKey.label', descKey: 'cookiesLogin.fields.qqmusicKey.desc', required: true }
+        ]
+    },
     'bilibili': {
         name: 'Bilibili', 
         nameKey: 'cookiesLogin.bilibili',
@@ -258,7 +268,7 @@ function initPlatformConfig() {
 
         // 如果是微博，教程里的目标网址显示为 m.weibo.cn
         // 如果是其他平台，教程里的目标名称使用翻译后的名字 (例如 "TikTok")
-        const targetDisplay = key === 'weibo' ? 'm.weibo.cn' : translatedName;
+        const targetDisplay = data.targetDisplay || (key === 'weibo' ? 'm.weibo.cn' : translatedName);
 
         PLATFORM_CONFIG[key] = {
             name: translatedName, // 界面上显示的名称 (Tabs, 列表) 现在支持多语言了！
@@ -267,7 +277,9 @@ function initPlatformConfig() {
             // 附带默认中文提示，自动填入正确的域名或名称
             // 如果字典里有 instructionKey，直接用字典的（字典通常自带了网址）
             // 如果字典没有，则使用这里的模板，并填入 m.weibo.cn 或 翻译后的平台名
-            instruction: data.instructionKey ? safeT(data.instructionKey, `<b>目标：</b> 请前往 <code>${targetDisplay}</code> 获取这些 Cookies。`) : '',
+            instruction: data.instructionKey
+                ? safeT(data.instructionKey, data.instruction || `<b>目标：</b> 请前往 <code>${targetDisplay}</code> 获取这些 Cookies。`)
+                : (data.instruction || ''),
             cookieStringMode: data.cookieStringMode === true,
             cookieStringLabel: data.cookieStringLabelKey ? safeT(data.cookieStringLabelKey, '完整 Cookie') : '',
             cookieStringDesc: data.cookieStringDescKey ? safeT(data.cookieStringDescKey, '粘贴 Request Headers 中完整的 Cookie 值') : '',
@@ -275,8 +287,8 @@ function initPlatformConfig() {
             fields: data.fields.map(field => ({
                 key: field.key,
                 mapKey: field.mapKey,
-                label: field.labelKey ? safeT(field.labelKey, field.key) : field.key,
-                desc: field.descKey ? safeT(field.descKey) : '',
+                label: field.labelKey ? safeT(field.labelKey, field.label || field.key) : (field.label || field.key),
+                desc: field.descKey ? safeT(field.descKey, field.desc || '') : (field.desc || ''),
                 required: field.required
             }))
         };
@@ -454,47 +466,6 @@ document.addEventListener('visibilitychange', () => {
     }
 });
 
-/**
- * 降低十六进制颜色的明度
- * @param {string} hexColor - 输入的十六进制颜色，如 #fff 或 #ffffff
- * @param {number} lightnessPercent - 降低明度的百分比（0-100），100 表示完全变黑
- * @returns {string} 调整后的十六进制颜色
- */
-function decreaseColorLightness(hexColor, lightnessPercent) {
-    // 验证输入的明度值
-    const percent = Math.max(0, Math.min(100, Number(lightnessPercent)));
-    const decreaseRatio = 1 - percent / 100;
-
-    // 清洗并验证十六进制颜色
-    let hex = hexColor.replace(/^#/, '');
-    // 处理简写形式 (#fff -> #ffffff)
-    if (hex.length === 3) {
-        hex = hex.split('').map(char => char + char).join('');
-    }
-
-    // 验证十六进制格式
-    if (!/^[0-9A-Fa-f]{6}$/.test(hex)) {
-        throw new Error('请输入有效的十六进制颜色，如 #fff 或 #ffffff');
-    }
-
-    // 十六进制转 RGB
-    const r = parseInt(hex.substring(0, 2), 16);
-    const g = parseInt(hex.substring(2, 4), 16);
-    const b = parseInt(hex.substring(4, 6), 16);
-
-    // 降低明度（按比例减少每个通道的值）
-    const newR = Math.max(0, Math.round(r * decreaseRatio));
-    const newG = Math.max(0, Math.round(g * decreaseRatio));
-    const newB = Math.max(0, Math.round(b * decreaseRatio));
-
-    // RGB 转回十六进制（确保两位，不足补0）
-    const toHex = (num) => num.toString(16).padStart(2, '0');
-    const newHex = `#${toHex(newR)}${toHex(newG)}${toHex(newB)}`;
-
-    return newHex.toUpperCase(); // 统一返回大写格式，也可以改为 toLowerCase()
-}
-
-
 let qrSupportedPlatforms = null;
 let qrSupportedPlatformsRequest = null;
 let qrEntryGeneration = 0;
@@ -545,19 +516,18 @@ async function showQRLogin(config, platformKey) {
     if (isSupported){
         const QRinfo =  document.createElement("div");
         const butt = document.createElement("button");
-        const rootStyle = getComputedStyle(document.documentElement);
-        const pagePrimary = rootStyle.getPropertyValue('--primary').trim();
-        const pageButtonBg = rootStyle.getPropertyValue('--button-bg').trim() || pagePrimary;
-        const buttonTheme = platformKey === 'bilibili' && pageButtonBg ? pageButtonBg : config["theme"];
-        const buttonBorder = platformKey === 'bilibili' && pagePrimary ? pagePrimary : buttonTheme;
+        // Keep QR entry buttons on each platform's own color; inherited app variables
+        // can resolve to light values and previously left a white button in dark mode.
+        const buttonTheme = config["theme"];
+        const buttonBorder = buttonTheme;
         QRinfo.dataset.i18n = 'cookiesLogin.qrLogin.tryQR';
         QRinfo.textContent = safeT('cookiesLogin.qrLogin.tryQR', '或者...试试扫码登录?');
-        QRinfo.style = 'margin-bottom: 10px;color: #64748b;font-size: 14px';
+        QRinfo.className = 'qr-login-hint';
         butt.dataset.i18n = 'cookiesLogin.qrLogin.openQR';
         butt.textContent = safeT('cookiesLogin.qrLogin.openQR', '打开扫码登录');
-        butt.style.cssText = `width: 100%; padding: 12px; margin-top: 10px; font-size: 14px; font-weight: 600; border-radius: 10px; border: 2px dashed ${buttonBorder}; background: ${buttonTheme} ; color: #f8fafc; cursor: pointer; transition: all 0.2s;`;
-        butt.onmouseover = function() { butt.style.background = decreaseColorLightness(buttonTheme,20); };
-        butt.onmouseout = function() { butt.style.background = buttonTheme; };
+        butt.className = 'qr-open-btn';
+        butt.style.setProperty('--qr-platform-color', buttonTheme);
+        butt.style.setProperty('--qr-platform-border', buttonBorder);
         butt.onclick = function(){requestQR(config, platformKey)};
         qrLoginBox.appendChild(QRinfo);
         qrLoginBox.appendChild(butt);
@@ -633,8 +603,8 @@ async function requestQR(config, platformKey) {
     qrRequestAbortController = abortController;
     const qrLoginBox = document.getElementById('QRLogin');
     qrLoginBox.innerHTML = `
-        <div style="text-align: center; padding: 20px;">
-            <div data-i18n="cookiesLogin.qrLogin.loading" style="color: #64748b; margin-bottom: 10px;">${safeT('cookiesLogin.qrLogin.loading', '正在获取二维码...')}</div>
+        <div class="qr-session-loading">
+            <div data-i18n="cookiesLogin.qrLogin.loading">${safeT('cookiesLogin.qrLogin.loading', '正在获取二维码...')}</div>
         </div>
     `;
     
@@ -663,16 +633,16 @@ async function requestQR(config, platformKey) {
             const timeout = result.data.timeout || 180;
             
             qrLoginBox.innerHTML = `
-                <div style="text-align: center; padding: 15px; background: #f8fafc; border-radius: 12px; border: 1px solid #e2e8f0; position: relative;">
+                <div class="qr-session">
                     <button id="qr-collapse-action" class="qr-collapse-btn">
                         <svg width="12" height="12" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path></svg>
                         <span data-i18n="common.collapse">${safeT('common.collapse', '收起')}</span>
                     </button>
-                    <div id="qr-scan-title" style="font-weight: 600; color: #334155; margin-bottom: 12px; margin-top: 5px;">${safeT('cookiesLogin.qrLogin.scanTitle', '扫码登录 {{platform}}').replace('{{platform}}', PLATFORM_CONFIG[platformKey]?.name || config["name"])}</div>
-                    <img src="${result.data.qrcode_image}" alt="${safeT('cookiesLogin.qrLogin.qrCodeAlt', 'QR code')}" style="width: 200px; height: 200px; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1);">
-                    <div id="qr-status" style="margin-top: 12px; font-size: 13px; color: #64748b;">${safeT('cookiesLogin.qrLogin.waiting', '等待扫码...')}</div>
-                    <div id="qr-valid-for" data-seconds="${timeout}" style="margin-top: 10px; font-size: 12px; color: #94a3b8;">${safeT('cookiesLogin.qrLogin.validFor', '二维码有效期: {{seconds}}秒').replace('{{seconds}}', timeout)}</div>
-                    <button id="qr-refresh-btn" data-i18n="cookiesLogin.qrLogin.refreshQR" style="margin-top: 12px; padding: 8px 16px; font-size: 13px; border-radius: 8px; border: 1px solid #e2e8f0; background: white; color: #475569; cursor: pointer;">${safeT('cookiesLogin.qrLogin.refreshQR', '刷新二维码')}</button>
+                    <div id="qr-scan-title" class="qr-session-title">${safeT('cookiesLogin.qrLogin.scanTitle', '扫码登录 {{platform}}').replace('{{platform}}', PLATFORM_CONFIG[platformKey]?.name || config["name"])}</div>
+                    <img class="qr-session-image" src="${result.data.qrcode_image}" alt="${safeT('cookiesLogin.qrLogin.qrCodeAlt', 'QR code')}">
+                    <div id="qr-status" class="qr-session-status">${safeT('cookiesLogin.qrLogin.waiting', '等待扫码...')}</div>
+                    <div id="qr-valid-for" class="qr-session-validity" data-seconds="${timeout}">${safeT('cookiesLogin.qrLogin.validFor', '二维码有效期: {{seconds}}秒').replace('{{seconds}}', timeout)}</div>
+                    <button id="qr-refresh-btn" class="qr-session-refresh" data-i18n="cookiesLogin.qrLogin.refreshQR">${safeT('cookiesLogin.qrLogin.refreshQR', '刷新二维码')}</button>
                 </div>
             `;
             
@@ -691,9 +661,9 @@ async function requestQR(config, platformKey) {
             startQrPoll(config, platformKey);
         } else {
             qrLoginBox.innerHTML = `
-                <div style="text-align: center; padding: 20px; color: #ef4444;">
+                <div class="qr-session-error">
                     ${safeT('cookiesLogin.qrLogin.fetchFailed', '获取二维码失败，请稍后重试')}
-                    <button id="qr-retry-btn" style="display: block; margin: 10px auto 0; padding: 8px 16px; border-radius: 8px; border: 1px solid #ef4444; background: white; color: #ef4444; cursor: pointer;">${safeT('cookiesLogin.qrLogin.retry', '重试')}</button>
+                    <button id="qr-retry-btn" class="qr-session-retry">${safeT('cookiesLogin.qrLogin.retry', '重试')}</button>
                 </div>
             `;
             document.getElementById('qr-retry-btn').onclick = function() {
@@ -708,9 +678,9 @@ async function requestQR(config, platformKey) {
             ? err.message
             : safeT('cookiesLogin.qrLogin.networkError', '网络请求失败，请检查连接');
         qrLoginBox.innerHTML = `
-            <div style="text-align: center; padding: 20px; color: #ef4444;">
+            <div class="qr-session-error">
                 ${errorMessage}
-                <button id="qr-retry-btn-err" style="display: block; margin: 10px auto 0; padding: 8px 16px; border-radius: 8px; border: 1px solid #ef4444; background: white; color: #ef4444; cursor: pointer;">${safeT('cookiesLogin.qrLogin.retry', '重试')}</button>
+                <button id="qr-retry-btn-err" class="qr-session-retry">${safeT('cookiesLogin.qrLogin.retry', '重试')}</button>
             </div>
         `;
         document.getElementById('qr-retry-btn-err').onclick = function() {
@@ -1388,6 +1358,7 @@ async function refreshStatusList({ reveal = false } = {}) {
                 const delBtn = document.createElement('button');
                 delBtn.className = 'del-btn';
                 delBtn.title = safeT('cookiesLogin.removeCredentials', '清除凭证');
+                delBtn.setAttribute('aria-label', safeT('cookiesLogin.removeCredentials', '清除凭证'));
                 delBtn.innerHTML = `<svg width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>`;
                 delBtn.addEventListener('click', () => deleteCookie(key));
                 actionsWrapper.appendChild(delBtn);

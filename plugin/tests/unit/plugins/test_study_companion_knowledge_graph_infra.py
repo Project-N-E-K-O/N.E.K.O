@@ -115,6 +115,73 @@ def test_compact_confusion_labels_use_related_topic_label() -> None:
     assert payload["model_context"]["confusions"] == ["Other Topic"]
 
 
+def test_general_discussion_guidance_filters_exam_procedure_and_practice() -> None:
+    payload = build_knowledge_guidance_payload(
+        topics=[
+            {
+                "id": "literary",
+                "name": "Literary Reading",
+                "subject": "chinese",
+                "stage": "senior_high",
+                "chapter": "Chinese",
+                "unit": "Reading",
+                "prerequisites": [],
+                "related": [
+                    {"id": "answer_template", "relation": "procedure_step"},
+                    {"id": "character", "relation": "application"},
+                    {"id": "theme", "relation": "supports"},
+                ],
+            },
+            {"id": "answer_template", "name": "Answer Template", "subject": "chinese", "prerequisites": [], "related": []},
+            {
+                "id": "character",
+                "name": "Character Analysis",
+                "subject": "chinese",
+                "prerequisites": [],
+                "related": [
+                    {"id": "exam_training", "relation": "application"},
+                ],
+            },
+            {"id": "theme", "name": "Theme", "subject": "chinese", "prerequisites": [], "related": []},
+            {"id": "exam_training", "name": "Exam Training", "subject": "chinese", "prerequisites": [], "related": []},
+        ],
+        topic_id="literary",
+        response_mode="general_discussion",
+    )
+
+    context = payload["model_context"]
+    assert context["procedure"] == []
+    assert "Answer Template" not in json.dumps(context)
+    assert payload["diagnosis_questions"] == []
+    assert "Character Analysis" in json.dumps(context)
+    assert "Exam Training" not in json.dumps(context)
+
+
+def test_unknown_response_mode_does_not_inject_solution_procedure() -> None:
+    payload = build_knowledge_guidance_payload(
+        topics=[
+            {
+                "id": "focus",
+                "name": "Selected Topic",
+                "subject": "math",
+                "prerequisites": [],
+                "related": [
+                    {"id": "procedure", "relation": "procedure_step"},
+                    {"id": "foundation", "relation": "prerequisite"},
+                ],
+            },
+            {"id": "procedure", "name": "Solution Procedure", "subject": "math"},
+            {"id": "foundation", "name": "Foundation", "subject": "math"},
+        ],
+        topic_id="focus",
+        response_mode="unknown",
+    )
+
+    assert payload["model_context"]["procedure"] == []
+    assert "Solution Procedure" not in json.dumps(payload["model_context"])
+    assert "Foundation" in json.dumps(payload["model_context"])
+
+
 def test_graph_topic_helpers_skip_blank_candidates() -> None:
     assert topic_id({"id": "   ", "topic_id": "fallback_id"}) == "fallback_id"
     assert (
@@ -137,6 +204,55 @@ def test_knowledge_guidance_cache_can_be_invalidated() -> None:
     host._invalidate_knowledge_guidance_cache()
 
     assert host._knowledge_guidance_topics_cache == {}
+
+
+@pytest.mark.asyncio
+async def test_explicit_guidance_topic_outside_cache_loads_its_subgraph() -> None:
+    cached_topic = {
+        "id": "cached",
+        "name": "Cached Topic",
+        "subject": "math",
+        "prerequisites": [],
+        "related": [],
+    }
+    selected_topic = {
+        "id": "selected_after_cache_cap",
+        "name": "Selected Topic",
+        "subject": "math",
+        "prerequisites": [{"id": "selected_foundation"}],
+        "related": [],
+    }
+    foundation_topic = {
+        "id": "selected_foundation",
+        "name": "Selected Foundation",
+        "subject": "math",
+        "prerequisites": [],
+        "related": [],
+    }
+
+    class Store:
+        def list_topics(self, *_args):
+            return [cached_topic]
+
+        def get_topic(self, topic_id: str):
+            return {
+                selected_topic["id"]: selected_topic,
+                foundation_topic["id"]: foundation_topic,
+            }.get(topic_id)
+
+    class Host(_TutorContextSupportMixin):
+        _store = Store()
+
+    guidance, outcome = await Host()._build_knowledge_guidance_context(
+        "question_generate",
+        context={"selected_topic_id": selected_topic["id"]},
+    )
+
+    assert outcome["knowledge_guidance_status"] == "applied"
+    assert guidance["topic"]["id"] == selected_topic["id"]
+    assert {
+        node["id"] for node in guidance["relevant_subgraph"]["nodes"]
+    } >= {selected_topic["id"], foundation_topic["id"]}
 
 
 def test_related_prerequisite_edges_point_from_prerequisite_to_topic() -> None:
@@ -173,6 +289,120 @@ def test_topic_matching_has_no_implicit_math_bonus() -> None:
 
     hinted = match_topics(topics, query="history common", limit=2)
     assert hinted[0]["id"] == "history_common"
+
+
+def test_topic_matching_limits_semantic_literature_query_to_chinese_subject() -> None:
+    topics = [
+        {
+            "id": "math_reading_comprehension",
+            "name": "数学阅读理解题",
+            "subject": "math",
+            "aliases": ["阅读理解"],
+        },
+        {
+            "id": "chinese_literary_text",
+            "name": "文学类文本阅读",
+            "subject": "chinese",
+            "aliases": ["小说主题", "人物形象", "情节与叙事"],
+        },
+    ]
+
+    matches = match_topics(
+        topics,
+        query="《活着》 文学类文本阅读 小说主题 人物形象 情节与叙事",
+        subject="chinese",
+        limit=5,
+    )
+
+    assert matches
+    assert matches[0]["id"] == "chinese_literary_text"
+    assert {item["subject"] for item in matches} == {"chinese"}
+
+
+def test_topic_matching_keeps_normal_math_retrieval_inside_math_subject() -> None:
+    topics = [
+        {
+            "id": "math_weighted_average",
+            "name": "加权平均数",
+            "subject": "math",
+            "aliases": ["平均分", "平均数应用题"],
+        },
+        {
+            "id": "chinese_average_description",
+            "name": "概括人物表现",
+            "subject": "chinese",
+            "aliases": ["人物表现"],
+        },
+    ]
+
+    matches = match_topics(
+        topics,
+        query="平均分应用题 加权平均数",
+        subject="math",
+        limit=5,
+    )
+
+    assert matches
+    assert matches[0]["id"] == "math_weighted_average"
+    assert {item["subject"] for item in matches} == {"math"}
+
+
+def test_topic_matching_rejects_generic_understanding_as_insufficient_evidence() -> None:
+    topics = [
+        {
+            "id": "math_reading_comprehension",
+            "name": "数学阅读理解题",
+            "subject": "math",
+        },
+        {
+            "id": "chinese_literary_text",
+            "name": "文学类文本阅读",
+            "subject": "chinese",
+        },
+    ]
+
+    assert match_topics(topics, query="理解", limit=5) == []
+    assert match_topics(topics, query="理解", subject="math", limit=5) == []
+    assert (
+        match_topics(
+            topics,
+            query="文学类文本阅读",
+            subject="unknown",
+            limit=5,
+        )
+        == []
+    )
+
+
+def test_explicit_topic_id_remains_authoritative_over_subject_scope() -> None:
+    topics = [
+        {
+            "id": "math_reading_comprehension",
+            "name": "数学阅读理解题",
+            "subject": "math",
+        },
+        {
+            "id": "chinese_literary_text",
+            "name": "文学类文本阅读",
+            "subject": "chinese",
+        },
+    ]
+
+    matches = match_topics(
+        topics,
+        topic_id="math_reading_comprehension",
+        subject="chinese",
+    )
+
+    assert matches == [
+        {
+            "id": "math_reading_comprehension",
+            "label": "数学阅读理解题",
+            "subject": "math",
+            "score": 100,
+            "match": "topic_id",
+        }
+    ]
 
 
 def test_prerequisite_question_cap_keeps_later_application_questions() -> None:

@@ -1,14 +1,12 @@
 import { computed, onMounted, ref, toValue, watch, type MaybeRefOrGetter } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { ElMessage } from 'element-plus'
 import {
   analyzePluginBundle,
   getPluginCliPackages,
   getPluginCliPlugins,
   inspectPluginPackage,
   buildPluginCli,
-  installPluginPackage,
-  planPluginInstall,
   verifyPluginPackage,
   type PluginCliAnalyzeResponse,
   type PluginCliInspectResponse,
@@ -17,7 +15,6 @@ import {
   type PluginCliBuildRequest,
   type PluginCliBuildResponse,
   type PluginCliInstallRequest,
-  type PluginCliInstallPlanResponse,
   type PluginCliPluginRef,
 } from '@/api/pluginCli'
 import { usePluginStore } from '@/stores/plugin'
@@ -29,6 +26,8 @@ import {
 } from '@/composables/usePluginWorkbench'
 import { resolvePluginDisplayText } from '@/utils/pluginDisplay'
 import { formatHttpError } from '@/utils/request'
+import { resolvePluginPackageErrorMessage } from '@/utils/pluginPackageError'
+import { usePluginPackageInstaller } from '@/composables/usePluginPackageInstaller'
 
 export type LayoutMode = PluginWorkbenchLayoutMode
 export type BuildMode = PluginCliBuildMode
@@ -53,6 +52,11 @@ export type PackageResultRecord = {
   summaryWarnings: string[]
 }
 
+function shouldShowRefreshFallback(error: unknown): boolean {
+  const status = (error as { response?: { status?: unknown } } | null)?.response?.status
+  return status === 401 || status === 403 || status === 404
+}
+
 export function usePackageManager(options: UsePackageManagerOptions = {}) {
   const pluginStore = usePluginStore()
   // PR #1480 review-fix 1.31 (Phase 7): summary labels and the createdAt
@@ -75,7 +79,7 @@ export function usePackageManager(options: UsePackageManagerOptions = {}) {
   const building = ref(false)
   const inspecting = ref(false)
   const verifying = ref(false)
-  const installing = ref(false)
+  const { installing, installPlan, installPackagePath } = usePluginPackageInstaller()
   const analyzing = ref(false)
 
   const resultKind = ref<PackageResultKind>('')
@@ -106,7 +110,6 @@ export function usePackageManager(options: UsePackageManagerOptions = {}) {
     profiles_root: '',
     on_conflict: 'fail',
   })
-  const installPlan = ref<PluginCliInstallPlanResponse | null>(null)
 
   const analyzeForm = ref({
     plugins: [] as string[],
@@ -500,9 +503,16 @@ export function usePackageManager(options: UsePackageManagerOptions = {}) {
 
   async function refreshPluginSources() {
     pluginsLoading.value = true
+    let warningShown = false
     try {
-      const syncResult = await pluginStore.syncRegistryAndFetch()
-      const response = await getPluginCliPlugins()
+      const syncResult = await pluginStore.syncRegistryAndFetch({ preserveMessagesOn404: true })
+      if (syncResult.warningMessage) {
+        ElMessage.warning(syncResult.warningMessage)
+        // 只有注册表请求本身失败（401/403/404）时，后续插件源请求的同类失败才算重复提示；
+        // 注册表已刷新但存在失败项属于另一个问题，不能吞掉插件源的失败反馈
+        warningShown = !syncResult.registryRefreshed
+      }
+      const response = await getPluginCliPlugins({ preserveMessagesOn404: true })
       const refs = response.plugin_refs || []
       localPluginRefs.value = refs
       localPluginIds.value = refs.length > 0 ? refs.map((ref) => pluginRefKey(ref)) : response.plugins
@@ -512,11 +522,11 @@ export function usePackageManager(options: UsePackageManagerOptions = {}) {
       } else {
         setSelectedPluginIds(selectedPluginIds.value.filter((pluginId) => availableIds.has(pluginId)))
       }
-      if (syncResult.warningMessage) {
-        ElMessage.warning(syncResult.warningMessage)
-      }
     } catch (error) {
       console.error('Failed to refresh plugin sources:', error)
+      if (!warningShown && shouldShowRefreshFallback(error)) {
+        ElMessage.warning(t('messages.pluginListRefreshFailed'))
+      }
     } finally {
       pluginsLoading.value = false
     }
@@ -550,7 +560,7 @@ export function usePackageManager(options: UsePackageManagerOptions = {}) {
   }
 
   function inferPackageType(pkg: PluginCliLocalPackageItem): 'plugin' | 'bundle' {
-    return pkg.name.endsWith('.neko-bundle') ? 'bundle' : 'plugin'
+    return pkg.name.toLowerCase().endsWith('.neko-bundle') ? 'bundle' : 'plugin'
   }
 
   async function inspectSelectedPackage(pkg: PluginCliLocalPackageItem) {
@@ -713,7 +723,7 @@ export function usePackageManager(options: UsePackageManagerOptions = {}) {
       setResult('inspect', response)
       ElMessage.success('包检查完成')
     } catch (error) {
-      ElMessage.error(`包检查失败：${formatHttpError(error)}`)
+      ElMessage.error(resolvePluginPackageErrorMessage(error, t, 'inspect'))
     } finally {
       inspecting.value = false
     }
@@ -731,105 +741,35 @@ export function usePackageManager(options: UsePackageManagerOptions = {}) {
       setResult('verify', response)
       ElMessage[response.ok ? 'success' : 'warning'](response.ok ? '包校验通过' : '包未通过校验')
     } catch (error) {
-      ElMessage.error(`包校验失败：${formatHttpError(error)}`)
+      ElMessage.error(resolvePluginPackageErrorMessage(error, t, 'verify'))
     } finally {
       verifying.value = false
     }
   }
 
   async function handleInstall() {
-    if (!installForm.value.package?.trim()) {
-      ElMessage.warning('请先输入包路径')
+    inspectResult.value = null
+    const response = await installPackagePath(installForm.value.package || '', {
+      pluginsRoot: installForm.value.plugins_root,
+      profilesRoot: installForm.value.profiles_root,
+    })
+    if (!response) {
       return
     }
-    installing.value = true
-    inspectResult.value = null
-    installPlan.value = null
-    try {
-      const packagePath = installForm.value.package.trim()
-      const pluginsRoot = installForm.value.plugins_root?.trim() || undefined
-      const profilesRoot = installForm.value.profiles_root?.trim() || undefined
-      const plan = await planPluginInstall({
-        package: packagePath,
-        plugins_root: pluginsRoot,
-        profiles_root: profilesRoot,
-      })
-      installPlan.value = plan
-
-      if (plan.action === 'blocked') {
-        const blockedKey = plan.reason === 'bundle_conflict'
-          ? 'package.install.blockedBundleConflict'
-          : plan.reason === 'legacy_plugin_present'
-            ? 'package.install.blockedLegacyPlugin'
-            : 'package.install.blockedDirectoryConflict'
-        ElMessage.error(
-          plan.reason === 'legacy_plugin_present'
-            ? t(blockedKey, {
-                plugin: plan.legacy_plugin_ids[0] || plan.plugin_id || plan.directory_name,
-              })
-            : t(blockedKey),
-        )
-        return
-      }
-
-      const request: PluginCliInstallRequest = {
-        package: packagePath,
-        plugins_root: pluginsRoot,
-        profiles_root: profilesRoot,
-        on_conflict: 'fail',
-      }
-      if (plan.action === 'upgrade') {
-        try {
-          await ElMessageBox.confirm(
-            t('package.install.upgradeBody', {
-              current: plan.current_version || '-',
-              target: plan.target_version || '-',
-            }),
-            t('package.install.upgradeTitle', {
-              plugin: plan.plugin_id || plan.directory_name,
-            }),
-            {
-              type: 'warning',
-              confirmButtonText: t('package.install.upgradeConfirm'),
-              cancelButtonText: t('common.cancel'),
-            },
-          )
-        } catch {
-          ElMessage.info(t('package.install.upgradeCancelled'))
-          return
-        }
-        request.confirm_upgrade = true
-        request.confirmation_token = plan.confirmation_token
-      }
-
-      const response = await installPluginPackage(request)
-      setResult('install', response)
-      await refreshPluginSources()
-      if (response.operation === 'upgrade') {
-        ElMessage.success(t('package.install.upgradeSucceeded', {
-          plugin: plan.plugin_id || plan.directory_name,
-        }))
-      } else {
-        ElMessage.success(`安装完成，处理了 ${response.installed_plugin_count} 个插件`)
-      }
-    } catch (error) {
-      const errorCode = (error as any)?.response?.data?.detail?.code
-        || (error as any)?.response?.data?.code
-      if (errorCode === 'PLUGIN_UPGRADE_ROLLED_BACK') {
-        const rollbackStatus = (error as any)?.response?.data?.detail?.details?.rollback_status
-        ElMessage.error(t(
-          rollbackStatus === 'completed'
-            ? 'package.install.rollbackCompleted'
-            : 'package.install.rollbackIncomplete',
-        ))
-      } else if (!installPlan.value) {
-        ElMessage.error(t('package.install.planFailed'))
-      } else {
-        ElMessage.error(`安装失败：${formatHttpError(error)}`)
-      }
-    } finally {
-      installing.value = false
+    setResult('install', response)
+    if (
+      response.operation === 'upgrade'
+      || response.operation === 'reinstall'
+      || response.operation === 'downgrade'
+    ) {
+      const plan = installPlan.value
+      ElMessage.success(t(`package.install.${response.operation}Succeeded`, {
+        plugin: plan?.plugin_id || plan?.directory_name || '',
+      }))
+    } else {
+      ElMessage.success(`安装完成，处理了 ${response.installed_plugin_count} 个插件`)
     }
+    await refreshPluginSources()
   }
 
   async function handleAnalyze() {

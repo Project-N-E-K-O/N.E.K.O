@@ -21,17 +21,16 @@ Some CLI help output may include app initialization logs before the argparse out
 Create standard plugins through the CLI. Do not hand-create the initial directory, `plugin.toml`, or entry class.
 
 ```bash
-uv run neko-plugin init <plugin_id> --type plugin --name "<Plugin Name>" --no-interactive
+uv run neko-plugin init <plugin_id> --type plugin --name "<Plugin Name>"
 ```
 
-Useful variants:
+Adapter variant:
 
 ```bash
-uv run neko-plugin init <plugin_id> --type adapter --name "<Plugin Name>" --no-interactive
-uv run neko-plugin init <plugin_id> --type extension --name "<Plugin Name>"
+uv run neko-plugin init <plugin_id> --type adapter --name "<Plugin Name>"
 ```
 
-`--no-interactive` is suitable for normal plugins and adapters. Extension setup needs host details, so use the interactive path or ask the host questions first.
+`init` creates the editable source directly at `plugin/plugins/<plugin_id>/`. The same directory is initialized as the plugin's own Git repository and includes the standard Market workflows. Do not develop from a second source copy, a symlink, or an imported package.
 
 ## CLI Source Map
 
@@ -45,16 +44,16 @@ Public command modules include:
 
 - `init_cmd.py`
 - `check_cmd.py`
-- `verify_cmd.py`
-- `inspect_cmd.py`
 - `analyze_cmd.py`
 - `deps_cmd.py`
 - `build_cmd.py`
 - `install_cmd.py`
+- `publish_cmd.py`
 
-Registered command families include `init`, `init-repo`, `setup-repo`, `check`, `add`, `sync`, `build`, `inspect`, `verify`, `install`, and `analyze`.
+Registered command families include `init`, `setup-repo`, `check`, `sync`,
+`build`, `install`, `analyze`, and `publish`.
 
-Internal implementation helpers include `release_cmd.py` and `validate_cmd.py`. They are imported by public commands such as `check`, but they are not registered as direct CLI command families.
+Internal implementation helpers include `release_cmd.py` and `validate_cmd.py`. They are imported by public commands such as `check` and `publish`, but they are not registered as direct CLI command families.
 
 Before using a command, run CLI help or read the command module enough to confirm arguments.
 

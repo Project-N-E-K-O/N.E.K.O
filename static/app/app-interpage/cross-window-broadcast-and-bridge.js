@@ -468,6 +468,34 @@
             || action === 'icebreaker_free_text_submitted';
     }
 
+    var _pendingIcebreakerIdentityMessages = [];
+    var ICEBREAKER_IDENTITY_QUEUE_MAX = 80;
+
+    function queueIcebreakerBridgeMessageUntilIdentity(data) {
+        if (!data || !I.isIcebreakerBridgeAction(data.action)) return;
+        if (_pendingIcebreakerIdentityMessages.length >= ICEBREAKER_IDENTITY_QUEUE_MAX) {
+            _pendingIcebreakerIdentityMessages.shift();
+        }
+        _pendingIcebreakerIdentityMessages.push(data);
+    }
+
+    I.flushPendingIcebreakerIdentityMessages = function flushPendingIcebreakerIdentityMessages() {
+        if (!I.getCurrentLanlanName() || !_pendingIcebreakerIdentityMessages.length) {
+            return false;
+        }
+        var batch = _pendingIcebreakerIdentityMessages.splice(0);
+        batch.forEach(function (message) {
+            I.handleIcebreakerBridgeData(message);
+        });
+        return true;
+    };
+
+    function schedulePendingIcebreakerIdentityFlush() {
+        I.yuiGuideInterpageResources.setTimeout(function () {
+            I.flushPendingIcebreakerIdentityMessages();
+        }, 0);
+    }
+
     function isIcebreakerBridgeForCurrentLanlan(data) {
         if (!data || !data.lanlan_name) return false;
         var currentName = I.getCurrentLanlanName();
@@ -476,6 +504,14 @@
 
     I.handleIcebreakerBridgeData = function handleIcebreakerBridgeData(data) {
         if (!data || !data.action) return false;
+        if (!I.isIcebreakerBridgeAction(data.action)) return false;
+        if (!data.lanlan_name) return false;
+        if (!I.getCurrentLanlanName()) {
+            // Full Chat 的 preload 队列会早于异步配置注入排空。身份未知时不能把
+            // 首批 append / prompt 当成跨角色消息丢弃；配置就绪后再按原顺序去重处理。
+            queueIcebreakerBridgeMessageUntilIdentity(data);
+            return true;
+        }
         if (!isIcebreakerBridgeForCurrentLanlan(data)) return false;
         switch (data.action) {
             case 'icebreaker_append_chat_message':
@@ -524,6 +560,12 @@
         }
     }
 
+    function handleIcebreakerElectronBridgeEvent(event) {
+        var message = event && event.detail;
+        if (!message || typeof message !== 'object') return;
+        I.handleIcebreakerBridgeData(message);
+    }
+
     I.postIcebreakerBridgeEvent = function postIcebreakerBridgeEvent(action, payload) {
         var message = Object.assign({
             action: action,
@@ -546,6 +588,14 @@
             }, 0);
         } catch (error) {
             console.warn('[NewUserIcebreaker] storage bridge post failed:', action, error);
+        }
+        try {
+            var electronBridge = window.nekoElectronIcebreakerBridge;
+            if (electronBridge && typeof electronBridge.send === 'function') {
+                electronBridge.send(message);
+            }
+        } catch (error) {
+            console.warn('[NewUserIcebreaker] Electron bridge post failed:', action, error);
         }
     }
 
@@ -962,6 +1012,27 @@
         }
         handleYuiGuideRelayedMessage(message);
     };
+
+    I.yuiGuideInterpageResources.addEventListener(
+        window,
+        'neko:electron-icebreaker-bridge',
+        handleIcebreakerElectronBridgeEvent
+    );
+    window.__nekoIcebreakerBridgeReady = true;
+    var pendingIcebreakerBridgeMessages = Array.isArray(window.__nekoPendingIcebreakerBridgeMessages)
+        ? window.__nekoPendingIcebreakerBridgeMessages.splice(0)
+        : [];
+    pendingIcebreakerBridgeMessages.forEach(function (message) {
+        I.handleIcebreakerBridgeData(message);
+    });
+    I.yuiGuideInterpageResources.addEventListener(
+        window,
+        'neko:config-injected',
+        schedulePendingIcebreakerIdentityFlush
+    );
+    if (window.pageConfigReady && typeof window.pageConfigReady.then === 'function') {
+        window.pageConfigReady.then(schedulePendingIcebreakerIdentityFlush).catch(function () {});
+    }
 
     I.yuiGuideInterpageResources.addEventListener(window, 'storage', handleIcebreakerStorageBridgeEvent);
     I.yuiGuideInterpageResources.addEventListener(window, 'storage', handleYuiGuideChatBridgeStorageEvent);

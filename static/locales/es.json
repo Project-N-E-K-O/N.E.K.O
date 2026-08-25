@@ -953,11 +953,14 @@
     "speaker": {
         "volumeLabel": "Volumen del altavoz",
         "volumeHint": "Ajustar el volumen de reproducción de voz AI",
-        "title": "Seleccionar altavoz",
-        "defaultDevice": "Altavoz predeterminado del sistema",
-        "deviceLabel": "Altavoz {{index}}",
-        "loadFailed": "No se pudo obtener la lista de oradores",
-        "noDevices": "No se detectaron dispositivos de altavoz",
+        "title": "Seleccionar dispositivo de reproducción",
+        "defaultDevice": "Dispositivo de reproducción predeterminado del sistema",
+        "deviceLabel": "Dispositivo de reproducción {{index}}",
+        "loadFailed": "No se pudo obtener la lista de dispositivos de reproducción",
+        "noDevices": "No se detectaron dispositivos de reproducción",
+        "switchFailed": "No se pudo cambiar el dispositivo de reproducción",
+        "unavailableFallback": "El dispositivo seleccionado no está disponible; se usa el predeterminado del sistema",
+        "unavailableFallbackFailed": "El dispositivo seleccionado no está disponible; no se pudo cambiar al predeterminado del sistema",
         "spatialAudioLabel": "Audio espacial",
         "spatialAudioHint": "Paneo estéreo y atenuación por distancia según la posición de la ventana del personaje respecto al monitor principal"
     },
@@ -2201,6 +2204,14 @@
         "voiceNotSet": "Ninguna voz especificada",
         "voiceSetting": "Configuración de voz",
         "personalitySetting": "Configuración de personalidad",
+        "languagePreference": "Preferencia de idioma",
+        "languagePreferenceDescription": "Esta preferencia no impone un idioma. La configuración del personaje y el idioma de la conversación actual aún pueden influir en la respuesta real.",
+        "languagePreferenceSaved": "Preferencia de idioma actualizada",
+        "languagePreferencePartiallySaved": "La preferencia de idioma se guardó, pero la sesión actual no se sincronizó por completo",
+        "languagePreferenceSuperseded": "Otra ventana guardó una preferencia de idioma más reciente; se actualizó por ti",
+        "languagePreferenceUnverified": "La preferencia de idioma se guardó, pero por ahora no se pudo confirmar que sea la más reciente",
+        "languagePreferenceSaveFailed": "No se pudo guardar la preferencia de idioma",
+        "languagePreferenceLoadFailed": "No se pudo cargar la preferencia de idioma",
         "personalityUseDefault": "Seguir la personalidad predeterminada de la tarjeta del personaje",
         "personalitySelect": "Elegir personalidad",
         "personalityClear": "Restaurar predeterminado",
@@ -2482,6 +2493,11 @@
             "screens": "Pantallas",
             "screenLabel": "Pantalla {{index}}",
             "windows": "ventanas",
+            "titleFilterPlaceholder": "Filtrar títulos de ventanas",
+            "titleFilterAriaLabel": "Filtrar ventanas por título",
+            "noWindowMatches": "No hay ventanas coincidentes",
+            "rememberWindow": "Recordar ventana",
+            "rememberedWindowUnavailable": "No se pudo identificar de forma única la ventana recordada. Vuelva a seleccionar una fuente de pantalla",
             "selected": "Seleccionado {{source}}",
             "sourceLost": "Compartir pantalla no pudo encontrar la ventana seleccionada previamente, se cambió a compartir pantalla completa",
             "captureFailed": "La captura de pantalla se detuvo. Compruebe los permisos del sistema o vuelva a seleccionar la fuente"
@@ -2901,13 +2917,14 @@
             "fullscreenTracking": "Seguimiento de pantalla completa",
             "localTracking": "Seguimiento local",
             "lockedHoverFade": "Desvanecimiento de desplazamiento bloqueado",
+            "forgeDropEffects": "Efectos al recibir cupón",
             "textGuardMaxLength": "Límite de longitud de respuesta",
             "unlimited": "Ilimitado",
             "characters": "caracteres",
             "tokens": "tokens",
             "textGuardUnlimitedWarning": "Puede causar problemas graves con la gata, no recomendado a menos que sea necesario.",
             "textGuardHighWarning": "Un ajuste demasiado alto puede causar confusión en la memoria y el idioma, recomendado dentro de 1000 tokens",
-            "textGuardNote": "Calculado mediante tiktoken; se aplica únicamente a respuestas de texto y no afecta las sesiones de voz"
+            "textGuardNote": "Se aplica únicamente a respuestas de texto y no afecta las sesiones de voz"
         }
     },
     "openclawGuide": {
@@ -3990,6 +4007,7 @@
         "twitter": "Twitter/X",
         "reddit": "Reddit",
         "netease": "Música en la nube NetEase",
+        "qqmusic": "QQ Music",
         "saveConfig": "Guardar configuración",
         "encryptStorage": "Cifre y almacene de forma segura en un archivo local",
         "localMonitoring": "Monitoreo de estado local",
@@ -4028,7 +4046,8 @@
             "weibo": "<b>Destino:</b> Vaya a <code>m.weibo.cn</code> para buscar estas cookies.",
             "twitter": "<b>Destino:</b> Vaya a <code>x.com</code> para buscar estas cookies.",
             "reddit": "<b>Destino:</b> Vaya a <code>reddit.com</code> para buscar estas cookies.",
-            "netease": "<b>Destino:</b> Vaya a <code>music.163.com</code> para buscar estas cookies."
+            "netease": "<b>Destino:</b> Vaya a <code>music.163.com</code> para buscar estas cookies.",
+            "qqmusic": "<b>Destino:</b> Vaya a <code>y.qq.com</code> para buscar estas cookies."
         },
         "guide": {
             "title": "Guía universal para principiantes",
@@ -4143,6 +4162,14 @@
             "MUSIC_U": {
                 "label": "MÚSICA_U",
                 "desc": "Credencial de identidad principal (obligatoria)"
+            },
+            "qqmusicUin": {
+                "label": "uin",
+                "desc": "Identificador de cuenta QQ (normalmente comienza con la letra o, seguida de dígitos)"
+            },
+            "qqmusicKey": {
+                "label": "qqmusic_key",
+                "desc": "Credencial de inicio de sesión de QQ Music (obligatoria)"
             },
             "NMTID": {
                 "label": "NMTID",

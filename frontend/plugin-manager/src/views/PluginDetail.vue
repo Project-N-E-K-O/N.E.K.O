@@ -20,7 +20,7 @@
       </template>
 
       <el-tabs v-model="activeTab" data-yui-guide-id="plugin-detail-tabs">
-        <el-tab-pane v-if="panelSurfaces.length > 0" :label="$t('plugins.ui.panel')" name="panel">
+        <el-tab-pane v-if="displayedPanelSurfaces.length > 0" :label="$t('plugins.ui.panel')" name="panel">
           <div class="surface-section" data-yui-guide-id="plugin-detail-panel">
             <el-alert
               v-if="surfaceWarnings.length > 0"
@@ -37,17 +37,36 @@
                 </li>
               </ul>
             </el-alert>
-            <el-tabs v-if="panelSurfaces.length > 1" v-model="activePanelSurfaceId" type="border-card">
+            <el-tabs v-if="displayedPanelSurfaces.length > 1" v-model="activePanelSurfaceId" type="border-card">
               <el-tab-pane
-                v-for="surface in panelSurfaces"
+                v-for="surface in displayedPanelSurfaces"
                 :key="surface.id"
                 :label="surface.title || surface.id"
                 :name="surface.id"
               >
-                <HostedSurfaceFrame :plugin-id="pluginId" :surface="surface" :height="hostedSurfaceFrameHeight" @open-logs="openLogsTab" @message="relayHostedSurfaceMessageToStaticUi" />
+                <HostedSurfaceFrame
+                  :ref="(instance) => setPanelSurfaceFrameRef(surface.id, instance)"
+                  :plugin-id="pluginId"
+                  :surface="surface"
+                  :height="hostedSurfaceFrameHeight"
+                  :active="isSurfaceActive(surface)"
+                  :activation-revision="activationRevisionFor(surface)"
+                  @open-logs="openLogsTab"
+                  @message="relayHostedSurfaceMessageToStaticUi"
+                />
               </el-tab-pane>
             </el-tabs>
-            <HostedSurfaceFrame v-else :plugin-id="pluginId" :surface="panelSurfaces[0]!" :height="hostedSurfaceFrameHeight" @open-logs="openLogsTab" @message="relayHostedSurfaceMessageToStaticUi" />
+            <HostedSurfaceFrame
+              v-else
+              :ref="(instance) => setPanelSurfaceFrameRef(displayedPanelSurfaces[0]?.id || '', instance)"
+              :plugin-id="pluginId"
+              :surface="displayedPanelSurfaces[0]!"
+              :height="hostedSurfaceFrameHeight"
+              :active="isSurfaceActive(displayedPanelSurfaces[0]!)"
+              :activation-revision="activationRevisionFor(displayedPanelSurfaces[0]!)"
+              @open-logs="openLogsTab"
+              @message="relayHostedSurfaceMessageToStaticUi"
+            />
           </div>
         </el-tab-pane>
 
@@ -75,15 +94,28 @@
                 :label="surface.title || surface.id"
                 :name="surface.id"
               >
-                <HostedSurfaceFrame :plugin-id="pluginId" :surface="surface" :height="hostedSurfaceFrameHeight" @open-logs="openLogsTab" @message="relayHostedSurfaceMessageToStaticUi" />
+                <HostedSurfaceFrame
+                  :plugin-id="pluginId"
+                  :surface="surface"
+                  :height="hostedSurfaceFrameHeight"
+                  :active="isSurfaceActive(surface)"
+                  :activation-revision="activationRevisionFor(surface)"
+                  @open-logs="openLogsTab"
+                  @message="relayHostedSurfaceMessageToStaticUi"
+                />
               </el-tab-pane>
             </el-tabs>
-            <HostedSurfaceFrame v-else :plugin-id="pluginId" :surface="guideSurfaces[0]!" :height="hostedSurfaceFrameHeight" @open-logs="openLogsTab" @message="relayHostedSurfaceMessageToStaticUi" />
+            <HostedSurfaceFrame
+              v-else
+              :plugin-id="pluginId"
+              :surface="guideSurfaces[0]!"
+              :height="hostedSurfaceFrameHeight"
+              :active="isSurfaceActive(guideSurfaces[0]!)"
+              :activation-revision="activationRevisionFor(guideSurfaces[0]!)"
+              @open-logs="openLogsTab"
+              @message="relayHostedSurfaceMessageToStaticUi"
+            />
           </div>
-        </el-tab-pane>
-
-        <el-tab-pane v-if="hasStaticUI" :label="$t('plugins.ui.title')" name="ui">
-          <PluginUIFrame ref="staticUiFrameRef" :plugin-id="pluginId" height="560px" @open-surface="openHostedSurfaceFromStaticUi" />
         </el-tab-pane>
 
         <el-tab-pane :label="$t('plugins.basicInfo')" name="info">
@@ -91,6 +123,9 @@
             <el-descriptions :column="2" border>
               <el-descriptions-item :label="$t('plugins.id')">{{ plugin.id }}</el-descriptions-item>
               <el-descriptions-item :label="$t('plugins.version')">{{ plugin.version }}</el-descriptions-item>
+              <el-descriptions-item :label="$t('market.filterLabels.author')" :span="2">
+                {{ authorDisplay || $t('common.noData') }}
+              </el-descriptions-item>
               <el-descriptions-item :label="$t('plugins.description')" :span="2">{{ pluginDisplayText.description || $t('common.noData') }}</el-descriptions-item>
               <el-descriptions-item :label="$t('plugins.pluginType')">
                 <el-tag size="small" :type="pluginTypeTagType">
@@ -155,9 +190,7 @@ import PluginConfigEditor from '@/components/plugin/PluginConfigEditor.vue'
 import LogViewer from '@/components/logs/LogViewer.vue'
 import EmptyState from '@/components/common/EmptyState.vue'
 import HostedSurfaceFrame from '@/components/plugin/HostedSurfaceFrame.vue'
-import PluginUIFrame from '@/components/plugin/PluginUIFrame.vue'
 import { getPluginUiSurfaceInfo } from '@/api/plugins'
-import { get } from '@/api'
 import { resolvePluginDisplayText, type PluginDisplayText } from '@/utils/pluginDisplay'
 import { useI18n } from 'vue-i18n'
 import type { PluginUiSurface, PluginUiWarning } from '@/types/api'
@@ -174,20 +207,15 @@ const surfaces = ref<PluginUiSurface[]>([])
 const surfaceWarnings = ref<PluginUiWarning[]>([])
 const activePanelSurfaceId = ref('')
 const activeGuideSurfaceId = ref('')
-const staticUiFrameRef = ref<InstanceType<typeof PluginUIFrame> | null>(null)
+type SurfaceMessageReceiver = {
+  sendSurfaceMessage: (data: unknown) => void
+  refreshContext: () => Promise<void>
+}
+const panelSurfaceFrameRefs = new Map<string, SurfaceMessageReceiver>()
+const surfaceActivationRevisions = ref<Record<string, number>>({})
 const hostedSurfaceFrameHeight = 'clamp(560px, calc(100vh - 220px), 1200px)'
 const allowedTabs = new Set(['panel', 'guide', 'ui', 'info', 'entries', 'metrics', 'config', 'logs'])
-const studySurfaceRelayMessageTypes = new Set([
-  'neko-study-review-completed',
-  'neko-study-refresh-summary',
-  'neko-study-memory-deck-updated',
-])
 let currentSurfaceLoadId = 0
-// fetchStaticUI 也需要和 fetchSurfaces 一样的 stale-response guard：用户快速
-// 切换 plugin detail 页时，旧 plugin 的 /ui-info 响应可能在新 plugin 加载后
-// 才到达，覆盖 hasStaticUI 导致 UI tab 显示状态错位。
-let currentStaticUiLoadId = 0
-const hasStaticUI = ref(false)
 
 const plugin = computed(() => {
   return pluginStore.pluginsWithStatus.find(p => p.id === pluginId.value)
@@ -203,8 +231,33 @@ const pluginDisplayText = computed(() => {
   return plugin.value ? resolvePluginDisplayText(plugin.value, locale.value) : emptyPluginDisplayText
 })
 
+const authorDisplay = computed(() => {
+  const author = plugin.value?.author
+  if (!author) return ''
+  if (author.name && author.email) return `${author.name} <${author.email}>`
+  return author.name || author.email || ''
+})
+
 const panelSurfaces = computed(() => surfaces.value.filter((surface) => surface.kind === 'panel'))
 const guideSurfaces = computed(() => surfaces.value.filter((surface) => surface.kind === 'guide' || surface.kind === 'docs'))
+const availablePanelSurfaces = computed(() => panelSurfaces.value.filter((surface) => surface.available !== false))
+// `auto` is accepted by the manifest but does not have a renderer yet. Do not
+// let its placeholder hide a working legacy static UI.
+const renderablePanelSurfaces = computed(() => availablePanelSurfaces.value.filter((surface) => surface.mode !== 'auto'))
+const availableDeclaredPanelSurfaces = computed(() => renderablePanelSurfaces.value.filter((surface) => !surface.legacy_static_compat))
+// Keep every renderable panel, including the host-generated static `main`
+// compatibility surface. The separate legacy "界面" tab is what gets hidden
+// when panels exist; filtering main here would make that page unreachable.
+const displayedPanelSurfaces = computed(() => renderablePanelSurfaces.value)
+// A generated static `main` is inserted before declared panels by the backend.
+// Keep it accessible in the list, but let generic `?tab=panel` entry points
+// select the first declared hosted panel when one exists.
+const defaultPanelSurface = computed(() => {
+  return availableDeclaredPanelSurfaces.value.find((surface) => surface.mode === 'hosted-tsx')
+    ?? availableDeclaredPanelSurfaces.value[0]
+    ?? displayedPanelSurfaces.value[0]
+})
+const hasDisplayablePanelSurface = computed(() => displayedPanelSurfaces.value.length > 0)
 
 const isAdapter = computed(() => plugin.value?.type === 'adapter')
 
@@ -240,10 +293,24 @@ function resolveActiveTab(value: unknown): string {
 
 function resolveDefaultTab(value: unknown): string {
   const requested = resolveActiveTab(value)
-  if (requested === 'panel' && panelSurfaces.value.length === 0) return 'info'
+  if (requested === 'panel' && !hasDisplayablePanelSurface.value) return 'info'
   if (requested === 'guide' && guideSurfaces.value.length === 0) return 'info'
-  if (requested === 'ui' && !hasStaticUI.value) return 'info'
+  if (requested === 'ui' && hasDisplayablePanelSurface.value) return 'panel'
+  if (requested === 'ui') return 'info'
   return requested
+}
+
+function syncActiveTab(requestedTab: unknown) {
+  const nextTab = resolveDefaultTab(requestedTab)
+  activeTab.value = nextTab
+  if (requestedTab === 'ui' && nextTab !== 'ui') {
+    void router.replace({
+      query: {
+        ...route.query,
+        tab: nextTab,
+      },
+    })
+  }
 }
 
 function syncSurfaceTabs() {
@@ -251,7 +318,7 @@ function syncSurfaceTabs() {
   const requestedTab = resolveActiveTab(route.query.tab)
   if (requestedSurfaceId) {
     const panel = requestedTab !== 'guide'
-      ? panelSurfaces.value.find((surface) => surface.id === requestedSurfaceId)
+      ? displayedPanelSurfaces.value.find((surface) => surface.id === requestedSurfaceId)
       : undefined
     if (panel) {
       activePanelSurfaceId.value = panel.id
@@ -263,8 +330,8 @@ function syncSurfaceTabs() {
       activeGuideSurfaceId.value = guide.id
     }
   }
-  if (!activePanelSurfaceId.value && panelSurfaces.value[0]) {
-    activePanelSurfaceId.value = panelSurfaces.value[0].id
+  if (!activePanelSurfaceId.value && defaultPanelSurface.value) {
+    activePanelSurfaceId.value = defaultPanelSurface.value.id
   }
   if (!activeGuideSurfaceId.value && guideSurfaces.value[0]) {
     activeGuideSurfaceId.value = guideSurfaces.value[0].id
@@ -281,16 +348,37 @@ function openLogsTab() {
   })
 }
 
-function openHostedSurfaceFromStaticUi(payload: { pluginId?: string; surfaceId: string; kind?: string }) {
+function surfaceActivationKey(surface: Pick<PluginUiSurface, 'kind' | 'id'>): string {
+  return `${pluginId.value}:${surface.kind}:${surface.id}`
+}
+
+function activationRevisionFor(surface: Pick<PluginUiSurface, 'kind' | 'id'>): number {
+  return surfaceActivationRevisions.value[surfaceActivationKey(surface)] ?? 0
+}
+
+function isSurfaceActive(surface: Pick<PluginUiSurface, 'kind' | 'id'>): boolean {
+  if (surface.kind === 'panel') {
+    return activeTab.value === 'panel' && activePanelSurfaceId.value === surface.id
+  }
+  return activeTab.value === 'guide' && activeGuideSurfaceId.value === surface.id
+}
+
+function isActivationRevision(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
+}
+
+function openHostedSurfaceFromStaticUi(payload: { pluginId?: string; surfaceId: string; kind?: string; activationRevision?: unknown }) {
   if (payload.pluginId && payload.pluginId !== pluginId.value) return
+  let activeSurface: PluginUiSurface | undefined
   let activeSurfaceId = ''
   const preferPanel = payload.kind === 'panel'
   const preferGuide = payload.kind === 'guide' || payload.kind === 'docs'
   const panel = (preferPanel || !preferGuide)
-    ? panelSurfaces.value.find((surface) => surface.id === payload.surfaceId)
+    ? displayedPanelSurfaces.value.find((surface) => surface.id === payload.surfaceId)
     : undefined
   if (panel) {
     activePanelSurfaceId.value = panel.id
+    activeSurface = panel
     activeSurfaceId = panel.id
     activeTab.value = 'panel'
   } else {
@@ -299,8 +387,12 @@ function openHostedSurfaceFromStaticUi(payload: { pluginId?: string; surfaceId: 
       : undefined
     if (!guide) return
     activeGuideSurfaceId.value = guide.id
+    activeSurface = guide
     activeSurfaceId = guide.id
     activeTab.value = 'guide'
+  }
+  if (isActivationRevision(payload.activationRevision)) {
+    surfaceActivationRevisions.value[surfaceActivationKey(activeSurface)] = payload.activationRevision
   }
   router.replace({
     query: {
@@ -311,46 +403,60 @@ function openHostedSurfaceFromStaticUi(payload: { pluginId?: string; surfaceId: 
   })
 }
 
-function isStudySurfaceRelayMessage(data: unknown): data is { type: string; payload?: unknown } {
-  return !!data
-    && typeof data === 'object'
-    && 'type' in data
-    && typeof (data as { type?: unknown }).type === 'string'
-    && studySurfaceRelayMessageTypes.has((data as { type: string }).type)
-}
-
-function isStudyOpenSurfaceMessage(data: unknown): data is {
+function isLegacyOpenSurfaceMessage(data: unknown): data is {
   type: 'neko-study-open-surface'
-  payload: { pluginId?: string; surfaceId: string; kind?: string }
+  payload: { pluginId?: string; surfaceId: string; kind?: string; activationRevision?: unknown }
 } {
   if (!data || typeof data !== 'object') return false
   const message = data as { type?: unknown; payload?: unknown }
   if (message.type !== 'neko-study-open-surface' || !message.payload || typeof message.payload !== 'object') return false
-  const payload = message.payload as { pluginId?: unknown; surfaceId?: unknown; kind?: unknown }
+  const payload = message.payload as { pluginId?: unknown; surfaceId?: unknown; kind?: unknown; activationRevision?: unknown }
   return typeof payload.surfaceId === 'string'
     && (!payload.pluginId || typeof payload.pluginId === 'string')
     && (!payload.kind || typeof payload.kind === 'string')
 }
 
+function setPanelSurfaceFrameRef(surfaceId: string, instance: unknown) {
+  if (!surfaceId) return
+  const receiver = instance as SurfaceMessageReceiver | null
+  if (receiver && typeof receiver.sendSurfaceMessage === 'function') {
+    panelSurfaceFrameRefs.set(surfaceId, receiver)
+  } else {
+    panelSurfaceFrameRefs.delete(surfaceId)
+  }
+}
+
 function relayHostedSurfaceMessageToStaticUi(data: unknown) {
-  if (isStudyOpenSurfaceMessage(data)) {
+  if (isLegacyOpenSurfaceMessage(data)) {
     openHostedSurfaceFromStaticUi(data.payload)
     return
   }
-  if (!isStudySurfaceRelayMessage(data)) return
-  staticUiFrameRef.value?.sendStudySurfaceMessage(data)
+  if (data && typeof data === 'object' && (data as { type?: unknown }).type === 'neko-plugin-context-invalidated') {
+    void Promise.allSettled(Array.from(panelSurfaceFrameRefs.values(), (frame) => frame.refreshContext()))
+    return
+  }
+  // Hosted surface messages have already been source/origin checked by the
+  // frame. Keep every mounted static panel current, including a `main` tab
+  // that is temporarily off-screen while a hosted surface is active. Static
+  // panels are the only legacy-UI iframe owners; do not mount a duplicate
+  // hidden relay for the same /ui/ document.
+  for (const surface of displayedPanelSurfaces.value) {
+    if (surface.mode === 'static') {
+      panelSurfaceFrameRefs.get(surface.id)?.sendSurfaceMessage(data)
+    }
+  }
 }
 
-async function fetchSurfaces() {
+async function fetchSurfaces(): Promise<boolean> {
   const loadId = ++currentSurfaceLoadId
   const currentPluginId = pluginId.value
   try {
     const info = await getPluginUiSurfaceInfo(currentPluginId, locale.value)
-    if (loadId !== currentSurfaceLoadId || currentPluginId !== pluginId.value) return
+    if (loadId !== currentSurfaceLoadId || currentPluginId !== pluginId.value) return false
     surfaces.value = info.surfaces
     surfaceWarnings.value = info.warnings
   } catch (caught: any) {
-    if (loadId !== currentSurfaceLoadId || currentPluginId !== pluginId.value) return
+    if (loadId !== currentSurfaceLoadId || currentPluginId !== pluginId.value) return false
     surfaces.value = []
     surfaceWarnings.value = [{
       path: 'plugin.ui',
@@ -361,28 +467,18 @@ async function fetchSurfaces() {
   activePanelSurfaceId.value = ''
   activeGuideSurfaceId.value = ''
   syncSurfaceTabs()
+  return true
 }
 
-async function fetchStaticUI() {
-  const loadId = ++currentStaticUiLoadId
-  const currentPluginId = pluginId.value
-  try {
-    const info = await get<{ has_ui: boolean }>(`/plugin/${encodeURIComponent(currentPluginId)}/ui-info`)
-    if (loadId !== currentStaticUiLoadId || currentPluginId !== pluginId.value) return
-    hasStaticUI.value = info?.has_ui ?? false
-  } catch {
-    if (loadId !== currentStaticUiLoadId || currentPluginId !== pluginId.value) return
-    hasStaticUI.value = false
-  }
+async function refreshPluginUi(): Promise<boolean> {
+  return fetchSurfaces()
 }
 
 onMounted(async () => {
   try {
     await pluginStore.fetchPlugins()
     await pluginStore.fetchPluginStatus(pluginId.value)
-    await fetchSurfaces()
-    await fetchStaticUI()
-    activeTab.value = resolveDefaultTab(route.query.tab)
+    if (await refreshPluginUi()) syncActiveTab(route.query.tab)
     pluginStore.setSelectedPlugin(pluginId.value)
   } finally {
     loading.value = false
@@ -393,7 +489,7 @@ watch(
   () => [route.query.tab, route.query.surface],
   ([tab]) => {
     syncSurfaceTabs()
-    activeTab.value = resolveDefaultTab(tab)
+    syncActiveTab(tab)
   },
 )
 
@@ -401,9 +497,7 @@ watch(pluginId, async () => {
   loading.value = true
   try {
     await pluginStore.fetchPluginStatus(pluginId.value)
-    await fetchSurfaces()
-    await fetchStaticUI()
-    activeTab.value = resolveDefaultTab(route.query.tab)
+    if (await refreshPluginUi()) syncActiveTab(route.query.tab)
     pluginStore.setSelectedPlugin(pluginId.value)
   } finally {
     loading.value = false
@@ -412,7 +506,9 @@ watch(pluginId, async () => {
 
 watch(locale, () => {
   if (!plugin.value) return
-  void fetchSurfaces()
+  void refreshPluginUi().then((refreshed) => {
+    if (refreshed) syncActiveTab(route.query.tab)
+  })
 })
 </script>
 

@@ -40,6 +40,10 @@ const CONNECTIVITY_TESTABLE_TYPES = MODEL_TYPES;
 // 由后端保留原密钥；绝不能当作真实凭据展示或用于连通性测试。
 const MASKED_SECRET_SENTINEL = '__NEKO_SECRET_MASKED__';
 const MASKED_SECRET_DISPLAY = '••••••••••••';
+// POST 成功后的紧随其后的配置重载中，后端会只返回密钥哨兵。此 Map 只在
+// 当前页面、当前次重载期间保存用户刚输入密钥的“局部遮罩值”（非明文），用于继续
+// 显示局部遮蔽；绝不写入 localStorage、不会发送到后端，也不会让后端 GET 回显明文。
+let _secretDisplayCache = null;
 const MIMO_TOKEN_PLAN_PROVIDER_KEY = 'mimo_token_plan';
 const MIMO_TOKEN_PLAN_OPENROUTER_URLS = [
     'https://token-plan-cn.xiaomimimo.com/v1',
@@ -375,15 +379,18 @@ function rememberResolvedProviderUrl(scope, providerKey, resolvedUrl) {
 function maskApiKey(key) {
     if (!key || typeof key !== 'string') return key;
     if (isMaskedSecretValue(key)) return MASKED_SECRET_DISPLAY;
-    if (key.length < 14) return key;
-    const midLen = key.length - 12;
-    return key.slice(0, 6) + '*'.repeat(midLen) + key.slice(-6);
+    // 与后端 mask_core_config_secret_for_display 对齐：短密钥直接全圆点，避免完整暴露。
+    if (key.length < 9) return MASKED_SECRET_DISPLAY;
+    const prefix = key.slice(0, 3);
+    const suffix = key.slice(-3);
+    if (prefix.includes('*') || suffix.includes('*')) return MASKED_SECRET_DISPLAY;
+    return prefix + '*'.repeat(key.length - 6) + suffix;
 }
 
 /**
  * 判断后端保留哨兵、通用圆点遮罩（含非空残片）或旧版遮罩。旧值只接受
- * 全星号，或 maskApiKey 生成的“6 字符前缀 + 至少 3 个星号 + 6 字符后缀”
- * 完整形状，避免把任意内部含星号的用户输入误判成遮罩。
+ * 全星号，或 maskApiKey 生成的“前后各 3 或 6 个非星号字符 + 至少 3 个星号”
+ * 对称形状，避免把任意内部含星号的用户输入误判成遮罩。
  */
 function isMaskedSecretValue(value) {
     if (typeof value !== 'string') return false;
@@ -392,30 +399,64 @@ function isMaskedSecretValue(value) {
         || normalized === MASKED_SECRET_DISPLAY
         || /^•+$/.test(normalized)
         || /^\*{3,}$/.test(normalized)
-        || /^[^*]{6}\*{3,}[^*]{6}$/.test(normalized);
+        || /^(?:[^*]{3}\*{3,}[^*]{3}|[^*]{6}\*{3,}[^*]{6})$/.test(normalized);
+}
+
+function getPartialMaskedSecretDisplay(value) {
+    const normalized = typeof value === 'string' ? value.trim() : '';
+    return /^(?:[^*]{3}\*{3,}[^*]{3}|[^*]{6}\*{3,}[^*]{6})$/.test(normalized) ? normalized : '';
 }
 
 /**
  * 将真实 key 写入 input 的 dataset，输入框显示遮蔽值。
  */
-function setMaskedInput(input, realKey) {
+function setMaskedInput(input, realKey, displayMask = '') {
     if (!input) return;
     if (!realKey) {
         input.dataset.realKey = '';
         delete input.dataset.maskedSecret;
+        delete input.dataset.maskedDisplay;
         input.value = '';
         return;
     }
     if (isMaskedSecretValue(realKey)) {
+        const cachedMask = _secretDisplayCache && _secretDisplayCache.get(input.id);
+        if (cachedMask && getPartialMaskedSecretDisplay(cachedMask)) {
+            // 保存后读取到的只是哨兵；同一次页面会话内沿用本地缓存的“遮罩值”
+            // （非明文）继续显示局部遮蔽，避免从“前后可见”退化为全圆点。
+            input.dataset.realKey = '';
+            input.dataset.maskedSecret = 'true';
+            input.dataset.maskedDisplay = cachedMask;
+            input.value = cachedMask;
+            return;
+        }
         // 只保留“后端已有密钥”这一状态，不把哨兵伪装成真实 key 放进 DOM。
         input.dataset.realKey = '';
         input.dataset.maskedSecret = 'true';
-        input.value = MASKED_SECRET_DISPLAY;
+        input.dataset.maskedDisplay = getPartialMaskedSecretDisplay(displayMask) || MASKED_SECRET_DISPLAY;
+        input.value = input.dataset.maskedDisplay;
         return;
     }
     delete input.dataset.maskedSecret;
+    delete input.dataset.maskedDisplay;
     input.dataset.realKey = realKey;
     input.value = maskApiKey(realKey);
+}
+
+/**
+ * 记录本页已输入密钥的“局部遮罩值”（非明文），以便保存成功后的单次配置重载
+ * 继续显示局部遮蔽。绝不缓存明文：遮罩值不可逆，DOM / 内存里都不保留真实 key。
+ */
+function cacheCurrentSecretDisplays() {
+    const cache = new Map();
+    document.querySelectorAll('input').forEach(input => {
+        if (input.dataset.maskAttached !== 'true' || !input.id) return;
+        const realKey = getRealKey(input);
+        if (realKey && !isMaskedSecretValue(realKey)) {
+            cache.set(input.id, maskApiKey(realKey));
+        }
+    });
+    _secretDisplayCache = cache;
 }
 
 function setSecretInputValue(elementId, value) {
@@ -460,8 +501,8 @@ function attachMaskBehavior(input) {
     input.dataset.maskAttached = 'true';
     input.addEventListener('focus', () => {
         if (input.dataset.maskedSecret === 'true') {
-            // 无明文可显示。选中通用掩码，让直接键入自然替换它。
-            input.value = MASKED_SECRET_DISPLAY;
+            // 无明文可显示；若后端提供了局部掩码，则保持该掩码。
+            input.value = input.dataset.maskedDisplay || MASKED_SECRET_DISPLAY;
             input.select();
             return;
         }
@@ -472,20 +513,22 @@ function attachMaskBehavior(input) {
         if (input.dataset.maskedSecret !== 'true') return;
         // 用户开始编辑时才丢弃“保留旧值”状态；单纯聚焦/失焦不会清空密钥。
         delete input.dataset.maskedSecret;
+        delete input.dataset.maskedDisplay;
         input.dataset.realKey = '';
         input.value = '';
     });
     input.addEventListener('input', () => {
-        if (input.dataset.maskedSecret === 'true' && input.value !== MASKED_SECRET_DISPLAY) {
+        if (input.dataset.maskedSecret === 'true' && input.value !== (input.dataset.maskedDisplay || MASKED_SECRET_DISPLAY)) {
             // 兼容脚本赋值后派发 input（以及不支持 beforeinput 的浏览器）。
             delete input.dataset.maskedSecret;
+            delete input.dataset.maskedDisplay;
             input.dataset.realKey = '';
         }
     });
     input.addEventListener('blur', () => {
         if (input.dataset.maskedSecret === 'true') {
             input.dataset.realKey = '';
-            input.value = MASKED_SECRET_DISPLAY;
+            input.value = input.dataset.maskedDisplay || MASKED_SECRET_DISPLAY;
             return;
         }
         // 用户可能编辑了 value，同步回 realKey
@@ -494,7 +537,8 @@ function attachMaskBehavior(input) {
             if (isMaskedSecretValue(current)) {
                 input.dataset.realKey = '';
                 input.dataset.maskedSecret = 'true';
-                input.value = MASKED_SECRET_DISPLAY;
+                input.dataset.maskedDisplay = getPartialMaskedSecretDisplay(current) || MASKED_SECRET_DISPLAY;
+                input.value = input.dataset.maskedDisplay;
                 return;
             }
             input.dataset.realKey = current;
@@ -502,6 +546,7 @@ function attachMaskBehavior(input) {
         } else {
             input.dataset.realKey = '';
             delete input.dataset.maskedSecret;
+            delete input.dataset.maskedDisplay;
         }
     });
 }
@@ -1146,6 +1191,48 @@ function getTtsProviderMeta(pk) {
 }
 
 /**
+ * 该 provider 是否真的具备某个槽位所需的能力。
+ *
+ * TTS 与「实时全模态」两个下拉原本把辅助 LLM 全表无差别铺开，于是列出了一堆后端
+ * 根本没有对应实现的服务商：选中后 TTS 仍由核心 API 决定 worker、实时全模态则落进
+ * 未实现的 api_type='local' 或被静默忽略，而下拉自动填进去的 URL/Key 还会污染该槽
+ * 的凭证。能力真相各有单一来源——实时全模态是 core_api_providers（后端按它分流），
+ * TTS 是后端 tts_provider_registry——这里据此过滤，前端不硬编码任何 provider key。
+ *
+ * 两处都 fail-open：元数据没取到（/api_providers 失败）时不过滤，宁可多列几项，
+ * 也不要把用户正在用的服务商从下拉里藏掉。
+ */
+function isProviderCapableForModelType(providerKey, modelType) {
+    const pk = String(providerKey || '').trim();
+    if (!pk || pk === 'custom' || pk.startsWith('follow_')) return true;
+
+    if (modelType === 'omni') {
+        // 实时全模态槽不提供任何具名服务商，只留「跟随」与「自定义」。
+        //
+        // 这个槽的取值最终会变成进程级的 core api type，而那个身份**同时**决定
+        // TTS worker、原生音色目录和音频凭证——它们都跟着核心 API 走。选一个与
+        // 核心不同的厂商会把音频链路撕成两半（实测过：核心 OpenAI + 本槽选 Qwen
+        // → 启动 Qwen TTS worker 却拿着 OpenAI 的 key，既无声又把一家的凭证发给
+        // 另一家）。整条音频链路只有一个 provider 身份，这个槽表达不了第二个，
+        // 所以干脆不摆出来。与后端 _normalize_realtime_provider 对偶。
+        return false;
+    }
+
+    if (modelType === 'tts') {
+        if (!_ttsProviders || Object.keys(_ttsProviders).length === 0) return true;
+        if (getTtsProviderMeta(pk)) return true;
+        // 注册表用 aliases 表达同一家的多地域入口（如 minimax_intl → minimax），
+        // 只按 key 查会把这些别名误判成无能力。
+        return Object.keys(_ttsProviders).some(k => {
+            const aliases = _ttsProviders[k] && _ttsProviders[k].aliases;
+            return Array.isArray(aliases) && aliases.includes(pk);
+        });
+    }
+
+    return true;
+}
+
+/**
  * 填充所有自定义模型的服务商下拉框
  */
 function getProviderInfo(providerKey) {
@@ -1295,6 +1382,8 @@ function populateModelProviderDropdowns() {
             const _spFilter = getTtsProviderMeta(pk);
             if (mt === 'tts' && !isTtsProviderVisibleInModelConfig(pk, _spFilter)) return;
             if (_spFilter && _spFilter.tts_dropdown_only && mt !== 'tts') return;
+            // 该槽位没有这家的实现就不要摆出来（伪选项 → 静默 fallback）。
+            if (!isProviderCapableForModelType(pk, mt)) return;
             const pInfo = _assistApiProviders[pk];
             const opt = document.createElement('option');
             opt.value = pk;
@@ -1846,7 +1935,7 @@ async function loadCurrentApiKey() {
                     apiKeyInput.value = window.t ? window.t('api.freeVersionNoApiKey') : '免费版无需API Key';
                 } else if (data.api_key) {
                     // 有API Key时设置
-                    setMaskedInput(apiKeyInput, data.api_key);
+                    setMaskedInput(apiKeyInput, data.api_key, data.api_key_display);
                     attachMaskBehavior(apiKeyInput);
                 }
                 // autoFillCoreApiKey 将在 coreApiSelect.value 设置后调用
@@ -1940,7 +2029,11 @@ async function loadCurrentApiKey() {
                 const assistKeyFromData = assistDataField ? (data[assistDataField] || '') : '';
                 if (assistApiKeyInput) {
                     if (assistKeyFromData) {
-                        setMaskedInput(assistApiKeyInput, assistKeyFromData);
+                        setMaskedInput(
+                            assistApiKeyInput,
+                            assistKeyFromData,
+                            data.assist_api_key_display
+                        );
                         attachMaskBehavior(assistApiKeyInput);
                     } else {
                         // 后端无辅助Key时，尝试从管理簿读取（兼容旧数据迁移）
@@ -2026,6 +2119,19 @@ async function loadCurrentApiKey() {
                     onCustomModelProviderChange(mt);
                     return;
                 }
+                if (data[providerField] && !isProviderCapableForModelType(data[providerField], mt)) {
+                    // 存量配置里选中了一个该槽根本没有实现的服务商（TTS / 实时全模态
+                    // 下拉曾把辅助 LLM 全表铺开）。这个选择在后端从来没有生效过，但它
+                    // 自动填进去的 URL/Key 会污染该槽凭证，是「界面绿灯、实际无声」的来源。
+                    //
+                    // 必须落回该槽默认值，**不能**走下面那条 'custom' 兜底：那会把一个
+                    // LLM 端点坐实成用户自配的 TTS/实时端点，反而让原本只是空转的配置
+                    // 真的被拿去请求。落回 follow_* 后 onCustomModelProviderChange 会用
+                    // 被跟随方的值重写 URL/Key，残留污染一并清掉。
+                    sel.value = getDefaultProviderForModelType(mt);
+                    onCustomModelProviderChange(mt);
+                    return;
+                }
                 if (data[providerField]) {
                     // Saved provider value exists — use it
                     const optionExists = Array.from(sel.options).some(opt => opt.value === data[providerField]);
@@ -2071,6 +2177,8 @@ async function loadCurrentApiKey() {
         showCurrentApiKey(window.t ? window.t('api.errorGettingCurrentApiKey') : '获取当前API Key时出错', '', false);
     } finally {
         _isLoadingSavedConfig = false;
+        // 缓存仅覆盖保存成功后的这一次重载。页面刷新或后续普通加载仍绝不回显密钥。
+        _secretDisplayCache = null;
     }
 }
 
@@ -2969,6 +3077,10 @@ async function saveApiKey(params) {
         if (response.ok) {
             const result = await response.json();
             if (result.success) {
+                // 后端的 GET 响应不会回传密钥明文。先保留当前页面已有值，供下面
+                // loadCurrentApiKey() 在收到哨兵时显示为“前后部分可见”的遮蔽形式；
+                // 其余密钥继续用这一轮临时缓存维持显示。
+                cacheCurrentSecretDisplays();
                 let statusMessage;
                 if (result.sessions_ended && result.sessions_ended > 0) {
                     statusMessage = window.t ? window.t('api.saveSuccessWithReset', { count: result.sessions_ended }) : `API Key保存成功！已重置 ${result.sessions_ended} 个活跃对话，对话页面将自动刷新。`;
@@ -2976,7 +3088,6 @@ async function saveApiKey(params) {
                     statusMessage = window.t ? window.t('api.saveSuccessReload') : 'API Key保存成功！配置已重新加载，新配置将在下次对话时生效。';
                 }
                 showStatus(statusMessage, 'success');
-                setMaskedInput(document.getElementById('apiKeyInput'), '');
 
                 // 清除本地Voice ID记录
                 await clearVoiceIds();
@@ -5181,7 +5292,10 @@ async function initializePage() {
             updateAssistApiKeyInputAvailability();
 
             updateAssistApiRecommendation();
-            autoFillCoreApiKey(true);
+            // loadCurrentApiKey() has already applied the saved core key.  Do
+            // not force a management-book overwrite during initial rendering;
+            // provider-change handlers below still use force=true.
+            autoFillCoreApiKey();
             // 不再调用 autoFillAssistApiKey(true)，因为 loadCurrentApiKey()
             // 已从后端数据直接设置辅助API Key，此处再次从管理簿读取会覆盖正确值
             // （同服务商时管理簿存的是核心Key，受限服务商时管理簿DOM不存在）

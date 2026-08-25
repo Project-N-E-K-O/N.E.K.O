@@ -96,3 +96,40 @@ def test_ensure_started_sets_hard_error_when_configured_dir_missing():
     assert plugin._napcat_process is None
     # Hard failure: wait_for_onebot_ready short-circuits immediately instead of polling
     assert service.has_hard_startup_error()
+
+
+def test_forward_mode_missing_launcher_is_not_hard_error():
+    """Forward mode treats a missing local launcher as best-effort (warning, not a
+    hard error) -- NapCat may be remote/manually started, so bootstrap() must not
+    fail just because no local launcher is configured."""
+    plugin = _plugin(qq_settings={
+        "napcat_directory": "C:/does/not/exist",
+        "qq_connection_mode": "napcat_forward",
+    })
+    service = QQNapcatService(plugin)
+
+    asyncio.run(service.ensure_napcat_started())
+
+    assert plugin._napcat_process is None
+    assert not service.has_hard_startup_error()
+
+
+def test_transient_timeout_recognized_after_mode_switch():
+    """A forward-mode timeout text written before switching to reverse must still be
+    treated as transient (not a hard failure), so wait_for_onebot_ready keeps polling.
+
+    Regression: has_hard_startup_error() used to compare the saved error against the
+    CURRENT mode's transient text -- after a forward timeout, switching to reverse made
+    the old forward text look like a hard failure and short-circuited the polling.
+    """
+    plugin = _plugin(qq_settings={"qq_connection_mode": "napcat_forward"})
+    service = QQNapcatService(plugin)
+    # Forward mode writes the forward transient timeout text
+    service._set_startup_error(service.FORWARD_TRANSIENT_TIMEOUT_ERROR)
+    assert not service.has_hard_startup_error()
+    # Switch to reverse: the old forward text must not be re-classified as hard
+    plugin._qq_settings["qq_connection_mode"] = "napcat"
+    assert not service.has_hard_startup_error()
+    # Reverse's own transient text is also transient under any mode
+    plugin._startup_error = service.TRANSIENT_TIMEOUT_ERROR
+    assert not service.has_hard_startup_error()

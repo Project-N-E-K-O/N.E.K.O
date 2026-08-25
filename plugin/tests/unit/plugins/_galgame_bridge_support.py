@@ -184,7 +184,7 @@ class _Ctx:
 
     def push_message(self, **kwargs):
         self.pushed_messages.append(dict(kwargs))
-        return {"ok": True}
+        return {"submitted": True}
 
     def update_status(self, status):
         return None
@@ -531,7 +531,7 @@ def _run_in_new_loop(awaitable):
 
 async def _drain_agent_summary_tasks(agent: GameLLMAgent) -> None:
     for _ in range(4):
-        tasks = list(agent._summary_tasks)
+        tasks = [*agent._summary_tasks, *agent._scene_capsule_tasks]
         if not tasks:
             return
         await asyncio.gather(*tasks, return_exceptions=True)

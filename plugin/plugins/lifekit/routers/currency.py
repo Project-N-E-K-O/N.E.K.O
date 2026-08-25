@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict
-
-from plugin.sdk.plugin import plugin_entry, quick_action, Ok, Err, SdkError
+from plugin.sdk.plugin import Err, Ok, SdkError, plugin_entry, quick_action, tr
 from plugin.sdk.shared.core.router import PluginRouter
 
 from .. import _currency as currency_api
@@ -20,12 +18,8 @@ class CurrencyRouter(PluginRouter):
 
     @plugin_entry(
         id="currency_convert",
-        name="汇率换算",
-        description=(
-            "实时汇率换算，支持全球主要货币。数据来源：欧洲央行。"
-            "适合回答「100美元多少人民币」「日元兑欧元汇率」。"
-            "出国旅行时可配合 trip_advice 使用。"
-        ),
+        name=tr("entries.currencyConvert.name", default="Convert currency"),
+        description=tr("entries.currencyConvert.description", default="Convert major currencies using European Central Bank reference rates."),
         params=CurrencyConvertParams,
         llm_result_model=CurrencyConvertResult,
     )
@@ -39,8 +33,12 @@ class CurrencyRouter(PluginRouter):
             from_currency = params.from_currency
             to_currency = params.to_currency
 
+        plugin = self.main_plugin
+        plugin._resolve_locale()
+        i18n = plugin._i18n
+
         if not from_currency.strip() or not to_currency.strip():
-            return Err(SdkError("请指定源货币和目标货币（如 USD → CNY）"))
+            return Err(SdkError(i18n.t("currency.no_currencies")))
 
         result = await currency_api.convert(
             amount=float(amount),
@@ -49,26 +47,39 @@ class CurrencyRouter(PluginRouter):
         )
 
         if result is None:
-            return Err(SdkError(f"汇率查询失败：{from_currency.upper()} → {to_currency.upper()}，请检查货币代码"))
+            return Err(SdkError(i18n.t(
+                "currency.convert_failed",
+                **{"from": from_currency.upper(), "to": to_currency.upper()},
+            )))
 
         fr_label = currency_api.currency_label(result["from"])
         to_label = currency_api.currency_label(result["to"])
 
         summary = f"{result['amount']} {fr_label} = {result['result']} {to_label}"
         if result.get("date"):
-            summary += f" (汇率 {result['rate']}，{result['date']})"
+            summary += i18n.t(
+                "runtime.currency_rate_suffix",
+                rate=result["rate"],
+                date=result["date"],
+            )
 
         # 推送卡片
         blocks = [
             {"type": "text", "text": f"💱 {result['amount']} {fr_label} → {result['result']} {to_label}"},
         ]
         if result.get("rate") and result["rate"] != 1.0:
-            blocks.append({"type": "text", "text": f"汇率: 1 {result['from']} = {result['rate']} {result['to']}  ({result.get('date', '')})"})
+            blocks.append({"type": "text", "text": i18n.t(
+                "runtime.currency_rate_card",
+                from_currency=result["from"],
+                rate=result["rate"],
+                to_currency=result["to"],
+                date=result.get("date", ""),
+            )})
 
         push_lifekit_content(self.main_plugin, blocks)
 
         return Ok({
             "summary": summary,
             "conversion": result,
-            "next_actions": ["trip_advice — 出行规划", "get_weather — 目的地天气"],
+            "next_actions": ["trip_advice", "get_weather"],
         })

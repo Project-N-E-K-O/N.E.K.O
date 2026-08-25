@@ -18,7 +18,7 @@ class _Gate:
         self._shift = shift
         self.checked = 0
         self._retro_tasks = set()
-        self._never = asyncio.Event()  # 让回溯任务挂起，避免完成回调立即 discard
+        self._never = asyncio.Event()  # Hang the retro task so the done-callback does not discard immediately
 
     async def check_focus_shift(self):
         self.checked += 1
@@ -37,6 +37,25 @@ def _plugin(gate):
     )
 
 
+def test_build_ignored_summary_uses_text_field():
+    """The retroactive summary reads the ``text`` field of a backlog item
+    (the key produced by ``QQBacklogMessage.to_dict``), not the nonexistent
+    ``message_text`` -- otherwise the original message content would always be
+    empty in the summary and the LLM would only see `[N] sender:  (id=...)`.
+    """
+    from plugin.plugins.qq_auto_reply.attention_gate_service import QQAttentionGateService
+
+    items = [
+        {"sender_id": "820040531", "sender_nickname": "", "text": "anyone there?", "message_id": "19464022"},
+        {"sender_id": "3429924750", "text": "yes here", "message_id": "660539476"},
+    ]
+    summary = QQAttentionGateService._build_ignored_summary(items)
+    assert "[1] 820040531: anyone there? (id=19464022)" in summary
+    assert "[2] 3429924750: yes here (id=660539476)" in summary
+    # The summary must not contain an empty-content row
+    assert "820040531:  (id=" not in summary
+
+
 def test_focus_shift_triggers_retroactive_review():
     """A focus shift creates a retroactive-review task."""
     gate = _Gate(shift=SimpleNamespace(new_focus_group="g2"))
@@ -44,7 +63,8 @@ def test_focus_shift_triggers_retroactive_review():
 
     async def run_and_assert():
         await dispatcher._run_focus_shift_check()
-        # 在 event loop 内断言：create_task 已执行、retro_tasks.add 已同步完成
+        # Assert inside the event loop: create_task has run and retro_tasks.add
+        # has completed synchronously.
         assert gate.checked == 1
         assert len(gate._retro_tasks) == 1
 
@@ -67,5 +87,5 @@ def test_no_focus_shift_is_noop():
 def test_missing_gate_is_noop():
     """Returns safely when the plugin has no attention_gate_service."""
     dispatcher = QQMessageDispatcher(_plugin(gate=None))
-    # 不应抛异常
+    # Must not raise
     asyncio.run(dispatcher._run_focus_shift_check())

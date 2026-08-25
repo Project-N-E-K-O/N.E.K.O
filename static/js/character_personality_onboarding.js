@@ -20,6 +20,7 @@
     const TUTORIAL_FLOW_POLL_INTERVAL_MS = 120;
     const TYPEWRITER_BASE_DELAY_MS = 18;
     const TYPEWRITER_PUNCTUATION_DELAY_MS = 110;
+    const CHARACTER_LANGUAGE_HYDRATION_TIMEOUT_MS = 2500;
     const HOME_TUTORIAL_RESET_EVENT = 'neko:home-tutorial-reset';
     const HOME_TUTORIAL_RESET_STORAGE_EVENT_KEY = 'neko_home_tutorial_reset_event';
     const HOME_TUTORIAL_RESET_CHANNEL = 'neko_tutorial_events';
@@ -64,7 +65,19 @@
         return payload;
     }
 
-    function getCurrentLanguage() {
+    function getTrustedCharacterLanguage(characterName) {
+        try {
+            if (typeof window.getExplicitConversationLanguagePreference === 'function') {
+                const preferred = window.getExplicitConversationLanguagePreference(characterName);
+                if (preferred) return preferred;
+            }
+        } catch (_) {
+            return '';
+        }
+        return '';
+    }
+
+    function getLiveUiLanguage() {
         try {
             if (window.i18next && typeof window.i18next.language === 'string' && window.i18next.language) {
                 return window.i18next.language;
@@ -85,6 +98,90 @@
             return '';
         }
         return '';
+    }
+
+    function getCurrentLanguage(characterName) {
+        return getTrustedCharacterLanguage(characterName) || getLiveUiLanguage();
+    }
+
+    function getCharacterLanguageRevision(characterName) {
+        try {
+            if (typeof window.getConversationLanguagePreferenceRevision === 'function') {
+                const revision = Number(
+                    window.getConversationLanguagePreferenceRevision(characterName)
+                );
+                return Number.isFinite(revision) ? revision : 0;
+            }
+        } catch (_) {
+            return 0;
+        }
+        return 0;
+    }
+
+    async function resolveCurrentLanguage(characterName) {
+        const name = String(characterName || '').trim();
+        const trustedLanguage = getTrustedCharacterLanguage(name);
+        if (trustedLanguage || !name) {
+            return trustedLanguage || getLiveUiLanguage();
+        }
+
+        const languageRevision = getCharacterLanguageRevision(name);
+        const controller = typeof AbortController === 'function' ? new AbortController() : null;
+        let timeoutId = null;
+        try {
+            const payload = await Promise.race([
+                requestJson(
+                    `/api/characters/character/${encodeURIComponent(name)}/language-preference`,
+                    {
+                        cache: 'no-store',
+                        signal: controller ? controller.signal : undefined,
+                    }
+                ),
+                new Promise((_, reject) => {
+                    timeoutId = window.setTimeout(() => {
+                        if (controller) controller.abort();
+                        reject(new Error('character language hydration timed out'));
+                    }, CHARACTER_LANGUAGE_HYDRATION_TIMEOUT_MS);
+                }),
+            ]);
+
+            if (!payload || payload.success !== true) {
+                throw new Error('invalid character language preference response');
+            }
+
+            // A websocket or sibling window may have published newer durable
+            // evidence while this request was in flight. Never overwrite it
+            // with the older response.
+            if (getCharacterLanguageRevision(name) !== languageRevision) {
+                return getCurrentLanguage(name);
+            }
+            const currentTrustedLanguage = getTrustedCharacterLanguage(name);
+            if (currentTrustedLanguage) {
+                return currentTrustedLanguage;
+            }
+
+            const durableLanguage = typeof payload.language === 'string'
+                ? payload.language.trim()
+                : '';
+            if (durableLanguage) {
+                if (typeof window.setConversationLanguagePreference === 'function') {
+                    window.setConversationLanguagePreference(
+                        durableLanguage,
+                        name,
+                        { dispatch: false, source: 'server' }
+                    );
+                }
+                return durableLanguage;
+            }
+        } catch (error) {
+            console.warn(
+                '[CharacterPersonalityOnboarding] language hydration failed, using UI fallback:',
+                error
+            );
+        } finally {
+            if (timeoutId !== null) window.clearTimeout(timeoutId);
+        }
+        return getCurrentLanguage(name);
     }
 
     function ensureStyles() {
@@ -212,7 +309,7 @@
             await this.waitForTutorialFlowToSettle();
             this.openReason = 'settings';
             this.currentCharacterName = String(characterName || '').trim() || await this.fetchCurrentCharacterName();
-            this.currentLanguage = getCurrentLanguage();
+            this.currentLanguage = await resolveCurrentLanguage(this.currentCharacterName);
             this.presets = await this.fetchPresets(this.currentLanguage, true);
             this.ensureOverlay();
             this.renderStageOne();
@@ -388,7 +485,7 @@
             }
 
             this.openReason = 'manual_reselect';
-            this.currentLanguage = getCurrentLanguage();
+            this.currentLanguage = await resolveCurrentLanguage(this.currentCharacterName);
             this.presets = await this.fetchPresets(this.currentLanguage);
             if (!this.presets.length) {
                 return false;
@@ -408,7 +505,7 @@
 
             this.openReason = 'onboarding';
             this.currentCharacterName = await this.fetchCurrentCharacterName();
-            this.currentLanguage = getCurrentLanguage();
+            this.currentLanguage = await resolveCurrentLanguage(this.currentCharacterName);
             this.presets = await this.fetchPresets(this.currentLanguage);
             if (!this.currentCharacterName || !this.presets.length) {
                 return;
@@ -440,7 +537,7 @@
         }
 
         async refreshForLocaleChange() {
-            const nextLanguage = getCurrentLanguage();
+            const nextLanguage = getCurrentLanguage(this.currentCharacterName);
             const overlay = this.overlay;
             if (!overlay || overlay.hidden) {
                 return;
@@ -1164,7 +1261,10 @@
             this.prepareOverlayPointerEvents();
             this.updateHeaderCopy();
             this.overlay.hidden = false;
-            if (this.currentLanguage && this.currentLanguage !== getCurrentLanguage()) {
+            if (
+                this.currentLanguage
+                && this.currentLanguage !== getCurrentLanguage(this.currentCharacterName)
+            ) {
                 void this.refreshForLocaleChange().catch((error) => {
                     console.warn('[CharacterPersonalityOnboarding] failed to refresh reopened overlay:', error);
                 });

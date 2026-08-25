@@ -560,7 +560,8 @@
         'userLanguage',
         'textGuardMaxLength',
         'renderQuality',
-        'targetFrameRate'
+        'targetFrameRate',
+        'forgeDropEffectsEnabled'
     ];
 
     function _defaultConversationSettingsForReset() {
@@ -1647,6 +1648,9 @@
         const currentLockedHoverFade = typeof window.lockedHoverFadeEnabled !== 'undefined'
             ? window.lockedHoverFadeEnabled
             : true;
+        const currentForgeDropEffects = typeof window.forgeDropEffectsEnabled !== 'undefined'
+            ? window.forgeDropEffectsEnabled
+            : true;
 
         // 读取字幕设置（统一走 subtitle-shared store，避免多处直接写 localStorage）
         const subtitleStore = window.nekoSubtitleShared;
@@ -1687,6 +1691,7 @@
             live2dFullscreenTrackingEnabled: currentLive2dFullscreenTracking,
             humanoidLocalTrackingEnabled: currentHumanoidLocalTracking,
             lockedHoverFadeEnabled: currentLockedHoverFade,
+            forgeDropEffectsEnabled: currentForgeDropEffects,
             subtitleEnabled: currentSubtitleEnabled,
             userLanguage: currentUserLanguage
         };
@@ -1943,6 +1948,15 @@
                     window.lockedHoverFadeEnabled = true;
                 }
 
+                // 锻造券掉落动画与音效设置
+                if (typeof settings.forgeDropEffectsEnabled === 'boolean') {
+                    window.forgeDropEffectsEnabled = settings.forgeDropEffectsEnabled;
+                } else if (typeof settings.forgeDropEffectsEnabled === 'string') {
+                    window.forgeDropEffectsEnabled = settings.forgeDropEffectsEnabled === 'true';
+                } else {
+                    window.forgeDropEffectsEnabled = true;
+                }
+
                 // 同步到运行中的实例
                 if (typeof window.live2dManager !== 'undefined' && window.live2dManager && typeof window.live2dManager.setFullscreenTrackingEnabled === 'function') {
                     window.live2dManager.setFullscreenTrackingEnabled(window.live2dFullscreenTrackingEnabled === true);
@@ -1991,6 +2005,7 @@
                 window.live2dFullscreenTrackingEnabled = false;
                 window.humanoidLocalTrackingEnabled = false;
                 window.lockedHoverFadeEnabled = true;
+                window.forgeDropEffectsEnabled = true;
 
                 // 首启专属 marker：告诉下方异步合并块「这次仍在等首次 settings/telemetry
                 // 决议」。升级用户走的是 if (saved) 分支不会写这个，于是不会被误判成首启
@@ -2013,6 +2028,7 @@
             window.live2dFullscreenTrackingEnabled = false;
             window.humanoidLocalTrackingEnabled = false;
             window.lockedHoverFadeEnabled = true;
+            window.forgeDropEffectsEnabled = true;
         }
 
         // 以下逻辑不依赖本地 JSON 解析结果，始终执行
@@ -2745,6 +2761,14 @@
             window.appAudioPlayback.loadSpeakerVolumeSetting();
         } else if (typeof window.loadSpeakerVolumeSetting === 'function') {
             window.loadSpeakerVolumeSetting();
+        }
+
+        // 加载播放设备选择；默认显式使用 Chromium 的 default 多媒体输出，
+        // 不使用 communications 默认语音通话设备。
+        if (typeof window.appAudioPlayback !== 'undefined' && window.appAudioPlayback.loadSelectedSpeaker) {
+            window.appAudioPlayback.loadSelectedSpeaker();
+        } else if (typeof window.loadSelectedSpeaker === 'function') {
+            window.loadSelectedSpeaker();
         }
 
         // 如果已开启主动搭话且选择了搭话方式，立即启动定时器

@@ -1513,3 +1513,38 @@ def test_react_chat_assets_use_react_chat_cache_version():
         assert f'{asset}?v={{{{ react_chat_asset_version }}}}' in chat_html
 
     assert pages_router.count('_PROJECT_ROOT.glob("static/app/app-interpage/*.js")') == 1
+
+
+def test_icebreaker_uses_electron_bridge_for_isolated_full_chat_partition():
+    runtime = RUNTIME_PATH.read_text(encoding="utf-8")
+    interpage = read_js_parts(APP_INTERPAGE_PATH)
+
+    assert "window.nekoElectronIcebreakerBridge" in runtime
+    assert "electronBridge.send(message)" in runtime
+    assert "window.nekoElectronIcebreakerBridge" in interpage
+    assert "window.__nekoPendingIcebreakerBridgeMessages" in interpage
+    assert "window.__nekoIcebreakerBridgeReady = true" in interpage
+    assert re.search(
+        r"yuiGuideInterpageResources\.addEventListener\(\s*window,\s*"
+        r"['\"]neko:electron-icebreaker-bridge['\"]\s*,\s*"
+        r"handleIcebreakerElectronBridgeEvent\s*\)",
+        interpage,
+    )
+    assert re.search(
+        r"pendingIcebreakerBridgeMessages\.forEach\(function \(message\) \{\s*"
+        r"handleIcebreakerBridgeData\(message\)",
+        interpage,
+    )
+
+
+def test_icebreaker_electron_messages_wait_for_async_chat_identity():
+    interpage = read_js_parts(APP_INTERPAGE_PATH)
+
+    assert "_pendingIcebreakerIdentityMessages" in interpage
+    assert "ICEBREAKER_IDENTITY_QUEUE_MAX = 80" in interpage
+    assert "function queueIcebreakerBridgeMessageUntilIdentity(data)" in interpage
+    assert "flushPendingIcebreakerIdentityMessages" in interpage
+    assert "if (!getCurrentLanlanName())" in interpage
+    assert "queueIcebreakerBridgeMessageUntilIdentity(data);" in interpage
+    assert "'neko:config-injected',\n        schedulePendingIcebreakerIdentityFlush" in interpage
+    assert "window.pageConfigReady.then(schedulePendingIcebreakerIdentityFlush)" in interpage

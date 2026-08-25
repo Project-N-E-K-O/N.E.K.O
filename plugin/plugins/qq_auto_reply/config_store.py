@@ -76,7 +76,7 @@ class QQAutoReplyConfigStore:
 
     def default_config(self) -> dict[str, Any]:
         return {
-            "qq_connection_mode": "napcat",     # "napcat" | "open_platform"
+            "qq_connection_mode": "napcat",     # "napcat" | "napcat_forward" | "open_platform"
             "onebot_url": "ws://0.0.0.0:6199",
             "token": "",
             # QQ 开放平台
@@ -105,6 +105,10 @@ class QQAutoReplyConfigStore:
             "reply_mode": "text",
             "group_attention_max_score": 10.0,
             "group_attention_focus_threshold": 4.0,
+            # 焦点群的发送门控线：低于焦点线、高于最低线。焦点线是「赢得焦点」的
+            # 资格线；发送门控若也用焦点线，焦点群回一条就跌破线被门控（见
+            # attention_gate_service 门控第 5 步）。
+            "group_attention_focus_send_threshold": 2.0,
             "group_attention_min_threshold": 1.0,
             "group_attention_message_gain": 0.25,
             # 周期模型：rise 基础增速 / 消息加成 / 夺冠蜜月 / 回落窗口 / 回落速率 / 发言消耗

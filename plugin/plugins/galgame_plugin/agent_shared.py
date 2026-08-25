@@ -18,11 +18,6 @@ from .agent_consultation import (
     render_cat_opinions_for_strategy,
     summarize_character_voice,
 )
-from .cross_scene_memory import (
-    empty_memory as _cross_scene_empty_memory,
-    render_for_push as _render_cross_scene_memory_for_push,
-    sanitize_memory as _cross_scene_sanitize,
-)
 from .host_agent_adapter import HostAgentAdapter, HostAgentError
 from .context_builder import (
     _compute_dynamic_line_limit,
@@ -61,7 +56,6 @@ from .models import (
     OCR_TRIGGER_MODE_AFTER_ADVANCE,
     OCR_TRIGGER_MODE_INTERVAL,
     GalgameLLMConfig,
-    STORE_CROSS_SCENE_MEMORY,
     SharedStatePayload,
     json_copy,
     sanitize_snapshot_state,

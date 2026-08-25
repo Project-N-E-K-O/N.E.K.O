@@ -14245,6 +14245,10 @@ async def test_new_message_during_summary_is_not_stranded_by_the_old_task():
         is_group=True, group_id="7788",
     )
     pending.buffered_texts = ["回复", "在吗"]
+    # The flush prompt is built from buffered_user_texts (the real inbound
+    # text), not buffered_texts (which schedule_reply overwrites with the bot
+    # draft) -- so both lists must carry the buffered messages.
+    pending.buffered_user_texts = ["回复", "在吗"]
     pending.message_count = 2
     pending.wait_until = 0.0
     service._pending["group:7788"] = pending
@@ -14260,6 +14264,7 @@ async def test_new_message_during_summary_is_not_stranded_by_the_old_task():
     # awaits its acknowledgement round first, and the retired task resumes
     # inside exactly that window.
     pending.buffered_texts.append("怎么不理我")
+    pending.buffered_user_texts.append("怎么不理我")
     pending.message_count += 1
     service._supersede(pending)
     release.set()

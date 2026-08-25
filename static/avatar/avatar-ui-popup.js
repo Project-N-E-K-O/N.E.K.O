@@ -1536,6 +1536,66 @@ function createAnimationSettingsSidePanel(manager, prefix) {
 
     trackingRow.appendChild(hoverFadeRow);
 
+    // ── 锻造券掉落动画与音效开关 ──
+    const forgeDropEffectsRow = document.createElement('div');
+    Object.assign(forgeDropEffectsRow.style, trackingToggleRowStyle);
+
+    const forgeDropEffectsCheckbox = document.createElement('input');
+    forgeDropEffectsCheckbox.type = 'checkbox';
+    forgeDropEffectsCheckbox.style.display = 'none';
+    forgeDropEffectsCheckbox.checked = window.forgeDropEffectsEnabled !== false;
+
+    const {
+        indicator: forgeDropEffectsIndicator,
+        updateStyle: updateForgeDropEffectsIndicatorStyle
+    } = manager._createCheckIndicator();
+    Object.assign(forgeDropEffectsIndicator.style, { width: '20px', height: '20px', flexShrink: '0' });
+
+    const updateForgeDropEffectsRowStyle = () => {
+        updateForgeDropEffectsIndicatorStyle(forgeDropEffectsCheckbox.checked);
+        updateTrackingToggleRowBackground(forgeDropEffectsRow, forgeDropEffectsCheckbox.checked);
+        forgeDropEffectsRow.setAttribute('aria-checked', String(forgeDropEffectsCheckbox.checked));
+    };
+    forgeDropEffectsCheckbox.updateStyle = updateForgeDropEffectsRowStyle;
+
+    const forgeDropEffectsLabel = document.createElement('span');
+    forgeDropEffectsLabel.textContent = window.t
+        ? window.t('settings.toggles.forgeDropEffects')
+        : '掉券动画与音效';
+    forgeDropEffectsLabel.setAttribute('data-i18n', 'settings.toggles.forgeDropEffects');
+    Object.assign(forgeDropEffectsLabel.style, { userSelect: 'none', fontSize: '12px', flex: '1' });
+
+    forgeDropEffectsRow.appendChild(forgeDropEffectsCheckbox);
+    forgeDropEffectsRow.appendChild(forgeDropEffectsIndicator);
+    forgeDropEffectsRow.appendChild(forgeDropEffectsLabel);
+    bindTrackingToggleRowHover(forgeDropEffectsRow, () => forgeDropEffectsCheckbox.checked);
+    updateForgeDropEffectsRowStyle();
+
+    const handleForgeDropEffectsChange = () => {
+        const enabled = !forgeDropEffectsCheckbox.checked;
+        forgeDropEffectsCheckbox.checked = enabled;
+        window.forgeDropEffectsEnabled = enabled;
+        updateForgeDropEffectsRowStyle();
+        if (typeof window.saveNEKOSettings === 'function') window.saveNEKOSettings();
+        window.dispatchEvent(new CustomEvent('neko-forge-drop-effects-changed', { detail: { enabled } }));
+    };
+
+    forgeDropEffectsRow.addEventListener('click', (e) => {
+        e.stopPropagation();
+        handleForgeDropEffectsChange();
+    });
+    forgeDropEffectsRow.setAttribute('role', 'switch');
+    forgeDropEffectsRow.tabIndex = 0;
+    forgeDropEffectsRow.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            e.stopPropagation();
+            handleForgeDropEffectsChange();
+        }
+    });
+
+    trackingRow.appendChild(forgeDropEffectsRow);
+
     document.body.appendChild(container);
     return container;
 }
@@ -3083,6 +3143,9 @@ const AvatarPopupMixin = {
 
         ManagerProto.renderScreenSourceList = async function (popup) {
             if (!popup) return false;
+            if (typeof window.renderFloatingScreenSourceList === 'function') {
+                return window.renderFloatingScreenSourceList(popup);
+            }
             const popupId = popup.id;
             const isPopupAvailable = () => {
                 if (!popup || !popup.isConnected) return false;

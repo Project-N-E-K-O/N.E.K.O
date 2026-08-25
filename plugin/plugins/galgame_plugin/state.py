@@ -51,7 +51,6 @@ class GalgameSharedState:
     character_mode: str = "off"
     character_fixed_name: str = ""
     character_mode_stale: bool = False
-    cross_scene_memory: dict[str, Any] = field(default_factory=dict)
     character_runtime_state: dict[str, dict[str, Any]] = field(default_factory=dict)
     last_push_seq: int = 0
     plugin_error: str = ""

@@ -68,6 +68,11 @@ from .runtime import app
 class HistoryRequest(BaseModel):
     input_history: str
     language: str | None = None
+    render_language: str | None = None
+
+
+class PromptLocalePreferenceRequest(BaseModel):
+    language: str
 
 
 def _activate_request_language(language: str | None) -> str:
@@ -86,8 +91,14 @@ def _activate_request_language(language: str | None) -> str:
 async def _resolve_foreground_memory_language(
     lanlan_name: str,
     language: str | None,
+    *,
+    render_language: str | None = None,
 ) -> str:
-    """Resolve foreground prompt locale without persisting a process guess.
+    """Resolve foreground prompt locale without persisting a render fallback.
+
+    Priority is explicit request > durable character preference > render-only
+    fallback > process locale. Only callers decide whether ``language`` is
+    durable evidence; this resolver never writes either input.
 
     Fail-soft on a durable-state read error. ``_load_locale_state_unlocked``
     raises ``PromptLocalePersistenceError`` on a transient ``OSError`` on
@@ -106,11 +117,13 @@ async def _resolve_foreground_memory_language(
     except locale_state.PromptLocalePersistenceError:
         logger.warning(
             "[PromptLocale] %s: durable locale unreadable, rendering with the "
-            "process locale for this request",
+            "request fallback for this request",
             lanlan_name,
         )
-        return _activate_request_language(None)
-    return _activate_request_language(durable_language)
+        return _activate_request_language(render_language)
+    if is_supported_language_code(durable_language):
+        return _activate_request_language(durable_language)
+    return _activate_request_language(render_language)
 
 
 #: Upper bound on how many subjects one request may cost in durable-locale
@@ -227,6 +240,7 @@ class ExternalMemoryImportRequest(BaseModel):
     candidates: list[dict]
     warning_count: int = 0
     language: str | None = None
+    render_language: str | None = None
 
 
 @app.post("/internal/memory/import_external_markdown")
@@ -351,7 +365,16 @@ async def import_external_markdown(request: ExternalMemoryImportRequest):
     # entity 只改写自己的 section（CAS 校验的也是本 entity 的指纹集合），慢的
     # Phase 2（LLM）不持锁——两个 entity 真正并行的只有 LLM 往返，落盘互斥。
     persona_entities = list(persona_candidates_by_entity.items())
-    memory_language = explicit_language or _activate_request_language(request.language)
+    # Browser imports deliberately omit ``language``. Resolve the durable
+    # character preference at execution time so a preference changed while the
+    # user was reading/confirming the preview cannot be overwritten by a stale
+    # frontend snapshot. This value is for prompt rendering only; the persistence
+    # block above remains reserved for explicit API callers.
+    memory_language = await _resolve_foreground_memory_language(
+        name,
+        explicit_language,
+        render_language=request.render_language,
+    )
     with language_context(memory_language):
         fusion_outcomes = await asyncio.gather(
             *(
@@ -734,6 +757,7 @@ async def cache_conversation(request: HistoryRequest, lanlan_name: str):
     memory_language = await _resolve_foreground_memory_language(
         lanlan_name,
         request.language,
+        render_language=request.render_language,
     )
     with language_context(memory_language):
         gates._touch_activity()
@@ -754,6 +778,7 @@ async def cache_conversation(request: HistoryRequest, lanlan_name: str):
             # 阻塞下一轮 /cache 写盘。
             await post_turn._spawn_outbox_post_turn_signals(
                 lanlan_name, input_history, language=request.language,
+                render_language=request.render_language,
                 locale_admission_order=locale_admission_order,
             )
             return {"status": "cached", "count": len(input_history)}
@@ -773,6 +798,7 @@ async def process_conversation(request: HistoryRequest, lanlan_name: str):
     memory_language = await _resolve_foreground_memory_language(
         lanlan_name,
         request.language,
+        render_language=request.render_language,
     )
     with language_context(memory_language):
         gates._touch_activity()
@@ -810,6 +836,7 @@ async def process_conversation(request: HistoryRequest, lanlan_name: str):
             # 异步事实提取（不阻塞返回，失败静默跳过）
             await post_turn._spawn_outbox_post_turn_signals(
                 lanlan_name, input_history, language=request.language,
+                render_language=request.render_language,
                 locale_admission_order=locale_admission_order,
             )
 
@@ -834,6 +861,7 @@ async def process_conversation_for_renew(request: HistoryRequest, lanlan_name: s
     memory_language = await _resolve_foreground_memory_language(
         lanlan_name,
         request.language,
+        render_language=request.render_language,
     )
     with language_context(memory_language):
         gates._touch_activity()
@@ -870,6 +898,7 @@ async def process_conversation_for_renew(request: HistoryRequest, lanlan_name: s
             # 异步事实提取
             await post_turn._spawn_outbox_post_turn_signals(
                 lanlan_name, input_history, language=request.language,
+                render_language=request.render_language,
                 locale_admission_order=locale_admission_order,
             )
 
@@ -899,6 +928,7 @@ async def settle_conversation(request: HistoryRequest, lanlan_name: str):
     memory_language = await _resolve_foreground_memory_language(
         lanlan_name,
         request.language,
+        render_language=request.render_language,
     )
     with language_context(memory_language):
         gates._touch_activity()
@@ -922,6 +952,7 @@ async def settle_conversation(request: HistoryRequest, lanlan_name: str):
             if input_history or is_supported_language_code(request.language):
                 await post_turn._spawn_outbox_post_turn_signals(
                     lanlan_name, input_history, language=request.language,
+                    render_language=request.render_language,
                     locale_admission_order=locale_admission_order,
                 )
 
@@ -3320,10 +3351,76 @@ async def cancel_correction(lanlan_name: str):
     
     return {"status": "no_task"}
 
+
+@app.get("/prompt-locale/{lanlan_name}")
+async def get_prompt_locale_preference(lanlan_name: str):
+    """Return the durable internal-template locale for one character."""
+    name = validate_lanlan_name(lanlan_name)
+    language, order = await asyncio.to_thread(
+        locale_state.get_character_prompt_locale_state,
+        name,
+    )
+    return {
+        "success": True,
+        "language": language,
+        # The write order identifies the individual write. Ownership checks must
+        # use it: two writes of the same language are equal by value.
+        "order": order,
+        "effective_language": language or get_global_language_full(),
+    }
+
+
+@app.put("/prompt-locale/{lanlan_name}")
+async def set_prompt_locale_preference(
+    lanlan_name: str,
+    request: PromptLocalePreferenceRequest,
+):
+    """Persist a character's template locale without injecting prompt text."""
+    name = validate_lanlan_name(lanlan_name)
+    if not is_supported_language_code(request.language):
+        raise HTTPException(status_code=400, detail="Unsupported language")
+
+    normalized = normalize_language_code(request.language, format="full")
+    order = await asyncio.to_thread(
+        locale_state.reserve_character_prompt_locale_order,
+        name,
+    )
+    previous, persisted, applied = await asyncio.to_thread(
+        locale_state.record_character_prompt_locale_state,
+        name,
+        normalized,
+        order=order,
+    )
+    if not applied or persisted != normalized:
+        # Structured detail on purpose: this server answers 409 for several
+        # unrelated reasons (cloudsave maintenance fence, storage-limited
+        # startup).  Callers must be able to tell a superseded write -- which
+        # means "a newer preference already won" -- from a retryable failure.
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error_code": "language_preference_superseded",
+                "message": "A newer language preference superseded this request",
+            },
+        )
+    return {
+        "success": True,
+        "language": persisted,
+        "order": order,
+        "previous_language": previous,
+        "changed": previous != persisted,
+    }
+
+
 @app.get("/new_dialog/{lanlan_name}")
-async def new_dialog(lanlan_name: str, language: str | None = None):
-    with language_context(_activate_request_language(language)):
-        return await _new_dialog(lanlan_name, language)
+async def new_dialog(
+    lanlan_name: str,
+    language: str | None = None,
+    render_language: str | None = None,
+):
+    request_language = language if is_supported_language_code(language) else render_language
+    with language_context(_activate_request_language(request_language)):
+        return await _new_dialog(lanlan_name, language, render_language)
 
 
 async def _write_new_dialog_locale(
@@ -3436,7 +3533,11 @@ outbox_infra.register_outbox_handler(
 )
 
 
-async def _new_dialog(lanlan_name: str, language: str | None = None):
+async def _new_dialog(
+    lanlan_name: str,
+    language: str | None = None,
+    render_language: str | None = None,
+):
     lanlan_name = validate_lanlan_name(lanlan_name)
     gates._touch_activity()
     has_explicit_language = is_supported_language_code(language)
@@ -3458,9 +3559,22 @@ async def _new_dialog(lanlan_name: str, language: str | None = None):
         return PlainTextResponse("")
 
     if not has_explicit_language:
-        language = await asyncio.to_thread(
-            locale_state.get_character_prompt_locale,
-            lanlan_name,
+        try:
+            durable_language = await asyncio.to_thread(
+                locale_state.get_character_prompt_locale,
+                lanlan_name,
+            )
+        except locale_state.PromptLocalePersistenceError:
+            logger.warning(
+                "[PromptLocale] %s: durable locale unreadable for new-dialog; "
+                "using the request render locale",
+                lanlan_name,
+            )
+            durable_language = None
+        language = (
+            durable_language
+            if is_supported_language_code(durable_language)
+            else render_language
         )
 
     if has_explicit_language:

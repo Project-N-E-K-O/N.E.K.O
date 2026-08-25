@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
+import zipfile
 
 import pytest
 
@@ -66,6 +67,33 @@ def test_plan_marks_matching_existing_plugin_as_upgrade(tmp_path: Path) -> None:
     assert plan.action == "upgrade"
     assert plan.current_version == "1.0.0"
     assert plan.target_version == "2.0.0"
+    assert len(plan.confirmation_token) == 64
+
+
+@pytest.mark.parametrize(
+    ("current_version", "target_version", "expected_action"),
+    [
+        ("1.1.0", "1.1.0", "reinstall"),
+        ("2.0.0", "0.9.0", "downgrade"),
+        ("1.0.0rc1", "1.0.0", "upgrade"),
+        ("nightly", "nightly", "reinstall"),
+        ("nightly-a", "nightly-b", "upgrade"),
+    ],
+)
+def test_plan_classifies_plugin_replacements_by_version(
+    tmp_path: Path,
+    current_version: str,
+    target_version: str,
+    expected_action: str,
+) -> None:
+    package = _single_package(tmp_path, "demo", version=target_version)
+    _write_plugin(tmp_path / "plugins", plugin_id="demo", version=current_version)
+
+    plan = build_install_plan(package_path=package, plugins_root=tmp_path / "plugins")
+
+    assert plan.action == expected_action
+    assert plan.current_version == current_version
+    assert plan.target_version == target_version
     assert len(plan.confirmation_token) == 64
 
 
@@ -133,3 +161,20 @@ def test_confirmation_token_streams_package_instead_of_reading_it_all_at_once(
     expected.update(manifest_bytes)
 
     assert confirmation_token(package_path=package_path, target_dir=target_dir) == expected.hexdigest()
+
+
+def test_install_plan_streams_packaged_manifest(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    package = _single_package(tmp_path, "streamed")
+
+    def forbidden_read(*_args, **_kwargs):  # type: ignore[no-untyped-def]
+        raise AssertionError("packaged manifests must use bounded streaming reads")
+
+    monkeypatch.setattr(zipfile.ZipFile, "read", forbidden_read)
+
+    assert build_install_plan(
+        package_path=package,
+        plugins_root=tmp_path / "plugins",
+    ).plugin_id == "streamed"

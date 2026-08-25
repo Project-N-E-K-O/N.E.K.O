@@ -77,6 +77,9 @@ class _CoreCtx:
     async def update_own_config(self, updates: dict[str, object], timeout: float = 10.0) -> dict[str, object]:
         return {"config": updates}
 
+    async def replace_own_config(self, config: dict[str, object], timeout: float = 10.0) -> dict[str, object]:
+        return {"config": config}
+
     async def query_plugins(self, filters: dict[str, object], timeout: float = 5.0) -> dict[str, object]:
         return {"plugins": [{"plugin_id": "p", "name": "Plugin"}]}
 
@@ -133,6 +136,61 @@ async def test_sdk_context_forwards_update_own_config() -> None:
     payload = await ctx.update_own_config({"mcp_servers": {"fetch": {"url": "https://example.com"}}})
 
     assert payload == {"config": {"mcp_servers": {"fetch": {"url": "https://example.com"}}}}
+
+
+@pytest.mark.asyncio
+async def test_sdk_context_forwards_replace_own_config() -> None:
+    ctx = SdkContext(_CoreCtx())
+
+    payload = await ctx.replace_own_config({"replacement": {"enabled": True}})
+
+    assert payload == {"config": {"replacement": {"enabled": True}}}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("success", "persisted"),
+    ((True, False), (True, None), (False, True)),
+)
+@pytest.mark.parametrize("operation", ("update", "nested_set", "root_set"))
+async def test_plugin_config_write_rejects_failed_or_non_persistent_result(
+    success: bool,
+    persisted: bool | None,
+    operation: str,
+) -> None:
+    class _NonPersistentCtx(_CoreCtx):
+        @staticmethod
+        def _response(config: dict[str, object]) -> dict[str, object]:
+            return {
+                "success": success,
+                "persisted": persisted,
+                "config": config,
+                "message": "Config persistence did not complete",
+            }
+
+        async def update_own_config(
+            self,
+            updates: dict[str, object],
+            timeout: float = 10.0,
+        ) -> dict[str, object]:
+            return self._response(updates)
+
+        async def replace_own_config(
+            self,
+            config: dict[str, object],
+            timeout: float = 10.0,
+        ) -> dict[str, object]:
+            return self._response(config)
+
+    config = core_config.PluginConfig(_NonPersistentCtx())
+
+    with pytest.raises(TransportError, match="Config persistence did not complete"):
+        if operation == "update":
+            await config.update({"feature": {"enabled": True}})
+        elif operation == "nested_set":
+            await config.set("feature.enabled", True)
+        else:
+            await config.set("", {"feature": {"enabled": True}})
 
 
 def test_core_base_and_hook_classes() -> None:
@@ -197,11 +255,8 @@ async def test_core_config_plugins_router_behaviors() -> None:
     with pytest.raises((ValidationError, TransportError)):
         await cfg.require("feature.missing")
 
-    with pytest.raises((ValidationError, TransportError)):
-        await cfg.set("feature.flag", True)
-
-    with pytest.raises((ValidationError, TransportError)):
-        await cfg.update({"a": 1})
+    await cfg.set("feature.flag", True)
+    assert await cfg.update({"a": 1}) == {"a": 1}
 
     listed = await plugins.list()
     assert listed.is_ok()

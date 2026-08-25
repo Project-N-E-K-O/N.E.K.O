@@ -65,29 +65,10 @@ def _disable_galgame_rapidocr_warmup(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
-def _disable_study_auto_open_browser(monkeypatch: pytest.MonkeyPatch) -> None:
-    """No-op study_companion's auto-open-UI launcher.
-
-    ``auto_open_ui`` defaults to True, so any test that starts the plugin would
-    otherwise call ``os.startfile`` / ``xdg-open`` and spawn a real browser tab
-    (e.g. a ``pytest -k study`` run popping ~20 tabs at the plugin UI URL).
-    """
-    try:
-        from plugin.plugins import study_companion as _study
-    except Exception:
-        return
-    monkeypatch.setattr(_study, "_open_url_in_browser", lambda url: None)
-
-
-@pytest.fixture(autouse=True)
-def _isolate_galgame_runtime_root(
-    request: pytest.FixtureRequest,
+def _isolate_plugin_runtime_root(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    path = Path(str(request.node.fspath))
-    if "galgame" not in str(path):
-        return
     monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(tmp_path / "runtime_data"))
     monkeypatch.delenv("NEKO_STORAGE_ANCHOR_ROOT", raising=False)
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 from _galgame_test_support import *
 
 from plugin.plugins.galgame_plugin import plugin_core as galgame_plugin_core
+from plugin.plugins.galgame_plugin.models import SessionCandidate
 from tests.fake_clock import patch_module_clock
 
 @pytest.mark.asyncio
@@ -43,6 +44,135 @@ async def test_background_bridge_poll_continues_for_subsecond_ocr_interval(
         plugin._bridge_poll_thread_stop.clear()
 
     assert poll_calls == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
+async def test_same_game_session_id_source_switch_starts_fresh_cursor(tmp_path: Path) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    cfg = _make_effective_config(bridge_root)
+    plugin = GalgameBridgePlugin(_Ctx(plugin_dir, cfg))
+    plugin._cfg = build_config(cfg)
+    local = plugin._snapshot_state(fresh=True)
+    local.update({
+        "active_data_source": DATA_SOURCE_MEMORY_READER,
+        "active_game_id": "demo.alpha", "active_session_id": "shared-session",
+        "warmup_session_id": "shared-session",
+        "history_events": [{"seq": 1, "type": "line_changed"}],
+        "history_lines": [{"text": "old source line"}],
+        "events_byte_offset": 5, "events_file_size": 5, "last_seq": 1,
+        "line_buffer": b"", "stream_reset_pending": False,
+    })
+    events_path = tmp_path / "events.jsonl"
+    events_path.write_text("", encoding="utf-8")
+    candidate = SessionCandidate(
+        game_id="demo.alpha", session_path=tmp_path / "session.json",
+        events_path=events_path, data_source=DATA_SOURCE_OCR_READER,
+        session={
+            "session_id": "shared-session", "started_at": "2099-04-21T08:35:00Z",
+            "last_seq": 0,
+            "state": _session_state(scene_id="ocr-scene", line_id="", text=""),
+        },
+    )
+
+    await plugin._apply_bridge_candidate_session(
+        local=local, candidate=candidate, warnings=[], now_monotonic=100.0,
+    )
+
+    assert local["active_data_source"] == DATA_SOURCE_OCR_READER
+    assert local["history_events"] == []
+    assert local["history_lines"] == []
+    assert local["events_byte_offset"] == 0
+    assert local["events_file_size"] == 0
+    assert local["last_seq"] == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
+async def test_fast_loop_waits_for_regular_poll_to_bootstrap_auto_ocr(
+    tmp_path: Path,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    cfg = _make_effective_config(
+        bridge_root,
+        galgame={"reader_mode": "auto"},
+        ocr_reader={
+            "enabled": True,
+            "fast_loop_enabled": True,
+            "trigger_mode": "interval",
+        },
+    )
+    plugin = GalgameBridgePlugin(_Ctx(plugin_dir, cfg))
+    plugin._cfg = build_config(cfg)
+    tick_calls = 0
+    fast_loop_starts: list[bool] = []
+
+    class _BootstrapManager:
+        def update_config(self, _config) -> None:
+            return None
+
+        async def tick(self, **_kwargs):
+            nonlocal tick_calls
+            tick_calls += 1
+            return SimpleNamespace(
+                runtime={"status": "starting"},
+                warnings=[],
+                should_rescan=False,
+                stable_event_emitted=False,
+            )
+
+        def current_window_target(self) -> dict[str, object]:
+            return {}
+
+    async def _keep_runtime(runtime: dict[str, object]) -> dict[str, object]:
+        return runtime
+
+    plugin._ocr_reader_manager = _BootstrapManager()
+    plugin._start_ocr_fast_loop = lambda: fast_loop_starts.append(True) or True  # type: ignore[method-assign]
+    plugin._update_ocr_capture_profile_rollback_state = _keep_runtime  # type: ignore[method-assign]
+    plugin._maybe_auto_apply_recommended_ocr_capture_profile = _keep_runtime  # type: ignore[method-assign]
+    local = {
+        "active_data_source": "",
+        "advance_speed": "medium",
+        "ocr_window_target": {},
+    }
+
+    first = await plugin._tick_ocr_reader_for_poll(
+        local=local,
+        raw_available_game_ids=[],
+        raw_candidates={},
+        memory_reader_runtime={},
+        ocr_reader_runtime={"status": "disabled"},
+        bridge_sdk_candidate_available=False,
+        ocr_tick_allowed=True,
+        pending_manual_foreground_ocr_capture=False,
+        pending_ocr_advance_capture=False,
+        force=False,
+    )
+
+    assert tick_calls == 1
+    assert fast_loop_starts == []
+    assert first[2]["status"] == "starting"
+    assert first[2]["ocr_tick_entered"] is True
+    assert first[2]["ocr_fast_loop_delegated"] is False
+
+    second = await plugin._tick_ocr_reader_for_poll(
+        local=local,
+        raw_available_game_ids=[],
+        raw_candidates={},
+        memory_reader_runtime={},
+        ocr_reader_runtime={"status": "active"},
+        bridge_sdk_candidate_available=False,
+        ocr_tick_allowed=True,
+        pending_manual_foreground_ocr_capture=False,
+        pending_ocr_advance_capture=False,
+        force=False,
+    )
+
+    assert tick_calls == 1
+    assert fast_loop_starts == [True]
+    assert second[2]["ocr_tick_entered"] is False
+    assert second[2]["ocr_fast_loop_delegated"] is True
 
 
 @pytest.mark.plugin_unit
@@ -792,7 +922,9 @@ async def test_auto_reader_keeps_rapidocr_enabled_ocr_available_when_backend_aut
     assert isinstance(snapshot, Ok)
     assert ocr_ticks
     assert status.value["active_data_source"] == DATA_SOURCE_OCR_READER
-    assert snapshot.value["snapshot"]["text"] == "rapidocr enabled OCR line"
+    # The source remains available, but internal RapidOCR status-like text is
+    # fail-closed at the public snapshot boundary.
+    assert snapshot.value["snapshot"]["text"] == ""
 
 
 @pytest.mark.asyncio
@@ -4861,6 +4993,10 @@ async def test_bridge_sdk_session_preempts_ocr_reader_candidate(tmp_path: Path) 
     clock["now"] += 1.0
     await plugin._poll_bridge(force=True)
 
+    session_started_at = time.strftime(
+        "%Y-%m-%dT%H:%M:%SZ",
+        time.gmtime(plugin._plugin_run_started_at + 1.0),
+    )
     _create_game_dir(
         bridge_root,
         game_id="demo.sdk",
@@ -4868,6 +5004,7 @@ async def test_bridge_sdk_session_preempts_ocr_reader_candidate(tmp_path: Path) 
             game_id="demo.sdk",
             session_id="sdk-session-1",
             last_seq=3,
+            started_at=session_started_at,
             state=_session_state(
                 speaker="桥接",
                 text="来自 Bridge SDK 的台词。",
@@ -5558,8 +5695,7 @@ def test_ocr_line_second_stable_read_enters_history(tmp_path: Path) -> None:
     assert len(history_lines) == 1
     assert history_lines[0]["speaker"] == "王生"
     assert history_lines[0]["text"] == "算了，没事。"
-    assert len(history_observed_lines) == 1
-    assert history_observed_lines[0]["stability"] == "stable"
+    assert history_observed_lines == []
 
 
 @pytest.mark.plugin_unit

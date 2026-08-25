@@ -255,7 +255,10 @@ from plugin.sdk.plugin import (
 |------|------|------|
 | `self.ctx` | `PluginContext` | 运行时上下文（宿主注入） |
 | `self.plugin_id` | `str` | 插件唯一标识符 |
-| `self.config_dir` | `Path` | `plugin.toml` 所在目录 |
+| `self.plugin_dir` | `Path` | 插件安装目录（代码、Manifest 和静态资源） |
+| `self.config_dir` | `Path` | `self.plugin_dir` 的兼容别名 |
+| `self.storage_dir` | `Path` | 分配给插件的用户存储根目录 |
+| `self.runtime_config_path` | `Path` | 外部运行配置文件路径 |
 | `self.metadata` | `dict` | 来自 `plugin.toml` 的元数据 |
 | `self.bus` | `SdkBusContext` | 宿主状态的 read/watch 门面；没有 publish/emit API |
 | `self.plugins` | `Plugins` | 跨插件调用工具 |
@@ -478,7 +481,17 @@ ctx.push_message(
 获取插件 `data/` 目录下的路径：
 
 ```python
-db_path = self.data_path("cache.db")  # → <plugin_dir>/data/cache.db
+db_path = self.data_path("records.db")
+# → <storage-root>/plugins/<plugin_id>/data/records.db
+```
+
+#### `cache_path(*parts) -> Path`
+
+获取插件可清理缓存目录下的路径：
+
+```python
+preview_path = self.cache_path("preview.png")
+# → <storage-root>/plugins/<plugin_id>/cache/preview.png
 ```
 
 #### `register_dynamic_entry(entry_id, handler, ...) -> bool`
@@ -1459,7 +1472,7 @@ import json
 class ConfigurablePlugin(NekoPluginBase):
     def __init__(self, ctx):
         super().__init__(ctx)
-        config_file = self.config_dir / "config.json"
+        config_file = self.storage_dir / "config" / "config.json"
         if config_file.exists():
             self.config = json.loads(config_file.read_text())
         else:
@@ -1552,12 +1565,18 @@ async def on_shutdown(self, **_):
 ### 10.5 使用路径工具
 
 ```python
-# 插件目录（plugin.toml 所在位置）
-config_file = self.config_dir / "config.json"
+# 插件安装目录（代码、Manifest 和静态资源）
+template_path = self.plugin_dir / "static" / "template.json"
+
+# 用户存储目录
+config_file = self.storage_dir / "config" / "config.json"
 
 # 数据目录
-db_path = self.data_path("cache.db")       # → <plugin_dir>/data/cache.db
-logs_dir = self.data_path("logs")          # → <plugin_dir>/data/logs/
+db_path = self.data_path("records.db")     # → <storage-dir>/data/records.db
+logs_dir = self.data_path("logs")          # → <storage-dir>/data/logs/
+
+# 缓存目录
+preview_path = self.cache_path("preview.png")  # → <storage-dir>/cache/preview.png
 ```
 
 ### 10.6 插件发布检查清单

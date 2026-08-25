@@ -271,6 +271,13 @@ def _command_language_candidates(
     )
 
 
+def _command_render_language(command_or_data: ProactiveChatCommand | dict) -> Any:
+    """Read a request-only template locale that must never become durable state."""
+    if isinstance(command_or_data, ProactiveChatCommand):
+        return command_or_data.render_language
+    return command_or_data.get("render_language")
+
+
 def _resolve_proactive_locale(
     data: ProactiveChatCommand | dict,
     mgr,
@@ -279,10 +286,11 @@ def _resolve_proactive_locale(
 ) -> str:
     """Resolve the active user locale for proactive chat flows.
 
-    Request data wins first, websocket session language is the second source of
-    truth, and the process-level global language is only a final fallback. This
-    keeps proactive invite copy and Phase 1-2 LLM output aligned with the live
-    session whenever frontend i18n has already reported the user's language.
+    An explicit request preference wins first, followed by an explicit manager
+    preference. A request-only render locale may override only a non-explicit
+    manager fallback; process-level global language remains the final fallback.
+    This aligns render-only responses with the live UI without shadowing a
+    durable per-character preference.
 
     Three output shapes, one precedence chain — which is the point of the parameter
     rather than a second resolver (issue #2500):
@@ -317,11 +325,26 @@ def _resolve_proactive_locale(
         normalized = _normalize(request_lang)
         if normalized:
             return normalized
+
     session_lang = getattr(mgr, "user_language", None)
-    if session_lang:
-        normalized = _normalize(session_lang)
+    session_language_is_explicit = bool(
+        getattr(mgr, "_user_language_explicit", False)
+    )
+    normalized_session_lang = None
+    if session_lang and is_supported_language_code(session_lang):
+        normalized_session_lang = _normalize(session_lang) or None
+
+    if session_language_is_explicit and normalized_session_lang:
+        return normalized_session_lang
+
+    render_lang = _command_render_language(data)
+    if render_lang and is_supported_language_code(render_lang):
+        normalized = _normalize(render_lang)
         if normalized:
             return normalized
+
+    if normalized_session_lang:
+        return normalized_session_lang
     if fmt == "prompt":
         return normalize_proactive_prompt_locale(get_global_language_full()) or "en"
     if fmt == "full":
@@ -339,6 +362,11 @@ def _resolve_topic_hook_locale(
     declared = _resolve_declared_topic_hook_locale(data, mgr)
     if declared:
         return declared
+    render_lang = _command_render_language(data)
+    if render_lang and is_supported_language_code(render_lang):
+        normalized = normalize_language_code(render_lang, format="full")
+        if normalized:
+            return normalized
     global_lang = normalize_language_code(get_global_language_full(), format="full")
     if global_lang:
         return global_lang
@@ -367,9 +395,44 @@ def _new_dialog_locale_params(
     data: ProactiveChatCommand | dict,
     mgr,
 ) -> dict[str, str] | None:
-    """Only explicit user locale evidence may update durable prompt state."""
+    """Pass durable and render-only locale evidence through separate fields."""
+    params: dict[str, str] = {}
     declared = _resolve_declared_topic_hook_locale(data, mgr)
-    return {"language": declared} if declared else None
+    if declared:
+        params["language"] = declared
+    render_language = _command_render_language(data)
+    if render_language and is_supported_language_code(render_language):
+        normalized_render_language = normalize_language_code(
+            render_language,
+            format="full",
+        )
+        if normalized_render_language:
+            params["render_language"] = normalized_render_language
+    return params or None
+
+
+def _resolve_phase2_avatar_position(fresh, request_avatar_position):
+    """Pick the avatar position to annotate a freshly fetched Phase 2 screenshot with.
+
+    Who is allowed to place the annotation depends on how the image was produced:
+
+    - ``'websocket'``: the frontend already judged THIS image. A position means
+      "annotate here"; ``None`` means it deliberately decided not to annotate
+      (window capture, camera, avatar collapsed, multi-monitor). Never substitute
+      the request's older position for that ``None`` -- it is a verdict, not a
+      missing value. Same rule as ``main_logic.core.streaming``, which refuses to
+      fall back to the cached position for exactly this reason.
+    - ``'backend_fallback'``: the frontend never saw this image, so it cannot have
+      objected. The position carried by the original request is the only avatar
+      information that exists for this path.
+
+    Neither branch of ``request_fresh_screenshot`` draws the annotation itself;
+    the caller does it with whatever this returns.
+    """
+    source = getattr(fresh, "source", "")
+    if source == "backend_fallback":
+        return request_avatar_position
+    return getattr(fresh, "avatar_position", None)
 
 
 async def handle_proactive_chat(
@@ -511,7 +574,10 @@ async def handle_proactive_chat(
                     body=entry_result.body,
                     status_code=entry_result.status_code,
                 )
-            delivered = await mgr.trigger_voice_proactive_nudge()
+            voice_language = _resolve_proactive_locale(command, mgr, fmt="full")
+            delivered = await mgr.trigger_voice_proactive_nudge(
+                language=voice_language,
+            )
             if delivered:
                 # 1h+10 chats 冷却的 chat counter：voice nudge 也算一次主动搭话，
                 # 与 text path 在 _record_proactive_chat 之后调 count 对称。
@@ -1987,13 +2053,15 @@ async def handle_proactive_chat(
         # --- 向前端请求最新截图，替换 Phase 1 时拿到的旧截图 ---
         screenshot_b64_for_phase2 = ""
         if vision_content and model_config.has_vision_model:
-            fresh_b64 = await mgr.request_fresh_screenshot(timeout=3.0)
-            if fresh_b64:
-                # 如果 request_fresh_screenshot 走了 WebSocket 路径，screenshot_response
-                # 已经在 websocket_router 中更新了 mgr._avatar_position，这里用最新的位置叠加。
-                # 如果走了 pyautogui 路径，overlay 已在 request_fresh_screenshot 内部完成。
-                # 为安全起见：若 WS 路径返回的 fresh_b64 尚未叠加，在此补叠。
-                av_pos = getattr(mgr, "_avatar_position", None) or avatar_position
+            fresh = await mgr.request_fresh_screenshot(timeout=3.0)
+            if fresh.b64:
+                fresh_b64 = fresh.b64
+                # 判据见 _resolve_phase2_avatar_position：WS 路径不给坐标 = 前端明确
+                # 说「别叠」，绝不回退请求里的旧坐标；pyautogui 兜底才用 Phase 1 坐标。
+                # ⚠️ request_fresh_screenshot 两条路径都不叠加，overlay 只在这里做。
+                # ⚠️ 已知上限：Phase1→Phase2 之间隔了一整轮 LLM（数秒），兜底路径复用
+                #    的坐标可能已经陈旧。
+                av_pos = _resolve_phase2_avatar_position(fresh, avatar_position)
                 if av_pos and isinstance(av_pos, dict):
                     try:
                         from utils.screenshot_utils import overlay_avatar_annotation

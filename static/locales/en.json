@@ -953,11 +953,14 @@
     "speaker": {
         "volumeLabel": "Speaker Volume",
         "volumeHint": "Adjust AI voice playback volume",
-        "title": "Select Speaker",
-        "defaultDevice": "System Default Speaker",
-        "deviceLabel": "Speaker {{index}}",
-        "loadFailed": "Failed to get speaker list",
-        "noDevices": "No speaker devices detected",
+        "title": "Select Playback Device",
+        "defaultDevice": "System Default Playback Device",
+        "deviceLabel": "Playback Device {{index}}",
+        "loadFailed": "Failed to get playback device list",
+        "noDevices": "No playback devices detected",
+        "switchFailed": "Failed to switch playback device",
+        "unavailableFallback": "Selected device unavailable; using system default",
+        "unavailableFallbackFailed": "Selected device unavailable; unable to switch to system default",
         "spatialAudioLabel": "Spatial Audio",
         "spatialAudioHint": "Stereo panning and distance falloff based on the character window's position relative to your primary monitor"
     },
@@ -2201,6 +2204,14 @@
         "voiceNotSet": "No Voice Specified",
         "voiceSetting": "Voice Settings",
         "personalitySetting": "Personality Settings",
+        "languagePreference": "Language Preference",
+        "languagePreferenceDescription": "This preference is not enforced. Character settings and the language used in the current conversation may still influence the actual response.",
+        "languagePreferenceSaved": "Language preference updated",
+        "languagePreferencePartiallySaved": "Language preference saved, but the current session was not fully synchronized",
+        "languagePreferenceSuperseded": "Another window saved a newer language preference; refreshed for you",
+        "languagePreferenceUnverified": "Language preference saved, but it could not be confirmed as the latest right now",
+        "languagePreferenceSaveFailed": "Failed to save language preference",
+        "languagePreferenceLoadFailed": "Failed to load language preference",
         "personalityUseDefault": "Follow the character card default personality",
         "personalitySelect": "Choose Personality",
         "personalityClear": "Restore Default",
@@ -2482,6 +2493,11 @@
             "screens": "Screens",
             "screenLabel": "Screen {{index}}",
             "windows": "Windows",
+            "titleFilterPlaceholder": "Filter window titles",
+            "titleFilterAriaLabel": "Filter windows by title",
+            "noWindowMatches": "No matching windows",
+            "rememberWindow": "Remember window",
+            "rememberedWindowUnavailable": "The remembered window could not be identified uniquely. Select a screen source again",
             "selected": "Selected {{source}}",
             "sourceLost": "Screen sharing could not find previously selected window, switched to fullscreen sharing",
             "captureFailed": "Screen capture stopped. Check system permissions or select the source again"
@@ -2901,13 +2917,14 @@
             "fullscreenTracking": "Fullscreen Tracking",
             "localTracking": "Local Tracking",
             "lockedHoverFade": "Locked Hover Fade",
+            "forgeDropEffects": "Ticket Drop Effects",
             "textGuardMaxLength": "Response Length Limit",
             "unlimited": "Unlimited",
             "characters": "chars",
             "tokens": "tokens",
             "textGuardUnlimitedWarning": "May cause serious issues with the cat girl, not recommended unless necessary",
             "textGuardHighWarning": "Setting too high may cause memory and language confusion, recommended within 1000 tokens",
-            "textGuardNote": "Counted via tiktoken; applies to text replies only and does not affect voice sessions"
+            "textGuardNote": "Applies to text replies only and does not affect voice sessions"
         }
     },
     "openclawGuide": {
@@ -3990,6 +4007,7 @@
         "twitter": "Twitter/X",
         "reddit": "Reddit",
         "netease": "NetEase Cloud Music",
+        "qqmusic": "QQ Music",
         "saveConfig": "Save Configuration",
         "encryptStorage": "Securely encrypt and store to local file",
         "localMonitoring": "Local Status Monitoring",
@@ -4028,7 +4046,8 @@
             "weibo": "<b>Target:</b> Go to <code>m.weibo.cn</code> to fetch these cookies.",
             "twitter": "<b>Target:</b> Go to <code>x.com</code> to fetch these cookies.",
             "reddit": "<b>Target:</b> Go to <code>reddit.com</code> to fetch these cookies.",
-            "netease": "<b>Target:</b> Go to <code>music.163.com</code> to fetch these cookies."
+            "netease": "<b>Target:</b> Go to <code>music.163.com</code> to fetch these cookies.",
+            "qqmusic": "<b>Target:</b> Go to <code>y.qq.com</code> to fetch these cookies."
         },
         "guide": {
             "title": "Universal Guide for Beginners",
@@ -4143,6 +4162,14 @@
             "MUSIC_U": {
                 "label": "MUSIC_U",
                 "desc": "Core identity credential (Required)"
+            },
+            "qqmusicUin": {
+                "label": "uin",
+                "desc": "QQ account identifier (usually starts with o followed by digits)"
+            },
+            "qqmusicKey": {
+                "label": "qqmusic_key",
+                "desc": "QQ Music login credential (Required)"
             },
             "NMTID": {
                 "label": "NMTID",

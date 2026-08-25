@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import fields
 import hashlib
@@ -24,6 +25,8 @@ from plugin.plugins.galgame_plugin.ocr_capture_backends import dxcam as galgame_
 from plugin.plugins.galgame_plugin.ocr_capture_backends import pyautogui as galgame_pyautogui_backend
 from plugin.plugins.galgame_plugin.ocr_capture_backends import _helpers as galgame_ocr_capture_helpers
 from plugin.plugins.galgame_plugin import ocr_manager_text as galgame_ocr_manager_text
+from plugin.plugins.galgame_plugin.ocr_manager_observe import SceneObservation
+from plugin.plugins.galgame_plugin import ocr_text_normalize as galgame_ocr_text_normalize
 from plugin.plugins.galgame_plugin import ocr_rapidocr_backend as galgame_ocr_rapidocr_backend
 from plugin.plugins.galgame_plugin import ocr_reader as galgame_ocr_reader
 from plugin.plugins._shared.rapidocr import rapidocr_support as galgame_rapidocr_support
@@ -1355,6 +1358,881 @@ def test_ocr_reader_known_title_timeout_triggers_rescan_and_skip_bypass(
     )
 
 
+def test_ocr_reader_title_classification_only_bypasses_for_strong_dialogue_text(
+    tmp_path: Path,
+) -> None:
+    bridge_root = tmp_path / "bridge"
+    bridge_root.mkdir()
+    manager = OcrReaderManager(
+        logger=_Logger(),
+        config=_make_config(bridge_root),
+        time_fn=lambda: 3000.0,
+        platform_fn=lambda: True,
+        window_scanner=_window,
+        capture_backend=_FakeCaptureBackend(),
+        ocr_backend=_FakeOcrBackend(),
+    )
+    classification = ScreenClassification(
+        screen_type=OCR_CAPTURE_PROFILE_STAGE_TITLE,
+        confidence=0.99,
+        debug={"source": "cnn_primary", "label": "title_screen"},
+    )
+
+    assert manager._should_skip_dialogue_for_screen_classification(
+        classification,
+        raw_text="芦花】\n「那当然了。也没有感冒，腰杆笔直，腿脚利落」",
+    ) is False
+    assert classification.debug["skip_dialogue_bypass_reason"] == (
+        "ocr_dialogue_evidence"
+    )
+
+    title_classification = ScreenClassification(
+        screen_type=OCR_CAPTURE_PROFILE_STAGE_TITLE,
+        confidence=0.99,
+        debug={"source": "cnn_primary", "label": "title_screen"},
+    )
+    assert manager._should_skip_dialogue_for_screen_classification(
+        title_classification,
+        raw_text="Start Game\nContinue\nConfig\nExit",
+    ) is True
+
+
+@pytest.mark.parametrize(
+    "raw_text",
+    [
+        "【芦花】\n「那当然了。也没有感冒，腰杆笔直，腿脚利落」",
+        "【芦花\n「那个那个啊、啊哈哈，谢谢夸奖」",
+        "将臣】\n「芦花姐，外公现在还是那么便朗吗？",
+    ],
+)
+def test_ocr_reader_cnn_title_dialogue_evidence_accepts_one_sided_speaker_brackets(
+    tmp_path: Path,
+    raw_text: str,
+) -> None:
+    bridge_root = tmp_path / "bridge"
+    bridge_root.mkdir()
+    manager = OcrReaderManager(
+        logger=_Logger(),
+        config=_make_config(bridge_root),
+        time_fn=lambda: 3000.0,
+        platform_fn=lambda: True,
+        window_scanner=_window,
+        capture_backend=_FakeCaptureBackend(),
+        ocr_backend=_FakeOcrBackend(),
+    )
+    classification = ScreenClassification(
+        screen_type=OCR_CAPTURE_PROFILE_STAGE_TITLE,
+        confidence=0.97,
+        debug={"source": "cnn_primary", "label": "title_screen"},
+    )
+
+    assert manager._should_skip_dialogue_for_screen_classification(
+        classification,
+        raw_text=raw_text,
+    ) is False
+    assert classification.debug["skip_dialogue_bypass_reason"] == "ocr_dialogue_evidence"
+
+
+def test_ocr_reader_cnn_title_dialogue_evidence_accepts_straight_quotes(
+    tmp_path: Path,
+) -> None:
+    bridge_root = tmp_path / "bridge"
+    bridge_root.mkdir()
+    manager = OcrReaderManager(
+        logger=_Logger(),
+        config=_make_config(bridge_root),
+        time_fn=lambda: 3000.0,
+        platform_fn=lambda: True,
+        window_scanner=_window,
+        capture_backend=_FakeCaptureBackend(),
+        ocr_backend=_FakeOcrBackend(),
+    )
+    classification = ScreenClassification(
+        screen_type=OCR_CAPTURE_PROFILE_STAGE_TITLE,
+        confidence=0.97,
+        debug={"source": "cnn_primary", "label": "title_screen"},
+    )
+
+    assert manager._should_skip_dialogue_for_screen_classification(
+        classification,
+        raw_text='[Alice]\n"Are you okay?"',
+    ) is False
+    assert classification.debug["skip_dialogue_bypass_reason"] == "ocr_dialogue_evidence"
+
+
+def test_ocr_reader_cnn_title_narration_requires_repeat_and_timeout(
+    tmp_path: Path,
+) -> None:
+    bridge_root = tmp_path / "bridge"
+    bridge_root.mkdir()
+    clock = {"now": 3000.0}
+    manager = OcrReaderManager(
+        logger=_Logger(),
+        config=_make_config(bridge_root),
+        time_fn=lambda: clock["now"],
+        platform_fn=lambda: True,
+        window_scanner=_window,
+        capture_backend=_FakeCaptureBackend(),
+        ocr_backend=_FakeOcrBackend(),
+    )
+    classification = ScreenClassification(
+        screen_type=OCR_CAPTURE_PROFILE_STAGE_TITLE,
+        confidence=0.97,
+        debug={"source": "cnn_primary", "label": "title_screen"},
+    )
+    narration = "我猛地坐起来，回答坐在前面的司机。"
+
+    assert manager._should_skip_dialogue_for_screen_classification(
+        classification,
+        raw_text=narration,
+    ) is True
+    assert manager._title_narration_streak == 1
+    assert manager._should_skip_dialogue_for_screen_classification(
+        classification,
+        raw_text=narration,
+    ) is True
+    assert manager._title_narration_streak == 2
+
+    manager._known_screen_skip_bypass_type = OCR_CAPTURE_PROFILE_STAGE_TITLE
+    manager._known_screen_skip_bypass_until = clock["now"] + 1.0
+    assert manager._should_skip_dialogue_for_screen_classification(
+        classification,
+        raw_text=narration,
+    ) is False
+    assert classification.debug["skip_dialogue_bypass_reason"] == (
+        "stable_title_narration_timeout_rescan"
+    )
+
+    manager._reset_title_narration_candidate()
+    assert manager._should_skip_dialogue_for_screen_classification(
+        classification,
+        raw_text="这才想起来就只跟他说了大致的目的地而已。",
+    ) is True
+    assert manager._should_skip_dialogue_for_screen_classification(
+        classification,
+        raw_text="下了电车，在车站前面叫了辆出租车。",
+    ) is True
+    assert manager._title_narration_streak == 1
+
+    manager._known_screen_skip_bypass_until = clock["now"] + 1.0
+    assert manager._should_skip_dialogue_for_screen_classification(
+        classification,
+        raw_text="第十二章",
+    ) is True
+    assert manager._title_narration_streak == 0
+
+
+def test_ocr_reader_cnn_title_narration_accepts_ascii_strong_punctuation(
+    tmp_path: Path,
+) -> None:
+    bridge_root = tmp_path / "bridge"
+    bridge_root.mkdir()
+    manager = OcrReaderManager(
+        logger=_Logger(),
+        config=_make_config(bridge_root),
+        time_fn=lambda: 3000.0,
+        platform_fn=lambda: True,
+        window_scanner=_window,
+        capture_backend=_FakeCaptureBackend(),
+        ocr_backend=_FakeOcrBackend(),
+    )
+    classification = ScreenClassification(
+        screen_type=OCR_CAPTURE_PROFILE_STAGE_TITLE,
+        confidence=0.97,
+        debug={"source": "cnn_primary", "label": "title_screen"},
+    )
+    manager._known_screen_skip_bypass_type = OCR_CAPTURE_PROFILE_STAGE_TITLE
+    manager._known_screen_skip_bypass_until = 3001.0
+
+    assert manager._should_skip_dialogue_for_screen_classification(
+        classification,
+        raw_text="What are you doing?",
+    ) is True
+    assert manager._should_skip_dialogue_for_screen_classification(
+        classification,
+        raw_text="What are you doing?",
+    ) is False
+    assert classification.debug["skip_dialogue_bypass_reason"] == (
+        "stable_title_narration_timeout_rescan"
+    )
+
+
+@pytest.mark.parametrize(
+    "raw_text",
+    [
+        "千恋＊万花。",
+        "START GAME\nCONFIG",
+        "第十二章。重逢",
+        "AUTO\nSKIP",
+        "N.E.K.O 插件设置。",
+        "沙漠之鹰|后\n之鹰解决一名敌人获得14点得分。",
+        "热身时间\n気に红葉@T起始点：烟雾弹！",
+    ],
+)
+def test_ocr_reader_cnn_title_narration_rejects_non_dialogue_text(
+    tmp_path: Path,
+    raw_text: str,
+) -> None:
+    bridge_root = tmp_path / "bridge"
+    bridge_root.mkdir()
+    manager = OcrReaderManager(
+        logger=_Logger(),
+        config=_make_config(bridge_root),
+        time_fn=lambda: 3000.0,
+        platform_fn=lambda: True,
+        window_scanner=_window,
+        capture_backend=_FakeCaptureBackend(),
+        ocr_backend=_FakeOcrBackend(),
+    )
+    classification = ScreenClassification(
+        screen_type=OCR_CAPTURE_PROFILE_STAGE_TITLE,
+        confidence=0.97,
+        debug={"source": "cnn_primary", "label": "title_screen"},
+    )
+    manager._known_screen_skip_bypass_type = OCR_CAPTURE_PROFILE_STAGE_TITLE
+    manager._known_screen_skip_bypass_until = 3001.0
+
+    assert manager._should_skip_dialogue_for_screen_classification(
+        classification,
+        raw_text=raw_text,
+    ) is True
+    assert manager._title_narration_streak == 0
+
+
+def test_ocr_reader_screen_stability_keeps_raw_cnn_confidence(
+    tmp_path: Path,
+) -> None:
+    bridge_root = tmp_path / "bridge"
+    bridge_root.mkdir()
+    manager = OcrReaderManager(
+        logger=_Logger(),
+        config=_make_config(bridge_root),
+        time_fn=lambda: 3000.0,
+        platform_fn=lambda: True,
+        window_scanner=_window,
+        capture_backend=_FakeCaptureBackend(),
+        ocr_backend=_FakeOcrBackend(),
+    )
+    classification = manager._classification_from_vision_result(
+        {
+            "label": "choice_menu",
+            "screen_type": OCR_CAPTURE_PROFILE_STAGE_MENU,
+            "confidence": 0.889123,
+            "model_name": "test_model",
+        },
+        extraction=OcrExtractionResult(text="我猛地坐起来，回答坐在前面的司机。"),
+    )
+
+    for expected_streak in range(1, 5):
+        classification = manager._apply_screen_classification_stability(classification)
+        assert classification.confidence == pytest.approx(0.8891)
+        assert classification.debug["stability_streak"] == expected_streak
+        assert classification.debug["stability_bonus"] == 0.0
+    assert classification.debug["model_confidence_raw"] == pytest.approx(0.889123)
+
+
+def test_ocr_reader_invalid_cnn_confidence_falls_back_to_zero(
+    tmp_path: Path,
+) -> None:
+    bridge_root = tmp_path / "bridge"
+    bridge_root.mkdir()
+    manager = OcrReaderManager(
+        logger=_Logger(),
+        config=_make_config(bridge_root),
+        time_fn=lambda: 3000.0,
+        platform_fn=lambda: True,
+        window_scanner=_window,
+        capture_backend=_FakeCaptureBackend(),
+        ocr_backend=_FakeOcrBackend(),
+    )
+
+    classification = manager._classification_from_vision_result(
+        {
+            "label": "choice_menu",
+            "screen_type": OCR_CAPTURE_PROFILE_STAGE_MENU,
+            "confidence": "invalid",
+            "model_name": "test_model",
+        },
+        extraction=OcrExtractionResult(text="Config"),
+    )
+
+    assert classification.confidence == 0.0
+    assert classification.debug["model_confidence_raw"] == 0.0
+
+
+def test_cnn_dialogue_boundary_requires_known_nonempty_label(tmp_path: Path) -> None:
+    bridge_root = tmp_path / "bridge"
+    bridge_root.mkdir()
+    manager = OcrReaderManager(
+        logger=_Logger(),
+        config=_make_config(bridge_root),
+        platform_fn=lambda: True,
+        window_scanner=_window,
+        capture_backend=_FakeCaptureBackend(),
+        ocr_backend=_FakeOcrBackend(),
+    )
+    classification = ScreenClassification(
+        screen_type=OCR_CAPTURE_PROFILE_STAGE_DIALOGUE,
+        confidence=0.98,
+        raw_ocr_text=["这是一句正常对白。"],
+        debug={"source": "cnn_primary", "label": ""},
+    )
+
+    assert manager._is_cnn_dialogue_boundary_classification(classification) is False
+    assert (
+        manager._reconcile_screen_classification_with_active_dialogue(classification)
+        is classification
+    )
+
+
+def test_active_dialogue_does_not_override_fresh_cnn_choice_menu(tmp_path: Path) -> None:
+    bridge_root = tmp_path / "bridge"
+    bridge_root.mkdir()
+    writer = OcrReaderBridgeWriter(bridge_root=bridge_root, time_fn=lambda: 3000.0)
+    writer.start_session(_window()[0])
+    assert writer.emit_line("旁白：请选择接下来的行动。", ts=galgame_ocr_reader.utc_now_iso(3000.0))
+    manager = OcrReaderManager(
+        logger=_Logger(),
+        config=_make_config(bridge_root),
+        platform_fn=lambda: True,
+        window_scanner=_window,
+        capture_backend=_FakeCaptureBackend(),
+        ocr_backend=_FakeOcrBackend(),
+        writer=writer,
+    )
+    classification = ScreenClassification(
+        screen_type=OCR_CAPTURE_PROFILE_STAGE_MENU,
+        confidence=0.99,
+        raw_ocr_text=["请选择接下来的行动。"],
+        debug={"source": "cnn_primary", "label": "choice_menu"},
+    )
+
+    reconciled = manager._reconcile_screen_classification_with_active_dialogue(
+        classification
+    )
+
+    assert reconciled is classification
+    assert reconciled.screen_type == OCR_CAPTURE_PROFILE_STAGE_MENU
+
+
+@pytest.mark.asyncio
+async def test_ocr_reader_cnn_title_false_positive_preserves_dialogue_stability(
+    tmp_path: Path,
+    ocr_runtime_root: Path,
+) -> None:
+    bridge_root = tmp_path / "bridge"
+    bridge_root.mkdir()
+    clock = {"now": 3000.0}
+    raw_text = "芦花】\n「那当然了。也没有感冒，腰杆笔直，腿脚利落」"
+    config = _make_config(
+        bridge_root,
+        enabled=True,
+        install_target_dir=str(ocr_runtime_root),
+    )
+    config.vision_classifier_enabled = True
+    manager = OcrReaderManager(
+        logger=_Logger(),
+        config=config,
+        time_fn=lambda: clock["now"],
+        platform_fn=lambda: True,
+        window_scanner=_window,
+        capture_backend=_FakeCaptureBackend(),
+        ocr_backend=_FakeOcrBackend([raw_text, raw_text]),
+    )
+
+    class _TitleClassifier:
+        last_error = ""
+
+        @staticmethod
+        def classify(_image: object) -> dict[str, object]:
+            return {
+                "label": "title_screen",
+                "screen_type": OCR_CAPTURE_PROFILE_STAGE_TITLE,
+                "confidence": 0.97,
+                "latency_ms": 1.0,
+                "model_name": "test_model",
+            }
+
+    manager.vision_classifier = _TitleClassifier()
+
+    try:
+        first = await manager.tick(
+            bridge_sdk_available=False,
+            memory_reader_runtime={},
+        )
+        events_path = bridge_root / first.runtime["game_id"] / "events.jsonl"
+        first_events = _read_events(events_path)
+        assert [event["type"] for event in first_events][-3:] == [
+            "screen_classified",
+            "line_observed",
+            "screen_classified",
+        ]
+        assert first_events[-1]["payload"]["screen_type"] == OCR_CAPTURE_PROFILE_STAGE_DIALOGUE
+        assert first_events[-1]["payload"]["screen_debug"]["source"] == (
+            "ocr_dialogue_reconciliation"
+        )
+        assert first_events[-1]["payload"]["screen_debug"]["original_screen_debug"][
+            "model_confidence_raw"
+        ] == pytest.approx(0.97)
+        assert first.runtime["last_observed_line"]["text"] == (
+            "那当然了。也没有感冒，腰杆笔直，腿脚利落"
+        )
+        assert first.runtime["last_stable_line"] == {}
+
+        clock["now"] += 1.0
+        second = await manager.tick(
+            bridge_sdk_available=False,
+            memory_reader_runtime={},
+        )
+        second_events = _read_events(events_path)
+        assert second_events[-1]["type"] == "line_changed"
+        session = read_session_json(events_path.parent / "session.json").session
+        assert session is not None
+        assert session["state"]["screen_type"] == OCR_CAPTURE_PROFILE_STAGE_DIALOGUE
+        assert second.runtime["last_stable_line"]["text"] == (
+            "那当然了。也没有感冒，腰杆笔直，腿脚利落"
+        )
+    finally:
+        await manager.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_ocr_reader_cnn_title_narration_waits_for_timeout_then_stays_dialogue(
+    tmp_path: Path,
+    ocr_runtime_root: Path,
+) -> None:
+    bridge_root = tmp_path / "bridge"
+    bridge_root.mkdir()
+    clock = {"now": 3000.0}
+    narration = "我猛地坐起来，回答坐在前面的司机。"
+    config = _make_config(
+        bridge_root,
+        enabled=True,
+        install_target_dir=str(ocr_runtime_root),
+        known_screen_timeout_seconds=2.0,
+    )
+    config.vision_classifier_enabled = True
+    manager = OcrReaderManager(
+        logger=_Logger(),
+        config=config,
+        time_fn=lambda: clock["now"],
+        platform_fn=lambda: True,
+        window_scanner=_window,
+        capture_backend=_FakeCaptureBackend(),
+        ocr_backend=_FakeOcrBackend([narration] * 5),
+    )
+
+    class _TitleClassifier:
+        last_error = ""
+
+        @staticmethod
+        def classify(_image: object) -> dict[str, object]:
+            return {
+                "label": "title_screen",
+                "screen_type": OCR_CAPTURE_PROFILE_STAGE_TITLE,
+                "confidence": 0.97,
+                "latency_ms": 1.0,
+                "model_name": "test_model",
+            }
+
+    manager.vision_classifier = _TitleClassifier()
+
+    try:
+        first = await manager.tick(bridge_sdk_available=False, memory_reader_runtime={})
+        events_path = bridge_root / first.runtime["game_id"] / "events.jsonl"
+        assert all(
+            event["type"] not in {"line_observed", "line_changed"}
+            for event in _read_events(events_path)
+        )
+
+        clock["now"] = 3001.0
+        second = await manager.tick(bridge_sdk_available=False, memory_reader_runtime={})
+        assert second.runtime["detail"] == "screen_classified"
+        assert manager._title_narration_streak == 2
+        assert all(
+            event["type"] not in {"line_observed", "line_changed"}
+            for event in _read_events(events_path)
+        )
+
+        clock["now"] = 3002.1
+        third = await manager.tick(bridge_sdk_available=False, memory_reader_runtime={})
+        assert third.should_rescan is True
+        assert third.runtime["detail"] == "screen_classified_timeout_rescan"
+        assert all(
+            event["type"] not in {"line_observed", "line_changed"}
+            for event in _read_events(events_path)
+        )
+
+        clock["now"] = 3002.2
+        fourth = await manager.tick(bridge_sdk_available=False, memory_reader_runtime={})
+        fourth_events = _read_events(events_path)
+        assert [event["type"] for event in fourth_events][-2:] == [
+            "line_observed",
+            "screen_classified",
+        ]
+        assert fourth.runtime["last_observed_line"]["text"] == narration
+        assert fourth_events[-1]["payload"]["screen_type"] == (
+            OCR_CAPTURE_PROFILE_STAGE_DIALOGUE
+        )
+
+        clock["now"] = 3003.2
+        fifth = await manager.tick(bridge_sdk_available=False, memory_reader_runtime={})
+        fifth_events = _read_events(events_path)
+        assert fifth_events[-1]["type"] == "line_changed"
+        assert fifth.runtime["last_stable_line"]["text"] == narration
+        session = read_session_json(events_path.parent / "session.json").session
+        assert session is not None
+        assert session["state"]["screen_type"] == OCR_CAPTURE_PROFILE_STAGE_DIALOGUE
+        assert session["state"]["screen_debug"]["source"] == (
+            "ocr_dialogue_reconciliation"
+        )
+    finally:
+        await manager.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_ocr_reader_cnn_choice_menu_false_positive_keeps_narration_dialogue(
+    tmp_path: Path,
+    ocr_runtime_root: Path,
+) -> None:
+    bridge_root = tmp_path / "bridge"
+    bridge_root.mkdir()
+    clock = {"now": 3000.0}
+    narration = "这才想起来就只跟他说了大致的目的地而已。"
+    config = _make_config(
+        bridge_root,
+        enabled=True,
+        install_target_dir=str(ocr_runtime_root),
+    )
+    config.vision_classifier_enabled = True
+    manager = OcrReaderManager(
+        logger=_Logger(),
+        config=config,
+        time_fn=lambda: clock["now"],
+        platform_fn=lambda: True,
+        window_scanner=_window,
+        capture_backend=_FakeCaptureBackend(),
+        ocr_backend=_FakeOcrBackend([narration, narration]),
+    )
+
+    class _MenuClassifier:
+        last_error = ""
+
+        @staticmethod
+        def classify(_image: object) -> dict[str, object]:
+            return {
+                "label": "choice_menu",
+                "screen_type": OCR_CAPTURE_PROFILE_STAGE_MENU,
+                "confidence": 0.99,
+                "latency_ms": 1.0,
+                "model_name": "test_model",
+            }
+
+    manager.vision_classifier = _MenuClassifier()
+
+    try:
+        first = await manager.tick(bridge_sdk_available=False, memory_reader_runtime={})
+        events_path = bridge_root / first.runtime["game_id"] / "events.jsonl"
+        first_events = _read_events(events_path)
+        assert [event["type"] for event in first_events][-2:] == [
+            "screen_classified",
+            "line_observed",
+        ]
+        first_session = read_session_json(events_path.parent / "session.json").session
+        assert first_session is not None
+        assert first_session["state"]["screen_type"] == (
+            OCR_CAPTURE_PROFILE_STAGE_MENU
+        )
+
+        clock["now"] += 1.0
+        second = await manager.tick(bridge_sdk_available=False, memory_reader_runtime={})
+        second_events = _read_events(events_path)
+        assert [event["type"] for event in second_events][-2:] == [
+            "line_changed",
+            "screen_classified",
+        ]
+        assert second_events[-1]["payload"]["screen_type"] == (
+            OCR_CAPTURE_PROFILE_STAGE_DIALOGUE
+        )
+        assert second.runtime["last_stable_line"]["text"] == narration
+        session = read_session_json(events_path.parent / "session.json").session
+        assert session is not None
+        assert session["state"]["screen_type"] == OCR_CAPTURE_PROFILE_STAGE_DIALOGUE
+    finally:
+        await manager.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_ocr_reader_cnn_choice_menu_prompt_waits_for_menu_profile_choices(
+    tmp_path: Path,
+    ocr_runtime_root: Path,
+) -> None:
+    bridge_root = tmp_path / "bridge"
+    bridge_root.mkdir()
+    clock = {"now": 3000.0}
+    prompt = "雪乃：请选择接下来的行动。"
+    config = _make_config(
+        bridge_root,
+        enabled=True,
+        install_target_dir=str(ocr_runtime_root),
+    )
+    config.vision_classifier_enabled = True
+    manager = OcrReaderManager(
+        logger=_Logger(),
+        config=config,
+        time_fn=lambda: clock["now"],
+        platform_fn=lambda: True,
+        window_scanner=_window,
+        capture_backend=_FakeCaptureBackend(),
+        ocr_backend=_FakeOcrBackend(
+            [
+                prompt,
+                "1. 去左边\n2. 去右边",
+                "1. 去左边\n2. 去右边",
+            ]
+        ),
+    )
+
+    class _MenuClassifier:
+        last_error = ""
+
+        @staticmethod
+        def classify(_image: object) -> dict[str, object]:
+            return {
+                "label": "choice_menu",
+                "screen_type": OCR_CAPTURE_PROFILE_STAGE_MENU,
+                "confidence": 0.99,
+                "latency_ms": 1.0,
+                "model_name": "test_model",
+            }
+
+    manager.vision_classifier = _MenuClassifier()
+
+    try:
+        first = await manager.tick(bridge_sdk_available=False, memory_reader_runtime={})
+        events_path = bridge_root / first.runtime["game_id"] / "events.jsonl"
+        first_session = read_session_json(events_path.parent / "session.json").session
+        assert first_session is not None
+        assert first_session["state"]["screen_type"] == OCR_CAPTURE_PROFILE_STAGE_MENU
+        assert first_session["state"]["stability"] == "tentative"
+
+        clock["now"] += 1.0
+        await manager.tick(bridge_sdk_available=False, memory_reader_runtime={})
+        clock["now"] += 1.0
+        third = await manager.tick(bridge_sdk_available=False, memory_reader_runtime={})
+
+        events = _read_events(events_path)
+        session = read_session_json(events_path.parent / "session.json").session
+        assert events[-1]["type"] == "choices_shown"
+        assert session is not None
+        assert session["state"]["screen_type"] == OCR_CAPTURE_PROFILE_STAGE_MENU
+        assert session["state"]["is_menu_open"] is True
+        assert [item["text"] for item in session["state"]["choices"]] == [
+            "去左边",
+            "去右边",
+        ]
+        assert third.runtime["last_stable_line"] == {}
+    finally:
+        await manager.shutdown()
+
+
+def test_ocr_reader_line_reconciles_non_cnn_menu_false_positive(
+    tmp_path: Path,
+) -> None:
+    bridge_root = tmp_path / "bridge"
+    bridge_root.mkdir()
+    clock = {"now": 3000.0}
+    writer = OcrReaderBridgeWriter(bridge_root=bridge_root, time_fn=lambda: clock["now"])
+    writer.start_session(_window()[0])
+    manager = OcrReaderManager(
+        logger=_Logger(),
+        config=_make_config(bridge_root),
+        time_fn=lambda: clock["now"],
+        platform_fn=lambda: True,
+        window_scanner=_window,
+        capture_backend=_FakeCaptureBackend(),
+        ocr_backend=_FakeOcrBackend(),
+        writer=writer,
+    )
+    assert writer.emit_screen_classified(
+        screen_type=OCR_CAPTURE_PROFILE_STAGE_MENU,
+        confidence=0.65,
+        raw_ocr_text=["将臣】", "「……嗯?」"],
+        screen_debug={"reason": "visual_button_layout"},
+        ts="2026-08-11T06:14:47Z",
+    ) is True
+
+    emitted = manager._emit_line_from_ocr_text(
+        "将臣】\n「……嗯?」",
+        now=clock["now"],
+        repeat_threshold=2,
+    )
+
+    assert emitted is False
+    events_path = bridge_root / writer.game_id / "events.jsonl"
+    events = _read_events(events_path)
+    assert [event["type"] for event in events][-2:] == [
+        "line_observed",
+        "screen_classified",
+    ]
+    assert events[-1]["payload"]["screen_type"] == OCR_CAPTURE_PROFILE_STAGE_DIALOGUE
+    assert events[-1]["payload"]["screen_debug"]["original_screen_debug"] == {
+        "reason": "visual_button_layout"
+    }
+    assert manager._dialogue_pipeline.state.effective_screen_type == (
+        OCR_CAPTURE_PROFILE_STAGE_DIALOGUE
+    )
+    assert manager._dialogue_pipeline.state.reconciliation_diagnostic["reason"] == (
+        "accepted_ocr_line_overrides_screen"
+    )
+
+
+def test_dialogue_state_reset_clears_observed_stable_and_narration_candidates(
+    tmp_path: Path,
+) -> None:
+    bridge_root = tmp_path / "bridge"
+    bridge_root.mkdir()
+    manager = OcrReaderManager(
+        logger=_Logger(),
+        config=_make_config(bridge_root),
+        time_fn=lambda: 3000.0,
+        platform_fn=lambda: True,
+        window_scanner=_window,
+        capture_backend=_FakeCaptureBackend(),
+        ocr_backend=_FakeOcrBackend(),
+    )
+    manager._last_observed_line = {"line_id": "observed-1", "text": "旁白"}
+    manager._last_stable_line = {"line_id": "stable-1", "text": "台词"}
+    manager._last_title_narration_key = "narration-key"
+    manager._title_narration_streak = 2
+    manager._default_ocr_state.last_text_key = "pending-key"
+    manager._default_ocr_state.repeat_count = 1
+
+    manager._reset_default_ocr_state()
+
+    assert manager._last_observed_line == {}
+    assert manager._last_stable_line == {}
+    assert manager._last_title_narration_key == ""
+    assert manager._title_narration_streak == 0
+    assert manager._default_ocr_state.last_text_key == ""
+    assert manager._default_ocr_state.repeat_count == 0
+
+
+def test_dialogue_pipeline_returns_one_complete_decision_and_promotes_same_scene() -> None:
+    pipeline = galgame_ocr_manager_text.DialoguePipeline()
+    observed = {
+        "line_id": "line-1",
+        "scene_id": "scene-a",
+        "text": "当前对白",
+        "stability": "tentative",
+    }
+    stable = {**observed, "stability": "stable"}
+
+    tentative_decision = pipeline.process(
+        accepted=True,
+        stability="tentative",
+        line_payload=observed,
+        effective_screen_type=OCR_CAPTURE_PROFILE_STAGE_DIALOGUE,
+        events=("line_observed",),
+        stability_key="current-dialogue",
+        repeat_count=1,
+    )
+    stable_decision = pipeline.process(
+        accepted=True,
+        stability="stable",
+        line_payload=stable,
+        effective_screen_type=OCR_CAPTURE_PROFILE_STAGE_DIALOGUE,
+        events=("line_changed",),
+        stability_key="current-dialogue",
+        repeat_count=2,
+    )
+
+    assert tentative_decision.events == ("line_observed",)
+    assert stable_decision.accepted is True
+    assert stable_decision.stability == "stable"
+    assert pipeline.state.observed_line == stable
+    assert pipeline.state.stable_line == stable
+    assert pipeline.state.stability_key == "current-dialogue"
+    assert pipeline.state.repeat_count == 2
+
+
+def test_dialogue_pipeline_rejected_untrusted_capture_does_not_advance_state() -> None:
+    pipeline = galgame_ocr_manager_text.DialoguePipeline()
+    pipeline.process(
+        accepted=True,
+        stability="tentative",
+        line_payload={"line_id": "line-1", "scene_id": "scene-a", "text": "旧对白"},
+        effective_screen_type=OCR_CAPTURE_PROFILE_STAGE_DIALOGUE,
+        events=("line_observed",),
+    )
+    before = galgame_ocr_manager_text.replace(pipeline.state)
+
+    decision = pipeline.process(
+        accepted=True,
+        capture_trusted=False,
+        stability="stable",
+        line_payload={"line_id": "line-2", "scene_id": "scene-a", "text": "新对白"},
+        effective_screen_type=OCR_CAPTURE_PROFILE_STAGE_DIALOGUE,
+        events=("line_changed",),
+    )
+
+    assert decision.accepted is False
+    assert decision.events == ()
+    assert decision.rejection_reason == "capture_untrusted"
+    assert pipeline.state == before
+
+
+def test_dialogue_pipeline_reset_drops_all_pending_dialogue_state() -> None:
+    pipeline = galgame_ocr_manager_text.DialoguePipeline()
+    pipeline.process(
+        accepted=True,
+        stability="tentative",
+        line_payload={"line_id": "line-1", "scene_id": "scene-a", "text": "待确认"},
+        effective_screen_type=OCR_CAPTURE_PROFILE_STAGE_DIALOGUE,
+        events=("line_observed",),
+        stability_key="pending",
+        repeat_count=1,
+        reconciliation_diagnostic={"reason": "test"},
+    )
+
+    pipeline.reset(reason="cancel")
+
+    assert pipeline.state.observed_line == {}
+    assert pipeline.state.stable_line == {}
+    assert pipeline.state.stability_key == ""
+    assert pipeline.state.repeat_count == 0
+    assert pipeline.state.effective_screen_type == ""
+    assert pipeline.state.reconciliation_diagnostic == {}
+
+
+def test_scene_observation_exposes_visual_facts_without_dialogue_policy(
+    tmp_path: Path,
+) -> None:
+    bridge_root = tmp_path / "bridge"
+    bridge_root.mkdir()
+    manager = OcrReaderManager(
+        logger=_Logger(),
+        config=_make_config(bridge_root),
+        time_fn=lambda: 3000.0,
+        platform_fn=lambda: True,
+        window_scanner=_window,
+        capture_backend=_FakeCaptureBackend(),
+        ocr_backend=_FakeOcrBackend(),
+    )
+    manager._last_background_hash = "background-a"
+    manager._pending_visual_scene_hash = "pending-scene-a"
+    manager._ocr_capture_content_trusted = False
+
+    observation = manager.scene_observation()
+
+    assert observation == SceneObservation(
+        raw_screen_type="",
+        background_hash="background-a",
+        pending_scene_id="pending-scene-a",
+        capture_trusted=False,
+    )
+
+
 def test_ocr_writer_start_session_preserves_existing_game_events(tmp_path: Path) -> None:
     bridge_root = tmp_path / "bridge"
     bridge_root.mkdir()
@@ -1545,6 +2423,11 @@ def test_ocr_writer_line_observed_includes_confidence_and_text_source(tmp_path: 
         ts="2026-04-29T03:00:00Z",
         ocr_confidence=0.87,
         text_source="bottom_region",
+        capture_backend_kind="printwindow",
+        target_foreground=True,
+        capture_region_occluded=True,
+        capture_content_trusted=True,
+        capture_untrusted_reason="",
     ) is True
 
     events = _read_events(bridge_root / writer.game_id / "events.jsonl")
@@ -1553,6 +2436,11 @@ def test_ocr_writer_line_observed_includes_confidence_and_text_source(tmp_path: 
     assert payload["ocr_confidence"] == pytest.approx(0.87)
     assert payload["speaker_confidence"] >= 0.9
     assert payload["text_source"] == "bottom_region"
+    assert payload["capture_backend_kind"] == "printwindow"
+    assert payload["target_foreground"] is True
+    assert payload["capture_region_occluded"] is True
+    assert payload["ocr_capture_content_trusted"] is True
+    assert payload["ocr_capture_rejected_reason"] == ""
 
 
 def test_ocr_choices_emit_does_not_fall_through_to_dialogue(tmp_path: Path) -> None:
@@ -2738,30 +3626,41 @@ def test_galgame_printwindow_releases_window_dc_without_deleting_wrapped_hdc(
             CreateBitmap=lambda: bitmap,
         ),
     )
-    monkeypatch.setitem(sys.modules, "win32con", SimpleNamespace(SRCCOPY=1))
+    def _print_window(_hwnd, _hdc, flags):
+        calls.append(f"printwindow:{flags}")
+        return 0
+
     monkeypatch.setattr(
-        galgame_printwindow_backend.sys,
-        "getwindowsversion",
-        lambda: SimpleNamespace(major=6, minor=2),
-        raising=False,
+        galgame_printwindow_backend.ctypes,
+        "windll",
+        SimpleNamespace(
+            user32=SimpleNamespace(PrintWindow=_print_window)
+        ),
     )
 
-    image = galgame_printwindow_backend.PrintWindowCaptureBackend._capture_full_window(
-        1234,
-        (0, 0, 2, 2),
-    )
+    with pytest.raises(RuntimeError, match="printwindow_failed_for_capture"):
+        galgame_printwindow_backend.PrintWindowCaptureBackend._capture_full_window(
+            1234,
+            (0, 0, 2, 2),
+        )
 
-    assert image.size == (2, 2)
     assert calls == [
         "create_bitmap:2x2",
         "select_bitmap",
-        "bitblt",
+        "printwindow:2",
+        "printwindow:0",
         "restore_bitmap",
         "mem_delete",
         "delete_object",
         "release_dc",
     ]
     assert "source_delete" not in calls
+    assert _print_window.argtypes == [
+        galgame_printwindow_backend.ctypes.wintypes.HWND,
+        galgame_printwindow_backend.ctypes.wintypes.HDC,
+        galgame_printwindow_backend.ctypes.wintypes.UINT,
+    ]
+    assert _print_window.restype is galgame_printwindow_backend.ctypes.wintypes.BOOL
 
 
 def test_ocr_capture_samples_dialogue_background_hash_at_low_frequency(tmp_path: Path) -> None:
@@ -2960,6 +3859,11 @@ def test_pyautogui_capture_uses_screenshot_region(monkeypatch: pytest.MonkeyPatc
         SimpleNamespace(size=lambda: (1920, 1080), screenshot=screenshot),
     )
     monkeypatch.setattr(galgame_pyautogui_backend, "_require_visible_capture_target", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        galgame_pyautogui_backend,
+        "_require_foreground_screen_capture_target",
+        lambda *_args, **_kwargs: None,
+    )
     monkeypatch.setattr(galgame_pyautogui_backend, "_target_screen_capture_rect", lambda _target: (10, 20, 210, 120))
 
     frame = galgame_ocr_reader.PyAutoGuiCaptureBackend().capture_frame(
@@ -3036,7 +3940,7 @@ def test_smart_capture_backend_non_windows_background_uses_filtered_chain(
     assert electron.calls == 1
     assert mss.calls == 0
     assert backend.last_backend_kind == "electron"
-    assert backend.last_backend_detail == "selected"
+    assert backend.last_backend_detail == "mss_unavailable_fallback"
 
 
 def test_smart_capture_backend_linux_wayland_background_fails_without_window_backend(
@@ -3123,27 +4027,28 @@ def test_smart_capture_backend_macos_background_allows_pixel_backend(
     assert backend.last_backend_kind == "mss"
 
 
-def test_smart_capture_backend_non_windows_foreground_prefers_window_backend(
+def test_smart_capture_backend_linux_x11_preserves_local_backend_order(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class _Backend:
         def __init__(self, kind: str, *, available: bool) -> None:
             self.kind = kind
             self.available = available
+            self.calls = 0
 
         def is_available(self) -> bool:
             return self.available
 
         def capture_frame(self, target, profile):
+            self.calls += 1
             return f"{self.kind}-frame"
 
     monkeypatch.setattr(sys, "platform", "linux")
     backend = galgame_ocr_reader.Win32CaptureBackend(selection="smart")
-    backend._backends = [
-        _Backend("mss", available=True),
-        _Backend("electron", available=False),
-        _Backend("pyautogui", available=True),
-    ]
+    mss = _Backend("mss", available=True)
+    electron = _Backend("electron", available=True)
+    pyautogui = _Backend("pyautogui", available=True)
+    backend._backends = [mss, pyautogui, electron]
 
     target = _window()[0]
     target.is_foreground = True
@@ -3151,8 +4056,11 @@ def test_smart_capture_backend_non_windows_foreground_prefers_window_backend(
     frame = backend.capture_frame(target, galgame_ocr_reader.OcrCaptureProfile())
 
     assert frame == "mss-frame"
+    assert mss.calls == 1
+    assert electron.calls == 0
+    assert pyautogui.calls == 0
     assert backend.last_backend_kind == "mss"
-    assert backend.last_backend_detail == "electron_unavailable_fallback"
+    assert backend.last_backend_detail == "selected"
 
 
 def test_smart_capture_backend_windows_background_keeps_printwindow_only(
@@ -3190,6 +4098,43 @@ def test_smart_capture_backend_windows_background_keeps_printwindow_only(
     assert backend.last_backend_kind == "printwindow"
 
 
+def test_smart_capture_backend_windows_occluded_foreground_uses_printwindow_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _Backend:
+        def __init__(self, kind: str) -> None:
+            self.kind = kind
+            self.calls = 0
+
+        def is_available(self) -> bool:
+            return True
+
+        def capture_frame(self, target, profile):
+            self.calls += 1
+            return f"{self.kind}-frame"
+
+    monkeypatch.setattr(sys, "platform", "win32")
+    backend = galgame_ocr_reader.Win32CaptureBackend(
+        selection="smart",
+        occlusion_checker=lambda _target, _profile: True,
+    )
+    printwindow = _Backend("printwindow")
+    dxcam = _Backend("dxcam")
+    backend._printwindow_backend = printwindow
+    backend._dxcam_backend = dxcam
+    backend._backends = [dxcam, _Backend("mss"), _Backend("pyautogui"), printwindow]
+
+    target = _window()[0]
+    target.is_foreground = True
+    frame = backend.capture_frame(target, galgame_ocr_reader.OcrCaptureProfile())
+
+    assert frame == "printwindow-frame"
+    assert printwindow.calls == 1
+    assert dxcam.calls == 0
+    assert backend.last_capture_region_occluded is True
+    assert backend.last_capture_content_trusted is True
+
+
 def test_dxcam_camera_creation_is_serialized(monkeypatch: pytest.MonkeyPatch) -> None:
     camera = object()
     calls = 0
@@ -3220,7 +4165,9 @@ def test_dxcam_camera_creation_is_serialized(monkeypatch: pytest.MonkeyPatch) ->
     assert results == [camera, camera]
 
 
-def test_background_hash_scene_change_resets_no_text_counter_without_losing_scene(tmp_path: Path) -> None:
+def test_background_hash_scene_change_preserves_ocr_state_while_scene_is_pending(
+    tmp_path: Path,
+) -> None:
     bridge_root = tmp_path / "bridge"
     bridge_root.mkdir()
     manager = OcrReaderManager(
@@ -3234,6 +4181,11 @@ def test_background_hash_scene_change_resets_no_text_counter_without_losing_scen
     )
     manager._last_background_hash = "0000000000000000"
     manager._consecutive_no_text_polls = 3
+    manager._default_ocr_state.last_raw_text = "旧台词。"
+    manager._default_ocr_state.last_text_key = "旧台词"
+    manager._default_ocr_state.repeat_count = 2
+    manager._default_ocr_state.stable_text = "旧台词。"
+    manager._default_ocr_state.stable_text_key = "旧台词"
     manager._aihong_stage = galgame_ocr_reader._AIHONG_MENU_STAGE
     manager._aihong_dialogue_idle_polls = 4
     manager._aihong_menu_missing_polls = 3
@@ -3250,13 +4202,15 @@ def test_background_hash_scene_change_resets_no_text_counter_without_losing_scen
         is False
     )
 
-    assert manager._consecutive_no_text_polls == 0
+    assert manager._consecutive_no_text_polls == 3
     assert manager._last_background_hash == "ffffffffffffffff"
     assert manager._pending_visual_scene_hash == "ffffffffffffffff"
-    assert manager._aihong_stage == galgame_ocr_reader._AIHONG_DIALOGUE_STAGE
-    assert manager._aihong_dialogue_idle_polls == 0
-    assert manager._aihong_menu_missing_polls == 0
-    assert manager._aihong_menu_ocr_state.last_raw_text == ""
+    assert manager._default_ocr_state.stable_text == "旧台词。"
+    assert manager._default_ocr_state.repeat_count == 2
+    assert manager._aihong_stage == galgame_ocr_reader._AIHONG_MENU_STAGE
+    assert manager._aihong_dialogue_idle_polls == 4
+    assert manager._aihong_menu_missing_polls == 3
+    assert manager._aihong_menu_ocr_state.last_raw_text == "去东院\n去西院"
 
 
 def test_aihong_menu_reset_clears_no_text_counter(tmp_path: Path) -> None:
@@ -3280,7 +4234,127 @@ def test_aihong_menu_reset_clears_no_text_counter(tmp_path: Path) -> None:
     assert manager._aihong_stage == galgame_ocr_reader._AIHONG_DIALOGUE_STAGE
 
 
-def test_pending_visual_scene_commits_before_observed_line(tmp_path: Path) -> None:
+def test_pending_visual_scene_waits_for_stable_line_before_commit(tmp_path: Path) -> None:
+    bridge_root = tmp_path / "bridge"
+    bridge_root.mkdir()
+    writer = OcrReaderBridgeWriter(bridge_root=bridge_root, time_fn=lambda: 3000.0)
+    writer.start_session(_window()[0])
+    manager = OcrReaderManager(
+        logger=_Logger(),
+        config=_make_config(bridge_root),
+        time_fn=lambda: 3000.0,
+        platform_fn=lambda: True,
+        window_scanner=_window,
+        capture_backend=_FakeCaptureBackend(),
+        ocr_backend=_FakeOcrBackend(),
+        writer=writer,
+    )
+    assert manager._emit_line_from_ocr_text(
+        "王生：上一句。",
+        now=2999.0,
+        repeat_threshold=1,
+    )
+    manager._pending_visual_scene_hash = "ffffffffffffffff"
+    manager._pending_visual_scene_at = 3000.0
+    writer.emit_screen_classified(
+        screen_type=OCR_CAPTURE_PROFILE_STAGE_TITLE,
+        confidence=0.95,
+        ts=galgame_ocr_reader.utc_now_iso(3000.0),
+    )
+
+    assert (
+        manager._emit_line_from_ocr_text(
+            "王生：先等等。",
+            now=3000.0,
+            repeat_threshold=2,
+        )
+        is False
+    )
+    assert manager._pending_visual_scene_hash == "ffffffffffffffff"
+    assert manager._default_ocr_state.stable_text == "王生：上一句。"
+    assert manager._default_ocr_state.repeat_count == 1
+    assert manager._default_ocr_state.last_block_reason == "waiting_for_repeat"
+    assert manager._last_observed_line["text"] == "先等等。"
+    events = _read_events(bridge_root / writer.game_id / "events.jsonl")
+    event_types = [event["type"] for event in events]
+    assert event_types[-1:] == ["screen_classified"]
+    assert "scene_changed" not in event_types
+
+    assert manager._emit_line_from_ocr_text(
+        "王生：先等等。",
+        now=3000.2,
+        repeat_threshold=2,
+    )
+    assert manager._pending_visual_scene_hash == ""
+    events = _read_events(bridge_root / writer.game_id / "events.jsonl")
+    event_types = [event["type"] for event in events]
+    assert event_types[-3:] == [
+        "scene_changed",
+        "line_changed",
+        "screen_classified",
+    ]
+    assert events[-1]["payload"]["screen_type"] == OCR_CAPTURE_PROFILE_STAGE_DIALOGUE
+    scene_id = events[-3]["payload"]["scene_id"]
+    assert events[-1]["payload"]["scene_id"] == scene_id
+    assert manager._runtime.scene_ordering_diagnostic == (
+        "pending_scene_committed_before_observed"
+    )
+
+
+def test_pending_visual_scene_accepts_same_stable_text_in_new_scene(
+    tmp_path: Path,
+) -> None:
+    bridge_root = tmp_path / "bridge"
+    bridge_root.mkdir()
+    writer = OcrReaderBridgeWriter(bridge_root=bridge_root, time_fn=lambda: 3000.0)
+    writer.start_session(_window()[0])
+    manager = OcrReaderManager(
+        logger=_Logger(),
+        config=_make_config(bridge_root),
+        time_fn=lambda: 3000.0,
+        platform_fn=lambda: True,
+        window_scanner=_window,
+        capture_backend=_FakeCaptureBackend(),
+        ocr_backend=_FakeOcrBackend(),
+        writer=writer,
+    )
+    assert manager._emit_line_from_ocr_text("王生：……", now=2999.0, repeat_threshold=1)
+    manager._pending_visual_scene_hash = "ffffffffffffffff"
+    manager._pending_visual_scene_at = 3000.0
+    writer.emit_screen_classified(
+        screen_type=OCR_CAPTURE_PROFILE_STAGE_TITLE,
+        confidence=0.95,
+        ts=galgame_ocr_reader.utc_now_iso(3000.0),
+    )
+
+    assert (
+        manager._emit_line_from_ocr_text(
+            "王生：……",
+            now=3000.0,
+            repeat_threshold=2,
+        )
+        is False
+    )
+    assert manager._pending_visual_scene_hash == "ffffffffffffffff"
+    assert manager._default_ocr_state.repeat_count == 1
+    assert manager._default_ocr_state.stable_text == ""
+
+    assert manager._emit_line_from_ocr_text(
+        "王生：……",
+        now=3000.2,
+        repeat_threshold=2,
+    )
+    events = _read_events(bridge_root / writer.game_id / "events.jsonl")
+    assert [event["type"] for event in events][-3:] == [
+        "scene_changed",
+        "line_changed",
+        "screen_classified",
+    ]
+
+
+def test_pending_visual_scene_different_second_candidate_stays_pending(
+    tmp_path: Path,
+) -> None:
     bridge_root = tmp_path / "bridge"
     bridge_root.mkdir()
     writer = OcrReaderBridgeWriter(bridge_root=bridge_root, time_fn=lambda: 3000.0)
@@ -3298,23 +4372,99 @@ def test_pending_visual_scene_commits_before_observed_line(tmp_path: Path) -> No
     manager._pending_visual_scene_hash = "ffffffffffffffff"
     manager._pending_visual_scene_at = 3000.0
 
-    assert (
-        manager._emit_line_from_ocr_text(
-            "王生：先等等。",
-            now=3000.0,
-            repeat_threshold=2,
-        )
-        is False
+    assert not manager._emit_line_from_ocr_text(
+        "王生：第一候选。",
+        now=3000.0,
+        repeat_threshold=1,
     )
-    assert manager._pending_visual_scene_hash == ""
+    assert not manager._emit_line_from_ocr_text(
+        "王生：第二候选。",
+        now=3000.1,
+        repeat_threshold=1,
+    )
+
+    assert manager._pending_visual_scene_hash == "ffffffffffffffff"
+    assert manager._default_ocr_state.repeat_count == 1
+    assert manager._default_ocr_state.last_block_reason == "waiting_for_repeat"
+    assert manager._last_observed_line["text"] == "第二候选。"
     events = _read_events(bridge_root / writer.game_id / "events.jsonl")
-    event_types = [event["type"] for event in events]
-    assert event_types[-2:] == ["scene_changed", "line_observed"]
-    scene_id = events[-2]["payload"]["scene_id"]
-    assert events[-1]["payload"]["scene_id"] == scene_id
-    assert manager._runtime.scene_ordering_diagnostic == (
-        "pending_scene_committed_before_observed"
+    assert all(event["type"] != "scene_changed" for event in events)
+    assert all(event["type"] != "line_changed" for event in events)
+
+
+def test_pending_visual_scene_capture_failure_preserves_candidate_for_recovery(
+    tmp_path: Path,
+) -> None:
+    bridge_root = tmp_path / "bridge"
+    bridge_root.mkdir()
+    writer = OcrReaderBridgeWriter(bridge_root=bridge_root, time_fn=lambda: 3000.0)
+    writer.start_session(_window()[0])
+    manager = OcrReaderManager(
+        logger=_Logger(),
+        config=_make_config(bridge_root),
+        time_fn=lambda: 3000.0,
+        platform_fn=lambda: True,
+        window_scanner=_window,
+        capture_backend=_FakeCaptureBackend(),
+        ocr_backend=_FakeOcrBackend(),
+        writer=writer,
     )
+    target = _window()[0]
+    active_backend = OcrBackendDescriptor(kind="fake", available=True)
+    manager._pending_visual_scene_hash = "ffffffffffffffff"
+    manager._pending_visual_scene_at = 3000.0
+    assert not manager._emit_line_from_ocr_text(
+        "王生：恢复后确认。",
+        now=3000.0,
+        repeat_threshold=1,
+    )
+    candidate_before_failure = dict(manager._last_observed_line)
+    manager._last_capture_error = "foreground_changed_during_screen_capture"
+
+    result = manager._finalize_tick_result(
+        result=galgame_ocr_reader.OcrReaderTickResult(),
+        now=3000.1,
+        poll_started_at=3000.1,
+        backend_plan=SelectedOcrBackendPlan(primary=active_backend),
+        active_backend=active_backend,
+        backend_detail_override="",
+        target=target,
+        aihong_two_stage_enabled=False,
+        runtime_profile=OcrCaptureProfile(),
+        runtime_capture_profile_selection=None,  # type: ignore[arg-type]
+        selection=galgame_ocr_reader.WindowSelectionResult(target=target),
+        emitted=False,
+        guard_blocked=False,
+        screen_classification=ScreenClassification(),
+        screen_event_emitted=False,
+        capture_attempted=True,
+        capture_completed=False,
+        capture_error=True,
+        text_event_seq_before_capture=writer.last_seq,
+        foreground_advance_stable_grace_active=False,
+    )
+
+    assert result.should_rescan is True
+    assert result.runtime["detail"] == "capture_failed"
+    assert result.runtime["last_capture_error"] == (
+        "foreground_changed_during_screen_capture"
+    )
+    assert manager._pending_visual_scene_hash == "ffffffffffffffff"
+    assert manager._last_observed_line == candidate_before_failure
+    assert manager._default_ocr_state.repeat_count == 1
+    events = _read_events(bridge_root / writer.game_id / "events.jsonl")
+    assert all(event["type"] != "scene_changed" for event in events)
+
+    assert manager._emit_line_from_ocr_text(
+        "王生：恢复后确认。",
+        now=3000.2,
+        repeat_threshold=1,
+    )
+    events = _read_events(bridge_root / writer.game_id / "events.jsonl")
+    assert [event["type"] for event in events][-2:] == [
+        "scene_changed",
+        "line_changed",
+    ]
 
 
 def test_committed_pending_visual_scene_requests_rescan(tmp_path: Path) -> None:
@@ -3368,7 +4518,60 @@ def test_committed_pending_visual_scene_requests_rescan(tmp_path: Path) -> None:
     assert manager._visual_scene_committed is False
 
 
-def test_pending_visual_scene_commits_before_stable_line_when_observed_disabled(
+def test_pending_visual_scene_timeout_discards_boundary_without_empty_scene(
+    tmp_path: Path,
+) -> None:
+    bridge_root = tmp_path / "bridge"
+    bridge_root.mkdir()
+    writer = OcrReaderBridgeWriter(bridge_root=bridge_root, time_fn=lambda: 3000.0)
+    writer.start_session(_window()[0])
+    manager = OcrReaderManager(
+        logger=_Logger(),
+        config=_make_config(bridge_root),
+        time_fn=lambda: 3000.0,
+        platform_fn=lambda: True,
+        window_scanner=_window,
+        capture_backend=_FakeCaptureBackend(),
+        ocr_backend=_FakeOcrBackend(),
+        writer=writer,
+    )
+    target = _window()[0]
+    active_backend = OcrBackendDescriptor(kind="fake", available=True)
+    manager._pending_visual_scene_hash = "ffffffffffffffff"
+    manager._pending_visual_scene_at = 3000.0
+
+    manager._finalize_tick_result(
+        result=galgame_ocr_reader.OcrReaderTickResult(),
+        now=3000.0 + galgame_ocr_reader._PENDING_VISUAL_SCENE_MAX_SECONDS + 0.1,
+        poll_started_at=3000.0,
+        backend_plan=SelectedOcrBackendPlan(primary=active_backend),
+        active_backend=active_backend,
+        backend_detail_override="",
+        target=target,
+        aihong_two_stage_enabled=False,
+        runtime_profile=OcrCaptureProfile(),
+        runtime_capture_profile_selection=None,  # type: ignore[arg-type]
+        selection=galgame_ocr_reader.WindowSelectionResult(target=target),
+        emitted=False,
+        guard_blocked=False,
+        screen_classification=ScreenClassification(),
+        screen_event_emitted=False,
+        capture_attempted=True,
+        capture_completed=True,
+        capture_error=False,
+        text_event_seq_before_capture=writer.last_seq,
+        foreground_advance_stable_grace_active=False,
+    )
+
+    assert manager._pending_visual_scene_hash == ""
+    assert manager._runtime.scene_ordering_diagnostic == (
+        "pending_scene_discarded_by_timeout"
+    )
+    events = _read_events(bridge_root / writer.game_id / "events.jsonl")
+    assert all(event["type"] != "scene_changed" for event in events)
+
+
+def test_pending_visual_scene_commits_with_stable_line_when_observed_disabled(
     tmp_path: Path,
 ) -> None:
     bridge_root = tmp_path / "bridge"
@@ -3392,6 +4595,41 @@ def test_pending_visual_scene_commits_before_stable_line_when_observed_disabled(
         manager._emit_line_from_ocr_text(
             "王生：稳定了。",
             now=3000.0,
+            emit_observed=False,
+            repeat_threshold=1,
+        )
+        is False
+    )
+    assert manager._pending_visual_scene_hash == "eeeeeeeeeeeeeeee"
+    assert manager._last_observed_line == {}
+    active_backend = OcrBackendDescriptor(kind="fake", available=True)
+    result = manager._finalize_tick_result(
+        result=galgame_ocr_reader.OcrReaderTickResult(),
+        now=3000.1,
+        poll_started_at=3000.1,
+        backend_plan=SelectedOcrBackendPlan(primary=active_backend),
+        active_backend=active_backend,
+        backend_detail_override="",
+        target=_window()[0],
+        aihong_two_stage_enabled=False,
+        runtime_profile=OcrCaptureProfile(),
+        runtime_capture_profile_selection=None,  # type: ignore[arg-type]
+        selection=galgame_ocr_reader.WindowSelectionResult(target=_window()[0]),
+        emitted=False,
+        guard_blocked=False,
+        screen_classification=ScreenClassification(),
+        screen_event_emitted=False,
+        capture_attempted=True,
+        capture_completed=True,
+        capture_error=False,
+        text_event_seq_before_capture=writer.last_seq,
+        foreground_advance_stable_grace_active=False,
+    )
+    assert result.should_rescan is True
+    assert (
+        manager._emit_line_from_ocr_text(
+            "王生：稳定了。",
+            now=3000.2,
             emit_observed=False,
             repeat_threshold=1,
         )
@@ -3524,9 +4762,15 @@ def test_pending_background_scene_commits_for_non_dialogue_boundary(
         ts=galgame_ocr_reader.utc_now_iso(3001.0),
     )
 
-    assert manager._emit_line_from_ocr_text(
+    assert not manager._emit_line_from_ocr_text(
         "Alice: This is a new chapter.",
         now=3001.0,
+        repeat_threshold=1,
+    )
+    assert manager._pending_visual_scene_hash == "dddddddddddddddd"
+    assert manager._emit_line_from_ocr_text(
+        "Alice: This is a new chapter.",
+        now=3001.2,
         repeat_threshold=1,
     )
 
@@ -3745,15 +4989,21 @@ def test_configured_background_scene_change_distance_does_not_change_force_thres
     assert manager._pending_visual_scene_hash == "ffffffffffffffff"
     assert manager._pending_visual_scene_distance == 64
 
-    assert manager._emit_line_from_ocr_text(
+    assert not manager._emit_line_from_ocr_text(
         "王生：这是真正的新场景。",
         now=3000.1,
+        repeat_threshold=1,
+    )
+    assert manager._pending_visual_scene_hash == "ffffffffffffffff"
+    assert manager._emit_line_from_ocr_text(
+        "王生：这是真正的新场景。",
+        now=3000.2,
         repeat_threshold=1,
     )
 
     assert manager._pending_visual_scene_hash == ""
     assert manager._runtime.scene_ordering_diagnostic == (
-        "pending_scene_committed_by_force_background_distance"
+        "pending_scene_confirmed_by_force_background_distance"
     )
 
 
@@ -3792,26 +5042,30 @@ def test_followup_background_hash_pending_scene_commits_before_line(
     assert manager._runtime.scene_ordering_diagnostic == (
         "followup_background_hash_scene_pending"
     )
-    assert (
+    assert not (
         manager._emit_line_from_ocr_text(
             "王生：新场景。",
             now=3000.1,
             repeat_threshold=1,
         )
-        is True
+    )
+    assert manager._pending_visual_scene_hash == "ffffffffffffffff"
+    assert manager._emit_line_from_ocr_text(
+        "王生：新场景。",
+        now=3000.2,
+        repeat_threshold=1,
     )
     events = _read_events(bridge_root / writer.game_id / "events.jsonl")
     event_types = [event["type"] for event in events]
-    assert event_types[-3:] == ["scene_changed", "line_observed", "line_changed"]
-    scene_id = events[-3]["payload"]["scene_id"]
-    assert events[-2]["payload"]["scene_id"] == scene_id
+    assert event_types[-2:] == ["scene_changed", "line_changed"]
+    scene_id = events[-2]["payload"]["scene_id"]
     assert events[-1]["payload"]["scene_id"] == scene_id
     assert manager._runtime.scene_ordering_diagnostic == (
         "followup_background_hash_scene_committed"
     )
 
 
-def test_background_candidate_commits_before_first_new_scene_observed_line(
+def test_background_candidate_waits_for_repeat_before_first_new_scene_line(
     tmp_path: Path,
 ) -> None:
     bridge_root = tmp_path / "bridge"
@@ -3843,21 +5097,29 @@ def test_background_candidate_commits_before_first_new_scene_observed_line(
             now=3000.0,
             repeat_threshold=1,
         )
-        is True
+        is False
+    )
+    assert manager._pending_visual_scene_hash == "00000000ffffffff"
+    events = _read_events(bridge_root / writer.game_id / "events.jsonl")
+    assert all(event["type"] != "scene_changed" for event in events)
+
+    assert manager._emit_line_from_ocr_text(
+        "王生：新场景台词。",
+        now=3000.2,
+        repeat_threshold=1,
     )
     events = _read_events(bridge_root / writer.game_id / "events.jsonl")
     event_types = [event["type"] for event in events]
-    assert event_types[-3:] == ["scene_changed", "line_observed", "line_changed"]
-    scene_id = events[-3]["payload"]["scene_id"]
-    assert events[-2]["payload"]["scene_id"] == scene_id
+    assert event_types[-2:] == ["scene_changed", "line_changed"]
+    scene_id = events[-2]["payload"]["scene_id"]
     assert events[-1]["payload"]["scene_id"] == scene_id
-    assert events[-3]["payload"]["reason"] == "background_changed"
+    assert events[-2]["payload"]["reason"] == "background_changed"
     assert manager._runtime.scene_ordering_diagnostic == (
         "background_candidate_committed_before_observed"
     )
 
 
-def test_background_candidate_commits_before_first_new_scene_stable_line_when_observed_disabled(
+def test_background_candidate_waits_for_repeat_when_observed_disabled(
     tmp_path: Path,
 ) -> None:
     bridge_root = tmp_path / "bridge"
@@ -3888,7 +5150,14 @@ def test_background_candidate_commits_before_first_new_scene_stable_line_when_ob
             emit_observed=False,
             repeat_threshold=1,
         )
-        is True
+        is False
+    )
+    assert manager._pending_visual_scene_hash == "00000000ffffffff"
+    assert manager._emit_line_from_ocr_text(
+        "王生：新场景稳定台词。",
+        now=3000.2,
+        emit_observed=False,
+        repeat_threshold=1,
     )
     events = _read_events(bridge_root / writer.game_id / "events.jsonl")
     event_types = [event["type"] for event in events]
@@ -4095,8 +5364,16 @@ def test_background_candidate_does_not_duplicate_scene_changed_after_confirmed_p
             now=3000.0,
             repeat_threshold=1,
         )
-        is True
+        is False
     )
+    assert manager._pending_visual_scene_hash == "eeeeeeeeeeeeeeee"
+    assert not manager._last_stable_line, manager._last_stable_line
+    assert manager._emit_line_from_ocr_text(
+        "王生：台词。",
+        now=3000.2,
+        repeat_threshold=1,
+    )
+    assert manager._pending_visual_scene_hash == ""
     events = _read_events(bridge_root / writer.game_id / "events.jsonl")
     scene_events = [event for event in events if event["type"] == "scene_changed"]
     assert len(scene_events) == 1
@@ -4137,7 +5414,13 @@ def test_background_candidate_uses_default_threshold_28_without_requiring_24(
             now=3000.0,
             repeat_threshold=1,
         )
-        is True
+        is False
+    )
+    assert manager._pending_visual_scene_hash == "00000000ffffffff"
+    assert manager._emit_line_from_ocr_text(
+        "王生：默认阈值台词。",
+        now=3000.2,
+        repeat_threshold=1,
     )
     events = _read_events(bridge_root / writer.game_id / "events.jsonl")
     scene_events = [event for event in events if event["type"] == "scene_changed"]
@@ -4185,7 +5468,13 @@ def test_background_candidate_overwritten_when_new_hash_exceeds_threshold(
             now=3001.0,
             repeat_threshold=1,
         )
-        is True
+        is False
+    )
+    assert manager._pending_visual_scene_hash == "ffffffff00000000"
+    assert manager._emit_line_from_ocr_text(
+        "王生：覆盖后台词。",
+        now=3001.2,
+        repeat_threshold=1,
     )
     events = _read_events(bridge_root / writer.game_id / "events.jsonl")
     scene_events = [event for event in events if event["type"] == "scene_changed"]
@@ -4193,7 +5482,7 @@ def test_background_candidate_overwritten_when_new_hash_exceeds_threshold(
     assert scene_events[0]["payload"]["background_hash"] == "ffffffff00000000"
 
 
-def test_background_candidate_force_distance_commits_immediately(
+def test_background_candidate_force_distance_still_waits_for_repeat(
     tmp_path: Path,
 ) -> None:
     bridge_root = tmp_path / "bridge"
@@ -4229,7 +5518,13 @@ def test_background_candidate_force_distance_commits_immediately(
             now=3001.0,
             repeat_threshold=1,
         )
-        is True
+        is False
+    )
+    assert manager._pending_visual_scene_hash == "ffffffffffffffff"
+    assert manager._emit_line_from_ocr_text(
+        "小红：你好呀。",
+        now=3001.2,
+        repeat_threshold=1,
     )
     events = _read_events(bridge_root / writer.game_id / "events.jsonl")
     scene_events = [event for event in events if event["type"] == "scene_changed"]
@@ -4239,7 +5534,7 @@ def test_background_candidate_force_distance_commits_immediately(
     )
 
 
-def test_background_candidate_commits_after_realistic_19_second_delay(
+def test_background_candidate_waits_for_repeat_after_realistic_19_second_delay(
     tmp_path: Path,
 ) -> None:
     bridge_root = tmp_path / "bridge"
@@ -4275,7 +5570,13 @@ def test_background_candidate_commits_after_realistic_19_second_delay(
             now=3019.0,
             repeat_threshold=1,
         )
-        is True
+        is False
+    )
+    assert manager._pending_visual_scene_hash == "00000000ffffffff"
+    assert manager._emit_line_from_ocr_text(
+        "王生：新场景第一句。",
+        now=3019.2,
+        repeat_threshold=1,
     )
     events = _read_events(bridge_root / writer.game_id / "events.jsonl")
     scene_events = [event for event in events if event["type"] == "scene_changed"]
@@ -4334,7 +5635,7 @@ def test_followup_confirm_uses_cleaned_dialogue_text() -> None:
     )
 
 
-def test_stable_text_promotes_distinct_line_without_waiting_for_repeat(
+def test_medium_stable_text_requires_distinct_line_to_repeat(
     tmp_path: Path,
 ) -> None:
     bridge_root = tmp_path / "bridge"
@@ -4366,6 +5667,14 @@ def test_stable_text_promotes_distinct_line_without_waiting_for_repeat(
             now=3001.0,
             repeat_threshold=2,
         )
+        is False
+    )
+    assert (
+        manager._emit_line_from_ocr_text(
+            "王生：新 台词。",
+            now=3002.0,
+            repeat_threshold=2,
+        )
         is True
     )
 
@@ -4374,6 +5683,16 @@ def test_stable_text_promotes_distinct_line_without_waiting_for_repeat(
     assert session["state"]["speaker"] == "王生"
     assert session["state"]["text"] == "新 台词。"
     assert manager._default_ocr_state.stable_text == "王生：新 台词。"
+
+
+def test_compound_neko_ui_capture_is_rejected_without_blocking_single_game_word() -> None:
+    polluted = (
+        "动画设置 主动搭话 隐私模式 角色设置 API密钥 +++声纹身份 "
+        "出家门后，算上换乘我一共坐了2个小时的电车。S英"
+    )
+
+    assert galgame_ocr_text_normalize._looks_like_self_ui_text(polluted) is True
+    assert galgame_ocr_text_normalize._looks_like_self_ui_text("她打开角色设置后继续说道。") is False
 
 
 @pytest.mark.asyncio
@@ -4975,6 +6294,11 @@ def test_ocr_reader_update_config_reloads_vision_classifier(
 
     manager.update_config(enabled_config)
 
+    assert manager.vision_classifier is None
+    assert manager._vision_classifier_detail == "pending"
+
+    manager.initialize_vision_classifier_if_needed()
+
     assert isinstance(manager.vision_classifier, _FakeVisionScreenClassifier)
     assert manager.vision_classifier.input_size == (192, 192)
     assert manager.vision_classifier.latency_check_ms == 123.0
@@ -4989,6 +6313,298 @@ def test_ocr_reader_update_config_reloads_vision_classifier(
     assert manager.vision_classifier is None
     assert manager._vision_classifier_detail == "disabled"
     assert manager._vision_classifier_last_label == ""
+
+
+def test_ocr_reader_update_config_contains_vision_classifier_close_failure(
+    tmp_path: Path,
+) -> None:
+    class _FailingCloseClassifier:
+        @staticmethod
+        def close() -> None:
+            raise RuntimeError("close failed")
+
+    bridge_root = tmp_path / "bridge"
+    bridge_root.mkdir()
+    logger = _CapturingLogger()
+    manager = OcrReaderManager(
+        logger=logger,
+        config=_make_config(bridge_root, enabled=True, rapidocr_enabled=False),
+        platform_fn=lambda: False,
+        window_scanner=_window,
+    )
+    manager.vision_classifier = _FailingCloseClassifier()
+    manager._vision_classifier_initialized = True
+    enabled_config = _make_config(
+        bridge_root,
+        enabled=True,
+        rapidocr_enabled=False,
+    )
+    enabled_config.vision_classifier_enabled = True
+
+    manager.update_config(enabled_config)
+
+    assert manager.vision_classifier is None
+    assert manager._vision_classifier_initialized is False
+    assert manager._vision_classifier_detail == "pending"
+    assert logger.warnings
+
+
+@pytest.mark.asyncio
+async def test_ocr_reader_shutdown_waits_for_deferred_vision_initialization(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from plugin.plugins.galgame_plugin.core import vision as vision_module
+
+    load_started = threading.Event()
+    allow_load = threading.Event()
+    closed = threading.Event()
+    load_calls = 0
+
+    class _FakeVisionModelLoader:
+        def __init__(self, model_dir: Path) -> None:
+            self.model_dir = model_dir
+
+    class _BlockingVisionScreenClassifier:
+        def __init__(self, loader, *, input_size, latency_check_ms) -> None:
+            del loader, input_size, latency_check_ms
+
+        def load(self, model_name: str) -> bool:
+            nonlocal load_calls
+            del model_name
+            load_calls += 1
+            load_started.set()
+            assert allow_load.wait(timeout=TEST_WAIT_TIMEOUT)
+            return True
+
+        @staticmethod
+        def close() -> None:
+            closed.set()
+
+    monkeypatch.setattr(vision_module, "VisionModelLoader", _FakeVisionModelLoader)
+    monkeypatch.setattr(
+        vision_module,
+        "VisionScreenClassifier",
+        _BlockingVisionScreenClassifier,
+    )
+    bridge_root = tmp_path / "bridge"
+    bridge_root.mkdir()
+    config = _make_config(bridge_root, enabled=True, rapidocr_enabled=False)
+    config.vision_classifier_enabled = True
+    manager = OcrReaderManager(
+        logger=_Logger(),
+        config=config,
+        platform_fn=lambda: False,
+        window_scanner=_window,
+    )
+
+    initialization = asyncio.create_task(
+        asyncio.to_thread(manager.initialize_vision_classifier_if_needed)
+    )
+    assert await asyncio.to_thread(load_started.wait, TEST_WAIT_TIMEOUT)
+    shutdown = asyncio.create_task(manager.shutdown())
+    await asyncio.sleep(0)
+    assert manager._vision_classifier_shutdown_requested is True
+    allow_load.set()
+    await initialization
+    await shutdown
+
+    assert closed.is_set()
+    assert manager.vision_classifier is None
+    manager.initialize_vision_classifier_if_needed()
+    assert load_calls == 1
+    assert manager._vision_classifier_detail == "shutdown"
+
+
+@pytest.mark.asyncio
+async def test_ocr_reader_rejects_untrusted_primary_capture_before_background_hash(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    ocr_runtime_root: Path,
+) -> None:
+    bridge_root = tmp_path / "bridge"
+    bridge_root.mkdir()
+    manager = OcrReaderManager(
+        logger=_Logger(),
+        config=_make_config(
+            bridge_root,
+            enabled=True,
+            install_target_dir=str(ocr_runtime_root),
+        ),
+        platform_fn=lambda: True,
+        window_scanner=_window,
+        capture_backend=_FakeCaptureBackend(),
+        ocr_backend=_FakeOcrBackend(["不可信台词。"]),
+    )
+    title_classification = ScreenClassification(
+        screen_type=OCR_CAPTURE_PROFILE_STAGE_TITLE,
+        confidence=0.97,
+        debug={"source": "cnn_primary", "label": "title_screen"},
+    )
+    narration = "我猛地坐起来，回答坐在前面的司机。"
+    assert manager._should_skip_dialogue_for_screen_classification(
+        title_classification,
+        raw_text=narration,
+    ) is True
+    assert manager._title_narration_streak == 1
+    observed_background_hashes: list[str] = []
+
+    async def _untrusted_capture(*_args, **_kwargs) -> OcrExtractionResult:
+        return OcrExtractionResult(
+            text="不可信台词。",
+            background_hash="ffffffffffffffff",
+            backend=OcrBackendDescriptor(kind="fake", available=True),
+            capture_backend_kind="fake",
+            target_foreground=False,
+            capture_region_occluded=True,
+            capture_content_trusted=False,
+            capture_untrusted_reason="target_occluded",
+        )
+
+    monkeypatch.setattr(
+        manager,
+        "_capture_and_extract_text_with_timeout",
+        _untrusted_capture,
+    )
+    monkeypatch.setattr(
+        manager,
+        "_observe_background_hash",
+        lambda background_hash, **_kwargs: (
+            observed_background_hashes.append(background_hash) or True
+        ),
+    )
+
+    try:
+        result = await manager.tick(
+            bridge_sdk_available=False,
+            memory_reader_runtime={},
+        )
+
+        assert observed_background_hashes == []
+        assert "ocr_reader ignored text from an untrusted capture source" in result.warnings
+        assert manager._ocr_capture_content_trusted is False
+        assert manager._ocr_capture_rejected_reason == "target_occluded"
+        assert manager._title_narration_streak == 0
+
+        manager._known_screen_skip_bypass_type = OCR_CAPTURE_PROFILE_STAGE_TITLE
+        manager._known_screen_skip_bypass_until = manager._time_fn() + 1.0
+        assert manager._should_skip_dialogue_for_screen_classification(
+            title_classification,
+            raw_text=narration,
+        ) is True
+        assert manager._title_narration_streak == 1
+    finally:
+        await manager.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_ocr_reader_rejects_untrusted_followup_before_stable_line(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    ocr_runtime_root: Path,
+) -> None:
+    bridge_root = tmp_path / "bridge"
+    bridge_root.mkdir()
+    manager = OcrReaderManager(
+        logger=_Logger(),
+        config=_make_config(
+            bridge_root,
+            enabled=True,
+            install_target_dir=str(ocr_runtime_root),
+        ),
+        platform_fn=lambda: True,
+        window_scanner=_window,
+        capture_backend=_FakeCaptureBackend(),
+        ocr_backend=_FakeOcrBackend(["新的候选台词。"]),
+    )
+    async def _untrusted_followup(*_args, **_kwargs) -> OcrExtractionResult:
+        return OcrExtractionResult(
+            text="新的候选台词。",
+            backend=OcrBackendDescriptor(kind="fake", available=True),
+            capture_backend_kind="fake",
+            target_foreground=False,
+            capture_region_occluded=True,
+            capture_content_trusted=False,
+            capture_untrusted_reason="target_occluded",
+        )
+
+    monkeypatch.setattr(manager, "_capture_followup_text", _untrusted_followup)
+    monkeypatch.setattr(
+        manager,
+        "_should_attempt_followup_confirm",
+        lambda *_args, **_kwargs: True,
+    )
+
+    try:
+        result = await manager.tick(
+            bridge_sdk_available=False,
+            memory_reader_runtime={},
+        )
+        events = _read_events(
+            bridge_root / result.runtime["game_id"] / "events.jsonl"
+        )
+
+        assert "ocr_reader ignored text from an untrusted capture source" in result.warnings
+        assert manager._ocr_capture_content_trusted is False
+        assert manager._ocr_capture_rejected_reason == "target_occluded"
+        assert all(event["type"] != "line_changed" for event in events)
+    finally:
+        await manager.shutdown()
+
+
+def test_ocr_reader_lazy_vision_initialization_is_single_flight(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from plugin.plugins.galgame_plugin.core import vision as vision_module
+
+    load_started = threading.Event()
+    allow_load = threading.Event()
+    load_calls = 0
+
+    class _FakeVisionModelLoader:
+        def __init__(self, model_dir: Path) -> None:
+            self.model_dir = model_dir
+
+    class _FakeVisionScreenClassifier:
+        def __init__(self, loader, *, input_size, latency_check_ms) -> None:
+            del loader, input_size, latency_check_ms
+
+        def load(self, model_name: str) -> bool:
+            nonlocal load_calls
+            del model_name
+            load_calls += 1
+            load_started.set()
+            assert allow_load.wait(timeout=1.0)
+            return True
+
+    monkeypatch.setattr(vision_module, "VisionModelLoader", _FakeVisionModelLoader)
+    monkeypatch.setattr(vision_module, "VisionScreenClassifier", _FakeVisionScreenClassifier)
+
+    bridge_root = tmp_path / "bridge"
+    bridge_root.mkdir()
+    config = _make_config(bridge_root, enabled=True, rapidocr_enabled=False)
+    config.vision_classifier_enabled = True
+    manager = OcrReaderManager(
+        logger=_Logger(),
+        config=config,
+        platform_fn=lambda: False,
+        window_scanner=_window,
+    )
+
+    assert load_calls == 0
+    assert manager._vision_classifier_detail == "pending"
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first = executor.submit(manager.initialize_vision_classifier_if_needed)
+        assert load_started.wait(timeout=1.0)
+        second = executor.submit(manager.initialize_vision_classifier_if_needed)
+        allow_load.set()
+        first.result(timeout=1.0)
+        second.result(timeout=1.0)
+
+    assert load_calls == 1
+    assert manager._vision_classifier_detail == "loaded"
 
 
 @pytest.mark.asyncio
@@ -5352,6 +6968,144 @@ def test_rapidocr_runtime_cache_reuses_loaded_runtime(
         second.close()
         assert cache_key not in galgame_ocr_reader._RAPIDOCR_RUNTIME_CACHE
     finally:
+        galgame_ocr_reader._RAPIDOCR_RUNTIME_CACHE.pop(cache_key, None)
+
+
+def test_rapidocr_runtime_aligns_classifier_shape_with_loaded_onnx_model(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install_target_dir = str(tmp_path / "RapidOCR")
+
+    class _ModelInput:
+        shape = [None, 3, 80, 160]
+
+    runtime = SimpleNamespace(
+        text_cls=SimpleNamespace(
+            cls_image_shape=[3, 48, 192],
+            infer=SimpleNamespace(
+                session=SimpleNamespace(get_inputs=lambda: [_ModelInput()]),
+            ),
+        )
+    )
+    monkeypatch.setattr(
+        galgame_ocr_rapidocr_backend,
+        "load_rapidocr_runtime",
+        lambda **_kwargs: (runtime, {}),
+    )
+    backend = galgame_ocr_reader.RapidOcrBackend(
+        install_target_dir_raw=install_target_dir,
+        engine_type="onnxruntime",
+        lang_type="ch",
+        model_type="mobile",
+        ocr_version="PP-OCRv5",
+    )
+    cache_key = (
+        install_target_dir,
+        "onnxruntime",
+        "ch",
+        "mobile",
+        "PP-OCRv5",
+    )
+    galgame_ocr_reader._RAPIDOCR_RUNTIME_CACHE.pop(cache_key, None)
+
+    try:
+        assert backend._ensure_runtime() is runtime
+        assert runtime.text_cls.cls_image_shape == [3, 80, 160]
+    finally:
+        backend.close()
+        galgame_ocr_reader._RAPIDOCR_RUNTIME_CACHE.pop(cache_key, None)
+
+
+def test_rapidocr_runtime_keeps_classifier_shape_for_dynamic_onnx_dimensions(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install_target_dir = str(tmp_path / "RapidOCR")
+
+    class _ModelInput:
+        shape = [None, 3, "height", "width"]
+
+    runtime = SimpleNamespace(
+        text_cls=SimpleNamespace(
+            cls_image_shape=[3, 48, 192],
+            infer=SimpleNamespace(
+                session=SimpleNamespace(get_inputs=lambda: [_ModelInput()]),
+            ),
+        )
+    )
+    monkeypatch.setattr(
+        galgame_ocr_rapidocr_backend,
+        "load_rapidocr_runtime",
+        lambda **_kwargs: (runtime, {}),
+    )
+    backend = galgame_ocr_reader.RapidOcrBackend(
+        install_target_dir_raw=install_target_dir,
+        engine_type="onnxruntime",
+        lang_type="ch",
+        model_type="mobile",
+        ocr_version="PP-OCRv5",
+    )
+    cache_key = (
+        install_target_dir,
+        "onnxruntime",
+        "ch",
+        "mobile",
+        "PP-OCRv5",
+    )
+    galgame_ocr_reader._RAPIDOCR_RUNTIME_CACHE.pop(cache_key, None)
+
+    try:
+        assert backend._ensure_runtime() is runtime
+        assert runtime.text_cls.cls_image_shape == [3, 48, 192]
+    finally:
+        backend.close()
+        galgame_ocr_reader._RAPIDOCR_RUNTIME_CACHE.pop(cache_key, None)
+
+
+def test_rapidocr_runtime_keeps_classifier_shape_when_metadata_read_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install_target_dir = str(tmp_path / "RapidOCR")
+
+    def _raise_metadata_error() -> list[object]:
+        raise RuntimeError("metadata unavailable")
+
+    runtime = SimpleNamespace(
+        text_cls=SimpleNamespace(
+            cls_image_shape=[3, 48, 192],
+            infer=SimpleNamespace(
+                session=SimpleNamespace(get_inputs=_raise_metadata_error),
+            ),
+        )
+    )
+    monkeypatch.setattr(
+        galgame_ocr_rapidocr_backend,
+        "load_rapidocr_runtime",
+        lambda **_kwargs: (runtime, {}),
+    )
+    backend = galgame_ocr_reader.RapidOcrBackend(
+        install_target_dir_raw=install_target_dir,
+        engine_type="onnxruntime",
+        lang_type="ch",
+        model_type="mobile",
+        ocr_version="PP-OCRv5",
+    )
+    cache_key = galgame_ocr_reader._rapidocr_runtime_cache_key(
+        install_target_dir_raw=install_target_dir,
+        engine_type="onnxruntime",
+        lang_type="ch",
+        model_type="mobile",
+        ocr_version="PP-OCRv5",
+    )
+    galgame_ocr_reader._RAPIDOCR_RUNTIME_CACHE.pop(cache_key, None)
+
+    try:
+        assert backend._ensure_runtime() is runtime
+        assert runtime.text_cls.cls_image_shape == [3, 48, 192]
+    finally:
+        backend.close()
         galgame_ocr_reader._RAPIDOCR_RUNTIME_CACHE.pop(cache_key, None)
 
 

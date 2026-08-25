@@ -1,8 +1,18 @@
 """
 QQ 客户端封装（基于 OneBot 协议）
 
-启动反向 WebSocket 服务器，等待 NapCat/LLOneBot/go-cqhttp 等 OneBot 实现
-作为 WS 客户端连接。与 AstrBot 的 aiocqhttp 反向 WS 模式一致。
+支持两种 WS 方向（``direction``）：
+- **反向**（默认）：启动反向 WebSocket 服务器，等待任意 OneBot v11 实现
+  （NapCat / LLOneBot / go-cqhttp / Lagrange 等）作为 WS 客户端连接。
+  与 AstrBot 的 aiocqhttp 反向 WS 模式一致。
+- **正向**：作为 WS 客户端主动拨出到 OneBot 实现方的 WS 服务器
+  （``ws://host:port``），用于远端设备运行 OneBot 实现、插件侧无需暴露端口的
+  场景。模式标识为 ``napcat_forward``（``qq_connection_mode`` 的取值，历史命名）。
+
+正向模式复用反向模式的整条入站/出站管线（``_process_incoming`` /
+``receive_message`` / echo→future 关联 / 全部 send 包装器），差别只在
+transport：把唯一出站 socket 装进 ``_main_client`` / ``_connected_clients``，
+由 ``_forward_receive_loop`` 单任务收流并在断线后自动重拨。
 """
 
 import asyncio
@@ -11,7 +21,7 @@ import re
 import secrets
 import time
 from typing import Any, Dict, Optional
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, quote, urlencode, urlparse, urlunparse
 
 import websockets
 from websockets.exceptions import ConnectionClosed
@@ -26,14 +36,15 @@ class QQClient(QQConnectionBase):
     #: flush-time read would attribute old messages to the new transport.
     #: Purely an observed attribute — it is never a key and never affects a
     #: score. See the kill list in ``memory/trust_store.py``.
-    CHANNEL: str = "napcat"
+    CHANNEL: str = "onebot"
 
     """OneBot 协议客户端（反向 WebSocket 服务器）"""
 
     def __init__(self, *, onebot_url: str, token: str = "", logger: Any = None,
                  emit_log: Any = None, message_queue_size: int = 100,
                  image_describer: Any = None,
-                 voice_transcriber: Any = None):
+                 voice_transcriber: Any = None,
+                 direction: str = "reverse"):
         self._onebot_url = str(onebot_url or "").strip()
         self.token = str(token or "")
         self.logger = logger
@@ -43,19 +54,38 @@ class QQClient(QQConnectionBase):
         # 可选：异步回调 (audio_base64: str) → str，用于语音转文字
         self._voice_transcriber = voice_transcriber
 
-        # 从 onebot_url 解析监听地址
-        self._listen_host = "0.0.0.0"
-        self._listen_port = 6199
-        parsed = urlparse(self._onebot_url) if self._onebot_url else None
-        if parsed and parsed.hostname:
-            self._listen_host = parsed.hostname
-            if parsed.port:
-                self._listen_port = parsed.port
+        #: WS 方向："reverse"=反向 WS 服务器（默认）/ "forward"=正向 WS 客户端。
+        self.direction = str(direction or "reverse").strip().lower()
+        #: 连接模式标识，供 runtime 判断是否需要重建连接（reverse→"napcat"，
+        #: forward→"napcat_forward"）。见 runtime_ops_service 的 mode 比较。
+        self.mode = "napcat_forward" if self.direction == "forward" else "napcat"
+
+        if self.direction == "forward":
+            # 正向连接：onebot_url 是 OneBot 实现方 WS 服务器的拨出目标，不拆监听地址
+            self._listen_host = "0.0.0.0"
+            self._listen_port = 6199
+        else:
+            # 反向连接：从 onebot_url 解析监听地址
+            self._listen_host = "0.0.0.0"
+            self._listen_port = 6199
+            parsed = urlparse(self._onebot_url) if self._onebot_url else None
+            if parsed and parsed.hostname:
+                self._listen_host = parsed.hostname
+                if parsed.port:
+                    self._listen_port = parsed.port
 
         self._server: Optional[websockets.WebSocketServer] = None
-        self._connected_clients: set[websockets.WebSocketServerProtocol] = set()
-        self._main_client: Optional[websockets.WebSocketServerProtocol] = None  # 最新的连接，用于发 API 调用
+        # 反向模式装的是 server 端协议（多个），正向模式装的是唯一出站客户端
+        # 协议——两者都有 .send/.close_code/.close() 且可迭代，代码通用。
+        self._connected_clients: set[Any] = set()
+        self._main_client: Optional[Any] = None  # 最新的连接，用于发 API 调用
+        # 正向模式唯一出站 socket（反向模式为 None）
+        self._ws: Optional[websockets.WebSocketClientProtocol] = None
         self._receive_task: Optional[asyncio.Task] = None
+        #: 正向模式拨出/重连参数
+        self._dial_timeout: float = 10.0
+        self._reconnect_initial_backoff: float = 1.0
+        self._reconnect_max_backoff: float = 30.0
         self._message_queue_maxsize = max(1, int(message_queue_size or 100))
         self._message_queue: asyncio.Queue = None  # lazy init in connect()
         self._pending_actions: Dict[str, asyncio.Future] = {}
@@ -72,6 +102,9 @@ class QQClient(QQConnectionBase):
     @onebot_url.setter
     def onebot_url(self, value: str) -> None:
         self._onebot_url = str(value or "").strip()
+        if self.direction == "forward":
+            # 正向模式：onebot_url 是拨出目标，直接使用，不拆监听地址
+            return
         self._listen_host = "0.0.0.0"
         self._listen_port = 6199
         parsed = urlparse(self._onebot_url) if self._onebot_url else None
@@ -253,13 +286,26 @@ class QQClient(QQConnectionBase):
             "mentions_bot": mentions_bot,
         }
 
-    # ── 反向 WebSocket 服务器 ─────────────────────────────────
+    # ── 连接生命周期 ─────────────────────────────────────────
 
     async def connect(self):
-        """启动反向 WebSocket 服务器，等待 OneBot 客户端连接"""
+        """建立连接。
+
+        反向模式：启动反向 WebSocket 服务器，等待 OneBot 客户端拨入；
+        正向模式：启动后台收流/重连循环（由循环负责拨出），返回即幂等。
+        正向**不**阻塞拨出：OneBot 实现方的 WS 服务器要在其本地进程起来并
+        登录后才开始监听，start 时可能还没就绪——由 ``_forward_receive_loop``
+        按退避重试，与反向模式「等待 OneBot 拨入」的语义一致。
+        """
+        self._closing = False
+        if self.direction == "forward":
+            if self._receive_task is not None and not self._receive_task.done():
+                return  # 收流/重连循环已在跑，幂等
+            self._message_queue = asyncio.Queue(maxsize=self._message_queue_maxsize)
+            self._receive_task = asyncio.create_task(self._forward_receive_loop())
+            return
         if self._server is not None:
             return
-        self._closing = False
         # 在当前 event loop 中重新创建队列（避免跨 loop 绑定错误）
         self._message_queue = asyncio.Queue(maxsize=self._message_queue_maxsize)
         self._server = await websockets.serve(
@@ -274,7 +320,7 @@ class QQClient(QQConnectionBase):
             self.logger.info(f"Reverse WS server listening on {self._listen_host}:{self._listen_port}")
 
     async def disconnect(self):
-        """关闭服务器和所有客户端连接"""
+        """关闭连接，清理资源"""
         self._closing = True
 
         # 取消所有待处理请求
@@ -282,6 +328,26 @@ class QQClient(QQConnectionBase):
             if not future.done():
                 future.cancel()
         self._pending_actions.clear()
+
+        if self.direction == "forward":
+            if self._receive_task:
+                self._receive_task.cancel()
+                try:
+                    await self._receive_task
+                except (asyncio.CancelledError, Exception):
+                    pass
+                self._receive_task = None
+            if self._ws is not None:
+                try:
+                    await self._ws.close()
+                except Exception:
+                    pass
+                self._ws = None
+            self._connected_clients.clear()
+            self._main_client = None
+            if self.logger:
+                self.logger.info("Forward WS client stopped")
+            return
 
         # 关闭所有已连接的客户端
         for client in list(self._connected_clients):
@@ -306,6 +372,131 @@ class QQClient(QQConnectionBase):
 
         if self.logger:
             self.logger.info("Reverse WS server stopped")
+
+    # ── 正向 WebSocket 客户端 ─────────────────────────────────
+
+    def _forward_ws_url(self) -> str:
+        """构造正向拨出 URL：token 走 Authorization 头之外，也拼到 query
+        （?access_token=，幂等：已带则不重复），兼容只认 query 的 OneBot 实现。"""
+        url = self._onebot_url
+        if not self.token:
+            return url
+        parsed = urlparse(url)
+        if "access_token" in parse_qs(parsed.query):
+            return url
+        sep = "&" if parsed.query else "?"
+        return f"{url}{sep}{urlencode({'access_token': self.token})}"
+
+    def _redact_url(self, url: str) -> str:
+        """写日志前遮掉 URL query 里的 access_token，避免 token 明文落盘。
+
+        ``_forward_ws_url`` 会把 token 拼进 query；连接成功后若把完整 URL 写进
+        文件日志，token 就永久留在磁盘上了。日志里只保留主机/路径，token 值以
+        ``***`` 替代（与插件 ``_mask_token`` 的脱敏习惯一致）。
+        """
+        if not url:
+            return url
+        try:
+            parsed = urlparse(url)
+            params = parse_qs(parsed.query)
+            if "access_token" not in params:
+                return url
+            cleaned = "&".join(
+                f"{k}={'***' if k == 'access_token' else v}"
+                for k, values in params.items()
+                for v in values
+            )
+            return urlunparse((parsed.scheme, parsed.netloc, parsed.path, parsed.params, cleaned, parsed.fragment))
+        except Exception:
+            return url
+
+    def _redact_text(self, text: str) -> str:
+        """把文本里出现的明文 token 遮掉（异常消息可能内嵌带 token 的完整 URL）。
+
+        同时替换原始值与 URL 编码值：token 若含 ``+``/``/``/``=`` 等字符，URL 里
+        是编码形式（%2B / %2F / %3D），只替换原始值会漏。
+        """
+        try:
+            raw = str(text)
+            if self.token:
+                for variant in (self.token, quote(self.token, safe="")):
+                    if variant and variant in raw:
+                        raw = raw.replace(variant, "***")
+            return raw
+        except Exception:
+            return str(text)
+
+    async def _dial_forward(self) -> bool:
+        """正向拨出到 OneBot 实现方的 WS 服务器（收流循环调用）。
+
+        失败不 raise，记录日志并返回 False，由 ``_forward_receive_loop`` 按
+        退避重试——WS 服务器可能尚未就绪（进程还在启动/登录）。
+        """
+        url = self._forward_ws_url()
+        try:
+            ws = await asyncio.wait_for(
+                websockets.connect(
+                    url,
+                    additional_headers=(
+                        {"Authorization": f"Bearer {self.token}"} if self.token else None
+                    ),
+                    ping_interval=30,
+                    ping_timeout=10,
+                    max_size=2 ** 23,
+                ),
+                timeout=self._dial_timeout,
+            )
+        except Exception as e:
+            # 异常消息可能内嵌带 token 的完整 URL（InvalidURI/InvalidStatus 等），先遮掉
+            self._emit_log("WARN", f"OneBot(正向) 拨出失败: {self._redact_text(e)}")
+            return False
+        self._ws = ws
+        self._main_client = ws
+        self._connected_clients = {ws}
+        if self.logger:
+            # 不打印带 access_token 的完整 URL，token 会明文留在日志文件里
+            self.logger.info(f"Forward WS connected to {self._redact_url(url)}")
+        self._emit_log("INFO", "OneBot(正向) 已连接")
+        # 首次连接时异步获取登录信息（不阻塞收流循环）
+        if not self._self_id:
+            asyncio.create_task(self._fetch_login_info_async())
+        return True
+
+    async def _forward_receive_loop(self):
+        """正向模式收流 + 断线重连循环。
+
+        单任务同时负责 recv 与重拨：断线后按退避重拨、换新 socket 继续收，
+        等价于反向模式下 OneBot 实现自己重连（只是发起方在我们这侧）。
+        """
+        backoff = self._reconnect_initial_backoff
+        while not self._closing:
+            if self._ws is None or getattr(self._ws, "close_code", None) is not None:
+                ok = await self._dial_forward()
+                if not ok:
+                    await asyncio.sleep(backoff)
+                    backoff = min(backoff * 2, self._reconnect_max_backoff)
+                    continue
+                backoff = self._reconnect_initial_backoff
+            ws = self._ws
+            try:
+                async for raw_message in ws:
+                    try:
+                        await self._process_incoming(raw_message)
+                    except Exception:
+                        if self.logger:
+                            self.logger.exception("Error processing incoming message")
+            except ConnectionClosed:
+                pass
+            except asyncio.CancelledError:
+                break
+            except Exception:
+                if self.logger and not self._closing:
+                    self.logger.exception("Unexpected error in forward receive loop")
+            if self._closing:
+                break
+            self._emit_log("WARN", "OneBot(正向) 连接断开，等待重连...")
+            await asyncio.sleep(backoff)
+            backoff = min(backoff * 2, self._reconnect_max_backoff)
 
     # ── 客户端连接处理 ────────────────────────────────────────
 
@@ -336,7 +527,7 @@ class QQClient(QQConnectionBase):
         return False
 
     async def _handle_client(self, websocket: websockets.WebSocketServerProtocol):
-        """处理一个 Napcat 客户端连接"""
+        """处理一个 OneBot 客户端连接"""
         # Token 鉴权
         if not self._check_token(websocket):
             if self.logger:
@@ -351,11 +542,11 @@ class QQClient(QQConnectionBase):
         self._main_client = websocket
         addr = websocket.remote_address if hasattr(websocket, 'remote_address') else "unknown"
         if self.logger:
-            self.logger.info(f"Napcat client connected from {addr}")
+            self.logger.info(f"OneBot client connected from {addr}")
         if was_first:
-            self._emit_log("INFO", "Napcat 已连接")
+            self._emit_log("INFO", "OneBot 已连接")
         else:
-            self._emit_log("INFO", f"Napcat 重连成功(共{len(self._connected_clients)}个客户端)")
+            self._emit_log("INFO", f"OneBot 重连成功(共{len(self._connected_clients)}个客户端)")
 
         # 首次连接时异步获取登录信息（不阻塞消息循环）
         if not self._self_id:
@@ -383,13 +574,13 @@ class QQClient(QQConnectionBase):
                 self._main_client = next(iter(self._connected_clients), None)
             addr = websocket.remote_address if hasattr(websocket, 'remote_address') else "unknown"
             if self.logger:
-                self.logger.info(f"Napcat client disconnected from {addr}")
+                self.logger.info(f"OneBot client disconnected from {addr}")
             if was_main:
                 remaining = len(self._connected_clients)
                 if remaining > 0:
-                    self._emit_log("WARN", f"Napcat 主连接断开(剩余{remaining})，已切换备用")
+                    self._emit_log("WARN", f"OneBot 主连接断开(剩余{remaining})，已切换备用")
                 else:
-                    self._emit_log("ERROR", "Napcat 已断开，等待重连...")
+                    self._emit_log("ERROR", "OneBot 已断开，等待重连...")
 
     # ── 消息处理 ──────────────────────────────────────────────
 
@@ -425,6 +616,55 @@ class QQClient(QQConnectionBase):
         else:
             self._emit_log("DEBUG", f"[Voice] 未检测到语音段, msg_type={message.get('message_type')} segments_type={type(segments).__name__} segments={str(segments)[:100]}")
         return record_files
+
+    def _collect_file_segments(self, message: Dict[str, Any]) -> list[dict]:
+        """提取文件段信息，返回 ``[{file_id, name, url, busid}]``。
+
+        支持 OneBot 数组段与 CQ 码字符串(raw_message)两种形态；NapCat 的
+        ``file_id`` 缺省时退化为文件名兜底，供后台 ``_fetch_file_content`` 拉内容。
+        """
+        import re
+        segments = message.get("message")
+        files: list[dict] = []
+        if isinstance(segments, list):
+            for seg in segments:
+                if not isinstance(seg, dict):
+                    continue
+                if seg.get("type") != "file":
+                    continue
+                # 外部 OneBot 客户端不可信：data 可能不是 dict、busid 可能不是
+                # 整数——边界上容错，任何段解析失败都不能拖垮整条消息。
+                d = seg.get("data")
+                if not isinstance(d, dict):
+                    d = {}
+                try:
+                    busid = int(d.get("busid") or 0)
+                except (TypeError, ValueError):
+                    busid = 0
+                files.append({
+                    "file_id": str(d.get("file_id") or "").strip(),
+                    "name": str(
+                        d.get("file_name") or d.get("name") or d.get("file") or ""
+                    ).strip(),
+                    "url": str(d.get("url") or "").strip(),
+                    "busid": busid,
+                })
+        if not files:
+            raw = str(message.get("raw_message") or message.get("message") or "")
+            for m in re.finditer(r"\[CQ:file,[^\]]*\]", raw):
+                text = m.group(0)
+                fid = re.search(r"file_id=([^,\]]+)", text)
+                fname = re.search(r"file=([^,\]]+)", text)
+                busid = re.search(r"busid=(\d+)", text)
+                files.append({
+                    "file_id": fid.group(1).strip() if fid else "",
+                    "name": fname.group(1).strip() if fname else "",
+                    "url": "",
+                    # 保留 CQ 段里的 busid：get_group_file_url 需要它才能解析
+                    # 部分 OneBot 后端的文件 URL（与数组段分支行为一致）。
+                    "busid": int(busid.group(1)) if busid else 0,
+                })
+        return files
 
     @staticmethod
     def _expand_forward_segments(message: Dict[str, Any]) -> list[str]:
@@ -568,7 +808,15 @@ class QQClient(QQConnectionBase):
             elif st == "face":
                 chain.add(Emoji(emoji_id=str(data.get("id") or "")))
             elif st == "at":
-                chain.add(At(pid=str(data.get("qq") or "")))
+                qq = str(data.get("qq") or "")
+                if not qq:
+                    continue
+                nickname = ""
+                if qq != "all":
+                    # 群消息优先查群成员 card，card 为空或私聊再 get_stranger_info；
+                    # 失败返回 ""（At.repr 回落 [@用户{qq}]），消息不崩。
+                    nickname = await self._resolve_at_nickname(qq, msg)
+                chain.add(At(pid=qq, nickname=nickname))
             elif st == "record":
                 chain.add(Record(file_id=str(data.get("file") or "")))
             elif st == "video":
@@ -576,7 +824,7 @@ class QQClient(QQConnectionBase):
             elif st == "json":
                 chain.add(JsonCard(raw_json=str(data.get("data") or "")))
             elif st == "file":
-                chain.add(File(name=str(data.get("file") or "")))
+                chain.add(await self._build_file_element(data, msg))
             elif st == "reply":
                 rid = str(data.get("id") or "").strip()
                 inner_chain = MessageChain.empty()
@@ -600,6 +848,96 @@ class QQClient(QQConnectionBase):
                         pass
                 chain.add(Forward(chains=sub_chains))
         return chain
+
+    async def _build_file_element(self, data: dict[str, Any], msg: dict[str, Any]) -> "File":
+        """把 OneBot ``file`` 段转成 File 组件，兼容各后端获取真实 URL 的方式。
+
+        - Lagrange 类后端：``data.url`` 直接带 http 直链 → 直接用；
+        - NapCat / go-cqhttp 类：只有 ``file_id`` → 调 ``get_group_file_url`` /
+          ``get_private_file_url`` 换 URL；
+        - 其余/失败：完全回落现状 ``data.file`` 兜底。
+
+        任何 API 异常都被吞掉，绝不向外抛 —— 单个 file 段失败不影响整条链。
+        """
+        from .message_chain import File
+        raw_file = str(data.get("file") or "")
+        url = str(data.get("url") or "").strip()
+        # 1) Lagrange / 带直链后端：data.url 以 http 开头 → 直接取
+        if url.startswith(("http://", "https://")):
+            name = (
+                str(data.get("file_name") or "")
+                or str(data.get("name") or "")
+                or raw_file
+                or "file"
+            )
+            return File(name=name, url=url)
+        # 2) NapCat 路线：有 file_id 且有群/私聊上下文 → 调 API 换 URL
+        file_id = str(data.get("file_id") or "").strip()
+        if file_id:
+            msg_type = str(msg.get("message_type") or "").strip()
+            group_id = str(msg.get("group_id") or "").strip()
+            try:
+                if msg_type == "group" and group_id:
+                    # 群文件：有真实 busid 才走 get_group_file_url（NapCat 要求真
+                    # busid，0 会被拒）；只有 file_id 时用通用 get_file 兜底。
+                    try:
+                        busid = int(data.get("busid") or 0)
+                    except (TypeError, ValueError):
+                        busid = 0
+                    if busid:
+                        ret = await self.get_group_file_url(
+                            group_id, file_id, busid=busid,
+                        )
+                    else:
+                        ret = await self.get_file_by_id(file_id)
+                elif msg_type == "private":
+                    # NapCat 的 get_private_file_url 需要发送者 user_id，缺了就
+                    # 拿不到 URL，落到下方兜底（裸 [文件 name]）。
+                    sender_id = str(msg.get("user_id") or "").strip()
+                    ret = (
+                        await self.get_private_file_url(sender_id, file_id)
+                        if sender_id
+                        else None
+                    )
+                else:
+                    ret = None
+                ret_url = str((ret or {}).get("url") or "").strip()
+                if ret_url:
+                    name = (
+                        str(ret.get("file_name") or "")
+                        or str(ret.get("name") or "")
+                        or raw_file
+                        or "file"
+                    )
+                    return File(name=name, url=ret_url)
+            except Exception:
+                pass  # ActionFailed / 超时 / 未连接 → 降级
+        # 3) 兜底：保持现状 data.file 行为
+        return File(name=raw_file)
+
+    async def _resolve_at_nickname(self, qq: str, msg: dict[str, Any]) -> str:
+        """解析 @ 目标的昵称（供 At.repr 注入 prompt）。
+
+        群消息：优先 ``get_group_member_info`` 的 card，card 为空再
+        ``get_stranger_info``；私聊（无 group_id）直接 stranger。
+        任何 API 异常都被吞掉，返回 ""（At.repr 回落 ``[@用户{qq}]``）。
+        """
+        group_id = str(msg.get("group_id") or "").strip()
+        if group_id:
+            try:
+                info = await self.get_group_member_info(group_id, qq, no_cache=False)
+                nickname = str((info or {}).get("card") or "").strip()
+                if nickname:
+                    return nickname
+            except Exception:
+                pass  # 降级到 stranger
+        try:
+            info = await self.get_stranger_info(qq, no_cache=False)
+            return str(
+                (info or {}).get("nick") or (info or {}).get("nickname") or ""
+            ).strip()
+        except Exception:
+            return ""
 
     async def _build_forward_chains(self, forward_data: dict[str, Any], *, depth: int = 0, seen: set[str] | None = None) -> "list[MessageChain]":
         """从 get_forward_msg 返回构建 MessageChain 列表，每条子消息带时间戳。"""
@@ -725,6 +1063,132 @@ class QQClient(QQConnectionBase):
                 if self.logger:
                     self.logger.exception(f"Failed to fetch record {file_id}")
 
+    #: 文本文件内容注入上限（超出截断并标注，防撑爆上下文）
+    _FILE_TEXT_MAX_BYTES = 100 * 1024
+    #: 视为图片、走 VLM 链路的文件扩展名
+    _IMAGE_FILE_EXTENSIONS = frozenset(
+        {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".tiff", ".heic", ".svg"}
+    )
+
+    async def _fetch_file_content(self, message: Dict[str, Any], files: list[dict]) -> None:
+        """后台拉取文件内容：图片走 VLM，文本解码，二进制/失败标记；替换 CQ 码。
+
+        分类路由：
+        - 图片扩展名 → 走现有 ``_image_describer(url)``（VLM 链路，吃 URL）；
+        - 其他 → 下载字节，前 512 字节含 NUL 判二进制，否则按 utf-8 解码
+          （上限 ``_FILE_TEXT_MAX_BYTES``，超出截断并标注）；
+        - 失败 → 裸 ``[文件 {name}]`` 兜底。
+
+        最后把 ``content``/``raw_message`` 里的原始 ``[CQ:file,...]`` 替换成可读文本，
+        让 LLM 本回合直接看到文件内容（与语音转录一致）。
+        """
+        import re
+        from pathlib import Path as _Path
+        import httpx
+
+        renders: list[str] = []
+        msg_type = str(message.get("message_type") or "").strip()
+        group_id = str(message.get("group_id") or "").strip()
+
+        for f in files:
+            file_id = str(f.get("file_id") or "").strip()
+            name = str(f.get("name") or "").strip() or file_id or "文件"
+            url = str(f.get("url") or "").strip()
+            render: str | None = None
+            try:
+                if not url and file_id:
+                    if msg_type == "group" and group_id:
+                        # 有真实 busid 才走 get_group_file_url，否则通用 get_file
+                        # 兜底（群文件消息常只带 file_id）。
+                        try:
+                            busid = int(f.get("busid") or 0)
+                        except (TypeError, ValueError):
+                            busid = 0
+                        if busid:
+                            ret = await self.get_group_file_url(
+                                group_id, file_id, busid=busid,
+                            )
+                        else:
+                            ret = await self.get_file_by_id(file_id)
+                        url = str((ret or {}).get("url") or "").strip()
+                    elif msg_type == "private":
+                        # NapCat 的 get_private_file_url 需要发送者 user_id，缺了
+                        # 就拿不到 URL，落到下方兜底。
+                        sender_id = str(message.get("user_id") or "").strip()
+                        if sender_id:
+                            ret = await self.get_private_file_url(sender_id, file_id)
+                            url = str((ret or {}).get("url") or "").strip()
+                if not url:
+                    render = f"[文件 {name}]"
+                elif _Path(name).suffix.lower() in self._IMAGE_FILE_EXTENSIONS:
+                    desc = ""
+                    if self._image_describer:
+                        try:
+                            desc = await asyncio.wait_for(
+                                self._image_describer(url), timeout=15.0,
+                            )
+                        except Exception:
+                            pass
+                    render = f"[文件 {name} (图片)]"
+                    if desc:
+                        render = f"{render}: {desc}"
+                else:
+                    async with httpx.AsyncClient(
+                        timeout=30.0, proxy=None, trust_env=False,
+                    ) as cl:
+                        # 流式下载，最多读 _FILE_TEXT_MAX_BYTES+1 字节就停：群文件可能
+                        # 几百 MB，resp.content 会把整个响应体读进内存撑爆进程。
+                        # +1 只用于判定是否超限，内存上限仍约 _FILE_TEXT_MAX_BYTES。
+                        read_limit = self._FILE_TEXT_MAX_BYTES + 1
+                        async with cl.stream("GET", url) as resp:
+                            if resp.status_code == 200:
+                                chunks: list[bytes] = []
+                                total = 0
+                                async for chunk in resp.aiter_bytes():
+                                    chunks.append(chunk)
+                                    total += len(chunk)
+                                    if total >= read_limit:
+                                        break
+                                payload = b"".join(chunks)
+                                if b"\x00" in payload[:512]:
+                                    render = f"[文件 {name} (二进制,无法读取)]"
+                                else:
+                                    text = payload[: self._FILE_TEXT_MAX_BYTES].decode(
+                                        "utf-8", errors="replace"
+                                    )
+                                    truncated = total > self._FILE_TEXT_MAX_BYTES
+                                    tail = "\n…(内容过长已截断)" if truncated else ""
+                                    render = f"[文件 {name}]\n{text}{tail}"
+                            else:
+                                render = f"[文件 {name} (下载失败)]"
+            except Exception:
+                render = f"[文件 {name}]"
+            if render:
+                renders.append(render)
+
+        if not renders:
+            return
+
+        raw = str(message.get("raw_message") or message.get("content") or "")
+        replaced = [False]
+        it = iter(renders)
+
+        def _repl(m: Any) -> str:
+            replaced[0] = True
+            return next(it, m.group(0))
+
+        new_raw = re.sub(r"\[CQ:file,[^\]]*\]", _repl, raw)
+        if not replaced[0]:
+            # content 里没有 CQ file 码（纯数组格式 raw_message 为空）→ 直接追加
+            extra = " ".join(renders)
+            new_raw = (
+                (new_raw.strip() + " " + extra).strip()
+                if new_raw.strip()
+                else extra
+            )
+        message["raw_message"] = new_raw
+        message["content"] = new_raw
+
     async def _process_incoming(self, raw_message: str):
         """处理一条来自 OneBot 客户端的消息"""
         message = json.loads(raw_message)
@@ -751,6 +1215,9 @@ class QQClient(QQConnectionBase):
                 record_files = self._transcribe_record_segments(message)
                 if record_files:
                     message["_pending_record_files"] = record_files
+                file_segments = self._collect_file_segments(message)
+                if file_segments:
+                    message["_pending_file_ids"] = file_segments
                 if not self._message_queue:
                     return
                 try:
@@ -837,7 +1304,7 @@ class QQClient(QQConnectionBase):
             if reply_context:
                 result["_reply_context"] = reply_context
             for _key in ("_pending_reply_ids", "_pending_forward_ids", "_pending_record_files",
-                         "_cached_reply_sender_id", "_forward_sub_count"):
+                         "_pending_file_ids", "_cached_reply_sender_id", "_forward_sub_count"):
                 _val = raw_msg.get(_key)
                 if _val is not None:
                     result[_key] = _val
@@ -930,13 +1397,13 @@ class QQClient(QQConnectionBase):
 
     async def call_action(self, action: str, params: Optional[Dict[str, Any]] = None, timeout: float = 10.0) -> Dict[str, Any]:
         if not self._main_client:
-            raise RuntimeError("No Napcat client connected")
+            raise RuntimeError("No OneBot client connected")
         # ServerConnection 没有 .open，用 close_code 判断
         if getattr(self._main_client, 'close_code', None) is not None:
             self._connected_clients.discard(self._main_client)
             self._main_client = next(iter(self._connected_clients), None)
             if not self._main_client:
-                raise RuntimeError("No Napcat client connected")
+                raise RuntimeError("No OneBot client connected")
 
         echo = secrets.token_hex(8)
         future = asyncio.get_running_loop().create_future()
@@ -1026,7 +1493,7 @@ class QQClient(QQConnectionBase):
         """One echo round-trip for the CQ-string senders (same plumbing as
         the segment senders; responses are dispatched by echo, not action)."""
         if not self._main_client:
-            raise RuntimeError("No Napcat client connected")
+            raise RuntimeError("No OneBot client connected")
 
         echo = secrets.token_hex(8)
         payload = {"action": action, "params": params, "echo": echo}
@@ -1049,7 +1516,7 @@ class QQClient(QQConnectionBase):
     async def send_private_message_segments(self, user_id: str, segments: list[Dict[str, Any]], *, record_sent: bool = True) -> Optional[str]:
         """发送私聊消息片段，返回 message_id。"""
         if not self._main_client:
-            raise RuntimeError("No Napcat client connected")
+            raise RuntimeError("No OneBot client connected")
 
         echo = secrets.token_hex(8)
         payload = {
@@ -1096,7 +1563,7 @@ class QQClient(QQConnectionBase):
     async def send_group_message_segments(self, group_id: str, segments: list[Dict[str, Any]], *, record_sent: bool = True, keyboard: str = "") -> Optional[str]:
         """发送群聊消息片段，返回 message_id"""
         if not self._main_client:
-            raise RuntimeError("No Napcat client connected")
+            raise RuntimeError("No OneBot client connected")
 
         echo = secrets.token_hex(8)
         payload = {
@@ -1129,7 +1596,7 @@ class QQClient(QQConnectionBase):
     async def send_group_poke(self, group_id: str, user_id: str) -> bool:
         """发送群聊戳一戳"""
         if not self._main_client:
-            raise RuntimeError("No Napcat client connected")
+            raise RuntimeError("No OneBot client connected")
         try:
             payload = {
                 "action": "send_poke",
@@ -1160,7 +1627,7 @@ class QQClient(QQConnectionBase):
             sub_type: 图片子类型，"1"=表情包贴纸（非普通图片）
         """
         if not self._main_client:
-            raise RuntimeError("No Napcat client connected")
+            raise RuntimeError("No OneBot client connected")
         segments: list[Dict[str, Any]] = []
         if str(reply_message_id or "").strip():
             segments.append({"type": "reply", "data": {"id": str(reply_message_id)}})
@@ -1175,7 +1642,7 @@ class QQClient(QQConnectionBase):
     async def send_private_image(self, user_id: str, image_data: str) -> Optional[str]:
         """发送私聊图片"""
         if not self._main_client:
-            raise RuntimeError("No Napcat client connected")
+            raise RuntimeError("No OneBot client connected")
         segments: list[Dict[str, Any]] = [
             {"type": "image", "data": {"file": str(image_data)}}
         ]
@@ -1521,6 +1988,14 @@ class QQClient(QQConnectionBase):
         """获取群文件下载链接。"""
         return await self.call_action("get_group_file_url", {"group_id": int(group_id), "file_id": str(file_id), "busid": int(busid)}, timeout=5.0)
 
+    async def get_private_file_url(self, user_id: str, file_id: str) -> Dict[str, Any]:
+        """获取私聊文件下载链接（NapCat 要求同时带 user_id 与 file_id）。"""
+        return await self.call_action(
+            "get_private_file_url",
+            {"user_id": int(user_id), "file_id": str(file_id)},
+            timeout=5.0,
+        )
+
     async def upload_private_file(self, user_id: str, file: str, name: str = "") -> Dict[str, Any]:
         """上传私聊文件。"""
         return await self.call_action("upload_private_file", {"user_id": int(user_id), "file": str(file), "name": str(name)}, timeout=30.0)
@@ -1532,6 +2007,15 @@ class QQClient(QQConnectionBase):
     async def get_file(self, url: str, thread_count: int = 3, headers: Optional[list[str]] = None) -> Dict[str, Any]:
         """获取文件数据。"""
         return await self.call_action("get_file", {"url": str(url), "thread_count": int(thread_count), "headers": headers or []}, timeout=60.0)
+
+    async def get_file_by_id(self, file_id: str) -> Dict[str, Any]:
+        """通过 file_id 获取文件信息（OneBot v11 标准 ``get_file``）。
+
+        用于群文件消息只有 ``file_id``、没有 ``busid`` 时替代
+        ``get_group_file_url``（NapCat 的 get_group_file_url 需要真实 busid，
+        传 0 会被拒）。
+        """
+        return await self.call_action("get_file", {"file_id": str(file_id)}, timeout=5.0)
 
     # ── AI / OCR / 翻译 ─────────────────────────────────────────
 

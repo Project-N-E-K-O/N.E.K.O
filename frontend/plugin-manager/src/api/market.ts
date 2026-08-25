@@ -41,6 +41,8 @@ export interface MarketPlugin {
   name: string
   description: string
   short_description?: string
+  /** 完整详情接口返回的 README；列表接口通常不包含。 */
+  readme?: string
   /** 取自 latest_version.version；latest_version === null 时为 ''。 */
   version: string
   author: {
@@ -57,6 +59,7 @@ export interface MarketPlugin {
   downloads: number
   likes: number
   rating_average?: number
+  rating_count?: number
   created_at: string
   updated_at: string
   is_recommended?: boolean
@@ -140,6 +143,14 @@ export interface MarketPluginVersion {
   created_at: string
 }
 
+/** 已审核版本的 README；由 Market 单独的公开接口提供。 */
+export interface MarketPluginReadme {
+  availability: 'available' | 'unavailable'
+  content?: string | null
+  repository_url?: string
+  source_ref?: string
+}
+
 const ZONE_BY_ID: Record<number, string> = {
   1: 'game',
   2: 'companion',
@@ -190,6 +201,7 @@ export function normalizeMarketPlugin(raw: MarketPluginRaw): MarketPlugin {
     name: raw.name,
     description,
     short_description: raw.short_description ?? undefined,
+    readme: raw.readme ?? undefined,
     version,
     author: {
       name: authorName,
@@ -204,6 +216,7 @@ export function normalizeMarketPlugin(raw: MarketPluginRaw): MarketPlugin {
     downloads: raw.download_count ?? 0,
     likes: raw.likes ?? 0,
     rating_average: raw.rating_average,
+    rating_count: raw.rating_count,
     created_at: raw.created_at,
     updated_at: raw.updated_at,
     is_recommended: Boolean(raw.is_featured),
@@ -333,6 +346,22 @@ export async function fetchMarketPlugin(
     return normalizeMarketPlugin(res.data)
   } catch (err) {
     console.warn('[Market] Failed to fetch plugin:', err)
+    return null
+  }
+}
+
+/** 获取 Market 审核快照对应的 README，而不是仓库当前分支的 README。 */
+export async function fetchMarketPluginReadme(
+  pluginId: string | number,
+): Promise<MarketPluginReadme | null> {
+  const client = await getClient()
+  if (!client) return null
+
+  try {
+    const res = await client.get<MarketPluginReadme>(`/plugins/${pluginId}/readme`)
+    return res.data
+  } catch (err) {
+    console.warn('[Market] Failed to fetch plugin README:', err)
     return null
   }
 }

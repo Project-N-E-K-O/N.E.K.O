@@ -20,6 +20,16 @@
               :has-update="hasUpdate"
             />
           </div>
+          <el-button
+            v-if="availableUiAction"
+            data-testid="plugin-open-ui"
+            size="small"
+            type="primary"
+            plain
+            @click.stop="$emit('open-ui', availableUiAction)"
+          >
+            {{ t('plugins.ui.open') }}
+          </el-button>
         </div>
 
         <p class="plugin-list-row-card__description">
@@ -67,24 +77,28 @@ import SourceDetailRow from '@/components/plugin/SourceDetailRow.vue'
 import { useMarketVersionsStore } from '@/stores/marketVersions'
 import { hasNewerVersion } from '@/utils/version'
 import { resolvePluginDisplayText } from '@/utils/pluginDisplay'
-import type { PluginMeta, PluginInstallSourceDetailMarket } from '@/types/api'
+import { isOpenUiNavigationAction } from '@/utils/pluginListActions'
+import type { PluginListAction, PluginMeta, PluginInstallSourceDetailMarket } from '@/types/api'
 
 interface Props {
   plugin: PluginMeta & { status?: string; enabled?: boolean; autoStart?: boolean; type?: string }
   isSelected?: boolean
   showMetrics?: boolean
   showSourceDetail?: boolean
+  enableUiAction?: boolean
 }
 
 const props = withDefaults(defineProps<Props>(), {
   isSelected: false,
   showMetrics: false,
   showSourceDetail: false,
+  enableUiAction: false,
 })
 
 defineEmits<{
   click: []
   contextmenu: [event: MouseEvent]
+  'open-ui': [action: PluginListAction]
 }>()
 
 const { t, locale } = useI18n()
@@ -92,6 +106,13 @@ const marketVersions = useMarketVersionsStore()
 
 const entryCount = computed(() => props.plugin.entries?.length || 0)
 const displayText = computed(() => resolvePluginDisplayText(props.plugin, locale.value))
+const availableUiAction = computed(() => {
+  if (!props.enableUiAction) return null
+  return props.plugin.list_actions?.find((action) => {
+    if (!isOpenUiNavigationAction(action) || action.disabled) return false
+    return !action.requires_running || props.plugin.status === 'running'
+  }) || null
+})
 
 const latestVersion = computed<string | null>(() => {
   const src = props.plugin.install_source

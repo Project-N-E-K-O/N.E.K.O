@@ -199,6 +199,14 @@ def test_request_language_still_wins_over_the_session():
     assert normalize_mini_game_invite_locale(resolved) == "ja"
 
 
+def test_render_language_guides_proactive_copy_without_becoming_declared_locale():
+    mgr = SimpleNamespace(user_language="en", _user_language_explicit=False)
+    data = {"render_language": "ja"}
+
+    assert service._resolve_proactive_locale(data, mgr, fmt="full") == "ja"
+    assert service._resolve_declared_topic_hook_locale(data, mgr) is None
+
+
 def test_garbage_request_language_still_falls_through_to_the_session():
     """The supported-language whitelist predates this change and must survive it:
     without it a corrupted localStorage short-circuits the copy to English."""

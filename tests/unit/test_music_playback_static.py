@@ -1,5 +1,12 @@
 import json
+import shutil
+import subprocess
+import textwrap
 from pathlib import Path
+
+import pytest
+
+from tests.node_harness import run_node_script
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -48,10 +55,158 @@ def test_music_dispatch_waits_for_media_and_reports_real_failure():
     assert "endsWith('.m3u8')" in source
     assert "const backendProxyDomains = new Set(MUSIC_CONFIG.allowlist)" in source
     assert "const toBackendMusicProxyUrl = (url) =>" in source
-    assert source.count("if (parsed.protocol !== 'https:')") == 2
-    assert "['http:', 'https:'].includes(parsed.protocol)" not in source
+    safe_url_source = source.split("const isSafeUrl = (url) => {", 1)[1].split(
+        "const normalizeMusicCoverUrl", 1
+    )[0]
+    assert "if (parsed.protocol === 'http:') return pluginHttpUrls.has(parsed.href);" in safe_url_source
+    assert "if (parsed.protocol !== 'https:') return false;" in safe_url_source
+    assert "MUSIC_CONFIG.allowlist.some" in safe_url_source
+    for blocked_protocol in ("ftp:", "file:", "data:", "javascript:"):
+        assert blocked_protocol not in safe_url_source
+
+    proxy_source = source.split("const toBackendMusicProxyUrl = (url) =>", 1)[1].split(
+        "const isMusicOccupied", 1
+    )[0]
+    assert "if (parsed.protocol !== 'https:') return url;" in proxy_source
+    assert "['http:', 'https:'].includes(parsed.protocol)" not in proxy_source
     assert "trackInfo.url = toBackendMusicProxyUrl(originalUrl)" in source
     assert "trackInfo.url.includes('music.163.com')" not in source
+
+
+def test_plugin_http_allowlist_matches_only_normalized_complete_urls():
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is required for the music URL allowlist browser contract test")
+
+    source = MUSIC_UI_PATH.read_text(encoding="utf-8")
+    normalize_url = source.split("const normalizeMusicUrlEscapes = (url) => {", 1)[1].split(
+        "/**", 1
+    )[0]
+    extract_hostname = source.split("const extractHostname = (input) => {", 1)[1].split(
+        "const isSafeUrl = (url) => {", 1
+    )[0]
+    safe_url = source.split("const isSafeUrl = (url) => {", 1)[1].split(
+        "const normalizeMusicCoverUrl", 1
+    )[0]
+    plugin_api = source.split("const MusicPluginAPI = {", 1)[1].split(
+        "// --- 暴露接口 ---", 1
+    )[0]
+    script = textwrap.dedent(
+        f"""
+        const MUSIC_CONFIG = {{ allowlist: ['localhost', '127.0.0.1', '::1', 'example.com'] }};
+        const pluginHttpUrls = new Set();
+        const window = {{
+          dispatchEvent() {{}},
+        }};
+        class CustomEvent {{ constructor(type) {{ this.type = type; }} }}
+        const normalizeMusicUrlEscapes = (url) => {{{normalize_url}
+        const extractHostname = (input) => {{{extract_hostname}
+        const isSafeUrl = (url) => {{{safe_url}
+        const MusicPluginAPI = {{{plugin_api}
+
+        const exactUrls = [
+          'http://localhost:48916/plugin/music_pusher/ui/uploads/song.mp3',
+          'http://127.0.0.1:48916/plugin/music_pusher/ui/uploads/song.mp3',
+          'http://[::1]:48916/plugin/music_pusher/ui/uploads/song.mp3',
+        ];
+        MusicPluginAPI.addAllowlist(['localhost', '127.0.0.1', '::1']);
+        MusicPluginAPI.addAllowlist(exactUrls[0]);
+        MusicPluginAPI.addAllowlist(exactUrls.slice(1));
+
+        for (const url of exactUrls) {{
+          if (!isSafeUrl(url)) throw new Error(`registered HTTP URL rejected: ${{url}}`);
+        }}
+        if (!isSafeUrl('HTTP://LOCALHOST:48916/plugin/music_pusher/ui/uploads/song.mp3')) {{
+          throw new Error('equivalent normalized localhost URL rejected');
+        }}
+        if (isSafeUrl('http://localhost:48917/plugin/music_pusher/ui/uploads/song.mp3')) {{
+          throw new Error('different HTTP port allowed');
+        }}
+        if (isSafeUrl('http://localhost:48916/plugin/music_pusher/ui/uploads/other.mp3')) {{
+          throw new Error('different HTTP path allowed');
+        }}
+        if (isSafeUrl('http://localhost:48916/plugin/music_pusher/ui/uploads/song.mp3?other=1')) {{
+          throw new Error('different HTTP query allowed');
+        }}
+        if (isSafeUrl('http://127.0.0.1/unregistered.mp3')) {{
+          throw new Error('host-only loopback entry allowed HTTP');
+        }}
+        if (!isSafeUrl('https://media.example.com/song.mp3')) {{
+          throw new Error('HTTPS hostname allowlist regressed');
+        }}
+        for (const url of ['ftp://example.com/song.mp3', 'file:///song.mp3', 'data:audio/mp3;base64,AA==']) {{
+          if (isSafeUrl(url)) throw new Error(`non-HTTP(S) URL allowed: ${{url}}`);
+        }}
+        if (!isSafeUrl('/api/music/proxy?url=x')) throw new Error('internal API URL rejected');
+
+        MusicPluginAPI.addAllowlist([], [
+          'http://localhost:80/default.mp3',
+          'http://[::1]:80/default.mp3',
+        ]);
+        if (!isSafeUrl('http://localhost/default.mp3')) throw new Error('localhost default port was not normalized');
+        if (!isSafeUrl('http://[::1]/default.mp3')) throw new Error('IPv6 default port was not normalized');
+
+        const escapedUrl = 'http://localhost:48916/song.mp3?token=one&amp;amp;part=two';
+        MusicPluginAPI.addAllowlist(escapedUrl);
+        if (!isSafeUrl('http://localhost:48916/song.mp3?token=one&part=two')) {{
+          throw new Error('HTML-escaped HTTP URL was not normalized like playback');
+        }}
+        const encodedUrls = [
+          'http://localhost:48916/encoded.mp3?token=one&amp%3Bpart=two',
+          'http://localhost:48916/percent.mp3?token=one%26amp%3Bpart=two',
+        ];
+        MusicPluginAPI.addAllowlist(encodedUrls);
+        for (const encoded of encodedUrls) {{
+          const playbackUrl = normalizeMusicUrlEscapes(encoded);
+          if (!isSafeUrl(playbackUrl)) throw new Error(`escaped HTTP URL rejected: ${{encoded}}`);
+        }}
+        if (isSafeUrl('http://localhost:48916/song.mp3?token=one&part=other')) {{
+          throw new Error('normalization widened exact query matching');
+        }}
+        """
+    )
+    result: subprocess.CompletedProcess[str] = run_node_script(
+        node,
+        script,
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        timeout=20,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr or result.stdout
+
+
+def test_exact_http_allowlist_is_carried_without_enabling_http_proxy():
+    source = MUSIC_UI_PATH.read_text(encoding="utf-8")
+    websocket_source = APP_WEBSOCKET_PATH.read_text(encoding="utf-8")
+    pusher_source = (ROOT / "plugin" / "plugins" / "music_pusher" / "__init__.py").read_text(
+        encoding="utf-8"
+    )
+    schema_source = (ROOT / "plugin" / "sdk" / "shared" / "core" / "push_message_schema.py").read_text(
+        encoding="utf-8"
+    )
+    bridge_source = (ROOT / "plugin" / "server" / "messaging" / "proactive_bridge.py").read_text(
+        encoding="utf-8"
+    )
+    runtime_source = (ROOT / "app" / "main_server" / "character_runtime.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'metadata={"domains": domains, "http_urls": http_urls, "event_id": event_id}' in pusher_source
+    assert 'ui_part["http_urls"] = list(md_local["http_urls"])' in schema_source
+    assert '"http_urls": list(http_urls)' in bridge_source
+    assert '"http_urls": event.get("http_urls")' in runtime_source
+    assert "response.http_urls || []" in websocket_source
+    assert "getHttpUrls: () => [...pluginHttpUrls]" in source
+    assert "trackInfo.url = normalizeMusicUrlEscapes(trackInfo.url);" in source
+    assert "new URL(normalizeMusicUrlEscapes(value))" in source
+
+    proxy_source = source.split("const toBackendMusicProxyUrl = (url) =>", 1)[1].split(
+        "const isMusicOccupied", 1
+    )[0]
+    assert "if (parsed.protocol !== 'https:') return url;" in proxy_source
+    assert "pluginHttpUrls" not in proxy_source
 
 
 def test_proactive_music_only_retries_candidate_specific_failures():
@@ -89,114 +244,6 @@ def test_proactive_request_rechecks_music_state_before_search():
     )
 
 
-def test_user_music_requests_retry_candidates_and_discard_stale_dispatches():
-    source = APP_WEBSOCKET_PATH.read_text(encoding="utf-8")
-
-    assert "response.type === 'music_play_candidates'" in source
-    assert (
-        "source: 'user'," in source
-    )
-    assert "requestId: response.request_id" in source
-    assert "dispatchResult.canTryNextCandidate !== true" in source
-    assert "_musicCandidateDispatchEpoch" in source
-    assert "_musicCandidateDispatchQueue" in source
-    assert "catch (error)" in source
-    assert "canTryNextCandidate: true" in source
-    assert "没有可用的音乐派发接口" in source
-    assert "if (accepted === 'queued')" in source
-    assert "return 'queued';" in source
-    assert "window._latestMusicCandidateRequestId" in source
-    assert "if (!Number.isFinite(requestId) || requestId <= 0)" in source
-    assert "window._pendingMusicCandidateRequestId" in source
-    assert "requestId === latestRequestId && requestId !== pendingRequestId" in source
-    assert "mediaCancelStatus === 'stale'" in source
-    assert "queuedCancelStatus === 'stale'" in source
-    candidate_dispatch = source.split(
-        "async function dispatchMusicPlayCandidatesResponse", 1
-    )[1].split("function queueMusicPlayCandidatesResponse", 1)[0]
-    immutable_key = candidate_dispatch.index(
-        "var candidateKey = getMusicPlayUrlClaimKey(track);"
-    )
-    claim = candidate_dispatch.index(
-        "var candidateClaimToken = claimMusicPlayUrl(candidateKey);"
-    )
-    dispatch = candidate_dispatch.index("window.dispatchMusicPlayDetailed(track")
-    assert immutable_key < claim < dispatch
-    assert (
-        "releaseMusicPlayUrlClaim(candidateKey, candidateClaimToken);"
-        in candidate_dispatch
-    )
-    assert "claim.token === data.token" in source
-    assert "claim.token !== token" in source
-    assert "token: token" in source
-    assert "window.cancelQueuedMusicDispatch(requestId);" in source
-    invalid_guard = source.index("if (!Number.isFinite(requestId) || requestId <= 0)")
-    cancel_call = source.index("window.cancelPendingMusicMediaReady(requestId);")
-    epoch_update = source.index("window._latestMusicCandidateRequestId = requestId;")
-    assert invalid_guard < cancel_call
-    assert cancel_call < epoch_update
-    queued_branch = source.split("if (accepted === 'queued')", 1)[1].split(
-        "dispatchResult = {", 1
-    )[0]
-    assert "response._clientDispatchEpoch !== window._musicCandidateDispatchEpoch" in queued_branch
-    assert "releaseMusicPlayUrlClaim(candidateKey, candidateClaimToken);" in queued_branch
-    assert queued_branch.index("_musicCandidateDispatchEpoch") < queued_branch.index(
-        "return 'queued';"
-    )
-    failure_handler = source.split(
-        "function handleMusicRequestFailureResponse(response)", 1
-    )[1].split("function readNewUserIcebreakerStore", 1)[0]
-    assert "Number(response && response.request_id)" in failure_handler
-    assert "window.cancelPendingMusicMediaReady(requestId);" in failure_handler
-    assert "window.cancelQueuedMusicDispatch(requestId);" in failure_handler
-    assert (
-        failure_handler.index("window.cancelQueuedMusicDispatch(requestId);")
-        < failure_handler.index("window._musicCandidateDispatchEpoch")
-        < failure_handler.index("showMusicRequestFailure(response);")
-    )
-    cancellation_handler = source.split(
-        "function handleMusicRequestCancelledResponse(response)", 1
-    )[1].split("function readNewUserIcebreakerStore", 1)[0]
-    assert "window.cancelPendingMusicMediaReady(requestId);" in cancellation_handler
-    assert "window.cancelQueuedMusicDispatch(requestId);" in cancellation_handler
-    assert "window.cancelActiveMusicPlayback();" in cancellation_handler
-    assert "showMusicRequestFailure" not in cancellation_handler
-    assert "response.type === 'music_request_cancelled'" in source
-
-    player_source = MUSIC_UI_PATH.read_text(encoding="utf-8")
-    active_cancel = player_source.split(
-        "const cancelActiveMusicPlayback = () =>", 1
-    )[1].split("// ---", 1)[0]
-    assert "destroyMusicPlayer(true, true, true);" in active_cancel
-    assert "broadcastBarCtrl('close');" in active_cancel
-    assert "window.cancelActiveMusicPlayback = cancelActiveMusicPlayback;" in player_source
-    started_handler = source.split(
-        "function handleMusicRequestStartedResponse(response)", 1
-    )[1].split("function handleMusicPlayCandidatesResponse(response)", 1)[0]
-    assert "window.cancelPendingMusicMediaReady(requestId);" in started_handler
-    assert "window.cancelQueuedMusicDispatch(requestId);" in started_handler
-    assert "window._pendingMusicCandidateRequestId = requestId;" in started_handler
-    assert "response.type === 'music_request_started'" in source
-
-
-def test_music_request_scope_resets_on_same_character_reconnect():
-    source = APP_WEBSOCKET_PATH.read_text(encoding="utf-8")
-    connect_source = source.split("function connectWebSocket()", 1)[1].split(
-        "mod.connectWebSocket = connectWebSocket", 1
-    )[0]
-
-    assert "function resetMusicCandidateRequestScope(scope, force)" in source
-    assert "if (!force && window._musicCandidateRequestScope === nextScope) return;" in source
-    assert "resetMusicCandidateRequestScope(currentLanlanName, true);" in connect_source
-    idempotent_guard = connect_source.index(
-        "S.socket && S.socket.readyState === WebSocket.OPEN && S.socket.url === wsUrl"
-    )
-    reset_call = connect_source.index(
-        "resetMusicCandidateRequestScope(currentLanlanName, true);"
-    )
-    assert idempotent_guard < reset_call
-
-
 def test_new_track_cancels_pending_media_readiness_wait():
     source = MUSIC_UI_PATH.read_text(encoding="utf-8")
     send_source = source.split(
@@ -213,35 +260,37 @@ def test_new_track_cancels_pending_media_readiness_wait():
     stale_guard = send_source.index("if (currentToken !== latestMusicRequestToken) {")
     assert send_source.index("const currentToken = ++latestMusicRequestToken;") < allowlist_wait
     assert allowlist_wait < stale_guard < send_source.index("isUnsupportedMusicStream")
-    assert "cancelWait.requestId = requestId ?? null;" in source
-    assert "window.cancelPendingMusicMediaReady = (requestId) =>" in source
-    assert "return 'invalid';" in source
-    assert "return 'no_pending';" in source
-    assert "return 'stale';" in source
-    assert "return 'cancelled';" in source
-    assert "nextRequestId < pendingRequestId" in source
-    no_pending_branch = source.split(
-        "if (!pendingMusicMediaReadyCancel) {", 1
-    )[1].split("const pendingRequestId", 1)[0]
-    assert "latestMusicRequestToken++;" in no_pending_branch
-    assert "!localPlayer && currentPlayingTrack" in no_pending_branch
-    assert "updateMusicCard('ended', currentPlayingTrack);" in no_pending_branch
-    assert "destroyMusicPlayer(true, false, false);" in no_pending_branch
-    assert "return 'no_pending';" in no_pending_branch
-    assert "window.cancelPendingMusicMediaReady(requestId);" in APP_WEBSOCKET_PATH.read_text(
-        encoding="utf-8"
+
+
+def test_websocket_reconnect_invalidates_pending_music_dispatches():
+    chat_source = APP_CHAT_PATH.read_text(encoding="utf-8")
+    player_source = MUSIC_UI_PATH.read_text(encoding="utf-8")
+    websocket_source = APP_WEBSOCKET_PATH.read_text(encoding="utf-8")
+    connect_source = websocket_source.split(
+        "function connectWebSocket()", 1
+    )[1].split("// ---- onopen ----", 1)[0]
+
+    same_socket_guard = connect_source.index(
+        "S.socket && S.socket.readyState === WebSocket.OPEN"
     )
+    reset_media = connect_source.index("window.cancelPendingMusicMediaReady();")
+    reset_queued = connect_source.index("window.cancelQueuedMusicDispatch();")
+    new_socket = connect_source.index("S.socket = new WebSocket(wsUrl);")
+    assert same_socket_guard < reset_media < reset_queued < new_socket
 
+    chat_reset = chat_source.split(
+        "window.cancelQueuedMusicDispatch = function ()", 1
+    )[1].split("window.dispatchMusicPlay = async function", 1)[0]
+    assert "_musicDispatchId++;" in chat_reset
+    assert "_queuedMusicDispatchCancel();" in chat_reset
+    assert "requestId" not in chat_reset
 
-def test_new_request_cancels_queued_player_dispatch():
-    dispatch_source = APP_CHAT_PATH.read_text(encoding="utf-8")
-
-    assert "let _queuedMusicDispatchCancel = null;" in dispatch_source
-    assert "cancelQueuedDispatch.requestId = options.requestId ?? null;" in dispatch_source
-    assert "window.cancelQueuedMusicDispatch = function (requestId)" in dispatch_source
-    assert "nextRequestId < pendingRequestId" in dispatch_source
-    assert "_queuedMusicDispatchCancel();" in dispatch_source
-    assert "musicDispatchResult(false, 'superseded', false)" in dispatch_source
+    player_reset = player_source.split(
+        "window.cancelPendingMusicMediaReady = () =>", 1
+    )[1].split("// ---", 1)[0]
+    assert "latestMusicRequestToken++;" in player_reset
+    assert "if (pendingMusicMediaReadyCancel) pendingMusicMediaReadyCancel();" in player_reset
+    assert "requestId" not in player_reset
 
 
 def test_music_player_reports_confirmed_state_to_backend():
@@ -290,9 +339,6 @@ def test_music_player_reports_confirmed_state_to_backend():
     assert superseded_gate.index("_is_music_playback_state_message") < superseded_gate.index(
         "await websocket.close()"
     )
-    assert 'mgr._music_playback_websockets = music_websockets' in router_source
-    assert 'music_websockets.add(websocket)' in router_source
-    assert 'music_websockets.discard(websocket)' in router_source
 
 
 def test_music_player_rejects_errors_queued_before_the_current_source_lifecycle():
@@ -377,7 +423,7 @@ def test_same_url_replacement_uses_a_fresh_audio_element():
 
     teardown_source = player_source.split(
         "const destroyMusicPlayer =", 1
-    )[1].split("const cancelActiveMusicPlayback", 1)[0]
+    )[1].split("// --- 查找并替换整个 loadAPlayerLibrary 函数 ---", 1)[0]
     revoke_context = teardown_source.index(
         "localPlayer._musicPlaybackReportContext = null;"
     )

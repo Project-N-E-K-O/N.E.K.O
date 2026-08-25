@@ -953,11 +953,14 @@
     "speaker": {
         "volumeLabel": "揚聲器音量",
         "volumeHint": "調節AI語音的播放音量",
-        "title": "選擇揚聲器",
-        "defaultDevice": "系統默認揚聲器",
-        "deviceLabel": "揚聲器 {{index}}",
-        "loadFailed": "獲取揚聲器列表失敗",
-        "noDevices": "沒有檢測到揚聲器設備",
+        "title": "選擇播放裝置",
+        "defaultDevice": "系統預設播放裝置",
+        "deviceLabel": "播放裝置 {{index}}",
+        "loadFailed": "獲取播放裝置列表失敗",
+        "noDevices": "沒有檢測到播放裝置",
+        "switchFailed": "切換播放裝置失敗",
+        "unavailableFallback": "所選裝置無法使用，正使用系統預設播放裝置",
+        "unavailableFallbackFailed": "所選裝置無法使用，且無法切換到系統預設播放裝置",
         "spatialAudioLabel": "空間音訊",
         "spatialAudioHint": "依貓娘視窗相對主螢幕的位置做立體聲與距離衰減"
     },
@@ -2201,6 +2204,14 @@
         "voiceNotSet": "未指定音色",
         "voiceSetting": "音色設定",
         "personalitySetting": "人格設定",
+        "languagePreference": "語言偏好",
+        "languagePreferenceDescription": "此偏好並非強制限制，角色設定以及目前對話中使用的語言仍可能影響實際回覆。",
+        "languagePreferenceSaved": "語言偏好已更新",
+        "languagePreferencePartiallySaved": "語言偏好已儲存，但目前對話同步未完全完成",
+        "languagePreferenceSuperseded": "已有更新的語言偏好生效，已為你重新整理",
+        "languagePreferenceUnverified": "語言偏好已儲存，但暫時無法確認是否為最新",
+        "languagePreferenceSaveFailed": "語言偏好儲存失敗",
+        "languagePreferenceLoadFailed": "語言偏好載入失敗",
         "personalityUseDefault": "跟隨角色卡預設設定",
         "personalitySelect": "選擇人格",
         "personalityClear": "恢復預設",
@@ -2482,6 +2493,11 @@
             "screens": "屏幕",
             "screenLabel": "螢幕 {{index}}",
             "windows": "窗口",
+            "titleFilterPlaceholder": "篩選窗口標題",
+            "titleFilterAriaLabel": "按標題篩選窗口",
+            "noWindowMatches": "沒有匹配的窗口",
+            "rememberWindow": "記住窗口",
+            "rememberedWindowUnavailable": "無法唯一找到記住的窗口，請重新選擇螢幕來源",
             "selected": "已選擇 {{source}}",
             "sourceLost": "螢幕分享無法找到之前選擇的窗口，已切換為全螢幕分享",
             "captureFailed": "螢幕擷取已停止，請檢查系統權限或重新選擇來源"
@@ -2901,13 +2917,14 @@
             "fullscreenTracking": "全屏跟蹤",
             "localTracking": "局部跟蹤",
             "lockedHoverFade": "鎖定懸停淡化",
+            "forgeDropEffects": "掉券動畫與音效",
             "textGuardMaxLength": "回覆長度上限",
             "unlimited": "無限制",
             "characters": "字",
             "tokens": "詞元",
             "textGuardUnlimitedWarning": "可能導致貓娘出現嚴重問題，非必要不建議無限制",
             "textGuardHighWarning": "設定過大可能導致貓娘記憶和語言混亂，建議 1000 詞元以內",
-            "textGuardNote": "依 tiktoken 統計；僅對文字回覆有效，不影響語音對話"
+            "textGuardNote": "僅對文字回覆有效，不影響語音對話"
         }
     },
     "openclawGuide": {
@@ -3990,6 +4007,7 @@
         "twitter": "Twitter/X",
         "reddit": "Reddit",
         "netease": "網易雲音樂",
+        "qqmusic": "QQ音樂",
         "saveConfig": "儲存設定",
         "encryptStorage": "安全加密儲存至本地檔案",
         "localMonitoring": "本地狀態監控",
@@ -4028,7 +4046,8 @@
             "weibo": "<b>目標：</b> 請前往 <code>m.weibo.cn</code> 獲取這些 Cookies。",
             "twitter": "<b>目標：</b> 請前往 <code>x.com</code> 獲取這些 Cookies。",
             "reddit": "<b>目標：</b> 請前往 <code>reddit.com</code> 獲取這些 Cookies。",
-            "netease": "<b>目標：</b> 請前往 <code>music.163.com</code> 獲取這些 Cookies。"
+            "netease": "<b>目標：</b> 請前往 <code>music.163.com</code> 獲取這些 Cookies。",
+            "qqmusic": "<b>目標：</b> 請前往 <code>y.qq.com</code> 獲取這些 Cookies。"
         },
         "guide": {
             "title": "新手通用獲取教學",
@@ -4143,6 +4162,14 @@
             "MUSIC_U": {
                 "label": "MUSIC_U",
                 "desc": "核心身份憑證 (必填)"
+            },
+            "qqmusicUin": {
+                "label": "uin",
+                "desc": "QQ 帳號識別碼（通常以 o 加數字開頭）"
+            },
+            "qqmusicKey": {
+                "label": "qqmusic_key",
+                "desc": "QQ 音樂登入憑證（必填）"
             },
             "NMTID": {
                 "label": "NMTID",

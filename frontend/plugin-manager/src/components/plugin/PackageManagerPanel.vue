@@ -374,7 +374,11 @@ const {
   padding: 14px 16px;
   border-radius: 18px;
   background:
-    linear-gradient(135deg, color-mix(in srgb, var(--el-color-primary) 10%, white), color-mix(in srgb, var(--el-color-info) 9%, white));
+    linear-gradient(
+      135deg,
+      color-mix(in srgb, var(--el-color-primary) 10%, var(--el-bg-color)),
+      color-mix(in srgb, var(--el-color-info) 9%, var(--el-bg-color))
+    );
   border: 1px solid color-mix(in srgb, var(--el-color-primary) 12%, var(--el-border-color));
 }
 
@@ -409,7 +413,7 @@ const {
   flex-wrap: wrap;
   padding: 12px 14px;
   border-radius: 16px;
-  background: color-mix(in srgb, var(--el-fill-color-light) 78%, white);
+  background: color-mix(in srgb, var(--el-fill-color-light) 78%, var(--el-bg-color));
   border: 1px solid color-mix(in srgb, var(--el-color-info) 10%, var(--el-border-color));
 }
 

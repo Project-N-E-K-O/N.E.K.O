@@ -10,9 +10,12 @@ import { i18n } from '@/i18n'
 
 let lastNetworkErrorShownAt = 0
 
-type ErrorDisplayRequestConfig = AxiosRequestConfig & {
+export type ErrorDisplayRequestConfig = AxiosRequestConfig & {
+  /** Let the caller replace the generic interceptor toast with a domain message. */
+  suppressErrorMessage?: boolean
   /** Suppress only the expected stopped-plugin response for panel probes. */
   suppressPluginNotRunningMessage?: boolean
+  preserveMessagesOn404?: boolean
 }
 
 type HeaderBag = Record<string, unknown> & {
@@ -115,6 +118,11 @@ export function shouldSuppressPluginNotRunningMessage(error: AxiosError): boolea
   return requested && readErrorCode(error) === 'PLUGIN_NOT_RUNNING'
 }
 
+export function shouldSuppressErrorMessage(error: AxiosError): boolean {
+  return Boolean((error.config as ErrorDisplayRequestConfig | undefined)?.suppressErrorMessage)
+    || shouldSuppressPluginNotRunningMessage(error)
+}
+
 // 创建 axios 实例
 const service: AxiosInstance = axios.create({
   baseURL: API_BASE_URL,
@@ -148,10 +156,13 @@ service.interceptors.response.use(
     return response.data
   },
   async (error: AxiosError) => {
+    if (axios.isCancel(error) || error.code === 'ERR_CANCELED') {
+      return Promise.reject(error)
+    }
     // 对于 404 错误，不输出错误日志（这是正常的，某些资源可能不存在）
     // 对于 401/403 错误，也不输出错误日志
     const status = error.response?.status
-    const suppressErrorMessage = shouldSuppressPluginNotRunningMessage(error)
+    const suppressErrorMessage = shouldSuppressErrorMessage(error)
     if (!suppressErrorMessage && status !== 404 && status !== 401 && status !== 403) {
       console.error('Response error:', error)
     }
@@ -166,8 +177,6 @@ service.interceptors.response.use(
         console.debug('Connection store not available:', err)
       }
       // 服务器返回了错误状态码
-      const data = error.response.data as any
-
       switch (status) {
         case 400:
           message = formatHttpError(error) || i18n.global.t('messages.badRequest')
@@ -178,11 +187,17 @@ service.interceptors.response.use(
         case 403:
           message = formatHttpError(error) || i18n.global.t('auth.forbidden')
           break
-        case 404:
+        case 404: {
           message = formatHttpError(error) || i18n.global.t('messages.resourceNotFound')
           // 404 错误不显示通用错误消息，让调用方自己处理
-          ElMessage.closeAll()
+          const preserveMessagesOn404 = Boolean(
+            (error.config as ErrorDisplayRequestConfig | undefined)?.preserveMessagesOn404,
+          )
+          if (!preserveMessagesOn404) {
+            ElMessage.closeAll()
+          }
           break
+        }
         case 500:
           message = formatHttpError(error) || i18n.global.t('messages.internalServerError')
           break
@@ -200,7 +215,7 @@ service.interceptors.response.use(
         const wasDisconnected = connectionStore.disconnected
         connectionStore.markDisconnected()
         const now = Date.now()
-        if (!wasDisconnected && now - lastNetworkErrorShownAt > 15000) {
+        if (!suppressErrorMessage && !wasDisconnected && now - lastNetworkErrorShownAt > 15000) {
           lastNetworkErrorShownAt = now
           ElMessage.error(message)
         }

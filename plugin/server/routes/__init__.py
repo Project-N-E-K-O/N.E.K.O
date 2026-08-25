@@ -9,6 +9,7 @@ from plugin.server.routes.runs import router as runs_router
 from plugin.server.routes.messages import router as messages_router
 from plugin.server.routes.metrics import router as metrics_router
 from plugin.server.routes.config import router as config_router
+from plugin.server.routes.documents import router as documents_router
 from plugin.server.routes.logs import router as logs_router
 from plugin.server.routes.media import router as media_router
 from plugin.server.routes.frontend import router as frontend_router
@@ -25,6 +26,7 @@ __all__ = [
     'messages_router',
     'metrics_router',
     'config_router',
+    'documents_router',
     'logs_router',
     'media_router',
     'frontend_router',

@@ -41,7 +41,12 @@ from main_logic.proactive_delivery import (
 from config import ANTI_REPEAT_EXEMPT_SOURCE_TAGS
 from utils.language_utils import normalize_language_code, get_global_language_full
 from uuid import uuid4
-from ._shared import _VOICE_PROACTIVE_ACK_GRACE_S, logger, _proactive_expected_sid
+from ._shared import (
+    _VOICE_PROACTIVE_ACK_GRACE_S,
+    logger,
+    _proactive_expected_sid,
+    FreshScreenshot,
+)
 from .callback_render import _build_callback_instruction, _select_callbacks_within_token_budget
 
 
@@ -92,12 +97,19 @@ class ProactiveMixin:
     # Voice-chat proactive text trigger (dedicated path)
     # ------------------------------------------------------------------
 
-    async def trigger_voice_proactive_nudge(self) -> bool:
+    async def trigger_voice_proactive_nudge(
+        self,
+        *,
+        language: str | None = None,
+    ) -> bool:
         """Inject a text prompt to nudge the voice model into speaking.
 
         This is the **only** caller of ``OmniRealtimeClient.prompt_ephemeral``
         for the voice-chat proactive feature.  It is completely independent of
         ``trigger_agent_callbacks`` (which handles agent task results).
+
+        ``language`` is a request-local rendering override. It intentionally
+        does not update the manager's durable or fallback language state.
 
         Returns True if the text turn was sent, False if skipped.
         """
@@ -122,7 +134,10 @@ class ProactiveMixin:
                     self.lanlan_name,
                 )
                 return False
-            _lang = normalize_language_code(self.user_language, format='short') or 'en'
+            _lang = normalize_language_code(
+                language or self.user_language,
+                format='full',
+            ) or 'en'
             delivered = await session.prompt_ephemeral(language=_lang)
         if delivered:
             logger.info("[%s] voice proactive nudge delivered (%s)", self.lanlan_name, _lang)
@@ -134,20 +149,32 @@ class ProactiveMixin:
     # Proactive streaming helpers (Phase 2 流式 TTS + 完整文本投递)
     # ------------------------------------------------------------------
 
-    async def request_fresh_screenshot(self, timeout: float = 3.0) -> str:
+    async def request_fresh_screenshot(self, timeout: float = 3.0) -> FreshScreenshot:
         """Request the latest screenshot from the frontend over WebSocket, falling back to backend pyautogui on failure.
 
         Both paths normalize the screenshot down to 720p/JPEG-80 and return the
         normalized base64 (without prefix), so a native-resolution frontend image
         never goes straight to the vision LLM and trips the proxy's 413.
+
+        Returns a ``FreshScreenshot`` rather than the bare base64: the caller has to
+        know which path produced the image before it can decide whether an absent
+        avatar position means "the frontend said don't annotate" or merely "the
+        frontend was never asked".
+
+        Neither path draws the avatar annotation; the caller owns that step.
         """
         # 策略1: 前端 WebSocket 截图
         if self.websocket:
             try:
                 loop = asyncio.get_running_loop()
+                # 先清槽再 arm future：上一次请求的残留坐标绝不能被这次读到。
+                self._pending_screenshot_avatar_position = None
                 self._screenshot_future = loop.create_future()
                 await self.websocket.send_json({"type": "request_screenshot"})
                 b64 = await asyncio.wait_for(self._screenshot_future, timeout=timeout)
+                # 紧贴 await 取走，中间不再 await → 事件循环插不进别的帧来改写它。
+                # getattr 守卫与本文件其余部分一致：窄 manager double 不一定带这个字段。
+                ws_av_pos = getattr(self, "_pending_screenshot_avatar_position", None)
                 if b64:
                     # 前端有的截图路径（如 Electron 主进程直捕 captureSourceAsDataUrl）
                     # 返回原生分辨率，未走 720p 缩放，base64 可达 ~1.4MB，直接发给
@@ -168,11 +195,14 @@ class ProactiveMixin:
                             "[%s] request_fresh_screenshot WS compress failed, using raw: %s",
                             self.lanlan_name, comp_err,
                         )
-                    return b64
+                    return FreshScreenshot(
+                        b64=b64, source="websocket", avatar_position=ws_av_pos,
+                    )
             except (asyncio.TimeoutError, Exception) as e:
                 logger.warning("[%s] request_fresh_screenshot WS failed: %s", self.lanlan_name, e)
             finally:
                 self._screenshot_future = None
+                self._pending_screenshot_avatar_position = None
 
         # 策略2: 后端 pyautogui 兜底（仅限本机连接，远程服务器截图无意义）
         is_local = False
@@ -201,15 +231,27 @@ class ProactiveMixin:
                 jpg_bytes = await asyncio.to_thread(_capture_and_compress)
                 b64_str = b64mod.b64encode(jpg_bytes).decode('utf-8')
                 logger.info("[%s] request_fresh_screenshot: 后端 pyautogui 兜底成功 (%dKB)", self.lanlan_name, len(jpg_bytes) // 1024)
-                return b64_str
+                # 这里不叠水印：后端手里没有任何属于这张图的 Avatar 坐标。谁有资格
+                # 补坐标由调用方按 source 判断（见 FreshScreenshot 的说明）。
+                return FreshScreenshot(b64=b64_str, source="backend_fallback")
             except Exception as e2:
                 logger.warning("[%s] request_fresh_screenshot backend fallback failed: %s", self.lanlan_name, e2)
 
-        return ''
+        return FreshScreenshot()
 
-    def resolve_screenshot_request(self, b64: str):
-        """Called by the WebSocket router to hand the frontend's returned screenshot to the waiting future."""
+    def resolve_screenshot_request(self, b64: str, avatar_position: dict | None = None):
+        """Called by the WebSocket router to hand the frontend's returned screenshot -- and its avatar verdict -- to the waiting future.
+
+        The position travels with the image instead of through ``_avatar_position``
+        on purpose: that field is rewritten by every stream_data frame, so a screen
+        share frame arriving between this call and the requester waking up would
+        silently swap the coordinates.
+        """
         if self._screenshot_future and not self._screenshot_future.done():
+            # 顺序要紧：先落坐标再 resolve，等待方被唤醒时槽里一定是配对好的值。
+            self._pending_screenshot_avatar_position = (
+                avatar_position if isinstance(avatar_position, dict) and avatar_position else None
+            )
             self._screenshot_future.set_result(b64)
 
     async def prepare_proactive_delivery(self, min_idle_secs: float = 10.0) -> bool:

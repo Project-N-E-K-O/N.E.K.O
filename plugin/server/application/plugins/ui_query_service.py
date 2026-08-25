@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import uuid
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -322,7 +323,40 @@ def _build_static_compat_surface(plugin_id: str, plugin_meta: Mapping[str, objec
         open_in="iframe",
         permissions=["state:read"],
         available=True,
+        legacy_static_compat=True,
     ).model_dump(exclude_none=True)
+
+
+def _legacy_static_panel_enabled(plugin_meta: Mapping[str, object]) -> bool:
+    plugin_ui = _get_plugin_ui_config_from_meta(plugin_meta)
+    if not isinstance(plugin_ui, Mapping):
+        return True
+    return _to_bool(plugin_ui.get("expose_legacy_static_panel"), default=True)
+
+
+def _static_ui_action_target(plugin_id: str, plugin_meta: Mapping[str, object]) -> str | None:
+    static_ui_config = _get_static_ui_config_from_meta(plugin_meta)
+    if static_ui_config is not None:
+        static_dir = _resolve_static_dir(static_ui_config)
+        if static_dir is not None and (static_dir / "index.html").exists():
+            return f"/plugin/{plugin_id}/ui/"
+
+    static_surface = next(
+        (
+            surface
+            for surface in _build_manifest_surfaces(plugin_id, plugin_meta)
+            if surface.get("mode") == "static"
+            and surface.get("kind") == "panel"
+            and surface.get("available") is not False
+            and isinstance(surface.get("ui_path") or surface.get("url"), str)
+            and str(surface.get("ui_path") or surface.get("url")).strip()
+        ),
+        None,
+    )
+    if static_surface is not None:
+        return str(static_surface.get("ui_path") or static_surface.get("url")).strip()
+
+    return None
 
 
 def _build_surfaces_sync(
@@ -336,9 +370,23 @@ def _build_surfaces_sync(
     for surface in surfaces:
         surface_warnings = surface.pop("_warnings", None)
         warnings.extend(normalize_warnings(surface_warnings))
-    seen = {(str(surface.get("kind")), str(surface.get("id"))) for surface in surfaces}
-    static_surface = _build_static_compat_surface(plugin_id, plugin_meta)
-    if static_surface is not None and ("panel", "main") not in seen:
+    static_surface = (
+        _build_static_compat_surface(plugin_id, plugin_meta)
+        if _legacy_static_panel_enabled(plugin_meta)
+        else None
+    )
+    # An unavailable or ``auto`` main panel cannot replace static/index.html:
+    # the former has no usable entry and the latter has no frontend renderer.
+    # Keep the compatibility surface in those cases so legacy UI remains
+    # reachable and generated Open Panel actions have a valid target.
+    has_renderable_main = any(
+        surface.get("kind") == "panel"
+        and surface.get("id") == "main"
+        and surface.get("mode") != "auto"
+        and surface.get("available") is not False
+        for surface in surfaces
+    )
+    if static_surface is not None and not has_renderable_main:
         surfaces.insert(0, static_surface)
     return surfaces, warnings
 
@@ -1176,7 +1224,15 @@ def _add_surface_route_actions(
     plugin_meta: Mapping[str, object],
 ) -> None:
     surfaces, _warnings = _build_surfaces_sync(plugin_id, plugin_meta)
-    has_panel = any(surface.get("kind") == "panel" and surface.get("available") is not False for surface in surfaces)
+    # ``auto`` is accepted as a manifest placeholder, but the frontend has no
+    # renderer for it yet. Do not expose an Open Panel action that would only
+    # route the user back to Basic Info.
+    has_panel = any(
+        surface.get("kind") == "panel"
+        and surface.get("mode") != "auto"
+        and surface.get("available") is not False
+        for surface in surfaces
+    )
     has_guide = any(surface.get("kind") in {"guide", "docs"} and surface.get("available") is not False for surface in surfaces)
     safe_id = plugin_id.replace("/", "%2F")
     if has_panel and "open_panel" not in seen_ids:
@@ -1283,6 +1339,17 @@ def _build_plugin_list_actions_from_meta(
                 continue
             actions.append(normalized)
             seen_ids.add(action_id)
+
+    if "open_ui" not in seen_ids:
+        target = _static_ui_action_target(plugin_id, plugin_meta)
+        if target is not None:
+            actions.append({
+                "id": "open_ui",
+                "kind": "ui",
+                "target": target,
+                "open_in": "new_tab",
+            })
+            seen_ids.add("open_ui")
 
     _add_surface_route_actions(actions, seen_ids, plugin_id=plugin_id, plugin_meta=plugin_meta)
 
@@ -1676,11 +1743,35 @@ class PluginUiQueryService:
                     plugin_id,
                     resolved_action_id,
                 )
-                result = await host.trigger(
-                    resolved_action_id,
-                    dict(args or {}),
-                    timeout=entry_timeout,
+                trigger_args = dict(args or {})
+                raw_context = trigger_args.get("_ctx")
+                trigger_context = (
+                    dict(raw_context) if isinstance(raw_context, Mapping) else {}
                 )
+                hosted_run_id = uuid.uuid4().hex
+                trigger_context["run_id"] = hosted_run_id
+                trigger_args["_ctx"] = trigger_context
+                try:
+                    result = await host.trigger(
+                        resolved_action_id,
+                        trigger_args,
+                        timeout=entry_timeout,
+                    )
+                except asyncio.CancelledError:
+                    cancel_run = getattr(host, "cancel_run", None)
+                    if callable(cancel_run):
+                        try:
+                            await cancel_run(hosted_run_id)
+                        except Exception as cancel_error:
+                            logger.warning(
+                                "Hosted UI action cancellation propagation failed: "
+                                "plugin_id={}, action_id={}, err_type={}, err={}",
+                                plugin_id,
+                                resolved_action_id,
+                                type(cancel_error).__name__,
+                                str(cancel_error),
+                            )
+                    raise
             except PluginExecutionError as exc:
                 message = exc.error if isinstance(exc.error, str) and exc.error else str(exc)
                 logger.warning(

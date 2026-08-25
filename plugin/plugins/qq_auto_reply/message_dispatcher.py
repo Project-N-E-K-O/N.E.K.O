@@ -612,6 +612,16 @@ class QQMessageDispatcher:
                 except (asyncio.TimeoutError, Exception) as e:
                     self.plugin._emit_log("DEBUG", f"[Voice] 语音转录超时或失败: {type(e).__name__}")
                 message.pop("_pending_record_files", None)
+            file_ids = message.get("_pending_file_ids")
+            if isinstance(file_ids, list) and file_ids:
+                try:
+                    await asyncio.wait_for(
+                        self.plugin.qq_client._fetch_file_content(message, file_ids),
+                        timeout=60.0,
+                    )
+                except (asyncio.TimeoutError, Exception) as e:
+                    self.plugin._emit_log("DEBUG", f"[File] 文件内容拉取超时或失败: {type(e).__name__}")
+                message.pop("_pending_file_ids", None)
             # 语音/引用/转发可能丰富了消息内容 → 复检黑名单
             enriched_content = str(message.get("content") or "").strip()
             if enriched_content != raw_content and QQFeedbackClassifier.is_blacklisted(enriched_content, label_defs):
@@ -630,6 +640,7 @@ class QQMessageDispatcher:
                 if self.plugin._strategy_mode != "neko_dynamic":
                     await self.plugin.attention_service.update_on_message(message)
         self.plugin._emit_log("INFO", f"收到消息: type={message.get('message_type')} from={message.get('user_id')} text={str(message.get('content',''))[:40]}")
+        getattr(self.plugin, "_maybe_push_status_event", lambda: None)()  # 消息活动 → SSE 通知前端刷新状态
         # ── 疲劳全局消息计数（睡眠判断已移入 attention_gate_service）──
         if getattr(self.plugin, "fatigue_service", None):
             self.plugin.fatigue_service.record_incoming_message()

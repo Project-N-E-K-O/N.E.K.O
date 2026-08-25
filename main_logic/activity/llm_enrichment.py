@@ -47,6 +47,7 @@ import asyncio
 import json
 import logging
 import re
+import threading
 import time
 from typing import Any
 
@@ -59,7 +60,14 @@ from config.prompts.prompts_activity import (
 from utils.file_utils import robust_json_loads
 from utils.tokenize import truncate_to_tokens
 
-logger = logging.getLogger(__name__)
+# Named into the Main service tree, not __name__. setup_logging(service_name=
+# "Main") installs handlers on "N.E.K.O.Main" with propagate=False, and nothing
+# is installed on root — so a `main_logic.*` logger reaches no handler at all
+# and its records fall through to logging.lastResort (bare text on stderr,
+# WARNING and above, never the log file). The sibling main_logic/topic modules
+# already name themselves this way; this module did not, which is why its
+# failure reasons were invisible even before they were only at debug level.
+logger = logging.getLogger("N.E.K.O.Main.activity.llm_enrichment")
 
 
 # Input cap: the emotion tier is small and cheap, but we still don't
@@ -88,6 +96,63 @@ _SCORED_STATES: tuple[str, ...] = (
 
 # Prompt templates moved to config/prompts/prompts_activity.py per the project's
 # i18n convention (multi-language str→str dicts must live in config/prompts/prompts_*).
+
+
+# ── Failure reporting ───────────────────────────────────────────────
+#
+# Enrichment failures used to land on logger.debug, so a permanently
+# misconfigured tier showed up only as the caller's "no result" symptom with
+# no visible cause. Reporting them costs two constraints:
+#
+#   1. No conversation text, ever. Both the prompt and the model's reply are
+#      built from the user's own turns, so neither may reach a log line.
+#      Reports carry a fixed reason slug plus, at most, an exception class
+#      name and an HTTP status code.
+#   2. Throttle per (label, reason). These calls hang off 20s / 40s
+#      heartbeats — logging every failure would just move the flood from
+#      INFO to WARNING. One line per window, and the next line to get
+#      through says how many were suppressed behind it.
+_FAILURE_LOG_INTERVAL_SECONDS = 300.0
+# {(label, reason): [last_emitted_monotonic, suppressed_since]}
+_failure_log_state: dict[tuple[str, str], list[float]] = {}
+_failure_log_lock = threading.Lock()
+
+
+def _failure_detail(exc: BaseException) -> str:
+    """Exception class name plus HTTP status when present — never its message.
+
+    Provider exception messages routinely echo back a slice of the request
+    body, which here is the conversation itself.
+    """
+    status = getattr(exc, 'status_code', None)
+    if status is None:
+        status = getattr(getattr(exc, 'response', None), 'status_code', None)
+    if isinstance(status, int):
+        return f'{type(exc).__name__} HTTP {status}'
+    return type(exc).__name__
+
+
+def _report_failure(label: str, reason: str, detail: str = '') -> None:
+    """Log one enrichment failure, throttled per (label, reason)."""
+    key = (label, reason)
+    now = time.monotonic()
+    with _failure_log_lock:
+        state = _failure_log_state.get(key)
+        if state is not None and now - state[0] < _FAILURE_LOG_INTERVAL_SECONDS:
+            state[1] += 1
+            return
+        suppressed = int(state[1]) if state is not None else 0
+        _failure_log_state[key] = [now, 0]
+    logger.warning(
+        'enrichment %s failed: %s%s%s',
+        label,
+        reason,
+        f' ({detail})' if detail else '',
+        (
+            f'; {suppressed} more suppressed in the last '
+            f'{int(_FAILURE_LOG_INTERVAL_SECONDS)}s'
+        ) if suppressed else '',
+    )
 
 
 # ── Helpers ─────────────────────────────────────────────────────────
@@ -234,13 +299,13 @@ async def call_activity_guess(
 
     parsed = _safe_parse_json(raw)
     if not isinstance(parsed, dict):
-        logger.debug('activity_guess: LLM did not return a JSON object: %r', raw[:200])
+        _report_failure('activity_guess', 'reply_not_json_object')
         return None
 
     raw_scores = parsed.get('scores')
     guess = parsed.get('guess', '') or ''
     if not isinstance(raw_scores, dict) or not isinstance(guess, str):
-        logger.debug('activity_guess: malformed JSON shape: %r', parsed)
+        _report_failure('activity_guess', 'reply_shape_unexpected')
         return None
 
     # Sanitise: keep only allowed state keys and clamp to [0, 1].
@@ -284,11 +349,12 @@ async def call_open_threads(
 
     parsed = _safe_parse_json(raw)
     if not isinstance(parsed, dict):
-        logger.debug('open_threads: LLM did not return a JSON object: %r', raw[:200])
+        _report_failure('open_threads', 'reply_not_json_object')
         return None
 
     threads = parsed.get('open_threads')
     if not isinstance(threads, list):
+        _report_failure('open_threads', 'reply_missing_open_threads')
         return None
     cleaned: list[str] = []
     for entry in threads[:5]:
@@ -325,11 +391,12 @@ async def call_topic_candidates(
 
     parsed = _safe_parse_json(raw)
     if not isinstance(parsed, dict):
-        logger.debug('topic_candidates: LLM did not return a JSON object: %r', raw[:200])
+        _report_failure('topic_candidates', 'reply_not_json_object')
         return None
 
     topics = parsed.get('topics')
     if not isinstance(topics, list):
+        _report_failure('topic_candidates', 'reply_missing_topics')
         return None
 
     cleaned: list[dict[str, Any]] = []
@@ -396,13 +463,13 @@ async def _invoke_emotion_tier(prompt: str, *, timeout: float, label: str) -> st
         cfg_mgr = get_config_manager()
         cfg = await cfg_mgr.aget_model_api_config('emotion')
     except Exception as e:
-        logger.debug('emotion config fetch failed: %s', e)
+        _report_failure(label, 'emotion_config_unavailable', _failure_detail(e))
         return None
     model = cfg.get('model')
     api_key = cfg.get('api_key')
     base_url = cfg.get('base_url')
     if not model or not api_key:
-        logger.debug('emotion tier model/api_key missing — enrichment disabled')
+        _report_failure(label, 'emotion_model_or_api_key_missing')
         return None
 
     set_call_type('activity_enrichment')
@@ -415,7 +482,7 @@ async def _invoke_emotion_tier(prompt: str, *, timeout: float, label: str) -> st
             provider_type=cfg.get('provider_type'),
         )
     except Exception as e:
-        logger.debug('emotion-tier llm init failed: %s', e)
+        _report_failure(label, 'emotion_llm_init_failed', _failure_detail(e))
         return None
 
     try:
@@ -426,10 +493,10 @@ async def _invoke_emotion_tier(prompt: str, *, timeout: float, label: str) -> st
             )
         return getattr(resp, 'content', '') or ''
     except asyncio.TimeoutError:
-        logger.debug('emotion-tier %s call timed out (%ss)', label, timeout)
+        _report_failure(label, 'emotion_call_timed_out', f'{timeout}s')
         return None
     except Exception as e:
-        logger.debug('emotion-tier %s call failed: %s', label, e)
+        _report_failure(label, 'emotion_call_failed', _failure_detail(e))
         return None
 
 
@@ -449,13 +516,13 @@ async def _invoke_capable_tier(prompt: str, *, timeout: float, label: str) -> st
         cfg_mgr = get_config_manager()
         cfg = await cfg_mgr.aget_model_api_config('summary')
     except Exception as e:
-        logger.debug('summary config fetch failed: %s', e)
+        _report_failure(label, 'summary_config_unavailable', _failure_detail(e))
         return None
     model = cfg.get('model')
     api_key = cfg.get('api_key')
     base_url = cfg.get('base_url')
     if not model or not api_key:
-        logger.debug('summary tier model/api_key missing — deep search disabled')
+        _report_failure(label, 'summary_model_or_api_key_missing')
         return None
 
     set_call_type('topic_deep_search')
@@ -468,7 +535,7 @@ async def _invoke_capable_tier(prompt: str, *, timeout: float, label: str) -> st
             provider_type=cfg.get('provider_type'),
         )
     except Exception as e:
-        logger.debug('summary-tier llm init failed: %s', e)
+        _report_failure(label, 'summary_llm_init_failed', _failure_detail(e))
         return None
 
     try:
@@ -479,10 +546,10 @@ async def _invoke_capable_tier(prompt: str, *, timeout: float, label: str) -> st
             )
         return getattr(resp, 'content', '') or ''
     except asyncio.TimeoutError:
-        logger.debug('summary-tier %s call timed out (%ss)', label, timeout)
+        _report_failure(label, 'summary_call_timed_out', f'{timeout}s')
         return None
     except Exception as e:
-        logger.debug('summary-tier %s call failed: %s', label, e)
+        _report_failure(label, 'summary_call_failed', _failure_detail(e))
         return None
 
 

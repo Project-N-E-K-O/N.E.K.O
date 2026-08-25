@@ -13,6 +13,18 @@ from .entry_common import (
     update_install_task_state,
     _entry_exception_error,
 )
+from .interactive_screenshot import (
+    InteractiveCaptureError,
+    capture_interactive_region,
+)
+from .models import OcrSnapshot
+
+
+def _ocr_request_lanlan(kwargs: dict[str, object]) -> str | None:
+    context = kwargs.get("_ctx")
+    if isinstance(context, dict):
+        return str(context.get("lanlan_name") or "").strip() or None
+    return None
 
 
 class _OcrEntriesMixin:
@@ -40,15 +52,80 @@ class _OcrEntriesMixin:
             "entries.ocr_snapshot.description",
             default="Run a lightweight OCR snapshot. Phase 1 attempts fullscreen capture and returns diagnostics on failure.",
         ),
-        input_schema={"type": "object", "properties": {}},
-        timeout=45.0,
-        llm_result_fields=["summary", "status", "diagnostic"],
+        input_schema={
+            "type": "object",
+            "properties": {
+                "capture_mode": {
+                    "type": "string",
+                    "enum": ["fullscreen", "interactive"],
+                    "default": "fullscreen",
+                }
+            },
+        },
+        timeout=90.0,
+        llm_result_fields=[
+            "summary",
+            "status",
+            "diagnostic",
+            "capture_mode_requested",
+            "capture_mode_used",
+            "interactive_fallback_reason",
+        ],
     )
-    async def study_ocr_snapshot(self, **_):
+    async def study_ocr_snapshot(self, capture_mode: str = "fullscreen", **kwargs):
         if self._ocr_pipeline is None:
             return Err(SdkError("study OCR pipeline is not initialized"))
-        snapshot = await asyncio.to_thread(self._ocr_pipeline.capture_snapshot)
+        if capture_mode not in {"fullscreen", "interactive"}:
+            return Err(SdkError("invalid capture_mode"))
+        capture_mode_used = capture_mode
+        interactive_fallback_reason = ""
+        if capture_mode == "interactive":
+            try:
+                capture = await capture_interactive_region(
+                    lanlan_name=_ocr_request_lanlan(kwargs)
+                )
+            except InteractiveCaptureError as exc:
+                exc_text = str(exc)
+                interactive_fallback_reason = next(
+                    (
+                        code
+                        for code in (
+                            "no_renderer",
+                            "main_server_unavailable",
+                            "interactive_unavailable",
+                        )
+                        if code in exc_text
+                    ),
+                    "",
+                )
+                if not interactive_fallback_reason:
+                    return _entry_exception_error(
+                        self,
+                        exc,
+                        operation="study_ocr_snapshot",
+                    )
+                capture_mode_used = "fullscreen"
+                snapshot = await asyncio.to_thread(self._ocr_pipeline.capture_snapshot)
+            else:
+                if capture.canceled:
+                    payload = build_ocr_payload(OcrSnapshot(status="canceled"))
+                    payload["capture_mode_requested"] = "interactive"
+                    payload["capture_mode_used"] = "interactive"
+                    return Ok(payload)
+                if capture.image is None:
+                    return Err(SdkError("interactive_capture: missing_image_data"))
+                snapshot = await asyncio.to_thread(
+                    self._ocr_pipeline.snapshot_from_image,
+                    capture.image,
+                )
+        else:
+            snapshot = await asyncio.to_thread(self._ocr_pipeline.capture_snapshot)
         payload = build_ocr_payload(snapshot)
+        if capture_mode == "interactive":
+            payload["capture_mode_requested"] = "interactive"
+            payload["capture_mode_used"] = capture_mode_used
+            if interactive_fallback_reason:
+                payload["interactive_fallback_reason"] = interactive_fallback_reason
         if self._supervision is not None:
             sensor_available = snapshot.status in {"ok", "empty"}
             payload["supervision"] = self._supervision.observe_activity(

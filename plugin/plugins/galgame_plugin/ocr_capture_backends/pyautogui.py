@@ -1,7 +1,12 @@
 from __future__ import annotations
 from typing import Any
 from ..ocr_runtime_types import DetectedGameWindow, OcrCaptureProfile, _CAPTURE_BACKEND_PYAUTOGUI
-from ._helpers import _require_visible_capture_target, _target_screen_capture_rect, _crop_window_image
+from ._helpers import (
+    _crop_window_image,
+    _require_foreground_screen_capture_target,
+    _require_visible_capture_target,
+    _target_screen_capture_rect,
+)
 
 
 def _is_window_on_primary_monitor(
@@ -104,8 +109,18 @@ class PyAutoGuiCaptureBackend:
                 f" primary=({primary_w},{primary_h})"
                 f" -- switch to dxcam or mss backend for multi-monitor support"
             )
+        _require_foreground_screen_capture_target(
+            target,
+            backend_kind=self.kind,
+            failure_marker="target_not_foreground_for_screen_capture",
+        )
         image = pyautogui.screenshot(
             region=(int(left), int(top), int(right - left), int(bottom - top))
+        )
+        _require_foreground_screen_capture_target(
+            target,
+            backend_kind=self.kind,
+            failure_marker="foreground_changed_during_screen_capture",
         )
         if image.mode != "RGB":
             image = image.convert("RGB")

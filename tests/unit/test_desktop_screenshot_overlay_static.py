@@ -94,3 +94,18 @@ def test_react_chat_marks_screenshot_capability_ready_after_binding_the_button()
     )
     ready_index = APP_BUTTONS.index("window.__NEKO_SCREENSHOT_CAPTURE_READY__ = true;")
     assert button_index < ready_index
+
+
+def test_crop_selection_only_hides_annotation_groups_and_disables_pin():
+    assert "var selectionOnly = false;" in APP_CROP
+    assert "annotationToolbarGroups" in APP_CROP
+    assert "group.style.display = selectionOnly ? 'none' : '';" in APP_CROP
+    assert "allowPin = !selectionOnly && !!(opts && opts.allowPin);" in APP_CROP
+    assert "selectionOnly = !!(opts && opts.selectionOnly);" in APP_CROP
+
+
+def test_crop_clipboard_copy_is_opt_out_and_defaults_to_existing_behavior():
+    assert "var copyCropToClipboard = true;" in APP_CROP
+    assert "copyCropToClipboard = !(opts && opts.copyToClipboard === false);" in APP_CROP
+    assert "if (result && copyCropToClipboard)" in APP_CROP
+    assert "copyCropToClipboard = true;" in APP_CROP

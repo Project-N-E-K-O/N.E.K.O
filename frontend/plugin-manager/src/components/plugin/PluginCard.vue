@@ -8,12 +8,32 @@
     <template #header>
       <div class="plugin-card-header">
         <div class="plugin-info">
-          <h3 class="plugin-name">{{ displayText.name }}</h3>
+          <div class="plugin-heading">
+            <h3 class="plugin-name">{{ displayText.name }}</h3>
+            <span
+              v-if="showIdentity"
+              class="plugin-identity"
+              data-testid="plugin-identity"
+              :title="plugin.id"
+            >
+              ID: {{ plugin.id }}
+            </span>
+          </div>
           <StatusIndicator :status="plugin.status || 'stopped'" />
           <el-tag v-if="plugin.autoStart === false" size="small" type="warning">
             {{ t('plugins.manualStart') }}
           </el-tag>
         </div>
+        <el-button
+          v-if="availableUiAction"
+          data-testid="plugin-open-ui"
+          size="small"
+          type="primary"
+          plain
+          @click.stop="$emit('open-ui', availableUiAction)"
+        >
+          {{ t('plugins.ui.open') }}
+        </el-button>
       </div>
     </template>
 
@@ -59,19 +79,24 @@ import SourceDetailRow from '@/components/plugin/SourceDetailRow.vue'
 import { useMarketVersionsStore } from '@/stores/marketVersions'
 import { hasNewerVersion } from '@/utils/version'
 import { resolvePluginDisplayText } from '@/utils/pluginDisplay'
-import type { PluginMeta, PluginInstallSourceDetailMarket } from '@/types/api'
+import { isOpenUiNavigationAction } from '@/utils/pluginListActions'
+import type { PluginListAction, PluginMeta, PluginInstallSourceDetailMarket } from '@/types/api'
 
 interface Props {
   plugin: PluginMeta & { status?: string; enabled?: boolean; autoStart?: boolean; type?: string }
   isSelected?: boolean
   showMetrics?: boolean
   showSourceDetail?: boolean
+  enableUiAction?: boolean
+  showIdentity?: boolean
 }
 
 const props = withDefaults(defineProps<Props>(), {
   isSelected: false,
   showMetrics: false,
   showSourceDetail: false,
+  enableUiAction: false,
+  showIdentity: false,
 })
 
 const { t, locale } = useI18n()
@@ -80,6 +105,7 @@ const marketVersions = useMarketVersionsStore()
 defineEmits<{
   click: []
   contextmenu: [event: MouseEvent]
+  'open-ui': [action: PluginListAction]
 }>()
 
 const entryCount = computed(() => {
@@ -87,6 +113,13 @@ const entryCount = computed(() => {
 })
 
 const displayText = computed(() => resolvePluginDisplayText(props.plugin, locale.value))
+const availableUiAction = computed(() => {
+  if (!props.enableUiAction) return null
+  return props.plugin.list_actions?.find((action) => {
+    if (!isOpenUiNavigationAction(action) || action.disabled) return false
+    return !action.requires_running || props.plugin.status === 'running'
+  }) || null
+})
 
 /** Look up the market's latest version for this plugin, IF it was installed
  *  from the market. Returns null for non-market / unknown plugins. Callers
@@ -134,6 +167,7 @@ const hasUpdate = computed<boolean>(() => {
   display: flex;
   justify-content: space-between;
   align-items: flex-start;
+  gap: 10px;
 }
 
 .plugin-info {
@@ -153,6 +187,25 @@ const hasUpdate = computed<boolean>(() => {
   color: var(--el-text-color-primary);
   line-height: 1.35;
   word-break: break-word;
+}
+
+.plugin-heading {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+  min-width: 0;
+}
+
+.plugin-identity {
+  max-width: 100%;
+  overflow: hidden;
+  color: var(--el-text-color-secondary);
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+  font-size: 11px;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .plugin-card-body {

@@ -7192,6 +7192,12 @@ describe('App', () => {
     expect(compactChatStyles).not.toContain('Neko ChillReunion Round');
   });
 
+  it('can switch conversation content to the default UI font', () => {
+    expect(compactChatStyles).toMatch(
+      /:root\[data-neko-chat-font-preset="system"\]\s*\{[\s\S]*?--neko-chat-content-font:\s*var\(--neko-ui-font\);/,
+    );
+  });
+
   it('gives the compact surface the full chat liquid-glass edge hierarchy', () => {
     const steadyFrameRule = compactChatStyles.match(/\.compact-chat-surface-frame\s*\{[\s\S]*?\n\}/)?.[0] ?? '';
     expect(compactChatStyles).toContain('--compact-chat-surface-edge-top: rgba(255, 255, 255, 0.7);');

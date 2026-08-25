@@ -10,7 +10,15 @@ from plugin.utils import parse_bool_config
 SURFACE_KINDS = {"panel", "guide", "docs"}
 SURFACE_MODES = {"static", "hosted-tsx", "markdown", "auto"}
 OPEN_IN_VALUES = {"iframe", "new_tab", "same_tab"}
-PERMISSIONS = {"state:read", "config:read", "config:write", "action:call", "logs:read", "runs:read"}
+PERMISSIONS = {
+    "state:read",
+    "config:read",
+    "config:write",
+    "action:call",
+    "document:parse",
+    "logs:read",
+    "runs:read",
+}
 
 
 def default_permissions(kind: str) -> list[str]:
@@ -61,6 +69,11 @@ def normalize_plugin_ui_manifest(conf: Mapping[str, Any], *, plugin_id: str = ""
     result: dict[str, Any] = {
         "enabled": parse_bool_config(ui_section.get("enabled"), default=True),
     }
+    if "expose_legacy_static_panel" in ui_section:
+        result["expose_legacy_static_panel"] = parse_bool_config(
+            ui_section.get("expose_legacy_static_panel"),
+            default=True,
+        )
     warnings: list[dict[str, str]] = []
 
     for kind in ("panel", "guide", "docs"):

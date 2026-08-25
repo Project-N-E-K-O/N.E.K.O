@@ -953,11 +953,14 @@
     "speaker": {
         "volumeLabel": "스피커 볼륨",
         "volumeHint": "AI 음성 재생 볼륨 조절",
-        "title": "스피커 선택",
-        "defaultDevice": "시스템 기본 스피커",
-        "deviceLabel": "스피커 {{index}}",
-        "loadFailed": "스피커 목록을 가져오지 못했습니다",
-        "noDevices": "스피커 장치가 감지되지 않았습니다",
+        "title": "재생 장치 선택",
+        "defaultDevice": "시스템 기본 재생 장치",
+        "deviceLabel": "재생 장치 {{index}}",
+        "loadFailed": "재생 장치 목록을 가져오지 못했습니다",
+        "noDevices": "재생 장치가 감지되지 않았습니다",
+        "switchFailed": "재생 장치를 전환하지 못했습니다",
+        "unavailableFallback": "선택한 장치를 사용할 수 없어 시스템 기본 장치를 사용 중입니다",
+        "unavailableFallbackFailed": "선택한 장치를 사용할 수 없으며 시스템 기본 장치로 전환할 수 없습니다",
         "spatialAudioLabel": "공간 음향",
         "spatialAudioHint": "주 모니터 기준 캐릭터 창 위치에 따른 스테레오 패닝과 거리 감쇠"
     },
@@ -2201,6 +2204,14 @@
         "voiceNotSet": "지정된 음성 없음",
         "voiceSetting": "음성 설정",
         "personalitySetting": "성격 설정",
+        "languagePreference": "언어 선호",
+        "languagePreferenceDescription": "이 설정은 강제되지 않습니다. 캐릭터 설정과 현재 대화에서 사용하는 언어에 따라 실제 응답 언어가 달라질 수 있습니다.",
+        "languagePreferenceSaved": "언어 선호를 업데이트했습니다",
+        "languagePreferencePartiallySaved": "언어 선호는 저장되었지만 현재 세션과의 동기화가 완료되지 않았습니다",
+        "languagePreferenceSuperseded": "다른 창에서 더 새로운 언어 선호가 저장되었습니다. 표시를 새로 고쳤습니다",
+        "languagePreferenceUnverified": "언어 선호는 저장되었지만 지금은 최신인지 확인할 수 없었습니다",
+        "languagePreferenceSaveFailed": "언어 선호를 저장하지 못했습니다",
+        "languagePreferenceLoadFailed": "언어 선호를 불러오지 못했습니다",
         "personalityUseDefault": "캐릭터 카드 기본 성격을 따르기",
         "personalitySelect": "성격 선택",
         "personalityClear": "기본값 복원",
@@ -2482,6 +2493,11 @@
             "screens": "화면",
             "screenLabel": "화면 {{index}}",
             "windows": "윈도우",
+            "titleFilterPlaceholder": "창 제목 필터",
+            "titleFilterAriaLabel": "제목으로 창 필터링",
+            "noWindowMatches": "일치하는 창이 없습니다",
+            "rememberWindow": "창 기억",
+            "rememberedWindowUnavailable": "기억한 창을 고유하게 찾을 수 없습니다. 화면 소스를 다시 선택해 주세요",
             "selected": "{{source}} 선택됨",
             "sourceLost": "화면 공유에서 이전에 선택한 창을 찾을 수 없어 전체 화면 공유로 전환되었습니다",
             "captureFailed": "화면 캡처가 중지되었습니다. 시스템 권한을 확인하거나 소스를 다시 선택해 주세요"
@@ -2901,13 +2917,14 @@
             "fullscreenTracking": "전체 화면 추적",
             "localTracking": "로컬 추적",
             "lockedHoverFade": "잠금 호버 페이드",
+            "forgeDropEffects": "티켓 획득 연출 및 효과음",
             "textGuardMaxLength": "응답 길이 상한",
             "unlimited": "무제한",
             "characters": "자",
             "tokens": "토큰",
             "textGuardUnlimitedWarning": "냥이에게 심각한 문제가 발생할 수 있으며, 필요한 경우가 아니면 무제한을 권장하지 않습니다",
             "textGuardHighWarning": "설정이 너무 크면 냥이의 기억과 언어가 혼란스러워질 수 있습니다. 1000 토큰 이내를 권장합니다",
-            "textGuardNote": "tiktoken 기준; 텍스트 응답에만 적용되며 음성 세션에는 영향이 없습니다"
+            "textGuardNote": "텍스트 응답에만 적용되며 음성 세션에는 영향이 없습니다"
         }
     },
     "openclawGuide": {
@@ -3990,6 +4007,7 @@
         "twitter": "트위터/X (Twitter/X)",
         "reddit": "레딧 (Reddit)",
         "netease": "넷이즈 뮤직 (NetEase)",
+        "qqmusic": "QQ 뮤직",
         "saveConfig": "설정 저장",
         "encryptStorage": "로컬 파일에 안전하게 암호화 저장",
         "localMonitoring": "로컬 상태 모니터링",
@@ -4028,7 +4046,8 @@
             "weibo": "<b>대상:</b> <code>m.weibo.cn</code>에 접속하여 해당 쿠키를 가져오세요.",
             "twitter": "<b>대상:</b> <code>x.com</code>에 접속하여 해당 쿠키를 가져오세요.",
             "reddit": "<b>대상:</b> <code>reddit.com</code>에 접속하여 해당 쿠키를 가져오세요.",
-            "netease": "<b>대상:</b> <code>music.163.com</code>에 접속하여 해당 쿠키를 가져오세요."
+            "netease": "<b>대상:</b> <code>music.163.com</code>에 접속하여 해당 쿠키를 가져오세요.",
+            "qqmusic": "<b>대상:</b> <code>y.qq.com</code>에 접속하여 해당 쿠키를 가져오세요."
         },
         "guide": {
             "title": "초보자를 위한 공통 가이드",
@@ -4143,6 +4162,14 @@
             "MUSIC_U": {
                 "label": "MUSIC_U",
                 "desc": "핵심 신원 증명 (필수)"
+            },
+            "qqmusicUin": {
+                "label": "uin",
+                "desc": "QQ 계정 식별자(일반적으로 o 뒤에 숫자가 붙음)"
+            },
+            "qqmusicKey": {
+                "label": "qqmusic_key",
+                "desc": "QQ 뮤직 로그인 자격 증명(필수)"
             },
             "NMTID": {
                 "label": "NMTID",

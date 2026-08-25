@@ -30,6 +30,7 @@ enabled = false
 [plugin_runtime]
 enabled = true
 auto_start = false
+timeout = 30
 
 [galgame]
 bridge_root = ""
@@ -44,6 +45,7 @@ warmup_replay_bytes_limit = 65536
 warmup_replay_events_limit = 50
 default_mode = "companion"
 push_notifications = true
+scene_summary_repeat_guard_enabled = true
 auto_open_ui = true
 reader_mode = "auto"
 
@@ -110,7 +112,7 @@ renpy = []
 [ocr_reader]
 enabled = true
 backend_selection = "rapidocr"
-capture_backend = "dxcam"
+capture_backend = "smart"
 install_manifest_url = ""
 install_target_dir = ""
 install_timeout_seconds = 60

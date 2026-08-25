@@ -953,11 +953,14 @@
     "speaker": {
         "volumeLabel": "スピーカー音量",
         "volumeHint": "AI音声の再生音量を調整",
-        "title": "スピーカーを選択",
-        "defaultDevice": "システムのデフォルトスピーカー",
-        "deviceLabel": "スピーカー {{index}}",
-        "loadFailed": "スピーカーリストの取得に失敗しました",
-        "noDevices": "スピーカーデバイスが検出されませんでした",
+        "title": "再生デバイスを選択",
+        "defaultDevice": "システムのデフォルト再生デバイス",
+        "deviceLabel": "再生デバイス {{index}}",
+        "loadFailed": "再生デバイス一覧の取得に失敗しました",
+        "noDevices": "再生デバイスが検出されませんでした",
+        "switchFailed": "再生デバイスの切り替えに失敗しました",
+        "unavailableFallback": "選択したデバイスを利用できないため、システムのデフォルトを使用中",
+        "unavailableFallbackFailed": "選択したデバイスを利用できず、システムのデフォルトにも切り替えられません",
         "spatialAudioLabel": "空間オーディオ",
         "spatialAudioHint": "キャラクターウィンドウのメインモニターに対する位置からステレオ定位と距離減衰を適用"
     },
@@ -2201,6 +2204,14 @@
         "voiceNotSet": "ボイスが指定されていません",
         "voiceSetting": "ボイス設定",
         "personalitySetting": "性格設定",
+        "languagePreference": "言語の好み",
+        "languagePreferenceDescription": "この設定は強制ではありません。キャラクター設定や現在の会話で使われる言語によって、実際の応答言語が変わることがあります。",
+        "languagePreferenceSaved": "言語の好みを更新しました",
+        "languagePreferencePartiallySaved": "言語の好みは保存されましたが、現在のセッションとの同期は完了していません",
+        "languagePreferenceSuperseded": "別のウィンドウでより新しい言語の好みが保存されました。表示を更新しました",
+        "languagePreferenceUnverified": "言語の好みは保存されましたが、最新かどうかを今は確認できませんでした",
+        "languagePreferenceSaveFailed": "言語の好みを保存できませんでした",
+        "languagePreferenceLoadFailed": "言語の好みを読み込めませんでした",
         "personalityUseDefault": "キャラクターカードのデフォルト性格に従う",
         "personalitySelect": "性格を選択",
         "personalityClear": "デフォルトに戻す",
@@ -2482,6 +2493,11 @@
             "screens": "画面",
             "screenLabel": "画面 {{index}}",
             "windows": "ウィンドウ",
+            "titleFilterPlaceholder": "ウィンドウ名を絞り込み",
+            "titleFilterAriaLabel": "タイトルでウィンドウを絞り込む",
+            "noWindowMatches": "一致するウィンドウがありません",
+            "rememberWindow": "ウィンドウを記憶",
+            "rememberedWindowUnavailable": "記憶したウィンドウを一意に特定できません。画面ソースを選択し直してください",
             "selected": "{{source}}を選択しました",
             "sourceLost": "画面共有で以前選択したウィンドウが見つかりません。全画面共有に切り替えました",
             "captureFailed": "画面キャプチャを停止しました。システム権限を確認するか、ソースを選択し直してください"
@@ -2901,13 +2917,14 @@
             "fullscreenTracking": "フルスクリーン追跡",
             "localTracking": "ローカル追跡",
             "lockedHoverFade": "ロック時ホバー透過",
+            "forgeDropEffects": "チケット獲得演出・効果音",
             "textGuardMaxLength": "返信長さ上限",
             "unlimited": "無制限",
             "characters": "文字",
             "tokens": "トークン",
             "textGuardUnlimitedWarning": "猫娘に深刻な問題が発生する可能性があり、必要な場合を除き無制限は推奨されません",
             "textGuardHighWarning": "設定が大きすぎると猫娘の記憶と言語が混乱する可能性があります。1000 トークン以内を推奨します",
-            "textGuardNote": "tiktoken で計測。テキスト返信にのみ適用され、音声セッションには影響しません"
+            "textGuardNote": "テキスト返信にのみ適用され、音声セッションには影響しません"
         }
     },
     "openclawGuide": {
@@ -3990,6 +4007,7 @@
         "twitter": "Twitter/X",
         "reddit": "Reddit",
         "netease": "网易雲音楽",
+        "qqmusic": "QQミュージック",
         "saveConfig": "設定を保存",
         "encryptStorage": "ローカルファイルに安全に暗号化保存",
         "localMonitoring": "ローカルステータス監視",
@@ -4028,7 +4046,8 @@
             "weibo": "<b>対象：</b> <code>m.weibo.cn</code> にアクセスして Cookie を取得してください。",
             "twitter": "<b>対象：</b> <code>x.com</code> にアクセスして Cookie を取得してください。",
             "reddit": "<b>対象：</b> <code>reddit.com</code> にアクセスして Cookie を取得してください。",
-            "netease": "<b>対象：</b> <code>music.163.com</code> にアクセスして Cookie を取得してください。"
+            "netease": "<b>対象：</b> <code>music.163.com</code> にアクセスして Cookie を取得してください。",
+            "qqmusic": "<b>対象：</b> <code>y.qq.com</code> にアクセスして Cookie を取得してください。"
         },
         "guide": {
             "title": "初心者向け共通ガイド",
@@ -4143,6 +4162,14 @@
             "MUSIC_U": {
                 "label": "MUSIC_U",
                 "desc": "コアIDクレデンシャル (必須)"
+            },
+            "qqmusicUin": {
+                "label": "uin",
+                "desc": "QQアカウント識別子（通常は o に数字が続きます）"
+            },
+            "qqmusicKey": {
+                "label": "qqmusic_key",
+                "desc": "QQ Music のログイン認証情報（必須）"
             },
             "NMTID": {
                 "label": "NMTID",

@@ -60,9 +60,12 @@ class _FakeNotebookAgent:
         self.calls: list[dict[str, str]] = []
         self.message_texts: list[str] = []
 
-    async def _call_model(self, messages, *, operation):
+    def _new_operation_deadline(self, _operation, _messages):
+        return None
+
+    async def _call_model(self, messages, *, operation, deadline=None):
         # Mirrors main's TutorLLMAgent._call_model signature, which routes by
-        # `operation` and does not accept a model-group override.
+        # `operation` and carries the shared operation deadline.
         self.calls.append({"operation": operation})
         self.message_texts.append(str(messages[-1]["content"]))
         if operation == "expand_note":
@@ -527,7 +530,10 @@ async def test_note_ai_expand_preserves_full_long_original() -> None:
         def __init__(self) -> None:
             self._config = SimpleNamespace(language="zh-CN")
 
-        async def _call_model(self, messages, *, operation):
+        def _new_operation_deadline(self, _operation, _messages):
+            return None
+
+        async def _call_model(self, messages, *, operation, deadline=None):
             # Model echoes only a leading slice plus the required callout — the
             # rest of the user's note must NOT be dropped.
             return long_original[:120] + "\n\n> [!ai]\n> 补充说明。"
@@ -551,7 +557,7 @@ async def test_notebook_summary_headings_follow_language() -> None:
 @pytest.mark.asyncio
 async def test_notebook_expand_fallback_follows_language() -> None:
     class _BrokenNotebookAgent(_FakeNotebookAgent):
-        async def _call_model(self, messages, *, operation):
+        async def _call_model(self, messages, *, operation, deadline=None):
             raise RuntimeError("model unavailable")
 
     agent = _BrokenNotebookAgent()

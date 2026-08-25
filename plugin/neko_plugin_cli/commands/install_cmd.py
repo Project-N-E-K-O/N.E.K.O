@@ -1,18 +1,26 @@
-"""neko-plugin install — install a package archive into plugin roots."""
+"""Compatibility command that directs runtime installs to Plugin Center."""
 
 from __future__ import annotations
 
 import argparse
 import sys
 
-from ..core import install_package
 from ..paths import CliDefaults
 from ._completers import PACKAGE_FILE_COMPLETER
-from ._resolve import resolve_package_path
+
+
+_RUNTIME_INSTALL_DISABLED_MESSAGE = (
+    "neko-plugin install does not write plugin runtime directories. "
+    "Import the .neko-plugin or .neko-bundle file from the N.E.K.O Plugin Center "
+    "so installation, confirmation, rollback, and source tracking use one safe workflow."
+)
 
 
 def register(subparsers: argparse._SubParsersAction, *, defaults: CliDefaults) -> None:
-    parser = subparsers.add_parser("install", help="Install a package archive")
+    parser = subparsers.add_parser(
+        "install",
+        help="Show how to import a package through the N.E.K.O Plugin Center",
+    )
     pkg_arg = parser.add_argument("package", help="Package file path or filename under target/")
     pkg_arg.complete = PACKAGE_FILE_COMPLETER  # type: ignore[attr-defined]
     parser.add_argument("--plugins-root", default=str(defaults.plugins_root), help="Destination root for extracted plugin directories")
@@ -27,38 +35,6 @@ def register(subparsers: argparse._SubParsersAction, *, defaults: CliDefaults) -
 
 
 def handle(args: argparse.Namespace) -> int:
-    defaults: CliDefaults = args._defaults
-
-    try:
-        package_path = resolve_package_path(args.package, defaults=defaults)
-    except Exception as exc:
-        print(f"[FAIL] {args.package}: {exc}", file=sys.stderr)
-        return 1
-
-    try:
-        result = install_package(
-            package_path,
-            plugins_root=args.plugins_root,
-            profiles_root=args.profiles_root,
-            on_conflict=args.on_conflict,
-        )
-    except Exception as exc:
-        print(f"[FAIL] {package_path}: {exc}", file=sys.stderr)
-        return 1
-
-    print(f"[OK] package={result.package_path}")
-    print(f"  type={result.package_type}")
-    print(f"  id={result.package_id}")
-    print(f"  plugins_root={result.plugins_root}")
-    print(f"  conflict_strategy={result.conflict_strategy}")
-    print(f"  metadata_found={result.metadata_found}")
-    if result.payload_hash:
-        print(f"  payload_hash={result.payload_hash}")
-    if result.payload_hash_verified is not None:
-        print(f"  payload_hash_verified={result.payload_hash_verified}")
-    for item in result.installed_plugins:
-        suffix = " (renamed)" if item.renamed else ""
-        print(f"  plugin: {item.source_folder} -> {item.target_dir.name}{suffix}")
-    if result.profile_dir is not None:
-        print(f"  profiles={result.profile_dir}")
-    return 0
+    del args
+    print(f"[DISABLED] {_RUNTIME_INSTALL_DISABLED_MESSAGE}", file=sys.stderr)
+    return 2

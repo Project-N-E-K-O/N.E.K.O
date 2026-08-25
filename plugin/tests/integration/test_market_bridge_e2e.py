@@ -44,6 +44,7 @@ from plugin.server.application.install_source import (
 from plugin.server.application.install_source.scanner import (
     PluginDirectoryScanner,
 )
+from plugin.server.application.install_source.models import SourceDetailMarket
 from plugin.neko_plugin_cli.public import build_plugin
 
 
@@ -274,6 +275,79 @@ def bridge_e2e_env(
 # ─── Tests ────────────────────────────────────────────────────────────
 
 
+def test_market_task_cleanup_prunes_overflow_workers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Capacity pruning releases both task states and their worker handles."""
+    from plugin.server.routes import market_bridge as market_bridge_module
+
+    monkeypatch.setattr(market_bridge_module, "_TASK_MAX_ENTRIES", 1)
+    monkeypatch.setattr(
+        market_bridge_module,
+        "_tasks",
+        {
+            "old": {"created_at": 1.0, "completed_at": None},
+            "new": {"created_at": 2.0, "completed_at": None},
+        },
+    )
+    workers = {"old": object(), "new": object()}
+    monkeypatch.setattr(market_bridge_module, "_task_workers", workers)
+
+    market_bridge_module._cleanup_tasks()
+
+    assert "old" not in market_bridge_module._tasks
+    assert "old" not in workers
+    assert "new" in market_bridge_module._tasks
+    assert "new" in workers
+
+
+@pytest.mark.asyncio
+async def test_market_install_task_can_be_cancelled_before_work_starts(
+    bridge_e2e_env: dict[str, Any],
+) -> None:
+    """The cancel endpoint stops a queued task before it can touch the package."""
+    from plugin.server.routes import market_bridge as market_bridge_module
+
+    task_id = "cancel-before-work"
+    market_bridge_module._tasks[task_id] = {
+        "task_id": task_id,
+        "status": "pending",
+        "stage": "pending",
+        "progress": 0.0,
+        "message": "任务已创建",
+        "downloaded_bytes": 0,
+        "total_bytes": None,
+        "result": None,
+        "error": None,
+        "error_code": None,
+        "created_at": time.time(),
+        "completed_at": None,
+        "rollback": None,
+        "cancel_requested": False,
+    }
+    try:
+        client: AsyncClient = bridge_e2e_env["client"]
+        token = bridge_e2e_env["token"]
+        response = await client.post(f"/market/tasks/{task_id}/cancel?token={token}")
+
+        assert response.status_code == 200, response.text
+        assert response.json()["cancel_requested"] is True
+
+        payload = market_bridge_module.MarketInstallRequest(
+            package_url="https://example.invalid/plugin.neko-plugin",
+            package_sha256="a" * 64,
+            plugin_id="cancel_test",
+        )
+        await market_bridge_module._execute_install(task_id, payload)
+
+        task = market_bridge_module._tasks[task_id]
+        assert task["status"] == "canceled"
+        assert task["message"] == "安装已取消"
+    finally:
+        market_bridge_module._tasks.pop(task_id, None)
+        market_bridge_module._task_workers.pop(task_id, None)
+
+
 @pytest.mark.asyncio
 async def test_market_catalog_plugins_use_same_origin_bridge(
     bridge_e2e_env: dict[str, Any],
@@ -331,6 +405,48 @@ async def test_market_catalog_plugins_use_same_origin_bridge(
     assert seen_urls == [
         "https://market.test/api/v1/plugins?page=1&page_size=20&channel=stable"
     ]
+
+
+@pytest.mark.asyncio
+async def test_market_catalog_readme_uses_same_origin_bridge(
+    bridge_e2e_env: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The desktop detail dialog reads the reviewed README via this fixed path."""
+    from plugin.server.routes import market_bridge as market_bridge_module
+
+    seen_urls: list[str] = []
+    payload = {"availability": "available", "content": "# Reviewed README"}
+
+    class CatalogResponse:
+        status_code = 200
+        content = json.dumps(payload).encode("utf-8")
+        headers = {"content-type": "application/json"}
+
+    class CatalogClient:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            pass
+
+        async def __aenter__(self) -> "CatalogClient":
+            return self
+
+        async def __aexit__(self, *args: Any) -> None:
+            return None
+
+        async def get(self, url: str, *args: Any, **kwargs: Any) -> CatalogResponse:
+            seen_urls.append(url)
+            return CatalogResponse()
+
+    monkeypatch.setattr(market_bridge_module.httpx, "AsyncClient", CatalogClient)
+    monkeypatch.setattr(market_bridge_module, "MARKET_API_URL", "https://market.test")
+
+    response = await bridge_e2e_env["client"].get(
+        "/market/catalog/api/v1/plugins/15/readme"
+    )
+
+    assert response.status_code == 200
+    assert response.json() == payload
+    assert seen_urls == ["https://market.test/api/v1/plugins/15/readme"]
 
 
 @pytest.mark.asyncio
@@ -458,7 +574,7 @@ async def test_install_happy_path_writes_v2_lock_entry(
                 "channel": "stable",
                 "published_at": "2026-05-16T08:00:00.000000Z",
                 "mode": "install",
-                "on_conflict": "rename",
+                "on_conflict": "fail",
             },
         )
         assert resp.status_code == 200, resp.text
@@ -541,7 +657,7 @@ async def test_installed_endpoint_projects_latest_install_source(
                 "channel": "beta",
                 "published_at": "2026-05-16T09:00:00.000000Z",
                 "mode": "install",
-                "on_conflict": "rename",
+                "on_conflict": "fail",
             },
         )
         task_id = resp.json()["task_id"]
@@ -599,6 +715,7 @@ async def test_built_market_package_install_surfaces_in_plugin_list(
     client: AsyncClient = bridge_e2e_env["client"]
     token: str = bridge_e2e_env["token"]
     user_root: Path = bridge_e2e_env["user_root"]
+    profiles_root: Path = bridge_e2e_env["profiles_root"]
 
     with _serve_bytes(
         filename=f"{plugin_id}-{version}.neko-plugin", content=package_bytes,
@@ -614,7 +731,7 @@ async def test_built_market_package_install_surfaces_in_plugin_list(
                 "channel": "stable",
                 "published_at": "2026-05-21T08:00:00.000000Z",
                 "mode": "install",
-                "on_conflict": "rename",
+                "on_conflict": "fail",
             },
         )
         assert resp.status_code == 200, resp.text
@@ -635,6 +752,9 @@ async def test_built_market_package_install_surfaces_in_plugin_list(
     assert final_status["status"] == "completed", final_status
     installed_toml = user_root / plugin_id / "plugin.toml"
     assert installed_toml.is_file()
+    manager: InstallSourceManager = bridge_e2e_env["manager"]
+    [entry] = [entry for entry in manager.snapshot().entries if entry.plugin_id == plugin_id]
+    assert Path(entry.profile_dir) == profiles_root / plugin_id
 
     from plugin.server.application.plugins import query_service as query_module
 
@@ -773,7 +893,7 @@ async def test_authenticated_market_install_reports_usage(
                 "channel": "stable",
                 "published_at": "2026-05-21T08:30:00.000000Z",
                 "mode": "install",
-                "on_conflict": "rename",
+                "on_conflict": "fail",
             },
         )
         assert resp.status_code == 200, resp.text
@@ -1193,6 +1313,529 @@ async def test_download_package_logs_safe_network_failure_without_signed_url(
     assert "download-password" not in log_line
     assert "secret-signature" not in log_line
     assert package_url not in log_line
+
+
+@pytest.mark.asyncio
+async def test_download_package_retries_allowlisted_proxy_via_github_direct(
+    bridge_e2e_env: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A stream failure after a proxy 200 falls back to the original asset URL."""
+    from plugin.server.routes import market_bridge as market_bridge_module
+
+    direct_url = (
+        "https://github.com/example/plugin/releases/download/v1.0.0/"
+        "plugin.neko-plugin"
+    )
+    proxied_url = f"https://cdn.gh-proxy.org/{direct_url}"
+    attempts: list[str] = []
+
+    class Response:
+        status_code = 200
+        headers = {"content-length": "14"}
+
+        def __init__(self, url: str) -> None:
+            self.url = url
+
+        def raise_for_status(self) -> None:
+            return None
+
+        async def aiter_bytes(self, chunk_size: int) -> Any:
+            if self.url == proxied_url:
+                raise httpx.ReadError("proxy stream closed")
+            yield b"direct-package"
+
+    class Stream:
+        def __init__(self, url: str) -> None:
+            self.response = Response(url)
+
+        async def __aenter__(self) -> Response:
+            return self.response
+
+        async def __aexit__(self, *args: Any) -> None:
+            return None
+
+    class Client:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            pass
+
+        async def __aenter__(self) -> "Client":
+            return self
+
+        async def __aexit__(self, *args: Any) -> None:
+            return None
+
+        def stream(self, method: str, url: str) -> Stream:
+            assert method == "GET"
+            attempts.append(url)
+            return Stream(url)
+
+    monkeypatch.setattr(market_bridge_module.httpx, "AsyncClient", Client)
+    monkeypatch.setattr(
+        market_bridge_module.PluginCliPathPolicy,
+        "from_settings",
+        classmethod(lambda cls: type("Policy", (), {"package_artifacts_root": tmp_path})()),
+    )
+
+    result, effective_url = await market_bridge_module._download_package(proxied_url, {})
+
+    assert attempts == [proxied_url, direct_url]
+    assert effective_url == direct_url
+    assert result.read_bytes() == b"direct-package"
+
+
+@pytest.mark.asyncio
+async def test_download_package_retries_oversized_allowlisted_proxy_via_github_direct(
+    bridge_e2e_env: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A mirror-only content-length limit failure retries the GitHub asset."""
+    from plugin.server.routes import market_bridge as market_bridge_module
+
+    direct_url = (
+        "https://github.com/example/plugin/releases/download/v1.0.0/"
+        "plugin.neko-plugin"
+    )
+    proxied_url = f"https://cdn.gh-proxy.org/{direct_url}"
+    attempts: list[str] = []
+
+    class Response:
+        status_code = 200
+
+        def __init__(self, url: str) -> None:
+            self.headers = {
+                "content-length": str(
+                    market_bridge_module._DOWNLOAD_MAX_BYTES + 1
+                    if url == proxied_url
+                    else len(b"direct-package")
+                ),
+            }
+
+        def raise_for_status(self) -> None:
+            return None
+
+        async def aiter_bytes(self, chunk_size: int) -> Any:
+            yield b"direct-package"
+
+    class Stream:
+        def __init__(self, url: str) -> None:
+            self.response = Response(url)
+
+        async def __aenter__(self) -> Response:
+            return self.response
+
+        async def __aexit__(self, *args: Any) -> None:
+            return None
+
+    class Client:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            pass
+
+        async def __aenter__(self) -> "Client":
+            return self
+
+        async def __aexit__(self, *args: Any) -> None:
+            return None
+
+        def stream(self, method: str, url: str) -> Stream:
+            assert method == "GET"
+            attempts.append(url)
+            return Stream(url)
+
+    monkeypatch.setattr(market_bridge_module.httpx, "AsyncClient", Client)
+    monkeypatch.setattr(
+        market_bridge_module.PluginCliPathPolicy,
+        "from_settings",
+        classmethod(lambda cls: type("Policy", (), {"package_artifacts_root": tmp_path})()),
+    )
+
+    result, effective_url = await market_bridge_module._download_package(proxied_url, {})
+
+    assert attempts == [proxied_url, direct_url]
+    assert effective_url == direct_url
+    assert result.read_bytes() == b"direct-package"
+
+
+@pytest.mark.asyncio
+async def test_direct_download_hash_mismatch_does_not_retry_github_again(
+    bridge_e2e_env: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A network fallback is verified as direct and never triggers a second retry."""
+    from plugin.server.routes import market_bridge as market_bridge_module
+
+    direct_url = (
+        "https://github.com/example/plugin/releases/download/v1.0.0/"
+        "plugin.neko-plugin"
+    )
+    proxied_url = f"https://cdn.gh-proxy.org/{direct_url}"
+    attempts: list[str] = []
+
+    class Response:
+        status_code = 200
+        headers = {"content-length": "12"}
+
+        def __init__(self, url: str) -> None:
+            self.url = url
+
+        def raise_for_status(self) -> None:
+            return None
+
+        async def aiter_bytes(self, chunk_size: int) -> Any:
+            if self.url == proxied_url:
+                raise httpx.ReadError("proxy stream closed")
+            yield b"wrong-package"
+
+    class Stream:
+        def __init__(self, url: str) -> None:
+            self.response = Response(url)
+
+        async def __aenter__(self) -> Response:
+            return self.response
+
+        async def __aexit__(self, *args: Any) -> None:
+            return None
+
+    class Client:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            pass
+
+        async def __aenter__(self) -> "Client":
+            return self
+
+        async def __aexit__(self, *args: Any) -> None:
+            return None
+
+        def stream(self, method: str, url: str) -> Stream:
+            assert method == "GET"
+            attempts.append(url)
+            return Stream(url)
+
+    monkeypatch.setattr(market_bridge_module.httpx, "AsyncClient", Client)
+    monkeypatch.setattr(
+        market_bridge_module.PluginCliPathPolicy,
+        "from_settings",
+        classmethod(lambda cls: type("Policy", (), {"package_artifacts_root": tmp_path})()),
+    )
+
+    package_path, effective_url = await market_bridge_module._download_package(proxied_url, {})
+    with pytest.raises(ValueError, match="SHA256 校验失败"):
+        await market_bridge_module._verify_downloaded_package_with_fallback(
+            effective_url,
+            package_path,
+            hashlib.sha256(b"valid-package").hexdigest(),
+            {},
+        )
+
+    assert attempts == [proxied_url, direct_url]
+
+
+@pytest.mark.asyncio
+async def test_invalid_expected_hash_does_not_trigger_proxy_fallback(
+    bridge_e2e_env: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Invalid Market metadata is rejected before retrying a proxy download."""
+    from plugin.server.routes import market_bridge as market_bridge_module
+
+    direct_url = (
+        "https://github.com/example/plugin/releases/download/v1.0.0/"
+        "plugin.neko-plugin"
+    )
+    proxied_url = f"https://cdn.gh-proxy.org/{direct_url}"
+    package_path = tmp_path / "proxy.neko-plugin"
+    package_path.write_bytes(b"valid-package")
+    fallback_attempted = False
+
+    async def unexpected_download(url: str, task: dict[str, Any]) -> Path:
+        nonlocal fallback_attempted
+        fallback_attempted = True
+        raise AssertionError(f"unexpected fallback download: {url}")
+
+    monkeypatch.setattr(market_bridge_module, "_download_package_once", unexpected_download)
+
+    with pytest.raises(ValueError, match="SHA256"):
+        await market_bridge_module._verify_downloaded_package_with_fallback(
+            proxied_url,
+            package_path,
+            "a" * 63,
+            {},
+        )
+
+    assert fallback_attempted is False
+    assert package_path.read_bytes() == b"valid-package"
+
+
+@pytest.mark.asyncio
+async def test_download_cancellation_removes_temporary_package(
+    bridge_e2e_env: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Cancelling a stream removes the partially created Market package."""
+    from plugin.server.routes import market_bridge as market_bridge_module
+
+    class Response:
+        status_code = 200
+        headers = {"content-length": "14"}
+
+        def raise_for_status(self) -> None:
+            return None
+
+        async def aiter_bytes(self, chunk_size: int) -> Any:
+            yield b"partial-package"
+            raise asyncio.CancelledError
+
+    class Stream:
+        async def __aenter__(self) -> Response:
+            return Response()
+
+        async def __aexit__(self, *args: Any) -> None:
+            return None
+
+    class Client:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            pass
+
+        async def __aenter__(self) -> "Client":
+            return self
+
+        async def __aexit__(self, *args: Any) -> None:
+            return None
+
+        def stream(self, method: str, url: str) -> Stream:
+            assert method == "GET"
+            return Stream()
+
+    monkeypatch.setattr(market_bridge_module.httpx, "AsyncClient", Client)
+    monkeypatch.setattr(
+        market_bridge_module.PluginCliPathPolicy,
+        "from_settings",
+        classmethod(lambda cls: type("Policy", (), {"package_artifacts_root": tmp_path})()),
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await market_bridge_module._download_package_once("https://cdn.test/package", {})
+
+    assert not list((tmp_path / ".downloads").glob("*.neko-plugin"))
+
+
+@pytest.mark.asyncio
+async def test_proxy_verification_cancellation_removes_temporary_package(
+    bridge_e2e_env: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Cancellation waits for the proxy verifier thread before cleanup."""
+    from plugin.server.routes import market_bridge as market_bridge_module
+
+    package_path = tmp_path / "proxy.neko-plugin"
+    package_path.write_bytes(b"proxy-package")
+    verifier_started = threading.Event()
+    release_verifier = threading.Event()
+    verifier_finished = threading.Event()
+
+    def blocking_verifier(path: Path, expected_hash: str) -> str:
+        with path.open("rb"):
+            verifier_started.set()
+            assert release_verifier.wait(2)
+        verifier_finished.set()
+        return "passed"
+
+    monkeypatch.setattr(market_bridge_module, "_verify_sha256_file", blocking_verifier)
+
+    verification = asyncio.create_task(
+        market_bridge_module._verify_downloaded_package_with_fallback(
+            "https://cdn.gh-proxy.org/https://github.com/example/plugin/releases/download/v1.0.0/plugin.neko-plugin",
+            package_path,
+            "a" * 64,
+            {},
+        )
+    )
+    assert await asyncio.to_thread(verifier_started.wait, 1)
+    verification.cancel()
+    await asyncio.sleep(0)
+
+    assert package_path.exists()
+    assert not verification.done()
+    release_verifier.set()
+    with pytest.raises(asyncio.CancelledError):
+        await verification
+
+    assert verifier_finished.is_set()
+    assert not package_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_direct_verification_cancellation_removes_temporary_package(
+    bridge_e2e_env: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Cancellation waits for the direct verifier thread before cleanup."""
+    from plugin.server.routes import market_bridge as market_bridge_module
+
+    direct_url = "https://github.com/example/plugin/releases/download/v1.0.0/plugin.neko-plugin"
+    proxied_url = f"https://cdn.gh-proxy.org/{direct_url}"
+    proxy_path = tmp_path / "proxy.neko-plugin"
+    direct_path = tmp_path / "direct.neko-plugin"
+    proxy_path.write_bytes(b"proxy-package")
+    direct_path.write_bytes(b"direct-package")
+    verifier_started = threading.Event()
+    release_verifier = threading.Event()
+    verifier_finished = threading.Event()
+
+    def verify_or_block(path: Path, expected_hash: str) -> str:
+        if path == proxy_path:
+            raise ValueError("SHA256 校验失败")
+        with path.open("rb"):
+            verifier_started.set()
+            assert release_verifier.wait(2)
+        verifier_finished.set()
+        return "passed"
+
+    async def download_direct(url: str, task: dict[str, Any]) -> Path:
+        assert url == direct_url
+        return direct_path
+
+    monkeypatch.setattr(market_bridge_module, "_verify_sha256_file", verify_or_block)
+    monkeypatch.setattr(market_bridge_module, "_download_package_once", download_direct)
+
+    verification = asyncio.create_task(
+        market_bridge_module._verify_downloaded_package_with_fallback(
+            proxied_url,
+            proxy_path,
+            "a" * 64,
+            {},
+        )
+    )
+    assert await asyncio.to_thread(verifier_started.wait, 1)
+    verification.cancel()
+    await asyncio.sleep(0)
+
+    assert direct_path.exists()
+    assert not verification.done()
+    release_verifier.set()
+    with pytest.raises(asyncio.CancelledError):
+        await verification
+
+    assert verifier_finished.is_set()
+    assert not proxy_path.exists()
+    assert not direct_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_hash_mismatch_retries_allowlisted_proxy_via_github_direct(
+    bridge_e2e_env: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A proxy 200 with invalid bytes retries direct before reporting a mismatch."""
+    from plugin.server.routes import market_bridge as market_bridge_module
+
+    direct_url = (
+        "https://github.com/example/plugin/releases/download/v1.0.0/"
+        "plugin.neko-plugin"
+    )
+    proxied_url = f"https://cdn.gh-proxy.org/{direct_url}"
+    attempts: list[str] = []
+
+    class Response:
+        status_code = 200
+
+        def __init__(self, url: str) -> None:
+            self.url = url
+            self.body = b"proxy-error-page" if url == proxied_url else b"valid-package"
+            self.headers = {"content-length": str(len(self.body))}
+
+        def raise_for_status(self) -> None:
+            return None
+
+        async def aiter_bytes(self, chunk_size: int) -> Any:
+            yield self.body
+
+    class Stream:
+        def __init__(self, url: str) -> None:
+            self.response = Response(url)
+
+        async def __aenter__(self) -> Response:
+            return self.response
+
+        async def __aexit__(self, *args: Any) -> None:
+            return None
+
+    class Client:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            pass
+
+        async def __aenter__(self) -> "Client":
+            return self
+
+        async def __aexit__(self, *args: Any) -> None:
+            return None
+
+        def stream(self, method: str, url: str) -> Stream:
+            assert method == "GET"
+            attempts.append(url)
+            return Stream(url)
+
+    monkeypatch.setattr(market_bridge_module.httpx, "AsyncClient", Client)
+    monkeypatch.setattr(
+        market_bridge_module.PluginCliPathPolicy,
+        "from_settings",
+        classmethod(lambda cls: type("Policy", (), {"package_artifacts_root": tmp_path})()),
+    )
+
+    proxy_path = await market_bridge_module._download_package_once(proxied_url, {})
+    expected_hash = hashlib.sha256(b"valid-package").hexdigest()
+
+    package_path, sha_check = await market_bridge_module._verify_downloaded_package_with_fallback(
+        proxied_url,
+        proxy_path,
+        expected_hash,
+        {},
+    )
+
+    assert attempts == [proxied_url, direct_url]
+    assert package_path.read_bytes() == b"valid-package"
+    assert sha_check == "passed"
+    assert not proxy_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_concurrent_proxy_measurements_share_one_probe_task(
+    bridge_e2e_env: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Concurrent UI requests share one bounded outbound probe batch."""
+    from plugin.server.routes import market_bridge as market_bridge_module
+
+    started = asyncio.Event()
+    release = asyncio.Event()
+    calls = 0
+
+    async def measure() -> tuple[dict[str, object], ...]:
+        nonlocal calls
+        calls += 1
+        started.set()
+        await release.wait()
+        return ({"id": "github-direct", "available": True},)
+
+    monkeypatch.setattr(market_bridge_module, "_measure_github_proxy_sources", measure)
+    market_bridge_module._GITHUB_PROXY_MEASURE_TASK = None
+    first = asyncio.create_task(market_bridge_module.measure_github_proxy_sources())
+    await started.wait()
+    second = asyncio.create_task(market_bridge_module.measure_github_proxy_sources())
+    release.set()
+
+    assert await first == await second == {
+        "sources": ({"id": "github-direct", "available": True},),
+    }
+    assert calls == 1
 
 
 @pytest.mark.asyncio
@@ -3564,6 +4207,8 @@ async def test_install_identity_match_no_warning(
 
     assert final_status is not None
     assert final_status["status"] == "completed", final_status
+    assert final_status["result"]["operation"] == "install"
+    assert final_status["result"]["rollback_status"] == "not_needed"
     # Match path: no identity warning surfaced. Other warnings (e.g.
     # legacy package_sha256 absence) are still permitted, but ours
     # specifically must not appear.
@@ -3654,7 +4299,7 @@ async def test_install_identity_mismatch_warns_but_succeeds(
 async def test_install_conflict_fails_without_renaming_executable_directory(
     bridge_e2e_env: dict[str, Any],
 ) -> None:
-    """Even a legacy rename request must not create an executable plugin copy."""
+    """Legacy rename requests are accepted but still fail on directory conflict."""
 
     plugin_id = "e2e_rename_identity"
     version = "1.0.0"
@@ -3670,10 +4315,8 @@ async def test_install_conflict_fails_without_renaming_executable_directory(
 
     existing = user_root / plugin_id
     existing.mkdir(parents=True)
-    (existing / "plugin.toml").write_text(
-        f'[plugin]\nid = "{plugin_id}"\nversion = "0.9.0"\n',
-        encoding="utf-8",
-    )
+    original_plugin_toml = f'[plugin]\nid = "{plugin_id}"\nversion = "0.9.0"\n'
+    (existing / "plugin.toml").write_text(original_plugin_toml, encoding="utf-8")
 
     with _serve_bytes(
         filename=f"{plugin_id}-{version}.neko-plugin", content=zip_bytes,
@@ -3692,21 +4335,25 @@ async def test_install_conflict_fails_without_renaming_executable_directory(
                 "on_conflict": "rename",
             },
         )
+        assert resp.status_code == 200, resp.text
         task_id = resp.json()["task_id"]
-
         deadline = time.monotonic() + 30
-        final_status: dict[str, Any] | None = None
+        task: dict[str, Any] | None = None
         while time.monotonic() < deadline:
             poll = await client.get(f"/market/tasks/{task_id}?token={token}")
-            body = poll.json()
-            if body["status"] in ("completed", "failed"):
-                final_status = body
+            assert poll.status_code == 200, poll.text
+            task = poll.json()
+            if task["status"] in {"completed", "failed", "cancelled"}:
                 break
-            await asyncio.sleep(0.05)
+            await asyncio.sleep(0.01)
+        else:
+            pytest.fail("legacy rename install task did not finish")
+        assert task is not None
+        assert task["status"] == "failed"
 
-    assert final_status is not None
-    assert final_status["status"] == "failed", final_status
     assert not (user_root / f"{plugin_id}_1").exists()
+    assert existing.is_dir()
+    assert (existing / "plugin.toml").read_text(encoding="utf-8") == original_plugin_toml
 
     active_entries = []
     if lock_path.exists():
@@ -3762,7 +4409,7 @@ async def test_upgrade_happy_path_replaces_lock_entry(
                     "version": version,
                     "channel": "stable",
                     "mode": mode,
-                    "on_conflict": "rename" if mode == "install" else "fail",
+                    "on_conflict": "fail",
                 },
             )
             assert resp.status_code == 200, resp.text
@@ -3969,7 +4616,7 @@ async def test_install_conflict_defaults_to_failure_without_lock_entry(
 
 
 @pytest.mark.asyncio
-async def test_upgrade_rejects_plugin_identity_mismatch_and_rolls_back(
+async def test_upgrade_rejects_plugin_identity_mismatch_before_replacement(
     bridge_e2e_env: dict[str, Any],
 ) -> None:
     """Upgrade must reject a package whose plugin.toml id changes identity."""
@@ -4047,7 +4694,7 @@ async def test_upgrade_rejects_plugin_identity_mismatch_and_rolls_back(
         upgrade_status = await _wait_task(resp.json()["task_id"])
 
     assert upgrade_status["status"] == "failed", upgrade_status
-    assert upgrade_status["error_code"] == "upgrade_rollback_completed"
+    assert upgrade_status["error_code"] == "package_id_change"
     assert "plugin identity mismatch" in upgrade_status["error"]
     assert plugin_id in upgrade_status["error"]
     assert intruder_id in upgrade_status["error"]
@@ -4181,35 +4828,38 @@ async def test_upgrade_rejects_when_not_installed(
 
 
 @pytest.mark.asyncio
-async def test_upgrade_rejects_same_version(
+async def test_upgrade_accepts_same_and_older_version_replacements(
     bridge_e2e_env: dict[str, Any],
 ) -> None:
-    """mode=upgrade with target version equal to current → task fails
-    with ``version_already_at_target`` (R5.6). reinstall mode bypasses
-    this check.
+    """Market replacement uses the same version-agnostic transaction as a
+    local package, so explicitly selected same and older targets are accepted.
     """
 
     plugin_id = "e2e_same_version"
-    zip_bytes, payload_hash = _build_neko_plugin_zip(
+    current_zip, current_payload_hash = _build_neko_plugin_zip(
+        plugin_id=plugin_id, version="2.0.0",
+    )
+    target_zip, target_payload_hash = _build_neko_plugin_zip(
         plugin_id=plugin_id, version="1.0.0",
     )
-    sha = hashlib.sha256(zip_bytes).hexdigest()
+    current_sha = hashlib.sha256(current_zip).hexdigest()
+    target_sha = hashlib.sha256(target_zip).hexdigest()
 
     client: AsyncClient = bridge_e2e_env["client"]
     token: str = bridge_e2e_env["token"]
 
-    # Seed v1.0.0.
+    # Seed v2.0.0.
     with _serve_bytes(
-        filename=f"{plugin_id}-1.0.0.neko-plugin", content=zip_bytes,
+        filename=f"{plugin_id}-2.0.0.neko-plugin", content=current_zip,
     ) as package_url:
         resp = await client.post(
             f"/market/install?token={token}",
             json={
                 "package_url": package_url,
-                "package_sha256": sha,
-                "payload_hash": payload_hash,
+                "package_sha256": current_sha,
+                "payload_hash": current_payload_hash,
                 "plugin_id": plugin_id,
-                "version": "1.0.0",
+                "version": "2.0.0",
                 "channel": "stable",
                 "mode": "install",
             },
@@ -4222,16 +4872,48 @@ async def test_upgrade_rejects_same_version(
                 break
             await asyncio.sleep(0.05)
 
-    # Try to "upgrade" to the same version → version_already_at_target.
+    # Reinstall the current artifact through the same replacement path.
     with _serve_bytes(
-        filename=f"{plugin_id}-1.0.0-again.neko-plugin", content=zip_bytes,
+        filename=f"{plugin_id}-2.0.0-again.neko-plugin", content=current_zip,
     ) as package_url:
         resp = await client.post(
             f"/market/install?token={token}",
             json={
                 "package_url": package_url,
-                "package_sha256": sha,
-                "payload_hash": payload_hash,
+                "package_sha256": current_sha,
+                "payload_hash": current_payload_hash,
+                "plugin_id": plugin_id,
+                "version": "2.0.0",
+                "channel": "stable",
+                "mode": "upgrade",
+            },
+        )
+        same_task_id = resp.json()["task_id"]
+        deadline = time.monotonic() + 30
+        same_status: dict[str, Any] | None = None
+        while time.monotonic() < deadline:
+            poll = await client.get(f"/market/tasks/{same_task_id}?token={token}")
+            body = poll.json()
+            if body["status"] in ("completed", "failed"):
+                same_status = body
+                break
+            await asyncio.sleep(0.05)
+
+    assert same_status is not None
+    assert same_status["status"] == "completed", same_status
+    assert same_status["result"]["operation"] == "upgrade"
+    assert same_status["result"]["rollback_status"] == "not_needed"
+
+    # Explicitly replace with the older v1.0.0 artifact.
+    with _serve_bytes(
+        filename=f"{plugin_id}-1.0.0.neko-plugin", content=target_zip,
+    ) as package_url:
+        resp = await client.post(
+            f"/market/install?token={token}",
+            json={
+                "package_url": package_url,
+                "package_sha256": target_sha,
+                "payload_hash": target_payload_hash,
                 "plugin_id": plugin_id,
                 "version": "1.0.0",
                 "channel": "stable",
@@ -4250,16 +4932,25 @@ async def test_upgrade_rejects_same_version(
             await asyncio.sleep(0.05)
 
     assert final_status is not None
-    assert final_status["status"] == "failed", final_status
-    assert final_status["error_code"] == "version_already_at_target"
+    assert final_status["status"] == "completed", final_status
+    assert final_status["result"]["operation"] == "upgrade"
+    assert final_status["result"]["rollback_status"] == "not_needed"
+    manager: InstallSourceManager = bridge_e2e_env["manager"]
+    [active_entry] = [
+        entry
+        for entry in manager.snapshot().entries
+        if entry.plugin_id == plugin_id and not entry.removed
+    ]
+    assert isinstance(active_entry.source_detail, SourceDetailMarket)
+    assert active_entry.source_detail.version == "1.0.0"
 
 
 @pytest.mark.asyncio
 async def test_upgrade_rollback_on_download_failure(
     bridge_e2e_env: dict[str, Any],
 ) -> None:
-    """mode=upgrade with a download error → backup restored, lock
-    unchanged, ``upgrade_rollback_completed`` returned.
+    """A download error happens before the shared replacement transaction,
+    so the live directory and source lock remain untouched.
 
     Drives the rollback path by pointing ``package_url`` at a 404
     on a real localhost server (the server only serves the install
@@ -4340,7 +5031,7 @@ async def test_upgrade_rollback_on_download_failure(
 
     assert final_status is not None
     assert final_status["status"] == "failed", final_status
-    assert final_status["error_code"] == "upgrade_rollback_completed"
+    assert final_status["error_code"] == "download_failed"
 
     # Lock entry must be unchanged (still v1.0.0 with original installed_at).
     snapshot = mgr.snapshot()
@@ -4352,7 +5043,7 @@ async def test_upgrade_rollback_on_download_failure(
     assert isinstance(restored_entry.source_detail, SourceDetailMarket)
     assert restored_entry.source_detail.version == "1.0.0"
     assert restored_entry.installed_at == v1_installed_at
-    # Directory must have been restored from backup.
+    # Directory was never moved because replacement starts after download.
     assert (user_root / plugin_id / "plugin.toml").is_file()
     # No backup leak (best-effort cleanup runs in async task; we don't
     # strictly assert absence here because the cleanup is fire-and-forget,

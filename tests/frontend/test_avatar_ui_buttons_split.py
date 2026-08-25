@@ -108,9 +108,47 @@ def test_avatar_button_parts_smoke_each_backend_and_layout(
     )
 
     toolbar = page.locator(f"#{prefix}-floating-buttons")
+    main_button = page.locator(f"#{prefix}-btn-mic")
     return_button = page.locator(f"#{prefix}-btn-return")
     expect(toolbar).to_be_visible()
     expect(return_button).to_be_visible()
+
+    # Cat return recomputes the toolbar with a fractional scale. The raster
+    # icon must share the button's exact box/origin instead of introducing a
+    # second translate layer which Chromium may round to another device pixel.
+    page.evaluate(
+        """prefix => {
+            const toolbar = document.getElementById(`${prefix}-floating-buttons`);
+            toolbar.style.transformOrigin = 'left top';
+            toolbar.style.transform = 'scale(0.537)';
+        }""",
+        prefix,
+    )
+    icon_geometry = main_button.evaluate(
+        """button => {
+            const icon = button.querySelector('img');
+            const buttonRect = button.getBoundingClientRect();
+            const iconRect = icon.getBoundingClientRect();
+            return {
+                centerDelta: {
+                    x: iconRect.x + iconRect.width / 2 - buttonRect.x - buttonRect.width / 2,
+                    y: iconRect.y + iconRect.height / 2 - buttonRect.y - buttonRect.height / 2,
+                },
+                sizeDelta: {
+                    width: iconRect.width - buttonRect.width,
+                    height: iconRect.height - buttonRect.height,
+                },
+                transform: getComputedStyle(icon).transform,
+                imageRendering: getComputedStyle(icon).imageRendering,
+            };
+        }"""
+    )
+    assert abs(icon_geometry["centerDelta"]["x"]) < 0.001
+    assert abs(icon_geometry["centerDelta"]["y"]) < 0.001
+    assert abs(icon_geometry["sizeDelta"]["width"]) < 0.001
+    assert abs(icon_geometry["sizeDelta"]["height"]) < 0.001
+    assert icon_geometry["transform"] == "none"
+    assert icon_geometry["imageRendering"] == "auto"
 
     return_button.click()
     assert page.evaluate("window.__avatarReturnClicks") == 1

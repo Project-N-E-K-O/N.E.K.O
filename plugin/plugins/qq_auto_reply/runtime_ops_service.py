@@ -40,8 +40,20 @@ class QQRuntimeOpsService:
             return Ok({"status": "already_running"})
         # 确保连接类型与当前配置一致
         expected = str((self.plugin._qq_settings or {}).get("qq_connection_mode", "napcat") or "napcat").strip()
-        is_napcat = expected == "napcat"
-        if self.plugin.qq_client and getattr(self.plugin.qq_client, 'needs_attention', True) != is_napcat:
+        is_napcat = expected in ("napcat", "napcat_forward")
+        # 优先用 mode 精确比较（napcat 与 napcat_forward 的 needs_attention
+        # 相同，启发式分不出 reverse↔forward 的方向切换）；旧客户端/桩没有
+        # mode 属性时回落到 needs_attention 启发式，保持历史行为。
+        client = self.plugin.qq_client
+        if client is not None:
+            client_mode = getattr(client, "mode", None)
+            if client_mode is not None:
+                mismatch = client_mode != expected
+            else:
+                mismatch = getattr(client, "needs_attention", True) != is_napcat
+        else:
+            mismatch = False
+        if mismatch:
             # 模式不匹配 → 断开旧连接，重建
             try: await self.plugin.qq_client.disconnect()
             except Exception: pass
@@ -49,8 +61,13 @@ class QQRuntimeOpsService:
         self.plugin._ensure_qq_client_initialized()
         if not self.plugin.qq_client:
             return Err(SdkError(f"NOT_INITIALIZED: {self.plugin.i18n.t('errors.qq_client_not_initialized', default='QQ 客户端未初始化')}"))
+        label = {
+            "napcat": "OneBot(反向)",
+            "napcat_forward": "OneBot(正向)",
+            "open_platform": "QQ 开放平台",
+        }.get(expected, "OneBot")
         try:
-            self.plugin._emit_log("INFO", f"正在连接 {'NapCat' if is_napcat else 'QQ 开放平台'}...")
+            self.plugin._emit_log("INFO", f"正在连接 {label}...")
             await self.plugin.qq_client.connect()
             if self.plugin.attention_service and self.plugin.qq_client.needs_attention:
                 await self.plugin.attention_service.start_decay_loop()
@@ -59,6 +76,7 @@ class QQRuntimeOpsService:
                 await self.plugin.attention_gate_service.start_proactive_loop()
             self.plugin._startup_error = None
             self.plugin._running = True
+            getattr(self.plugin, "_spawn_push_ui_event", lambda *a, **k: None)("status")  # 运行状态翻转 → SSE 通知前端
             self.plugin._message_task = asyncio.create_task(self.plugin._process_messages())
             # 连上了才登记这个通道的标识符语义：登记的是「现在跑着的 wire
             # format」，而改配置到重连之间可能隔着任意长的时间。模式在这里
@@ -78,6 +96,8 @@ class QQRuntimeOpsService:
                 self.plugin._session_housekeeping_task = asyncio.create_task(
                     self.plugin._session_housekeeping_loop()
                 )
+            # 启动自动回复**不检查 NapCat 链路**：正向拨出由后台 _forward_receive_loop
+            # 退避重试，连接状态由状态指示灯/SSE 体现，start 只管把管线拉起来。
             return Ok({"status": "started"})
         except Exception as e:
             self.plugin._emit_log("ERROR", f"启动失败: {e}")
@@ -86,6 +106,7 @@ class QQRuntimeOpsService:
                 startup_error = str(e)
             self.plugin._startup_error = startup_error
             self.plugin.logger.exception("Failed to start auto reply")
+            # 反向 serve 失败等真实异常走这里；正向 connect() 不 raise（后台重试）。
             return Err(SdkError(
                 f"START_ERROR: {self.plugin.i18n.t('errors.start_connect_failed', default='反向 WS 服务器已启动 ({url})，但没有 NapCat 客户端连接: {error}', url=self.plugin.qq_client.onebot_url, error=startup_error)}"
             ))
@@ -98,6 +119,7 @@ class QQRuntimeOpsService:
 
     async def stop_runtime(self, *, stop_napcat: bool):
         self.plugin._running = False
+        getattr(self.plugin, "_spawn_push_ui_event", lambda *a, **k: None)("status")  # 运行状态翻转 → SSE 通知前端
         if self.plugin.attention_service:
             await self.plugin.attention_service.stop_decay_loop()
         if self.plugin.attention_gate_service:

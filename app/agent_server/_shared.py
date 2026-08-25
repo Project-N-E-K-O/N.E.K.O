@@ -72,6 +72,10 @@ class Modules:
     _plugin_server_loop: Any = None
     plugin_lifecycle_started: bool = False
     _plugin_lifecycle_lock: Optional[asyncio.Lock] = None
+    # Monotonic user-plugin intent generation.  Enable/disable work runs in
+    # background tasks, so an older readiness check must not overwrite a newer
+    # toggle (or restart the lifecycle after the master switch was turned off).
+    user_plugin_lifecycle_seq: int = 0
     # Task tracking
     task_registry: Dict[str, Dict[str, Any]] = {}
     executor_reset_needed: bool = False

@@ -163,6 +163,9 @@ function createHarness({
         controls,
         getLive2DPeekViewport: context.getLive2DPeekViewport,
         getLive2DPeekEdgeContact: context.getLive2DPeekEdgeContact,
+        refreshLive2DPeekDisplayContext: context.refreshLive2DPeekDisplayContext,
+        validateLive2DPeekEdgeContact: context.validateLive2DPeekEdgeContact,
+        settleLive2DBaseAtEdgeContact: context.settleLive2DBaseAtEdgeContact,
         getLive2DModelLocalGrabPoint: context.getLive2DModelLocalGrabPoint,
         placeLive2DGrabPointAtPointer: context.placeLive2DGrabPointAtPointer,
         waitForLive2DDesktopCoordinateSettlement: context.waitForLive2DDesktopCoordinateSettlement,
@@ -407,6 +410,744 @@ test('desktop drag settlement waits for two matching settled coordinate snapshot
     assert.equal(context.workArea.y, 24);
 });
 
+test('drag settlement restores pre-alignment position when locked edge validation fails', async () => {
+    const harness = createHarness();
+    const manager = new harness.Live2DManager();
+    const model = createModel({ x: 5, y: 120, width: 500, height: 600 });
+    let geometryReadCount = 0;
+    manager.currentModel = model;
+    manager._isModelReadyForInteraction = true;
+    manager._live2DDragGeneration = 1;
+    manager.getModelDrawableScreenRects = () => {
+        geometryReadCount += 1;
+        return geometryReadCount === 1
+            ? [{ left: 5, top: 120, right: 505, bottom: 720, width: 500, height: 600 }]
+            : [{ left: 100, top: 120, right: 600, bottom: 720, width: 500, height: 600 }];
+    };
+    manager._checkAndSwitchDisplay = async () => false;
+    manager._checkAndPerformSnap = async () => false;
+    const savedPositions = [];
+    manager._savePositionAfterInteraction = async () => {
+        savedPositions.push({ x: model.x, y: model.y });
+    };
+
+    assert.equal(await manager._settleLive2DDragTerminal(model, { dragGeneration: 1 }), true);
+    assert.deepEqual(savedPositions, [{ x: 5, y: 120 }]);
+    assert.equal(model.x, 5);
+    assert.equal(model.y, 120);
+    assert.equal(manager.isLive2DPeekActive(), false);
+});
+
+test('ambiguous oversize model skips peek and snap while preserving its release position', async () => {
+    const harness = createHarness();
+    const manager = new harness.Live2DManager();
+    const model = createModel({ x: -100, y: 100, width: 1200, height: 600 });
+    const savedPositions = [];
+    manager.currentModel = model;
+    manager._isModelReadyForInteraction = true;
+    manager._live2DDragGeneration = 1;
+    manager._checkAndSwitchDisplay = async () => false;
+    manager._savePositionAfterInteraction = async () => {
+        savedPositions.push({ x: model.x, y: model.y });
+    };
+
+    assert.equal(await manager._settleLive2DDragTerminal(model, {
+        dragGeneration: 1,
+        startScreenPoint: { x: 500, y: 300 },
+        releaseScreenPoint: { x: 500, y: 300 }
+    }), true);
+    assert.deepEqual(savedPositions, [{ x: -100, y: 100 }]);
+    assert.equal(model.x, -100);
+    assert.equal(model.y, 100);
+    assert.equal(manager.isLive2DPeekActive(), false);
+    assert.equal(harness.rafQueue.length, 0);
+});
+
+test('new drag generation cancels an older asynchronous terminal settlement', async () => {
+    const harness = createHarness();
+    const manager = new harness.Live2DManager();
+    const model = createModel({ x: 0 });
+    let releaseDisplayCheck;
+    let snapCalls = 0;
+    let saveCalls = 0;
+    manager.currentModel = model;
+    manager._isModelReadyForInteraction = true;
+    manager._live2DDragGeneration = 1;
+    manager._checkAndSwitchDisplay = () => new Promise((resolve) => {
+        releaseDisplayCheck = resolve;
+    });
+    manager._checkAndPerformSnap = async () => {
+        snapCalls += 1;
+        return false;
+    };
+    manager._savePositionAfterInteraction = async () => {
+        saveCalls += 1;
+    };
+
+    const settlement = manager._settleLive2DDragTerminal(model, { dragGeneration: 1 });
+    manager._live2DDragGeneration = 2;
+    releaseDisplayCheck(false);
+
+    assert.equal(await settlement, false);
+    assert.equal(snapCalls, 0);
+    assert.equal(saveCalls, 0);
+    assert.equal(manager.isLive2DPeekActive(), false);
+    assert.equal(harness.rafQueue.length, 0);
+});
+
+test('terminal settlement waits for every in-flight display move before snap and save', async () => {
+    const harness = createHarness({ widgetModeEnabled: false });
+    const manager = new harness.Live2DManager();
+    const model = createModel({ x: 100, y: 120, width: 500, height: 600 });
+    let resolveDisplaySwitchIdle;
+    let snapCalls = 0;
+    let saveCalls = 0;
+    manager.currentModel = model;
+    manager._isModelReadyForInteraction = true;
+    manager._live2DDragGeneration = 1;
+    manager._live2DDisplaySwitchIdlePromise = new Promise((resolve) => {
+        resolveDisplaySwitchIdle = resolve;
+    });
+    manager._checkAndSwitchDisplay = async () => false;
+    manager._checkAndPerformSnap = async () => {
+        snapCalls += 1;
+        return false;
+    };
+    manager._savePositionAfterInteraction = async () => {
+        saveCalls += 1;
+        return true;
+    };
+    harness.window.electronScreen = null;
+
+    let settlementFinished = false;
+    const settlement = manager._settleLive2DDragTerminal(model, { dragGeneration: 1 })
+        .then((result) => {
+            settlementFinished = true;
+            return result;
+        });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.equal(settlementFinished, false);
+    assert.equal(snapCalls, 0);
+    assert.equal(saveCalls, 0);
+
+    resolveDisplaySwitchIdle();
+    assert.equal(await settlement, true);
+    assert.equal(snapCalls, 1);
+    assert.equal(saveCalls, 1);
+});
+
+test('pointerup snapshots settlement context before an asynchronous release hint', async () => {
+    const canvas = { style: {} };
+    const harness = createHarness({ controls: { 'live2d-canvas': canvas } });
+    const manager = new harness.Live2DManager();
+    const model = createModel({ x: 0 });
+    const modelListeners = new Map();
+    let releaseHint;
+    let receivedOptions = null;
+    model.parent = null;
+    model.toLocal = (point) => ({ x: point.x - model.x, y: point.y - model.y });
+    model.toGlobal = (point) => ({ x: point.x + model.x, y: point.y + model.y });
+    model.on = (type, handler) => {
+        modelListeners.set(type, handler);
+        return model;
+    };
+    manager.currentModel = model;
+    manager._isModelReadyForInteraction = true;
+    manager.isLocked = false;
+    manager._settleLive2DDragTerminal = async (_model, options) => {
+        receivedOptions = options;
+        return true;
+    };
+    harness.window.live2dManager = manager;
+    harness.window.NekoAvatarMultiScreenDragHint = {
+        recordPointerEdgeApproach: async () => false,
+        recordPointerEdgeRelease: () => new Promise((resolve) => {
+            releaseHint = resolve;
+        })
+    };
+
+    manager.setupDragAndDrop(model);
+    modelListeners.get('pointerdown')({
+        data: {
+            global: { x: 100, y: 100 },
+            originalEvent: { screenX: 100, screenY: 100 }
+        }
+    });
+    harness.window.dispatchEvent({
+        type: 'pointermove',
+        clientX: 150,
+        clientY: 100,
+        screenX: 150,
+        screenY: 100
+    });
+    harness.window.dispatchEvent({ type: 'pointerup', screenX: 160, screenY: 100 });
+    await Promise.resolve();
+
+    modelListeners.get('pointerdown')({
+        data: {
+            global: { x: 200, y: 100 },
+            originalEvent: { screenX: 200, screenY: 100 }
+        }
+    });
+    harness.window.dispatchEvent({
+        type: 'pointermove',
+        clientX: 250,
+        clientY: 100,
+        screenX: 250,
+        screenY: 100
+    });
+    releaseHint(false);
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.equal(manager._live2DDragGeneration, 2);
+    assert.deepEqual(JSON.parse(JSON.stringify(receivedOptions)), {
+        startScreenPoint: { x: 100, y: 100 },
+        releaseScreenPoint: { x: 160, y: 100 },
+        startedFromPeek: false,
+        dragGeneration: 1
+    });
+});
+
+test('pointerdown without threshold movement does not invalidate an older settlement', () => {
+    const canvas = { style: {} };
+    const harness = createHarness({ controls: { 'live2d-canvas': canvas } });
+    const manager = new harness.Live2DManager();
+    const model = createModel({ x: 0 });
+    const modelListeners = new Map();
+    model.parent = null;
+    model.toLocal = (point) => ({ x: point.x - model.x, y: point.y - model.y });
+    model.toGlobal = (point) => ({ x: point.x + model.x, y: point.y + model.y });
+    model.on = (type, handler) => {
+        modelListeners.set(type, handler);
+        return model;
+    };
+    manager.currentModel = model;
+    manager._isModelReadyForInteraction = true;
+    manager._live2DDragGeneration = 7;
+    harness.window.live2dManager = manager;
+
+    manager.setupDragAndDrop(model);
+    modelListeners.get('pointerdown')({
+        data: {
+            global: { x: 100, y: 100 },
+            originalEvent: { screenX: 100, screenY: 100 }
+        }
+    });
+    harness.window.dispatchEvent({
+        type: 'pointermove',
+        clientX: 101,
+        clientY: 100,
+        screenX: 101,
+        screenY: 100
+    });
+
+    assert.equal(manager._live2DDragGeneration, 7);
+});
+
+test('threshold movement synchronously releases a stale snap before terminal settlement', () => {
+    const canvas = { style: {} };
+    const harness = createHarness({ controls: { 'live2d-canvas': canvas } });
+    const manager = new harness.Live2DManager();
+    const model = createModel({ x: 0 });
+    const modelListeners = new Map();
+    model.parent = null;
+    model.toLocal = (point) => ({ x: point.x - model.x, y: point.y - model.y });
+    model.toGlobal = (point) => ({ x: point.x + model.x, y: point.y + model.y });
+    model.on = (type, handler) => {
+        modelListeners.set(type, handler);
+        return model;
+    };
+    manager.currentModel = model;
+    manager._isModelReadyForInteraction = true;
+    manager._live2DDragGeneration = 3;
+    manager._isSnapping = true;
+    manager._live2DActiveSnapAnimation = {};
+    harness.window.live2dManager = manager;
+
+    manager.setupDragAndDrop(model);
+    modelListeners.get('pointerdown')({
+        data: {
+            global: { x: 100, y: 100 },
+            originalEvent: { screenX: 100, screenY: 100 }
+        }
+    });
+    harness.window.dispatchEvent({
+        type: 'pointermove',
+        clientX: 150,
+        clientY: 100,
+        screenX: 150,
+        screenY: 100
+    });
+
+    assert.equal(manager._live2DDragGeneration, 4);
+    assert.equal(manager._isSnapping, false);
+    assert.equal(manager._live2DActiveSnapAnimation, null);
+});
+
+test('stale terminal snap animation stops before writing the next drag position', async () => {
+    const harness = createHarness({ widgetModeEnabled: false });
+    const manager = new harness.Live2DManager();
+    const model = createModel({ x: -400, y: 120, width: 500, height: 600 });
+    let saveCalls = 0;
+    manager.currentModel = model;
+    manager._isModelReadyForInteraction = true;
+    manager._live2DDragGeneration = 1;
+    manager._checkAndSwitchDisplay = async () => false;
+    manager._checkSnapRequired = async () => ({
+        startX: -400,
+        startY: 120,
+        targetX: 5,
+        targetY: 120,
+        overflow: { left: 400, right: 0, top: 0, bottom: 0 }
+    });
+    manager._savePositionAfterInteraction = async () => {
+        saveCalls += 1;
+    };
+
+    const settlement = manager._settleLive2DDragTerminal(model, { dragGeneration: 1 });
+    await waitForQueuedFrame(harness);
+    manager._live2DDragGeneration = 2;
+    model.x = 240;
+    flushNextFrame(harness, 16);
+
+    assert.equal(await settlement, false);
+    assert.equal(model.x, 240);
+    assert.equal(saveCalls, 0);
+    assert.equal(manager._isSnapping, false);
+    assert.equal(manager._live2DActiveSnapAnimation, null);
+});
+
+test('cancelled unguarded snap animation stops before overwriting drag coordinates', async () => {
+    const harness = createHarness({ widgetModeEnabled: false });
+    const manager = new harness.Live2DManager();
+    const model = createModel({ x: -400, y: 120, width: 500, height: 600 });
+
+    const animation = manager._performSnapAnimation(model, {
+        startX: -400,
+        startY: 120,
+        targetX: 5,
+        targetY: 120,
+        overflow: { left: 400, right: 0, top: 0, bottom: 0 }
+    });
+    await waitForQueuedFrame(harness);
+
+    manager._live2DActiveSnapAnimation = null;
+    manager._isSnapping = false;
+    model.x = 240;
+    flushNextFrame(harness, 16);
+
+    assert.equal(await animation, false);
+    assert.equal(model.x, 240);
+    assert.equal(manager._isSnapping, false);
+    assert.equal(manager._live2DActiveSnapAnimation, null);
+});
+
+test('threshold movement cancels a Peek transition created after pointerdown', async () => {
+    const canvas = { style: {} };
+    const harness = createHarness({ controls: { 'live2d-canvas': canvas } });
+    const manager = new harness.Live2DManager();
+    const model = createModel({ x: 0, y: 120, width: 500, height: 600 });
+    const modelListeners = new Map();
+    model.parent = null;
+    model.toLocal = (point) => ({ x: point.x - model.x, y: point.y - model.y });
+    model.toGlobal = (point) => ({ x: point.x + model.x, y: point.y + model.y });
+    model.on = (type, handler) => {
+        modelListeners.set(type, handler);
+        return model;
+    };
+    manager.currentModel = model;
+    manager._isModelReadyForInteraction = true;
+    manager._live2DDragGeneration = 1;
+    manager.getModelDrawableScreenRects = () => [{
+        left: 0,
+        top: 120,
+        right: 500,
+        bottom: 720,
+        width: 500,
+        height: 600
+    }];
+    harness.window.live2dManager = manager;
+
+    manager.setupDragAndDrop(model);
+    modelListeners.get('pointerdown')({
+        data: {
+            global: { x: 100, y: 200 },
+            originalEvent: { screenX: 100, screenY: 200 }
+        }
+    });
+    const applyingPeek = manager._tryApplyLive2DPeek(model, null, {
+        isCurrentSettlement: () => manager._live2DDragGeneration === 1
+    });
+    await waitForQueuedFrame(harness);
+    assert.equal(manager.isLive2DPeekActive(), true);
+
+    harness.window.dispatchEvent({
+        type: 'pointermove',
+        clientX: 150,
+        clientY: 200,
+        screenX: 150,
+        screenY: 200
+    });
+    const draggedPosition = { x: model.x, y: model.y };
+    flushNextFrame(harness, 16);
+
+    assert.equal(await applyingPeek, false);
+    assert.equal(manager._live2DDragGeneration, 2);
+    assert.equal(manager.isLive2DPeekActive(), false);
+    assert.deepEqual({ x: model.x, y: model.y }, draggedPosition);
+    assert.equal(model.rotation, 0);
+});
+
+test('stale terminal save stops before starting persistence', async () => {
+    const harness = createHarness({
+        currentDisplay: {
+            id: 'display-a',
+            screenX: 0,
+            screenY: 0,
+            bounds: { x: 0, y: 0, width: 1000, height: 800 },
+            workArea: { x: 0, y: 0, width: 1000, height: 800 }
+        }
+    });
+    const manager = new harness.Live2DManager();
+    const model = createModel({ x: 100, y: 120, width: 500, height: 600 });
+    let resolveDisplay;
+    let current = true;
+    let saveCalls = 0;
+    manager.currentModel = model;
+    manager._lastLoadedModelPath = 'model.json';
+    manager.pixi_app = {
+        renderer: { screen: { width: 1000, height: 800 } }
+    };
+    harness.window.electronScreen.getCurrentDisplay = () => new Promise((resolve) => {
+        resolveDisplay = resolve;
+    });
+    manager.saveUserPreferences = () => {
+        saveCalls += 1;
+        return Promise.resolve(true);
+    };
+
+    const saving = manager._savePositionAfterInteraction({
+        isCurrentSettlement: () => current
+    });
+    current = false;
+    resolveDisplay({ screenX: 0, screenY: 0 });
+
+    assert.equal(await saving, false);
+    assert.equal(saveCalls, 0);
+});
+
+test('peek application rechecks settlement generation after display refresh', async () => {
+    const currentDisplay = {
+        id: 'display-a',
+        screenX: 0,
+        screenY: 0,
+        bounds: { x: 0, y: 0, width: 1000, height: 800 },
+        workArea: { x: 0, y: 0, width: 1000, height: 800 }
+    };
+    const harness = createHarness({ currentDisplay });
+    const manager = new harness.Live2DManager();
+    const model = createModel({ x: 0 });
+    let releaseSnapshot;
+    let current = true;
+    harness.window.electronScreen.getDesktopCoordinateSnapshot = () => new Promise((resolve) => {
+        releaseSnapshot = resolve;
+    });
+
+    const applying = manager._tryApplyLive2DPeek(model, null, {
+        isCurrentSettlement: () => current
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    current = false;
+    releaseSnapshot({
+        version: 2,
+        revision: 1,
+        display: {
+            id: 'display-a',
+            bounds: currentDisplay.bounds,
+            workArea: currentDisplay.workArea
+        },
+        window: { settled: true },
+        renderer: { screenOrigin: { x: 0, y: 0 } }
+    });
+
+    assert.equal(await applying, false);
+    assert.equal(manager.isLive2DPeekActive(), false);
+    assert.equal(harness.rafQueue.length, 0);
+});
+
+test('release pointer selects display instead of an oversize model center', async () => {
+    const currentDisplay = {
+        id: 'display-a',
+        screenX: 0,
+        screenY: 0,
+        bounds: { x: 0, y: 0, width: 1000, height: 800 },
+        workArea: { x: 0, y: 0, width: 1000, height: 800 }
+    };
+    const harness = createHarness({ currentDisplay });
+    const manager = new harness.Live2DManager();
+    const model = createModel({ x: 1980, y: 120, width: 1200, height: 600 });
+    const displays = [
+        { id: 'display-a', screenX: 0, screenY: 0, width: 1000, height: 800 },
+        { id: 'display-b', screenX: 1000, screenY: 0, width: 2000, height: 1600 }
+    ];
+    let moveCalls = 0;
+    harness.window.electronScreen.getAllDisplays = async () => displays;
+    harness.window.electronScreen.moveWindowToDisplay = async () => {
+        moveCalls += 1;
+        return { success: true };
+    };
+
+    assert.equal(await manager._checkAndSwitchDisplay(model, {
+        releaseScreenPoint: { x: 900, y: 120 }
+    }), false);
+    assert.equal(moveCalls, 0, 'model center on display B must not override pointer released on display A');
+});
+
+test('release pointer on another display still performs the ordinary display switch', async () => {
+    const currentDisplay = {
+        id: 'display-a',
+        screenX: 0,
+        screenY: 0,
+        bounds: { x: 0, y: 0, width: 1000, height: 800 },
+        workArea: { x: 0, y: 0, width: 1000, height: 800 }
+    };
+    const harness = createHarness({ currentDisplay });
+    const manager = new harness.Live2DManager();
+    const model = createModel({ x: 700, y: 120, width: 500, height: 600 });
+    const displays = [
+        { id: 'display-a', screenX: 0, screenY: 0, width: 1000, height: 800 },
+        { id: 'display-b', screenX: 1000, screenY: 0, width: 1000, height: 800 }
+    ];
+    const movePoints = [];
+    harness.window.electronScreen.getAllDisplays = async () => displays;
+    harness.window.electronScreen.moveWindowToDisplay = async (x, y) => {
+        movePoints.push({ x, y });
+        currentDisplay.id = 'display-b';
+        currentDisplay.screenX = 1000;
+        currentDisplay.bounds = { x: 1000, y: 0, width: 1000, height: 800 };
+        currentDisplay.workArea = { x: 1000, y: 0, width: 1000, height: 800 };
+        return {
+            success: true,
+            sameDisplay: false,
+            windowBounds: { x: 1000, y: 0, width: 1000, height: 800 }
+        };
+    };
+
+    const switching = manager._checkAndSwitchDisplay(model, {
+        releaseScreenPoint: { x: 1100, y: 120 }
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    await waitForQueuedFrame(harness);
+    flushNextFrame(harness, 16);
+
+    assert.equal(await switching, true);
+    assert.deepEqual(movePoints, [{ x: 1100, y: 120 }]);
+    assert.equal(model.x, -300, 'drawable center keeps its original absolute screen position');
+});
+
+test('release pointer selects Electron displays that expose geometry under bounds', async () => {
+    const currentDisplay = {
+        id: 'display-a',
+        screenX: 0,
+        screenY: 0,
+        bounds: { x: 0, y: 0, width: 1000, height: 800 },
+        workArea: { x: 0, y: 0, width: 1000, height: 800 }
+    };
+    const harness = createHarness({ currentDisplay });
+    const manager = new harness.Live2DManager();
+    const model = createModel({ x: 700, y: 120, width: 500, height: 600 });
+    const movePoints = [];
+    harness.window.electronScreen.getAllDisplays = async () => [
+        { id: 'display-a', bounds: { x: 0, y: 0, width: 1000, height: 800 } },
+        { id: 'display-b', bounds: { x: 1000, y: 0, width: 1000, height: 800 } }
+    ];
+    harness.window.electronScreen.moveWindowToDisplay = async (x, y) => {
+        movePoints.push({ x, y });
+        return { success: false };
+    };
+
+    assert.equal(await manager._checkAndSwitchDisplay(model, {
+        releaseScreenPoint: { x: 1100, y: 120 }
+    }), false);
+    assert.deepEqual(movePoints, [{ x: 1100, y: 120 }]);
+});
+
+test('a completed stale display move rebases the newer drag without overwriting its movement', async () => {
+    const currentDisplay = {
+        id: 'display-a',
+        screenX: 0,
+        screenY: 0,
+        bounds: { x: 0, y: 0, width: 1000, height: 800 },
+        workArea: { x: 0, y: 0, width: 1000, height: 800 }
+    };
+    const harness = createHarness({ currentDisplay });
+    const manager = new harness.Live2DManager();
+    const model = createModel({ x: 700, y: 120, width: 500, height: 600 });
+    const displays = [
+        { id: 'display-a', screenX: 0, screenY: 0, width: 1000, height: 800 },
+        { id: 'display-b', screenX: 1000, screenY: 0, width: 1000, height: 800 }
+    ];
+    let resolveMove;
+    let current = true;
+    harness.window.electronScreen.getAllDisplays = async () => displays;
+    harness.window.electronScreen.moveWindowToDisplay = () => new Promise((resolve) => {
+        resolveMove = resolve;
+    });
+
+    const switching = manager._checkAndSwitchDisplay(model, {
+        releaseScreenPoint: { x: 1100, y: 120 },
+        isCurrentSettlement: () => current
+    });
+    for (let attempt = 0; attempt < 10 && !resolveMove; attempt += 1) {
+        await new Promise((resolve) => setImmediate(resolve));
+    }
+
+    current = false;
+    model.x = 760;
+    model.y = 150;
+    resolveMove({
+        success: true,
+        sameDisplay: false,
+        windowBounds: { x: 1000, y: 0, width: 1000, height: 800 }
+    });
+
+    assert.equal(await switching, false);
+    assert.equal(model.x, -240, 'newer drag x delta survives the window-origin rebase');
+    assert.equal(model.y, 150, 'unchanged display y origin must not alter newer drag y');
+    assert.equal(manager._pendingDisplaySwitch, false);
+});
+
+test('a newer display switch waits until the older pending move finishes', async () => {
+    const currentDisplay = {
+        id: 'display-a',
+        screenX: 0,
+        screenY: 0,
+        bounds: { x: 0, y: 0, width: 1000, height: 800 },
+        workArea: { x: 0, y: 0, width: 1000, height: 800 }
+    };
+    const harness = createHarness({ currentDisplay });
+    const manager = new harness.Live2DManager();
+    const model = createModel({ x: 700, y: 120, width: 500, height: 600 });
+    const displays = [
+        { id: 'display-a', screenX: 0, screenY: 0, width: 1000, height: 800 },
+        { id: 'display-b', screenX: 1000, screenY: 0, width: 1000, height: 800 }
+    ];
+    const moveResolvers = [];
+    harness.window.electronScreen.getAllDisplays = async () => displays;
+    harness.window.electronScreen.moveWindowToDisplay = () => new Promise((resolve) => {
+        moveResolvers.push(resolve);
+    });
+
+    const firstSwitch = manager._checkAndSwitchDisplay(model, {
+        releaseScreenPoint: { x: 1100, y: 120 }
+    });
+    const secondSwitch = manager._checkAndSwitchDisplay(model, {
+        releaseScreenPoint: { x: 1100, y: 120 }
+    });
+    for (let attempt = 0; attempt < 10 && moveResolvers.length < 1; attempt += 1) {
+        await new Promise((resolve) => setImmediate(resolve));
+    }
+    assert.equal(moveResolvers.length, 1, 'the newer display transaction must remain queued');
+    assert.equal(manager._pendingDisplaySwitch, true);
+
+    moveResolvers[0]({ success: false });
+    assert.equal(await firstSwitch, false);
+    for (let attempt = 0; attempt < 10 && moveResolvers.length < 2; attempt += 1) {
+        await new Promise((resolve) => setImmediate(resolve));
+    }
+    assert.equal(moveResolvers.length, 2);
+    assert.equal(manager._pendingDisplaySwitch, true);
+
+    moveResolvers[1]({ success: false });
+    assert.equal(await secondSwitch, false);
+    assert.equal(manager._pendingDisplaySwitch, false);
+    assert.equal(manager._live2DPendingDisplaySwitchToken, null);
+});
+
+test('the newest display request runs last after an older move succeeds', async () => {
+    const currentDisplay = {
+        id: 'display-a',
+        screenX: 0,
+        screenY: 0,
+        bounds: { x: 0, y: 0, width: 1000, height: 800 },
+        workArea: { x: 0, y: 0, width: 1000, height: 800 }
+    };
+    const harness = createHarness({ currentDisplay });
+    const manager = new harness.Live2DManager();
+    const model = createModel({ x: 700, y: 120, width: 500, height: 600 });
+    const moveRequests = [];
+    const settlementsCurrent = [true, true];
+    harness.window.electronScreen.getAllDisplays = async () => [
+        { id: 'display-a', screenX: 0, screenY: 0, width: 1000, height: 800 },
+        { id: 'display-b', screenX: 1000, screenY: 0, width: 1000, height: 800 },
+        { id: 'display-c', screenX: 2000, screenY: 0, width: 1000, height: 800 }
+    ];
+    harness.window.electronScreen.moveWindowToDisplay = (x, y) => new Promise((resolve) => {
+        moveRequests.push({ x, y, resolve });
+    });
+
+    const firstSwitch = manager._checkAndSwitchDisplay(model, {
+        releaseScreenPoint: { x: 1100, y: 120 },
+        isCurrentSettlement: () => settlementsCurrent[0]
+    });
+    const secondSwitch = manager._checkAndSwitchDisplay(model, {
+        releaseScreenPoint: { x: 2100, y: 120 },
+        isCurrentSettlement: () => settlementsCurrent[1]
+    });
+    for (let attempt = 0; attempt < 10 && moveRequests.length < 1; attempt += 1) {
+        await new Promise((resolve) => setImmediate(resolve));
+    }
+    assert.deepEqual(
+        moveRequests.map(({ x, y }) => ({ x, y })),
+        [{ x: 1100, y: 120 }],
+        'the newer request must not race the older IPC'
+    );
+    assert.equal(manager._pendingDisplaySwitch, true);
+    assert.equal(manager._live2DDisplaySwitchInFlightCount, 1);
+
+    settlementsCurrent[0] = false;
+    currentDisplay.id = 'display-b';
+    currentDisplay.screenX = 1000;
+    currentDisplay.bounds = { x: 1000, y: 0, width: 1000, height: 800 };
+    currentDisplay.workArea = { x: 1000, y: 0, width: 1000, height: 800 };
+    moveRequests[0].resolve({
+        success: true,
+        sameDisplay: false,
+        windowBounds: { x: 1000, y: 0, width: 1000, height: 800 }
+    });
+    assert.equal(await firstSwitch, false);
+    for (let attempt = 0; attempt < 10 && moveRequests.length < 2; attempt += 1) {
+        await new Promise((resolve) => setImmediate(resolve));
+    }
+    assert.deepEqual(
+        moveRequests.map(({ x, y }) => ({ x, y })),
+        [{ x: 1100, y: 120 }, { x: 2100, y: 120 }]
+    );
+    assert.equal(model.x, -300);
+    assert.equal(manager._pendingDisplaySwitch, true);
+    assert.equal(manager._live2DDisplaySwitchInFlightCount, 1);
+
+    currentDisplay.id = 'display-c';
+    currentDisplay.screenX = 2000;
+    currentDisplay.bounds = { x: 2000, y: 0, width: 1000, height: 800 };
+    currentDisplay.workArea = { x: 2000, y: 0, width: 1000, height: 800 };
+    moveRequests[1].resolve({
+        success: true,
+        sameDisplay: false,
+        windowBounds: { x: 2000, y: 0, width: 1000, height: 800 }
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    await waitForQueuedFrame(harness);
+    flushNextFrame(harness, 16);
+
+    assert.equal(await secondSwitch, true);
+    assert.equal(manager._live2DModelCoordinateScreenOrigin.x, 2000);
+    assert.equal(manager._pendingDisplaySwitch, false);
+    assert.equal(manager._live2DDisplaySwitchInFlightCount, 0);
+});
+
 test('edge contact follows drawable geometry instead of transparent model bounds', () => {
     const harness = createHarness();
     const manager = new harness.Live2DManager();
@@ -432,6 +1173,106 @@ test('edge contact follows drawable geometry instead of transparent model bounds
         height: 500
     }];
     assert.equal(harness.getLive2DPeekEdgeContact(manager, model), null);
+});
+
+test('oversize edge contact requires an exact edge or explicit drag intent', async () => {
+    const harness = createHarness({
+        currentDisplay: {
+            id: 'display-test',
+            screenX: 0,
+            screenY: 0,
+            bounds: { x: 0, y: 0, width: 1000, height: 800 },
+            workArea: { x: 0, y: 0, width: 1000, height: 800 }
+        }
+    });
+    await harness.refreshLive2DPeekDisplayContext(true);
+    const manager = new harness.Live2DManager();
+
+    const exactLeft = createModel({ x: 0, y: 100, width: 1200, height: 600 });
+    assert.equal(harness.getLive2DPeekEdgeContact(manager, exactLeft).edge, 'left');
+
+    for (const x of [-101, -100, -99]) {
+        const centered = createModel({ x, y: 100, width: 1200, height: 600 });
+        assert.equal(
+            harness.getLive2DPeekEdgeContact(manager, centered),
+            null,
+            `oversize model at x=${x} must not infer a side from overflow`
+        );
+    }
+
+    const ambiguous = createModel({ x: -100, y: 100, width: 1200, height: 600 });
+    const leftIntent = harness.getLive2DPeekEdgeContact(manager, ambiguous, null, {
+        startScreenPoint: { x: 300, y: 300 },
+        releaseScreenPoint: { x: 20, y: 300 }
+    });
+    const rightIntent = harness.getLive2DPeekEdgeContact(manager, ambiguous, null, {
+        startScreenPoint: { x: 700, y: 300 },
+        releaseScreenPoint: { x: 980, y: 300 }
+    });
+    assert.equal(leftIntent.edge, 'left');
+    assert.equal(rightIntent.edge, 'right');
+});
+
+test('screen-coordinate drag intent fails closed without display context', () => {
+    const harness = createHarness();
+    const manager = new harness.Live2DManager();
+    const ambiguous = createModel({ x: -100, y: 100, width: 1200, height: 600 });
+
+    assert.equal(harness.getLive2DPeekEdgeContact(manager, ambiguous, null, {
+        startScreenPoint: { x: 300, y: 300 },
+        releaseScreenPoint: { x: 20, y: 300 }
+    }), null);
+});
+
+test('oversize vertical ambiguity degrades to a side edge without implicit y alignment', async () => {
+    const harness = createHarness({
+        currentDisplay: {
+            id: 'display-test',
+            screenX: 0,
+            screenY: 0,
+            bounds: { x: 0, y: 0, width: 1000, height: 800 },
+            workArea: { x: 0, y: 0, width: 1000, height: 800 }
+        }
+    });
+    await harness.refreshLive2DPeekDisplayContext(true);
+    const manager = new harness.Live2DManager();
+    const model = createModel({ x: 0, y: -100, width: 500, height: 1000 });
+
+    const contact = harness.getLive2DPeekEdgeContact(manager, model);
+    assert.equal(contact.edge, 'left');
+    assert.equal(contact.verticalEdge, '');
+    assert.equal(harness.settleLive2DBaseAtEdgeContact(model, contact), true);
+    assert.equal(model.y, -100);
+
+    const intendedTop = harness.getLive2DPeekEdgeContact(manager, model, null, {
+        startScreenPoint: { x: 20, y: 200 },
+        releaseScreenPoint: { x: 20, y: 20 }
+    });
+    const intendedBottom = harness.getLive2DPeekEdgeContact(manager, model, null, {
+        startScreenPoint: { x: 20, y: 600 },
+        releaseScreenPoint: { x: 20, y: 780 }
+    });
+    assert.equal(intendedTop.edge, 'top-left');
+    assert.equal(intendedBottom.edge, 'bottom-left');
+});
+
+test('locked edge validation cannot reclassify an oversize model to the opposite corner', () => {
+    const harness = createHarness();
+    const manager = new harness.Live2DManager();
+    const model = createModel({ x: 0, y: -200, width: 500, height: 1000 });
+    const initialContact = {
+        edge: 'top-left',
+        side: 'left',
+        verticalEdge: 'top',
+        geometry: model.getBounds(),
+        workArea: { left: 0, top: 0, right: 1000, bottom: 800, width: 1000, height: 800 }
+    };
+
+    assert.equal(harness.getLive2DPeekEdgeContact(manager, model).edge, 'bottom-left');
+    assert.equal(
+        harness.validateLive2DPeekEdgeContact(manager, model, initialContact).edge,
+        'top-left'
+    );
 });
 
 test('restoring a peek transform keeps the grabbed model-local point under the pointer', () => {
@@ -928,6 +1769,41 @@ test('Widget Mode disabled event restores active edge peek to its base position'
     assert.equal(model.rotation, 0);
     assert.equal(model.scale.x, 1);
     assert.equal(harness.bodyClasses.has('neko-live2d-peek'), false);
+});
+
+test('restoreAnchor leaves the model untouched while Widget Mode is disabled', async () => {
+    const harness = createHarness({ widgetModeEnabled: false });
+    const manager = new harness.Live2DManager();
+    const model = createRotatingModel({ x: 0, y: 0, scaleX: 1 });
+    manager.currentModel = model;
+    manager.getHeadScreenAnchor = () => model.transformPoint(150, 110);
+    manager.getBodyScreenRectInfo = () => {
+        const waist = model.transformPoint(150, 330);
+        return { rect: { centerX: waist.x, bottom: waist.y } };
+    };
+    harness.window.live2dManager = manager;
+
+    // 猫形态期间用户关掉 Widget 模式后，return 仍残留探身锚点。restore 必须在
+    // 触碰模型坐标之前先拒绝，否则 _tryApplyLive2DPeek 会在对齐边缘后才因
+    // isLive2DPeekEnabled() 失败，把模型留在陈旧边缘位置。
+    const anchor = {
+        kind: 'live2d-edge-peek',
+        edge: 'left',
+        side: 'left',
+        edgeAnchorRatio: 0.5,
+        facing: 'inward'
+    };
+    model.x = 350;
+    model.y = 100;
+    const beforeX = model.x;
+    const beforeY = model.y;
+
+    const restored = await harness.window.nekoLive2DPeek.restoreAnchor(anchor);
+
+    assert.equal(restored, false);
+    assert.equal(manager.isLive2DPeekActive(), false);
+    assert.equal(model.x, beforeX);
+    assert.equal(model.y, beforeY);
 });
 
 test('top and bottom edges alone do not trigger edge peek', async () => {

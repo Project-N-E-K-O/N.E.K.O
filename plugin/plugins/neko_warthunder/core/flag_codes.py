@@ -1,7 +1,7 @@
 """数据层告警 flag 名 → 我们事件的集中映射（接缝集中点）。
 
 ⚠️ 这是与数据层契约最易错的接缝：若真实 /api/processed.flags 的 code 拼写/分级
-与此不符，改这一处即可（不动逻辑）。来源：data_layer/data process/后端接口文档.md
+与此不符，改这一处即可（不动逻辑）。来源：data_layer/data_process/后端接口文档.md
 的「告警代码」表 + wt_processor.py。
 
 每个连续事件 → 一组 (warning_code, critical_code)；多组表示"任一成立即触发"

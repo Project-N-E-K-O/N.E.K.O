@@ -18,13 +18,14 @@ VOICE_POPOVER_GLOBAL_LISTENERS = (
     "window:neko:voice-session-started",
     "window:neko:voice-settings-pending-changed",
     "window:neko:core-api-capability-changed",
+    "window:neko:speaker-device-changed",
 )
 
 
 def _voice_popover_sources() -> tuple[str, str]:
     source = APP_AUDIO_CAPTURE.read_text(encoding="utf-8")
 
-    permission_start = source.index("async function ensureMicrophonePermission()")
+    permission_start = source.index("async function enumerateAndCacheMediaDevices()")
     permission_end = source.index("// 监听设备变化", permission_start)
     permission_source = source[permission_start:permission_end].strip()
 
@@ -38,6 +39,13 @@ def _voice_popover_sources() -> tuple[str, str]:
     if not render_expression.endswith(";"):
         raise AssertionError("renderFloatingMicList assignment is not terminated")
     return permission_source, render_expression[:-1]
+
+
+def _device_change_source() -> str:
+    source = APP_AUDIO_CAPTURE.read_text(encoding="utf-8")
+    start = source.index("async function enumerateAndCacheMediaDevices()")
+    end = source.index("/** 为浮动弹出框渲染麦克风列表 */", start)
+    return source[start:end].strip()
 
 
 def _install_voice_popover_harness(
@@ -103,6 +111,10 @@ def _install_voice_popover_harness(
             enumerateDevices() {
                 return Promise.resolve([
                     { kind: 'audioinput', deviceId: 'test-mic' },
+                    { kind: 'audiooutput', deviceId: 'default', label: 'Default pseudo device' },
+                    { kind: 'audiooutput', deviceId: 'communications', label: 'Communications pseudo device' },
+                    { kind: 'audiooutput', deviceId: 'speaker-a', label: 'Speaker A' },
+                    { kind: 'audiooutput', deviceId: 'speaker-b', label: 'Speaker B' },
                 ]);
             },
             addEventListener() {},
@@ -112,6 +124,9 @@ def _install_voice_popover_harness(
     const S = {
         speakerVolume: 100,
         speakerGainNode: null,
+        selectedSpeakerId: 'default',
+        effectiveSpeakerId: 'default',
+        selectedSpeakerAvailable: true,
         spatialAudioEnabled: true,
         independentAsrEnabled: true,
         coreApiSupportsIndependentAsr: true,
@@ -130,6 +145,7 @@ def _install_voice_popover_harness(
     };
     const C = {
         DEFAULT_SPEAKER_VOLUME: 100,
+        DEFAULT_SPEAKER_DEVICE_ID: 'default',
         MAX_SPEAKER_VOLUME: 200,
         SPEAKER_VOLUME_KNEE_RATIO: 0.75,
         MIN_MIC_GAIN_DB: -5,
@@ -148,6 +164,36 @@ def _install_voice_popover_harness(
     };
     window.appSettings = { saveSettings: () => { window.__saveCalls += 1; } };
     window.__saveCalls = 0;
+    window.__speakerSelections = [];
+    window.__speakerSelectionResult = true;
+    window.__statusToasts = [];
+    window.__unhandledRejectionCount = 0;
+    window.addEventListener('unhandledrejection', () => {
+        window.__unhandledRejectionCount += 1;
+    });
+    window.showStatusToast = (...args) => {
+        window.__statusToasts.push(args);
+    };
+    window.selectSpeakerDevice = async (deviceId) => {
+        window.__speakerSelections.push(deviceId);
+        if (window.__speakerSelectionResult === 'throw') {
+            throw new DOMException('device unavailable', 'NotFoundError');
+        }
+        if (window.__speakerSelectionResult === false) return false;
+        S.selectedSpeakerId = deviceId;
+        S.effectiveSpeakerId = deviceId;
+        S.selectedSpeakerAvailable = true;
+        return true;
+    };
+    window.reconcileSelectedSpeakerDevices = async (devices) => {
+        const preferred = S.selectedSpeakerId;
+        S.selectedSpeakerAvailable = preferred === 'default'
+            || devices.some((device) => (
+                device.kind === 'audiooutput' && device.deviceId === preferred
+            ));
+        S.effectiveSpeakerId = S.selectedSpeakerAvailable ? preferred : 'default';
+        return S.selectedSpeakerAvailable;
+    };
     window.t = (key) => key;
 
     function formatGainDisplay(value) { return String(value); }
@@ -183,11 +229,25 @@ def _install_voice_popover_harness(
         source.type = 'button';
         source.textContent = 'test-screen';
         container.appendChild(source);
+        const filter = document.createElement('input');
+        filter.type = 'search';
+        filter.className = 'screen-source-title-filter';
+        container.appendChild(filter);
         return true;
+    };
+    let rememberWindowEnabled = true;
+    window.__rememberWindowSetCalls = [];
+    window.isScreenSourceTitleMatchEnabled = () => rememberWindowEnabled;
+    window.setScreenSourceTitleMatchEnabled = (enabled) => {
+        rememberWindowEnabled = enabled;
+        window.__rememberWindowSetCalls.push(enabled);
     };
 
     let micPermissionGranted = false;
     let cachedMicDevices = null;
+    let cachedSpeakerDevices = null;
+    let mediaDeviceEnumerationGeneration = 0;
+    let latestMediaDeviceEnumerationPromise = Promise.resolve(null);
     let disposeVoiceRecognitionPopover = null;
     let voiceRecognitionPopoverRenderGeneration = 0;
 
@@ -198,6 +258,12 @@ def _install_voice_popover_harness(
         state: S,
         capturedErrors,
         listenerBalance,
+        setCachedSpeakerDevices(devices) {
+            cachedSpeakerDevices = devices;
+        },
+        setSpeakerSelectionResult(result) {
+            window.__speakerSelectionResult = result;
+        },
         resolvePermissions() {
             while (mediaResolvers.length) {
                 mediaResolvers.shift().resolve(stream);
@@ -221,6 +287,7 @@ def _install_voice_popover_harness(
             }
         },
         pendingScreenSources: () => screenSourceResolvers.length,
+        rememberWindowEnabled: () => rememberWindowEnabled,
         failMicVolumeVisualization() {
             failMicVolumeVisualization = true;
         },
@@ -571,6 +638,7 @@ def test_voice_device_and_screen_actions_share_one_owned_subwindow(
 
             const voice = await openAndSnapshot('voice-recognition');
             const device = await openAndSnapshot('device');
+            const speaker = await openAndSnapshot('speaker-device');
             const screen = await openAndSnapshot('screen');
             const closeButton = test.ownedPanels()[0].querySelector(
                 'button[aria-label="Close"]'
@@ -579,6 +647,7 @@ def test_voice_device_and_screen_actions_share_one_owned_subwindow(
             return {
                 voice,
                 device,
+                speaker,
                 screen,
                 panelsAfterClose: test.ownedPanels().length,
             };
@@ -597,6 +666,12 @@ def test_voice_device_and_screen_actions_share_one_owned_subwindow(
         "owner": "live2d-popup-mic",
         "sidePanel": True,
     }
+    assert result["speaker"] == {
+        "count": 1,
+        "actionKey": "speaker-device",
+        "owner": "live2d-popup-mic",
+        "sidePanel": True,
+    }
     assert result["screen"] == {
         "count": 1,
         "actionKey": "screen",
@@ -604,6 +679,651 @@ def test_voice_device_and_screen_actions_share_one_owned_subwindow(
         "sidePanel": True,
     }
     assert result["panelsAfterClose"] == 0
+
+
+@pytest.mark.frontend
+def test_screen_source_subwindow_header_has_remember_window_toggle(
+    page: Page,
+) -> None:
+    _install_voice_popover_harness(page, deferred_permission=False)
+
+    result = page.evaluate(
+        """async () => {
+            const test = window.__voicePopoverTest;
+            await window.renderFloatingMicList(test.popup());
+            test.action('screen').click();
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            const panel = test.panel('screen');
+            const control = panel.querySelector(
+                '.neko-screen-source-remember-control'
+            );
+            const input = control.querySelector(
+                '.neko-screen-source-title-match-toggle'
+            );
+            const closeButton = panel.querySelector('button[aria-label="Close"]');
+            const initiallyChecked = input.checked;
+            input.click();
+            return {
+                controlText: control.textContent,
+                initiallyChecked,
+                checkedAfterClick: input.checked,
+                ariaLabel: input.getAttribute('aria-label'),
+                controlBeforeClose: Boolean(
+                    control.compareDocumentPosition(closeButton)
+                        & Node.DOCUMENT_POSITION_FOLLOWING
+                ),
+                setterCalls: window.__rememberWindowSetCalls,
+                enabledAfterClick: test.rememberWindowEnabled(),
+            };
+        }"""
+    )
+
+    assert result == {
+        "controlText": "app.screenSource.rememberWindow",
+        "initiallyChecked": True,
+        "checkedAfterClick": False,
+        "ariaLabel": "app.screenSource.rememberWindow",
+        "controlBeforeClose": True,
+        "setterCalls": [False],
+        "enabledAfterClick": False,
+    }
+
+
+@pytest.mark.frontend
+def test_screen_source_subwindow_ignores_leave_and_closes_on_parent_return(
+    page: Page,
+) -> None:
+    _install_voice_popover_harness(page, deferred_permission=False)
+    page.evaluate(
+        """async () => {
+            const test = window.__voicePopoverTest;
+            await window.renderFloatingMicList(test.popup());
+            test.action('screen').click();
+            await new Promise((resolve) => setTimeout(resolve, 0));
+        }"""
+    )
+
+    filter_input = page.locator(
+        '.neko-mic-subwindow[data-neko-mic-action-key="screen"] '
+        '.screen-source-title-filter'
+    )
+    filter_input.focus()
+    page.locator(
+        '.neko-mic-subwindow[data-neko-mic-action-key="screen"]'
+    ).hover()
+    page.locator("#outside-target").hover()
+    page.wait_for_timeout(360)
+    assert page.evaluate("window.__voicePopoverTest.panels()") == 1
+
+    page.evaluate(
+        """() => {
+            document.querySelector('.screen-source-title-filter').blur();
+            window.dispatchEvent(new Event('blur'));
+        }"""
+    )
+    page.wait_for_timeout(360)
+    assert page.evaluate("window.__voicePopoverTest.panels()") == 1
+
+    page.locator('[data-neko-mic-main-action="screen"]').hover()
+    page.wait_for_function("window.__voicePopoverTest.panels() === 0")
+
+
+@pytest.mark.frontend
+def test_screen_source_subwindow_closes_when_parent_popup_hides(
+    page: Page,
+) -> None:
+    _install_voice_popover_harness(page, deferred_permission=False)
+    result = page.evaluate(
+        """async () => {
+            const test = window.__voicePopoverTest;
+            const popup = test.popup();
+            await window.renderFloatingMicList(popup);
+            test.action('screen').click();
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            const beforeHide = test.panels();
+            popup.style.display = 'none';
+            await Promise.resolve();
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            return { beforeHide, afterHide: test.panels() };
+        }"""
+    )
+    assert result == {"beforeHide": 1, "afterHide": 0}
+
+
+@pytest.mark.frontend
+def test_playback_device_action_position_and_pseudo_device_filtering(
+    page: Page,
+) -> None:
+    _install_voice_popover_harness(page, deferred_permission=False)
+
+    result = page.evaluate(
+        """async () => {
+            const test = window.__voicePopoverTest;
+            await window.renderFloatingMicList(test.popup());
+            const column = test.popup().firstElementChild;
+            const order = Array.from(column.children).map((node) => (
+                node.dataset.nekoMicMainActionRow
+                || (node.classList.contains('speaker-volume-container')
+                    ? 'speaker-volume'
+                    : null)
+            )).filter(Boolean);
+
+            test.action('speaker-device').click();
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            const options = Array.from(
+                test.panel('speaker-device').querySelectorAll('.speaker-option')
+            ).map((option) => ({
+                deviceId: option.dataset.deviceId,
+                text: option.textContent,
+                selected: option.classList.contains('selected'),
+                pressed: option.getAttribute('aria-pressed'),
+            }));
+            const speakerB = test.panel('speaker-device').querySelector(
+                '.speaker-option[data-device-id="speaker-b"]'
+            );
+            speakerB.click();
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            return {
+                order,
+                options,
+                selections: window.__speakerSelections.slice(),
+                selectedSpeakerId: test.state.selectedSpeakerId,
+                summary: test.action('speaker-device').querySelector(
+                    '.neko-mic-action-sub-label'
+                ).textContent,
+                summaryLive: test.action('speaker-device').querySelector(
+                    '.neko-mic-action-sub-label'
+                ).getAttribute('aria-live'),
+            };
+        }"""
+    )
+
+    assert result["order"][:5] == [
+        "screen",
+        "device",
+        "voice-recognition",
+        "speaker-device",
+        "speaker-volume",
+    ]
+    assert [option["deviceId"] for option in result["options"]] == [
+        "default",
+        "speaker-a",
+        "speaker-b",
+    ]
+    assert result["options"][0]["selected"] is True
+    assert result["options"][0]["pressed"] == "true"
+    assert all(option["pressed"] == "false" for option in result["options"][1:])
+    assert result["selections"] == ["speaker-b"]
+    assert result["selectedSpeakerId"] == "speaker-b"
+    assert result["summary"] == "Speaker B"
+    assert result["summaryLive"] == "polite"
+
+
+@pytest.mark.frontend
+def test_playback_device_summary_uses_the_latest_cached_devices(
+    page: Page,
+) -> None:
+    _install_voice_popover_harness(page, deferred_permission=False)
+
+    result = page.evaluate(
+        """async () => {
+            const test = window.__voicePopoverTest;
+            test.state.selectedSpeakerId = 'restored-speaker';
+            test.state.selectedSpeakerAvailable = false;
+            await window.renderFloatingMicList(test.popup());
+            const summary = test.action('speaker-device').querySelector(
+                '.neko-mic-action-sub-label'
+            );
+            const beforeRestore = summary.textContent;
+            test.state.effectiveSpeakerId = 'restored-speaker';
+            window.dispatchEvent(new CustomEvent('neko:speaker-device-changed'));
+            const failedFallback = summary.textContent;
+            test.setCachedSpeakerDevices([
+                { kind: 'audiooutput', deviceId: 'default', label: 'Default' },
+                {
+                    kind: 'audiooutput',
+                    deviceId: 'restored-speaker',
+                    label: 'Restored Speaker',
+                },
+            ]);
+            test.state.selectedSpeakerAvailable = true;
+            window.dispatchEvent(new CustomEvent('neko:speaker-device-changed'));
+            const afterRestore = summary.textContent;
+            test.state.selectedSpeakerId = 'default';
+            test.state.effectiveSpeakerId = 'restored-speaker';
+            window.dispatchEvent(new CustomEvent('neko:speaker-device-changed'));
+            const failedDefaultRoute = summary.textContent;
+            test.state.effectiveSpeakerId = 'default';
+            window.dispatchEvent(new CustomEvent('neko:speaker-device-changed'));
+            return {
+                beforeRestore,
+                failedFallback,
+                afterRestore,
+                failedDefaultRoute,
+                successfulDefaultRoute: summary.textContent,
+            };
+        }"""
+    )
+
+    assert result == {
+        "beforeRestore": "speaker.unavailableFallback",
+        "failedFallback": "speaker.unavailableFallbackFailed",
+        "afterRestore": "Restored Speaker",
+        "failedDefaultRoute": "speaker.unavailableFallbackFailed",
+        "successfulDefaultRoute": "speaker.defaultDevice",
+    }
+
+
+@pytest.mark.frontend
+def test_playback_device_event_refreshes_open_option_selection(
+    page: Page,
+) -> None:
+    _install_voice_popover_harness(page, deferred_permission=False)
+
+    result = page.evaluate(
+        """async () => {
+            const test = window.__voicePopoverTest;
+            await window.renderFloatingMicList(test.popup());
+            test.action('speaker-device').click();
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            test.state.selectedSpeakerId = 'speaker-b';
+            test.state.selectedSpeakerAvailable = true;
+            test.state.effectiveSpeakerId = 'speaker-b';
+            window.dispatchEvent(new CustomEvent('neko:speaker-device-changed'));
+            return Array.from(
+                test.panel('speaker-device').querySelectorAll('.speaker-option')
+            ).map((option) => ({
+                deviceId: option.dataset.deviceId,
+                selected: option.classList.contains('selected'),
+                pressed: option.getAttribute('aria-pressed'),
+            }));
+        }"""
+    )
+
+    assert result == [
+        {"deviceId": "default", "selected": False, "pressed": "false"},
+        {"deviceId": "speaker-a", "selected": False, "pressed": "false"},
+        {"deviceId": "speaker-b", "selected": True, "pressed": "true"},
+    ]
+
+
+@pytest.mark.frontend
+def test_playback_device_false_result_shows_switch_failure(
+    page: Page,
+) -> None:
+    _install_voice_popover_harness(page, deferred_permission=False)
+
+    result = page.evaluate(
+        """async () => {
+            const test = window.__voicePopoverTest;
+            await window.renderFloatingMicList(test.popup());
+            test.action('speaker-device').click();
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            test.setSpeakerSelectionResult(false);
+            test.panel('speaker-device').querySelector(
+                '.speaker-option[data-device-id="speaker-b"]'
+            ).click();
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            return {
+                selected: test.state.selectedSpeakerId,
+                toasts: window.__statusToasts.map((args) => args[0]),
+            };
+        }"""
+    )
+
+    assert result == {
+        "selected": "default",
+        "toasts": ["speaker.switchFailed"],
+    }
+
+
+@pytest.mark.frontend
+def test_playback_device_exception_shows_switch_failure(
+    page: Page,
+) -> None:
+    _install_voice_popover_harness(page, deferred_permission=False)
+
+    result = page.evaluate(
+        """async () => {
+            const test = window.__voicePopoverTest;
+            await window.renderFloatingMicList(test.popup());
+            test.action('speaker-device').click();
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            test.setSpeakerSelectionResult('throw');
+            test.panel('speaker-device').querySelector(
+                '.speaker-option[data-device-id="speaker-b"]'
+            ).click();
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            return {
+                selected: test.state.selectedSpeakerId,
+                toasts: window.__statusToasts.map((args) => args[0]),
+                unhandledRejections: window.__unhandledRejectionCount,
+            };
+        }"""
+    )
+
+    assert result == {
+        "selected": "default",
+        "toasts": ["speaker.switchFailed"],
+        "unhandledRejections": 0,
+    }
+
+
+@pytest.mark.frontend
+def test_devicechange_discards_an_older_out_of_order_enumeration(
+    page: Page,
+) -> None:
+    device_change_source = _device_change_source()
+    page.set_content("<main>devicechange generation harness</main>")
+    page.add_script_tag(
+        content=(
+            r"""
+            (() => {
+                const pendingEnumerations = [];
+                const reconcileCalls = [];
+                let deviceChangeListener = null;
+                Object.defineProperty(navigator, 'mediaDevices', {
+                    configurable: true,
+                    value: {
+                        enumerateDevices() {
+                            return new Promise((resolve) => {
+                                pendingEnumerations.push(resolve);
+                            });
+                        },
+                        addEventListener(type, listener) {
+                            if (type === 'devicechange') deviceChangeListener = listener;
+                        },
+                    },
+                });
+                var cachedMicDevices = null;
+                var cachedSpeakerDevices = null;
+                var mediaDeviceChangeGeneration = 0;
+                var mediaDeviceEnumerationGeneration = 0;
+                var latestMediaDeviceEnumerationPromise = Promise.resolve(null);
+                window.reconcileSelectedSpeakerDevices = async (devices) => {
+                    reconcileCalls.push(devices.map((device) => device.deviceId));
+                };
+                window.renderFloatingMicList = async () => true;
+                __DEVICE_CHANGE_SOURCE__
+                window.__deviceChangeTest = {
+                    emit: () => deviceChangeListener(),
+                    resolve(index, devices) {
+                        pendingEnumerations[index](devices);
+                    },
+                    result: () => ({
+                        speakers: (cachedSpeakerDevices || []).map(
+                            (device) => device.deviceId
+                        ),
+                        reconcileCalls: reconcileCalls.slice(),
+                    }),
+                };
+            })();
+            """.replace("__DEVICE_CHANGE_SOURCE__", device_change_source)
+        )
+    )
+
+    result = page.evaluate(
+        """async () => {
+            const test = window.__deviceChangeTest;
+            const older = test.emit();
+            const newer = test.emit();
+            test.resolve(1, [
+                { kind: 'audioinput', deviceId: 'mic-new' },
+                { kind: 'audiooutput', deviceId: 'default' },
+                { kind: 'audiooutput', deviceId: 'preferred-speaker' },
+            ]);
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            test.resolve(0, [
+                { kind: 'audioinput', deviceId: 'mic-old' },
+                { kind: 'audiooutput', deviceId: 'default' },
+            ]);
+            await Promise.all([older, newer]);
+            return test.result();
+        }"""
+    )
+
+    assert result == {
+        "speakers": ["default", "preferred-speaker"],
+        "reconcileCalls": [["mic-new", "default", "preferred-speaker"]],
+    }
+
+
+@pytest.mark.frontend
+def test_permission_enumeration_cannot_overwrite_a_newer_devicechange_result(
+    page: Page,
+) -> None:
+    device_change_source = _device_change_source()
+    page.set_content("<main>shared media enumeration generation harness</main>")
+    page.add_script_tag(
+        content=(
+            r"""
+            (() => {
+                const pendingEnumerations = [];
+                const reconcileCalls = [];
+                let deviceChangeListener = null;
+                Object.defineProperty(navigator, 'mediaDevices', {
+                    configurable: true,
+                    value: {
+                        async getUserMedia() {
+                            return { getTracks: () => [{ stop() {} }] };
+                        },
+                        enumerateDevices() {
+                            return new Promise((resolve) => {
+                                pendingEnumerations.push(resolve);
+                            });
+                        },
+                        addEventListener(type, listener) {
+                            if (type === 'devicechange') deviceChangeListener = listener;
+                        },
+                    },
+                });
+                var micPermissionGranted = false;
+                var cachedMicDevices = null;
+                var cachedSpeakerDevices = null;
+                var mediaDeviceChangeGeneration = 0;
+                var mediaDeviceEnumerationGeneration = 0;
+                var latestMediaDeviceEnumerationPromise = Promise.resolve(null);
+                window.reconcileSelectedSpeakerDevices = async (devices) => {
+                    reconcileCalls.push(devices.map((device) => device.deviceId));
+                };
+                window.renderFloatingMicList = async () => true;
+                __DEVICE_CHANGE_SOURCE__
+                window.__mediaEnumerationTest = {
+                    startPermission: () => ensureMicrophonePermission(),
+                    emitDeviceChange: () => deviceChangeListener(),
+                    pendingCount: () => pendingEnumerations.length,
+                    resolve(index, devices) {
+                        pendingEnumerations[index](devices);
+                    },
+                    result: () => ({
+                        microphones: (cachedMicDevices || []).map(
+                            (device) => device.deviceId
+                        ),
+                        speakers: (cachedSpeakerDevices || []).map(
+                            (device) => device.deviceId
+                        ),
+                        reconcileCalls: reconcileCalls.slice(),
+                    }),
+                };
+            })();
+            """.replace("__DEVICE_CHANGE_SOURCE__", device_change_source)
+        )
+    )
+
+    result = page.evaluate(
+        """async () => {
+            const test = window.__mediaEnumerationTest;
+            const waitForPendingCount = async (expected) => {
+                for (let attempt = 0; attempt < 1000; attempt += 1) {
+                    if (test.pendingCount() >= expected) return;
+                    await new Promise((resolve) => setTimeout(resolve, 0));
+                }
+                throw new Error('expected media enumeration was not observed');
+            };
+            const permission = test.startPermission();
+            await waitForPendingCount(1);
+            const deviceChange = test.emitDeviceChange();
+            await waitForPendingCount(2);
+            test.resolve(1, [
+                { kind: 'audioinput', deviceId: 'mic-new' },
+                { kind: 'audiooutput', deviceId: 'default' },
+                { kind: 'audiooutput', deviceId: 'preferred-speaker' },
+            ]);
+            await deviceChange;
+            test.resolve(0, [
+                { kind: 'audioinput', deviceId: 'mic-old' },
+                { kind: 'audiooutput', deviceId: 'default' },
+            ]);
+            const permissionDevices = await permission;
+            return {
+                permissionDevices: permissionDevices.map(
+                    (device) => device.deviceId
+                ),
+                ...test.result(),
+            };
+        }"""
+    )
+
+    assert result == {
+        "permissionDevices": ["mic-new"],
+        "microphones": ["mic-new"],
+        "speakers": ["default", "preferred-speaker"],
+        "reconcileCalls": [["mic-new", "default", "preferred-speaker"]],
+    }
+
+
+@pytest.mark.frontend
+def test_newer_enumeration_reconciles_after_an_older_route_is_blocked(
+    page: Page,
+) -> None:
+    device_change_source = _device_change_source()
+    page.set_content("<main>media enumeration reconciliation ownership harness</main>")
+    page.add_script_tag(
+        content=(
+            r"""
+            (() => {
+                const pendingEnumerations = [];
+                const reconcileCalls = [];
+                let deviceChangeListener = null;
+                let releaseFirstReconciliation;
+                const firstReconciliationGate = new Promise((resolve) => {
+                    releaseFirstReconciliation = resolve;
+                });
+                let reconciliationTail = Promise.resolve();
+                let effectiveDevices = [];
+                Object.defineProperty(navigator, 'mediaDevices', {
+                    configurable: true,
+                    value: {
+                        async getUserMedia() {
+                            return { getTracks: () => [{ stop() {} }] };
+                        },
+                        enumerateDevices() {
+                            return new Promise((resolve) => {
+                                pendingEnumerations.push(resolve);
+                            });
+                        },
+                        addEventListener(type, listener) {
+                            if (type === 'devicechange') deviceChangeListener = listener;
+                        },
+                    },
+                });
+                var micPermissionGranted = false;
+                var cachedMicDevices = null;
+                var cachedSpeakerDevices = null;
+                var mediaDeviceChangeGeneration = 0;
+                var mediaDeviceEnumerationGeneration = 0;
+                var latestMediaDeviceEnumerationPromise = Promise.resolve(null);
+                window.reconcileSelectedSpeakerDevices = (devices) => {
+                    const deviceIds = devices.map((device) => device.deviceId);
+                    const operation = reconciliationTail.then(async () => {
+                        reconcileCalls.push(deviceIds);
+                        if (reconcileCalls.length === 1) {
+                            await firstReconciliationGate;
+                        }
+                        effectiveDevices = deviceIds;
+                    });
+                    reconciliationTail = operation.catch(() => {});
+                    return operation;
+                };
+                window.renderFloatingMicList = async () => true;
+                __DEVICE_CHANGE_SOURCE__
+                window.__mediaReconciliationTest = {
+                    startPermission: () => ensureMicrophonePermission(),
+                    emitDeviceChange: () => deviceChangeListener(),
+                    pendingCount: () => pendingEnumerations.length,
+                    reconcileCount: () => reconcileCalls.length,
+                    resolve(index, devices) {
+                        pendingEnumerations[index](devices);
+                    },
+                    releaseFirstReconciliation() {
+                        releaseFirstReconciliation();
+                    },
+                    result: () => ({
+                        microphones: (cachedMicDevices || []).map(
+                            (device) => device.deviceId
+                        ),
+                        speakers: (cachedSpeakerDevices || []).map(
+                            (device) => device.deviceId
+                        ),
+                        reconcileCalls: reconcileCalls.slice(),
+                        effectiveDevices: effectiveDevices.slice(),
+                    }),
+                };
+            })();
+            """.replace("__DEVICE_CHANGE_SOURCE__", device_change_source)
+        )
+    )
+
+    result = page.evaluate(
+        """async () => {
+            const test = window.__mediaReconciliationTest;
+            const waitFor = async (predicate, message) => {
+                for (let attempt = 0; attempt < 1000; attempt += 1) {
+                    if (predicate()) return;
+                    await new Promise((resolve) => setTimeout(resolve, 0));
+                }
+                throw new Error(message);
+            };
+
+            const deviceChange = test.emitDeviceChange();
+            await waitFor(
+                () => test.pendingCount() >= 1,
+                'expected the devicechange enumeration'
+            );
+            test.resolve(0, [
+                { kind: 'audioinput', deviceId: 'mic-old' },
+                { kind: 'audiooutput', deviceId: 'default' },
+            ]);
+            await waitFor(
+                () => test.reconcileCount() === 1,
+                'expected the older reconciliation to block'
+            );
+
+            const permission = test.startPermission();
+            await waitFor(
+                () => test.pendingCount() >= 2,
+                'expected the newer permission enumeration'
+            );
+            test.resolve(1, [
+                { kind: 'audioinput', deviceId: 'mic-new' },
+                { kind: 'audiooutput', deviceId: 'default' },
+                { kind: 'audiooutput', deviceId: 'preferred-speaker' },
+            ]);
+            test.releaseFirstReconciliation();
+            await Promise.all([deviceChange, permission]);
+            return test.result();
+        }"""
+    )
+
+    assert result == {
+        "microphones": ["mic-new"],
+        "speakers": ["default", "preferred-speaker"],
+        "reconcileCalls": [
+            ["mic-old", "default"],
+            ["mic-new", "default", "preferred-speaker"],
+        ],
+        "effectiveDevices": ["mic-new", "default", "preferred-speaker"],
+    }
 
 
 @pytest.mark.frontend

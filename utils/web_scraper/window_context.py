@@ -33,6 +33,7 @@ if TYPE_CHECKING:
     pass
 
 from ._shared import _extract_llm_text_content, get_random_user_agent, is_china_region, logger
+from .search_gateway import search_via_plugin
 
 def get_active_window_title(include_raw: bool = False) -> Optional[Union[str, Dict[str, str]]]:
     """
@@ -391,13 +392,7 @@ def parse_google_results(html_content: str, limit: int = 5) -> List[Dict[str, st
 
 async def search_duckduckgo(query: str, limit: int = 10) -> Dict[str, Any]:
     """
-    Search keywords on DuckDuckGo and fetch results (for non-Chinese regions).
-
-    Replaces Google: Google's anti-bot measures are nearly guaranteed to trip for
-    headless/scripted requests (302 → /sorry/index → 429), so the proactive-chat
-    window-context search got basically no results. DuckDuckGo's HTML endpoint
-    (html.duckduckgo.com) is far more tolerant of scripted access, and results are
-    embedded directly in the HTML, easy to parse.
+    Search DuckDuckGo through the controlled web-search plugin gateway.
 
     Args:
         query: search keywords
@@ -406,66 +401,7 @@ async def search_duckduckgo(query: str, limit: int = 10) -> Dict[str, Any]:
     Returns:
         Dict with search results
     """
-    try:
-        if not query or len(query.strip()) < 2:
-            return {
-                'success': False,
-                'error': '搜索关键词太短'
-            }
-
-        # 清理查询词
-        query = query.strip()
-        encoded_query = quote(query)
-
-        # DuckDuckGo 无 JS 的 HTML 端点（kl=us-en 对齐非中文区域口径）
-        url = f"https://html.duckduckgo.com/html/?q={encoded_query}&kl=us-en"
-
-        headers = {
-            'User-Agent': get_random_user_agent(),
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-            'Accept-Language': 'en-US,en;q=0.9',
-            'Referer': 'https://duckduckgo.com/',
-            'Connection': 'keep-alive',
-            'DNT': '1',
-            'Cache-Control': 'no-cache',
-        }
-
-        # 添加随机延迟
-        await asyncio.sleep(random.uniform(0.2, 0.5))
-
-        client = get_external_http_client()
-        response = await client.get(url, headers=headers, timeout=5.0)
-        response.raise_for_status()
-        html_content = response.text
-
-        # 解析搜索结果（BS4 大 HTML 同步解析放线程池，避免阻塞 event loop）
-        results = await asyncio.to_thread(parse_duckduckgo_results, html_content, limit)
-
-        if results:
-            return {
-                'success': True,
-                'query': query,
-                'results': results
-            }
-        else:
-            return {
-                'success': False,
-                'error': '未能解析到搜索结果',
-                'query': query
-            }
-
-    except httpx.TimeoutException:
-        logger.exception("DuckDuckGo搜索超时")
-        return {
-            'success': False,
-            'error': '搜索超时'
-        }
-    except Exception as e:
-        logger.exception(f"DuckDuckGo搜索失败: {e}")
-        return {
-            'success': False,
-            'error': str(e)
-        }
+    return await search_via_plugin(query, limit, backend="duckduckgo")
 
 _SEARCH_TEXT_WS_RE = re.compile(r"\s+")
 
@@ -573,7 +509,7 @@ def parse_duckduckgo_results(html_content: str, limit: int = 5) -> List[Dict[str
 
 async def search_baidu(query: str, limit: int = 5) -> Dict[str, Any]:
     """
-    Search keywords on Baidu and fetch results
+    Search Baidu through the controlled web-search plugin gateway.
     
     Args:
         query: search keywords
@@ -582,66 +518,7 @@ async def search_baidu(query: str, limit: int = 5) -> Dict[str, Any]:
     Returns:
         Dict with search results
     """
-    try:
-        if not query or len(query.strip()) < 2:
-            return {
-                'success': False,
-                'error': '搜索关键词太短'
-            }
-        
-        # 清理查询词
-        query = query.strip()
-        encoded_query = quote(query)
-        
-        # 百度搜索URL
-        url = f"https://www.baidu.com/s?wd={encoded_query}"
-        
-        headers = {
-            'User-Agent': get_random_user_agent(),
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-            'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
-            'Connection': 'keep-alive',
-            'Referer': 'https://www.baidu.com/',
-            'DNT': '1',
-            'Cache-Control': 'no-cache',
-        }
-        
-        # 添加随机延迟
-        await asyncio.sleep(random.uniform(0.2, 0.5))
-        
-        client = get_external_http_client()
-        response = await client.get(url, headers=headers, timeout=5.0)
-        response.raise_for_status()
-        html_content = response.text
-
-        # 解析搜索结果
-        results = await asyncio.to_thread(parse_baidu_results, html_content, limit)
-
-        if results:
-            return {
-                'success': True,
-                'query': query,
-                'results': results
-            }
-        else:
-            return {
-                'success': False,
-                'error': '未能解析到搜索结果',
-                'query': query
-            }
-
-    except httpx.TimeoutException:
-        logger.exception("百度搜索超时")
-        return {
-            'success': False,
-            'error': '搜索超时'
-        }
-    except Exception as e:
-        logger.exception(f"百度搜索失败: {e}")
-        return {
-            'success': False,
-            'error': str(e)
-        }
+    return await search_via_plugin(query, limit, backend="baidu")
 
 def parse_baidu_results(html_content: str, limit: int = 5) -> List[Dict[str, str]]:
     """
@@ -820,9 +697,7 @@ async def fetch_window_context_content(limit: int = 5) -> Dict[str, Any]:
     """
     Get the active window title and run a search on it
     
-    Region detection decides the search engine:
-    - Chinese region: Baidu
-    - non-Chinese region: DuckDuckGo (replacing Google to dodge its anti-bot 429)
+    The web_search plugin selects the backend and owns all upstream resilience.
     
     Args:
         limit: max number of search results
@@ -856,8 +731,9 @@ async def fetch_window_context_content(limit: int = 5) -> Dict[str, Any]:
         # 清理窗口标题以移除敏感信息，避免发送给LLM
         cleaned_title = clean_window_title(raw_title)
         
-        # 使用清理后的标题生成多样化搜索查询（保护隐私）
-        search_queries = await generate_diverse_queries(cleaned_title)
+        # 只提交一个稳定、清理后的查询。搜索插件负责缓存、限流、冷却和
+        # 后端回退，避免每轮主动上下文刷新放大成三次公网请求。
+        search_queries = [cleaned_title] if cleaned_title else []
         
         if not search_queries or all(not q or len(q) < 2 for q in search_queries):
             if china_region:
@@ -874,33 +750,22 @@ async def fetch_window_context_content(limit: int = 5) -> Dict[str, Any]:
                 }
         
         # 窗口标题 + 查询都不写 logger
-        logger.info(f"从窗口标题生成多样化查询完成 (queries_count={len(search_queries or [])})")
-        print(f"从窗口标题「{sanitized_title}」生成多样化查询: {search_queries}")
+        logger.info("窗口标题已生成受控查询 (queries_count=1)")
         
         # 执行搜索并合并结果
         all_results = []
         successful_queries = []
         
-        # 根据区域选择搜索函数
-        if china_region:
-            search_func = search_baidu
-        else:
-            # 非中文区域改用 DuckDuckGo：Google 对脚本请求几乎必触发 429/sorry 反爬
-            search_func = search_duckduckgo
-        
-        for query in search_queries:
-            if not query or len(query) < 2:
-                continue
-            
-            # query 是从用户窗口标题派生的搜索词，不写 logger
-            logger.info(f"使用查询关键词 (len={len(query)})")
-            print(f"使用查询关键词: {query}")
-            
-            search_result = await search_func(query, limit)
-            
-            if search_result.get('success') and search_result.get('results'):
-                all_results.extend(search_result['results'])
-                successful_queries.append(query)
+        query = search_queries[0]
+        logger.info(f"使用受控窗口查询 (len={len(query)})")
+        search_result = await search_via_plugin(
+            query,
+            limit,
+            preferred_backend="baidu" if china_region else "duckduckgo",
+        )
+        if search_result.get('success') and search_result.get('results'):
+            all_results.extend(search_result['results'])
+            successful_queries.append(query)
         
         # 去重结果（优先使用URL，如果URL缺失则使用title）
         seen_keys = set()

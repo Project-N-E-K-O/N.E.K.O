@@ -38,6 +38,8 @@ import tempfile
 from fastapi import Request
 from fastapi.responses import JSONResponse
 from PIL import Image
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, ValidationError
+from utils import capture_bridge
 from utils.pyautogui_diagnostics import classify_pyautogui_import_error
 from utils.screenshot_utils import (
     compress_screenshot,
@@ -98,6 +100,102 @@ def _format_backend_screenshot_error(exc: Exception) -> str:
     return text or type(exc).__name__
 
 
+class _InteractiveScreenshotOptions(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    selection_only: StrictBool = False
+    copy_to_clipboard: StrictBool = True
+    session_timeout_ms: int = Field(default=300000, ge=10000, le=300000, strict=True)
+    lanlan_name: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=capture_bridge.MAX_LANLAN_NAME_LEN,
+        strict=True,
+    )
+
+
+_INTERACTIVE_SCREENSHOT_TRANSPORT_MARGIN_SECONDS = 5.0
+
+
+async def _capture_windows_interactive_screenshot(request: Request) -> JSONResponse:
+    raw_body = await request.body()
+    if raw_body:
+        try:
+            options = _InteractiveScreenshotOptions.model_validate_json(raw_body)
+        except ValidationError:
+            return _json_no_store_response(
+                {"success": False, "error": "validation_error"},
+                status_code=422,
+            )
+    else:
+        options = _InteractiveScreenshotOptions()
+
+    target_lanlan = options.lanlan_name
+    has_region_client = (
+        capture_bridge.has_region_capture_client()
+        if target_lanlan is None
+        else capture_bridge.has_region_capture_client(target_lanlan)
+    )
+    if not has_region_client:
+        return _json_no_store_response(
+            {"success": False, "error": "no_renderer"},
+            status_code=503,
+        )
+
+    try:
+        capture_payload = {
+            "selection_only": options.selection_only,
+            "copy_to_clipboard": options.copy_to_clipboard,
+            "session_timeout_ms": options.session_timeout_ms,
+        }
+        if target_lanlan is not None:
+            capture_payload["lanlan_name"] = target_lanlan
+        result = await capture_bridge.request_capture_region(
+            capture_payload,
+            timeout=(
+                options.session_timeout_ms / 1000.0
+                + _INTERACTIVE_SCREENSHOT_TRANSPORT_MARGIN_SECONDS
+            ),
+        )
+    except capture_bridge.CaptureBridgeError as exc:
+        message = str(exc)
+        if message in {"capture_busy", "interactive_capture_busy", "SCREENSHOT_BUSY"}:
+            return _json_no_store_response(
+                {"success": False, "error": "capture_busy"},
+                status_code=409,
+            )
+        if "timeout" in message.lower():
+            return _json_no_store_response(
+                {"success": False, "error": "renderer_timeout"},
+                status_code=504,
+            )
+        if message in {
+            "no renderer available",
+            "unavailable",
+            "SCREEN_CAPTURE_UNAVAILABLE",
+        }:
+            return _json_no_store_response(
+                {"success": False, "error": "no_renderer"},
+                status_code=503,
+            )
+        return _json_no_store_response(
+            {"success": False, "error": "bridge_error"},
+            status_code=502,
+        )
+
+    if result.get("canceled") is True:
+        return _json_no_store_response({"success": False, "canceled": True})
+    image = result.get("image")
+    if not isinstance(image, str) or not image:
+        return _json_no_store_response(
+            {"success": False, "error": "empty_image"},
+            status_code=502,
+        )
+    return _json_no_store_response(
+        {"success": True, "data": image, "interactive": True}
+    )
+
+
 @router.get('/get_window_title')
 async def get_window_title_api():
     """
@@ -117,7 +215,11 @@ async def get_window_title_api():
 @router.post('/screenshot')
 async def backend_screenshot(request: Request):
     """
-    Backend screenshot fallback: when all frontend screen-capture APIs fail, the backend captures the local screen with pyautogui.
+    One-shot backend screenshot fallback for explicit screenshot/proactive-vision
+    requests. Continuous screen sharing must keep using the user-selected
+    client-side capture path and must not poll this endpoint because system
+    screenshot helpers can produce visible/audible feedback and cannot preserve a
+    selected-window boundary.
     Security restriction: only requests from loopback addresses are allowed. Returns a JPEG base64 DataURL.
     """
     validation_error = _validate_local_mutation_request(
@@ -232,11 +334,11 @@ async def backend_interactive_screenshot(request: Request):
 
     if sys.platform == "darwin":
         runner = _run_macos_interactive_screenshot
+    elif sys.platform == "win32":
+        return await _capture_windows_interactive_screenshot(request)
     else:
-        # Windows / Linux 没有可靠的"系统级框选 + 回传"原语，统一交给前端 Electron
-        # 的 desktopCapturer 区域选择路径处理；这里直接 501 让 caller 走兜底链。
         return _json_no_store_response(
-            {"success": False, "error": "interactive screenshot is only supported on macOS"},
+            {"success": False, "error": "interactive screenshot is only supported on macOS or Windows"},
             status_code=501,
         )
 

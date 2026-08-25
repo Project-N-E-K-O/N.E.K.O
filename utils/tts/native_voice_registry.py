@@ -253,11 +253,25 @@ def get_native_voice_catalog_for_ui(
     return provider.voice_catalog_for_ui()
 
 
+def _is_free_lanlan_domain_route(
+    core_api_type: str | None,
+    realtime_base_url: str | None,
+    domain: str,
+) -> bool:
+    raw_url = str(realtime_base_url or "").strip()
+    parsed = urlparse(raw_url if "://" in raw_url else f"//{raw_url}")
+    hostname = (parsed.hostname or "").lower()
+    return bool(
+        str(core_api_type or "").lower() == "free"
+        and (hostname == domain or hostname.endswith(f".{domain}"))
+    )
+
+
 def is_free_lanlan_app_route(
     core_api_type: str | None,
     realtime_base_url: str | None,
 ) -> bool:
-    """Whether this is the overseas free route (core_api_type='free' with host in the lanlan.app domain).
+    """Whether this is the overseas free route hosted on lanlan.app.
 
     The overseas free upstream is lanlan.app's Gemini proxy; available voices are the
     full Gemini set + the branded yui, so the "effective native voice provider" of
@@ -265,12 +279,24 @@ def is_free_lanlan_app_route(
     _effective_native_provider_key). Host checks are centralized here instead of
     leaking into cross-cutting files.
     """
-    raw_url = str(realtime_base_url or "").strip()
-    parsed = urlparse(raw_url if "://" in raw_url else f"//{raw_url}")
-    hostname = (parsed.hostname or "").lower()
-    return bool(
-        str(core_api_type or "").lower() == "free"
-        and (hostname == "lanlan.app" or hostname.endswith(".lanlan.app"))
+
+    return _is_free_lanlan_domain_route(
+        core_api_type,
+        realtime_base_url,
+        "lanlan.app",
+    )
+
+
+def is_free_lanlan_tech_route(
+    core_api_type: str | None,
+    realtime_base_url: str | None,
+) -> bool:
+    """Whether this is the domestic StepFun-compatible free route."""
+
+    return _is_free_lanlan_domain_route(
+        core_api_type,
+        realtime_base_url,
+        "lanlan.tech",
     )
 
 
