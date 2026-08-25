@@ -9439,6 +9439,27 @@ async def test_independent_multimodal_turn_never_reuses_prior_turn_frame() -> No
 
 
 @pytest.mark.unit
+async def test_independent_multimodal_turn_rejects_owned_frame_expired_at_final() -> None:
+    runtime = _Runtime()
+    runtime._asr_route_mode = "independent"
+    token = VoiceTurnToken(ingress=runtime._capture_ingress_token(), turn_id=79)
+    turn_id = f"asr-{token.ingress.session_epoch}-{token.turn_id}"
+    runtime._begin_core_multimodal_turn(turn_id, token)
+    assert runtime._stage_independent_visual_frame(
+        "expired-owned-frame",
+        source="screen",
+        request_id="screen-expired",
+        captured_at=(
+            time.monotonic() - runtime._independent_visual_frame_ttl_s - 1.0
+        ),
+    )
+
+    turn = runtime._snapshot_core_multimodal_turn(turn_id, "delayed final")
+
+    assert turn is None
+
+
+@pytest.mark.unit
 async def test_direct_multimodal_final_submits_raw_image_once() -> None:
     runtime = _Runtime()
     _install_ready_lifecycle(runtime, "openai")

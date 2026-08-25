@@ -491,6 +491,7 @@ class AsrRuntimeMixin:
         record = self._core_multimodal_turns.get(turn_id)
         if record is None:
             return None
+        snapshot_at = time.monotonic()
         frame = record.frame
         if frame is None:
             latest = self._latest_independent_visual_frame
@@ -499,7 +500,7 @@ class AsrRuntimeMixin:
                 and latest.session_epoch == record.session_epoch
                 and latest.route_generation == record.route_generation
                 and latest.generation > record.start_image_generation
-                and time.monotonic() - latest.captured_at
+                and snapshot_at - latest.captured_at
                 <= self._independent_visual_frame_ttl_s
             ):
                 frame = latest
@@ -509,6 +510,7 @@ class AsrRuntimeMixin:
             or record.route_generation != self._voice_input_transition_generation
             or frame.session_epoch != record.session_epoch
             or frame.route_generation != record.route_generation
+            or snapshot_at - frame.captured_at > self._independent_visual_frame_ttl_s
         ):
             return None
         return MultimodalTurn(
