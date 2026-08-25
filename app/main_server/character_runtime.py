@@ -82,17 +82,18 @@ _approx_decoded_bytes = approx_base64_decoded_bytes
 
 
 class _PushImageByteBudget:
-    """Byte pool shared by every image resolution within ONE push.
+    """How many decoded image bytes ONE push may still retain.
 
-    A per-fetch cap cannot bound a CONCURRENT batch: four transfers each capped
-    at the remaining budget still buffer four times it, so a "remaining budget"
-    cap and the flat ceiling are identical on the first batch -- which is the
-    worst case (CodeRabbit). Drawing from a single pool bounds the SUM, which is
-    what the budget claims to do, without serialising the batch.
+    Charged by the event handler in canonical part order, once a batch of
+    resolutions is in -- never from inside the concurrent fetches themselves.
+    That was tried and reverted: drawing mid-transfer bounds the aggregate but
+    makes survival depend on which network read finishes first, so the set of
+    parts reaching the model varies with timing (Codex P2). Bounding each
+    transfer separately by the per-image ceiling and charging afterwards in
+    order costs a wider in-flight peak and buys determinism.
 
-    Single event loop, so no lock. Bytes drawn by a transfer that later fails
-    are not returned: erring toward under-delivery is the safe direction, and
-    the failure is already logged at the drop site.
+    Single event loop, so no lock. There is no refund: a payload is charged
+    once, at its retained size, after it is fully resolved.
     """
 
     __slots__ = ("remaining",)
@@ -106,11 +107,6 @@ class _PushImageByteBudget:
             return False
         self.remaining -= count
         return True
-
-    def refund(self, count: int) -> None:
-        """Return bytes reserved for a payload that turned out smaller."""
-        if count > 0:
-            self.remaining += count
 
 
 
