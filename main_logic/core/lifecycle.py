@@ -1705,6 +1705,8 @@ class LifecycleMixin:
 
             promoted = False
             old_listener = self.message_handler_task
+            listener_cancel_timed_out = False
+            listener_timeout_fail_closed = False
             try:
                 if (
                     not operation_is_current()
@@ -1741,28 +1743,74 @@ class LifecycleMixin:
                                 '[%s] Offline VLM handoff: old listener cancellation timed out',
                                 self.lanlan_name,
                             )
-                            return False
+                            listener_cancel_timed_out = True
+                            # Once cancellation has timed out, the old listener
+                            # may still own recv() and cannot be closed in place.
+                            # Fail-close only if both active ownership refs still
+                            # identify the pair observed before promotion; a
+                            # concurrent winner must never be cleared here.
+                            async with self.lock:
+                                listener_timeout_fail_closed = bool(
+                                    self.session is expected_session
+                                    and self.message_handler_task is old_listener
+                                )
+                                if listener_timeout_fail_closed:
+                                    self.session = None
+                                    self.message_handler_task = None
+                                    self.is_active = False
+                                    self.session_ready = False
+
+                            stuck_listener = old_listener
+                            orphan_session = expected_session
+
+                            async def _reap_handoff_session_after_listener_exit():
+                                try:
+                                    await stuck_listener
+                                except (asyncio.CancelledError, Exception):
+                                    pass
+                                try:
+                                    await orphan_session.close()
+                                except Exception as reap_err:
+                                    logger.debug(
+                                        '[%s] Offline VLM handoff: orphan close failed: %s',
+                                        self.lanlan_name,
+                                        reap_err,
+                                    )
+
+                            reaper = asyncio.create_task(
+                                _reap_handoff_session_after_listener_exit()
+                            )
+                            _ORPHAN_SESSION_REAPER_TASKS.add(reaper)
+                            reaper.add_done_callback(
+                                _ORPHAN_SESSION_REAPER_TASKS.discard
+                            )
                         except Exception as exc:
                             logger.debug(
                                 '[%s] Offline VLM handoff: old listener exited with error: %s',
                                 self.lanlan_name,
                                 exc,
                             )
-                    try:
-                        await expected_session.close()
-                    except Exception as exc:
-                        logger.warning(
-                            '[%s] Offline VLM handoff: old session close failed: %s',
-                            self.lanlan_name,
-                            exc,
-                        )
-                    async with self.lock:
-                        if self.session is not expected_session:
-                            return False
-                        self.session = candidate
-                        promoted = True
+                    if not listener_cancel_timed_out:
+                        try:
+                            await expected_session.close()
+                        except Exception as exc:
+                            logger.warning(
+                                '[%s] Offline VLM handoff: old session close failed: %s',
+                                self.lanlan_name,
+                                exc,
+                            )
+                        async with self.lock:
+                            if self.session is not expected_session:
+                                return False
+                            self.session = candidate
+                            promoted = True
                 finally:
                     session_swap_lock.release()
+
+                if listener_cancel_timed_out:
+                    if listener_timeout_fail_closed:
+                        await self.send_session_ended_by_server()
+                    return False
 
                 self.response_backend = 'offline_vlm'
                 # Offline emits text even though microphone ownership remains

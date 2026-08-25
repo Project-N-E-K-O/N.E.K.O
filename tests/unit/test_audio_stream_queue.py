@@ -146,6 +146,34 @@ async def test_cancelled_pending_input_flush_restores_unprocessed_suffix_first()
     assert mgr._pending_input_flush_active is False
 
 
+async def test_failed_pending_input_drops_only_current_and_continues_suffix():
+    mgr = LLMSessionManager.__new__(LLMSessionManager)
+    first = {"input_type": "text", "data": "first"}
+    failed = {"input_type": "text", "data": "failed"}
+    suffix = {"input_type": "text", "data": "suffix"}
+    live = {"input_type": "text", "data": "live"}
+    mgr.pending_input_data = [first, failed, suffix]
+    mgr.input_cache_lock = asyncio.Lock()
+    mgr.session = object()
+    mgr.is_active = True
+    mgr._enqueue_audio_stream_data = AsyncMock()
+    attempted: list[dict] = []
+
+    async def process(message):
+        attempted.append(message)
+        if message is failed:
+            mgr.pending_input_data.append(live)
+            raise RuntimeError("bad cached message")
+
+    mgr._process_stream_data_internal = process
+
+    await LLMSessionManager._flush_pending_input_data(mgr)
+
+    assert attempted == [first, failed, suffix, live]
+    assert mgr.pending_input_data == []
+    assert mgr._pending_input_flush_active is False
+
+
 def _queue_token() -> VoiceIngressToken:
     return VoiceIngressToken(1, "socket", 1, 1, 1)
 

@@ -936,6 +936,28 @@ async def test_cancelled_prepare_preserves_quarantine_for_next_external_turn():
 
 
 @pytest.mark.unit
+async def test_cancelled_quarantine_wait_does_not_reconnect_when_child_is_cancelled():
+    client = _make_client(api_type="gemini", model="gemini-live")
+    quarantine_future = asyncio.get_running_loop().create_future()
+    client._gemini_proactive_quarantine_task = quarantine_future
+    client._gemini_session = None
+    client.instructions = "system prompt"
+    client.connect = AsyncMock()
+
+    waiter = asyncio.create_task(
+        client._await_gemini_proactive_quarantine()
+    )
+    await asyncio.sleep(0)
+    waiter.cancel()
+    quarantine_future.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await waiter
+    client.connect.assert_not_awaited()
+    await client.close()
+
+
+@pytest.mark.unit
 async def test_gemini_send_conflict_cannot_clear_another_inject_outcome():
     client = _make_client(api_type="gemini", model="gemini-live")
     client._gemini_session = AsyncMock()

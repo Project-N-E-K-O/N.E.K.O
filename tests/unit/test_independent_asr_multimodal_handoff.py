@@ -368,6 +368,89 @@ async def test_handoff_candidate_failure_preserves_realtime_session() -> None:
     old_session.close.assert_not_awaited()
 
 
+async def test_handoff_listener_cancel_timeout_fail_closes_active_session(
+    monkeypatch,
+) -> None:
+    manager = LLMSessionManager.__new__(LLMSessionManager)
+    manager.lanlan_name = "Test"
+    manager._multimodal_handoff_lock = asyncio.Lock()
+    manager._core_voice_session_swap_lock = asyncio.Lock()
+    manager._core_voice_session_swap_barrier_timeout_s = 1.0
+    manager.lock = asyncio.Lock()
+    manager.is_active = True
+    manager.session_ready = True
+    manager._reset_preparation_state = AsyncMock()
+    manager._cleanup_pending_session_resources = AsyncMock()
+    manager.send_session_ended_by_server = AsyncMock()
+
+    listener_cancelled = asyncio.Event()
+    listener_release = asyncio.Event()
+    old_session_closed = asyncio.Event()
+
+    async def close_old_session() -> None:
+        old_session_closed.set()
+
+    old_session = SimpleNamespace(
+        close=AsyncMock(side_effect=close_old_session),
+    )
+    manager.session = old_session
+
+    async def stuck_old_listener() -> None:
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            listener_cancelled.set()
+            await listener_release.wait()
+
+    old_listener = asyncio.create_task(stuck_old_listener())
+    manager.message_handler_task = old_listener
+    await asyncio.sleep(0)
+
+    candidate = SimpleNamespace(
+        close=AsyncMock(),
+        submit_multimodal_turn=AsyncMock(),
+    )
+    manager._create_offline_vlm_handoff_candidate = AsyncMock(
+        return_value=(candidate, 0)
+    )
+    turn = SimpleNamespace(
+        transcript="what is this",
+        image_b64="raw-image",
+        turn_id="turn-1",
+    )
+    real_wait_for = asyncio.wait_for
+
+    async def timeout_old_listener(awaitable, timeout):
+        if awaitable is old_listener:
+            raise asyncio.TimeoutError
+        return await real_wait_for(awaitable, timeout)
+
+    monkeypatch.setattr(asyncio, "wait_for", timeout_old_listener)
+
+    delivered = await manager._handoff_to_offline_vlm_and_submit(
+        turn,
+        expected_session=old_session,
+        prepared_session=old_session,
+        operation_is_current=lambda: True,
+        cached_turns_before_final=[],
+    )
+
+    assert delivered is False
+    await real_wait_for(listener_cancelled.wait(), 1.0)
+    assert manager.session is None
+    assert manager.message_handler_task is None
+    assert manager.is_active is False
+    assert manager.session_ready is False
+    manager.send_session_ended_by_server.assert_awaited_once_with()
+    candidate.submit_multimodal_turn.assert_not_awaited()
+    candidate.close.assert_awaited_once_with()
+    old_session.close.assert_not_awaited()
+
+    listener_release.set()
+    await real_wait_for(old_session_closed.wait(), 1.0)
+    old_session.close.assert_awaited_once_with()
+
+
 async def test_new_user_turn_during_candidate_connect_cancels_old_handoff() -> None:
     manager = LLMSessionManager.__new__(LLMSessionManager)
     manager.lanlan_name = "Test"

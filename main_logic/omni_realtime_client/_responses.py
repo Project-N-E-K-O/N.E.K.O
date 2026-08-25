@@ -626,10 +626,18 @@ class _ResponseMixin:
             or quarantine_task is asyncio.current_task()
         ):
             return
+        current_task = asyncio.current_task()
+        cancelling_before = (
+            current_task.cancelling() if current_task is not None else 0
+        )
         try:
             await asyncio.shield(quarantine_task)
         except asyncio.CancelledError:
-            if not quarantine_task.cancelled():
+            if (
+                current_task is None
+                or current_task.cancelling() > cancelling_before
+                or not quarantine_task.cancelled()
+            ):
                 raise
         finally:
             if (

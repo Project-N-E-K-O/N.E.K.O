@@ -1238,9 +1238,13 @@ class _TransportMixin:
                                     }
                                 }
                                 logger.info("Sending image description before recognition.")
-                                description_sent = await self.send_event(text_event)
-                                if description_sent:
-                                    await self._analyze_image_with_vision_model(image_b64)
+                                try:
+                                    description_sent = await self.send_event(text_event)
+                                    if description_sent:
+                                        await self._analyze_image_with_vision_model(image_b64)
+                                finally:
+                                    if not description_sent:
+                                        self._image_being_analyzed = False
                         elif not self._image_sent_this_turn:
                             self._image_sent_this_turn = True
                             text_event = {

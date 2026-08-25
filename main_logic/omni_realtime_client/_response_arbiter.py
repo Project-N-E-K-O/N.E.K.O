@@ -437,11 +437,16 @@ class RealtimeResponseArbiter:
         current.interrupted = True
         current.interrupt_event.set()
         if not current.ticket.sent.done():
-            if current.item_committed:
+            admission_rejected = bool(
+                current.admission_check is not None
+                and not current.admission_check()
+            )
+            if current.item_committed and admission_rejected:
                 if current.item_ack is not None and not current.item_ack.done():
                     # Wake the worker so it can issue the compensating item
-                    # delete; setting a result keeps connection-level failures
-                    # distinct from a user interruption while preserving cleanup.
+                    # delete. Ordinary barge-in must retain the committed user
+                    # item in provider history and follows the error wake-up
+                    # below instead.
                     current.item_ack.set_result(None)
             else:
                 self._wake_current_with_error(
@@ -2001,11 +2006,12 @@ class RealtimeResponseArbiter:
                 self._adoptable_serial, self._item_created_serial
             )
             for event in queued.events_before_response:
-                if queued.interrupted or (
+                admission_rejected = bool(
                     queued.admission_check is not None
                     and not queued.admission_check()
-                ):
-                    if queued.item_committed:
+                )
+                if queued.interrupted or admission_rejected:
+                    if queued.item_committed and admission_rejected:
                         await self._delete_committed_item(queued)
                     raise RuntimeError("response dispatch interrupted")
                 queued.item_committed = True
@@ -2023,9 +2029,7 @@ class RealtimeResponseArbiter:
                 queued.admission_check is not None
                 and not queued.admission_check()
             )
-            if queued.item_committed and (
-                queued.interrupted or admission_rejected
-            ):
+            if queued.item_committed and admission_rejected:
                 await self._delete_committed_item(queued)
                 raise RuntimeError("response dispatch interrupted")
 
@@ -2058,9 +2062,7 @@ class RealtimeResponseArbiter:
                 queued.admission_check is not None
                 and not queued.admission_check()
             )
-            if queued.item_committed and (
-                queued.interrupted or admission_rejected
-            ):
+            if queued.item_committed and admission_rejected:
                 await self._delete_committed_item(queued)
                 raise RuntimeError("response dispatch interrupted")
             if queued.interrupted:

@@ -146,18 +146,32 @@ class StreamingMixin:
                     dropped_text_for_voice = 0
                     for index, message in enumerate(pending_messages):
                         msg_input_type = message.get("input_type")
-                        if msg_input_type == "audio":
-                            await self._enqueue_audio_stream_data(message)
-                        else:
-                            if (
-                                isinstance(self.session, OmniRealtimeClient)
-                                and msg_input_type == "text"
-                            ):
-                                self.note_stream_input_ingress(message)
-                                dropped_text_for_voice += 1
-                                next_unprocessed = index + 1
-                                continue
-                            await self._process_stream_data_internal(message)
+                        try:
+                            if msg_input_type == "audio":
+                                await self._enqueue_audio_stream_data(message)
+                            else:
+                                if (
+                                    isinstance(self.session, OmniRealtimeClient)
+                                    and msg_input_type == "text"
+                                ):
+                                    self.note_stream_input_ingress(message)
+                                    dropped_text_for_voice += 1
+                                    next_unprocessed = index + 1
+                                    continue
+                                await self._process_stream_data_internal(message)
+                        except asyncio.CancelledError:
+                            raise
+                        except Exception as e:
+                            # The message was attempted and is now terminally
+                            # failed. Retrying it at the queue head would block
+                            # every later cached/live input indefinitely; drop
+                            # only this item and preserve batch ordering.
+                            next_unprocessed = index + 1
+                            logger.error(
+                                "💥 发送缓存的输入数据失败，丢弃当前消息: %s",
+                                e,
+                            )
+                            continue
                         next_unprocessed = index + 1
                     if dropped_text_for_voice:
                         logger.info(

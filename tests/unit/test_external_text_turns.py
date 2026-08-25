@@ -336,6 +336,49 @@ async def test_response_arbiter_deletes_all_committed_prefix_items_after_invalid
 
 
 @pytest.mark.asyncio
+async def test_cancel_current_keeps_committed_item_for_ordinary_barge_in():
+    sent = []
+    item_write_started = asyncio.Event()
+    release_item_write = asyncio.Event()
+
+    async def send(event):
+        sent.append(dict(event))
+        if event["type"] == "conversation.item.create":
+            item_write_started.set()
+            await release_item_write.wait()
+
+    arbiter = RealtimeResponseArbiter(send)
+    ticket = await arbiter.enqueue(
+        source="ordinary-user-turn",
+        events_before_response=(
+            {
+                "type": "conversation.item.create",
+                "item": {
+                    "id": "committed-user-item",
+                    "role": "user",
+                    "content": [],
+                },
+            },
+        ),
+        response_event={"type": "response.create"},
+        admission_check=lambda: True,
+    )
+    await item_write_started.wait()
+
+    cancelling = asyncio.create_task(arbiter.cancel_current(timeout=0.2))
+    await asyncio.sleep(0)
+    release_item_write.set()
+    await asyncio.wait_for(cancelling, 0.2)
+
+    with pytest.raises(RuntimeError, match="interrupted"):
+        await asyncio.wait_for(ticket.done, 0.2)
+    assert [event["type"] for event in sent] == [
+        "conversation.item.create",
+    ]
+    await arbiter.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_cancel_ticket_after_terminal_does_not_cancel_new_server_response():
     sent = []
     arbiter = None

@@ -273,6 +273,68 @@ async def test_concurrent_non_native_frame_does_not_replace_analyzed_snapshot():
 
 
 @pytest.mark.unit
+async def test_non_native_failed_description_send_releases_analysis_gate_after_reset():
+    client = _make_client("legacy-realtime", supports_native_image=False)
+    first_frame = DUMMY_IMAGE_B64
+    second_frame = DUMMY_IMAGE_B64 + "second"
+    next_frame = DUMMY_IMAGE_B64 + "next"
+    client._latest_image_b64 = first_frame
+    client._latest_image_generation = 1
+    client._proactive_image_consumed = False
+    client._image_description = "[实时屏幕截图或相机画面]: 一只猫"
+    client._image_recognized_this_turn = True
+    client._image_sent_this_turn = False
+
+    first_send_started = asyncio.Event()
+    release_first_send = asyncio.Event()
+    send_count = 0
+
+    async def send_event(_event):
+        nonlocal send_count
+        send_count += 1
+        if send_count == 1:
+            first_send_started.set()
+            await release_first_send.wait()
+        return False
+
+    analyzed = []
+
+    async def analyze(image_b64):
+        analyzed.append(image_b64)
+        client._image_being_analyzed = False
+        return "下一帧"
+
+    client.send_event = send_event
+    client._analyze_image_with_vision_model = analyze
+
+    first_task = asyncio.create_task(client.stream_image(first_frame))
+    await first_send_started.wait()
+    second_task = asyncio.create_task(client.stream_image(second_frame))
+    await asyncio.sleep(0)
+    assert not second_task.done()
+
+    # A completed callback may consume the annotation while another screen
+    # frame has already passed the pending-sentinel check and is waiting for
+    # the image lock. The receive-loop reset does not share that lock.
+    client._proactive_image_consumed = True
+    client._reset_per_turn_output_state()
+    assert client._image_recognized_this_turn is False
+    assert "正在分析中" in client._image_description
+
+    release_first_send.set()
+    first_result, second_result = await asyncio.gather(first_task, second_task)
+
+    assert first_result.accepted is False
+    assert second_result.accepted is False
+    assert client._image_being_analyzed is False
+    assert analyzed == []
+
+    await client.stream_image(next_frame)
+    assert analyzed == [next_frame]
+    await client.close()
+
+
+@pytest.mark.unit
 async def test_completed_non_native_annotation_pins_its_unconsumed_frame():
     client = _make_client("step-realtime", supports_native_image=False)
     first_frame = DUMMY_IMAGE_B64
