@@ -149,7 +149,7 @@
   "ui.actions.cancel": "Отмена",
   "ui.actions.add": "Добавить",
   "ui.actions.remove": "Удалить",
-  "ui.actions.clear_credentials": "Очистить локальные данные",
+  "ui.actions.clear_credentials": "Очистить локальные учетные данные",
   "ui.status.listening": "Прослушивание",
   "ui.status.stopped": "Остановлено",
   "ui.status.configured": "Настроено",

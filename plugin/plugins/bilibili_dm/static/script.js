@@ -160,7 +160,7 @@ async function pollQrLogin(generation) {
       clearQrLogin();
       const completionGeneration = qrLogin.generation;
       const closeAt = Date.now() + 2000;
-      setQrStatus(data.message || tr('ui.qr.login_saved', 'Login successful. Settings were saved automatically.'));
+      setQrStatus(tr('ui.qr.login_saved', 'Login successful. Settings were saved automatically.'));
       qrLogin.closeTimer = setTimeout(() => {
         if (qrLogin.generation !== completionGeneration) return;
         qrLogin.closeTimer = null;
@@ -168,20 +168,22 @@ async function pollQrLogin(generation) {
       }, Math.max(0, closeAt - Date.now()));
       await refreshDashboard(true);
       if (completionGeneration !== qrLogin.generation) return;
-      showToast(data.message || tr('ui.qr.login_saved', 'Login successful. Settings were saved automatically.'));
+      showToast(tr('ui.qr.login_saved', 'Login successful. Settings were saved automatically.'));
       return;
     }
     if (data.status === 'expired') {
       clearQrLogin();
-      setQrStatus(data.message || tr('ui.qr.expired', 'QR code expired. Please refresh.'));
+      setQrStatus(tr('ui.qr.expired', 'QR code expired. Please refresh.'));
       return;
     }
     if (data.status === 'no_session' || data.status === 'cancelled') {
       clearQrLogin();
-      setQrStatus(data.message || tr('ui.qr.session_ended', 'QR login ended. Please get a new QR code.'));
+      setQrStatus(tr('ui.qr.session_ended', 'QR login ended. Please get a new QR code.'));
       return;
     }
-    setQrStatus(data.message || (data.status === 'scanned' ? tr('ui.qr.scanned', 'Scanned. Please confirm on your phone…') : tr('ui.qr.waiting', 'Waiting for scan…')));
+    setQrStatus(data.status === 'scanned'
+      ? tr('ui.qr.scanned', 'Scanned. Please confirm on your phone…')
+      : tr('ui.qr.waiting', 'Waiting for scan…'));
     qrLogin.pollTimer = setTimeout(() => pollQrLogin(generation), 1500);
   } catch (error) {
     if (generation !== qrLogin.generation) return;
@@ -216,7 +218,8 @@ function renderUsers(users) {
     const name = document.createElement('strong');
     name.textContent = user.nickname || `UID ${user.uid}`;
     const meta = document.createElement('span');
-    meta.textContent = `${user.nickname ? `UID ${user.uid} · ` : ''}${user.level}`;
+    const level = tr(`ui.users.level.${user.level}`, user.level);
+    meta.textContent = `${user.nickname ? `UID ${user.uid} · ` : ''}${level}`;
     identity.append(name, meta);
     const remove = document.createElement('button');
     remove.type = 'button';
@@ -388,6 +391,23 @@ function initializePanel() {
 }
 
 window.addEventListener('DOMContentLoaded', () => {
-  if (window.I18n?.whenReady) window.I18n.whenReady(initializePanel);
-  else void initializePanel();
+  let initialized = false;
+  const startPanel = () => {
+    if (initialized) return;
+    initialized = true;
+    void initializePanel();
+  };
+  const fallbackTimer = setTimeout(startPanel, 5000);
+  if (window.I18n?.whenReady) {
+    window.I18n.whenReady(() => {
+      clearTimeout(fallbackTimer);
+      startPanel();
+    });
+    window.addEventListener('i18n-ready', () => {
+      if (initialized) void refreshDashboard(true);
+    }, { once: true });
+  } else {
+    clearTimeout(fallbackTimer);
+    startPanel();
+  }
 });

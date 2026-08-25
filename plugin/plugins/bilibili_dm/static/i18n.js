@@ -42,13 +42,19 @@ const I18n = {
     }
     const normalized = String(locale || '').trim().replace(/_/g, '-').toLowerCase();
     const primary = normalized.split('-')[0];
+    const isChinese = primary === 'zh';
+    const isTraditionalChinese = isChinese && (
+      normalized.includes('hant')
+      || /(?:^|-)(tw|hk|mo)(?:-|$)/.test(normalized)
+    );
     const candidates = [
       locale,
       ['en', 'ja', 'ko', 'ru', 'es', 'pt'].includes(primary) ? primary : '',
-      normalized.startsWith('zh') ? 'zh-CN' : '',
+      isTraditionalChinese ? 'zh-TW' : '',
+      isChinese ? 'zh-CN' : '',
       'en',
       'zh-CN',
-    ];
+    ].filter(Boolean);
     for (const candidate of [...new Set(candidates)]) {
       try {
         const response = await fetch(`/plugin/${encodeURIComponent(this._pluginId)}/ui-api/i18n/${encodeURIComponent(candidate)}.json`, { cache: 'no-store' });
@@ -82,7 +88,12 @@ const I18n = {
   scanDOM(root = document) {
     root.querySelectorAll('[data-i18n]').forEach((element) => {
       const key = element.getAttribute('data-i18n');
-      if (key) element.textContent = this.t(key, element.textContent || '');
+      if (key) {
+        const params = {};
+        const count = element.getAttribute('data-i18n-count');
+        if (count !== null) params.count = count;
+        element.textContent = this.t(key, element.textContent || '', params);
+      }
     });
     root.querySelectorAll('[data-i18n-placeholder]').forEach((element) => {
       const key = element.getAttribute('data-i18n-placeholder');
