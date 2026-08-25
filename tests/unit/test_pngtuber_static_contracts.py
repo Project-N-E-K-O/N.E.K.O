@@ -353,6 +353,23 @@ manager.scheduleSaveCurrentConfig = () => {{ scheduledSaves += 1; }};
   window.innerWidth = 1000;
   manager.config.mobile_offset_x = 0;
 
+  // Wheel input clamped at the scale boundary leaves the active rebound untouched.
+  manager.config.scale = 0.1;
+  manager.config.offset_x = -750;
+  const minScaleWheelSnap = manager.snapModelIntoScreen();
+  const sequenceBeforeClampedWheel = manager._dragSequence;
+  manager.handleWheelZoom({{
+    deltaY: 1000,
+    preventDefault() {{}},
+    stopPropagation() {{}},
+  }});
+  assert.equal(manager._dragSequence, sequenceBeforeClampedWheel);
+  assert.equal(frames.size, 1, 'clamped wheel input must not cancel the rebound');
+  runNextFrame(0);
+  runNextFrame(260);
+  assert.equal(await minScaleWheelSnap, true);
+  manager.config.scale = 1;
+
   // Wheel zoom cancels the old rebound and targets the resized model geometry.
   manager.config.offset_x = -750;
   const preZoomSnap = manager.snapModelIntoScreen();
@@ -387,6 +404,30 @@ manager.scheduleSaveCurrentConfig = () => {{ scheduledSaves += 1; }};
   runNextFrame(260);
   assert.equal(await untouchedSnap, true);
   assert.equal(manager.config.offset_x, -500);
+
+  // A pinch clamped at the scale boundary with no pan also preserves the rebound.
+  manager.config.scale = 5;
+  manager.config.offset_x = -3000;
+  const maxScaleTouchSnap = manager.snapModelIntoScreen();
+  const sequenceBeforeClampedTouch = manager._dragSequence;
+  manager.startTouchZoom({{
+    touches: [{{ clientX: 100, clientY: 100 }}, {{ clientX: 200, clientY: 100 }}],
+    preventDefault() {{}},
+    stopPropagation() {{}},
+  }});
+  manager.moveTouchZoom({{
+    touches: [{{ clientX: 90, clientY: 100 }}, {{ clientX: 210, clientY: 100 }}],
+    preventDefault() {{}},
+    stopPropagation() {{}},
+  }});
+  assert.equal(manager._touchZoomState.changed, false);
+  assert.equal(manager._dragSequence, sequenceBeforeClampedTouch);
+  await manager.endTouchZoom();
+  assert.equal(frames.size, 1, 'clamped touch scale must not cancel the rebound');
+  runNextFrame(0);
+  runNextFrame(260);
+  assert.equal(await maxScaleTouchSnap, true);
+  manager.config.scale = 1;
 
   // A rebound that finishes during a pending click refreshes the first drag grab offset.
   manager.config.offset_x = -750;

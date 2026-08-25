@@ -3246,15 +3246,18 @@
             if (this._dragState) return;
             event.preventDefault();
             event.stopPropagation();
-            this._dragSequence += 1;
-            const zoomSequence = this._dragSequence;
-            this.cancelEdgeSnapAnimation();
-            this.beginModelManagerPositionEditing();
             const absDelta = Math.abs(event.deltaY);
             const zoomStep = Math.min(absDelta / 1000, 0.08);
             const scaleFactor = 1 + zoomStep;
             const currentScale = this.getActivePlacement().scale;
-            const nextScale = event.deltaY < 0 ? currentScale * scaleFactor : currentScale / scaleFactor;
+            const requestedScale = event.deltaY < 0 ? currentScale * scaleFactor : currentScale / scaleFactor;
+            const nextScale = clampNumber(requestedScale, SCALE_MIN, SCALE_MAX, currentScale);
+            if (nextScale === currentScale) return;
+
+            this._dragSequence += 1;
+            const zoomSequence = this._dragSequence;
+            this.cancelEdgeSnapAnimation();
+            this.beginModelManagerPositionEditing();
             this.applyScale(nextScale);
             this.snapModelIntoScreen({ animate: true }).then(() => {
                 if (zoomSequence === this._dragSequence) {
@@ -3324,6 +3327,19 @@
             state.lastAt = now;
             const changed = Math.abs(scaleChange - 1) > 0.01 || Math.hypot(dx, dy) > 4;
             if (changed && !state.changed) {
+                const candidatePlacement = this.getRenderPlacement(this.getActivePlacement());
+                const nextScale = clampNumber(
+                    candidatePlacement.scale * scaleChange,
+                    SCALE_MIN,
+                    SCALE_MAX,
+                    candidatePlacement.scale
+                );
+                const nextOffsetX = Math.max(-5000, Math.min(5000, candidatePlacement.offsetX + dx));
+                const nextOffsetY = Math.max(-5000, Math.min(5000, candidatePlacement.offsetY + dy));
+                if (nextScale === candidatePlacement.scale
+                    && nextOffsetX === candidatePlacement.offsetX
+                    && nextOffsetY === candidatePlacement.offsetY) return;
+
                 this.cancelEdgeSnapAnimation();
                 this._dragSequence += 1;
                 state.dragSequence = this._dragSequence;
