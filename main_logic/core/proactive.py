@@ -2717,7 +2717,19 @@ class ProactiveMixin:
         self._purge_undeliverable_callbacks()
         if not self.pending_agent_callbacks:
             return ""
-        candidate_callbacks = list(self.pending_agent_callbacks)
+        # Media-bearing callbacks are NOT drainable as text. This path renders
+        # to a system_prefix string and clears the queue; it has no way to hand
+        # ``media_images`` to stream_text, so draining one here would consume
+        # the callback and silently discard the images the plugin sent with it
+        # (Codex P2). Leave them queued for the proactive path, which delivers
+        # text and images as one unit -- and which re-drives itself, so they do
+        # not strand.
+        candidate_callbacks = [
+            cb for cb in self.pending_agent_callbacks
+            if not (isinstance(cb, dict) and cb.get("media_images"))
+        ]
+        if not candidate_callbacks:
+            return ""
         if self._retract_unavailable_topic_hook_snapshots(candidate_callbacks):
             logger.info(
                 "[%s] drain_agent_callbacks_for_llm: topic hook dropped before passive drain — delivery gate closed",

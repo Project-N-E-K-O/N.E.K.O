@@ -4,7 +4,7 @@ import asyncio
 import base64
 import warnings
 from io import BytesIO
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from PIL import Image
@@ -480,7 +480,7 @@ async def test_plugin_image_fetch_stops_at_the_model_input_byte_limit(monkeypatc
         lambda: client,
     )
 
-    with pytest.raises(ValueError, match="remaining model input budget"):
+    with pytest.raises(ValueError, match="per-push image budget"):
         await _fetch_plugin_image_base64(_IMAGE_URL)
 
     assert response.chunks_read == 9
@@ -778,7 +778,7 @@ async def test_multiple_plugin_image_urls_are_fetched_concurrently(monkeypatch) 
     active_fetches = 0
     max_active_fetches = 0
 
-    async def _fetch(url: str, *, max_bytes: int | None = None) -> str:
+    async def _fetch(url: str, *, budget=None) -> str:
         nonlocal active_fetches, max_active_fetches
         active_fetches += 1
         max_active_fetches = max(max_active_fetches, active_fetches)
@@ -1037,7 +1037,7 @@ async def test_model_path_caps_image_count_per_push(monkeypatch) -> None:
 
     manager = _manager()
 
-    async def _fake_fetch(url: str, *, max_bytes: int | None = None) -> str:
+    async def _fake_fetch(url: str, *, budget=None) -> str:
         return "b64-" + url.rsplit("/", 1)[-1]
 
     fetch = AsyncMock(side_effect=_fake_fetch)
@@ -1094,10 +1094,8 @@ async def test_model_path_caps_total_image_bytes_per_push(monkeypatch) -> None:
         "app.main_server.character_runtime._get_session_manager",
         lambda _name: manager,
     )
-    monkeypatch.setattr(
-        "app.main_server.character_runtime._fetch_plugin_image_base64",
-        AsyncMock(return_value=two_mib_b64),
-    )
+    # Inline parts draw from the pool inside the real resolver; mocking the
+    # fetcher would bypass the very bound under test.
 
     await main_server._handle_agent_event({
         "event_type": "proactive_message",
@@ -1108,12 +1106,8 @@ async def test_model_path_caps_total_image_bytes_per_push(monkeypatch) -> None:
         "ai_behavior": "read",
         "visibility": [],
         "media_parts": [
-            {
-                "type": "image",
-                "url": "http://127.0.0.1:48916/media/heavy%d" % i,
-                "mime": "image/jpeg",
-            }
-            for i in range(3)
+            {"type": "image", "binary_base64": two_mib_b64, "mime": "image/jpeg"}
+            for _ in range(3)
         ],
     })
 
@@ -1135,10 +1129,8 @@ async def test_respond_callback_media_images_obey_the_byte_budget(monkeypatch) -
         "app.main_server.character_runtime._get_session_manager",
         lambda _name: manager,
     )
-    monkeypatch.setattr(
-        "app.main_server.character_runtime._fetch_plugin_image_base64",
-        AsyncMock(return_value=two_mib_b64),
-    )
+    # Inline parts draw from the pool inside the real resolver; mocking the
+    # fetcher would bypass the very bound under test.
 
     await main_server._handle_agent_event({
         "event_type": "proactive_message",
@@ -1149,12 +1141,8 @@ async def test_respond_callback_media_images_obey_the_byte_budget(monkeypatch) -
         "ai_behavior": "respond",
         "visibility": [],
         "media_parts": [
-            {
-                "type": "image",
-                "url": "http://127.0.0.1:48916/media/heavy%d" % i,
-                "mime": "image/jpeg",
-            }
-            for i in range(3)
+            {"type": "image", "binary_base64": two_mib_b64, "mime": "image/jpeg"}
+            for _ in range(3)
         ],
     })
 
@@ -1165,56 +1153,97 @@ async def test_respond_callback_media_images_obey_the_byte_budget(monkeypatch) -
 
 
 @pytest.mark.asyncio
-async def test_fetch_cap_tightens_to_the_remaining_push_budget(monkeypatch) -> None:
-    """Each in-flight transfer is capped by what the push can still keep.
+async def test_concurrent_fetches_share_one_push_byte_pool() -> None:
+    """The bound that matters is the SUM, not the per-transfer cap.
 
-    The batch runs concurrently, so a flat per-image ceiling let four near-limit
-    transfers buffer at once for a budget that can retain one. Capping the
-    transfer itself bounds that without serialising the batch.
+    A per-fetch cap equal to the remaining budget is identical to the flat
+    ceiling on the first batch, so four concurrent transfers could buffer four
+    times the budget. Drawing from one pool is what actually bounds them.
     """
-    from app import main_server
+    from app.main_server.character_runtime import (
+        _PushImageByteBudget,
+        _fetch_plugin_image_base64,
+    )
+
+    total = 4 * 1024 * 1024
+    budget = _PushImageByteBudget(total)
+    chunk = b"x" * (256 * 1024)
+    peak = 0
+
+    class _Resp(_StreamingResponse):
+        async def aiter_bytes(self):
+            nonlocal peak
+            for _ in range(24):  # 6 MiB each if unbounded
+                peak = max(peak, total - budget.remaining)
+                yield chunk
+
+    client = MagicMock()
+    client.stream.side_effect = lambda *a, **kw: _Resp([])
+    with patch(
+        "app.main_server.character_runtime.get_internal_http_client",
+        lambda: client,
+    ):
+        results = await asyncio.gather(
+            *(
+                _fetch_plugin_image_base64(
+                    "http://127.0.0.1:48916/media/i%d" % i, budget=budget
+                )
+                for i in range(4)
+            ),
+            return_exceptions=True,
+        )
+
+    # Whatever succeeded or failed, the pool was never overdrawn.
+    assert budget.remaining >= 0
+    assert peak <= total
+    assert any(isinstance(r, BaseException) for r in results), (
+        "four 6 MiB transfers against a 4 MiB pool must not all succeed"
+    )
+
+
+def test_push_byte_pool_refuses_an_overdraw() -> None:
+    from app.main_server.character_runtime import _PushImageByteBudget
+
+    budget = _PushImageByteBudget(100)
+    assert budget.draw(60) is True
+    assert budget.draw(60) is False, "must refuse rather than go negative"
+    assert budget.remaining == 40
+    assert budget.draw(40) is True
+    assert budget.remaining == 0
+
+
+def _animated_gif_base64(frames: int, size: int = 600) -> str:
+    source = BytesIO()
+    imgs = [Image.new("P", (size, size), i % 256) for i in range(frames)]
+    imgs[0].save(source, format="GIF", save_all=True, append_images=imgs[1:])
+    return base64.b64encode(source.getvalue()).decode("ascii")
+
+
+def test_animated_inline_images_are_bounded_by_cumulative_frames() -> None:
+    """Many small frames stay under every single-frame check but sum up.
+
+    Each frame here is well inside the pixel ceiling and the whole animation is
+    far inside the wire budget; only the cumulative bound catches it.
+    """
     from app.main_server import character_runtime
 
-    manager = _manager()
-    seen_caps: list[int] = []
-
-    async def _fetch(url: str, *, max_bytes: int | None = None) -> str:
-        seen_caps.append(max_bytes)
-        # 2 MiB decoded, so the budget shrinks between batches.
-        return "A" * (2 * 1024 * 1024 * 4 // 3)
-
-    monkeypatch.setattr(
-        "app.main_server.character_runtime._get_session_manager",
-        lambda _name: manager,
+    many = _animated_gif_base64(frames=60)
+    assert character_runtime._approx_decoded_bytes(many) < (
+        character_runtime._PLUGIN_CHAT_INLINE_TOTAL_MAX_BYTES
     )
-    monkeypatch.setattr(
-        "app.main_server.character_runtime._fetch_plugin_image_base64", _fetch
-    )
+    assert 600 * 600 < MAX_SOURCE_IMAGE_PIXELS  # one frame passes on its own
+    assert 60 * 600 * 600 > MAX_SOURCE_IMAGE_PIXELS  # the sum does not
 
-    await main_server._handle_agent_event({
-        "event_type": "proactive_message",
-        "lanlan_name": "Test",
-        "text": "many",
-        "channel": "plugin:demo",
-        "delivery_mode": "passive",
-        "ai_behavior": "read",
-        "visibility": [],
-        "media_parts": [
-            {
-                "type": "image",
-                "url": "http://127.0.0.1:48916/media/i%d" % i,
-                "mime": "image/jpeg",
-            }
-            for i in range(8)
-        ],
-    })
+    assert character_runtime._inline_image_data_url_mime(many) is None
 
-    # First batch: nothing spent yet, so the flat per-image ceiling applies.
-    assert seen_caps[0] == character_runtime._PLUGIN_IMAGE_MAX_BYTES
-    # Second batch: four 2 MiB images consumed the budget, so the cap is now
-    # strictly tighter than the per-image ceiling.
-    assert len(seen_caps) > 4
-    assert seen_caps[4] < character_runtime._PLUGIN_IMAGE_MAX_BYTES
+
+def test_short_animations_still_render() -> None:
+    """The cumulative bound must not reject every animation."""
+    from app.main_server import character_runtime
+
+    few = _animated_gif_base64(frames=3, size=200)
+
+    assert character_runtime._inline_image_data_url_mime(few) == "image/gif"
 
 
 def test_chat_blocks_cap_image_count_and_keep_text_in_order() -> None:

@@ -76,8 +76,42 @@ _PLUGIN_CHAT_HEADER_PREFIX_B64_CHARS = 64 * 1024
 _approx_decoded_bytes = approx_base64_decoded_bytes
 
 
+class _PushImageByteBudget:
+    """Byte pool shared by every image resolution within ONE push.
+
+    A per-fetch cap cannot bound a CONCURRENT batch: four transfers each capped
+    at the remaining budget still buffer four times it, so a "remaining budget"
+    cap and the flat ceiling are identical on the first batch -- which is the
+    worst case (CodeRabbit). Drawing from a single pool bounds the SUM, which is
+    what the budget claims to do, without serialising the batch.
+
+    Single event loop, so no lock. Bytes drawn by a transfer that later fails
+    are not returned: erring toward under-delivery is the safe direction, and
+    the failure is already logged at the drop site.
+    """
+
+    __slots__ = ("remaining",)
+
+    def __init__(self, total: int) -> None:
+        self.remaining = int(total)
+
+    def draw(self, count: int) -> bool:
+        """Reserve ``count`` bytes, or refuse if the pool cannot cover them."""
+        if count > self.remaining:
+            return False
+        self.remaining -= count
+        return True
+
+
+
 # Pillow's own format names for the raster types a chat bubble can render.
 # Keyed off the PARSED bytes, never off the plugin's declared ``mime``.
+# Formats whose frame count cannot be read from a truncated prefix: Pillow
+# counts GIF/WebP frames by walking the stream, so a prefix always reports 1.
+# PNG (APNG) carries acTL right after IHDR, and JPEG cannot animate, so both
+# keep the fast path.
+_FRAME_COUNT_NEEDS_FULL_PAYLOAD = {"GIF", "WEBP"}
+
 _PILLOW_FORMAT_TO_MIME = {
     "PNG": "image/png",
     "JPEG": "image/jpeg",
@@ -126,6 +160,13 @@ def _inline_image_data_url_mime(encoded: str) -> Optional[str]:
             with Image.open(BytesIO(raw)) as image:
                 width, height = image.size
                 detected = str(image.format or "").upper()
+                # n_frames may itself need to walk the stream; a prefix that
+                # cannot answer is treated as a single frame and re-checked on
+                # the full-decode fallback below.
+                try:
+                    frames = max(1, int(getattr(image, "n_frames", 1)))
+                except Exception:
+                    frames = 1
         except Image.DecompressionBombError:
             # Already past Pillow's own ceiling; a full decode cannot help.
             return None
@@ -133,7 +174,22 @@ def _inline_image_data_url_mime(encoded: str) -> Optional[str]:
             continue
         if width <= 0 or height <= 0:
             return None
-        if width * height > MAX_SOURCE_IMAGE_PIXELS:
+        if candidate is head and detected in _FRAME_COUNT_NEEDS_FULL_PAYLOAD:
+            # The prefix cannot answer for these; counting off it would let an
+            # animation through as a single frame.
+            try:
+                with Image.open(BytesIO(base64.b64decode(encoded))) as full:
+                    frames = max(1, int(getattr(full, "n_frames", 1)))
+            except Exception:
+                return None
+        # Animation multiplies the decode work the single-frame check bounds:
+        # hundreds of tiny frames stay under both the wire budget and the
+        # per-frame pixel cap while costing the renderer their SUM (Codex P2).
+        # Budget the total against the same ceiling rather than inventing a
+        # second number -- one animation may cost what one full-size still
+        # costs. Deliberately tight: the SDK upload path flattens to JPEG, so
+        # animation only reaches here through un-normalized inline bytes.
+        if frames * width * height > MAX_SOURCE_IMAGE_PIXELS:
             return None
         return _PILLOW_FORMAT_TO_MIME.get(detected)
     return None
@@ -166,21 +222,22 @@ def _is_local_plugin_media_url(url: str) -> bool:
 async def _resolve_plugin_model_image(
     part: dict[str, Any],
     *,
-    max_bytes: int = _PLUGIN_IMAGE_MAX_BYTES,
+    budget: "_PushImageByteBudget",
 ) -> str:
     """Resolve one canonical image part to the model's base64 input.
 
-    ``max_bytes`` is the caller's REMAINING per-push budget, not just the
-    per-image ceiling: a fetch that cannot possibly be retained should abandon
-    the transfer rather than buffer a payload the budget will reject anyway.
+    Every byte -- inline or transferred -- is drawn from the push's shared pool,
+    so concurrent resolutions cannot collectively exceed the budget.
     """
     encoded = part.get("binary_base64")
     if isinstance(encoded, str) and encoded:
+        if not budget.draw(_approx_decoded_bytes(encoded)):
+            raise ValueError("inline plugin image exhausted the per-push image budget")
         return encoded
     url = part.get("url")
     if not isinstance(url, str) or not url:
         raise ValueError("plugin image part has no usable payload")
-    return await _fetch_plugin_image_base64(url, max_bytes=max_bytes)
+    return await _fetch_plugin_image_base64(url, budget=budget)
 
 
 def _build_plugin_chat_blocks(
@@ -282,9 +339,22 @@ def _ordered_plugin_chat_blocks(parts: list[Any], mgr: Any) -> list[dict[str, st
 async def _fetch_plugin_image_base64(
     url: str,
     *,
-    max_bytes: int = _PLUGIN_IMAGE_MAX_BYTES,
+    budget: Optional["_PushImageByteBudget"] = None,
 ) -> str:
-    """Fetch one temporary plugin image without blocking the event loop."""
+    """Fetch one temporary plugin image without blocking the event loop.
+
+    ``budget`` is the push's shared byte pool. Bytes are drawn BEFORE they are
+    appended, so a concurrent batch can never collectively buffer more than the
+    pool holds. Omitting it falls back to the flat per-image ceiling, which is
+    only correct for a lone transfer.
+    """
+    if budget is None:
+        budget = _PushImageByteBudget(_PLUGIN_IMAGE_MAX_BYTES)
+    _effective_cap = min(_PLUGIN_IMAGE_MAX_BYTES, budget.remaining)
+
+    def _draw(count: int) -> bool:
+        return budget.draw(count)
+
     if not _is_local_plugin_media_url(url):
         raise ValueError("image URL is not served by the local plugin media store")
     client = get_internal_http_client()
@@ -304,15 +374,15 @@ async def _fetch_plugin_image_base64(
                 content_length = int(raw_content_length)
             except ValueError:
                 content_length = 0
-            if content_length > max_bytes:
+            if content_length > _effective_cap:
                 raise ValueError("plugin image exceeds the remaining model input budget")
         buffered = bytearray()
         async for chunk in response.aiter_bytes():
             if not chunk:
                 continue
+            if not _draw(len(chunk)):
+                raise ValueError("plugin image exhausted the per-push image budget")
             buffered.extend(chunk)
-            if len(buffered) > max_bytes:
-                raise ValueError("plugin image exceeds the remaining model input budget")
         content = bytes(buffered)
     if not content:
         raise ValueError("plugin media store returned an empty image")
@@ -884,10 +954,14 @@ async def _handle_agent_event(event: dict):
                     )
                     image_indexes = image_indexes[:_PLUGIN_IMAGE_MAX_COUNT]
                 resolved_model_images: dict[int, str | BaseException] = {}
-                remaining_image_bytes = _PLUGIN_IMAGE_TOTAL_MAX_BYTES
+                # ONE pool for the push. Bytes are drawn as they stream in, so
+                # the concurrent batch is bounded in aggregate rather than
+                # per-transfer -- and there is no post-hoc subtraction to keep
+                # in step with it (CodeRabbit).
+                _image_budget = _PushImageByteBudget(_PLUGIN_IMAGE_TOTAL_MAX_BYTES)
                 for offset in range(0, len(image_indexes), _PLUGIN_IMAGE_FETCH_BATCH_SIZE):
-                    if remaining_image_bytes <= 0:
-                        # Short-circuit the remaining batches: the budget is
+                    if _image_budget.remaining <= 0:
+                        # Short-circuit the remaining batches: the pool is
                         # spent, so fetching them would only add latency.
                         logger.warning(
                             "[EventBus] plugin image byte budget (%d) exhausted; %d image(s) not fetched",
@@ -896,35 +970,18 @@ async def _handle_agent_event(event: dict):
                         )
                         break
                     batch = image_indexes[offset : offset + _PLUGIN_IMAGE_FETCH_BATCH_SIZE]
-                    # Cap each in-flight fetch at what the push could still
-                    # retain, not at the flat per-image ceiling: with the batch
-                    # running concurrently the flat cap let four near-limit
-                    # transfers buffer together for a budget that can keep one
-                    # (Codex P2). This tightens the transfer; it does not make
-                    # the batch sequential, which would multiply handler latency.
-                    _fetch_cap = min(_PLUGIN_IMAGE_MAX_BYTES, remaining_image_bytes)
                     results = await asyncio.gather(
                         *(
                             _resolve_plugin_model_image(
-                                media_parts[index], max_bytes=_fetch_cap
+                                media_parts[index], budget=_image_budget
                             )
                             for index in batch
                         ),
                         return_exceptions=True,
                     )
-                    for index, result in zip(batch, results):
-                        if isinstance(result, str):
-                            decoded_bytes = _approx_decoded_bytes(result)
-                            if decoded_bytes > remaining_image_bytes:
-                                logger.warning(
-                                    "[EventBus] plugin image dropped: over the %d byte per-push model budget",
-                                    _PLUGIN_IMAGE_TOTAL_MAX_BYTES,
-                                )
-                                continue
-                            remaining_image_bytes -= decoded_bytes
-                        # Exceptions are retained so the drop below still logs
-                        # the underlying resolve failure.
-                        resolved_model_images[index] = result
+                    # Exceptions are retained so the drop below still logs the
+                    # underlying resolve failure (budget exhaustion included).
+                    resolved_model_images.update(zip(batch, results))
 
                 for index, mp in enumerate(media_parts):
                     if not isinstance(mp, dict):

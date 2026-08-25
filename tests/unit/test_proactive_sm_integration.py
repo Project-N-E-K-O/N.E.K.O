@@ -2687,6 +2687,44 @@ async def test_voice_mode_bounds_images_across_one_proactive_turn():
     assert mgr.pending_agent_callbacks == [cbs[2]]
 
 
+def test_text_drain_does_not_consume_media_bearing_callbacks():
+    """The text drain renders to a string and clears the queue.
+
+    It has no way to hand ``media_images`` to stream_text, so draining a
+    media-bearing callback would consume it and silently discard the images the
+    plugin sent with it. They stay queued for the proactive path, which
+    delivers text and images together.
+    """
+    mgr = _make_mgr(session=_FakeOmniOffline(delivered=True))
+    image_cb = _budget_cb("with-image", 1)
+    text_cb = {
+        "_callback_delivery_id": "id-text",
+        "status": "completed",
+        "summary": "plain text cue",
+    }
+    mgr.pending_agent_callbacks = [image_cb, text_cb]
+
+    rendered = core_module.LLMSessionManager.drain_agent_callbacks_for_llm(mgr)
+
+    # The text-only cue is drained normally...
+    assert "plain text cue" in rendered
+    # ...and the media-bearing one survives, images intact.
+    assert mgr.pending_agent_callbacks == [image_cb]
+    assert mgr.pending_agent_callbacks[0]["media_images"] == ["with-image-img0"]
+
+
+def test_text_drain_returns_empty_when_every_callback_carries_media():
+    """No text to render must not mean the images get dropped either."""
+    mgr = _make_mgr(session=_FakeOmniOffline(delivered=True))
+    only_image = _budget_cb("only-image", 2)
+    mgr.pending_agent_callbacks = [only_image]
+
+    rendered = core_module.LLMSessionManager.drain_agent_callbacks_for_llm(mgr)
+
+    assert rendered == ""
+    assert mgr.pending_agent_callbacks == [only_image]
+
+
 async def test_deferred_image_overflow_is_re_driven_on_the_text_path():
     """A deferred tail must not wait for an unrelated event to wake it.
 
