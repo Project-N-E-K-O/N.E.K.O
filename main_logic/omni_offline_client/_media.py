@@ -47,46 +47,19 @@ class _MediaMixin:
         if not image_b64:
             return
 
-        from main_logic.proactive_delivery import (
-            CALLBACK_IMAGE_MAX_COUNT,
-            CALLBACK_IMAGE_MAX_TOTAL_BYTES,
-            approx_base64_decoded_bytes,
-        )
-
-        # Bound the queue ACROSS pushes. Per-push and per-proactive-turn budgets
-        # do not reach here: passive ``read`` images are injected straight into
-        # the session, and the next stream_text attaches this whole accumulated
-        # list to ONE user message. Two individually valid pushes could
-        # therefore exceed the one-turn provider budget, and repeated background
-        # pushes could retain unbounded base64 while the user is idle (Codex).
+        # NOT bounded here, deliberately. This list is shared with the user's
+        # own screen/camera frames, which arrive through this same method with
+        # nothing marking them apart, so every policy available inside this
+        # method harms the user path: evicting the oldest lets background
+        # plugin reads discard the frame the user just staged, and refusing the
+        # newest lets plugin reads block the user's own image once the queue is
+        # full. Both were tried during review and both were correctly rejected.
         #
-        # REFUSE the new frame rather than evicting an old one. This list is
-        # shared with the user's own screen/camera frames, which arrive through
-        # this same method with nothing marking them apart, so drop-oldest let
-        # background plugin reads evict the image the user just staged and
-        # expects the next message to describe (Codex). Refusing costs the
-        # newest plugin frame instead -- the acceptable direction -- and keeps
-        # the decision inside this method rather than needing provenance state
-        # that _clear_text_pending_images would also have to maintain.
-        incoming = approx_base64_decoded_bytes(image_b64)
-        if len(self._pending_images) >= CALLBACK_IMAGE_MAX_COUNT:
-            logger.warning(
-                "Pending image queue already holds %d; dropping the new frame",
-                len(self._pending_images),
-            )
-            return
-        staged = sum(approx_base64_decoded_bytes(i) for i in self._pending_images)
-        # Covers the lone-oversized case too: staged is never negative, so a
-        # frame that alone busts the budget fails here without needing its own
-        # branch -- one a mutation could not kill, which is how it was spotted.
-        if staged + incoming > CALLBACK_IMAGE_MAX_TOTAL_BYTES:
-            logger.warning(
-                "Pending image queue would exceed the one-turn byte budget; "
-                "dropping the new frame (staged=%d incoming=%d)",
-                staged, incoming,
-            )
-            return
-
+        # The right fix is a separately budgeted queue for plugin-owned reads,
+        # which changes how the offline path attaches images and is out of
+        # scope here. Recorded as a follow-up: unbounded accumulation only
+        # matters once a plugin actually calls ctx.images.upload(), and none
+        # ships today.
         self._pending_images.append(image_b64)
         logger.info(f"Added image to pending queue (total: {len(self._pending_images)})")
 
