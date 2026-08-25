@@ -459,6 +459,39 @@ manager.scheduleSaveCurrentConfig = () => {{ scheduledSaves += 1; }};
   assert.equal(manager._dragState.modelCenterPointerOffset.y, centerAfterPendingCompletionMove.y - 100);
   manager._dragState = null;
 
+  // Wheel input cannot steal ownership from an active two-finger interaction.
+  manager.config.scale = 1;
+  manager.config.offset_x = 0;
+  manager.config.offset_y = 0;
+  manager.startTouchZoom({{
+    touches: [{{ clientX: 100, clientY: 100 }}, {{ clientX: 200, clientY: 100 }}],
+    preventDefault() {{}},
+    stopPropagation() {{}},
+  }});
+  manager.moveTouchZoom({{
+    touches: [{{ clientX: 110, clientY: 100 }}, {{ clientX: 210, clientY: 100 }}],
+    preventDefault() {{}},
+    stopPropagation() {{}},
+  }});
+  const activeTouchSequence = manager._dragSequence;
+  const activeTouchState = manager._touchZoomState;
+  manager.handleWheelZoom({{
+    deltaY: 1000,
+    preventDefault() {{}},
+    stopPropagation() {{}},
+  }});
+  assert.equal(manager._dragSequence, activeTouchSequence);
+  assert.equal(manager._touchZoomState, activeTouchState);
+  assert.equal(manager.config.scale, 1);
+  manager.moveTouchZoom({{
+    touches: [{{ clientX: 120, clientY: 100 }}, {{ clientX: 220, clientY: 100 }}],
+    preventDefault() {{}},
+    stopPropagation() {{}},
+  }});
+  assert.equal(manager.config.offset_x, 20);
+  await manager.endTouchZoom();
+  assert.equal(manager._touchZoomState, null);
+
   // Model-manager wheel replacement stages the final snapped placement.
   window.location.pathname = '/model_manager';
   manager._modelManagerUseCurrentPlacement = true;

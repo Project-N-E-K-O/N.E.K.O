@@ -3243,7 +3243,7 @@
         handleWheelZoom(event) {
             if (!canInteractWithAvatar()) return;
             if (this.isLocked) return;
-            if (this._dragState) return;
+            if (this._dragState || this._touchZoomState) return;
             event.preventDefault();
             event.stopPropagation();
             const absDelta = Math.abs(event.deltaY);
