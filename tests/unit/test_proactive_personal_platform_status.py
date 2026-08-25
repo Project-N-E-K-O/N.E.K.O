@@ -24,8 +24,12 @@ async def test_cookie_status_marks_only_personal_dynamic_platforms():
             return_value=platforms,
         ),
         patch(
-            "main_routers.cookies_login_router.load_cookies_from_file",
-            side_effect=lambda platform: {"credential": platform},
+            "main_routers.cookies_login_router.credential_manager.status",
+            side_effect=lambda platform: {
+                "has_cookies": True,
+                "cookies_count": 1,
+                "credential_state": "ready",
+            },
         ),
     ):
         response = await get_all_cookies_status()

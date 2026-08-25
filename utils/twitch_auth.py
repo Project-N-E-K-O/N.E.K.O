@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
-from utils.cookies_login import load_cookies_from_file, save_cookies_to_file
+from utils.cookies_login import credential_manager, load_cookies_from_file, save_cookies_to_file
 from utils.external_http_client import get_external_http_client
 
 
@@ -127,6 +127,8 @@ class TwitchAuthService:
             "refresh_token": refresh_token,
         })
         if status != 200:
+            if status in {400, 401}:
+                credential_manager.mark_auth_rejected("twitch")
             return "", ""
         refreshed = await _validated_credential(client_id, data)
         if refreshed is None or not await _save(refreshed):

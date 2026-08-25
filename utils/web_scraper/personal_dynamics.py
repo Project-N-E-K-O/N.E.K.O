@@ -24,6 +24,8 @@ import time
 from typing import TYPE_CHECKING, Dict, Any, Optional
 import os
 
+from utils.cookies_login import credential_manager
+
 # bs4 惰性 import（各解析函数内首用加载，utils.module_warmup 后台预热兜底）：本模块被
 # system_router 顶层引用、坐在 main_server 启动 import 链上，顶层 bs4 会拖慢端口就绪。
 if TYPE_CHECKING:
@@ -69,6 +71,8 @@ async def _fetch_bilibili_personal_dynamic_uncached(limit: int = 10) -> Dict[str
             data = response.json()
 
         if not isinstance(data, dict) or data.get("code") != 0:
+            if isinstance(data, dict) and data.get("code") == -101:
+                credential_manager.mark_auth_rejected("bilibili")
             logger.error(f"获取B站动态失败，API返回: {data}")
             return {
                 'success': False,
@@ -524,6 +528,7 @@ async def fetch_weibo_personal_dynamic(limit: int = 10) -> Dict[str, Any]:
 
         # 移动端如果未登录，通常会返回 ok: 0 或者重定向
         if data.get('ok') != 1:
+            credential_manager.mark_auth_rejected("weibo")
             logger.error("❌ 微博拦截：返回 ok=0，说明你的 SUB 凭证已过期！")
             return {'success': False, 'error': "微博凭证已过期，请去浏览器重新获取"}
 
@@ -639,6 +644,7 @@ async def _fetch_twitter_personal_web_scraping(limit: int = 10, cookies: Optiona
 
         # 如果被重定向到了登录页，说明 Cookie 彻底失效了
         if "login" in str(res.url) or "logout" in str(res.url):
+            credential_manager.mark_auth_rejected("twitter")
             return {'success': False, 'error': 'Twitter Cookie 已过期，网页端拒绝访问'}
 
         tweets = []

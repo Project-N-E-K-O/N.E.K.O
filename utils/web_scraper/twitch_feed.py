@@ -24,6 +24,7 @@ from __future__ import annotations
 from typing import Any
 from urllib.parse import quote
 
+from utils.cookies_login import credential_manager
 from utils.external_http_client import get_external_http_client
 from utils.twitch_auth import TwitchAuthService
 
@@ -95,6 +96,8 @@ async def fetch_twitch_live_streams(limit: int = 10) -> dict[str, Any]:
                 headers={"Client-ID": client_id, "Authorization": f"Bearer {access_token}"},
                 timeout=10.0,
             )
+            if response.status_code == 401:
+                credential_manager.mark_auth_rejected("twitch")
         response.raise_for_status()
         payload = response.json()
     except Exception as exc:

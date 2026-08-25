@@ -43,9 +43,9 @@ from pydantic import BaseModel, Field, field_validator
 from utils.cookies_login import (
     PlatformLoginManager,
     save_cookies_to_file,
-    load_cookies_from_file,
     parse_cookie_string,
     COOKIE_FILES,
+    credential_manager,
     get_cookie_key_file,
 )
 from utils.logger_config import get_module_logger
@@ -256,16 +256,15 @@ async def get_all_cookies_status():
     """Return cookie presence status for each supported platform (used by the frontend personal-feed feature)."""
     try:
         platforms = login_manager.get_supported_platforms()
-        loaded = await asyncio.gather(
-            *(asyncio.to_thread(load_cookies_from_file, p) for p in platforms)
+        statuses = await asyncio.gather(
+            *(asyncio.to_thread(credential_manager.status, p) for p in platforms)
         )
         result = {
             platform_key: {
-                "has_cookies": bool(cookies),
-                "cookies_count": len(cookies) if cookies else 0,
+                **credential_status,
                 "supports_personal_dynamic": platform_key in PERSONAL_DYNAMIC_PLATFORMS,
             }
-            for platform_key, cookies in zip(platforms, loaded)
+            for platform_key, credential_status in zip(platforms, statuses)
         }
         return {"success": True, "data": result}
     except Exception as e:
@@ -282,18 +281,8 @@ async def get_platform_cookies(platform: str):
         status_data = await twitch_auth_service.status()
         return {"success": True, "data": status_data}
             
-    cookies = await asyncio.to_thread(load_cookies_from_file, platform)
-    if not cookies:
-        return {"success": True, "data": {"platform": platform, "has_cookies": False}}
-            
-    return {
-        "success": True,
-        "data": {
-            "platform": platform,
-            "has_cookies": True,
-            "cookies_count": len(cookies)
-        }
-    }
+    credential_status = await asyncio.to_thread(credential_manager.status, platform)
+    return {"success": True, "data": {"platform": platform, **credential_status}}
 
 @router.delete("/cookies/{platform}", summary="删除平台Cookie")
 async def delete_platform_cookies(platform: str):
@@ -305,6 +294,7 @@ async def delete_platform_cookies(platform: str):
     
     # 安全检查文件对象是否存在
     if not cookie_file or not cookie_file.exists():
+        credential_manager.mark_deleted(platform)
         return {"success": True, "message": f"{platform} 凭证本就不存在"}
             
     # Step 1: 删除 cookie 文件（独立 try/except，失败才返回 500）
@@ -314,6 +304,8 @@ async def delete_platform_cookies(platform: str):
         logger.error(f"删除 cookie 文件失败: {type(e).__name__}")
         logger.debug(f"详细错误: {e}")
         raise HTTPException(status_code=500, detail="删除 cookie 文件失败，请检查系统权限")
+
+    credential_manager.mark_deleted(platform)
 
     # Step 2: 删除关联密钥文件（独立 try/except，失败不影响 cookie 已删除的结果）
     key_file = get_cookie_key_file(platform)

@@ -27,6 +27,7 @@ Fetches and saves authentication cookies for each platform, with system-level pr
 import json
 import os
 import sys
+import threading
 from typing import Dict, Any, Optional
 from pathlib import Path
 import logging
@@ -123,7 +124,7 @@ def _write_encryption_key(platform: str, key_file: Path, key: bytes) -> None:
     if sys.platform != 'win32':
         os.chmod(key_file, 0o600)
 
-def save_cookies_to_file(platform: str, cookies: Dict[str, Any], encrypt: bool = True) -> bool:
+def _save_cookies_to_file_uncached(platform: str, cookies: Dict[str, Any], encrypt: bool = True) -> bool:
     """Save cookies, with normalization checks and encryption logic"""
     try:
         if platform not in COOKIE_FILES:
@@ -217,7 +218,7 @@ def _normalize_cookies(cookies: Dict[str, Any], platform: str) -> Dict[str, str]
     
     return valid_cookies
 
-def load_cookies_from_file(platform: str) -> Dict[str, str]:
+def _load_cookies_from_file_uncached(platform: str) -> Dict[str, str]:
     """Load cookies from file, auto-detecting whether they are encrypted"""
     try:
         if platform not in COOKIE_FILES:
@@ -300,6 +301,118 @@ def load_cookies_from_file(platform: str) -> Dict[str, str]:
     except Exception as e:
         logger.error(f"❌ 加载 {platform} Cookie 失败: {e}")
         return {}
+
+
+class CredentialManager:
+    """Thread-safe in-memory cache for decrypted platform credentials."""
+
+    READY = "ready"
+    MISSING = "missing"
+    INVALID = "invalid"
+    AUTH_REJECTED = "auth_rejected"
+
+    def __init__(self) -> None:
+        self._cache: dict[str, tuple[str | None, str, dict[str, str]]] = {}
+        self._cache_lock = threading.RLock()
+        self._platform_locks: dict[str, threading.Lock] = {}
+
+    @staticmethod
+    def _source_path(platform: str) -> str | None:
+        cookie_file = COOKIE_FILES.get(platform)
+        return str(cookie_file) if cookie_file is not None else None
+
+    def _platform_lock(self, platform: str) -> threading.Lock:
+        with self._cache_lock:
+            return self._platform_locks.setdefault(platform, threading.Lock())
+
+    def _cached(self, platform: str) -> tuple[str | None, str, dict[str, str]] | None:
+        with self._cache_lock:
+            entry = self._cache.get(platform)
+            if entry is not None and entry[0] != self._source_path(platform):
+                self._cache.pop(platform, None)
+                return None
+            return entry
+
+    def _store(self, platform: str, state: str, credentials: Dict[str, str] | None = None) -> None:
+        with self._cache_lock:
+            self._cache[platform] = (self._source_path(platform), state, dict(credentials or {}))
+
+    @staticmethod
+    def _copy(entry: tuple[str | None, str, dict[str, str]]) -> Dict[str, str]:
+        _, state, credentials = entry
+        return dict(credentials) if state == CredentialManager.READY else {}
+
+    def load(self, platform: str) -> Dict[str, str]:
+        cached = self._cached(platform)
+        if cached is not None:
+            return self._copy(cached)
+
+        with self._platform_lock(platform):
+            cached = self._cached(platform)
+            if cached is not None:
+                return self._copy(cached)
+
+            credentials = _load_cookies_from_file_uncached(platform)
+            cookie_file = COOKIE_FILES.get(platform)
+            if credentials:
+                state = self.READY
+            elif cookie_file is not None and cookie_file.exists():
+                state = self.INVALID
+            else:
+                state = self.MISSING
+            self._store(platform, state, credentials)
+            return dict(credentials)
+
+    def save(self, platform: str, cookies: Dict[str, Any], encrypt: bool = True) -> bool:
+        normalized = _normalize_cookies(cookies, platform)
+        if not normalized:
+            return False
+
+        with self._platform_lock(platform):
+            if not _save_cookies_to_file_uncached(platform, normalized, encrypt=encrypt):
+                return False
+            self._store(platform, self.READY, normalized)
+            return True
+
+    def mark_deleted(self, platform: str) -> None:
+        with self._platform_lock(platform):
+            self._store(platform, self.MISSING)
+
+    def mark_auth_rejected(self, platform: str) -> None:
+        with self._platform_lock(platform):
+            self._store(platform, self.AUTH_REJECTED)
+
+    def status(self, platform: str) -> dict[str, Any]:
+        self.load(platform)
+        entry = self._cached(platform) or (self._source_path(platform), self.MISSING, {})
+        _, state, credentials = entry
+        return {
+            "has_cookies": state == self.READY and bool(credentials),
+            "cookies_count": len(credentials) if state == self.READY else 0,
+            "credential_state": state,
+        }
+
+    def status_all(self, platforms) -> dict[str, dict[str, Any]]:
+        return {platform: self.status(platform) for platform in platforms}
+
+    def clear(self) -> None:
+        """Drop all cached secrets; primarily useful during process teardown and tests."""
+        with self._cache_lock:
+            self._cache.clear()
+
+
+credential_manager = CredentialManager()
+
+
+def save_cookies_to_file(platform: str, cookies: Dict[str, Any], encrypt: bool = True) -> bool:
+    """Compatibility wrapper backed by the process-wide credential manager."""
+    return credential_manager.save(platform, cookies, encrypt=encrypt)
+
+
+def load_cookies_from_file(platform: str) -> Dict[str, str]:
+    """Compatibility wrapper returning a defensive copy of cached credentials."""
+    return credential_manager.load(platform)
+
 
 def parse_cookie_string(cookie_string: str) -> Dict[str, str]:
     """Parse plaintext cookies"""
