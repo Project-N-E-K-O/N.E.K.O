@@ -1309,29 +1309,77 @@ async def test_inline_budget_is_charged_on_the_normalized_bytes() -> None:
     )
 
 
+def _expands_under_jpeg_base64() -> str:
+    """A png that provably GROWS when normalized to jpeg.
+
+    Flat colour is the extreme of png-compressible and the worst case for
+    jpeg, which has to spend bytes on every block regardless. Measured ~16 KiB
+    png against ~63 KiB jpeg. The tests using this assert the growth as a
+    precondition, so if the codec ever changes the fixture fails loudly rather
+    than quietly stopping to exercise anything.
+    """
+    source = BytesIO()
+    Image.new("RGB", (2000, 2000), "white").save(source, format="PNG")
+    return base64.b64encode(source.getvalue()).decode("ascii")
+
+
 @pytest.mark.asyncio
 async def test_inline_image_is_refused_when_the_normalized_form_will_not_fit() -> None:
-    """Growth past the pool is refused, and the pool is not left overdrawn."""
+    """Growth past the pool must be refused — and must actually be reached.
+
+    The earlier version accepted either outcome, so a fixture that happened to
+    shrink would pass it without ever touching the refusal path (CodeRabbit).
+    The growth is now a precondition, and the raise is required.
+    """
+    from app.main_server.character_runtime import (
+        _PushImageByteBudget,
+        _approx_decoded_bytes,
+        _normalize_inline_image_to_jpeg_base64,
+        _resolve_plugin_model_image,
+    )
+
+    encoded = _expands_under_jpeg_base64()
+    source_bytes = _approx_decoded_bytes(encoded)
+    normalized_bytes = _approx_decoded_bytes(
+        _normalize_inline_image_to_jpeg_base64(encoded)
+    )
+    # Precondition: without this the test proves nothing.
+    assert normalized_bytes > source_bytes, (
+        "fixture must expand under jpeg conversion for this test to mean anything"
+    )
+
+    # Exactly enough for the source, nothing for the growth.
+    budget = _PushImageByteBudget(source_bytes)
+
+    with pytest.raises(ValueError, match="per-push image budget"):
+        await _resolve_plugin_model_image(
+            {"type": "image", "binary_base64": encoded, "mime": "image/png"},
+            budget=budget,
+        )
+    assert budget.remaining >= 0, "the pool must never go negative"
+
+
+@pytest.mark.asyncio
+async def test_expanded_inline_image_is_accepted_when_the_pool_covers_it() -> None:
+    """The refusal is about the pool, not about growth per se."""
     from app.main_server.character_runtime import (
         _PushImageByteBudget,
         _approx_decoded_bytes,
         _resolve_plugin_model_image,
     )
 
-    encoded = _noise_png_base64(512 * 1024)
-    # Room for the source, but nothing to spare if jpeg comes out larger.
-    budget = _PushImageByteBudget(_approx_decoded_bytes(encoded))
+    encoded = _expands_under_jpeg_base64()
+    budget = _PushImageByteBudget(8 * 1024 * 1024)
 
-    try:
-        out = await _resolve_plugin_model_image(
-            {"type": "image", "binary_base64": encoded, "mime": "image/png"},
-            budget=budget,
-        )
-    except ValueError as exc:
-        assert "per-push image budget" in str(exc)
-    else:
-        assert _approx_decoded_bytes(out) <= _approx_decoded_bytes(encoded)
-    assert budget.remaining >= 0, "the pool must never go negative"
+    out = await _resolve_plugin_model_image(
+        {"type": "image", "binary_base64": encoded, "mime": "image/png"},
+        budget=budget,
+    )
+
+    retained = _approx_decoded_bytes(out)
+    assert retained > _approx_decoded_bytes(encoded)
+    # Charged the grown size, not the source.
+    assert (8 * 1024 * 1024) - budget.remaining == retained
 
 
 @pytest.mark.asyncio
@@ -1417,6 +1465,45 @@ async def test_respond_images_still_resolve_without_a_session(monkeypatch) -> No
 
     assert len(fetched) == 1
     callback = manager.submit_proactive_callback.call_args.args[0]
+    assert len(callback["media_images"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_chat_render_failure_does_not_cancel_model_delivery(monkeypatch) -> None:
+    """A broken display must not take the model path down with it.
+
+    render_chat_blocks runs before the callback is built, so an exception there
+    would skip delivery entirely — losing the deferred images AND the text for
+    a purely cosmetic failure.
+    """
+    from app import main_server
+
+    manager = _manager()
+    manager.render_chat_blocks = AsyncMock(side_effect=RuntimeError("socket died"))
+    monkeypatch.setattr(
+        "app.main_server.character_runtime._get_session_manager",
+        lambda _name: manager,
+    )
+    monkeypatch.setattr(
+        "app.main_server.character_runtime._fetch_plugin_image_base64",
+        AsyncMock(return_value=base64.b64encode(b"still-delivered").decode("ascii")),
+    )
+
+    await main_server._handle_agent_event({
+        "event_type": "proactive_message",
+        "lanlan_name": "Test",
+        "text": "text must survive a render failure",
+        "channel": "plugin:demo",
+        "delivery_mode": "proactive",
+        "ai_behavior": "respond",
+        "visibility": ["chat"],
+        "media_parts": [{"type": "image", "url": _IMAGE_URL, "mime": "image/jpeg"}],
+    })
+
+    manager.render_chat_blocks.assert_awaited()
+    manager.submit_proactive_callback.assert_called_once()
+    callback = manager.submit_proactive_callback.call_args.args[0]
+    assert callback["summary"] == "text must survive a render failure"
     assert len(callback["media_images"]) == 1
 
 

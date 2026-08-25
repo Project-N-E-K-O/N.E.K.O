@@ -1126,11 +1126,22 @@ async def _handle_agent_event(event: dict):
                     visible_source = str(event.get("source_kind") or "").strip()
                     if not visible_source:
                         visible_source = "plugin" if channel.startswith("plugin:") else "system"
-                    await mgr.render_chat_blocks(
-                        visible_blocks,
-                        request_id=event.get("task_id") or None,
-                        source=visible_source,
-                    )
+                    # Display must not be able to cancel delivery. This runs
+                    # BEFORE the callback is built, so an exception here would
+                    # skip the model path entirely and lose both the deferred
+                    # images and the text (CodeRabbit). The passthrough branch
+                    # below is already guarded this way; this one was not.
+                    try:
+                        await mgr.render_chat_blocks(
+                            visible_blocks,
+                            request_id=event.get("task_id") or None,
+                            source=visible_source,
+                        )
+                    except Exception as e:
+                        logger.warning(
+                            "[EventBus] render_chat_blocks failed; continuing delivery: %s",
+                            e,
+                        )
 
             if text or deferred_callback_images:
                 if event.get("direct_reply"):
