@@ -2687,30 +2687,46 @@ async def test_voice_mode_bounds_images_across_one_proactive_turn():
     assert mgr.pending_agent_callbacks == [cbs[2]]
 
 
-def test_text_drain_does_not_consume_media_bearing_callbacks():
-    """The text drain renders to a string and clears the queue.
+def test_text_drain_stops_at_a_held_media_callback():
+    """Holding one back must hold back everything behind it.
 
-    It has no way to hand ``media_images`` to stream_text, so draining a
-    media-bearing callback would consume it and silently discard the images the
-    plugin sent with it. They stay queued for the proactive path, which
-    delivers text and images together.
+    The drain has no channel for media_images, so a proactive media callback
+    waits for the proactive path. Skipping past it to drain a LATER cue would
+    put the later cue in front of the earlier one — the model would hear them
+    out of the order they were queued in.
     """
     mgr = _make_mgr(session=_FakeOmniOffline(delivered=True))
     image_cb = _budget_cb("with-image", 1)
-    text_cb = {
-        "_callback_delivery_id": "id-text",
+    later_text = {
+        "_callback_delivery_id": "id-later",
         "status": "completed",
-        "summary": "plain text cue",
+        "summary": "queued after the image",
     }
-    mgr.pending_agent_callbacks = [image_cb, text_cb]
+    mgr.pending_agent_callbacks = [image_cb, later_text]
 
     rendered = core_module.LLMSessionManager.drain_agent_callbacks_for_llm(mgr)
 
-    # The text-only cue is drained normally...
-    assert "plain text cue" in rendered
-    # ...and the media-bearing one survives, images intact.
-    assert mgr.pending_agent_callbacks == [image_cb]
+    assert rendered == ""
+    # Neither is consumed: the suffix waits with the cue it queued behind.
+    assert mgr.pending_agent_callbacks == [image_cb, later_text]
     assert mgr.pending_agent_callbacks[0]["media_images"] == ["with-image-img0"]
+
+
+def test_text_drain_takes_the_prefix_before_a_held_media_callback():
+    """Stopping is not the same as refusing: earlier text still drains."""
+    mgr = _make_mgr(session=_FakeOmniOffline(delivered=True))
+    earlier_text = {
+        "_callback_delivery_id": "id-earlier",
+        "status": "completed",
+        "summary": "queued before the image",
+    }
+    image_cb = _budget_cb("with-image", 1)
+    mgr.pending_agent_callbacks = [earlier_text, image_cb]
+
+    rendered = core_module.LLMSessionManager.drain_agent_callbacks_for_llm(mgr)
+
+    assert "queued before the image" in rendered
+    assert mgr.pending_agent_callbacks == [image_cb]
 
 
 def test_text_drain_returns_empty_when_every_callback_carries_media():

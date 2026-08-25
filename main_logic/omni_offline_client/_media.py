@@ -24,7 +24,13 @@ class _MediaMixin:
     async def stream_audio(self, audio_chunk: bytes) -> None:
         """Compatibility method - not used in text mode"""
 
-    async def stream_image(self, image_b64: str, *, bypass_rate_limit: bool = False) -> None:
+    async def stream_image(
+        self,
+        image_b64: str,
+        *,
+        bypass_rate_limit: bool = False,
+        cache_latest: bool = True,
+    ) -> None:
         """
         Add an image to pending images queue.
         Images will be sent together with the next text message.
@@ -32,6 +38,11 @@ class _MediaMixin:
         ``bypass_rate_limit`` is accepted for signature parity with the
         realtime client (text mode has no frame-rate throttle — it's an
         in-memory append) and is ignored here.
+
+        ``cache_latest`` is accepted for the same reason. Text mode keeps no
+        ambient frame cache, so there is nothing here for it to opt out of —
+        but callers must be able to say "this is deliberate input, not an
+        ambient screenshot" without first knowing which client they hold.
         """
         if not image_b64:
             return

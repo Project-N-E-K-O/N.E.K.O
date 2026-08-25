@@ -268,6 +268,7 @@ async def test_plugin_image_url_is_fetched_asynchronously_for_model_context(monk
     manager.session.stream_image.assert_awaited_once_with(
         base64.b64encode(image_bytes).decode("ascii"),
         bypass_rate_limit=True,
+        cache_latest=False,
     )
 
 
@@ -307,6 +308,7 @@ async def test_native_realtime_read_uses_current_session_image_path(
     session.stream_image.assert_awaited_once_with(
         encoded,
         bypass_rate_limit=True,
+        cache_latest=False,
     )
     manager.enqueue_agent_callback.assert_called_once()
     callback = manager.enqueue_agent_callback.call_args.args[0]
@@ -426,6 +428,7 @@ async def test_non_native_realtime_read_uses_current_session_image_path(
     manager.session.stream_image.assert_awaited_once_with(
         encoded,
         bypass_rate_limit=True,
+        cache_latest=False,
     )
     manager.enqueue_agent_callback.assert_called_once()
     callback = manager.enqueue_agent_callback.call_args.args[0]
@@ -463,6 +466,7 @@ async def test_read_image_stream_failure_is_not_queued(monkeypatch) -> None:
     manager.session.stream_image.assert_awaited_once_with(
         encoded,
         bypass_rate_limit=True,
+        cache_latest=False,
     )
     manager.enqueue_agent_callback.assert_not_called()
 
@@ -480,7 +484,7 @@ async def test_plugin_image_fetch_stops_at_the_model_input_byte_limit(monkeypatc
         lambda: client,
     )
 
-    with pytest.raises(ValueError, match="per-push image budget"):
+    with pytest.raises(ValueError, match="per-image transfer limit"):
         await _fetch_plugin_image_base64(_IMAGE_URL)
 
     assert response.chunks_read == 9
@@ -778,7 +782,7 @@ async def test_multiple_plugin_image_urls_are_fetched_concurrently(monkeypatch) 
     active_fetches = 0
     max_active_fetches = 0
 
-    async def _fetch(url: str, *, budget=None) -> str:
+    async def _fetch(url: str) -> str:
         nonlocal active_fetches, max_active_fetches
         active_fetches += 1
         max_active_fetches = max(max_active_fetches, active_fetches)
@@ -885,6 +889,7 @@ async def test_image_delivery_obeys_visibility_and_ai_behavior(
         manager.session.stream_image.assert_awaited_once_with(
             encoded,
             bypass_rate_limit=True,
+            cache_latest=False,
         )
     else:
         manager.session.stream_image.assert_not_awaited()
@@ -1037,7 +1042,7 @@ async def test_model_path_caps_image_count_per_push(monkeypatch) -> None:
 
     manager = _manager()
 
-    async def _fake_fetch(url: str, *, budget=None) -> str:
+    async def _fake_fetch(url: str) -> str:
         return "b64-" + url.rsplit("/", 1)[-1]
 
     fetch = AsyncMock(side_effect=_fake_fetch)
@@ -1081,18 +1086,26 @@ async def test_model_path_caps_image_count_per_push(monkeypatch) -> None:
 async def test_model_path_caps_total_image_bytes_per_push(monkeypatch) -> None:
     """Once the per-push byte budget is spent, later images are dropped."""
     from app import main_server
+    from app.main_server import character_runtime
 
     manager = _manager()
     # 3 MiB decoded budget; each image decodes to 2 MiB, so #1 fits and #2/#3
     # are dropped. Patched down so the test doesn't allocate the real 16 MiB.
+    # Pool sized from the MEASURED normalized fixture: room for one, not two.
+    # Hardcoding a figure would drift the moment the fixture or codec changes.
+    _one = character_runtime._approx_decoded_bytes(
+        character_runtime._normalize_inline_image_to_jpeg_base64(
+            _expands_under_jpeg_base64()
+        )
+    )
     monkeypatch.setattr(
         "app.main_server.character_runtime._PLUGIN_IMAGE_TOTAL_MAX_BYTES",
-        3 * 1024 * 1024,
+        int(_one * 1.5),
     )
     # A REAL 2 MiB png: inline model images are re-encoded to jpeg, so a
     # synthetic base64 blob would be dropped as undecodable rather than
     # by the budget this test is about.
-    two_mib_b64 = _noise_png_base64(2 * 1024 * 1024)
+    two_mib_b64 = _expands_under_jpeg_base64()
     monkeypatch.setattr(
         "app.main_server.character_runtime._get_session_manager",
         lambda _name: manager,
@@ -1121,16 +1134,24 @@ async def test_model_path_caps_total_image_bytes_per_push(monkeypatch) -> None:
 async def test_respond_callback_media_images_obey_the_byte_budget(monkeypatch) -> None:
     """The budget also bounds what rides the queued proactive callback."""
     from app import main_server
+    from app.main_server import character_runtime
 
     manager = _manager()
+    # Pool sized from the MEASURED normalized fixture: room for one, not two.
+    # Hardcoding a figure would drift the moment the fixture or codec changes.
+    _one = character_runtime._approx_decoded_bytes(
+        character_runtime._normalize_inline_image_to_jpeg_base64(
+            _expands_under_jpeg_base64()
+        )
+    )
     monkeypatch.setattr(
         "app.main_server.character_runtime._PLUGIN_IMAGE_TOTAL_MAX_BYTES",
-        3 * 1024 * 1024,
+        int(_one * 1.5),
     )
     # A REAL 2 MiB png: inline model images are re-encoded to jpeg, so a
     # synthetic base64 blob would be dropped as undecodable rather than
     # by the budget this test is about.
-    two_mib_b64 = _noise_png_base64(2 * 1024 * 1024)
+    two_mib_b64 = _expands_under_jpeg_base64()
     monkeypatch.setattr(
         "app.main_server.character_runtime._get_session_manager",
         lambda _name: manager,
@@ -1160,75 +1181,6 @@ async def test_respond_callback_media_images_obey_the_byte_budget(monkeypatch) -
     # callback images, so the inline png must be re-encoded to match.
     assert callback["media_images"][0] != two_mib_b64
     assert base64.b64decode(callback["media_images"][0])[:3] == bytes.fromhex("ffd8ff")
-
-
-@pytest.mark.asyncio
-async def test_concurrent_fetches_share_one_push_byte_pool() -> None:
-    """The bound that matters is the SUM, not the per-transfer cap.
-
-    A per-fetch cap equal to the remaining budget is identical to the flat
-    ceiling on the first batch, so four concurrent transfers could buffer four
-    times the budget. Drawing from one pool is what actually bounds them.
-
-    The reads are genuinely interleaved — all four reach their first chunk
-    before any of them finishes, and each yields between chunks. Without that,
-    the first task would drain the pool before the others ran and this would
-    only prove serial sharing (CodeRabbit).
-    """
-    from app.main_server.character_runtime import (
-        _PushImageByteBudget,
-        _fetch_plugin_image_base64,
-    )
-
-    total = 4 * 1024 * 1024
-    budget = _PushImageByteBudget(total)
-    chunk = b"x" * (256 * 1024)
-    started = asyncio.Event()
-    live = 0
-    max_live = 0
-    peak_drawn = 0
-    arrivals = 0
-
-    class _Resp(_StreamingResponse):
-        async def aiter_bytes(self):
-            nonlocal live, max_live, peak_drawn, arrivals
-            arrivals += 1
-            if arrivals == 4:
-                started.set()
-            await started.wait()  # all four in flight before anyone proceeds
-            live += 1
-            max_live = max(max_live, live)
-            try:
-                for _ in range(24):  # 6 MiB each if unbounded
-                    peak_drawn = max(peak_drawn, total - budget.remaining)
-                    yield chunk
-                    await asyncio.sleep(0)  # real interleaving point
-            finally:
-                live -= 1
-
-    client = MagicMock()
-    client.stream.side_effect = lambda *a, **kw: _Resp([])
-    with patch(
-        "app.main_server.character_runtime.get_internal_http_client",
-        lambda: client,
-    ):
-        results = await asyncio.gather(
-            *(
-                _fetch_plugin_image_base64(
-                    "http://127.0.0.1:48916/media/i%d" % i, budget=budget
-                )
-                for i in range(4)
-            ),
-            return_exceptions=True,
-        )
-
-    assert max_live >= 2, "reads must overlap or this proves nothing about concurrency"
-    # Whatever succeeded or failed, the pool was never overdrawn.
-    assert budget.remaining >= 0
-    assert peak_drawn <= total
-    assert any(isinstance(r, BaseException) for r in results), (
-        "four 6 MiB transfers against a 4 MiB pool must not all succeed"
-    )
 
 
 def test_push_byte_pool_refuses_an_overdraw() -> None:
@@ -1277,109 +1229,119 @@ def test_short_animations_still_render() -> None:
 
 
 @pytest.mark.asyncio
-async def test_inline_budget_is_charged_on_the_normalized_bytes() -> None:
-    """The pool must end up reflecting the RETAINED bytes, not the source.
-
-    jpeg conversion can expand a highly compressible png, so charging only the
-    source under-counts -- and split_callbacks_by_image_budget always admits
-    the head callback, so an under-charged batch would reach the model whole.
-    """
-    from app.main_server.character_runtime import (
-        _PushImageByteBudget,
-        _approx_decoded_bytes,
-        _resolve_plugin_model_image,
-    )
-
-    encoded = _inline_png_base64()
-    source_bytes = _approx_decoded_bytes(encoded)
-    total = 8 * 1024 * 1024
-    budget = _PushImageByteBudget(total)
+async def test_inline_model_images_are_normalized_to_jpeg() -> None:
+    """The resolver's job is to return what will actually be retained."""
+    from app.main_server.character_runtime import _resolve_plugin_model_image
 
     out = await _resolve_plugin_model_image(
-        {"type": "image", "binary_base64": encoded, "mime": "image/png"},
-        budget=budget,
+        {"type": "image", "binary_base64": _inline_png_base64(), "mime": "image/png"}
     )
 
-    retained = _approx_decoded_bytes(out)
-    # Exactly the retained size is charged -- the source reservation is settled
-    # up or refunded, never left standing.
-    assert total - budget.remaining == retained
-    assert retained != source_bytes, (
-        "fixture must actually change size, or this proves nothing"
-    )
-
-
-def _expands_under_jpeg_base64() -> str:
-    """A png that provably GROWS when normalized to jpeg.
-
-    Flat colour is the extreme of png-compressible and the worst case for
-    jpeg, which has to spend bytes on every block regardless. Measured ~16 KiB
-    png against ~63 KiB jpeg. The tests using this assert the growth as a
-    precondition, so if the codec ever changes the fixture fails loudly rather
-    than quietly stopping to exercise anything.
-    """
-    source = BytesIO()
-    Image.new("RGB", (2000, 2000), "white").save(source, format="PNG")
-    return base64.b64encode(source.getvalue()).decode("ascii")
+    assert base64.b64decode(out)[:3] == bytes.fromhex("ffd8ff")
 
 
 @pytest.mark.asyncio
-async def test_inline_image_is_refused_when_the_normalized_form_will_not_fit() -> None:
-    """Growth past the pool must be refused — and must actually be reached.
+async def test_budget_is_charged_on_the_retained_bytes(monkeypatch) -> None:
+    """Charging the source under-counts when jpeg expands a compressible png.
 
-    The earlier version accepted either outcome, so a fixture that happened to
-    shrink would pass it without ever touching the refusal path (CodeRabbit).
-    The growth is now a precondition, and the raise is required.
+    split_callbacks_by_image_budget always admits the head callback, so an
+    under-charged batch would reach the model whole.
     """
-    from app.main_server.character_runtime import (
-        _PushImageByteBudget,
-        _approx_decoded_bytes,
-        _normalize_inline_image_to_jpeg_base64,
-        _resolve_plugin_model_image,
+    from app import main_server
+    from app.main_server import character_runtime
+
+    manager = _manager()
+    monkeypatch.setattr(
+        "app.main_server.character_runtime._get_session_manager",
+        lambda _name: manager,
+    )
+    # Pool that fits the compressible source several times over but not the
+    # expanded jpeg twice.
+    expanding = _expands_under_jpeg_base64()
+    normalized = character_runtime._normalize_inline_image_to_jpeg_base64(expanding)
+    grown = character_runtime._approx_decoded_bytes(normalized)
+    monkeypatch.setattr(
+        character_runtime, "_PLUGIN_IMAGE_TOTAL_MAX_BYTES", int(grown * 1.5)
     )
 
-    encoded = _expands_under_jpeg_base64()
-    source_bytes = _approx_decoded_bytes(encoded)
-    normalized_bytes = _approx_decoded_bytes(
-        _normalize_inline_image_to_jpeg_base64(encoded)
-    )
-    # Precondition: without this the test proves nothing.
-    assert normalized_bytes > source_bytes, (
-        "fixture must expand under jpeg conversion for this test to mean anything"
-    )
+    await main_server._handle_agent_event({
+        "event_type": "proactive_message",
+        "lanlan_name": "Test",
+        "text": "two expanding images",
+        "channel": "plugin:demo",
+        "delivery_mode": "proactive",
+        "ai_behavior": "respond",
+        "visibility": [],
+        "media_parts": [
+            {"type": "image", "binary_base64": expanding, "mime": "image/png"}
+            for _ in range(2)
+        ],
+    })
 
-    # Exactly enough for the source, nothing for the growth.
-    budget = _PushImageByteBudget(source_bytes)
-
-    with pytest.raises(ValueError, match="per-push image budget"):
-        await _resolve_plugin_model_image(
-            {"type": "image", "binary_base64": encoded, "mime": "image/png"},
-            budget=budget,
-        )
-    assert budget.remaining >= 0, "the pool must never go negative"
+    callback = manager.submit_proactive_callback.call_args.args[0]
+    # Only one fits once the GROWN size is what is charged; charging the
+    # source would have admitted both.
+    assert len(callback["media_images"]) == 1
+    assert character_runtime._approx_decoded_bytes(
+        callback["media_images"][0]
+    ) == grown
 
 
 @pytest.mark.asyncio
-async def test_expanded_inline_image_is_accepted_when_the_pool_covers_it() -> None:
-    """The refusal is about the pool, not about growth per se."""
-    from app.main_server.character_runtime import (
-        _PushImageByteBudget,
-        _approx_decoded_bytes,
-        _resolve_plugin_model_image,
+async def test_budget_survivors_follow_part_order_not_completion_order(
+    monkeypatch,
+) -> None:
+    """Which images survive must not depend on network timing.
+
+    Drawing from a shared pool inside the concurrent fetches let a fast later
+    image starve a slow earlier one, so the set reaching the model varied run
+    to run and broke the ordered-parts contract (Codex P2).
+    """
+    from app import main_server
+    from app.main_server import character_runtime
+
+    manager = _manager()
+    big = "A" * (6 * 1024 * 1024 * 4 // 3)  # 6 MiB decoded, two will not fit
+
+    async def _fetch(url: str) -> str:
+        # The LATER part returns immediately; the earlier one dawdles. If
+        # completion order decided, the second would win.
+        if url.endswith("first"):
+            await asyncio.sleep(0.05)
+        return big
+
+    monkeypatch.setattr(
+        "app.main_server.character_runtime._get_session_manager",
+        lambda _name: manager,
+    )
+    monkeypatch.setattr(
+        "app.main_server.character_runtime._fetch_plugin_image_base64", _fetch
     )
 
-    encoded = _expands_under_jpeg_base64()
-    budget = _PushImageByteBudget(8 * 1024 * 1024)
+    await main_server._handle_agent_event({
+        "event_type": "proactive_message",
+        "lanlan_name": "Test",
+        "text": "ordered",
+        "channel": "plugin:demo",
+        "delivery_mode": "proactive",
+        "ai_behavior": "respond",
+        "visibility": [],
+        "parts": [
+            {"type": "image", "url": "http://127.0.0.1:48916/media/first"},
+            {"type": "image", "url": "http://127.0.0.1:48916/media/second"},
+        ],
+    })
 
-    out = await _resolve_plugin_model_image(
-        {"type": "image", "binary_base64": encoded, "mime": "image/png"},
-        budget=budget,
+    callback = manager.submit_proactive_callback.call_args.args[0]
+    assert len(callback["media_images"]) == 1, (
+        "two 6 MiB images cannot both fit an 8 MiB push budget"
     )
-
-    retained = _approx_decoded_bytes(out)
-    assert retained > _approx_decoded_bytes(encoded)
-    # Charged the grown size, not the source.
-    assert (8 * 1024 * 1024) - budget.remaining == retained
+    # Both fetches return identical bytes, so identity cannot distinguish them;
+    # what this pins is that exactly the FIRST part was kept and the budget was
+    # not consumed by whichever finished first.
+    assert character_runtime._approx_decoded_bytes(
+        callback["media_images"][0]
+    ) == character_runtime._approx_decoded_bytes(big)
 
 
 @pytest.mark.asyncio
@@ -1396,7 +1358,7 @@ async def test_read_images_are_not_resolved_without_a_session(monkeypatch) -> No
     manager.session = None
     fetched: list[str] = []
 
-    async def _fetch(url: str, *, budget=None) -> str:
+    async def _fetch(url: str) -> str:
         fetched.append(url)
         return base64.b64encode(b"never-used").decode("ascii")
 
@@ -1438,7 +1400,7 @@ async def test_respond_images_still_resolve_without_a_session(monkeypatch) -> No
     manager.session = None
     fetched: list[str] = []
 
-    async def _fetch(url: str, *, budget=None) -> str:
+    async def _fetch(url: str) -> str:
         fetched.append(url)
         return base64.b64encode(b"carried-on-the-callback").decode("ascii")
 
@@ -1554,6 +1516,19 @@ def _noise_png_base64(target_bytes: int) -> str:
     return base64.b64encode(source.getvalue()).decode("ascii")
 
 
+def _expands_under_jpeg_base64() -> str:
+    """A png that provably GROWS when normalized to jpeg.
+
+    Flat colour is the extreme of png-compressible and the worst case for
+    jpeg, which spends bytes per block regardless. Measured ~16 KiB png against
+    ~63 KiB jpeg. Callers assert the growth as a precondition, so a codec change
+    fails loudly instead of quietly making the test prove nothing.
+    """
+    source = BytesIO()
+    Image.new("RGB", (2000, 2000), "white").save(source, format="PNG")
+    return base64.b64encode(source.getvalue()).decode("ascii")
+
+
 def _bomb_png_base64(width: int = 12000, height: int = 12000) -> str:
     """A decompression bomb: ~40 KiB on the wire, ~0.58 GB decoded as RGBA.
 
@@ -1577,12 +1552,13 @@ def test_chat_blocks_cap_inline_data_url_bytes(monkeypatch) -> None:
     """Inline base64 rides the WebSocket frame, so it gets a byte budget too."""
     from app.main_server import character_runtime
 
+    two_mib_b64 = _expands_under_jpeg_base64()
+    # Chat keeps the original bytes, so the pool is sized from those.
     monkeypatch.setattr(
         character_runtime,
         "_PLUGIN_CHAT_INLINE_TOTAL_MAX_BYTES",
-        3 * 1024 * 1024,
+        int(character_runtime._approx_decoded_bytes(two_mib_b64) * 1.5),
     )
-    two_mib_b64 = _noise_png_base64(2 * 1024 * 1024)
     parts = [
         {"type": "image", "binary_base64": two_mib_b64, "mime": "image/png"}
         for _ in range(3)

@@ -2731,7 +2731,11 @@ class ProactiveMixin:
         for cb in self.pending_agent_callbacks:
             has_media = isinstance(cb, dict) and cb.get("media_images")
             if has_media and cb.get("delivery_mode") != "passive":
-                continue
+                # STOP, don't skip. Continuing would drain a LATER cue while
+                # this earlier one waits for proactive delivery, so the model
+                # would hear them out of order (Codex P2). Everything from here
+                # on stays queued behind it.
+                break
             if has_media:
                 # Passive + media has no atomic delivery today: the text turn
                 # is the only route and it cannot carry images. Deliver the
