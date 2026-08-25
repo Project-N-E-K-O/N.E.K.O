@@ -8,9 +8,17 @@
 
 ## 问题一：图片 parts 没有「用户聊天窗可见」通道
 
-**现象**：插件通过 `push_message(parts=[{"type": "image", "data": ...}],
-visibility=["chat"], ai_behavior="blind")` 推送图片时，用户聊天窗**看不到**
-图片；`visibility=["chat"]` 只对 text parts 生效。
+**现象**：插件通过 `push_message` 推送 image part（`visibility=["chat"]`、
+`ai_behavior="blind"`）时，用户聊天窗**看不到**图片；`visibility=["chat"]`
+只对 text parts 生效。
+
+```python
+push_message(
+    visibility=["chat"],
+    ai_behavior="blind",
+    parts=[{"type": "image", "data": <png bytes>, "mime": "image/png"}],
+)
+```
 
 **根因**（源码核实）：
 
@@ -21,12 +29,14 @@ visibility=["chat"], ai_behavior="blind")` 推送图片时，用户聊天窗**�
   （视觉输入）；`ai_behavior="blind"` 时媒体被完全忽略，**没有任何分支把
   image part 渲染到用户聊天窗**。
 - 用户可见图片目前唯一可行的路径是：text part 内嵌 markdown
-  `![alt](http://...)`（前端 ReactMarkdown 渲染），且 URL 必须可外网/内网访问
-  ——插件只能借助自身静态服务 + 拼接 URL 实现，绕不开宿主通道缺失的本质。
+  `![alt](http://...)`（前端 ReactMarkdown 渲染），且 URL 必须可外网/内网
+  访问——插件只能借助自身静态服务 + 拼接 URL 实现，绕不开宿主通道缺失的
+  本质。
 
 **影响**：游戏/工具类插件想让用户「看见」一张图片（结果卡片、相册照片、
-截图）时，没有原生通道。社区插件（lifekit、neko_live 等）全部
-`visibility=[]` 只发 AI 视觉，用户端靠 markdown URL 变通。
+截图）时，没有原生通道。社区插件（lifekit、neko_live 等）当前要么
+`visibility=["chat"]` + text part 内嵌 markdown URL（lifekit 做法，用户可见
+但依赖外链托管），要么 `visibility=[]` 只发 AI 视觉（用户不可见）。
 
 **期望**：`visibility=["chat"]` + image part（含 `binary_base64`/`url`）应
 在用户聊天窗直接渲染为图片气泡（与 text part 同通道），`ai_behavior` 仅
@@ -37,15 +47,24 @@ visibility=["chat"], ai_behavior="blind")` 推送图片时，用户聊天窗**�
 
 ## 问题二：audio / video parts 被宿主直接丢弃
 
-**现象**：`push_message(parts=[{"type": "audio", "data": ..., "mime": ...}])`
-到达宿主后被静默丢弃，仅打 warning 日志。
+**现象**：`push_message` 推送 audio part 到达宿主后被静默丢弃，仅打
+warning 日志。
+
+```python
+push_message(
+    visibility=["chat"],
+    ai_behavior="blind",
+    parts=[{"type": "audio", "data": <wav bytes>, "mime": "audio/wav"}],
+)
+```
 
 **根因**（源码核实）：
 
-- `app/main_server/character_runtime.py`（约 L556-565）：
-  `part_type != "image"` 时直接 `logger.warning("media_part type=%s not yet
-  supported ... dropped")`，注释说明 `stream_audio` 是实时麦克风 PCM 管线
-  （特定采样率 + RNNoise 门控），不是通用文件注入器，且没有 video API。
+- `app/main_server/character_runtime.py`（约 L556-565）：对
+  `part_type != "image"` 的 part 直接 `logger.warning("media_part type=%s
+  not yet supported ... dropped")`，注释说明 `stream_audio` 是实时麦克风
+  PCM 管线（特定采样率 + RNNoise 门控），不是通用文件注入器，且没有
+  video API。
 - 因此 `{"type": "audio"}` / `{"type": "video"}` parts 在 v2 schema 中虽已
   定义（见 `plugin/sdk/shared/core/push_message_schema.py`），但宿主消费端
   未实现，插件发送后无任何效果。
@@ -62,10 +81,10 @@ visibility=["chat"], ai_behavior="blind")` 推送图片时，用户聊天窗**�
 
 ### 验证方法
 
-- 任一插件 `push_message(visibility=["chat"], ai_behavior="blind",
-  parts=[{"type": "image", "data": <png bytes>, "mime": "image/png"}])`：
-  期望用户聊天窗出现图片气泡，实际无。
-- 同一 payload 换 `ai_behavior="respond"`：AI 上下文可见（stream_image），
-  用户聊天窗仍无。
-- `parts=[{"type": "audio", "data": <wav bytes>, "mime": "audio/wav"}]`：
-  宿主日志出现 `media_part type=audio not yet supported`，无任何输出。
+1. 任一插件推送 `push_message(visibility=["chat"], ai_behavior="blind",
+   parts=[{"type": "image", "data": <png bytes>, "mime": "image/png"}])`：
+   期望用户聊天窗出现图片气泡，实际无。
+2. 同一 payload 换 `ai_behavior="respond"`：AI 上下文可见（stream_image），
+   用户聊天窗仍无。
+3. 推送 `parts=[{"type": "audio", "data": <wav bytes>, "mime": "audio/wav"}]`：
+   宿主日志出现 `media_part type=audio not yet supported`，无任何输出。
