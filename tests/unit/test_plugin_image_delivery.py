@@ -1295,6 +1295,43 @@ def test_chat_blocks_keep_ordinary_inline_images() -> None:
     assert blocks[0]["url"].startswith("data:image/png;base64,")
 
 
+def test_declared_mime_cannot_inject_into_the_data_url() -> None:
+    """A data: URL's media type ends at the FIRST comma.
+
+    So a part may declare `image/svg+xml,<svg ...>` — which still satisfies a
+    startswith("image/") test — and the browser would render that markup as the
+    payload, never looking at the bytes the pixel probe just validated. The
+    MIME therefore has to come from the parsed bytes, not from the part.
+    """
+    from app.main_server.character_runtime import _build_ordered_plugin_chat_blocks
+
+    png = _inline_png_base64()
+    blocks = _build_ordered_plugin_chat_blocks([{
+        "type": "image",
+        "binary_base64": png,
+        "mime": "image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg'/>#",
+    }])
+
+    assert len(blocks) == 1
+    url = blocks[0]["url"]
+    assert url == "data:image/png;base64," + png
+    # The whole point: nothing the part declared survives into the URL.
+    assert "svg" not in url
+    assert url.count(",") == 1
+
+
+def test_inline_mime_is_the_detected_format_not_the_declared_one() -> None:
+    """A wrong-but-harmless declaration is corrected, not trusted."""
+    from app.main_server.character_runtime import _build_ordered_plugin_chat_blocks
+
+    png = _inline_png_base64()
+    blocks = _build_ordered_plugin_chat_blocks([
+        {"type": "image", "binary_base64": png, "mime": "image/jpeg"},
+    ])
+
+    assert blocks[0]["url"].startswith("data:image/png;base64,")
+
+
 def test_chat_blocks_drop_unreadable_inline_payloads() -> None:
     """Bytes this host cannot inspect are not handed to the renderer."""
     from app.main_server.character_runtime import _build_ordered_plugin_chat_blocks
@@ -1321,8 +1358,8 @@ def test_pixel_probe_reads_dimensions_from_a_bounded_prefix() -> None:
     # Truncating everything past the prefix still yields a verdict, which is
     # only possible if the probe never needed the tail.
     head = big[: character_runtime._PLUGIN_CHAT_HEADER_PREFIX_B64_CHARS]
-    assert character_runtime._inline_image_pixels_ok(head) is True
-    assert character_runtime._inline_image_pixels_ok(big) is True
+    assert character_runtime._inline_image_data_url_mime(head) == "image/png"
+    assert character_runtime._inline_image_data_url_mime(big) == "image/png"
 
 
 def test_chat_blocks_url_images_cost_no_inline_budget() -> None:

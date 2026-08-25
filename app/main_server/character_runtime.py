@@ -76,21 +76,42 @@ _PLUGIN_CHAT_HEADER_PREFIX_B64_CHARS = 64 * 1024
 _approx_decoded_bytes = approx_base64_decoded_bytes
 
 
-def _inline_image_pixels_ok(encoded: str) -> bool:
-    """Reject decompression bombs before a data: URL reaches the browser.
+# Pillow's own format names for the raster types a chat bubble can render.
+# Keyed off the PARSED bytes, never off the plugin's declared ``mime``.
+_PILLOW_FORMAT_TO_MIME = {
+    "PNG": "image/png",
+    "JPEG": "image/jpeg",
+    "GIF": "image/gif",
+    "WEBP": "image/webp",
+    "BMP": "image/bmp",
+}
 
-    The byte budget is structurally blind to these: a 20000x20000 single-colour
-    PNG compresses to ~1.2 MiB, sails through an 8 MiB cap, and costs the
-    renderer ~1.6 GB to decode. Only a pixel count catches it.
 
-    Reads the dimensions from a bounded base64 prefix so the probe does not
+def _inline_image_data_url_mime(encoded: str) -> Optional[str]:
+    """Return the MIME to publish for an inline payload, or None to reject it.
+
+    Two jobs, both of which have to key off the bytes rather than the part:
+
+    Bombs. The byte budget is structurally blind to them: a 20000x20000
+    single-colour PNG compresses to ~1.2 MiB, sails through an 8 MiB cap, and
+    costs the renderer ~1.6 GB to decode. Only a pixel count catches that.
+
+    MIME. The result is interpolated into a ``data:`` URL, and a data URL's
+    media type ends at the FIRST comma. A part declaring
+    ``image/svg+xml,<svg ...></svg>#`` still satisfies a startswith("image/")
+    test, but the browser would then treat the injected markup as the payload
+    and never look at the bytes validated here. So the MIME comes from the
+    format Pillow actually parsed, and anything outside the raster allowlist is
+    refused rather than passed through.
+
+    Dimensions are read from a bounded base64 prefix so the probe does not
     scale with payload size (~0.1 ms flat, against ~14 ms to base64-decode a
     full 8 MiB payload just to read its header). WebP is the one format Pillow
-    cannot open from a truncated stream, so it takes the full-decode fallback —
+    cannot open from a truncated stream, so it takes the full-decode fallback --
     harmless, because a weaponized image is small by construction.
 
-    Returns False when the dimensions cannot be established at all: an image
-    this host cannot inspect is one it should not hand to the renderer.
+    Returns None when nothing can be established: bytes this host cannot
+    inspect are bytes it should not hand to the renderer.
     """
     head = encoded[:_PLUGIN_CHAT_HEADER_PREFIX_B64_CHARS]
     head = head[: len(head) - (len(head) % 4)]
@@ -100,19 +121,22 @@ def _inline_image_pixels_ok(encoded: str) -> bool:
         try:
             raw = base64.b64decode(candidate)
         except Exception:
-            return False
+            return None
         try:
             with Image.open(BytesIO(raw)) as image:
                 width, height = image.size
+                detected = str(image.format or "").upper()
         except Image.DecompressionBombError:
             # Already past Pillow's own ceiling; a full decode cannot help.
-            return False
+            return None
         except Exception:
             continue
         if width <= 0 or height <= 0:
-            return False
-        return width * height <= MAX_SOURCE_IMAGE_PIXELS
-    return False
+            return None
+        if width * height > MAX_SOURCE_IMAGE_PIXELS:
+            return None
+        return _PILLOW_FORMAT_TO_MIME.get(detected)
+    return None
 
 
 def _is_local_plugin_media_url(url: str) -> bool:
@@ -192,13 +216,18 @@ def _build_plugin_chat_blocks(
             if inline_bytes + decoded_bytes > _PLUGIN_CHAT_INLINE_TOTAL_MAX_BYTES:
                 dropped_images += 1
                 continue
-            if not _inline_image_pixels_ok(encoded):
+            safe_mime = _inline_image_data_url_mime(encoded)
+            if safe_mime is None:
                 # Bytes and pixels are independent axes; the budget above
                 # cannot see a bomb, so this check is not redundant with it.
+                # It also refuses a MIME we could not corroborate from bytes.
                 bomb_images += 1
                 continue
             inline_bytes += decoded_bytes
-            blocks.append({"type": "image", "url": f"data:{mime};base64,{encoded}"})
+            # safe_mime, NOT the declared ``mime`` -- see the helper's docstring.
+            blocks.append(
+                {"type": "image", "url": f"data:{safe_mime};base64,{encoded}"}
+            )
             image_count += 1
     if dropped_images:
         logger.warning(

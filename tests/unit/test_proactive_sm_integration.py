@@ -2687,6 +2687,43 @@ async def test_voice_mode_bounds_images_across_one_proactive_turn():
     assert mgr.pending_agent_callbacks == [cbs[2]]
 
 
+async def test_deferred_image_overflow_is_re_driven_on_the_text_path():
+    """A deferred tail must not wait for an unrelated event to wake it.
+
+    The manager's queue is already empty by this point and the text path has no
+    response.done to re-fire trigger, so without an armed retry the ninth cue
+    of a nine-image batch sits in pending indefinitely.
+    """
+    sess = _CapturingImageOmniOffline()
+    mgr = _make_mgr(session=sess)
+    mgr._schedule_proactive_retry = MagicMock()
+    cbs = [_budget_cb("c%d" % i, 1) for i in range(9)]
+    mgr.pending_agent_callbacks = list(cbs)
+
+    delivered = await core_module.LLMSessionManager.trigger_agent_callbacks(mgr)
+
+    assert delivered is True
+    assert len(sess.image_batches[0]) == 8
+    assert [cb["summary"] for cb in mgr.pending_agent_callbacks] == ["cue c8"]
+    mgr._schedule_proactive_retry.assert_called_once_with(
+        mgr.proactive_manager.min_gap_s
+    )
+
+
+async def test_no_retry_is_armed_when_nothing_was_deferred():
+    """The retry is for a deferred tail only — not every proactive turn."""
+    sess = _CapturingImageOmniOffline()
+    mgr = _make_mgr(session=sess)
+    mgr._schedule_proactive_retry = MagicMock()
+    mgr.pending_agent_callbacks = [_budget_cb("a", 2)]
+
+    delivered = await core_module.LLMSessionManager.trigger_agent_callbacks(mgr)
+
+    assert delivered is True
+    assert mgr.pending_agent_callbacks == []
+    mgr._schedule_proactive_retry.assert_not_called()
+
+
 async def test_image_overflow_keeps_fifo_order_when_delivery_fails():
     """The deferred tail must not overtake the prefix it was split from.
 

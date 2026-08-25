@@ -1295,6 +1295,14 @@ class ProactiveMixin:
                 self.pending_agent_callbacks.extend(_overflow)
             self._proactive_image_overflow = []
             await self.state.fire(SessionEvent.PROACTIVE_DONE)
+            if _overflow:
+                # Nothing else re-drives a deferred tail on the TEXT path: the
+                # manager's queue is already empty and, unlike voice, no
+                # response.done / voice_play_end arrives to re-fire trigger. So
+                # the ninth cue of a nine-image batch would sit until some
+                # unrelated event happened along. Armed AFTER PROACTIVE_DONE so
+                # the retry is not denied by our own still-held claim (Codex P2).
+                self._schedule_proactive_retry(self.proactive_manager.min_gap_s)
         if delivered:
             for cb in callbacks_snapshot:
                 resolve_callback_delivery_ack(cb, True)
