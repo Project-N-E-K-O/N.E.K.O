@@ -183,14 +183,13 @@ async def llm_tool_callback(
     #    pass through verbatim. This is the path used when a handler
     #    wraps its own error semantics, e.g. via the SDK's Result type.
     #
-    # ``images`` / ``is_error`` mark the envelope shape. ``output`` may be
-    # omitted (image-only replies); main_server's parser then uses the
-    # remaining body fields minus ``images``. A bare dict carrying only
-    # ``output`` stays data, not an envelope — otherwise a tool whose
-    # result happens to have an ``output`` field would get silently
-    # unwrapped.
+    # ``is_error`` explicitly marks an error envelope. A successful image
+    # envelope must contain both ``output`` and ``images``: an ``images`` key
+    # alone is common business data (for example search-result URLs) and must
+    # remain inside the model-visible output. A bare dict carrying only
+    # ``output`` also stays data for backward compatibility.
     if isinstance(result, dict) and (
-        "is_error" in result or "images" in result
+        "is_error" in result or ("output" in result and "images" in result)
     ):
         out = {"is_error": bool(result.get("is_error", False))}
         if "output" in result:

@@ -16,6 +16,38 @@ class _Logger:
 
 
 @pytest.mark.plugin_unit
+def test_get_live_vision_sync_sends_the_frame_permission_token(
+    tmp_path: Path,
+) -> None:
+    ctx = PluginContext(
+        plugin_id="demo_plugin",
+        config_path=tmp_path / "demo_plugin" / "plugin.toml",
+        logger=_Logger(),  # type: ignore[arg-type]
+        status_queue=None,
+    )
+    seen: list[dict[str, object]] = []
+
+    def _send(**kwargs: object) -> dict[str, object]:
+        seen.append(kwargs)
+        return {"active": True, "frame_b64": "frame"}
+
+    ctx._send_request_and_wait = _send  # type: ignore[method-assign]
+
+    payload = ctx.get_live_vision_sync(
+        include_frame=True,
+        permission_token="generation-one",
+        timeout=3.0,
+    )
+
+    assert payload["frame_b64"] == "frame"
+    assert seen[0]["request_data"] == {
+        "role": "",
+        "include_frame": True,
+        "token": "generation-one",
+    }
+
+
+@pytest.mark.plugin_unit
 @pytest.mark.asyncio
 async def test_set_live_frame_permission_async_sends_authenticated_plugin_request(
     tmp_path: Path,

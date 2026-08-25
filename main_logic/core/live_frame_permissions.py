@@ -7,6 +7,22 @@ _state: dict[str, tuple[str, bool]] = {}
 _delivery_state: dict[str, tuple[str, bool]] = {}
 
 
+def _set_generation_permission(
+    state: dict[str, tuple[str, bool]],
+    source: str,
+    generation: str,
+    allowed: bool,
+) -> bool:
+    if not source or not generation:
+        return False
+    with _lock:
+        current = state.get(source)
+        if not allowed and current is not None and current[0] != generation:
+            return False
+        state[source] = (generation, allowed)
+    return True
+
+
 def clear_live_frame_permissions() -> None:
     with _lock:
         _state.clear()
@@ -15,6 +31,22 @@ def clear_live_frame_permissions() -> None:
 def clear_plugin_delivery_permissions() -> None:
     with _lock:
         _delivery_state.clear()
+
+
+def revoke_plugin_permissions(source_name: str) -> dict[str, object]:
+    source = str(source_name or "").strip()
+    live_frame_revoked = False
+    delivery_revoked = False
+    if source:
+        with _lock:
+            live_frame_revoked = _state.pop(source, None) is not None
+            delivery_revoked = _delivery_state.pop(source, None) is not None
+    return {
+        "ok": True,
+        "source_name": source,
+        "live_frame_revoked": live_frame_revoked,
+        "delivery_revoked": delivery_revoked,
+    }
 
 
 def set_live_frame_permission(
@@ -26,14 +58,13 @@ def set_live_frame_permission(
     source = str(source_name or "").strip()
     generation = str(token or "").strip()
     allowed = bool(enabled)
-    if source and generation:
-        with _lock:
-            _state[source] = (generation, allowed)
+    applied = _set_generation_permission(_state, source, generation, allowed)
     return {
         "ok": True,
         "source_name": source,
         "token": generation,
         "enabled": allowed,
+        "applied": applied,
     }
 
 
@@ -59,14 +90,15 @@ def set_plugin_delivery_permission(
     source = str(source_name or "").strip()
     generation = str(token or "").strip()
     allowed = bool(enabled)
-    if source and generation:
-        with _lock:
-            _delivery_state[source] = (generation, allowed)
+    applied = _set_generation_permission(
+        _delivery_state, source, generation, allowed
+    )
     return {
         "ok": True,
         "source_name": source,
         "token": generation,
         "enabled": allowed,
+        "applied": applied,
     }
 
 

@@ -909,7 +909,7 @@ def test_filter_deliverable_callbacks_drops_an_invalidated_plugin_generation():
     mgr.enqueue_agent_callback(other)
 
     set_plugin_delivery_permission(
-        "demo_plugin", "generation-two", enabled=False)
+        "demo_plugin", "generation-one", enabled=False)
 
     deliverable = core_module.LLMSessionManager.filter_deliverable_callbacks(
         mgr,
@@ -955,6 +955,25 @@ def test_retract_callbacks_from_source_keeps_other_pending_sources():
 
     assert mgr.pending_agent_callbacks == [other]
     assert demo.get(DELIVERY_RETRACTED_KEY) is True
+
+
+def test_retract_callbacks_from_source_removes_a_drained_extras_mirror():
+    mgr = _make_session_mgr()
+    mgr.enqueue_agent_callback(
+        _proactive_cb("you are sinking", source_name="demo_plugin")
+    )
+    mgr.enqueue_agent_callback(
+        _proactive_cb("unrelated plugin", source_name="neko_live")
+    )
+    mgr.pending_agent_callbacks.clear()
+
+    assert core_module.LLMSessionManager.retract_callbacks_from_source(
+        mgr, "demo_plugin"
+    ) == 0
+
+    assert [extra["source_name"] for extra in mgr.pending_extra_replies] == [
+        "neko_live"
+    ]
 
 
 def test_retract_callbacks_from_source_skips_committed_cues():

@@ -93,6 +93,7 @@ class _HostContextProtocol(Protocol):
         *,
         role: str = "",
         include_frame: bool = False,
+        permission_token: str = "",
         timeout: float = 3.0,
     ) -> object: ...
 
@@ -285,6 +286,7 @@ class SdkContext:
         *,
         role: str = "",
         include_frame: bool = False,
+        permission_token: str = "",
         timeout: float = 3.0,
     ) -> object:
         """Whether the user is sharing a screen or camera with the character.
@@ -296,7 +298,10 @@ class SdkContext:
         desktop, so ask for it only when you will actually look at it.
         """
         return await self._host_ctx.get_live_vision_async(
-            role=role, include_frame=include_frame, timeout=timeout
+            role=role,
+            include_frame=include_frame,
+            permission_token=permission_token,
+            timeout=timeout,
         )
 
     async def run_update(

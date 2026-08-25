@@ -459,11 +459,13 @@ class ToolRegistry:
                 result_value = tool.handler(call.arguments or {})
                 if asyncio.iscoroutine(result_value) or isinstance(result_value, asyncio.Future):
                     result_value = await result_value
-                # ``images`` / ``is_error`` mark the plugin envelope, matching
-                # the remote callback route. A data dict that merely contains
-                # ``output`` stays intact so sibling fields reach the model.
+                # Match the remote callback route: ``is_error`` is explicit,
+                # while a successful image envelope needs both channel keys.
+                # Plain business data may legitimately contain ``images`` or
+                # ``output`` and must stay intact.
                 if isinstance(result_value, dict) and (
-                    "images" in result_value or "is_error" in result_value
+                    "is_error" in result_value
+                    or ("output" in result_value and "images" in result_value)
                 ):
                     return tool_result_from_envelope(call, result_value)
                 return ToolResult(

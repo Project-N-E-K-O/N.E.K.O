@@ -197,6 +197,7 @@ async def test_live_vision_handler_answers_the_request_a_plugin_actually_sends(
             "timeout": 3.0,
             "role": "",
             "include_frame": False,
+            "token": "generation-one",
         },
         send,
     )
@@ -204,6 +205,8 @@ async def test_live_vision_handler_answers_the_request_a_plugin_actually_sends(
     assert send.calls[-1][3] is None
     assert send.calls[-1][2]["active"] is True
     assert seen[-1]["include_frame"] is False
+    assert seen[-1]["source_name"] == "demo_plugin"
+    assert seen[-1]["token"] == "generation-one"
 
     await live_vision_module.handle_live_vision_get(
         {"from_plugin": "p", "request_id": "2", "include_frame": True}, send)

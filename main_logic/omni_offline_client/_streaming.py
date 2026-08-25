@@ -197,6 +197,7 @@ class _StreamingMixin:
             old_llm = self.llm
             self.llm = new_llm
             self.model = new_model
+            self._supports_native_image = bool(use_vision_config)
             # ⚠️ 同步 self.base_url / self.api_key —— 否则后续 _astream_with_tools
             # 重新计算 _use_genai_sdk 时拿到的还是旧 conversation 配置，会
             # 把 vision 走的 Gemini endpoint 错误路由到 OpenAI-compat（反之亦然）。

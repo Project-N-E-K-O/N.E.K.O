@@ -46,6 +46,8 @@ class LiveVisionQueryService:
     async def get_live_vision(
         self,
         *,
+        source_name: object = "",
+        token: object = "",
         role: object = "",
         include_frame: object = False,
         timeout: object = None,
@@ -56,6 +58,8 @@ class LiveVisionQueryService:
             params["role"] = role.strip()
         if include_frame:
             params["include_frame"] = "true"
+            params["source_name"] = str(source_name or "").strip()
+            params["token"] = str(token or "").strip()
 
         url = f"{_main_server_base_url()}/api/system/live-vision"
         try:
@@ -170,3 +174,33 @@ class LiveVisionQueryService:
             "token": str(payload.get("token") or token or ""),
             "enabled": bool(payload.get("enabled")),
         }
+
+    async def revoke_plugin_permissions(
+        self,
+        *,
+        source_name: object = "",
+        timeout: object = None,
+    ) -> dict[str, object]:
+        normalized_timeout = _coerce_timeout(timeout)
+        url = f"{_main_server_base_url()}/api/system/plugin-permissions/revoke"
+        try:
+            async with httpx.AsyncClient(
+                timeout=normalized_timeout, proxy=None, trust_env=False
+            ) as client:
+                response = await client.post(
+                    url,
+                    json={"source_name": str(source_name or "")},
+                )
+                response.raise_for_status()
+                payload = response.json()
+        except (httpx.HTTPError, ValueError, OSError, RuntimeError) as exc:
+            logger.debug(
+                "plugin permission revoke unavailable: err_type={}, err={}",
+                type(exc).__name__,
+                str(exc),
+            )
+            raise RuntimeError("plugin permission revoke unavailable") from exc
+
+        if not isinstance(payload, dict) or not payload.get("ok"):
+            raise RuntimeError("plugin permission revoke rejected")
+        return payload

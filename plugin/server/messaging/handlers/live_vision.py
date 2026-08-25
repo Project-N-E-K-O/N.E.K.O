@@ -18,6 +18,8 @@ async def handle_live_vision_get(request: dict[str, object], send_response: Send
     from_plugin, request_id, timeout = common_fields
     try:
         payload = await live_vision_query_service.get_live_vision(
+            source_name=from_plugin,
+            token=request.get("token"),
             role=request.get("role"),
             include_frame=coerce_bool(request.get("include_frame"), default=False),
             timeout=timeout,

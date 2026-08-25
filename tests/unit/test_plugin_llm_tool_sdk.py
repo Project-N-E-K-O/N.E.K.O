@@ -476,28 +476,36 @@ async def test_callback_route_accepts_images_without_is_error():
 
 
 @pytest.mark.asyncio
-async def test_callback_route_accepts_images_without_output():
-    """Image-only replies must stay envelopes — requiring ``output`` would
-    wrap the whole dict and bury base64 in the tool text channel."""
-    out = await _call_with_handler_result({
-        "images": [{"data_b64": "QUJD", "mime": "image/jpeg"}],
-    })
-    assert out["is_error"] is False
-    assert "output" not in out
-    assert out["images"] == [{"data_b64": "QUJD", "mime": "image/jpeg"}]
+async def test_callback_route_preserves_plain_business_images_field():
+    result = {
+        "query": "cats",
+        "images": [{"url": "https://example.test/cat.jpg"}],
+    }
+
+    out = await _call_with_handler_result(result)
+
+    assert out == {"output": result, "is_error": False}
 
 
 @pytest.mark.asyncio
-async def test_callback_route_preserves_metadata_beside_images_without_output():
-    out = await _call_with_handler_result({
+async def test_callback_route_treats_images_without_output_as_plain_data():
+    result = {
+        "images": [{"data_b64": "QUJD", "mime": "image/jpeg"}],
+    }
+    out = await _call_with_handler_result(result)
+    assert out == {"output": result, "is_error": False}
+
+
+@pytest.mark.asyncio
+async def test_callback_route_preserves_metadata_beside_plain_business_images():
+    result = {
         "shot_id": "shot_1",
         "telemetry": {"distance_m": 1200},
         "images": [{"data_b64": "QUJD", "mime": "image/jpeg"}],
-    })
+    }
+    out = await _call_with_handler_result(result)
 
-    assert out["shot_id"] == "shot_1"
-    assert out["telemetry"] == {"distance_m": 1200}
-    assert "output" not in out
+    assert out == {"output": result, "is_error": False}
 
 
 @pytest.mark.asyncio

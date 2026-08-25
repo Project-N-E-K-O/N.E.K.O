@@ -24,7 +24,6 @@ import os
 from main_logic.omni_realtime_client import OmniRealtimeClient
 from main_logic.tool_calling import ToolCall, ToolDefinition, ToolResult
 from utils.screenshot_utils import analyze_image_with_vision_model
-from utils.vision_capability import model_supports_vision
 from config.prompts.prompts_sys import _loc
 from config.prompts.prompts_memory import (
     RECALL_MEMORY_TOOL_DESCRIPTION,
@@ -138,13 +137,13 @@ class ToolCallingMixin:
             reason = "realtime session"
         else:
             model = str(getattr(self.session, "model", "") or "")
-            if model_supports_vision(model):
+            if getattr(self.session, "_supports_native_image", False) is True:
                 return
             reason = f"model {model!r} has no vision"
 
-        descriptions = []
-        for image in result.images:
-            descriptions.append(await self._describe_tool_image(image))
+        descriptions = await asyncio.gather(
+            *(self._describe_tool_image(image) for image in result.images)
+        )
         logger.info(
             "Tool '%s': transcribed %d image(s) to text (%s)",
             result.name, len(descriptions), reason,

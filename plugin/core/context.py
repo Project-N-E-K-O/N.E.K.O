@@ -1908,6 +1908,7 @@ class PluginContext:
         *,
         role: str = "",
         include_frame: bool = False,
+        permission_token: str = "",
         timeout: float = 3.0,
     ) -> Dict[str, Any]:
         """同步版本:查询主对话是否正在共享屏幕"""
@@ -1917,6 +1918,7 @@ class PluginContext:
             request_data={
                 "role": role,
                 "include_frame": bool(include_frame),
+                "token": str(permission_token or ""),
             },
             timeout=timeout,
             wrap_result=True,
@@ -1928,6 +1930,7 @@ class PluginContext:
         *,
         role: str = "",
         include_frame: bool = False,
+        permission_token: str = "",
         timeout: float = 3.0,
     ) -> Dict[str, Any]:
         """异步版本:查询主对话是否正在共享屏幕"""
@@ -1937,6 +1940,7 @@ class PluginContext:
             request_data={
                 "role": role,
                 "include_frame": bool(include_frame),
+                "token": str(permission_token or ""),
             },
             timeout=timeout,
             wrap_result=True,
@@ -1948,6 +1952,7 @@ class PluginContext:
         *,
         role: str = "",
         include_frame: bool = False,
+        permission_token: str = "",
         timeout: float = 3.0,
     ):
         """智能版本:自动检测执行环境,选择同步或异步执行方式
@@ -1957,10 +1962,16 @@ class PluginContext:
         """
         if self._is_in_event_loop():
             return self.get_live_vision_async(
-                role=role, include_frame=include_frame, timeout=timeout
+                role=role,
+                include_frame=include_frame,
+                permission_token=permission_token,
+                timeout=timeout,
             )
         return self.get_live_vision_sync(
-            role=role, include_frame=include_frame, timeout=timeout
+            role=role,
+            include_frame=include_frame,
+            permission_token=permission_token,
+            timeout=timeout,
         )
 
     async def set_live_frame_permission_async(

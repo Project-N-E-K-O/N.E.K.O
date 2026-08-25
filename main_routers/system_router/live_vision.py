@@ -29,6 +29,8 @@ from fastapi import Depends, Request
 from fastapi.responses import Response
 
 from main_logic.core.live_frame_permissions import (
+    allows_live_frame,
+    revoke_plugin_permissions,
     set_live_frame_permission,
     set_plugin_delivery_permission,
 )
@@ -96,6 +98,8 @@ async def get_live_vision_state(
     response: Response,
     role: str = "",
     include_frame: bool = False,
+    source_name: str = "",
+    token: str = "",
 ):
     """Report whether a screen/camera share is feeding the conversation."""
     del request  # consumed by the verify_local_access dependency
@@ -114,7 +118,12 @@ async def get_live_vision_state(
     # Camera shares the user's room, not a desktop. The SDK documents
     # ``include_frame`` as a desktop image, and game companions reject camera
     # frames for the same reason — report liveness/source but withhold pixels.
-    if include_frame and payload["active"] and payload["source"] == "screen":
+    if (
+        include_frame
+        and allows_live_frame(source_name, token)
+        and payload["active"]
+        and payload["source"] == "screen"
+    ):
         frame_fn = getattr(mgr, "live_vision_frame_b64", None)
         frame = ""
         if callable(frame_fn):
@@ -192,6 +201,29 @@ async def set_plugin_callback_delivery_permission(
     )
     source = str(result.get("source_name") or "")
     token = str(result.get("token") or "")
-    if source and token and not result["enabled"]:
+    if source and token and not result["enabled"] and result.get("applied"):
+        _retract_plugin_deliveries(source)
+    return result
+
+
+@router.post(
+    "/system/plugin-permissions/revoke",
+    dependencies=[Depends(verify_local_access)],
+)
+async def revoke_plugin_host_permissions(
+    request: Request,
+    response: Response,
+):
+    """Drop every host capability owned by a stopped plugin source."""
+    _set_no_store_headers(response)
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+    result = revoke_plugin_permissions(str(payload.get("source_name") or ""))
+    source = str(result.get("source_name") or "")
+    if source:
         _retract_plugin_deliveries(source)
     return result

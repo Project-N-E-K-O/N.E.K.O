@@ -150,6 +150,25 @@ async def test_registry_local_handler_keeps_data_dicts_that_contain_output():
 
 
 @pytest.mark.asyncio
+async def test_registry_local_handler_keeps_business_images_as_plain_data():
+    from main_logic.tool_calling import ToolCall, ToolDefinition, ToolRegistry
+
+    payload = {
+        "query": "cats",
+        "images": [{"url": "https://example.test/cat.jpg"}],
+    }
+
+    reg = ToolRegistry()
+    reg.register(ToolDefinition(
+        name="search", description="search", handler=lambda _args: payload))
+    result = await reg.execute(ToolCall(name="search", arguments={}, call_id="c1"))
+
+    assert result.is_error is False
+    assert result.output == payload
+    assert result.images == []
+
+
+@pytest.mark.asyncio
 async def test_registry_unknown_tool_returns_error_not_raise():
     from main_logic.tool_calling import ToolCall, ToolRegistry
 

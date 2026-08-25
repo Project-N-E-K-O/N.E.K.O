@@ -361,13 +361,33 @@ async def test_result_without_images_is_untouched(spy_vision):
 
 @pytest.mark.asyncio
 async def test_vision_capable_offline_model_keeps_the_pixels(spy_vision):
+    session = _FakeOfflineSession("gpt-4o")
+    session._supports_native_image = True
     out = await _dispatch(
         _result(output={"ok": True}, images=[ToolImage(data_b64="IMG")]),
-        _FakeOfflineSession("gpt-4o"),
+        session,
     )
     assert [i.data_b64 for i in out.images] == ["IMG"]
     assert spy_vision.calls == [], "no transcription needed when the model can see"
     assert "_image_descriptions" not in out.output
+
+
+@pytest.mark.asyncio
+async def test_model_name_does_not_override_an_explicit_text_only_capability(
+    spy_vision,
+):
+    session = _FakeOfflineSession("custom-gpt-5-text-only")
+    session._supports_native_image = False
+
+    out = await _dispatch(
+        _result(output={"ok": True}, images=[ToolImage(data_b64="IMG")]),
+        session,
+    )
+
+    assert out.images == []
+    assert out.output["_image_descriptions"] == [
+        "a burning cruiser near the cap"
+    ]
 
 
 @pytest.mark.asyncio
@@ -382,6 +402,32 @@ async def test_text_only_model_gets_a_transcription_instead(spy_vision):
     assert out.images == [], "pixels must not survive for a model that cannot read them"
     assert out.output["_image_descriptions"] == ["a burning cruiser near the cap"]
     assert spy_vision.calls[0]["extra_instruction"] == "watch the minimap"
+
+
+@pytest.mark.asyncio
+async def test_multiple_tool_images_are_transcribed_concurrently_in_order():
+    result = _result(
+        output={"ok": True},
+        images=[ToolImage(data_b64="first"), ToolImage(data_b64="second")],
+    )
+    manager = _Manager(result, _FakeOfflineSession("deepseek-chat"))
+    second_started = __import__("asyncio").Event()
+
+    async def _describe(image: ToolImage) -> str:
+        if image.data_b64 == "first":
+            await second_started.wait()
+        else:
+            second_started.set()
+        return image.data_b64
+
+    manager._describe_tool_image = _describe
+
+    out = await __import__("asyncio").wait_for(
+        manager._on_tool_call(ToolCall(name="demo_tool", arguments={})),
+        timeout=0.5,
+    )
+
+    assert out.output["_image_descriptions"] == ["first", "second"]
 
 
 @pytest.mark.asyncio

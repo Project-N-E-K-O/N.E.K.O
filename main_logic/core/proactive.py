@@ -692,6 +692,25 @@ class ProactiveMixin:
             retract(source)
         if matching:
             self.filter_deliverable_callbacks(matching)
+        extras = [
+            extra
+            for extra in list(getattr(self, "pending_extra_replies", None) or [])
+            if isinstance(extra, dict)
+            and str(extra.get("source_name") or "").strip() == source
+            and not extra.get(VOICE_DELIVERY_COMMITTED_KEY)
+            and not extra.get(SWAP_PRIME_DELIVERY_CLAIM_KEY)
+        ]
+        if extras:
+            extra_ids = {id(extra) for extra in extras}
+            self._clear_voice_delivery_committed(extras)
+            for extra in extras:
+                extra[DELIVERY_RETRACTED_KEY] = True
+                resolve_callback_delivery_ack(extra, False)
+            self.pending_extra_replies = [
+                extra
+                for extra in (getattr(self, "pending_extra_replies", None) or [])
+                if id(extra) not in extra_ids
+            ]
         return len(matching)
 
     def _purge_undeliverable_callbacks(self) -> None:

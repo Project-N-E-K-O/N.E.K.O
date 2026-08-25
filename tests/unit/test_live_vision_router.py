@@ -75,11 +75,43 @@ def test_a_sharing_session_is_reported_without_the_pixels(monkeypatch):
 
 def test_the_frame_comes_only_when_asked_for(monkeypatch):
     client = _client({"lanlan": _Manager("lanlan", _sharing())}, monkeypatch)
+    client.post(
+        PERMISSION_ENDPOINT,
+        json={
+            "source_name": "demo_plugin",
+            "token": "generation-one",
+            "enabled": True,
+        },
+    )
 
-    body = client.get(ENDPOINT, params={"include_frame": "true"}).json()
+    body = client.get(
+        ENDPOINT,
+        params={
+            "include_frame": "true",
+            "source_name": "demo_plugin",
+            "token": "generation-one",
+        },
+    ).json()
 
     assert body["frame_b64"] == "shared-frame"
     assert body["frame_mime"] == "image/jpeg"
+
+
+def test_the_frame_is_withheld_without_a_matching_plugin_generation(monkeypatch):
+    client = _client({"lanlan": _Manager("lanlan", _sharing())}, monkeypatch)
+
+    body = client.get(
+        ENDPOINT,
+        params={
+            "include_frame": "true",
+            "source_name": "demo_plugin",
+            "token": "not-authorized",
+        },
+    ).json()
+
+    assert body["active"] is True
+    assert body["source"] == "screen"
+    assert "frame_b64" not in body
 
 
 def test_camera_share_never_returns_pixels(monkeypatch):
@@ -231,6 +263,7 @@ def test_a_local_permission_update_is_installed_before_it_is_acknowledged(
         "source_name": "demo_plugin",
         "token": "generation-two",
         "enabled": False,
+        "applied": True,
     }
     from main_logic.core.live_frame_permissions import allows_live_frame
 
@@ -255,7 +288,7 @@ def test_authorizing_a_generation_allows_that_token_only(monkeypatch):
     assert allows_live_frame("demo_plugin", "generation-two") is False
 
 
-def test_replacing_the_generation_revokes_the_previous_token(monkeypatch):
+def test_unknown_disable_does_not_replace_the_current_frame_generation(monkeypatch):
     from main_logic.core.live_frame_permissions import allows_live_frame
 
     client = _client({}, monkeypatch)
@@ -276,7 +309,7 @@ def test_replacing_the_generation_revokes_the_previous_token(monkeypatch):
         },
     )
 
-    assert allows_live_frame("demo_plugin", "generation-one") is False
+    assert allows_live_frame("demo_plugin", "generation-one") is True
     assert allows_live_frame("demo_plugin", "generation-two") is False
 
 
@@ -294,9 +327,10 @@ def test_the_permission_route_is_not_reachable_from_another_machine(monkeypatch)
 
 
 DELIVERY_ENDPOINT = "/api/system/plugin-callbacks/delivery-permission"
+REVOKE_ENDPOINT = "/api/system/plugin-permissions/revoke"
 
 
-def test_disabling_delivery_permission_replaces_the_generation_and_retracts(
+def test_disabling_current_delivery_generation_retracts(
     monkeypatch,
 ):
     from main_logic.core.live_frame_permissions import allows_plugin_delivery
@@ -320,7 +354,7 @@ def test_disabling_delivery_permission_replaces_the_generation_and_retracts(
         DELIVERY_ENDPOINT,
         json={
             "source_name": "demo_plugin",
-            "token": "generation-two",
+            "token": "generation-one",
             "enabled": False,
         },
     )
@@ -330,6 +364,43 @@ def test_disabling_delivery_permission_replaces_the_generation_and_retracts(
     assert allows_plugin_delivery("demo_plugin", "generation-one") is False
     assert allows_plugin_delivery("demo_plugin", "generation-two") is False
     assert retracted == ["demo_plugin"]
+
+
+def test_stale_delivery_disable_does_not_revoke_or_retract_the_new_generation(
+    monkeypatch,
+):
+    from main_logic.core.live_frame_permissions import allows_plugin_delivery
+
+    retracted = []
+
+    class _Session:
+        def retract_callbacks_from_source(self, source_name):
+            retracted.append(source_name)
+
+    client = _client({"lanlan": _Session()}, monkeypatch)
+    for token in ("generation-one", "generation-two"):
+        client.post(
+            DELIVERY_ENDPOINT,
+            json={
+                "source_name": "demo_plugin",
+                "token": token,
+                "enabled": True,
+            },
+        )
+
+    response = client.post(
+        DELIVERY_ENDPOINT,
+        json={
+            "source_name": "demo_plugin",
+            "token": "generation-one",
+            "enabled": False,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["applied"] is False
+    assert allows_plugin_delivery("demo_plugin", "generation-two") is True
+    assert retracted == []
 
 
 def test_an_empty_delivery_token_does_not_retract(monkeypatch):
@@ -362,3 +433,50 @@ def test_an_empty_delivery_token_does_not_retract(monkeypatch):
     assert response.status_code == 200
     assert allows_plugin_delivery("demo_plugin", "generation-one") is True
     assert retracted == []
+
+
+def test_source_revoke_clears_frame_and_delivery_permissions(monkeypatch):
+    from main_logic.core.live_frame_permissions import (
+        allows_live_frame,
+        allows_plugin_delivery,
+    )
+
+    retracted = []
+
+    class _Session:
+        def retract_callbacks_from_source(self, source_name):
+            retracted.append(source_name)
+
+    client = _client({"lanlan": _Session()}, monkeypatch)
+    client.post(
+        PERMISSION_ENDPOINT,
+        json={
+            "source_name": "demo_plugin",
+            "token": "frame-generation",
+            "enabled": True,
+        },
+    )
+    client.post(
+        DELIVERY_ENDPOINT,
+        json={
+            "source_name": "demo_plugin",
+            "token": "delivery-generation",
+            "enabled": True,
+        },
+    )
+
+    response = client.post(
+        REVOKE_ENDPOINT,
+        json={"source_name": "demo_plugin"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "ok": True,
+        "source_name": "demo_plugin",
+        "live_frame_revoked": True,
+        "delivery_revoked": True,
+    }
+    assert allows_live_frame("demo_plugin", "frame-generation") is False
+    assert allows_plugin_delivery("demo_plugin", "delivery-generation") is False
+    assert retracted == ["demo_plugin"]

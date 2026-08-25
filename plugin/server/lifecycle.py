@@ -23,6 +23,7 @@ from plugin.settings import PLUGIN_SHUTDOWN_TIMEOUT, PLUGIN_SHUTDOWN_TOTAL_TIMEO
 from utils.logger_config import get_module_logger
 
 _EMBEDDED_BY_AGENT = os.getenv("NEKO_PLUGIN_HOSTED_BY_AGENT", "").strip().lower() == "true"
+_SHUTDOWN_PERMISSION_REVOKE_TIMEOUT = 0.4
 
 if _EMBEDDED_BY_AGENT:
     logger = get_module_logger(__name__, "Agent")
@@ -138,6 +139,16 @@ class ServerLifecycleService:
                 len(refresh_result.get("removed", [])),
                 len(refresh_result.get("failed", [])),
             )
+            with state.acquire_plugins_read_lock():
+                registered_plugin_ids = sorted(
+                    plugin_id
+                    for plugin_id in state.plugins
+                    if isinstance(plugin_id, str) and plugin_id
+                )
+            await asyncio.gather(*(
+                self._plugin_lifecycle_service.revoke_plugin_permissions(plugin_id)
+                for plugin_id in registered_plugin_ids
+            ))
             autostart_plugin_ids = await self._plugin_registry_service.list_autostart_plugin_ids()
         except Exception as exc:
             logger.error(
@@ -237,23 +248,40 @@ class ServerLifecycleService:
 
         per_host_timeout = PLUGIN_SHUTDOWN_TIMEOUT + 0.5
 
-        async def _shutdown_one(plugin_id: str, host_obj: _PluginHostContract) -> None:
+        async def _shutdown_one(plugin_id: str, host_obj: object) -> None:
             try:
-                await asyncio.wait_for(
-                    host_obj.shutdown(timeout=PLUGIN_SHUTDOWN_TIMEOUT),
-                    timeout=per_host_timeout,
+                if not isinstance(host_obj, _PluginHostContract):
+                    logger.warning(
+                        "invalid plugin host object skipped during shutdown: plugin_id={}, host_type={}",
+                        plugin_id,
+                        type(host_obj).__name__,
+                    )
+                    return
+                try:
+                    await asyncio.wait_for(
+                        host_obj.shutdown(timeout=PLUGIN_SHUTDOWN_TIMEOUT),
+                        timeout=per_host_timeout,
+                    )
+                except asyncio.TimeoutError:
+                    logger.warning(
+                        "plugin {} shutdown timed out after {:.1f}s, force-killing",
+                        plugin_id, per_host_timeout,
+                    )
+                    proc = getattr(host_obj, "process", None)
+                    if proc is not None and proc.is_alive():
+                        try:
+                            proc.terminate()
+                        except Exception:
+                            pass
+            finally:
+                revoked = await self._plugin_lifecycle_service.revoke_plugin_permissions(
+                    plugin_id,
+                    timeout=_SHUTDOWN_PERMISSION_REVOKE_TIMEOUT,
                 )
-            except asyncio.TimeoutError:
-                logger.warning(
-                    "plugin {} shutdown timed out after {:.1f}s, force-killing",
-                    plugin_id, per_host_timeout,
-                )
-                proc = getattr(host_obj, "process", None)
-                if proc is not None and proc.is_alive():
-                    try:
-                        proc.terminate()
-                    except Exception:
-                        pass
+                if revoked is False:
+                    raise RuntimeError(
+                        f"plugin permission revoke failed for {plugin_id}"
+                    )
 
         tasks: list[asyncio.Task[None]] = []
         for plugin_id, host_obj in hosts_snapshot.items():
@@ -261,13 +289,6 @@ class ServerLifecycleService:
                 emit_lifecycle_event({"type": "plugin_shutdown_requested", "plugin_id": plugin_id, "time": now_iso()})
             except Exception as exc:
                 logger.warning("failed to emit plugin_shutdown_requested event: plugin_id={}, err={}", plugin_id, exc)
-            if not isinstance(host_obj, _PluginHostContract):
-                logger.warning(
-                    "invalid plugin host object skipped during shutdown: plugin_id={}, host_type={}",
-                    plugin_id,
-                    type(host_obj).__name__,
-                )
-                continue
             tasks.append(asyncio.create_task(_shutdown_one(plugin_id, host_obj)))
 
         if not tasks:
@@ -282,6 +303,28 @@ class ServerLifecycleService:
                     "plugin shutdown task raised: err_type={}, err={}",
                     type(result).__name__,
                     str(result),
+                )
+        return had_errors
+
+    async def _revoke_host_permissions(self) -> bool:
+        plugin_ids = sorted(self._get_plugin_hosts_snapshot())
+        if not plugin_ids:
+            return False
+        results = await asyncio.gather(*(
+            self._plugin_lifecycle_service.revoke_plugin_permissions(
+                plugin_id,
+                timeout=_SHUTDOWN_PERMISSION_REVOKE_TIMEOUT,
+            )
+            for plugin_id in plugin_ids
+        ), return_exceptions=True)
+        had_errors = False
+        for plugin_id, result in zip(plugin_ids, results):
+            if result is False or isinstance(result, BaseException):
+                had_errors = True
+                logger.warning(
+                    "failed to revoke plugin permissions during shutdown: plugin_id={}, result={}",
+                    plugin_id,
+                    result,
                 )
         return had_errors
 
@@ -378,6 +421,7 @@ class ServerLifecycleService:
             result = await asyncio.wait_for(self._shutdown_internal(), timeout=PLUGIN_SHUTDOWN_TOTAL_TIMEOUT)
         except asyncio.TimeoutError:
             logger.error("server shutdown timed out after {}s", PLUGIN_SHUTDOWN_TOTAL_TIMEOUT)
+            await self._revoke_host_permissions()
             try:
                 await asyncio.wait_for(
                     asyncio.to_thread(state.close_plugin_resources),

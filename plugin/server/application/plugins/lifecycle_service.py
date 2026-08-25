@@ -57,6 +57,9 @@ from plugin.server.infrastructure.runtime_overrides import (
     set_runtime_override,
 )
 from plugin.server.messaging.lifecycle_events import emit_lifecycle_event
+from plugin.server.application.messages.live_vision_service import (
+    LiveVisionQueryService,
+)
 from plugin.server.messaging.llm_tool_registry import (
     clear_plugin_tools as clear_plugin_llm_tools,
 )
@@ -81,6 +84,9 @@ _DEFERRED_PROFILE_STAGING_NAME_PATTERN = re.compile(
     r"^\.[A-Za-z0-9._-]+\.deleting-[0-9a-f]{32}$"
 )
 plugin_registry_service = PluginRegistryService()
+plugin_permission_service = LiveVisionQueryService()
+_PLUGIN_PERMISSION_REVOKE_ATTEMPTS = 2
+_PLUGIN_PERMISSION_REVOKE_RETRY_SECONDS = 0.1
 # The profile sharing decision and install-source soft-removal must form one
 # operation.  Serializing deletions prevents two members of the same package
 # from both observing the other as active and orphaning the shared profile.
@@ -122,6 +128,35 @@ def _persist_user_runtime_intent(
             },
             log_level="error",
         ) from exc
+
+
+async def _revoke_plugin_permissions(
+    plugin_id: str,
+    *,
+    timeout: float = 3.0,
+) -> bool:
+    last_error: Exception | None = None
+    for attempt in range(_PLUGIN_PERMISSION_REVOKE_ATTEMPTS):
+        try:
+            await plugin_permission_service.revoke_plugin_permissions(
+                source_name=plugin_id,
+                timeout=timeout,
+            )
+            return True
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            last_error = exc
+            if attempt + 1 < _PLUGIN_PERMISSION_REVOKE_ATTEMPTS:
+                await asyncio.sleep(_PLUGIN_PERMISSION_REVOKE_RETRY_SECONDS)
+    logger.warning(
+        "plugin permission revoke failed: plugin_id={}, attempts={}, err_type={}, err={}",
+        plugin_id,
+        _PLUGIN_PERMISSION_REVOKE_ATTEMPTS,
+        type(last_error).__name__,
+        str(last_error),
+    )
+    return False
 
 
 def _mark_preference_persistence_failure(
@@ -824,6 +859,7 @@ async def _cleanup_started_host(plugin_id: str, host: PluginHostContract) -> Non
             type(exc).__name__,
             str(exc),
         )
+    await _revoke_plugin_permissions(plugin_id)
 
 
 def _emit_lifecycle_event(
@@ -978,6 +1014,15 @@ async def _start_host_with_timeout(
 
 
 class PluginLifecycleService:
+    async def revoke_plugin_permissions(
+        self,
+        plugin_id: str,
+        *,
+        timeout: float = 3.0,
+    ) -> bool:
+        return await _revoke_plugin_permissions(plugin_id, timeout=timeout)
+
+    @serialized_plugin_operation
     async def start_plugin(
         self,
         plugin_id: str,
@@ -1008,6 +1053,7 @@ class PluginLifecycleService:
                     "message": "Plugin is already running",
                 }
             # Stale host (process dead) — remove so re-start can proceed
+            await _revoke_plugin_permissions(current_plugin_id)
             await asyncio.to_thread(_pop_plugin_host_sync, current_plugin_id)
             logger.info("removed stale host for plugin_id={} (process no longer alive)", current_plugin_id)
 
@@ -1425,6 +1471,7 @@ class PluginLifecycleService:
                 error_type=type(exc).__name__,
             ) from exc
 
+    @serialized_plugin_operation
     async def stop_plugin(
         self,
         plugin_id: str,
@@ -1452,7 +1499,13 @@ class PluginLifecycleService:
 
         try:
             _emit_lifecycle_event(event_type="plugin_stop_requested", plugin_id=plugin_id)
-            await host_obj.shutdown(timeout=PLUGIN_SHUTDOWN_TIMEOUT)
+            permissions_revoked = True
+            try:
+                await host_obj.shutdown(timeout=PLUGIN_SHUTDOWN_TIMEOUT)
+            finally:
+                permissions_revoked = (
+                    await _revoke_plugin_permissions(plugin_id)
+                ) is not False
             await asyncio.to_thread(_pop_plugin_host_sync, plugin_id)
             await asyncio.to_thread(_remove_event_handlers_sync, plugin_id)
             # Clear any LLM tools the plugin had registered with
@@ -1477,7 +1530,13 @@ class PluginLifecycleService:
                 "success": True,
                 "plugin_id": plugin_id,
                 "message": "Plugin stopped successfully",
+                "permissions_revoked": permissions_revoked,
             }
+            if not permissions_revoked:
+                response["partial_success"] = True
+                response["message"] = (
+                    "Plugin stopped, but host permission revocation failed"
+                )
             if persist_user_intent:
                 await _persist_changed_runtime_intent(
                     response,
@@ -1514,6 +1573,7 @@ class PluginLifecycleService:
                 error_type=type(exc).__name__,
             ) from exc
 
+    @serialized_plugin_operation
     async def reload_plugin(self, plugin_id: str) -> dict[str, object]:
         _emit_lifecycle_event(event_type="plugin_reload_requested", plugin_id=plugin_id)
 
@@ -1637,7 +1697,14 @@ class PluginLifecycleService:
 
         is_running = await asyncio.to_thread(_plugin_is_running_sync, plugin_id)
         if is_running:
-            await self.stop_plugin(plugin_id)
+            stop_result = await self.stop_plugin(plugin_id)
+            permissions_revoked = bool(
+                stop_result.get("permissions_revoked", True)
+            )
+        else:
+            permissions_revoked = (
+                await _revoke_plugin_permissions(plugin_id)
+            ) is not False
 
         staged_profile: _StagedPackageProfile | None = None
         try:
@@ -1725,7 +1792,13 @@ class PluginLifecycleService:
             "plugin_dir": str(plugin_dir),
             "deleted_from_disk": deleted_from_disk,
             "message": "Plugin deleted successfully",
+            "permissions_revoked": permissions_revoked,
         }
+        if not permissions_revoked:
+            response["partial_success"] = True
+            response["message"] = (
+                "Plugin deleted, but host permission revocation failed"
+            )
         return response
 
     async def retry_deferred_profile_cleanup(self) -> int:
