@@ -477,7 +477,7 @@ import { Refresh, DataAnalysis, RefreshRight, Box, Connection, Finished, Sort, C
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { usePluginStore } from '@/stores/plugin'
 import { useMetricsStore } from '@/stores/metrics'
-import { useMarketVersionsStore } from '@/stores/marketVersions'
+import { useMarketVersionsStore, type MarketVersionTarget } from '@/stores/marketVersions'
 import PluginGridSection from '@/components/plugin/PluginGridSection.vue'
 import PluginContextMenu from '@/components/plugin/PluginContextMenu.vue'
 import PluginDangerConfirmDialog from '@/components/plugin/PluginDangerConfirmDialog.vue'
@@ -508,7 +508,11 @@ import { resolveLocalizedText } from '@/utils/i18nLabel'
 import { openExternalUrl } from '@/utils/openExternal'
 import { isOpenUiNavigationAction } from '@/utils/pluginListActions'
 import { useI18n } from 'vue-i18n'
-import type { PluginListAction, PluginMeta } from '@/types/api'
+import type {
+  PluginInstallSourceDetailMarket,
+  PluginListAction,
+  PluginMeta,
+} from '@/types/api'
 
 const route = useRoute()
 const router = useRouter()
@@ -626,12 +630,28 @@ let metricsRefreshTimer: number | null = null
 const showSourceDetail = ref(false)
 const marketVersionsStore = useMarketVersionsStore()
 
+function installedMarketVersionTargets(): MarketVersionTarget[] {
+  const targets: MarketVersionTarget[] = []
+  for (const plugin of pluginStore.pluginsWithStatus) {
+    const installSource = plugin.install_source
+    if (installSource?.source !== 'market') continue
+    const detail = installSource.source_detail as PluginInstallSourceDetailMarket | null
+    const pluginId = String(detail?.plugin_market_id || '').trim()
+    if (!/^\d+$/.test(pluginId)) continue
+    targets.push({
+      pluginId,
+      channel: detail?.channel === 'beta' ? 'beta' : 'stable',
+    })
+  }
+  return targets
+}
+
 async function toggleSourceDetail() {
   showSourceDetail.value = !showSourceDetail.value
   if (showSourceDetail.value) {
     // Fire-and-forget; if Market is unreachable the badge simply won't
     // appear, which is a fine degraded state.
-    marketVersionsStore.ensureFresh().catch((err) => {
+    marketVersionsStore.ensureFresh(installedMarketVersionTargets()).catch((err) => {
       console.warn('Failed to refresh market versions:', err)
     })
   }

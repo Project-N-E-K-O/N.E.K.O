@@ -15,6 +15,7 @@ vi.mock('axios', () => ({
 
 import {
   fetchMarketPluginReadme,
+  fetchMarketLatestVersions,
   fetchMarketPlugins,
   normalizeMarketPlugin,
   resetMarketClient,
@@ -74,6 +75,23 @@ describe('Market API transport', () => {
     )
     expect(mocks.marketGet).toHaveBeenCalledWith('/plugins', {
       params: { page: 2 },
+    })
+  })
+
+  it('fetches installed-plugin latest versions through the local catalog bridge', async () => {
+    mocks.marketGet.mockResolvedValueOnce({
+      data: {
+        items: [
+          { plugin_id: 15, channel: 'stable', version: '1.2.3', published_at: '2026-01-01T00:00:00Z' },
+        ],
+      },
+    })
+
+    await expect(fetchMarketLatestVersions([15, 18], 'stable')).resolves.toEqual([
+      { plugin_id: 15, channel: 'stable', version: '1.2.3', published_at: '2026-01-01T00:00:00Z' },
+    ])
+    expect(mocks.marketGet).toHaveBeenCalledWith('/plugins/latest-versions', {
+      params: { ids: '15,18', channel: 'stable' },
     })
   })
 

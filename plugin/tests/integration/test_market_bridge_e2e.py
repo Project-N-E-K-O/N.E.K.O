@@ -408,6 +408,54 @@ async def test_market_catalog_plugins_use_same_origin_bridge(
 
 
 @pytest.mark.asyncio
+async def test_market_catalog_latest_versions_use_same_origin_bridge(
+    bridge_e2e_env: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The compact update-check endpoint stays on the fixed catalog proxy."""
+    from plugin.server.routes import market_bridge as market_bridge_module
+
+    seen_urls: list[str] = []
+    payload = {
+        "items": [
+            {"plugin_id": 15, "channel": "stable", "version": "1.2.3", "published_at": "2026-01-01T00:00:00"},
+        ]
+    }
+
+    class CatalogResponse:
+        status_code = 200
+        content = json.dumps(payload).encode("utf-8")
+        headers = {"content-type": "application/json"}
+
+    class CatalogClient:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            pass
+
+        async def __aenter__(self) -> "CatalogClient":
+            return self
+
+        async def __aexit__(self, *args: Any) -> None:
+            return None
+
+        async def get(self, url: str, *args: Any, **kwargs: Any) -> CatalogResponse:
+            seen_urls.append(url)
+            return CatalogResponse()
+
+    monkeypatch.setattr(market_bridge_module.httpx, "AsyncClient", CatalogClient)
+    monkeypatch.setattr(market_bridge_module, "MARKET_API_URL", "https://market.test")
+
+    response = await bridge_e2e_env["client"].get(
+        "/market/catalog/api/v1/plugins/latest-versions?ids=15,18&channel=stable"
+    )
+
+    assert response.status_code == 200
+    assert response.json() == payload
+    assert seen_urls == [
+        "https://market.test/api/v1/plugins/latest-versions?ids=15,18&channel=stable"
+    ]
+
+
+@pytest.mark.asyncio
 async def test_market_catalog_readme_uses_same_origin_bridge(
     bridge_e2e_env: dict[str, Any],
     monkeypatch: pytest.MonkeyPatch,
