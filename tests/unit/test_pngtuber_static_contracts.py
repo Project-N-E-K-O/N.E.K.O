@@ -326,6 +326,17 @@ manager.scheduleSaveCurrentConfig = () => {{ scheduledSaves += 1; }};
   assert.ok(Math.abs(manager.config.offset_x - (-485)) < 0.001);
   modelWidth = 400;
 
+  // Growing content cannot reverse the snap target past its starting offset.
+  manager.config.offset_x = -750;
+  const growingImageSnap = manager.snapModelIntoScreen();
+  runNextFrame(0);
+  modelWidth = 2000;
+  runNextFrame(130);
+  runNextFrame(260);
+  assert.equal(await growingImageSnap, true);
+  assert.equal(manager.config.offset_x, -500);
+  modelWidth = 400;
+
   // Wheel zoom cancels the old rebound and targets the resized model geometry.
   manager.config.offset_x = -750;
   const preZoomSnap = manager.snapModelIntoScreen();

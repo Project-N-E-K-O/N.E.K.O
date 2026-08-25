@@ -2950,7 +2950,18 @@
                 this._edgeSnapResolve = resolve;
                 const step = (timestamp) => {
                     const refreshedTarget = this.getEdgeSnapTarget({ horizontalDirection, verticalDirection });
-                    if (refreshedTarget) target = refreshedTarget;
+                    if (refreshedTarget) {
+                        const reversesHorizontalDirection = horizontalDirection > 0
+                            ? refreshedTarget.offsetX < startOffsetX
+                            : horizontalDirection < 0 && refreshedTarget.offsetX > startOffsetX;
+                        const reversesVerticalDirection = verticalDirection > 0
+                            ? refreshedTarget.offsetY < startOffsetY
+                            : verticalDirection < 0 && refreshedTarget.offsetY > startOffsetY;
+                        target = {
+                            offsetX: reversesHorizontalDirection ? target.offsetX : refreshedTarget.offsetX,
+                            offsetY: reversesVerticalDirection ? target.offsetY : refreshedTarget.offsetY
+                        };
+                    }
                     const elapsed = Math.max(0, Number(timestamp) - startedAt);
                     const progress = Math.min(1, elapsed / duration);
                     const c1 = 1.70158;
