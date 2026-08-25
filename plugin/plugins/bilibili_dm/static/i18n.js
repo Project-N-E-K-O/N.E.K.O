@@ -12,8 +12,15 @@ const I18n = {
 
   _browserLocale() {
     try {
-      const preferred = navigator.languages?.[0] || navigator.language || '';
-      return String(preferred).trim();
+      const locales = [
+        ...(Array.isArray(navigator.languages) ? navigator.languages : []),
+        navigator.language,
+      ].map((locale) => String(locale || '').trim()).filter(Boolean);
+      const supported = locales.find((locale) => {
+        const primary = locale.toLowerCase().replace(/_/g, '-').split('-')[0];
+        return ['zh', 'en', 'ja', 'ko', 'ru', 'es', 'pt'].includes(primary);
+      });
+      return supported || locales[0] || '';
     } catch (_) {
       return '';
     }
@@ -24,7 +31,12 @@ const I18n = {
     let locale = 'zh-CN';
     try {
       const queryLocale = new URLSearchParams(location.search).get('locale') || '';
-      const storedLocale = localStorage.getItem('locale') || '';
+      let storedLocale = '';
+      if (!queryLocale) {
+        try {
+          storedLocale = localStorage.getItem('locale') || '';
+        } catch (_) { /* explicit query locale remains authoritative */ }
+      }
       // `auto` means follow the browser/UI language.  The backend endpoint
       // resolves a separate Steam/system language, which can be English even
       // while the plugin manager is correctly rendered in Simplified Chinese.

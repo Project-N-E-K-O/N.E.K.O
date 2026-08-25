@@ -8,6 +8,31 @@ function tr(key, fallback, params = {}) {
   ));
 }
 
+const BACKEND_ERROR_KEYS = {
+  LISTENING_ACTIVE: 'ui.error.stop_before_credentials',
+  QR_LOGIN_START_FAILED: 'ui.error.qr_fetch_failed',
+  QR_LOGIN_POLL_FAILED: 'ui.error.qr_status_failed',
+  START_ERROR: 'ui.error.operation_failed',
+  NOT_INITIALIZED: 'ui.error.operation_failed',
+  INVALID_ARGUMENT: 'ui.error.operation_failed',
+  SEND_FAILED: 'ui.error.operation_failed',
+  USER_NOT_FOUND: 'ui.error.operation_failed',
+  ADMIN_NO_NICKNAME: 'ui.error.operation_failed',
+  SET_FAILED: 'ui.error.operation_failed',
+};
+
+function localizedError(error, fallbackKey, fallback) {
+  const message = String(error?.message || error || '').trim();
+  const code = /^([A-Z_]+):/.exec(message)?.[1];
+  const key = code && BACKEND_ERROR_KEYS[code];
+  if (key) return tr(key, fallback);
+  // Backend errors without a recognized code may still be source-language
+  // strings. Keep transport/browser diagnostics, but never leak those into a
+  // translated panel.
+  if (!message || /[\u3400-\u9fff]/.test(message)) return tr(fallbackKey, fallback);
+  return message;
+}
+
 const state = { dashboard: null, busy: false };
 const qrClientId = globalThis.crypto?.randomUUID?.() || `bili-dm-${Date.now()}-${Math.random()}`;
 const qrLogin = { key: null, sessionId: null, starting: false, pollTimer: null, countdownTimer: null, closeTimer: null, expiresAt: 0, generation: 0 };
@@ -129,7 +154,7 @@ async function requestQrLogin() {
       client_id: qrClientId,
       request_generation: generation,
     });
-    if (!result?.qrcode_image || !result?.session_id) throw new Error(result?.message || tr('ui.error.qr_fetch_failed', 'Unable to get QR code. Please try again.'));
+    if (!result?.qrcode_image || !result?.session_id) throw new Error(tr('ui.error.qr_fetch_failed', 'Unable to get QR code. Please try again.'));
     if (generation !== qrLogin.generation) {
       await callPlugin('cancel_qr_login', { session_id: result.session_id });
       return;
@@ -146,8 +171,9 @@ async function requestQrLogin() {
   } catch (error) {
     if (generation !== qrLogin.generation) return;
     qrLogin.starting = false;
-    setQrStatus(error.message || tr('ui.error.qr_fetch_failed', 'Unable to get QR code. Please try again.'));
-    showToast(error.message || tr('ui.error.qr_fetch_failed_short', 'Unable to get QR code'), true);
+    const message = localizedError(error, 'ui.error.qr_fetch_failed', 'Unable to get QR code. Please try again.');
+    setQrStatus(message);
+    showToast(message, true);
   }
 }
 
@@ -188,7 +214,7 @@ async function pollQrLogin(generation) {
   } catch (error) {
     if (generation !== qrLogin.generation) return;
     clearQrLogin();
-    setQrStatus(error.message || tr('ui.error.qr_status_failed', 'Unable to check QR status. Please refresh the QR code.'));
+    setQrStatus(localizedError(error, 'ui.error.qr_status_failed', 'Unable to check QR status. Please refresh the QR code.'));
   }
 }
 
@@ -278,7 +304,7 @@ async function refreshDashboard(silent = false) {
   try {
     applyDashboard(await callPlugin('get_dashboard_state', {}));
   } catch (error) {
-    if (!silent) showToast(error.message || tr('ui.error.refresh_failed', 'Refresh failed'), true);
+    if (!silent) showToast(localizedError(error, 'ui.error.refresh_failed', 'Refresh failed'), true);
   }
 }
 
@@ -308,7 +334,7 @@ async function saveSettings(successMessage = tr('ui.toast.settings_saved', 'Sett
     document.querySelectorAll('.credential-grid input').forEach((input) => { input.value = ''; });
     showToast(successMessage);
   } catch (error) {
-    showToast(error.message || tr('ui.error.save_failed', 'Save failed'), true);
+    showToast(localizedError(error, 'ui.error.save_failed', 'Save failed'), true);
   } finally {
     setBusy(false);
   }
@@ -320,7 +346,7 @@ async function clearCredentials() {
     applyDashboard(await callPlugin('clear_credentials', {}));
     showToast(tr('ui.toast.credentials_cleared', 'Local credentials cleared'));
   } catch (error) {
-    showToast(error.message || tr('ui.error.clear_failed', 'Clear failed'), true);
+    showToast(localizedError(error, 'ui.error.clear_failed', 'Clear failed'), true);
   } finally {
     setBusy(false);
   }
@@ -333,7 +359,7 @@ async function toggleListening(start) {
     await refreshDashboard(true);
     showToast(start ? tr('ui.toast.listening_started', 'Bilibili listening started') : tr('ui.toast.listening_stopped', 'Bilibili listening stopped'));
   } catch (error) {
-    showToast(error.message || tr('ui.error.operation_failed', 'Operation failed'), true);
+    showToast(localizedError(error, 'ui.error.operation_failed', 'Operation failed'), true);
   } finally {
     setBusy(false);
   }
@@ -357,7 +383,7 @@ async function addTrustedUser() {
     await refreshDashboard(true);
     showToast(tr('ui.toast.user_saved', 'Trusted user saved'));
   } catch (error) {
-    showToast(error.message || tr('ui.error.add_failed', 'Add failed'), true);
+    showToast(localizedError(error, 'ui.error.add_failed', 'Add failed'), true);
   } finally {
     setBusy(false);
   }
@@ -371,7 +397,7 @@ async function removeTrustedUser(uid) {
     await refreshDashboard(true);
     showToast(tr('ui.toast.user_removed', 'Trusted user removed'));
   } catch (error) {
-    showToast(error.message || tr('ui.error.remove_failed', 'Remove failed'), true);
+    showToast(localizedError(error, 'ui.error.remove_failed', 'Remove failed'), true);
   } finally {
     setBusy(false);
   }
@@ -392,19 +418,21 @@ function initializePanel() {
 
 window.addEventListener('DOMContentLoaded', () => {
   let initialized = false;
-  const startPanel = () => {
+  let startedByFallback = false;
+  const startPanel = (fromFallback = false) => {
     if (initialized) return;
     initialized = true;
+    startedByFallback = fromFallback;
     void initializePanel();
   };
-  const fallbackTimer = setTimeout(startPanel, 5000);
+  const fallbackTimer = setTimeout(() => startPanel(true), 5000);
   if (window.I18n?.whenReady) {
     window.I18n.whenReady(() => {
       clearTimeout(fallbackTimer);
       startPanel();
     });
     window.addEventListener('i18n-ready', () => {
-      if (initialized) void refreshDashboard(true);
+      if (startedByFallback) void refreshDashboard(true);
     }, { once: true });
   } else {
     clearTimeout(fallbackTimer);
