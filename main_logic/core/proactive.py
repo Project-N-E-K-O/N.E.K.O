@@ -1497,6 +1497,26 @@ class ProactiveMixin:
                     active_callbacks
                 )
                 callbacks_snapshot[:] = active_callbacks
+                # Re-filtering is not enough: that await is also a preempt
+                # window, and a stale callback is a different thing from a
+                # stale TURN. Without this the user can take the session
+                # during the cancel write and still get an unrelated proactive
+                # prompt afterwards. Mirrors the check after send_topic_hint
+                # above (CodeRabbit).
+                async with self.lock:
+                    preempted_after_cancel = (
+                        self.state.is_proactive_preempted()
+                        or self.current_speech_id != proactive_sid
+                    )
+                if preempted_after_cancel:
+                    logger.info(
+                        "[%s] trigger_agent_callbacks: preempted during topic hint cancel, aborting before prompt",
+                        self.lanlan_name,
+                    )
+                    self.pending_agent_callbacks.extend(active_callbacks)
+                    callbacks_snapshot[:] = []
+                    self.proactive_manager.release_inflight_noop()
+                    return False
             if not active_callbacks:
                 if topic_hint_sent:
                     await self.send_cancel_topic_hint(turn_id=proactive_sid)

@@ -2819,6 +2819,39 @@ async def test_image_overflow_keeps_fifo_order_when_delivery_fails():
     ]
 
 
+async def test_preemption_during_the_hint_cancel_aborts_before_prompting():
+    """The cancel write is a yield point, so it is also a preempt window.
+
+    Re-filtering callbacks after it is not enough: a stale CALLBACK and a stale
+    TURN are different things. Without the re-check the user can take the
+    session during that await and still receive an unrelated proactive prompt.
+    """
+    sess = _CapturingImageOmniOffline()
+    mgr = _make_mgr(session=sess)
+    mgr.topic_hook_delivery_allowed = lambda: True
+    mgr.send_topic_hint = AsyncMock(return_value=True)
+
+    async def _cancel(**_kw):
+        # The user grabs the session while the cancel write is in flight.
+        mgr.current_speech_id = "user-took-over"
+
+    mgr.send_cancel_topic_hint = AsyncMock(side_effect=_cancel)
+    heavy = _budget_cb("heavy", 8)
+    topic = _budget_cb("topic", 1)
+    topic["channel"] = "topic_hook"
+    topic["source_kind"] = "topic"
+    mgr.pending_agent_callbacks = [heavy, topic]
+
+    delivered = await core_module.LLMSessionManager.trigger_agent_callbacks(mgr)
+
+    assert delivered is False
+    assert sess.image_batches == [], "no prompt may go out after preemption"
+    # Nothing is lost: the whole batch goes back for a later turn.
+    assert {cb["summary"] for cb in mgr.pending_agent_callbacks} == {
+        "cue heavy", "cue topic",
+    }
+
+
 async def test_topic_hint_is_retracted_when_its_hook_lands_in_image_overflow():
     """A teaser must never outlive the opener it promised.
 

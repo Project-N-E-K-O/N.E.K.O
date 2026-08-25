@@ -1089,8 +1089,6 @@ async def test_model_path_caps_total_image_bytes_per_push(monkeypatch) -> None:
     from app.main_server import character_runtime
 
     manager = _manager()
-    # 3 MiB decoded budget; each image decodes to 2 MiB, so #1 fits and #2/#3
-    # are dropped. Patched down so the test doesn't allocate the real 16 MiB.
     # Pool sized from the MEASURED normalized fixture: room for one, not two.
     # Hardcoding a figure would drift the moment the fixture or codec changes.
     _one = character_runtime._approx_decoded_bytes(
@@ -1102,10 +1100,10 @@ async def test_model_path_caps_total_image_bytes_per_push(monkeypatch) -> None:
         "app.main_server.character_runtime._PLUGIN_IMAGE_TOTAL_MAX_BYTES",
         int(_one * 1.5),
     )
-    # A REAL 2 MiB png: inline model images are re-encoded to jpeg, so a
-    # synthetic base64 blob would be dropped as undecodable rather than
-    # by the budget this test is about.
-    two_mib_b64 = _expands_under_jpeg_base64()
+    # A REAL png, not a synthetic base64 blob: inline model images are
+    # re-encoded to jpeg, so undecodable bytes would be dropped as garbage
+    # rather than by the budget this test is about.
+    expanding_b64 = _expands_under_jpeg_base64()
     monkeypatch.setattr(
         "app.main_server.character_runtime._get_session_manager",
         lambda _name: manager,
@@ -1122,7 +1120,7 @@ async def test_model_path_caps_total_image_bytes_per_push(monkeypatch) -> None:
         "ai_behavior": "read",
         "visibility": [],
         "media_parts": [
-            {"type": "image", "binary_base64": two_mib_b64, "mime": "image/jpeg"}
+            {"type": "image", "binary_base64": expanding_b64, "mime": "image/jpeg"}
             for _ in range(3)
         ],
     })
@@ -1148,10 +1146,10 @@ async def test_respond_callback_media_images_obey_the_byte_budget(monkeypatch) -
         "app.main_server.character_runtime._PLUGIN_IMAGE_TOTAL_MAX_BYTES",
         int(_one * 1.5),
     )
-    # A REAL 2 MiB png: inline model images are re-encoded to jpeg, so a
-    # synthetic base64 blob would be dropped as undecodable rather than
-    # by the budget this test is about.
-    two_mib_b64 = _expands_under_jpeg_base64()
+    # A REAL png, not a synthetic base64 blob: inline model images are
+    # re-encoded to jpeg, so undecodable bytes would be dropped as garbage
+    # rather than by the budget this test is about.
+    expanding_b64 = _expands_under_jpeg_base64()
     monkeypatch.setattr(
         "app.main_server.character_runtime._get_session_manager",
         lambda _name: manager,
@@ -1168,7 +1166,7 @@ async def test_respond_callback_media_images_obey_the_byte_budget(monkeypatch) -
         "ai_behavior": "respond",
         "visibility": [],
         "media_parts": [
-            {"type": "image", "binary_base64": two_mib_b64, "mime": "image/jpeg"}
+            {"type": "image", "binary_base64": expanding_b64, "mime": "image/jpeg"}
             for _ in range(3)
         ],
     })
@@ -1179,7 +1177,7 @@ async def test_respond_callback_media_images_obey_the_byte_budget(monkeypatch) -
     assert len(callback["media_images"]) == 1
     # Normalized, not passed through: every model client declares jpeg for
     # callback images, so the inline png must be re-encoded to match.
-    assert callback["media_images"][0] != two_mib_b64
+    assert callback["media_images"][0] != expanding_b64
     assert base64.b64decode(callback["media_images"][0])[:3] == bytes.fromhex("ffd8ff")
 
 
@@ -1552,15 +1550,15 @@ def test_chat_blocks_cap_inline_data_url_bytes(monkeypatch) -> None:
     """Inline base64 rides the WebSocket frame, so it gets a byte budget too."""
     from app.main_server import character_runtime
 
-    two_mib_b64 = _expands_under_jpeg_base64()
+    expanding_b64 = _expands_under_jpeg_base64()
     # Chat keeps the original bytes, so the pool is sized from those.
     monkeypatch.setattr(
         character_runtime,
         "_PLUGIN_CHAT_INLINE_TOTAL_MAX_BYTES",
-        int(character_runtime._approx_decoded_bytes(two_mib_b64) * 1.5),
+        int(character_runtime._approx_decoded_bytes(expanding_b64) * 1.5),
     )
     parts = [
-        {"type": "image", "binary_base64": two_mib_b64, "mime": "image/png"}
+        {"type": "image", "binary_base64": expanding_b64, "mime": "image/png"}
         for _ in range(3)
     ]
 
