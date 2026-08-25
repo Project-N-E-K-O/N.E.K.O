@@ -1,5 +1,6 @@
 const I18n = {
   _bundle: {},
+  _fallbackBundle: {},
   _lang: 'zh-CN',
   _pluginId: 'bilibili_dm',
   _ready: false,
@@ -9,11 +10,29 @@ const I18n = {
     else window.addEventListener('i18n-ready', fn, { once: true });
   },
 
+  _browserLocale() {
+    try {
+      const preferred = navigator.languages?.[0] || navigator.language || '';
+      return String(preferred).trim();
+    } catch (_) {
+      return '';
+    }
+  },
+
   async init(pluginId) {
     this._pluginId = pluginId || this._pluginId;
     let locale = 'zh-CN';
     try {
-      locale = new URLSearchParams(location.search).get('locale') || localStorage.getItem('locale') || '';
+      const queryLocale = new URLSearchParams(location.search).get('locale') || '';
+      const storedLocale = localStorage.getItem('locale') || '';
+      // `auto` means follow the browser/UI language.  The backend endpoint
+      // resolves a separate Steam/system language, which can be English even
+      // while the plugin manager is correctly rendered in Simplified Chinese.
+      const automatic = queryLocale === 'auto'
+        || (!queryLocale && storedLocale === 'auto');
+      locale = automatic
+        ? this._browserLocale()
+        : (queryLocale || storedLocale);
       if (!locale) {
         const response = await fetch(`/plugin/${encodeURIComponent(this._pluginId)}/ui-api/locale`, { cache: 'no-store' });
         if (response.ok) locale = String((await response.json()).locale || 'zh-CN');
@@ -21,7 +40,15 @@ const I18n = {
     } catch (_) {
       locale = 'zh-CN';
     }
-    const candidates = [locale, locale.toLowerCase().startsWith('zh') ? 'zh-CN' : 'en', 'zh-CN'];
+    const normalized = String(locale || '').trim().replace(/_/g, '-').toLowerCase();
+    const primary = normalized.split('-')[0];
+    const candidates = [
+      locale,
+      ['en', 'ja', 'ko', 'ru', 'es', 'pt'].includes(primary) ? primary : '',
+      normalized.startsWith('zh') ? 'zh-CN' : '',
+      'en',
+      'zh-CN',
+    ];
     for (const candidate of [...new Set(candidates)]) {
       try {
         const response = await fetch(`/plugin/${encodeURIComponent(this._pluginId)}/ui-api/i18n/${encodeURIComponent(candidate)}.json`, { cache: 'no-store' });
@@ -32,18 +59,38 @@ const I18n = {
         }
       } catch (_) { /* use fallback text */ }
     }
+    // English is the shared per-key fallback.  It prevents a newly added UI
+    // key from leaking its Chinese source text into a partially translated
+    // locale while keeping the selected locale as the first choice.
+    if (this._lang !== 'en') {
+      try {
+        const response = await fetch(`/plugin/${encodeURIComponent(this._pluginId)}/ui-api/i18n/en.json`, { cache: 'no-store' });
+        if (response.ok) this._fallbackBundle = await response.json();
+      } catch (_) { /* source-text fallback remains available */ }
+    }
     this._ready = true;
   },
 
-  t(key, fallback) {
-    const value = this._bundle[String(key || '')];
-    return typeof value === 'string' && value ? value : (fallback || key);
+  t(key, fallback, params = {}) {
+    const lookupKey = String(key || '');
+    const value = this._bundle[lookupKey] || this._fallbackBundle[lookupKey] || fallback || key;
+    return String(value).replace(/\{([a-zA-Z0-9_]+)\}/g, (match, name) => (
+      Object.prototype.hasOwnProperty.call(params, name) ? String(params[name]) : match
+    ));
   },
 
   scanDOM(root = document) {
     root.querySelectorAll('[data-i18n]').forEach((element) => {
       const key = element.getAttribute('data-i18n');
       if (key) element.textContent = this.t(key, element.textContent || '');
+    });
+    root.querySelectorAll('[data-i18n-placeholder]').forEach((element) => {
+      const key = element.getAttribute('data-i18n-placeholder');
+      if (key) element.setAttribute('placeholder', this.t(key, element.getAttribute('placeholder') || ''));
+    });
+    root.querySelectorAll('[data-i18n-alt]').forEach((element) => {
+      const key = element.getAttribute('data-i18n-alt');
+      if (key) element.setAttribute('alt', this.t(key, element.getAttribute('alt') || ''));
     });
   },
 };
