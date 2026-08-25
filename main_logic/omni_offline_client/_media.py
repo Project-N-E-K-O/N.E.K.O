@@ -47,39 +47,47 @@ class _MediaMixin:
         if not image_b64:
             return
 
-        # Bound the queue ACROSS pushes. Per-push and per-proactive-turn budgets
-        # do not reach here: passive ``read`` images are injected straight into
-        # the session, and the next stream_text attaches this whole accumulated
-        # list to ONE user message. Two individually valid pushes could
-        # therefore exceed the one-turn provider budget, and repeated
-        # background pushes could retain unbounded base64 while the user is
-        # idle (Codex P2).
-        #
-        # Drop-oldest rather than refuse: the newest frame is the one most
-        # likely to still describe what the plugin is talking about.
         from main_logic.proactive_delivery import (
             CALLBACK_IMAGE_MAX_COUNT,
             CALLBACK_IMAGE_MAX_TOTAL_BYTES,
             approx_base64_decoded_bytes,
         )
 
-        self._pending_images.append(image_b64)
-        _dropped = 0
-        while len(self._pending_images) > CALLBACK_IMAGE_MAX_COUNT:
-            self._pending_images.pop(0)
-            _dropped += 1
-        while (
-            len(self._pending_images) > 1
-            and sum(approx_base64_decoded_bytes(i) for i in self._pending_images)
-            > CALLBACK_IMAGE_MAX_TOTAL_BYTES
-        ):
-            self._pending_images.pop(0)
-            _dropped += 1
-        if _dropped:
+        # Bound the queue ACROSS pushes. Per-push and per-proactive-turn budgets
+        # do not reach here: passive ``read`` images are injected straight into
+        # the session, and the next stream_text attaches this whole accumulated
+        # list to ONE user message. Two individually valid pushes could
+        # therefore exceed the one-turn provider budget, and repeated background
+        # pushes could retain unbounded base64 while the user is idle (Codex).
+        #
+        # REFUSE the new frame rather than evicting an old one. This list is
+        # shared with the user's own screen/camera frames, which arrive through
+        # this same method with nothing marking them apart, so drop-oldest let
+        # background plugin reads evict the image the user just staged and
+        # expects the next message to describe (Codex). Refusing costs the
+        # newest plugin frame instead -- the acceptable direction -- and keeps
+        # the decision inside this method rather than needing provenance state
+        # that _clear_text_pending_images would also have to maintain.
+        incoming = approx_base64_decoded_bytes(image_b64)
+        if len(self._pending_images) >= CALLBACK_IMAGE_MAX_COUNT:
             logger.warning(
-                "Pending image queue over the one-turn budget; dropped %d oldest "
-                "(kept %d)", _dropped, len(self._pending_images),
+                "Pending image queue already holds %d; dropping the new frame",
+                len(self._pending_images),
             )
+            return
+        staged = sum(approx_base64_decoded_bytes(i) for i in self._pending_images)
+        # Covers the lone-oversized case too: staged is never negative, so a
+        # frame that alone busts the budget fails here without needing its own
+        # branch -- one a mutation could not kill, which is how it was spotted.
+        if staged + incoming > CALLBACK_IMAGE_MAX_TOTAL_BYTES:
+            logger.warning(
+                "Pending image queue would exceed the one-turn byte budget; "
+                "dropping the new frame (staged=%d incoming=%d)",
+                staged, incoming,
+            )
+            return
+
+        self._pending_images.append(image_b64)
         logger.info(f"Added image to pending queue (total: {len(self._pending_images)})")
 
     def has_pending_images(self) -> bool:

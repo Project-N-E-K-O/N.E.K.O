@@ -1472,8 +1472,7 @@ async def test_offline_pending_images_are_bounded_across_pushes() -> None:
     """Passive read images bypass every per-push and per-turn budget.
 
     They go straight into the offline session's pending list, and the next
-    stream_text attaches that whole accumulated list to ONE user message — so
-    two individually valid pushes could exceed the one-turn provider budget.
+    stream_text attaches that whole list to ONE user message.
     """
     from main_logic.omni_offline_client import OmniOfflineClient
     from main_logic.proactive_delivery import CALLBACK_IMAGE_MAX_COUNT
@@ -1481,15 +1480,34 @@ async def test_offline_pending_images_are_bounded_across_pushes() -> None:
     session = OmniOfflineClient.__new__(OmniOfflineClient)
     session._pending_images = []
 
-    # Two full pushes' worth, one image at a time, as read injection does.
     for i in range(CALLBACK_IMAGE_MAX_COUNT * 2):
         await session.stream_image("img-%d" % i, bypass_rate_limit=True)
 
     assert len(session._pending_images) == CALLBACK_IMAGE_MAX_COUNT
-    # Drop-OLDEST: the newest frames are the ones still describing what the
-    # plugin is talking about.
-    assert session._pending_images[-1] == "img-%d" % (CALLBACK_IMAGE_MAX_COUNT * 2 - 1)
-    assert "img-0" not in session._pending_images
+
+
+@pytest.mark.asyncio
+async def test_offline_trim_never_evicts_an_already_staged_image() -> None:
+    """The list is shared with the USER's own screen/camera frames.
+
+    Nothing in it marks provenance, so evicting the oldest to make room let
+    background plugin reads discard the image the user just staged and expects
+    the next message to describe. The bound refuses the newcomer instead.
+    """
+    from main_logic.omni_offline_client import OmniOfflineClient
+    from main_logic.proactive_delivery import CALLBACK_IMAGE_MAX_COUNT
+
+    session = OmniOfflineClient.__new__(OmniOfflineClient)
+    session._pending_images = []
+
+    await session.stream_image("the-users-own-screenshot")  # user path: no kwargs
+    for i in range(CALLBACK_IMAGE_MAX_COUNT * 3):
+        await session.stream_image("plugin-read-%d" % i, bypass_rate_limit=True)
+
+    assert session._pending_images[0] == "the-users-own-screenshot", (
+        "background reads must not evict what the user staged"
+    )
+    assert len(session._pending_images) == CALLBACK_IMAGE_MAX_COUNT
 
 
 @pytest.mark.asyncio
@@ -1510,7 +1528,26 @@ async def test_offline_pending_images_are_bounded_by_bytes_too() -> None:
 
     total = sum(approx_base64_decoded_bytes(i) for i in session._pending_images)
     assert total <= CALLBACK_IMAGE_MAX_TOTAL_BYTES
-    assert len(session._pending_images) >= 1, "never trim to empty"
+    assert len(session._pending_images) >= 1
+
+
+@pytest.mark.asyncio
+async def test_offline_refuses_a_lone_frame_over_the_turn_budget() -> None:
+    """A single oversized frame must not survive the bound it violates.
+
+    The count/byte checks are about the QUEUE; without this an oversized lone
+    image would be the only entry and pass them both.
+    """
+    from main_logic.omni_offline_client import OmniOfflineClient
+    from main_logic.proactive_delivery import CALLBACK_IMAGE_MAX_TOTAL_BYTES
+
+    session = OmniOfflineClient.__new__(OmniOfflineClient)
+    session._pending_images = []
+    oversized = "A" * int(CALLBACK_IMAGE_MAX_TOTAL_BYTES * 4 / 3 * 1.2)
+
+    await session.stream_image(oversized, bypass_rate_limit=True)
+
+    assert session._pending_images == []
 
 
 def test_chat_blocks_cap_image_count_and_keep_text_in_order() -> None:
