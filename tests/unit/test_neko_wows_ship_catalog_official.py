@@ -324,6 +324,45 @@ def test_official_name_lookup_pages_without_unsupported_search_parameter():
         assert query["limit"] == ["100"]
 
 
+def test_official_name_lookup_shares_one_deadline_with_detail_requests():
+    now = [100.0]
+    listing = (200, response({
+        "status": "ok",
+        "meta": {"page_total": 7},
+        "data": {
+            str(SHIP_ID): {"ship_id": SHIP_ID, "name": "Yamato"},
+        },
+    }))
+
+    class AdvancingTransport(ScriptedTransport):
+        def __call__(self, url: str, timeout: float, max_bytes: int):
+            result = super().__call__(url, timeout, max_bytes)
+            now[0] += min(4.0, timeout)
+            return result
+
+    transport = AdvancingTransport([
+        *([listing] * 7),
+        (200, response(ship_envelope())),
+        (200, response(profile_envelope())),
+    ])
+    client = OfficialWowsApiClient(
+        application_id="test-app-id",
+        region="asia",
+        timeout_seconds=5.0,
+        cache_ttl_seconds=300.0,
+        transport=transport,
+        clock=lambda: now[0],
+    )
+
+    result = client.query_ship("Yamato", language="en")
+
+    assert result["code"] == "timeout"
+    assert now[0] == pytest.approx(130.0)
+    assert len(transport.calls) == 8
+    assert transport.calls[-1][1] == pytest.approx(2.0)
+    assert all("/shipprofile/" not in url for url, *_ in transport.calls)
+
+
 def _listing_calls(transport) -> list[str]:
     found = []
     for url, *_ in transport.calls:

@@ -786,6 +786,7 @@ class NekoWowsPlugin(NekoPluginBase):
                 "reconnect_required": bool(self._reconnect_required),
             })
         if not was_enabled:
+            await asyncio.to_thread(self._open_knowledge)
             self._resume_runtime_output()
             return await self.reconnect()
         if before != after:

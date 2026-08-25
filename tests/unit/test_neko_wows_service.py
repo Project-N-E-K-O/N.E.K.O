@@ -609,7 +609,7 @@ def test_config_change_does_not_report_disabled_when_host_revoke_fails():
     assert plugin._running is False
 
 
-def test_config_change_restarts_output_when_the_plugin_is_re_enabled():
+def test_config_change_initializes_knowledge_before_re_enabling_output():
     calls = []
     plugin = object.__new__(NekoWowsPlugin)
     plugin._state_lock = threading.RLock()
@@ -632,6 +632,7 @@ def test_config_change_restarts_output_when_the_plugin_is_re_enabled():
 
     status = ServiceStatus(mode=MODE_EXTERNAL)
     plugin._reload_config = reload_config
+    plugin._open_knowledge = lambda: record("knowledge_open") or True
     plugin.transport = type("Transport", (), {
         "stop": lambda _self: record("transport_stop"),
         "start": lambda _self: record("transport_start"),
@@ -661,12 +662,13 @@ def test_config_change_restarts_output_when_the_plugin_is_re_enabled():
     result = asyncio.run(NekoWowsPlugin.on_config_change(plugin))
 
     assert plugin._running is True
+    assert ("knowledge_open", False) in calls
     assert ("dispatcher_resume", True) in calls
     assert ("arbiter_resume", True) in calls
     assert ("service_start", False) in calls
     assert ("transport_start", False) in calls
-    assert calls.index(("dispatcher_resume", True)) < calls.index(
-        ("transport_start", False))
+    assert calls.index(("knowledge_open", False)) < calls.index(
+        ("dispatcher_resume", True)) < calls.index(("transport_start", False))
     assert result.unwrap()["transport_started"] is True
 
 
@@ -1278,27 +1280,50 @@ def test_a_managed_service_that_dies_mid_battle_is_relaunched(monkeypatch, tmp_p
     assert recovered.owned_instance_id == "inst-b"
 
 
-def test_an_alive_managed_service_with_failed_health_is_not_relaunched(
+def test_an_alive_managed_service_with_failed_health_is_restarted_after_backoff(
         monkeypatch, tmp_path):
     source = prepare_source(tmp_path)
-    patch_urlopen(monkeypatch, error=urllib.error.URLError("refused"))
+    now = {"t": 1000.0}
+    freeze_clock(monkeypatch, now)
+    launches = []
+    original = FakeProcess()
+    replacement = FakeProcess()
+
+    def fake_urlopen(url, timeout=None):
+        if not launches:
+            raise urllib.error.URLError("refused")
+        return FakeResponse(healthy_payload(instanceId="inst-b"))
+
+    monkeypatch.setattr(sm.urllib.request, "urlopen", fake_urlopen)
     monkeypatch.setattr(
-        sm.subprocess, "Popen", lambda *a, **k: pytest.fail("must not launch"))
+        sm.subprocess, "Popen",
+        lambda *a, **k: launches.append(a) or replacement)
     monkeypatch.setattr(sm, "_which_uv", lambda: "uv")
 
     manager = WowsServiceManager(cfg(service_source_dir=str(source)))
-    process = FakeProcess()
-    manager._process = process
+    manager._process = original
     manager._owned_instance_id = "inst-a"
 
-    status = manager.supervise()
+    failed = manager.supervise()
 
-    assert manager._process is process
-    assert status.mode == MODE_OFFLINE
-    assert status.pid == process.pid
-    assert status.owned_instance_id == "inst-a"
-    assert "still running" in status.detail
-    assert status.crash_count == 0
+    assert original.terminated is True
+    assert manager._process is None
+    assert launches == []
+    assert failed.mode == MODE_OFFLINE
+    assert failed.pid is None
+    assert failed.owned_instance_id == ""
+    assert "health check failed" in failed.detail
+    assert failed.crash_count == 1
+
+    manager.supervise()
+    assert launches == [], "the unhealthy child must respect crash backoff"
+
+    now["t"] += 30.0
+    recovered = manager.supervise()
+    assert len(launches) == 1
+    assert manager._process is replacement
+    assert recovered.mode == MODE_MANAGED
+    assert recovered.owned_instance_id == "inst-b"
 
 
 def test_a_managed_service_exiting_during_failed_health_is_reaped_not_relaunched(

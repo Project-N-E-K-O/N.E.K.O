@@ -415,8 +415,16 @@ class WowsSchemaAdapter:
         player_id = raw.get("playerId")
         team_id = raw.get("teamId")
         return SelfShip(
-            player_id=player_id if isinstance(player_id, int) else None,
-            team_id=team_id if isinstance(team_id, int) else None,
+            player_id=(
+                player_id
+                if isinstance(player_id, int) and not isinstance(player_id, bool)
+                else None
+            ),
+            team_id=(
+                team_id
+                if isinstance(team_id, int) and not isinstance(team_id, bool)
+                else None
+            ),
             health=_number(raw.get("health")),
             max_health=_number(raw.get("maxHealth")),
             yaw=_number(raw.get("yaw")),

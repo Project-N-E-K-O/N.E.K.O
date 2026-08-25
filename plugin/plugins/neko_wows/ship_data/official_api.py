@@ -27,6 +27,8 @@ SOURCE_NAME = "official_wargaming_api"
 MAX_RESPONSE_BYTES = 2 * 1024 * 1024
 DEFAULT_CACHE_SIZE = 128
 MAX_SHIP_NAME_PAGES = 100
+# Keep the synchronous worker inside the tool's 35-second callback timeout.
+MAX_LOOKUP_SECONDS = 30.0
 
 REGION_ORIGINS = {
     "na": "https://api.worldofwarships.com",
@@ -213,12 +215,14 @@ class OfficialWowsApiClient:
     ) -> dict[str, Any]:
         """Resolve one exact official display name, never a fuzzy match."""
         client_config = self._config_snapshot()
+        deadline = float(self._clock()) + MAX_LOOKUP_SECONDS
         if isinstance(ship, str) and ship.strip().isdigit():
             return self._query_ship_id(
                 int(ship.strip()),
                 configuration=configuration,
                 language=language,
                 client_config=client_config,
+                deadline=deadline,
             )
         error = self._validate(
             configuration, language, client_config=client_config)
@@ -228,7 +232,8 @@ class OfficialWowsApiClient:
         if not wanted:
             return official_error("ship_not_found")
         language = language.casefold()
-        index, code = self._name_index_for(language, client_config)
+        index, code = self._name_index_for(
+            language, client_config, deadline=deadline)
         if code:
             return official_error(code)
         matches = index.get(wanted, ())
@@ -239,12 +244,15 @@ class OfficialWowsApiClient:
             configuration=configuration,
             language=language,
             client_config=client_config,
+            deadline=deadline,
         )
 
     def _name_index_for(
         self,
         language: str,
         client_config: _OfficialApiConfig,
+        *,
+        deadline: float,
     ) -> tuple[dict[str, tuple[int, ...]], str]:
         key = (
             client_config.generation,
@@ -261,7 +269,8 @@ class OfficialWowsApiClient:
                     self._name_index.move_to_end(key)
                     return value, ""
                 self._name_index.pop(key, None)
-        index, code = self._fetch_name_index(language, client_config)
+        index, code = self._fetch_name_index(
+            language, client_config, deadline=deadline)
         if code:
             return {}, code
         if client_config.cache_ttl_seconds > 0:
@@ -277,6 +286,8 @@ class OfficialWowsApiClient:
         self,
         language: str,
         client_config: _OfficialApiConfig,
+        *,
+        deadline: float,
     ) -> tuple[dict[str, tuple[int, ...]], str]:
         names: dict[str, list[int]] = {}
         page_total: int | None = None
@@ -290,6 +301,7 @@ class OfficialWowsApiClient:
                     "page_no": page_no,
                 },
                 client_config,
+                deadline=deadline,
             )
             if code:
                 return {}, code
@@ -330,11 +342,13 @@ class OfficialWowsApiClient:
         configuration: str = "top",
         language: str = "en",
     ) -> dict[str, Any]:
+        client_config = self._config_snapshot()
         return self._query_ship_id(
             ship_id,
             configuration=configuration,
             language=language,
-            client_config=self._config_snapshot(),
+            client_config=client_config,
+            deadline=float(self._clock()) + MAX_LOOKUP_SECONDS,
         )
 
     def _query_ship_id(
@@ -344,6 +358,7 @@ class OfficialWowsApiClient:
         configuration: str,
         language: str,
         client_config: _OfficialApiConfig,
+        deadline: float,
     ) -> dict[str, Any]:
         error = self._validate(
             configuration, language, client_config=client_config)
@@ -372,6 +387,7 @@ class OfficialWowsApiClient:
             "/wows/encyclopedia/ships/",
             {"language": language, "ship_id": ship_id},
             client_config,
+            deadline=deadline,
         )
         if code:
             return official_error(code)
@@ -391,6 +407,7 @@ class OfficialWowsApiClient:
             "/wows/encyclopedia/shipprofile/",
             profile_params,
             client_config,
+            deadline=deadline,
         )
         if code:
             return official_error(code)
@@ -454,6 +471,8 @@ class OfficialWowsApiClient:
         path: str,
         params: Mapping[str, Any],
         client_config: _OfficialApiConfig,
+        *,
+        deadline: float,
     ) -> tuple[Mapping[str, Any], str]:
         origin = REGION_ORIGINS.get(client_config.region)
         if origin is None:
@@ -463,9 +482,15 @@ class OfficialWowsApiClient:
             **params,
         })
         url = f"{origin}{path}?{query}"
+        remaining = deadline - float(self._clock())
+        if remaining <= 0:
+            return {}, "timeout"
         try:
             status, body = self._transport(
-                url, client_config.timeout_seconds, MAX_RESPONSE_BYTES)
+                url,
+                min(client_config.timeout_seconds, remaining),
+                MAX_RESPONSE_BYTES,
+            )
             if not isinstance(body, (bytes, bytearray)):
                 return {}, "invalid_response"
             if len(body) > MAX_RESPONSE_BYTES:

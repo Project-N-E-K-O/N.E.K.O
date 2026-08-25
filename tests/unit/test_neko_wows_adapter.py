@@ -186,6 +186,20 @@ def test_v1_body_is_normalized():
     assert snapshot.enemies()[0].name == "Shimakaze"
 
 
+@pytest.mark.parametrize("value", [True, False])
+@pytest.mark.parametrize(
+    ("wire_name", "attribute"),
+    [("playerId", "player_id"), ("teamId", "team_id")],
+)
+def test_self_integer_identifiers_reject_booleans(value, wire_name, attribute):
+    own = {**flat_body()["self"], wire_name: value}
+
+    snapshot = WowsSchemaAdapter().parse(v1_payload(self=own))
+
+    assert snapshot.self_ship is not None
+    assert getattr(snapshot.self_ship, attribute) is None
+
+
 def test_the_services_map_domain_arms_the_map_bounds_detectors():
     """8111_for_wows publishes this domain as `map`, not `mapBounds`.
 

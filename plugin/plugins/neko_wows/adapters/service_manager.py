@@ -281,10 +281,15 @@ class WowsServiceManager:
             process = self._process
             exit_code = process.poll() if process is not None else None
             if process is not None and exit_code is None:
-                self._detail = "managed service is still running but health check failed"
-                return self.snapshot()
+                if not defer_relaunch_after_reap:
+                    self._detail = "managed service is still running but health check failed"
+                    return self.snapshot()
         if process is not None:
-            if not self._reap(process, exit_code):
+            if exit_code is None:
+                retired = self._retire_unhealthy(process)
+            else:
+                retired = self._reap(process, exit_code)
+            if not retired:
                 return self.snapshot()
             if defer_relaunch_after_reap:
                 return self.snapshot()
@@ -349,6 +354,34 @@ class WowsServiceManager:
         self._set_detail(f"managed service exited unexpectedly (code={exit_code})")
         # Last, so that the pause message wins when the fuse trips: which exit
         # code it was matters less than auto-management having given up.
+        self.note_crash()
+        return True
+
+    def _retire_unhealthy(self, process: subprocess.Popen[bytes]) -> bool:
+        """Stop an owned child that is alive but no longer serving health."""
+        with self._lock:
+            if self._process is not process:
+                return False
+            self._process = None
+            self._owned_instance_id = ""
+            handle = self._log_handle
+            self._log_handle = None
+
+        try:
+            process.terminate()
+            process.wait(timeout=3.0)
+        except subprocess.TimeoutExpired:
+            process.kill()
+        except OSError as exc:
+            self._log("warning", f"failed to terminate unhealthy managed service: {exc}")
+
+        if handle is not None:
+            try:
+                handle.close()
+            except OSError:
+                pass
+        self._log("warning", "managed service health check failed; stopping for restart")
+        self._set_detail("managed service health check failed; stopped for restart")
         self.note_crash()
         return True
 
