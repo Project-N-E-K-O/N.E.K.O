@@ -1034,7 +1034,20 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                 if input_type in _ORDERED_STREAM_INPUT_TYPES:
                     await stream_mgr.stream_data(message)
                 else:
-                    _fire_task(stream_mgr.stream_data(message))
+                    stream_task = _fire_task(stream_mgr.stream_data(message))
+                    if input_type in {"screen", "camera"}:
+                        track_validation = getattr(
+                            stream_mgr,
+                            "_track_independent_visual_validation_task",
+                            None,
+                        )
+                        if callable(track_validation):
+                            track_validation(
+                                stream_task,
+                                captured_at=message.get(
+                                    "_visual_input_ingress_time"
+                                ),
+                            )
 
             elif action == "avatar_interaction":
                 message = _stamp_user_input_ingress(message)

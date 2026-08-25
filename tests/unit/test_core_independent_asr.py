@@ -9,7 +9,7 @@ import threading
 import time
 from dataclasses import replace
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, call
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 
@@ -9439,22 +9439,61 @@ async def test_independent_multimodal_turn_never_reuses_prior_turn_frame() -> No
 
 
 @pytest.mark.unit
-async def test_independent_multimodal_turn_rejects_owned_frame_expired_at_final() -> None:
+async def test_independent_multimodal_turn_rejects_delayed_prior_capture() -> None:
     runtime = _Runtime()
     runtime._asr_route_mode = "independent"
+    captured_before_turn = time.monotonic() - 1.0
     token = VoiceTurnToken(ingress=runtime._capture_ingress_token(), turn_id=79)
     turn_id = f"asr-{token.ingress.session_epoch}-{token.turn_id}"
     runtime._begin_core_multimodal_turn(turn_id, token)
+    record = runtime._core_multimodal_turns[turn_id]
+
+    # Validation completes after prepare, so generation alone looks current;
+    # the ingress capture time must keep this prior image out of the new turn.
+    assert runtime._stage_independent_visual_frame(
+        "delayed-prior-frame",
+        source="screen",
+        request_id="screen-delayed",
+        captured_at=captured_before_turn,
+    )
+    assert record.frame is None
+    assert runtime._snapshot_core_multimodal_turn(turn_id, "new question") is None
+
+    assert runtime._stage_independent_visual_frame(
+        "current-turn-frame",
+        source="camera",
+        request_id="camera-current",
+        captured_at=record.started_at,
+    )
+    turn = runtime._snapshot_core_multimodal_turn(turn_id, "new question")
+
+    assert turn is not None
+    assert turn.image_b64 == "current-turn-frame"
+    assert turn.captured_at == record.started_at
+
+
+@pytest.mark.unit
+async def test_independent_multimodal_turn_rejects_owned_frame_expired_at_final() -> None:
+    runtime = _Runtime()
+    runtime._asr_route_mode = "independent"
+    token = VoiceTurnToken(ingress=runtime._capture_ingress_token(), turn_id=80)
+    turn_id = f"asr-{token.ingress.session_epoch}-{token.turn_id}"
+    runtime._begin_core_multimodal_turn(turn_id, token)
+    record = runtime._core_multimodal_turns[turn_id]
     assert runtime._stage_independent_visual_frame(
         "expired-owned-frame",
         source="screen",
         request_id="screen-expired",
-        captured_at=(
-            time.monotonic() - runtime._independent_visual_frame_ttl_s - 1.0
-        ),
+        captured_at=record.started_at,
     )
 
-    turn = runtime._snapshot_core_multimodal_turn(turn_id, "delayed final")
+    with patch(
+        "main_logic.core.asr_runtime.time.monotonic",
+        return_value=(
+            record.started_at + runtime._independent_visual_frame_ttl_s + 1.0
+        ),
+    ):
+        turn = runtime._snapshot_core_multimodal_turn(turn_id, "delayed final")
 
     assert turn is None
 
@@ -9472,11 +9511,21 @@ async def test_direct_multimodal_final_submits_raw_image_once() -> None:
     token = runtime._asr_runtime._capture_turn_token(runtime._asr_lifecycle)
     turn_id = f"asr-{token.ingress.session_epoch}-{token.turn_id}"
     runtime._begin_core_multimodal_turn(turn_id, token)
-    assert runtime._stage_independent_visual_frame(
-        "raw-frame",
-        source="screen",
-        request_id="screen-1",
-        captured_at=time.monotonic(),
+    record = runtime._core_multimodal_turns[turn_id]
+
+    async def validate_frame() -> None:
+        await asyncio.sleep(0)
+        assert runtime._stage_independent_visual_frame(
+            "raw-frame",
+            source="screen",
+            request_id="screen-1",
+            captured_at=record.started_at,
+        )
+
+    validation_task = asyncio.create_task(validate_frame())
+    assert runtime._track_independent_visual_validation_task(
+        validation_task,
+        captured_at=record.started_at,
     )
 
     await runtime._dispatch_core_asr_transcript(
@@ -9486,6 +9535,7 @@ async def test_direct_multimodal_final_submits_raw_image_once() -> None:
             text="look here",
         )
     )
+    await validation_task
 
     runtime.session.submit_multimodal_turn.assert_awaited_once_with(
         "look here",
@@ -9494,6 +9544,68 @@ async def test_direct_multimodal_final_submits_raw_image_once() -> None:
     )
     runtime.session.submit_external_voice_turn.assert_not_awaited()
     assert turn_id not in runtime._core_multimodal_turns
+
+
+@pytest.mark.unit
+async def test_visual_validation_wait_timeout_does_not_cancel_image_task() -> None:
+    runtime = _Runtime()
+    runtime._asr_route_mode = "independent"
+    runtime._independent_visual_frame_ttl_s = 0.01
+    token = VoiceTurnToken(ingress=runtime._capture_ingress_token(), turn_id=81)
+    turn_id = f"asr-{token.ingress.session_epoch}-{token.turn_id}"
+    runtime._begin_core_multimodal_turn(turn_id, token)
+    record = runtime._core_multimodal_turns[turn_id]
+    release = asyncio.Event()
+    validation_task = asyncio.create_task(release.wait())
+    assert runtime._track_independent_visual_validation_task(
+        validation_task,
+        captured_at=record.started_at,
+    )
+
+    await runtime._await_independent_visual_validation_tasks(turn_id)
+
+    assert not validation_task.done()
+    release.set()
+    await validation_task
+
+
+@pytest.mark.unit
+async def test_new_turn_wakes_visual_validation_wait_without_cancelling_task() -> None:
+    runtime = _Runtime()
+    runtime._asr_route_mode = "independent"
+    first_token = VoiceTurnToken(
+        ingress=runtime._capture_ingress_token(),
+        turn_id=82,
+    )
+    first_turn_id = (
+        f"asr-{first_token.ingress.session_epoch}-{first_token.turn_id}"
+    )
+    runtime._begin_core_multimodal_turn(first_turn_id, first_token)
+    first_record = runtime._core_multimodal_turns[first_turn_id]
+    release = asyncio.Event()
+    validation_task = asyncio.create_task(release.wait())
+    assert runtime._track_independent_visual_validation_task(
+        validation_task,
+        captured_at=first_record.started_at,
+    )
+    waiting = asyncio.create_task(
+        runtime._await_independent_visual_validation_tasks(first_turn_id)
+    )
+    await asyncio.sleep(0)
+
+    second_token = VoiceTurnToken(
+        ingress=runtime._capture_ingress_token(),
+        turn_id=83,
+    )
+    runtime._begin_core_multimodal_turn(
+        f"asr-{second_token.ingress.session_epoch}-{second_token.turn_id}",
+        second_token,
+    )
+
+    await asyncio.wait_for(waiting, timeout=0.1)
+    assert not validation_task.done()
+    release.set()
+    await validation_task
 
 
 async def test_offline_image_free_voice_turn_retries_tts_after_failure() -> None:

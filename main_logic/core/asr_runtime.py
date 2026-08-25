@@ -456,9 +456,106 @@ class AsrRuntimeMixin:
                 record.session_epoch == frame.session_epoch
                 and record.route_generation == frame.route_generation
                 and frame.generation > record.start_image_generation
+                and frame.captured_at >= record.started_at
             ):
                 record.frame = frame
         return True
+
+    def _track_independent_visual_validation_task(
+        self,
+        task: asyncio.Task,
+        *,
+        captured_at: object,
+    ) -> bool:
+        """Bind one router-owned validation task to the active ASR turn."""
+
+        self._ensure_asr_runtime_state()
+        if (
+            self._asr_route_mode != "independent"
+            or not isinstance(task, asyncio.Task)
+            or not isinstance(captured_at, (int, float))
+        ):
+            return False
+        record = next(iter(self._core_multimodal_turns.values()), None)
+        if record is None or record.invalidated.is_set():
+            return False
+        ingress = self._capture_ingress_token()
+        stable_captured_at = float(captured_at)
+        if (
+            record.session_epoch != ingress.session_epoch
+            or record.route_generation != self._voice_input_transition_generation
+            or stable_captured_at < record.started_at
+        ):
+            return False
+        record.pending_visual_validations[task] = stable_captured_at
+
+        def discard(completed: asyncio.Task) -> None:
+            record.pending_visual_validations.pop(completed, None)
+
+        task.add_done_callback(discard)
+        return True
+
+    async def _await_independent_visual_validation_tasks(
+        self,
+        turn_id: str,
+    ) -> None:
+        """Bound final-freeze on validations captured during this ASR turn."""
+
+        self._ensure_asr_runtime_state()
+        record = self._core_multimodal_turns.get(turn_id)
+        if record is None or record.invalidated.is_set():
+            return
+        freeze_at = time.monotonic()
+        if (
+            record.route_generation != self._voice_input_transition_generation
+            or record.session_epoch != self._capture_ingress_token().session_epoch
+        ):
+            return
+        eligible = [
+            task
+            for task, captured_at in record.pending_visual_validations.items()
+            if (
+                not task.done()
+                and record.started_at <= captured_at <= freeze_at
+                and freeze_at - captured_at
+                <= self._independent_visual_frame_ttl_s
+            )
+        ]
+        if not eligible:
+            return
+        remaining_ttl = max(
+            self._independent_visual_frame_ttl_s
+            - (freeze_at - record.pending_visual_validations[task])
+            for task in eligible
+        )
+        # Image validation is local/threaded work. Give an already-captured
+        # frame a short chance to join its transcript without holding the
+        # serial ASR final dispatcher behind a slow or wedged worker.
+        timeout = min(0.5, remaining_ttl)
+        if timeout <= 0:
+            return
+
+        all_validations = asyncio.gather(
+            *(asyncio.shield(task) for task in eligible),
+            return_exceptions=True,
+        )
+        invalidated = asyncio.create_task(record.invalidated.wait())
+        try:
+            await asyncio.wait(
+                {all_validations, invalidated},
+                timeout=timeout,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+        finally:
+            if not all_validations.done():
+                all_validations.cancel()
+            if not invalidated.done():
+                invalidated.cancel()
+            await asyncio.gather(
+                all_validations,
+                invalidated,
+                return_exceptions=True,
+            )
 
     def _begin_core_multimodal_turn(
         self,
@@ -471,6 +568,8 @@ class AsrRuntimeMixin:
         # The independent-ASR registry admits one Core chat utterance at a
         # time. A newer prepare invalidates any older frame/text ownership
         # synchronously, before candidate creation or provider awaits.
+        for previous in self._core_multimodal_turns.values():
+            previous.invalidated.set()
         self._core_multimodal_turns.clear()
         self._core_multimodal_turns[turn_id] = _CoreMultimodalTurnRecord(
             turn_id=turn_id,
@@ -510,6 +609,7 @@ class AsrRuntimeMixin:
             or record.route_generation != self._voice_input_transition_generation
             or frame.session_epoch != record.session_epoch
             or frame.route_generation != record.route_generation
+            or frame.captured_at < record.started_at
             or snapshot_at - frame.captured_at > self._independent_visual_frame_ttl_s
         ):
             return None
@@ -1221,9 +1321,13 @@ class AsrRuntimeMixin:
         turns = getattr(self, "_core_multimodal_turns", None)
         if turns is not None:
             if turn_id is None:
+                for record in turns.values():
+                    record.invalidated.set()
                 turns.clear()
             else:
-                turns.pop(turn_id, None)
+                record = turns.pop(turn_id, None)
+                if record is not None:
+                    record.invalidated.set()
         target_session = (
             session_ref if session_ref is not None else getattr(self, "session", None)
         )
@@ -2825,7 +2929,9 @@ class AsrRuntimeMixin:
                 self._core_asr_preview_turn_token = previous_preview_turn_token
                 self._core_asr_preview_text = previous_preview_text
             if not preparation_succeeded:
-                self._core_multimodal_turns.pop(external_turn_id, None)
+                record = self._core_multimodal_turns.pop(external_turn_id, None)
+                if record is not None:
+                    record.invalidated.set()
 
     async def _submit_core_voice_turn(
         self,
@@ -2899,6 +3005,19 @@ class AsrRuntimeMixin:
                 if isinstance(item, dict)
             ]
             turn_record = self._core_multimodal_turns.get(external_turn_id)
+            if turn_record is not None:
+                await self._await_independent_visual_validation_tasks(
+                    external_turn_id
+                )
+                if (
+                    self._core_multimodal_turns.get(external_turn_id)
+                    is not turn_record
+                    or transition_generation
+                    != self._voice_input_transition_generation
+                    or self._voice_lease_owner != "core"
+                    or not self._ingress_token_matches(token)
+                ):
+                    return
             multimodal_turn = self._snapshot_core_multimodal_turn(
                 external_turn_id,
                 event.text,

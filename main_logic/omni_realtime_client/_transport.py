@@ -496,6 +496,7 @@ class _TransportMixin:
         *,
         raise_on_oversize: bool = False,
         expected_visual_mode: VisualDeliveryMode | str | None = None,
+        callback_owned_visual: bool = False,
     ) -> bool:
         # 检查是否已发生致命错误，直接跳过发送
         if self._fatal_error_occurred:
@@ -563,6 +564,7 @@ class _TransportMixin:
                     if current_mode != expected_mode or (
                         expected_mode == VisualDeliveryMode.NATIVE
                         and getattr(self, "_raw_visual_delivery_blocked", False)
+                        and not callback_owned_visual
                     ):
                         return False
                 await self.ws.send(payload)
@@ -689,6 +691,14 @@ class _TransportMixin:
         if len(raw_samples) > 0:
             local_rms = np.sqrt(np.mean(raw_samples.astype(np.float32) ** 2))
             raw_loud = local_rms > self._client_vad_threshold
+        if raw_loud:
+            # Publish user engagement before waiting on the shared admission
+            # boundary. A proactive callback holding that lock must see speech
+            # that arrived during its media transaction and defer its response;
+            # all VAD state transitions and provider writes remain serialized
+            # below.
+            self._last_local_loud_time = audio_timeline_at
+            self._user_recent_activity_time = time.time()
 
         # Detect input sample rate based on chunk size
         # 48kHz: 480 samples (10ms) = 960 bytes
@@ -723,13 +733,6 @@ class _TransportMixin:
             if self._fatal_error_occurred:
                 return
             admitted_at = time.time()
-            # Activity/VAD state is part of admission too. Updating it before
-            # this lock lets queued PCM invalidate the callback transaction
-            # currently owning the boundary, even though that audio cannot yet
-            # reach the provider.
-            if raw_loud:
-                self._last_local_loud_time = audio_timeline_at
-                self._user_recent_activity_time = admitted_at
 
             # Unified VAD update (priority: server VAD > RNNoise > RMS).
             if (
@@ -987,6 +990,9 @@ class _TransportMixin:
         """
         rejection_event_id: str | None = None
         try:
+            callback_owned_raw_image = bool(
+                not cache_latest and str(source or "").strip() == "callback"
+            )
             delivery_mode = getattr(
                 self,
                 "_visual_delivery_mode",
@@ -995,6 +1001,7 @@ class _TransportMixin:
             if (
                 getattr(self, "_raw_visual_delivery_blocked", False)
                 and delivery_mode != VisualDeliveryMode.EXTERNAL_DESCRIPTION
+                and not callback_owned_raw_image
             ):
                 return ImageStageResult(
                     accepted=False,
@@ -1123,7 +1130,14 @@ class _TransportMixin:
                                 VisualDeliveryMode.NATIVE,
                             )
                             != VisualDeliveryMode.NATIVE
-                            or getattr(self, "_raw_visual_delivery_blocked", False)
+                            or (
+                                getattr(
+                                    self,
+                                    "_raw_visual_delivery_blocked",
+                                    False,
+                                )
+                                and not callback_owned_raw_image
+                            )
                         ):
                             return ImageStageResult(
                                 accepted=False,
@@ -1173,6 +1187,7 @@ class _TransportMixin:
                     append_event,
                     raise_on_oversize=bypass_rate_limit,
                     expected_visual_mode=VisualDeliveryMode.NATIVE,
+                    callback_owned_visual=callback_owned_raw_image,
                 )
                 if not sent and rejection_event_id is not None:
                     self._inject_rejection_handlers.pop(rejection_event_id, None)
@@ -1187,6 +1202,7 @@ class _TransportMixin:
                         "raw_visual_delivery_blocked"
                         if not sent
                         and getattr(self, "_raw_visual_delivery_blocked", False)
+                        and not callback_owned_raw_image
                         else None
                     ),
                 )
@@ -1278,6 +1294,7 @@ class _TransportMixin:
                     append_event,
                     raise_on_oversize=bypass_rate_limit,
                     expected_visual_mode=VisualDeliveryMode.NATIVE,
+                    callback_owned_visual=callback_owned_raw_image,
                 )
                 if not sent and rejection_event_id is not None:
                     self._inject_rejection_handlers.pop(rejection_event_id, None)
@@ -1292,6 +1309,7 @@ class _TransportMixin:
                         "raw_visual_delivery_blocked"
                         if not sent
                         and getattr(self, "_raw_visual_delivery_blocked", False)
+                        and not callback_owned_raw_image
                         else None
                     ),
                 )

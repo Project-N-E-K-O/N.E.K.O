@@ -1707,6 +1707,8 @@ class LifecycleMixin:
             old_listener = self.message_handler_task
             listener_cancel_timed_out = False
             listener_timeout_fail_closed = False
+            listener_cancelled_for_handoff = False
+            ownership_lost_after_close = False
             try:
                 if (
                     not operation_is_current()
@@ -1732,6 +1734,7 @@ class LifecycleMixin:
                         return False
                     if old_listener and not old_listener.done():
                         old_listener.cancel()
+                        listener_cancelled_for_handoff = True
                         try:
                             await asyncio.wait_for(old_listener, timeout=2.0)
                         except asyncio.CancelledError:
@@ -1791,6 +1794,22 @@ class LifecycleMixin:
                                 exc,
                             )
                     if not listener_cancel_timed_out:
+                        if (
+                            not operation_is_current()
+                            or self.session is not expected_session
+                        ):
+                            # Cancellation retired the receive task, but the
+                            # Realtime session itself is still healthy. If this
+                            # handoff merely lost turn ownership, restore Core's
+                            # listener before abandoning the candidate.
+                            if (
+                                listener_cancelled_for_handoff
+                                and self.session is expected_session
+                            ):
+                                await self._restart_message_handler_after_session_reconnect(
+                                    expected_session
+                                )
+                            return False
                         try:
                             await expected_session.close()
                         except Exception as exc:
@@ -1802,14 +1821,33 @@ class LifecycleMixin:
                         async with self.lock:
                             if self.session is not expected_session:
                                 return False
-                            self.session = candidate
-                            promoted = True
+                            if not operation_is_current():
+                                # The old session has already crossed its
+                                # destructive close boundary, so neither it nor
+                                # the stale candidate may remain active.
+                                self.session = None
+                                self.message_handler_task = None
+                                self.is_active = False
+                                self.session_ready = False
+                                ownership_lost_after_close = True
+                            else:
+                                self.session = candidate
+                                promoted = True
                 finally:
                     session_swap_lock.release()
 
                 if listener_cancel_timed_out:
                     if listener_timeout_fail_closed:
+                        await self._close_independent_asr(
+                            next_route_mode="blocked",
+                        )
                         await self.send_session_ended_by_server()
+                    return False
+                if ownership_lost_after_close:
+                    await self._close_independent_asr(
+                        next_route_mode="blocked",
+                    )
+                    await self.send_session_ended_by_server()
                     return False
 
                 self.response_backend = 'offline_vlm'

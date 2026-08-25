@@ -346,6 +346,7 @@ async def test_handoff_candidate_failure_preserves_realtime_session() -> None:
     manager._cleanup_pending_session_resources = AsyncMock()
     old_session = SimpleNamespace(close=AsyncMock())
     manager.session = old_session
+    manager._close_independent_asr = AsyncMock()
     manager._create_offline_vlm_handoff_candidate = AsyncMock(
         side_effect=RuntimeError("vision unavailable")
     )
@@ -366,6 +367,7 @@ async def test_handoff_candidate_failure_preserves_realtime_session() -> None:
     assert delivered is False
     assert manager.session is old_session
     old_session.close.assert_not_awaited()
+    manager._close_independent_asr.assert_not_awaited()
 
 
 async def test_handoff_listener_cancel_timeout_fail_closes_active_session(
@@ -381,7 +383,14 @@ async def test_handoff_listener_cancel_timeout_fail_closes_active_session(
     manager.session_ready = True
     manager._reset_preparation_state = AsyncMock()
     manager._cleanup_pending_session_resources = AsyncMock()
+    teardown_order = []
+    manager._close_independent_asr = AsyncMock(
+        side_effect=lambda **_kwargs: teardown_order.append("close_asr")
+    )
     manager.send_session_ended_by_server = AsyncMock()
+    manager.send_session_ended_by_server.side_effect = lambda: teardown_order.append(
+        "session_ended"
+    )
 
     listener_cancelled = asyncio.Event()
     listener_release = asyncio.Event()
@@ -441,7 +450,11 @@ async def test_handoff_listener_cancel_timeout_fail_closes_active_session(
     assert manager.message_handler_task is None
     assert manager.is_active is False
     assert manager.session_ready is False
+    manager._close_independent_asr.assert_awaited_once_with(
+        next_route_mode="blocked"
+    )
     manager.send_session_ended_by_server.assert_awaited_once_with()
+    assert teardown_order == ["close_asr", "session_ended"]
     candidate.submit_multimodal_turn.assert_not_awaited()
     candidate.close.assert_awaited_once_with()
     old_session.close.assert_not_awaited()
@@ -504,6 +517,150 @@ async def test_new_user_turn_during_candidate_connect_cancels_old_handoff() -> N
     assert await asyncio.wait_for(task, 1.0) is False
     assert manager.session is old_session
     old_session.close.assert_not_awaited()
+    candidate.submit_multimodal_turn.assert_not_awaited()
+    candidate.close.assert_awaited_once_with()
+
+
+async def test_new_user_turn_during_listener_cancel_restores_realtime_listener() -> None:
+    manager = LLMSessionManager.__new__(LLMSessionManager)
+    manager.lanlan_name = "Test"
+    manager._multimodal_handoff_lock = asyncio.Lock()
+    manager._core_voice_session_swap_lock = asyncio.Lock()
+    manager._core_voice_session_swap_barrier_timeout_s = 1.0
+    manager.lock = asyncio.Lock()
+    manager.is_active = True
+    manager.session_ready = True
+    manager._reset_preparation_state = AsyncMock()
+    manager._cleanup_pending_session_resources = AsyncMock()
+    manager._close_independent_asr = AsyncMock()
+    manager.send_session_ended_by_server = AsyncMock()
+
+    turn_owned = True
+    replacement_listener_release = asyncio.Event()
+
+    async def listen_after_cancel() -> None:
+        await replacement_listener_release.wait()
+
+    old_session = SimpleNamespace(
+        close=AsyncMock(),
+        handle_messages=AsyncMock(side_effect=listen_after_cancel),
+    )
+    manager.session = old_session
+
+    async def old_listener() -> None:
+        nonlocal turn_owned
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            turn_owned = False
+            raise
+
+    retired_listener = asyncio.create_task(old_listener())
+    manager.message_handler_task = retired_listener
+    await asyncio.sleep(0)
+
+    candidate = SimpleNamespace(
+        close=AsyncMock(),
+        submit_multimodal_turn=AsyncMock(),
+    )
+    manager._create_offline_vlm_handoff_candidate = AsyncMock(
+        return_value=(candidate, 0)
+    )
+    turn = SimpleNamespace(
+        transcript="old turn",
+        image_b64="old-frame",
+        turn_id="turn-old",
+    )
+
+    try:
+        delivered = await manager._handoff_to_offline_vlm_and_submit(
+            turn,
+            expected_session=old_session,
+            prepared_session=old_session,
+            operation_is_current=lambda: turn_owned,
+            cached_turns_before_final=[],
+        )
+
+        assert delivered is False
+        assert retired_listener.cancelled()
+        assert manager.session is old_session
+        assert manager.message_handler_task is not retired_listener
+        assert not manager.message_handler_task.done()
+        old_session.handle_messages.assert_called_once_with()
+        old_session.close.assert_not_awaited()
+        candidate.submit_multimodal_turn.assert_not_awaited()
+        candidate.close.assert_awaited_once_with()
+        manager._close_independent_asr.assert_not_awaited()
+        manager.send_session_ended_by_server.assert_not_awaited()
+    finally:
+        replacement_listener_release.set()
+        if manager.message_handler_task is not None:
+            await manager.message_handler_task
+
+
+async def test_new_user_turn_during_old_close_fail_closes_handoff() -> None:
+    manager = LLMSessionManager.__new__(LLMSessionManager)
+    manager.lanlan_name = "Test"
+    manager._multimodal_handoff_lock = asyncio.Lock()
+    manager._core_voice_session_swap_lock = asyncio.Lock()
+    manager._core_voice_session_swap_barrier_timeout_s = 1.0
+    manager.lock = asyncio.Lock()
+    manager.is_active = True
+    manager.session_ready = True
+    manager._reset_preparation_state = AsyncMock()
+    manager._cleanup_pending_session_resources = AsyncMock()
+    teardown_order = []
+    manager._close_independent_asr = AsyncMock(
+        side_effect=lambda **_kwargs: teardown_order.append("close_asr")
+    )
+    manager.send_session_ended_by_server = AsyncMock()
+    manager.send_session_ended_by_server.side_effect = lambda: teardown_order.append(
+        "session_ended"
+    )
+    manager.message_handler_task = None
+
+    turn_owned = True
+
+    async def close_old_session() -> None:
+        nonlocal turn_owned
+        turn_owned = False
+
+    old_session = SimpleNamespace(
+        close=AsyncMock(side_effect=close_old_session),
+    )
+    manager.session = old_session
+    candidate = SimpleNamespace(
+        close=AsyncMock(),
+        submit_multimodal_turn=AsyncMock(),
+    )
+    manager._create_offline_vlm_handoff_candidate = AsyncMock(
+        return_value=(candidate, 0)
+    )
+    turn = SimpleNamespace(
+        transcript="old turn",
+        image_b64="old-frame",
+        turn_id="turn-old",
+    )
+
+    delivered = await manager._handoff_to_offline_vlm_and_submit(
+        turn,
+        expected_session=old_session,
+        prepared_session=old_session,
+        operation_is_current=lambda: turn_owned,
+        cached_turns_before_final=[],
+    )
+
+    assert delivered is False
+    old_session.close.assert_awaited_once_with()
+    assert manager.session is None
+    assert manager.message_handler_task is None
+    assert manager.is_active is False
+    assert manager.session_ready is False
+    manager._close_independent_asr.assert_awaited_once_with(
+        next_route_mode="blocked"
+    )
+    manager.send_session_ended_by_server.assert_awaited_once_with()
+    assert teardown_order == ["close_asr", "session_ended"]
     candidate.submit_multimodal_turn.assert_not_awaited()
     candidate.close.assert_awaited_once_with()
 

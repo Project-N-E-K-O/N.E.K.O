@@ -275,6 +275,116 @@ def test_stage_multimodal_frame_rejects_stale_capture():
     assert client._latest_image_captured_at == 20.0
 
 
+@pytest.mark.parametrize(
+    ("api_type", "model"),
+    [
+        ("openai", "gpt-4o-realtime"),
+        ("gemini", "gemini-2.5-flash-native-audio"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_callback_owned_image_bypasses_raw_frame_fence_only(
+    api_type,
+    model,
+):
+    client = _make_client(api_type, model)
+    provider = AsyncMock()
+    client.ws = provider
+    if api_type == "gemini":
+        client._gemini_session = provider
+    client.block_raw_visual_delivery()
+
+    ambient = await client.stream_image(
+        DUMMY_IMAGE_B64,
+        source="screen",
+        bypass_rate_limit=True,
+    )
+    proactive = await client.stream_image(
+        DUMMY_IMAGE_B64,
+        source="proactive",
+        bypass_rate_limit=True,
+        cache_latest=False,
+    )
+    callback_cached = await client.stream_image(
+        DUMMY_IMAGE_B64,
+        source="callback",
+        bypass_rate_limit=True,
+    )
+    callback = await client.stream_image(
+        DUMMY_IMAGE_B64,
+        source="callback",
+        bypass_rate_limit=True,
+        cache_latest=False,
+    )
+
+    assert ambient.accepted is False
+    assert ambient.rejection_reason == "raw_visual_delivery_blocked"
+    assert proactive.accepted is False
+    assert proactive.rejection_reason == "raw_visual_delivery_blocked"
+    assert callback_cached.accepted is False
+    assert callback_cached.rejection_reason == "raw_visual_delivery_blocked"
+    assert callback.accepted is True
+    assert client._latest_image_b64 is None
+    if api_type == "gemini":
+        provider.send_realtime_input.assert_awaited_once()
+    else:
+        provider.send.assert_awaited_once()
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_callback_fence_bypass_still_rejects_visual_mode_change_before_send():
+    client = _make_client("openai", "gpt-4o-realtime")
+    client.ws = AsyncMock()
+    client.block_raw_visual_delivery()
+    client._send_semaphore = asyncio.Semaphore(1)
+    await client._send_semaphore.acquire()
+    sending = asyncio.create_task(
+        client.stream_image(
+            DUMMY_IMAGE_B64,
+            source="callback",
+            bypass_rate_limit=True,
+            cache_latest=False,
+        )
+    )
+    await asyncio.sleep(0)
+
+    client.set_visual_delivery_mode("external_description")
+    client._send_semaphore.release()
+    result = await sending
+
+    assert result.accepted is False
+    client.ws.send.assert_not_awaited()
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_loud_pcm_publishes_activity_before_provider_admission():
+    admission_lock = asyncio.Lock()
+    client = _make_client(
+        "openai",
+        "gpt-4o-realtime",
+        turn_admission_lock=admission_lock,
+    )
+    client.ws = AsyncMock()
+    client._resample_uplink = lambda audio: audio
+    client._user_recent_activity_time = 0.0
+    await admission_lock.acquire()
+    loud_pcm = (1_000).to_bytes(2, "little", signed=True) * 512
+
+    streaming = asyncio.create_task(client.stream_audio(loud_pcm))
+    await asyncio.sleep(0)
+
+    assert client._user_recent_activity_time > 0.0
+    assert not streaming.done()
+    client.ws.send.assert_not_awaited()
+
+    admission_lock.release()
+    await streaming
+    client.ws.send.assert_awaited_once()
+    await client.close()
+
+
 @pytest.mark.asyncio
 async def test_step_legacy_one_shot_annotation_remains_outside_asr_routing_scope():
     client = _make_client("step", "step-audio-2-mini")

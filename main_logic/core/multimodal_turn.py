@@ -15,7 +15,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import asyncio
+from dataclasses import dataclass, field
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,6 +38,11 @@ class _CoreMultimodalTurnRecord:
     start_image_generation: int
     started_at: float
     frame: _IndependentVisualFrame | None = None
+    pending_visual_validations: dict[asyncio.Task, float] = field(
+        default_factory=dict,
+        repr=False,
+    )
+    invalidated: asyncio.Event = field(default_factory=asyncio.Event, repr=False)
 
 
 @dataclass(frozen=True, slots=True)
