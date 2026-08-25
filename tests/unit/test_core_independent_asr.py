@@ -5188,6 +5188,7 @@ async def test_qwen_core_starts_independent_asr_with_external_turn_support(
     runtime = _Runtime()
     runtime.core_api_type = core_type
     runtime.session.set_visual_delivery_mode = MagicMock()
+    runtime.session.block_raw_visual_delivery = MagicMock()
     asr = type("Asr", (), {})()
 
     async def connect_after_visual_fail_closed() -> None:
@@ -5195,7 +5196,8 @@ async def test_qwen_core_starts_independent_asr_with_external_turn_support(
             getattr(call.args[0], "value", call.args[0])
             for call in runtime.session.set_visual_delivery_mode.call_args_list
         ]
-        assert delivered_modes[-1:] == ["external_description"]
+        assert "external_description" not in delivered_modes
+        runtime.session.block_raw_visual_delivery.assert_called()
 
     asr.connect = AsyncMock(side_effect=connect_after_visual_fail_closed)
     asr.close = AsyncMock()
@@ -5534,16 +5536,9 @@ async def test_hot_swap_does_not_retry_failed_same_core_route() -> None:
     runtime._start_independent_asr_if_enabled.assert_not_awaited()
 
 
-@pytest.mark.parametrize(
-    ("route_mode", "expected_visual_mode"),
-    [
-        ("independent", "external_description"),
-        ("native", "native"),
-    ],
-)
+@pytest.mark.parametrize("route_mode", ["independent", "native"])
 async def test_same_core_session_promotion_resyncs_visual_delivery_mode(
     route_mode: str,
-    expected_visual_mode: str,
 ) -> None:
     """A promoted session inherits the live route even when provider key is unchanged."""
     runtime = _Runtime()
@@ -5555,13 +5550,16 @@ async def test_same_core_session_promotion_resyncs_visual_delivery_mode(
     replacement_session = type("ReplacementOmni", (), {})()
     replacement_session._supports_native_image = True
     replacement_session.set_visual_delivery_mode = MagicMock()
+    replacement_session.block_raw_visual_delivery = MagicMock()
     runtime.session = replacement_session
 
     await runtime._reconcile_independent_asr_after_core_change()
 
-    replacement_session.set_visual_delivery_mode.assert_called_once()
-    delivered_mode = replacement_session.set_visual_delivery_mode.call_args.args[0]
-    assert getattr(delivered_mode, "value", delivered_mode) == expected_visual_mode
+    if route_mode == "independent":
+        replacement_session.set_visual_delivery_mode.assert_not_called()
+        replacement_session.block_raw_visual_delivery.assert_called_once_with()
+    else:
+        replacement_session.set_visual_delivery_mode.assert_called_once_with("native")
     runtime._start_independent_asr_if_enabled.assert_not_awaited()
 
 
@@ -5576,9 +5574,7 @@ async def test_blocked_replacement_session_preserves_external_visual_policy_and_
 
     runtime._set_microphone_route("blocked")
 
-    replacement_session.set_visual_delivery_mode.assert_called_once_with(
-        "external_description"
-    )
+    replacement_session.set_visual_delivery_mode.assert_not_called()
     replacement_session.block_raw_visual_delivery.assert_called()
 
 
@@ -5743,6 +5739,7 @@ async def test_failed_independent_start_preserves_external_visual_route_memory(
     runtime = _Runtime()
     runtime.core_api_type = "gemini"
     runtime.session.set_visual_delivery_mode = MagicMock()
+    runtime.session.block_raw_visual_delivery = MagicMock()
     monkeypatch.setattr(
         core_module,
         "aload_global_conversation_settings",
@@ -5760,11 +5757,7 @@ async def test_failed_independent_start_preserves_external_visual_route_memory(
 
     assert runtime._asr_route_mode == "blocked"
     assert runtime._visual_route_mode == "independent"
-    delivered_modes = [
-        getattr(call.args[0], "value", call.args[0])
-        for call in runtime.session.set_visual_delivery_mode.call_args_list
-    ]
-    assert delivered_modes[-1:] == ["external_description"]
+    runtime.session.block_raw_visual_delivery.assert_called()
 
 
 async def test_connect_budget_does_not_block_a_free_native_route(
@@ -6925,6 +6918,7 @@ async def test_unreadable_independent_setting_preserves_visual_route_on_hot_swap
     runtime = _Runtime()
     runtime.core_api_type = "gemini"
     runtime.session.set_visual_delivery_mode = MagicMock()
+    runtime.session.block_raw_visual_delivery = MagicMock()
     monkeypatch.setattr(
         core_module,
         "aload_global_conversation_settings",
@@ -6937,11 +6931,7 @@ async def test_unreadable_independent_setting_preserves_visual_route_on_hot_swap
 
     assert runtime._asr_route_mode == "blocked"
     assert runtime._visual_route_mode == "independent"
-    delivered_modes = [
-        getattr(call.args[0], "value", call.args[0])
-        for call in runtime.session.set_visual_delivery_mode.call_args_list
-    ]
-    assert delivered_modes[-1:] == ["external_description"]
+    runtime.session.block_raw_visual_delivery.assert_called()
 
 
 async def test_unknown_core_capability_remains_fail_closed(monkeypatch) -> None:
@@ -9341,6 +9331,8 @@ async def test_microphone_route_syncs_provider_neutral_visual_delivery_mode() ->
     runtime = _Runtime()
     runtime.session._supports_native_image = True
     runtime.session.set_visual_delivery_mode = MagicMock()
+    runtime.session.block_raw_visual_delivery = MagicMock()
+    runtime.session.allow_raw_visual_delivery = MagicMock()
 
     runtime._set_microphone_route("independent")
     runtime._set_microphone_route("blocked")
@@ -9350,11 +9342,9 @@ async def test_microphone_route_syncs_provider_neutral_visual_delivery_mode() ->
         getattr(item.args[0], "value", item.args[0])
         for item in runtime.session.set_visual_delivery_mode.call_args_list
     ]
-    assert delivered_modes == [
-        "external_description",
-        "external_description",
-        "native",
-    ]
+    assert delivered_modes == ["native"]
+    assert runtime.session.block_raw_visual_delivery.call_count >= 2
+    runtime.session.allow_raw_visual_delivery.assert_called_once_with()
 
 
 @pytest.mark.unit
@@ -9388,7 +9378,198 @@ async def test_independent_visual_sync_failure_blocks_raw_images_without_stoppin
     runtime._set_microphone_route("independent")
 
     assert runtime._asr_route_mode == "independent"
-    assert call_order == ["block", "sync"]
+    assert call_order == ["block"]
+
+
+@pytest.mark.unit
+async def test_independent_multimodal_turn_freezes_latest_valid_frame() -> None:
+    runtime = _Runtime()
+    runtime._asr_route_mode = "independent"
+    token = VoiceTurnToken(ingress=runtime._capture_ingress_token(), turn_id=77)
+    turn_id = f"asr-{token.ingress.session_epoch}-{token.turn_id}"
+    runtime._begin_core_multimodal_turn(turn_id, token)
+    captured_at = time.monotonic()
+
+    assert runtime._stage_independent_visual_frame(
+        "first-frame",
+        source="screen",
+        request_id="frame-1",
+        captured_at=captured_at,
+    )
+    assert runtime._stage_independent_visual_frame(
+        "latest-frame",
+        source="camera",
+        request_id="frame-2",
+        captured_at=captured_at + 0.1,
+    )
+    assert not runtime._stage_independent_visual_frame(
+        "stale-frame",
+        source="screen",
+        request_id="frame-stale",
+        captured_at=captured_at - 0.1,
+    )
+
+    turn = runtime._snapshot_core_multimodal_turn(turn_id, "what is that")
+
+    assert turn is not None
+    assert turn.image_b64 == "latest-frame"
+    assert turn.source == "camera"
+    assert turn.request_id == "frame-2"
+    assert turn.image_generation > turn.start_image_generation
+
+
+@pytest.mark.unit
+async def test_direct_multimodal_final_submits_raw_image_once() -> None:
+    runtime = _Runtime()
+    _install_ready_lifecycle(runtime, "openai")
+    runtime._asr_route_mode = "independent"
+    runtime.session.get_multimodal_turn_delivery = MagicMock(
+        return_value="direct_atomic"
+    )
+    runtime.session.submit_multimodal_turn = AsyncMock()
+    runtime.session.submit_external_voice_turn = AsyncMock()
+    token = runtime._asr_runtime._capture_turn_token(runtime._asr_lifecycle)
+    turn_id = f"asr-{token.ingress.session_epoch}-{token.turn_id}"
+    runtime._begin_core_multimodal_turn(turn_id, token)
+    assert runtime._stage_independent_visual_frame(
+        "raw-frame",
+        source="screen",
+        request_id="screen-1",
+        captured_at=time.monotonic(),
+    )
+
+    await runtime._dispatch_core_asr_transcript(
+        VoiceTranscriptEvent(
+            turn_token=token,
+            provider="openai",
+            text="look here",
+        )
+    )
+
+    runtime.session.submit_multimodal_turn.assert_awaited_once_with(
+        "look here",
+        "raw-frame",
+        turn_id=turn_id,
+    )
+    runtime.session.submit_external_voice_turn.assert_not_awaited()
+    assert turn_id not in runtime._core_multimodal_turns
+
+
+async def test_offline_image_free_voice_turn_retries_tts_after_failure() -> None:
+    runtime = _Runtime()
+    runtime.response_backend = "offline_vlm"
+    runtime.ensure_tts_pipeline_alive = AsyncMock(
+        side_effect=[RuntimeError("tts unavailable"), None]
+    )
+    runtime.session.submit_external_voice_turn = AsyncMock()
+
+    with pytest.raises(RuntimeError, match="tts unavailable"):
+        await runtime._submit_core_voice_turn(
+            "first",
+            turn_id="turn-1",
+            session_ref=runtime.session,
+        )
+    runtime.session.submit_external_voice_turn.assert_not_awaited()
+
+    await runtime._submit_core_voice_turn(
+        "second",
+        turn_id="turn-2",
+        session_ref=runtime.session,
+    )
+
+    assert runtime.ensure_tts_pipeline_alive.await_count == 2
+    runtime.session.submit_external_voice_turn.assert_awaited_once_with(
+        "second",
+        turn_id="turn-2",
+    )
+
+
+@pytest.mark.unit
+async def test_direct_multimodal_failure_reports_status_without_text_fallback() -> None:
+    runtime = _Runtime()
+    runtime.core_api_type = "openai"
+    runtime.session.get_multimodal_turn_delivery = MagicMock(
+        return_value="direct_atomic"
+    )
+    runtime.session.submit_multimodal_turn = AsyncMock(
+        side_effect=RuntimeError("provider rejected image")
+    )
+    runtime.session.submit_external_voice_turn = AsyncMock()
+    epoch = runtime._asr_session_epoch
+    await _start_and_seal_turn(runtime, "openai")
+    assert runtime._stage_independent_visual_frame(
+        "raw-frame",
+        source="screen",
+        request_id="screen-1",
+        captured_at=time.monotonic(),
+    )
+
+    await runtime._handle_independent_asr_final(
+        "look here",
+        epoch,
+        "openai",
+    )
+    await runtime._wait_asr_transcript_dispatch_idle()
+
+    runtime.session.submit_multimodal_turn.assert_awaited_once()
+    runtime.session.submit_external_voice_turn.assert_not_awaited()
+    status_payloads = [call.args[0] for call in runtime.send_status.await_args_list]
+    assert any("ASR_INDEPENDENT_INJECTION_FAILED" in item for item in status_payloads)
+    assert "provider rejected image" not in str(status_payloads)
+
+
+@pytest.mark.unit
+async def test_handoff_failure_never_falls_back_to_transcript_only() -> None:
+    runtime = _Runtime()
+    _install_ready_lifecycle(runtime, "qwen")
+    runtime._asr_route_mode = "independent"
+    runtime.session.get_multimodal_turn_delivery = MagicMock(
+        return_value="handoff_required"
+    )
+    runtime.session.submit_external_voice_turn = AsyncMock()
+    runtime._handoff_to_offline_vlm_and_submit = AsyncMock(return_value=False)
+    runtime.is_preparing_new_session = True
+    runtime.message_cache_for_new_session = [
+        {"role": "Test", "text": "earlier reply"}
+    ]
+
+    async def cache_current_final(*_args, **_kwargs) -> bool:
+        runtime.message_cache_for_new_session.append(
+            {"role": "master", "text": "what is this"}
+        )
+        return True
+
+    runtime.handle_input_transcript.side_effect = cache_current_final
+    token = runtime._asr_runtime._capture_turn_token(runtime._asr_lifecycle)
+    turn_id = f"asr-{token.ingress.session_epoch}-{token.turn_id}"
+    runtime._begin_core_multimodal_turn(turn_id, token)
+    assert runtime._stage_independent_visual_frame(
+        "raw-frame",
+        source="camera",
+        request_id="camera-1",
+        captured_at=time.monotonic(),
+    )
+
+    await runtime._dispatch_core_asr_transcript(
+        VoiceTranscriptEvent(
+            turn_token=token,
+            provider="qwen",
+            text="what is this",
+        )
+    )
+
+    runtime._handoff_to_offline_vlm_and_submit.assert_awaited_once()
+    handoff_kwargs = (
+        runtime._handoff_to_offline_vlm_and_submit.await_args.kwargs
+    )
+    assert handoff_kwargs["prepared_session"] is runtime.session
+    assert handoff_kwargs["cached_turns_before_final"] == [
+        {"role": "Test", "text": "earlier reply"}
+    ]
+    runtime.session.submit_external_voice_turn.assert_not_awaited()
+    assert "ASR_MULTIMODAL_TURN_FAILED" in str(
+        runtime.send_status.await_args_list
+    )
 
 
 @pytest.mark.unit

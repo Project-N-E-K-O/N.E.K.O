@@ -14,6 +14,7 @@
 # limitations under the License.
 
 from ._shared import (
+    asyncio,
     HumanMessage,
     logger,
     time,
@@ -21,8 +22,43 @@ from ._shared import (
 
 
 class _MediaMixin:
+    class _ExternalVoiceSubmitCancelled(Exception):
+        """Business cancellation of one externally transcribed user turn."""
+
+    @staticmethod
+    async def _ignore_already_recorded_external_transcript(_text: str) -> None:
+        return None
+
     async def stream_audio(self, audio_chunk: bytes) -> None:
         """Compatibility method - not used in text mode"""
+
+    async def _run_external_voice_stream(self, text: str) -> None:
+        """Run one externally transcribed turn under cancellable task ownership."""
+
+        task = asyncio.create_task(
+            self.stream_text(
+                text,
+                input_transcript_callback=(
+                    self._ignore_already_recorded_external_transcript
+                ),
+            )
+        )
+        self._external_voice_submit_task = task
+        try:
+            try:
+                await task
+            except asyncio.CancelledError as exc:
+                parent = asyncio.current_task()
+                if parent is not None and parent.cancelling():
+                    raise
+                # handle_interruption()/close() cancel the owned child, not the
+                # serial transcript worker awaiting this wrapper. Convert that
+                # child-cancel echo into an ordinary per-turn failure so the
+                # worker can consume the next queued final.
+                raise self._ExternalVoiceSubmitCancelled() from exc
+        finally:
+            if getattr(self, "_external_voice_submit_task", None) is task:
+                self._external_voice_submit_task = None
 
     async def stream_image(self, image_b64: str, *, bypass_rate_limit: bool = False) -> None:
         """
@@ -39,6 +75,72 @@ class _MediaMixin:
         # Store base64 image
         self._pending_images.append(image_b64)
         logger.info(f"Added image to pending queue (total: {len(self._pending_images)})")
+
+    async def submit_multimodal_turn(
+        self,
+        text: str,
+        image_b64: str,
+        *,
+        turn_id: str,
+    ) -> bool:
+        """Submit exactly one raw image with one transcript as a user turn.
+
+        Independent ASR already recorded and displayed the transcript before a
+        possible session promotion. Suppress the regular Offline input callback
+        here so the same user turn is not counted or persisted twice.
+        """
+
+        if not image_b64 or not str(text or "").strip():
+            raise ValueError("MULTIMODAL_TURN_REQUIRES_IMAGE_AND_TEXT")
+        lock = getattr(self, "_multimodal_submit_lock", None)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._multimodal_submit_lock = lock
+
+        async with lock:
+            pending = getattr(self, "_pending_images", None)
+            staged_index = len(pending) if isinstance(pending, list) else None
+            await self.stream_image(image_b64, bypass_rate_limit=True)
+            try:
+                await self._run_external_voice_stream(text)
+            except BaseException as exc:
+                # stream_text consumes pending images as soon as it constructs
+                # the HumanMessage. If it failed before that point, remove only
+                # this turn's staged frame so it cannot leak into a later turn.
+                current_pending = getattr(self, "_pending_images", None)
+                if (
+                    staged_index is not None
+                    and current_pending is pending
+                    and len(pending) > staged_index
+                    and pending[staged_index] is image_b64
+                ):
+                    del pending[staged_index]
+                if isinstance(exc, self._ExternalVoiceSubmitCancelled):
+                    return False
+                raise
+            return True
+
+    async def submit_external_voice_turn(
+        self,
+        text: str,
+        *,
+        turn_id: str,
+    ) -> bool:
+        """Generate a text/TTS reply for a later image-free independent-ASR turn."""
+
+        del turn_id
+        if not str(text or "").strip():
+            return False
+        lock = getattr(self, "_multimodal_submit_lock", None)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._multimodal_submit_lock = lock
+        async with lock:
+            try:
+                await self._run_external_voice_stream(text)
+            except self._ExternalVoiceSubmitCancelled:
+                return False
+            return True
 
     def has_pending_images(self) -> bool:
         """Check if there are pending images waiting to be sent."""

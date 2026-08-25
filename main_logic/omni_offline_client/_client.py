@@ -144,6 +144,7 @@ class OmniOfflineClient(_ToolingMixin, _GenaiMixin, _StreamingMixin, _MediaMixin
         self.provider_type = provider_type
         self.vision_provider_type = vision_provider_type or provider_type
         self._model_switch_lock = asyncio.Lock()
+        self._multimodal_submit_lock = asyncio.Lock()
         self.on_text_delta = on_text_delta
         # Called with True the first time a stream emits a reasoning / thinking
         # chunk (the text itself is filtered out before it reaches text/TTS —

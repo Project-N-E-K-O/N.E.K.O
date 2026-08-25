@@ -141,6 +141,7 @@ FACADE_MODULE_ALIAS = "_core_facade"
 OWNER_SUBMODULES = {
     "_shared",
     "callback_render",
+    "multimodal_turn",
     "notices",
 }
 MIXIN_SUPPORT_CLASSES = {

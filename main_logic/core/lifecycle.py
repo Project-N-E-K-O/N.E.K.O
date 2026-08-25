@@ -1452,6 +1452,380 @@ class LifecycleMixin:
             raise ConnectionError(f"❌ 记忆服务返回非2xx状态 {resp.status_code}: {resp.text[:200]}")
         return resp.text
 
+    def _create_offline_vlm_client(
+        self,
+        *,
+        conversation_config: dict,
+        vision_config: dict,
+        tool_definitions: list,
+        max_response_length: int,
+        external_tts_enabled: bool,
+    ) -> OmniOfflineClient:
+        """Build the shared Offline/VLM client used by starts and promotions."""
+
+        session = OmniOfflineClient(
+            base_url=conversation_config['base_url'],
+            api_key=conversation_config['api_key'],
+            model=conversation_config['model'],
+            vision_model=vision_config['model'],
+            vision_base_url=vision_config['base_url'],
+            vision_api_key=vision_config['api_key'],
+            provider_type=conversation_config.get('provider_type'),
+            vision_provider_type=vision_config.get('provider_type'),
+            on_text_delta=self.handle_text_data,
+            on_input_transcript=self.handle_text_input_transcript,
+            on_output_transcript=self.handle_output_transcript,
+            on_connection_error=self.handle_connection_error,
+            on_response_done=self.handle_response_complete,
+            on_repetition_detected=self.handle_repetition_detected,
+            on_response_discarded=self.handle_response_discarded,
+            on_status_message=self.send_status,
+            max_response_length=max_response_length,
+            lanlan_name=self.lanlan_name,
+            master_name=self.master_name,
+            user_language_provider=lambda: self.user_language,
+            on_tool_call=self._on_tool_call,
+            tool_definitions=tool_definitions,
+            enable_long_response_summary=external_tts_enabled,
+        )
+        session.on_proactive_done = self.handle_proactive_complete
+        session.on_thinking_active = self._make_thinking_active_callback(session)
+        return session
+
+    async def _create_offline_vlm_handoff_candidate(
+        self,
+        *,
+        cached_turns: list[dict],
+    ):
+        """Connect an Offline VLM without mutating active-session ownership."""
+
+        await self._config_manager.aensure_region_resolved()
+        core_config = await self._config_manager.aget_core_config()
+        conversation_config, vision_config = await asyncio.gather(
+            self._config_manager.aget_model_api_config(
+                'conversation', core_config=core_config,
+            ),
+            self._config_manager.aget_model_api_config(
+                'vision', core_config=core_config,
+            ),
+        )
+        self._register_builtin_tools()
+        candidate = self._create_offline_vlm_client(
+            conversation_config=conversation_config,
+            vision_config=vision_config,
+            tool_definitions=self.tool_registry.all(),
+            max_response_length=self._get_text_guard_max_length(),
+            external_tts_enabled=not core_config.get('DISABLE_TTS', False),
+        )
+        next_context = self._snapshot_next_session_context_messages()
+        try:
+            initial_prompt = await self._build_initial_prompt()
+            initial_prompt += await self._start_session_fetch_new_dialog(
+                self.lanlan_name,
+                self.memory_server_port,
+            )
+            initial_prompt += self._convert_cache_to_str(next_context)
+            initial_prompt += self._convert_cache_to_str(cached_turns)
+            self._bind_session_lifecycle_callbacks(candidate)
+            await candidate.connect(initial_prompt, native_audio=False)
+        except BaseException:
+            try:
+                await candidate.close()
+            except Exception:
+                pass
+            raise
+        return candidate, len(next_context)
+
+    async def _handoff_to_offline_vlm_and_submit(
+        self,
+        turn,
+        *,
+        expected_session,
+        prepared_session,
+        operation_is_current,
+        cached_turns_before_final: list[dict],
+    ) -> bool:
+        """Two-phase Realtime -> Offline VLM promotion for one raw-image turn.
+
+        Candidate construction is side-effect free for the active session. The
+        old Realtime session is retired only after the Offline VLM connected and
+        the independent-ASR route still owns the same turn.
+        """
+
+        lock = getattr(self, '_multimodal_handoff_lock', None)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._multimodal_handoff_lock = lock
+        async with lock:
+            # A normal hot-swap can promote an Offline session after the ASR
+            # dispatcher releases its barrier but before this handoff lock is
+            # entered. Re-read behind the same swap barrier and prepare that
+            # exact session before using the fast path; a naked type check here
+            # would race a second promotion and submit into a retired client.
+            session_swap_lock = self._core_voice_session_swap_lock
+            try:
+                await asyncio.wait_for(
+                    session_swap_lock.acquire(),
+                    timeout=self._core_voice_session_swap_barrier_timeout_s,
+                )
+            except asyncio.TimeoutError:
+                logger.warning(
+                    '[%s] Offline VLM handoff timed out waiting for entry barrier',
+                    self.lanlan_name,
+                )
+                return False
+            try:
+                current = getattr(self, 'session', None)
+                if isinstance(current, OmniOfflineClient):
+                    if not operation_is_current():
+                        return False
+                    # The session captured at ASR prepare already owns the turn:
+                    # repeating interruption/handle_new_message would rotate its
+                    # speech id twice. Only a hot-swap replacement needs the
+                    # preparation that could not run at the original boundary.
+                    if current is not prepared_session:
+                        prepare = getattr(
+                            current,
+                            'prepare_external_voice_turn',
+                            None,
+                        )
+                        if callable(prepare):
+                            reconnected = await prepare(turn_id=turn.turn_id)
+                            if reconnected is True and not await (
+                                self._restart_message_handler_after_session_reconnect(
+                                    current
+                                )
+                            ):
+                                return False
+                        else:
+                            interrupt = getattr(
+                                current,
+                                'handle_interruption',
+                                None,
+                            )
+                            if callable(interrupt):
+                                await interrupt()
+                        if (
+                            not operation_is_current()
+                            or self.session is not current
+                        ):
+                            return False
+                        await self.handle_new_message()
+                        if (
+                            not operation_is_current()
+                            or self.session is not current
+                        ):
+                            return False
+                    submit = getattr(current, 'submit_multimodal_turn', None)
+                    if not callable(submit):
+                        return False
+                    self.response_backend = 'offline_vlm'
+                    try:
+                        await self.ensure_tts_pipeline_alive()
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as exc:
+                        logger.warning(
+                            '[%s] Offline VLM submit TTS retry failed: %s',
+                            self.lanlan_name,
+                            exc,
+                        )
+                        return False
+                    if (
+                        not operation_is_current()
+                        or self.session is not current
+                    ):
+                        return False
+                    delivered = await submit(
+                        turn.transcript,
+                        turn.image_b64,
+                        turn_id=turn.turn_id,
+                    )
+                    return delivered is not False
+                if current is None or not operation_is_current():
+                    return False
+                if current is not expected_session:
+                    # A same-conversation normal hot-swap may have promoted a
+                    # newer Realtime session after the dispatcher selected its
+                    # handoff source. The multimodal user turn has priority:
+                    # prepare the replacement behind the barrier and continue
+                    # candidate construction from that exact live identity.
+                    prepare = getattr(
+                        current,
+                        'prepare_external_voice_turn',
+                        None,
+                    )
+                    if callable(prepare):
+                        reconnected = await prepare(turn_id=turn.turn_id)
+                        if reconnected is True and not await (
+                            self._restart_message_handler_after_session_reconnect(
+                                current
+                            )
+                        ):
+                            return False
+                    else:
+                        interrupt = getattr(current, 'handle_interruption', None)
+                        if callable(interrupt):
+                            await interrupt()
+                    if (
+                        not operation_is_current()
+                        or self.session is not current
+                    ):
+                        return False
+                    expected_session = current
+            finally:
+                session_swap_lock.release()
+
+            # A user-owned multimodal final supersedes speculative archival
+            # preparation. Cancel and close that candidate before building a
+            # dedicated local replacement; never borrow pending_session's slot.
+            await self._reset_preparation_state(clear_main_cache=False)
+            await self._cleanup_pending_session_resources()
+            if (
+                not operation_is_current()
+                or self.session is not expected_session
+            ):
+                return False
+
+            try:
+                candidate, next_context_count = (
+                    await self._create_offline_vlm_handoff_candidate(
+                        cached_turns=cached_turns_before_final,
+                    )
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.warning(
+                    '[%s] Offline VLM handoff preparation failed: %s',
+                    self.lanlan_name,
+                    exc,
+                )
+                return False
+
+            promoted = False
+            old_listener = self.message_handler_task
+            try:
+                if (
+                    not operation_is_current()
+                    or self.session is not expected_session
+                ):
+                    return False
+                try:
+                    await asyncio.wait_for(
+                        session_swap_lock.acquire(),
+                        timeout=self._core_voice_session_swap_barrier_timeout_s,
+                    )
+                except asyncio.TimeoutError:
+                    logger.warning(
+                        '[%s] Offline VLM handoff timed out waiting for promotion barrier',
+                        self.lanlan_name,
+                    )
+                    return False
+                try:
+                    if (
+                        not operation_is_current()
+                        or self.session is not expected_session
+                    ):
+                        return False
+                    if old_listener and not old_listener.done():
+                        old_listener.cancel()
+                        try:
+                            await asyncio.wait_for(old_listener, timeout=2.0)
+                        except asyncio.CancelledError:
+                            current_task = asyncio.current_task()
+                            if current_task is not None and current_task.cancelling():
+                                raise
+                        except asyncio.TimeoutError:
+                            logger.error(
+                                '[%s] Offline VLM handoff: old listener cancellation timed out',
+                                self.lanlan_name,
+                            )
+                            return False
+                        except Exception as exc:
+                            logger.debug(
+                                '[%s] Offline VLM handoff: old listener exited with error: %s',
+                                self.lanlan_name,
+                                exc,
+                            )
+                    try:
+                        await expected_session.close()
+                    except Exception as exc:
+                        logger.warning(
+                            '[%s] Offline VLM handoff: old session close failed: %s',
+                            self.lanlan_name,
+                            exc,
+                        )
+                    async with self.lock:
+                        if self.session is not expected_session:
+                            return False
+                        self.session = candidate
+                        promoted = True
+                finally:
+                    session_swap_lock.release()
+
+                self.response_backend = 'offline_vlm'
+                # Offline emits text even though microphone ownership remains
+                # audio/independent-ASR, so its response always needs the
+                # external TTS pipeline.
+                self.use_tts = True
+                self.message_handler_task = asyncio.create_task(
+                    candidate.handle_messages()
+                )
+                # Promotion is already committed. Settle the context ownership
+                # before any later initialization await so a fail-closed turn
+                # cannot leave the promoted session paired with stale cache.
+                self._consume_next_session_context_messages(next_context_count)
+                self.message_cache_for_new_session = []
+                self.is_preparing_new_session = False
+                self.summary_triggered_time = None
+                try:
+                    await self.ensure_tts_pipeline_alive()
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    # Keep the promoted Offline session coherent and listened
+                    # to, but do not submit a reply that cannot own its TTS
+                    # lifecycle. A later turn may retry the TTS pipeline.
+                    logger.warning(
+                        '[%s] Offline VLM handoff TTS initialization failed: %s',
+                        self.lanlan_name,
+                        exc,
+                    )
+                    return False
+                try:
+                    await self._sync_tools_to_active_session()
+                except Exception as exc:
+                    logger.warning(
+                        '[%s] Offline VLM handoff tool sync failed: %s',
+                        self.lanlan_name,
+                        exc,
+                    )
+                # New speech can invalidate the frozen image owner while TTS
+                # or tool synchronization is awaiting. The candidate remains
+                # the active answer backend, but the superseded turn must never
+                # reach it.
+                if (
+                    not operation_is_current()
+                    or self.session is not candidate
+                ):
+                    return False
+                submit = getattr(candidate, 'submit_multimodal_turn', None)
+                if not callable(submit):
+                    raise RuntimeError('OFFLINE_MULTIMODAL_SUBMIT_UNAVAILABLE')
+                delivered = await submit(
+                    turn.transcript,
+                    turn.image_b64,
+                    turn_id=turn.turn_id,
+                )
+                return delivered is not False
+            finally:
+                if not promoted:
+                    try:
+                        await candidate.close()
+                    except Exception:
+                        pass
+
     async def _start_session_start_llm(self, input_mode, core_config_snapshot,
                                        prepared_realtime_config,
                                        new_dialog_task, mem_start):
@@ -1555,47 +1929,16 @@ class LifecycleMixin:
             vision_config = await self._config_manager.aget_model_api_config(
                 'vision', core_config=_fresh_core_config
             )
-            new_session = OmniOfflineClient(
-                base_url=conversation_config['base_url'],
-                api_key=conversation_config['api_key'],
-                model=conversation_config['model'],
-                vision_model=vision_config['model'],
-                vision_base_url=vision_config['base_url'],
-                vision_api_key=vision_config['api_key'],
-                provider_type=conversation_config.get('provider_type'),
-                vision_provider_type=vision_config.get('provider_type'),
-                on_text_delta=self.handle_text_data,
-                # on_thinking_active bound below via a session-scoped
-                # closure so only the LIVE session drives the bubble.
-                on_input_transcript=self.handle_text_input_transcript,
-                on_output_transcript=self.handle_output_transcript,
-                on_connection_error=self.handle_connection_error,
-                on_response_done=self.handle_response_complete,
-                on_repetition_detected=self.handle_repetition_detected,
-                on_response_discarded=self.handle_response_discarded,
-                on_status_message=self.send_status,
-                max_response_length=guard_max_length,
-                lanlan_name=self.lanlan_name,
-                master_name=self.master_name,
-                # Live resolver so a mid-session language switch is
-                # reflected in slop reduction without re-creating the client.
-                user_language_provider=lambda: self.user_language,
-                on_tool_call=self._on_tool_call,
+            new_session = self._create_offline_vlm_client(
+                conversation_config=conversation_config,
+                vision_config=vision_config,
                 tool_definitions=_initial_tool_defs,
-                # 长回复 summary 必须有"真的会发声的 TTS"才有意义：summary
-                # 文本是 `tts_enabled=True, ui_enabled=False` 注入的，若 TTS
-                # 实际不发声它会被 handle_text_data 静默丢掉，但 history 仍被
-                # 重写成 prefix+summary —— 静音会话会"live 看到全文、reload 看
-                # 不到尾巴"，是隐性内容丢失。注意 `_resolve_session_use_tts` 对
-                # text mode 永远返回 True；真正的"发声"还要 DISABLE_TTS=False，
-                # 否则 tts_worker 会被换成 dummy_tts_worker。
-                enable_long_response_summary=(
+                max_response_length=guard_max_length,
+                external_tts_enabled=(
                     self.use_tts
                     and not core_config_snapshot.get('DISABLE_TTS', False)
                 ),
             )
-            new_session.on_proactive_done = self.handle_proactive_complete
-            new_session.on_thinking_active = self._make_thinking_active_callback(new_session)
         else:
             # 同上：await 记忆拉取之后必须重读，不复用 prepare_runtime 的快照
             _prev_realtime_base = str((prepared_realtime_config or {}).get('base_url') or '')
@@ -1724,6 +2067,11 @@ class LifecycleMixin:
         input gate after queued context is drained."""
         async with self.lock:
             self.is_active = True
+        self.response_backend = (
+            'offline_vlm'
+            if isinstance(self.session, OmniOfflineClient)
+            else 'realtime'
+        )
 
         # Activity tracker：voice_engaged state 的硬前置就是 voice mode flag。
         # 文本模式置 False 让 voice_engaged 永不触发；语音模式打开后由
@@ -1839,8 +2187,12 @@ class LifecycleMixin:
             if old_voice_id != self.voice_id:
                 logger.info(f"🔄 热切换准备: voice_id已更新: '{old_voice_id}' -> '{self.voice_id}'")
 
+            pending_offline_vlm = (
+                self.input_mode == 'text'
+                or getattr(self, 'response_backend', 'realtime') == 'offline_vlm'
+            )
             self.pending_use_tts = self._resolve_session_use_tts(
-                self.input_mode,
+                'text' if pending_offline_vlm else self.input_mode,
                 realtime_config,
                 core_config_snapshot,
                 log_prefix="热切换准备: ",
@@ -1853,7 +2205,7 @@ class LifecycleMixin:
             # 抓快照前 refresh 一下内置工具的 description。
             self._register_builtin_tools()
             _pending_tool_defs = self.tool_registry.all()
-            if self.input_mode == 'text':
+            if pending_offline_vlm:
                 # 文本模式：使用 OmniOfflineClient
                 # 与主会话构造点对偶：顶部快照与此处之间隔着角色数据读取等 await，
                 # 故重新读一份新鲜快照，并让 conversation / vision 共用它，避免撕裂
@@ -1879,42 +2231,16 @@ class LifecycleMixin:
                     'vision', core_config=_fresh_core_config
                 )
                 guard_max_length = self._get_text_guard_max_length()
-                self.pending_session = OmniOfflineClient(
-                    base_url=conversation_config['base_url'],
-                    api_key=conversation_config['api_key'],
-                    model=conversation_config['model'],
-                    vision_model=vision_config['model'],
-                    vision_base_url=vision_config['base_url'],
-                    vision_api_key=vision_config['api_key'],
-                    on_text_delta=self.handle_text_data,
-                    # on_thinking_active bound below via a session-scoped closure:
-                    # the pending session must NOT light the current window's
-                    # bubble while it warms up / before the hot-swap promotes it.
-                    on_input_transcript=self.handle_text_input_transcript,
-                    on_output_transcript=self.handle_output_transcript,
-                    on_connection_error=self.handle_connection_error,
-                    on_response_done=self.handle_response_complete,
-                    on_repetition_detected=self.handle_repetition_detected,
-                    on_response_discarded=self.handle_response_discarded,
-                    on_status_message=self.send_status,
-                    max_response_length=guard_max_length,
-                    lanlan_name=self.lanlan_name,
-                    master_name=self.master_name,
-                    # 与上方对偶：实时解析 user_language，热切换跨语言也能正确选规则集。
-                    user_language_provider=lambda: self.user_language,
-                    on_tool_call=self._on_tool_call,
+                self.pending_session = self._create_offline_vlm_client(
+                    conversation_config=conversation_config,
+                    vision_config=vision_config,
                     tool_definitions=_pending_tool_defs,
-                    # 与上方对偶：长回复 summary 必须有"真的会发声的 TTS"才有意义
-                    # （理由见 main session 构造点的注释）。pending_use_tts 是热切换
-                    # 准备时已 resolve 的下一轮 use_tts；DISABLE_TTS 仍需独立检查
-                    # 因为它会把 worker 换成 dummy_tts_worker。
-                    enable_long_response_summary=(
+                    max_response_length=guard_max_length,
+                    external_tts_enabled=(
                         self.pending_use_tts
                         and not core_config_snapshot.get('DISABLE_TTS', False)
                     ),
                 )
-                self.pending_session.on_proactive_done = self.handle_proactive_complete
-                self.pending_session.on_thinking_active = self._make_thinking_active_callback(self.pending_session)
                 logger.info("🔄 热切换准备: 创建文本模式 OmniOfflineClient")
             else:
                 # 语音模式：使用 OmniRealtimeClient
@@ -2842,6 +3168,11 @@ class LifecycleMixin:
             # 成功后。窗口期被 drain/清扫抢先消费的条目在此 no-op。
             _removed_passive_cbs = self._remove_swap_delivered_passive_cbs(
                 _prime_selected_passive_cbs
+            )
+            self.response_backend = (
+                'offline_vlm'
+                if isinstance(self.session, OmniOfflineClient)
+                else 'realtime'
             )
             self._require_context_append_current_delivery = True
             next_context_count_at_promote = len(self._snapshot_next_session_context_messages())

@@ -497,8 +497,26 @@ class _LifecycleMixin:
         """Cancel the current response if possible"""
         self._is_responding = False
 
+    async def _cancel_external_voice_submit_task(self) -> bool:
+        """Cancel the narrow external-ASR child task, if another task owns it."""
+
+        submit_task = getattr(self, "_external_voice_submit_task", None)
+        if (
+            submit_task is None
+            or submit_task is asyncio.current_task()
+        ):
+            return False
+        if not submit_task.done():
+            submit_task.cancel()
+        await asyncio.gather(submit_task, return_exceptions=True)
+        if getattr(self, "_external_voice_submit_task", None) is submit_task:
+            self._external_voice_submit_task = None
+        return True
+
     async def handle_interruption(self):
         """Handle user interruption - cancel current response"""
+        if await self._cancel_external_voice_submit_task():
+            logger.info("Cancelling pending external voice submit")
         if not self._is_responding:
             return
 
@@ -519,6 +537,7 @@ class _LifecycleMixin:
 
     async def close(self) -> None:
         """Close the client and cleanup resources."""
+        await self._cancel_external_voice_submit_task()
         self._is_responding = False
         self._conversation_history = []
         self._pending_images.clear()

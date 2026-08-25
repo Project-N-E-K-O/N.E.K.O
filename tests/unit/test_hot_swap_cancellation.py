@@ -44,7 +44,11 @@ import pytest
 
 import main_logic.core as core_module
 from main_logic.omni_offline_client import OmniOfflineClient
-from main_logic.omni_realtime_client import ImageStageResult, OmniRealtimeClient
+from main_logic.omni_realtime_client import (
+    ImageStageResult,
+    MultimodalTurnDelivery,
+    OmniRealtimeClient,
+)
 from main_logic.proactive_delivery import (
     CALLBACK_EXPIRES_AT_KEY,
     DELIVERY_ACK_FUTURE_KEY,
@@ -1532,6 +1536,9 @@ async def test_passive_native_rejection_retires_replacement_before_callback_ack(
     new_session._fatal_error_occurred = False
     new_session._is_gemini = False
     new_session._session_update_ack_waiters = []
+    new_session.get_multimodal_turn_delivery = MagicMock(
+        return_value=MultimodalTurnDelivery.DIRECT_ATOMIC
+    )
     new_session.instructions = "initial instructions"
     new_session.closed = False
     new_session.prime_calls = []

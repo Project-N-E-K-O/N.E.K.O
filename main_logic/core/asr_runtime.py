@@ -57,6 +57,11 @@ from main_logic.voice_turn.audio_input import (
 from main_logic import core as _core_facade
 
 from ._shared import logger
+from .multimodal_turn import (
+    MultimodalTurn,
+    _CoreMultimodalTurnRecord,
+    _IndependentVisualFrame,
+)
 
 @dataclass(frozen=True, slots=True)
 class _QueuedMicFrame:
@@ -263,6 +268,10 @@ class AsrRuntimeMixin:
         # has atomically exposed the replacement.
         self._core_voice_session_swap_lock = asyncio.Lock()
         self._core_voice_session_swap_barrier_timeout_s = 5.0
+        self._independent_visual_generation = 0
+        self._independent_visual_frame_ttl_s = 5.0
+        self._latest_independent_visual_frame: _IndependentVisualFrame | None = None
+        self._core_multimodal_turns: dict[str, _CoreMultimodalTurnRecord] = {}
         self._independent_asr_provider: str | None = None
         self._independent_asr_route_key: str | None = None
         self._independent_asr_handshake_override: bool | None = None
@@ -357,6 +366,14 @@ class AsrRuntimeMixin:
             self._core_voice_session_swap_lock = asyncio.Lock()
         if not hasattr(self, "_core_voice_session_swap_barrier_timeout_s"):
             self._core_voice_session_swap_barrier_timeout_s = 5.0
+        if not hasattr(self, "_independent_visual_generation"):
+            self._independent_visual_generation = 0
+        if not hasattr(self, "_independent_visual_frame_ttl_s"):
+            self._independent_visual_frame_ttl_s = 5.0
+        if not hasattr(self, "_latest_independent_visual_frame"):
+            self._latest_independent_visual_frame = None
+        if not hasattr(self, "_core_multimodal_turns"):
+            self._core_multimodal_turns = {}
         if not hasattr(self, "_voice_input_transition_generation"):
             self._voice_input_transition_generation = 0
         if not hasattr(self, "_voice_lease_resync_signal_state"):
@@ -394,6 +411,117 @@ class AsrRuntimeMixin:
         if not hasattr(self, "_voice_lease_resync_suppressed"):
             self._voice_lease_resync_suppressed = False
 
+    def _stage_independent_visual_frame(
+        self,
+        image_b64: str,
+        *,
+        source: str,
+        request_id: str | None,
+        captured_at: float,
+    ) -> bool:
+        """Stage one validated live frame without sending it to any model."""
+
+        self._ensure_asr_runtime_state()
+        if (
+            self._asr_route_mode != "independent"
+            or not image_b64
+            or not isinstance(captured_at, (int, float))
+        ):
+            return False
+
+        ingress = self._capture_ingress_token()
+        previous = self._latest_independent_visual_frame
+        stable_captured_at = float(captured_at)
+        if (
+            previous is not None
+            and previous.session_epoch == ingress.session_epoch
+            and previous.route_generation == self._voice_input_transition_generation
+            and stable_captured_at <= previous.captured_at
+        ):
+            return False
+
+        self._independent_visual_generation += 1
+        frame = _IndependentVisualFrame(
+            image_b64=image_b64,
+            session_epoch=ingress.session_epoch,
+            route_generation=self._voice_input_transition_generation,
+            generation=self._independent_visual_generation,
+            captured_at=stable_captured_at,
+            source=str(source or "unknown"),
+            request_id=(str(request_id) if request_id is not None else None),
+        )
+        self._latest_independent_visual_frame = frame
+        for record in tuple(self._core_multimodal_turns.values()):
+            if (
+                record.session_epoch == frame.session_epoch
+                and record.route_generation == frame.route_generation
+                and frame.generation > record.start_image_generation
+            ):
+                record.frame = frame
+        return True
+
+    def _begin_core_multimodal_turn(
+        self,
+        turn_id: str,
+        token: VoiceTurnToken,
+    ) -> None:
+        """Register raw-image ownership at the independent-ASR turn boundary."""
+
+        self._ensure_asr_runtime_state()
+        # The independent-ASR registry admits one Core chat utterance at a
+        # time. A newer prepare invalidates any older frame/text ownership
+        # synchronously, before candidate creation or provider awaits.
+        self._core_multimodal_turns.clear()
+        self._core_multimodal_turns[turn_id] = _CoreMultimodalTurnRecord(
+            turn_id=turn_id,
+            session_epoch=token.ingress.session_epoch,
+            route_generation=self._voice_input_transition_generation,
+            start_image_generation=self._independent_visual_generation,
+            started_at=time.monotonic(),
+        )
+
+    def _snapshot_core_multimodal_turn(
+        self,
+        turn_id: str,
+        transcript: str,
+    ) -> MultimodalTurn | None:
+        """Freeze the frame owned by ``turn_id``; stale frames are fail-closed."""
+
+        self._ensure_asr_runtime_state()
+        record = self._core_multimodal_turns.get(turn_id)
+        if record is None:
+            return None
+        frame = record.frame
+        if frame is None:
+            latest = self._latest_independent_visual_frame
+            if (
+                latest is not None
+                and latest.session_epoch == record.session_epoch
+                and latest.route_generation == record.route_generation
+                and time.monotonic() - latest.captured_at
+                <= self._independent_visual_frame_ttl_s
+            ):
+                frame = latest
+                record.frame = latest
+        if (
+            frame is None
+            or record.route_generation != self._voice_input_transition_generation
+            or frame.session_epoch != record.session_epoch
+            or frame.route_generation != record.route_generation
+        ):
+            return None
+        return MultimodalTurn(
+            turn_id=turn_id,
+            session_epoch=record.session_epoch,
+            route_generation=record.route_generation,
+            start_image_generation=record.start_image_generation,
+            image_generation=frame.generation,
+            captured_at=frame.captured_at,
+            image_b64=frame.image_b64,
+            transcript=transcript,
+            source=frame.source,
+            request_id=frame.request_id,
+        )
     def _begin_asr_route_operation(self) -> int:
         self._asr_route_operation_generation += 1
         return self._asr_route_operation_generation
@@ -462,32 +590,28 @@ class AsrRuntimeMixin:
         )
         if not callable(set_visual_delivery_mode):
             return
-        visual_mode: str | None
         if route_mode == "independent":
-            visual_mode = "external_description"
-        elif route_mode == "native":
-            visual_mode = "native"
-        else:
-            visual_mode = None
-        if visual_mode is None:
+            # Independent ASR owns raw frames in Core until transcript final.
+            # Arming the provider fence is sufficient; selecting the legacy
+            # external-description mode would reintroduce image annotation in
+            # an ordinary user conversation.
+            self._block_realtime_raw_visual_delivery()
+            return
+        if route_mode != "native":
             return
         try:
-            if route_mode == "independent":
-                self._block_realtime_raw_visual_delivery()
-            set_visual_delivery_mode(visual_mode)
-            if route_mode == "native":
-                allow_raw_visual_delivery = getattr(
-                    session,
-                    "allow_raw_visual_delivery",
-                    None,
-                )
-                if callable(allow_raw_visual_delivery):
-                    allow_raw_visual_delivery()
+            set_visual_delivery_mode("native")
+            allow_raw_visual_delivery = getattr(
+                session,
+                "allow_raw_visual_delivery",
+                None,
+            )
+            if callable(allow_raw_visual_delivery):
+                allow_raw_visual_delivery()
         except Exception as exc:
             # This setter only updates local session policy. A broken or stale
             # session must not take the independent-ASR microphone route down.
-            if route_mode == "native":
-                self._block_realtime_raw_visual_delivery()
+            self._block_realtime_raw_visual_delivery()
             logger.warning(
                 "[%s] visual delivery mode sync failed: %s",
                 self.lanlan_name,
@@ -1091,6 +1215,12 @@ class AsrRuntimeMixin:
         *,
         session_ref: object | None = None,
     ) -> None:
+        turns = getattr(self, "_core_multimodal_turns", None)
+        if turns is not None:
+            if turn_id is None:
+                turns.clear()
+            else:
+                turns.pop(turn_id, None)
         target_session = (
             session_ref if session_ref is not None else getattr(self, "session", None)
         )
@@ -2605,6 +2735,7 @@ class AsrRuntimeMixin:
             return False
         transition_generation = self._voice_input_transition_generation
         external_turn_id = f"asr-{token.ingress.session_epoch}-{token.turn_id}"
+        self._begin_core_multimodal_turn(external_turn_id, token)
         previous_preview_turn_id = self._core_asr_preview_turn_id
         previous_preview_turn_token = self._core_asr_preview_turn_token
         previous_preview_text = self._core_asr_preview_text
@@ -2690,6 +2821,8 @@ class AsrRuntimeMixin:
                 self._core_asr_preview_turn_id = previous_preview_turn_id
                 self._core_asr_preview_turn_token = previous_preview_turn_token
                 self._core_asr_preview_text = previous_preview_text
+            if not preparation_succeeded:
+                self._core_multimodal_turns.pop(external_turn_id, None)
 
     async def _submit_core_voice_turn(
         self,
@@ -2710,6 +2843,12 @@ class AsrRuntimeMixin:
 
         if session_ref is None:
             session_ref = self.session
+        if getattr(self, "response_backend", "realtime") == "offline_vlm":
+            # A failed promotion-time TTS initialization leaves the Offline
+            # conversation/listener usable. Retry the external TTS lifecycle on
+            # every later independent-ASR turn before asking it to generate;
+            # never push this concern into the general Offline stream_text path.
+            await self.ensure_tts_pipeline_alive()
         submit = getattr(session_ref, "submit_external_voice_turn", None)
         if callable(submit):
             await submit(text, turn_id=turn_id)
@@ -2726,6 +2865,7 @@ class AsrRuntimeMixin:
         external_turn_id = f"asr-{token.session_epoch}-{event.turn_token.turn_id}"
         if session_ref is None:
             session_ref = getattr(self, "session", None)
+        prepared_session_ref = session_ref
         transition_generation = self._voice_input_transition_generation
         try:
             if (
@@ -2744,6 +2884,22 @@ class AsrRuntimeMixin:
                 # next turn.
                 await self._send_core_asr_preview_clear(external_turn_id)
                 return
+            # A normal pending hot-swap may already be caching the conversation.
+            # Snapshot it before handle_input_transcript appends this final: the
+            # handoff candidate receives the prior context here, while the raw
+            # transcript itself is submitted exactly once with its image below.
+            cached_turns_before_final = [
+                dict(item)
+                for item in (
+                    getattr(self, "message_cache_for_new_session", None) or []
+                )
+                if isinstance(item, dict)
+            ]
+            turn_record = self._core_multimodal_turns.get(external_turn_id)
+            multimodal_turn = self._snapshot_core_multimodal_turn(
+                external_turn_id,
+                event.text,
+            )
             accepted = await self.handle_input_transcript(
                 event.text,
                 is_voice_source=True,
@@ -2765,6 +2921,12 @@ class AsrRuntimeMixin:
                     == self._voice_input_transition_generation
                     and self._voice_lease_owner == "core"
                     and self._ingress_token_matches(token)
+                    and (
+                        multimodal_turn is None
+                        or turn_record is None
+                        or self._core_multimodal_turns.get(external_turn_id)
+                        is turn_record
+                    )
                 )
 
             operation_still_current = route_still_core()
@@ -2781,6 +2943,24 @@ class AsrRuntimeMixin:
                     # the preview bubble and the clear must not remove it.
                     await self._send_core_asr_preview_clear(external_turn_id)
                 return
+            if getattr(self, "response_backend", "realtime") == "offline_vlm":
+                # handle_input_transcript historically keys voice display off
+                # the session class. After a main-session VLM promotion the
+                # input is still voice/independent-ASR even though the answering
+                # client is Offline, so preserve the same frontend event here.
+                websocket_ref = getattr(self, "websocket", None)
+                send_json = getattr(websocket_ref, "send_json", None)
+                if callable(send_json):
+                    try:
+                        await send_json({
+                            "type": "user_transcript",
+                            "text": event.text.strip(),
+                        })
+                    except Exception:
+                        logger.warning(
+                            "[%s] Offline VLM voice transcript delivery failed",
+                            self.lanlan_name,
+                        )
             await self._restore_core_asr_preview_after_final(
                 external_turn_id,
                 session_epoch=token.session_epoch,
@@ -2802,6 +2982,7 @@ class AsrRuntimeMixin:
             # the promoted replacement. Bound the wait so the serial transcript
             # dispatcher cannot be held forever by a stuck swap.
             session_swap_lock = self._core_voice_session_swap_lock
+            handoff_target = None
             try:
                 await asyncio.wait_for(
                     session_swap_lock.acquire(),
@@ -2841,13 +3022,59 @@ class AsrRuntimeMixin:
                             return
                     if not route_still_core() or self.session is not session_ref:
                         return
-                await self._submit_core_voice_turn(
-                    event.text,
-                    turn_id=external_turn_id,
-                    session_ref=session_ref,
-                )
+                if multimodal_turn is None:
+                    await self._submit_core_voice_turn(
+                        event.text,
+                        turn_id=external_turn_id,
+                        session_ref=session_ref,
+                    )
+                else:
+                    get_delivery = getattr(
+                        session_ref,
+                        "get_multimodal_turn_delivery",
+                        None,
+                    )
+                    delivery = (
+                        get_delivery() if callable(get_delivery) else None
+                    )
+                    delivery_value = str(
+                        getattr(delivery, "value", delivery) or "handoff_required"
+                    )
+                    if delivery_value == "direct_atomic":
+                        submit_multimodal = getattr(
+                            session_ref,
+                            "submit_multimodal_turn",
+                            None,
+                        )
+                        if not callable(submit_multimodal):
+                            raise RuntimeError(
+                                "DIRECT_MULTIMODAL_SUBMIT_UNAVAILABLE"
+                            )
+                        await submit_multimodal(
+                            multimodal_turn.transcript,
+                            multimodal_turn.image_b64,
+                            turn_id=multimodal_turn.turn_id,
+                        )
+                    else:
+                        # Candidate connect must happen outside the swap lock so
+                        # the healthy Realtime session remains usable until the
+                        # replacement is ready.
+                        handoff_target = session_ref
             finally:
                 session_swap_lock.release()
+            if handoff_target is not None:
+                delivered = await self._handoff_to_offline_vlm_and_submit(
+                    multimodal_turn,
+                    expected_session=handoff_target,
+                    prepared_session=prepared_session_ref,
+                    operation_is_current=route_still_core,
+                    cached_turns_before_final=cached_turns_before_final,
+                )
+                if not delivered and route_still_core():
+                    await self.send_status(json.dumps({
+                        "code": "ASR_MULTIMODAL_TURN_FAILED",
+                        "details": {"stage": "offline_vlm_handoff"},
+                    }))
         finally:
             self._abandon_core_voice_turn(
                 external_turn_id,

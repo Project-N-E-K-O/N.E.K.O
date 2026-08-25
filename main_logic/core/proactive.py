@@ -23,6 +23,7 @@ import asyncio
 import time
 from typing import Any, Optional
 from main_logic.omni_realtime_client import (
+    MultimodalTurnDelivery,
     OmniRealtimeClient,
     RealtimeImagePayloadTooLargeError,
 )
@@ -2328,8 +2329,10 @@ class ProactiveMixin:
 
         Passive consumers remove callbacks after rendering their text. Media
         therefore needs an explicit ownership handoff first: native/offline
-        images are staged into the exact session that will consume the prompt,
-        while external visual descriptions are folded into the callback body.
+        images are staged into the exact session that will consume the prompt.
+        A provider that requires image-to-text annotation is not a valid
+        consumer for this path; the callback remains queued until a raw-image
+        VLM session owns it.
         A transient rejection leaves the callback unready and queued.  The
         returned live outcome also covers WebSocket-native rejection events
         that can arrive after ``stream_image`` has returned; the hot-swap
@@ -2346,13 +2349,40 @@ class ProactiveMixin:
             "rejection_observed": asyncio.Event(),
         }
 
+        if session is None:
+            return outcome
+        realtime_session = isinstance(session, OmniRealtimeClient)
+        if realtime_session:
+            get_delivery = getattr(
+                session,
+                "get_multimodal_turn_delivery",
+                None,
+            )
+            try:
+                turn_delivery = (
+                    get_delivery()
+                    if callable(get_delivery)
+                    else MultimodalTurnDelivery.HANDOFF_REQUIRED
+                )
+            except Exception as exc:
+                logger.warning(
+                    "[%s] passive callback capability lookup failed; keeping callback queued for raw VLM: %s",
+                    self.lanlan_name,
+                    exc,
+                )
+                return outcome
+            if turn_delivery is not MultimodalTurnDelivery.DIRECT_ATOMIC:
+                # Gate before stream_image: legacy non-native adapters may
+                # implement that method by calling the annotation model. A
+                # passive callback belongs to the next natural user turn and
+                # must reach the final answering VLM as raw media instead.
+                return outcome
         stream_image = getattr(session, "stream_image", None)
-        if session is None or not callable(stream_image):
+        if not callable(stream_image):
             return outcome
         session_id = self._session_media_identity(session)
         if session_id is None:
             return outcome
-        realtime_session = isinstance(session, OmniRealtimeClient)
         websocket_native_session = realtime_session and not getattr(
             session,
             "_is_gemini",
@@ -2456,10 +2486,8 @@ class ProactiveMixin:
                 )
                 raw_mode = getattr(stage_result, "mode", None)
                 mode = getattr(raw_mode, "value", raw_mode)
-                description = getattr(stage_result, "description", None)
                 if not structured and isinstance(stage_result, str):
                     mode = "external_description"
-                    description = stage_result
                 if not accepted:
                     reason = getattr(stage_result, "rejection_reason", None)
                     if reason not in self._terminal_callback_image_rejections():
@@ -2481,32 +2509,24 @@ class ProactiveMixin:
                     )
                     continue
                 if mode == "external_description":
-                    clean_description = str(description or "").strip()
-                    if not clean_description:
-                        images.pop(index)
-                        callback["media_images"] = images
-                        continue
-                    existing = str(
-                        callback.get("detail")
-                        or callback.get("summary")
-                        or ""
-                    ).strip()
-                    visual_context = (
-                        "[系统视觉感知结果，不是用户陈述]\n"
-                        f"当前画面：{clean_description}"
-                    )
-                    combined = (
-                        f"{existing}\n{visual_context}"
-                        if existing
-                        else visual_context
-                    )
-                    callback["detail"] = self._normalize_context_text_for_source(
-                        callback.get("source_kind") or "unknown",
-                        combined,
-                    )
-                    images.pop(index)
+                    # Fail closed even if a stale/legacy adapter reports a
+                    # successful description. Passive callbacks ride a natural
+                    # user turn, so converting their image to text would bypass
+                    # the VLM takeover contract. Preserve both image and text;
+                    # do not mark the callback media-ready for this session.
                     callback["media_images"] = images
-                    continue
+                    if pending_images_snapshot is not None:
+                        pending_images[:] = pending_images_snapshot
+                        callback["_passive_media_staged_count"] = staged_count
+                    else:
+                        callback["_passive_media_staged_count"] = index
+                        if realtime_session and index > 0:
+                            outcome["safe_to_continue"] = False
+                    logger.warning(
+                        "[%s] passive callback image refused external-description delivery; keeping callback queued for raw VLM",
+                        self.lanlan_name,
+                    )
+                    break
                 if mode == "native" and realtime_session:
                     outcome["native_prefix_committed"] = True
                     if websocket_native_session:

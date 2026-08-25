@@ -267,6 +267,11 @@ class LLMSessionManager(
         
         # 模式标志: 'audio' 或 'text'
         self.input_mode = 'audio'
+        # Input ownership and response backend are independent. Independent ASR
+        # may keep the audio microphone route alive after the answering session
+        # has been promoted from Realtime to an Offline VLM.
+        self.response_backend = 'realtime'
+        self._multimodal_handoff_lock = asyncio.Lock()
         
         # 初始化时创建audio模式的session（默认）
         self.session = None

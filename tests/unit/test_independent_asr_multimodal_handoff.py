@@ -1,0 +1,795 @@
+import asyncio
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
+
+from main_logic.asr_client.lifecycle import VoiceIngressToken, VoiceTurnToken
+from main_logic.asr_client.transcript import (
+    TranscriptDispatcher,
+    TranscriptEnvelope,
+)
+from main_logic.core import LLMSessionManager
+from main_logic.omni_offline_client import OmniOfflineClient
+from main_logic.omni_realtime_client import OmniRealtimeClient
+
+
+pytestmark = pytest.mark.asyncio
+
+
+def _transcript_envelope(turn_id: int) -> TranscriptEnvelope:
+    token = VoiceTurnToken(
+        ingress=VoiceIngressToken(1, "socket", 2, 3, 4),
+        turn_id=turn_id,
+    )
+    return TranscriptEnvelope(token, "qwen", f"turn-{turn_id}")
+
+
+async def test_offline_multimodal_submit_suppresses_duplicate_transcript() -> None:
+    client = OmniOfflineClient.__new__(OmniOfflineClient)
+    client._pending_images = []
+    client._multimodal_submit_lock = asyncio.Lock()
+    client.stream_text = AsyncMock()
+
+    assert await client.submit_multimodal_turn(
+        "look",
+        "raw-image",
+        turn_id="turn-1",
+    ) is True
+
+    assert client._pending_images == ["raw-image"]
+    kwargs = client.stream_text.await_args.kwargs
+    callback = kwargs["input_transcript_callback"]
+    assert await callback("look") is None
+
+    await client.submit_external_voice_turn(
+        "what about the one on the left",
+        turn_id="turn-2",
+    )
+
+    assert client.stream_text.await_count == 2
+    followup = client.stream_text.await_args
+    assert followup.args == ("what about the one on the left",)
+    assert await followup.kwargs["input_transcript_callback"]("followup") is None
+
+
+async def test_offline_multimodal_failure_removes_only_this_turn_image() -> None:
+    client = OmniOfflineClient.__new__(OmniOfflineClient)
+    prior_equal_image = "".join(["raw", "-image"])
+    turn_image = "".join(["raw-", "image"])
+    assert prior_equal_image == turn_image
+    client._pending_images = [prior_equal_image]
+    client._multimodal_submit_lock = asyncio.Lock()
+    client.stream_text = AsyncMock(side_effect=RuntimeError("request failed"))
+
+    with pytest.raises(RuntimeError, match="request failed"):
+        await client.submit_multimodal_turn(
+            "look",
+            turn_image,
+            turn_id="turn-1",
+        )
+
+    assert client._pending_images == [prior_equal_image]
+
+
+async def test_offline_interruption_cancels_submit_during_model_switch() -> None:
+    client = OmniOfflineClient.__new__(OmniOfflineClient)
+    client._pending_images = []
+    client._multimodal_submit_lock = asyncio.Lock()
+    client._conversation_history = []
+    client._user_language_provider = None
+    client._is_responding = False
+    client._begin_reasoning_stream = MagicMock()
+    client.on_response_discarded = None
+    client.model = "text-model"
+    client.vision_model = "vision-model"
+    switch_started = asyncio.Event()
+
+    async def block_model_switch(*_args, **_kwargs) -> None:
+        switch_started.set()
+        await asyncio.Event().wait()
+
+    client.switch_model = AsyncMock(side_effect=block_model_switch)
+    submit_task = asyncio.create_task(
+        client.submit_multimodal_turn(
+            "look",
+            "raw-image",
+            turn_id="turn-1",
+        )
+    )
+    await asyncio.wait_for(switch_started.wait(), 1.0)
+
+    assert client._is_responding is False
+    await client.handle_interruption()
+
+    assert await submit_task is False
+    assert client._external_voice_submit_task is None
+    assert client._pending_images == []
+
+
+async def test_offline_close_cancels_submit_before_clearing_session_state() -> None:
+    client = OmniOfflineClient.__new__(OmniOfflineClient)
+    client._pending_images = []
+    client._multimodal_submit_lock = asyncio.Lock()
+    client._conversation_history = []
+    client._user_language_provider = None
+    client._is_responding = False
+    client._begin_reasoning_stream = MagicMock()
+    client.on_response_discarded = None
+    client.model = "text-model"
+    client.vision_model = "vision-model"
+    client._proactive_image_to_inject = None
+    client._proactive_image_staged_at = 0.0
+    client._proactive_image_history_len = 0
+    client.llm = None
+    client._genai_client = None
+    client._genai_tools_unsupported = False
+    switch_started = asyncio.Event()
+
+    async def block_model_switch(*_args, **_kwargs) -> None:
+        switch_started.set()
+        await asyncio.Event().wait()
+
+    client.switch_model = AsyncMock(side_effect=block_model_switch)
+    submit_task = asyncio.create_task(
+        client.submit_multimodal_turn(
+            "look",
+            "raw-image",
+            turn_id="turn-1",
+        )
+    )
+    await asyncio.wait_for(switch_started.wait(), 1.0)
+
+    await client.close()
+
+    assert await submit_task is False
+    assert client._external_voice_submit_task is None
+    assert client._pending_images == []
+    assert client._conversation_history == []
+    assert client.llm is None
+
+
+async def test_child_cancel_echo_does_not_stop_serial_transcript_worker() -> None:
+    client = OmniOfflineClient.__new__(OmniOfflineClient)
+    client._pending_images = []
+    client._multimodal_submit_lock = asyncio.Lock()
+    client._conversation_history = []
+    client._user_language_provider = None
+    client._is_responding = False
+    client._begin_reasoning_stream = MagicMock()
+    client.on_response_discarded = None
+    client.model = "text-model"
+    client.vision_model = "vision-model"
+    switch_started = asyncio.Event()
+    delivered: list[int] = []
+    injection_failures: list[int] = []
+
+    async def block_model_switch(*_args, **_kwargs) -> None:
+        switch_started.set()
+        await asyncio.Event().wait()
+
+    client.switch_model = AsyncMock(side_effect=block_model_switch)
+
+    async def dispatch(envelope: TranscriptEnvelope) -> None:
+        turn_id = envelope.turn_token.turn_id
+        if turn_id == 1:
+            try:
+                was_delivered = await client.submit_multimodal_turn(
+                    envelope.text,
+                    "raw-image",
+                    turn_id="turn-1",
+                )
+            except Exception:
+                injection_failures.append(turn_id)
+                raise
+            if not was_delivered:
+                return
+        delivered.append(turn_id)
+
+    dispatcher = TranscriptDispatcher(dispatch, capacity=2)
+    first = _transcript_envelope(1)
+    second = _transcript_envelope(2)
+    assert dispatcher.try_reserve(first.final_key)
+    assert dispatcher.try_reserve(second.final_key)
+    dispatcher.submit(first)
+    dispatcher.submit(second)
+    await asyncio.wait_for(switch_started.wait(), 1.0)
+
+    await client.handle_interruption()
+    await asyncio.wait_for(dispatcher.wait_idle(), 1.0)
+
+    assert delivered == [2]
+    assert injection_failures == []
+    assert dispatcher._worker is not None
+    assert not dispatcher._worker.done()
+    worker = dispatcher._worker
+    dispatcher.invalidate_all()
+    await worker
+
+
+async def test_parent_submit_cancellation_remains_control_cancellation() -> None:
+    client = OmniOfflineClient.__new__(OmniOfflineClient)
+    client._pending_images = []
+    client._multimodal_submit_lock = asyncio.Lock()
+    client._conversation_history = []
+    client._user_language_provider = None
+    client._is_responding = False
+    client._begin_reasoning_stream = MagicMock()
+    client.on_response_discarded = None
+    client.model = "text-model"
+    client.vision_model = "vision-model"
+    switch_started = asyncio.Event()
+
+    async def block_model_switch(*_args, **_kwargs) -> None:
+        switch_started.set()
+        await asyncio.Event().wait()
+
+    client.switch_model = AsyncMock(side_effect=block_model_switch)
+    submit_task = asyncio.create_task(
+        client.submit_multimodal_turn(
+            "look",
+            "raw-image",
+            turn_id="turn-1",
+        )
+    )
+    await asyncio.wait_for(switch_started.wait(), 1.0)
+
+    submit_task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await submit_task
+    assert client._external_voice_submit_task is None
+    assert client._pending_images == []
+
+
+@pytest.mark.parametrize("submit_fails", [False, True])
+async def test_two_phase_handoff_keeps_audio_input_and_asr_state_alive(
+    submit_fails: bool,
+) -> None:
+    manager = LLMSessionManager.__new__(LLMSessionManager)
+    manager.lanlan_name = "Test"
+    manager.input_mode = "audio"
+    manager.response_backend = "realtime"
+    manager._asr_route_mode = "independent"
+    manager._independent_asr_provider = "qwen"
+    manager._multimodal_handoff_lock = asyncio.Lock()
+    manager._core_voice_session_swap_lock = asyncio.Lock()
+    manager._core_voice_session_swap_barrier_timeout_s = 1.0
+    manager.lock = asyncio.Lock()
+    manager.message_cache_for_new_session = []
+    manager.is_preparing_new_session = True
+    manager.summary_triggered_time = object()
+    manager._reset_preparation_state = AsyncMock()
+    manager._cleanup_pending_session_resources = AsyncMock()
+    manager.ensure_tts_pipeline_alive = AsyncMock()
+    manager._sync_tools_to_active_session = AsyncMock()
+    manager._consume_next_session_context_messages = MagicMock()
+
+    old_session = SimpleNamespace(close=AsyncMock())
+    manager.session = old_session
+    listener_cancelled = asyncio.Event()
+
+    async def old_listener() -> None:
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            listener_cancelled.set()
+            raise
+
+    manager.message_handler_task = asyncio.create_task(old_listener())
+    await asyncio.sleep(0)
+
+    candidate = SimpleNamespace(
+        handle_messages=AsyncMock(),
+        submit_multimodal_turn=AsyncMock(
+            side_effect=(
+                RuntimeError("vlm request failed") if submit_fails else None
+            )
+        ),
+        close=AsyncMock(),
+    )
+    manager._create_offline_vlm_handoff_candidate = AsyncMock(
+        return_value=(candidate, 0)
+    )
+    prior_cache = [{"role": "Test", "text": "earlier reply"}]
+    turn = SimpleNamespace(
+        transcript="what is this",
+        image_b64="raw-image",
+        turn_id="turn-1",
+    )
+
+    handoff = manager._handoff_to_offline_vlm_and_submit(
+        turn,
+        expected_session=old_session,
+        prepared_session=old_session,
+        operation_is_current=lambda: True,
+        cached_turns_before_final=prior_cache,
+    )
+    if submit_fails:
+        with pytest.raises(RuntimeError, match="vlm request failed"):
+            await handoff
+        delivered = None
+    else:
+        delivered = await handoff
+
+    assert delivered is (None if submit_fails else True)
+    assert listener_cancelled.is_set()
+    old_session.close.assert_awaited_once_with()
+    assert manager.session is candidate
+    assert manager.input_mode == "audio"
+    assert manager._asr_route_mode == "independent"
+    assert manager._independent_asr_provider == "qwen"
+    assert manager.response_backend == "offline_vlm"
+    assert manager.use_tts is True
+    manager._reset_preparation_state.assert_awaited_once_with(
+        clear_main_cache=False
+    )
+    manager._cleanup_pending_session_resources.assert_awaited_once_with()
+    manager._create_offline_vlm_handoff_candidate.assert_awaited_once_with(
+        cached_turns=prior_cache
+    )
+    manager.ensure_tts_pipeline_alive.assert_awaited_once_with()
+    candidate.submit_multimodal_turn.assert_awaited_once_with(
+        "what is this",
+        "raw-image",
+        turn_id="turn-1",
+    )
+    candidate.close.assert_not_awaited()
+
+
+async def test_handoff_candidate_failure_preserves_realtime_session() -> None:
+    manager = LLMSessionManager.__new__(LLMSessionManager)
+    manager.lanlan_name = "Test"
+    manager._multimodal_handoff_lock = asyncio.Lock()
+    manager._core_voice_session_swap_lock = asyncio.Lock()
+    manager._core_voice_session_swap_barrier_timeout_s = 1.0
+    manager._reset_preparation_state = AsyncMock()
+    manager._cleanup_pending_session_resources = AsyncMock()
+    old_session = SimpleNamespace(close=AsyncMock())
+    manager.session = old_session
+    manager._create_offline_vlm_handoff_candidate = AsyncMock(
+        side_effect=RuntimeError("vision unavailable")
+    )
+    turn = SimpleNamespace(
+        transcript="what is this",
+        image_b64="raw-image",
+        turn_id="turn-1",
+    )
+
+    delivered = await manager._handoff_to_offline_vlm_and_submit(
+        turn,
+        expected_session=old_session,
+        prepared_session=old_session,
+        operation_is_current=lambda: True,
+        cached_turns_before_final=[],
+    )
+
+    assert delivered is False
+    assert manager.session is old_session
+    old_session.close.assert_not_awaited()
+
+
+async def test_new_user_turn_during_candidate_connect_cancels_old_handoff() -> None:
+    manager = LLMSessionManager.__new__(LLMSessionManager)
+    manager.lanlan_name = "Test"
+    manager._multimodal_handoff_lock = asyncio.Lock()
+    manager._core_voice_session_swap_lock = asyncio.Lock()
+    manager._core_voice_session_swap_barrier_timeout_s = 1.0
+    manager.lock = asyncio.Lock()
+    manager._reset_preparation_state = AsyncMock()
+    manager._cleanup_pending_session_resources = AsyncMock()
+    old_session = SimpleNamespace(close=AsyncMock())
+    manager.session = old_session
+    manager.message_handler_task = None
+    candidate = SimpleNamespace(
+        close=AsyncMock(),
+        submit_multimodal_turn=AsyncMock(),
+    )
+    connect_started = asyncio.Event()
+    release_connect = asyncio.Event()
+
+    async def connect_candidate(*, cached_turns):
+        del cached_turns
+        connect_started.set()
+        await release_connect.wait()
+        return candidate, 0
+
+    manager._create_offline_vlm_handoff_candidate = AsyncMock(
+        side_effect=connect_candidate
+    )
+    turn_owned = True
+    turn = SimpleNamespace(
+        transcript="old turn",
+        image_b64="old-frame",
+        turn_id="turn-old",
+    )
+    task = asyncio.create_task(
+        manager._handoff_to_offline_vlm_and_submit(
+            turn,
+            expected_session=old_session,
+            prepared_session=old_session,
+            operation_is_current=lambda: turn_owned,
+            cached_turns_before_final=[],
+        )
+    )
+    await asyncio.wait_for(connect_started.wait(), 1.0)
+
+    # A newer prepare synchronously drops the old Core turn record, which is
+    # represented by this ownership fence becoming false.
+    turn_owned = False
+    release_connect.set()
+
+    assert await asyncio.wait_for(task, 1.0) is False
+    assert manager.session is old_session
+    old_session.close.assert_not_awaited()
+    candidate.submit_multimodal_turn.assert_not_awaited()
+    candidate.close.assert_awaited_once_with()
+
+
+async def test_new_user_turn_after_promotion_skips_multimodal_submit() -> None:
+    manager = LLMSessionManager.__new__(LLMSessionManager)
+    manager.lanlan_name = "Test"
+    manager._multimodal_handoff_lock = asyncio.Lock()
+    manager._core_voice_session_swap_lock = asyncio.Lock()
+    manager._core_voice_session_swap_barrier_timeout_s = 1.0
+    manager.lock = asyncio.Lock()
+    manager.message_cache_for_new_session = []
+    manager.is_preparing_new_session = True
+    manager.summary_triggered_time = object()
+    manager._reset_preparation_state = AsyncMock()
+    manager._cleanup_pending_session_resources = AsyncMock()
+    manager.ensure_tts_pipeline_alive = AsyncMock()
+    manager._consume_next_session_context_messages = MagicMock()
+    manager.message_handler_task = None
+
+    old_session = SimpleNamespace(close=AsyncMock())
+    manager.session = old_session
+    listener_release = asyncio.Event()
+
+    async def listen() -> None:
+        await listener_release.wait()
+
+    turn_owned = True
+
+    async def invalidate_during_tool_sync() -> None:
+        nonlocal turn_owned
+        turn_owned = False
+
+    manager._sync_tools_to_active_session = AsyncMock(
+        side_effect=invalidate_during_tool_sync
+    )
+    candidate = SimpleNamespace(
+        handle_messages=AsyncMock(side_effect=listen),
+        submit_multimodal_turn=AsyncMock(),
+        close=AsyncMock(),
+    )
+    manager._create_offline_vlm_handoff_candidate = AsyncMock(
+        return_value=(candidate, 0)
+    )
+    turn = SimpleNamespace(
+        transcript="old turn",
+        image_b64="old-frame",
+        turn_id="turn-old",
+    )
+
+    try:
+        delivered = await manager._handoff_to_offline_vlm_and_submit(
+            turn,
+            expected_session=old_session,
+            prepared_session=old_session,
+            operation_is_current=lambda: turn_owned,
+            cached_turns_before_final=[],
+        )
+
+        assert delivered is False
+        assert manager.session is candidate
+        assert manager.response_backend == "offline_vlm"
+        assert manager.message_handler_task is not None
+        assert not manager.message_handler_task.done()
+        candidate.submit_multimodal_turn.assert_not_awaited()
+        candidate.close.assert_not_awaited()
+    finally:
+        listener_release.set()
+        if manager.message_handler_task is not None:
+            await manager.message_handler_task
+
+
+async def test_tts_failure_after_promotion_keeps_offline_listener_coherent() -> None:
+    manager = LLMSessionManager.__new__(LLMSessionManager)
+    manager.lanlan_name = "Test"
+    manager._multimodal_handoff_lock = asyncio.Lock()
+    manager._core_voice_session_swap_lock = asyncio.Lock()
+    manager._core_voice_session_swap_barrier_timeout_s = 1.0
+    manager.lock = asyncio.Lock()
+    manager.message_cache_for_new_session = [{"role": "Test", "text": "old"}]
+    manager.is_preparing_new_session = True
+    manager.summary_triggered_time = object()
+    manager._reset_preparation_state = AsyncMock()
+    manager._cleanup_pending_session_resources = AsyncMock()
+    manager.ensure_tts_pipeline_alive = AsyncMock(
+        side_effect=RuntimeError("tts unavailable")
+    )
+    manager._sync_tools_to_active_session = AsyncMock()
+    manager._consume_next_session_context_messages = MagicMock()
+    manager.message_handler_task = None
+
+    old_session = SimpleNamespace(close=AsyncMock())
+    manager.session = old_session
+    listener_release = asyncio.Event()
+
+    async def listen() -> None:
+        await listener_release.wait()
+
+    candidate = SimpleNamespace(
+        handle_messages=AsyncMock(side_effect=listen),
+        submit_multimodal_turn=AsyncMock(),
+        close=AsyncMock(),
+    )
+    manager._create_offline_vlm_handoff_candidate = AsyncMock(
+        return_value=(candidate, 2)
+    )
+    turn = SimpleNamespace(
+        transcript="what is this",
+        image_b64="raw-frame",
+        turn_id="turn-1",
+    )
+
+    try:
+        delivered = await manager._handoff_to_offline_vlm_and_submit(
+            turn,
+            expected_session=old_session,
+            prepared_session=old_session,
+            operation_is_current=lambda: True,
+            cached_turns_before_final=[],
+        )
+
+        assert delivered is False
+        assert manager.session is candidate
+        assert manager.response_backend == "offline_vlm"
+        assert manager.use_tts is True
+        assert manager.message_handler_task is not None
+        assert not manager.message_handler_task.done()
+        manager._consume_next_session_context_messages.assert_called_once_with(2)
+        assert manager.message_cache_for_new_session == []
+        assert manager.is_preparing_new_session is False
+        candidate.submit_multimodal_turn.assert_not_awaited()
+        candidate.close.assert_not_awaited()
+    finally:
+        listener_release.set()
+        if manager.message_handler_task is not None:
+            await manager.message_handler_task
+
+
+async def test_existing_offline_fast_path_does_not_repeat_turn_preparation() -> None:
+    manager = LLMSessionManager.__new__(LLMSessionManager)
+    manager.lanlan_name = "Test"
+    manager._multimodal_handoff_lock = asyncio.Lock()
+    manager._core_voice_session_swap_lock = asyncio.Lock()
+    manager._core_voice_session_swap_barrier_timeout_s = 1.0
+    manager.response_backend = "offline_vlm"
+    manager.handle_new_message = AsyncMock()
+    manager.ensure_tts_pipeline_alive = AsyncMock()
+
+    session = OmniOfflineClient.__new__(OmniOfflineClient)
+
+    async def interrupt() -> None:
+        assert manager._core_voice_session_swap_lock.locked()
+
+    session.handle_interruption = AsyncMock(side_effect=interrupt)
+    session.submit_multimodal_turn = AsyncMock()
+    manager.session = session
+    turn = SimpleNamespace(
+        transcript="what is this",
+        image_b64="raw-frame",
+        turn_id="turn-1",
+    )
+
+    delivered = await manager._handoff_to_offline_vlm_and_submit(
+        turn,
+        expected_session=session,
+        prepared_session=session,
+        operation_is_current=lambda: True,
+        cached_turns_before_final=[],
+    )
+
+    assert delivered is True
+    session.handle_interruption.assert_not_awaited()
+    manager.handle_new_message.assert_not_awaited()
+    manager.ensure_tts_pipeline_alive.assert_awaited_once_with()
+    session.submit_multimodal_turn.assert_awaited_once_with(
+        "what is this",
+        "raw-frame",
+        turn_id="turn-1",
+    )
+
+
+async def test_offline_replacement_wins_and_receives_multimodal_turn() -> None:
+    manager = LLMSessionManager.__new__(LLMSessionManager)
+    manager.lanlan_name = "Test"
+    manager._multimodal_handoff_lock = asyncio.Lock()
+    manager._core_voice_session_swap_lock = asyncio.Lock()
+    manager._core_voice_session_swap_barrier_timeout_s = 1.0
+    manager.handle_new_message = AsyncMock()
+    manager.ensure_tts_pipeline_alive = AsyncMock()
+
+    expected = OmniOfflineClient.__new__(OmniOfflineClient)
+    expected.handle_interruption = AsyncMock()
+    expected.submit_multimodal_turn = AsyncMock()
+    replacement = OmniOfflineClient.__new__(OmniOfflineClient)
+    replacement.handle_interruption = AsyncMock()
+    replacement.submit_multimodal_turn = AsyncMock()
+    manager.session = expected
+    turn = SimpleNamespace(
+        transcript="what is this",
+        image_b64="raw-frame",
+        turn_id="turn-1",
+    )
+
+    await manager._core_voice_session_swap_lock.acquire()
+    task = asyncio.create_task(
+        manager._handoff_to_offline_vlm_and_submit(
+            turn,
+            expected_session=expected,
+            prepared_session=expected,
+            operation_is_current=lambda: True,
+            cached_turns_before_final=[],
+        )
+    )
+    await asyncio.sleep(0)
+    manager.session = replacement
+    manager._core_voice_session_swap_lock.release()
+
+    assert await asyncio.wait_for(task, 1.0) is True
+    expected.handle_interruption.assert_not_awaited()
+    expected.submit_multimodal_turn.assert_not_awaited()
+    replacement.handle_interruption.assert_awaited_once_with()
+    replacement.submit_multimodal_turn.assert_awaited_once_with(
+        "what is this",
+        "raw-frame",
+        turn_id="turn-1",
+    )
+    manager.handle_new_message.assert_awaited_once_with()
+    manager.ensure_tts_pipeline_alive.assert_awaited_once_with()
+
+
+async def test_realtime_replacement_wins_and_continues_handoff() -> None:
+    manager = LLMSessionManager.__new__(LLMSessionManager)
+    manager.lanlan_name = "Test"
+    manager._multimodal_handoff_lock = asyncio.Lock()
+    manager._core_voice_session_swap_lock = asyncio.Lock()
+    manager._core_voice_session_swap_barrier_timeout_s = 1.0
+    manager.lock = asyncio.Lock()
+    manager.message_cache_for_new_session = []
+    manager.is_preparing_new_session = True
+    manager.summary_triggered_time = object()
+    manager._reset_preparation_state = AsyncMock()
+    manager._cleanup_pending_session_resources = AsyncMock()
+    manager.ensure_tts_pipeline_alive = AsyncMock()
+    manager._sync_tools_to_active_session = AsyncMock()
+    manager._consume_next_session_context_messages = MagicMock()
+    manager.message_handler_task = None
+
+    prepared = SimpleNamespace(close=AsyncMock())
+    replacement = OmniRealtimeClient.__new__(OmniRealtimeClient)
+
+    async def prepare_replacement(*, turn_id: str) -> bool:
+        assert turn_id == "turn-1"
+        assert manager._core_voice_session_swap_lock.locked()
+        return False
+
+    replacement.prepare_external_voice_turn = AsyncMock(
+        side_effect=prepare_replacement
+    )
+    replacement.close = AsyncMock()
+    manager.session = replacement
+    candidate = SimpleNamespace(
+        handle_messages=AsyncMock(),
+        submit_multimodal_turn=AsyncMock(),
+        close=AsyncMock(),
+    )
+    manager._create_offline_vlm_handoff_candidate = AsyncMock(
+        return_value=(candidate, 0)
+    )
+    turn = SimpleNamespace(
+        transcript="what is this",
+        image_b64="raw-frame",
+        turn_id="turn-1",
+    )
+
+    delivered = await manager._handoff_to_offline_vlm_and_submit(
+        turn,
+        expected_session=prepared,
+        prepared_session=prepared,
+        operation_is_current=lambda: True,
+        cached_turns_before_final=[],
+    )
+
+    assert delivered is True
+    prepared.close.assert_not_awaited()
+    replacement.prepare_external_voice_turn.assert_awaited_once_with(
+        turn_id="turn-1"
+    )
+    replacement.close.assert_awaited_once_with()
+    assert manager.session is candidate
+    candidate.submit_multimodal_turn.assert_awaited_once_with(
+        "what is this",
+        "raw-frame",
+        turn_id="turn-1",
+    )
+    candidate.close.assert_not_awaited()
+
+
+async def test_handoff_entry_session_close_fails_without_candidate() -> None:
+    manager = LLMSessionManager.__new__(LLMSessionManager)
+    manager.lanlan_name = "Test"
+    manager._multimodal_handoff_lock = asyncio.Lock()
+    manager._core_voice_session_swap_lock = asyncio.Lock()
+    manager._core_voice_session_swap_barrier_timeout_s = 1.0
+    manager.session = None
+    manager._reset_preparation_state = AsyncMock()
+    manager._cleanup_pending_session_resources = AsyncMock()
+    manager._create_offline_vlm_handoff_candidate = AsyncMock()
+    prepared = SimpleNamespace(close=AsyncMock())
+    turn = SimpleNamespace(
+        transcript="what is this",
+        image_b64="raw-frame",
+        turn_id="turn-1",
+    )
+
+    delivered = await manager._handoff_to_offline_vlm_and_submit(
+        turn,
+        expected_session=prepared,
+        prepared_session=prepared,
+        operation_is_current=lambda: True,
+        cached_turns_before_final=[],
+    )
+
+    assert delivered is False
+    manager._reset_preparation_state.assert_not_awaited()
+    manager._cleanup_pending_session_resources.assert_not_awaited()
+    manager._create_offline_vlm_handoff_candidate.assert_not_awaited()
+
+
+async def test_existing_offline_multimodal_submit_retries_tts_each_turn() -> None:
+    manager = LLMSessionManager.__new__(LLMSessionManager)
+    manager.lanlan_name = "Test"
+    manager._multimodal_handoff_lock = asyncio.Lock()
+    manager._core_voice_session_swap_lock = asyncio.Lock()
+    manager._core_voice_session_swap_barrier_timeout_s = 1.0
+    manager.handle_new_message = AsyncMock()
+    manager.ensure_tts_pipeline_alive = AsyncMock(
+        side_effect=[RuntimeError("tts unavailable"), None]
+    )
+
+    session = OmniOfflineClient.__new__(OmniOfflineClient)
+    session.handle_interruption = AsyncMock()
+    session.submit_multimodal_turn = AsyncMock()
+    manager.session = session
+    turn = SimpleNamespace(
+        transcript="what is this",
+        image_b64="raw-frame",
+        turn_id="turn-1",
+    )
+
+    first = await manager._handoff_to_offline_vlm_and_submit(
+        turn,
+        expected_session=session,
+        prepared_session=session,
+        operation_is_current=lambda: True,
+        cached_turns_before_final=[],
+    )
+    second = await manager._handoff_to_offline_vlm_and_submit(
+        turn,
+        expected_session=session,
+        prepared_session=session,
+        operation_is_current=lambda: True,
+        cached_turns_before_final=[],
+    )
+
+    assert first is False
+    assert second is True
+    assert manager.ensure_tts_pipeline_alive.await_count == 2
+    session.submit_multimodal_turn.assert_awaited_once_with(
+        "what is this",
+        "raw-frame",
+        turn_id="turn-1",
+    )

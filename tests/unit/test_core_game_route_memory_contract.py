@@ -744,6 +744,76 @@ async def test_voice_live_vision_input_preserves_source_and_request_identity(
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+@pytest.mark.parametrize("input_type", ["screen", "camera"])
+@pytest.mark.parametrize(
+    ("response_backend", "session_type", "stages_adapter_cache"),
+    [
+        ("realtime", core_module.OmniRealtimeClient, True),
+        ("offline_vlm", core_module.OmniOfflineClient, False),
+    ],
+)
+async def test_independent_asr_live_vision_stays_out_of_provider_queues(
+    monkeypatch,
+    input_type,
+    response_backend,
+    session_type,
+    stages_adapter_cache,
+):
+    """Independent live frames remain Core-owned across backend promotion."""
+    mgr = _make_manager()
+    session = object.__new__(session_type)
+    session.stream_image = AsyncMock()
+    session._pending_images = ["existing-user-attachment"]
+    if stages_adapter_cache:
+        session.stage_multimodal_frame = MagicMock()
+    mgr.session = session
+    mgr.response_backend = response_backend
+    mgr._asr_route_mode = "independent"
+    mgr._stage_independent_visual_frame = MagicMock(return_value=True)
+    mgr.is_goodbye_silent = Mock(return_value=False)
+    mgr.is_active = True
+    mgr.session_ready = True
+    mgr.input_cache_lock = asyncio.Lock()
+    mgr.pending_input_data = []
+    mgr._pending_input_flush_active = False
+    mgr._starting_session_count = 0
+    mgr._session_start_circuit_open = False
+    monkeypatch.setattr(
+        core_module,
+        "process_screen_data",
+        AsyncMock(return_value="img-b64"),
+    )
+
+    await core_module.LLMSessionManager._stream_data_now(
+        mgr,
+        {
+            "input_type": input_type,
+            "data": "raw-image",
+            "request_id": "req-independent-vision",
+        },
+    )
+
+    mgr._stage_independent_visual_frame.assert_called_once_with(
+        "img-b64",
+        source=input_type,
+        request_id="req-independent-vision",
+        captured_at=ANY,
+    )
+    session.stream_image.assert_not_awaited()
+    assert session._pending_images == ["existing-user-attachment"]
+    assert mgr.pending_input_data == []
+    assert mgr.sync_message_queue.messages == []
+    if stages_adapter_cache:
+        session.stage_multimodal_frame.assert_called_once_with(
+            "img-b64",
+            source=input_type,
+            request_id="req-independent-vision",
+            captured_at=ANY,
+        )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 @pytest.mark.parametrize("input_type", ["avatar_drop_image", "user_image"])
 async def test_voice_session_hands_one_shot_user_images_to_offline_vision(
     monkeypatch,

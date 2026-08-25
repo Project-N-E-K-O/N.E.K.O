@@ -21,6 +21,7 @@ from ._shared import (
     Optional,
     VisualDeliveryMode,
     asyncio,
+    base64,
     logger,
     response_arbiter_fail_open_enabled,
     time,
@@ -35,7 +36,10 @@ from config.prompts.prompts_proactive import (
 from config.prompts.prompts_sys import _loc
 
 from ._response_arbiter import RealtimeResponseArbiter, ResponseTicket
-from ._protocol_capabilities import STRICT_REALTIME_PROTOCOL_CAPABILITIES
+from ._protocol_capabilities import (
+    MultimodalTurnDelivery,
+    STRICT_REALTIME_PROTOCOL_CAPABILITIES,
+)
 
 
 # A missing response.done must fail conservatively instead of acknowledging a
@@ -242,34 +246,16 @@ class _ResponseMixin:
         if not stable_turn_id:
             raise ValueError("external ASR turn_id must not be empty")
 
-        visual_record = getattr(self, "_external_visual_turns", {}).get(
-            stable_turn_id
-        )
-        visual_description = await self._resolve_external_visual_turn(
-            stable_turn_id
-        )
-
         event_suffix = uuid.uuid4().hex
         item_id = f"item_neko_{uuid.uuid4().hex}"
         expected_item_id = item_id
-        item_text = clean
-        if visual_description:
-            # Persist the observation and its owning transcript atomically. A
-            # barge-in can now keep both or neither, never an orphaned visual
-            # item that leaks into the next voice turn.
-            item_text = (
-                "[系统视觉感知结果，不是用户陈述]\n"
-                f"当前画面：{visual_description}\n"
-                "[用户语音转写]\n"
-                f"{clean}"
-            )
         item_event = {
             "type": "conversation.item.create",
             "event_id": f"event_asr_item_{event_suffix}",
             "item": {
                 "type": "message",
                 "role": "user",
-                "content": [{"type": "input_text", "text": item_text}],
+                "content": [{"type": "input_text", "text": clean}],
             },
         }
         if expected_item_id is not None:
@@ -286,39 +272,15 @@ class _ResponseMixin:
             text_hash,
         )
         arbiter = self._ensure_response_arbiter()
-        try:
-            admission_check = None
-            if visual_record is not None:
-                admission_check = (
-                    lambda: self._external_visual_turns.get(stable_turn_id)
-                    is visual_record
-                )
-            ticket = await arbiter.enqueue(
-                source="external_asr",
-                events_before_response=(item_event,),
-                response_event=response_event,
-                ack_expected=True,
-                expected_item_id=expected_item_id,
-                expected_item_role="user",
-                priority=0,
-                admission_check=admission_check,
-            )
-        except BaseException:
-            if (
-                visual_record is not None
-                and self._external_visual_turns.get(stable_turn_id)
-                is visual_record
-            ):
-                self._external_visual_turns.pop(stable_turn_id, None)
-            raise
-        if visual_record is not None:
-            if (
-                self._external_visual_turns.get(stable_turn_id)
-                is not visual_record
-            ):
-                await arbiter.cancel_ticket(ticket)
-                raise asyncio.CancelledError
-            visual_record["ticket"] = ticket
+        ticket = await arbiter.enqueue(
+            source="external_asr",
+            events_before_response=(item_event,),
+            response_event=response_event,
+            ack_expected=True,
+            expected_item_id=expected_item_id,
+            expected_item_role="user",
+            priority=0,
+        )
         # Speech-start pauses dispatch. Resume only after this priority-0 user
         # turn is present, so queued proactive work cannot win the race. An
         # older completed turn may still be ahead of a newer paused turn in
@@ -349,12 +311,133 @@ class _ResponseMixin:
                 == active_pause_id
             ):
                 arbiter.pause_dispatch()
+        return ticket
+
+    def get_multimodal_turn_delivery(self) -> MultimodalTurnDelivery:
+        """Return the provider adapter's atomic text+image capability."""
+
+        capabilities = getattr(
+            self,
+            "_realtime_protocol_capabilities",
+            STRICT_REALTIME_PROTOCOL_CAPABILITIES,
+        )
+        return capabilities.multimodal_turn_delivery
+
+    @staticmethod
+    def _decode_multimodal_turn_image(image_b64: str) -> bytes:
+        """Validate one image payload before it can enter provider history."""
+
+        from utils.screenshot_utils import MAX_BASE64_SIZE
+
+        if not isinstance(image_b64, str) or not image_b64:
+            raise ValueError("multimodal turn image must not be empty")
+        if len(image_b64) > MAX_BASE64_SIZE:
+            raise ValueError("multimodal turn image exceeds the payload budget")
+        try:
+            return base64.b64decode(image_b64, validate=True)
+        except (ValueError, TypeError) as exc:
+            raise ValueError("multimodal turn image is not valid base64") from exc
+
+    async def submit_multimodal_turn(
+        self,
+        text: str,
+        image_b64: str,
+        *,
+        turn_id: str,
+    ):
+        """Submit one atomic raw-image + external-ASR user turn.
+
+        Unsupported Realtime protocols fail closed so Core can hand the whole
+        turn to an Offline VLM. This method never invokes the annotation model
+        and never degrades a visual turn into text-only input.
+        """
+
+        if self.get_multimodal_turn_delivery() is not (
+            MultimodalTurnDelivery.DIRECT_ATOMIC
+        ):
+            raise RuntimeError("realtime multimodal turn requires VLM handoff")
+        clean = str(text or "").strip()
+        if not clean:
+            raise ValueError("external ASR turn must not be empty")
+        if len(clean) > 8_000:
+            raise ValueError("external ASR turn exceeds the 8000 character budget")
+        stable_turn_id = str(turn_id or "").strip()
+        if not stable_turn_id:
+            raise ValueError("external voice turn_id must not be empty")
+        image_bytes = self._decode_multimodal_turn_image(image_b64)
+
+        if self._is_gemini:
+            await self._submit_external_gemini_turn(
+                clean,
+                image_bytes=image_bytes,
+            )
+            return None
+        if self.ws is None or self._fatal_error_occurred:
+            raise RuntimeError("realtime websocket is not connected")
+
+        import hashlib
+
+        event_suffix = uuid.uuid4().hex
+        item_id = f"item_neko_{uuid.uuid4().hex}"
+        item_event = {
+            "type": "conversation.item.create",
+            "event_id": f"event_asr_multimodal_item_{event_suffix}",
+            "item": {
+                "id": item_id,
+                "type": "message",
+                "role": "user",
+                "content": [
+                    {
+                        "type": "input_image",
+                        "image_url": "data:image/jpeg;base64," + image_b64,
+                    },
+                    {"type": "input_text", "text": clean},
+                ],
+            },
+        }
+        response_event = {
+            "type": "response.create",
+            "event_id": f"event_asr_multimodal_response_{event_suffix}",
+        }
+        text_hash = hashlib.sha256(clean.encode("utf-8")).hexdigest()[:8]
+        logger.info(
+            "external_multimodal_turn queued turn=%s chars=%d hash=%s",
+            stable_turn_id,
+            len(clean),
+            text_hash,
+        )
+        arbiter = self._ensure_response_arbiter()
+        ticket = await arbiter.enqueue(
+            source="external_asr_multimodal",
+            events_before_response=(item_event,),
+            response_event=response_event,
+            ack_expected=True,
+            expected_item_id=item_id,
+            expected_item_role="user",
+            priority=0,
+            admission_check=lambda: getattr(
+                self,
+                "_external_voice_turn_pause_id",
+                None,
+            ) in (None, stable_turn_id),
+        )
+        active_pause_id = getattr(self, "_external_voice_turn_pause_id", None)
+        if active_pause_id == stable_turn_id:
+            self._external_voice_turn_pause_id = None
+        arbiter.resume_dispatch()
+        try:
+            await ticket.sent
+        except asyncio.CancelledError:
+            await arbiter.cancel_ticket(ticket)
+            raise
+        finally:
             if (
-                visual_record is not None
-                and self._external_visual_turns.get(stable_turn_id)
-                is visual_record
+                active_pause_id is not None
+                and active_pause_id != stable_turn_id
+                and getattr(self, "_external_voice_turn_pause_id", None)
+                == active_pause_id
             ):
-                self._external_visual_turns.pop(stable_turn_id, None)
+                arbiter.pause_dispatch()
         return ticket
 
     async def _cancel_gemini_proactive_submit(
@@ -431,7 +514,6 @@ class _ResponseMixin:
                     )
                     self._gemini_proactive_quarantine_task = proactive_quarantine
                 await self._await_gemini_proactive_quarantine()
-            self._begin_external_visual_turn(stable_turn_id)
             try:
                 if not self._is_gemini:
                     arbiter = self._ensure_response_arbiter()
@@ -571,7 +653,6 @@ class _ResponseMixin:
     def abandon_external_voice_turn(self, turn_id: str | None = None) -> None:
         """Release an external-ASR dispatch pause, optionally by turn key."""
 
-        self._abandon_external_visual_turn(turn_id)
         if self._is_gemini:
             return
         current_turn_id = getattr(self, "_external_voice_turn_pause_id", None)
@@ -585,6 +666,34 @@ class _ResponseMixin:
             arbiter = self._ensure_response_arbiter()
         arbiter.resume_dispatch()
 
+    async def _submit_external_gemini_turn(
+        self,
+        text: str,
+        *,
+        image_bytes: bytes | None = None,
+    ) -> None:
+        """Submit one external-ASR turn through the owned Gemini lifecycle."""
+
+        submit_task = asyncio.current_task()
+        outcome_token = object()
+        self._gemini_external_submit_task = submit_task
+        self._gemini_external_outcome_token = outcome_token
+        accepted = False
+        try:
+            if image_bytes is None:
+                await self._gemini_send_user_turn(text)
+            else:
+                await self._gemini_send_user_turn(
+                    text,
+                    image_bytes=image_bytes,
+                )
+            accepted = True
+        finally:
+            if getattr(self, "_gemini_external_submit_task", None) is submit_task:
+                self._gemini_external_submit_task = None
+            if not accepted:
+                self._settle_gemini_external_turn(outcome_token)
+
     async def submit_external_voice_turn(self, text: str, *, turn_id: str) -> None:
         """Submit external ASR text through the Provider-appropriate path."""
 
@@ -597,47 +706,7 @@ class _ResponseMixin:
             stable_turn_id = str(turn_id or "").strip()
             if not stable_turn_id:
                 raise ValueError("external voice turn_id must not be empty")
-            visual_record = getattr(self, "_external_visual_turns", {}).get(
-                stable_turn_id
-            )
-            visual_description = await self._resolve_external_visual_turn(
-                stable_turn_id
-            )
-            if (
-                visual_record is not None
-                and self._external_visual_turns.get(stable_turn_id)
-                is not visual_record
-            ):
-                raise asyncio.CancelledError
-            item_text = clean
-            if visual_description:
-                item_text = (
-                    "[系统视觉感知结果，不是用户陈述]\n"
-                    f"当前画面：{visual_description}\n"
-                    "[用户语音转写]\n"
-                    f"{clean}"
-                )
-            if visual_record is not None:
-                visual_record["submit_task"] = asyncio.current_task()
-            submit_task = asyncio.current_task()
-            outcome_token = object()
-            self._gemini_external_submit_task = submit_task
-            self._gemini_external_outcome_token = outcome_token
-            accepted = False
-            try:
-                await self.create_response(item_text)
-                accepted = True
-            finally:
-                if getattr(self, "_gemini_external_submit_task", None) is submit_task:
-                    self._gemini_external_submit_task = None
-                if not accepted:
-                    self._settle_gemini_external_turn(outcome_token)
-                if (
-                    visual_record is not None
-                    and self._external_visual_turns.get(stable_turn_id)
-                    is visual_record
-                ):
-                    self._external_visual_turns.pop(stable_turn_id, None)
+            await self._submit_external_gemini_turn(clean)
             return
         await self.submit_external_text_turn(text, turn_id=turn_id)
 

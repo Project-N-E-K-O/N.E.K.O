@@ -316,8 +316,14 @@ class _GeminiMixin:
         )
         await ticket.sent
 
-    async def _gemini_send_user_turn(self, text: str) -> None:
-        """Inject ``text`` as a Gemini user turn and trigger a response via
+    async def _gemini_send_user_turn(
+        self,
+        text: str,
+        *,
+        image_bytes: bytes | None = None,
+        image_mime_type: str = "image/jpeg",
+    ) -> None:
+        """Inject one Gemini user turn and trigger a response via
         ``send_client_content(turn_complete=True)``.
 
         This is Gemini Live's idiomatic equivalent of OpenAI-Realtime's
@@ -329,8 +335,17 @@ class _GeminiMixin:
         """
         from google.genai import types as genai_types
 
+        parts = []
+        if image_bytes is not None:
+            parts.append(
+                genai_types.Part.from_bytes(
+                    data=image_bytes,
+                    mime_type=image_mime_type,
+                )
+            )
+        parts.append(genai_types.Part(text=text))
         content = genai_types.Content(
-            parts=[genai_types.Part(text=text)],
+            parts=parts,
             role="user",
         )
         await self._gemini_session.send_client_content(

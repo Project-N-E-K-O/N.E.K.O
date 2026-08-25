@@ -877,7 +877,6 @@ class _TransportMixin:
             return
         self._visual_delivery_mode = selected
         self._visual_delivery_epoch = getattr(self, "_visual_delivery_epoch", 0) + 1
-        self._abandon_external_visual_turn()
         # A cached frame from the old routing contract must never cross the
         # mode boundary and later appear as context for a different ASR turn.
         self._latest_image_b64 = None
@@ -891,151 +890,69 @@ class _TransportMixin:
         ):
             self._raw_visual_delivery_blocked = False
 
-    def _begin_external_visual_turn(self, turn_id: str) -> None:
-        if getattr(self, "_visual_delivery_mode", VisualDeliveryMode.NATIVE) != (
-            VisualDeliveryMode.EXTERNAL_DESCRIPTION
-        ):
-            return
-        self._abandon_external_visual_turn()
-        self._external_visual_turns[turn_id] = {
-            "turn_id": turn_id,
-            "epoch": self._visual_delivery_epoch,
-            "start_generation": self._latest_image_generation,
-            "generation": None,
-            "source": None,
-            "request_id": None,
-            "task": None,
-            "ticket": None,
-            "submit_task": None,
-        }
-
-    def _bind_external_visual_frame(
+    def stage_multimodal_frame(
         self,
-        record: Dict[str, Any],
-        *,
         image_b64: str,
-        generation: int,
-        source: str,
-        request_id: str | None,
-    ) -> None:
-        if record.get("task") is not None or record.get("generation") is not None:
-            return
-        if record.get("epoch") != self._visual_delivery_epoch:
-            return
-        record["generation"] = generation
-        record["source"] = source
-        record["request_id"] = request_id
-        record["task"] = self._fire_task(
-            self._analyze_image_with_vision_model(
-                image_b64,
-                update_turn_state=False,
-            )
-        )
+        *,
+        source: str = "unknown",
+        request_id: str | None = None,
+        captured_at: float | None = None,
+    ) -> ImageStageResult:
+        """Cache a raw frame without sending it or invoking image analysis."""
 
-    async def _resolve_external_visual_turn(
-        self,
-        turn_id: str,
-    ) -> str | None:
-        if getattr(self, "_visual_delivery_mode", VisualDeliveryMode.NATIVE) != (
-            VisualDeliveryMode.EXTERNAL_DESCRIPTION
-        ):
-            return None
-        record = self._external_visual_turns.get(turn_id)
-        if record is None or record.get("epoch") != self._visual_delivery_epoch:
-            return None
-
-        if record.get("task") is None:
-            frame_age = time.monotonic() - getattr(
-                self,
-                "_latest_image_captured_at",
-                0.0,
-            )
-            if (
-                self._latest_image_b64 is not None
-                and frame_age <= self._external_visual_frame_ttl
-            ):
-                self._bind_external_visual_frame(
-                    record,
-                    image_b64=self._latest_image_b64,
-                    generation=self._latest_image_generation,
-                    source=self._latest_image_source,
-                    request_id=self._latest_image_request_id,
-                )
-
-        task = record.get("task")
-        if task is None:
-            return None
-        try:
-            description = await asyncio.wait_for(
-                asyncio.shield(task),
-                timeout=self._external_visual_join_timeout,
-            )
-        except asyncio.TimeoutError:
-            task.cancel()
-            description = ""
-        except Exception as exc:
-            # Ambient screen/camera analysis is best-effort: a transient
-            # vision outage must not discard the completed ASR transcript.
-            # Callback-owned one-shot images use stream_image() directly and
-            # still propagate their exception so the callback can retry.
-            logger.warning(
-                "external visual analysis failed; continuing transcript-only: %s",
-                exc,
-            )
-            description = ""
-        except asyncio.CancelledError:
-            if not task.cancelled():
-                task.cancel()
-                await asyncio.gather(task, return_exceptions=True)
-            # A newer external turn cancels this exact task via
-            # _abandon_external_visual_turn(). Propagate that cancellation so
-            # the superseded transcript cannot enqueue after the new turn has
-            # paused dispatch.
-            if self._external_visual_turns.get(turn_id) is record:
-                self._external_visual_turns.pop(turn_id, None)
-            raise
+        from utils.screenshot_utils import MAX_BASE64_SIZE
 
         if (
-            not description
-            or record.get("epoch") != self._visual_delivery_epoch
-            or getattr(self, "_visual_delivery_mode", VisualDeliveryMode.NATIVE)
-            != VisualDeliveryMode.EXTERNAL_DESCRIPTION
+            not isinstance(image_b64, str)
+            or not image_b64
+            or len(image_b64) > MAX_BASE64_SIZE
         ):
-            return None
-        return str(description).strip() or None
+            return ImageStageResult(
+                accepted=False,
+                mode="staged",
+                generation=getattr(self, "_latest_image_generation", 0),
+                rejection_reason=(
+                    "payload_too_large"
+                    if isinstance(image_b64, str)
+                    and len(image_b64) > MAX_BASE64_SIZE
+                    else "invalid_payload"
+                ),
+            )
 
-    def _abandon_external_visual_turn(
-        self,
-        turn_id: str | None = None,
-        *,
-        quarantine_gemini_submit: bool = True,
-    ) -> None:
-        turns = getattr(self, "_external_visual_turns", None)
-        if not turns:
-            return
-        keys = [turn_id] if turn_id is not None else list(turns)
-        for key in keys:
-            record = turns.pop(key, None)
-            if record is None:
-                continue
-            task = record.get("task")
-            if task is not None and not task.done():
-                task.cancel()
-            ticket = record.get("ticket")
-            if ticket is not None:
-                self._fire_task(
-                    self._ensure_response_arbiter().cancel_ticket(ticket)
-                )
-            submit_task = record.get("submit_task")
-            if (
-                submit_task is not None
-                and submit_task is not asyncio.current_task()
-                and not submit_task.done()
-            ):
-                if self._is_gemini and quarantine_gemini_submit:
-                    self._start_gemini_external_submit_quarantine(submit_task)
-                else:
-                    submit_task.cancel()
+        stable_source = str(source or "unknown").strip() or "unknown"
+        stable_request_id = (
+            str(request_id).strip() if request_id is not None else None
+        )
+        has_ingress_order = isinstance(captured_at, (int, float))
+        frame_captured_at = (
+            float(captured_at) if has_ingress_order else time.monotonic()
+        )
+        if has_ingress_order and frame_captured_at <= getattr(
+            self,
+            "_latest_image_captured_at",
+            0.0,
+        ):
+            return ImageStageResult(
+                accepted=False,
+                mode="staged",
+                generation=getattr(self, "_latest_image_generation", 0),
+                rejection_reason="stale_frame",
+            )
+
+        self._latest_image_generation = (
+            getattr(self, "_latest_image_generation", 0) + 1
+        )
+        generation = self._latest_image_generation
+        self._latest_image_b64 = image_b64
+        self._latest_image_captured_at = frame_captured_at
+        self._latest_image_source = stable_source
+        self._latest_image_request_id = stable_request_id
+        self._proactive_image_consumed = False
+        return ImageStageResult(
+            accepted=True,
+            mode="staged",
+            generation=generation,
+        )
 
     async def stream_image(
         self,
@@ -1086,93 +1003,19 @@ class _TransportMixin:
                     rejection_reason="raw_visual_delivery_blocked",
                 )
             if delivery_mode == VisualDeliveryMode.EXTERNAL_DESCRIPTION:
-                stable_source = str(source or "unknown").strip() or "unknown"
-                stable_request_id = (
-                    str(request_id).strip() if request_id is not None else None
-                )
-                from utils.screenshot_utils import MAX_BASE64_SIZE
-
-                if (
-                    not isinstance(image_b64, str)
-                    or not image_b64
-                    or len(image_b64) > MAX_BASE64_SIZE
-                ):
-                    logger.warning(
-                        "external visual image rejected by size/type guard source=%s",
-                        stable_source,
-                    )
-                    return ImageStageResult(
-                        accepted=False,
-                        mode=delivery_mode.value,
-                        generation=getattr(self, "_latest_image_generation", 0),
-                        rejection_reason=(
-                            "payload_too_large"
-                            if isinstance(image_b64, str)
-                            and len(image_b64) > MAX_BASE64_SIZE
-                            else "invalid_payload"
-                        ),
-                    )
                 if not cache_latest:
-                    description = await self._analyze_image_with_vision_model(
-                        image_b64,
-                        update_turn_state=False,
-                    )
-                    clean_description = str(description or "").strip()
-                    return ImageStageResult(
-                        accepted=bool(clean_description),
-                        mode=delivery_mode.value,
-                        generation=getattr(self, "_latest_image_generation", 0),
-                        description=clean_description or None,
-                        rejection_reason=(
-                            None if clean_description else "analysis_empty"
-                        ),
-                    )
-
-                has_ingress_order = isinstance(captured_at, (int, float))
-                frame_captured_at = (
-                    float(captured_at)
-                    if has_ingress_order
-                    else time.monotonic()
-                )
-                if has_ingress_order and frame_captured_at <= getattr(
-                    self,
-                    "_latest_image_captured_at",
-                    0.0,
-                ):
-                    logger.info(
-                        "external visual frame rejected as stale source=%s request_id=%s",
-                        stable_source,
-                        stable_request_id,
-                    )
                     return ImageStageResult(
                         accepted=False,
-                        mode=delivery_mode.value,
+                        mode="handoff_required",
                         generation=getattr(self, "_latest_image_generation", 0),
-                        rejection_reason="stale_frame",
+                        rejection_reason="multimodal_handoff_required",
                     )
 
-                self._latest_image_generation = (
-                    getattr(self, "_latest_image_generation", 0) + 1
-                )
-                generation = self._latest_image_generation
-                self._latest_image_b64 = image_b64
-                self._latest_image_captured_at = frame_captured_at
-                self._latest_image_source = stable_source
-                self._latest_image_request_id = stable_request_id
-                self._proactive_image_consumed = False
-                for record in tuple(self._external_visual_turns.values()):
-                    if generation > record["start_generation"]:
-                        self._bind_external_visual_frame(
-                            record,
-                            image_b64=image_b64,
-                            generation=generation,
-                            source=stable_source,
-                            request_id=stable_request_id,
-                        )
-                return ImageStageResult(
-                    accepted=True,
-                    mode=delivery_mode.value,
-                    generation=generation,
+                return self.stage_multimodal_frame(
+                    image_b64,
+                    source=source,
+                    request_id=request_id,
+                    captured_at=captured_at,
                 )
 
             if not self._supports_native_image and not cache_latest:
@@ -3003,10 +2846,6 @@ class _TransportMixin:
         connection would have no one left to exit it.
         """
 
-        # External visual turns belong to the connection being retired. Drop
-        # their analysis, arbiter ticket, and submit task synchronously before
-        # teardown can yield and a replacement connection can attach.
-        self._abandon_external_visual_turn(quarantine_gemini_submit=False)
         self._cancel_session_update_ack_waiters()
         generation = self._connection_generation
         ws, self.ws = self.ws, None

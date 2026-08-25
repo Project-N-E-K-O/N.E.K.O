@@ -32,7 +32,10 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../"
 # state/session/lock 结构，然后直接调用 trigger_agent_callbacks 的关键分支。
 import main_logic.core as core_module
 from main_logic.omni_offline_client import OmniOfflineClient
-from main_logic.omni_realtime_client import ImageStageResult
+from main_logic.omni_realtime_client import (
+    ImageStageResult,
+    MultimodalTurnDelivery,
+)
 from main_logic.proactive_delivery import (
     CALLBACK_EXPIRES_AT_KEY,
     DELIVERY_ACK_FUTURE_KEY,
@@ -217,6 +220,9 @@ def _make_voice_sess(*, is_responding=False, inject=None):
     sess._client_vad_active = False
     sess._user_recent_activity_time = 0.0
     sess._ai_recent_activity_time = 0.0
+    sess.get_multimodal_turn_delivery = lambda: (
+        MultimodalTurnDelivery.DIRECT_ATOMIC
+    )
 
     if inject is None:
         async def _default_inject(
@@ -1610,7 +1616,39 @@ async def test_passive_native_async_rejection_invalidates_live_stage_outcome():
     assert cb["_passive_media_staged_count"] == 0
 
 
-async def test_external_passive_image_description_rides_hot_swap_prime():
+async def test_passive_handoff_required_never_calls_stream_or_annotation():
+    session = _make_voice_sess()
+    session.get_multimodal_turn_delivery = MagicMock(
+        return_value=MultimodalTurnDelivery.HANDOFF_REQUIRED
+    )
+    session.stream_image = AsyncMock()
+    session._analyze_image_with_vision_model = AsyncMock()
+    mgr = _make_mgr(session=session)
+    cb = {
+        "_callback_delivery_id": "id-passive-image-handoff",
+        "status": "completed",
+        "summary": "camera event",
+        "delivery_mode": "passive",
+        "origin": "event",
+        "media_images": ["image-b64"],
+    }
+    mgr.pending_agent_callbacks = [cb]
+
+    outcome = await core_module.LLMSessionManager._stage_passive_callback_media(
+        mgr,
+        [cb],
+        session,
+    )
+
+    assert outcome["safe_to_continue"] is True
+    session.stream_image.assert_not_awaited()
+    session._analyze_image_with_vision_model.assert_not_awaited()
+    assert cb["media_images"] == ["image-b64"]
+    assert core_module.LLMSessionManager.drain_agent_callbacks_for_llm(mgr) == ""
+    assert mgr.pending_agent_callbacks == [cb]
+
+
+async def test_passive_image_description_never_rides_hot_swap_prime():
     session = _make_voice_sess()
     session.stream_image = AsyncMock(
         return_value=ImageStageResult(
@@ -1642,10 +1680,11 @@ async def test_external_passive_image_description_rides_hot_swap_prime():
         core_module.LLMSessionManager._select_passive_callbacks_for_swap_prime(mgr)
     )
 
-    assert selected == [cb]
-    assert "camera event" in rendered
-    assert "桌上有一只白杯子" in rendered
-    assert "media_images" not in cb
+    assert selected == []
+    assert rendered == ""
+    assert cb["detail"] == ""
+    assert cb["media_images"] == ["image-b64"]
+    assert mgr.pending_agent_callbacks == [cb]
 
 
 async def test_drain_agent_callbacks_rechecks_topic_release_gate():

@@ -694,8 +694,49 @@ class StreamingMixin:
                                 logger.warning("[%s] avatar annotation failed, sending original: %s",
                                                self.lanlan_name, ann_err)
 
+                        independent_live_frame = (
+                            input_type in _LIVE_VISION_STREAM_INPUT_TYPES
+                            and getattr(self, "_asr_route_mode", "blocked")
+                            == "independent"
+                        )
+                        if independent_live_frame:
+                            captured_at = message.get("_visual_input_ingress_time")
+                            image_accepted = self._stage_independent_visual_frame(
+                                image_b64,
+                                source=input_type,
+                                request_id=message.get("request_id"),
+                                captured_at=captured_at,
+                            )
+                            # Keep the active Realtime adapter's provider-neutral
+                            # latest-frame cache warm for proactive observation,
+                            # without sending the image to the provider. Once a
+                            # handoff promotes Offline, Core remains the sole owner
+                            # of live frames and they never leak into its attachment
+                            # queue.
+                            stage_session_frame = getattr(
+                                self.session,
+                                "stage_multimodal_frame",
+                                None,
+                            )
+                            if image_accepted and callable(stage_session_frame):
+                                try:
+                                    stage_session_frame(
+                                        image_b64,
+                                        source=input_type,
+                                        request_id=message.get("request_id"),
+                                        captured_at=captured_at,
+                                    )
+                                except asyncio.CancelledError:
+                                    raise
+                                except Exception as stage_error:
+                                    logger.warning(
+                                        "[%s] Realtime multimodal frame cache update failed: %s",
+                                        self.lanlan_name,
+                                        stage_error,
+                                    )
+
                         # 如果是文本模式（OmniOfflineClient），只存储图片，不立即发送
-                        if isinstance(self.session, OmniOfflineClient):
+                        elif isinstance(self.session, OmniOfflineClient):
                             # 只添加到待发送队列，等待与文本一起发送
                             await self.session.stream_image(image_b64)
                             image_accepted = True

@@ -120,8 +120,6 @@ class OmniRealtimeClient(_ToolingMixin, _AudioMixin, _TransportMixin, _ResponseM
         tool_definitions: Optional[List[ToolDefinition]] = None,
         livestream_mode: bool = False,
         noise_reduction_enabled: bool = True,
-        external_visual_join_timeout: float = 0.75,
-        external_visual_frame_ttl: float = 5.0,
         turn_admission_lock: Optional[asyncio.Lock] = None,
     ):
         self.base_url = base_url
@@ -289,15 +287,6 @@ class OmniRealtimeClient(_ToolingMixin, _AudioMixin, _TransportMixin, _ResponseM
         self._visual_delivery_mode = VisualDeliveryMode.NATIVE
         self._raw_visual_delivery_blocked = False
         self._visual_delivery_epoch = 0
-        self._external_visual_turns: Dict[str, Dict[str, Any]] = {}
-        self._external_visual_frame_ttl = max(
-            0.0,
-            float(external_visual_frame_ttl),
-        )
-        self._external_visual_join_timeout = max(
-            0.01,
-            float(external_visual_join_timeout),
-        )
         # Callback-owned native media and user turns share this boundary. Core
         # passes its voice-proactive lock so the whole callback media+text
         # transaction is mutually exclusive with both server-VAD and external
