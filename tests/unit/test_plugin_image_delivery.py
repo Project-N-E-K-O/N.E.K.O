@@ -1089,7 +1089,10 @@ async def test_model_path_caps_total_image_bytes_per_push(monkeypatch) -> None:
         "app.main_server.character_runtime._PLUGIN_IMAGE_TOTAL_MAX_BYTES",
         3 * 1024 * 1024,
     )
-    two_mib_b64 = "A" * (2 * 1024 * 1024 * 4 // 3)
+    # A REAL 2 MiB png: inline model images are re-encoded to jpeg, so a
+    # synthetic base64 blob would be dropped as undecodable rather than
+    # by the budget this test is about.
+    two_mib_b64 = _noise_png_base64(2 * 1024 * 1024)
     monkeypatch.setattr(
         "app.main_server.character_runtime._get_session_manager",
         lambda _name: manager,
@@ -1124,7 +1127,10 @@ async def test_respond_callback_media_images_obey_the_byte_budget(monkeypatch) -
         "app.main_server.character_runtime._PLUGIN_IMAGE_TOTAL_MAX_BYTES",
         3 * 1024 * 1024,
     )
-    two_mib_b64 = "A" * (2 * 1024 * 1024 * 4 // 3)
+    # A REAL 2 MiB png: inline model images are re-encoded to jpeg, so a
+    # synthetic base64 blob would be dropped as undecodable rather than
+    # by the budget this test is about.
+    two_mib_b64 = _noise_png_base64(2 * 1024 * 1024)
     monkeypatch.setattr(
         "app.main_server.character_runtime._get_session_manager",
         lambda _name: manager,
@@ -1149,7 +1155,11 @@ async def test_respond_callback_media_images_obey_the_byte_budget(monkeypatch) -
     manager.submit_proactive_callback.assert_called_once()
     callback = manager.submit_proactive_callback.call_args.args[0]
     assert callback["summary"] == "heavy respond"
-    assert callback["media_images"] == [two_mib_b64]
+    assert len(callback["media_images"]) == 1
+    # Normalized, not passed through: every model client declares jpeg for
+    # callback images, so the inline png must be re-encoded to match.
+    assert callback["media_images"][0] != two_mib_b64
+    assert base64.b64decode(callback["media_images"][0])[:3] == bytes.fromhex("ffd8ff")
 
 
 @pytest.mark.asyncio

@@ -39,7 +39,10 @@ from main_logic.proactive_delivery import (
     CALLBACK_IMAGE_MAX_TOTAL_BYTES,
     approx_base64_decoded_bytes,
 )
-from plugin.sdk.shared.core.images import MAX_SOURCE_IMAGE_PIXELS
+from plugin.sdk.shared.core.images import (
+    MAX_SOURCE_IMAGE_PIXELS,
+    normalize_image_to_jpeg,
+)
 from utils.config_manager import get_reserved
 from utils.internal_http_client import get_internal_http_client
 
@@ -219,6 +222,12 @@ def _is_local_plugin_media_url(url: str) -> bool:
         return False
 
 
+def _normalize_inline_image_to_jpeg_base64(encoded: str) -> str:
+    """Re-encode an inline payload to jpeg so the declared mime is honest."""
+    raw = base64.b64decode(encoded)
+    return base64.b64encode(normalize_image_to_jpeg(raw)).decode("ascii")
+
+
 async def _resolve_plugin_model_image(
     part: dict[str, Any],
     *,
@@ -233,7 +242,17 @@ async def _resolve_plugin_model_image(
     if isinstance(encoded, str) and encoded:
         if not budget.draw(_approx_decoded_bytes(encoded)):
             raise ValueError("inline plugin image exhausted the per-push image budget")
-        return encoded
+        # Every model client downstream DECLARES jpeg for callback images --
+        # the offline path builds ``data:image/jpeg;base64,`` and the realtime
+        # Gemini path sends ``mime_type="image/jpeg"``. URL-sourced images are
+        # already jpeg because the SDK normalizes at upload; inline bytes never
+        # pass through that, so PNG/WebP would reach the provider mislabelled
+        # and could be rejected -- which retains the callback and retries it
+        # (Codex P2). Normalize here so the declaration is true.
+        #
+        # Unlike the header probe, this is a full decode+encode, and Pillow's
+        # codecs release the GIL -- so a thread genuinely buys something here.
+        return await asyncio.to_thread(_normalize_inline_image_to_jpeg_base64, encoded)
     url = part.get("url")
     if not isinstance(url, str) or not url:
         raise ValueError("plugin image part has no usable payload")
