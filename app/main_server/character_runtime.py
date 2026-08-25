@@ -105,6 +105,11 @@ class _PushImageByteBudget:
         self.remaining -= count
         return True
 
+    def refund(self, count: int) -> None:
+        """Return bytes reserved for a payload that turned out smaller."""
+        if count > 0:
+            self.remaining += count
+
 
 
 # Pillow's own format names for the raster types a chat bubble can render.
@@ -240,7 +245,8 @@ async def _resolve_plugin_model_image(
     """
     encoded = part.get("binary_base64")
     if isinstance(encoded, str) and encoded:
-        if not budget.draw(_approx_decoded_bytes(encoded)):
+        source_bytes = _approx_decoded_bytes(encoded)
+        if not budget.draw(source_bytes):
             raise ValueError("inline plugin image exhausted the per-push image budget")
         # Every model client downstream DECLARES jpeg for callback images --
         # the offline path builds ``data:image/jpeg;base64,`` and the realtime
@@ -252,7 +258,25 @@ async def _resolve_plugin_model_image(
         #
         # Unlike the header probe, this is a full decode+encode, and Pillow's
         # codecs release the GIL -- so a thread genuinely buys something here.
-        return await asyncio.to_thread(_normalize_inline_image_to_jpeg_base64, encoded)
+        normalized = await asyncio.to_thread(
+            _normalize_inline_image_to_jpeg_base64, encoded
+        )
+        # Re-settle against the NORMALIZED size. Charging only the source was
+        # the wrong invariant: the budget exists to bound what reaches the
+        # provider, not to describe what the plugin sent, and jpeg conversion
+        # can EXPAND a highly compressible png. Combined with the head-progress
+        # rule in split_callbacks_by_image_budget -- which always admits the
+        # first callback -- an under-charged batch would reach the model whole
+        # (Codex P2).
+        grew = _approx_decoded_bytes(normalized) - source_bytes
+        if grew > 0:
+            if not budget.draw(grew):
+                raise ValueError(
+                    "normalized inline image exhausted the per-push image budget"
+                )
+        else:
+            budget.refund(-grew)
+        return normalized
     url = part.get("url")
     if not isinstance(url, str) or not url:
         raise ValueError("plugin image part has no usable payload")
@@ -972,6 +996,20 @@ async def _handle_agent_event(event: dict):
                         _PLUGIN_IMAGE_MAX_COUNT,
                     )
                     image_indexes = image_indexes[:_PLUGIN_IMAGE_MAX_COUNT]
+                if ai_behavior_v2 == "read" and stream_image is None:
+                    # ``read`` is documented as best-effort into the CURRENT
+                    # session; with no session these are dropped at the inject
+                    # site regardless. Resolving them first would spend network,
+                    # a decode and event-handler latency on media guaranteed to
+                    # be discarded -- background pushes can repeat that
+                    # indefinitely (Codex P2). ``respond`` is unaffected: its
+                    # images ride the callback and need no session yet.
+                    logger.debug(
+                        "[EventBus] %d read image(s) skipped: session=%s has no stream_image",
+                        len(image_indexes),
+                        type(sess).__name__ if sess else "None",
+                    )
+                    image_indexes = []
                 resolved_model_images: dict[int, str | BaseException] = {}
                 # ONE pool for the push. Bytes are drawn as they stream in, so
                 # the concurrent batch is bounded in aggregate rather than

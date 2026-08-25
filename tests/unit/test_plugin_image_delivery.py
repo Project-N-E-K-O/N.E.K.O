@@ -1276,6 +1276,150 @@ def test_short_animations_still_render() -> None:
     assert character_runtime._inline_image_data_url_mime(few) == "image/gif"
 
 
+@pytest.mark.asyncio
+async def test_inline_budget_is_charged_on_the_normalized_bytes() -> None:
+    """The pool must end up reflecting the RETAINED bytes, not the source.
+
+    jpeg conversion can expand a highly compressible png, so charging only the
+    source under-counts -- and split_callbacks_by_image_budget always admits
+    the head callback, so an under-charged batch would reach the model whole.
+    """
+    from app.main_server.character_runtime import (
+        _PushImageByteBudget,
+        _approx_decoded_bytes,
+        _resolve_plugin_model_image,
+    )
+
+    encoded = _inline_png_base64()
+    source_bytes = _approx_decoded_bytes(encoded)
+    total = 8 * 1024 * 1024
+    budget = _PushImageByteBudget(total)
+
+    out = await _resolve_plugin_model_image(
+        {"type": "image", "binary_base64": encoded, "mime": "image/png"},
+        budget=budget,
+    )
+
+    retained = _approx_decoded_bytes(out)
+    # Exactly the retained size is charged -- the source reservation is settled
+    # up or refunded, never left standing.
+    assert total - budget.remaining == retained
+    assert retained != source_bytes, (
+        "fixture must actually change size, or this proves nothing"
+    )
+
+
+@pytest.mark.asyncio
+async def test_inline_image_is_refused_when_the_normalized_form_will_not_fit() -> None:
+    """Growth past the pool is refused, and the pool is not left overdrawn."""
+    from app.main_server.character_runtime import (
+        _PushImageByteBudget,
+        _approx_decoded_bytes,
+        _resolve_plugin_model_image,
+    )
+
+    encoded = _noise_png_base64(512 * 1024)
+    # Room for the source, but nothing to spare if jpeg comes out larger.
+    budget = _PushImageByteBudget(_approx_decoded_bytes(encoded))
+
+    try:
+        out = await _resolve_plugin_model_image(
+            {"type": "image", "binary_base64": encoded, "mime": "image/png"},
+            budget=budget,
+        )
+    except ValueError as exc:
+        assert "per-push image budget" in str(exc)
+    else:
+        assert _approx_decoded_bytes(out) <= _approx_decoded_bytes(encoded)
+    assert budget.remaining >= 0, "the pool must never go negative"
+
+
+@pytest.mark.asyncio
+async def test_read_images_are_not_resolved_without_a_session(monkeypatch) -> None:
+    """Work that is guaranteed to be discarded must not be done at all.
+
+    A read push with no session drops its images at the inject site anyway;
+    fetching and decoding them first burns network, CPU and handler latency,
+    and a background plugin can repeat that indefinitely.
+    """
+    from app import main_server
+
+    manager = _manager()
+    manager.session = None
+    fetched: list[str] = []
+
+    async def _fetch(url: str, *, budget=None) -> str:
+        fetched.append(url)
+        return base64.b64encode(b"never-used").decode("ascii")
+
+    monkeypatch.setattr(
+        "app.main_server.character_runtime._get_session_manager",
+        lambda _name: manager,
+    )
+    monkeypatch.setattr(
+        "app.main_server.character_runtime._fetch_plugin_image_base64", _fetch
+    )
+
+    await main_server._handle_agent_event({
+        "event_type": "proactive_message",
+        "lanlan_name": "Test",
+        "text": "look at this",
+        "channel": "plugin:demo",
+        "delivery_mode": "passive",
+        "ai_behavior": "read",
+        "visibility": [],
+        "media_parts": [
+            {
+                "type": "image",
+                "url": "http://127.0.0.1:48916/media/i%d" % i,
+                "mime": "image/jpeg",
+            }
+            for i in range(4)
+        ],
+    })
+
+    assert fetched == [], "no session means these are dropped regardless"
+
+
+@pytest.mark.asyncio
+async def test_respond_images_still_resolve_without_a_session(monkeypatch) -> None:
+    """The skip is read-specific: respond images ride the callback."""
+    from app import main_server
+
+    manager = _manager()
+    manager.session = None
+    fetched: list[str] = []
+
+    async def _fetch(url: str, *, budget=None) -> str:
+        fetched.append(url)
+        return base64.b64encode(b"carried-on-the-callback").decode("ascii")
+
+    monkeypatch.setattr(
+        "app.main_server.character_runtime._get_session_manager",
+        lambda _name: manager,
+    )
+    monkeypatch.setattr(
+        "app.main_server.character_runtime._fetch_plugin_image_base64", _fetch
+    )
+
+    await main_server._handle_agent_event({
+        "event_type": "proactive_message",
+        "lanlan_name": "Test",
+        "text": "react to this",
+        "channel": "plugin:demo",
+        "delivery_mode": "proactive",
+        "ai_behavior": "respond",
+        "visibility": [],
+        "media_parts": [
+            {"type": "image", "url": _IMAGE_URL, "mime": "image/jpeg"},
+        ],
+    })
+
+    assert len(fetched) == 1
+    callback = manager.submit_proactive_callback.call_args.args[0]
+    assert len(callback["media_images"]) == 1
+
+
 def test_chat_blocks_cap_image_count_and_keep_text_in_order() -> None:
     """Over-cap images drop out; the text mix keeps its canonical order."""
     from app.main_server.character_runtime import (
