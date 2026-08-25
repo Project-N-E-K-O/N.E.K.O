@@ -1841,7 +1841,7 @@ def test_compact_avatar_tool_manager_uses_desktop_work_area_for_carrier_layout()
     assert "workAreaX - windowX" in manager_source
     assert "workAreaY - windowY" in manager_source
     assert "viewport.compactDesktop" in manager_source
-    assert "getDesktopCompactDialogSize(viewport)" in manager_source
+    assert "getDesktopCompactDialogSize(viewport, preferredHeight)" in manager_source
     assert "neko:desktop-compact-layout-change" in manager_source
     assert "'--avatar-tool-manager-width'" in manager_source
     assert "'--avatar-tool-manager-height'" in manager_source

@@ -186,10 +186,13 @@ def test_create_rejects_incomplete_or_invalid_special_configuration(
     assert not store.root.exists() or not list(store.root.iterdir())
 
 
-@pytest.mark.parametrize("audio, duration_limit, expected_code", [
-    (b"not-an-mp3", 10_000, "audio_decode_failed"),
-    (_mp3(), 10, "audio_too_long"),
-])
+@pytest.mark.parametrize(
+    "audio, duration_limit, expected_code",
+    [
+        pytest.param(b"not-an-mp3", 10_000, "audio_decode_failed", id="invalid_audio"),
+        pytest.param(_mp3(), 10, "audio_too_long", id="audio_too_long"),
+    ],
+)
 def test_create_rejects_invalid_or_too_long_audio(
     tmp_path,
     monkeypatch,
