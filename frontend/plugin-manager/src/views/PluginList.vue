@@ -646,16 +646,33 @@ function installedMarketVersionTargets(): MarketVersionTarget[] {
   return targets
 }
 
+function refreshInstalledMarketVersions(): void {
+  // Fire-and-forget; if Market is unreachable the badge simply won't appear.
+  // ``ensureFresh`` compares the target signature, so status-only updates do
+  // not cause a network request while a newly installed Market plugin does.
+  marketVersionsStore.ensureFresh(installedMarketVersionTargets()).catch((err) => {
+    console.warn('Failed to refresh market versions:', err)
+  })
+}
+
 async function toggleSourceDetail() {
   showSourceDetail.value = !showSourceDetail.value
   if (showSourceDetail.value) {
-    // Fire-and-forget; if Market is unreachable the badge simply won't
-    // appear, which is a fine degraded state.
-    marketVersionsStore.ensureFresh(installedMarketVersionTargets()).catch((err) => {
-      console.warn('Failed to refresh market versions:', err)
-    })
+    refreshInstalledMarketVersions()
   }
 }
+
+// The initial plugin fetch and a Market install can both finish after source
+// details become visible. Recompute the target set on either change so update
+// badges are not held to the empty/stale snapshot from the original toggle.
+watch(
+  () => pluginStore.plugins,
+  () => {
+    if (showSourceDetail.value) refreshInstalledMarketVersions()
+  },
+  { deep: true },
+)
+
 const pluginSections = computed(() => [
   {
     key: 'plugin',

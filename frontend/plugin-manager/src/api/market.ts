@@ -413,9 +413,10 @@ export async function fetchMarketLatestVersions(
   pluginIds: Array<string | number>,
   channel: 'stable' | 'beta',
 ): Promise<MarketLatestVersion[] | null> {
+  if (pluginIds.length === 0) return []
+
   const client = await getClient()
   if (!client) return null
-  if (pluginIds.length === 0) return []
 
   try {
     const res = await client.get<{ items: MarketLatestVersion[] }>('/plugins/latest-versions', {

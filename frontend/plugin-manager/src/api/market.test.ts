@@ -95,6 +95,13 @@ describe('Market API transport', () => {
     })
   })
 
+  it('skips Market client initialization when no installed plugin ids are supplied', async () => {
+    await expect(fetchMarketLatestVersions([], 'stable')).resolves.toEqual([])
+
+    expect(mocks.create).not.toHaveBeenCalled()
+    expect(mocks.statusGet).not.toHaveBeenCalled()
+  })
+
   it('preserves full-detail fields for the in-app detail dialog', () => {
     const plugin = normalizeMarketPlugin({
       id: 7,

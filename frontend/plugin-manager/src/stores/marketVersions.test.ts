@@ -51,6 +51,7 @@ describe('market versions store', () => {
       { pluginId: '18', channel: 'stable' },
     ])
 
+    expect(fetchMarketLatestVersions).toHaveBeenLastCalledWith(['15', '18'], 'stable')
     expect(store.latest('15', 'stable')).toBe('1.2.0')
     expect(store.latest('18', 'stable')).toBeNull()
     expect(store.loadError).toContain('latest-version lookup failed')
