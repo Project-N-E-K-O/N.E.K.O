@@ -2,6 +2,37 @@ const RUNS_URL = '/runs';
 const pluginMatch = location.pathname.match(/\/plugin\/([^/]+)\/ui\//);
 const pluginId = pluginMatch ? decodeURIComponent(pluginMatch[1]) : 'bilibili_dm';
 
+function tr(key, fallback, params = {}) {
+  return window.I18n?.t ? window.I18n.t(key, fallback, params) : String(fallback || key).replace(/\{([a-zA-Z0-9_]+)\}/g, (match, name) => (
+    Object.prototype.hasOwnProperty.call(params, name) ? String(params[name]) : match
+  ));
+}
+
+const BACKEND_ERROR_KEYS = {
+  LISTENING_ACTIVE: 'ui.error.stop_before_credentials',
+  QR_LOGIN_START_FAILED: 'ui.error.qr_fetch_failed',
+  QR_LOGIN_POLL_FAILED: 'ui.error.qr_status_failed',
+  START_ERROR: 'ui.error.operation_failed',
+  NOT_INITIALIZED: 'ui.error.operation_failed',
+  INVALID_ARGUMENT: 'ui.error.operation_failed',
+  SEND_FAILED: 'ui.error.operation_failed',
+  USER_NOT_FOUND: 'ui.error.operation_failed',
+  ADMIN_NO_NICKNAME: 'ui.error.operation_failed',
+  SET_FAILED: 'ui.error.operation_failed',
+};
+
+function localizedError(error, fallbackKey, fallback) {
+  const message = String(error?.message || error || '').trim();
+  const code = /^([A-Z_]+):/.exec(message)?.[1];
+  const key = code && BACKEND_ERROR_KEYS[code];
+  if (key) return tr(key, fallback);
+  // Backend errors without a recognized code may still be source-language
+  // strings. Keep transport/browser diagnostics, but never leak those into a
+  // translated panel.
+  if (!message || /[\u3400-\u9fff]/.test(message)) return tr(fallbackKey, fallback);
+  return message;
+}
+
 const state = { dashboard: null, busy: false };
 const qrClientId = globalThis.crypto?.randomUUID?.() || `bili-dm-${Date.now()}-${Math.random()}`;
 const qrLogin = { key: null, sessionId: null, starting: false, pollTimer: null, countdownTimer: null, closeTimer: null, expiresAt: 0, generation: 0 };
@@ -19,7 +50,7 @@ async function callPlugin(entryId, args = {}) {
   if (!response.ok) throw new Error(`HTTP ${response.status}`);
   const record = await response.json();
   const runId = record.run_id || record.id;
-  if (!runId) throw new Error('未获取到 run_id');
+  if (!runId) throw new Error(tr('ui.error.no_run_id', 'Unable to obtain run ID'));
 
   const deadline = Date.now() + 60000;
   while (Date.now() < deadline) {
@@ -33,7 +64,7 @@ async function callPlugin(entryId, args = {}) {
         const item = (payload.items || []).find((candidate) => candidate.type === 'json' && candidate.json) || (payload.items || [])[0];
         let raw = item ? (item.json || {}) : {};
         while (raw && raw.data && typeof raw.data === 'object') raw = raw.data;
-        if (raw && raw.error) throw new Error(raw.error.message || raw.error || '操作失败');
+        if (raw && raw.error) throw new Error(raw.error.message || raw.error || tr('ui.error.operation_failed', 'Operation failed'));
         return raw && raw.value && typeof raw.value === 'object' ? raw.value : raw;
       }
       if (['failed', 'canceled', 'timeout'].includes(run.status)) {
@@ -42,7 +73,7 @@ async function callPlugin(entryId, args = {}) {
     }
     await delay(400);
   }
-  throw new Error('调用超时');
+  throw new Error(tr('ui.error.timeout', 'Request timed out'));
 }
 
 function showToast(message, error = false) {
@@ -94,18 +125,18 @@ function updateQrCountdown() {
   const countdown = document.getElementById('qr-login-countdown');
   if (!countdown || !qrLogin.expiresAt) return;
   const seconds = Math.max(0, Math.ceil((qrLogin.expiresAt - Date.now()) / 1000));
-  countdown.textContent = seconds ? `二维码剩余 ${seconds} 秒` : '二维码已过期，请刷新';
+  countdown.textContent = seconds ? tr('ui.qr.countdown', '{seconds} seconds remaining', { seconds }) : tr('ui.qr.expired', 'QR code expired. Please refresh.');
   if (!seconds) clearQrLogin();
 }
 
 function setQrStatus(message) {
   const status = document.getElementById('qr-login-status');
-  if (status) status.textContent = String(message || '等待扫码…');
+  if (status) status.textContent = String(message || tr('ui.qr.waiting', 'Waiting for scan…'));
 }
 
 async function requestQrLogin() {
   if (state.dashboard?.status?.listening) {
-    showToast('请先停止监听，再更新登录凭据', true);
+    showToast(tr('ui.error.stop_before_credentials', 'Stop listening before updating credentials.'), true);
     return;
   }
   if (qrLogin.starting) return;
@@ -116,14 +147,14 @@ async function requestQrLogin() {
   const image = document.getElementById('qr-login-image');
   panel.hidden = false;
   image.removeAttribute('src');
-  setQrStatus('正在获取二维码…');
+  setQrStatus(tr('ui.qr.loading', 'Getting QR code…'));
   document.getElementById('qr-login-countdown').textContent = '';
   try {
     const result = await callPlugin('start_qr_login', {
       client_id: qrClientId,
       request_generation: generation,
     });
-    if (!result?.qrcode_image || !result?.session_id) throw new Error(result?.message || '获取二维码失败，请稍后重试');
+    if (!result?.qrcode_image || !result?.session_id) throw new Error(tr('ui.error.qr_fetch_failed', 'Unable to get QR code. Please try again.'));
     if (generation !== qrLogin.generation) {
       await callPlugin('cancel_qr_login', { session_id: result.session_id });
       return;
@@ -133,15 +164,16 @@ async function requestQrLogin() {
     qrLogin.starting = false;
     qrLogin.expiresAt = Date.now() + Number(result.timeout || 180) * 1000;
     image.src = result.qrcode_image;
-    setQrStatus('等待扫码…');
+    setQrStatus(tr('ui.qr.waiting', 'Waiting for scan…'));
     updateQrCountdown();
     qrLogin.countdownTimer = setInterval(updateQrCountdown, 1000);
     pollQrLogin(generation);
   } catch (error) {
     if (generation !== qrLogin.generation) return;
     qrLogin.starting = false;
-    setQrStatus(error.message || '获取二维码失败，请稍后重试');
-    showToast(error.message || '获取二维码失败', true);
+    const message = localizedError(error, 'ui.error.qr_fetch_failed', 'Unable to get QR code. Please try again.');
+    setQrStatus(message);
+    showToast(message, true);
   }
 }
 
@@ -154,7 +186,7 @@ async function pollQrLogin(generation) {
       clearQrLogin();
       const completionGeneration = qrLogin.generation;
       const closeAt = Date.now() + 2000;
-      setQrStatus(data.message || '登录成功，配置已自动保存');
+      setQrStatus(tr('ui.qr.login_saved', 'Login successful. Settings were saved automatically.'));
       qrLogin.closeTimer = setTimeout(() => {
         if (qrLogin.generation !== completionGeneration) return;
         qrLogin.closeTimer = null;
@@ -162,32 +194,34 @@ async function pollQrLogin(generation) {
       }, Math.max(0, closeAt - Date.now()));
       await refreshDashboard(true);
       if (completionGeneration !== qrLogin.generation) return;
-      showToast(data.message || '扫码登录成功，配置已自动保存');
+      showToast(tr('ui.qr.login_saved', 'Login successful. Settings were saved automatically.'));
       return;
     }
     if (data.status === 'expired') {
       clearQrLogin();
-      setQrStatus(data.message || '二维码已过期，请刷新');
+      setQrStatus(tr('ui.qr.expired', 'QR code expired. Please refresh.'));
       return;
     }
     if (data.status === 'no_session' || data.status === 'cancelled') {
       clearQrLogin();
-      setQrStatus(data.message || '扫码登录已结束，请重新获取二维码');
+      setQrStatus(tr('ui.qr.session_ended', 'QR login ended. Please get a new QR code.'));
       return;
     }
-    setQrStatus(data.message || (data.status === 'scanned' ? '已扫码，请在手机上确认…' : '等待扫码…'));
+    setQrStatus(data.status === 'scanned'
+      ? tr('ui.qr.scanned', 'Scanned. Please confirm on your phone…')
+      : tr('ui.qr.waiting', 'Waiting for scan…'));
     qrLogin.pollTimer = setTimeout(() => pollQrLogin(generation), 1500);
   } catch (error) {
     if (generation !== qrLogin.generation) return;
     clearQrLogin();
-    setQrStatus(error.message || '检查扫码状态失败，请刷新二维码');
+    setQrStatus(localizedError(error, 'ui.error.qr_status_failed', 'Unable to check QR status. Please refresh the QR code.'));
   }
 }
 
 function fieldStatus(id, configured) {
   const element = document.getElementById(id);
   if (!element) return;
-  element.textContent = configured ? '已保存（留空则保持）' : '未保存';
+  element.textContent = configured ? tr('ui.credentials.saved_keep_blank', 'Saved (leave blank to keep)') : tr('ui.credentials.not_saved', 'Not saved');
   element.classList.toggle('configured', configured);
 }
 
@@ -195,11 +229,11 @@ function renderUsers(users) {
   const list = document.getElementById('trusted-users');
   list.replaceChildren();
   const normalized = Array.isArray(users) ? users : [];
-  document.getElementById('trusted-count').textContent = `${normalized.length} 人`;
+  document.getElementById('trusted-count').textContent = tr('ui.users.count', '{count} users', { count: normalized.length });
   if (!normalized.length) {
     const empty = document.createElement('p');
     empty.className = 'empty';
-    empty.textContent = '暂无信任用户';
+    empty.textContent = tr('user_list.empty', 'No trusted users yet');
     list.appendChild(empty);
     return;
   }
@@ -210,12 +244,13 @@ function renderUsers(users) {
     const name = document.createElement('strong');
     name.textContent = user.nickname || `UID ${user.uid}`;
     const meta = document.createElement('span');
-    meta.textContent = `${user.nickname ? `UID ${user.uid} · ` : ''}${user.level}`;
+    const level = tr(`ui.users.level.${user.level}`, user.level);
+    meta.textContent = `${user.nickname ? `UID ${user.uid} · ` : ''}${level}`;
     identity.append(name, meta);
     const remove = document.createElement('button');
     remove.type = 'button';
     remove.className = 'link-danger';
-    remove.textContent = '移除';
+    remove.textContent = tr('ui.actions.remove', 'Remove');
     remove.addEventListener('click', () => removeTrustedUser(String(user.uid || '')));
     row.append(identity, remove);
     list.appendChild(row);
@@ -232,20 +267,20 @@ function applyDashboard(payload) {
   const listening = !!runtime.listening;
   const configured = !!runtime.credentials_configured;
   const listener = document.getElementById('listener-status');
-  listener.textContent = listening ? '监听中' : '已停止';
+  listener.textContent = listening ? tr('ui.status.listening', 'Listening') : tr('ui.status.stopped', 'Stopped');
   listener.className = `pill ${listening ? 'active' : 'idle'}`;
   document.getElementById('btn-start').hidden = listening;
   document.getElementById('btn-stop').hidden = !listening;
 
   const credentialPill = document.getElementById('credential-pill');
-  credentialPill.textContent = configured ? '已配置' : '未配置';
+  credentialPill.textContent = configured ? tr('ui.status.configured', 'Configured') : tr('ui.status.not_configured', 'Not configured');
   credentialPill.className = `pill ${configured ? 'active' : 'idle'}`;
   const missingRequired = [];
   if (!credentials.sesdata_configured) missingRequired.push('SESSDATA');
   if (!credentials.bili_jct_configured) missingRequired.push('bili_jct');
   document.getElementById('credential-summary').textContent = configured
-    ? `登录凭据已保存${credentials.dedeuserid_masked ? ` · UID ${credentials.dedeuserid_masked}` : ''}。`
-    : `尚未配置 ${missingRequired.join(' 和 ')}，请先保存登录凭据。`;
+    ? tr('ui.credentials.summary_saved', 'Login credentials saved{uid}.', { uid: credentials.dedeuserid_masked ? ` · UID ${credentials.dedeuserid_masked}` : '' })
+    : tr('ui.credentials.summary_missing', '{fields} is not configured. Save your login credentials first.', { fields: missingRequired.join(' / ') });
 
   fieldStatus('state-sesdata', credentials.sesdata_configured);
   fieldStatus('state-bili-jct', credentials.bili_jct_configured);
@@ -269,7 +304,7 @@ async function refreshDashboard(silent = false) {
   try {
     applyDashboard(await callPlugin('get_dashboard_state', {}));
   } catch (error) {
-    if (!silent) showToast(error.message || '刷新失败', true);
+    if (!silent) showToast(localizedError(error, 'ui.error.refresh_failed', 'Refresh failed'), true);
   }
 }
 
@@ -278,7 +313,7 @@ function optionalSecret(payload, key, elementId) {
   if (value) payload[key] = value;
 }
 
-async function saveSettings(successMessage = '配置已保存到本机插件数据目录') {
+async function saveSettings(successMessage = tr('ui.toast.settings_saved', 'Settings saved to this device')) {
   const payload = {
     permission_mode: document.getElementById('cfg-permission-mode').value,
     max_concurrent_messages: Number(document.getElementById('cfg-max-concurrent').value || 3),
@@ -299,7 +334,7 @@ async function saveSettings(successMessage = '配置已保存到本机插件数�
     document.querySelectorAll('.credential-grid input').forEach((input) => { input.value = ''; });
     showToast(successMessage);
   } catch (error) {
-    showToast(error.message || '保存失败', true);
+    showToast(localizedError(error, 'ui.error.save_failed', 'Save failed'), true);
   } finally {
     setBusy(false);
   }
@@ -309,9 +344,9 @@ async function clearCredentials() {
   setBusy(true);
   try {
     applyDashboard(await callPlugin('clear_credentials', {}));
-    showToast('本地凭据已清除');
+    showToast(tr('ui.toast.credentials_cleared', 'Local credentials cleared'));
   } catch (error) {
-    showToast(error.message || '清除失败', true);
+    showToast(localizedError(error, 'ui.error.clear_failed', 'Clear failed'), true);
   } finally {
     setBusy(false);
   }
@@ -322,9 +357,9 @@ async function toggleListening(start) {
   try {
     applyDashboard(await callPlugin(start ? 'start_listening' : 'stop_listening', {}));
     await refreshDashboard(true);
-    showToast(start ? 'B站集成监听已启动' : 'B站集成监听已停止');
+    showToast(start ? tr('ui.toast.listening_started', 'Bilibili listening started') : tr('ui.toast.listening_stopped', 'Bilibili listening stopped'));
   } catch (error) {
-    showToast(error.message || '操作失败', true);
+    showToast(localizedError(error, 'ui.error.operation_failed', 'Operation failed'), true);
   } finally {
     setBusy(false);
   }
@@ -333,7 +368,7 @@ async function toggleListening(start) {
 async function addTrustedUser() {
   const uid = document.getElementById('user-uid').value.trim();
   if (!/^\d+$/.test(uid)) {
-    showToast('请输入纯数字 B站 UID', true);
+    showToast(tr('ui.error.invalid_uid', 'Enter a numeric Bilibili UID'), true);
     return;
   }
   setBusy(true);
@@ -346,9 +381,9 @@ async function addTrustedUser() {
     document.getElementById('user-uid').value = '';
     document.getElementById('user-nickname').value = '';
     await refreshDashboard(true);
-    showToast('信任用户已保存');
+    showToast(tr('ui.toast.user_saved', 'Trusted user saved'));
   } catch (error) {
-    showToast(error.message || '添加失败', true);
+    showToast(localizedError(error, 'ui.error.add_failed', 'Add failed'), true);
   } finally {
     setBusy(false);
   }
@@ -360,16 +395,15 @@ async function removeTrustedUser(uid) {
   try {
     await callPlugin('remove_trusted_user', { uid });
     await refreshDashboard(true);
-    showToast('信任用户已移除');
+    showToast(tr('ui.toast.user_removed', 'Trusted user removed'));
   } catch (error) {
-    showToast(error.message || '移除失败', true);
+    showToast(localizedError(error, 'ui.error.remove_failed', 'Remove failed'), true);
   } finally {
     setBusy(false);
   }
 }
 
-window.addEventListener('DOMContentLoaded', async () => {
-  if (window.I18n) window.I18n.scanDOM();
+function initializePanel() {
   document.getElementById('btn-refresh').addEventListener('click', () => refreshDashboard(false));
   document.getElementById('btn-save').addEventListener('click', () => saveSettings());
   document.getElementById('btn-qr-login').addEventListener('click', requestQrLogin);
@@ -379,5 +413,29 @@ window.addEventListener('DOMContentLoaded', async () => {
   document.getElementById('btn-start').addEventListener('click', () => toggleListening(true));
   document.getElementById('btn-stop').addEventListener('click', () => toggleListening(false));
   document.getElementById('btn-add-user').addEventListener('click', addTrustedUser);
-  await refreshDashboard(false);
+  return refreshDashboard(false);
+}
+
+window.addEventListener('DOMContentLoaded', () => {
+  let initialized = false;
+  let startedByFallback = false;
+  const startPanel = (fromFallback = false) => {
+    if (initialized) return;
+    initialized = true;
+    startedByFallback = fromFallback;
+    void initializePanel();
+  };
+  const fallbackTimer = setTimeout(() => startPanel(true), 5000);
+  if (window.I18n?.whenReady) {
+    window.I18n.whenReady(() => {
+      clearTimeout(fallbackTimer);
+      startPanel();
+    });
+    window.addEventListener('i18n-ready', () => {
+      if (startedByFallback) void refreshDashboard(true);
+    }, { once: true });
+  } else {
+    clearTimeout(fallbackTimer);
+    startPanel();
+  }
 });

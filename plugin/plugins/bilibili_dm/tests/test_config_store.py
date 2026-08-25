@@ -1431,10 +1431,10 @@ def test_static_ui_assets_are_versioned_and_not_cached():
     )
 
     assert 'cache_control="no-cache, no-store, must-revalidate"' in plugin_source
-    assert 'UI_ASSET_VERSION = "1.2.0"' in plugin_source
-    assert "style.css?v=1.2.0" in page
-    assert "i18n.js?v=1.2.0" in page
-    assert "script.js?v=1.2.0" in page
+    assert 'UI_ASSET_VERSION = "1.2.2"' in plugin_source
+    assert "style.css?v=1.2.2" in page
+    assert "i18n.js?v=1.2.2" in page
+    assert "script.js?v=1.2.2" in page
 
 
 def test_qr_login_panel_can_be_cancelled_and_auto_closes_after_success():
@@ -1468,4 +1468,4 @@ def test_qr_login_panel_can_be_cancelled_and_auto_closes_after_success():
         "await refreshDashboard(true)"
     )
     assert "data.status === 'no_session' || data.status === 'cancelled'" in script
-    assert "扫码登录已结束，请重新获取二维码" in script
+    assert "tr('ui.qr.session_ended'" in script
