@@ -1467,6 +1467,52 @@ async def test_chat_render_failure_does_not_cancel_model_delivery(monkeypatch) -
     assert len(callback["media_images"]) == 1
 
 
+@pytest.mark.asyncio
+async def test_offline_pending_images_are_bounded_across_pushes() -> None:
+    """Passive read images bypass every per-push and per-turn budget.
+
+    They go straight into the offline session's pending list, and the next
+    stream_text attaches that whole accumulated list to ONE user message — so
+    two individually valid pushes could exceed the one-turn provider budget.
+    """
+    from main_logic.omni_offline_client import OmniOfflineClient
+    from main_logic.proactive_delivery import CALLBACK_IMAGE_MAX_COUNT
+
+    session = OmniOfflineClient.__new__(OmniOfflineClient)
+    session._pending_images = []
+
+    # Two full pushes' worth, one image at a time, as read injection does.
+    for i in range(CALLBACK_IMAGE_MAX_COUNT * 2):
+        await session.stream_image("img-%d" % i, bypass_rate_limit=True)
+
+    assert len(session._pending_images) == CALLBACK_IMAGE_MAX_COUNT
+    # Drop-OLDEST: the newest frames are the ones still describing what the
+    # plugin is talking about.
+    assert session._pending_images[-1] == "img-%d" % (CALLBACK_IMAGE_MAX_COUNT * 2 - 1)
+    assert "img-0" not in session._pending_images
+
+
+@pytest.mark.asyncio
+async def test_offline_pending_images_are_bounded_by_bytes_too() -> None:
+    """A few large frames must not slip past a count-only bound."""
+    from main_logic.omni_offline_client import OmniOfflineClient
+    from main_logic.proactive_delivery import (
+        CALLBACK_IMAGE_MAX_TOTAL_BYTES,
+        approx_base64_decoded_bytes,
+    )
+
+    session = OmniOfflineClient.__new__(OmniOfflineClient)
+    session._pending_images = []
+    chunky = "A" * (5 * 1024 * 1024 * 4 // 3)  # ~5 MiB decoded each
+
+    for _ in range(4):
+        await session.stream_image(chunky, bypass_rate_limit=True)
+
+    total = sum(approx_base64_decoded_bytes(i) for i in session._pending_images)
+    assert total <= CALLBACK_IMAGE_MAX_TOTAL_BYTES
+    assert len(session._pending_images) >= 1, "never trim to empty"
+
+
 def test_chat_blocks_cap_image_count_and_keep_text_in_order() -> None:
     """Over-cap images drop out; the text mix keeps its canonical order."""
     from app.main_server.character_runtime import (

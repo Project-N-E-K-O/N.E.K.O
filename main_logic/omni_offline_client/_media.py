@@ -47,8 +47,39 @@ class _MediaMixin:
         if not image_b64:
             return
 
-        # Store base64 image
+        # Bound the queue ACROSS pushes. Per-push and per-proactive-turn budgets
+        # do not reach here: passive ``read`` images are injected straight into
+        # the session, and the next stream_text attaches this whole accumulated
+        # list to ONE user message. Two individually valid pushes could
+        # therefore exceed the one-turn provider budget, and repeated
+        # background pushes could retain unbounded base64 while the user is
+        # idle (Codex P2).
+        #
+        # Drop-oldest rather than refuse: the newest frame is the one most
+        # likely to still describe what the plugin is talking about.
+        from main_logic.proactive_delivery import (
+            CALLBACK_IMAGE_MAX_COUNT,
+            CALLBACK_IMAGE_MAX_TOTAL_BYTES,
+            approx_base64_decoded_bytes,
+        )
+
         self._pending_images.append(image_b64)
+        _dropped = 0
+        while len(self._pending_images) > CALLBACK_IMAGE_MAX_COUNT:
+            self._pending_images.pop(0)
+            _dropped += 1
+        while (
+            len(self._pending_images) > 1
+            and sum(approx_base64_decoded_bytes(i) for i in self._pending_images)
+            > CALLBACK_IMAGE_MAX_TOTAL_BYTES
+        ):
+            self._pending_images.pop(0)
+            _dropped += 1
+        if _dropped:
+            logger.warning(
+                "Pending image queue over the one-turn budget; dropped %d oldest "
+                "(kept %d)", _dropped, len(self._pending_images),
+            )
         logger.info(f"Added image to pending queue (total: {len(self._pending_images)})")
 
     def has_pending_images(self) -> bool:
