@@ -498,6 +498,7 @@ class AsrRuntimeMixin:
                 latest is not None
                 and latest.session_epoch == record.session_epoch
                 and latest.route_generation == record.route_generation
+                and latest.generation > record.start_image_generation
                 and time.monotonic() - latest.captured_at
                 <= self._independent_visual_frame_ttl_s
             ):

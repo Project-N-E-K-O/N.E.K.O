@@ -9419,6 +9419,26 @@ async def test_independent_multimodal_turn_freezes_latest_valid_frame() -> None:
 
 
 @pytest.mark.unit
+async def test_independent_multimodal_turn_never_reuses_prior_turn_frame() -> None:
+    runtime = _Runtime()
+    runtime._asr_route_mode = "independent"
+    captured_at = time.monotonic()
+    assert runtime._stage_independent_visual_frame(
+        "prior-turn-frame",
+        source="screen",
+        request_id="screen-prior",
+        captured_at=captured_at,
+    )
+    token = VoiceTurnToken(ingress=runtime._capture_ingress_token(), turn_id=78)
+    turn_id = f"asr-{token.ingress.session_epoch}-{token.turn_id}"
+    runtime._begin_core_multimodal_turn(turn_id, token)
+
+    turn = runtime._snapshot_core_multimodal_turn(turn_id, "new question")
+
+    assert turn is None
+
+
+@pytest.mark.unit
 async def test_direct_multimodal_final_submits_raw_image_once() -> None:
     runtime = _Runtime()
     _install_ready_lifecycle(runtime, "openai")
