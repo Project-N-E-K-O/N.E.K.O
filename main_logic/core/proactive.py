@@ -2717,17 +2717,33 @@ class ProactiveMixin:
         self._purge_undeliverable_callbacks()
         if not self.pending_agent_callbacks:
             return ""
-        # Media-bearing callbacks are NOT drainable as text. This path renders
-        # to a system_prefix string and clears the queue; it has no way to hand
-        # ``media_images`` to stream_text, so draining one here would consume
-        # the callback and silently discard the images the plugin sent with it
-        # (Codex P2). Leave them queued for the proactive path, which delivers
-        # text and images as one unit -- and which re-drives itself, so they do
-        # not strand.
-        candidate_callbacks = [
-            cb for cb in self.pending_agent_callbacks
-            if not (isinstance(cb, dict) and cb.get("media_images"))
-        ]
+        # This path renders to a system_prefix string and clears the queue; it
+        # has no channel to hand ``media_images`` to stream_text. Draining a
+        # media-bearing callback here therefore consumes it and discards its
+        # images (Codex P2).
+        #
+        # Hold back only the ones the PROACTIVE path will actually deliver.
+        # Passive callbacks are filtered out of that path
+        # (_active_proactive_callbacks), so excluding them here too would leave
+        # them deliverable by neither and stranded in the queue forever
+        # (CodeRabbit) -- a worse outcome than the loss it was meant to prevent.
+        candidate_callbacks = []
+        for cb in self.pending_agent_callbacks:
+            has_media = isinstance(cb, dict) and cb.get("media_images")
+            if has_media and cb.get("delivery_mode") != "passive":
+                continue
+            if has_media:
+                # Passive + media has no atomic delivery today: the text turn
+                # is the only route and it cannot carry images. Deliver the
+                # text rather than strand the cue, but say so -- a silent drop
+                # here is what made this hard to see in the first place.
+                logger.warning(
+                    "[%s] passive callback drained as text-only; %d image(s) dropped "
+                    "(no media path in the user turn)",
+                    self.lanlan_name,
+                    len(cb.get("media_images") or []),
+                )
+            candidate_callbacks.append(cb)
         if not candidate_callbacks:
             return ""
         if self._retract_unavailable_topic_hook_snapshots(candidate_callbacks):

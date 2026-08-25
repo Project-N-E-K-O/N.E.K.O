@@ -1169,6 +1169,11 @@ async def test_concurrent_fetches_share_one_push_byte_pool() -> None:
     A per-fetch cap equal to the remaining budget is identical to the flat
     ceiling on the first batch, so four concurrent transfers could buffer four
     times the budget. Drawing from one pool is what actually bounds them.
+
+    The reads are genuinely interleaved — all four reach their first chunk
+    before any of them finishes, and each yields between chunks. Without that,
+    the first task would drain the pool before the others ran and this would
+    only prove serial sharing (CodeRabbit).
     """
     from app.main_server.character_runtime import (
         _PushImageByteBudget,
@@ -1178,14 +1183,28 @@ async def test_concurrent_fetches_share_one_push_byte_pool() -> None:
     total = 4 * 1024 * 1024
     budget = _PushImageByteBudget(total)
     chunk = b"x" * (256 * 1024)
-    peak = 0
+    started = asyncio.Event()
+    live = 0
+    max_live = 0
+    peak_drawn = 0
+    arrivals = 0
 
     class _Resp(_StreamingResponse):
         async def aiter_bytes(self):
-            nonlocal peak
-            for _ in range(24):  # 6 MiB each if unbounded
-                peak = max(peak, total - budget.remaining)
-                yield chunk
+            nonlocal live, max_live, peak_drawn, arrivals
+            arrivals += 1
+            if arrivals == 4:
+                started.set()
+            await started.wait()  # all four in flight before anyone proceeds
+            live += 1
+            max_live = max(max_live, live)
+            try:
+                for _ in range(24):  # 6 MiB each if unbounded
+                    peak_drawn = max(peak_drawn, total - budget.remaining)
+                    yield chunk
+                    await asyncio.sleep(0)  # real interleaving point
+            finally:
+                live -= 1
 
     client = MagicMock()
     client.stream.side_effect = lambda *a, **kw: _Resp([])
@@ -1203,9 +1222,10 @@ async def test_concurrent_fetches_share_one_push_byte_pool() -> None:
             return_exceptions=True,
         )
 
+    assert max_live >= 2, "reads must overlap or this proves nothing about concurrency"
     # Whatever succeeded or failed, the pool was never overdrawn.
     assert budget.remaining >= 0
-    assert peak <= total
+    assert peak_drawn <= total
     assert any(isinstance(r, BaseException) for r in results), (
         "four 6 MiB transfers against a 4 MiB pool must not all succeed"
     )

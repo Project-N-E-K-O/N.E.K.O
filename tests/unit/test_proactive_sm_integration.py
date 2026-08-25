@@ -2725,6 +2725,27 @@ def test_text_drain_returns_empty_when_every_callback_carries_media():
     assert mgr.pending_agent_callbacks == [only_image]
 
 
+def test_passive_media_callbacks_are_still_drained_not_stranded():
+    """Passive cues are excluded from the proactive path.
+
+    Holding them back from the text drain as well would leave them deliverable
+    by neither, stranded in the queue forever — worse than the image loss the
+    hold-back exists to prevent. They drain (with the loss logged) until a
+    media-capable user-turn path exists.
+    """
+    mgr = _make_mgr(session=_FakeOmniOffline(delivered=True))
+    passive_cb = _budget_cb("passive-image", 1)
+    passive_cb["delivery_mode"] = "passive"
+    proactive_cb = _budget_cb("proactive-image", 1)
+    mgr.pending_agent_callbacks = [passive_cb, proactive_cb]
+
+    rendered = core_module.LLMSessionManager.drain_agent_callbacks_for_llm(mgr)
+
+    assert "cue passive-image" in rendered
+    # Only the proactively-deliverable one is held back.
+    assert mgr.pending_agent_callbacks == [proactive_cb]
+
+
 async def test_deferred_image_overflow_is_re_driven_on_the_text_path():
     """A deferred tail must not wait for an unrelated event to wake it.
 
