@@ -2720,6 +2720,17 @@
             return { x: screenX, y: screenY };
         }
 
+        rememberModelCenterPointerOffset(state, event) {
+            if (!state) return false;
+            const center = this.getModelCenterInWindow();
+            const clientX = Number(event?.clientX);
+            const clientY = Number(event?.clientY);
+            state.modelCenterPointerOffset = center && Number.isFinite(clientX) && Number.isFinite(clientY)
+                ? { x: center.x - clientX, y: center.y - clientY }
+                : { x: 0, y: 0 };
+            return !!center && Number.isFinite(clientX) && Number.isFinite(clientY);
+        }
+
         rememberDragScreenPoint(state, event, { start = false } = {}) {
             if (!state) return null;
             const point = this.captureDragScreenPoint(event);
@@ -2728,12 +2739,7 @@
             state.dragHintLastPointer = point;
             if (!start) return point;
 
-            const center = this.getModelCenterInWindow();
-            const clientX = Number(event?.clientX);
-            const clientY = Number(event?.clientY);
-            state.modelCenterPointerOffset = center && Number.isFinite(clientX) && Number.isFinite(clientY)
-                ? { x: center.x - clientX, y: center.y - clientY }
-                : { x: 0, y: 0 };
+            this.rememberModelCenterPointerOffset(state, event);
             state.dragHintStartPointer = Object.assign({ startedAt: Date.now() }, point);
             return point;
         }
@@ -2935,6 +2941,7 @@
             if (!target) return Promise.resolve(false);
 
             const placement = this.getActivePlacement();
+            const layoutFields = placement.fields;
             const startOffsetX = placement.offsetX;
             const startOffsetY = placement.offsetY;
             const horizontalDirection = Math.sign(target.offsetX - startOffsetX);
@@ -2949,6 +2956,17 @@
             return new Promise((resolve) => {
                 this._edgeSnapResolve = resolve;
                 const step = (timestamp) => {
+                    const activeLayoutFields = this.getActiveLayoutFields();
+                    if (activeLayoutFields.scale !== layoutFields.scale
+                        || activeLayoutFields.offsetX !== layoutFields.offsetX
+                        || activeLayoutFields.offsetY !== layoutFields.offsetY) {
+                        this._edgeSnapAnimationFrame = null;
+                        this._edgeSnapResolve = null;
+                        this.applyTransform();
+                        if (this.isLayeredActive()) this.drawLayeredState();
+                        this.snapModelIntoScreen({ animate: true, durationMs: duration }).then(resolve);
+                        return;
+                    }
                     const refreshedTarget = this.getEdgeSnapTarget({ horizontalDirection, verticalDirection });
                     if (refreshedTarget) {
                         const reversesHorizontalDirection = horizontalDirection > 0
@@ -3140,8 +3158,8 @@
             state.lastY = event.clientY;
             state.lastAt = now;
             this.rememberDragScreenPoint(state, event);
+            let startedMoving = false;
             if (Math.hypot(dx, dy) > 4 && !state.moved) {
-                const takingOverSnap = this._edgeSnapAnimationFrame !== null || this._edgeSnapResolve !== null;
                 this.cancelEdgeSnapAnimation();
                 this._dragSequence += 1;
                 state.dragSequence = this._dragSequence;
@@ -3149,8 +3167,8 @@
                 const placement = this.getActivePlacement();
                 state.startOffsetX = placement.offsetX;
                 state.startOffsetY = placement.offsetY;
-                state.refreshGrabOffset = takingOverSnap;
                 state.moved = true;
+                startedMoving = true;
                 this.setModelDraggingState(true, true);
                 this.showDragImage();
             }
@@ -3163,10 +3181,7 @@
                 this.updateFloatingButtonsPosition();
             }
             this.updateLockIconPosition();
-            if (state.refreshGrabOffset) {
-                this.rememberDragScreenPoint(state, event, { start: true });
-                state.refreshGrabOffset = false;
-            }
+            if (startedMoving) this.rememberModelCenterPointerOffset(state, event);
             void this.recordDragHintPointerEdgeApproach(state);
         }
 

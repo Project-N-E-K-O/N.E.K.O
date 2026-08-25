@@ -224,10 +224,11 @@ manager.image = {{
   removeAttribute() {{}},
   setPointerCapture() {{}},
   getBoundingClientRect() {{
-    const width = modelWidth * manager.config.scale;
-    const height = 400 * manager.config.scale;
-    const centerX = window.innerWidth / 2 + manager.config.offset_x;
-    const centerY = window.innerHeight / 2 + manager.config.offset_y;
+    const placement = manager.getActivePlacement();
+    const width = modelWidth * placement.scale;
+    const height = 400 * placement.scale;
+    const centerX = window.innerWidth / 2 + placement.offsetX;
+    const centerY = window.innerHeight / 2 + placement.offsetY;
     return {{ left: centerX - width / 2, top: centerY - height / 2, width, height }};
   }},
 }};
@@ -337,6 +338,21 @@ manager.scheduleSaveCurrentConfig = () => {{ scheduledSaves += 1; }};
   assert.equal(manager.config.offset_x, -500);
   modelWidth = 400;
 
+  // Crossing the responsive breakpoint restarts against the new layout fields.
+  manager.config.offset_x = -750;
+  manager.config.mobile_offset_x = -500;
+  const responsiveSnap = manager.snapModelIntoScreen();
+  runNextFrame(0);
+  window.innerWidth = 600;
+  runNextFrame(130);
+  runNextFrame(130);
+  runNextFrame(260);
+  assert.equal(await responsiveSnap, true);
+  assert.equal(manager.config.offset_x, -750);
+  assert.equal(manager.config.mobile_offset_x, -300);
+  window.innerWidth = 1000;
+  manager.config.mobile_offset_x = 0;
+
   // Wheel zoom cancels the old rebound and targets the resized model geometry.
   manager.config.offset_x = -750;
   const preZoomSnap = manager.snapModelIntoScreen();
@@ -371,6 +387,36 @@ manager.scheduleSaveCurrentConfig = () => {{ scheduledSaves += 1; }};
   runNextFrame(260);
   assert.equal(await untouchedSnap, true);
   assert.equal(manager.config.offset_x, -500);
+
+  // A rebound that finishes during a pending click refreshes the first drag grab offset.
+  manager.config.offset_x = -750;
+  const completedPendingSnap = manager.snapModelIntoScreen();
+  manager.startDrag({{
+    target: manager.image,
+    button: 0,
+    pointerId: 8,
+    clientX: 100,
+    clientY: 100,
+    screenX: 100,
+    screenY: 100,
+    preventDefault() {{}},
+    stopPropagation() {{}},
+  }});
+  runNextFrame(0);
+  runNextFrame(260);
+  assert.equal(await completedPendingSnap, true);
+  manager.moveDrag({{
+    pointerId: 8,
+    clientX: 110,
+    clientY: 100,
+    screenX: 110,
+    screenY: 100,
+    preventDefault() {{}},
+  }});
+  const centerAfterPendingCompletionMove = manager.getModelCenterInWindow();
+  assert.equal(manager._dragState.modelCenterPointerOffset.x, centerAfterPendingCompletionMove.x - 110);
+  assert.equal(manager._dragState.modelCenterPointerOffset.y, centerAfterPendingCompletionMove.y - 100);
+  manager._dragState = null;
 
   // Model-manager wheel replacement stages the final snapped placement.
   window.location.pathname = '/model_manager';
