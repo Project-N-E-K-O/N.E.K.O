@@ -146,12 +146,14 @@ def resolve_lock_path() -> Path:
 
 
 def _resolve_legacy_lock_path(lock_path: Path) -> Path | None:
-    """Return a migration source for an explicit execution-root lock.
+    """Return the root-local predecessor of an execution-root-scoped lock.
 
     Before executable plugin code and persistent state were separated, an
     explicit ``PLUGIN_CONFIG_ROOT`` also moved ``plugins.lock.json`` beside
-    that root. PR #2943 then briefly used one unscoped state-root lock. A
-    missing scoped file may be bootstrapped from either predecessor.
+    that root. That path carries enough identity to migrate into the scoped
+    state-root filename. The briefly-used unscoped state-root lock is
+    deliberately not a migration source: its rows cannot be attributed to one
+    of several execution roots safely.
 
     Compatibility lookup is deliberately disabled for an explicit
     ``NEKO_PLUGIN_INSTALL_LOCK_PATH`` and for managers using a caller-supplied
@@ -177,14 +179,6 @@ def _resolve_legacy_lock_path(lock_path: Path) -> Path | None:
     ).resolve(strict=False)
     if legacy_path != canonical_path and legacy_path.exists():
         return legacy_path
-
-    # PR #2943 briefly used one unscoped file in the shared state root.
-    # Treat it as a secondary migration source when no root-local legacy
-    # file survives. Once copied, subsequent writes stay in this root's
-    # scoped file and cannot collide with another explicit execution root.
-    shared_path = _shared_state_lock_path()
-    if shared_path != canonical_path:
-        return shared_path
     return None
 
 

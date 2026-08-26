@@ -295,11 +295,11 @@ def test_shared_state_keeps_explicit_execution_root_provenance_isolated(
     assert second_entry.removed is False
 
 
-def test_scoped_lock_migrates_the_intermediate_shared_state_lock(
+def test_scoped_lock_declines_ambiguous_shared_state_provenance(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The prior unscoped PR layout remains a fallback migration source."""
+    """An unscoped shared row must not be cloned into an unrelated root."""
     builtin_root = tmp_path / "builtin"
     user_root = tmp_path / "exec" / "plugins"
     state_root = tmp_path / "state" / "plugins"
@@ -324,6 +324,7 @@ def test_scoped_lock_migrates_the_intermediate_shared_state_lock(
         version="1.0.0",
         package_url="https://example.test/shared.neko-plugin",
     )
+    shared_bytes = shared_lock.read_bytes()
 
     scoped_lock = resolve_lock_path()
     manager = InstallSourceManager(
@@ -333,12 +334,15 @@ def test_scoped_lock_migrates_the_intermediate_shared_state_lock(
         scanner=PluginDirectoryScanner(builtin_root, user_root),
     )
     manager.load()
+    assert manager.list_entries() == []
+    manager.reconcile()
 
     entry = manager.list_entries()[0]
     assert scoped_lock != shared_lock
-    assert isinstance(entry.source_detail, SourceDetailMarket)
-    assert entry.source_detail.plugin_market_id == "shared-market-id"
-    assert scoped_lock.read_bytes() == shared_lock.read_bytes()
+    assert entry.channel == "manual"
+    assert entry.source_detail is None
+    assert shared_lock.read_bytes() == shared_bytes
+    assert scoped_lock.read_bytes() != shared_bytes
 
 
 # ──────────────────────────────────────────────────────────────────────
