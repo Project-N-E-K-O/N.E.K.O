@@ -118,6 +118,7 @@ class LLMSessionManager(
         self._live_vision_source: str = ""
         self._live_vision_last_frame_at: float = 0.0
         self._live_vision_frame_b64: str = ""
+        self._live_vision_expiry_handle: asyncio.TimerHandle | None = None
         # request_fresh_screenshot 与 resolve_screenshot_request 之间的一次性交接槽。
         # 与 _avatar_position 分开是刻意的：后者被每一条 stream_data 覆写（屏幕分享帧、
         # 主动视觉单帧都会写），拿它去配对 Phase 2 的那张截图，坐标会被中途到达的

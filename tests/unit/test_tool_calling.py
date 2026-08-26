@@ -4013,6 +4013,35 @@ def _make_rt_client(api_type: str, *, tool_name: str = "x", tool_kwargs=None):
     return client, sent
 
 
+def test_realtime_tool_image_chain_survives_tool_result_responses():
+    from types import SimpleNamespace
+
+    from main_logic.omni_realtime_client import OmniRealtimeClient
+
+    client = OmniRealtimeClient.__new__(OmniRealtimeClient)
+    client._response_arbiter = SimpleNamespace(response_owner_source="manual")
+    client.get_host_turn_id = lambda: "speech-one"
+    client._turn_epoch = 0
+    client._idless_quarantine = False
+    client._tool_image_chain_serial = 0
+    client._active_tool_image_chain_id = None
+
+    client._begin_response_lifecycle("response-one")
+    first_chain = client._ensure_tool_image_chain_id()
+
+    client._response_arbiter.response_owner_source = "tool_result"
+    client.get_host_turn_id = lambda: "speech-rotated-after-tool"
+    client._begin_response_lifecycle("response-two")
+
+    assert client._ensure_tool_image_chain_id() == first_chain
+
+    client._response_arbiter.response_owner_source = "manual"
+    client.get_host_turn_id = lambda: "speech-next-user"
+    client._begin_response_lifecycle("response-three")
+
+    assert client._ensure_tool_image_chain_id() != first_chain
+
+
 def test_realtime_tools_for_step_uses_nested_function_shape():
     client, _ = _make_rt_client("step", tool_kwargs={"description": "d"})
     out = client._tools_for_step()

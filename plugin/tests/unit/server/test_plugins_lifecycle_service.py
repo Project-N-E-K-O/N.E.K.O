@@ -403,6 +403,50 @@ async def test_start_failure_cleanup_stops_and_keeps_host_when_permission_revoke
 
 @pytest.mark.plugin_unit
 @pytest.mark.asyncio
+async def test_start_failure_cleanup_rechecks_permissions_after_shutdown(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    host = _FakeProcessHost(
+        plugin_id="demo_plugin",
+        entry_point="tests.fake:Plugin",
+        config_path=tmp_path / "demo_plugin" / "plugin.toml",
+    )
+    host.transport = SimpleNamespace(uplink_token="failed-start-generation")
+    revoke_results = iter((True, False))
+    revoke_calls: list[str] = []
+    hosts_backup = dict(module.state.plugin_hosts)
+    try:
+        with module.state.acquire_plugin_hosts_write_lock():
+            module.state.plugin_hosts.clear()
+
+        async def _revoke(
+            _plugin_id: str,
+            *,
+            host_generation: str = "",
+            timeout: float = 3.0,
+        ) -> bool:
+            revoke_calls.append(host_generation)
+            return next(revoke_results)
+
+        monkeypatch.setattr(module, "_revoke_plugin_permissions", _revoke)
+
+        cleaned_up = await module._cleanup_started_host("demo_plugin", host)
+
+        assert revoke_calls == ["failed-start-generation", "failed-start-generation"]
+        assert cleaned_up is False
+        assert host.stopped is True
+        assert getattr(host, module._STARTUP_QUARANTINED_ATTR) is True
+        with module.state.acquire_plugin_hosts_read_lock():
+            assert module.state.plugin_hosts["demo_plugin"] is host
+    finally:
+        with module.state.acquire_plugin_hosts_write_lock():
+            module.state.plugin_hosts.clear()
+            module.state.plugin_hosts.update(hosts_backup)
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
 async def test_start_failure_cleanup_keeps_a_host_that_survives_shutdown(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

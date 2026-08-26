@@ -1575,11 +1575,12 @@ class PluginHost:
         # ZMQ transport: 2 socket pairs replace 5 mp.Queues
         self.transport = HostTransport()
 
-        self._process_stop_event: Any = multiprocessing.Event()
+        process_context = multiprocessing.get_context("spawn")
+        self._process_stop_event: Any = process_context.Event()
         self._startup_options: dict[str, object] = {"startup_failure": "warn"}
 
         # Shared response notification primitives must be initialized before
-        # forking, otherwise each child creates its own Manager proxies.
+        # spawning, otherwise each child creates its own Manager proxies.
         try:
             _ = state.plugin_response_map
         except Exception as e:
@@ -1595,7 +1596,7 @@ class PluginHost:
                 plugin_id, e
             )
 
-        self.process = multiprocessing.Process(
+        self.process = process_context.Process(
             target=_plugin_process_runner,
             args=(
                 plugin_id,

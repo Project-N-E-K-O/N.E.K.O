@@ -906,6 +906,22 @@ async def _cleanup_started_host(plugin_id: str, host: PluginHostContract) -> boo
             type(exc).__name__,
             str(exc),
         )
+    post_shutdown_revoked = (
+        await _revoke_plugin_host_permissions(plugin_id, target_host)
+    ) is not False
+    permissions_revoked = permissions_revoked and post_shutdown_revoked
+    if not post_shutdown_revoked:
+        setattr(target_host, _STARTUP_QUARANTINED_ATTR, True)
+        await asyncio.to_thread(
+            _register_or_replace_host_sync,
+            plugin_id,
+            target_host,
+        )
+        logger.warning(
+            "startup cleanup post-shutdown permission sweep failed; "
+            "retaining quarantined host for retry: plugin_id={}",
+            plugin_id,
+        )
     if shutdown_failed:
         try:
             still_alive = bool(target_host.is_alive())

@@ -131,9 +131,15 @@ class ToolCallingMixin:
         """
         result = await self.tool_registry.execute(call)
         if result.images:
+            tool_chain_id = call.provider_meta.get("tool_chain_id")
             await self._route_tool_images(
                 result,
                 invoking_session=invoking_session,
+                tool_chain_id=(
+                    str(tool_chain_id)
+                    if isinstance(tool_chain_id, str) and tool_chain_id
+                    else None
+                ),
             )
         return result
 
@@ -142,6 +148,7 @@ class ToolCallingMixin:
         result: ToolResult,
         *,
         invoking_session=None,
+        tool_chain_id: str | None = None,
     ) -> None:
         """Decide how a tool's pictures reach the model, and degrade if needed.
 
@@ -179,7 +186,13 @@ class ToolCallingMixin:
             for _image in images
         ]
         async with budget_lock:
-            turn_id = str(getattr(self, "current_speech_id", "") or "")
+            # A realtime function-call-only response rotates the host speech
+            # id before the tool-result response continues. The client stamps
+            # every leg of that logical chain with one stable identifier.
+            if isinstance(session, OmniRealtimeClient) and tool_chain_id:
+                turn_id = f"realtime:{id(session)}:{tool_chain_id}"
+            else:
+                turn_id = str(getattr(self, "current_speech_id", "") or "")
             if getattr(self, "_tool_image_fallback_budget_turn_id", None) != turn_id:
                 self._tool_image_fallback_budget_turn_id = turn_id
                 self._tool_image_fallback_budget_count = 0

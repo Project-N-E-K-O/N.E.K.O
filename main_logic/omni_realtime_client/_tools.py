@@ -30,6 +30,16 @@ from ._shared import (
 
 
 class _ToolingMixin:
+    def _ensure_tool_image_chain_id(self) -> str:
+        """Return the stable image-budget identity for this tool chain."""
+        chain_id = getattr(self, "_active_tool_image_chain_id", None)
+        if chain_id is None:
+            serial = getattr(self, "_tool_image_chain_serial", 0) + 1
+            self._tool_image_chain_serial = serial
+            chain_id = f"{getattr(self, '_connection_generation', 0)}:{serial}"
+            self._active_tool_image_chain_id = chain_id
+        return chain_id
+
     def set_tools(self, tool_definitions: Optional[List[ToolDefinition]]) -> None:
         """Replace the active tool list. Takes effect the next time the
         client builds its session config (next ``connect`` call). For an

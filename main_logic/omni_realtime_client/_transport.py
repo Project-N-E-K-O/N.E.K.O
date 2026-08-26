@@ -1229,6 +1229,13 @@ class _TransportMixin:
     def _begin_response_lifecycle(self, response_id: Any) -> None:
         """Apply the host-side state shared by all accepted start evidence."""
 
+        response_source = getattr(
+            self._response_arbiter,
+            "response_owner_source",
+            None,
+        )
+        if response_source != "tool_result":
+            self._active_tool_image_chain_id = None
         self._current_response_id = response_id
         self._is_responding = True
         self._turn_epoch += 1
@@ -1936,12 +1943,20 @@ class _TransportMixin:
                         # Execute and reply asynchronously — don't block the
                         # message loop. handle_messages stays responsive to
                         # other events while the tool runs.
-                        async def _run_tool(_name=name, _args=raw_args, _cid=call_id):
+                        tool_chain_id = self._ensure_tool_image_chain_id()
+
+                        async def _run_tool(
+                            _name=name,
+                            _args=raw_args,
+                            _cid=call_id,
+                            _tool_chain_id=tool_chain_id,
+                        ):
                             call = ToolCall(
                                 name=_name,
                                 arguments=parse_arguments_json(_args),
                                 call_id=_cid,
                                 raw_arguments=_args,
+                                provider_meta={"tool_chain_id": _tool_chain_id},
                             )
                             result = await self._execute_tool_call(call)
                             await self._send_tool_result_openai_realtime(result)

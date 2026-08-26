@@ -429,6 +429,12 @@ def _liveness(
         _live_vision_frame_b64=frame,
     )
     mgr.live_vision_snapshot = lambda: StreamingMixin.live_vision_snapshot(mgr)
+    mgr._expire_live_vision_frame = (
+        lambda expected_frame_at: StreamingMixin._expire_live_vision_frame(
+            mgr,
+            expected_frame_at,
+        )
+    )
     return mgr
 
 
@@ -481,7 +487,7 @@ def test_frames_that_stopped_arriving_stop_counting(monkeypatch):
     assert state["source"] == ""
 
 
-def test_only_an_accepted_share_frame_reaches_the_slot(monkeypatch):
+async def test_only_an_accepted_share_frame_reaches_the_slot(monkeypatch):
     """One writer, so nothing else can pass itself off as the shared screen."""
     import main_logic.core.streaming as streaming
 
@@ -519,6 +525,18 @@ def test_an_expired_frame_is_dropped_rather_than_kept_in_memory(monkeypatch):
     mgr = _liveness(last_at=500.0)
 
     StreamingMixin.live_vision_snapshot(mgr)
+
+    assert mgr._live_vision_frame_b64 == ""
+
+
+async def test_an_unread_live_frame_expires_without_a_snapshot(monkeypatch):
+    import main_logic.core.streaming as streaming
+
+    monkeypatch.setattr(streaming, "_LIVE_VISION_STALE_SECONDS", 0.01)
+    mgr = _liveness(last_at=0.0, source="", frame="")
+
+    StreamingMixin._note_live_vision_frame(mgr, "screen", "private-desktop")
+    await asyncio.sleep(0.03)
 
     assert mgr._live_vision_frame_b64 == ""
 

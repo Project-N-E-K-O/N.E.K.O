@@ -306,6 +306,12 @@ class RealtimeResponseArbiter:
         return self._current.source if self._current is not None else None
 
     @property
+    def response_owner_source(self) -> str | None:
+        """Source whose response is currently waiting for its terminal."""
+        owner = self._response_owner
+        return owner.source if owner is not None else None
+
+    @property
     def is_busy(self) -> bool:
         return (
             self._current is not None

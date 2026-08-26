@@ -516,6 +516,54 @@ async def test_fallback_transcription_budget_is_shared_across_the_tool_turn(
 
 
 @pytest.mark.asyncio
+async def test_realtime_tool_chain_keeps_one_budget_across_speech_id_rotations(
+    spy_vision,
+):
+    session = OmniRealtimeClient.__new__(OmniRealtimeClient)
+    manager = _Manager(_result(), session)
+    results = [
+        _result(
+            output={"index": index},
+            images=[ToolImage(data_b64=f"image-{index}")],
+        )
+        for index in range(4)
+    ]
+
+    for index, result in enumerate(results):
+        manager.current_speech_id = f"response-{index}"
+        manager.tool_registry._result = result
+        await manager._on_tool_call(
+            ToolCall(
+                name="demo_tool",
+                arguments={},
+                provider_meta={"tool_chain_id": "logical-chain-one"},
+            ),
+            invoking_session=session,
+        )
+
+    assert len(spy_vision.calls) == 2
+    assert sum(
+        "budget" in description
+        for result in results
+        for description in result.output["_image_descriptions"]
+    ) == 2
+
+    next_result = _result(images=[ToolImage(data_b64="next-chain-image")])
+    manager.current_speech_id = "response-next"
+    manager.tool_registry._result = next_result
+    await manager._on_tool_call(
+        ToolCall(
+            name="demo_tool",
+            arguments={},
+            provider_meta={"tool_chain_id": "logical-chain-two"},
+        ),
+        invoking_session=session,
+    )
+
+    assert len(spy_vision.calls) == 3
+
+
+@pytest.mark.asyncio
 async def test_transcription_passes_png_mime_to_the_vision_helper(spy_vision):
     """Realtime / text-only fallback must not relabel PNG bytes as JPEG."""
     out = await _dispatch(

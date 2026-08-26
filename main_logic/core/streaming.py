@@ -160,9 +160,28 @@ class StreamingMixin:
         pictures also write, and answering "here is the shared screen" with
         whichever of those landed last.
         """
+        expiry_handle = getattr(self, "_live_vision_expiry_handle", None)
+        if expiry_handle is not None:
+            expiry_handle.cancel()
+
+        frame_at = time.monotonic()
         self._live_vision_source = str(input_type or "")
-        self._live_vision_last_frame_at = time.monotonic()
+        self._live_vision_last_frame_at = frame_at
         self._live_vision_frame_b64 = image_b64 if isinstance(image_b64, str) else ""
+        self._live_vision_expiry_handle = asyncio.get_running_loop().call_later(
+            _LIVE_VISION_STALE_SECONDS,
+            self._expire_live_vision_frame,
+            frame_at,
+        )
+
+    def _expire_live_vision_frame(self, expected_frame_at: float) -> None:
+        """Release a frame only if no newer accepted frame replaced it."""
+        if self._live_vision_last_frame_at != expected_frame_at:
+            return
+        self._live_vision_expiry_handle = None
+        self._live_vision_source = ""
+        self._live_vision_last_frame_at = 0.0
+        self._live_vision_frame_b64 = ""
 
     def _clear_live_vision_share(self) -> None:
         """Drop the shared screen/camera slot on genuine session teardown.
@@ -173,6 +192,10 @@ class StreamingMixin:
         callback in the next session, even though that session has not
         received a frame of its own.
         """
+        expiry_handle = getattr(self, "_live_vision_expiry_handle", None)
+        if expiry_handle is not None:
+            expiry_handle.cancel()
+        self._live_vision_expiry_handle = None
         self._live_vision_source = ""
         self._live_vision_last_frame_at = 0.0
         self._live_vision_frame_b64 = ""
@@ -186,11 +209,8 @@ class StreamingMixin:
         model, which is the round trip the live-frame path exists to avoid, so
         callers skip the path entirely rather than pay for it twice.
 
-        Also where an expired frame is released. This is the one method every
-        consumer calls -- delivery, the HTTP probe, the panel -- so it is the
-        only place guaranteed to run again after sharing stops, and a picture
-        of somebody's desktop should not sit in memory once it has aged out
-        of being answerable.
+        Also provides a defensive expiry check for callers racing the scheduled
+        frame-release callback.
         """
         session = self.session
         native_vision = getattr(session, "_supports_native_image", False) is True
