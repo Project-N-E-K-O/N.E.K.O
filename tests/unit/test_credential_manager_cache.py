@@ -412,6 +412,38 @@ def test_failed_orphan_key_delete_reports_existing_artifact(tmp_path, monkeypatc
     assert key_file.exists()
 
 
+def test_key_is_restored_when_credential_reappears_during_delete(
+    tmp_path,
+    monkeypatch,
+):
+    manager = CredentialManager()
+    cookie_file = tmp_path / "weibo.json"
+    key_file = tmp_path / "weibo_key.key"
+    key_file.write_bytes(b"original-key")
+    original_unlink = Path.unlink
+
+    def recreate_cookie_after_key_unlink(path, *args, **kwargs):
+        original_unlink(path, *args, **kwargs)
+        if path == key_file:
+            cookie_file.write_text('{"SUB":"restored"}', encoding="utf-8")
+
+    monkeypatch.chdir(tmp_path)
+    with (
+        patch.dict("utils.cookies_login.COOKIE_FILES", {"weibo": cookie_file}),
+        patch.object(cookies_login, "CONFIG_DIR", tmp_path),
+        patch.object(
+            cookies_login.os.path,
+            "expanduser",
+            return_value=str(tmp_path / "home"),
+        ),
+        patch.object(Path, "unlink", recreate_cookie_after_key_unlink),
+    ):
+        assert manager.delete_stored_credentials("weibo") == (True, False)
+
+    assert cookie_file.exists()
+    assert key_file.read_bytes() == b"original-key"
+
+
 def test_failed_cookie_delete_preserves_encryption_key(tmp_path, monkeypatch):
     manager = CredentialManager()
     cookie_file = tmp_path / "weibo.json"

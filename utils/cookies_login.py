@@ -669,7 +669,13 @@ class CredentialManager:
             key_file = get_cookie_key_file(platform)
             if cookie_error is None and sources_absent:
                 try:
-                    key_file.unlink()
+                    key_stat = key_file.lstat()
+                    key_link_target = (
+                        os.readlink(key_file) if key_file.is_symlink() else None
+                    )
+                    key_contents = (
+                        b"" if key_link_target is not None else key_file.read_bytes()
+                    )
                 except FileNotFoundError:
                     pass
                 except OSError:
@@ -677,6 +683,44 @@ class CredentialManager:
                     key_deleted = False
                 else:
                     artifact_existed = True
+                    key_signature = (
+                        key_stat.st_mtime_ns,
+                        key_stat.st_ctime_ns,
+                        key_stat.st_size,
+                    )
+                    sources_absent = all(
+                        self._path_is_absent(path) for path in cookie_files
+                    )
+                    if (
+                        not sources_absent
+                        or self._file_stamp(key_file, follow_symlinks=False)
+                        != key_signature
+                    ):
+                        key_deleted = False
+                    else:
+                        try:
+                            key_file.unlink()
+                        except FileNotFoundError:
+                            pass
+                        except OSError:
+                            key_deleted = False
+
+                        sources_absent = all(
+                            self._path_is_absent(path) for path in cookie_files
+                        )
+                        if not sources_absent:
+                            key_deleted = False
+                            if self._path_is_absent(key_file):
+                                try:
+                                    if key_link_target is None:
+                                        key_file.write_bytes(key_contents)
+                                        if sys.platform != "win32":
+                                            os.chmod(key_file, key_stat.st_mode)
+                                    else:
+                                        key_file.symlink_to(key_link_target)
+                                except OSError as exc:
+                                    logger.error("凭证来源重建后恢复密钥失败: %s", exc)
+                                    raise
 
             with self._cache_lock:
                 self._legacy_sources.pop(platform, None)
