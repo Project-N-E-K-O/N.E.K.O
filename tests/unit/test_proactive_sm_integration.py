@@ -62,6 +62,7 @@ class _FakeOmniOffline(OmniOfflineClient):
         instruction: str,
         *,
         images=None,
+        authorization_guard=None,
         on_committed=None,
         response_owner=None,
     ) -> bool:
@@ -757,6 +758,7 @@ async def test_text_mode_resolves_delivery_ack_after_committed_output_before_com
             instruction: str,
             *,
             images=None,
+            authorization_guard=None,
             on_committed=None,
             response_owner=None,
         ) -> bool:
@@ -853,6 +855,7 @@ async def test_text_mode_source_revoke_aborts_checked_out_callback_before_commit
             instruction: str,
             *,
             images=None,
+            authorization_guard=None,
             on_committed=None,
             response_owner=None,
         ) -> bool:
@@ -908,6 +911,7 @@ async def test_source_revoke_does_not_clear_a_newer_user_response_generation():
             instruction: str,
             *,
             images=None,
+            authorization_guard=None,
             on_committed=None,
             response_owner=None,
         ) -> bool:
@@ -958,6 +962,7 @@ async def test_text_mode_committed_then_flush_exception_does_not_requeue_callbac
             instruction: str,
             *,
             images=None,
+            authorization_guard=None,
             on_committed=None,
             response_owner=None,
         ) -> bool:
@@ -993,6 +998,7 @@ async def test_text_mode_success_keeps_late_extra_replies():
             instruction: str,
             *,
             images=None,
+            authorization_guard=None,
             on_committed=None,
             response_owner=None,
         ) -> bool:
@@ -2466,6 +2472,7 @@ async def test_user_input_between_claim_and_lock_is_detected():
             instruction,
             *,
             images=None,
+            authorization_guard=None,
             on_committed=None,
             response_owner=None,
         ):
@@ -2523,6 +2530,7 @@ async def test_user_input_during_agent_delivery_sets_preempted():
             instruction,
             *,
             images=None,
+            authorization_guard=None,
             on_committed=None,
             response_owner=None,
         ):
