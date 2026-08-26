@@ -87,6 +87,28 @@ def test_fork_child_cleanup_closes_active_and_acquisition_phase_handles() -> Non
     assert operation_lock._OPEN_FILE_LOCK_HANDLES == set()
 
 
+def test_default_operation_lock_follows_shared_install_state_root(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from plugin import settings
+    from plugin.server.application.plugins import operation_lock
+
+    state_root = tmp_path / "shared-state" / "plugins"
+    monkeypatch.delenv("NEKO_PLUGIN_OPERATION_LOCK_PATH", raising=False)
+    monkeypatch.delenv("NEKO_PLUGIN_INSTALL_LOCK_PATH", raising=False)
+    monkeypatch.setattr(settings, "get_plugins_directory", lambda: state_root)
+
+    monkeypatch.setenv("PLUGIN_CONFIG_ROOT", str(tmp_path / "exec-a" / "plugins"))
+    first_path = operation_lock._operation_file_lock_path()
+    monkeypatch.setenv("PLUGIN_CONFIG_ROOT", str(tmp_path / "exec-b" / "plugins"))
+    second_path = operation_lock._operation_file_lock_path()
+
+    expected = state_root.parent / ".plugin-operation.lock"
+    assert first_path == expected.resolve()
+    assert second_path == expected.resolve()
+
+
 @pytest.mark.plugin_unit
 @pytest.mark.asyncio
 async def test_plugin_operation_lock_serializes_tasks_and_allows_reentry() -> None:

@@ -191,7 +191,13 @@ def _select_effective_records(
         canonical = [record for record in group if record.config_path.parent.name == plugin_id]
         sources = {_source_for_config_path(record.config_path) for record in canonical}
         if not {"builtin", "user"}.issubset(sources):
-            winners = group
+            # This is a real legacy ID conflict, not a supported source
+            # override. Preserve the historical builtin-first winner even
+            # though discovery roots are now ordered user-first.
+            winners = sorted(
+                group,
+                key=lambda record: _source_for_config_path(record.config_path) != "builtin",
+            )
             hidden: list[PluginDiscoveryRecord] = []
         else:
             winners = [
@@ -304,30 +310,31 @@ def _collect_plugin_contexts_from_roots_sync(
             canonical = config_path.parent.name == ctx.pid
             previous = pid_to_context.get(ctx.pid)
             previous_canonical = previous is not None and previous.toml_path.parent.name == ctx.pid
-            replaces_builtin = (
+            supported_override = (
                 canonical
                 and previous_canonical
-                and current_source == "user"
-                and previous_source == "builtin"
+                and {current_source, previous_source} == {"builtin", "user"}
             )
-            shadows_builtin = (
-                canonical
-                and previous_canonical
+            prefer_current = previous is None or (
+                supported_override and current_source == "user"
+            ) or (
+                not supported_override
                 and current_source == "builtin"
                 and previous_source == "user"
             )
-            if previous is not None and shadows_builtin:
-                logger.debug(
-                    "builtin plugin id '{}' is shadowed by the user source",
-                    ctx.pid,
-                )
-                continue
-            if previous is not None and not replaces_builtin:
-                logger.warning(
+            if previous is not None and not prefer_current:
+                log = logger.debug if supported_override else logger.warning
+                log(
                     "duplicate plugin id '{}' ignored while building runtime plan",
                     ctx.pid,
                 )
                 continue
+            if previous is not None and not supported_override:
+                logger.warning(
+                    "builtin plugin id '{}' replaces a noncanonical user conflict "
+                    "while building runtime plan",
+                    ctx.pid,
+                )
             if ctx.pid not in pid_to_context:
                 context_order.append(ctx.pid)
             pid_to_context[ctx.pid] = ctx

@@ -339,6 +339,8 @@ import { narrowMarketChannel } from '@/utils/narrowChannel'
 import { openExternalUrl } from '@/utils/openExternal'
 import {
   deriveMarketPluginAction,
+  fetchInstalledProjection,
+  inferManualInstallConflict,
   type MarketInstalledState,
   type MarketPluginAction,
 } from '@/utils/marketPluginInstallState'
@@ -582,6 +584,7 @@ interface InstalledMarketEntry extends MarketInstalledState {
   package_url?: string
 }
 const installedByPid = ref<Map<string, InstalledMarketEntry>>(new Map())
+const installedProjectionLoaded = ref(false)
 // pluginId → 当前装的版本是否已被作者撤回（v2 yank 检测）
 const yankedMap = ref<Record<string, boolean>>({})
 
@@ -651,8 +654,11 @@ function getInstalledState(plugin: MarketPlugin): InstalledMarketEntry | undefin
 
 function getMarketAction(plugin: MarketPlugin): MarketPluginAction {
   const state = getInstalledState(plugin)
-  const manualConflict = !state
-    && marketIdentityKeys(plugin).some((key) => localPluginKeys.value.has(key))
+  const manualConflict = inferManualInstallConflict(
+    installedProjectionLoaded.value,
+    state,
+    marketIdentityKeys(plugin).some((key) => localPluginKeys.value.has(key)),
+  )
   return deriveMarketPluginAction(state, plugin.version, plugin.has_release, manualConflict)
 }
 
@@ -842,16 +848,10 @@ interface MarketInstalledItem extends MarketInstalledState {
   path: string
 }
 
-async function fetchInstalledFromBridge(): Promise<MarketInstalledItem[]> {
-  try {
-    const res = await fetchBridge('/market/installed')
-    if (!res) return []
-    if (!res.ok) return []
-    const data = await res.json()
-    return Array.isArray(data?.installed) ? data.installed : []
-  } catch {
-    return []
-  }
+async function fetchInstalledFromBridge(): Promise<MarketInstalledItem[] | null> {
+  return fetchInstalledProjection<MarketInstalledItem>(
+    () => fetchBridge('/market/installed'),
+  )
 }
 
 /**
@@ -865,6 +865,7 @@ async function fetchInstalledFromBridge(): Promise<MarketInstalledItem[]> {
 async function yankSweep() {
   if (!marketAvailable.value) return
   const installed = await fetchInstalledFromBridge()
+  if (installed === null) return
   const newIndex = new Map<string, InstalledMarketEntry>()
   const uniqueEntries = new Map<string, InstalledMarketEntry>()
   for (const item of installed) {
@@ -888,6 +889,7 @@ async function yankSweep() {
     }
   }
   installedByPid.value = newIndex
+  installedProjectionLoaded.value = true
   // Build the next yank map into a local, then atomic-swap below — so a
   // transient `fetchMarketPluginVersions` failure preserves the previous
   // warning (R8.5 "失败静默") instead of clearing every entry's flag until

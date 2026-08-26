@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest'
 
-import { deriveMarketPluginAction } from './marketPluginInstallState'
+import {
+  deriveMarketPluginAction,
+  fetchInstalledProjection,
+  inferManualInstallConflict,
+} from './marketPluginInstallState'
 
 describe('deriveMarketPluginAction', () => {
   it('offers a safe override when the builtin version is older', () => {
@@ -109,5 +113,34 @@ describe('deriveMarketPluginAction', () => {
         true
       )
     ).toMatchObject({ kind: 'upgrade', effectiveSource: 'market' })
+  })
+})
+
+describe('installed projection loading', () => {
+  it('keeps transport failures distinct from a successful empty projection', async () => {
+    await expect(fetchInstalledProjection(async () => null)).resolves.toBeNull()
+    await expect(
+      fetchInstalledProjection(async () => ({ ok: false } as Response))
+    ).resolves.toBeNull()
+    await expect(
+      fetchInstalledProjection(async () => {
+        throw new Error('bridge unavailable')
+      })
+    ).resolves.toBeNull()
+    await expect(
+      fetchInstalledProjection(
+        async () =>
+          ({
+            ok: true,
+            json: async () => ({ installed: [] }),
+          }) as Response
+      )
+    ).resolves.toEqual([])
+  })
+
+  it('infers a manual conflict only after the installed projection loaded', () => {
+    expect(inferManualInstallConflict(false, undefined, true)).toBe(false)
+    expect(inferManualInstallConflict(true, undefined, true)).toBe(true)
+    expect(inferManualInstallConflict(true, { plugin_id: 'demo' }, true)).toBe(false)
   })
 })

@@ -37,6 +37,27 @@ export interface MarketPluginAction {
   installed: boolean
 }
 
+export async function fetchInstalledProjection<T extends MarketInstalledState>(
+  fetcher: () => Promise<Response | null>
+): Promise<T[] | null> {
+  try {
+    const response = await fetcher()
+    if (!response?.ok) return null
+    const data = await response.json()
+    return Array.isArray(data?.installed) ? (data.installed as T[]) : []
+  } catch {
+    return null
+  }
+}
+
+export function inferManualInstallConflict(
+  projectionLoaded: boolean,
+  installedState: MarketInstalledState | null | undefined,
+  localIdentityMatch: boolean
+): boolean {
+  return projectionLoaded && !installedState && localIdentityMatch
+}
+
 export function normalizeEffectiveSource(
   state: MarketInstalledState | null | undefined
 ): EffectivePluginSource {

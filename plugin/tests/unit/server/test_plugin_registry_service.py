@@ -816,6 +816,51 @@ async def test_user_source_shadows_builtin_without_suffix_and_builtin_recovers_a
 
 
 @pytest.mark.asyncio
+async def test_noncanonical_user_conflict_keeps_builtin_declared_id_and_runtime_context(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    plugin_id = "demo"
+    builtin_root = tmp_path / "builtin" / "plugins"
+    user_root = tmp_path / "user" / "plugins"
+    builtin_config = _write_package_plugin_fixture(builtin_root, plugin_id)
+    user_config = _write_package_plugin_fixture(
+        user_root,
+        "old_name",
+        plugin_id=plugin_id,
+    )
+    plugins_backup = copy.deepcopy(module.state.plugins)
+    cache_backup = copy.deepcopy(module.state._snapshot_cache)
+    try:
+        with module.state.acquire_plugins_write_lock():
+            module.state.plugins.clear()
+        monkeypatch.setattr(module, "BUILTIN_PLUGIN_CONFIG_ROOT", builtin_root)
+        monkeypatch.setattr(module, "PLUGIN_CONFIG_ROOTS", (user_root, builtin_root))
+
+        result = await module.PluginRegistryService().refresh_registry()
+        _contexts, contexts_by_id = module._collect_plugin_contexts_from_roots_sync(
+            (user_root, builtin_root),
+        )
+
+        assert result["success"] is True, result
+        assert result["shadowed"] == []
+        with module.state.acquire_plugins_read_lock():
+            builtin_meta = dict(module.state.plugins[plugin_id])
+            legacy_meta = dict(module.state.plugins[f"{plugin_id}_1"])
+        assert Path(builtin_meta["config_path"]) == builtin_config
+        assert builtin_meta["effective_source"] == "builtin"
+        assert Path(legacy_meta["config_path"]) == user_config
+        assert legacy_meta["effective_source"] == "user"
+        assert contexts_by_id[plugin_id].toml_path == builtin_config
+    finally:
+        with module.state.acquire_plugins_write_lock():
+            module.state.plugins.clear()
+            module.state.plugins.update(plugins_backup)
+        with module.state._snapshot_cache_lock:
+            module.state._snapshot_cache = cache_backup
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("alias_running", [True, False])
 async def test_override_refresh_preserves_only_running_config_path_alias(
     monkeypatch: pytest.MonkeyPatch,
