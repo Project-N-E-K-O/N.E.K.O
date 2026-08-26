@@ -10,10 +10,18 @@ PLUGIN_HOST_TOKEN_HEADER = "X-NEKO-Plugin-Host-Token"
 LIVE_FRAME_TOKEN_HEADER = "X-NEKO-Live-Frame-Token"
 
 
-def plugin_host_auth_headers() -> dict[str, str]:
+def require_plugin_host_token() -> str:
     token = os.environ.get(PLUGIN_HOST_TOKEN_ENV, "")
-    if not token:
-        raise RuntimeError("plugin host API credential unavailable")
+    if not token.strip():
+        raise RuntimeError(
+            f"{PLUGIN_HOST_TOKEN_ENV} must be set to the same non-empty value "
+            "for main_server and agent_server"
+        )
+    return token
+
+
+def plugin_host_auth_headers() -> dict[str, str]:
+    token = require_plugin_host_token()
     return {PLUGIN_HOST_TOKEN_HEADER: token}
 
 
