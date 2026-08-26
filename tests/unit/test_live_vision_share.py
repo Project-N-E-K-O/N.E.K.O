@@ -58,8 +58,16 @@ def _mgr(session, *, snapshot, frame="cached-frame"):
     mgr._resolve_cb_live_frame_b64 = (
         lambda cb: ProactiveMixin._resolve_cb_live_frame_b64(mgr, cb)
     )
+    mgr._resolve_batch_live_frame_b64 = (
+        lambda cbs: ProactiveMixin._resolve_batch_live_frame_b64(mgr, cbs)
+    )
     mgr._collect_text_proactive_images = (
         lambda cbs: ProactiveMixin._collect_text_proactive_images(mgr, cbs)
+    )
+    mgr._stream_live_frame_b64 = (
+        lambda frame, sess, si: ProactiveMixin._stream_live_frame_b64(
+            mgr, frame, sess, si
+        )
     )
     mgr._stream_cb_live_frame = (
         lambda cb, sess, si: ProactiveMixin._stream_cb_live_frame(mgr, cb, sess, si)
@@ -268,6 +276,26 @@ async def test_a_batch_shares_one_frame_rather_than_one_each():
     assert len(session.sent) == 1
 
 
+async def test_voice_batch_withholds_frame_when_any_callback_is_unauthorized():
+    """Every instruction sharing the model turn must be allowed to see it."""
+    _authorize()
+    session = _FakeRealtime()
+    mgr = _mgr(session, snapshot=_sharing())
+    unauthorized = {
+        **_token_cb("other-generation"),
+        "source_name": "other_plugin",
+    }
+
+    ok = await ProactiveMixin._stream_cb_media(
+        mgr,
+        [_token_cb(), unauthorized],
+        session,
+    )
+
+    assert ok is True
+    assert session.sent == []
+
+
 def test_text_path_collects_the_live_frame_before_media_images():
     """Offline prompt_ephemeral never calls stream_image; the frame must ride
     the explicit images list instead of being promised but omitted."""
@@ -282,6 +310,23 @@ def test_text_path_collects_the_live_frame_before_media_images():
     images = mgr._collect_text_proactive_images(cbs)
 
     assert images == ["shared-screen", "plugin-shot"]
+
+
+def test_text_batch_withholds_frame_when_any_callback_is_unauthorized():
+    _authorize()
+    session = SimpleNamespace(
+        _supports_native_image=False,
+        vision_model="vision-model",
+    )
+    mgr = _mgr(session, snapshot=_sharing(), frame="shared-screen")
+    unauthorized = {
+        **_token_cb("other-generation"),
+        "source_name": "other_plugin",
+    }
+
+    assert mgr._collect_text_proactive_images(
+        [_token_cb(), unauthorized]
+    ) == []
 
 
 def test_text_path_denies_an_unknown_generation_but_keeps_plugin_media():

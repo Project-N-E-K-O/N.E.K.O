@@ -1997,15 +1997,16 @@ class ProactiveMixin:
             return True
         all_ok = True
         registered_description_event_ids: list[str] = []
-        # One shared frame per batch: every cue released together lands in the
-        # same turn, so a second copy of the same screenshot buys nothing and
-        # costs another image's worth of context.
-        live_frame_sent = False
+        # Every cue below is rendered into the same model turn. Attach the
+        # shared desktop only when every callback in that turn independently
+        # holds permission; otherwise an unprivileged callback could influence
+        # a response grounded in pixels it was never allowed to see.
+        live_frame = self._resolve_batch_live_frame_b64(callbacks)
+        if live_frame:
+            await self._stream_live_frame_b64(live_frame, session, si)
         for cb in callbacks:
             if not isinstance(cb, dict):
                 continue
-            if not live_frame_sent:
-                live_frame_sent = await self._stream_cb_live_frame(cb, session, si)
             images = cb.get("media_images")
             if not images:
                 continue
@@ -2133,6 +2134,20 @@ class ProactiveMixin:
         # though it were the user's screen.
         return self.live_vision_frame_b64() or ""
 
+    def _resolve_batch_live_frame_b64(self, callbacks: list) -> str:
+        """Return one shared frame only when every callback may see it."""
+        frame = ""
+        for cb in callbacks:
+            if not isinstance(cb, dict):
+                return ""
+            callback_frame = self._resolve_cb_live_frame_b64(cb)
+            if not callback_frame:
+                return ""
+            if frame and callback_frame != frame:
+                return ""
+            frame = callback_frame
+        return frame
+
     def _collect_text_proactive_images(self, callbacks: list) -> list:
         """Build the image list for offline ``prompt_ephemeral``.
 
@@ -2141,29 +2156,26 @@ class ProactiveMixin:
         model is told a share is attached when none was sent.
         """
         images: list = []
-        live_frame_added = False
+        live_frame = self._resolve_batch_live_frame_b64(callbacks)
+        if live_frame:
+            # Offline sessions usually lack native multimodal on the base
+            # model; prompt_ephemeral switches to vision_model when images are
+            # present. Skip when neither path exists.
+            session = getattr(self, "session", None)
+            can_vision = bool(
+                getattr(session, "_supports_native_image", False)
+                or getattr(session, "vision_model", None)
+            )
+            if can_vision:
+                images.append(live_frame)
         for cb in callbacks:
             if not isinstance(cb, dict):
                 continue
-            if not live_frame_added:
-                frame = self._resolve_cb_live_frame_b64(cb)
-                if frame:
-                    # Offline sessions usually lack native multimodal on the
-                    # base model; prompt_ephemeral switches to vision_model
-                    # when images are present. Skip when neither path exists.
-                    session = getattr(self, "session", None)
-                    can_vision = bool(
-                        getattr(session, "_supports_native_image", False)
-                        or getattr(session, "vision_model", None)
-                    )
-                    if can_vision:
-                        images.append(frame)
-                        live_frame_added = True
             images.extend(cb.get("media_images") or [])
         return images
 
-    async def _stream_cb_live_frame(self, cb: dict, session, si) -> bool:
-        """Give one callback's turn the live screen-share frame it asked for.
+    async def _stream_live_frame_b64(self, frame: str, session, si) -> bool:
+        """Stream a resolved live frame without changing delivery semantics.
 
         Opportunistic, and that is the whole difference from ``media_images``.
         A callback's own pictures are part of what it wants to say, so losing
@@ -2184,7 +2196,6 @@ class ProactiveMixin:
         # captured earlier in the release path.
         if not getattr(session, "_supports_native_image", False):
             return False
-        frame = self._resolve_cb_live_frame_b64(cb)
         if not frame:
             return False
         try:
@@ -2201,6 +2212,14 @@ class ProactiveMixin:
             self.lanlan_name, state.get("age_seconds") or 0.0,
         )
         return True
+
+    async def _stream_cb_live_frame(self, cb: dict, session, si) -> bool:
+        """Give one callback's turn the live screen-share frame it asked for."""
+        return await self._stream_live_frame_b64(
+            self._resolve_cb_live_frame_b64(cb),
+            session,
+            si,
+        )
 
     def on_voice_playback_signal(self, *, playing: bool, **meta) -> None:
         """Handle a FRONTEND-reported audio playback boundary.
