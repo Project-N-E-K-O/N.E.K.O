@@ -170,6 +170,7 @@ class PluginContext:
     _effective_config: Optional[Dict[str, Any]] = None
     _effective_config_uncertain: bool = False
     _current_lanlan: Optional[str] = None
+    permission_generation: str = ""
 
     @property
     def bus(self) -> "BusHubProtocol":
@@ -933,6 +934,10 @@ class PluginContext:
         canonical_metadata = dict(canonical.get("metadata") or {})
         if target_lanlan and "target_lanlan" not in canonical_metadata:
             canonical_metadata["target_lanlan"] = target_lanlan
+        canonical_metadata.pop("plugin_host_generation", None)
+        permission_generation = str(self.permission_generation or "").strip()
+        if permission_generation:
+            canonical_metadata["plugin_host_generation"] = permission_generation
         # Synthesize legacy fields for downstream readers that haven't
         # migrated to v2 yet (notably plugin/server/application/messages/
         # query_service.py).  These are derived, not authoritative — the

@@ -44,6 +44,17 @@ class _FakeProcessHost:
         return True
 
 
+def test_host_permission_generation_prefers_non_secret_transport_value() -> None:
+    host = SimpleNamespace(
+        transport=SimpleNamespace(
+            permission_generation="derived-generation",
+            uplink_token="raw-uplink-secret",
+        )
+    )
+
+    assert module._host_permission_generation(host) == "derived-generation"
+
+
 async def _successful_revoke(
     _plugin_id: str,
     *,

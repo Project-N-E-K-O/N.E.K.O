@@ -47,8 +47,9 @@ def _revoke_generation_permission(
 ) -> bool:
     current_host_generation = host_generations.get(source)
     if host_generation:
-        revoked_generations = revoked_host_generations.setdefault(source, set())
-        revoked_generations.add(host_generation)
+        if host_generation != _INTERNAL_HOST_GENERATION:
+            revoked_generations = revoked_host_generations.setdefault(source, set())
+            revoked_generations.add(host_generation)
         if (
             current_host_generation is not None
             and current_host_generation != host_generation
@@ -56,10 +57,13 @@ def _revoke_generation_permission(
             return False
     else:
         generations = revoked_host_generations.setdefault(source, set())
-        if current_host_generation:
+        if current_host_generation and current_host_generation != _INTERNAL_HOST_GENERATION:
             generations.add(current_host_generation)
         current_permission = state.get(source)
-        if current_permission is not None:
+        if (
+            current_permission is not None
+            and current_permission[0] != _INTERNAL_HOST_GENERATION
+        ):
             generations.add(current_permission[0])
 
     host_generations.pop(source, None)

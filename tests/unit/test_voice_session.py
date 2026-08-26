@@ -964,6 +964,7 @@ async def test_connect_qwen_server_vad_preserves_payload():
         ("free", False, 120, True, 120.0),
         ("glm", False, 0, False, 0.0),
         ("glm", False, -5, False, 0.0),
+        ("glm", False, 10**400, True, 90.0),
         ("qwen", False, 90, False, 90.0),
         ("glm", True, 90, False, 90.0),
     ],

@@ -21,6 +21,7 @@ Channel tags
 """
 from __future__ import annotations
 
+import hashlib
 import pickle
 import secrets
 import threading
@@ -46,6 +47,12 @@ _UPLINK_PACK_OPTIONS = (
     | ormsgpack.OPT_SERIALIZE_NUMPY
     | ormsgpack.OPT_SERIALIZE_PYDANTIC
 )
+
+
+def _derive_permission_generation(uplink_token: str) -> str:
+    if not uplink_token:
+        return ""
+    return hashlib.sha256(uplink_token.encode("utf-8")).hexdigest()
 
 
 def _normalize_uplink_extension(value: object) -> object:
@@ -141,6 +148,10 @@ class HostTransport:
     def uplink_token(self) -> str:
         return self._uplink_token
 
+    @property
+    def permission_generation(self) -> str:
+        return _derive_permission_generation(self._uplink_token)
+
     # ── send helpers ─────────────────────────────────────────────
 
     async def send_command(self, msg: dict) -> None:
@@ -216,6 +227,10 @@ class ChildTransport:
         self._uplink_endpoint = uplink_endpoint
         self._uplink_token = uplink_token
         self._closed = False
+
+    @property
+    def permission_generation(self) -> str:
+        return _derive_permission_generation(self._uplink_token)
 
     # ── downlink (async, event-loop only) ────────────────────────
 

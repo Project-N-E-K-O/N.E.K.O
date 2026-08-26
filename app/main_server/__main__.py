@@ -19,6 +19,11 @@ import asyncio
 import logging
 import os
 
+if __name__ == "__main__":
+    from utils.plugin_host_auth import require_plugin_host_token
+
+    require_plugin_host_token()
+
 from config import MAIN_SERVER_PORT
 
 from . import (

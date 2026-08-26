@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import pickle
 from pathlib import Path
 
@@ -77,6 +78,24 @@ def test_uplink_decoder_rejects_another_plugin_host_channel_token() -> None:
             encoded,
             expected_token="victim-channel-token",
         )
+
+
+@pytest.mark.plugin_unit
+def test_host_and_child_share_a_non_secret_permission_generation() -> None:
+    host = zmq_transport.HostTransport()
+    child = zmq_transport.ChildTransport(
+        host.downlink_endpoint,
+        host.uplink_endpoint,
+        host.uplink_token,
+    )
+    try:
+        expected = hashlib.sha256(host.uplink_token.encode("utf-8")).hexdigest()
+        assert host.permission_generation == expected
+        assert child.permission_generation == expected
+        assert host.permission_generation != host.uplink_token
+    finally:
+        child.close()
+        host.close()
 
 
 @pytest.mark.plugin_unit

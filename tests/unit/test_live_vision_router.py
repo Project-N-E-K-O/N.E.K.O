@@ -607,6 +607,30 @@ def test_source_revoke_clears_frame_and_delivery_permissions(monkeypatch):
 
 
 @pytest.mark.parametrize(
+    ("set_permission", "allows_permission"),
+    [
+        ("set_live_frame_permission", "allows_live_frame"),
+        ("set_plugin_delivery_permission", "allows_plugin_delivery"),
+    ],
+)
+def test_source_revoke_allows_a_later_internal_permission_generation(
+    set_permission,
+    allows_permission,
+):
+    from main_logic.core import live_frame_permissions
+
+    setter = getattr(live_frame_permissions, set_permission)
+    allows = getattr(live_frame_permissions, allows_permission)
+    setter("demo_plugin", "generation-one", enabled=True)
+
+    live_frame_permissions.revoke_plugin_permissions("demo_plugin")
+    reapplied = setter("demo_plugin", "generation-two", enabled=True)
+
+    assert reapplied["applied"] is True
+    assert allows("demo_plugin", "generation-two") is True
+
+
+@pytest.mark.parametrize(
     ("permission_endpoint", "allows_permission"),
     [
         (PERMISSION_ENDPOINT, "allows_live_frame"),
@@ -662,6 +686,26 @@ def test_revoked_host_generation_cannot_restore_an_old_grant(
     assert stale_response.json()["applied"] is False
     assert allows("demo_plugin", "permission-one") is False
     assert allows("demo_plugin", "permission-two") is True
+
+
+def test_revoked_host_generation_rejects_a_late_tokenless_delivery() -> None:
+    from main_logic.core.live_frame_permissions import (
+        allows_plugin_delivery,
+        revoke_plugin_permissions,
+        set_plugin_delivery_permission,
+    )
+
+    set_plugin_delivery_permission(
+        "demo_plugin",
+        "permission-one",
+        enabled=True,
+        host_generation="host-one",
+    )
+    assert allows_plugin_delivery("demo_plugin", "", "host-one") is True
+
+    revoke_plugin_permissions("demo_plugin", "host-one")
+
+    assert allows_plugin_delivery("demo_plugin", "", "host-one") is False
 
 
 def test_stale_host_revoke_does_not_retract_the_active_host_generation(

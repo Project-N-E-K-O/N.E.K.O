@@ -16,6 +16,7 @@ from plugin.core.state import state
 
 _HOST_API_TOKEN_ENV = "NEKO_PLUGIN_HOST_API_TOKEN"
 _RESULT_PREFIX = "NEKO_PLUGIN_METADATA_RESULT:"
+_MAX_METADATA_RESULT_BYTES = 1024 * 1024
 _WORKER_BOOTSTRAP = (
     "import os,sys;"
     "_stdout_fd=sys.stdout.fileno();"
@@ -159,6 +160,9 @@ def _worker_main(protocol_fd: int | None = None) -> None:
     raw_open = os.open
     raw_write = os.write
     immediate_exit = os._exit
+    trusted_json_dumps = json.dumps
+    result_prefix = _RESULT_PREFIX
+    max_result_bytes = _MAX_METADATA_RESULT_BYTES
     if protocol_fd is None:
         stdout_fd = sys.stdout.fileno()
         stderr_fd = sys.stderr.fileno()
@@ -180,10 +184,25 @@ def _worker_main(protocol_fd: int | None = None) -> None:
         }
     encoded_result = (
         "\n"
-        + _RESULT_PREFIX
-        + json.dumps(result, ensure_ascii=False, separators=(",", ":"))
+        + result_prefix
+        + trusted_json_dumps(result, ensure_ascii=False, separators=(",", ":"))
         + "\n"
     ).encode("utf-8")
+    if len(encoded_result) > max_result_bytes:
+        result = {
+            "ok": False,
+            "error_type": "MetadataResultTooLarge",
+            "message": (
+                "Plugin metadata result exceeds the "
+                f"{max_result_bytes}-byte protocol limit"
+            ),
+        }
+        encoded_result = (
+            "\n"
+            + result_prefix
+            + trusted_json_dumps(result, ensure_ascii=False, separators=(",", ":"))
+            + "\n"
+        ).encode("utf-8")
     remaining = memoryview(encoded_result)
     while remaining:
         try:

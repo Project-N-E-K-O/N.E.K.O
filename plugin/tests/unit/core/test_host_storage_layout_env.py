@@ -139,6 +139,30 @@ class _FakeResponseSender:
 
 
 @pytest.mark.plugin_unit
+def test_plugin_process_runner_rejects_missing_uplink_token(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "demo" / "plugin.toml"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text("[plugin]\nid='demo'\ntype='plugin'\n", encoding="utf-8")
+    monkeypatch.setattr(
+        host_module,
+        "_setup_plugin_logger",
+        lambda *args, **kwargs: _FakeLogger(),
+    )
+
+    with pytest.raises(ValueError, match="uplink token"):
+        host_module._plugin_process_runner(
+            plugin_id="demo",
+            entry_point="tests.fake:DemoPlugin",
+            config_path=config_path,
+            downlink_endpoint="ipc://down",
+            uplink_endpoint="ipc://up",
+        )
+
+
+@pytest.mark.plugin_unit
 def test_plugin_router_entry_closes_context_and_transport_before_returning(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -146,6 +170,7 @@ def test_plugin_router_entry_closes_context_and_transport_before_returning(
     closed: list[str] = []
     host_tokens_seen_during_import: list[str | None] = []
     payloads: list[dict[str, object]] = []
+    contexts: list[dict[str, object]] = []
     config_path = tmp_path / "demo" / "plugin.toml"
     config_path.parent.mkdir(parents=True, exist_ok=True)
     config_path.write_text("[plugin]\nid='demo'\ntype='plugin'\n", encoding="utf-8")
@@ -158,8 +183,14 @@ def test_plugin_router_entry_closes_context_and_transport_before_returning(
             payloads.append(payload)
 
     class _ChildTransport:
-        def __init__(self, downlink_endpoint: str, uplink_endpoint: str) -> None:
-            del downlink_endpoint, uplink_endpoint
+        def __init__(
+            self,
+            downlink_endpoint: str,
+            uplink_endpoint: str,
+            uplink_token: str,
+        ) -> None:
+            del downlink_endpoint, uplink_endpoint, uplink_token
+            self.permission_generation = "child-permission-generation"
 
         def channel_sender(self, channel: str) -> _Sender:
             del channel
@@ -171,6 +202,7 @@ def test_plugin_router_entry_closes_context_and_transport_before_returning(
     class _Context:
         def __init__(self, **kwargs: object) -> None:
             self.__dict__.update(kwargs)
+            contexts.append(kwargs)
 
         def close(self) -> None:
             closed.append("context")
@@ -198,11 +230,13 @@ def test_plugin_router_entry_closes_context_and_transport_before_returning(
         config_path=config_path,
         downlink_endpoint="ipc://down",
         uplink_endpoint="ipc://up",
+        uplink_token="test-uplink-token",
     )
 
     assert closed == ["context", "transport"]
     assert payloads[-1]["status"] == "error"
     assert host_tokens_seen_during_import == [None]
+    assert contexts[0]["permission_generation"] == "child-permission-generation"
 
 
 @pytest.mark.plugin_unit
@@ -260,7 +294,14 @@ def test_plugin_process_runner_sends_startup_ready_before_auto_custom_events(
             self.put(payload)
 
     class _ChildTransport:
-        def __init__(self, downlink_endpoint: str, uplink_endpoint: str) -> None:
+        def __init__(
+            self,
+            downlink_endpoint: str,
+            uplink_endpoint: str,
+            uplink_token: str,
+        ) -> None:
+            del downlink_endpoint, uplink_endpoint, uplink_token
+            self.permission_generation = "test-permission-generation"
             self.stopped = False
 
         def channel_sender(self, channel: str) -> _Sender:
@@ -299,6 +340,7 @@ def test_plugin_process_runner_sends_startup_ready_before_auto_custom_events(
         config_path=config_path,
         downlink_endpoint="ipc://down",
         uplink_endpoint="ipc://up",
+        uplink_token="test-uplink-token",
     )
 
     assert order == ["startup", "ready", "auto_custom"]
@@ -329,8 +371,14 @@ def test_plugin_process_runner_uses_timeout_when_reporting_crash(
             self.put(payload)
 
     class _ChildTransport:
-        def __init__(self, downlink_endpoint: str, uplink_endpoint: str) -> None:
-            return
+        def __init__(
+            self,
+            downlink_endpoint: str,
+            uplink_endpoint: str,
+            uplink_token: str,
+        ) -> None:
+            del downlink_endpoint, uplink_endpoint, uplink_token
+            self.permission_generation = "test-permission-generation"
 
         def channel_sender(self, channel: str) -> _Sender:
             return _Sender(channel)
@@ -357,6 +405,7 @@ def test_plugin_process_runner_uses_timeout_when_reporting_crash(
             config_path=config_path,
             downlink_endpoint="ipc://down",
             uplink_endpoint="ipc://up",
+            uplink_token="test-uplink-token",
         )
 
     result_payloads = [
@@ -429,8 +478,14 @@ def test_plugin_process_runner_skips_auto_work_after_failed_startup_in_fail_mode
             self.put(payload)
 
     class _ChildTransport:
-        def __init__(self, downlink_endpoint: str, uplink_endpoint: str) -> None:
-            return
+        def __init__(
+            self,
+            downlink_endpoint: str,
+            uplink_endpoint: str,
+            uplink_token: str,
+        ) -> None:
+            del downlink_endpoint, uplink_endpoint, uplink_token
+            self.permission_generation = "test-permission-generation"
 
         def channel_sender(self, channel: str) -> _Sender:
             return _Sender(channel)
@@ -463,6 +518,7 @@ def test_plugin_process_runner_skips_auto_work_after_failed_startup_in_fail_mode
         config_path=config_path,
         downlink_endpoint="ipc://down",
         uplink_endpoint="ipc://up",
+        uplink_token="test-uplink-token",
         startup_options={"startup_failure": "fail"},
     )
 

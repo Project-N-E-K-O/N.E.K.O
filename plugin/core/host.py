@@ -534,6 +534,10 @@ def _plugin_process_runner(
     # plugin-controlled module is loaded.
     os.environ.pop("NEKO_PLUGIN_HOST_API_TOKEN", None)
 
+    uplink_token = str(uplink_token or "").strip()
+    if not uplink_token:
+        raise ValueError("Plugin child process requires an uplink token")
+
     process_stop_event = stop_event
     startup_failure_policy = str((startup_options or {}).get("startup_failure") or "warn").strip().lower()
     
@@ -548,14 +552,11 @@ def _plugin_process_runner(
         logger.warning("[Plugin Process] Failed to setup logging interception: {}", e)
     
     # ── ZMQ child-side transport ─────────────────────────────────
-    if uplink_token:
-        child_transport = ChildTransport(
-            downlink_endpoint,
-            uplink_endpoint,
-            uplink_token,
-        )
-    else:
-        child_transport = ChildTransport(downlink_endpoint, uplink_endpoint)
+    child_transport = ChildTransport(
+        downlink_endpoint,
+        uplink_endpoint,
+        uplink_token,
+    )
     res_sender = child_transport.channel_sender(CH_RES)
     status_sender = child_transport.channel_sender(CH_STS)
     message_sender = child_transport.channel_sender(CH_MSG)
@@ -593,6 +594,7 @@ def _plugin_process_runner(
             config_path=config_path,
             status_queue=status_sender,
             message_queue=message_sender,
+            permission_generation=child_transport.permission_generation,
             _plugin_comm_queue=comm_sender,
             _zmq_ipc_client=None,
             _cmd_queue=None,

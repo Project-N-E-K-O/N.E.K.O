@@ -544,17 +544,21 @@ class PluginCommunicationResourceManager:
             private_msg["plugin_id"] = self.plugin_id
             private_metadata = dict(metadata)
             host_generation = str(
-                getattr(self.transport, "uplink_token", "") or ""
+                getattr(self.transport, "permission_generation", "")
+                or getattr(self.transport, "uplink_token", "")
+                or ""
             ).strip()
             if host_generation:
                 private_metadata["plugin_host_generation"] = host_generation
             private_msg["metadata"] = private_metadata
+            private_enqueued = False
             try:
                 from plugin.server.messaging.proactive_bridge import (
                     enqueue_private_payload,
                 )
 
-                if not enqueue_private_payload(private_msg):
+                private_enqueued = bool(enqueue_private_payload(private_msg))
+                if not private_enqueued:
                     self.logger.warning(
                         "Private proactive bridge queue rejected message from plugin {}",
                         self.plugin_id,
@@ -569,7 +573,8 @@ class PluginCommunicationResourceManager:
             redacted_metadata.pop("live_frame_permission_token", None)
             msg = dict(private_msg)
             msg["metadata"] = redacted_metadata
-            msg["_proactive_bridge_suppressed"] = True
+            if private_enqueued:
+                msg["_proactive_bridge_suppressed"] = True
         await self._forward_message(msg)
 
     async def _forward_message(self, msg: Dict[str, Any]) -> None:
@@ -645,7 +650,9 @@ class PluginCommunicationResourceManager:
                     "PLUGIN_DELIVERY_PERMISSION_SET",
                 }:
                     trusted_msg["host_generation"] = str(
-                        getattr(self.transport, "uplink_token", "") or ""
+                        getattr(self.transport, "permission_generation", "")
+                        or getattr(self.transport, "uplink_token", "")
+                        or ""
                     )
                 await comm_queue.put(trusted_msg)
         except Exception as e:

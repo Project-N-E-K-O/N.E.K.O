@@ -5,13 +5,19 @@ import os
 from pathlib import Path
 import subprocess
 
+import pytest
+
 from plugin._types.events import EventHandler, EventMeta
 from plugin.core import registry as registry_module
 from plugin.core.state import state
 from plugin.server.application.plugins.metadata_scanner import (
     IsolatedPluginMetadata,
+    PluginMetadataScanError,
     install_isolated_plugin_metadata,
 )
+
+
+_OVERSIZED_METADATA_FIELD_BYTES = 8 * 1024 * 1024
 
 
 def _handler(entry_id: str, *, metadata: dict[str, object] | None = None) -> EventHandler:
@@ -178,3 +184,47 @@ def test_metadata_worker_discards_untrusted_stdout_and_stderr(
         line.startswith(_RESULT_PREFIX)
         for line in completed.stdout.splitlines()
     ) == 1
+
+
+@pytest.mark.parametrize(
+    "oversized_argument",
+    [
+        "description='x' * {size}",
+        "input_schema={{'type': 'object', 'description': 'x' * {size}}}",
+    ],
+    ids=["description", "schema"],
+)
+def test_metadata_worker_rejects_oversized_protocol_results(
+    tmp_path: Path,
+    oversized_argument: str,
+) -> None:
+    module_path = tmp_path / "oversized_metadata_plugin.py"
+    module_path.write_text(
+        "from plugin.sdk.plugin.decorators import plugin_entry\n"
+        "class Plugin:\n"
+        "    @plugin_entry(id='huge', name='Huge', "
+        + oversized_argument.format(size=_OVERSIZED_METADATA_FIELD_BYTES)
+        + ")\n"
+        "    async def huge(self):\n"
+        "        return None\n",
+        encoding="utf-8",
+    )
+    config_path = tmp_path / "plugin.toml"
+    config_path.write_text("[plugin]\nid='demo'\n", encoding="utf-8")
+
+    from plugin.server.application.plugins.metadata_scanner import (
+        scan_plugin_metadata_isolated,
+    )
+
+    with pytest.raises(PluginMetadataScanError) as exc_info:
+        scan_plugin_metadata_isolated(
+            plugin_id="demo",
+            module_path="oversized_metadata_plugin",
+            class_name="Plugin",
+            config_path=config_path,
+            conf={},
+            pdata={},
+            python_requirement_paths=[tmp_path],
+        )
+
+    assert exc_info.value.error_type == "MetadataResultTooLarge"

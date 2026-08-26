@@ -501,7 +501,7 @@ class OmniRealtimeClient(_ToolingMixin, _AudioMixin, _TransportMixin, _ResponseM
             value = VOICE_SILENCE_TIMEOUT_SECONDS
         try:
             seconds = float(value)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             seconds = 90.0
         if seconds != seconds or seconds == float("inf") or seconds == float("-inf"):
             seconds = 90.0

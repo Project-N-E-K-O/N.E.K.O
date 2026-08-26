@@ -29,6 +29,9 @@ class _Logger:
     def exception(self, *args, **kwargs):
         return None
 
+    def warning(self, *args, **kwargs):
+        return None
+
 
 @pytest.mark.asyncio
 async def test_comm_manager_shutdown_tolerates_cross_loop_uplink_task() -> None:
@@ -268,7 +271,8 @@ async def test_route_comm_overwrites_the_plugin_supplied_identity(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     transport = _Transport()
-    transport.uplink_token = "trusted-host-generation"
+    transport.uplink_token = "raw-uplink-secret"
+    transport.permission_generation = "trusted-host-generation"
     manager = PluginCommunicationResourceManager(
         plugin_id="authenticated-plugin",
         transport=transport,
@@ -300,7 +304,8 @@ async def test_token_bearing_message_uses_private_bridge_and_redacts_shared_stat
     from plugin.server.messaging import proactive_bridge
 
     transport = _Transport()
-    transport.uplink_token = "trusted-host-generation"
+    transport.uplink_token = "raw-uplink-secret"
+    transport.permission_generation = "trusted-host-generation"
     manager = PluginCommunicationResourceManager(
         plugin_id="authenticated-plugin",
         transport=transport,
@@ -337,10 +342,57 @@ async def test_token_bearing_message_uses_private_bridge_and_redacts_shared_stat
     assert "_proactive_bridge_suppressed" not in private[0]
     assert "generation-secret" not in repr(stored)
     assert "trusted-host-generation" not in repr(stored)
+    assert "raw-uplink-secret" not in repr(private)
     assert stored[0]["_proactive_bridge_suppressed"] is True
     forwarded = target_queue.get_nowait()
     assert forwarded["metadata"] == {"public_hint": "keep-me"}
     assert forwarded["_proactive_bridge_suppressed"] is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("enqueue_failure", ["rejected", "raised"])
+async def test_token_bearing_message_falls_back_to_redacted_shared_delivery(
+    monkeypatch: pytest.MonkeyPatch,
+    enqueue_failure: str,
+) -> None:
+    from plugin.server.messaging import proactive_bridge
+
+    transport = _Transport()
+    transport.uplink_token = "raw-uplink-secret"
+    transport.permission_generation = "trusted-host-generation"
+    manager = PluginCommunicationResourceManager(
+        plugin_id="authenticated-plugin",
+        transport=transport,
+        logger=_Logger(),
+    )
+    target_queue: asyncio.Queue[dict[str, object]] = asyncio.Queue()
+    manager._message_target_queue = target_queue
+    monkeypatch.setattr(state, "append_message_record", lambda _record: None)
+
+    if enqueue_failure == "raised":
+        def _enqueue(_payload: dict[str, object]) -> bool:
+            raise RuntimeError("private queue unavailable")
+    else:
+        def _enqueue(_payload: dict[str, object]) -> bool:
+            return False
+    monkeypatch.setattr(
+        proactive_bridge,
+        "enqueue_private_payload",
+        _enqueue,
+        raising=False,
+    )
+
+    await manager._route_message(
+        {
+            "type": "MESSAGE_PUSH",
+            "parts": [{"type": "text", "text": "fallback cue"}],
+            "metadata": {"live_frame_permission_token": "generation-secret"},
+        }
+    )
+
+    forwarded = target_queue.get_nowait()
+    assert "live_frame_permission_token" not in forwarded["metadata"]
+    assert "_proactive_bridge_suppressed" not in forwarded
 
 
 @pytest.mark.asyncio

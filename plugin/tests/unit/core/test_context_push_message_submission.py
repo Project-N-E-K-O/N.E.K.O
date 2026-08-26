@@ -65,8 +65,18 @@ class _Again(Exception):
     pass
 
 
-def _context(tmp_path: Path, *, message_queue: object = None) -> tuple[PluginContext, _Logger]:
+def _context(
+    tmp_path: Path,
+    *,
+    message_queue: object = None,
+    permission_generation: str = "",
+) -> tuple[PluginContext, _Logger]:
     logger = _Logger()
+    generation_args = (
+        {"permission_generation": permission_generation}
+        if permission_generation
+        else {}
+    )
     return (
         PluginContext(
             plugin_id="demo",
@@ -74,6 +84,7 @@ def _context(tmp_path: Path, *, message_queue: object = None) -> tuple[PluginCon
             logger=logger,  # type: ignore[arg-type]
             status_queue=None,
             message_queue=message_queue,
+            **generation_args,
         ),
         logger,
     )
@@ -128,6 +139,38 @@ def test_slow_message_plane_success_reports_local_submission(
 
     assert result == {"submitted": True}
     assert socket.sent == [b"packed-message"]
+
+
+@pytest.mark.plugin_unit
+def test_direct_message_plane_overwrites_plugin_host_generation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    socket = _Socket()
+    packed: list[dict[str, object]] = []
+    _install_slow_message_plane(monkeypatch, socket)
+    monkeypatch.setattr(
+        context_module.ormsgpack,
+        "packb",
+        lambda payload: packed.append(payload) or b"packed-message",
+    )
+    ctx, _logger = _context(
+        tmp_path,
+        permission_generation="trusted-host-generation",
+    )
+
+    result = ctx.push_message(
+        visibility=[],
+        ai_behavior="respond",
+        parts=[{"type": "text", "text": "tokenless queued cue"}],
+        metadata={"plugin_host_generation": "plugin-forged-generation"},
+    )
+
+    assert result == {"submitted": True}
+    payload = packed[0]["items"][0]["payload"]  # type: ignore[index]
+    assert payload["metadata"]["plugin_host_generation"] == (
+        "trusted-host-generation"
+    )
 
 
 @pytest.mark.plugin_unit
