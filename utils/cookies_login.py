@@ -306,6 +306,7 @@ def _load_cookies_from_file_uncached(platform: str) -> Dict[str, str]:
 
 _FileStamp = tuple[int, int, int] | None
 _SourceSignature = tuple[str | None, _FileStamp, _FileStamp]
+_SOURCE_READ_ATTEMPTS = 3
 
 
 @dataclass(frozen=True)
@@ -388,7 +389,7 @@ class CredentialManager:
             if cached is not None:
                 return cached
 
-            while True:
+            for _attempt in range(_SOURCE_READ_ATTEMPTS):
                 source_signature = self._source_signature(platform)
                 credentials = _load_cookies_from_file_uncached(platform)
                 if self._source_signature(platform) != source_signature:
@@ -402,6 +403,11 @@ class CredentialManager:
                 else:
                     state = self.MISSING
                 return self._store(platform, source_signature, state, credentials)
+
+            source_signature = self._source_signature(platform)
+            logger.warning("%s 凭证文件持续变化，暂不缓存本次读取结果", platform)
+            state = self.INVALID if source_signature[1] is not None else self.MISSING
+            return _CredentialEntry(source_signature, state, {})
 
     def load(self, platform: str) -> Dict[str, str]:
         return self._copy(self._load_entry(platform))
@@ -421,20 +427,35 @@ class CredentialManager:
         """Delete credential and key files atomically with the cache transition."""
         with self._platform_lock(platform):
             cookie_file = COOKIE_FILES.get(platform)
-            if cookie_file is None or not cookie_file.exists():
+            if cookie_file is None:
                 self._store(platform, self._source_signature(platform), self.MISSING)
                 return False, True
 
-            cookie_file.unlink()
+            artifact_existed = False
+            cookie_error: OSError | None = None
+            if cookie_file.exists():
+                artifact_existed = True
+                try:
+                    cookie_file.unlink()
+                except OSError as exc:
+                    cookie_error = exc
+
             key_deleted = True
             key_file = get_cookie_key_file(platform)
             if key_file.exists():
+                artifact_existed = True
                 try:
                     key_file.unlink()
                 except OSError:
                     key_deleted = False
+
+            if cookie_error is not None:
+                with self._cache_lock:
+                    self._cache.pop(platform, None)
+                raise cookie_error
+
             self._store(platform, self._source_signature(platform), self.MISSING)
-            return True, key_deleted
+            return artifact_existed, key_deleted
 
     def mark_auth_rejected(
         self,

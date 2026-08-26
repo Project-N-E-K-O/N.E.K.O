@@ -205,6 +205,36 @@ def test_file_change_during_load_retries_before_caching(tmp_path):
     assert loader.call_count == 2
 
 
+def test_continuous_file_changes_have_bounded_uncached_retries(tmp_path):
+    manager = CredentialManager()
+    cookie_file = tmp_path / "weibo.json"
+    cookie_file.write_text('{"SUB":"initial"}', encoding="utf-8")
+    revisions = 0
+
+    def load_and_replace(_platform):
+        nonlocal revisions
+        credentials = json.loads(cookie_file.read_text(encoding="utf-8"))
+        revisions += 1
+        cookie_file.write_text(
+            json.dumps({"SUB": "x" * (20 + revisions)}),
+            encoding="utf-8",
+        )
+        return credentials
+
+    with (
+        patch.dict("utils.cookies_login.COOKIE_FILES", {"weibo": cookie_file}),
+        patch.object(cookies_login, "CONFIG_DIR", tmp_path),
+        patch(
+            "utils.cookies_login._load_cookies_from_file_uncached",
+            side_effect=load_and_replace,
+        ) as loader,
+    ):
+        assert manager.load("weibo") == {}
+        assert loader.call_count == cookies_login._SOURCE_READ_ATTEMPTS
+        assert manager.load("weibo") == {}
+        assert loader.call_count == cookies_login._SOURCE_READ_ATTEMPTS * 2
+
+
 def test_delete_and_save_share_the_same_platform_lock(tmp_path):
     manager = CredentialManager()
     cookie_file = tmp_path / "weibo.json"
@@ -245,6 +275,21 @@ def test_delete_and_save_share_the_same_platform_lock(tmp_path):
         assert save_future.result(timeout=2) is True
         assert manager.load("weibo") == {"SUB": "new"}
         assert cookie_file.exists()
+
+
+def test_delete_removes_orphaned_key_when_cookie_file_is_missing(tmp_path):
+    manager = CredentialManager()
+    cookie_file = tmp_path / "weibo.json"
+    key_file = tmp_path / "weibo_key.key"
+    key_file.write_bytes(b"orphaned-key")
+
+    with (
+        patch.dict("utils.cookies_login.COOKIE_FILES", {"weibo": cookie_file}),
+        patch.object(cookies_login, "CONFIG_DIR", tmp_path),
+    ):
+        assert manager.delete_stored_credentials("weibo") == (True, True)
+
+    assert not key_file.exists()
 
 
 def test_auth_rejected_state_skips_legacy_plaintext_fallback():
