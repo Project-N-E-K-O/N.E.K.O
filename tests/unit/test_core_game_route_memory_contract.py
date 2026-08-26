@@ -1760,10 +1760,10 @@ async def test_bare_openclaw_magic_words_do_not_short_circuit_text_stream(monkey
 async def test_passive_callback_media_remains_bound_across_concurrent_focus_wait(
     monkeypatch,
 ):
-    """A later text task must not steal an earlier callback's staged image."""
+    """A later text task must not steal an earlier callback's staged images."""
     mgr = _make_transcript_manager()
     offline_session = object.__new__(core_module.OmniOfflineClient)
-    offline_session._pending_images = []
+    offline_session._pending_images = ["user-image"]
     offline_session.update_max_response_length = Mock()
     stream_calls = []
 
@@ -1788,7 +1788,7 @@ async def test_passive_callback_media_remains_bound_across_concurrent_focus_wait
         "summary": "callback context",
         "delivery_mode": "passive",
         "origin": "event",
-        "media_images": ["callback-image"],
+        "media_images": ["callback-image-1", "callback-image-2"],
     }]
     first_focus_entered = asyncio.Event()
     release_first_focus = asyncio.Event()
@@ -1823,10 +1823,11 @@ async def test_passive_callback_media_remains_bound_across_concurrent_focus_wait
     calls_by_text = {text: kwargs for text, kwargs in stream_calls}
     assert "system_prefix_images" not in calls_by_text["second text"]
     assert calls_by_text["first text"]["system_prefix_images"] == [
-        "callback-image"
+        "callback-image-1",
+        "callback-image-2",
     ]
     assert "callback context" in calls_by_text["first text"]["system_prefix"]
-    assert offline_session._pending_images == []
+    assert offline_session._pending_images == ["user-image"]
     assert mgr.pending_agent_callbacks == []
 
 
