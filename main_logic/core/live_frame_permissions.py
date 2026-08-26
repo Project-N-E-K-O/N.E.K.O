@@ -194,24 +194,45 @@ def set_plugin_delivery_permission(
     }
 
 
-def allows_plugin_delivery(source_name: str, token: str) -> bool:
+def allows_plugin_delivery(
+    source_name: str,
+    token: str,
+    host_generation: str = "",
+) -> bool:
     """Whether a stamped plugin cue may still be spoken.
 
     Call-outs that never opted in (empty token) stay deliverable, so existing
     plugins are unchanged. A stamped generation is fail-closed: unknown,
     replaced, or disabled tokens are dropped at the delivery point.
     """
-    generation = str(token or "").strip()
-    if not generation:
-        return True
     source = str(source_name or "").strip()
-    if not source:
+    generation = str(token or "").strip()
+    normalized_host_generation = str(host_generation or "").strip()
+    if (generation or normalized_host_generation) and not source:
         return False
     with _lock:
+        if normalized_host_generation:
+            if normalized_host_generation in _revoked_delivery_host_generations.get(
+                source, set()
+            ):
+                return False
+            current_host_generation = _delivery_host_generations.get(source)
+            if (
+                current_host_generation is not None
+                and current_host_generation != normalized_host_generation
+            ):
+                return False
+        if not generation:
+            return True
         current = _delivery_state.get(source)
         if current is None:
             return False
         current_host_generation, current_token, allowed = current
         if _delivery_host_generations.get(source) != current_host_generation:
+            return False
+        if (
+            normalized_host_generation
+            and normalized_host_generation != current_host_generation
+        ):
             return False
     return allowed and current_token == generation

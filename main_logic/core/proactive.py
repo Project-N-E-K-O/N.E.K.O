@@ -605,6 +605,14 @@ class ProactiveMixin:
         raw = metadata.get("plugin_delivery_token")
         return str(raw) if raw else ""
 
+    @staticmethod
+    def _plugin_host_generation(callback: dict) -> str:
+        metadata = callback.get("metadata")
+        if not isinstance(metadata, dict):
+            return ""
+        raw = metadata.get("plugin_host_generation")
+        return str(raw) if raw else ""
+
     def filter_deliverable_callbacks(self, callbacks: list) -> list:
         """Drop undeliverable callbacks and their paired voice mirrors."""
         deliverable = []
@@ -618,6 +626,7 @@ class ProactiveMixin:
             elif not allows_plugin_delivery(
                 str(callback.get("source_name") or ""),
                 self._plugin_delivery_token(callback),
+                self._plugin_host_generation(callback),
             ):
                 callback[DELIVERY_RETRACTED_KEY] = True
             if callback.get(DELIVERY_RETRACTED_KEY):

@@ -17,8 +17,15 @@ from plugin.core.state import state
 _HOST_API_TOKEN_ENV = "NEKO_PLUGIN_HOST_API_TOKEN"
 _RESULT_PREFIX = "NEKO_PLUGIN_METADATA_RESULT:"
 _WORKER_BOOTSTRAP = (
+    "import os,sys;"
+    "_stdout_fd=sys.stdout.fileno();"
+    "_protocol_fd=os.dup(_stdout_fd);"
+    "_devnull_fd=os.open(os.devnull,os.O_WRONLY);"
+    "os.dup2(_devnull_fd,_stdout_fd);"
+    "os.dup2(_devnull_fd,sys.stderr.fileno());"
+    "os.close(_devnull_fd);"
     "from plugin.server.application.plugins.metadata_scanner "
-    "import _worker_main; _worker_main()"
+    "import _worker_main;_worker_main(_protocol_fd)"
 )
 
 
@@ -140,7 +147,7 @@ def _scan_in_worker(request: Mapping[str, object]) -> dict[str, object]:
     }
 
 
-def _worker_main() -> None:
+def _worker_main(protocol_fd: int | None = None) -> None:
     # Reserve a private duplicate of the protocol pipe, then redirect the
     # process-wide stdout/stderr descriptors before importing plugin code.
     # This prevents untrusted import output from being buffered without bound
@@ -152,13 +159,14 @@ def _worker_main() -> None:
     raw_open = os.open
     raw_write = os.write
     immediate_exit = os._exit
-    stdout_fd = sys.stdout.fileno()
-    stderr_fd = sys.stderr.fileno()
-    protocol_fd = raw_dup(stdout_fd)
-    devnull_fd = raw_open(os.devnull, os.O_WRONLY)
-    raw_dup2(devnull_fd, stdout_fd)
-    raw_dup2(devnull_fd, stderr_fd)
-    raw_close(devnull_fd)
+    if protocol_fd is None:
+        stdout_fd = sys.stdout.fileno()
+        stderr_fd = sys.stderr.fileno()
+        protocol_fd = raw_dup(stdout_fd)
+        devnull_fd = raw_open(os.devnull, os.O_WRONLY)
+        raw_dup2(devnull_fd, stdout_fd)
+        raw_dup2(devnull_fd, stderr_fd)
+        raw_close(devnull_fd)
     try:
         request_obj = json.loads(sys.stdin.read())
         if not isinstance(request_obj, dict):

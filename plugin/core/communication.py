@@ -183,7 +183,10 @@ class PluginCommunicationResourceManager:
                     except Exception:
                         cancel_coro.close()
                         raise
-                    await asyncio.wrap_future(cancel_future)
+                    await asyncio.wait_for(
+                        asyncio.wrap_future(cancel_future),
+                        timeout=graceful,
+                    )
                 else:
                     task.cancel()
 
@@ -539,6 +542,13 @@ class PluginCommunicationResourceManager:
             # on a private path into proactive delivery.
             private_msg = dict(msg)
             private_msg["plugin_id"] = self.plugin_id
+            private_metadata = dict(metadata)
+            host_generation = str(
+                getattr(self.transport, "uplink_token", "") or ""
+            ).strip()
+            if host_generation:
+                private_metadata["plugin_host_generation"] = host_generation
+            private_msg["metadata"] = private_metadata
             try:
                 from plugin.server.messaging.proactive_bridge import (
                     enqueue_private_payload,

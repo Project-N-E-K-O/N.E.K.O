@@ -133,6 +133,69 @@ async def test_comm_manager_shutdown_waits_for_cross_loop_consumer_before_purge(
 
 
 @pytest.mark.asyncio
+async def test_comm_manager_shutdown_times_out_when_cross_loop_is_blocked(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from plugin.server.messaging import proactive_bridge
+
+    manager = PluginCommunicationResourceManager(
+        plugin_id="demo",
+        transport=_Transport(),
+        logger=_Logger(),
+    )
+    loop_ready = threading.Event()
+    loop_blocked = threading.Event()
+    allow_loop = threading.Event()
+    purged: list[str] = []
+    holder: dict[str, object] = {}
+
+    def _runner() -> None:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+
+        def _block_loop() -> None:
+            loop_blocked.set()
+            allow_loop.wait(timeout=2.0)
+
+        task = loop.create_task(asyncio.sleep(10))
+        manager._uplink_consumer_task = task
+        holder["loop"] = loop
+        loop.call_soon(_block_loop)
+        loop_ready.set()
+        loop.run_forever()
+        if not task.done():
+            task.cancel()
+            loop.run_until_complete(asyncio.gather(task, return_exceptions=True))
+        loop.close()
+
+    monkeypatch.setattr(
+        proactive_bridge,
+        "discard_private_payloads",
+        lambda plugin_id: purged.append(plugin_id),
+    )
+    thread = threading.Thread(target=_runner, daemon=True)
+    thread.start()
+    assert loop_ready.wait(timeout=1.0)
+    assert loop_blocked.wait(timeout=1.0)
+
+    shutdown_task = asyncio.create_task(manager.shutdown(timeout=0.05))
+    try:
+        done, _pending = await asyncio.wait({shutdown_task}, timeout=0.3)
+        assert shutdown_task in done
+        with pytest.raises(TimeoutError):
+            await shutdown_task
+        assert purged == []
+    finally:
+        if not shutdown_task.done():
+            shutdown_task.cancel()
+        allow_loop.set()
+        loop = holder["loop"]
+        assert isinstance(loop, asyncio.AbstractEventLoop)
+        loop.call_soon_threadsafe(loop.stop)
+        thread.join(timeout=1.0)
+
+
+@pytest.mark.asyncio
 async def test_comm_manager_shutdown_purges_private_proactive_payloads(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -236,9 +299,11 @@ async def test_token_bearing_message_uses_private_bridge_and_redacts_shared_stat
 ) -> None:
     from plugin.server.messaging import proactive_bridge
 
+    transport = _Transport()
+    transport.uplink_token = "trusted-host-generation"
     manager = PluginCommunicationResourceManager(
         plugin_id="authenticated-plugin",
-        transport=_Transport(),
+        transport=transport,
         logger=_Logger(),
     )
     target_queue: asyncio.Queue[dict[str, object]] = asyncio.Queue()
@@ -268,8 +333,10 @@ async def test_token_bearing_message_uses_private_bridge_and_redacts_shared_stat
     )
 
     assert private[0]["metadata"]["live_frame_permission_token"] == "generation-secret"
+    assert private[0]["metadata"]["plugin_host_generation"] == "trusted-host-generation"
     assert "_proactive_bridge_suppressed" not in private[0]
     assert "generation-secret" not in repr(stored)
+    assert "trusted-host-generation" not in repr(stored)
     assert stored[0]["_proactive_bridge_suppressed"] is True
     forwarded = target_queue.get_nowait()
     assert forwarded["metadata"] == {"public_hint": "keep-me"}

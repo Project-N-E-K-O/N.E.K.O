@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import subprocess
 
@@ -165,6 +166,7 @@ def test_metadata_worker_discards_untrusted_stdout_and_stderr(
         encoding="utf-8",
         errors="replace",
         cwd=Path(__file__).resolve().parents[4],
+        env={**os.environ, "PYTHONIOENCODING": "cp1252"},
         timeout=10.0,
         check=False,
     )

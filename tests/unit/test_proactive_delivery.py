@@ -922,6 +922,37 @@ def test_filter_deliverable_callbacks_drops_an_invalidated_plugin_generation():
     clear_plugin_delivery_permissions()
 
 
+def test_filter_deliverable_callbacks_drops_a_revoked_host_generation():
+    from main_logic.core.live_frame_permissions import (
+        clear_plugin_delivery_permissions,
+        revoke_plugin_permissions,
+    )
+
+    clear_plugin_delivery_permissions()
+    revoke_plugin_permissions("demo_plugin", "stopped-host-generation")
+    mgr = _make_session_mgr()
+    future = _FakeAckFuture()
+    queued = _proactive_cb(
+        "you are sinking",
+        source_name="demo_plugin",
+        metadata={"plugin_host_generation": "stopped-host-generation"},
+        **{DELIVERY_ACK_FUTURE_KEY: future},
+    )
+    legacy = _proactive_cb("legacy callback", source_name="legacy_plugin")
+    mgr.enqueue_agent_callback(queued)
+    mgr.enqueue_agent_callback(legacy)
+
+    deliverable = core_module.LLMSessionManager.filter_deliverable_callbacks(
+        mgr,
+        list(mgr.pending_agent_callbacks),
+    )
+
+    assert deliverable == [legacy]
+    assert mgr.pending_agent_callbacks == [legacy]
+    assert future.done() and future.result is False
+    clear_plugin_delivery_permissions()
+
+
 async def test_retract_from_source_drops_only_that_plugin_queue():
     delivered = []
     mgr = _make(delivered)
