@@ -2126,12 +2126,18 @@ class ProactiveMixin:
             return ""
         metadata = cb.get("metadata")
         token = ""
+        host_generation = ""
         if isinstance(metadata, dict):
             raw_token = metadata.get("live_frame_permission_token")
             if raw_token:
                 token = str(raw_token)
+            raw_host_generation = metadata.get("plugin_host_generation")
+            if raw_host_generation:
+                host_generation = str(raw_host_generation).strip()
         if not token or not allows_live_frame(
-            str(cb.get("source_name") or ""), token
+            str(cb.get("source_name") or ""),
+            token,
+            host_generation,
         ):
             return ""
         state = self.live_vision_snapshot()

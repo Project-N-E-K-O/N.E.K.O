@@ -230,6 +230,34 @@ async def test_a_queued_frame_is_not_attached_after_reuse_is_revoked():
     assert session.sent == []
 
 
+async def test_old_host_generation_cannot_reuse_the_new_hosts_frame_token():
+    from main_logic.core.live_frame_permissions import (
+        revoke_plugin_permissions,
+        set_live_frame_permission,
+    )
+
+    set_live_frame_permission(
+        "demo_plugin",
+        "shared-token",
+        enabled=True,
+        host_generation="old-host",
+    )
+    queued = _token_cb("shared-token")
+    queued["metadata"]["plugin_host_generation"] = "old-host"
+    revoke_plugin_permissions("demo_plugin", "old-host")
+    set_live_frame_permission(
+        "demo_plugin",
+        "shared-token",
+        enabled=True,
+        host_generation="new-host",
+    )
+    session = _FakeRealtime()
+    mgr = _mgr(session, snapshot=_sharing())
+
+    assert await _attach(mgr, queued, session) is False
+    assert session.sent == []
+
+
 async def test_the_delivered_frame_is_the_share_not_the_ambient_cache():
     """An avatar drop, a pasted image or another plugin's picture all land in
     the session's ``_latest_image_b64``. Delivering that as "your screen" would

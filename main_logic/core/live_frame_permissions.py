@@ -146,17 +146,31 @@ def set_live_frame_permission(
     }
 
 
-def allows_live_frame(source_name: str, token: str) -> bool:
+def allows_live_frame(
+    source_name: str,
+    token: str,
+    host_generation: str = "",
+) -> bool:
     source = str(source_name or "").strip()
     generation = str(token or "").strip()
+    normalized_host_generation = str(host_generation or "").strip()
     if not source or not generation:
         return False
     with _lock:
+        if normalized_host_generation in _revoked_host_generations.get(
+            source, set()
+        ):
+            return False
         current = _state.get(source)
         if current is None:
             return False
         current_host_generation, current_token, allowed = current
         if _host_generations.get(source) != current_host_generation:
+            return False
+        if (
+            normalized_host_generation
+            and normalized_host_generation != current_host_generation
+        ):
             return False
     return allowed and current_token == generation
 
