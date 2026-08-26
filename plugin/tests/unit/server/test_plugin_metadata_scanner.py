@@ -232,6 +232,43 @@ def test_metadata_worker_rejects_oversized_protocol_results(
     assert exc_info.value.error_type == "MetadataResultTooLarge"
 
 
+def test_parent_rejects_untrusted_protocol_output_over_limit(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "protocol_flood_plugin.py"
+    module_path.write_text(
+        "import os\n"
+        "import sys\n"
+        "payload = b'x' * (1024 * 1024 + 1)\n"
+        "protocol_fd = sys.modules['__main__']._protocol_fd\n"
+        "while payload:\n"
+        "    payload = payload[os.write(protocol_fd, payload):]\n"
+        "class Plugin:\n"
+        "    pass\n",
+        encoding="utf-8",
+    )
+    config_path = tmp_path / "plugin.toml"
+    config_path.write_text("[plugin]\nid='demo'\n", encoding="utf-8")
+
+    from plugin.server.application.plugins.metadata_scanner import (
+        scan_plugin_metadata_isolated,
+    )
+
+    with pytest.raises(PluginMetadataScanError) as exc_info:
+        scan_plugin_metadata_isolated(
+            plugin_id="demo",
+            module_path="protocol_flood_plugin",
+            class_name="Plugin",
+            config_path=config_path,
+            conf={},
+            pdata={},
+            python_requirement_paths=[tmp_path],
+            timeout=10.0,
+        )
+
+    assert exc_info.value.error_type == "MetadataResultTooLarge"
+
+
 def _process_is_running(pid: int) -> bool:
     try:
         process = psutil.Process(pid)
@@ -249,6 +286,12 @@ def test_metadata_scan_reaps_plugin_spawned_helpers(
     module_path = tmp_path / f"{module_name}.py"
     child_pid_path = tmp_path / "child.pid"
     blocking_import = "time.sleep(30)\n" if worker_times_out else ""
+    disable_worker_cleanup = (
+        "from plugin.server.application.plugins import metadata_scanner\n"
+        "metadata_scanner._cleanup_worker_descendants = lambda: None\n"
+        if not worker_times_out
+        else ""
+    )
     module_path.write_text(
         "from pathlib import Path\n"
         "import subprocess\n"
@@ -257,6 +300,7 @@ def test_metadata_scan_reaps_plugin_spawned_helpers(
         f"child = subprocess.Popen([sys.executable, '-c', "
         f"'import time; time.sleep(30)'])\n"
         f"Path({str(child_pid_path)!r}).write_text(str(child.pid), encoding='utf-8')\n"
+        f"{disable_worker_cleanup}"
         f"{blocking_import}"
         "class Plugin:\n"
         "    pass\n",

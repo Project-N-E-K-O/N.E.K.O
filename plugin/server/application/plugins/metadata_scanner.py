@@ -3,11 +3,13 @@ from __future__ import annotations
 import json
 import math
 import os
+import signal
 import subprocess
 import sys
+import threading
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, BinaryIO, Mapping
 
 import psutil
 
@@ -50,25 +52,26 @@ def _terminate_processes(processes: list[psutil.Process]) -> None:
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             pass
 
-    _, alive = psutil.wait_procs(processes, timeout=_PROCESS_CLEANUP_TIMEOUT)
+    try:
+        _, alive = psutil.wait_procs(
+            processes,
+            timeout=_PROCESS_CLEANUP_TIMEOUT,
+        )
+    except (psutil.Error, OSError, RuntimeError, ValueError):
+        alive = processes
     for process in alive:
         try:
             process.kill()
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             pass
     if alive:
-        psutil.wait_procs(alive, timeout=_PROCESS_CLEANUP_TIMEOUT)
+        try:
+            psutil.wait_procs(alive, timeout=_PROCESS_CLEANUP_TIMEOUT)
+        except (psutil.Error, OSError, RuntimeError, ValueError):
+            pass
 
 
-def _cleanup_worker_descendants() -> None:
-    try:
-        descendants = psutil.Process(os.getpid()).children(recursive=True)
-        _terminate_processes(descendants)
-    except (psutil.Error, OSError, RuntimeError, ValueError):
-        pass
-
-
-def _terminate_worker_tree(process: subprocess.Popen[str]) -> None:
+def _terminate_worker_tree(process: subprocess.Popen[bytes]) -> None:
     try:
         parent = psutil.Process(process.pid)
         descendants = parent.children(recursive=True)
@@ -79,6 +82,12 @@ def _terminate_worker_tree(process: subprocess.Popen[str]) -> None:
         except (psutil.Error, OSError, RuntimeError, ValueError):
             parent = None
 
+    if os.name != "nt":
+        try:
+            os.killpg(process.pid, signal.SIGTERM)
+        except OSError:
+            pass
+
     processes = [*descendants, parent] if parent is not None else descendants
     _terminate_processes(processes)
 
@@ -87,6 +96,21 @@ def _terminate_worker_tree(process: subprocess.Popen[str]) -> None:
             process.kill()
         except OSError:
             pass
+
+
+def _read_protocol_output(stream: BinaryIO) -> tuple[bytes, bool]:
+    output = bytearray()
+    result_prefix = _RESULT_PREFIX.encode("utf-8")
+    while len(output) <= _MAX_METADATA_RESULT_BYTES:
+        chunk = stream.readline(
+            _MAX_METADATA_RESULT_BYTES + 1 - len(output)
+        )
+        if not chunk:
+            break
+        output.extend(chunk)
+        if chunk.startswith(result_prefix):
+            break
+    return bytes(output), len(output) > _MAX_METADATA_RESULT_BYTES
 
 
 class PluginMetadataScanError(RuntimeError):
@@ -207,11 +231,13 @@ def _worker_main(protocol_fd: int | None = None) -> None:
     raw_dup = os.dup
     raw_dup2 = os.dup2
     raw_open = os.open
+    raw_read = os.read
     raw_write = os.write
     immediate_exit = os._exit
     trusted_json_dumps = json.dumps
     result_prefix = _RESULT_PREFIX
     max_result_bytes = _MAX_METADATA_RESULT_BYTES
+    control_fd = raw_dup(sys.stdin.fileno())
     if protocol_fd is None:
         stdout_fd = sys.stdout.fileno()
         stderr_fd = sys.stderr.fileno()
@@ -221,7 +247,7 @@ def _worker_main(protocol_fd: int | None = None) -> None:
         raw_dup2(devnull_fd, stderr_fd)
         raw_close(devnull_fd)
     try:
-        request_obj = json.loads(sys.stdin.read())
+        request_obj = json.loads(sys.stdin.readline())
         if not isinstance(request_obj, dict):
             raise TypeError("metadata scan request must be an object")
         result = _scan_in_worker(request_obj)
@@ -231,7 +257,6 @@ def _worker_main(protocol_fd: int | None = None) -> None:
             "error_type": type(exc).__name__,
             "message": str(exc),
         }
-    _cleanup_worker_descendants()
     encoded_result = (
         "\n"
         + result_prefix
@@ -263,6 +288,11 @@ def _worker_main(protocol_fd: int | None = None) -> None:
             raise OSError("metadata worker result pipe closed")
         remaining = remaining[written:]
     raw_close(protocol_fd)
+    try:
+        raw_read(control_fd, 1)
+    except OSError:
+        pass
+    raw_close(control_fd)
     immediate_exit(0)
 
 
@@ -302,9 +332,6 @@ def scan_plugin_metadata_isolated(
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
             cwd=str(project_root),
             env=child_env,
             **popen_kwargs,
@@ -312,22 +339,63 @@ def scan_plugin_metadata_isolated(
     except OSError as exc:
         raise PluginMetadataScanError(type(exc).__name__, str(exc)) from exc
 
+    timed_out = threading.Event()
+
+    def _expire_worker() -> None:
+        timed_out.set()
+        _terminate_worker_tree(process)
+
+    timeout_timer = threading.Timer(timeout, _expire_worker)
+    timeout_timer.daemon = True
+    timeout_timer.start()
     try:
-        stdout, stderr = process.communicate(
-            json.dumps(request, ensure_ascii=False),
-            timeout=timeout,
+        if process.stdin is None or process.stdout is None:
+            raise OSError("metadata worker pipes are unavailable")
+        process.stdin.write(
+            (json.dumps(request, ensure_ascii=False) + "\n").encode("utf-8")
         )
-    except subprocess.TimeoutExpired as exc:
+        process.stdin.flush()
+        stdout_bytes, output_too_large = _read_protocol_output(process.stdout)
+        timeout_timer.cancel()
         _terminate_worker_tree(process)
         try:
-            process.communicate(timeout=_PROCESS_CLEANUP_TIMEOUT)
+            process.wait(timeout=_PROCESS_CLEANUP_TIMEOUT)
         except subprocess.TimeoutExpired:
             process.kill()
-            process.communicate()
+            process.wait()
+    except OSError as exc:
+        timeout_timer.cancel()
+        _terminate_worker_tree(process)
+        if timed_out.is_set():
+            raise PluginMetadataScanError(
+                "TimeoutExpired",
+                f"Plugin metadata scan timed out after {timeout:g}s",
+            ) from exc
+        raise PluginMetadataScanError(type(exc).__name__, str(exc)) from exc
+    finally:
+        timeout_timer.cancel()
+        if process.stdin is not None:
+            try:
+                process.stdin.close()
+            except OSError:
+                pass
+
+    if timed_out.is_set():
         raise PluginMetadataScanError(
             "TimeoutExpired",
             f"Plugin metadata scan timed out after {timeout:g}s",
-        ) from exc
+        )
+    if output_too_large:
+        raise PluginMetadataScanError(
+            "MetadataResultTooLarge",
+            "Plugin metadata worker output exceeds the "
+            f"{_MAX_METADATA_RESULT_BYTES}-byte protocol limit",
+        )
+
+    stdout = stdout_bytes.decode("utf-8", errors="replace")
+    stderr = ""
+    if process.stderr is not None:
+        stderr = process.stderr.read(1000).decode("utf-8", errors="replace")
 
     payload: dict[str, object] | None = None
     for line in reversed(stdout.splitlines()):
