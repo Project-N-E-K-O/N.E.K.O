@@ -4,6 +4,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from fastapi import HTTPException
 
 from plugin.server.routes import market_bridge
 
@@ -134,6 +135,59 @@ async def test_installed_keeps_builtin_effective_for_noncanonical_user_conflict(
     assert installed.effective_source == "builtin"
     assert installed.effective_version == "0.1.5"
     assert installed.builtin_version == "0.1.5"
+
+
+@pytest.mark.asyncio
+async def test_installed_keeps_noncanonical_builtin_over_canonical_user_conflict(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    builtin_root = tmp_path / "builtin"
+    user_root = tmp_path / "installations" / "plugins"
+    builtin = _write_plugin(
+        builtin_root,
+        "study_companion",
+        "0.1.5",
+        directory_name="legacy_builtin",
+    )
+    _write_plugin(user_root, "study_companion", "0.1.6")
+    policy = SimpleNamespace(
+        builtin_plugins_root=builtin_root.resolve(),
+        user_plugins_root=user_root.resolve(),
+    )
+
+    monkeypatch.setattr(market_bridge, "_verify_token", lambda _token: None)
+    monkeypatch.setattr(
+        market_bridge.PluginCliPathPolicy,
+        "from_settings",
+        classmethod(lambda cls: policy),
+    )
+    monkeypatch.setattr(market_bridge, "get_install_source_manager", lambda: None)
+
+    response = await market_bridge.market_installed(token="test")
+
+    [installed] = response.installed
+    assert installed.path == str(builtin)
+    assert installed.effective_source == "builtin"
+    assert installed.effective_version == "0.1.5"
+
+
+@pytest.mark.asyncio
+async def test_installed_propagates_enumeration_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(market_bridge, "_verify_token", lambda _token: None)
+    monkeypatch.setattr(
+        market_bridge,
+        "_plugin_config_roots",
+        lambda: (_ for _ in ()).throw(OSError("enumeration failed")),
+    )
+
+    with pytest.raises(HTTPException) as caught:
+        await market_bridge.market_installed(token="test")
+
+    assert caught.value.status_code == 500
+    assert caught.value.detail == "market_installed_enumeration_failed"
 
 
 @pytest.mark.asyncio

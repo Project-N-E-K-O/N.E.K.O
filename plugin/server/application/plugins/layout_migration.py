@@ -382,11 +382,21 @@ def _migrate_legacy_plugin_layout_sync(
         )
 
     ledger_entries = ledger["entries"]
-    migrated_ids = {
-        item.get("plugin_id")
-        for item in ledger_entries
-        if isinstance(item, dict) and isinstance(item.get("plugin_id"), str)
-    }
+    migrated_ids: set[str] = set()
+    for item in ledger_entries:
+        if not isinstance(item, dict):
+            continue
+        plugin_id = item.get("plugin_id")
+        recorded_new_path = item.get("new_path")
+        if not isinstance(plugin_id, str) or not isinstance(recorded_new_path, str):
+            continue
+        try:
+            expected_destination = (exec_root / plugin_id).resolve(strict=False)
+            recorded_destination = Path(recorded_new_path).resolve(strict=False)
+        except (OSError, RuntimeError, ValueError):
+            continue
+        if recorded_destination == expected_destination:
+            migrated_ids.add(plugin_id)
     migrated: list[str] = []
     skipped: list[str] = []
 

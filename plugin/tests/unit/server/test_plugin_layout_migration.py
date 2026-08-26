@@ -96,6 +96,39 @@ async def test_migration_is_atomic_idempotent_and_does_not_resurrect(
 
 
 @pytest.mark.asyncio
+async def test_shared_ledger_scopes_migrations_to_each_execution_root(
+    tmp_path: Path,
+) -> None:
+    state_root = tmp_path / "user" / "plugins"
+    source = _write_plugin(state_root, "study_companion")
+    ledger_path = state_root.parent / LAYOUT_LEDGER_FILENAME
+    first_exec_root = tmp_path / "exec-a"
+    second_exec_root = tmp_path / "exec-b"
+
+    first = await migrate_legacy_plugin_layout(
+        state_root=state_root,
+        exec_root=first_exec_root,
+        ledger_path=ledger_path,
+    )
+    second = await migrate_legacy_plugin_layout(
+        state_root=state_root,
+        exec_root=second_exec_root,
+        ledger_path=ledger_path,
+    )
+
+    assert first.migrated == ("study_companion",)
+    assert second.migrated == ("study_companion",)
+    assert (first_exec_root / "study_companion" / "plugin.toml").is_file()
+    assert (second_exec_root / "study_companion" / "plugin.toml").is_file()
+    ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
+    assert {entry["new_path"] for entry in ledger["entries"]} == {
+        str((first_exec_root / "study_companion").resolve()),
+        str((second_exec_root / "study_companion").resolve()),
+    }
+    assert source.is_dir()
+
+
+@pytest.mark.asyncio
 async def test_pure_state_directory_is_not_migrated(tmp_path: Path) -> None:
     state_root = tmp_path / "plugins"
     state_dir = state_root / "state_only"

@@ -920,10 +920,15 @@ async def market_installed(
                 (candidate for candidate in user_candidates if candidate[0].name == plugin_id),
                 None,
             )
-            # Only <user-root>/<id> may shadow a builtin. A renamed legacy
-            # directory remains a real ID conflict and the builtin stays
-            # effective, matching registry_service._select_effective_records.
-            user = canonical_user or (user_candidates[0] if builtin is None else None)
+            # Only the canonical cross-root pair may form a user override.
+            # Any noncanonical builtin or user directory remains a real ID
+            # conflict, matching registry_service._select_effective_records.
+            if builtin is None:
+                user = canonical_user or (user_candidates[0] if user_candidates else None)
+            elif builtin[0].name == plugin_id:
+                user = canonical_user
+            else:
+                user = None
             effective = user or builtin
             if effective is None:  # pragma: no cover - discovered always contains one source
                 continue
@@ -949,7 +954,10 @@ async def market_installed(
         return MarketInstalledResponse(installed=installed, count=len(installed))
     except Exception as exc:
         logger.warning("Failed to list installed plugins: {}", exc)
-        return MarketInstalledResponse(installed=[], count=0)
+        raise HTTPException(
+            status_code=500,
+            detail="market_installed_enumeration_failed",
+        ) from exc
 
 
 def _project_market_source_detail(
