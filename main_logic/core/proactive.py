@@ -1553,7 +1553,10 @@ class ProactiveMixin:
                 return False
             # Rebuild after the topic-hint awaits: callbacks may have been
             # filtered, and offline prompt_ephemeral never calls stream_image.
-            _proactive_images = self._collect_text_proactive_images(active_callbacks)
+            (
+                _proactive_images,
+                _proactive_image_authorization_guard,
+            ) = self._collect_text_proactive_images_guarded(active_callbacks)
             # Preserve the full language code until callback rendering.
             _lang = normalize_language_code(self.user_language, format='full')
             instruction = _build_callback_instruction(
@@ -1593,6 +1596,7 @@ class ProactiveMixin:
                     delivered = await self.session.prompt_ephemeral(
                         instruction,
                         images=_proactive_images or None,
+                        authorization_guard=_proactive_image_authorization_guard,
                         on_committed=lambda: _resolve_text_delivery_ack(True),
                         response_owner=response_owner,
                     )
@@ -2224,7 +2228,15 @@ class ProactiveMixin:
         must put that same frame on the explicit ``images`` argument or the
         model is told a share is attached when none was sent.
         """
+        images, _authorization_guard = (
+            self._collect_text_proactive_images_guarded(callbacks)
+        )
+        return images
+
+    def _collect_text_proactive_images_guarded(self, callbacks: list):
+        """Return offline images plus a final-send guard for a live frame."""
         images: list = []
+        authorization_guard = None
         live_frame = self._resolve_batch_live_frame_b64(callbacks)
         if live_frame:
             # Offline sessions usually lack native multimodal on the base
@@ -2237,11 +2249,12 @@ class ProactiveMixin:
             )
             if can_vision:
                 images.append(live_frame)
+                authorization_guard = self._live_frame_permission_guard(callbacks)
         for cb in callbacks:
             if not isinstance(cb, dict):
                 continue
             images.extend(cb.get("media_images") or [])
-        return images
+        return images, authorization_guard
 
     async def _stream_live_frame_b64(
         self,

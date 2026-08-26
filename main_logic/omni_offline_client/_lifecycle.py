@@ -193,6 +193,7 @@ class _LifecycleMixin:
         on_committed: Optional[Callable[[], None]] = None,
         on_committed_text: Optional[Callable[[str], None]] = None,
         response_owner: object | None = None,
+        authorization_guard: Optional[Callable[[], bool]] = None,
     ) -> bool:
         """Send a fire-and-forget instruction to the LLM and stream the response.
 
@@ -320,6 +321,17 @@ class _LifecycleMixin:
                     break
 
                 try:
+                    if authorization_guard is not None:
+                        try:
+                            authorized = bool(authorization_guard())
+                        except Exception:
+                            authorized = False
+                        if not authorized:
+                            logger.info(
+                                "prompt_ephemeral: image authorization was revoked before provider submission"
+                            )
+                            assistant_message = ""
+                            return False
                     # 主动搭话同样走 tool-aware streaming —— agent 注入的 stage
                     # direction 也可能让模型决定调用工具（比如 "讲一下今天天气"）。
                     async for chunk in self._astream_visible_with_tools(messages_to_send):

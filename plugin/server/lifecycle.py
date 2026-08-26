@@ -12,6 +12,9 @@ from plugin.core.status import status_manager
 from plugin.logging_config import get_logger
 from plugin.utils.time_utils import now_iso
 from plugin.server.application.plugins import PluginLifecycleService, PluginRegistryService
+from plugin.server.application.messages.live_vision_service import (
+    live_vision_query_service,
+)
 from plugin.server.messaging.bus_subscriptions import bus_subscription_manager
 from plugin.server.messaging.lifecycle_events import emit_lifecycle_event
 from plugin.server.messaging.plane_bridge import start_bridge, stop_bridge
@@ -27,6 +30,8 @@ _SHUTDOWN_PERMISSION_REVOKE_TIMEOUT = 0.4
 _AUTOSTART_PERMISSION_REVOKE_ATTEMPTS = 16
 _AUTOSTART_PERMISSION_REVOKE_ATTEMPT_TIMEOUT = 1.0
 _AUTOSTART_PERMISSION_REVOKE_RETRY_SECONDS = 1.0
+_PERMISSION_REHYDRATE_INTERVAL_SECONDS = 2.0
+_PERMISSION_REHYDRATE_TIMEOUT_SECONDS = 1.0
 
 if _EMBEDDED_BY_AGENT:
     logger = get_module_logger(__name__, "Agent")
@@ -51,6 +56,33 @@ class ServerLifecycleService:
         self._message_plane_runner: MessagePlaneRunner | None = None
         self._plugin_registry_service = PluginRegistryService()
         self._plugin_lifecycle_service = PluginLifecycleService()
+        self._permission_rehydration_task: asyncio.Task[None] | None = None
+
+    async def _permission_rehydration_loop(self) -> None:
+        while True:
+            await asyncio.sleep(_PERMISSION_REHYDRATE_INTERVAL_SECONDS)
+            await live_vision_query_service.rehydrate_active_permissions(
+                timeout=_PERMISSION_REHYDRATE_TIMEOUT_SECONDS,
+            )
+
+    def _start_permission_rehydration(self) -> None:
+        task = self._permission_rehydration_task
+        if task is None or task.done():
+            self._permission_rehydration_task = asyncio.create_task(
+                self._permission_rehydration_loop(),
+                name="plugin-permission-rehydration",
+            )
+
+    async def _stop_permission_rehydration(self) -> None:
+        task = self._permission_rehydration_task
+        self._permission_rehydration_task = None
+        if task is None:
+            return
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
 
     @staticmethod
     def _get_plugin_hosts_snapshot() -> dict[str, object]:
@@ -239,6 +271,7 @@ class ServerLifecycleService:
         self._clear_runtime_state()
 
         await ensure_plugin_messaging_started()
+        self._start_permission_rehydration()
 
         try:
             cleaned_profiles = await self._plugin_lifecycle_service.retry_deferred_profile_cleanup()
@@ -313,23 +346,23 @@ class ServerLifecycleService:
                         plugin_id,
                         type(host_obj).__name__,
                     )
-                    return
-                try:
-                    await asyncio.wait_for(
-                        host_obj.shutdown(timeout=PLUGIN_SHUTDOWN_TIMEOUT),
-                        timeout=per_host_timeout,
-                    )
-                except asyncio.TimeoutError:
-                    logger.warning(
-                        "plugin {} shutdown timed out after {:.1f}s, force-killing",
-                        plugin_id, per_host_timeout,
-                    )
-                    proc = getattr(host_obj, "process", None)
-                    if proc is not None and proc.is_alive():
-                        try:
-                            proc.terminate()
-                        except Exception:
-                            pass
+                else:
+                    try:
+                        await asyncio.wait_for(
+                            host_obj.shutdown(timeout=PLUGIN_SHUTDOWN_TIMEOUT),
+                            timeout=per_host_timeout,
+                        )
+                    except asyncio.TimeoutError:
+                        logger.warning(
+                            "plugin {} shutdown timed out after {:.1f}s, force-killing",
+                            plugin_id, per_host_timeout,
+                        )
+                        proc = getattr(host_obj, "process", None)
+                        if proc is not None and proc.is_alive():
+                            try:
+                                proc.terminate()
+                            except Exception:
+                                pass
             finally:
                 revoked = await self._plugin_lifecycle_service.revoke_plugin_permissions(
                     plugin_id,
@@ -393,6 +426,8 @@ class ServerLifecycleService:
             logger.warning("failed to emit server_shutdown_begin event: {}", exc)
 
         had_errors = False
+
+        await self._stop_permission_rehydration()
 
         # Phase 1: sync signals (instant)
         for stop_fn, label in [

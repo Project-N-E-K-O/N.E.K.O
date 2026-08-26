@@ -788,7 +788,7 @@ async def test_plugin_process_start_passes_startup_failure_policy_to_child(
             self.args = kwargs["args"]
 
         def start(self) -> None:
-            startup_options = self.args[-1]
+            startup_options = self.args[7]
             if isinstance(startup_options, dict):
                 captured_startup_options.append(dict(startup_options))
             super().start()

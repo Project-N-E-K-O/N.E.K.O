@@ -483,6 +483,33 @@ async def test_shutdown_hosts_revokes_permissions_for_invalid_stale_entry(
 
 
 @pytest.mark.asyncio
+async def test_shutdown_hosts_reports_failed_revoke_for_invalid_stale_entry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = module.ServerLifecycleService()
+    monkeypatch.setattr(
+        service,
+        "_get_plugin_hosts_snapshot",
+        lambda: {"demo_plugin": object()},
+    )
+
+    async def _revoke_plugin_permissions(
+        _plugin_id: str,
+        *,
+        timeout: float = 3.0,
+    ) -> bool:
+        return False
+
+    monkeypatch.setattr(
+        service._plugin_lifecycle_service,
+        "revoke_plugin_permissions",
+        _revoke_plugin_permissions,
+    )
+
+    assert await service._shutdown_hosts() is True
+
+
+@pytest.mark.asyncio
 async def test_shutdown_timeout_still_retries_host_permission_revocation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

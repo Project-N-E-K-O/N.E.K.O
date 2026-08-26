@@ -31,6 +31,7 @@ from typing import Any, Optional, Tuple
 import ormsgpack
 import zmq
 import zmq.asyncio
+from zmq.auth.thread import ThreadAuthenticator
 
 # ── Channel constants ──────────────────────────────────────────────
 CH_CMD = "cmd"
@@ -48,6 +49,15 @@ _UPLINK_PACK_OPTIONS = (
     | ormsgpack.OPT_SERIALIZE_NUMPY
     | ormsgpack.OPT_SERIALIZE_PYDANTIC
 )
+_CURVE_DOMAIN = b"neko-plugin-host"
+
+
+class _SingleClientCurveCredentials:
+    def __init__(self, client_public_key: bytes) -> None:
+        self._expected_key = client_public_key
+
+    def callback(self, _domain: str, key: bytes) -> bool:
+        return secrets.compare_digest(key, self._expected_key)
 
 
 def _derive_permission_generation(uplink_token: str) -> str:
@@ -126,9 +136,26 @@ class HostTransport:
     def __init__(self) -> None:
         self._ctx = zmq.asyncio.Context()
         self._uplink_token = secrets.token_urlsafe(32)
+        server_public_key, server_secret_key = zmq.curve_keypair()
+        client_public_key, client_secret_key = zmq.curve_keypair()
+        self._downlink_curve_credentials = (
+            server_public_key,
+            client_public_key,
+            client_secret_key,
+        )
+        self._authenticator = ThreadAuthenticator(self._ctx)
+        self._authenticator.start()
+        self._authenticator.configure_curve_callback(
+            domain=_CURVE_DOMAIN.decode("ascii"),
+            credentials_provider=_SingleClientCurveCredentials(client_public_key),
+        )
 
         # Downlink: host → child (PUSH/PULL)
         self._dl_sock = self._ctx.socket(zmq.PUSH)
+        self._dl_sock.curve_publickey = server_public_key
+        self._dl_sock.curve_secretkey = server_secret_key
+        self._dl_sock.curve_server = True
+        self._dl_sock.zap_domain = _CURVE_DOMAIN
         self._dl_sock.setsockopt(zmq.LINGER, _LINGER_MS)
         self._dl_sock.setsockopt(zmq.SNDHWM, 5000)
         self._dl_sock.bind("tcp://127.0.0.1:*")
@@ -136,6 +163,10 @@ class HostTransport:
 
         # Uplink: child → host (PUSH/PULL)
         self._ul_sock = self._ctx.socket(zmq.PULL)
+        self._ul_sock.curve_publickey = server_public_key
+        self._ul_sock.curve_secretkey = server_secret_key
+        self._ul_sock.curve_server = True
+        self._ul_sock.zap_domain = _CURVE_DOMAIN
         self._ul_sock.setsockopt(zmq.LINGER, 0)
         self._ul_sock.setsockopt(zmq.RCVHWM, 5000)
         self._ul_sock.bind("tcp://127.0.0.1:*")
@@ -146,6 +177,10 @@ class HostTransport:
     @property
     def uplink_token(self) -> str:
         return self._uplink_token
+
+    @property
+    def downlink_curve_credentials(self) -> tuple[bytes, bytes, bytes]:
+        return self._downlink_curve_credentials
 
     @property
     def permission_generation(self) -> str:
@@ -182,6 +217,10 @@ class HostTransport:
             except Exception:
                 pass
         try:
+            self._authenticator.stop()
+        except Exception:
+            pass
+        try:
             self._ctx.term()
         except Exception:
             pass
@@ -206,11 +245,20 @@ class ChildTransport:
         downlink_endpoint: str,
         uplink_endpoint: str,
         uplink_token: str,
+        *,
+        downlink_curve: tuple[bytes, bytes, bytes] | None = None,
     ) -> None:
+        if downlink_curve is None or len(downlink_curve) != 3:
+            raise ValueError("Plugin child process requires CURVE credentials")
+        server_public_key, client_public_key, client_secret_key = downlink_curve
+
         # Sync context — used for the uplink PUSH socket (thread-safe via lock)
         self._sync_ctx = zmq.Context()
 
         self._ul_sock = self._sync_ctx.socket(zmq.PUSH)
+        self._ul_sock.curve_serverkey = server_public_key
+        self._ul_sock.curve_publickey = client_public_key
+        self._ul_sock.curve_secretkey = client_secret_key
         self._ul_sock.setsockopt(zmq.LINGER, _LINGER_MS)
         self._ul_sock.setsockopt(zmq.SNDHWM, 5000)
         self._ul_sock.connect(uplink_endpoint)
@@ -219,6 +267,9 @@ class ChildTransport:
         # Async context — used for the downlink PULL socket (event-loop only)
         self._async_ctx = zmq.asyncio.Context()
         self._dl_sock = self._async_ctx.socket(zmq.PULL)
+        self._dl_sock.curve_serverkey = server_public_key
+        self._dl_sock.curve_publickey = client_public_key
+        self._dl_sock.curve_secretkey = client_secret_key
         self._dl_sock.setsockopt(zmq.LINGER, 0)
         self._dl_sock.connect(downlink_endpoint)
 

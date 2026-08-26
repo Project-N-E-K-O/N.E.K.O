@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import math
 
 import httpx
@@ -43,6 +44,107 @@ def _main_server_base_url() -> str:
 
 class LiveVisionQueryService:
     """Ask main_server whether a screen share is feeding the conversation."""
+
+    def __init__(self) -> None:
+        self._permission_lock = asyncio.Lock()
+        self._active_permissions: dict[
+            tuple[str, str],
+            dict[str, object],
+        ] = {}
+
+    async def _set_permission(
+        self,
+        *,
+        kind: str,
+        path: str,
+        source_name: object,
+        host_generation: object,
+        token: object,
+        enabled: object,
+        timeout: object,
+        remember: bool,
+    ) -> dict[str, object]:
+        normalized_timeout = _coerce_timeout(timeout)
+        source = str(source_name or "")
+        generation = str(host_generation or "")
+        permission_token = str(token or "")
+        allowed = bool(enabled)
+        url = f"{_main_server_base_url()}{path}"
+        try:
+            async with httpx.AsyncClient(
+                timeout=normalized_timeout, proxy=None, trust_env=False
+            ) as client:
+                response = await client.post(
+                    url,
+                    headers=plugin_host_auth_headers(),
+                    json={
+                        "source_name": source,
+                        "host_generation": generation,
+                        "token": permission_token,
+                        "enabled": allowed,
+                    },
+                )
+                response.raise_for_status()
+                payload = response.json()
+        except (httpx.HTTPError, ValueError, OSError, RuntimeError) as exc:
+            logger.debug(
+                "{} permission update unavailable: err_type={}, err={}",
+                kind,
+                type(exc).__name__,
+                str(exc),
+            )
+            raise RuntimeError(f"{kind} permission update unavailable") from exc
+
+        if not isinstance(payload, dict) or not payload.get("ok"):
+            raise RuntimeError(f"{kind} permission update rejected")
+        result = {
+            "ok": True,
+            "source_name": str(payload.get("source_name") or source),
+            "token": str(payload.get("token") or permission_token),
+            "enabled": bool(payload.get("enabled")),
+            "applied": bool(payload.get("applied")),
+        }
+        if remember and result["applied"]:
+            key = (kind, source)
+            if allowed and source and generation and permission_token:
+                self._active_permissions[key] = {
+                    "kind": kind,
+                    "path": path,
+                    "source_name": source,
+                    "host_generation": generation,
+                    "token": permission_token,
+                    "enabled": True,
+                }
+            else:
+                current = self._active_permissions.get(key)
+                if (
+                    current is not None
+                    and current.get("host_generation") == generation
+                    and current.get("token") == permission_token
+                ):
+                    self._active_permissions.pop(key, None)
+        return result
+
+    async def rehydrate_active_permissions(
+        self,
+        *,
+        timeout: object = 1.0,
+    ) -> int:
+        """Replay active grants after a split main_server restart."""
+        restored = 0
+        async with self._permission_lock:
+            for grant in tuple(self._active_permissions.values()):
+                try:
+                    result = await self._set_permission(
+                        **grant,
+                        timeout=timeout,
+                        remember=False,
+                    )
+                except RuntimeError:
+                    continue
+                if result.get("applied"):
+                    restored += 1
+        return restored
 
     async def get_live_vision(
         self,
@@ -106,41 +208,17 @@ class LiveVisionQueryService:
         enabled: object = False,
         timeout: object = None,
     ) -> dict[str, object]:
-        normalized_timeout = _coerce_timeout(timeout)
-        url = f"{_main_server_base_url()}/api/system/live-vision/attachment-permission"
-        try:
-            async with httpx.AsyncClient(
-                timeout=normalized_timeout, proxy=None, trust_env=False
-            ) as client:
-                response = await client.post(
-                    url,
-                    headers=plugin_host_auth_headers(),
-                    json={
-                        "source_name": str(source_name or ""),
-                        "host_generation": str(host_generation or ""),
-                        "token": str(token or ""),
-                        "enabled": bool(enabled),
-                    },
-                )
-                response.raise_for_status()
-                payload = response.json()
-        except (httpx.HTTPError, ValueError, OSError, RuntimeError) as exc:
-            logger.debug(
-                "live frame permission update unavailable: err_type={}, err={}",
-                type(exc).__name__,
-                str(exc),
+        async with self._permission_lock:
+            return await self._set_permission(
+                kind="live frame",
+                path="/api/system/live-vision/attachment-permission",
+                source_name=source_name,
+                host_generation=host_generation,
+                token=token,
+                enabled=enabled,
+                timeout=timeout,
+                remember=True,
             )
-            raise RuntimeError("live frame permission update unavailable") from exc
-
-        if not isinstance(payload, dict) or not payload.get("ok"):
-            raise RuntimeError("live frame permission update rejected")
-        return {
-            "ok": True,
-            "source_name": str(payload.get("source_name") or source_name or ""),
-            "token": str(payload.get("token") or token or ""),
-            "enabled": bool(payload.get("enabled")),
-            "applied": bool(payload.get("applied")),
-        }
 
     async def set_plugin_delivery_permission(
         self,
@@ -151,41 +229,17 @@ class LiveVisionQueryService:
         enabled: object = False,
         timeout: object = None,
     ) -> dict[str, object]:
-        normalized_timeout = _coerce_timeout(timeout)
-        url = f"{_main_server_base_url()}/api/system/plugin-callbacks/delivery-permission"
-        try:
-            async with httpx.AsyncClient(
-                timeout=normalized_timeout, proxy=None, trust_env=False
-            ) as client:
-                response = await client.post(
-                    url,
-                    headers=plugin_host_auth_headers(),
-                    json={
-                        "source_name": str(source_name or ""),
-                        "host_generation": str(host_generation or ""),
-                        "token": str(token or ""),
-                        "enabled": bool(enabled),
-                    },
-                )
-                response.raise_for_status()
-                payload = response.json()
-        except (httpx.HTTPError, ValueError, OSError, RuntimeError) as exc:
-            logger.debug(
-                "plugin delivery permission update unavailable: err_type={}, err={}",
-                type(exc).__name__,
-                str(exc),
+        async with self._permission_lock:
+            return await self._set_permission(
+                kind="plugin delivery",
+                path="/api/system/plugin-callbacks/delivery-permission",
+                source_name=source_name,
+                host_generation=host_generation,
+                token=token,
+                enabled=enabled,
+                timeout=timeout,
+                remember=True,
             )
-            raise RuntimeError("plugin delivery permission update unavailable") from exc
-
-        if not isinstance(payload, dict) or not payload.get("ok"):
-            raise RuntimeError("plugin delivery permission update rejected")
-        return {
-            "ok": True,
-            "source_name": str(payload.get("source_name") or source_name or ""),
-            "token": str(payload.get("token") or token or ""),
-            "enabled": bool(payload.get("enabled")),
-            "applied": bool(payload.get("applied")),
-        }
 
     async def revoke_plugin_permissions(
         self,
@@ -195,29 +249,41 @@ class LiveVisionQueryService:
         timeout: object = None,
     ) -> dict[str, object]:
         normalized_timeout = _coerce_timeout(timeout)
+        source = str(source_name or "")
+        generation = str(host_generation or "")
         url = f"{_main_server_base_url()}/api/system/plugin-permissions/revoke"
-        try:
-            async with httpx.AsyncClient(
-                timeout=normalized_timeout, proxy=None, trust_env=False
-            ) as client:
-                response = await client.post(
-                    url,
-                    headers=plugin_host_auth_headers(),
-                    json={
-                        "source_name": str(source_name or ""),
-                        "host_generation": str(host_generation or ""),
-                    },
+        async with self._permission_lock:
+            for key, grant in tuple(self._active_permissions.items()):
+                if key[1] != source:
+                    continue
+                if generation and grant.get("host_generation") != generation:
+                    continue
+                self._active_permissions.pop(key, None)
+            try:
+                async with httpx.AsyncClient(
+                    timeout=normalized_timeout, proxy=None, trust_env=False
+                ) as client:
+                    response = await client.post(
+                        url,
+                        headers=plugin_host_auth_headers(),
+                        json={
+                            "source_name": source,
+                            "host_generation": generation,
+                        },
+                    )
+                    response.raise_for_status()
+                    payload = response.json()
+            except (httpx.HTTPError, ValueError, OSError, RuntimeError) as exc:
+                logger.debug(
+                    "plugin permission revoke unavailable: err_type={}, err={}",
+                    type(exc).__name__,
+                    str(exc),
                 )
-                response.raise_for_status()
-                payload = response.json()
-        except (httpx.HTTPError, ValueError, OSError, RuntimeError) as exc:
-            logger.debug(
-                "plugin permission revoke unavailable: err_type={}, err={}",
-                type(exc).__name__,
-                str(exc),
-            )
-            raise RuntimeError("plugin permission revoke unavailable") from exc
+                raise RuntimeError("plugin permission revoke unavailable") from exc
 
-        if not isinstance(payload, dict) or not payload.get("ok"):
-            raise RuntimeError("plugin permission revoke rejected")
-        return payload
+            if not isinstance(payload, dict) or not payload.get("ok"):
+                raise RuntimeError("plugin permission revoke rejected")
+            return payload
+
+
+live_vision_query_service = LiveVisionQueryService()

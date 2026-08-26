@@ -290,13 +290,17 @@ def parse_tool_images(body: Dict[str, Any]) -> Tuple[List[ToolImage], List[str]]
         if not isinstance(data_b64, str) or not data_b64:
             warnings.append(f"image #{index} has empty data_b64; dropped")
             continue
-        if len(data_b64) > _MAX_TOOL_IMAGE_B64_BYTES:
+        normalized_data_b64 = "".join(data_b64.split())
+        if not normalized_data_b64:
+            warnings.append(f"image #{index} has empty data_b64; dropped")
+            continue
+        if len(normalized_data_b64) > _MAX_TOOL_IMAGE_B64_BYTES:
             warnings.append(
                 f"image #{index} is too large "
-                f"({len(data_b64)} > {_MAX_TOOL_IMAGE_B64_BYTES} base64 bytes); dropped"
+                f"({len(normalized_data_b64)} > {_MAX_TOOL_IMAGE_B64_BYTES} base64 bytes); dropped"
             )
             continue
-        decoded = _decode_tool_image_b64(data_b64)
+        decoded = _decode_tool_image_b64(normalized_data_b64)
         if decoded is None:
             warnings.append(
                 f"image #{index} has invalid base64 or non-image bytes; dropped"
@@ -327,7 +331,7 @@ def parse_tool_images(body: Dict[str, Any]) -> Tuple[List[ToolImage], List[str]]
             )
             vision_prompt = vision_prompt[:_MAX_TOOL_IMAGE_VISION_PROMPT_CHARS]
         images.append(ToolImage(
-            data_b64=data_b64,
+            data_b64=normalized_data_b64,
             mime=mime,
             vision_prompt=vision_prompt,
         ))

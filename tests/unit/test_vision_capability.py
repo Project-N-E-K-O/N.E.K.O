@@ -44,6 +44,7 @@ def test_known_vision_models(model):
     # ``vl`` must be a bounded token; these only contain the letters.
     "avl-router",
     "evolved-chat",
+    "revision-text",
 ])
 def test_text_only_models(model):
     assert model_supports_vision(model) is False

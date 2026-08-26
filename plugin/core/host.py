@@ -526,6 +526,7 @@ def _plugin_process_runner(
     uplink_token: str = "",
     stop_event: Any | None = None,
     startup_options: dict[str, object] | None = None,
+    transport_curve_credentials: tuple[bytes, bytes, bytes] | None = None,
 ) -> None:
     """独立进程中的运行函数。通过 ZMQ 与宿主进程通信。"""
     # 保存进程级 stop event
@@ -552,10 +553,14 @@ def _plugin_process_runner(
         logger.warning("[Plugin Process] Failed to setup logging interception: {}", e)
     
     # ── ZMQ child-side transport ─────────────────────────────────
+    child_transport_kwargs: dict[str, object] = {}
+    if transport_curve_credentials is not None:
+        child_transport_kwargs["downlink_curve"] = transport_curve_credentials
     child_transport = ChildTransport(
         downlink_endpoint,
         uplink_endpoint,
         uplink_token,
+        **child_transport_kwargs,
     )
     res_sender = child_transport.channel_sender(CH_RES)
     status_sender = child_transport.channel_sender(CH_STS)
@@ -1592,6 +1597,7 @@ class PluginHost:
                 getattr(self.transport, "uplink_token", ""),
                 self._process_stop_event,
                 self._startup_options,
+                getattr(self.transport, "downlink_curve_credentials", None),
             ),
             # Plugin code may spawn subprocesses/Managers; daemon process would forbid that.
             daemon=False,

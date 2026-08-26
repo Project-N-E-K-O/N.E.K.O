@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import math
 import os
+import queue
+import selectors
 import signal
 import subprocess
 import sys
@@ -119,7 +121,7 @@ def _terminate_and_reap_worker(
             process.wait()
 
 
-def _read_protocol_output(stream: BinaryIO) -> tuple[bytes, bool]:
+def _read_protocol_output_blocking(stream: BinaryIO) -> tuple[bytes, bool]:
     output = bytearray()
     result_prefix = _RESULT_PREFIX.encode("utf-8")
     while len(output) <= _MAX_METADATA_RESULT_BYTES:
@@ -132,6 +134,85 @@ def _read_protocol_output(stream: BinaryIO) -> tuple[bytes, bool]:
         if chunk.startswith(result_prefix):
             break
     return bytes(output), len(output) > _MAX_METADATA_RESULT_BYTES
+
+
+def _read_protocol_output(
+    stream: BinaryIO,
+    *,
+    timeout_event: threading.Event | None = None,
+) -> tuple[bytes, bool]:
+    """Read the worker protocol without letting an inherited fd defeat timeout.
+
+    POSIX pipes are polled directly so a detached descendant holding the write
+    end open cannot leave this process blocked in ``readline()``.  The fallback
+    covers streams without a selectable descriptor (including Windows pipes)
+    with a daemon reader and keeps the caller bounded by ``timeout_event``.
+    """
+    if timeout_event is None:
+        return _read_protocol_output_blocking(stream)
+
+    if os.name != "nt":
+        try:
+            fd = stream.fileno()
+            selector = selectors.DefaultSelector()
+            selector.register(fd, selectors.EVENT_READ)
+        except (AttributeError, OSError, TypeError, ValueError):
+            pass
+        else:
+            output = bytearray()
+            result_prefix = _RESULT_PREFIX.encode("utf-8")
+            line_start = 0
+            try:
+                while len(output) <= _MAX_METADATA_RESULT_BYTES:
+                    if timeout_event.is_set():
+                        raise TimeoutError("metadata protocol read timed out")
+                    if not selector.select(timeout=0.05):
+                        continue
+                    chunk = os.read(
+                        fd,
+                        _MAX_METADATA_RESULT_BYTES + 1 - len(output),
+                    )
+                    if not chunk:
+                        break
+                    output.extend(chunk)
+                    while True:
+                        line_end = output.find(b"\n", line_start)
+                        if line_end < 0:
+                            break
+                        line = output[line_start:line_end]
+                        if line.endswith(b"\r"):
+                            line = line[:-1]
+                        line_start = line_end + 1
+                        if line.startswith(result_prefix):
+                            return bytes(output[:line_start]), False
+                return bytes(output), len(output) > _MAX_METADATA_RESULT_BYTES
+            finally:
+                selector.close()
+
+    result_queue: queue.Queue[tuple[bool, object]] = queue.Queue(maxsize=1)
+
+    def _blocking_reader() -> None:
+        try:
+            result_queue.put((True, _read_protocol_output_blocking(stream)))
+        except BaseException as exc:
+            result_queue.put((False, exc))
+
+    reader = threading.Thread(
+        target=_blocking_reader,
+        name="plugin-metadata-protocol-reader",
+        daemon=True,
+    )
+    reader.start()
+    while True:
+        try:
+            succeeded, result = result_queue.get(timeout=0.05)
+        except queue.Empty:
+            if timeout_event.is_set():
+                raise TimeoutError("metadata protocol read timed out")
+            continue
+        if succeeded:
+            return result  # type: ignore[return-value]
+        raise result  # type: ignore[misc]
 
 
 class PluginMetadataScanError(RuntimeError):
@@ -380,10 +461,13 @@ def scan_plugin_metadata_isolated(
             (json.dumps(request, ensure_ascii=False) + "\n").encode("utf-8")
         )
         process.stdin.flush()
-        stdout_bytes, output_too_large = _read_protocol_output(process.stdout)
+        stdout_bytes, output_too_large = _read_protocol_output(
+            process.stdout,
+            timeout_event=timed_out,
+        )
         timeout_timer.cancel()
         _terminate_and_reap_worker(process, cleanup_lock)
-    except OSError as exc:
+    except (OSError, TimeoutError) as exc:
         timeout_timer.cancel()
         _terminate_and_reap_worker(process, cleanup_lock)
         if timed_out.is_set():

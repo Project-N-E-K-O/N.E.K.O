@@ -165,6 +165,20 @@ def test_valid_entry_is_parsed():
     assert images[0].vision_prompt == "look"
 
 
+def test_line_wrapped_base64_is_normalized_before_validation():
+    wrapped = " \n".join(
+        _TINY_PNG_B64[index:index + 16]
+        for index in range(0, len(_TINY_PNG_B64), 16)
+    )
+
+    images, warnings = _parse_tool_images(
+        {"images": [_image_entry(data_b64=wrapped)]}
+    )
+
+    assert warnings == []
+    assert images[0].data_b64 == _TINY_PNG_B64
+
+
 def test_oversized_vision_prompt_is_truncated_with_a_warning():
     oversized_prompt = "x" * 2001
 

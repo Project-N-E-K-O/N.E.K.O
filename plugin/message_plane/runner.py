@@ -230,6 +230,7 @@ class PythonMessagePlaneRunner(MessagePlaneRunner):
             from plugin.message_plane.rpc_server import MessagePlaneRpcServer
             from plugin.message_plane.stores import StoreRegistry, TopicStore
             from plugin.settings import MESSAGE_PLANE_STORE_MAXLEN
+            from utils.plugin_host_auth import require_plugin_host_token
 
             stores = StoreRegistry(default_store="messages")
             # conversations 是独立的 store，用于存储对话上下文（与 messages 分离）
@@ -237,7 +238,12 @@ class PythonMessagePlaneRunner(MessagePlaneRunner):
                 stores.register(TopicStore(name=name, maxlen=MESSAGE_PLANE_STORE_MAXLEN))
 
             pub_srv = MessagePlanePubServer(endpoint=str(self._endpoints.pub))
-            ingest_srv = MessagePlaneIngestServer(endpoint=str(self._endpoints.ingest), stores=stores, pub_server=pub_srv)
+            ingest_srv = MessagePlaneIngestServer(
+                endpoint=str(self._endpoints.ingest),
+                stores=stores,
+                pub_server=pub_srv,
+                auth_token=require_plugin_host_token(),
+            )
             rpc_srv = MessagePlaneRpcServer(endpoint=str(self._endpoints.rpc), pub_server=pub_srv, stores=stores)
 
             ingest_thread = threading.Thread(target=ingest_srv.serve_forever, daemon=True, name="message-plane-ingest")

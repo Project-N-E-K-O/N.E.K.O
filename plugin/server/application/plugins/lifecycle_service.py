@@ -59,7 +59,7 @@ from plugin.server.infrastructure.runtime_overrides import (
 )
 from plugin.server.messaging.lifecycle_events import emit_lifecycle_event
 from plugin.server.application.messages.live_vision_service import (
-    LiveVisionQueryService,
+    live_vision_query_service,
 )
 from plugin.server.messaging.llm_tool_registry import (
     clear_plugin_tools as clear_plugin_llm_tools,
@@ -85,7 +85,7 @@ _DEFERRED_PROFILE_STAGING_NAME_PATTERN = re.compile(
     r"^\.[A-Za-z0-9._-]+\.deleting-[0-9a-f]{32}$"
 )
 plugin_registry_service = PluginRegistryService()
-plugin_permission_service = LiveVisionQueryService()
+plugin_permission_service = live_vision_query_service
 _PLUGIN_PERMISSION_REVOKE_ATTEMPTS = 2
 _PLUGIN_PERMISSION_REVOKE_RETRY_SECONDS = 0.1
 _STARTUP_QUARANTINED_ATTR = "_neko_startup_quarantined"

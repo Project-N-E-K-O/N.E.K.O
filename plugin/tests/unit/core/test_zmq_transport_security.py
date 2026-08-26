@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import pickle
 from pathlib import Path
 
 import pytest
+import zmq
 
 from plugin.core import zmq_transport
 
@@ -87,6 +89,7 @@ def test_host_and_child_share_a_non_secret_permission_generation() -> None:
         host.downlink_endpoint,
         host.uplink_endpoint,
         host.uplink_token,
+        downlink_curve=host.downlink_curve_credentials,
     )
     try:
         expected = hashlib.sha256(host.uplink_token.encode("utf-8")).hexdigest()
@@ -94,6 +97,36 @@ def test_host_and_child_share_a_non_secret_permission_generation() -> None:
         assert child.permission_generation == expected
         assert host.permission_generation != host.uplink_token
     finally:
+        child.close()
+        host.close()
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_downlink_curve_rejects_an_unauthenticated_competing_receiver() -> None:
+    host = zmq_transport.HostTransport()
+    child = zmq_transport.ChildTransport(
+        host.downlink_endpoint,
+        host.uplink_endpoint,
+        host.uplink_token,
+        downlink_curve=host.downlink_curve_credentials,
+    )
+    attacker_context = zmq.Context()
+    attacker = attacker_context.socket(zmq.PULL)
+    attacker.linger = 0
+    attacker.connect(host.downlink_endpoint)
+    try:
+        await asyncio.sleep(0.1)
+        await host.send_command({"type": "SECRET", "config": "private"})
+
+        assert await child.recv_downlink(timeout_ms=1000) == (
+            zmq_transport.CH_CMD,
+            {"type": "SECRET", "config": "private"},
+        )
+        assert attacker.poll(timeout=100) == 0
+    finally:
+        attacker.close(linger=0)
+        attacker_context.term()
         child.close()
         host.close()
 

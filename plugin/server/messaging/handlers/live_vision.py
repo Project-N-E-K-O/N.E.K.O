@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 from plugin.logging_config import get_logger
-from plugin.server.application.messages.live_vision_service import LiveVisionQueryService
+from plugin.server.application.messages.live_vision_service import (
+    live_vision_query_service,
+)
 from plugin.server.messaging.handlers.common import coerce_bool, resolve_common_fields
 from plugin.server.messaging.handlers.typing import SendResponse
 
 logger = get_logger("server.messaging.handlers.live_vision")
-live_vision_query_service = LiveVisionQueryService()
 _RUNTIME_ERRORS = (RuntimeError, ValueError, TypeError, AttributeError, KeyError, OSError, TimeoutError)
 
 

@@ -11,6 +11,7 @@ import zmq
 from plugin.logging_config import get_logger
 
 from plugin.settings import MESSAGE_PLANE_BRIDGE_ENABLED, MESSAGE_PLANE_ZMQ_INGEST_ENDPOINT
+from utils.plugin_host_auth import require_plugin_host_token
 
 logger = get_logger("server.messaging.plane_bridge")
 
@@ -18,7 +19,11 @@ _RUNTIME_ERRORS = (RuntimeError, ValueError, TypeError, AttributeError, KeyError
 
 
 def _dumps(obj: object) -> bytes:
-    return ormsgpack.packb(obj)
+    if not isinstance(obj, dict):
+        raise TypeError("message-plane ingest payload must be an object")
+    authenticated = dict(obj)
+    authenticated["_auth"] = require_plugin_host_token()
+    return ormsgpack.packb(authenticated)
 
 
 def _parse_tcp_endpoint(endpoint: str) -> tuple[str, int] | None:

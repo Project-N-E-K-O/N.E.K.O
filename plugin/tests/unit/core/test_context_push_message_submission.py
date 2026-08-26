@@ -174,6 +174,35 @@ def test_direct_message_plane_overwrites_plugin_host_generation(
 
 
 @pytest.mark.plugin_unit
+def test_plugin_messages_use_authenticated_host_uplink_instead_of_direct_ingest(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    direct_socket = _Socket()
+    host_queue = _Queue()
+    _install_slow_message_plane(monkeypatch, direct_socket)
+    ctx, _logger = _context(
+        tmp_path,
+        message_queue=host_queue,
+        permission_generation="trusted-host-generation",
+    )
+
+    result = ctx.push_message(
+        visibility=[],
+        ai_behavior="respond",
+        parts=[{"type": "text", "text": "authenticated cue"}],
+        metadata={"plugin_host_generation": "forged-generation"},
+    )
+
+    assert result == {"submitted": True}
+    assert direct_socket.sent == []
+    assert host_queue.items[0]["plugin_id"] == "demo"
+    assert host_queue.items[0]["metadata"]["plugin_host_generation"] == (
+        "trusted-host-generation"
+    )
+
+
+@pytest.mark.plugin_unit
 def test_live_frame_token_bypasses_shared_message_plane(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -217,7 +246,6 @@ def test_slow_message_plane_failure_uses_fallback_and_is_redacted(
     assert result == {"submitted": True}
     assert len(fallback_queue.items) == 1
     assert private_marker not in repr(logger.records)
-    assert "RuntimeError" in repr(logger.records)
 
 
 @pytest.mark.plugin_unit
@@ -242,7 +270,6 @@ def test_slow_message_plane_backpressure_fallback_reports_submission(
     assert result == {"submitted": True}
     assert len(fallback_queue.items) == 1
     assert private_marker not in repr(logger.records)
-    assert "_Again" in repr(logger.records)
 
 
 @pytest.mark.plugin_unit
@@ -256,7 +283,7 @@ def test_slow_message_plane_backpressure_is_reported_when_fallback_fails(
         monkeypatch,
         _Socket(send_error=_Again(private_send_marker)),
     )
-    fallback_queue = _Queue(error=RuntimeError(private_queue_marker))
+    fallback_queue = _Queue(error=_Again(private_queue_marker))
     ctx, logger = _context(tmp_path, message_queue=fallback_queue)
 
     result = ctx.push_message(
@@ -274,7 +301,6 @@ def test_slow_message_plane_backpressure_is_reported_when_fallback_fails(
     assert private_send_marker not in repr(logger.records)
     assert private_queue_marker not in repr(logger.records)
     assert "_Again" in repr(logger.records)
-    assert "RuntimeError" in repr(logger.records)
 
 
 @pytest.mark.plugin_unit
@@ -462,4 +488,3 @@ def test_primary_setup_failure_can_use_fallback_before_submission_attempt(
     assert result == {"submitted": True}
     assert len(fallback_queue.items) == 1
     assert private_marker not in repr(logger.records)
-    assert "RuntimeError" in repr(logger.records)

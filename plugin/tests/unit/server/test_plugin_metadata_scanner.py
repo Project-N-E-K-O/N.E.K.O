@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import threading
 import time
 
 import psutil
@@ -324,6 +325,39 @@ def test_parent_rejects_untrusted_protocol_output_over_limit(
         )
 
     assert exc_info.value.error_type == "MetadataResultTooLarge"
+
+
+def test_protocol_reader_returns_when_timeout_fires_during_partial_line() -> None:
+    from plugin.server.application.plugins import metadata_scanner
+
+    release_read = threading.Event()
+    timed_out = threading.Event()
+
+    class _PartialBlockingStream:
+        def __init__(self) -> None:
+            self._first_read = True
+
+        def readline(self, _size: int) -> bytes:
+            if self._first_read:
+                self._first_read = False
+                return b"partial protocol output without newline"
+            release_read.wait(timeout=2.0)
+            return b""
+
+    timer = threading.Timer(0.05, timed_out.set)
+    timer.start()
+    started_at = time.monotonic()
+    try:
+        with pytest.raises(TimeoutError):
+            metadata_scanner._read_protocol_output(
+                _PartialBlockingStream(),  # type: ignore[arg-type]
+                timeout_event=timed_out,
+            )
+    finally:
+        release_read.set()
+        timer.cancel()
+
+    assert time.monotonic() - started_at < 1.0
 
 
 def test_terminate_worker_tree_skips_already_reaped_process(

@@ -194,3 +194,86 @@ async def test_permission_updates_forward_the_plugin_host_credential(
         "token": "generation-one",
         "enabled": True,
     }
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("method_name", "path"),
+    [
+        (
+            "set_live_frame_permission",
+            "/api/system/live-vision/attachment-permission",
+        ),
+        (
+            "set_plugin_delivery_permission",
+            "/api/system/plugin-callbacks/delivery-permission",
+        ),
+    ],
+)
+async def test_active_permission_is_replayed_after_main_server_restart(
+    monkeypatch: pytest.MonkeyPatch,
+    method_name: str,
+    path: str,
+) -> None:
+    posts: list[tuple[str, dict[str, object]]] = []
+
+    class _Response:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict[str, object]:
+            return {
+                "ok": True,
+                "source_name": "demo_plugin",
+                "token": "generation-one",
+                "enabled": True,
+                "applied": True,
+            }
+
+    class _Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args: object) -> None:
+            return None
+
+        async def post(
+            self,
+            url: str,
+            *,
+            json: dict[str, object],
+            headers: dict[str, str],
+        ):
+            assert headers == {"X-NEKO-Plugin-Host-Token": "host-secret"}
+            posts.append((url, dict(json)))
+            return _Response()
+
+    monkeypatch.setattr(
+        service_module.httpx,
+        "AsyncClient",
+        lambda **_kwargs: _Client(),
+    )
+    monkeypatch.setenv("NEKO_PLUGIN_HOST_API_TOKEN", "host-secret")
+    service = service_module.LiveVisionQueryService()
+
+    method = getattr(service, method_name)
+    await method(
+        source_name="demo_plugin",
+        host_generation="host-generation",
+        token="generation-one",
+        enabled=True,
+    )
+    posts.clear()
+
+    restored = await service.rehydrate_active_permissions()
+
+    assert restored == 1
+    assert len(posts) == 1
+    assert posts[0][0].endswith(path)
+    assert posts[0][1] == {
+        "source_name": "demo_plugin",
+        "host_generation": "host-generation",
+        "token": "generation-one",
+        "enabled": True,
+    }

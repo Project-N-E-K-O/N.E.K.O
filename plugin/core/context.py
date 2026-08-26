@@ -1038,6 +1038,36 @@ class PluginContext:
                 "reply": legacy_reply,
             }
 
+        # Plugin-originated messages cross the authenticated per-host uplink.
+        # The host binds plugin_id and generation to that transport before any
+        # shared-state write, so plugin code cannot self-assert another host's
+        # identity by opening the public message-plane ingest socket directly.
+        if self.message_queue is not None:
+            try:
+                authenticated_payload = _build_wire_payload(
+                    message_id=str(uuid.uuid4()),
+                    ts=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                )
+                self.message_queue.put_nowait(authenticated_payload)
+                return {"submitted": True}
+            except Exception as e:
+                try:
+                    self.logger.warning(
+                        "[PluginContext] authenticated message uplink failed (%s)",
+                        type(e).__name__,
+                    )
+                except Exception:
+                    pass
+                return {
+                    "ok": False,
+                    "submitted": False,
+                    "reason": (
+                        "backpressure"
+                        if _is_submission_backpressure(e)
+                        else "transport_error"
+                    ),
+                }
+
         # A live-frame permission token is a per-host capability. It must not
         # enter message_plane, whose records are persisted and broadcast to
         # bus subscribers. The plugin child sends this payload only over its

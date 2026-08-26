@@ -5,6 +5,7 @@ import threading
 from typing import Optional
 
 from plugin.logging_config import logger
+from utils.plugin_host_auth import require_plugin_host_token
 
 from plugin.settings import (
     MESSAGE_PLANE_STORE_MAXLEN,
@@ -35,7 +36,12 @@ def run_message_plane(
         stores.register(TopicStore(name=name, maxlen=MESSAGE_PLANE_STORE_MAXLEN))
 
     pub_srv = MessagePlanePubServer(endpoint=pub_ep)
-    ingest_srv = MessagePlaneIngestServer(endpoint=ingest_ep, stores=stores, pub_server=pub_srv)
+    ingest_srv = MessagePlaneIngestServer(
+        endpoint=ingest_ep,
+        stores=stores,
+        pub_server=pub_srv,
+        auth_token=require_plugin_host_token(),
+    )
     srv = MessagePlaneRpcServer(endpoint=endpoint, pub_server=pub_srv, stores=stores)
 
     ingest_thread = threading.Thread(target=ingest_srv.serve_forever, daemon=True)

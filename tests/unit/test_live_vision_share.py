@@ -67,6 +67,9 @@ def _mgr(session, *, snapshot, frame="cached-frame"):
     mgr._collect_text_proactive_images = (
         lambda cbs: ProactiveMixin._collect_text_proactive_images(mgr, cbs)
     )
+    mgr._collect_text_proactive_images_guarded = (
+        lambda cbs: ProactiveMixin._collect_text_proactive_images_guarded(mgr, cbs)
+    )
     mgr._live_frame_permission_guard = (
         lambda cbs: ProactiveMixin._live_frame_permission_guard(mgr, cbs)
     )
@@ -426,6 +429,30 @@ def test_text_path_attaches_an_authorized_generation_before_plugin_media():
 
     assert mgr._collect_text_proactive_images(cbs) == [
         "shared-screen", "plugin-shot"]
+
+
+def test_text_path_carries_a_recheck_guard_with_the_collected_live_frame():
+    from main_logic.core.live_frame_permissions import (
+        revoke_plugin_permissions,
+        set_live_frame_permission,
+    )
+
+    set_live_frame_permission("demo_plugin", "generation-one", enabled=True)
+    session = SimpleNamespace(
+        _supports_native_image=False,
+        vision_model="vision-model",
+    )
+    mgr = _mgr(session, snapshot=_sharing(), frame="shared-screen")
+    callbacks = [{**_token_cb(), "media_images": ["plugin-shot"]}]
+
+    images, authorization_guard = (
+        ProactiveMixin._collect_text_proactive_images_guarded(mgr, callbacks)
+    )
+    revoke_plugin_permissions("demo_plugin")
+
+    assert images == ["shared-screen", "plugin-shot"]
+    assert authorization_guard is not None
+    assert authorization_guard() is False
 
 
 def test_text_path_does_not_trust_a_vision_like_model_alias():

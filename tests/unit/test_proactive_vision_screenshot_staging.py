@@ -370,6 +370,36 @@ def test_prompt_ephemeral_no_visible_text_keeps_staged_screenshot():
     assert c._proactive_image_to_inject == "SCREEN_B64"
 
 
+def test_prompt_ephemeral_rechecks_image_authorization_after_async_setup():
+    c, _set_chunks = _make_offline_for_ephemeral()
+    c.vision_model = "vision-model"
+    authorized = True
+    provider_called = False
+
+    async def _switch_model(*_args, **_kwargs):
+        nonlocal authorized
+        authorized = False
+
+    async def _provider(_messages):
+        nonlocal provider_called
+        provider_called = True
+        yield SimpleNamespace(content="must not be emitted")
+
+    c.switch_model = AsyncMock(side_effect=_switch_model)
+    c._astream_visible_with_tools = _provider
+
+    committed = asyncio.run(
+        c.prompt_ephemeral(
+            "describe the shared screen",
+            images=["private-live-frame"],
+            authorization_guard=lambda: authorized,
+        )
+    )
+
+    assert committed is False
+    assert provider_called is False
+
+
 def test_prompt_ephemeral_committed_text_callback_receives_sanitized_text_once():
     c, set_chunks = _make_offline_for_ephemeral()
     set_chunks([
