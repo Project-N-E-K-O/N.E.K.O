@@ -290,7 +290,7 @@ class OmniRealtimeClient(_ToolingMixin, _AudioMixin, _TransportMixin, _ResponseM
             silence_timeout_seconds
         )
         self._enable_silence_timeout = (
-            self._api_type.lower() in ['glm', 'free']
+            _effective_api_type.lower() in ['glm', 'free']
             and not self._livestream_mode
             and self._silence_timeout_seconds > 0
         )

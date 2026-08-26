@@ -696,8 +696,8 @@ class _StreamingMixin:
                 self.max_response_length, summary_mode=True,
             )
 
+        response_generation = self._begin_response_generation()
         try:
-            self._is_responding = True
             reroll_count = 0
             set_call_type("conversation")
 
@@ -723,7 +723,10 @@ class _StreamingMixin:
                 # 用 hasattr 守卫：单元测试用 __new__ 绕过 __init__ 不会设这个
                 # 属性，但真实代码 __init__ 必设；区分"未初始化（测试桩）"和
                 # "已关闭（生产）"两种情况。
-                if (hasattr(self, "llm") and self.llm is None) or not self._is_responding:
+                if (
+                    (hasattr(self, "llm") and self.llm is None)
+                    or not self._response_generation_is_active(response_generation)
+                ):
                     logger.info("OmniOfflineClient.stream_text: client 已 close 或响应已被取消，终止 retry")
                     # 标记 status_reported 抑制 finally 的 LLM_NO_RESPONSE 兜底：
                     # 这是用户主动 cancel / close，不是 LLM 故障，前端不该看到
@@ -740,7 +743,9 @@ class _StreamingMixin:
                     _ttft_start = time.time()
                     _ttft_recorded = False
                     while guard_attempt <= self.max_response_rerolls:
-                        self._is_responding = True
+                        if not self._resume_response_generation(response_generation):
+                            status_reported = True
+                            break
                         assistant_message = ""           # 仅最后一段未持久化的 text，用于 final AIMessage append
                         assistant_message_total = ""     # 全轮累积，用于 _check_repetition / 长度 guard
                         is_first_chunk = True
@@ -912,7 +917,7 @@ class _StreamingMixin:
                                 summary_trigger_tokens = 0
                                 summary_overflow_offset = 0
                                 continue
-                            if not self._is_responding:
+                            if not self._response_generation_is_active(response_generation):
                                 break
 
                             if fence_triggered:
@@ -938,7 +943,7 @@ class _StreamingMixin:
                                             guard_triggered = True
                                             discard_reason = "role_hallucination"
                                             logger.info(f"OmniOfflineClient: 检测到主人名前缀 '{prefix_buffer[:master_match]}'，触发重试")
-                                            self._is_responding = False
+                                            self._pause_response_generation(response_generation)
                                             break
                                         elif lanlan_match:
                                             logger.info(f"OmniOfflineClient: 剥离角色名前缀 '{prefix_buffer[:lanlan_match]}'")
@@ -1002,7 +1007,7 @@ class _StreamingMixin:
                                                 discard_reason = f"length>{self.max_response_length}"
                                                 length_guard_original_tokens = current_length
                                                 logger.info(f"OmniOfflineClient: 检测到长回复 ({current_length} tokens)，准备停止生成")
-                                                self._is_responding = False
+                                                self._pause_response_generation(response_generation)
                                                 emit_content = ""
                                                 if not _is_gibberish_response(candidate_total):
                                                     capped = truncate_to_tokens(
@@ -1101,7 +1106,7 @@ class _StreamingMixin:
                                                             "命中 (%d tokens)，中止本轮生成",
                                                             tail_tokens,
                                                         )
-                                                        self._is_responding = False
+                                                        self._pause_response_generation(response_generation)
                                                     else:
                                                         summary_next_gibberish_check = (
                                                             tail_tokens + _SUMMARY_GIBBERISH_RECHECK_TOKENS
@@ -1676,7 +1681,7 @@ class _StreamingMixin:
                         status_reported = True
                     break
         finally:
-            self._is_responding = False
+            self._finish_response_generation(response_generation)
 
             if (
                 history_replacement_text

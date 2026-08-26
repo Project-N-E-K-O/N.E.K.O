@@ -99,7 +99,7 @@ def test_host_and_child_share_a_non_secret_permission_generation() -> None:
 
 
 @pytest.mark.plugin_unit
-def test_uplink_result_normalizes_path_and_set_values() -> None:
+def test_uplink_result_normalizes_path_values() -> None:
     encoded = zmq_transport._encode_uplink(
         "host-channel-token",
         zmq_transport.CH_RES,
@@ -108,7 +108,6 @@ def test_uplink_result_normalizes_path_and_set_values() -> None:
             "success": True,
             "data": {
                 "path": Path("artifacts/result.json"),
-                "labels": {"alpha", "beta"},
             },
             "error": None,
         },
@@ -120,7 +119,40 @@ def test_uplink_result_normalizes_path_and_set_values() -> None:
     )
 
     assert payload["data"]["path"] == str(Path("artifacts/result.json"))
-    assert set(payload["data"]["labels"]) == {"alpha", "beta"}
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.parametrize(
+    "container",
+    [
+        pytest.param(("alpha", "beta"), id="tuple"),
+        pytest.param({"alpha", "beta"}, id="set"),
+        pytest.param(frozenset({"alpha", "beta"}), id="frozenset"),
+    ],
+)
+def test_uplink_result_rejects_non_json_container_types(container: object) -> None:
+    encoded = zmq_transport._encode_uplink(
+        "host-channel-token",
+        zmq_transport.CH_RES,
+        {
+            "req_id": "request-1",
+            "success": True,
+            "data": {"labels": container},
+            "error": None,
+        },
+    )
+
+    _channel, payload = zmq_transport._decode_uplink(
+        encoded,
+        expected_token="host-channel-token",
+    )
+
+    assert payload == {
+        "req_id": "request-1",
+        "success": False,
+        "data": None,
+        "error": "Plugin result is not MessagePack-serializable",
+    }
 
 
 @pytest.mark.plugin_unit

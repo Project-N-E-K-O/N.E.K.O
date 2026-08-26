@@ -908,6 +908,7 @@ async def _cleanup_started_host(plugin_id: str, host: PluginHostContract) -> boo
             type(exc).__name__,
             str(exc),
         )
+    await asyncio.to_thread(_remove_event_handlers_sync, plugin_id)
     try:
         await clear_plugin_llm_tools(plugin_id)
     except Exception as exc:

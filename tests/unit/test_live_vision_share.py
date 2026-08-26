@@ -34,9 +34,12 @@ class _FakeRealtime:
         self.sent = []
 
     async def stream_image(self, b64, *, bypass_rate_limit=False,
-                           cache_latest=True, on_rejected=None):
+                           cache_latest=True, on_rejected=None,
+                           authorization_guard=None):
         if self._fail:
             raise RuntimeError("provider closed the socket")
+        if authorization_guard is not None and not authorization_guard():
+            return False
         self.sent.append(
             {
                 "b64": b64,
@@ -64,9 +67,12 @@ def _mgr(session, *, snapshot, frame="cached-frame"):
     mgr._collect_text_proactive_images = (
         lambda cbs: ProactiveMixin._collect_text_proactive_images(mgr, cbs)
     )
+    mgr._live_frame_permission_guard = (
+        lambda cbs: ProactiveMixin._live_frame_permission_guard(mgr, cbs)
+    )
     mgr._stream_live_frame_b64 = (
-        lambda frame, sess, si: ProactiveMixin._stream_live_frame_b64(
-            mgr, frame, sess, si
+        lambda frame, sess, si, **kwargs: ProactiveMixin._stream_live_frame_b64(
+            mgr, frame, sess, si, **kwargs
         )
     )
     mgr._stream_cb_live_frame = (
@@ -227,6 +233,45 @@ async def test_a_queued_frame_is_not_attached_after_reuse_is_revoked():
     set_live_frame_permission("demo_plugin", "generation-one", enabled=False)
 
     assert await _attach(mgr, queued, session) is False
+    assert session.sent == []
+
+
+async def test_permission_is_rechecked_at_the_async_send_boundary():
+    from main_logic.core.live_frame_permissions import revoke_plugin_permissions
+
+    _authorize()
+    send_started = asyncio.Event()
+    release_send = asyncio.Event()
+
+    class _DeferredRealtime(_FakeRealtime):
+        async def stream_image(
+            self,
+            b64,
+            *,
+            bypass_rate_limit=False,
+            cache_latest=True,
+            on_rejected=None,
+            authorization_guard=None,
+        ):
+            send_started.set()
+            await release_send.wait()
+            return await super().stream_image(
+                b64,
+                bypass_rate_limit=bypass_rate_limit,
+                cache_latest=cache_latest,
+                on_rejected=on_rejected,
+                authorization_guard=authorization_guard,
+            )
+
+    session = _DeferredRealtime()
+    mgr = _mgr(session, snapshot=_sharing())
+    delivery = asyncio.create_task(_attach(mgr, _token_cb(), session))
+    await asyncio.wait_for(send_started.wait(), timeout=1.0)
+
+    revoke_plugin_permissions("demo_plugin")
+    release_send.set()
+
+    assert await delivery is False
     assert session.sent == []
 
 

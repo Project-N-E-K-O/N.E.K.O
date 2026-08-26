@@ -32,6 +32,7 @@ from main_logic.session_state import SessionEvent, ProactivePhase
 from main_logic.proactive_delivery import (
     CALLBACK_EXPIRES_AT_KEY,
     DELIVERY_RETRACTED_KEY,
+    PROACTIVE_RESPONSE_OWNER_KEY,
     SWAP_PRIME_DELIVERY_CLAIM_KEY,
     VOICE_DELIVERY_COMMITTED_KEY,
     callback_is_expired,
@@ -708,8 +709,27 @@ class ProactiveMixin:
         if any(id(callback) in inflight_callback_ids for callback in matching):
             session = getattr(self, "session", None)
             if isinstance(session, OmniOfflineClient):
-                session._is_responding = False
-                self.current_speech_id = str(uuid4())
+                response_owners = {
+                    callback.get(PROACTIVE_RESPONSE_OWNER_KEY)
+                    for callback in matching
+                    if callback.get(PROACTIVE_RESPONSE_OWNER_KEY) is not None
+                }
+                cancel_generation = getattr(
+                    session,
+                    "_cancel_response_generation",
+                    None,
+                )
+                cancelled = False
+                if callable(cancel_generation):
+                    cancelled = any(
+                        cancel_generation(owner=owner)
+                        for owner in response_owners
+                    )
+                else:
+                    session._is_responding = False
+                    cancelled = True
+                if cancelled:
+                    self.current_speech_id = str(uuid4())
         manager = getattr(self, "proactive_manager", None)
         retract = getattr(manager, "retract_from_source", None)
         if callable(retract):
@@ -1554,6 +1574,9 @@ class ProactiveMixin:
                     resolve_callback_delivery_ack(cb, delivered)
 
             _sid_token = _proactive_expected_sid.set(proactive_sid)
+            response_owner = object()
+            for cb in active_callbacks:
+                cb[PROACTIVE_RESPONSE_OWNER_KEY] = response_owner
             # Text-mode playback boundary for the pacing manager: no frontend
             # audio signal arrives for text delivery, so bracket prompt_ephemeral
             # with text_start/text_end. text_end clears the manager's in-flight
@@ -1571,6 +1594,7 @@ class ProactiveMixin:
                         instruction,
                         images=_proactive_images or None,
                         on_committed=lambda: _resolve_text_delivery_ack(True),
+                        response_owner=response_owner,
                     )
                 except Exception as exc:
                     if ack_resolved:
@@ -1587,6 +1611,9 @@ class ProactiveMixin:
                             await self.send_cancel_topic_hint(turn_id=proactive_sid)
                         raise
             finally:
+                for cb in active_callbacks:
+                    if cb.get(PROACTIVE_RESPONSE_OWNER_KEY) is response_owner:
+                        cb.pop(PROACTIVE_RESPONSE_OWNER_KEY, None)
                 _proactive_expected_sid.reset(_sid_token)
                 try:
                     self.lifecycle_bus.emit("text_end")
@@ -2012,7 +2039,12 @@ class ProactiveMixin:
         # a response grounded in pixels it was never allowed to see.
         live_frame = self._resolve_batch_live_frame_b64(callbacks)
         if live_frame:
-            await self._stream_live_frame_b64(live_frame, session, si)
+            await self._stream_live_frame_b64(
+                live_frame,
+                session,
+                si,
+                authorization_guard=self._live_frame_permission_guard(callbacks),
+            )
         for cb in callbacks:
             if not isinstance(cb, dict):
                 continue
@@ -2163,6 +2195,28 @@ class ProactiveMixin:
             frame = callback_frame
         return frame
 
+    def _live_frame_permission_guard(self, callbacks: list):
+        grants: list[tuple[str, str, str]] = []
+        for cb in callbacks:
+            if not isinstance(cb, dict):
+                return lambda: False
+            metadata = cb.get("metadata")
+            if not isinstance(metadata, dict):
+                return lambda: False
+            source = str(cb.get("source_name") or "").strip()
+            token = str(metadata.get("live_frame_permission_token") or "").strip()
+            host_generation = str(
+                metadata.get("plugin_host_generation") or ""
+            ).strip()
+            if not source or not token:
+                return lambda: False
+            grants.append((source, token, host_generation))
+
+        return lambda: all(
+            allows_live_frame(source, token, host_generation)
+            for source, token, host_generation in grants
+        )
+
     def _collect_text_proactive_images(self, callbacks: list) -> list:
         """Build the image list for offline ``prompt_ephemeral``.
 
@@ -2189,7 +2243,14 @@ class ProactiveMixin:
             images.extend(cb.get("media_images") or [])
         return images
 
-    async def _stream_live_frame_b64(self, frame: str, session, si) -> bool:
+    async def _stream_live_frame_b64(
+        self,
+        frame: str,
+        session,
+        si,
+        *,
+        authorization_guard=None,
+    ) -> bool:
         """Stream a resolved live frame without changing delivery semantics.
 
         Opportunistic, and that is the whole difference from ``media_images``.
@@ -2213,13 +2274,22 @@ class ProactiveMixin:
             return False
         if not frame:
             return False
+        if authorization_guard is not None and not authorization_guard():
+            return False
         try:
-            await si(frame, bypass_rate_limit=True, cache_latest=False)
+            result = await si(
+                frame,
+                bypass_rate_limit=True,
+                cache_latest=False,
+                authorization_guard=authorization_guard,
+            )
         except Exception as e:
             logger.warning(
                 "[%s] live-frame attach failed; delivering call-out without it: %s",
                 self.lanlan_name, e,
             )
+            return False
+        if result is False:
             return False
         state = self.live_vision_snapshot()
         logger.debug(
@@ -2234,6 +2304,7 @@ class ProactiveMixin:
             self._resolve_cb_live_frame_b64(cb),
             session,
             si,
+            authorization_guard=self._live_frame_permission_guard([cb]),
         )
 
     def on_voice_playback_signal(self, *, playing: bool, **meta) -> None:

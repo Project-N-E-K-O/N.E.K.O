@@ -1000,6 +1000,20 @@ def test_silence_timeout_defaults_to_session_settings_constant():
     assert client._enable_silence_timeout is (VOICE_SILENCE_TIMEOUT_SECONDS > 0)
 
 
+@pytest.mark.unit
+def test_silence_timeout_uses_inferred_free_api_type():
+    client = OmniRealtimeClient(
+        base_url="wss://www.lanlan.tech/tts",
+        api_key="sk-test",
+        model="free-realtime",
+        silence_timeout_seconds=90,
+    )
+
+    assert client._api_type == ""
+    assert client._is_free_provider is True
+    assert client._enable_silence_timeout is True
+
+
 # ──────────────────────────────────────────────────────────────────────
 # Regression: connect() must reset _has_server_vad to False in MANUAL
 # mode for every provider that defaults to server-VAD. Otherwise

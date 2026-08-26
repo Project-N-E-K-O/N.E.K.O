@@ -448,6 +448,42 @@ async def test_start_failure_cleanup_clears_registered_tools(
 
 @pytest.mark.plugin_unit
 @pytest.mark.asyncio
+async def test_start_failure_cleanup_removes_dynamic_event_handlers(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    host = _FakeProcessHost(
+        plugin_id="demo_plugin",
+        entry_point="tests.fake:Plugin",
+        config_path=tmp_path / "demo_plugin" / "plugin.toml",
+    )
+    handlers_backup = dict(module.state.event_handlers)
+    try:
+        with module.state.acquire_event_handlers_write_lock():
+            module.state.event_handlers.clear()
+            module.state.event_handlers.update(
+                {
+                    "demo_plugin.dynamic": object(),
+                    "demo_plugin:runtime": object(),
+                    "other_plugin.dynamic": object(),
+                }
+            )
+
+        monkeypatch.setattr(module, "_revoke_plugin_permissions", _successful_revoke)
+
+        cleaned_up = await module._cleanup_started_host("demo_plugin", host)
+
+        assert cleaned_up is True
+        with module.state.acquire_event_handlers_read_lock():
+            assert set(module.state.event_handlers) == {"other_plugin.dynamic"}
+    finally:
+        with module.state.acquire_event_handlers_write_lock():
+            module.state.event_handlers.clear()
+            module.state.event_handlers.update(handlers_backup)
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
 async def test_start_failure_cleanup_rechecks_permissions_after_shutdown(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

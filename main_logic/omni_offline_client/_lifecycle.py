@@ -80,6 +80,53 @@ def _slop_reduced_for_genai(messages):
 
 
 class _LifecycleMixin:
+    def _begin_response_generation(self, owner: object | None = None) -> int:
+        generation = int(getattr(self, "_response_generation", 0)) + 1
+        self._response_generation = generation
+        self._active_response_generation = generation
+        self._active_response_owner = owner if owner is not None else object()
+        self._is_responding = True
+        return generation
+
+    def _response_generation_is_active(self, generation: int) -> bool:
+        return (
+            getattr(self, "_active_response_generation", None) == generation
+            and bool(getattr(self, "_is_responding", False))
+        )
+
+    def _pause_response_generation(self, generation: int) -> bool:
+        if getattr(self, "_active_response_generation", None) != generation:
+            return False
+        self._is_responding = False
+        return True
+
+    def _resume_response_generation(self, generation: int) -> bool:
+        if getattr(self, "_active_response_generation", None) != generation:
+            return False
+        self._is_responding = True
+        return True
+
+    def _finish_response_generation(self, generation: int) -> bool:
+        if getattr(self, "_active_response_generation", None) != generation:
+            return False
+        self._active_response_generation = None
+        self._active_response_owner = None
+        self._is_responding = False
+        return True
+
+    def _cancel_response_generation(self, *, owner: object | None = None) -> bool:
+        if (
+            owner is not None
+            and getattr(self, "_active_response_owner", None) is not owner
+        ):
+            return False
+        if getattr(self, "_active_response_generation", None) is None:
+            return False
+        self._active_response_generation = None
+        self._active_response_owner = None
+        self._is_responding = False
+        return True
+
     async def prime_context(self, text: str, skipped: bool = False) -> None:
         """Append context to the system prompt at session start.
 
@@ -145,6 +192,7 @@ class _LifecycleMixin:
         persist_response: bool = True,
         on_committed: Optional[Callable[[], None]] = None,
         on_committed_text: Optional[Callable[[str], None]] = None,
+        response_owner: object | None = None,
     ) -> bool:
         """Send a fire-and-forget instruction to the LLM and stream the response.
 
@@ -246,9 +294,9 @@ class _LifecycleMixin:
         # own pulse, never for a newer user stream_text that interleaved and
         # re-pulsed under a fresher seq (Codex P2).
         _reasoning_owner_seq = self._begin_reasoning_stream()
+        response_generation = self._begin_response_generation(response_owner)
 
         try:
-            self._is_responding = True
             set_call_type("proactive")
             for attempt in range(max_retries):
                 # 每次 attempt 重置流式状态（assistant_message / prefix /
@@ -265,7 +313,10 @@ class _LifecycleMixin:
                 # 调 .astream 触发 AttributeError，且就算重试 client 也已不在。
                 # 用 hasattr 守卫：单元测试用 __new__ 绕过 __init__ 不会设这个
                 # 属性，但真实代码 __init__ 必设。
-                if (hasattr(self, "llm") and self.llm is None) or not self._is_responding:
+                if (
+                    (hasattr(self, "llm") and self.llm is None)
+                    or not self._response_generation_is_active(response_generation)
+                ):
                     break
 
                 try:
@@ -278,7 +329,7 @@ class _LifecycleMixin:
                             if 'token_usage' in chunk.response_metadata or 'usage' in chunk.response_metadata:
                                 logger.debug(f"🔍 [Meta-Proactive] {chunk.response_metadata}")
 
-                        if not self._is_responding:
+                        if not self._response_generation_is_active(response_generation):
                             break
                         content = chunk.content if hasattr(chunk, "content") else str(chunk)
                         if content and content.strip():
@@ -401,7 +452,7 @@ class _LifecycleMixin:
             assistant_message = ""
             return False
         finally:
-            self._is_responding = False
+            self._finish_response_generation(response_generation)
             # Token usage 由 _AsyncStreamWrapper hook 在流结束时自动记录，
             # 此处不再手动调用 TokenTracker.record() 避免双重计数。
             committed_text = _strip_nonverbal_directives(assistant_message).strip()
@@ -495,7 +546,7 @@ class _LifecycleMixin:
 
     async def cancel_response(self) -> None:
         """Cancel the current response if possible"""
-        self._is_responding = False
+        self._cancel_response_generation()
 
     async def handle_interruption(self):
         """Handle user interruption - cancel current response"""
@@ -519,7 +570,7 @@ class _LifecycleMixin:
 
     async def close(self) -> None:
         """Close the client and cleanup resources."""
-        self._is_responding = False
+        self._cancel_response_generation()
         self._conversation_history = []
         self._pending_images.clear()
         self._proactive_image_to_inject = None

@@ -1581,23 +1581,6 @@ class PluginHost:
         self._process_stop_event: Any = process_context.Event()
         self._startup_options: dict[str, object] = {"startup_failure": "warn"}
 
-        # Shared response notification primitives must be initialized before
-        # spawning, otherwise each child creates its own Manager proxies.
-        try:
-            _ = state.plugin_response_map
-        except Exception as e:
-            logger.warning(
-                "Failed to pre-initialize plugin_response_map for plugin {}: {}",
-                plugin_id, e
-            )
-        try:
-            _ = state.plugin_response_notify_event
-        except Exception as e:
-            logger.warning(
-                "Failed to pre-initialize plugin_response_notify_event for plugin {}: {}",
-                plugin_id, e
-            )
-
         self.process = process_context.Process(
             target=_plugin_process_runner,
             args=(

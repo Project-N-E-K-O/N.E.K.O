@@ -77,6 +77,7 @@ def test_plugin_host_uses_spawn_context_for_process_primitives(
     tmp_path: Path,
 ) -> None:
     requested_methods: list[str] = []
+    accessed_response_proxies: list[str] = []
     spawn_event = object()
     spawn_process = _FakeProcess()
 
@@ -97,6 +98,16 @@ def test_plugin_host_uses_spawn_context_for_process_primitives(
 
     monkeypatch.setattr(host_module, "HostTransport", _FakeTransport)
     monkeypatch.setattr(host_module, "PluginCommunicationResourceManager", lambda **_kwargs: _FakeCommManager())
+    monkeypatch.setattr(
+        type(host_module.state),
+        "plugin_response_map",
+        property(lambda _self: accessed_response_proxies.append("map")),
+    )
+    monkeypatch.setattr(
+        type(host_module.state),
+        "plugin_response_notify_event",
+        property(lambda _self: accessed_response_proxies.append("event")),
+    )
     monkeypatch.setattr(host_module.multiprocessing, "get_context", _get_context)
     monkeypatch.setattr(host_module.multiprocessing, "Event", lambda: object())
     monkeypatch.setattr(host_module.multiprocessing, "Process", lambda **_kwargs: _FakeProcess())
@@ -108,6 +119,7 @@ def test_plugin_host_uses_spawn_context_for_process_primitives(
     )
 
     assert requested_methods == ["spawn"]
+    assert accessed_response_proxies == []
     assert plugin_host._process_stop_event is spawn_event
     assert plugin_host.process is spawn_process
 
@@ -146,6 +158,7 @@ def test_plugin_process_runner_rejects_missing_uplink_token(
     config_path = tmp_path / "demo" / "plugin.toml"
     config_path.parent.mkdir(parents=True, exist_ok=True)
     config_path.write_text("[plugin]\nid='demo'\ntype='plugin'\n", encoding="utf-8")
+    monkeypatch.setenv("NEKO_PLUGIN_HOST_API_TOKEN", "host-secret")
     monkeypatch.setattr(
         host_module,
         "_setup_plugin_logger",

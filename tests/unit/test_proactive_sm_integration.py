@@ -57,7 +57,14 @@ class _FakeOmniOffline(OmniOfflineClient):
         self._raise = raise_exc
         self.called_with: list[str] = []
 
-    async def prompt_ephemeral(self, instruction: str, *, images=None, on_committed=None) -> bool:
+    async def prompt_ephemeral(
+        self,
+        instruction: str,
+        *,
+        images=None,
+        on_committed=None,
+        response_owner=None,
+    ) -> bool:
         self.called_with.append(instruction)
         if self._raise is not None:
             raise self._raise
@@ -745,7 +752,14 @@ async def test_trigger_releases_inflight_when_callback_expires_during_claim():
 
 async def test_text_mode_resolves_delivery_ack_after_committed_output_before_completion_flush():
     class _FlushCancellingSess(_FakeOmniOffline):
-        async def prompt_ephemeral(self, instruction: str, *, images=None, on_committed=None) -> bool:
+        async def prompt_ephemeral(
+            self,
+            instruction: str,
+            *,
+            images=None,
+            on_committed=None,
+            response_owner=None,
+        ) -> bool:
             self.called_with.append(instruction)
             assert not future.done()
             assert on_committed is not None
@@ -840,17 +854,21 @@ async def test_text_mode_source_revoke_aborts_checked_out_callback_before_commit
             *,
             images=None,
             on_committed=None,
+            response_owner=None,
         ) -> bool:
             self.called_with.append(instruction)
-            self._is_responding = True
+            generation = self._begin_response_generation(response_owner)
             prompt_started.set()
-            await release_prompt.wait()
-            if not self._is_responding:
-                return False
-            self.committed = True
-            if on_committed:
-                on_committed()
-            return True
+            try:
+                await release_prompt.wait()
+                if not self._response_generation_is_active(generation):
+                    return False
+                self.committed = True
+                if on_committed:
+                    on_committed()
+                return True
+            finally:
+                self._finish_response_generation(generation)
 
     session = _WaitingSess()
     mgr = _make_mgr(session=session)
@@ -880,9 +898,69 @@ async def test_text_mode_source_revoke_aborts_checked_out_callback_before_commit
     assert mgr.pending_agent_callbacks == []
 
 
+async def test_source_revoke_does_not_clear_a_newer_user_response_generation():
+    prompt_started = asyncio.Event()
+    release_prompt = asyncio.Event()
+
+    class _GenerationSess(_FakeOmniOffline):
+        async def prompt_ephemeral(
+            self,
+            instruction: str,
+            *,
+            images=None,
+            on_committed=None,
+            response_owner=None,
+        ) -> bool:
+            self.called_with.append(instruction)
+            generation = self._begin_response_generation(response_owner)
+            prompt_started.set()
+            try:
+                await release_prompt.wait()
+                return False
+            finally:
+                self._finish_response_generation(generation)
+
+    session = _GenerationSess()
+    mgr = _make_mgr(session=session)
+    callback = {
+        "_callback_delivery_id": "id-old-generation",
+        "status": "completed",
+        "summary": "speak later",
+        "source_name": "demo_plugin",
+    }
+    mgr.pending_agent_callbacks = [callback]
+
+    delivery = asyncio.create_task(
+        core_module.LLMSessionManager.trigger_agent_callbacks(mgr)
+    )
+    await asyncio.wait_for(prompt_started.wait(), timeout=1.0)
+
+    user_generation = session._begin_response_generation(object())
+    mgr.current_speech_id = "user-response-sid"
+
+    assert core_module.LLMSessionManager.retract_callbacks_from_source(
+        mgr,
+        "demo_plugin",
+    ) == 1
+    assert session._is_responding is True
+    assert mgr.current_speech_id == "user-response-sid"
+
+    release_prompt.set()
+    assert await delivery is False
+    assert session._is_responding is True
+    session._finish_response_generation(user_generation)
+
+
 async def test_text_mode_committed_then_flush_exception_does_not_requeue_callback():
     class _CommittedThenFailSess(_FakeOmniOffline):
-        async def prompt_ephemeral(self, instruction: str, *, images=None, on_committed=None) -> bool:
+        async def prompt_ephemeral(
+            self,
+            instruction: str,
+            *,
+            images=None,
+            on_committed=None,
+            response_owner=None,
+        ) -> bool:
             self.called_with.append(instruction)
             assert on_committed is not None
             on_committed()
@@ -910,7 +988,14 @@ async def test_text_mode_committed_then_flush_exception_does_not_requeue_callbac
 
 async def test_text_mode_success_keeps_late_extra_replies():
     class _QueueingSess(_FakeOmniOffline):
-        async def prompt_ephemeral(self, instruction: str, *, images=None, on_committed=None) -> bool:
+        async def prompt_ephemeral(
+            self,
+            instruction: str,
+            *,
+            images=None,
+            on_committed=None,
+            response_owner=None,
+        ) -> bool:
             self.called_with.append(instruction)
             if on_committed:
                 on_committed()
@@ -2376,7 +2461,14 @@ async def test_user_input_between_claim_and_lock_is_detected():
         def __init__(self):
             pass
 
-        async def prompt_ephemeral(self, instruction, *, images=None, on_committed=None):
+        async def prompt_ephemeral(
+            self,
+            instruction,
+            *,
+            images=None,
+            on_committed=None,
+            response_owner=None,
+        ):
             await sess_wait.wait()
             return True
 
@@ -2426,7 +2518,14 @@ async def test_user_input_during_agent_delivery_sets_preempted():
         def __init__(self):
             pass  # 跳过父类初始化
 
-        async def prompt_ephemeral(self, instruction, *, images=None, on_committed=None):
+        async def prompt_ephemeral(
+            self,
+            instruction,
+            *,
+            images=None,
+            on_committed=None,
+            response_owner=None,
+        ):
             # 模拟 LLM 耗时，期间 user input 抢占
             await sess_wait.wait()
             return True

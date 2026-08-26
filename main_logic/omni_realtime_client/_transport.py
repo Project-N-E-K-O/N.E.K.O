@@ -487,7 +487,13 @@ class _TransportMixin:
             logger.warning("⚠️ 图片重压缩失败 type=%s: %s — 丢弃帧", etype, e)
             return None
 
-    async def send_event(self, event, *, raise_on_oversize: bool = False) -> None:
+    async def send_event(
+        self,
+        event,
+        *,
+        raise_on_oversize: bool = False,
+        authorization_guard: Optional[Callable[[], bool]] = None,
+    ) -> bool | None:
         # 检查是否已发生致命错误，直接跳过发送
         if self._fatal_error_occurred:
             return
@@ -524,6 +530,8 @@ class _TransportMixin:
             try:
                 if not self.ws:
                     return
+                if authorization_guard is not None and not authorization_guard():
+                    return False
                 payload = json.dumps(event)
                 # Guard: Qwen/GLM/Step servers enforce 256KB max frame; for
                 # oversized image payloads, try to re-compress the JPEG at
@@ -540,6 +548,8 @@ class _TransportMixin:
                                 "image payload exceeds realtime WebSocket frame limit"
                             )
                         return
+                if authorization_guard is not None and not authorization_guard():
+                    return False
                 await self.ws.send(payload)
             except Exception as e:
                 error_msg = str(e)
@@ -755,7 +765,8 @@ class _TransportMixin:
         cache_latest: bool = True,
         event_id: str | None = None,
         on_rejected: Optional[Callable[[str], None]] = None,
-    ) -> str | None:
+        authorization_guard: Optional[Callable[[], bool]] = None,
+    ) -> str | bool | None:
         """Stream raw image data to the API.
 
         ``bypass_rate_limit=True`` skips the native-vision frame-rate throttle
@@ -847,7 +858,17 @@ class _TransportMixin:
             if self._is_gemini:
                 if self._gemini_session:
                     try:
+                        if (
+                            authorization_guard is not None
+                            and not authorization_guard()
+                        ):
+                            return False
                         image_bytes = base64.b64decode(image_b64)
+                        if (
+                            authorization_guard is not None
+                            and not authorization_guard()
+                        ):
+                            return False
                         await self._gemini_session.send_realtime_input(
                             media={"data": image_bytes, "mime_type": "image/jpeg"}
                         )
@@ -873,11 +894,12 @@ class _TransportMixin:
                 }
                 if event_id is not None:
                     append_event["event_id"] = event_id
-                await self.send_event(
+                sent = await self.send_event(
                     append_event,
                     raise_on_oversize=bypass_rate_limit,
+                    authorization_guard=authorization_guard,
                 )
-                return
+                return sent
 
             if self._audio_in_buffer or bypass_rate_limit:
                 if "qwen" in self._model_lower:
@@ -948,10 +970,13 @@ class _TransportMixin:
 
                 if event_id is not None:
                     append_event["event_id"] = event_id
-                await self.send_event(
+                sent = await self.send_event(
                     append_event,
                     raise_on_oversize=bypass_rate_limit,
+                    authorization_guard=authorization_guard,
                 )
+                if sent is False:
+                    return False
             return None
         except asyncio.CancelledError:
             if rejection_event_id is not None:

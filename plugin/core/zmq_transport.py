@@ -44,6 +44,7 @@ _LINGER_MS = 1000
 _UPLINK_CHANNELS = frozenset({CH_RES, CH_STS, CH_MSG, CH_COMM})
 _UPLINK_PACK_OPTIONS = (
     ormsgpack.OPT_NON_STR_KEYS
+    | ormsgpack.OPT_PASSTHROUGH_TUPLE
     | ormsgpack.OPT_SERIALIZE_NUMPY
     | ormsgpack.OPT_SERIALIZE_PYDANTIC
 )
@@ -58,8 +59,6 @@ def _derive_permission_generation(uplink_token: str) -> str:
 def _normalize_uplink_extension(value: object) -> object:
     if isinstance(value, PurePath):
         return str(value)
-    if isinstance(value, (set, frozenset)):
-        return list(value)
     raise TypeError(f"unsupported uplink value type: {type(value).__name__}")
 
 
@@ -68,7 +67,7 @@ def _encode_uplink(token: str, channel: str, payload: Any) -> bytes:
         raise TypeError("invalid uplink message")
     try:
         return ormsgpack.packb(
-            (token, channel, payload),
+            [token, channel, payload],
             default=_normalize_uplink_extension,
             option=_UPLINK_PACK_OPTIONS,
         )
@@ -82,7 +81,7 @@ def _encode_uplink(token: str, channel: str, payload: Any) -> bytes:
                 "error": "Plugin result is not MessagePack-serializable",
             }
             return ormsgpack.packb(
-                (token, channel, error_payload),
+                [token, channel, error_payload],
                 option=_UPLINK_PACK_OPTIONS,
             )
         raise TypeError("uplink payload must be MessagePack-serializable") from exc
