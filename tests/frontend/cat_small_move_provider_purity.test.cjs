@@ -86,6 +86,7 @@ test('small_move capability check is pure while actual start owns hover preparat
         _NEKO_IDLE_CAT1_TARGET_KIND_COMPACT_TOP_EDGE: 'compact-top-edge',
         _NEKO_IDLE_CAT1_PAIR_MOVE_MIN_USABLE_DISTANCE_PX: 12,
         _NEKO_IDLE_CAT1_PAIR_MOVE_MAX_DISTANCE_PX: 120,
+        _isNekoIdleCat1MovementAnchored: () => false,
         _isNekoIdleCat1EdgePeekActive: () => false,
         _isNekoIdleCat1IndependentActionActive: () => false,
         _isNekoIdleReturnDragActionActive: () => false,
@@ -95,6 +96,7 @@ test('small_move capability check is pure while actual start owns hover preparat
             finishCalls += 1;
         },
         _getNekoIdleReturnContainerFromButton: () => container,
+        _getNekoDesktopVirtualElementRect: (element) => element.getBoundingClientRect(),
         _getNekoIdleCat1PairMoveChatTarget: () => null,
         _canNekoIdleCat1MoveSoloWithExpandedChat: () => true,
         _hasNekoIdleCat1MoveVectorSpace: () => true,

@@ -175,11 +175,15 @@
         const container = manager && manager.container;
         if (!manager || !container || event.target !== container || manager.isLocked) return null;
         if (!manager.image || !isVisible(container)) return null;
+        let dragSequence = null;
 
         return {
             type: 'pngtuber',
             surface: container,
             move(deltaX, deltaY) {
+                if (dragSequence === null && typeof manager.beginExternalPositionDrag === 'function') {
+                    dragSequence = manager.beginExternalPositionDrag();
+                }
                 if (typeof manager.beginModelManagerPositionEditing === 'function') {
                     manager.beginModelManagerPositionEditing();
                 }
@@ -203,6 +207,19 @@
                 if (!moved) return;
                 if (typeof manager.restartLayeredAnimationLoop === 'function') {
                     manager.restartLayeredAnimationLoop();
+                }
+                if (dragSequence !== null &&
+                    typeof manager.isExternalPositionDragCurrent === 'function' &&
+                    !manager.isExternalPositionDragCurrent(dragSequence)) {
+                    return;
+                }
+                if (typeof manager.snapModelIntoScreen === 'function') {
+                    await manager.snapModelIntoScreen({ animate: true });
+                }
+                if (dragSequence !== null &&
+                    typeof manager.isExternalPositionDragCurrent === 'function' &&
+                    !manager.isExternalPositionDragCurrent(dragSequence)) {
+                    return;
                 }
                 if (typeof window.stageModelManagerPNGTuberPlacement === 'function') {
                     window.stageModelManagerPNGTuberPlacement(manager.config);

@@ -33,6 +33,15 @@
         return bridge;
     }
 
+    if (!getBridge()) {
+        return;
+    }
+
+    let sharedRevision = 0;
+    let sharedResult = null;
+    let lastObservedRect = null;
+    const sharedListeners = new Set();
+
     function readSessionId(value) {
         return typeof value === 'string' && value.length > 0 ? value : '';
     }
@@ -75,6 +84,79 @@
             VALID_CHANGES.has(change) && all.indexOf(change) === index
         ));
     }
+
+    function normalizeSharedResult(value, expectedSessionId) {
+        if (!value || typeof value !== 'object') return null;
+        const valueSessionId = readSessionId(value.sessionId);
+        if (!valueSessionId || valueSessionId !== expectedSessionId) return null;
+        const status = value.status === 'ready' ? 'current' : value.status;
+        const base = {
+            status: status,
+            sessionId: valueSessionId,
+            revision: sharedRevision + 1,
+        };
+        if (status === 'unavailable') {
+            if (typeof value.reason !== 'string' || !value.reason) return null;
+            return Object.freeze({
+                ...base,
+                reason: value.reason,
+                timestamp: Date.now(),
+            });
+        }
+        if (status !== 'current' && status !== 'changed') return null;
+        const rect = readRect(value.rect);
+        if (!rect) return null;
+        const changes = status === 'changed' ? readChanges(value.changes) : [];
+        if (status === 'changed' && changes.length === 0) return null;
+        const movement = status === 'changed' ? readMovement(value.movement) : null;
+        if (status === 'changed' && value.movement != null && !movement) return null;
+        return Object.freeze({
+            ...base,
+            changes: Object.freeze(changes),
+            movement: movement ? Object.freeze(movement) : null,
+            rect: Object.freeze(rect),
+            timestamp: Date.now(),
+        });
+    }
+
+    function notifySharedListeners(value) {
+        Array.from(sharedListeners).forEach((listener) => {
+            try {
+                listener(value);
+            } catch (_) {}
+        });
+    }
+
+    function updateSharedResult(value, expectedSessionId) {
+        const normalized = normalizeSharedResult(value, expectedSessionId);
+        if (!normalized) return false;
+        sharedRevision = normalized.revision;
+        sharedResult = normalized;
+        notifySharedListeners(sharedResult);
+        return true;
+    }
+
+    function clearSharedResult() {
+        if (sharedResult === null) return;
+        sharedResult = null;
+        notifySharedListeners(null);
+    }
+
+    const sharedContext = Object.freeze({
+        getCurrent() {
+            return sharedResult;
+        },
+        subscribe(listener) {
+            if (typeof listener !== 'function' || disposed) {
+                return function noop() {};
+            }
+            sharedListeners.add(listener);
+            return function unsubscribe() {
+                sharedListeners.delete(listener);
+            };
+        },
+    });
+    window.nekoDesktopWindowSensingContext = sharedContext;
 
     function readTier(fallbackTier) {
         if (['cat1', 'cat2', 'cat3'].includes(fallbackTier)) {
@@ -134,6 +216,32 @@
         return true;
     }
 
+    function sameRect(left, right) {
+        return !!(left
+            && right
+            && left.x === right.x
+            && left.y === right.y
+            && left.width === right.width
+            && left.height === right.height);
+    }
+
+    sharedContext.subscribe((value) => {
+        if (value === null) {
+            lastObservedRect = null;
+            return;
+        }
+        if (value.status === 'unavailable') {
+            lastObservedRect = null;
+            publishObservation(value);
+            return;
+        }
+        const rect = readRect(value.rect);
+        if (!rect) return;
+        if (value.status === 'current' && sameRect(lastObservedRect, rect)) return;
+        lastObservedRect = rect;
+        publishObservation(value);
+    });
+
     function removeChangedSubscription() {
         const cleanup = unsubscribeChanged;
         unsubscribeChanged = null;
@@ -154,6 +262,7 @@
         cat1Active = false;
         generation += 1;
         startPending = false;
+        clearSharedResult();
         removeChangedSubscription();
         const activeSessionId = sessionId;
         sessionId = '';
@@ -194,7 +303,7 @@
                     || changedSessionId !== sessionId) {
                     return;
                 }
-                publishObservation(value);
+                updateSharedResult(value, sessionId);
             });
             unsubscribeChanged = ownUnsubscribe;
             const result = await bridge.start();
@@ -211,7 +320,11 @@
                 return;
             }
             sessionId = startedSessionId;
-            publishObservation(result);
+            if (sessionId) {
+                updateSharedResult(result, sessionId);
+            } else {
+                publishObservation(result);
+            }
             if (!sessionId) {
                 removeOwnSubscription();
             }
@@ -264,6 +377,12 @@
         catAppearanceActive = false;
         stopSession();
         disposed = true;
+        sharedListeners.clear();
+        try {
+            delete window.nekoDesktopWindowSensingContext;
+        } catch (_) {
+            window.nekoDesktopWindowSensingContext = undefined;
+        }
         window.removeEventListener(CAT_ACTIVE_EVENT, handleCatAppearanceChange);
         window.removeEventListener(CAT_TIER_EVENT, handleCatTierChange);
         window.removeEventListener(GOODBYE_STATE_CLEARED_EVENT, handleGoodbyeStateCleared);
