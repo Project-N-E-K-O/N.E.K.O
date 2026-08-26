@@ -381,15 +381,15 @@ def test_a_recent_frame_means_sharing(monkeypatch):
     assert state["age_seconds"] == pytest.approx(1.0)
 
 
-def test_offline_vision_model_is_reported_as_native_vision(monkeypatch):
+def test_model_name_does_not_override_explicit_native_vision_capability(monkeypatch):
     import main_logic.core.streaming as streaming
 
     patch_module_clock(monkeypatch, streaming, monotonic=lambda: 500.0)
     state = StreamingMixin.live_vision_snapshot(
-        _liveness(last_at=499.0, native=False, model="gpt-4o")
+        _liveness(last_at=499.0, native=False, model="custom-gpt-5-text-only")
     )
 
-    assert state["native_vision"] is True
+    assert state["native_vision"] is False
 
 
 def test_frames_that_stopped_arriving_stop_counting(monkeypatch):
