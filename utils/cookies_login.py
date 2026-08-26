@@ -115,6 +115,16 @@ def get_cookie_key_file(platform: str) -> Path:
     return CONFIG_DIR / f"{platform}_key.key"
 
 
+def get_legacy_cookie_files(platform: str) -> list[Path]:
+    """Return every plaintext compatibility path supported by the scraper."""
+    filename = f"{platform}_cookies.json"
+    return [
+        Path(os.path.expanduser("~")) / filename,
+        Path("config") / filename,
+        Path(".") / filename,
+    ]
+
+
 def _read_encryption_key(platform: str, key_file: Path) -> bytes:
     return key_file.read_bytes()
 
@@ -149,7 +159,7 @@ def _save_cookies_to_file_uncached(platform: str, cookies: Dict[str, Any], encry
         if encrypt:
             # 加密保存
             from cryptography.fernet import Fernet
-            
+
             # 生成或加载加密密钥
             key_file = get_cookie_key_file(platform)
             if key_file.exists():
@@ -219,6 +229,14 @@ def _normalize_cookies(cookies: Dict[str, Any], platform: str) -> Dict[str, str]
     
     return valid_cookies
 
+class _CredentialReadError(Exception):
+    """The credential source could not be read because of a transient I/O error."""
+
+
+class _PlaintextFallback(Exception):
+    """The credential source should be interpreted as plaintext."""
+
+
 def _load_cookies_from_file_uncached(platform: str) -> Dict[str, str]:
     """Load cookies from file, auto-detecting whether they are encrypted"""
     try:
@@ -226,8 +244,12 @@ def _load_cookies_from_file_uncached(platform: str) -> Dict[str, str]:
             return {}
             
         cookie_file = COOKIE_FILES[platform]
-        if not cookie_file.exists():
+        try:
+            cookie_file.stat()
+        except FileNotFoundError:
             return {}
+        except OSError as exc:
+            raise _CredentialReadError(str(exc)) from exc
         
         # 尝试解密加载
         try:
@@ -235,34 +257,36 @@ def _load_cookies_from_file_uncached(platform: str) -> Dict[str, str]:
             
             # 加载加密密钥
             key_file = get_cookie_key_file(platform)
-            if key_file.exists():
-                key = _read_encryption_key(platform, key_file)
-                
-                # 解密Cookie数据
-                with open(cookie_file, 'rb') as f:
-                    encrypted_data = f.read()
-                
-                fernet = Fernet(key)
-                decrypted_data = fernet.decrypt(encrypted_data).decode('utf-8')
-                cookies = json.loads(decrypted_data)
-                
-                # 校验 Cookie 结构: 确保所有值都是字符串
-                if isinstance(cookies, dict):
-                    valid_cookies = _normalize_cookies(cookies, platform)
-                    # 【新增】判断归一化后是否为空，并进行核心必填字段校验
-                    if not valid_cookies or not validate_cookies(platform, valid_cookies):
-                        logger.warning(f"{platform} Cookie 解密后核心字段校验不通过，拒绝加载")
-                        return {}
-                        
-                    logger.info(f"✅ 已解密加载 {platform} 凭证")
-                    return valid_cookies
-                else:
-                    logger.warning(f"{platform} Cookie 解密后不是对象")
+            try:
+                key_file.stat()
+            except FileNotFoundError:
+                raise _PlaintextFallback("密钥文件不存在")
+            key = _read_encryption_key(platform, key_file)
+
+            # 解密Cookie数据
+            with open(cookie_file, 'rb') as f:
+                encrypted_data = f.read()
+
+            fernet = Fernet(key)
+            decrypted_data = fernet.decrypt(encrypted_data).decode('utf-8')
+            cookies = json.loads(decrypted_data)
+
+            # 校验 Cookie 结构: 确保所有值都是字符串
+            if isinstance(cookies, dict):
+                valid_cookies = _normalize_cookies(cookies, platform)
+                # 【新增】判断归一化后是否为空，并进行核心必填字段校验
+                if not valid_cookies or not validate_cookies(platform, valid_cookies):
+                    logger.warning(f"{platform} Cookie 解密后核心字段校验不通过，拒绝加载")
                     return {}
-            else:
-                # 密钥文件不存在，可能是明文文件
-                raise FileNotFoundError("密钥文件不存在")
-                
+
+                logger.info(f"✅ 已解密加载 {platform} 凭证")
+                return valid_cookies
+
+            logger.warning(f"{platform} Cookie 解密后不是对象")
+            return {}
+
+        except OSError as decrypt_error:
+            raise _CredentialReadError(str(decrypt_error)) from decrypt_error
         except Exception as decrypt_error:
             # 解密失败，尝试明文加载
             logger.debug(f"解密 {platform} Cookie 失败，尝试明文加载: {decrypt_error}")
@@ -295,10 +319,14 @@ def _load_cookies_from_file_uncached(platform: str) -> Dict[str, str]:
                 logger.info(f"✅ 已明文加载 {platform} 凭证")
                 return valid_cookies
                 
+            except OSError as plain_error:
+                raise _CredentialReadError(str(plain_error)) from plain_error
             except Exception as plain_error:
                 logger.error(f"明文加载 {platform} Cookie 失败: {plain_error}")
                 return {}
                 
+    except _CredentialReadError:
+        raise
     except Exception as e:
         logger.error(f"❌ 加载 {platform} Cookie 失败: {e}")
         return {}
@@ -339,6 +367,16 @@ class CredentialManager:
         except OSError:
             return None
         return stat.st_mtime_ns, stat.st_ctime_ns, stat.st_size
+
+    @staticmethod
+    def _path_is_absent(path: Path) -> bool:
+        try:
+            path.stat()
+        except FileNotFoundError:
+            return True
+        except OSError:
+            return False
+        return False
 
     @classmethod
     def _source_signature(cls, platform: str) -> _SourceSignature:
@@ -420,7 +458,13 @@ class CredentialManager:
 
             for _attempt in range(_SOURCE_READ_ATTEMPTS):
                 source_signature = self._source_signature(platform)
-                credentials = _load_cookies_from_file_uncached(platform)
+                try:
+                    credentials = _load_cookies_from_file_uncached(platform)
+                except _CredentialReadError as exc:
+                    if self._source_signature(platform) != source_signature:
+                        continue
+                    logger.warning("%s 凭证文件暂时无法读取: %s", platform, exc)
+                    return _CredentialEntry(source_signature, self.INVALID, {})
                 if self._source_signature(platform) != source_signature:
                     continue
 
@@ -449,8 +493,10 @@ class CredentialManager:
         with self._platform_lock(platform):
             if not _save_cookies_to_file_uncached(platform, normalized, encrypt=encrypt):
                 return False
-            self._store(platform, self._source_signature(platform), self.READY, normalized)
-            return True
+            with self._cache_lock:
+                self._cache.pop(platform, None)
+            entry = self._load_entry(platform)
+            return entry.state == self.READY and entry.credentials == normalized
 
     def cache_legacy_credentials(
         self,
@@ -487,26 +533,38 @@ class CredentialManager:
 
             with self._cache_lock:
                 legacy_files = self._legacy_sources.get(platform, set()).copy()
-            cookie_files = list(dict.fromkeys([cookie_file, *legacy_files]))
+            candidate_files = [
+                cookie_file,
+                *get_legacy_cookie_files(platform),
+                *legacy_files,
+            ]
+            cookie_files = list(dict.fromkeys(path.resolve() for path in candidate_files))
 
             artifact_existed = False
             cookie_error: OSError | None = None
             for stored_file in cookie_files:
-                if stored_file.exists():
+                try:
+                    stored_file.unlink()
+                except FileNotFoundError:
+                    continue
+                except OSError as exc:
                     artifact_existed = True
-                    try:
-                        stored_file.unlink()
-                    except OSError as exc:
-                        cookie_error = cookie_error or exc
+                    cookie_error = cookie_error or exc
+                else:
+                    artifact_existed = True
 
+            sources_absent = all(self._path_is_absent(path) for path in cookie_files)
             key_deleted = True
             key_file = get_cookie_key_file(platform)
-            if cookie_error is None and key_file.exists():
-                artifact_existed = True
+            if cookie_error is None and sources_absent:
                 try:
                     key_file.unlink()
+                except FileNotFoundError:
+                    pass
                 except OSError:
                     key_deleted = False
+                else:
+                    artifact_existed = True
 
             if cookie_error is not None:
                 with self._cache_lock:
@@ -515,7 +573,16 @@ class CredentialManager:
 
             with self._cache_lock:
                 self._legacy_sources.pop(platform, None)
-            self._store(platform, self._source_signature(platform), self.MISSING)
+            source_signature = self._source_signature(platform)
+            sources_absent = (
+                source_signature[1] is None
+                and all(self._path_is_absent(path) for path in cookie_files)
+            )
+            if sources_absent:
+                self._store(platform, source_signature, self.MISSING)
+            else:
+                with self._cache_lock:
+                    self._cache.pop(platform, None)
             return artifact_existed, key_deleted
 
     def mark_auth_rejected(

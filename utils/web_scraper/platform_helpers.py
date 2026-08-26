@@ -20,13 +20,11 @@ import hashlib
 import secrets
 import time
 from typing import TYPE_CHECKING, Any
-import os
 
 # bs4 惰性 import（各解析函数内首用加载，utils.module_warmup 后台预热兜底）：本模块被
 # system_router 顶层引用、坐在 main_server 启动 import 链上，顶层 bs4 会拖慢端口就绪。
 if TYPE_CHECKING:
     pass
-from pathlib import Path
 import json
 
 from ._shared import logger
@@ -210,7 +208,11 @@ def _get_platform_cookies(platform_name: str) -> dict[str, str]:
     """
     try:
         # 优先调用系统底层的解密读取逻辑
-        from utils.cookies_login import CredentialManager, credential_manager
+        from utils.cookies_login import (
+            CredentialManager,
+            credential_manager,
+            get_legacy_cookie_files,
+        )
         cookies = credential_manager.load(platform_name)
         if cookies:
             logger.debug(f"✅ 成功通过底层接口加载 {platform_name} 凭证")
@@ -224,11 +226,7 @@ def _get_platform_cookies(platform_name: str) -> dict[str, str]:
         logger.debug(f"底层接口加载 {platform_name} 凭证失败: {e}，尝试使用明文回退...")
 
     # 下面是作为回退的明文读取逻辑（兜底处理旧文件）
-    possible_paths = [
-        Path(os.path.expanduser('~')) / f'{platform_name}_cookies.json',
-        Path('config') / f'{platform_name}_cookies.json',
-        Path('.') / f'{platform_name}_cookies.json',
-    ]
+    possible_paths = get_legacy_cookie_files(platform_name)
     
     for cookie_file in possible_paths:
         if not cookie_file.exists():

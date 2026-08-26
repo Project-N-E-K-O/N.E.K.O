@@ -64,13 +64,33 @@ def test_missing_and_invalid_credentials_are_negative_cached(tmp_path):
     assert invalid_status["credential_state"] == CredentialManager.INVALID
 
 
-def test_save_delete_and_auth_rejection_update_cache_without_reload():
+def test_save_delete_and_auth_rejection_update_cache_without_reload(
+    tmp_path,
+    monkeypatch,
+):
     manager = CredentialManager()
+    monkeypatch.chdir(tmp_path)
 
-    with patch(
-        "utils.cookies_login._save_cookies_to_file_uncached",
-        return_value=True,
-    ) as saver:
+    with (
+        patch.dict(
+            "utils.cookies_login.COOKIE_FILES",
+            {"weibo": tmp_path / "config" / "weibo_cookies.json"},
+        ),
+        patch.object(cookies_login, "CONFIG_DIR", tmp_path / "config"),
+        patch.object(
+            cookies_login.os.path,
+            "expanduser",
+            return_value=str(tmp_path / "home"),
+        ),
+        patch(
+            "utils.cookies_login._save_cookies_to_file_uncached",
+            return_value=True,
+        ) as saver,
+        patch(
+            "utils.cookies_login._load_cookies_from_file_uncached",
+            side_effect=[{"SUB": "first"}, {"SUB": "second"}],
+        ) as save_loader,
+    ):
         assert manager.save("weibo", {"SUB": "first"}) is True
         assert manager.save("weibo", {"SUB": "second"}) is True
 
@@ -86,20 +106,47 @@ def test_save_delete_and_auth_rejection_update_cache_without_reload():
         assert manager.status("weibo")["credential_state"] == CredentialManager.MISSING
 
     assert saver.call_count == 2
+    assert save_loader.call_count == 2
     loader.assert_not_called()
 
 
 def test_failed_save_preserves_previous_cached_credentials():
     manager = CredentialManager()
 
-    with patch(
-        "utils.cookies_login._save_cookies_to_file_uncached",
-        side_effect=[True, False],
+    with (
+        patch(
+            "utils.cookies_login._save_cookies_to_file_uncached",
+            side_effect=[True, False],
+        ),
+        patch(
+            "utils.cookies_login._load_cookies_from_file_uncached",
+            return_value={"SUB": "existing"},
+        ) as loader,
     ):
         assert manager.save("weibo", {"SUB": "existing"}) is True
         assert manager.save("weibo", {"SUB": "replacement"}) is False
 
     assert manager.load("weibo") == {"SUB": "existing"}
+    loader.assert_called_once_with("weibo")
+
+
+def test_save_reloads_source_instead_of_caching_submitted_credentials():
+    manager = CredentialManager()
+
+    with (
+        patch(
+            "utils.cookies_login._save_cookies_to_file_uncached",
+            return_value=True,
+        ),
+        patch(
+            "utils.cookies_login._load_cookies_from_file_uncached",
+            return_value={"SUB": "external-replacement"},
+        ) as loader,
+    ):
+        assert manager.save("weibo", {"SUB": "submitted"}) is False
+        assert manager.load("weibo") == {"SUB": "external-replacement"}
+
+    loader.assert_called_once_with("weibo")
 
 
 def test_changing_credential_path_invalidates_cached_result(tmp_path):
@@ -127,7 +174,13 @@ def test_changing_credential_path_invalidates_cached_result(tmp_path):
 def test_stale_auth_rejection_does_not_override_new_credentials():
     manager = CredentialManager()
 
-    with patch("utils.cookies_login._save_cookies_to_file_uncached", return_value=True):
+    with (
+        patch("utils.cookies_login._save_cookies_to_file_uncached", return_value=True),
+        patch(
+            "utils.cookies_login._load_cookies_from_file_uncached",
+            side_effect=[{"SUB": "old"}, {"SUB": "new"}],
+        ),
+    ):
         assert manager.save("weibo", {"SUB": "old"}) is True
         old_credentials = manager.load("weibo")
         assert manager.save("weibo", {"SUB": "new"}) is True
@@ -140,7 +193,16 @@ def test_stale_auth_rejection_does_not_override_new_credentials():
 def test_partial_auth_match_does_not_reject_replacement_credentials():
     manager = CredentialManager()
 
-    with patch("utils.cookies_login._save_cookies_to_file_uncached", return_value=True):
+    with (
+        patch("utils.cookies_login._save_cookies_to_file_uncached", return_value=True),
+        patch(
+            "utils.cookies_login._load_cookies_from_file_uncached",
+            side_effect=[
+                {"SUB": "shared", "token": "old"},
+                {"SUB": "shared", "token": "new"},
+            ],
+        ),
+    ):
         assert manager.save("weibo", {"SUB": "shared", "token": "old"}) is True
         old_credentials = manager.load("weibo")
         assert manager.save("weibo", {"SUB": "shared", "token": "new"}) is True
@@ -237,7 +299,23 @@ def test_continuous_file_changes_have_bounded_uncached_retries(tmp_path):
         assert loader.call_count == cookies_login._SOURCE_READ_ATTEMPTS * 2
 
 
-def test_delete_and_save_share_the_same_platform_lock(tmp_path):
+def test_transient_read_failure_is_not_negative_cached():
+    manager = CredentialManager()
+
+    with patch(
+        "utils.cookies_login._load_cookies_from_file_uncached",
+        side_effect=[
+            cookies_login._CredentialReadError("busy"),
+            {"SUB": "available"},
+        ],
+    ) as loader:
+        assert manager.load("weibo") == {}
+        assert manager.load("weibo") == {"SUB": "available"}
+
+    assert loader.call_count == 2
+
+
+def test_delete_and_save_share_the_same_platform_lock(tmp_path, monkeypatch):
     manager = CredentialManager()
     cookie_file = tmp_path / "weibo.json"
     cookie_file.write_text('{"SUB":"old"}', encoding="utf-8")
@@ -258,9 +336,15 @@ def test_delete_and_save_share_the_same_platform_lock(tmp_path):
         cookie_file.write_text('{"SUB":"new"}', encoding="utf-8")
         return credentials == {"SUB": "new"}
 
+    monkeypatch.chdir(tmp_path)
     with (
         patch.dict("utils.cookies_login.COOKIE_FILES", {"weibo": cookie_file}),
         patch.object(cookies_login, "CONFIG_DIR", tmp_path),
+        patch.object(
+            cookies_login.os.path,
+            "expanduser",
+            return_value=str(tmp_path / "home"),
+        ),
         patch.object(Path, "unlink", slow_unlink),
         patch("utils.cookies_login._save_cookies_to_file_uncached", side_effect=save_new),
         ThreadPoolExecutor(max_workers=2) as executor,
@@ -279,22 +363,28 @@ def test_delete_and_save_share_the_same_platform_lock(tmp_path):
         assert cookie_file.exists()
 
 
-def test_delete_removes_orphaned_key_when_cookie_file_is_missing(tmp_path):
+def test_delete_removes_orphaned_key_when_cookie_file_is_missing(tmp_path, monkeypatch):
     manager = CredentialManager()
     cookie_file = tmp_path / "weibo.json"
     key_file = tmp_path / "weibo_key.key"
     key_file.write_bytes(b"orphaned-key")
 
+    monkeypatch.chdir(tmp_path)
     with (
         patch.dict("utils.cookies_login.COOKIE_FILES", {"weibo": cookie_file}),
         patch.object(cookies_login, "CONFIG_DIR", tmp_path),
+        patch.object(
+            cookies_login.os.path,
+            "expanduser",
+            return_value=str(tmp_path / "home"),
+        ),
     ):
         assert manager.delete_stored_credentials("weibo") == (True, True)
 
     assert not key_file.exists()
 
 
-def test_failed_cookie_delete_preserves_encryption_key(tmp_path):
+def test_failed_cookie_delete_preserves_encryption_key(tmp_path, monkeypatch):
     manager = CredentialManager()
     cookie_file = tmp_path / "weibo.json"
     key_file = tmp_path / "weibo_key.key"
@@ -307,9 +397,15 @@ def test_failed_cookie_delete_preserves_encryption_key(tmp_path):
             raise PermissionError("busy")
         return original_unlink(path, *args, **kwargs)
 
+    monkeypatch.chdir(tmp_path)
     with (
         patch.dict("utils.cookies_login.COOKIE_FILES", {"weibo": cookie_file}),
         patch.object(cookies_login, "CONFIG_DIR", tmp_path),
+        patch.object(
+            cookies_login.os.path,
+            "expanduser",
+            return_value=str(tmp_path / "home"),
+        ),
         patch.object(Path, "unlink", fail_cookie_unlink),
         pytest.raises(PermissionError, match="busy"),
     ):
@@ -317,6 +413,33 @@ def test_failed_cookie_delete_preserves_encryption_key(tmp_path):
 
     assert cookie_file.exists()
     assert key_file.exists()
+
+
+def test_delete_does_not_cache_missing_for_recreated_source(tmp_path, monkeypatch):
+    manager = CredentialManager()
+    cookie_file = tmp_path / "weibo.json"
+    cookie_file.write_text('{"SUB":"old"}', encoding="utf-8")
+    original_unlink = Path.unlink
+
+    def recreate_after_unlink(path, *args, **kwargs):
+        original_unlink(path, *args, **kwargs)
+        if path == cookie_file.resolve():
+            path.write_text('{"SUB":"recreated-and-longer"}', encoding="utf-8")
+
+    monkeypatch.chdir(tmp_path)
+    with (
+        patch.dict("utils.cookies_login.COOKIE_FILES", {"weibo": cookie_file}),
+        patch.object(cookies_login, "CONFIG_DIR", tmp_path),
+        patch.object(
+            cookies_login.os.path,
+            "expanduser",
+            return_value=str(tmp_path / "home"),
+        ),
+        patch.object(Path, "unlink", recreate_after_unlink),
+    ):
+        assert manager.load("weibo") == {"SUB": "old"}
+        assert manager.delete_stored_credentials("weibo") == (True, True)
+        assert manager.load("weibo") == {"SUB": "recreated-and-longer"}
 
 
 def test_auth_rejected_state_skips_legacy_plaintext_fallback():
@@ -366,7 +489,7 @@ def test_missing_state_keeps_legacy_plaintext_fallback(tmp_path, monkeypatch):
             return_value=CredentialManager.MISSING,
         ),
         patch.object(
-            platform_helpers.os.path,
+            cookies_login.os.path,
             "expanduser",
             return_value=str(tmp_path / "home"),
         ),
@@ -382,8 +505,12 @@ def test_missing_state_keeps_legacy_plaintext_fallback(tmp_path, monkeypatch):
 def test_legacy_fallback_can_be_rejected_and_deleted(tmp_path, monkeypatch):
     manager = CredentialManager()
     configured_file = tmp_path / "config" / "weibo_cookies.json"
-    legacy_file = tmp_path / "weibo_cookies.json"
-    legacy_file.write_text('{"SUB":"legacy"}', encoding="utf-8")
+    home_dir = tmp_path / "home"
+    home_dir.mkdir()
+    home_legacy_file = home_dir / "weibo_cookies.json"
+    cwd_legacy_file = tmp_path / "weibo_cookies.json"
+    home_legacy_file.write_text('{"SUB":"legacy"}', encoding="utf-8")
+    cwd_legacy_file.write_text('{"SUB":"other-legacy"}', encoding="utf-8")
     monkeypatch.chdir(tmp_path)
 
     with (
@@ -394,9 +521,9 @@ def test_legacy_fallback_can_be_rejected_and_deleted(tmp_path, monkeypatch):
         patch.object(cookies_login, "CONFIG_DIR", tmp_path / "config"),
         patch.object(cookies_login, "credential_manager", manager),
         patch.object(
-            platform_helpers.os.path,
+            cookies_login.os.path,
             "expanduser",
-            return_value=str(tmp_path / "home"),
+            return_value=str(home_dir),
         ),
     ):
         credentials = platform_helpers._get_platform_cookies("weibo")
@@ -405,7 +532,8 @@ def test_legacy_fallback_can_be_rejected_and_deleted(tmp_path, monkeypatch):
         assert platform_helpers._get_platform_cookies("weibo") == {}
         assert manager.delete_stored_credentials("weibo") == (True, True)
 
-    assert not legacy_file.exists()
+    assert not home_legacy_file.exists()
+    assert not cwd_legacy_file.exists()
 
 
 def test_changed_legacy_source_is_not_cached(tmp_path):
