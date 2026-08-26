@@ -543,8 +543,8 @@ class PluginCliService:
             target_root=policy.user_plugins_root,
             profiles_root=policy.package_profiles_root,
         )
-        expected_plugin_id = str(detail.get("expected_plugin_toml_id") or plan.plugin_id)
-        if expected_plugin_id != plan.plugin_id:
+        expected_plugin_id = str(detail.get("expected_plugin_toml_id") or "").strip()
+        if not expected_plugin_id or expected_plugin_id != plan.plugin_id:
             raise ValueError("Market plugin identity does not match the builtin override plan")
         detail.pop("expected_plugin_toml_id", None)
         detail["package_sha256"] = actual_sha256
