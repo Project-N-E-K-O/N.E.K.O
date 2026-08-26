@@ -96,6 +96,41 @@ async def test_cli_rejects_unverified_direct_builtin_override(
 
 
 @pytest.mark.asyncio
+async def test_builtin_override_plan_blocks_existing_incoming_profile_target(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plugin_id = "study_companion"
+    builtin_root = tmp_path / "builtin"
+    user_root = tmp_path / "installations" / "plugins"
+    packages_root = tmp_path / "packages"
+    profiles_root = tmp_path / "profiles"
+    _write_plugin(builtin_root, plugin_id, "0.1.5")
+    packages_root.mkdir(parents=True)
+    package = packages_root / f"{plugin_id}.neko-plugin"
+    build_plugin(_write_plugin(tmp_path / "source", plugin_id, "0.1.6"), package)
+    retained_profile = profiles_root / plugin_id
+    retained_profile.mkdir(parents=True)
+    retained_state = retained_profile / "settings.toml"
+    retained_state.write_text("[settings]\nkeep = true\n", encoding="utf-8")
+
+    import plugin.settings as settings
+
+    monkeypatch.setattr(settings, "BUILTIN_PLUGIN_CONFIG_ROOT", builtin_root)
+    monkeypatch.setattr(settings, "USER_PLUGIN_CONFIG_ROOT", user_root)
+    monkeypatch.setattr(settings, "USER_PLUGIN_PACKAGES_ROOT", packages_root)
+    monkeypatch.setattr(settings, "USER_PACKAGE_PROFILES_ROOT", profiles_root)
+    monkeypatch.setattr(settings, "PLUGIN_STATE_ROOT", tmp_path / "state")
+
+    plan = await PluginCliService().plan_install(package=str(package))
+
+    assert plan["action"] == "blocked"
+    assert plan["reason"] == "override_profile_target_exists"
+    assert retained_state.read_text(encoding="utf-8") == "[settings]\nkeep = true\n"
+    assert not user_root.exists()
+
+
+@pytest.mark.asyncio
 async def test_install_plan_fails_closed_when_exec_and_state_roots_collide(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

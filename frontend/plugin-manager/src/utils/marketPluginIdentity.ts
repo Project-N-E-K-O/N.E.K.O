@@ -26,6 +26,17 @@ export function marketIdentityKeys(plugin: MarketPluginIdentity): string[] {
   return [...keys]
 }
 
+export function marketLocalIdentityKeys(plugin: MarketPluginIdentity): string[] {
+  const keys = new Set<string>()
+  for (const value of [plugin.slug, extractRepoPluginId(plugin.github_repo)]) {
+    const normalized = String(value || '')
+      .trim()
+      .toLowerCase()
+    if (normalized) keys.add(normalized)
+  }
+  return [...keys]
+}
+
 export function localPluginIdentityKeys(
   plugins: Iterable<{ id?: unknown; name?: unknown }>
 ): Set<string> {

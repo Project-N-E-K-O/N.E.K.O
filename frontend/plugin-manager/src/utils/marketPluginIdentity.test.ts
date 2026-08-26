@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest'
 
-import { localPluginIdentityKeys, marketIdentityKeys } from './marketPluginIdentity'
+import {
+  localPluginIdentityKeys,
+  marketIdentityKeys,
+  marketLocalIdentityKeys,
+} from './marketPluginIdentity'
 
 describe('market plugin identity matching', () => {
   it('uses stable Market identities and excludes the display name', () => {
@@ -15,6 +19,8 @@ describe('market plugin identity matching', () => {
 
     expect(keys).toEqual(['study-companion', '42', 'study_companion'])
     expect(keys).not.toContain('unrelated_local_id')
+    expect(marketLocalIdentityKeys(plugin)).toEqual(['study-companion', 'study_companion'])
+    expect(marketLocalIdentityKeys(plugin)).not.toContain('42')
   })
 
   it('indexes local plugins by runtime id and excludes the display name', () => {

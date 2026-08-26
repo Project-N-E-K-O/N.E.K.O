@@ -350,6 +350,7 @@ import {
   extractRepoPluginId,
   localPluginIdentityKeys,
   marketIdentityKeys,
+  marketLocalIdentityKeys,
 } from '@/utils/marketPluginIdentity'
 
 interface Props {
@@ -614,7 +615,7 @@ function isInstalled(plugin: MarketPlugin): boolean {
   for (const key of marketIdentityKeys(plugin)) {
     if (installedByPid.value.has(key)) return true
   }
-  return marketIdentityKeys(plugin).some((key) => localPluginKeys.value.has(key))
+  return marketLocalIdentityKeys(plugin).some((key) => localPluginKeys.value.has(key))
 }
 
 function getInstalledState(plugin: MarketPlugin): InstalledMarketEntry | undefined {
@@ -630,7 +631,7 @@ function getMarketAction(plugin: MarketPlugin): MarketPluginAction {
   const manualConflict = inferManualInstallConflict(
     installedProjectionLoaded.value,
     state,
-    marketIdentityKeys(plugin).some((key) => localPluginKeys.value.has(key)),
+    marketLocalIdentityKeys(plugin).some((key) => localPluginKeys.value.has(key)),
   )
   return deriveMarketPluginAction(state, plugin.version, plugin.has_release, manualConflict)
 }

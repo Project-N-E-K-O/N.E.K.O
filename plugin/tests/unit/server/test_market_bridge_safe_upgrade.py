@@ -88,6 +88,23 @@ async def test_market_builtin_override_requires_current_preflight_confirmation(
         encoding="utf-8",
     )
     user_root.mkdir()
+
+    async def authoritative_release(_payload: object) -> dict[str, object]:
+        return {
+            "plugin_market_id": "market-demo",
+            "version": "2.0.0",
+            "channel": "stable",
+            "package_url": "https://example.invalid/demo.neko-plugin",
+            "package_sha256": "a" * 64,
+            "payload_hash": None,
+            "published_at": None,
+        }
+
+    monkeypatch.setattr(
+        market_bridge,
+        "_fetch_authoritative_market_override_release",
+        authoritative_release,
+    )
     monkeypatch.setattr(
         market_bridge.PluginCliPathPolicy,
         "from_settings",
@@ -153,6 +170,58 @@ async def test_market_builtin_override_requires_current_preflight_confirmation(
     market_bridge._tasks.pop(accepted.task_id, None)
 
     assert accepted.status == "pending"
+
+
+@pytest.mark.asyncio
+async def test_market_builtin_override_rejects_caller_hash_not_in_catalog(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = market_bridge.MarketInstallRequest(
+        plugin_id="42",
+        expected_plugin_toml_id="demo",
+        version="2.0.0",
+        package_url="https://attacker.invalid/demo.neko-plugin",
+        canonical_package_url="https://attacker.invalid/demo.neko-plugin",
+        package_sha256="a" * 64,
+        channel="stable",
+        mode="override_builtin",
+    )
+
+    class FakeAsyncClient:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        async def __aenter__(self) -> "FakeAsyncClient":
+            return self
+
+        async def __aexit__(self, *_args: object) -> None:
+            return None
+
+        async def get(self, url: str, **_kwargs: object) -> object:
+            request = market_bridge.httpx.Request("GET", url)
+            return market_bridge.httpx.Response(
+                200,
+                request=request,
+                json=[
+                    {
+                        "version": "2.0.0",
+                        "channel": "stable",
+                        "package_url": "https://market.invalid/demo.neko-plugin",
+                        "package_sha256": "b" * 64,
+                        "payload_hash": None,
+                        "created_at": "2026-08-26T00:00:00Z",
+                    }
+                ],
+            )
+
+    monkeypatch.setattr(market_bridge.httpx, "AsyncClient", FakeAsyncClient)
+    monkeypatch.setattr(market_bridge, "MARKET_API_URL", "https://market.invalid")
+
+    with pytest.raises(HTTPException) as exc_info:
+        await market_bridge._fetch_authoritative_market_override_release(payload)
+
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.detail["code"] == "market_release_mismatch"
 
 
 @pytest.mark.asyncio

@@ -1611,15 +1611,28 @@ class PluginCliService:
                     else policy.package_profiles_root
                 )
             )
+            package_path = self._resolve_package_path(package)
             plan = self._apply_installed_package_identity(
                 build_install_plan(
-                    package_path=self._resolve_package_path(package),
+                    package_path=package_path,
                     plugins_root=target_root,
                     builtin_plugins_root=policy.builtin_plugins_root,
                 ),
                 target_root=target_root,
                 profiles_root=profiles_root_path,
             )
+            if plan.action == "override_builtin":
+                inspected = inspect_package(package_path)
+                target_profile_dir = profiles_root_path / plan.package_id
+                if inspected.profile_names and (
+                    target_profile_dir.exists() or target_profile_dir.is_symlink()
+                ):
+                    plan = replace(
+                        plan,
+                        action="blocked",
+                        confirmation_token="",
+                        reason="override_profile_target_exists",
+                    )
             return asdict(plan)
         except Exception as exc:
             raise self._domain_error_from_exception(exc, action="install-plan") from exc

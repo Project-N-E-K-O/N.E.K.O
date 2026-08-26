@@ -741,7 +741,99 @@ async def measure_github_proxy_sources() -> dict[str, object]:
     return {"sources": measured}
 
 
-def _build_market_override_confirmation(
+async def _fetch_authoritative_market_override_release(
+    payload: MarketInstallRequest,
+) -> dict[str, object]:
+    market_id = str(payload.plugin_id or "").strip()
+    base_url = _normalized_base_url(MARKET_API_URL)
+    if not market_id or not base_url:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "market_catalog_not_configured",
+                "message": "builtin override requires a configured Market catalog",
+            },
+        )
+
+    channel = str(payload.channel or "stable").strip() or "stable"
+    url = f"{base_url}/api/v1/plugins/{quote(market_id, safe='')}/versions"
+    try:
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(10.0, connect=3.0),
+            follow_redirects=False,
+        ) as client:
+            response = await client.get(url, params={"channel": channel})
+        if 300 <= response.status_code < 400:
+            raise httpx.HTTPStatusError(
+                "Market catalog redirect rejected",
+                request=response.request,
+                response=response,
+            )
+        response.raise_for_status()
+        releases = response.json()
+    except (httpx.HTTPError, ValueError) as exc:
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "code": "market_catalog_unavailable",
+                "message": "Market release metadata could not be verified",
+            },
+        ) from exc
+
+    if not isinstance(releases, list):
+        releases = []
+    requested_version = str(payload.version or "").strip()
+    release = next(
+        (
+            item
+            for item in releases
+            if isinstance(item, dict)
+            and str(item.get("version") or "").strip() == requested_version
+            and str(item.get("channel") or "stable").strip() == channel
+        ),
+        None,
+    )
+    canonical_package_url = str(
+        payload.canonical_package_url or payload.package_url or ""
+    ).strip()
+    if release is None:
+        mismatch = True
+    else:
+        mismatch = any(
+            (
+                str(release.get("package_url") or "").strip() != canonical_package_url,
+                str(release.get("package_sha256") or "").strip().lower()
+                != payload.package_sha256,
+                bool(payload.payload_hash)
+                and str(release.get("payload_hash") or "").strip()
+                != str(payload.payload_hash or "").strip(),
+                bool(payload.published_at)
+                and str(release.get("created_at") or release.get("published_at") or "").strip()
+                != str(payload.published_at or "").strip(),
+            )
+        )
+    if mismatch:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "market_release_mismatch",
+                "message": "builtin override request does not match the Market catalog",
+            },
+        )
+
+    assert release is not None
+    return {
+        "plugin_market_id": market_id,
+        "version": requested_version,
+        "channel": channel,
+        "package_url": canonical_package_url,
+        "package_sha256": payload.package_sha256,
+        "payload_hash": release.get("payload_hash"),
+        "published_at": release.get("created_at") or release.get("published_at"),
+    }
+
+
+async def _build_market_override_confirmation(
     payload: MarketInstallRequest,
 ) -> MarketOverrideConfirmationResponse:
     """Bind a client confirmation to the current builtin and Market artifact."""
@@ -809,6 +901,7 @@ def _build_market_override_confirmation(
             },
         )
 
+    authoritative_release = await _fetch_authoritative_market_override_release(payload)
     request_evidence = payload.model_dump(
         mode="json",
         exclude={"confirmation_token"},
@@ -818,6 +911,7 @@ def _build_market_override_confirmation(
         "plugin_id": plugin_id,
         "current_version": current_version,
         "target_version": target_version,
+        "market_release": authoritative_release,
         "builtin_manifest_sha256": hashlib.sha256(manifest_bytes).hexdigest(),
         "target_dir": str(target_dir.resolve(strict=False)),
     }
@@ -851,7 +945,7 @@ async def market_override_confirmation(
     """Issue confirmation evidence before a builtin override is dispatched."""
 
     _verify_token(token)
-    return _build_market_override_confirmation(payload)
+    return await _build_market_override_confirmation(payload)
 
 
 @router.post("/install", response_model=MarketInstallResponse)
@@ -871,7 +965,6 @@ async def market_install(
     _verify_token(token)
 
     if payload.mode == "override_builtin":
-        rebuilt = _build_market_override_confirmation(payload)
         supplied_token = (payload.confirmation_token or "").strip()
         if not supplied_token:
             raise HTTPException(
@@ -881,6 +974,7 @@ async def market_install(
                     "message": "confirm the current builtin override plan before install",
                 },
             )
+        rebuilt = await _build_market_override_confirmation(payload)
         if not secrets.compare_digest(
             supplied_token,
             rebuilt.confirmation_token,
