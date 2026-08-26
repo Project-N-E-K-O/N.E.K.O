@@ -121,6 +121,7 @@ function _finishNekoIdleCat1EatAction(button, token) {
 function _playNekoIdleCat1EatAction(button) {
     const catMindRunOptions = arguments[1] || {};
     if (!button) return false;
+    if (_isNekoIdleDesktopWindowInteractionActionActive(button)) return false;
     if (_isNekoIdleCat1PlaygroundEntryOrDropActive(button)) return false;
     if (_normalizeNekoIdleReturnTier(button.getAttribute('data-neko-idle-tier')) !== _NEKO_IDLE_TIER_CAT1) return false;
     if (_isNekoIdleReturnDragActionActive(button)) return false;
@@ -459,18 +460,60 @@ function _isAnyNekoIdleCat1PlayActionActive() {
     return active;
 }
 
+function _isNekoIdleDesktopWindowTopEdgeActionActive(button) {
+    const desktopTopEdge = typeof window !== 'undefined'
+        ? window.NekoDesktopWindowTopEdgePerch
+        : null;
+    return !!(desktopTopEdge
+        && typeof desktopTopEdge.isActive === 'function'
+        && desktopTopEdge.isActive(button));
+}
+
+function _isNekoIdleDesktopWindowEdgePeekActionActive(button) {
+    const desktopEdgePeek = typeof window !== 'undefined'
+        ? window.NekoDesktopWindowEdgePeek
+        : null;
+    return !!(desktopEdgePeek
+        && typeof desktopEdgePeek.isActive === 'function'
+        && desktopEdgePeek.isActive(button));
+}
+
+function _isNekoIdleDesktopWindowDoorWalkActionActive(button) {
+    const desktopDoorWalk = typeof window !== 'undefined'
+        ? window.NekoDesktopWindowDoorWalk
+        : null;
+    return !!(desktopDoorWalk
+        && typeof desktopDoorWalk.isActive === 'function'
+        && desktopDoorWalk.isActive(button));
+}
+
+function _isNekoIdleDesktopWindowInteractionActionActive(button) {
+    const desktopInteractions = typeof window !== 'undefined'
+        ? window.NekoDesktopWindowInteractions
+        : null;
+    const presentationActive = desktopInteractions
+        && typeof desktopInteractions.isActive === 'function'
+        ? desktopInteractions.isActive(button)
+        : (_isNekoIdleDesktopWindowTopEdgeActionActive(button)
+            || _isNekoIdleDesktopWindowEdgePeekActionActive(button));
+    return presentationActive
+        || _isNekoIdleDesktopWindowDoorWalkActionActive(button);
+}
+
 function _isNekoIdleCat1IndependentActionActive(button) {
     return _isNekoIdleCat1EatActionActive(button) ||
         _isNekoIdleCat1StretchActionActive(button) ||
         _isNekoIdleCat1PlayActionActive(button) ||
-        _isNekoIdleCat1PlaygroundEntryOrDropActive(button);
+        _isNekoIdleCat1PlaygroundEntryOrDropActive(button) ||
+        _isNekoIdleDesktopWindowInteractionActionActive(button);
 }
 
 function _isAnyNekoIdleCat1IndependentActionActive() {
     return _isAnyNekoIdleCat1EatActionActive() ||
         _isAnyNekoIdleCat1StretchActionActive() ||
         _isAnyNekoIdleCat1PlayActionActive() ||
-        _isAnyNekoIdleCat1PlaygroundDropLifecycleActive();
+        _isAnyNekoIdleCat1PlaygroundDropLifecycleActive() ||
+        _isNekoIdleDesktopWindowInteractionActionActive();
 }
 
 function _clearNekoIdleCat1PlayActionTimers(state) {
@@ -700,6 +743,7 @@ function _playNekoIdleCat1PlayAction(button) {
     const catMindRunOptions = arguments[1] || {};
     const isCatMindRun = catMindRunOptions.source === 'cat_mind';
     if (!button) return false;
+    if (_isNekoIdleDesktopWindowInteractionActionActive(button)) return false;
     if (_isNekoIdleCat1PlaygroundEntryOrDropActive(button)) return false;
     if (_normalizeNekoIdleReturnTier(button.getAttribute('data-neko-idle-tier')) !== _NEKO_IDLE_TIER_CAT1) return false;
     if (_isNekoIdleReturnDragActionActive(button)) return false;

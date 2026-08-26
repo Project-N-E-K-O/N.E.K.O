@@ -19,6 +19,11 @@ const PART_NAMES = [
     'methods-return.js',
     'methods-state-and-cleanup.js',
 ];
+const STANDALONE_PART_NAMES = [
+    'idle-desktop-window-edge-peek.js',
+    'idle-desktop-window-interactions.js',
+    'idle-desktop-window-top-edge.js',
+];
 const EXPECTED_METHOD_NAMES = [
     '_addReturnButtonBreathingAnimation',
     '_setupReturnButtonDrag',
@@ -79,7 +84,7 @@ test('avatar button parts install the unchanged method contract for every backen
     const discoveredParts = fs.readdirSync(PARTS_DIR)
         .filter((name) => name.endsWith('.js'))
         .sort();
-    assert.deepEqual(discoveredParts, [...PART_NAMES].sort());
+    assert.deepEqual(discoveredParts, [...PART_NAMES, ...STANDALONE_PART_NAMES].sort());
 
     const { mixin } = loadMixin();
     for (const prefix of ['live2d', 'vrm', 'mmd']) {

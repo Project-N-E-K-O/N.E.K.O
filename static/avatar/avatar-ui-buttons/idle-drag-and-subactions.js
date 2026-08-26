@@ -1666,6 +1666,10 @@ function _cancelNekoIdleReturnSubactionState(state, options = {}) {
 function _cancelNekoIdleCat1Journey(button, options = {}) {
     const state = button && (button.__nekoIdleReturnSubactionState || button.__nekoIdleCat1Journey);
     if (!state) return;
+    const doorWalk = typeof window !== 'undefined' ? window.NekoDesktopWindowDoorWalk : null;
+    if (doorWalk && typeof doorWalk.cancel === 'function') {
+        doorWalk.cancel(button, { recover: false });
+    }
     _cancelNekoIdleReturnSubactionState(state, {
         preserveObservers: options.preserveObservers === true,
         reason: options.reason
