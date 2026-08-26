@@ -155,7 +155,10 @@ async def test_market_builtin_override_requires_current_preflight_confirmation(
         token=bridge_token,
     )
 
-    async def finish_task(_task_id: str, _payload: object) -> None:
+    dispatched_payloads: list[object] = []
+
+    async def finish_task(_task_id: str, dispatched_payload: object) -> None:
+        dispatched_payloads.append(dispatched_payload)
         return None
 
     monkeypatch.setattr(market_bridge, "_execute_install", finish_task)
@@ -170,6 +173,11 @@ async def test_market_builtin_override_requires_current_preflight_confirmation(
     market_bridge._tasks.pop(accepted.task_id, None)
 
     assert accepted.status == "pending"
+    assert len(dispatched_payloads) == 1
+    assert (
+        getattr(dispatched_payloads[0], "verified_builtin_manifest_sha256", None)
+        == fresh_confirmation.builtin_manifest_sha256
+    )
 
 
 @pytest.mark.asyncio
@@ -238,6 +246,7 @@ async def test_market_builtin_override_routes_verified_package_to_source_switch(
         package_url="https://example.invalid/study_companion.neko-plugin",
         package_sha256="a" * 64,
         mode="override_builtin",
+        verified_builtin_manifest_sha256="f" * 64,
     )
     calls: list[dict[str, Any]] = []
 
@@ -271,6 +280,9 @@ async def test_market_builtin_override_routes_verified_package_to_source_switch(
     await market_bridge._do_install(task, payload, {})
 
     assert calls[0]["install_source_override"]["mode"] == "override_builtin"
+    assert calls[0]["install_source_override"]["override_confirmation"] == {
+        "builtin_manifest_sha256": "f" * 64,
+    }
     assert task["result"]["operation"] == "override_builtin"
     assert task["result"]["restarted"] is True
     assert task["result"]["install"]["operation"] == "override_builtin"

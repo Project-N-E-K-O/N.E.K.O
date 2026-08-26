@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import asdict, dataclass, replace
 import hashlib
+import secrets
 import shutil
 import stat
 import tomllib
@@ -521,6 +522,7 @@ class PluginCliService:
         detail = dict(market_override.get("market_detail") or {})
         if market_override.get("channel") != "market" or market_override.get("mode") != "override_builtin":
             raise ValueError("builtin override requires Market source metadata")
+        expected_plugin_id = str(detail.get("expected_plugin_toml_id") or "").strip()
         expected_sha256 = str(detail.get("package_sha256") or "").strip().lower()
         actual_sha256 = await asyncio.to_thread(self._sha256_file, package_path)
         if len(expected_sha256) != 64 or actual_sha256 != expected_sha256:
@@ -543,12 +545,38 @@ class PluginCliService:
             target_root=policy.user_plugins_root,
             profiles_root=policy.package_profiles_root,
         )
-        expected_plugin_id = str(detail.get("expected_plugin_toml_id") or "").strip()
         if not expected_plugin_id or expected_plugin_id != plan.plugin_id:
             raise ValueError("Market plugin identity does not match the builtin override plan")
         expected_version = str(detail.get("version") or "").strip()
         if not expected_version or expected_version != plan.target_version:
             raise ValueError("Market plugin version does not match the builtin override package")
+        confirmation = dict(market_override.get("override_confirmation") or {})
+        expected_builtin_manifest_sha256 = str(
+            confirmation.get("builtin_manifest_sha256") or ""
+        ).strip().lower()
+        builtin_manifest = policy.builtin_plugins_root / expected_plugin_id / "plugin.toml"
+        try:
+            actual_builtin_manifest_sha256 = hashlib.sha256(
+                builtin_manifest.read_bytes()
+            ).hexdigest()
+        except OSError as exc:
+            raise ServerDomainError(
+                code="OVERRIDE_CONFIRMATION_CHANGED",
+                message="builtin override source changed after confirmation",
+                status_code=409,
+            ) from exc
+        if (
+            len(expected_builtin_manifest_sha256) != 64
+            or not secrets.compare_digest(
+                expected_builtin_manifest_sha256,
+                actual_builtin_manifest_sha256,
+            )
+        ):
+            raise ServerDomainError(
+                code="OVERRIDE_CONFIRMATION_CHANGED",
+                message="builtin override source changed after confirmation",
+                status_code=409,
+            )
         detail.pop("expected_plugin_toml_id", None)
         detail["package_sha256"] = actual_sha256
 

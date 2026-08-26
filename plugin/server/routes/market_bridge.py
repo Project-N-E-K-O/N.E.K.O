@@ -370,6 +370,12 @@ class MarketInstallRequest(BaseModel):
         default=None,
         description="override_builtin 预检返回、与当前覆盖计划绑定的确认令牌",
     )
+    verified_builtin_manifest_sha256: str | None = Field(
+        default=None,
+        exclude=True,
+        repr=False,
+        description="服务端内部传递的已确认 builtin manifest 指纹",
+    )
 
     @field_validator("package_sha256", mode="before")
     @classmethod
@@ -394,6 +400,7 @@ class MarketOverrideConfirmationResponse(BaseModel):
     current_version: str
     target_version: str
     confirmation_token: str
+    builtin_manifest_sha256: str = Field(default="", exclude=True, repr=False)
 
 
 class MarketTaskStatus(BaseModel):
@@ -931,6 +938,7 @@ async def _build_market_override_confirmation(
         current_version=current_version,
         target_version=target_version,
         confirmation_token=token,
+        builtin_manifest_sha256=evidence["builtin_manifest_sha256"],
     )
 
 
@@ -963,6 +971,7 @@ async def market_install(
     旧目录 → unpack → record → start，失败时按 rollback steps 逆序回滚。
     """
     _verify_token(token)
+    task_payload = payload
 
     if payload.mode == "override_builtin":
         supplied_token = (payload.confirmation_token or "").strip()
@@ -986,6 +995,11 @@ async def market_install(
                     "message": "builtin or Market package changed after confirmation",
                 },
             )
+        task_payload = payload.model_copy(
+            update={
+                "verified_builtin_manifest_sha256": rebuilt.builtin_manifest_sha256,
+            }
+        )
 
     # mode=upgrade 立即校验 lock entry 存在性（R5.5）；reinstall 同样需要
     # 已装才能"重装"，install 不要求。
@@ -1025,7 +1039,7 @@ async def market_install(
 
     # 异步执行安装
     _task_workers[task_id] = asyncio.create_task(
-        _execute_install(task_id, payload),
+        _execute_install(task_id, task_payload),
         name=f"market-install-{task_id}",
     )
 
@@ -3616,6 +3630,10 @@ def _build_market_override(
             "expected_plugin_toml_id": payload.expected_plugin_toml_id,
         },
     }
+    if mode == "override_builtin" and payload.verified_builtin_manifest_sha256:
+        override["override_confirmation"] = {
+            "builtin_manifest_sha256": payload.verified_builtin_manifest_sha256,
+        }
     if directory_name:
         override["directory_name"] = directory_name
     return override
