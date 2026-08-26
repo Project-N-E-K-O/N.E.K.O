@@ -2753,6 +2753,33 @@ def test_delete_removes_recorded_profile_after_profile_root_changes(
 
 
 @pytest.mark.plugin_unit
+def test_delete_preserves_recorded_profile_under_plugin_state_root(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    plugin_dir = tmp_path / "exec" / "legacy_plugin"
+    state_root = tmp_path / "state" / "plugins"
+    profile_dir = state_root / "legacy_package"
+    state_file = profile_dir / "data" / "state.db"
+    state_file.parent.mkdir(parents=True)
+    state_file.write_bytes(b"persistent legacy state")
+    install_source_manager = _FakeInstallSourceManager(
+        package_id="legacy_package",
+        profile_dir=str(profile_dir),
+        profile_installed=True,
+    )
+    monkeypatch.setattr(module, "get_install_source_manager", lambda: install_source_manager)
+    monkeypatch.setattr(module, "get_user_package_profiles_root", lambda: tmp_path / "profiles")
+    monkeypatch.setattr(module, "get_plugin_state_root", lambda: state_root)
+
+    staged_profile = module._stage_orphaned_package_profile_sync(plugin_dir)
+
+    assert staged_profile is None
+    assert state_file.read_bytes() == b"persistent legacy state"
+    assert not list(state_root.glob(".*.deleting-*"))
+
+
+@pytest.mark.plugin_unit
 def test_delete_refuses_symlinked_recorded_profile(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
