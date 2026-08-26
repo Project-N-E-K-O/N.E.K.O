@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import sys
 from pathlib import Path
 
 import pytest
 
+from plugin.core.host import evict_cached_plugin_modules
 from plugin.core.state import state
 from plugin.server.application.plugins import source_switch as source_switch_module
 from plugin.server.application.plugins.source_switch import (
@@ -15,6 +17,32 @@ from plugin.server.application.plugins.source_switch import (
 )
 
 pytestmark = pytest.mark.plugin_unit
+
+
+@pytest.fixture(autouse=True)
+def _restore_study_companion_module_cache():
+    """Keep source-switch cache eviction from leaking into later tests."""
+
+    plugin_id = "study_companion"
+    module_roots = (f"plugins.{plugin_id}", f"plugin.plugins.{plugin_id}")
+    saved_modules = {
+        name: module
+        for name, module in sys.modules.items()
+        if any(name == root or name.startswith(f"{root}.") for root in module_roots)
+    }
+    saved_parent_children = {
+        parent_name: getattr(sys.modules.get(parent_name), plugin_id, None)
+        for parent_name in ("plugins", "plugin.plugins")
+    }
+    try:
+        yield
+    finally:
+        evict_cached_plugin_modules(plugin_id)
+        sys.modules.update(saved_modules)
+        for parent_name, child_module in saved_parent_children.items():
+            parent_module = sys.modules.get(parent_name)
+            if parent_module is not None and child_module is not None:
+                setattr(parent_module, plugin_id, child_module)
 
 
 def _plan(token: str) -> dict[str, object]:
