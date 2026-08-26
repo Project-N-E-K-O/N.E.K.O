@@ -1314,21 +1314,15 @@ async def test_passive_image_is_staged_before_text_drain_can_prune_callback():
     assert core_module.LLMSessionManager.drain_agent_callbacks_for_llm(mgr) == ""
     assert mgr.pending_agent_callbacks == [cb]
 
-    await core_module.LLMSessionManager._stage_passive_callback_media(
+    outcome = await core_module.LLMSessionManager._stage_passive_callback_media(
         mgr,
         [cb],
         session,
     )
     rendered = core_module.LLMSessionManager.drain_agent_callbacks_for_llm(mgr)
 
-    session.stream_image.assert_awaited_once_with(
-        "image-b64",
-        bypass_rate_limit=True,
-        cache_latest=False,
-        source="callback",
-        request_id="id-passive-image-text",
-        on_rejected=ANY,
-    )
+    session.stream_image.assert_not_awaited()
+    assert outcome["system_prefix_images"] == ["image-b64"]
     assert "camera event" in rendered
     assert mgr.pending_agent_callbacks == []
 
@@ -1364,14 +1358,7 @@ async def test_text_passive_media_stages_only_the_selected_prompt_snapshot():
     )
 
     assert snapshot == [selected]
-    session.stream_image.assert_awaited_once_with(
-        "selected-image",
-        bypass_rate_limit=True,
-        cache_latest=False,
-        source="callback",
-        request_id="id-selected-media",
-        on_rejected=ANY,
-    )
+    session.stream_image.assert_not_awaited()
     assert "selected callback" in rendered
     assert "must not render" not in rendered
     assert mgr.pending_agent_callbacks == []
@@ -1411,8 +1398,8 @@ def test_passive_media_identity_is_stable_and_distinct_per_session():
     )
 
 
-async def test_transient_passive_image_rejection_keeps_callback_for_retry():
-    session = _FakeOmniOffline(delivered=True)
+async def test_transient_native_passive_image_rejection_keeps_callback_for_retry():
+    session = _make_voice_sess()
     session.stream_image = AsyncMock(
         return_value=ImageStageResult(
             accepted=False,
@@ -1443,16 +1430,10 @@ async def test_transient_passive_image_rejection_keeps_callback_for_retry():
     assert cb["media_images"] == ["image-b64"]
 
 
-async def test_partial_offline_passive_media_staging_rolls_back_callback_prefix():
+async def test_offline_passive_media_uses_call_local_images_without_touching_queue():
     session = _FakeOmniOffline(delivered=True)
     session._pending_images = ["user-image"]
-
-    async def stream_image(image_b64, **_kwargs):
-        if image_b64 == "callback-image-2":
-            raise RuntimeError("transient second-image failure")
-        session._pending_images.append(image_b64)
-
-    session.stream_image = AsyncMock(side_effect=stream_image)
+    session.stream_image = AsyncMock()
     mgr = _make_mgr(session=session)
     cb = {
         "_callback_delivery_id": "id-passive-partial-rollback",
@@ -1464,7 +1445,7 @@ async def test_partial_offline_passive_media_staging_rolls_back_callback_prefix(
     }
     mgr.pending_agent_callbacks = [cb]
 
-    await core_module.LLMSessionManager._stage_passive_callback_media(
+    outcome = await core_module.LLMSessionManager._stage_passive_callback_media(
         mgr,
         [cb],
         session,
@@ -1472,9 +1453,14 @@ async def test_partial_offline_passive_media_staging_rolls_back_callback_prefix(
     rendered = core_module.LLMSessionManager.drain_agent_callbacks_for_llm(mgr)
 
     assert session._pending_images == ["user-image"]
-    assert cb["_passive_media_staged_count"] == 0
-    assert rendered == ""
-    assert mgr.pending_agent_callbacks == [cb]
+    session.stream_image.assert_not_awaited()
+    assert outcome["system_prefix_images"] == [
+        "callback-image-1",
+        "callback-image-2",
+    ]
+    assert cb["_passive_media_staged_count"] == 2
+    assert "two callback images" in rendered
+    assert mgr.pending_agent_callbacks == []
 
 
 async def test_partial_native_passive_media_staging_requires_session_retirement():

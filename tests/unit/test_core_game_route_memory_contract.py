@@ -1757,6 +1757,81 @@ async def test_bare_openclaw_magic_words_do_not_short_circuit_text_stream(monkey
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_passive_callback_media_remains_bound_across_concurrent_focus_wait(
+    monkeypatch,
+):
+    """A later text task must not steal an earlier callback's staged image."""
+    mgr = _make_transcript_manager()
+    offline_session = object.__new__(core_module.OmniOfflineClient)
+    offline_session._pending_images = []
+    offline_session.update_max_response_length = Mock()
+    stream_calls = []
+
+    async def stream_text(text, **kwargs):
+        stream_calls.append((text, kwargs))
+
+    offline_session.stream_text = AsyncMock(side_effect=stream_text)
+    mgr.session = offline_session
+    mgr.is_active = True
+    mgr.session_ready = True
+    mgr._starting_session_count = 0
+    mgr._session_start_circuit_open = False
+    mgr._emit_cooldown_turn_end_if_needed = Mock(return_value=False)
+    mgr._is_agent_enabled = Mock(return_value=False)
+    mgr.agent_flags = {}
+    mgr._fire_task = Mock()
+    mgr._clear_tts_pipeline = AsyncMock()
+    mgr._push_focus_thinking = AsyncMock()
+    mgr.pending_agent_callbacks = [{
+        "_callback_delivery_id": "id-focus-race",
+        "status": "completed",
+        "summary": "callback context",
+        "delivery_mode": "passive",
+        "origin": "event",
+        "media_images": ["callback-image"],
+    }]
+    first_focus_entered = asyncio.Event()
+    release_first_focus = asyncio.Event()
+
+    async def focus_decision(text):
+        if text == "first text":
+            first_focus_entered.set()
+            await release_first_focus.wait()
+        return False
+
+    mgr._focus_inline_decision = AsyncMock(side_effect=focus_decision)
+    monkeypatch.setattr(
+        core_module,
+        "dispatch_text_user_message",
+        lambda name, text: None,
+    )
+
+    first_task = asyncio.create_task(
+        core_module.LLMSessionManager._process_stream_data_internal(
+            mgr,
+            {"input_type": "text", "data": "first text"},
+        )
+    )
+    await first_focus_entered.wait()
+    await core_module.LLMSessionManager._process_stream_data_internal(
+        mgr,
+        {"input_type": "text", "data": "second text"},
+    )
+    release_first_focus.set()
+    await first_task
+
+    calls_by_text = {text: kwargs for text, kwargs in stream_calls}
+    assert "system_prefix_images" not in calls_by_text["second text"]
+    assert calls_by_text["first text"]["system_prefix_images"] == [
+        "callback-image"
+    ]
+    assert "callback context" in calls_by_text["first text"]["system_prefix"]
+    assert offline_session._pending_images == []
+    assert mgr.pending_agent_callbacks == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_explicit_openclaw_magic_command_clears_pending_text_images(monkeypatch):
     """Magic-command handoff must not leak queued screenshots into the next text turn."""
     mgr = _make_transcript_manager()

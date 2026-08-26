@@ -2328,8 +2328,9 @@ class ProactiveMixin:
         """Stage retained callback images before a natural-turn consumer.
 
         Passive consumers remove callbacks after rendering their text. Media
-        therefore needs an explicit ownership handoff first: native/offline
-        images are staged into the exact session that will consume the prompt.
+        therefore needs an explicit ownership handoff first: native images
+        are staged into the exact session, while Offline images are returned
+        as call-local input for the matching ``stream_text`` invocation.
         A provider that requires image-to-text annotation is not a valid
         consumer for this path; the callback remains queued until a raw-image
         VLM session owns it.
@@ -2347,10 +2348,16 @@ class ProactiveMixin:
             "rejected": False,
             "settled": False,
             "rejection_observed": asyncio.Event(),
+            # Offline callback media is returned to the exact stream_text call
+            # that carries the rendered callback prefix.  It must never remain
+            # in OmniOfflineClient._pending_images, whose session-global
+            # next-consumer semantics let a concurrent text task steal it.
+            "system_prefix_images": [],
         }
 
         if session is None:
             return outcome
+        offline_session = isinstance(session, OmniOfflineClient)
         realtime_session = isinstance(session, OmniRealtimeClient)
         if realtime_session:
             get_delivery = getattr(
@@ -2403,6 +2410,18 @@ class ProactiveMixin:
                 callback.pop("_passive_media_staged_count", None)
                 continue
             if self._callback_media_ready_for_session(callback, session):
+                if offline_session:
+                    outcome["system_prefix_images"].extend(images)
+                continue
+            if offline_session:
+                # Offline stream_image only appends to the session-global
+                # _pending_images queue; it performs no validation.  Mark this
+                # exact session as the owner, then carry the already-validated
+                # callback media directly to its matching stream_text call.
+                # Never expose it through a next-consumer queue.
+                callback["_passive_media_session_id"] = session_id
+                callback["_passive_media_staged_count"] = len(images)
+                outcome["system_prefix_images"].extend(images)
                 continue
             pending_images = getattr(session, "_pending_images", None)
             pending_images_snapshot = (

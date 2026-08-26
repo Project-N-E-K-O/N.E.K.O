@@ -574,10 +574,11 @@ class StreamingMixin:
                     # 失败也不回填——延续到这条路径仍是这样，不在 caller 加
                     # snapshot 回滚。
                     _agent_cb_ctx = ""
+                    _agent_cb_images = []
                     if self.pending_agent_callbacks:
                         callbacks_snapshot = self._claim_agent_callbacks_for_llm()
                         try:
-                            await self._stage_passive_callback_media(
+                            _passive_media_outcome = await self._stage_passive_callback_media(
                                 callbacks_snapshot,
                                 self.session,
                             )
@@ -587,6 +588,13 @@ class StreamingMixin:
                                 )
                                 or ""
                             )
+                            if _agent_cb_ctx:
+                                _agent_cb_images = list(
+                                    _passive_media_outcome.get(
+                                        "system_prefix_images",
+                                        [],
+                                    )
+                                )
                         except Exception as _cb_err:
                             logger.warning(f"⚠️ Agent callback drain failed: {_cb_err}")
                             _agent_cb_ctx = ""
@@ -648,6 +656,8 @@ class StreamingMixin:
                         "thinking_on": _focus_thinking,
                         "response_discarded_callback": response_discarded_callback,
                     }
+                    if _agent_cb_images:
+                        stream_text_kwargs["system_prefix_images"] = _agent_cb_images
                     if input_transcript_callback:
                         stream_text_kwargs["input_transcript_callback"] = input_transcript_callback
                     if memory_text:

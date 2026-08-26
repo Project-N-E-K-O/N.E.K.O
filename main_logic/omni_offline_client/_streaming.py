@@ -490,6 +490,7 @@ class _StreamingMixin:
         text: str,
         *,
         system_prefix: str | None = None,
+        system_prefix_images: Optional[list[str]] = None,
         thinking_on: bool = False,
         input_transcript_callback: Optional[Callable[[str], Awaitable[None]]] = None,
         history_replacement_text: str | None = None,
@@ -537,10 +538,16 @@ class _StreamingMixin:
         ``response_discarded_callback`` binds discard ownership to this invocation.
         It avoids re-reading mutable session-level request state after a later text
         request has already started.
+
+        ``system_prefix_images`` binds passive callback media to the same
+        invocation as ``system_prefix``.  Unlike ``_pending_images``, this list
+        cannot be consumed by a concurrently scheduled text request while Core
+        awaits its Focus decision.
         """  # noqa: DOCSTRING_CJK
+        prefix_images = list(system_prefix_images or [])
         if not text or not text.strip():
             # If only images without text, use a default prompt
-            if self._pending_images:
+            if self._pending_images or prefix_images:
                 text = "请分析这些图片。"
             else:
                 return
@@ -583,7 +590,11 @@ class _StreamingMixin:
                 self._proactive_image_staged_at = 0.0
                 self._proactive_image_history_len = 0
                 proactive_image = None
-        has_images = bool(proactive_image) or len(self._pending_images) > 0
+        has_images = bool(
+            proactive_image
+            or prefix_images
+            or self._pending_images
+        )
         # 就地植入 system_prefix：拼到 user content 的 text 段前缀（watermark
         # 自带，不补 separator 也能区分）。callback 文本随 HumanMessage 一起
         # 落 history，跟 voice mode user-role 注入对偶。
@@ -622,6 +633,13 @@ class _StreamingMixin:
                         "url": f"data:image/jpeg;base64,{img_b64}"
                     }
                 })
+            for img_b64 in prefix_images:
+                content.append({
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:image/jpeg;base64,{img_b64}"
+                    }
+                })
 
             # Add text（已含 system_prefix watermark 前缀，若有）
             content.append({
@@ -630,7 +648,11 @@ class _StreamingMixin:
             })
 
             user_message = HumanMessage(content=content)
-            _img_count = len(self._pending_images) + (1 if proactive_image else 0)
+            _img_count = (
+                len(self._pending_images)
+                + len(prefix_images)
+                + (1 if proactive_image else 0)
+            )
             logger.info(
                 f"Sending multi-modal message with {_img_count} image(s)"
                 f"{' (incl. proactive screen)' if proactive_image else ''}"
