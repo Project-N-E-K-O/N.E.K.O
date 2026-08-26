@@ -138,6 +138,48 @@ async def test_route_comm_overwrites_the_plugin_supplied_identity(
 
 
 @pytest.mark.asyncio
+async def test_token_bearing_message_uses_private_bridge_and_redacts_shared_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from plugin.server.messaging import proactive_bridge
+
+    manager = PluginCommunicationResourceManager(
+        plugin_id="authenticated-plugin",
+        transport=_Transport(),
+        logger=_Logger(),
+    )
+    target_queue: asyncio.Queue[dict[str, object]] = asyncio.Queue()
+    manager._message_target_queue = target_queue
+    stored: list[dict[str, object]] = []
+    private: list[dict[str, object]] = []
+    monkeypatch.setattr(state, "append_message_record", lambda record: stored.append(copy.deepcopy(record)))
+    monkeypatch.setattr(
+        proactive_bridge,
+        "enqueue_private_payload",
+        lambda payload: private.append(copy.deepcopy(payload)) or True,
+        raising=False,
+    )
+
+    await manager._route_message(
+        {
+            "type": "MESSAGE_PUSH",
+            "message_id": "private-message",
+            "plugin_id": "authenticated-plugin",
+            "parts": [{"type": "text", "text": "private live-frame cue"}],
+            "metadata": {
+                "live_frame_permission_token": "generation-secret",
+                "public_hint": "keep-me",
+            },
+        }
+    )
+
+    assert private[0]["metadata"]["live_frame_permission_token"] == "generation-secret"
+    assert "generation-secret" not in repr(stored)
+    forwarded = target_queue.get_nowait()
+    assert forwarded["metadata"] == {"public_hint": "keep-me"}
+
+
+@pytest.mark.asyncio
 async def test_wait_for_startup_rejects_ready_result_with_startup_error() -> None:
     manager = PluginCommunicationResourceManager(
         plugin_id="demo",

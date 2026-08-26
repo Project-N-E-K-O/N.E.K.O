@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import queue
 import threading
 import time
 from typing import Any
@@ -111,6 +112,25 @@ class ProactiveBridge:
     def __init__(self) -> None:
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
+        self._private_payloads: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=1024)
+
+    def enqueue_private_payload(self, payload: dict[str, Any]) -> bool:
+        try:
+            self._private_payloads.put_nowait(dict(payload))
+            return True
+        except queue.Full:
+            return False
+
+    def _drain_private_payloads(self, push_sock: Any) -> None:
+        for _ in range(128):
+            try:
+                payload = self._private_payloads.get_nowait()
+            except queue.Empty:
+                return
+            try:
+                self._dispatch(payload, push_sock)
+            except Exception as exc:
+                logger.error("Error dispatching private push payload: {}", exc)
 
     def start(self) -> None:
         if zmq is None:
@@ -148,7 +168,7 @@ class ProactiveBridge:
         ctx = zmq.Context.instance()
         sub_sock = ctx.socket(zmq.SUB)
         sub_sock.linger = 0
-        sub_sock.setsockopt(zmq.RCVTIMEO, 1000)
+        sub_sock.setsockopt(zmq.RCVTIMEO, 100)
         sub_sock.connect(pub_endpoint)
         sub_sock.setsockopt_string(zmq.SUBSCRIBE, "messages.")
 
@@ -164,6 +184,7 @@ class ProactiveBridge:
 
         try:
             while not self._stop.is_set():
+                self._drain_private_payloads(push_sock)
                 try:
                     parts_raw = sub_sock.recv_multipart()
                 except zmq.Again:
@@ -368,6 +389,10 @@ class ProactiveBridge:
 
 
 _bridge = ProactiveBridge()
+
+
+def enqueue_private_payload(payload: dict[str, Any]) -> bool:
+    return _bridge.enqueue_private_payload(payload)
 
 
 def start_proactive_bridge() -> None:

@@ -13,6 +13,7 @@ from plugin._types.exceptions import PluginLifecycleError
 from plugin.core import registry as registry_module
 from plugin.server.application.plugins import query_service as query_module
 from plugin.server.application.plugins import lifecycle_service as module
+from plugin.server.application.plugins.metadata_scanner import IsolatedPluginMetadata
 from plugin.server.domain.errors import ServerDomainError
 from plugin.server.infrastructure import runtime_overrides as runtime_overrides_module
 from plugin.sdk.plugin.decorators import plugin_entry
@@ -51,6 +52,25 @@ class _FakeAdapterPlugin:
     @plugin_entry(id="list_servers", name="List Servers", description="List configured MCP servers")
     async def list_servers(self) -> dict[str, object]:
         return {"servers": []}
+
+
+def _metadata_scan_for(plugin_cls: type):
+    def _scan(**kwargs: object) -> IsolatedPluginMetadata:
+        plugin_id = str(kwargs["plugin_id"])
+        conf = kwargs.get("conf")
+        pdata = kwargs.get("pdata")
+        return IsolatedPluginMetadata(
+            entries_preview=registry_module._extract_entries_preview(
+                plugin_id,
+                plugin_cls,
+                conf if isinstance(conf, dict) else {},
+                pdata if isinstance(pdata, dict) else {},
+            ),
+            handlers={},
+            entry_methods={},
+        )
+
+    return _scan
 
 
 class _CaptureLogger:
@@ -626,7 +646,7 @@ async def test_start_plugin_refreshes_registry_before_loading(
         )
         monkeypatch.setattr(module, "_resolve_plugin_id_conflict", lambda *args, **kwargs: args[0])
         monkeypatch.setattr(module, "PluginProcessHost", _FakeProcessHost)
-        monkeypatch.setattr(module, "_import_plugin_module", lambda *args, **kwargs: SimpleNamespace(FakeAdapterPlugin=_FakeAdapterPlugin))
+        monkeypatch.setattr(module, "scan_plugin_metadata_isolated", _metadata_scan_for(_FakeAdapterPlugin))
         monkeypatch.setattr(module, "emit_lifecycle_event", lambda event: None)
 
         service = module.PluginLifecycleService()
@@ -710,7 +730,7 @@ async def test_start_plugin_persists_intent_after_success_and_migrates_resolved_
     monkeypatch.setattr(module, "_resolve_plugin_id_conflict", lambda *args, **kwargs: resolved_plugin_id)
     monkeypatch.setattr(module, "_find_missing_python_requirements", lambda *args, **kwargs: [])
     monkeypatch.setattr(module, "PluginProcessHost", _FakeProcessHost)
-    monkeypatch.setattr(module, "_import_plugin_module", lambda *args, **kwargs: SimpleNamespace(Plugin=type("Plugin", (), {})))
+    monkeypatch.setattr(module, "scan_plugin_metadata_isolated", _metadata_scan_for(type("Plugin", (), {})))
     monkeypatch.setattr(module, "emit_lifecycle_event", lambda event: None)
 
     plugins_backup = copy.deepcopy(module.state.plugins)
@@ -889,7 +909,7 @@ async def test_start_plugin_checks_python_requirements_against_vendor_paths(
     monkeypatch.setattr(module, "_resolve_plugin_id_conflict", lambda *args, **kwargs: args[0])
     monkeypatch.setattr(module, "_find_missing_python_requirements", _fake_find_missing)
     monkeypatch.setattr(module, "PluginProcessHost", _FakeProcessHost)
-    monkeypatch.setattr(module, "_import_plugin_module", lambda *args, **kwargs: SimpleNamespace(FakeAdapterPlugin=_FakeAdapterPlugin))
+    monkeypatch.setattr(module, "scan_plugin_metadata_isolated", _metadata_scan_for(_FakeAdapterPlugin))
     monkeypatch.setattr(module, "emit_lifecycle_event", lambda event: None)
 
     plugins_backup = copy.deepcopy(module.state.plugins)
@@ -1050,8 +1070,8 @@ async def test_start_plugin_uses_default_startup_timeout_when_runtime_timeout_om
         monkeypatch.setattr(module, "PluginProcessHost", _RecordingHost)
         monkeypatch.setattr(
             module,
-            "_import_plugin_module",
-            lambda *args, **kwargs: SimpleNamespace(FakeAdapterPlugin=_FakeAdapterPlugin),
+            "scan_plugin_metadata_isolated",
+            _metadata_scan_for(_FakeAdapterPlugin),
         )
         monkeypatch.setattr(module, "emit_lifecycle_event", lambda event: None)
 
@@ -1327,8 +1347,8 @@ async def test_start_plugin_defaults_startup_failure_to_warn_and_marks_degraded(
         monkeypatch.setattr(module, "PluginProcessHost", _StartupWarningHost)
         monkeypatch.setattr(
             module,
-            "_import_plugin_module",
-            lambda *args, **kwargs: SimpleNamespace(FakeAdapterPlugin=_FakeAdapterPlugin),
+            "scan_plugin_metadata_isolated",
+            _metadata_scan_for(_FakeAdapterPlugin),
         )
         monkeypatch.setattr(module, "emit_lifecycle_event", lambda event: None)
 
@@ -1441,8 +1461,8 @@ async def test_start_plugin_startup_failure_fail_keeps_startup_error_fatal(
         monkeypatch.setattr(module, "_revoke_plugin_permissions", _successful_revoke)
         monkeypatch.setattr(
             module,
-            "_import_plugin_module",
-            lambda *args, **kwargs: SimpleNamespace(FakeAdapterPlugin=_FakeAdapterPlugin),
+            "scan_plugin_metadata_isolated",
+            _metadata_scan_for(_FakeAdapterPlugin),
         )
         monkeypatch.setattr(module, "emit_lifecycle_event", lambda event: None)
 
@@ -1547,8 +1567,8 @@ async def test_start_plugin_does_not_map_startup_business_timeout_to_start_timeo
         monkeypatch.setattr(module, "_revoke_plugin_permissions", _successful_revoke)
         monkeypatch.setattr(
             module,
-            "_import_plugin_module",
-            lambda *args, **kwargs: SimpleNamespace(FakeAdapterPlugin=_FakeAdapterPlugin),
+            "scan_plugin_metadata_isolated",
+            _metadata_scan_for(_FakeAdapterPlugin),
         )
         monkeypatch.setattr(module, "emit_lifecycle_event", lambda event: None)
 
@@ -1649,8 +1669,8 @@ async def test_start_plugin_applies_runtime_startup_timeout_to_legacy_host_and_c
         monkeypatch.setattr(module, "_revoke_plugin_permissions", _successful_revoke)
         monkeypatch.setattr(
             module,
-            "_import_plugin_module",
-            lambda *args, **kwargs: SimpleNamespace(FakeAdapterPlugin=_FakeAdapterPlugin),
+            "scan_plugin_metadata_isolated",
+            _metadata_scan_for(_FakeAdapterPlugin),
         )
         monkeypatch.setattr(module, "emit_lifecycle_event", lambda event: None)
 
@@ -1759,8 +1779,8 @@ async def test_start_plugin_lets_timeout_aware_host_own_startup_timeout_cleanup(
         monkeypatch.setattr(module, "_revoke_plugin_permissions", _successful_revoke)
         monkeypatch.setattr(
             module,
-            "_import_plugin_module",
-            lambda *args, **kwargs: SimpleNamespace(FakeAdapterPlugin=_FakeAdapterPlugin),
+            "scan_plugin_metadata_isolated",
+            _metadata_scan_for(_FakeAdapterPlugin),
         )
         monkeypatch.setattr(module, "emit_lifecycle_event", lambda event: None)
 
@@ -1865,8 +1885,8 @@ async def test_start_plugin_classifies_exponent_form_startup_timeout(
         monkeypatch.setattr(module, "_revoke_plugin_permissions", _successful_revoke)
         monkeypatch.setattr(
             module,
-            "_import_plugin_module",
-            lambda *args, **kwargs: SimpleNamespace(FakeAdapterPlugin=_FakeAdapterPlugin),
+            "scan_plugin_metadata_isolated",
+            _metadata_scan_for(_FakeAdapterPlugin),
         )
         monkeypatch.setattr(module, "emit_lifecycle_event", lambda event: None)
 
@@ -1965,7 +1985,7 @@ async def test_start_plugin_persists_entries_preview_and_invalidates_stale_cache
         )
         monkeypatch.setattr(module, "_resolve_plugin_id_conflict", lambda *args, **kwargs: args[0])
         monkeypatch.setattr(module, "PluginProcessHost", _FakeProcessHost)
-        monkeypatch.setattr(module, "_import_plugin_module", lambda *args, **kwargs: SimpleNamespace(FakeAdapterPlugin=_FakeAdapterPlugin))
+        monkeypatch.setattr(module, "scan_plugin_metadata_isolated", _metadata_scan_for(_FakeAdapterPlugin))
         monkeypatch.setattr(module, "emit_lifecycle_event", lambda event: None)
 
         service = module.PluginLifecycleService()
@@ -1987,6 +2007,116 @@ async def test_start_plugin_persists_entries_preview_and_invalidates_stale_cache
         assert plugin_meta["short_description"] == "persist me"
         assert plugin_meta["keywords"] == ["mcp"]
         assert plugin_meta["sdk_supported"] == ">=0.1"
+    finally:
+        with module.state.acquire_plugins_write_lock():
+            module.state.plugins.clear()
+            module.state.plugins.update(plugins_backup)
+        with module.state.acquire_plugin_hosts_write_lock():
+            module.state.plugin_hosts.clear()
+            module.state.plugin_hosts.update(hosts_backup)
+        with module.state.acquire_event_handlers_write_lock():
+            module.state.event_handlers.clear()
+            module.state.event_handlers.update(handlers_backup)
+        with module.state._snapshot_cache_lock:
+            module.state._snapshot_cache = cache_backup
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_start_plugin_imports_metadata_without_host_api_token(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    plugin_id = "credential_start_probe"
+    plugin_dir = tmp_path / "plugins" / plugin_id
+    plugin_dir.mkdir(parents=True)
+    observed_path = tmp_path / "observed-start-host-token.txt"
+    (plugin_dir / "__init__.py").write_text(
+        "\n".join(
+            [
+                "import os",
+                "from pathlib import Path",
+                "from plugin.sdk.plugin.decorators import plugin_entry",
+                f"Path({str(observed_path)!r}).write_text(",
+                "    os.getenv('NEKO_PLUGIN_HOST_API_TOKEN', '<missing>'),",
+                "    encoding='utf-8',",
+                ")",
+                "",
+                "class DemoPlugin:",
+                "    @plugin_entry(id='ping', name='Ping', description='Ping tool')",
+                "    async def ping(self):",
+                "        return {'ok': True}",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    config_path = plugin_dir / "plugin.toml"
+    config_path.write_text(
+        "\n".join(
+            [
+                "[plugin]",
+                f"id = '{plugin_id}'",
+                f"name = '{plugin_id}'",
+                "type = 'plugin'",
+                f"entry = 'plugins.{plugin_id}:DemoPlugin'",
+                "version = '0.1.0'",
+                "",
+                "[plugin_runtime]",
+                "enabled = true",
+                "auto_start = false",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    plugins_backup = copy.deepcopy(module.state.plugins)
+    hosts_backup = dict(module.state.plugin_hosts)
+    handlers_backup = dict(module.state.event_handlers)
+    cache_backup = copy.deepcopy(module.state._snapshot_cache)
+
+    try:
+        with module.state.acquire_plugins_write_lock():
+            module.state.plugins.clear()
+            module.state.plugins[plugin_id] = {
+                "id": plugin_id,
+                "name": plugin_id,
+                "type": "plugin",
+                "config_path": str(config_path),
+                "entry_point": f"plugins.{plugin_id}:DemoPlugin",
+            }
+        with module.state.acquire_plugin_hosts_write_lock():
+            module.state.plugin_hosts.clear()
+        with module.state.acquire_event_handlers_write_lock():
+            module.state.event_handlers.clear()
+
+        monkeypatch.setenv("NEKO_PLUGIN_HOST_API_TOKEN", "host-secret")
+        monkeypatch.setattr(module, "_get_plugin_config_path", lambda _plugin_id: config_path)
+        monkeypatch.setattr(
+            module,
+            "resolve_plugin_config_from_path",
+            lambda *args, **kwargs: {
+                "effective_config": kwargs["base_config"],
+                "warnings": [],
+            },
+        )
+        monkeypatch.setattr(module, "_resolve_plugin_id_conflict", lambda *args, **kwargs: args[0])
+        monkeypatch.setattr(module, "PluginProcessHost", _FakeProcessHost)
+        monkeypatch.setattr(module, "emit_lifecycle_event", lambda event: None)
+
+        result = await module.PluginLifecycleService().start_plugin(
+            plugin_id,
+            refresh_registry=False,
+        )
+
+        assert result["success"] is True
+        assert observed_path.read_text(encoding="utf-8") == "<missing>"
+        with module.state.acquire_event_handlers_read_lock():
+            handler = module.state.event_handlers[f"{plugin_id}.ping"]
+        assert handler.meta.id == "ping"
+        assert handler.meta.name == "Ping"
+        assert handler.handler() is None
     finally:
         with module.state.acquire_plugins_write_lock():
             module.state.plugins.clear()
@@ -2055,7 +2185,7 @@ async def test_start_plugin_logs_structured_config_warnings_from_resolver(
         )
         monkeypatch.setattr(module, "_resolve_plugin_id_conflict", lambda *args, **kwargs: args[0])
         monkeypatch.setattr(module, "PluginProcessHost", _FakeProcessHost)
-        monkeypatch.setattr(module, "_import_plugin_module", lambda *args, **kwargs: SimpleNamespace(FakeAdapterPlugin=_FakeAdapterPlugin))
+        monkeypatch.setattr(module, "scan_plugin_metadata_isolated", _metadata_scan_for(_FakeAdapterPlugin))
         monkeypatch.setattr(module, "emit_lifecycle_event", lambda event: None)
         monkeypatch.setattr(module, "logger", capture_logger)
 
@@ -2167,7 +2297,7 @@ async def test_start_plugin_allows_retry_for_load_failed_plugin(
         )
         monkeypatch.setattr(module, "_resolve_plugin_id_conflict", lambda *args, **kwargs: args[0])
         monkeypatch.setattr(module, "PluginProcessHost", _FakeProcessHost)
-        monkeypatch.setattr(module, "_import_plugin_module", lambda *args, **kwargs: SimpleNamespace(FakeAdapterPlugin=_FakeAdapterPlugin))
+        monkeypatch.setattr(module, "scan_plugin_metadata_isolated", _metadata_scan_for(_FakeAdapterPlugin))
         monkeypatch.setattr(module, "emit_lifecycle_event", lambda event: None)
 
         service = module.PluginLifecycleService()
@@ -3113,6 +3243,62 @@ def _seed_running_plugin(plugin_id: str, config_path: Path) -> None:
 
 @pytest.mark.plugin_unit
 @pytest.mark.asyncio
+async def test_stop_plugin_repeats_generation_revoke_after_shutdown(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    events: list[tuple[str, str]] = []
+
+    class _PublishingShutdownHost(_FakeProcessHost):
+        def __init__(self, *args, **kwargs) -> None:
+            super().__init__(*args, **kwargs)
+            self.transport = SimpleNamespace(uplink_token="host-generation-one")
+
+        async def shutdown(
+            self, timeout: float = module.PLUGIN_SHUTDOWN_TIMEOUT
+        ) -> None:
+            events.append(("shutdown", self.transport.uplink_token))
+            self.stopped = True
+
+    config_path = tmp_path / "demo_plugin" / "plugin.toml"
+    hosts_backup = dict(module.state.plugin_hosts)
+    try:
+        with module.state.acquire_plugin_hosts_write_lock():
+            module.state.plugin_hosts.clear()
+            module.state.plugin_hosts["demo_plugin"] = _PublishingShutdownHost(
+                plugin_id="demo_plugin",
+                entry_point="tests.fake:Plugin",
+                config_path=config_path,
+            )
+
+        async def _revoke(
+            plugin_id: str,
+            *,
+            host_generation: str = "",
+        ) -> bool:
+            assert plugin_id == "demo_plugin"
+            events.append(("revoke", host_generation))
+            return True
+
+        monkeypatch.setattr(module, "_revoke_plugin_permissions", _revoke)
+        monkeypatch.setattr(module, "emit_lifecycle_event", lambda event: None)
+
+        result = await module.PluginLifecycleService().stop_plugin("demo_plugin")
+
+        assert result["success"] is True
+        assert events == [
+            ("revoke", "host-generation-one"),
+            ("shutdown", "host-generation-one"),
+            ("revoke", "host-generation-one"),
+        ]
+    finally:
+        with module.state.acquire_plugin_hosts_write_lock():
+            module.state.plugin_hosts.clear()
+            module.state.plugin_hosts.update(hosts_backup)
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
 async def test_stop_plugin_revokes_permissions_even_when_shutdown_fails(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -3419,7 +3605,7 @@ async def test_stop_plugin_internal_call_does_not_touch_override(
         await service.stop_plugin("demo_plugin")
         assert _isolate_runtime_overrides == {"demo_plugin": True}
         assert runtime_overrides_module.get_runtime_override("demo_plugin") is True
-        assert revoked == ["demo_plugin"]
+        assert revoked == ["demo_plugin", "demo_plugin"]
     finally:
         with module.state.acquire_plugins_write_lock():
             module.state.plugins.clear()

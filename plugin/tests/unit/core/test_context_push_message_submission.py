@@ -131,6 +131,28 @@ def test_slow_message_plane_success_reports_local_submission(
 
 
 @pytest.mark.plugin_unit
+def test_live_frame_token_bypasses_shared_message_plane(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    socket = _Socket()
+    private_queue = _Queue()
+    _install_slow_message_plane(monkeypatch, socket)
+    ctx, _logger = _context(tmp_path, message_queue=private_queue)
+
+    result = ctx.push_message(
+        visibility=[],
+        ai_behavior="respond",
+        parts=[{"type": "text", "text": "private live-frame cue"}],
+        metadata={"live_frame_permission_token": "generation-secret"},
+    )
+
+    assert result == {"submitted": True}
+    assert socket.sent == []
+    assert private_queue.items[0]["metadata"]["live_frame_permission_token"] == "generation-secret"
+
+
+@pytest.mark.plugin_unit
 def test_slow_message_plane_failure_uses_fallback_and_is_redacted(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

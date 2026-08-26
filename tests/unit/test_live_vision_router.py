@@ -717,6 +717,47 @@ def test_stale_host_revoke_does_not_retract_the_active_host_generation(
     assert retracted == []
 
 
+def test_repeated_revoke_sweeps_when_no_newer_host_generation_is_active(
+    monkeypatch,
+):
+    retracted = []
+
+    class _Session:
+        def retract_callbacks_from_source(self, source_name):
+            retracted.append(source_name)
+
+    client = _client({"lanlan": _Session()}, monkeypatch, authenticated=True)
+    client.post(
+        DELIVERY_ENDPOINT,
+        json={
+            "source_name": "demo_plugin",
+            "host_generation": "host-one",
+            "token": "permission-one",
+            "enabled": True,
+        },
+    )
+    client.post(
+        REVOKE_ENDPOINT,
+        json={
+            "source_name": "demo_plugin",
+            "host_generation": "host-one",
+        },
+    )
+    retracted.clear()
+
+    response = client.post(
+        REVOKE_ENDPOINT,
+        json={
+            "source_name": "demo_plugin",
+            "host_generation": "host-one",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["delivery_revoked"] is True
+    assert retracted == ["demo_plugin"]
+
+
 def test_source_revoke_retracts_callbacks_from_a_mapping_view(monkeypatch):
     retracted = []
 

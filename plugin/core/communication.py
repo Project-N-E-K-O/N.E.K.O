@@ -490,6 +490,39 @@ class PluginCommunicationResourceManager:
         se = self._shutdown_event
         if se and se.is_set():
             return
+
+        metadata = msg.get("metadata") if isinstance(msg, dict) else None
+        live_frame_token = (
+            metadata.get("live_frame_permission_token")
+            if isinstance(metadata, dict)
+            else None
+        )
+        if isinstance(live_frame_token, str) and live_frame_token:
+            # CH_MSG is authenticated by this host's uplink transport. Bind
+            # the source to that authenticated plugin and keep the capability
+            # on a private path into proactive delivery.
+            private_msg = dict(msg)
+            private_msg["plugin_id"] = self.plugin_id
+            try:
+                from plugin.server.messaging.proactive_bridge import (
+                    enqueue_private_payload,
+                )
+
+                if not enqueue_private_payload(private_msg):
+                    self.logger.warning(
+                        "Private proactive bridge queue rejected message from plugin {}",
+                        self.plugin_id,
+                    )
+            except Exception:
+                self.logger.warning(
+                    "Failed to enqueue private proactive message from plugin {}",
+                    self.plugin_id,
+                )
+
+            redacted_metadata = dict(metadata)
+            redacted_metadata.pop("live_frame_permission_token", None)
+            msg = dict(private_msg)
+            msg["metadata"] = redacted_metadata
         await self._forward_message(msg)
 
     async def _forward_message(self, msg: Dict[str, Any]) -> None:

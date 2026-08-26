@@ -80,3 +80,23 @@ def test_proactive_bridge_ignores_an_oversized_expiry() -> None:
 
     assert len(socket.events) == 1
     assert "expires_in_s" not in socket.events[0]
+
+
+def test_private_bridge_preserves_live_frame_token_for_proactive_delivery() -> None:
+    socket = _PushSocket()
+    bridge = ProactiveBridge()
+
+    assert bridge.enqueue_private_payload(
+        {
+            "plugin_id": "demo_plugin",
+            "schema": "push_message.v2",
+            "visibility": [],
+            "ai_behavior": "respond",
+            "parts": [{"type": "text", "text": "look at this"}],
+            "metadata": {"live_frame_permission_token": "generation-secret"},
+        }
+    ) is True
+
+    bridge._drain_private_payloads(socket)
+
+    assert socket.events[0]["metadata"]["live_frame_permission_token"] == "generation-secret"

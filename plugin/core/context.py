@@ -1033,6 +1033,45 @@ class PluginContext:
                 "reply": legacy_reply,
             }
 
+        # A live-frame permission token is a per-host capability. It must not
+        # enter message_plane, whose records are persisted and broadcast to
+        # bus subscribers. The plugin child sends this payload only over its
+        # authenticated CH_MSG uplink; the host strips the token before any
+        # shared-state write and privately hands the original to proactive
+        # delivery.
+        live_frame_token = canonical_metadata.get("live_frame_permission_token")
+        if isinstance(live_frame_token, str) and live_frame_token:
+            if self.message_queue is None:
+                return {
+                    "ok": False,
+                    "submitted": False,
+                    "reason": "transport_unavailable",
+                }
+            try:
+                private_payload = _build_wire_payload(
+                    message_id=str(uuid.uuid4()),
+                    ts=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                )
+                self.message_queue.put_nowait(private_payload)
+                return {"submitted": True}
+            except Exception as e:
+                try:
+                    self.logger.warning(
+                        "[PluginContext] private message_queue push failed (%s)",
+                        type(e).__name__,
+                    )
+                except Exception:
+                    pass
+                return {
+                    "ok": False,
+                    "submitted": False,
+                    "reason": (
+                        "backpressure"
+                        if _is_submission_backpressure(e)
+                        else "transport_error"
+                    ),
+                }
+
         # Prefer writing messages directly to message_plane ingest to isolate high-frequency writes
         # from the control plane and rely on ZMQ backpressure.
         primary_failure_reason: Optional[str] = None
