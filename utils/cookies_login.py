@@ -357,13 +357,18 @@ class CredentialManager:
         self._cache_lock = threading.RLock()
         self._platform_locks: dict[str, threading.RLock] = {}
         self._legacy_sources: dict[str, set[Path]] = {}
+        self._legacy_configured_signatures: dict[str, _SourceSignature] = {}
 
     @staticmethod
-    def _file_stamp(path: Path | None) -> _FileStamp:
+    def _file_stamp(
+        path: Path | None,
+        *,
+        follow_symlinks: bool = True,
+    ) -> _FileStamp:
         if path is None:
             return None
         try:
-            stat = path.stat()
+            stat = path.stat(follow_symlinks=follow_symlinks)
         except OSError:
             return None
         return stat.st_mtime_ns, stat.st_ctime_ns, stat.st_size
@@ -371,7 +376,7 @@ class CredentialManager:
     @staticmethod
     def _path_is_absent(path: Path) -> bool:
         try:
-            path.stat()
+            path.lstat()
         except FileNotFoundError:
             return True
         except OSError:
@@ -387,7 +392,7 @@ class CredentialManager:
 
     @classmethod
     def legacy_source_signature(cls, source_path: Path) -> _SourceSignature:
-        source_path = source_path.resolve()
+        source_path = source_path.absolute()
         return str(source_path), cls._file_stamp(source_path), None
 
     def _platform_lock(self, platform: str) -> threading.RLock:
@@ -398,6 +403,9 @@ class CredentialManager:
         with self._cache_lock:
             entry = self._cache.get(platform)
             legacy_sources = self._legacy_sources.get(platform, set()).copy()
+            legacy_configured_signature = self._legacy_configured_signatures.get(
+                platform
+            )
         if entry is None:
             return None
 
@@ -406,7 +414,10 @@ class CredentialManager:
         if source_path == configured_signature[0]:
             source_signature = configured_signature
         elif source_path is not None and Path(source_path) in legacy_sources:
-            if configured_signature[1] is not None:
+            if (
+                configured_signature[1] is not None
+                and configured_signature != legacy_configured_signature
+            ):
                 source_signature = configured_signature
             else:
                 legacy_path = Path(source_path)
@@ -495,6 +506,7 @@ class CredentialManager:
                 return False
             with self._cache_lock:
                 self._cache.pop(platform, None)
+                self._legacy_configured_signatures.pop(platform, None)
             entry = self._load_entry(platform)
             return entry.state == self.READY and entry.credentials == normalized
 
@@ -510,8 +522,16 @@ class CredentialManager:
             return False
 
         with self._platform_lock(platform):
-            if self._source_signature(platform)[1] is not None:
-                return False
+            configured_signature = self._source_signature(platform)
+            if configured_signature[1] is not None:
+                configured_entry = self._load_entry(platform)
+                if configured_entry.state != self.INVALID:
+                    return False
+                if self._source_signature(platform) != configured_signature:
+                    return False
+            else:
+                configured_signature = None
+
             source_path_value = source_signature[0]
             if source_path_value is None or source_signature[1] is None:
                 return False
@@ -520,6 +540,10 @@ class CredentialManager:
                 return False
             with self._cache_lock:
                 self._legacy_sources.setdefault(platform, set()).add(source_path)
+                if configured_signature is None:
+                    self._legacy_configured_signatures.pop(platform, None)
+                else:
+                    self._legacy_configured_signatures[platform] = configured_signature
             self._store(platform, source_signature, self.READY, normalized)
             return True
 
@@ -538,13 +562,19 @@ class CredentialManager:
                 *get_legacy_cookie_files(platform),
                 *legacy_files,
             ]
-            cookie_files = list(dict.fromkeys(path.resolve() for path in candidate_files))
+            cookie_files = list(dict.fromkeys(path.absolute() for path in candidate_files))
 
-            backups: dict[Path, tuple[bytes, int, _FileStamp]] = {}
+            backups: dict[
+                Path,
+                tuple[bytes, int, _FileStamp, str | None],
+            ] = {}
             for stored_file in cookie_files:
                 try:
-                    stat = stored_file.stat()
-                    contents = stored_file.read_bytes()
+                    stat = stored_file.lstat()
+                    link_target = (
+                        os.readlink(stored_file) if stored_file.is_symlink() else None
+                    )
+                    contents = b"" if link_target is not None else stored_file.read_bytes()
                 except FileNotFoundError:
                     continue
                 except OSError:
@@ -553,17 +583,23 @@ class CredentialManager:
                     raise
 
                 signature = (stat.st_mtime_ns, stat.st_ctime_ns, stat.st_size)
-                if self._file_stamp(stored_file) != signature:
+                if self._file_stamp(stored_file, follow_symlinks=False) != signature:
                     with self._cache_lock:
                         self._cache.pop(platform, None)
                     raise OSError(f"{stored_file} changed while preparing deletion")
-                backups[stored_file] = (contents, stat.st_mode, signature)
+                backups[stored_file] = (
+                    contents,
+                    stat.st_mode,
+                    signature,
+                    link_target,
+                )
 
             artifact_existed = bool(backups)
             deleted_files: list[Path] = []
             cookie_error: OSError | None = None
-            for stored_file, (_contents, _mode, signature) in backups.items():
-                if self._file_stamp(stored_file) != signature:
+            for stored_file, backup in backups.items():
+                _contents, _mode, signature, _link_target = backup
+                if self._file_stamp(stored_file, follow_symlinks=False) != signature:
                     cookie_error = OSError(
                         f"{stored_file} changed while deleting credentials"
                     )
@@ -583,10 +619,13 @@ class CredentialManager:
                 for deleted_file in deleted_files:
                     if not self._path_is_absent(deleted_file):
                         continue
-                    contents, mode, _signature = backups[deleted_file]
+                    contents, mode, _signature, link_target = backups[deleted_file]
                     try:
-                        deleted_file.write_bytes(contents)
-                        if sys.platform != "win32":
+                        if link_target is None:
+                            deleted_file.write_bytes(contents)
+                        else:
+                            deleted_file.symlink_to(link_target)
+                        if link_target is None and sys.platform != "win32":
                             os.chmod(deleted_file, mode)
                     except OSError as exc:
                         restore_error = restore_error or exc
@@ -605,12 +644,14 @@ class CredentialManager:
                 except FileNotFoundError:
                     pass
                 except OSError:
+                    artifact_existed = True
                     key_deleted = False
                 else:
                     artifact_existed = True
 
             with self._cache_lock:
                 self._legacy_sources.pop(platform, None)
+                self._legacy_configured_signatures.pop(platform, None)
             source_signature = self._source_signature(platform)
             sources_absent = (
                 source_signature[1] is None
@@ -666,6 +707,8 @@ class CredentialManager:
         """Drop all cached secrets; primarily useful during process teardown and tests."""
         with self._cache_lock:
             self._cache.clear()
+            self._legacy_sources.clear()
+            self._legacy_configured_signatures.clear()
 
 
 credential_manager = CredentialManager()

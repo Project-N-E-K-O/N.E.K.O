@@ -824,6 +824,10 @@ async def test_bilibili_following_without_login_skips_fetch(monkeypatch):
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_bilibili_rejection_uses_exact_request_cookie_snapshot(monkeypatch):
+    managed_cookies = {
+        "SESSDATA": "request-snapshot",
+        "browser-only-field": "preserved-for-rejection",
+    }
     request_cookies = {"SESSDATA": "request-snapshot"}
     marked = []
     sent = []
@@ -853,7 +857,12 @@ async def test_bilibili_rejection_uses_exact_request_cookie_snapshot(monkeypatch
     monkeypatch.setattr(
         personal_dynamics,
         "_get_bilibili_credential",
-        lambda: FakeCredential(),
+        lambda cookies: FakeCredential() if cookies == managed_cookies else None,
+    )
+    monkeypatch.setattr(
+        personal_dynamics,
+        "_get_platform_cookies",
+        lambda platform: dict(managed_cookies) if platform == "bilibili" else {},
     )
     monkeypatch.setattr(personal_dynamics.httpx, "AsyncClient", FakeClient)
     monkeypatch.setattr(personal_dynamics.random, "uniform", lambda *_args: 0)
@@ -867,7 +876,7 @@ async def test_bilibili_rejection_uses_exact_request_cookie_snapshot(monkeypatch
 
     assert result["status"] == "auth_failed"
     assert sent == [request_cookies]
-    assert marked == [("bilibili", request_cookies)]
+    assert marked == [("bilibili", managed_cookies)]
 
 
 @pytest.mark.unit
@@ -886,7 +895,9 @@ async def test_bilibili_following_uses_two_minute_cache(monkeypatch):
         return {"success": True, "status": "ok", "dynamics": [{"id": calls}]}
 
     monkeypatch.setattr(
-        personal_dynamics, "_get_bilibili_credential", lambda: FakeCredential()
+        personal_dynamics,
+        "_get_bilibili_credential",
+        lambda _cookies=None: FakeCredential(),
     )
     monkeypatch.setattr(
         personal_dynamics,
@@ -1101,7 +1112,9 @@ async def test_bilibili_following_video_keeps_bvid_and_content_fields(monkeypatc
             return FakeResponse()
 
     monkeypatch.setattr(
-        personal_dynamics, "_get_bilibili_credential", lambda: FakeCredential()
+        personal_dynamics,
+        "_get_bilibili_credential",
+        lambda _cookies=None: FakeCredential(),
     )
     monkeypatch.setattr(personal_dynamics.httpx, "AsyncClient", FakeClient)
     monkeypatch.setattr(personal_dynamics.random, "uniform", lambda *_args: 0)

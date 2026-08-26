@@ -157,10 +157,13 @@ def build_xhh_cookie_header(cookies: dict[str, str]) -> str:
     normalized["x_xhh_tokenid"] = build_xhh_token_id()
     return "; ".join(f"{key}={value}" for key, value in normalized.items())
 
-def _get_bilibili_credential() -> Any | None:
+def _get_bilibili_credential(
+    cookies: dict[str, str] | None = None,
+) -> Any | None:
     try:
         from bilibili_api import Credential
-        cookies = _get_platform_cookies('bilibili')
+        if cookies is None:
+            cookies = _get_platform_cookies('bilibili')
         if not cookies:
             return None
         
@@ -218,10 +221,7 @@ def _get_platform_cookies(platform_name: str) -> dict[str, str]:
         if cookies:
             logger.debug(f"✅ 成功通过底层接口加载 {platform_name} 凭证")
             return cookies
-        if credential_manager.state(platform_name) in {
-            CredentialManager.AUTH_REJECTED,
-            CredentialManager.INVALID,
-        }:
+        if credential_manager.state(platform_name) == CredentialManager.AUTH_REJECTED:
             return {}
     except Exception as e:
         logger.debug(f"底层接口加载 {platform_name} 凭证失败: {e}，尝试使用明文回退...")

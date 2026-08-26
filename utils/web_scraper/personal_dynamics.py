@@ -77,7 +77,14 @@ async def _fetch_bilibili_personal_dynamic_uncached(limit: int = 10) -> Dict[str
     Fetch Bilibili push feed updates
     """
     try:
-        credential = await asyncio.to_thread(_get_bilibili_credential)
+        stored_credentials = await asyncio.to_thread(
+            _get_platform_cookies,
+            "bilibili",
+        )
+        credential = await asyncio.to_thread(
+            _get_bilibili_credential,
+            stored_credentials,
+        )
         if not credential: 
             return {
                 'success': False,
@@ -99,7 +106,7 @@ async def _fetch_bilibili_personal_dynamic_uncached(limit: int = 10) -> Dict[str
 
         if not isinstance(data, dict) or data.get("code") != 0:
             if isinstance(data, dict) and data.get("code") == -101:
-                credential_manager.mark_auth_rejected("bilibili", request_cookies)
+                credential_manager.mark_auth_rejected("bilibili", stored_credentials)
             logger.error(f"获取B站动态失败，API返回: {data}")
             return {
                 'success': False,

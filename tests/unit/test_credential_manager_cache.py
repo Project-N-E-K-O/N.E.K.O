@@ -384,6 +384,34 @@ def test_delete_removes_orphaned_key_when_cookie_file_is_missing(tmp_path, monke
     assert not key_file.exists()
 
 
+def test_failed_orphan_key_delete_reports_existing_artifact(tmp_path, monkeypatch):
+    manager = CredentialManager()
+    cookie_file = tmp_path / "weibo.json"
+    key_file = tmp_path / "weibo_key.key"
+    key_file.write_bytes(b"orphaned-key")
+    original_unlink = Path.unlink
+
+    def fail_key_unlink(path, *args, **kwargs):
+        if path == key_file:
+            raise PermissionError("key busy")
+        return original_unlink(path, *args, **kwargs)
+
+    monkeypatch.chdir(tmp_path)
+    with (
+        patch.dict("utils.cookies_login.COOKIE_FILES", {"weibo": cookie_file}),
+        patch.object(cookies_login, "CONFIG_DIR", tmp_path),
+        patch.object(
+            cookies_login.os.path,
+            "expanduser",
+            return_value=str(tmp_path / "home"),
+        ),
+        patch.object(Path, "unlink", fail_key_unlink),
+    ):
+        assert manager.delete_stored_credentials("weibo") == (True, False)
+
+    assert key_file.exists()
+
+
 def test_failed_cookie_delete_preserves_encryption_key(tmp_path, monkeypatch):
     manager = CredentialManager()
     cookie_file = tmp_path / "weibo.json"
@@ -476,6 +504,35 @@ def test_delete_does_not_cache_missing_for_recreated_source(tmp_path, monkeypatc
         assert manager.load("weibo") == {"SUB": "recreated-and-longer"}
 
 
+def test_delete_unlinks_credential_symlink_without_deleting_target(
+    tmp_path,
+    monkeypatch,
+):
+    manager = CredentialManager()
+    target_file = tmp_path / "outside.json"
+    target_file.write_text('{"SUB":"shared"}', encoding="utf-8")
+    cookie_link = tmp_path / "weibo.json"
+    try:
+        cookie_link.symlink_to(target_file)
+    except OSError as exc:
+        pytest.skip(f"symlink unavailable: {exc}")
+
+    monkeypatch.chdir(tmp_path)
+    with (
+        patch.dict("utils.cookies_login.COOKIE_FILES", {"weibo": cookie_link}),
+        patch.object(cookies_login, "CONFIG_DIR", tmp_path),
+        patch.object(
+            cookies_login.os.path,
+            "expanduser",
+            return_value=str(tmp_path / "home"),
+        ),
+    ):
+        assert manager.delete_stored_credentials("weibo") == (True, True)
+
+    assert not cookie_link.is_symlink()
+    assert target_file.read_text(encoding="utf-8") == '{"SUB":"shared"}'
+
+
 def test_auth_rejected_state_skips_legacy_plaintext_fallback():
     with (
         patch.object(cookies_login.credential_manager, "load", return_value={}),
@@ -491,19 +548,38 @@ def test_auth_rejected_state_skips_legacy_plaintext_fallback():
     exists.assert_not_called()
 
 
-def test_invalid_state_skips_legacy_plaintext_fallback():
-    with (
-        patch.object(cookies_login.credential_manager, "load", return_value={}),
-        patch.object(
-            cookies_login.credential_manager,
-            "state",
-            return_value=CredentialManager.INVALID,
-        ),
-        patch.object(Path, "exists") as exists,
-    ):
-        assert platform_helpers._get_platform_cookies("weibo") == {}
+def test_invalid_configured_source_uses_stable_legacy_fallback(tmp_path, monkeypatch):
+    manager = CredentialManager()
+    configured_file = tmp_path / "config" / "weibo_cookies.json"
+    configured_file.parent.mkdir()
+    configured_file.write_text("broken", encoding="utf-8")
+    legacy_file = tmp_path / "weibo_cookies.json"
+    legacy_file.write_text('{"SUB":"legacy"}', encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
 
-    exists.assert_not_called()
+    with (
+        patch.dict(
+            "utils.cookies_login.COOKIE_FILES",
+            {"weibo": configured_file},
+        ),
+        patch.object(cookies_login, "CONFIG_DIR", configured_file.parent),
+        patch.object(cookies_login, "credential_manager", manager),
+        patch.object(
+            cookies_login.os.path,
+            "expanduser",
+            return_value=str(tmp_path / "home"),
+        ),
+    ):
+        assert platform_helpers._get_platform_cookies("weibo") == {"SUB": "legacy"}
+        assert platform_helpers._get_platform_cookies("weibo") == {"SUB": "legacy"}
+
+        configured_file.write_text(
+            '{"SUB":"configured-and-repaired"}',
+            encoding="utf-8",
+        )
+        assert platform_helpers._get_platform_cookies("weibo") == {
+            "SUB": "configured-and-repaired"
+        }
 
 
 def test_missing_state_keeps_legacy_plaintext_fallback(tmp_path, monkeypatch):
