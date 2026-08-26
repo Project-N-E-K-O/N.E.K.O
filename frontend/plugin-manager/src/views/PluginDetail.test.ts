@@ -253,4 +253,25 @@ describe('PluginDetail surface selection', () => {
     expect(hostedFrameMocks.refreshContext).toHaveBeenCalledWith('note-exporter')
     mounted.unmount()
   })
+
+  it.each([
+    ['single guide', [{ id: 'quickstart', kind: 'guide' as const }]],
+    ['tabbed guides', [{ id: 'quickstart', kind: 'guide' as const }, { id: 'faq', kind: 'guide' as const }]],
+  ])('also refreshes hosted guide contexts (%s)', async (_label, guides) => {
+    // Guides get a context id just like panels and can be hosted-tsx, so a
+    // runtime change leaves them just as stale as a panel.
+    const mounted = await mountDetail([
+      surface({ id: 'legacy-main', mode: 'static' }),
+      ...guides.map((guide) => surface(guide)),
+    ])
+
+    mounted.container.querySelector<HTMLButtonElement>('[data-surface-id="legacy-main"]')
+      ?.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true }))
+    await nextTick()
+
+    for (const guide of guides) {
+      expect(hostedFrameMocks.refreshContext).toHaveBeenCalledWith(guide.id)
+    }
+    mounted.unmount()
+  })
 })

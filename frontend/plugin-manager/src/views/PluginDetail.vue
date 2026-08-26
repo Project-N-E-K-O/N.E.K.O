@@ -100,6 +100,7 @@
                   :height="hostedSurfaceFrameHeight"
                   :active="isSurfaceActive(surface)"
                   :activation-revision="activationRevisionFor(surface)"
+                  :ref="(instance) => setGuideSurfaceFrameRef(surface.id, instance)"
                   @open-logs="openLogsTab"
                   @message="relayHostedSurfaceMessageToStaticUi"
                 />
@@ -112,6 +113,7 @@
               :height="hostedSurfaceFrameHeight"
               :active="isSurfaceActive(guideSurfaces[0]!)"
               :activation-revision="activationRevisionFor(guideSurfaces[0]!)"
+              :ref="(instance) => setGuideSurfaceFrameRef(guideSurfaces[0]?.id || '', instance)"
               @open-logs="openLogsTab"
               @message="relayHostedSurfaceMessageToStaticUi"
             />
@@ -216,6 +218,7 @@ type SurfaceMessageReceiver = {
   refreshContext: () => Promise<void>
 }
 const panelSurfaceFrameRefs = new Map<string, SurfaceMessageReceiver>()
+const guideSurfaceFrameRefs = new Map<string, SurfaceMessageReceiver>()
 const surfaceActivationRevisions = ref<Record<string, number>>({})
 const hostedSurfaceFrameHeight = 'clamp(560px, calc(100vh - 220px), 1200px)'
 const allowedTabs = new Set(['panel', 'guide', 'ui', 'info', 'entries', 'metrics', 'config', 'logs'])
@@ -430,8 +433,23 @@ function setPanelSurfaceFrameRef(surfaceId: string, instance: unknown) {
   }
 }
 
+function setGuideSurfaceFrameRef(surfaceId: string, instance: unknown) {
+  if (!surfaceId) return
+  const receiver = instance as SurfaceMessageReceiver | null
+  if (receiver && typeof receiver.refreshContext === 'function') {
+    guideSurfaceFrameRefs.set(surfaceId, receiver)
+  } else {
+    guideSurfaceFrameRefs.delete(surfaceId)
+  }
+}
+
 async function refreshHostedPanelContextsAfterRuntimeChange(): Promise<void> {
-  await refreshHostedPanelFrames(panelSurfaceFrameRefs.values())
+  // Guides can be hosted-tsx too, and they get a context id just like panels
+  // do, so a runtime change leaves them just as stale.
+  await refreshHostedPanelFrames([
+    ...panelSurfaceFrameRefs.values(),
+    ...guideSurfaceFrameRefs.values(),
+  ])
 }
 
 provide(PLUGIN_DETAIL_REFRESH_HOSTED_PANELS_KEY, refreshHostedPanelContextsAfterRuntimeChange)

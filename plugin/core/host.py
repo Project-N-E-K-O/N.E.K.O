@@ -146,18 +146,24 @@ _UI_CONTEXT_DEFAULT_BUDGET = 5.0
 # 留给「收手 -> 序列化 -> IPC 回程」的余量：子进程必须赶在父进程超时之前把
 # 降级结果（actions + context_error）送到，否则父进程先炸，降级分支够不着。
 _UI_CONTEXT_REPLY_HEADROOM = 0.75
-_UI_CONTEXT_MIN_BUDGET = 0.5
+# 预算小到扣不出上面那个余量时改按比例让，绝不能用一个固定下限反超调用方。
+_UI_CONTEXT_MIN_REPLY_SHARE = 0.5
 
 
 def _ui_context_provider_budget(requested: object) -> float:
-    """Provider budget that still leaves room to reply before the caller gives up."""
+    """Provider budget that always leaves the caller room to receive the reply.
+
+    Invariant: the result is strictly less than the caller's budget, for every
+    budget. Subtracting a fixed headroom alone breaks that for short budgets,
+    so fall back to yielding a share of it.
+    """
     try:
         budget = float(requested)  # type: ignore[arg-type]
     except (TypeError, ValueError):
         budget = _UI_CONTEXT_DEFAULT_BUDGET
     if budget <= 0:
         budget = _UI_CONTEXT_DEFAULT_BUDGET
-    return max(_UI_CONTEXT_MIN_BUDGET, budget - _UI_CONTEXT_REPLY_HEADROOM)
+    return max(budget - _UI_CONTEXT_REPLY_HEADROOM, budget * _UI_CONTEXT_MIN_REPLY_SHARE)
 
 
 def _find_project_root(config_path: Path) -> Path:
