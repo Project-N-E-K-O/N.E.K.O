@@ -334,7 +334,11 @@ class _GeminiMixin:
             role="user",
         )
         self._active_tool_image_chain_id = None
-        self._tool_image_chain_user_activity_time = self._user_recent_activity_time
+        self._tool_image_chain_user_activity_time = getattr(
+            self,
+            "_user_recent_activity_time",
+            0.0,
+        )
         await self._gemini_session.send_client_content(
             turns=[content],
             turn_complete=True,
