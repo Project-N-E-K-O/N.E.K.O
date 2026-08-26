@@ -293,6 +293,16 @@ def _evict_plugin_module_tree(plugin_module_path: str) -> None:
         delattr(parent_module, child_name)
 
 
+def evict_cached_plugin_modules(plugin_id: str) -> None:
+    """Invalidate both import aliases for one plugin after its files change."""
+
+    if not plugin_id or "." in plugin_id:
+        return
+    _evict_plugin_module_tree(f"plugins.{plugin_id}")
+    _evict_plugin_module_tree(f"plugin.plugins.{plugin_id}")
+    importlib.invalidate_caches()
+
+
 def _module_is_loaded_from_plugin_dir(module: Any, plugin_dir: Path) -> bool:
     """Return whether an imported package already represents the selected source."""
 

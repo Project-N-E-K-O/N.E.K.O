@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from plugin.core import host as host_module
 from plugin.core.plugin_layout import resolve_plugin_layout
 from plugin.server.application.plugins import upgrade_support
 from plugin.server.application.plugins.upgrade_support import (
@@ -24,6 +25,14 @@ async def _async_none() -> None:
 
 async def _async_false() -> bool:
     return False
+
+
+async def _async_true() -> bool:
+    return True
+
+
+async def _record(events: list[str], value: str) -> None:
+    events.append(value)
 
 
 def test_legacy_profile_case_variants_cannot_share_one_canonical_target() -> None:
@@ -75,6 +84,88 @@ async def test_replace_plugin_replaces_only_payload_and_preserves_external_user_
     assert (target / "vendor" / "dependency.txt").read_text(encoding="utf-8") == "new"
     for path, content in expected_state.items():
         assert path.read_text(encoding="utf-8") == content
+
+
+@pytest.mark.asyncio
+async def test_replace_plugin_invalidates_module_cache_before_restart(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = tmp_path / "plugins" / "demo"
+    target.mkdir(parents=True)
+    (target / "plugin.toml").write_text("version = 1\n", encoding="utf-8")
+    events: list[str] = []
+
+    async def install_new() -> dict[str, object]:
+        target.mkdir()
+        (target / "plugin.toml").write_text("version = 2\n", encoding="utf-8")
+        return {"installed": True}
+
+    def evict(plugin_id: str) -> None:
+        events.append(f"evict:{plugin_id}")
+
+    monkeypatch.setattr(host_module, "evict_cached_plugin_modules", evict)
+
+    await replace_plugin(
+        layout=resolve_plugin_layout("demo", target),
+        install_new=install_new,
+        validate_new=_async_none,
+        is_running=lambda _plugin_id: _async_true(),
+        stop=lambda plugin_id: _record(events, f"stop:{plugin_id}"),
+        start=lambda plugin_id: _record(events, f"start:{plugin_id}"),
+        cleanup_backup=remove_directory,
+    )
+
+    assert events == ["stop:demo", "evict:demo", "start:demo"]
+
+
+@pytest.mark.asyncio
+async def test_replace_plugin_invalidates_new_cache_before_rollback_restart(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = tmp_path / "plugins" / "demo"
+    target.mkdir(parents=True)
+    (target / "plugin.toml").write_text("version = 1\n", encoding="utf-8")
+    events: list[str] = []
+    start_attempts = 0
+
+    async def install_new() -> dict[str, object]:
+        target.mkdir()
+        (target / "plugin.toml").write_text("version = 2\n", encoding="utf-8")
+        return {"installed": True}
+
+    async def start(plugin_id: str) -> None:
+        nonlocal start_attempts
+        start_attempts += 1
+        events.append(f"start:{plugin_id}")
+        if start_attempts == 1:
+            raise RuntimeError("replacement failed to start")
+
+    def evict(plugin_id: str) -> None:
+        events.append(f"evict:{plugin_id}")
+
+    monkeypatch.setattr(host_module, "evict_cached_plugin_modules", evict)
+
+    with pytest.raises(ReplacePluginError, match="restart"):
+        await replace_plugin(
+            layout=resolve_plugin_layout("demo", target),
+            install_new=install_new,
+            validate_new=_async_none,
+            is_running=lambda _plugin_id: _async_true(),
+            stop=lambda plugin_id: _record(events, f"stop:{plugin_id}"),
+            start=start,
+            cleanup_backup=remove_directory,
+        )
+
+    assert events == [
+        "stop:demo",
+        "evict:demo",
+        "start:demo",
+        "evict:demo",
+        "start:demo",
+    ]
+    assert (target / "plugin.toml").read_text(encoding="utf-8") == "version = 1\n"
 
 
 @pytest.mark.asyncio

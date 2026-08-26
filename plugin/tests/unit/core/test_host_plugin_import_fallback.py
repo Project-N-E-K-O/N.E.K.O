@@ -420,6 +420,48 @@ def test_import_plugin_module_reuses_cached_builtin_from_same_source(
 
 
 @pytest.mark.plugin_unit
+def test_explicit_cache_eviction_reloads_replaced_same_path_package(
+    _isolate_plugins_namespace,
+    tmp_path: Path,
+) -> None:
+    plugin_id = "same_path_replacement"
+    plugin_root = tmp_path / "installations" / "plugins"
+    config_path = _make_importable_plugin(plugin_root, plugin_id, "old")
+    plugin_dir = config_path.parent
+    (plugin_dir / "marker.py").write_text("SOURCE = 'old'\n", encoding="utf-8")
+
+    old_module = host_module._import_plugin_module(
+        f"plugins.{plugin_id}",
+        config_path,
+        _StubLogger(),
+    )
+    old_marker = importlib.import_module(f"plugins.{plugin_id}.marker")
+    assert old_module.SOURCE == "old"
+    assert old_marker.SOURCE == "old"
+
+    backup_dir = plugin_root / f".{plugin_id}.backup"
+    plugin_dir.rename(backup_dir)
+    replacement_config = _make_importable_plugin(plugin_root, plugin_id, "replacement")
+    (replacement_config.parent / "marker.py").write_text(
+        "SOURCE = 'replacement'\n",
+        encoding="utf-8",
+    )
+
+    host_module.evict_cached_plugin_modules(plugin_id)
+    replacement_module = host_module._import_plugin_module(
+        f"plugins.{plugin_id}",
+        replacement_config,
+        _StubLogger(),
+    )
+    replacement_marker = importlib.import_module(f"plugins.{plugin_id}.marker")
+
+    assert replacement_module is not old_module
+    assert replacement_module.SOURCE == "replacement"
+    assert replacement_marker.SOURCE == "replacement"
+    assert sys.modules[f"plugin.plugins.{plugin_id}"] is replacement_module
+
+
+@pytest.mark.plugin_unit
 def test_user_plugin_absolute_self_import_uses_selected_source_and_can_restore_builtin(
     _isolate_plugins_namespace,
     tmp_path: Path,

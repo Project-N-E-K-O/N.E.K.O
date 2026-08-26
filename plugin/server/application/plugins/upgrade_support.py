@@ -244,6 +244,12 @@ def _notify_rollback_start(callback: Callable[[], None] | None) -> None:
         )
 
 
+def _evict_replaced_plugin_modules(plugin_id: str) -> None:
+    from plugin.core.host import evict_cached_plugin_modules
+
+    evict_cached_plugin_modules(plugin_id)
+
+
 def _path_is_within(path: Path, root: Path) -> bool:
     resolved_path = path.resolve(strict=False)
     resolved_root = root.resolve(strict=False)
@@ -349,6 +355,8 @@ async def replace_plugin(
             if backup is not None:
                 await merge_directory_contents(backup, target)
         await _restore_manifest_adjacent_profiles(backup_dir, target_dir)
+        stage = "invalidate_cache"
+        await asyncio.to_thread(_evict_replaced_plugin_modules, plugin_id)
         if was_running:
             stage = "restart"
             await start(plugin_id)
@@ -376,6 +384,15 @@ async def replace_plugin(
             preexisting_targets=preexisting_targets,
             remove_created_targets=True,
         )
+        try:
+            await asyncio.to_thread(_evict_replaced_plugin_modules, plugin_id)
+        except Exception as eviction_exc:
+            restored = False
+            logger.error(
+                "plugin rollback cache invalidation failed plugin_id={} err_type={}",
+                plugin_id,
+                type(eviction_exc).__name__,
+            )
         if was_running:
             try:
                 await start(plugin_id)
