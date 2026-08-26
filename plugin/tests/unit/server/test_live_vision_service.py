@@ -102,11 +102,15 @@ async def test_source_revoke_forwards_the_plugin_identity(
     monkeypatch.setenv("NEKO_PLUGIN_HOST_API_TOKEN", "host-secret")
 
     result = await service_module.LiveVisionQueryService().revoke_plugin_permissions(
-        source_name="demo_plugin"
+        source_name="demo_plugin",
+        host_generation="host-generation",
     )
 
     assert result["ok"] is True
-    assert seen["json"] == {"source_name": "demo_plugin"}
+    assert seen["json"] == {
+        "source_name": "demo_plugin",
+        "host_generation": "host-generation",
+    }
     assert seen["headers"] == {"X-NEKO-Plugin-Host-Token": "host-secret"}
     assert str(seen["url"]).endswith("/api/system/plugin-permissions/revoke")
 
@@ -173,6 +177,7 @@ async def test_permission_updates_forward_the_plugin_host_credential(
     method = getattr(service_module.LiveVisionQueryService(), method_name)
     result = await method(
         source_name="demo_plugin",
+        host_generation="host-generation",
         token="generation-one",
         enabled=True,
     )
@@ -181,3 +186,9 @@ async def test_permission_updates_forward_the_plugin_host_credential(
     assert result["applied"] is False
     assert str(seen["url"]).endswith(path)
     assert seen["headers"] == {"X-NEKO-Plugin-Host-Token": "host-secret"}
+    assert seen["json"] == {
+        "source_name": "demo_plugin",
+        "host_generation": "host-generation",
+        "token": "generation-one",
+        "enabled": True,
+    }

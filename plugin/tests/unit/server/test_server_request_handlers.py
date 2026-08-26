@@ -264,6 +264,7 @@ async def test_live_frame_permission_handler_uses_authenticated_plugin_source(
             "from_plugin": "demo_plugin",
             "request_id": "permission-1",
             "source_name": "forged-plugin",
+            "host_generation": "trusted-host-generation",
             "token": "generation-two",
             "enabled": False,
         },
@@ -272,6 +273,7 @@ async def test_live_frame_permission_handler_uses_authenticated_plugin_source(
 
     assert seen == [{
         "source_name": "demo_plugin",
+        "host_generation": "trusted-host-generation",
         "token": "generation-two",
         "enabled": False,
         "timeout": 10.0,
@@ -310,6 +312,7 @@ async def test_plugin_delivery_permission_handler_uses_authenticated_plugin_sour
             "from_plugin": "demo_plugin",
             "request_id": "permission-1",
             "source_name": "forged-plugin",
+            "host_generation": "trusted-host-generation",
             "token": "queued-generation",
             "enabled": False,
         },
@@ -318,6 +321,7 @@ async def test_plugin_delivery_permission_handler_uses_authenticated_plugin_sour
 
     assert seen == [{
         "source_name": "demo_plugin",
+        "host_generation": "trusted-host-generation",
         "token": "queued-generation",
         "enabled": False,
         "timeout": 10.0,

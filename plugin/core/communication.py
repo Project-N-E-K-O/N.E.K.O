@@ -560,6 +560,13 @@ class PluginCommunicationResourceManager:
             if comm_queue is not None:
                 trusted_msg = dict(msg)
                 trusted_msg["from_plugin"] = self.plugin_id
+                if trusted_msg.get("type") in {
+                    "LIVE_FRAME_PERMISSION_SET",
+                    "PLUGIN_DELIVERY_PERMISSION_SET",
+                }:
+                    trusted_msg["host_generation"] = str(
+                        getattr(self.transport, "uplink_token", "") or ""
+                    )
                 await comm_queue.put(trusted_msg)
         except Exception as e:
             self.logger.warning("Failed to route comm message from plugin {}: {}", self.plugin_id, e)

@@ -99,6 +99,7 @@ class LiveVisionQueryService:
         self,
         *,
         source_name: object = "",
+        host_generation: object = "",
         token: object = "",
         enabled: object = False,
         timeout: object = None,
@@ -114,6 +115,7 @@ class LiveVisionQueryService:
                     headers=plugin_host_auth_headers(),
                     json={
                         "source_name": str(source_name or ""),
+                        "host_generation": str(host_generation or ""),
                         "token": str(token or ""),
                         "enabled": bool(enabled),
                     },
@@ -142,6 +144,7 @@ class LiveVisionQueryService:
         self,
         *,
         source_name: object = "",
+        host_generation: object = "",
         token: object = "",
         enabled: object = False,
         timeout: object = None,
@@ -157,6 +160,7 @@ class LiveVisionQueryService:
                     headers=plugin_host_auth_headers(),
                     json={
                         "source_name": str(source_name or ""),
+                        "host_generation": str(host_generation or ""),
                         "token": str(token or ""),
                         "enabled": bool(enabled),
                     },
@@ -185,6 +189,7 @@ class LiveVisionQueryService:
         self,
         *,
         source_name: object = "",
+        host_generation: object = "",
         timeout: object = None,
     ) -> dict[str, object]:
         normalized_timeout = _coerce_timeout(timeout)
@@ -196,7 +201,10 @@ class LiveVisionQueryService:
                 response = await client.post(
                     url,
                     headers=plugin_host_auth_headers(),
-                    json={"source_name": str(source_name or "")},
+                    json={
+                        "source_name": str(source_name or ""),
+                        "host_generation": str(host_generation or ""),
+                    },
                 )
                 response.raise_for_status()
                 payload = response.json()

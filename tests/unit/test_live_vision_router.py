@@ -20,6 +20,7 @@ HOST_TOKEN_ENV = "NEKO_PLUGIN_HOST_API_TOKEN"
 HOST_TOKEN_HEADER = "X-NEKO-Plugin-Host-Token"
 FRAME_TOKEN_HEADER = "X-NEKO-Live-Frame-Token"
 HOST_TOKEN = "test-plugin-host-token"
+HOST_GENERATION = "test-host-generation"
 
 pytestmark = pytest.mark.unit
 
@@ -92,6 +93,7 @@ def test_the_frame_comes_only_when_asked_for(monkeypatch):
         PERMISSION_ENDPOINT,
         json={
             "source_name": "demo_plugin",
+            "host_generation": HOST_GENERATION,
             "token": "generation-one",
             "enabled": True,
         },
@@ -137,6 +139,7 @@ def test_a_matching_query_token_is_not_accepted(monkeypatch):
         PERMISSION_ENDPOINT,
         json={
             "source_name": "demo_plugin",
+            "host_generation": HOST_GENERATION,
             "token": "generation-one",
             "enabled": True,
         },
@@ -293,6 +296,7 @@ def test_a_local_permission_update_is_installed_before_it_is_acknowledged(
         PERMISSION_ENDPOINT,
         json={
             "source_name": "demo_plugin",
+            "host_generation": HOST_GENERATION,
             "token": "generation-two",
             "enabled": False,
         },
@@ -319,6 +323,7 @@ def test_authorizing_a_generation_allows_that_token_only(monkeypatch):
         PERMISSION_ENDPOINT,
         json={
             "source_name": "demo_plugin",
+            "host_generation": HOST_GENERATION,
             "token": "generation-one",
             "enabled": True,
         },
@@ -381,6 +386,7 @@ def test_unknown_disable_does_not_replace_the_current_frame_generation(monkeypat
         PERMISSION_ENDPOINT,
         json={
             "source_name": "demo_plugin",
+            "host_generation": HOST_GENERATION,
             "token": "generation-one",
             "enabled": True,
         },
@@ -389,6 +395,7 @@ def test_unknown_disable_does_not_replace_the_current_frame_generation(monkeypat
         PERMISSION_ENDPOINT,
         json={
             "source_name": "demo_plugin",
+            "host_generation": HOST_GENERATION,
             "token": "generation-two",
             "enabled": False,
         },
@@ -455,6 +462,7 @@ def test_disabling_current_delivery_generation_retracts(
         DELIVERY_ENDPOINT,
         json={
             "source_name": "demo_plugin",
+            "host_generation": HOST_GENERATION,
             "token": "generation-one",
             "enabled": True,
         },
@@ -463,6 +471,7 @@ def test_disabling_current_delivery_generation_retracts(
         DELIVERY_ENDPOINT,
         json={
             "source_name": "demo_plugin",
+            "host_generation": HOST_GENERATION,
             "token": "generation-one",
             "enabled": False,
         },
@@ -492,6 +501,7 @@ def test_stale_delivery_disable_does_not_revoke_or_retract_the_new_generation(
             DELIVERY_ENDPOINT,
             json={
                 "source_name": "demo_plugin",
+                "host_generation": HOST_GENERATION,
                 "token": token,
                 "enabled": True,
             },
@@ -501,6 +511,7 @@ def test_stale_delivery_disable_does_not_revoke_or_retract_the_new_generation(
         DELIVERY_ENDPOINT,
         json={
             "source_name": "demo_plugin",
+            "host_generation": HOST_GENERATION,
             "token": "generation-one",
             "enabled": False,
         },
@@ -526,6 +537,7 @@ def test_an_empty_delivery_token_does_not_retract(monkeypatch):
         DELIVERY_ENDPOINT,
         json={
             "source_name": "demo_plugin",
+            "host_generation": HOST_GENERATION,
             "token": "generation-one",
             "enabled": True,
         },
@@ -534,6 +546,7 @@ def test_an_empty_delivery_token_does_not_retract(monkeypatch):
         DELIVERY_ENDPOINT,
         json={
             "source_name": "demo_plugin",
+            "host_generation": HOST_GENERATION,
             "token": "",
             "enabled": False,
         },
@@ -561,6 +574,7 @@ def test_source_revoke_clears_frame_and_delivery_permissions(monkeypatch):
         PERMISSION_ENDPOINT,
         json={
             "source_name": "demo_plugin",
+            "host_generation": HOST_GENERATION,
             "token": "frame-generation",
             "enabled": True,
         },
@@ -569,6 +583,7 @@ def test_source_revoke_clears_frame_and_delivery_permissions(monkeypatch):
         DELIVERY_ENDPOINT,
         json={
             "source_name": "demo_plugin",
+            "host_generation": HOST_GENERATION,
             "token": "delivery-generation",
             "enabled": True,
         },
@@ -589,6 +604,117 @@ def test_source_revoke_clears_frame_and_delivery_permissions(monkeypatch):
     assert allows_live_frame("demo_plugin", "frame-generation") is False
     assert allows_plugin_delivery("demo_plugin", "delivery-generation") is False
     assert retracted == ["demo_plugin"]
+
+
+@pytest.mark.parametrize(
+    ("permission_endpoint", "allows_permission"),
+    [
+        (PERMISSION_ENDPOINT, "allows_live_frame"),
+        (DELIVERY_ENDPOINT, "allows_plugin_delivery"),
+    ],
+)
+def test_revoked_host_generation_cannot_restore_an_old_grant(
+    monkeypatch,
+    permission_endpoint,
+    allows_permission,
+):
+    from main_logic.core import live_frame_permissions
+
+    client = _client({}, monkeypatch, authenticated=True)
+    client.post(
+        permission_endpoint,
+        json={
+            "source_name": "demo_plugin",
+            "host_generation": "host-one",
+            "token": "permission-one",
+            "enabled": True,
+        },
+    )
+    client.post(
+        REVOKE_ENDPOINT,
+        json={
+            "source_name": "demo_plugin",
+            "host_generation": "host-one",
+        },
+    )
+    client.post(
+        permission_endpoint,
+        json={
+            "source_name": "demo_plugin",
+            "host_generation": "host-two",
+            "token": "permission-two",
+            "enabled": True,
+        },
+    )
+
+    stale_response = client.post(
+        permission_endpoint,
+        json={
+            "source_name": "demo_plugin",
+            "host_generation": "host-one",
+            "token": "permission-one",
+            "enabled": True,
+        },
+    )
+
+    allows = getattr(live_frame_permissions, allows_permission)
+    assert stale_response.status_code == 200
+    assert stale_response.json()["applied"] is False
+    assert allows("demo_plugin", "permission-one") is False
+    assert allows("demo_plugin", "permission-two") is True
+
+
+def test_stale_host_revoke_does_not_retract_the_active_host_generation(
+    monkeypatch,
+):
+    from main_logic.core.live_frame_permissions import allows_plugin_delivery
+
+    retracted = []
+
+    class _Session:
+        def retract_callbacks_from_source(self, source_name):
+            retracted.append(source_name)
+
+    client = _client({"lanlan": _Session()}, monkeypatch, authenticated=True)
+    client.post(
+        DELIVERY_ENDPOINT,
+        json={
+            "source_name": "demo_plugin",
+            "host_generation": "host-one",
+            "token": "permission-one",
+            "enabled": True,
+        },
+    )
+    client.post(
+        REVOKE_ENDPOINT,
+        json={
+            "source_name": "demo_plugin",
+            "host_generation": "host-one",
+        },
+    )
+    retracted.clear()
+    client.post(
+        DELIVERY_ENDPOINT,
+        json={
+            "source_name": "demo_plugin",
+            "host_generation": "host-two",
+            "token": "permission-two",
+            "enabled": True,
+        },
+    )
+
+    response = client.post(
+        REVOKE_ENDPOINT,
+        json={
+            "source_name": "demo_plugin",
+            "host_generation": "host-one",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["delivery_revoked"] is False
+    assert allows_plugin_delivery("demo_plugin", "permission-two") is True
+    assert retracted == []
 
 
 def test_source_revoke_retracts_callbacks_from_a_mapping_view(monkeypatch):

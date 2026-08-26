@@ -262,15 +262,20 @@ async def test_start_plugin_revokes_permissions_from_a_crashed_stale_host(
         entry_point="tests.fake:Plugin",
         config_path=tmp_path / "demo_plugin" / "plugin.toml",
     )
-    revoked: list[str] = []
+    host.transport = SimpleNamespace(uplink_token="stale-host-generation")
+    revoked: list[tuple[str, str]] = []
     hosts_backup = dict(module.state.plugin_hosts)
     try:
         with module.state.acquire_plugin_hosts_write_lock():
             module.state.plugin_hosts.clear()
             module.state.plugin_hosts["demo_plugin"] = host
 
-        async def _revoke(plugin_id: str) -> None:
-            revoked.append(plugin_id)
+        async def _revoke(
+            plugin_id: str,
+            *,
+            host_generation: str = "",
+        ) -> None:
+            revoked.append((plugin_id, host_generation))
 
         monkeypatch.setattr(module, "_revoke_plugin_permissions", _revoke)
         monkeypatch.setattr(module.state, "is_plugin_frozen", lambda _plugin_id: True)
@@ -279,7 +284,46 @@ async def test_start_plugin_revokes_permissions_from_a_crashed_stale_host(
             await module.PluginLifecycleService().start_plugin("demo_plugin")
 
         assert exc_info.value.code == "PLUGIN_FROZEN"
-        assert revoked == ["demo_plugin"]
+        assert revoked == [("demo_plugin", "stale-host-generation")]
+    finally:
+        with module.state.acquire_plugin_hosts_write_lock():
+            module.state.plugin_hosts.clear()
+            module.state.plugin_hosts.update(hosts_backup)
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_start_plugin_keeps_crashed_stale_host_when_permission_revoke_fails(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    class _CrashedHost(_FakeProcessHost):
+        def is_alive(self) -> bool:
+            return False
+
+    host = _CrashedHost(
+        plugin_id="demo_plugin",
+        entry_point="tests.fake:Plugin",
+        config_path=tmp_path / "demo_plugin" / "plugin.toml",
+    )
+    hosts_backup = dict(module.state.plugin_hosts)
+    try:
+        with module.state.acquire_plugin_hosts_write_lock():
+            module.state.plugin_hosts.clear()
+            module.state.plugin_hosts["demo_plugin"] = host
+
+        async def _failed_revoke(_plugin_id: str) -> bool:
+            return False
+
+        monkeypatch.setattr(module, "_revoke_plugin_permissions", _failed_revoke)
+        monkeypatch.setattr(module.state, "is_plugin_frozen", lambda _plugin_id: True)
+
+        with pytest.raises(ServerDomainError) as exc_info:
+            await module.PluginLifecycleService().start_plugin("demo_plugin")
+
+        assert exc_info.value.code == "PLUGIN_PERMISSION_REVOKE_FAILED"
+        with module.state.acquire_plugin_hosts_read_lock():
+            assert module.state.plugin_hosts["demo_plugin"] is host
     finally:
         with module.state.acquire_plugin_hosts_write_lock():
             module.state.plugin_hosts.clear()

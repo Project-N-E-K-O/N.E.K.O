@@ -55,6 +55,7 @@ async def handle_live_frame_permission_set(
     try:
         payload = await live_vision_query_service.set_live_frame_permission(
             source_name=from_plugin,
+            host_generation=request.get("host_generation"),
             token=request.get("token"),
             enabled=coerce_bool(request.get("enabled"), default=False),
             timeout=timeout,
@@ -86,6 +87,7 @@ async def handle_plugin_delivery_permission_set(
     try:
         payload = await live_vision_query_service.set_plugin_delivery_permission(
             source_name=from_plugin,
+            host_generation=request.get("host_generation"),
             token=request.get("token"),
             enabled=coerce_bool(request.get("enabled"), default=False),
             timeout=timeout,

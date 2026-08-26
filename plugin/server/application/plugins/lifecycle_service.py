@@ -133,6 +133,7 @@ def _persist_user_runtime_intent(
 async def _revoke_plugin_permissions(
     plugin_id: str,
     *,
+    host_generation: str = "",
     timeout: float = 3.0,
 ) -> bool:
     last_error: Exception | None = None
@@ -140,6 +141,7 @@ async def _revoke_plugin_permissions(
         try:
             await plugin_permission_service.revoke_plugin_permissions(
                 source_name=plugin_id,
+                host_generation=host_generation,
                 timeout=timeout,
             )
             return True
@@ -157,6 +159,34 @@ async def _revoke_plugin_permissions(
         str(last_error),
     )
     return False
+
+
+def _host_permission_generation(host_obj: object) -> str:
+    transport = getattr(host_obj, "transport", None)
+    return str(getattr(transport, "uplink_token", "") or "").strip()
+
+
+async def _revoke_plugin_host_permissions(
+    plugin_id: str,
+    host_obj: object,
+    *,
+    timeout: float = 3.0,
+) -> bool:
+    host_generation = _host_permission_generation(host_obj)
+    if host_generation:
+        if timeout == 3.0:
+            return await _revoke_plugin_permissions(
+                plugin_id,
+                host_generation=host_generation,
+            )
+        return await _revoke_plugin_permissions(
+            plugin_id,
+            host_generation=host_generation,
+            timeout=timeout,
+        )
+    if timeout == 3.0:
+        return await _revoke_plugin_permissions(plugin_id)
+    return await _revoke_plugin_permissions(plugin_id, timeout=timeout)
 
 
 def _mark_preference_persistence_failure(
@@ -859,7 +889,7 @@ async def _cleanup_started_host(plugin_id: str, host: PluginHostContract) -> Non
             type(exc).__name__,
             str(exc),
         )
-    await _revoke_plugin_permissions(plugin_id)
+    await _revoke_plugin_host_permissions(plugin_id, target_host)
 
 
 def _emit_lifecycle_event(
@@ -1020,6 +1050,13 @@ class PluginLifecycleService:
         *,
         timeout: float = 3.0,
     ) -> bool:
+        host_obj = await asyncio.to_thread(_get_plugin_host_sync, plugin_id)
+        if isinstance(host_obj, PluginHostContract):
+            return await _revoke_plugin_host_permissions(
+                plugin_id,
+                host_obj,
+                timeout=timeout,
+            )
         return await _revoke_plugin_permissions(plugin_id, timeout=timeout)
 
     @serialized_plugin_operation
@@ -1053,7 +1090,23 @@ class PluginLifecycleService:
                     "message": "Plugin is already running",
                 }
             # Stale host (process dead) — remove so re-start can proceed
-            await _revoke_plugin_permissions(current_plugin_id)
+            permissions_revoked = (
+                await _revoke_plugin_host_permissions(
+                    current_plugin_id,
+                    existing_host_obj,
+                )
+            ) is not False
+            if not permissions_revoked:
+                raise _to_domain_error(
+                    code="PLUGIN_PERMISSION_REVOKE_FAILED",
+                    message=(
+                        f"Failed to revoke permissions for plugin "
+                        f"'{current_plugin_id}'"
+                    ),
+                    status_code=503,
+                    plugin_id=current_plugin_id,
+                    error_type="PermissionRevokeFailed",
+                )
             await asyncio.to_thread(_pop_plugin_host_sync, current_plugin_id)
             logger.info("removed stale host for plugin_id={} (process no longer alive)", current_plugin_id)
 
@@ -1500,7 +1553,7 @@ class PluginLifecycleService:
         try:
             _emit_lifecycle_event(event_type="plugin_stop_requested", plugin_id=plugin_id)
             permissions_revoked = (
-                await _revoke_plugin_permissions(plugin_id)
+                await _revoke_plugin_host_permissions(plugin_id, host_obj)
             ) is not False
             if not permissions_revoked:
                 raise _to_domain_error(

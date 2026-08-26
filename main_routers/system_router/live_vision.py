@@ -160,6 +160,7 @@ async def set_live_frame_attachment_permission(
         str(payload.get("source_name") or ""),
         str(payload.get("token") or ""),
         enabled=bool(payload.get("enabled")),
+        host_generation=str(payload.get("host_generation") or ""),
     )
 
 
@@ -200,6 +201,7 @@ async def set_plugin_callback_delivery_permission(
         str(payload.get("source_name") or ""),
         str(payload.get("token") or ""),
         enabled=bool(payload.get("enabled")),
+        host_generation=str(payload.get("host_generation") or ""),
     )
     source = str(result.get("source_name") or "")
     token = str(result.get("token") or "")
@@ -224,8 +226,14 @@ async def revoke_plugin_host_permissions(
         payload = {}
     if not isinstance(payload, dict):
         payload = {}
-    result = revoke_plugin_permissions(str(payload.get("source_name") or ""))
+    host_generation = str(payload.get("host_generation") or "")
+    result = revoke_plugin_permissions(
+        str(payload.get("source_name") or ""),
+        host_generation,
+    )
     source = str(result.get("source_name") or "")
-    if source:
+    if source and (
+        not host_generation or bool(result.get("delivery_revoked"))
+    ):
         _retract_plugin_deliveries(source)
     return result
