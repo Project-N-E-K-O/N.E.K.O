@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 from collections.abc import Callable
 from pathlib import Path
+import threading
 from typing import Any
 
 import numpy as np
@@ -190,18 +191,24 @@ class CampPlusEmbeddingModel:
     def __init__(self, asset_dir: Path | None = None) -> None:
         self._asset_dir = Path(asset_dir) if asset_dir is not None else None
         self._session: Any | None = None
+        self._lifecycle_lock = threading.Lock()
+        self._active_load_options: Any | None = None
+        self._active_run_options: Any | None = None
         self._closed = False
 
     @property
     def is_ready(self) -> bool:
-        return self._session is not None and not self._closed
+        with self._lifecycle_lock:
+            return self._session is not None and not self._closed
 
     def load(self) -> bool:
-        if self._closed:
-            return False
-        if self._session is not None:
-            return True
+        with self._lifecycle_lock:
+            if self._closed:
+                return False
+            if self._session is not None:
+                return True
         session: Any | None = None
+        options: Any | None = None
         try:
             model_path = resolve_verified_campplus_asset(self._asset_dir)
             import onnxruntime as ort
@@ -214,17 +221,41 @@ class CampPlusEmbeddingModel:
                 ort.GraphOptimizationLevel.ORT_ENABLE_ALL
             )
             options.enable_cpu_mem_arena = False
-            session = ort.InferenceSession(
-                str(model_path),
-                sess_options=options,
-                providers=["CPUExecutionProvider"],
-            )
-            self._validate_session_contract(session)
+            with self._lifecycle_lock:
+                if self._closed:
+                    return False
+                if self._session is not None:
+                    return True
+                if self._active_load_options is not None:
+                    return False
+                self._active_load_options = options
+            try:
+                session = ort.InferenceSession(
+                    str(model_path),
+                    sess_options=options,
+                    providers=["CPUExecutionProvider"],
+                )
+                self._validate_session_contract(session)
+            finally:
+                with self._lifecycle_lock:
+                    if self._active_load_options is options:
+                        self._active_load_options = None
         except Exception:
             session = None
             return False
-        self._session = session
+        with self._lifecycle_lock:
+            if self._closed:
+                return False
+            self._session = session
         return True
+
+    def cancel_load(self) -> None:
+        """Request cancellation of the active ONNX session construction."""
+
+        with self._lifecycle_lock:
+            options = self._active_load_options
+        if options is not None:
+            options.set_load_cancellation_flag(True)
 
     @staticmethod
     def _validate_session_contract(session: Any) -> None:
@@ -270,8 +301,10 @@ class CampPlusEmbeddingModel:
         *,
         sample_rate_hz: int,
     ) -> np.ndarray:
-        session = self._session
-        if self._closed or session is None:
+        with self._lifecycle_lock:
+            session = self._session
+            closed = self._closed
+        if closed or session is None:
             raise RuntimeError("model_not_loaded")
         if not isinstance(pcm16, bytes) or not pcm16 or len(pcm16) % 2:
             raise ValueError("pcm_invalid")
@@ -284,8 +317,18 @@ class CampPlusEmbeddingModel:
         raw_embedding: np.ndarray | None = None
         result: np.ndarray | None = None
         outputs: list[Any] | None = None
+        run_options: Any | None = None
         keep_result = False
         try:
+            import onnxruntime as ort
+
+            run_options = ort.RunOptions()
+            with self._lifecycle_lock:
+                if self._closed or self._session is not session:
+                    raise RuntimeError("model_not_loaded")
+                if self._active_run_options is not None:
+                    raise RuntimeError("model_inference_already_active")
+                self._active_run_options = run_options
             features = compute_campplus_features(
                 pcm16,
                 sample_rate_hz=sample_rate_hz,
@@ -293,6 +336,7 @@ class CampPlusEmbeddingModel:
             outputs = session.run(
                 ["embedding"],
                 {"x": features[np.newaxis, :, :]},
+                run_options,
             )
             if len(outputs) != 1:
                 raise ValueError("onnx_output_count")
@@ -309,6 +353,9 @@ class CampPlusEmbeddingModel:
             keep_result = True
             return result
         finally:
+            with self._lifecycle_lock:
+                if self._active_run_options is run_options:
+                    self._active_run_options = None
             _wipe_array(features)
             if outputs is not None:
                 for output in outputs:
@@ -318,11 +365,32 @@ class CampPlusEmbeddingModel:
             if not keep_result:
                 _wipe_array(result)
 
+    def cancel_inference(self) -> None:
+        """Request termination of the active ONNX Runtime call, if any."""
+
+        with self._lifecycle_lock:
+            run_options = self._active_run_options
+        if run_options is not None:
+            run_options.terminate = True
+
     def close(self) -> None:
-        if self._closed:
-            return
-        self._closed = True
-        self._session = None
+        with self._lifecycle_lock:
+            if self._closed:
+                return
+            self._closed = True
+            load_options = self._active_load_options
+            run_options = self._active_run_options
+            self._session = None
+        if load_options is not None:
+            try:
+                load_options.set_load_cancellation_flag(True)
+            except Exception:
+                pass
+        if run_options is not None:
+            try:
+                run_options.terminate = True
+            except Exception:
+                pass
 
 
 class CampPlusSpeakerShadowBackend:

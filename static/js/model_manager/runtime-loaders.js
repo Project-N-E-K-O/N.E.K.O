@@ -10,6 +10,12 @@
         // 已由 model_manager.html 静态 <script> 加载，此处不再重复加载
         const vrmModules = [
             '/static/vrm/vrm-orientation.js',
+            // 共享五元音共振峰分析器（挂 window.FormantLipSyncAnalyzer）。
+            // 本文件先置 _vrmModulesLoading/_mmdModulesLoading，vrm-init.js /
+            // mmd-init.js 的 IIFE 会直接 return，它们的依赖表不会执行——
+            // 所以这里必须自己带上，否则 model_manager 页面 window.FormantLipSyncAnalyzer
+            // 恒为 undefined，两种模型都静默退化成旧单通道口型。
+            '/static/vrm/vrm-lipsync-formant.js',
             '/static/vrm/vrm-core.js',
             '/static/vrm/vrm-expression.js',
             '/static/vrm/vrm-animation.js',
@@ -22,6 +28,10 @@
 
         const failedModules = [];
         for (const moduleSrc of vrmModules) {
+            // vrm-lipsync-formant.js 同时挂在 VRM 与 MMD 两条并行链上；已在 DOM 里
+            // 就跳过，省掉一次被 ?v=Date.now() 绕过缓存的重复请求。模块本身也做了
+            // 幂等短路，这里只是不做无用功。
+            if (document.querySelector(`script[src^="${moduleSrc}"]`)) continue;
             const script = document.createElement('script');
             script.src = `${moduleSrc}?v=${Date.now()}`;
             await new Promise((resolve) => {
@@ -63,6 +73,8 @@
         // 已由 model_manager.html 静态 <script> 加载，此处不再重复加载
         const mmdModules = [
             '/static/mmd/mmd-init.js',
+            // 同上：MMD 与 VRM 复用同一个分析器实现。
+            '/static/vrm/vrm-lipsync-formant.js',
             '/static/mmd/mmd-core.js',
             '/static/mmd/mmd-animation.js',
             '/static/mmd/mmd-expression.js',
@@ -74,6 +86,10 @@
 
         const failedModules = [];
         for (const moduleSrc of mmdModules) {
+            // vrm-lipsync-formant.js 同时挂在 VRM 与 MMD 两条并行链上；已在 DOM 里
+            // 就跳过，省掉一次被 ?v=Date.now() 绕过缓存的重复请求。模块本身也做了
+            // 幂等短路，这里只是不做无用功。
+            if (document.querySelector(`script[src^="${moduleSrc}"]`)) continue;
             const script = document.createElement('script');
             const baseSrc = moduleSrc.split('?')[0];
             script.src = `${baseSrc}?v=${Date.now()}`;

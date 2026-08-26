@@ -16,7 +16,10 @@ from typing import Callable, ClassVar, Literal
 
 from websockets import exceptions as web_exceptions
 
-from main_logic.asr_client import get_asr_core_capabilities
+from main_logic.asr_client import (
+    VoiceIdentityActivationResult,
+    get_asr_core_capabilities,
+)
 from main_logic.asr_client.runtime import (
     ASR_CONNECT_TOTAL_BUDGET_SECONDS,
     AsrRuntimeCallbacks,
@@ -224,6 +227,7 @@ class AsrRuntimeMixin:
         self._voice_lease_requires_abort = False
         self._voice_input_suppressed = True
         self._voice_input_suppression_reasons: set[str] = {"owner_none"}
+        self._voice_input_external_suppressions: set[str] = set()
         self._voice_lease_resync_signal_state: tuple[str, int, bool, str] | None = (
             None
         )
@@ -353,6 +357,8 @@ class AsrRuntimeMixin:
             self._independent_asr_handshake_override = None
         if not hasattr(self, "_speaker_shadow_factory"):
             self._speaker_shadow_factory = None
+        if not hasattr(self, "_voice_input_external_suppressions"):
+            self._voice_input_external_suppressions = set()
         if not hasattr(
             self,
             "_voice_input_resource_optimization_handshake_override",
@@ -507,7 +513,76 @@ class AsrRuntimeMixin:
             and not self._voice_lease_hard_muted
             and not self._voice_lease_focus_suppressed
             and not self._voice_input_suppressed
+            and not getattr(self, "_voice_input_external_suppressions", set())
         )
+
+    async def set_voice_input_suppressed(
+        self,
+        reason: str,
+        *,
+        suppressed: bool,
+    ) -> None:
+        """Apply an application-level PCM gate without becoming a consumer."""
+
+        normalized = str(reason or "").strip()
+        if not normalized:
+            raise ValueError("suppression reason must be non-empty")
+        if type(suppressed) is not bool:
+            raise TypeError("suppressed must be bool")
+        reasons = getattr(self, "_voice_input_external_suppressions", None)
+        if reasons is None:
+            reasons = set()
+            self._voice_input_external_suppressions = reasons
+        changed = False
+        if suppressed:
+            if normalized not in reasons:
+                reasons.add(normalized)
+                changed = True
+        elif normalized in reasons:
+            reasons.discard(normalized)
+            changed = True
+        if not changed:
+            return
+        self._invalidate_voice_pcm_sync(normalized)
+        if suppressed:
+            if getattr(self, "_asr_route_mode", "blocked") == "native":
+                await self._reset_native_audio_turn(normalized)
+            else:
+                await self._abort_independent_asr(normalized)
+
+    async def set_speaker_verifier_factory(
+        self,
+        factory: SpeakerShadowFactory | None,
+        *,
+        activation_generation: str,
+    ) -> bool | VoiceIdentityActivationResult:
+        """Update future and active independent-ASR speaker verification."""
+
+        try:
+            updated = await self._asr_runtime.set_speaker_verifier_factory(
+                factory,
+                activation_generation=activation_generation,
+            )
+        except asyncio.CancelledError:
+            if factory is None:
+                self._speaker_shadow_factory = None
+            raise
+        if updated or factory is None:
+            self._speaker_shadow_factory = factory
+        if updated:
+            if (
+                factory is not None
+                and getattr(self, "_asr_route_mode", "blocked") != "independent"
+            ):
+                return VoiceIdentityActivationResult.UNSUPPORTED_ASR_ROUTE
+            return VoiceIdentityActivationResult.READY
+        close = getattr(factory, "close", None)
+        if callable(close):
+            try:
+                close()
+            except Exception:
+                pass
+        return False
 
     def set_independent_asr_handshake(self, value: object) -> None:
         # Record the frontend's authoritative independent-ASR toggle carried by

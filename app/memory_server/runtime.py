@@ -32,6 +32,7 @@ the same reason.
 """
 
 import asyncio
+from contextvars import ContextVar, Token
 from datetime import datetime, timezone
 
 from fastapi import FastAPI, HTTPException, Request
@@ -74,12 +75,175 @@ class ContinueStorageStartupRequest(BaseModel):
 
 
 app = FastAPI()
+# 角色写端点 → 允许的方法。围栏和排空按这张表走；方法维度是必要的，
+# /prompt-locale/{name} 的 GET 只读、PUT 才写。
+_CHARACTER_WRITE_ROUTES: tuple[tuple[str, frozenset[str]], ...] = (
+    ("/cache/", frozenset({"POST"})),
+    ("/process/", frozenset({"POST"})),
+    ("/renew/", frozenset({"POST"})),
+    ("/settle/", frozenset({"POST"})),
+    # 反思合成与 surfaced 冷却登记同样往角色目录写 reflections.json /
+    # surfaced.json，删除后落盘会把旧身份的目录重建出来。
+    ("/reflect/", frozenset({"POST"})),
+    ("/record_surfaced/", frozenset({"POST"})),
+    # 只有 PUT 是写；GET 只读 sidecar，不进围栏。
+    # 409 对它的调用方是既有的可重试失败（云存档维护围栏也会给 409）。
+    ("/prompt-locale/", frozenset({"PUT"})),
+)
+# 群记忆写端点走 /internal/memory/{lanlan_name}/<op>，最终同样落到该角色的
+# FactStore / TimeIndexedMemory。围栏漏掉它们的话，删除窗口里这些请求既不会被
+# 拒绝也不会被排空，仍能带着已 checkout 的 SQLite 连接跨过 dispose。
+# scoped_context 是只读的，不进这里——读路径由引擎准入检查兜底。
+_CHARACTER_SCOPED_WRITE_PATH_PREFIX = "/internal/memory/"
+_CHARACTER_SCOPED_WRITE_OPS = frozenset({
+    "scoped_facts",
+    "scoped_history",
+    "scoped_forget",
+    "scoped_mentions",
+})
+_admitted_character_context: ContextVar[frozenset[str]] = ContextVar(
+    "admitted_character_context",
+    default=frozenset(),
+)
+_active_character_requests: dict[str, int] = {}
+_active_character_request_events: dict[str, asyncio.Event] = {}
+# 排空预算必须小于**最紧**的调用方超时，否则调用方会先放弃、然后照样往下删文件，
+# 而这个 handler 还在排空/dispose——正好撞出这个 PR 要修的 Windows 占用失败。
+# 最紧的是取消订阅：_release_workshop_character_handles 的 per_call_timeout=2.5s
+# （改名/删除走 release_memory_server_character()，5s）。
+_CHARACTER_REQUEST_DRAIN_TIMEOUT_SECONDS = 2.0
 _STORAGE_LIMITED_MODE_ALLOWED_PATHS = {
     "/health",
     "/shutdown",
     "/internal/storage/startup/continue",
     "/internal/storage/startup/block",
 }
+
+
+def _character_write_name_from_path(path: str, method: str) -> str | None:
+    raw_name = None
+    method = (method or "").upper()
+    for prefix, methods in _CHARACTER_WRITE_ROUTES:
+        if path.startswith(prefix):
+            candidate = path[len(prefix):]
+            if method in methods and candidate and "/" not in candidate:
+                raw_name = candidate
+            break
+    if (
+        raw_name is None
+        and method == "POST"
+        and path.startswith(_CHARACTER_SCOPED_WRITE_PATH_PREFIX)
+    ):
+        segments = path[len(_CHARACTER_SCOPED_WRITE_PATH_PREFIX):].split("/")
+        if len(segments) == 2 and segments[1] in _CHARACTER_SCOPED_WRITE_OPS:
+            raw_name = segments[0]
+    if not raw_name:
+        return None
+    # 端点自己会 validate_lanlan_name 归一化后才读写角色目录；准入登记必须用
+    # 同一个键，否则 "/process/ Alice " 既躲开 " Alice " 之外的所有围栏，
+    # 请求租约也对不上引擎实际用的 "Alice"。
+    try:
+        return validate_lanlan_name(raw_name)
+    except HTTPException:
+        return None
+
+
+def _begin_character_request(
+    lanlan_name: str,
+) -> Token[frozenset[str]] | None:
+    """Atomically admit one foreground request before its first await."""
+    if not _is_character_publication_admitted(lanlan_name):
+        return None
+    _active_character_requests[lanlan_name] = (
+        _active_character_requests.get(lanlan_name, 0) + 1
+    )
+    return _admitted_character_context.set(
+        _admitted_character_context.get() | {lanlan_name}
+    )
+
+
+def _end_character_request(
+    lanlan_name: str,
+    context_token: Token[frozenset[str]],
+) -> None:
+    _admitted_character_context.reset(context_token)
+    remaining = _active_character_requests.get(lanlan_name, 0) - 1
+    if remaining > 0:
+        _active_character_requests[lanlan_name] = remaining
+        return
+    _active_character_requests.pop(lanlan_name, None)
+    event = _active_character_request_events.pop(lanlan_name, None)
+    if event is not None:
+        event.set()
+
+
+async def _acquire_within_deadline(lock: asyncio.Lock, deadline: float) -> bool:
+    """Take one lock without outliving the release budget.
+
+    ``/new_dialog`` and the background review hold the per-character settle lock
+    across whole prompt assemblies, and they are deliberately not fenced. An
+    unbounded acquire here would keep this handler running long after the caller
+    gave up, so a lock that cannot be taken in time fails the release instead.
+    """
+    remaining = deadline - asyncio.get_running_loop().time()
+    if remaining <= 0:
+        return False
+    try:
+        await asyncio.wait_for(lock.acquire(), timeout=remaining)
+    except asyncio.TimeoutError:
+        return False
+    return True
+
+
+async def _wait_for_character_requests(
+    lanlan_name: str,
+    deadline: float | None = None,
+) -> bool:
+    """Drain admitted foreground writes; report whether they all finished.
+
+    The caller (``release_memory_server_character``) gives up after 5s and
+    compensates by reopening admission. An unbounded wait here would keep this
+    handler running past that point and dispose engines behind the caller's
+    back, so the drain stays strictly inside the caller's window.
+    """
+    loop = asyncio.get_running_loop()
+    if deadline is None:
+        deadline = loop.time() + _CHARACTER_REQUEST_DRAIN_TIMEOUT_SECONDS
+    while _active_character_requests.get(lanlan_name, 0):
+        remaining = deadline - loop.time()
+        if remaining <= 0:
+            return False
+        event = _active_character_request_events.setdefault(
+            lanlan_name,
+            asyncio.Event(),
+        )
+        event.clear()
+        if not _active_character_requests.get(lanlan_name, 0):
+            break
+        try:
+            await asyncio.wait_for(event.wait(), timeout=remaining)
+        except asyncio.TimeoutError:
+            return False
+    return True
+
+
+@app.middleware("http")
+async def character_publication_guard(request: Request, call_next):
+    lanlan_name = _character_write_name_from_path(
+        request.url.path, request.method,
+    )
+    if lanlan_name is None:
+        return await call_next(request)
+    context_token = _begin_character_request(lanlan_name)
+    if context_token is None:
+        return JSONResponse(
+            {"status": "cancelled", "message": "character release in progress"},
+            status_code=409,
+        )
+    try:
+        return await call_next(request)
+    finally:
+        _end_character_request(lanlan_name, context_token)
 
 
 @app.middleware("http")
@@ -244,6 +408,64 @@ def _defer_time_manager_cleanup(manager: TimeIndexedMemory | None) -> None:
     _deferred_time_managers.append(manager)
     logger.info("[MemoryServer] 旧的 TimeIndexedMemory 已加入延迟清理队列")
 
+
+def _is_character_publication_admitted(lanlan_name: str) -> bool:
+    """Keep a released identity from reopening storage before publication."""
+    from . import review
+
+    return not review.is_character_publication_held(lanlan_name)
+
+
+def _is_character_engine_admitted(lanlan_name: str) -> bool:
+    """Allow a request admitted before the publication hold to finish."""
+    return (
+        lanlan_name in _admitted_character_context.get()
+        or _is_character_publication_admitted(lanlan_name)
+    )
+
+
+def _dispose_character_engines_across_generations(
+    lanlan_name: str,
+) -> tuple[int, int]:
+    """Release one character from the current and every deferred manager.
+
+    Hot reload deliberately keeps old managers alive for requests that already
+    captured them.  A character rename/delete must nevertheless close that
+    character's idle SQLite pools in every retained generation before touching
+    its files.  Other characters and the deferred-manager lifecycle are left
+    unchanged.
+    """
+    managers: list[TimeIndexedMemory] = []
+    seen: set[int] = set()
+    for manager in (time_manager, *_deferred_time_managers):
+        if manager is None or id(manager) in seen:
+            continue
+        seen.add(id(manager))
+        managers.append(manager)
+
+    released_count = 0
+    errors: list[tuple[int, Exception]] = []
+    for index, manager in enumerate(managers):
+        try:
+            if manager.dispose_engine(lanlan_name, retain_on_failure=True):
+                released_count += 1
+        except Exception as exc:
+            # Continue so one broken generation cannot hide the manager that
+            # actually owns the Windows file handle.
+            errors.append((index, exc))
+
+    if errors:
+        summary = ", ".join(
+            f"manager[{index}]={type(exc).__name__}: {exc}"
+            for index, exc in errors
+        )
+        raise RuntimeError(
+            f"failed to dispose character engines: {summary}"
+        ) from errors[0][1]
+
+    return len(managers), released_count
+
+
 async def reload_memory_components(
     *,
     resume_derived_task_names: set[str] | None = None,
@@ -280,7 +502,10 @@ async def reload_memory_components(
             # 先创建所有新实例
             new_recent = CompressedRecentHistoryManager()
             new_settings = ImportantSettingsManager()
-            new_time = TimeIndexedMemory(new_recent)
+            new_time = TimeIndexedMemory(
+                new_recent,
+                engine_admission_check=_is_character_engine_admitted,
+            )
             new_facts = FactStore(time_indexed_memory=new_time)
             # EventLog 复用（per-character lock dict 没有必要跨 reload 丢弃），
             # 但每次 reload 重建 Reconciler 以便 handlers 指向新 manager 实例。
@@ -444,31 +669,114 @@ async def release_character_resources(
             },
             status_code=409,
         )
-    async with _reload_lock:
-        try:
-            time_manager.dispose_engine(lanlan_name)
-            logger.info(
-                "[MemoryServer] 已主动释放角色 %s 的 SQLite 引擎并排空 %d 个派生任务",
-                lanlan_name,
-                cancelled_tasks,
-            )
-            return {
-                "status": "success",
+    # The publication hold above prevents queued/new work from reopening the
+    # engine. Requests admitted before the hold keep their request-local lease;
+    # drain them and their spawned post-turn tasks before disposing any manager.
+    from . import post_turn
+
+    # 整个释放流程共用一个预算：排空 + 两把锁的等待加起来都不能超出调用方的
+    # 超时窗口，否则调用方已经放弃并补偿了，这个 handler 还在背后 dispose。
+    deadline = (
+        asyncio.get_running_loop().time()
+        + _CHARACTER_REQUEST_DRAIN_TIMEOUT_SECONDS
+    )
+    # 排空和取消 post-turn 的前提都是 publication hold 已经挡住新准入。
+    # 不取 hold 的调用方（云存档下载、取消订阅）角色事后还活着：排空等不到
+    # 计数归零（新请求随时进来），取消也留不住（下一毫秒就能派新的），
+    # 净效果只是白白打断在途的 outbox op。这两条路径保持本 PR 之前的语义。
+    holding_publication = review.is_character_publication_held(lanlan_name)
+    cancelled_post_turn_tasks = 0
+    drained = True
+    if holding_publication:
+        # post-turn task 不持有前台准入 lease，等前台排空期间它仍会给旧名字写
+        # fact / mention / reflection。先取消当前已登记的，再排空前台请求，
+        # 最后补一次——排空窗口里已准入的请求还会派新的 post-turn task。
+        cancelled_post_turn_tasks = await post_turn.cancel_character_post_turn_tasks(
+            lanlan_name
+        )
+        drained = await _wait_for_character_requests(lanlan_name, deadline)
+        cancelled_post_turn_tasks += (
+            await post_turn.cancel_character_post_turn_tasks(lanlan_name)
+        )
+
+    async def _fail_release(message: str, status_code: int):
+        await review.release_character_derived_task_admission_claim(
+            lanlan_name,
+            derived_task_claim_token,
+        )
+        logger.warning("[MemoryServer] 释放角色 %s 中止：%s", lanlan_name, message)
+        return JSONResponse(
+            {
+                "status": "error",
                 "character_name": lanlan_name,
-                "cancelled_derived_tasks": cancelled_tasks,
-                "derived_task_claim_token": derived_task_claim_token,
-            }
-        except Exception as exc:
-            if derived_task_claim_token:
-                await review.release_character_derived_task_admission_claim(
+                "message": message,
+            },
+            status_code=status_code,
+        )
+
+    if not drained:
+        return await _fail_release(
+            "timed out draining admitted character writes", 503,
+        )
+    # 绑定同一个对象：`_get_settle_lock` 是函数，acquire / release 各调一次会有
+    # 拿到不同实例的风险（测试里就有把它 patch 成每次返回新锁的写法）。
+    settle_lock = _get_settle_lock(lanlan_name)
+    if not await _acquire_within_deadline(settle_lock, deadline):
+        return await _fail_release("timed out acquiring the settle lock", 503)
+    try:
+        if not await _acquire_within_deadline(_reload_lock, deadline):
+            return await _fail_release("timed out acquiring the reload lock", 503)
+        try:
+            # 排空和拿锁都可能久到调用方超时；那时主进程已经补偿性地释放了
+            # 本次 claim 并重新开放准入，这里不能再背着它 dispose。
+            if not review.is_character_derived_task_claim_active(
+                lanlan_name, derived_task_claim_token,
+            ):
+                logger.warning(
+                    "[MemoryServer] 角色 %s 的释放声明已被撤回，跳过 dispose",
                     lanlan_name,
-                    derived_task_claim_token,
                 )
-            logger.warning("[MemoryServer] 释放角色 %s 的 SQLite 引擎失败: %s", lanlan_name, exc)
-            return JSONResponse(
-                {"status": "error", "character_name": lanlan_name, "message": str(exc)},
-                status_code=500,
-            )
+                return JSONResponse(
+                    {
+                        "status": "cancelled",
+                        "character_name": lanlan_name,
+                        "message": "release claim was withdrawn while draining",
+                    },
+                    status_code=409,
+                )
+            try:
+                scanned_managers, released_managers = (
+                    _dispose_character_engines_across_generations(lanlan_name)
+                )
+                logger.info(
+                    "[MemoryServer] 已扫描角色 %s 的 %d 个 TimeIndexedMemory 实例，"
+                    "实际释放 %d 个 SQLite 引擎并排空 %d 个派生任务",
+                    lanlan_name,
+                    scanned_managers,
+                    released_managers,
+                    cancelled_tasks + cancelled_post_turn_tasks,
+                )
+                return {
+                    "status": "success",
+                    "character_name": lanlan_name,
+                    "cancelled_derived_tasks": cancelled_tasks,
+                    "derived_task_claim_token": derived_task_claim_token,
+                }
+            except Exception as exc:
+                if derived_task_claim_token:
+                    await review.release_character_derived_task_admission_claim(
+                        lanlan_name,
+                        derived_task_claim_token,
+                    )
+                logger.warning("[MemoryServer] 释放角色 %s 的 SQLite 引擎失败: %s", lanlan_name, exc)
+                return JSONResponse(
+                    {"status": "error", "character_name": lanlan_name, "message": str(exc)},
+                    status_code=500,
+                )
+        finally:
+            _reload_lock.release()
+    finally:
+        settle_lock.release()
 
 
 # 全局变量用于控制服务器关闭
@@ -528,8 +836,18 @@ def _get_settle_lock(lanlan_name: str) -> asyncio.Lock:
 
 
 def _spawn_background_task(coro) -> asyncio.Task:
-    """Create a background task with strong reference + exception logging."""
-    task = asyncio.create_task(coro)
+    """Create a background task with strong reference + exception logging.
+
+    Detached work never inherits the caller's admission lease. That lease means
+    "an admitted request is still running and release will wait for it"; a
+    fire-and-forget task outlives the request and is not waited for, so keeping
+    the lease would let it reopen the engine after disposal.
+    """
+    context_token = _admitted_character_context.set(frozenset())
+    try:
+        task = asyncio.create_task(coro)
+    finally:
+        _admitted_character_context.reset(context_token)
     _BACKGROUND_TASKS.add(task)
 
     def _on_done(t: asyncio.Task):
@@ -651,7 +969,10 @@ async def ensure_memory_server_runtime_initialized(*, reason: str = "") -> bool:
 
         recent_history_manager = CompressedRecentHistoryManager()
         settings_manager = ImportantSettingsManager()
-        time_manager = TimeIndexedMemory(recent_history_manager)
+        time_manager = TimeIndexedMemory(
+            recent_history_manager,
+            engine_admission_check=_is_character_engine_admitted,
+        )
         fact_store = FactStore(time_indexed_memory=time_manager)
         # Queue erasure is part of the privacy runtime, not the optional
         # vector worker. Construct the lightweight resolver before ready so

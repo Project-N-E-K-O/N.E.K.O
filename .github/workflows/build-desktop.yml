@@ -725,6 +725,42 @@ jobs:
           echo "=== Build output ==="
           ls -la dist/Xiao8/ || echo "dist/Xiao8 not found!"
 
+      - name: Smoke test frozen Owner voice identity runtime
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $env:NEKO_VOICE_IDENTITY_RELEASE_SMOKE = "1"
+          $stdout = Join-Path $env:RUNNER_TEMP "voice-identity-smoke.stdout.log"
+          $stderr = Join-Path $env:RUNNER_TEMP "voice-identity-smoke.stderr.log"
+          $process = Start-Process `
+            -FilePath "dist/Xiao8/projectneko_server.exe" `
+            -WindowStyle Hidden `
+            -RedirectStandardOutput $stdout `
+            -RedirectStandardError $stderr `
+            -PassThru
+          $timedOut = -not $process.WaitForExit(120000)
+          if ($timedOut) {
+            taskkill.exe /PID $process.Id /T /F | Out-Host
+            $process.WaitForExit()
+          }
+          $stdoutText = if (Test-Path -LiteralPath $stdout) {
+            Get-Content -LiteralPath $stdout -Raw
+          } else { "" }
+          $stderrText = if (Test-Path -LiteralPath $stderr) {
+            Get-Content -LiteralPath $stderr -Raw
+          } else { "" }
+          Write-Host $stdoutText
+          if ($stderrText) { Write-Host $stderrText }
+          if ($timedOut) {
+            throw "Frozen Owner voice identity smoke timed out"
+          }
+          if ($process.ExitCode -ne 0) {
+            throw "Frozen Owner voice identity smoke exited with $($process.ExitCode)"
+          }
+          if ($stdoutText -notmatch "NEKO_VOICE_IDENTITY_RELEASE_SMOKE_OK") {
+            throw "Frozen Owner voice identity smoke success marker missing"
+          }
+
       # --- Verify bundled embedding + tiktoken assets ---
       # memory/embeddings.py treats every onnx_data sidecar plus both fp32
       # and int8 variants as required at session-load time; tiktoken

@@ -3,6 +3,12 @@
  * 参考 vrm-expression.js 的情感映射系统
  */
 
+// 共振峰分析器输出的 VRM blendshape 键 → MMD 五元音 morph 键。
+// 冻结在模块作用域，供 update() 每帧零分配读取（见 MMDExpression.FORMANT_TO_MMD_VOWEL）。
+const FORMANT_TO_MMD_VOWEL = Object.freeze({ aa: 'a', ih: 'i', ou: 'u', ee: 'e', oh: 'o' });
+// 遍历顺序也预先固定，避免每帧 Object.keys 分配新数组。
+const FORMANT_KEYS = Object.freeze(Object.keys(FORMANT_TO_MMD_VOWEL));
+
 class MMDExpression {
     constructor(manager) {
         this.manager = manager;
@@ -291,14 +297,58 @@ class MMDExpression {
         }
     }
 
+    /**
+     * 统一重置全部五元音口型 morph 为 0。
+     * stopLipSync / 切换表情时调用，防止 formant 模式下
+     * い/う/え 等 morph 残留（setMouth(0) 只清 あ + お×0.3）。
+     */
+    resetAllLipMorphs() {
+        for (const vowel of Object.keys(this.lipMorphNames)) {
+            for (const name of (this.lipMorphNames[vowel] || [])) {
+                this.setMorphWeight(name, 0);
+            }
+        }
+    }
+
     // ═══════════════════ 帧更新 ═══════════════════
+
+    // 分析器输出的 VRM blendshape 键 → MMD 五元音 morph 键（lipMorphNames 的键）。
+    // 引用模块级 frozen 常量而非在 getter 里现造字面量：update() 每帧都会读它，
+    // 每帧新建一个对象 + 一个 Object.keys 数组是 60fps 热路径上的无谓 GC 压力。
+    static get FORMANT_TO_MMD_VOWEL() {
+        return FORMANT_TO_MMD_VOWEL;
+    }
 
     update(delta) {
         this.updateBlink(delta);
 
         // 口型同步（如果动画模块有音频分析）
-        if (this.manager.animationModule && this.manager.animationModule._lipSyncEnabled) {
-            const lipValue = this.manager.animationModule.getLipSyncValue();
+        const anim = this.manager.animationModule;
+        if (anim && anim._lipSyncEnabled) {
+            if (anim._formantAnalyzer) {
+                // 五元音共振峰路径：每帧产出 {aa,ee,ih,oh,ou} 连续权重，映射到
+                // あ/い/う/え/お morph。
+                // delta 的夹紧（非有限值回退、负值归零、上界截断）已收口到
+                // FormantLipSyncAnalyzer.update 内部，两条接入路径不再各自防御。
+                const weights = anim._formantAnalyzer.update(delta);
+                const map = FORMANT_TO_MMD_VOWEL;
+                // 发声帧写全五个（含 0），覆盖待机 VMD 可能残留的口型轨道；
+                // 静音帧只把 lip sync 主驱动的 あ/お 归零，不碰 い/う/え，
+                // 让待机 VMD 的口型轨道照常播放——与旧单通道路径
+                // 「清零只在 lipValue>0.05 分支执行」的取舍保持一致。
+                const speaking = FORMANT_KEYS.some((k) => (weights[k] ?? 0) > 0);
+                for (const formantKey of FORMANT_KEYS) {
+                    const vowel = map[formantKey];
+                    if (!speaking && vowel !== 'a' && vowel !== 'o') continue;
+                    const target = weights[formantKey] ?? 0;
+                    for (const name of (this.lipMorphNames[vowel] || [])) {
+                        this.setMorphWeight(name, target);
+                    }
+                }
+                return;
+            }
+            // 旧单通道路径（FormantLipSyncAnalyzer 未加载时回退）
+            const lipValue = anim.getLipSyncValue();
             if (window.DEBUG_AUDIO) {
                 console.log('[MMD Expression] 口型同步检测:', { 
                     lipValue, 
