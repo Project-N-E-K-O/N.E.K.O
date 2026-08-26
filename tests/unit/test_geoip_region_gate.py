@@ -2539,12 +2539,12 @@ def test_case_variant_official_hostname_still_rewrites(config_manager):
 
 @pytest.mark.unit
 def test_every_offline_client_constructor_in_lifecycle_applies_the_flip_failsafe():
-    """Both lifecycle paths that build an OmniOfflineClient run the flip fail-safe.
+    """Every lifecycle path that builds an OmniOfflineClient runs the flip fail-safe.
 
-    The normal-session and hot-swap branches are duals; guarding only one lets
-    the other freeze a voice from the pre-flip catalog into the pending client.
-    Discovered from the constructor sites, line-ordered, so a third path added
-    later cannot silently skip it.
+    Normal-session, hot-swap, and multimodal handoff are parallel entry points;
+    guarding only some lets another freeze a voice from the pre-flip catalog.
+    Follow the shared constructor helper at its call sites, line-ordered, so a
+    later path cannot silently skip the guard.
     """
     import ast
     import pathlib
@@ -2557,12 +2557,14 @@ def test_every_offline_client_constructor_in_lifecycle_applies_the_flip_failsafe
     for node in ast.walk(tree):
         if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
+        if node.name == '_create_offline_vlm_client':
+            continue
         builds, drops = [], []
         for c in ast.walk(node):
             if not isinstance(c, ast.Call):
                 continue
             name = getattr(c.func, 'attr', None) or getattr(c.func, 'id', None)
-            if name == 'OmniOfflineClient':
+            if name in {'OmniOfflineClient', '_create_offline_vlm_client'}:
                 builds.append(c.lineno)
             elif name == '_drop_free_voice_on_route_flip':
                 drops.append(c.lineno)
@@ -2575,5 +2577,5 @@ def test_every_offline_client_constructor_in_lifecycle_applies_the_flip_failsafe
             problems.append(
                 f'{node.name}: fail-safe 在 line {min(drops)}，晚于 client 构造 line {min(builds)}')
 
-    assert len(checked) >= 2, f'未找到足够的 OmniOfflineClient 构造点，断言失效: {checked}'
+    assert len(checked) >= 3, f'未找到足够的 OmniOfflineClient 构造入口，断言失效: {checked}'
     assert not problems, f'这些构造点缺少区域翻转音色 fail-safe: {problems}'

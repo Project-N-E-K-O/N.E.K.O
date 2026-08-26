@@ -1496,11 +1496,24 @@ class LifecycleMixin:
         self,
         *,
         cached_turns: list[dict],
+        previous_core_url: str,
     ):
         """Connect an Offline VLM without mutating active-session ownership."""
 
         await self._config_manager.aensure_region_resolved()
         core_config = await self._config_manager.aget_core_config()
+        current_core_url = str(core_config.get('CORE_URL') or '')
+        if str(previous_core_url or '') != current_core_url:
+            logger.warning(
+                "[GeoIP] Offline VLM handoff: 区域结论在 Realtime 会话与候选创建之间发生变化"
+                "（%s → %s），本场音色可能落到服务端默认",
+                previous_core_url,
+                current_core_url,
+            )
+            self._drop_free_voice_on_route_flip(
+                previous_core_url,
+                current_core_url,
+            )
         conversation_config, vision_config = await asyncio.gather(
             self._config_manager.aget_model_api_config(
                 'conversation', core_config=core_config,
@@ -1691,6 +1704,9 @@ class LifecycleMixin:
                 candidate, next_context_count = (
                     await self._create_offline_vlm_handoff_candidate(
                         cached_turns=cached_turns_before_final,
+                        previous_core_url=str(
+                            getattr(expected_session, 'base_url', '') or ''
+                        ),
                     )
                 )
             except asyncio.CancelledError:

@@ -241,6 +241,50 @@ async def test_parent_submit_cancellation_remains_control_cancellation() -> None
     assert client._pending_images == []
 
 
+async def test_handoff_candidate_drops_a_free_voice_after_region_flip() -> None:
+    manager = LLMSessionManager.__new__(LLMSessionManager)
+    manager.lanlan_name = "Test"
+    manager.memory_server_port = 48912
+    manager._config_manager = SimpleNamespace(
+        aensure_region_resolved=AsyncMock(),
+        aget_core_config=AsyncMock(
+            return_value={
+                "CORE_URL": "wss://www.lanlan.app/core",
+                "DISABLE_TTS": False,
+            }
+        ),
+        aget_model_api_config=AsyncMock(
+            side_effect=[
+                {"model": "text"},
+                {"model": "vision"},
+            ]
+        ),
+    )
+    manager._drop_free_voice_on_route_flip = MagicMock()
+    manager._register_builtin_tools = MagicMock()
+    manager.tool_registry = SimpleNamespace(all=MagicMock(return_value=[]))
+    candidate = SimpleNamespace(connect=AsyncMock(), close=AsyncMock())
+    manager._create_offline_vlm_client = MagicMock(return_value=candidate)
+    manager._snapshot_next_session_context_messages = MagicMock(return_value=[])
+    manager._build_initial_prompt = AsyncMock(return_value="prompt")
+    manager._start_session_fetch_new_dialog = AsyncMock(return_value="memory")
+    manager._convert_cache_to_str = MagicMock(return_value="")
+    manager._bind_session_lifecycle_callbacks = MagicMock()
+
+    built, context_count = await manager._create_offline_vlm_handoff_candidate(
+        cached_turns=[],
+        previous_core_url="wss://www.lanlan.tech/core",
+    )
+
+    assert built is candidate
+    assert context_count == 0
+    manager._drop_free_voice_on_route_flip.assert_called_once_with(
+        "wss://www.lanlan.tech/core",
+        "wss://www.lanlan.app/core",
+    )
+    candidate.connect.assert_awaited_once_with("promptmemory", native_audio=False)
+
+
 @pytest.mark.parametrize("submit_fails", [False, True])
 async def test_two_phase_handoff_keeps_audio_input_and_asr_state_alive(
     submit_fails: bool,
@@ -264,7 +308,10 @@ async def test_two_phase_handoff_keeps_audio_input_and_asr_state_alive(
     manager._sync_tools_to_active_session = AsyncMock()
     manager._consume_next_session_context_messages = MagicMock()
 
-    old_session = SimpleNamespace(close=AsyncMock())
+    old_session = SimpleNamespace(
+        base_url="wss://www.lanlan.tech/core",
+        close=AsyncMock(),
+    )
     manager.session = old_session
     listener_cancelled = asyncio.Event()
 
@@ -325,7 +372,8 @@ async def test_two_phase_handoff_keeps_audio_input_and_asr_state_alive(
     )
     manager._cleanup_pending_session_resources.assert_awaited_once_with()
     manager._create_offline_vlm_handoff_candidate.assert_awaited_once_with(
-        cached_turns=prior_cache
+        cached_turns=prior_cache,
+        previous_core_url="wss://www.lanlan.tech/core",
     )
     manager.ensure_tts_pipeline_alive.assert_awaited_once_with()
     candidate.submit_multimodal_turn.assert_awaited_once_with(
@@ -483,8 +531,8 @@ async def test_new_user_turn_during_candidate_connect_cancels_old_handoff() -> N
     connect_started = asyncio.Event()
     release_connect = asyncio.Event()
 
-    async def connect_candidate(*, cached_turns):
-        del cached_turns
+    async def connect_candidate(*, cached_turns, previous_core_url):
+        del cached_turns, previous_core_url
         connect_started.set()
         await release_connect.wait()
         return candidate, 0
