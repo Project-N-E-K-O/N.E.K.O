@@ -358,6 +358,10 @@ class CredentialManager:
         self._platform_locks: dict[str, threading.RLock] = {}
         self._legacy_sources: dict[str, set[Path]] = {}
         self._legacy_configured_signatures: dict[str, _SourceSignature] = {}
+        self._legacy_candidate_signatures: dict[
+            str,
+            tuple[_SourceSignature, ...],
+        ] = {}
 
     @staticmethod
     def _file_stamp(
@@ -406,17 +410,31 @@ class CredentialManager:
             legacy_configured_signature = self._legacy_configured_signatures.get(
                 platform
             )
+            legacy_candidate_signatures = self._legacy_candidate_signatures.get(
+                platform
+            )
         if entry is None:
             return None
 
         configured_signature = self._source_signature(platform)
         source_path = entry.source_signature[0]
+        legacy_candidates_changed = (
+            legacy_candidate_signatures is not None
+            and legacy_candidate_signatures
+            != tuple(
+                self.legacy_source_signature(path)
+                for path in get_legacy_cookie_files(platform)
+            )
+        )
         if source_path == configured_signature[0]:
             source_signature = configured_signature
         elif source_path is not None and Path(source_path) in legacy_sources:
             if (
-                configured_signature[1] is not None
-                and configured_signature != legacy_configured_signature
+                legacy_candidates_changed
+                or (
+                    configured_signature[1] is not None
+                    and configured_signature != legacy_configured_signature
+                )
             ):
                 source_signature = configured_signature
             else:
@@ -507,6 +525,7 @@ class CredentialManager:
             with self._cache_lock:
                 self._cache.pop(platform, None)
                 self._legacy_configured_signatures.pop(platform, None)
+                self._legacy_candidate_signatures.pop(platform, None)
             entry = self._load_entry(platform)
             return entry.state == self.READY and entry.credentials == normalized
 
@@ -522,6 +541,10 @@ class CredentialManager:
             return False
 
         with self._platform_lock(platform):
+            candidate_signatures = tuple(
+                self.legacy_source_signature(path)
+                for path in get_legacy_cookie_files(platform)
+            )
             configured_signature = self._source_signature(platform)
             if configured_signature[1] is not None:
                 configured_entry = self._load_entry(platform)
@@ -538,8 +561,14 @@ class CredentialManager:
             source_path = Path(source_path_value)
             if self.legacy_source_signature(source_path) != source_signature:
                 return False
+            if candidate_signatures != tuple(
+                self.legacy_source_signature(path)
+                for path in get_legacy_cookie_files(platform)
+            ):
+                return False
             with self._cache_lock:
                 self._legacy_sources.setdefault(platform, set()).add(source_path)
+                self._legacy_candidate_signatures[platform] = candidate_signatures
                 if configured_signature is None:
                     self._legacy_configured_signatures.pop(platform, None)
                 else:
@@ -652,6 +681,7 @@ class CredentialManager:
             with self._cache_lock:
                 self._legacy_sources.pop(platform, None)
                 self._legacy_configured_signatures.pop(platform, None)
+                self._legacy_candidate_signatures.pop(platform, None)
             source_signature = self._source_signature(platform)
             sources_absent = (
                 source_signature[1] is None
@@ -709,6 +739,7 @@ class CredentialManager:
             self._cache.clear()
             self._legacy_sources.clear()
             self._legacy_configured_signatures.clear()
+            self._legacy_candidate_signatures.clear()
 
 
 credential_manager = CredentialManager()

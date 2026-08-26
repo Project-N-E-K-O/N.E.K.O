@@ -563,7 +563,7 @@ def test_invalid_configured_source_uses_stable_legacy_fallback(tmp_path, monkeyp
             {"weibo": configured_file},
         ),
         patch.object(cookies_login, "CONFIG_DIR", configured_file.parent),
-        patch.object(cookies_login, "credential_manager", manager),
+        patch.object(platform_helpers, "credential_manager", manager),
         patch.object(
             cookies_login.os.path,
             "expanduser",
@@ -629,7 +629,7 @@ def test_legacy_fallback_can_be_rejected_and_deleted(tmp_path, monkeypatch):
             {"weibo": configured_file},
         ),
         patch.object(cookies_login, "CONFIG_DIR", tmp_path / "config"),
-        patch.object(cookies_login, "credential_manager", manager),
+        patch.object(platform_helpers, "credential_manager", manager),
         patch.object(
             cookies_login.os.path,
             "expanduser",
@@ -644,6 +644,43 @@ def test_legacy_fallback_can_be_rejected_and_deleted(tmp_path, monkeypatch):
 
     assert not home_legacy_file.exists()
     assert not cwd_legacy_file.exists()
+
+
+def test_higher_priority_legacy_source_invalidates_cached_fallback(
+    tmp_path,
+    monkeypatch,
+):
+    manager = CredentialManager()
+    configured_file = tmp_path / "config" / "weibo_cookies.json"
+    home_dir = tmp_path / "home"
+    home_dir.mkdir()
+    home_legacy_file = home_dir / "weibo_cookies.json"
+    cwd_legacy_file = tmp_path / "weibo_cookies.json"
+    cwd_legacy_file.write_text('{"SUB":"cwd"}', encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+
+    with (
+        patch.dict(
+            "utils.cookies_login.COOKIE_FILES",
+            {"weibo": configured_file},
+        ),
+        patch.object(cookies_login, "CONFIG_DIR", tmp_path / "config"),
+        patch.object(platform_helpers, "credential_manager", manager),
+        patch.object(
+            cookies_login.os.path,
+            "expanduser",
+            return_value=str(home_dir),
+        ),
+    ):
+        assert platform_helpers._get_platform_cookies("weibo") == {"SUB": "cwd"}
+
+        home_legacy_file.write_text(
+            '{"SUB":"higher-priority-and-longer"}',
+            encoding="utf-8",
+        )
+        assert platform_helpers._get_platform_cookies("weibo") == {
+            "SUB": "higher-priority-and-longer"
+        }
 
 
 def test_changed_legacy_source_is_not_cached(tmp_path):
