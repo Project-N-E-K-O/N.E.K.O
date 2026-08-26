@@ -44,6 +44,7 @@ async def test_migration_is_atomic_idempotent_and_does_not_resurrect(
 ) -> None:
     state_root = tmp_path / "user" / "plugins"
     exec_root = tmp_path / "user" / ".neko-plugin-installations" / "plugins"
+    builtin_root = tmp_path / "builtin" / "plugins"
     source = _write_plugin(state_root, "study_companion")
     database = source / "data" / "study.db"
     database.parent.mkdir()
@@ -63,7 +64,11 @@ async def test_migration_is_atomic_idempotent_and_does_not_resurrect(
     (source / "static" / "index.html").parent.mkdir()
     (source / "static" / "index.html").write_text("ok", encoding="utf-8")
 
-    first = await migrate_legacy_plugin_layout(state_root=state_root, exec_root=exec_root)
+    first = await migrate_legacy_plugin_layout(
+        state_root=state_root,
+        exec_root=exec_root,
+        builtin_root=builtin_root,
+    )
 
     assert first.migrated == ("study_companion",)
     assert not first.blocked
@@ -84,12 +89,20 @@ async def test_migration_is_atomic_idempotent_and_does_not_resurrect(
     assert ledger["entries"][0]["new_path"] == str(destination.resolve())
     assert len(ledger["entries"][0]["manifest_sha256"]) == 64
 
-    second = await migrate_legacy_plugin_layout(state_root=state_root, exec_root=exec_root)
+    second = await migrate_legacy_plugin_layout(
+        state_root=state_root,
+        exec_root=exec_root,
+        builtin_root=builtin_root,
+    )
     assert second.migrated == ()
     assert second.skipped == ("study_companion",)
 
     shutil.rmtree(destination)
-    third = await migrate_legacy_plugin_layout(state_root=state_root, exec_root=exec_root)
+    third = await migrate_legacy_plugin_layout(
+        state_root=state_root,
+        exec_root=exec_root,
+        builtin_root=builtin_root,
+    )
     assert third.migrated == ()
     assert third.skipped == ("study_companion",)
     assert not destination.exists()
@@ -104,16 +117,19 @@ async def test_shared_ledger_scopes_migrations_to_each_execution_root(
     ledger_path = state_root.parent / LAYOUT_LEDGER_FILENAME
     first_exec_root = tmp_path / "exec-a"
     second_exec_root = tmp_path / "exec-b"
+    builtin_root = tmp_path / "builtin"
 
     first = await migrate_legacy_plugin_layout(
         state_root=state_root,
         exec_root=first_exec_root,
         ledger_path=ledger_path,
+        builtin_root=builtin_root,
     )
     second = await migrate_legacy_plugin_layout(
         state_root=state_root,
         exec_root=second_exec_root,
         ledger_path=ledger_path,
+        builtin_root=builtin_root,
     )
 
     assert first.migrated == ("study_companion",)
@@ -359,6 +375,34 @@ async def test_migration_rejects_writable_roots_colliding_with_builtin_before_wr
     assert (builtin_plugin / "plugin.toml").is_file()
     assert not ledger_path.exists()
     assert not list(shared.rglob(".neko-layout-v1-*.staging"))
+
+
+@pytest.mark.asyncio
+async def test_migration_blocks_legacy_plugin_that_collides_with_builtin(
+    tmp_path: Path,
+) -> None:
+    state_root = tmp_path / "state" / "plugins"
+    source = _write_plugin(state_root, "study_companion")
+    exec_root = tmp_path / "user" / "plugins"
+    builtin_root = tmp_path / "builtin" / "plugins"
+    builtin = _write_plugin(builtin_root, "study_companion")
+    ledger_path = tmp_path / "layout-ledger.json"
+
+    result = await migrate_legacy_plugin_layout(
+        state_root=state_root,
+        exec_root=exec_root,
+        builtin_root=builtin_root,
+        ledger_path=ledger_path,
+    )
+
+    assert result.migrated == ()
+    assert [issue.code for issue in result.blocked] == [
+        "PLUGIN_LAYOUT_MIGRATION_BUILTIN_CONFLICT"
+    ]
+    assert source.is_dir()
+    assert (builtin / "plugin.toml").is_file()
+    assert not (exec_root / "study_companion").exists()
+    assert not ledger_path.exists()
 
 
 @pytest.mark.asyncio

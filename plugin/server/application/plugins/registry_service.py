@@ -276,10 +276,8 @@ def _collect_plugin_contexts_from_roots_sync(
     roots: tuple[Path, ...],
 ) -> tuple[list[PluginContext], dict[str, PluginContext]]:
     # Dependency ordering must use the same effective source as registration.
-    # Track the winning root index so a later user root replaces the builtin
-    # context instead of the old first-seen behaviour.
+    candidates: dict[str, list[tuple[PluginContext, str, bool]]] = {}
     pid_to_context: dict[str, PluginContext] = {}
-    pid_to_source: dict[str, str] = {}
     context_order: list[str] = []
     processed_paths: set[Path] = set()
 
@@ -308,40 +306,41 @@ def _collect_plugin_contexts_from_roots_sync(
 
             if ctx is None:
                 continue
-            current_source = _source_for_config_path(config_path)
-            previous_source = pid_to_source.get(ctx.pid)
-            canonical = config_path.parent.name == ctx.pid
-            previous = pid_to_context.get(ctx.pid)
-            previous_canonical = previous is not None and previous.toml_path.parent.name == ctx.pid
-            supported_override = (
-                canonical
-                and previous_canonical
-                and {current_source, previous_source} == {"builtin", "user"}
-            )
-            prefer_current = previous is None or (
-                supported_override and current_source == "user"
-            ) or (
-                not supported_override
-                and current_source == "builtin"
-                and previous_source == "user"
-            )
-            if previous is not None and not prefer_current:
-                log = logger.debug if supported_override else logger.warning
-                log(
-                    "duplicate plugin id '{}' ignored while building runtime plan",
-                    ctx.pid,
-                )
-                continue
-            if previous is not None and not supported_override:
-                logger.warning(
-                    "builtin plugin id '{}' replaces a noncanonical user conflict "
-                    "while building runtime plan",
-                    ctx.pid,
-                )
-            if ctx.pid not in pid_to_context:
+            if ctx.pid not in candidates:
                 context_order.append(ctx.pid)
-            pid_to_context[ctx.pid] = ctx
-            pid_to_source[ctx.pid] = current_source
+            candidates.setdefault(ctx.pid, []).append(
+                (
+                    ctx,
+                    _source_for_config_path(config_path),
+                    config_path.parent.name == ctx.pid,
+                )
+            )
+
+    for plugin_id in context_order:
+        group = candidates[plugin_id]
+        canonical_user = next(
+            (ctx for ctx, source, canonical in group if canonical and source == "user"),
+            None,
+        )
+        canonical_builtin = next(
+            (ctx for ctx, source, canonical in group if canonical and source == "builtin"),
+            None,
+        )
+        if canonical_user is not None and canonical_builtin is not None:
+            winner = canonical_user
+        else:
+            winner = next(
+                (ctx for ctx, source, _canonical in group if source == "builtin"),
+                group[0][0],
+            )
+        pid_to_context[plugin_id] = winner
+        for ctx, _source, _canonical in group:
+            if ctx is winner:
+                continue
+            logger.debug(
+                "duplicate plugin id '{}' ignored while building runtime plan",
+                plugin_id,
+            )
 
     plugin_contexts = [pid_to_context[plugin_id] for plugin_id in context_order]
     return plugin_contexts, pid_to_context

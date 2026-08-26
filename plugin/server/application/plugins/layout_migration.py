@@ -448,6 +448,15 @@ def _migrate_legacy_plugin_layout_sync(
                 )
             _ensure_tree_has_no_links(source)
             source_hash, _ = _validate_plugin_tree(source, directory_id)
+            builtin_manifest = builtin_root / directory_id / "plugin.toml"
+            if builtin_manifest.is_file():
+                raise _LayoutMigrationBlocked(
+                    "PLUGIN_LAYOUT_MIGRATION_BUILTIN_CONFLICT",
+                    (
+                        "legacy plugin collides with an immutable builtin; "
+                        "automatic migration cannot create an unverified override"
+                    ),
+                )
             if destination.exists():
                 raise _LayoutMigrationBlocked(
                     "PLUGIN_LAYOUT_MIGRATION_DESTINATION_EXISTS",

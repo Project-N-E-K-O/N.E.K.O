@@ -934,6 +934,9 @@ async def test_canonical_user_override_precedes_earlier_legacy_conflict(
         monkeypatch.setattr(module, "PLUGIN_CONFIG_ROOTS", (user_root, builtin_root))
 
         result = await module.PluginRegistryService().refresh_registry()
+        _contexts, contexts_by_id = module._collect_plugin_contexts_from_roots_sync(
+            (user_root, builtin_root),
+        )
 
         assert result["success"] is True, result
         assert result["shadowed"] == [
@@ -950,6 +953,7 @@ async def test_canonical_user_override_precedes_earlier_legacy_conflict(
         assert effective["effective_source"] == "user"
         assert Path(legacy["config_path"]) == legacy_config
         assert legacy["effective_source"] == "user"
+        assert contexts_by_id[plugin_id].toml_path == user_config
     finally:
         with module.state.acquire_plugins_write_lock():
             module.state.plugins.clear()

@@ -346,6 +346,11 @@ import {
 } from '@/utils/marketPluginInstallState'
 import { resolvePluginInstallErrorKey } from '@/utils/pluginInstallError'
 import { confirmBuiltinOverride } from '@/utils/confirmBuiltinOverride'
+import {
+  extractRepoPluginId,
+  localPluginIdentityKeys,
+  marketIdentityKeys,
+} from '@/utils/marketPluginIdentity'
 
 interface Props {
   embedded?: boolean
@@ -596,46 +601,13 @@ const yankCache = new Map<
 >()
 const YANK_TTL_MS = 5 * 60 * 1000
 
-function extractRepoPluginId(githubRepo?: string): string | undefined {
-  const match = githubRepo?.match(/n\.e\.k\.o_plugin_([a-z_][a-z0-9_]*)/i)
-  return match?.[1]
-}
-
-function marketIdentityKeys(plugin: {
-  slug?: string
-  name?: string
-  id: string | number
-  rawId?: number | string
-  github_repo?: string
-}): string[] {
-  const keys = new Set<string>()
-  for (const value of [
-    plugin.slug,
-    plugin.name,
-    String(plugin.id),
-    plugin.rawId !== undefined ? String(plugin.rawId) : '',
-    extractRepoPluginId(plugin.github_repo),
-  ]) {
-    const normalized = String(value || '').trim().toLowerCase()
-    if (normalized) keys.add(normalized)
-  }
-  return [...keys]
-}
-
 function resolveExpectedTomlId(plugin: Pick<MarketPlugin, 'slug' | 'github_repo'>): string | null {
   return extractRepoPluginId(plugin.github_repo) || plugin.slug || null
 }
 
 // ─── 本地插件对比：slug / repo plugin_id / lock 三路配对 ───────────
 const localPluginKeys = computed(() => {
-  const keys = new Set<string>()
-  for (const p of pluginStore.pluginsWithStatus) {
-    const id = String(p.id || '').toLowerCase()
-    const name = String(p.name || '').toLowerCase()
-    if (id) keys.add(id)
-    if (name) keys.add(name)
-  }
-  return keys
+  return localPluginIdentityKeys(pluginStore.pluginsWithStatus)
 })
 
 function isInstalled(plugin: MarketPlugin): boolean {
