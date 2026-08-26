@@ -31,8 +31,14 @@ async def test_frame_query_forwards_plugin_identity_and_generation(
         async def __aexit__(self, *_args: object) -> None:
             return None
 
-        async def get(self, url: str, *, params: dict[str, str]):
-            seen.update({"url": url, "params": params})
+        async def get(
+            self,
+            url: str,
+            *,
+            params: dict[str, str],
+            headers: dict[str, str],
+        ):
+            seen.update({"url": url, "params": params, "headers": headers})
             return _Response()
 
     monkeypatch.setattr(
@@ -51,7 +57,9 @@ async def test_frame_query_forwards_plugin_identity_and_generation(
     assert seen["params"] == {
         "include_frame": "true",
         "source_name": "demo_plugin",
-        "token": "generation-one",
+    }
+    assert seen["headers"] == {
+        "X-NEKO-Live-Frame-Token": "generation-one",
     }
 
 

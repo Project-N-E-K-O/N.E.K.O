@@ -7,6 +7,7 @@ from fastapi import HTTPException, Request
 
 PLUGIN_HOST_TOKEN_ENV = "NEKO_PLUGIN_HOST_API_TOKEN"
 PLUGIN_HOST_TOKEN_HEADER = "X-NEKO-Plugin-Host-Token"
+LIVE_FRAME_TOKEN_HEADER = "X-NEKO-Live-Frame-Token"
 
 
 def plugin_host_auth_headers() -> dict[str, str]:

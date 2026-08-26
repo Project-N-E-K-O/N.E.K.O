@@ -33,6 +33,10 @@ from ._genai_support import (
 )
 from ._lifecycle import _suspend_dialog_slop
 
+_TOOL_IMAGE_TURN_MAX_COUNT = 2
+_TOOL_IMAGE_TURN_MAX_B64_BYTES = 4 * 1024 * 1024
+
+
 class _ToolingMixin:
     def set_tools(self, tool_definitions: Optional[List[ToolDefinition]]) -> None:
         """Replace the active tool list. Takes effect on the next
@@ -242,8 +246,40 @@ class _ToolingMixin:
         if not images:
             return
 
+        if slots is None:
+            slots = getattr(self, "_pending_tool_image_slots", None)
+            if slots is None:
+                slots = []
+                self._pending_tool_image_slots = slots
+
+        used_count = 0
+        used_b64_bytes = 0
+        for _messages, _index, image_message, _placeholder in slots:
+            for part in image_message.get("content", []):
+                if part.get("type") != "image_url":
+                    continue
+                url = part.get("image_url", {}).get("url", "")
+                if not isinstance(url, str):
+                    continue
+                used_count += 1
+                used_b64_bytes += len(url.rsplit(",", 1)[-1])
+
         content = []
         for img in images:
+            image_b64_bytes = len(img.data_b64)
+            if (
+                used_count >= _TOOL_IMAGE_TURN_MAX_COUNT
+                or used_b64_bytes + image_b64_bytes
+                > _TOOL_IMAGE_TURN_MAX_B64_BYTES
+            ):
+                logger.warning(
+                    "Dropping tool image beyond turn budget: tool=%s, "
+                    "used_count=%d, used_b64_bytes=%d",
+                    result.name,
+                    used_count,
+                    used_b64_bytes,
+                )
+                continue
             content.append({
                 "type": "image_url",
                 "image_url": {"url": f"data:{img.mime};base64,{img.data_b64}"},
@@ -252,6 +288,11 @@ class _ToolingMixin:
             # Always caption: several providers reject bare image parts.
             caption = img.vision_prompt.strip() or self._TOOL_IMAGE_DEFAULT_CAPTION
             content.append({"type": "text", "text": caption})
+            used_count += 1
+            used_b64_bytes += image_b64_bytes
+
+        if not content:
+            return
 
         message = {"role": "user", "content": content}
         messages.append(message)
@@ -259,11 +300,6 @@ class _ToolingMixin:
         # Remember the list too: ``prompt_ephemeral`` runs the tool loop over
         # a scratch list rather than ``_conversation_history``, so an index
         # alone would point into the wrong history.
-        if slots is None:
-            slots = getattr(self, "_pending_tool_image_slots", None)
-            if slots is None:
-                slots = []
-                self._pending_tool_image_slots = slots
         output = result.output if isinstance(result.output, dict) else {}
         shot_id = output.get("shot_id")
         recall_hint = output.get("recall_hint")

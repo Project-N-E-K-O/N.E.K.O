@@ -37,7 +37,7 @@ from main_logic.core.live_frame_permissions import (
     set_plugin_delivery_permission,
 )
 from main_routers.cookies_login_router import verify_local_access
-from utils.plugin_host_auth import require_plugin_host_access
+from utils.plugin_host_auth import LIVE_FRAME_TOKEN_HEADER, require_plugin_host_access
 
 from ..shared_state import get_session_manager
 from ._shared import _set_no_store_headers, logger, router
@@ -102,11 +102,10 @@ async def get_live_vision_state(
     role: str = "",
     include_frame: bool = False,
     source_name: str = "",
-    token: str = "",
 ):
     """Report whether a screen/camera share is feeding the conversation."""
-    del request  # consumed by the verify_local_access dependency
     _set_no_store_headers(response)
+    token = request.headers.get(LIVE_FRAME_TOKEN_HEADER, "")
 
     mgr, state = _pick_sharing_manager(_candidate_managers(role))
     payload = {

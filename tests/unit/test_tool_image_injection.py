@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import pytest
 
+from main_logic.omni_offline_client import _tools as tools_module
 from main_logic.omni_offline_client._tools import _ToolingMixin
 from main_logic.tool_calling import ToolCall, ToolImage, ToolResult
 
@@ -155,6 +156,62 @@ async def test_image_turns_follow_every_tool_result():
     assert [m["role"] for m in messages] == [
         "assistant", "tool", "tool", "user",
     ]
+
+
+@pytest.mark.asyncio
+async def test_parallel_tool_results_share_an_aggregate_image_count_budget():
+    client = _Client({
+        name: _image_result(name=name, images=[ToolImage(data_b64=name.upper())])
+        for name in ("first", "second", "third")
+    })
+    messages: list = []
+
+    await client._execute_and_append_openai_tool_calls(
+        messages,
+        [_Call(name=name, id=name) for name in ("first", "second", "third")],
+    )
+
+    assert len(_image_messages(messages)) == 2
+    assert "FIRST" in str(messages)
+    assert "SECOND" in str(messages)
+    assert "THIRD" not in str(messages)
+
+
+@pytest.mark.asyncio
+async def test_tool_iterations_share_an_aggregate_image_byte_budget(monkeypatch):
+    monkeypatch.setattr(
+        tools_module,
+        "_TOOL_IMAGE_TURN_MAX_B64_BYTES",
+        5,
+        raising=False,
+    )
+    client = _Client({
+        "first": _image_result(
+            name="first",
+            images=[ToolImage(data_b64="AAAA")],
+        ),
+        "second": _image_result(
+            name="second",
+            images=[ToolImage(data_b64="BBBB")],
+        ),
+    })
+    messages: list = []
+    slots: list = []
+
+    await client._execute_and_append_openai_tool_calls(
+        messages,
+        [_Call(name="first", id="first")],
+        tool_image_slots=slots,
+    )
+    await client._execute_and_append_openai_tool_calls(
+        messages,
+        [_Call(name="second", id="second")],
+        tool_image_slots=slots,
+    )
+
+    assert len(_image_messages(messages)) == 1
+    assert "AAAA" in str(messages)
+    assert "BBBB" not in str(messages)
 
 
 # -------------------------------------------------------------------- release

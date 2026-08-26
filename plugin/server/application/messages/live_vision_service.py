@@ -5,7 +5,7 @@ import math
 import httpx
 
 from plugin.logging_config import get_logger
-from utils.plugin_host_auth import plugin_host_auth_headers
+from utils.plugin_host_auth import LIVE_FRAME_TOKEN_HEADER, plugin_host_auth_headers
 
 logger = get_logger("server.application.messages.live_vision")
 
@@ -55,19 +55,20 @@ class LiveVisionQueryService:
     ) -> dict[str, object]:
         normalized_timeout = _coerce_timeout(timeout)
         params: dict[str, str] = {}
+        headers: dict[str, str] = {}
         if isinstance(role, str) and role.strip():
             params["role"] = role.strip()
         if include_frame:
             params["include_frame"] = "true"
             params["source_name"] = str(source_name or "").strip()
-            params["token"] = str(token or "").strip()
+            headers[LIVE_FRAME_TOKEN_HEADER] = str(token or "").strip()
 
         url = f"{_main_server_base_url()}/api/system/live-vision"
         try:
             async with httpx.AsyncClient(
                 timeout=normalized_timeout, proxy=None, trust_env=False
             ) as client:
-                response = await client.get(url, params=params)
+                response = await client.get(url, params=params, headers=headers)
                 response.raise_for_status()
                 payload = response.json()
         except (httpx.HTTPError, ValueError, OSError, RuntimeError) as exc:

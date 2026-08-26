@@ -18,6 +18,7 @@ ENDPOINT = "/api/system/live-vision"
 PERMISSION_ENDPOINT = "/api/system/live-vision/attachment-permission"
 HOST_TOKEN_ENV = "NEKO_PLUGIN_HOST_API_TOKEN"
 HOST_TOKEN_HEADER = "X-NEKO-Plugin-Host-Token"
+FRAME_TOKEN_HEADER = "X-NEKO-Live-Frame-Token"
 HOST_TOKEN = "test-plugin-host-token"
 
 pytestmark = pytest.mark.unit
@@ -98,10 +99,10 @@ def test_the_frame_comes_only_when_asked_for(monkeypatch):
 
     body = client.get(
         ENDPOINT,
+        headers={FRAME_TOKEN_HEADER: "generation-one"},
         params={
             "include_frame": "true",
             "source_name": "demo_plugin",
-            "token": "generation-one",
         },
     ).json()
 
@@ -123,6 +124,34 @@ def test_the_frame_is_withheld_without_a_matching_plugin_generation(monkeypatch)
 
     assert body["active"] is True
     assert body["source"] == "screen"
+    assert "frame_b64" not in body
+
+
+def test_a_matching_query_token_is_not_accepted(monkeypatch):
+    client = _client(
+        {"lanlan": _Manager("lanlan", _sharing())},
+        monkeypatch,
+        authenticated=True,
+    )
+    client.post(
+        PERMISSION_ENDPOINT,
+        json={
+            "source_name": "demo_plugin",
+            "token": "generation-one",
+            "enabled": True,
+        },
+    )
+
+    body = client.get(
+        ENDPOINT,
+        params={
+            "include_frame": "true",
+            "source_name": "demo_plugin",
+            "token": "generation-one",
+        },
+    ).json()
+
+    assert body["active"] is True
     assert "frame_b64" not in body
 
 
