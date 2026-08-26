@@ -27,6 +27,12 @@ if TYPE_CHECKING:
     pass
 import json
 
+from utils.cookies_login import (
+    CredentialManager,
+    credential_manager,
+    get_legacy_cookie_files,
+)
+
 from ._shared import logger
 
 
@@ -208,11 +214,6 @@ def _get_platform_cookies(platform_name: str) -> dict[str, str]:
     """
     try:
         # 优先调用系统底层的解密读取逻辑
-        from utils.cookies_login import (
-            CredentialManager,
-            credential_manager,
-            get_legacy_cookie_files,
-        )
         cookies = credential_manager.load(platform_name)
         if cookies:
             logger.debug(f"✅ 成功通过底层接口加载 {platform_name} 凭证")

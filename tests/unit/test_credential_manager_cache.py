@@ -415,6 +415,40 @@ def test_failed_cookie_delete_preserves_encryption_key(tmp_path, monkeypatch):
     assert key_file.exists()
 
 
+def test_later_legacy_delete_failure_restores_deleted_sources(tmp_path, monkeypatch):
+    manager = CredentialManager()
+    cookie_file = tmp_path / "managed.json"
+    legacy_file = tmp_path / "weibo_cookies.json"
+    key_file = tmp_path / "weibo_key.key"
+    cookie_file.write_text("managed", encoding="utf-8")
+    legacy_file.write_text('{"SUB":"legacy"}', encoding="utf-8")
+    key_file.write_bytes(b"required-key")
+    original_unlink = Path.unlink
+
+    def fail_legacy_unlink(path, *args, **kwargs):
+        if path == legacy_file.resolve():
+            raise PermissionError("legacy busy")
+        return original_unlink(path, *args, **kwargs)
+
+    monkeypatch.chdir(tmp_path)
+    with (
+        patch.dict("utils.cookies_login.COOKIE_FILES", {"weibo": cookie_file}),
+        patch.object(cookies_login, "CONFIG_DIR", tmp_path),
+        patch.object(
+            cookies_login.os.path,
+            "expanduser",
+            return_value=str(tmp_path / "home"),
+        ),
+        patch.object(Path, "unlink", fail_legacy_unlink),
+        pytest.raises(PermissionError, match="legacy busy"),
+    ):
+        manager.delete_stored_credentials("weibo")
+
+    assert cookie_file.read_text(encoding="utf-8") == "managed"
+    assert legacy_file.read_text(encoding="utf-8") == '{"SUB":"legacy"}'
+    assert key_file.exists()
+
+
 def test_delete_does_not_cache_missing_for_recreated_source(tmp_path, monkeypatch):
     manager = CredentialManager()
     cookie_file = tmp_path / "weibo.json"

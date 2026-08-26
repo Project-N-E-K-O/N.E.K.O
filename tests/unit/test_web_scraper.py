@@ -823,6 +823,55 @@ async def test_bilibili_following_without_login_skips_fetch(monkeypatch):
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_bilibili_rejection_uses_exact_request_cookie_snapshot(monkeypatch):
+    request_cookies = {"SESSDATA": "request-snapshot"}
+    marked = []
+    sent = []
+
+    class FakeCredential:
+        def get_cookies(self):
+            return dict(request_cookies)
+
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"code": -101}
+
+    class FakeClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def get(self, *args, **kwargs):
+            sent.append(kwargs["cookies"])
+            return FakeResponse()
+
+    monkeypatch.setattr(
+        personal_dynamics,
+        "_get_bilibili_credential",
+        lambda: FakeCredential(),
+    )
+    monkeypatch.setattr(personal_dynamics.httpx, "AsyncClient", FakeClient)
+    monkeypatch.setattr(personal_dynamics.random, "uniform", lambda *_args: 0)
+    monkeypatch.setattr(
+        personal_dynamics.credential_manager,
+        "mark_auth_rejected",
+        lambda platform, credentials: marked.append((platform, credentials)),
+    )
+
+    result = await personal_dynamics._fetch_bilibili_personal_dynamic_uncached(10)
+
+    assert result["status"] == "auth_failed"
+    assert sent == [request_cookies]
+    assert marked == [("bilibili", request_cookies)]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_bilibili_following_uses_two_minute_cache(monkeypatch):
     calls = 0
     clock = {"now": 0.0}

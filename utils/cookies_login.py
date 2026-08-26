@@ -540,18 +540,61 @@ class CredentialManager:
             ]
             cookie_files = list(dict.fromkeys(path.resolve() for path in candidate_files))
 
-            artifact_existed = False
-            cookie_error: OSError | None = None
+            backups: dict[Path, tuple[bytes, int, _FileStamp]] = {}
             for stored_file in cookie_files:
+                try:
+                    stat = stored_file.stat()
+                    contents = stored_file.read_bytes()
+                except FileNotFoundError:
+                    continue
+                except OSError:
+                    with self._cache_lock:
+                        self._cache.pop(platform, None)
+                    raise
+
+                signature = (stat.st_mtime_ns, stat.st_ctime_ns, stat.st_size)
+                if self._file_stamp(stored_file) != signature:
+                    with self._cache_lock:
+                        self._cache.pop(platform, None)
+                    raise OSError(f"{stored_file} changed while preparing deletion")
+                backups[stored_file] = (contents, stat.st_mode, signature)
+
+            artifact_existed = bool(backups)
+            deleted_files: list[Path] = []
+            cookie_error: OSError | None = None
+            for stored_file, (_contents, _mode, signature) in backups.items():
+                if self._file_stamp(stored_file) != signature:
+                    cookie_error = OSError(
+                        f"{stored_file} changed while deleting credentials"
+                    )
+                    break
                 try:
                     stored_file.unlink()
                 except FileNotFoundError:
                     continue
                 except OSError as exc:
-                    artifact_existed = True
-                    cookie_error = cookie_error or exc
+                    cookie_error = exc
+                    break
                 else:
-                    artifact_existed = True
+                    deleted_files.append(stored_file)
+
+            if cookie_error is not None:
+                restore_error: OSError | None = None
+                for deleted_file in deleted_files:
+                    if not self._path_is_absent(deleted_file):
+                        continue
+                    contents, mode, _signature = backups[deleted_file]
+                    try:
+                        deleted_file.write_bytes(contents)
+                        if sys.platform != "win32":
+                            os.chmod(deleted_file, mode)
+                    except OSError as exc:
+                        restore_error = restore_error or exc
+                with self._cache_lock:
+                    self._cache.pop(platform, None)
+                if restore_error is not None:
+                    logger.error("回滚已删除凭证文件失败: %s", restore_error)
+                raise cookie_error
 
             sources_absent = all(self._path_is_absent(path) for path in cookie_files)
             key_deleted = True
@@ -565,11 +608,6 @@ class CredentialManager:
                     key_deleted = False
                 else:
                     artifact_existed = True
-
-            if cookie_error is not None:
-                with self._cache_lock:
-                    self._cache.pop(platform, None)
-                raise cookie_error
 
             with self._cache_lock:
                 self._legacy_sources.pop(platform, None)
