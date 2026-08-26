@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pickle
+from pathlib import Path
 
 import pytest
 
@@ -76,3 +77,57 @@ def test_uplink_decoder_rejects_another_plugin_host_channel_token() -> None:
             encoded,
             expected_token="victim-channel-token",
         )
+
+
+@pytest.mark.plugin_unit
+def test_uplink_result_normalizes_path_and_set_values() -> None:
+    encoded = zmq_transport._encode_uplink(
+        "host-channel-token",
+        zmq_transport.CH_RES,
+        {
+            "req_id": "request-1",
+            "success": True,
+            "data": {
+                "path": Path("artifacts/result.json"),
+                "labels": {"alpha", "beta"},
+            },
+            "error": None,
+        },
+    )
+
+    _channel, payload = zmq_transport._decode_uplink(
+        encoded,
+        expected_token="host-channel-token",
+    )
+
+    assert payload["data"]["path"] == str(Path("artifacts/result.json"))
+    assert set(payload["data"]["labels"]) == {"alpha", "beta"}
+
+
+@pytest.mark.plugin_unit
+def test_unserializable_uplink_result_returns_an_immediate_error() -> None:
+    class _UnsupportedResult:
+        pass
+
+    encoded = zmq_transport._encode_uplink(
+        "host-channel-token",
+        zmq_transport.CH_RES,
+        {
+            "req_id": "request-1",
+            "success": True,
+            "data": {"value": _UnsupportedResult()},
+            "error": None,
+        },
+    )
+
+    _channel, payload = zmq_transport._decode_uplink(
+        encoded,
+        expected_token="host-channel-token",
+    )
+
+    assert payload == {
+        "req_id": "request-1",
+        "success": False,
+        "data": None,
+        "error": "Plugin result is not MessagePack-serializable",
+    }

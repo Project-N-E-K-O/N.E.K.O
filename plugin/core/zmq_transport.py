@@ -24,6 +24,7 @@ from __future__ import annotations
 import pickle
 import secrets
 import threading
+from pathlib import PurePath
 from typing import Any, Optional, Tuple
 
 import ormsgpack
@@ -47,15 +48,36 @@ _UPLINK_PACK_OPTIONS = (
 )
 
 
+def _normalize_uplink_extension(value: object) -> object:
+    if isinstance(value, PurePath):
+        return str(value)
+    if isinstance(value, (set, frozenset)):
+        return list(value)
+    raise TypeError(f"unsupported uplink value type: {type(value).__name__}")
+
+
 def _encode_uplink(token: str, channel: str, payload: Any) -> bytes:
     if not token or channel not in _UPLINK_CHANNELS or not isinstance(payload, dict):
         raise TypeError("invalid uplink message")
     try:
         return ormsgpack.packb(
             (token, channel, payload),
+            default=_normalize_uplink_extension,
             option=_UPLINK_PACK_OPTIONS,
         )
     except Exception as exc:
+        if channel == CH_RES:
+            req_id = payload.get("req_id")
+            error_payload = {
+                "req_id": req_id if isinstance(req_id, (str, int)) else "unknown",
+                "success": False,
+                "data": None,
+                "error": "Plugin result is not MessagePack-serializable",
+            }
+            return ormsgpack.packb(
+                (token, channel, error_payload),
+                option=_UPLINK_PACK_OPTIONS,
+            )
         raise TypeError("uplink payload must be MessagePack-serializable") from exc
 
 

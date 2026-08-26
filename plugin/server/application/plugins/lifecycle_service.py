@@ -87,6 +87,7 @@ plugin_registry_service = PluginRegistryService()
 plugin_permission_service = LiveVisionQueryService()
 _PLUGIN_PERMISSION_REVOKE_ATTEMPTS = 2
 _PLUGIN_PERMISSION_REVOKE_RETRY_SECONDS = 0.1
+_STARTUP_QUARANTINED_ATTR = "_neko_startup_quarantined"
 # The profile sharing decision and install-source soft-removal must form one
 # operation.  Serializing deletions prevents two members of the same package
 # from both observing the other as active and orphaning the shared profile.
@@ -874,6 +875,7 @@ async def _cleanup_started_host(plugin_id: str, host: PluginHostContract) -> Non
         await _revoke_plugin_host_permissions(plugin_id, target_host)
     ) is not False
     if not permissions_revoked:
+        setattr(target_host, _STARTUP_QUARANTINED_ATTR, True)
         if not isinstance(registered, PluginHostContract):
             await asyncio.to_thread(
                 _register_or_replace_host_sync,
@@ -1093,7 +1095,13 @@ class PluginLifecycleService:
 
         existing_host_obj = await asyncio.to_thread(_get_plugin_host_sync, current_plugin_id)
         if isinstance(existing_host_obj, PluginHostContract):
-            if existing_host_obj.is_alive():
+            if getattr(existing_host_obj, _STARTUP_QUARANTINED_ATTR, False) is True:
+                await _cleanup_started_host(current_plugin_id, existing_host_obj)
+                logger.info(
+                    "removed quarantined failed-start host for plugin_id={}",
+                    current_plugin_id,
+                )
+            elif existing_host_obj.is_alive():
                 if persist_user_intent:
                     await asyncio.to_thread(
                         _persist_user_runtime_intent,
@@ -1107,26 +1115,30 @@ class PluginLifecycleService:
                     "plugin_id": current_plugin_id,
                     "message": "Plugin is already running",
                 }
-            # Stale host (process dead) — remove so re-start can proceed
-            permissions_revoked = (
-                await _revoke_plugin_host_permissions(
+            else:
+                # Stale host (process dead) — remove so re-start can proceed
+                permissions_revoked = (
+                    await _revoke_plugin_host_permissions(
+                        current_plugin_id,
+                        existing_host_obj,
+                    )
+                ) is not False
+                if not permissions_revoked:
+                    raise _to_domain_error(
+                        code="PLUGIN_PERMISSION_REVOKE_FAILED",
+                        message=(
+                            f"Failed to revoke permissions for plugin "
+                            f"'{current_plugin_id}'"
+                        ),
+                        status_code=503,
+                        plugin_id=current_plugin_id,
+                        error_type="PermissionRevokeFailed",
+                    )
+                await asyncio.to_thread(_pop_plugin_host_sync, current_plugin_id)
+                logger.info(
+                    "removed stale host for plugin_id={} (process no longer alive)",
                     current_plugin_id,
-                    existing_host_obj,
                 )
-            ) is not False
-            if not permissions_revoked:
-                raise _to_domain_error(
-                    code="PLUGIN_PERMISSION_REVOKE_FAILED",
-                    message=(
-                        f"Failed to revoke permissions for plugin "
-                        f"'{current_plugin_id}'"
-                    ),
-                    status_code=503,
-                    plugin_id=current_plugin_id,
-                    error_type="PermissionRevokeFailed",
-                )
-            await asyncio.to_thread(_pop_plugin_host_sync, current_plugin_id)
-            logger.info("removed stale host for plugin_id={} (process no longer alive)", current_plugin_id)
 
         if state.is_plugin_frozen(current_plugin_id) and not restore_state:
             raise _to_domain_error(

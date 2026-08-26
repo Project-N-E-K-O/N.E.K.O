@@ -371,6 +371,66 @@ async def test_start_failure_cleanup_keeps_host_when_permission_revoke_fails(
 
 
 @pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_start_retries_quarantined_failed_start_host(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    host = _FakeProcessHost(
+        plugin_id="demo_plugin",
+        entry_point="tests.fake:Plugin",
+        config_path=tmp_path / "demo_plugin" / "plugin.toml",
+    )
+    host.transport = SimpleNamespace(uplink_token="failed-start-generation")
+    hosts_backup = dict(module.state.plugin_hosts)
+    try:
+        with module.state.acquire_plugin_hosts_write_lock():
+            module.state.plugin_hosts.clear()
+
+        async def _failed_revoke(
+            _plugin_id: str,
+            *,
+            host_generation: str = "",
+        ) -> bool:
+            assert host_generation == "failed-start-generation"
+            return False
+
+        monkeypatch.setattr(module, "_revoke_plugin_permissions", _failed_revoke)
+        with pytest.raises(ServerDomainError):
+            await module._cleanup_started_host("demo_plugin", host)
+
+        async def _successful_generation_revoke(
+            _plugin_id: str,
+            *,
+            host_generation: str = "",
+        ) -> bool:
+            assert host_generation == "failed-start-generation"
+            return True
+
+        monkeypatch.setattr(
+            module,
+            "_revoke_plugin_permissions",
+            _successful_generation_revoke,
+        )
+        monkeypatch.setattr(module, "_get_plugin_config_path", lambda _plugin_id: None)
+
+        with pytest.raises(ServerDomainError) as exc_info:
+            await module.PluginLifecycleService().start_plugin(
+                "demo_plugin",
+                refresh_registry=False,
+            )
+
+        assert exc_info.value.code == "PLUGIN_CONFIG_NOT_FOUND"
+        assert host.stopped is True
+        with module.state.acquire_plugin_hosts_read_lock():
+            assert "demo_plugin" not in module.state.plugin_hosts
+    finally:
+        with module.state.acquire_plugin_hosts_write_lock():
+            module.state.plugin_hosts.clear()
+            module.state.plugin_hosts.update(hosts_backup)
+
+
+@pytest.mark.plugin_unit
 def test_parse_single_plugin_config_warns_on_directory_id_mismatch(
     tmp_path: Path,
 ) -> None:
