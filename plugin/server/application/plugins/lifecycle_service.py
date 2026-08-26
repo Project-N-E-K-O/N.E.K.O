@@ -302,7 +302,11 @@ def _plugin_is_running_sync(plugin_id: str) -> bool:
 
 def _list_running_plugin_ids_sync() -> list[str]:
     with state.acquire_plugin_hosts_read_lock():
-        return [plugin_id for plugin_id in state.plugin_hosts.keys()]
+        return [
+            plugin_id
+            for plugin_id, host in state.plugin_hosts.items()
+            if getattr(host, _STARTUP_QUARANTINED_ATTR, False) is not True
+        ]
 
 
 def _remove_event_handlers_sync(plugin_id: str) -> None:

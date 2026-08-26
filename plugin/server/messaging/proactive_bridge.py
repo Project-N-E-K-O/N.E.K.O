@@ -145,17 +145,17 @@ class ProactiveBridge:
 
     def _drain_private_payloads(self, push_sock: Any) -> None:
         for _ in range(128):
-            try:
-                with self._private_payloads_lock:
+            with self._private_payloads_lock:
+                try:
                     payload = self._private_payloads.get_nowait()
-            except queue.Empty:
-                return
-            try:
-                self._dispatch(payload, push_sock)
-            except Exception as exc:
-                logger.error("Error dispatching private push payload: {}", exc)
-            finally:
-                self._private_payloads.task_done()
+                except queue.Empty:
+                    return
+                try:
+                    self._dispatch(payload, push_sock)
+                except Exception as exc:
+                    logger.error("Error dispatching private push payload: {}", exc)
+                finally:
+                    self._private_payloads.task_done()
 
     def start(self) -> None:
         if zmq is None:

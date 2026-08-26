@@ -28,6 +28,10 @@ def _metadata_worker_command() -> list[str]:
     return [sys.executable, "-c", _WORKER_BOOTSTRAP]
 
 
+def _handler_key_belongs_to_plugin(key: str, plugin_id: str) -> bool:
+    return key.startswith(f"{plugin_id}.") or key.startswith(f"{plugin_id}:")
+
+
 class PluginMetadataScanError(RuntimeError):
     def __init__(self, error_type: str, message: str) -> None:
         super().__init__(message)
@@ -137,6 +141,12 @@ def _scan_in_worker(request: Mapping[str, object]) -> dict[str, object]:
 
 
 def _worker_main() -> None:
+    # Capture the raw writer and descriptor before importing plugin code.
+    # os._exit below prevents plugin-registered atexit hooks from appending a
+    # second, forged protocol record after this trusted one.
+    raw_write = os.write
+    immediate_exit = os._exit
+    stdout_fd = sys.stdout.fileno()
     try:
         request_obj = json.loads(sys.stdin.read())
         if not isinstance(request_obj, dict):
@@ -148,15 +158,14 @@ def _worker_main() -> None:
             "error_type": type(exc).__name__,
             "message": str(exc),
         }
-    # A plugin import may write stdout without terminating its line. Start the
-    # protocol record on a fresh line so the parent can still find the marker.
-    sys.stdout.write("\n")
-    sys.stdout.write(
-        _RESULT_PREFIX
+    encoded_result = (
+        "\n"
+        + _RESULT_PREFIX
         + json.dumps(result, ensure_ascii=False, separators=(",", ":"))
         + "\n"
-    )
-    sys.stdout.flush()
+    ).encode("utf-8")
+    raw_write(stdout_fd, encoded_result)
+    immediate_exit(0)
 
 
 def scan_plugin_metadata_isolated(
@@ -235,6 +244,16 @@ def scan_plugin_metadata_isolated(
         if isinstance(handlers_obj, dict)
         else {}
     )
+    invalid_handler_keys = [
+        key
+        for key in handlers
+        if not _handler_key_belongs_to_plugin(key, plugin_id)
+    ]
+    if invalid_handler_keys:
+        raise PluginMetadataScanError(
+            "InvalidMetadataResult",
+            f"Metadata worker returned handler keys outside plugin '{plugin_id}'",
+        )
     entry_methods = (
         {str(key): str(value) for key, value in methods_obj.items()}
         if isinstance(methods_obj, dict)
@@ -268,6 +287,8 @@ def install_isolated_plugin_metadata(
     }
 
     for key, raw_meta in metadata.handlers.items():
+        if not _handler_key_belongs_to_plugin(key, plugin_id):
+            continue
         event_meta = EventMeta(
             event_type=str(raw_meta.get("event_type") or "plugin_entry"),
             id=str(raw_meta.get("id") or ""),

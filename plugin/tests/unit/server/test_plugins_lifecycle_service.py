@@ -3315,6 +3315,26 @@ def _seed_running_plugin(plugin_id: str, config_path: Path) -> None:
         module.state.event_handlers.clear()
 
 
+def test_running_plugin_ids_exclude_quarantined_hosts(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    running = _FakeProcessHost("running", "tests.fake:Plugin", tmp_path / "running.toml")
+    quarantined = _FakeProcessHost(
+        "stopped",
+        "tests.fake:Plugin",
+        tmp_path / "stopped.toml",
+    )
+    setattr(quarantined, module._STARTUP_QUARANTINED_ATTR, True)
+    monkeypatch.setattr(
+        module.state,
+        "plugin_hosts",
+        {"running": running, "stopped": quarantined},
+    )
+
+    assert module._list_running_plugin_ids_sync() == ["running"]
+
+
 @pytest.mark.plugin_unit
 @pytest.mark.asyncio
 async def test_stop_plugin_repeats_generation_revoke_after_shutdown(

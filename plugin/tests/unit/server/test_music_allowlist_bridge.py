@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import threading
+
 from plugin.server.messaging.proactive_bridge import ProactiveBridge
 
 
@@ -139,3 +141,39 @@ def test_private_bridge_discards_only_stopped_plugin_payloads() -> None:
     bridge._drain_private_payloads(socket)
 
     assert [event["source_name"] for event in socket.events] == ["still-running"]
+
+
+def test_private_bridge_discard_waits_for_in_flight_dispatch() -> None:
+    bridge = ProactiveBridge()
+    assert bridge.enqueue_private_payload({"plugin_id": "stopped"}) is True
+    dispatch_started = threading.Event()
+    allow_dispatch = threading.Event()
+    discard_finished = threading.Event()
+
+    def _blocking_dispatch(_payload, _socket) -> None:
+        dispatch_started.set()
+        assert allow_dispatch.wait(timeout=2.0)
+
+    bridge._dispatch = _blocking_dispatch  # type: ignore[method-assign]
+    drain_thread = threading.Thread(
+        target=bridge._drain_private_payloads,
+        args=(_PushSocket(),),
+    )
+    drain_thread.start()
+    assert dispatch_started.wait(timeout=1.0)
+
+    discard_thread = threading.Thread(
+        target=lambda: (
+            bridge.discard_private_payloads("stopped"),
+            discard_finished.set(),
+        )
+    )
+    discard_thread.start()
+    try:
+        assert not discard_finished.wait(timeout=0.1)
+    finally:
+        allow_dispatch.set()
+        drain_thread.join(timeout=1.0)
+        discard_thread.join(timeout=1.0)
+
+    assert discard_finished.is_set()
