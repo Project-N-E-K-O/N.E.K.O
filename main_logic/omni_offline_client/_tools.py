@@ -32,9 +32,10 @@ from ._genai_support import (
     _GenaiToolsUnsupported,
 )
 from ._lifecycle import _suspend_dialog_slop
-
-_TOOL_IMAGE_TURN_MAX_COUNT = 2
-_TOOL_IMAGE_TURN_MAX_B64_BYTES = 4 * 1024 * 1024
+from main_logic.tool_calling import (
+    _TOOL_IMAGE_TURN_MAX_B64_BYTES,
+    _TOOL_IMAGE_TURN_MAX_COUNT,
+)
 
 
 class _ToolingMixin:

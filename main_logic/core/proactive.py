@@ -676,7 +676,16 @@ class ProactiveMixin:
         if not source:
             return 0
         matching = []
-        for callback in list(getattr(self, "pending_agent_callbacks", None) or []):
+        candidates = list(getattr(self, "pending_agent_callbacks", None) or [])
+        candidates.extend(
+            getattr(self, "_inflight_agent_callbacks", None) or []
+        )
+        seen_callback_ids: set[int] = set()
+        for callback in candidates:
+            callback_id = id(callback)
+            if callback_id in seen_callback_ids:
+                continue
+            seen_callback_ids.add(callback_id)
             if (
                 isinstance(callback, dict)
                 and str(callback.get("source_name") or "").strip() == source
@@ -685,6 +694,13 @@ class ProactiveMixin:
             ):
                 callback[DELIVERY_RETRACTED_KEY] = True
                 matching.append(callback)
+        inflight_callbacks = getattr(self, "_inflight_agent_callbacks", None) or []
+        inflight_callback_ids = {id(callback) for callback in inflight_callbacks}
+        if any(id(callback) in inflight_callback_ids for callback in matching):
+            session = getattr(self, "session", None)
+            if isinstance(session, OmniOfflineClient):
+                session._is_responding = False
+                self.current_speech_id = str(uuid4())
         manager = getattr(self, "proactive_manager", None)
         retract = getattr(manager, "retract_from_source", None)
         if callable(retract):
@@ -1299,6 +1315,11 @@ class ProactiveMixin:
             cb for cb in self.pending_agent_callbacks
             if id(cb) not in snapshot_ids
         ]
+        inflight_callbacks = getattr(self, "_inflight_agent_callbacks", None)
+        if inflight_callbacks is None:
+            inflight_callbacks = []
+            self._inflight_agent_callbacks = inflight_callbacks
+        inflight_callbacks.extend(callbacks_snapshot)
 
         delivered = False
         try:
@@ -1320,8 +1341,15 @@ class ProactiveMixin:
                     callbacks_snapshot[:] = []
         except Exception as e:
             logger.warning("[%s] trigger_agent_callbacks error: %s", self.lanlan_name, e)
-            self.pending_agent_callbacks.extend(callbacks_snapshot)
+            self.pending_agent_callbacks.extend(
+                self.filter_deliverable_callbacks(callbacks_snapshot)
+            )
         finally:
+            self._inflight_agent_callbacks = [
+                callback
+                for callback in self._inflight_agent_callbacks
+                if id(callback) not in snapshot_ids
+            ]
             await self.state.fire(SessionEvent.PROACTIVE_DONE)
         if delivered:
             for cb in callbacks_snapshot:
@@ -1578,7 +1606,9 @@ class ProactiveMixin:
                 # send its own fresh teaser).
                 if topic_hint_sent:
                     await self.send_cancel_topic_hint(turn_id=proactive_sid)
-                self.pending_agent_callbacks.extend(active_callbacks)
+                self.pending_agent_callbacks.extend(
+                    self.filter_deliverable_callbacks(active_callbacks)
+                )
                 return False
 
     def _is_voice_session_active_or_starting(self) -> bool:

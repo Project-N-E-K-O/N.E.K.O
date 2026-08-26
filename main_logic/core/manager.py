@@ -206,6 +206,13 @@ class LLMSessionManager(
         self.pending_extra_replies: list[dict] = []
         # 结构化 agent 任务回调队列（用于按会话类型注入）
         self.pending_agent_callbacks: list[dict] = []
+        # Callbacks checked out by the text delivery path remain reachable so
+        # source revocation can stop them before any response is committed.
+        self._inflight_agent_callbacks: list[dict] = []
+        self._tool_image_fallback_budget_lock = asyncio.Lock()
+        self._tool_image_fallback_budget_turn_id: str | None = None
+        self._tool_image_fallback_budget_count = 0
+        self._tool_image_fallback_budget_b64_bytes = 0
         # ── Proactive delivery front stage ───────────────────────────────
         # Generic, plugin-agnostic pacing/ordering for proactive cues
         # (push_message ai_behavior="respond" + agent task results). The

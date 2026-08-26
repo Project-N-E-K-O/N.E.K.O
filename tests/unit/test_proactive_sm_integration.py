@@ -825,6 +825,61 @@ async def test_text_mode_retraction_after_claim_purges_paired_extra():
     assert mgr.pending_extra_replies == []
 
 
+async def test_text_mode_source_revoke_aborts_checked_out_callback_before_commit():
+    prompt_started = asyncio.Event()
+    release_prompt = asyncio.Event()
+
+    class _WaitingSess(_FakeOmniOffline):
+        def __init__(self):
+            super().__init__(delivered=True)
+            self.committed = False
+
+        async def prompt_ephemeral(
+            self,
+            instruction: str,
+            *,
+            images=None,
+            on_committed=None,
+        ) -> bool:
+            self.called_with.append(instruction)
+            self._is_responding = True
+            prompt_started.set()
+            await release_prompt.wait()
+            if not self._is_responding:
+                return False
+            self.committed = True
+            if on_committed:
+                on_committed()
+            return True
+
+    session = _WaitingSess()
+    mgr = _make_mgr(session=session)
+    callback = {
+        "_callback_delivery_id": "id-old-generation",
+        "status": "completed",
+        "summary": "speak later",
+        "source_name": "demo_plugin",
+    }
+    mgr.pending_agent_callbacks = [callback]
+
+    delivery = asyncio.create_task(
+        core_module.LLMSessionManager.trigger_agent_callbacks(mgr)
+    )
+    await prompt_started.wait()
+
+    assert mgr.pending_agent_callbacks == []
+    assert core_module.LLMSessionManager.retract_callbacks_from_source(
+        mgr,
+        "demo_plugin",
+    ) == 1
+
+    release_prompt.set()
+    assert await delivery is False
+    assert session.committed is False
+    assert callback.get(DELIVERY_RETRACTED_KEY) is True
+    assert mgr.pending_agent_callbacks == []
+
+
 async def test_text_mode_committed_then_flush_exception_does_not_requeue_callback():
     class _CommittedThenFailSess(_FakeOmniOffline):
         async def prompt_ephemeral(self, instruction: str, *, images=None, on_committed=None) -> bool:

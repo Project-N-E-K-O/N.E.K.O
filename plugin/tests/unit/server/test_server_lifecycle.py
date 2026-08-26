@@ -183,6 +183,66 @@ async def test_startup_uses_registry_refresh_then_autostart(monkeypatch: pytest.
 
 
 @pytest.mark.asyncio
+async def test_startup_skips_autostart_when_permission_revoke_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plugins_backup = copy.deepcopy(module.state.plugins)
+    started: list[str] = []
+    service = module.ServerLifecycleService()
+
+    async def _refresh_registry() -> dict[str, object]:
+        with module.state.acquire_plugins_write_lock():
+            module.state.plugins.clear()
+            module.state.plugins.update(
+                {
+                    "blocked_plugin": {"id": "blocked_plugin", "type": "plugin"},
+                    "ready_plugin": {"id": "ready_plugin", "type": "plugin"},
+                }
+            )
+        return {"added": [], "updated": [], "removed": [], "failed": []}
+
+    async def _revoke(plugin_id: str) -> bool:
+        return plugin_id != "blocked_plugin"
+
+    async def _list_autostart() -> list[str]:
+        return ["blocked_plugin", "ready_plugin"]
+
+    async def _start(plugin_id: str, **_kwargs: object) -> dict[str, object]:
+        started.append(plugin_id)
+        return {"success": True, "plugin_id": plugin_id}
+
+    try:
+        monkeypatch.setattr(
+            service._plugin_registry_service,
+            "refresh_registry",
+            _refresh_registry,
+        )
+        monkeypatch.setattr(
+            service._plugin_registry_service,
+            "list_autostart_plugin_ids",
+            _list_autostart,
+        )
+        monkeypatch.setattr(
+            service._plugin_lifecycle_service,
+            "revoke_plugin_permissions",
+            _revoke,
+        )
+        monkeypatch.setattr(
+            service._plugin_lifecycle_service,
+            "start_plugin",
+            _start,
+        )
+
+        await service._refresh_registry_and_start_autostart_plugins()
+
+        assert started == ["ready_plugin"]
+    finally:
+        with module.state.acquire_plugins_write_lock():
+            module.state.plugins.clear()
+            module.state.plugins.update(plugins_backup)
+
+
+@pytest.mark.asyncio
 async def test_shutdown_hosts_revokes_permissions_even_when_shutdown_fails(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

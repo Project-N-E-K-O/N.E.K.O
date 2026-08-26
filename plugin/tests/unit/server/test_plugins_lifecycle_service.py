@@ -331,6 +331,46 @@ async def test_start_plugin_keeps_crashed_stale_host_when_permission_revoke_fail
 
 
 @pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_start_failure_cleanup_keeps_host_when_permission_revoke_fails(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    host = _FakeProcessHost(
+        plugin_id="demo_plugin",
+        entry_point="tests.fake:Plugin",
+        config_path=tmp_path / "demo_plugin" / "plugin.toml",
+    )
+    host.transport = SimpleNamespace(uplink_token="failed-start-generation")
+    hosts_backup = dict(module.state.plugin_hosts)
+    try:
+        with module.state.acquire_plugin_hosts_write_lock():
+            module.state.plugin_hosts.clear()
+
+        async def _failed_revoke(
+            _plugin_id: str,
+            *,
+            host_generation: str = "",
+        ) -> bool:
+            assert host_generation == "failed-start-generation"
+            return False
+
+        monkeypatch.setattr(module, "_revoke_plugin_permissions", _failed_revoke)
+
+        with pytest.raises(ServerDomainError) as exc_info:
+            await module._cleanup_started_host("demo_plugin", host)
+
+        assert exc_info.value.code == "PLUGIN_PERMISSION_REVOKE_FAILED"
+        assert host.stopped is False
+        with module.state.acquire_plugin_hosts_read_lock():
+            assert module.state.plugin_hosts["demo_plugin"] is host
+    finally:
+        with module.state.acquire_plugin_hosts_write_lock():
+            module.state.plugin_hosts.clear()
+            module.state.plugin_hosts.update(hosts_backup)
+
+
+@pytest.mark.plugin_unit
 def test_parse_single_plugin_config_warns_on_directory_id_mismatch(
     tmp_path: Path,
 ) -> None:
@@ -1338,6 +1378,7 @@ async def test_start_plugin_startup_failure_fail_keeps_startup_error_fatal(
         )
         monkeypatch.setattr(module, "_resolve_plugin_id_conflict", lambda *args, **kwargs: args[0])
         monkeypatch.setattr(module, "PluginProcessHost", _StrictStartupHost)
+        monkeypatch.setattr(module, "_revoke_plugin_permissions", _successful_revoke)
         monkeypatch.setattr(
             module,
             "_import_plugin_module",
@@ -1443,6 +1484,7 @@ async def test_start_plugin_does_not_map_startup_business_timeout_to_start_timeo
         )
         monkeypatch.setattr(module, "_resolve_plugin_id_conflict", lambda *args, **kwargs: args[0])
         monkeypatch.setattr(module, "PluginProcessHost", _BusinessTimeoutHost)
+        monkeypatch.setattr(module, "_revoke_plugin_permissions", _successful_revoke)
         monkeypatch.setattr(
             module,
             "_import_plugin_module",
@@ -1544,6 +1586,7 @@ async def test_start_plugin_applies_runtime_startup_timeout_to_legacy_host_and_c
         )
         monkeypatch.setattr(module, "_resolve_plugin_id_conflict", lambda *args, **kwargs: args[0])
         monkeypatch.setattr(module, "PluginProcessHost", _SlowProcessHost)
+        monkeypatch.setattr(module, "_revoke_plugin_permissions", _successful_revoke)
         monkeypatch.setattr(
             module,
             "_import_plugin_module",
@@ -1653,6 +1696,7 @@ async def test_start_plugin_lets_timeout_aware_host_own_startup_timeout_cleanup(
         )
         monkeypatch.setattr(module, "_resolve_plugin_id_conflict", lambda *args, **kwargs: args[0])
         monkeypatch.setattr(module, "PluginProcessHost", _TimeoutAwareHost)
+        monkeypatch.setattr(module, "_revoke_plugin_permissions", _successful_revoke)
         monkeypatch.setattr(
             module,
             "_import_plugin_module",
@@ -1758,6 +1802,7 @@ async def test_start_plugin_classifies_exponent_form_startup_timeout(
         )
         monkeypatch.setattr(module, "_resolve_plugin_id_conflict", lambda *args, **kwargs: args[0])
         monkeypatch.setattr(module, "PluginProcessHost", _ExponentTimeoutHost)
+        monkeypatch.setattr(module, "_revoke_plugin_permissions", _successful_revoke)
         monkeypatch.setattr(
             module,
             "_import_plugin_module",

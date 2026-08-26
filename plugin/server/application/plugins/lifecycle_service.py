@@ -868,8 +868,27 @@ def _registered_load_failure_error(plugin_id: str, plugin_meta: dict[str, object
 
 
 async def _cleanup_started_host(plugin_id: str, host: PluginHostContract) -> None:
+    registered = await asyncio.to_thread(_get_plugin_host_sync, plugin_id)
+    target_host = registered if isinstance(registered, PluginHostContract) else host
+    permissions_revoked = (
+        await _revoke_plugin_host_permissions(plugin_id, target_host)
+    ) is not False
+    if not permissions_revoked:
+        if not isinstance(registered, PluginHostContract):
+            await asyncio.to_thread(
+                _register_or_replace_host_sync,
+                plugin_id,
+                target_host,
+            )
+        raise _to_domain_error(
+            code="PLUGIN_PERMISSION_REVOKE_FAILED",
+            message=f"Failed to revoke permissions for plugin '{plugin_id}'",
+            status_code=503,
+            plugin_id=plugin_id,
+            error_type="PermissionRevokeFailed",
+        )
+
     removed = await asyncio.to_thread(_pop_plugin_host_sync, plugin_id)
-    target_host = host
     if isinstance(removed, PluginHostContract):
         target_host = removed
 
@@ -889,7 +908,6 @@ async def _cleanup_started_host(plugin_id: str, host: PluginHostContract) -> Non
             type(exc).__name__,
             str(exc),
         )
-    await _revoke_plugin_host_permissions(plugin_id, target_host)
 
 
 def _emit_lifecycle_event(

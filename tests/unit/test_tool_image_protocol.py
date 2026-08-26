@@ -431,6 +431,48 @@ async def test_multiple_tool_images_are_transcribed_concurrently_in_order():
 
 
 @pytest.mark.asyncio
+async def test_fallback_transcription_budget_is_shared_across_the_tool_turn(
+    spy_vision,
+):
+    manager = _Manager(
+        _result(output={"unused": True}),
+        _FakeOfflineSession("deepseek-chat"),
+    )
+    manager.current_speech_id = "turn-one"
+    results = [
+        _result(
+            output={"index": index},
+            images=[ToolImage(data_b64=f"image-{index}")],
+        )
+        for index in range(4)
+    ]
+
+    await __import__("asyncio").gather(
+        *(manager._route_tool_images(result) for result in results)
+    )
+
+    assert len(spy_vision.calls) == 2
+    assert all(result.images == [] for result in results)
+    assert sum(
+        "budget" in description
+        for result in results
+        for description in result.output["_image_descriptions"]
+    ) == 2
+
+    manager.current_speech_id = "turn-two"
+    next_result = _result(
+        output={"index": 4},
+        images=[ToolImage(data_b64="next-turn-image")],
+    )
+    await manager._route_tool_images(next_result)
+
+    assert len(spy_vision.calls) == 3
+    assert next_result.output["_image_descriptions"] == [
+        "a burning cruiser near the cap"
+    ]
+
+
+@pytest.mark.asyncio
 async def test_transcription_passes_png_mime_to_the_vision_helper(spy_vision):
     """Realtime / text-only fallback must not relabel PNG bytes as JPEG."""
     out = await _dispatch(

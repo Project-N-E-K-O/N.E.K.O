@@ -22,7 +22,13 @@ Method-only mixin: every instance attribute is assigned in
 import asyncio
 import os
 from main_logic.omni_realtime_client import OmniRealtimeClient
-from main_logic.tool_calling import ToolCall, ToolDefinition, ToolResult
+from main_logic.tool_calling import (
+    ToolCall,
+    ToolDefinition,
+    ToolResult,
+    _TOOL_IMAGE_TURN_MAX_B64_BYTES,
+    _TOOL_IMAGE_TURN_MAX_COUNT,
+)
 from utils.screenshot_utils import analyze_image_with_vision_model
 from config.prompts.prompts_sys import _loc
 from config.prompts.prompts_memory import (
@@ -141,12 +147,51 @@ class ToolCallingMixin:
                 return
             reason = f"model {model!r} has no vision"
 
-        descriptions = await asyncio.gather(
-            *(self._describe_tool_image(image) for image in result.images)
+        images = list(result.images)
+        budget_lock = getattr(self, "_tool_image_fallback_budget_lock", None)
+        if budget_lock is None:
+            budget_lock = asyncio.Lock()
+            self._tool_image_fallback_budget_lock = budget_lock
+
+        accepted: list[tuple[int, object]] = []
+        descriptions = [
+            "(image omitted: tool-turn vision budget exhausted)"
+            for _image in images
+        ]
+        async with budget_lock:
+            turn_id = str(getattr(self, "current_speech_id", "") or "")
+            if getattr(self, "_tool_image_fallback_budget_turn_id", None) != turn_id:
+                self._tool_image_fallback_budget_turn_id = turn_id
+                self._tool_image_fallback_budget_count = 0
+                self._tool_image_fallback_budget_b64_bytes = 0
+            used_count = getattr(self, "_tool_image_fallback_budget_count", 0)
+            used_b64_bytes = getattr(
+                self,
+                "_tool_image_fallback_budget_b64_bytes",
+                0,
+            )
+            for index, image in enumerate(images):
+                image_b64_bytes = len(str(getattr(image, "data_b64", "") or ""))
+                if (
+                    used_count >= _TOOL_IMAGE_TURN_MAX_COUNT
+                    or used_b64_bytes + image_b64_bytes
+                    > _TOOL_IMAGE_TURN_MAX_B64_BYTES
+                ):
+                    continue
+                accepted.append((index, image))
+                used_count += 1
+                used_b64_bytes += image_b64_bytes
+            self._tool_image_fallback_budget_count = used_count
+            self._tool_image_fallback_budget_b64_bytes = used_b64_bytes
+
+        analyzed = await asyncio.gather(
+            *(self._describe_tool_image(image) for _index, image in accepted)
         )
+        for (index, _image), description in zip(accepted, analyzed, strict=True):
+            descriptions[index] = description
         logger.info(
-            "Tool '%s': transcribed %d image(s) to text (%s)",
-            result.name, len(descriptions), reason,
+            "Tool '%s': transcribed %d/%d image(s) to text (%s)",
+            result.name, len(accepted), len(images), reason,
         )
         result.images = []
         result.merge_into_output(_image_descriptions=descriptions)

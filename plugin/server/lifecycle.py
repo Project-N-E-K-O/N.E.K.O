@@ -145,10 +145,19 @@ class ServerLifecycleService:
                     for plugin_id in state.plugins
                     if isinstance(plugin_id, str) and plugin_id
                 )
-            await asyncio.gather(*(
+            revocation_results = await asyncio.gather(*(
                 self._plugin_lifecycle_service.revoke_plugin_permissions(plugin_id)
                 for plugin_id in registered_plugin_ids
             ))
+            failed_revocation_ids = {
+                plugin_id
+                for plugin_id, revoked in zip(
+                    registered_plugin_ids,
+                    revocation_results,
+                    strict=True,
+                )
+                if revoked is False
+            }
             autostart_plugin_ids = await self._plugin_registry_service.list_autostart_plugin_ids()
         except Exception as exc:
             logger.error(
@@ -163,6 +172,12 @@ class ServerLifecycleService:
             return
 
         for plugin_id in autostart_plugin_ids:
+            if plugin_id in failed_revocation_ids:
+                logger.error(
+                    "skipping plugin autostart because permission revocation failed: plugin_id={}",
+                    plugin_id,
+                )
+                continue
             try:
                 await self._plugin_lifecycle_service.start_plugin(plugin_id, refresh_registry=False)
                 logger.debug("autostart plugin started: plugin_id={}", plugin_id)
