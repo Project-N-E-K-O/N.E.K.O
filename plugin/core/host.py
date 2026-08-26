@@ -1290,24 +1290,48 @@ def _plugin_process_runner(
             context_id = str(msg.get("context_id") or "main")
             ret = {"req_id": req_id, "success": False, "data": None, "error": None}
             try:
+                # actions 只从 @ui.action 的装饰器元数据推导，不跑任何插件代码。
+                # 它必须独立于插件自己写的 @ui.context provider：provider 缺失、
+                # 抛错或超时时，宿主仍然要拿得到 api.call 的授权白名单，否则
+                # 面板上每个按钮都会返回一条与真实原因无关的 500。
+                actions = _collect_ui_actions()
+                context_payload: Dict[str, Any] = {"state": {}, "state_schema": None}
+                context_error: str | None = None
+
                 provider = ui_context_map.get(context_id)
                 if provider is None:
                     _rebuild_ui_context_map()
                     provider = ui_context_map.get(context_id)
+
                 if provider is None:
-                    ret["error"] = f"UI context '{context_id}' not found"
-                    return
-                result = provider()
-                if inspect.isawaitable(result):
-                    result = await _run_with_watchdog(result, f"ui_context.{context_id}", 5.0)
+                    context_error = f"UI context '{context_id}' not found"
+                    logger.warning(
+                        "UI context '{}' not found; serving actions without state", context_id,
+                    )
+                else:
+                    try:
+                        result = provider()
+                        if inspect.isawaitable(result):
+                            result = await _run_with_watchdog(result, f"ui_context.{context_id}", 5.0)
+                        context_payload = _serialize_ui_context_result(result)
+                    except asyncio.TimeoutError:
+                        # str(asyncio.TimeoutError()) 是空串，直接透出会得到一条
+                        # 没有内容的错误信息。
+                        logger.warning("UI context '{}' timed out after 5.0s", context_id)
+                        context_error = f"UI context '{context_id}' timed out after 5.0s"
+                    except Exception as e:
+                        logger.exception("Failed to execute UI context '{}'", context_id)
+                        context_error = str(e) or type(e).__name__
+
                 ret["success"] = True
                 ret["data"] = {
-                    **_serialize_ui_context_result(result),
-                    "actions": _collect_ui_actions(),
+                    **context_payload,
+                    "actions": actions,
+                    "context_error": context_error,
                 }
             except Exception as e:
-                logger.exception("Failed to execute UI context '{}'", context_id)
-                ret["error"] = str(e)
+                logger.exception("Failed to build UI context '{}'", context_id)
+                ret["error"] = str(e) or type(e).__name__
             finally:
                 try:
                     res_sender.put(ret, timeout=10.0)
