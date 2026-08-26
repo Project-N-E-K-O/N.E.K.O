@@ -361,11 +361,12 @@ class CredentialManager:
     def _store(
         self,
         platform: str,
+        source_signature: _SourceSignature,
         state: str,
         credentials: Dict[str, str] | None = None,
     ) -> _CredentialEntry:
         entry = _CredentialEntry(
-            source_signature=self._source_signature(platform),
+            source_signature=source_signature,
             state=state,
             credentials=dict(credentials or {}),
         )
@@ -387,15 +388,20 @@ class CredentialManager:
             if cached is not None:
                 return cached
 
-            credentials = _load_cookies_from_file_uncached(platform)
-            cookie_file = COOKIE_FILES.get(platform)
-            if credentials:
-                state = self.READY
-            elif self._file_stamp(cookie_file) is not None:
-                state = self.INVALID
-            else:
-                state = self.MISSING
-            return self._store(platform, state, credentials)
+            while True:
+                source_signature = self._source_signature(platform)
+                credentials = _load_cookies_from_file_uncached(platform)
+                if self._source_signature(platform) != source_signature:
+                    continue
+
+                cookie_file = COOKIE_FILES.get(platform)
+                if credentials:
+                    state = self.READY
+                elif self._file_stamp(cookie_file) is not None:
+                    state = self.INVALID
+                else:
+                    state = self.MISSING
+                return self._store(platform, source_signature, state, credentials)
 
     def load(self, platform: str) -> Dict[str, str]:
         return self._copy(self._load_entry(platform))
@@ -408,7 +414,7 @@ class CredentialManager:
         with self._platform_lock(platform):
             if not _save_cookies_to_file_uncached(platform, normalized, encrypt=encrypt):
                 return False
-            self._store(platform, self.READY, normalized)
+            self._store(platform, self._source_signature(platform), self.READY, normalized)
             return True
 
     def delete_stored_credentials(self, platform: str) -> tuple[bool, bool]:
@@ -416,7 +422,7 @@ class CredentialManager:
         with self._platform_lock(platform):
             cookie_file = COOKIE_FILES.get(platform)
             if cookie_file is None or not cookie_file.exists():
-                self._store(platform, self.MISSING)
+                self._store(platform, self._source_signature(platform), self.MISSING)
                 return False, True
 
             cookie_file.unlink()
@@ -427,7 +433,7 @@ class CredentialManager:
                     key_file.unlink()
                 except OSError:
                     key_deleted = False
-            self._store(platform, self.MISSING)
+            self._store(platform, self._source_signature(platform), self.MISSING)
             return True, key_deleted
 
     def mark_auth_rejected(
@@ -449,7 +455,12 @@ class CredentialManager:
                 return False
             if any(entry.credentials.get(key) != value for key, value in expected.items()):
                 return False
-            self._store(platform, self.AUTH_REJECTED, entry.credentials)
+            self._store(
+                platform,
+                entry.source_signature,
+                self.AUTH_REJECTED,
+                entry.credentials,
+            )
             return True
 
     def state(self, platform: str) -> str:

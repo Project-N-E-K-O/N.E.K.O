@@ -163,6 +163,34 @@ def test_external_file_changes_invalidate_positive_and_negative_cache(tmp_path):
     assert loader.call_count == 4
 
 
+def test_file_change_during_load_retries_before_caching(tmp_path):
+    manager = CredentialManager()
+    cookie_file = tmp_path / "weibo.json"
+    cookie_file.write_text('{"SUB":"first"}', encoding="utf-8")
+
+    def load_and_replace(_platform):
+        credentials = json.loads(cookie_file.read_text(encoding="utf-8"))
+        if credentials["SUB"] == "first":
+            cookie_file.write_text(
+                '{"SUB":"second-and-longer"}',
+                encoding="utf-8",
+            )
+        return credentials
+
+    with (
+        patch.dict("utils.cookies_login.COOKIE_FILES", {"weibo": cookie_file}),
+        patch.object(cookies_login, "CONFIG_DIR", tmp_path),
+        patch(
+            "utils.cookies_login._load_cookies_from_file_uncached",
+            side_effect=load_and_replace,
+        ) as loader,
+    ):
+        assert manager.load("weibo") == {"SUB": "second-and-longer"}
+        assert manager.load("weibo") == {"SUB": "second-and-longer"}
+
+    assert loader.call_count == 2
+
+
 def test_delete_and_save_share_the_same_platform_lock(tmp_path):
     manager = CredentialManager()
     cookie_file = tmp_path / "weibo.json"
@@ -218,6 +246,46 @@ def test_auth_rejected_state_skips_legacy_plaintext_fallback():
         assert platform_helpers._get_platform_cookies("weibo") == {}
 
     exists.assert_not_called()
+
+
+def test_invalid_state_skips_legacy_plaintext_fallback():
+    with (
+        patch.object(cookies_login.credential_manager, "load", return_value={}),
+        patch.object(
+            cookies_login.credential_manager,
+            "state",
+            return_value=CredentialManager.INVALID,
+        ),
+        patch.object(Path, "exists") as exists,
+    ):
+        assert platform_helpers._get_platform_cookies("weibo") == {}
+
+    exists.assert_not_called()
+
+
+def test_missing_state_keeps_legacy_plaintext_fallback(tmp_path, monkeypatch):
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    (config_dir / "weibo_cookies.json").write_text(
+        '{"SUB":"legacy"}',
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+
+    with (
+        patch.object(cookies_login.credential_manager, "load", return_value={}),
+        patch.object(
+            cookies_login.credential_manager,
+            "state",
+            return_value=CredentialManager.MISSING,
+        ),
+        patch.object(
+            platform_helpers.os.path,
+            "expanduser",
+            return_value=str(tmp_path / "home"),
+        ),
+    ):
+        assert platform_helpers._get_platform_cookies("weibo") == {"SUB": "legacy"}
 
 
 def test_credential_ui_keeps_rejected_entries_visible_and_removable():

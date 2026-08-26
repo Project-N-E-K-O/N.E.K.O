@@ -215,7 +215,10 @@ def _get_platform_cookies(platform_name: str) -> dict[str, str]:
         if cookies:
             logger.debug(f"✅ 成功通过底层接口加载 {platform_name} 凭证")
             return cookies
-        if credential_manager.state(platform_name) == CredentialManager.AUTH_REJECTED:
+        if credential_manager.state(platform_name) in {
+            CredentialManager.AUTH_REJECTED,
+            CredentialManager.INVALID,
+        }:
             return {}
     except Exception as e:
         logger.debug(f"底层接口加载 {platform_name} 凭证失败: {e}，尝试使用明文回退...")
