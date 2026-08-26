@@ -176,7 +176,9 @@ async function handleStart() {
   try {
     loading.value = true
     await pluginStore.start(props.pluginId)
-    await refreshHostedPanelsAfterRuntimeChange?.()
+    // Hosted panel 的 context 刷新是尽力而为的后续动作（内部还带重试延时），
+    // 不能 await —— 否则每个插件的启停按钮都要多转两秒，成功提示也跟着晚发。
+    void refreshHostedPanelsAfterRuntimeChange?.().catch(() => {})
     ElMessage.success(t('messages.pluginStarted'))
   } catch (error: any) {
     showActionError(error, t('messages.startFailed'))
@@ -192,7 +194,7 @@ async function handleStop() {
     })
     loading.value = true
     await pluginStore.stop(props.pluginId)
-    await refreshHostedPanelsAfterRuntimeChange?.()
+    void refreshHostedPanelsAfterRuntimeChange?.().catch(() => {})
     ElMessage.success(t('messages.pluginStopped'))
   } catch (error: any) {
     if (error !== 'cancel') {
@@ -210,7 +212,7 @@ async function handleReload() {
     })
     loading.value = true
     await pluginStore.reload(props.pluginId)
-    await refreshHostedPanelsAfterRuntimeChange?.()
+    void refreshHostedPanelsAfterRuntimeChange?.().catch(() => {})
     ElMessage.success(t('messages.pluginReloaded'))
   } catch (error: any) {
     if (error !== 'cancel') {

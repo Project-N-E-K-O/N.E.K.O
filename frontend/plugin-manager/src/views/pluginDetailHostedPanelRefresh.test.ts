@@ -21,6 +21,35 @@ describe('refreshHostedPanelFrames', () => {
     vi.useRealTimers()
   })
 
+  it('returns without arming the delay chain when there is nothing to refresh', async () => {
+    vi.useFakeTimers()
+
+    // Awaiting directly, without advancing timers: a plugin with no hosted-tsx
+    // panel must not sit through HOSTED_PANEL_REFRESH_DELAYS_MS. If the
+    // short-circuit is removed this await never settles and the test times out.
+    await refreshHostedPanelFrames([])
+
+    expect(vi.getTimerCount()).toBe(0)
+
+    vi.useRealTimers()
+  })
+
+  it('does not reject when a frame throws synchronously', async () => {
+    vi.useFakeTimers()
+    const frames = [{
+      refreshContext: () => {
+        throw new Error('frame disposed')
+      },
+    }] as unknown as Array<{ refreshContext: () => Promise<void> }>
+
+    const pending = refreshHostedPanelFrames(frames)
+    await vi.runAllTimersAsync()
+
+    await expect(pending).resolves.toBeUndefined()
+
+    vi.useRealTimers()
+  })
+
   it('reuses a single-use Map iterator across delayed refresh passes', async () => {
     vi.useFakeTimers()
     const refreshContext = vi.fn(async () => undefined)
