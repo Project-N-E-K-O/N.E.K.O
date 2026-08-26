@@ -77,7 +77,10 @@ async def _fetch_bilibili_personal_dynamic_uncached(limit: int = 10) -> Dict[str
     Fetch Bilibili push feed updates
     """
     try:
-        stored_credentials = _get_platform_cookies("bilibili")
+        stored_credentials = await asyncio.to_thread(
+            _get_platform_cookies,
+            "bilibili",
+        )
         credential = _get_bilibili_credential()
         if not credential: 
             return {
