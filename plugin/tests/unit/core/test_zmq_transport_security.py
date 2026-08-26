@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import pickle
+import threading
 from pathlib import Path
 
 import pytest
@@ -127,7 +128,21 @@ async def test_message_uplink_is_physically_isolated_from_control_results() -> N
 
 @pytest.mark.plugin_unit
 @pytest.mark.asyncio
-async def test_fast_message_sender_batches_on_the_authenticated_message_uplink() -> None:
+async def test_fast_message_sender_batches_on_the_authenticated_message_uplink(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import plugin.settings as plugin_settings
+
+    monkeypatch.setattr(
+        plugin_settings,
+        "PLUGIN_ZMQ_MESSAGE_PUSH_BATCH_SIZE",
+        2,
+    )
+    monkeypatch.setattr(
+        plugin_settings,
+        "PLUGIN_ZMQ_MESSAGE_PUSH_FLUSH_INTERVAL_MS",
+        10_000,
+    )
     host = zmq_transport.HostTransport()
     child = zmq_transport.ChildTransport(
         host.downlink_endpoint,
@@ -154,6 +169,46 @@ async def test_fast_message_sender_batches_on_the_authenticated_message_uplink()
     finally:
         child.close()
         host.close()
+
+
+@pytest.mark.plugin_unit
+def test_fast_message_batcher_records_failed_batch_delivery(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    logged = threading.Event()
+    records: list[str] = []
+
+    class _FailingTransport:
+        def send_uplink_nowait(self, _channel: str, _payload: object) -> None:
+            raise RuntimeError("private-transport-detail")
+
+    class _Logger:
+        def warning(self, message: str) -> None:
+            records.append(message)
+            logged.set()
+
+    monkeypatch.setattr(zmq_transport, "logger", _Logger(), raising=False)
+    batcher = zmq_transport._AuthenticatedMessageBatcher(
+        _FailingTransport(),  # type: ignore[arg-type]
+        batch_size=1,
+        flush_interval_ms=5,
+        max_queue=10,
+        reject_ratio=0.9,
+        enqueue_timeout_s=0,
+    )
+    batcher.start()
+    try:
+        batcher.enqueue({"message_id": "dropped"})
+        was_logged = logged.wait(timeout=1.0)
+    finally:
+        batcher.stop()
+
+    assert was_logged is True
+    assert batcher._dropped == 1
+    assert "items=1" in records[0]
+    assert "total_dropped=1" in records[0]
+    assert "RuntimeError" in records[0]
+    assert "private-transport-detail" not in records[0]
 
 
 @pytest.mark.plugin_unit

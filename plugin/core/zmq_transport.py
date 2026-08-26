@@ -37,6 +37,8 @@ import zmq
 import zmq.asyncio
 from zmq.auth.thread import ThreadAuthenticator
 
+from plugin.logging_config import logger
+
 # ── Channel constants ──────────────────────────────────────────────
 CH_CMD = "cmd"
 CH_RES = "res"
@@ -496,6 +498,7 @@ class _AuthenticatedMessageBatcher:
         self._queue: queue.Queue[dict] = queue.Queue(maxsize=self._max_queue)
         self._reject_ratio = min(1.0, max(0.0, float(reject_ratio)))
         self._enqueue_timeout_s = max(0.0, float(enqueue_timeout_s))
+        self._dropped = 0
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
 
@@ -550,7 +553,12 @@ class _AuthenticatedMessageBatcher:
                         CH_MSG_BATCH,
                         {"items": batch},
                     )
-                except Exception:
-                    pass
+                except Exception as exc:
+                    self._dropped += len(batch)
+                    logger.warning(
+                        "Authenticated message batch dropped "
+                        f"(items={len(batch)} total_dropped={self._dropped} "
+                        f"error_type={type(exc).__name__})"
+                    )
                 batch = []
                 deadline = now + self._flush_interval_s
