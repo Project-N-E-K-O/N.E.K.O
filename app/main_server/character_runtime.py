@@ -1061,10 +1061,16 @@ async def _init_character_resources(k: str, is_new_character: bool):
     Writes the per-k slots: role_state[k].session_manager / sync_task — no state is
     shared between different k, so this is safe to run in parallel.
     """
-    rs = role_state[k]  # 调用方必须先 _ensure_character_slots，保证这里可直接索引
+    rs = role_state.get(k)
+    if rs is None:
+        logger.info(f"{k} 的角色资源已被并发删除，跳过初始化")
+        return
     # 更新或创建session manager（使用最新的prompt）
     # 使用锁保护websocket的preserve/restore操作，防止与cleanup()竞争
     async with rs.websocket_lock:
+        if role_state.get(k) is not rs:
+            logger.info(f"{k} 的角色资源已被并发删除，跳过初始化")
+            return
         # 如果已存在且已有websocket连接，保留websocket引用
         old_websocket = None
         if rs.session_manager is not None and rs.session_manager.websocket:
@@ -1133,12 +1139,15 @@ async def _init_character_resources(k: str, is_new_character: bool):
             old_user_language = None
             old_user_language_explicit = False
             if rs.session_manager is not None:
+                from .voice_identity_runtime import unregister_voice_identity_manager
+
                 old_user_language = getattr(rs.session_manager, "user_language", None)
                 old_user_language_explicit = getattr(
                     rs.session_manager,
                     "_user_language_explicit",
                     False,
                 )
+                await unregister_voice_identity_manager(rs.session_manager)
                 try:
                     rs.session_manager.shutdown()
                 except Exception as e:
@@ -1163,6 +1172,11 @@ async def _init_character_resources(k: str, is_new_character: bool):
                 logger.info(f"已恢复 {k} 的WebSocket连接")
 
             rs.session_manager = new_mgr
+
+        from .voice_identity_runtime import register_voice_identity_manager
+
+        if rs.session_manager is not None:
+            await register_voice_identity_manager(rs.session_manager)
 
     # 检查并启动同步连接器 task
     # 如果是新角色，或者 task 不存在/已结束，需要启动
@@ -1293,6 +1307,36 @@ def _cleanup_character_dicts(k: str):
     del role_state[k]
 
 
+async def _unregister_character_voice_identity_manager(k: str) -> None:
+    rs = role_state.get(k)
+    if rs is None:
+        return
+    async with rs.websocket_lock:
+        if role_state.get(k) is not rs:
+            return
+        await _unregister_character_voice_identity_manager_locked(rs)
+
+
+async def _unregister_character_voice_identity_manager_locked(rs) -> None:
+    if rs.session_manager is None:
+        return
+    from .voice_identity_runtime import unregister_voice_identity_manager
+
+    await unregister_voice_identity_manager(rs.session_manager)
+
+
+async def _unregister_and_cleanup_character_slot(k: str) -> None:
+    rs = role_state.get(k)
+    if rs is None:
+        return
+    async with rs.websocket_lock:
+        if role_state.get(k) is not rs:
+            return
+        await _stop_character_thread(k)
+        await _unregister_character_voice_identity_manager_locked(rs)
+        _cleanup_character_dicts(k)
+
+
 async def initialize_character_data():
     """Full refresh: load config + run per-k init for every catgirl + clean up deleted ones.
 
@@ -1329,17 +1373,19 @@ async def initialize_character_data():
     # 清理已删除角色的资源
     removed_names = [k for k in role_state.keys() if k not in catgirl_names]
 
-    # N 个 join(timeout=3) 串行最坏要 3N 秒；并行化后墙钟 ≈ 3 秒。
-    if removed_names:
-        await asyncio.gather(
-            *[_stop_character_thread(k) for k in removed_names],
-            return_exceptions=True,
-        )
-
-    # 线程都已停/超时，再在事件循环里顺序清理 dict —— 这些操作都是纯内存，不需要并行。
     for k in removed_names:
         logger.info(f"清理已删除角色 {k} 的资源")
-        _cleanup_character_dicts(k)
+
+    # 每个角色在同一 websocket_lock 事务内停止 connector、注销 manager 并删除 slot。
+    # N 个 stop(timeout=3) 并行执行，最坏墙钟仍约为 3 秒。
+    if removed_names:
+        cleanup_results = await asyncio.gather(
+            *[_unregister_and_cleanup_character_slot(k) for k in removed_names],
+            return_exceptions=True,
+        )
+        for k, result in zip(removed_names, cleanup_results):
+            if isinstance(result, BaseException):
+                logger.error(f"❌ 清理已删除角色 {k} 失败: {result}", exc_info=result)
 
     logger.info(f"角色配置加载完成，当前角色: {catgirl_names}，主人: {master_name}")
 
@@ -1379,8 +1425,7 @@ async def init_one_catgirl(name: str, *, is_new: bool = False):
 
 async def remove_one_catgirl(name: str):
     """Fast path for deleting a single catgirl: stop the character's thread + clear dicts + refresh globals."""
-    await _stop_character_thread(name)
-    _cleanup_character_dicts(name)
+    await _unregister_and_cleanup_character_slot(name)
     # config 文件已由调用方写入，这里刷新 globals 让 catgirl_names 等反映删除
     await _refresh_character_globals()
     logger.info(f"[fast-remove] 已移除角色 {name}")

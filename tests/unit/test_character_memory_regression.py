@@ -4578,16 +4578,42 @@ def test_timeindexed_dispose_engine_also_clears_sql_chat_engine_cache(monkeypatc
         manager.engines = {"测试角色": primary_engine}
         manager.db_paths = {"测试角色": "D:/tmp/test-time-indexed.db"}
 
-        manager.dispose_engine("测试角色")
+        released = manager.dispose_engine("测试角色")
 
+        assert released is True
         assert primary_engine.dispose_calls == 1
         assert cached_engine.dispose_calls == 1
         assert "测试角色" not in manager.engines
         assert "测试角色" not in manager.db_paths
         assert connection_string not in SQLChatMessageHistory._engine_cache
+        assert manager.dispose_engine("不存在角色") is False
     finally:
         SQLChatMessageHistory._engine_cache.clear()
         SQLChatMessageHistory._engine_cache.update(original_cache)
+
+
+@pytest.mark.unit
+def test_timeindexed_engine_admission_fence_prevents_lazy_recreation(monkeypatch):
+    from memory.timeindex import CharacterEngineAdmissionError, TimeIndexedMemory
+
+    manager = TimeIndexedMemory(
+        recent_history_manager=None,
+        engine_admission_check=lambda _name: False,
+    )
+    monkeypatch.setattr(
+        manager,
+        "_resolve_expected_db_path",
+        lambda *_args, **_kwargs: pytest.fail(
+            "fenced identity must not resolve or create storage"
+        ),
+    )
+
+    with pytest.raises(CharacterEngineAdmissionError):
+        manager._ensure_engine_exists("正在删除角色")
+    with pytest.raises(CharacterEngineAdmissionError):
+        manager._ensure_engine_exists("正在删除角色", readonly=True)
+    with pytest.raises(CharacterEngineAdmissionError):
+        manager.retrieve_original_by_timeframe("正在删除角色", None, None)
 
 
 @pytest.mark.unit

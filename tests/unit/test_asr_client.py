@@ -142,6 +142,7 @@ def test_public_exports_are_frozen():
         "AsrCoreCapabilities",
         "AsrSessionConfig",
         "RealtimeAsrSession",
+        "VoiceIdentityActivationResult",
         "create_asr_session",
         "get_asr_core_capabilities",
     ]

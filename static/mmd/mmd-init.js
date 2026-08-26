@@ -368,7 +368,11 @@
         const lightweightEmbed = window.__NEKO_CARD_MAKER_EMBED__ === true;
 
         // 核心模块（无相互依赖，可并行）
+        // vrm-lipsync-formant.js 是共享分析器（挂 window.FormantLipSyncAnalyzer），
+        // MMD 与 VRM 复用同一实现。mmd-animation 在 startLipSync 时才懒实例化
+        // 分析器，故与并行加载时序兼容；缺失时回退单通道路径。
         const parallelModules = [
+            '/static/vrm/vrm-lipsync-formant.js',
             '/static/mmd/mmd-core.js',
             '/static/mmd/mmd-expression.js',
             '/static/mmd/mmd-animation.js',

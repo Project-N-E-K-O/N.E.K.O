@@ -6,26 +6,39 @@
     const CAPTURE_TIMEOUT_GRACE_MS = 1000;
     const WINDOW_CLOSE_START_WAIT_MS = 500;
     const SESSION_HEADER = 'X-Voice-Identity-Enrollment';
+    const PROFILE_HEADER = 'X-Voice-Identity-Profile';
     const API_ROOT = '/api/voice-identity';
-    const ENROLLMENT_STAGE_ORDER = Object.freeze({
-        fixed_1: 1,
-        fixed_2: 2,
-        fixed_3: 3,
-        free_verify_1: 4,
-        free_verify_2: 5,
-        ready_to_commit: 6
+    const EFFECTIVE_REASON_KEYS = Object.freeze({
+        disabled: 'voiceIdentity.reasonDisabled',
+        ready: 'voiceIdentity.profileReady',
+        no_profile: 'voiceIdentity.profileMissing',
+        model_unavailable: 'voiceIdentity.reasonModelUnavailable',
+        profile_incompatible: 'voiceIdentity.reasonProfileIncompatible',
+        secure_storage_unavailable: 'voiceIdentity.reasonSecureStorageUnavailable',
+        enrollment_active: 'voiceIdentity.reasonEnrollmentActive',
+        runtime_degraded: 'voiceIdentity.reasonRuntimeDegraded',
+        unsupported_asr_route: 'voiceIdentity.reasonUnsupportedAsrRoute',
+        shadow_mode: 'voiceIdentity.reasonShadowMode'
+    });
+    const ENROLLMENT_ERROR_MESSAGES = Object.freeze({
+        invalid_pcm: ['voiceIdentity.errorInvalidPcm', '录音格式无效，请重新录入。'],
+        audio_too_long: ['voiceIdentity.errorAudioTooLong', '录音时间过长，请重新录入。']
     });
 
     const state = {
         csrfToken: '',
-        sessionId: null,
-        stage: 'idle',
+        enrollmentId: null,
+        profileId: null,
         profileAvailable: false,
-        persistenceState: 'empty',
-        filterEnabled: false,
+        profileRevision: null,
+        requestedEnabled: false,
+        effectiveEnabled: false,
+        effectiveReason: 'no_profile',
         mediaStream: null,
         audioContext: null,
+        captureAbort: null,
         recording: false,
+        saving: false,
         cancelPending: false,
         filterPending: false,
         busy: false,
@@ -49,19 +62,17 @@
     function cacheElements() {
         elements.statusDot = document.getElementById('voice-identity-status-dot');
         elements.profileStatus = document.getElementById('voice-identity-profile-status');
-        elements.stepCount = document.getElementById('voice-identity-step-count');
-        elements.stepTitle = document.getElementById('voice-identity-step-title');
-        elements.stepBody = document.getElementById('voice-identity-step-body');
-        elements.prompt = document.getElementById('voice-identity-prompt');
+        elements.enrollment = document.getElementById('voice-identity-enrollment');
+        elements.captureStatus = document.getElementById('voice-identity-capture-status');
+        elements.captureLabel = document.getElementById('voice-identity-capture-label');
         elements.timer = document.getElementById('voice-identity-timer');
         elements.message = document.getElementById('voice-identity-message');
         elements.start = document.getElementById('voice-identity-start');
-        elements.record = document.getElementById('voice-identity-record');
         elements.cancel = document.getElementById('voice-identity-cancel');
+        elements.profileControls = document.getElementById('voice-identity-profile-controls');
         elements.reenroll = document.getElementById('voice-identity-reenroll');
         elements.delete = document.getElementById('voice-identity-delete');
         elements.filter = document.getElementById('voice-identity-filter');
-        elements.progress = Array.from(document.querySelectorAll('.step-progress span'));
     }
 
     async function loadCsrfToken() {
@@ -69,16 +80,12 @@
             cache: 'no-store',
             credentials: 'same-origin'
         });
-        if (!response.ok) {
-            throw new Error('page_config_unavailable');
-        }
+        if (!response.ok) throw new Error('page_config_unavailable');
         const payload = await response.json();
         state.csrfToken = typeof payload.autostart_csrf_token === 'string'
             ? payload.autostart_csrf_token
             : '';
-        if (!state.csrfToken) {
-            throw new Error('csrf_token_unavailable');
-        }
+        if (!state.csrfToken) throw new Error('csrf_token_unavailable');
     }
 
     async function apiRequest(path, options) {
@@ -88,11 +95,9 @@
 
         async function sendOnce() {
             const headers = new Headers(config.headers || {});
-            if (isMutation) {
-                headers.set('X-CSRF-Token', state.csrfToken);
-            }
-            if (state.sessionId) {
-                headers.set(SESSION_HEADER, state.sessionId);
+            if (isMutation) headers.set('X-CSRF-Token', state.csrfToken);
+            if (state.enrollmentId && !headers.has(SESSION_HEADER)) {
+                headers.set(SESSION_HEADER, state.enrollmentId);
             }
             const response = await fetch(`${API_ROOT}${path}`, {
                 credentials: 'same-origin',
@@ -118,41 +123,109 @@
             await loadCsrfToken();
             result = await sendOnce();
         }
-        const { response, payload } = result;
-        if (!response.ok) {
-            const error = new Error(payload.error || 'request_failed');
-            error.status = response.status;
+        if (!result.response.ok) {
+            const error = new Error(result.payload.error_code || 'request_failed');
+            error.status = result.response.status;
             throw error;
         }
-        return payload;
+        return result.payload;
+    }
+
+    function firstBoolean(sources, names, fallback) {
+        for (const source of sources) {
+            if (!source || typeof source !== 'object') continue;
+            for (const name of names) {
+                if (typeof source[name] === 'boolean') return source[name];
+            }
+        }
+        return fallback;
+    }
+
+    function firstString(sources, names, fallback) {
+        for (const source of sources) {
+            if (!source || typeof source !== 'object') continue;
+            for (const name of names) {
+                if (typeof source[name] === 'string' && source[name]) return source[name];
+            }
+        }
+        return fallback;
+    }
+
+    function firstScalar(sources, names, fallback) {
+        for (const source of sources) {
+            if (!source || typeof source !== 'object') continue;
+            for (const name of names) {
+                if (typeof source[name] === 'string' || typeof source[name] === 'number') {
+                    return source[name];
+                }
+            }
+        }
+        return fallback;
     }
 
     function applyStatus(payload) {
         const status = payload && typeof payload === 'object' ? payload : {};
-        if (Object.prototype.hasOwnProperty.call(status, 'enrollment')) {
-            const enrollment = status.enrollment || {};
-            const nextStage = enrollment.stage || 'idle';
-            if (nextStage === 'idle') {
-                state.sessionId = null;
-            } else if (Object.prototype.hasOwnProperty.call(enrollment, 'session_id')) {
-                state.sessionId = enrollment.session_id || null;
-            }
-            state.stage = nextStage;
+        const enrollment = status.enrollment && typeof status.enrollment === 'object'
+            ? status.enrollment
+            : {};
+        const profile = status.profile && typeof status.profile === 'object'
+            ? status.profile
+            : {};
+        const filter = status.filter && typeof status.filter === 'object'
+            ? status.filter
+            : {};
+        const enrollmentId = firstString(
+            [status, enrollment],
+            ['enrollment_id', 'id', 'session_id'],
+            null
+        );
+        const enrollmentActive = firstBoolean(
+            [status, enrollment],
+            ['enrollment_active', 'active'],
+            Boolean(enrollmentId)
+        );
+        if (enrollmentActive && enrollmentId) {
+            state.enrollmentId = enrollmentId;
+            state.profileId = firstString(
+                [status, enrollment],
+                ['profile_id'],
+                state.profileId
+            );
+        } else if (
+            Object.prototype.hasOwnProperty.call(status, 'enrollment_active')
+            || Object.prototype.hasOwnProperty.call(status, 'enrollment')
+        ) {
+            state.enrollmentId = null;
+            state.profileId = null;
         }
-        if (Object.prototype.hasOwnProperty.call(status, 'profile')) {
-            const profile = status.profile || {};
-            state.profileAvailable = profile.available === true;
-            state.persistenceState = profile.state || 'empty';
-            if (
-                !state.profileAvailable
-                && !Object.prototype.hasOwnProperty.call(status, 'filter')
-            ) {
-                state.filterEnabled = false;
-            }
-        }
-        if (Object.prototype.hasOwnProperty.call(status, 'filter')) {
-            const filter = status.filter || {};
-            state.filterEnabled = filter.enabled === true;
+
+        state.profileAvailable = firstBoolean(
+            [status, profile],
+            ['has_profile', 'profile_available', 'available'],
+            state.profileAvailable
+        );
+        state.profileRevision = firstScalar(
+            [status, profile],
+            ['profile_generation'],
+            state.profileRevision
+        );
+        state.requestedEnabled = firstBoolean(
+            [status, filter],
+            ['requested_enabled', 'enabled'],
+            state.requestedEnabled
+        );
+        state.effectiveEnabled = firstBoolean(
+            [status, filter],
+            ['effective_enabled'],
+            state.requestedEnabled && state.profileAvailable
+        );
+        state.effectiveReason = firstString(
+            [status, filter],
+            ['effective_reason', 'reason'],
+            state.effectiveEnabled ? 'ready' : (state.profileAvailable ? 'disabled' : 'no_profile')
+        );
+        if (!state.profileAvailable) {
+            state.effectiveEnabled = false;
         }
         render();
     }
@@ -172,336 +245,197 @@
         elements.message.classList.toggle('error', Boolean(isError));
     }
 
-    function stageNumber(stage) {
-        return Math.min(ENROLLMENT_STAGE_ORDER[stage] || 0, 5);
+    function enrollmentErrorMessage(error) {
+        const configured = error && ENROLLMENT_ERROR_MESSAGES[error.message];
+        if (!configured) {
+            return translate('voiceIdentity.requestFailed', '操作失败，请稍后重试。');
+        }
+        return translate(configured[0], configured[1]);
     }
 
-    function fixedPrompts() {
-        let translated = null;
-        if (window.i18next && typeof window.i18next.t === 'function') {
-            translated = window.i18next.t(
-                'voiceIdentity.fixedPrompts',
-                { returnObjects: true }
-            );
-        } else if (typeof window.t === 'function') {
-            translated = window.t(
-                'voiceIdentity.fixedPrompts',
-                { returnObjects: true }
+    function reasonMessage() {
+        if (!state.profileAvailable) {
+            if (['disabled', 'no_profile'].includes(state.effectiveReason)) {
+                return translate('voiceIdentity.profileMissing', '尚未录入 Owner 声纹');
+            }
+            const unavailableKey = EFFECTIVE_REASON_KEYS[state.effectiveReason]
+                || 'voiceIdentity.reasonRuntimeDegraded';
+            return translate(unavailableKey, '声纹暂时不可用，独立 ASR 将正常放行');
+        }
+        if (state.effectiveEnabled) {
+            return translate('voiceIdentity.profileReady', 'Owner 声纹已保存并启用');
+        }
+        if (!state.requestedEnabled || state.effectiveReason === 'disabled') {
+            return translate('voiceIdentity.profileSavedDisabled', 'Owner 声纹已保存，过滤当前关闭');
+        }
+        const key = EFFECTIVE_REASON_KEYS[state.effectiveReason]
+            || 'voiceIdentity.reasonRuntimeDegraded';
+        return translate(key, '声纹暂时不可用，独立 ASR 将正常放行');
+    }
+
+    function enrollmentCompleteMessage() {
+        if (state.effectiveEnabled) {
+            return translate(
+                'voiceIdentity.enrollmentComplete',
+                'Owner 声纹已保存并启用。'
             );
         }
-        if (Array.isArray(translated) && translated.length === 3) {
-            return translated;
+        if (!state.requestedEnabled) {
+            return translate(
+                'voiceIdentity.profileSavedDisabled',
+                'Owner 声纹已保存，过滤当前关闭'
+            );
         }
-        return [
-            '今天我想和你分享一件趣事。',
-            '窗外的光线正在慢慢变化。',
-            '今天也用自然的声音聊天。'
-        ];
+        return reasonMessage();
     }
 
     function renderProfile() {
-        const isIdle = state.stage === 'idle';
+        const enrollmentVisible = !state.profileAvailable
+            || state.busy || state.cancelPending || Boolean(state.enrollmentId);
+        elements.enrollment.hidden = !enrollmentVisible;
+        elements.profileControls.hidden = !state.profileAvailable || enrollmentVisible;
         elements.statusDot.className = 'status-dot';
-        if (state.profileAvailable) {
-            elements.statusDot.classList.add(
-                state.persistenceState === 'secure_storage_unavailable'
-                    ? 'warning'
-                    : 'ready'
-            );
-            elements.profileStatus.textContent = state.persistenceState === 'secure_storage_unavailable'
-                ? translate(
-                    'voiceIdentity.persistenceUnavailable',
-                    'Profile 已在本次运行中激活，但本地持久化不可用'
-                )
-                : translate('voiceIdentity.profileReady', 'Owner Profile 已保存并激活');
-        } else {
-            elements.profileStatus.textContent = translate(
-                'voiceIdentity.profileMissing',
-                '尚未录入 Owner 声纹'
-            );
-        }
-        elements.reenroll.disabled = !state.initialized || !isIdle
-            || state.busy || state.recording || state.filterPending;
-        elements.delete.disabled = !state.profileAvailable || !isIdle
-            || !state.initialized || state.busy || state.recording
-            || state.filterPending;
-        if (!state.filterPending) {
-            elements.filter.checked = state.filterEnabled;
-        }
-        elements.filter.disabled = !state.profileAvailable || !isIdle
-            || !state.initialized || state.busy || state.recording
-            || state.filterPending;
+        if (state.effectiveEnabled) elements.statusDot.classList.add('ready');
+        else if (state.profileAvailable) elements.statusDot.classList.add('warning');
+        elements.profileStatus.textContent = reasonMessage();
+
+        const pending = !state.initialized || state.busy
+            || state.cancelPending || state.filterPending;
+        const enrollmentUnavailable = !state.profileAvailable
+            && state.effectiveReason === 'secure_storage_unavailable';
+        elements.start.hidden = state.profileAvailable || state.busy || state.cancelPending;
+        elements.start.disabled = pending || enrollmentUnavailable;
+        elements.cancel.hidden = !state.busy && !state.cancelPending && !state.enrollmentId;
+        elements.cancel.disabled = state.cancelPending;
+        elements.reenroll.disabled = pending;
+        elements.delete.disabled = pending;
+        if (!state.filterPending) elements.filter.checked = state.requestedEnabled;
+        elements.filter.disabled = pending;
     }
 
-    function renderWizard() {
-        const activeStep = stageNumber(state.stage);
-        elements.progress.forEach(function (item, index) {
-            item.classList.toggle('active', index < Math.max(1, activeStep));
-        });
-        const isIdle = state.stage === 'idle';
-        const isFixed = state.stage.startsWith('fixed_');
-        const isFree = state.stage.startsWith('free_verify_');
-        const isReadyToCommit = state.stage === 'ready_to_commit';
-        const activeElement = document.activeElement;
-        const shouldMoveWizardFocus = (
-            isIdle && (
-                activeElement === elements.record
-                || activeElement === elements.cancel
-            )
-        ) || (
-            (isFixed || isFree || isReadyToCommit) && (
-                activeElement === elements.start
-                || activeElement === elements.reenroll
-            )
-        );
-        elements.start.hidden = !isIdle;
-        elements.record.hidden = !(isFixed || isFree || isReadyToCommit);
-        elements.cancel.hidden = isIdle;
-        elements.start.disabled = !state.initialized || state.busy
-            || state.filterPending;
-        elements.record.disabled = state.busy || state.recording
-            || state.cancelPending;
-        elements.cancel.disabled = state.busy || state.recording || state.cancelPending;
-        elements.record.classList.toggle('recording', state.recording);
-        const recordLabel = elements.record.querySelector('span:last-child');
-        if (recordLabel) {
-            recordLabel.textContent = state.recording
-                ? translate('voiceIdentity.recording', '正在录音…')
-                : translate(
-                    isReadyToCommit ? 'voiceIdentity.retry' : 'voiceIdentity.record',
-                    isReadyToCommit ? '重试' : '开始录音'
-                );
-        }
-
-        elements.prompt.hidden = true;
-        elements.stepCount.textContent = activeStep
-            ? translate('voiceIdentity.stepCount', `步骤 ${activeStep} / 5`, {
-                current: activeStep,
-                total: 5
-            })
-            : '';
-
-        if (isIdle) {
-            elements.stepTitle.textContent = translate(
-                'voiceIdentity.privacyTitle',
-                '开始前请了解'
-            );
-            elements.stepBody.textContent = translate(
-                'voiceIdentity.privacyBody',
-                '声纹仅在本机处理和保存，不会发送给 ASR Provider。'
-            );
-            if (shouldMoveWizardFocus) elements.stepTitle.focus();
-            return;
-        }
-        if (isFixed) {
-            const index = Math.max(0, Number(state.stage.slice(-1)) - 1);
-            elements.stepTitle.textContent = translate(
-                'voiceIdentity.fixedTitle',
-                '朗读固定文案'
-            );
-            elements.stepBody.textContent = translate(
-                'voiceIdentity.fixedHelp',
-                '请使用平时聊天的自然音量和语速朗读下方文字。'
-            );
-            elements.prompt.textContent = fixedPrompts()[index];
-            elements.prompt.hidden = false;
-            if (shouldMoveWizardFocus) elements.stepTitle.focus();
-            return;
-        }
-        if (isFree) {
-            const first = state.stage === 'free_verify_1';
-            elements.stepTitle.textContent = translate(
-                first ? 'voiceIdentity.freeTitle1' : 'voiceIdentity.freeTitle2',
-                first ? '自由说话测试 1' : '自由说话测试 2'
-            );
-            elements.stepBody.textContent = translate(
-                first ? 'voiceIdentity.freePrompt1' : 'voiceIdentity.freePrompt2',
-                first
-                    ? '请自由说几句话，内容不限，像平时聊天一样即可。'
-                    : '请再自由说几句话，内容可以和上一次不同。'
-            );
-            if (shouldMoveWizardFocus) elements.stepTitle.focus();
-            return;
-        }
-        elements.stepTitle.textContent = translate(
-            'voiceIdentity.saving',
-            '正在保存并激活…'
-        );
-        elements.stepBody.textContent = '';
-        if (shouldMoveWizardFocus) elements.stepTitle.focus();
+    function renderEnrollment() {
+        const captureVisible = state.recording || state.saving;
+        elements.captureStatus.hidden = !captureVisible;
+        elements.captureStatus.classList.toggle('saving', state.saving);
+        elements.captureLabel.textContent = state.saving
+            ? translate('voiceIdentity.saving', '正在加密保存并启用…')
+            : translate('voiceIdentity.recording', '正在录音…');
     }
 
     function render() {
         renderProfile();
-        renderWizard();
+        renderEnrollment();
     }
 
     async function ensureMicrophone() {
-        if (!state.mediaStream || !state.mediaStream.active) {
+        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+            throw new Error('media_devices_unavailable');
+        }
+        if (!state.mediaStream) {
             state.mediaStream = await navigator.mediaDevices.getUserMedia({
-                audio: {
-                    channelCount: 1,
-                    echoCancellation: false,
-                    noiseSuppression: false,
-                    autoGainControl: false
-                },
+                audio: { channelCount: 1 },
                 video: false
             });
         }
-        const AudioContext = window.AudioContext || window.webkitAudioContext;
-        if (!AudioContext) {
-            throw new Error('audio_context_unavailable');
-        }
-        if (!state.audioContext || state.audioContext.state === 'closed') {
-            state.audioContext = new AudioContext();
-        }
-        if (state.audioContext.state === 'suspended') {
-            await state.audioContext.resume();
-        }
-    }
-
-    function resampleTo16k(input, sourceRate) {
-        if (sourceRate === TARGET_SAMPLE_RATE) {
-            return input;
-        }
-        const outputLength = Math.max(
-            1,
-            Math.round(input.length * TARGET_SAMPLE_RATE / sourceRate)
-        );
-        const output = new Float32Array(outputLength);
-        const scale = sourceRate / TARGET_SAMPLE_RATE;
-        if (scale > 1) {
-            const cutoff = 0.5 / scale;
-            const halfTaps = Math.max(8, Math.ceil(scale * 4));
-            const kernels = new Map();
-            for (let index = 0; index < outputLength; index += 1) {
-                const center = (index + 0.5) * scale - 0.5;
-                const anchor = Math.floor(center);
-                const fraction = center - anchor;
-                const phase = Math.round(fraction * 1000000);
-                let kernel = kernels.get(phase);
-                if (!kernel) {
-                    kernel = [];
-                    for (let offset = -halfTaps; offset <= halfTaps; offset += 1) {
-                        const distance = offset - fraction;
-                        if (Math.abs(distance) > halfTaps) continue;
-                        const sinc = distance === 0
-                            ? 2 * cutoff
-                            : Math.sin(2 * Math.PI * cutoff * distance)
-                                / (Math.PI * distance);
-                        const window = 0.5
-                            + 0.5 * Math.cos(Math.PI * distance / halfTaps);
-                        kernel.push({ offset, weight: sinc * window });
-                    }
-                    kernels.set(phase, kernel);
-                }
-                let weighted = 0;
-                let weightTotal = 0;
-                for (const tap of kernel) {
-                    const sourceIndex = anchor + tap.offset;
-                    if (sourceIndex < 0 || sourceIndex >= input.length) continue;
-                    weighted += input[sourceIndex] * tap.weight;
-                    weightTotal += tap.weight;
-                }
-                output[index] = weightTotal === 0 ? 0 : weighted / weightTotal;
+        if (!state.audioContext) {
+            const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+            if (!AudioContextClass || typeof AudioWorkletNode !== 'function') {
+                throw new Error('audio_worklet_unavailable');
             }
-            return output;
+            const context = new AudioContextClass();
+            try {
+                await context.audioWorklet.addModule('/static/audio-processor.js');
+            } catch (error) {
+                await context.close();
+                throw error;
+            }
+            state.audioContext = context;
         }
-        for (let index = 0; index < outputLength; index += 1) {
-            const position = index * scale;
-            const left = Math.floor(position);
-            const right = Math.min(left + 1, input.length - 1);
-            const mix = position - left;
-            output[index] = input[left] * (1 - mix) + input[right] * mix;
-        }
-        return output;
-    }
-
-    function floatToPcm16(samples) {
-        const pcm = new Int16Array(samples.length);
-        for (let index = 0; index < samples.length; index += 1) {
-            const sample = Math.max(-1, Math.min(1, samples[index]));
-            pcm[index] = sample < 0 ? sample * 0x8000 : sample * 0x7fff;
-        }
-        return pcm;
     }
 
     async function capturePcm16() {
         await ensureMicrophone();
         const context = state.audioContext;
         const source = context.createMediaStreamSource(state.mediaStream);
-        const processor = context.createScriptProcessor(2048, 1, 1);
+        const processor = new AudioWorkletNode(context, 'audio-processor', {
+            numberOfInputs: 1,
+            numberOfOutputs: 1,
+            outputChannelCount: [1],
+            processorOptions: {
+                originalSampleRate: context.sampleRate,
+                targetSampleRate: TARGET_SAMPLE_RATE
+            }
+        });
         const mute = context.createGain();
         const chunks = [];
-        const maxSourceSamples = Math.ceil(
-            context.sampleRate * RECORDING_MS / 1000
-        );
+        const targetSamples = TARGET_SAMPLE_RATE * RECORDING_MS / 1000;
         let capturedSamples = 0;
+        let finishCapture = null;
         mute.gain.value = 0;
         source.connect(processor);
         processor.connect(mute);
         mute.connect(context.destination);
+        await context.resume();
 
         const startedAt = performance.now();
         const timer = window.setInterval(function () {
             const elapsed = Math.min(RECORDING_MS, performance.now() - startedAt);
             elements.timer.textContent = translate(
                 'voiceIdentity.recordingSeconds',
-                `${(elapsed / 1000).toFixed(1)} s`,
+                `${(elapsed / 1000).toFixed(1)} 秒`,
                 { seconds: (elapsed / 1000).toFixed(1) }
             );
         }, 100);
         try {
             await new Promise(function (resolve, reject) {
                 let settled = false;
-                let timeoutId = null;
-                const finish = function (error) {
+                const timeoutId = window.setTimeout(function () {
+                    finishCapture(new Error('incomplete_capture'));
+                }, RECORDING_MS + CAPTURE_TIMEOUT_GRACE_MS);
+                finishCapture = function (error) {
                     if (settled) return;
                     settled = true;
-                    if (timeoutId !== null) window.clearTimeout(timeoutId);
+                    window.clearTimeout(timeoutId);
                     if (error) reject(error);
                     else resolve();
                 };
-                processor.onaudioprocess = function (event) {
-                    const input = event.inputBuffer.getChannelData(0);
-                    const remaining = maxSourceSamples - capturedSamples;
-                    if (remaining <= 0) return;
-                    const length = Math.min(input.length, remaining);
-                    chunks.push(new Float32Array(input.subarray(0, length)));
-                    capturedSamples += length;
-                    if (capturedSamples >= maxSourceSamples) finish();
+                state.captureAbort = finishCapture;
+                processor.port.onmessage = function (event) {
+                    const chunk = event.data instanceof Int16Array
+                        ? event.data
+                        : new Int16Array(event.data);
+                    if (chunk.length === 0) return;
+                    chunks.push(chunk);
+                    capturedSamples += chunk.length;
+                    if (capturedSamples >= targetSamples) finishCapture();
                 };
-                timeoutId = window.setTimeout(function () {
-                    finish(new Error('incomplete_capture'));
-                }, RECORDING_MS + CAPTURE_TIMEOUT_GRACE_MS);
             });
         } finally {
+            state.captureAbort = null;
             window.clearInterval(timer);
+            processor.port.onmessage = null;
             processor.disconnect();
             source.disconnect();
             mute.disconnect();
-            processor.onaudioprocess = null;
             elements.timer.textContent = '';
         }
 
-        const sampleCount = chunks.reduce(function (sum, chunk) {
-            return sum + chunk.length;
-        }, 0);
-        if (sampleCount === 0) {
-            throw new Error('empty_capture');
-        }
-        const joined = new Float32Array(sampleCount);
+        if (capturedSamples < targetSamples) throw new Error('incomplete_capture');
+        const pcm = new Int16Array(targetSamples);
         let offset = 0;
-        chunks.forEach(function (chunk) {
-            joined.set(chunk, offset);
-            offset += chunk.length;
-        });
-        return floatToPcm16(
-            resampleTo16k(joined, context.sampleRate)
-        ).buffer;
+        for (const chunk of chunks) {
+            const remaining = targetSamples - offset;
+            if (remaining <= 0) break;
+            pcm.set(chunk.subarray(0, remaining), offset);
+            offset += Math.min(chunk.length, remaining);
+        }
+        return pcm.buffer;
     }
 
-    function stopMicrophone() {
+    function stopMicrophone(reason) {
+        const abort = state.captureAbort;
+        state.captureAbort = null;
+        if (abort) abort(new Error(reason || 'capture_cancelled'));
         if (state.mediaStream) {
             state.mediaStream.getTracks().forEach(function (track) {
                 track.stop();
@@ -515,251 +449,195 @@
         }
     }
 
+    function createProfileId() {
+        if (window.crypto && typeof window.crypto.randomUUID === 'function') {
+            return window.crypto.randomUUID();
+        }
+        if (!window.crypto || typeof window.crypto.getRandomValues !== 'function') {
+            throw new Error('crypto_unavailable');
+        }
+        const bytes = new Uint8Array(16);
+        window.crypto.getRandomValues(bytes);
+        bytes[6] = (bytes[6] & 0x0f) | 0x40;
+        bytes[8] = (bytes[8] & 0x3f) | 0x80;
+        const hex = Array.from(bytes, function (value) {
+            return value.toString(16).padStart(2, '0');
+        }).join('');
+        return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+    }
+
+    async function cancelSession(options) {
+        const config = options || {};
+        const enrollmentId = state.enrollmentId;
+        if (!enrollmentId) return;
+        const headers = new Headers({
+            'X-CSRF-Token': state.csrfToken,
+            [SESSION_HEADER]: enrollmentId
+        });
+        if (config.keepalive) {
+            state.enrollmentId = null;
+            state.profileId = null;
+            await fetch(`${API_ROOT}/enrollment/cancel`, {
+                method: 'POST',
+                headers,
+                credentials: 'same-origin',
+                keepalive: true
+            });
+            return;
+        }
+        const payload = await apiRequest('/enrollment/cancel', {
+            method: 'POST',
+            headers
+        });
+        state.enrollmentId = null;
+        state.profileId = null;
+        applyStatus(payload);
+    }
+
     async function startEnrollment() {
-        if (state.busy || state.filterPending) return;
-        let startRequestPending = false;
+        if (state.busy || state.filterPending || state.cancelPending) return;
         let startSettled = null;
         let settleStart = null;
+        let uploadStarted = false;
+        const profileWasAvailable = state.profileAvailable;
+        const profileRevisionBefore = state.profileRevision;
         state.busy = true;
         setMessage('');
         render();
         try {
             await ensureMicrophone();
-            stopMicrophone();
-            if (state.closeStarted) return;
+            if (state.closeStarted || state.cancelPending) return;
             startSettled = new Promise(function (resolve) {
                 settleStart = resolve;
             });
             state.startSettled = startSettled;
-            startRequestPending = true;
-            const payload = await apiRequest('/enrollment/start', {
-                method: 'POST'
-            });
-            startRequestPending = false;
-            applyStatus(payload);
-        } catch (error) {
-            stopMicrophone();
-            const recovered = startRequestPending
-                && await reconcileStatus()
-                && Boolean(state.sessionId);
-            const microphoneError = error && (
-                error.name === 'NotAllowedError'
-                || error.name === 'NotFoundError'
-                || error.name === 'NotReadableError'
-            );
-            if (!recovered) {
-                setMessage(
-                    microphoneError
-                        ? translate(
-                            'voiceIdentity.microphoneDenied',
-                            '无法使用麦克风，请检查权限和设备。'
-                        )
-                        : translate(
-                            'voiceIdentity.requestFailed',
-                            '操作失败，请稍后重试。'
-                        ),
-                    true
-                );
-            }
-        } finally {
-            state.busy = false;
-            if (settleStart) {
+            let started;
+            try {
+                started = await apiRequest('/enrollment/start', { method: 'POST' });
+            } finally {
+                if (settleStart) settleStart();
                 if (state.startSettled === startSettled) state.startSettled = null;
-                settleStart();
             }
-            render();
-        }
-    }
-
-    async function commitEnrollment() {
-        const profileAlreadyAvailable = state.profileAvailable;
-        let reconciliationAttempted = false;
-        try {
-            const committed = await apiRequest('/enrollment/commit', {
-                method: 'POST'
-            });
-            applyStatus(committed);
-            const completeStatus = committed && typeof committed === 'object'
-                && Object.prototype.hasOwnProperty.call(committed, 'enrollment')
-                && Object.prototype.hasOwnProperty.call(committed, 'profile');
-            if (!completeStatus) {
-                reconciliationAttempted = true;
-                if (!await reconcileStatus()) {
-                    throw new Error('commit_status_unavailable');
-                }
-            }
-            if (state.stage !== 'idle' || !state.profileAvailable) {
-                throw new Error('commit_not_confirmed');
-            }
-        } catch (error) {
-            const reconciled = reconciliationAttempted
-                ? state.stage === 'idle' && state.profileAvailable
-                : await reconcileStatus();
-            if (
-                !reconciled
-                || state.stage !== 'idle'
-                || !state.profileAvailable
-                || profileAlreadyAvailable
-            ) throw error;
-        }
-        stopMicrophone();
-        setMessage(
-            state.persistenceState === 'secure_storage_unavailable'
-                ? translate(
-                    'voiceIdentity.persistenceUnavailable',
-                    'Profile 已在本次运行中激活，但本地持久化不可用'
-                )
-                : translate(
-                    'voiceIdentity.enrollmentComplete',
-                    'Owner Profile 已保存并激活。'
-                ),
-            state.persistenceState === 'secure_storage_unavailable'
-        );
-    }
-
-    async function recordCurrentStep() {
-        if (
-            state.busy || state.recording || state.cancelPending || !state.sessionId
-        ) return;
-        let uploadRequestPending = false;
-        let uploadStage = null;
-        state.busy = true;
-        state.recording = state.stage !== 'ready_to_commit';
-        setMessage('');
-        render();
-        try {
-            if (state.stage === 'ready_to_commit') {
-                await commitEnrollment();
+            applyStatus(started);
+            state.enrollmentId = firstString(
+                [started, started.enrollment],
+                ['enrollment_id', 'id', 'session_id'],
+                state.enrollmentId
+            );
+            state.profileId = firstString(
+                [started, started.enrollment],
+                ['profile_id'],
+                state.profileId || createProfileId()
+            );
+            if (!state.enrollmentId) throw new Error('enrollment_id_missing');
+            if (state.closeStarted || state.cancelPending) {
+                await cancelSession({
+                    keepalive: state.closeStarted,
+                    silent: true
+                });
                 return;
             }
-            let pcm16;
-            try {
-                pcm16 = await capturePcm16();
-            } finally {
-                stopMicrophone();
-            }
-            state.recording = false;
+
+            state.recording = true;
             render();
-            const verification = state.stage.startsWith('free_verify_');
-            uploadStage = state.stage;
-            uploadRequestPending = true;
-            const payload = await apiRequest(
-                verification ? '/enrollment/verify' : '/enrollment/segment',
-                {
-                    method: 'POST',
-                    body: pcm16,
-                    headers: {
-                        'Content-Type': 'audio/pcm;format=pcm_s16le;rate=16000;channels=1'
-                    }
+            const pcm16 = await capturePcm16();
+            state.recording = false;
+            state.saving = true;
+            stopMicrophone();
+            render();
+            uploadStarted = true;
+            const completed = await apiRequest('/enrollment/profile', {
+                method: 'PUT',
+                body: pcm16,
+                headers: {
+                    'Content-Type': 'audio/pcm;format=pcm_s16le;rate=16000;channels=1',
+                    [SESSION_HEADER]: state.enrollmentId,
+                    [PROFILE_HEADER]: state.profileId
                 }
-            );
-            uploadRequestPending = false;
-            applyStatus(payload);
-            if (verification) {
-                const passed = payload.verification && payload.verification.passed;
-                setMessage(
-                    passed
-                        ? translate(
-                            'voiceIdentity.verificationPassed',
-                            '本次自由说话测试已通过。'
-                        )
-                        : translate(
-                            'voiceIdentity.verificationRetry',
-                            '这次未能确认，请保持自然语气再试一次。'
-                        ),
-                    !passed
-                );
+            });
+            applyStatus(completed);
+            if (!state.profileAvailable && !await reconcileStatus()) {
+                throw new Error('profile_status_unavailable');
             }
-            if (state.stage === 'ready_to_commit') {
-                await commitEnrollment();
-            }
+            if (!state.profileAvailable) throw new Error('profile_not_confirmed');
+            state.enrollmentId = null;
+            state.profileId = null;
+            setMessage(enrollmentCompleteMessage(), false);
         } catch (error) {
-            let recovered = uploadRequestPending
-                && await reconcileStatus()
-                && (ENROLLMENT_STAGE_ORDER[state.stage] || 0)
-                    > (ENROLLMENT_STAGE_ORDER[uploadStage] || 0);
-            if (recovered && state.stage === 'ready_to_commit') {
-                try {
-                    await commitEnrollment();
-                } catch (_) {
-                    recovered = false;
-                }
-            }
-            const microphoneError = error && (
-                error.name === 'NotAllowedError'
-                || error.name === 'NotFoundError'
-                || error.name === 'NotReadableError'
-            );
-            if (!recovered) {
-                setMessage(
-                    microphoneError
-                        ? translate(
-                            'voiceIdentity.microphoneDenied',
-                            '无法使用麦克风，请检查权限和设备。'
-                        )
-                        : translate(
-                            'voiceIdentity.requestFailed',
-                            '操作失败，请稍后重试。'
-                        ),
-                    true
+            stopMicrophone();
+            const reconciled = await reconcileStatus();
+            const replacementConfirmed = uploadStarted
+                && reconciled
+                && state.profileAvailable
+                && (
+                    !profileWasAvailable
+                    || (
+                        profileRevisionBefore !== null
+                        && state.profileRevision !== null
+                        && state.profileRevision !== profileRevisionBefore
+                    )
                 );
+            if (replacementConfirmed) {
+                state.enrollmentId = null;
+                state.profileId = null;
+                setMessage(enrollmentCompleteMessage(), false);
+            } else {
+                try {
+                    await cancelSession();
+                } catch (_) {}
+                const microphoneError = error && (
+                    error.name === 'NotAllowedError'
+                    || error.name === 'NotFoundError'
+                    || error.name === 'NotReadableError'
+                    || error.message === 'audio_worklet_unavailable'
+                    || error.message === 'media_devices_unavailable'
+                );
+                if (!state.cancelPending && !state.closeStarted) {
+                    setMessage(
+                        microphoneError
+                            ? translate(
+                                'voiceIdentity.microphoneDenied',
+                                '无法使用麦克风，请检查权限和设备。'
+                            )
+                            : enrollmentErrorMessage(error),
+                        true
+                    );
+                }
             }
         } finally {
+            stopMicrophone();
+            if (settleStart && state.startSettled === startSettled) {
+                state.startSettled = null;
+                settleStart();
+            }
             state.recording = false;
+            state.saving = false;
             state.busy = false;
+            state.cancelPending = false;
             render();
         }
     }
 
     async function cancelEnrollment(options) {
         const config = options || {};
-        if (!state.sessionId) {
-            stopMicrophone();
-            return;
-        }
-        const sessionId = state.sessionId;
-        if (config.keepalive) {
-            state.sessionId = null;
-            state.stage = 'idle';
-        } else {
-            setMessage('');
-            state.cancelPending = true;
-            render();
-        }
-        stopMicrophone();
-        const headers = new Headers({
-            'X-CSRF-Token': state.csrfToken,
-            [SESSION_HEADER]: sessionId
-        });
+        state.cancelPending = true;
+        stopMicrophone('capture_cancelled');
+        render();
         try {
-            if (config.keepalive) {
-                await fetch(`${API_ROOT}/enrollment/cancel`, {
-                    method: 'POST',
-                    headers,
-                    credentials: 'same-origin',
-                    keepalive: true
-                });
-            } else {
-                const payload = await apiRequest('/enrollment/cancel', {
-                    method: 'POST',
-                    headers
-                });
-                applyStatus(payload);
-                setMessage('');
-            }
+            await cancelSession(config);
+            if (!config.silent) setMessage('');
         } catch (_) {
-            const reconciled = !config.keepalive && await reconcileStatus();
-            if (!config.silent && (!reconciled || state.sessionId)) {
-                setMessage(
-                    translate(
-                        'voiceIdentity.requestFailed',
-                        '操作失败，请稍后重试。'
-                    ),
-                    true
-                );
+            if (!config.keepalive) {
+                const reconciled = await reconcileStatus();
+                if (!config.silent && (!reconciled || state.enrollmentId)) {
+                    setMessage(
+                        translate('voiceIdentity.requestFailed', '操作失败，请稍后重试。'),
+                        true
+                    );
+                }
             }
         } finally {
-            state.cancelPending = false;
+            if (!state.busy) state.cancelPending = false;
             render();
         }
     }
@@ -767,6 +645,7 @@
     async function deleteProfile() {
         if (state.busy || state.filterPending) return;
         state.busy = true;
+        setMessage('');
         render();
         try {
             const message = translate(
@@ -777,7 +656,7 @@
             if (typeof window.showConfirm === 'function') {
                 confirmed = await window.showConfirm(
                     message,
-                    translate('voiceIdentity.delete', '删除 Profile'),
+                    translate('voiceIdentity.delete', '删除声纹'),
                     { danger: true }
                 );
             } else if (typeof window.confirm === 'function') {
@@ -786,12 +665,10 @@
             if (!confirmed) return;
             const payload = await apiRequest('/profile', { method: 'DELETE' });
             applyStatus(payload);
-            setMessage('');
+            if (state.profileAvailable) await reconcileStatus();
         } catch (_) {
             const reconciled = await reconcileStatus();
-            if (reconciled && !state.profileAvailable) {
-                setMessage('');
-            } else {
+            if (!reconciled || state.profileAvailable) {
                 setMessage(
                     translate('voiceIdentity.requestFailed', '操作失败，请稍后重试。'),
                     true
@@ -804,7 +681,7 @@
     }
 
     async function updateFilter() {
-        if (state.filterPending) return;
+        if (state.filterPending || state.busy) return;
         const desired = elements.filter.checked;
         state.filterPending = true;
         setMessage('');
@@ -818,8 +695,8 @@
             applyStatus(payload);
         } catch (_) {
             const reconciled = await reconcileStatus();
-            if (!reconciled || state.filterEnabled !== desired) {
-                elements.filter.checked = state.filterEnabled;
+            if (!reconciled || state.requestedEnabled !== desired) {
+                elements.filter.checked = state.requestedEnabled;
                 setMessage(
                     translate('voiceIdentity.requestFailed', '操作失败，请稍后重试。'),
                     true
@@ -834,16 +711,16 @@
     function bindEvents() {
         elements.start.addEventListener('click', startEnrollment);
         elements.reenroll.addEventListener('click', startEnrollment);
-        elements.record.addEventListener('click', recordCurrentStep);
         elements.cancel.addEventListener('click', function () {
-            return cancelEnrollment();
+            cancelEnrollment().catch(function () {});
         });
         elements.delete.addEventListener('click', deleteProfile);
         elements.filter.addEventListener('change', updateFilter);
         window.addEventListener('localechange', render);
         window.nekoBeforeWindowClose = async function () {
             state.closeStarted = true;
-            stopMicrophone();
+            state.cancelPending = true;
+            stopMicrophone('capture_cancelled');
             const pendingStart = state.startSettled;
             if (pendingStart) {
                 let timeoutId = null;
@@ -862,18 +739,15 @@
         window.addEventListener('pageshow', async function (event) {
             if (!event.persisted) return;
             state.closeStarted = false;
+            state.cancelPending = false;
             state.busy = true;
             render();
             const reconciled = await reconcileStatus();
             if (!reconciled) {
                 setMessage(
-                    translate(
-                        'voiceIdentity.requestFailed',
-                        '操作失败，请稍后重试。'
-                    ),
+                    translate('voiceIdentity.requestFailed', '操作失败，请稍后重试。'),
                     true
                 );
-                return;
             }
             state.busy = false;
             render();

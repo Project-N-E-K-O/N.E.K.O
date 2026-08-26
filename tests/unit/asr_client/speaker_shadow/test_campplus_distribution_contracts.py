@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import re
 import tomllib
 from pathlib import Path
@@ -42,9 +43,7 @@ def test_pyinstaller_bundles_campplus_and_requires_onnxruntime() -> None:
 
 
 def test_nuitka_workflows_prepare_and_verify_one_campplus_weight() -> None:
-    desktop = (ROOT / ".github/workflows/build-desktop.yml").read_text(
-        encoding="utf-8"
-    )
+    desktop = (ROOT / ".github/workflows/build-desktop.yml").read_text(encoding="utf-8")
     linux = (ROOT / ".github/workflows/build-desktop-linux.yml").read_text(
         encoding="utf-8"
     )
@@ -59,6 +58,36 @@ def test_nuitka_workflows_prepare_and_verify_one_campplus_weight() -> None:
         assert "CAM++ weight must be packaged exactly once" in workflow
         assert "obsolete data/speaker_models must not be packaged" in workflow
         assert "THIRD_PARTY_NOTICES.md" in workflow
+
+
+def test_windows_nuitka_runs_frozen_voice_identity_release_smoke() -> None:
+    workflow = (ROOT / ".github/workflows/build-desktop.yml").read_text(
+        encoding="utf-8"
+    )
+    launcher = (ROOT / "launcher.py").read_text(encoding="utf-8")
+
+    assert "if: runner.os == 'Windows'" in workflow
+    assert "dist/Xiao8/projectneko_server.exe" in workflow
+    assert 'NEKO_VOICE_IDENTITY_RELEASE_SMOKE = "1"' in workflow
+    assert "WaitForExit(120000)" in workflow
+    assert "taskkill.exe /PID $process.Id /T /F" in workflow
+    assert "NEKO_VOICE_IDENTITY_RELEASE_SMOKE_OK" in workflow
+    assert 'os.environ.get("NEKO_VOICE_IDENTITY_RELEASE_SMOKE") == "1"' in launcher
+    tree = ast.parse(launcher)
+    calls = {
+        node.func.id: node.lineno
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+    assert (
+        calls["_release_smoke_freeze_support"]
+        < calls["_run_voice_identity_release_smoke"]
+    )
+    stdout_index = workflow.index("$stdoutText = if")
+    assert workflow.index("$timedOut = -not $process.WaitForExit") < stdout_index
+    assert stdout_index < workflow.index(
+        'throw "Frozen Owner voice identity smoke timed out"'
+    )
 
 
 def test_docker_builds_prepare_natively_then_verify_offline() -> None:
