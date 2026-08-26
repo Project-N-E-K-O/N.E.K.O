@@ -403,6 +403,48 @@ async def test_start_failure_cleanup_keeps_host_when_permission_revoke_fails(
 
 @pytest.mark.plugin_unit
 @pytest.mark.asyncio
+async def test_start_failure_cleanup_keeps_a_host_that_survives_shutdown(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    class _ShutdownFailingHost(_FakeProcessHost):
+        async def shutdown(self, timeout: float = 1.0) -> None:
+            raise PluginLifecycleError(
+                "demo_plugin",
+                "shutdown",
+                "process stayed alive",
+            )
+
+    host = _ShutdownFailingHost(
+        plugin_id="demo_plugin",
+        entry_point="tests.fake:Plugin",
+        config_path=tmp_path / "demo_plugin" / "plugin.toml",
+    )
+    hosts_backup = dict(module.state.plugin_hosts)
+    try:
+        with module.state.acquire_plugin_hosts_write_lock():
+            module.state.plugin_hosts.clear()
+
+        monkeypatch.setattr(
+            module,
+            "_revoke_plugin_permissions",
+            _successful_revoke,
+        )
+
+        cleaned_up = await module._cleanup_started_host("demo_plugin", host)
+
+        assert cleaned_up is False
+        assert getattr(host, module._STARTUP_QUARANTINED_ATTR) is True
+        with module.state.acquire_plugin_hosts_read_lock():
+            assert module.state.plugin_hosts["demo_plugin"] is host
+    finally:
+        with module.state.acquire_plugin_hosts_write_lock():
+            module.state.plugin_hosts.clear()
+            module.state.plugin_hosts.update(hosts_backup)
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
 async def test_start_retries_quarantined_failed_start_host(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -3591,6 +3633,67 @@ async def test_delete_plugin_aborts_before_removal_when_permission_revoke_fails(
         with module.state.acquire_plugin_hosts_write_lock():
             module.state.plugin_hosts.clear()
             module.state.plugin_hosts.update(hosts_backup)
+        with module.state._snapshot_cache_lock:
+            module.state._snapshot_cache = cache_backup
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_delete_running_plugin_aborts_when_stop_reports_unrevoked_permissions(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    plugin_dir = tmp_path / "demo_plugin"
+    config_path = plugin_dir / "plugin.toml"
+    plugin_dir.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(
+        "[plugin]\nid='demo_plugin'\nentry='tests.fake:Plugin'\n",
+        encoding="utf-8",
+    )
+
+    plugins_backup = copy.deepcopy(module.state.plugins)
+    hosts_backup = dict(module.state.plugin_hosts)
+    handlers_backup = dict(module.state.event_handlers)
+    cache_backup = copy.deepcopy(module.state._snapshot_cache)
+    try:
+        _seed_running_plugin("demo_plugin", config_path)
+
+        async def _partial_stop(
+            _self: module.PluginLifecycleService,
+            plugin_id: str,
+            **_kwargs: object,
+        ) -> dict[str, object]:
+            assert plugin_id == "demo_plugin"
+            return {
+                "success": True,
+                "permissions_revoked": False,
+                "partial_success": True,
+            }
+
+        monkeypatch.setattr(module, "PLUGIN_CONFIG_ROOTS", (tmp_path,))
+        monkeypatch.setattr(
+            module.PluginLifecycleService,
+            "stop_plugin",
+            _partial_stop,
+        )
+
+        with pytest.raises(ServerDomainError) as exc_info:
+            await module.PluginLifecycleService().delete_plugin("demo_plugin")
+
+        assert exc_info.value.code == "PLUGIN_PERMISSION_REVOKE_FAILED"
+        assert plugin_dir.is_dir()
+        with module.state.acquire_plugins_read_lock():
+            assert "demo_plugin" in module.state.plugins
+    finally:
+        with module.state.acquire_plugins_write_lock():
+            module.state.plugins.clear()
+            module.state.plugins.update(plugins_backup)
+        with module.state.acquire_plugin_hosts_write_lock():
+            module.state.plugin_hosts.clear()
+            module.state.plugin_hosts.update(hosts_backup)
+        with module.state.acquire_event_handlers_write_lock():
+            module.state.event_handlers.clear()
+            module.state.event_handlers.update(handlers_backup)
         with module.state._snapshot_cache_lock:
             module.state._snapshot_cache = cache_backup
 

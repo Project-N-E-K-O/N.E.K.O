@@ -884,9 +884,11 @@ async def _cleanup_started_host(plugin_id: str, host: PluginHostContract) -> boo
     if isinstance(removed, PluginHostContract):
         target_host = removed
 
+    shutdown_failed = False
     try:
         await target_host.shutdown(timeout=1.0)
     except PluginError as exc:
+        shutdown_failed = True
         logger.warning(
             "cleanup shutdown failed with PluginError: plugin_id={}, err_type={}, err={}",
             plugin_id,
@@ -894,12 +896,37 @@ async def _cleanup_started_host(plugin_id: str, host: PluginHostContract) -> boo
             str(exc),
         )
     except RUNTIME_ERRORS as exc:
+        shutdown_failed = True
         logger.warning(
             "cleanup shutdown failed: plugin_id={}, err_type={}, err={}",
             plugin_id,
             type(exc).__name__,
             str(exc),
         )
+    if shutdown_failed:
+        try:
+            still_alive = bool(target_host.is_alive())
+        except Exception as exc:
+            logger.warning(
+                "cleanup could not confirm host exit; keeping it quarantined: "
+                "plugin_id={}, err_type={}, err={}",
+                plugin_id,
+                type(exc).__name__,
+                str(exc),
+            )
+            still_alive = True
+        if still_alive:
+            setattr(target_host, _STARTUP_QUARANTINED_ATTR, True)
+            await asyncio.to_thread(
+                _register_or_replace_host_sync,
+                plugin_id,
+                target_host,
+            )
+            logger.warning(
+                "startup cleanup retained live host after shutdown failed: plugin_id={}",
+                plugin_id,
+            )
+            return False
     return True
 
 
@@ -1786,7 +1813,15 @@ class PluginLifecycleService:
 
         is_running = await asyncio.to_thread(_plugin_is_running_sync, plugin_id)
         if is_running:
-            await self.stop_plugin(plugin_id)
+            stop_result = await self.stop_plugin(plugin_id)
+            if stop_result.get("permissions_revoked") is False:
+                raise _to_domain_error(
+                    code="PLUGIN_PERMISSION_REVOKE_FAILED",
+                    message=f"Failed to revoke permissions for plugin '{plugin_id}'",
+                    status_code=503,
+                    plugin_id=plugin_id,
+                    error_type="PermissionRevokeFailed",
+                )
         else:
             permissions_revoked = (
                 await _revoke_plugin_permissions(plugin_id)
