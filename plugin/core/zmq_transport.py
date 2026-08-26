@@ -531,7 +531,7 @@ class _AuthenticatedMessageBatcher:
     def _run(self) -> None:
         batch: list[dict] = []
         deadline = time.monotonic() + self._flush_interval_s
-        while not self._stop.is_set() or not self._queue.empty():
+        while batch or not self._stop.is_set() or not self._queue.empty():
             remaining = max(0.0, deadline - time.monotonic())
             try:
                 item = self._queue.get(timeout=remaining)

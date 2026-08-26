@@ -271,6 +271,7 @@ class OmniRealtimeClient(_ToolingMixin, _AudioMixin, _TransportMixin, _ResponseM
         self._recent_tool_call_times: list[float] = []
         self._tool_image_chain_serial = 0
         self._active_tool_image_chain_id: str | None = None
+        self._tool_image_chain_user_activity_time = 0.0
         # Track image recognition per turn
         self._image_recognized_this_turn = False
         self._image_sent_this_turn = False

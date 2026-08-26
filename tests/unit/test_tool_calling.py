@@ -4135,6 +4135,96 @@ def test_realtime_tool_image_chain_survives_tool_result_responses():
     assert client._ensure_tool_image_chain_id() != first_chain
 
 
+@pytest.mark.asyncio
+async def test_gemini_tool_calls_share_a_chain_until_the_next_user_turn():
+    from types import SimpleNamespace
+
+    from main_logic.omni_realtime_client import OmniRealtimeClient
+    from main_logic.tool_calling import ToolResult
+
+    client = OmniRealtimeClient(
+        base_url="wss://example.invalid",
+        api_key="test-key",
+        model="gemini-live",
+        api_type="gemini",
+    )
+    calls = []
+
+    async def _handle_tool(call):
+        calls.append(call)
+        return ToolResult(call_id=call.call_id, name=call.name, output={})
+
+    def _discard_task(coro) -> None:
+        coro.close()
+
+    def _response(call_id: str, *, starts_turn: bool):
+        return SimpleNamespace(
+            tool_call=SimpleNamespace(
+                function_calls=[
+                    SimpleNamespace(id=call_id, name="inspect", args={})
+                ]
+            ),
+            server_content=(
+                SimpleNamespace(
+                    input_transcription=None,
+                    model_turn=SimpleNamespace(parts=[]),
+                    output_transcription=None,
+                    turn_complete=False,
+                    interrupted=False,
+                )
+                if starts_turn
+                else None
+            ),
+        )
+
+    client.on_tool_call = _handle_tool
+    client._fire_task = _discard_task
+    client._tool_image_chain_serial = 0
+    client._active_tool_image_chain_id = "previous-user-turn"
+    client._is_responding = False
+    client._user_recent_activity_time = 2.0
+    client._ai_recent_activity_time = 0.0
+
+    await client._process_gemini_response(_response("call-one", starts_turn=True))
+    await client._process_gemini_response(
+        _response("call-two", starts_turn=False)
+    )
+
+    first_chain = calls[0].provider_meta.get("tool_chain_id")
+    assert first_chain
+    assert first_chain != "previous-user-turn"
+    assert calls[1].provider_meta.get("tool_chain_id") == first_chain
+
+    client._is_responding = False
+    client._user_recent_activity_time = 4.0
+    client._ai_recent_activity_time = 0.0
+    await client._process_gemini_response(
+        _response("call-three", starts_turn=False)
+    )
+
+    assert calls[2].provider_meta.get("tool_chain_id") != first_chain
+
+
+@pytest.mark.asyncio
+async def test_gemini_text_user_turn_resets_the_tool_image_chain():
+    from unittest.mock import AsyncMock
+
+    from main_logic.omni_realtime_client import OmniRealtimeClient
+
+    client = OmniRealtimeClient(
+        base_url="wss://example.invalid",
+        api_key="test-key",
+        model="gemini-live",
+        api_type="gemini",
+    )
+    client._gemini_session = AsyncMock()
+    client._active_tool_image_chain_id = "previous-user-turn"
+
+    await client._gemini_send_user_turn("next question")
+
+    assert client._active_tool_image_chain_id is None
+
+
 def test_realtime_tools_for_step_uses_nested_function_shape():
     client, _ = _make_rt_client("step", tool_kwargs={"description": "d"})
     out = client._tools_for_step()

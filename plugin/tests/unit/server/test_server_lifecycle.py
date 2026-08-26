@@ -372,6 +372,69 @@ async def test_startup_revoke_exception_skips_only_the_affected_plugin(
 
 
 @pytest.mark.asyncio
+async def test_permission_maintenance_reconciles_only_live_host_generations(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _Transport:
+        def __init__(self, generation: str) -> None:
+            self.permission_generation = generation
+
+    class _Host:
+        def __init__(self, generation: str, alive: bool) -> None:
+            self.transport = _Transport(generation)
+            self._alive = alive
+
+        def is_alive(self) -> bool:
+            return self._alive
+
+    reconciled: list[tuple[dict[str, str], float]] = []
+    rehydrated: list[float] = []
+    service = module.ServerLifecycleService()
+    monkeypatch.setattr(
+        service,
+        "_get_plugin_hosts_snapshot",
+        lambda: {
+            "live_plugin": _Host("live-generation", True),
+            "dead_plugin": _Host("dead-generation", False),
+        },
+    )
+
+    async def _revoke_inactive_permissions(
+        active_host_generations: dict[str, str],
+        *,
+        timeout: float,
+    ) -> int:
+        reconciled.append((dict(active_host_generations), timeout))
+        return 1
+
+    async def _rehydrate_active_permissions(*, timeout: float) -> int:
+        rehydrated.append(timeout)
+        return 1
+
+    monkeypatch.setattr(
+        module.live_vision_query_service,
+        "revoke_inactive_permissions",
+        _revoke_inactive_permissions,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        module.live_vision_query_service,
+        "rehydrate_active_permissions",
+        _rehydrate_active_permissions,
+    )
+
+    await service._maintain_plugin_permissions()
+
+    assert reconciled == [
+        (
+            {"live_plugin": "live-generation"},
+            module._PERMISSION_REHYDRATE_TIMEOUT_SECONDS,
+        )
+    ]
+    assert rehydrated == [module._PERMISSION_REHYDRATE_TIMEOUT_SECONDS]
+
+
+@pytest.mark.asyncio
 async def test_shutdown_hosts_revokes_permissions_even_when_shutdown_fails(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

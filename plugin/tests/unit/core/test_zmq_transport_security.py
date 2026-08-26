@@ -212,6 +212,61 @@ def test_fast_message_batcher_records_failed_batch_delivery(
 
 
 @pytest.mark.plugin_unit
+def test_fast_message_batcher_flushes_a_local_partial_batch_on_stop() -> None:
+    sent: list[tuple[str, dict[str, object]]] = []
+
+    class _Transport:
+        def send_uplink_nowait(
+            self,
+            channel: str,
+            payload: dict[str, object],
+        ) -> None:
+            sent.append((channel, payload))
+
+    class _QueueWithOneAcceptedItem:
+        def __init__(self) -> None:
+            self._returned_item = False
+
+        def get(self, timeout: float) -> dict[str, str]:
+            _ = timeout
+            if not self._returned_item:
+                self._returned_item = True
+                return {"message_id": "accepted-before-stop"}
+            raise zmq_transport.queue.Empty
+
+        def empty(self) -> bool:
+            return self._returned_item
+
+    class _StopBetweenFlushCheckAndLoopCondition:
+        def __init__(self) -> None:
+            self._checks = 0
+
+        def is_set(self) -> bool:
+            self._checks += 1
+            return self._checks >= 3
+
+    batcher = zmq_transport._AuthenticatedMessageBatcher(
+        _Transport(),  # type: ignore[arg-type]
+        batch_size=10,
+        flush_interval_ms=10_000,
+        max_queue=10,
+        reject_ratio=0.9,
+        enqueue_timeout_s=0,
+    )
+    batcher._queue = _QueueWithOneAcceptedItem()  # type: ignore[assignment]
+    batcher._stop = _StopBetweenFlushCheckAndLoopCondition()  # type: ignore[assignment]
+
+    batcher._run()
+
+    assert sent == [
+        (
+            zmq_transport.CH_MSG_BATCH,
+            {"items": [{"message_id": "accepted-before-stop"}]},
+        )
+    ]
+
+
+@pytest.mark.plugin_unit
 def test_fast_message_batcher_preserves_zero_as_an_unbounded_queue() -> None:
     batcher = zmq_transport._AuthenticatedMessageBatcher(
         object(),  # type: ignore[arg-type]

@@ -277,3 +277,163 @@ async def test_active_permission_is_replayed_after_main_server_restart(
         "token": "generation-one",
         "enabled": True,
     }
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_failed_revoke_tombstone_is_replayed_after_main_server_restart(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    posts: list[dict[str, object]] = []
+    fail_revoke = True
+
+    class _Response:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict[str, object]:
+            return {"ok": True, "source_name": "demo_plugin"}
+
+    class _Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args: object) -> None:
+            return None
+
+        async def post(
+            self,
+            _url: str,
+            *,
+            json: dict[str, object],
+            headers: dict[str, str],
+        ):
+            nonlocal fail_revoke
+            assert headers == {"X-NEKO-Plugin-Host-Token": "host-secret"}
+            posts.append(dict(json))
+            if fail_revoke:
+                raise service_module.httpx.ConnectError("main server unavailable")
+            return _Response()
+
+    monkeypatch.setattr(
+        service_module.httpx,
+        "AsyncClient",
+        lambda **_kwargs: _Client(),
+    )
+    monkeypatch.setenv("NEKO_PLUGIN_HOST_API_TOKEN", "host-secret")
+    service = service_module.LiveVisionQueryService()
+    service._active_permissions[("plugin delivery", "demo_plugin")] = {
+        "kind": "plugin delivery",
+        "path": "/api/system/plugin-callbacks/delivery-permission",
+        "source_name": "demo_plugin",
+        "host_generation": "stopped-generation",
+        "token": "delivery-generation",
+        "enabled": True,
+    }
+
+    with pytest.raises(RuntimeError, match="permission revoke unavailable"):
+        await service.revoke_plugin_permissions(
+            source_name="demo_plugin",
+            host_generation="stopped-generation",
+        )
+
+    fail_revoke = False
+    posts.clear()
+    restored = await service.rehydrate_active_permissions()
+
+    assert restored == 0
+    assert posts == [
+        {
+            "source_name": "demo_plugin",
+            "host_generation": "stopped-generation",
+        }
+    ]
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_inactive_host_permissions_are_revoked_and_not_rehydrated(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    posts: list[tuple[str, dict[str, object]]] = []
+
+    class _Response:
+        def __init__(self, payload: dict[str, object]) -> None:
+            self._payload = payload
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict[str, object]:
+            return self._payload
+
+    class _Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args: object) -> None:
+            return None
+
+        async def post(
+            self,
+            url: str,
+            *,
+            json: dict[str, object],
+            headers: dict[str, str],
+        ):
+            assert headers == {"X-NEKO-Plugin-Host-Token": "host-secret"}
+            posts.append((url, dict(json)))
+            if url.endswith("/api/system/plugin-permissions/revoke"):
+                return _Response({"ok": True, "source_name": "dead_plugin"})
+            return _Response(
+                {
+                    "ok": True,
+                    "source_name": str(json.get("source_name") or ""),
+                    "token": str(json.get("token") or ""),
+                    "enabled": bool(json.get("enabled")),
+                    "applied": True,
+                }
+            )
+
+    monkeypatch.setattr(
+        service_module.httpx,
+        "AsyncClient",
+        lambda **_kwargs: _Client(),
+    )
+    monkeypatch.setenv("NEKO_PLUGIN_HOST_API_TOKEN", "host-secret")
+    service = service_module.LiveVisionQueryService()
+    service._active_permissions[("live frame", "dead_plugin")] = {
+        "kind": "live frame",
+        "path": "/api/system/live-vision/attachment-permission",
+        "source_name": "dead_plugin",
+        "host_generation": "dead-generation",
+        "token": "frame-generation",
+        "enabled": True,
+    }
+    service._active_permissions[("plugin delivery", "live_plugin")] = {
+        "kind": "plugin delivery",
+        "path": "/api/system/plugin-callbacks/delivery-permission",
+        "source_name": "live_plugin",
+        "host_generation": "live-generation",
+        "token": "delivery-generation",
+        "enabled": True,
+    }
+
+    revoked = await service.revoke_inactive_permissions(
+        {"live_plugin": "live-generation"}
+    )
+    posts.clear()
+    restored = await service.rehydrate_active_permissions()
+
+    assert revoked == 1
+    assert restored == 1
+    assert len(posts) == 2
+    assert posts[0][0].endswith("/api/system/plugin-permissions/revoke")
+    assert posts[0][1] == {
+        "source_name": "dead_plugin",
+        "host_generation": "dead-generation",
+    }
+    assert posts[1][0].endswith(
+        "/api/system/plugin-callbacks/delivery-permission"
+    )
+    assert posts[1][1]["source_name"] == "live_plugin"

@@ -51,6 +51,41 @@ class LiveVisionQueryService:
             tuple[str, str],
             dict[str, object],
         ] = {}
+        self._revoked_host_generations: set[tuple[str, str]] = set()
+
+    async def _post_permission_revoke(
+        self,
+        *,
+        source_name: str,
+        host_generation: str,
+        timeout: float,
+    ) -> dict[str, object]:
+        url = f"{_main_server_base_url()}/api/system/plugin-permissions/revoke"
+        try:
+            async with httpx.AsyncClient(
+                timeout=timeout, proxy=None, trust_env=False
+            ) as client:
+                response = await client.post(
+                    url,
+                    headers=plugin_host_auth_headers(),
+                    json={
+                        "source_name": source_name,
+                        "host_generation": host_generation,
+                    },
+                )
+                response.raise_for_status()
+                payload = response.json()
+        except (httpx.HTTPError, ValueError, OSError, RuntimeError) as exc:
+            logger.debug(
+                "plugin permission revoke unavailable: err_type={}, err={}",
+                type(exc).__name__,
+                str(exc),
+            )
+            raise RuntimeError("plugin permission revoke unavailable") from exc
+
+        if not isinstance(payload, dict) or not payload.get("ok"):
+            raise RuntimeError("plugin permission revoke rejected")
+        return payload
 
     async def _set_permission(
         self,
@@ -130,14 +165,24 @@ class LiveVisionQueryService:
         *,
         timeout: object = 1.0,
     ) -> int:
-        """Replay active grants after a split main_server restart."""
+        """Replay revocations and active grants after a main_server restart."""
         restored = 0
+        normalized_timeout = _coerce_timeout(timeout)
         async with self._permission_lock:
+            for source, generation in tuple(self._revoked_host_generations):
+                try:
+                    await self._post_permission_revoke(
+                        source_name=source,
+                        host_generation=generation,
+                        timeout=normalized_timeout,
+                    )
+                except RuntimeError:
+                    continue
             for grant in tuple(self._active_permissions.values()):
                 try:
                     result = await self._set_permission(
                         **grant,
-                        timeout=timeout,
+                        timeout=normalized_timeout,
                         remember=False,
                     )
                 except RuntimeError:
@@ -145,6 +190,50 @@ class LiveVisionQueryService:
                 if result.get("applied"):
                     restored += 1
         return restored
+
+    async def revoke_inactive_permissions(
+        self,
+        active_host_generations: dict[str, str],
+        *,
+        timeout: object = 1.0,
+    ) -> int:
+        """Drop cached grants whose exact plugin host is no longer alive."""
+        normalized_active = {
+            str(source or "").strip(): str(generation or "").strip()
+            for source, generation in active_host_generations.items()
+            if str(source or "").strip() and str(generation or "").strip()
+        }
+        normalized_timeout = _coerce_timeout(timeout)
+        async with self._permission_lock:
+            stale_hosts = {
+                (
+                    str(grant.get("source_name") or "").strip(),
+                    str(grant.get("host_generation") or "").strip(),
+                )
+                for grant in self._active_permissions.values()
+                if normalized_active.get(
+                    str(grant.get("source_name") or "").strip()
+                )
+                != str(grant.get("host_generation") or "").strip()
+            }
+            stale_hosts.discard(("", ""))
+            for source, generation in stale_hosts:
+                self._revoked_host_generations.add((source, generation))
+                for key, grant in tuple(self._active_permissions.items()):
+                    if (
+                        grant.get("source_name") == source
+                        and grant.get("host_generation") == generation
+                    ):
+                        self._active_permissions.pop(key, None)
+                try:
+                    await self._post_permission_revoke(
+                        source_name=source,
+                        host_generation=generation,
+                        timeout=normalized_timeout,
+                    )
+                except RuntimeError:
+                    continue
+        return len(stale_hosts)
 
     async def get_live_vision(
         self,
@@ -251,39 +340,20 @@ class LiveVisionQueryService:
         normalized_timeout = _coerce_timeout(timeout)
         source = str(source_name or "")
         generation = str(host_generation or "")
-        url = f"{_main_server_base_url()}/api/system/plugin-permissions/revoke"
         async with self._permission_lock:
+            if source and generation:
+                self._revoked_host_generations.add((source, generation))
             for key, grant in tuple(self._active_permissions.items()):
                 if key[1] != source:
                     continue
                 if generation and grant.get("host_generation") != generation:
                     continue
                 self._active_permissions.pop(key, None)
-            try:
-                async with httpx.AsyncClient(
-                    timeout=normalized_timeout, proxy=None, trust_env=False
-                ) as client:
-                    response = await client.post(
-                        url,
-                        headers=plugin_host_auth_headers(),
-                        json={
-                            "source_name": source,
-                            "host_generation": generation,
-                        },
-                    )
-                    response.raise_for_status()
-                    payload = response.json()
-            except (httpx.HTTPError, ValueError, OSError, RuntimeError) as exc:
-                logger.debug(
-                    "plugin permission revoke unavailable: err_type={}, err={}",
-                    type(exc).__name__,
-                    str(exc),
-                )
-                raise RuntimeError("plugin permission revoke unavailable") from exc
-
-            if not isinstance(payload, dict) or not payload.get("ok"):
-                raise RuntimeError("plugin permission revoke rejected")
-            return payload
+            return await self._post_permission_revoke(
+                source_name=source,
+                host_generation=generation,
+                timeout=normalized_timeout,
+            )
 
 
 live_vision_query_service = LiveVisionQueryService()

@@ -61,9 +61,31 @@ class ServerLifecycleService:
     async def _permission_rehydration_loop(self) -> None:
         while True:
             await asyncio.sleep(_PERMISSION_REHYDRATE_INTERVAL_SECONDS)
-            await live_vision_query_service.rehydrate_active_permissions(
-                timeout=_PERMISSION_REHYDRATE_TIMEOUT_SECONDS,
-            )
+            await self._maintain_plugin_permissions()
+
+    async def _maintain_plugin_permissions(self) -> None:
+        active_host_generations: dict[str, str] = {}
+        for plugin_id, host in self._get_plugin_hosts_snapshot().items():
+            try:
+                is_alive = getattr(host, "is_alive", None)
+                if not callable(is_alive) or not bool(is_alive()):
+                    continue
+            except (AttributeError, RuntimeError, OSError, TypeError, ValueError):
+                continue
+            transport = getattr(host, "transport", None)
+            generation = str(
+                getattr(transport, "permission_generation", "") or ""
+            ).strip()
+            if generation:
+                active_host_generations[plugin_id] = generation
+
+        await live_vision_query_service.revoke_inactive_permissions(
+            active_host_generations,
+            timeout=_PERMISSION_REHYDRATE_TIMEOUT_SECONDS,
+        )
+        await live_vision_query_service.rehydrate_active_permissions(
+            timeout=_PERMISSION_REHYDRATE_TIMEOUT_SECONDS,
+        )
 
     def _start_permission_rehydration(self) -> None:
         task = self._permission_rehydration_task
