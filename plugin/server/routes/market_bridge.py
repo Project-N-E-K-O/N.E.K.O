@@ -3362,6 +3362,20 @@ async def _do_upgrade(
 
     path_policy = PluginCliPathPolicy.from_settings()
     plugin_dir = (path_policy.user_plugins_root / entry.directory_name).resolve()
+    builtin_manifest = path_policy.builtin_plugins_root / installed_plugin_id / "plugin.toml"
+    builtin_plugin_id = await asyncio.to_thread(_read_plugin_toml_id, builtin_manifest)
+    continues_builtin_override = builtin_plugin_id == installed_plugin_id
+    authoritative_release: dict[str, object] | None = None
+    if continues_builtin_override:
+        try:
+            authoritative_release = await _fetch_authoritative_market_override_release(payload)
+        except HTTPException as exc:
+            detail = exc.detail if isinstance(exc.detail, dict) else {}
+            raise _TaskError(
+                code=str(detail.get("code") or "market_catalog_unavailable"),
+                message=str(detail.get("message") or exc.detail),
+                http_status=exc.status_code,
+            ) from exc
     package_path: Path | None = None
     try:
         _set_task_stage(
@@ -3457,6 +3471,10 @@ async def _do_upgrade(
             mode="reinstall" if record_as_reinstall else "upgrade",
             directory_name=entry.directory_name,
         )
+        if authoritative_release is not None:
+            market_detail = market_override["market_detail"]
+            market_detail.update(authoritative_release)
+            market_detail["expected_plugin_toml_id"] = payload.expected_plugin_toml_id
 
         source_write_attempted = False
         source_restored = True
@@ -3489,10 +3507,26 @@ async def _do_upgrade(
                 )
 
         async def validate_new() -> None:
-            actual_plugin_id = _read_plugin_toml_id(plugin_dir / "plugin.toml")
+            actual_plugin_id = await asyncio.to_thread(
+                _read_plugin_toml_id,
+                plugin_dir / "plugin.toml",
+            )
             if actual_plugin_id and actual_plugin_id != installed_plugin_id:
                 raise ValueError(
                     "installed plugin identity does not match the Market replacement target"
+                )
+            if continues_builtin_override:
+                if actual_plugin_id != installed_plugin_id:
+                    raise ValueError(
+                        "installed plugin identity does not match the builtin override target"
+                    )
+                from plugin.server.application.plugins.lifecycle_service import (
+                    plugin_registry_service,
+                )
+
+                await plugin_registry_service.validate_plugin_runtime_source(
+                    plugin_id=installed_plugin_id,
+                    config_path=plugin_dir / "plugin.toml",
                 )
 
         async def start(plugin_id: str) -> None:

@@ -127,11 +127,27 @@ def _filesystem_is_case_insensitive(path: Path) -> bool:
     return False
 
 
+def _normalise_unicode_path_identity(path: Path) -> str:
+    """Normalise Unicode only when alternate spellings name the same path."""
+
+    comparable = os.path.normpath(str(path))
+    nfc = unicodedata.normalize("NFC", comparable)
+    for alternate in {nfc, unicodedata.normalize("NFD", comparable)}:
+        if alternate == comparable:
+            continue
+        try:
+            if os.path.samefile(comparable, alternate):
+                return nfc
+        except OSError:
+            continue
+    return comparable
+
+
 def _execution_root_scope(config_root: str) -> str:
     """Return a stable, non-reversible identity for an execution root."""
 
     resolved = Path(config_root).expanduser().resolve(strict=False)
-    comparable = os.path.normcase(unicodedata.normalize("NFC", str(resolved)))
+    comparable = _normalise_unicode_path_identity(resolved)
     if _filesystem_is_case_insensitive(resolved):
         comparable = comparable.casefold()
     return hashlib.sha256(comparable.encode("utf-8")).hexdigest()[:16]

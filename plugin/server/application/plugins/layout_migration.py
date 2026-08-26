@@ -321,13 +321,26 @@ def _copy_legacy_plugin_tree(source: Path, staging: Path) -> None:
     resolved_source = source.resolve(strict=False)
 
     def _ignore(current: str, names: list[str]) -> list[str]:
-        if Path(current).resolve(strict=False) != resolved_source:
+        current_path = Path(current)
+        if current_path.resolve(strict=False) != resolved_source:
             return []
-        return [
-            name
-            for name in names
-            if name.casefold() in _STANDARD_STATE_DIRECTORY_NAMES
-        ]
+        ignored: list[str] = []
+        for name in names:
+            candidate = current_path / name
+            if not candidate.is_dir():
+                continue
+            folded_name = name.casefold()
+            if folded_name not in _STANDARD_STATE_DIRECTORY_NAMES:
+                continue
+            if name == folded_name:
+                ignored.append(name)
+                continue
+            try:
+                if os.path.samefile(candidate, current_path / folded_name):
+                    ignored.append(name)
+            except OSError:
+                continue
+        return ignored
 
     shutil.copytree(source, staging, symlinks=False, ignore=_ignore)
 

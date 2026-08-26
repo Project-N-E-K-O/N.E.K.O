@@ -38,6 +38,23 @@ def test_execution_root_scope_folds_case_only_on_case_insensitive_filesystems(
     )
 
 
+def test_execution_root_scope_preserves_unicode_distinctions_on_sensitive_filesystems(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    composed = tmp_path / "caf\N{LATIN SMALL LETTER E WITH ACUTE}"
+    decomposed = tmp_path / "cafe\N{COMBINING ACUTE ACCENT}"
+    monkeypatch.setattr(
+        manager_module,
+        "_filesystem_is_case_insensitive",
+        lambda _path: False,
+    )
+
+    assert manager_module._execution_root_scope(str(composed)) != manager_module._execution_root_scope(
+        str(decomposed)
+    )
+
+
 def test_default_layout_separates_exec_from_state_and_keeps_metadata_roots(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

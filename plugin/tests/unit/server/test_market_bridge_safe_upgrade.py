@@ -297,6 +297,7 @@ def _configure_paths(
 ) -> None:
     policy = SimpleNamespace(
         user_plugins_root=plugins_root,
+        builtin_plugins_root=plugins_root.parent / "builtin",
         package_profiles_root=profiles_root,
         package_artifacts_root=plugins_root.parent / "packages",
     )
@@ -1101,6 +1102,141 @@ async def test_market_backup_failure_reports_incomplete_when_old_plugin_cannot_r
         await market_bridge._do_upgrade({}, _payload(), {})
 
     assert exc_info.value.code == "upgrade_rollback_incomplete"
+
+
+@pytest.mark.asyncio
+async def test_market_builtin_override_upgrade_rejects_non_catalog_release_before_download(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plugins_root = tmp_path / "plugins"
+    profiles_root = tmp_path / "profiles"
+    plugin_dir = plugins_root / "demo"
+    builtin_manifest = tmp_path / "builtin" / "demo" / "plugin.toml"
+    plugin_dir.mkdir(parents=True)
+    builtin_manifest.parent.mkdir(parents=True)
+    (plugin_dir / "plugin.toml").write_text('[plugin]\nid = "demo"\n', encoding="utf-8")
+    builtin_manifest.write_text('[plugin]\nid = "demo"\n', encoding="utf-8")
+    _configure_paths(
+        monkeypatch,
+        plugins_root=plugins_root,
+        profiles_root=profiles_root,
+    )
+
+    async def reject_release(_payload: object) -> dict[str, object]:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "market_release_mismatch",
+                "message": "request does not match catalog",
+            },
+        )
+
+    async def unexpected_download(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("non-catalog packages must not be downloaded")
+
+    monkeypatch.setattr(
+        market_bridge,
+        "_fetch_authoritative_market_override_release",
+        reject_release,
+    )
+    monkeypatch.setattr(market_bridge, "_download_package", unexpected_download)
+
+    with pytest.raises(market_bridge._TaskError) as exc_info:
+        await market_bridge._do_upgrade({}, _payload("demo"), {})
+
+    assert exc_info.value.code == "market_release_mismatch"
+    assert exc_info.value.http_status == 409
+
+
+@pytest.mark.asyncio
+async def test_stopped_builtin_override_upgrade_validates_runtime_and_rolls_back(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from plugin.server.application.plugins import lifecycle_service
+
+    plugins_root = tmp_path / "plugins"
+    profiles_root = tmp_path / "profiles"
+    plugin_dir = plugins_root / "demo"
+    builtin_manifest = tmp_path / "builtin" / "demo" / "plugin.toml"
+    plugin_dir.mkdir(parents=True)
+    builtin_manifest.parent.mkdir(parents=True)
+    original_manifest = '[plugin]\nid = "demo"\nversion = "1.0.0"\n'
+    (plugin_dir / "plugin.toml").write_text(original_manifest, encoding="utf-8")
+    builtin_manifest.write_text(original_manifest, encoding="utf-8")
+    package_path = tmp_path / "demo.neko-plugin"
+    package_path.write_bytes(b"catalog package")
+    _configure_paths(
+        monkeypatch,
+        plugins_root=plugins_root,
+        profiles_root=profiles_root,
+    )
+    authoritative_release = {
+        "plugin_market_id": "42",
+        "version": "2.0.0",
+        "channel": "stable",
+        "package_url": "https://market.invalid/demo.neko-plugin",
+        "package_sha256": "a" * 64,
+        "payload_hash": "catalog-payload",
+        "published_at": "2026-08-26T00:00:00Z",
+    }
+    monkeypatch.setattr(
+        market_bridge,
+        "_fetch_authoritative_market_override_release",
+        lambda _payload: _async_value(authoritative_release),
+    )
+    monkeypatch.setattr(
+        market_bridge,
+        "_download_package",
+        lambda _url, _task: _async_value(package_path),
+    )
+    monkeypatch.setattr(
+        market_bridge,
+        "_verify_downloaded_package_with_fallback",
+        lambda *_args, **_kwargs: _async_value((package_path, "passed")),
+    )
+    monkeypatch.setattr(market_bridge, "_cleanup_download_file", lambda _path: None)
+    monkeypatch.setattr(market_bridge, "plugin_is_running", lambda _plugin_id: _async_false())
+
+    captured_override: dict[str, Any] = {}
+
+    async def install_invalid_runtime(**kwargs: Any) -> dict[str, object]:
+        captured_override.update(kwargs["install_source_override"])
+        plugin_dir.mkdir(parents=True)
+        (plugin_dir / "plugin.toml").write_text(
+            '[plugin]\nid = "demo"\nentry = "plugin.plugins.demo:Plugin"\n',
+            encoding="utf-8",
+        )
+        return {"operation": "upgrade"}
+
+    validation_calls: list[tuple[str, Path]] = []
+
+    async def reject_invalid_runtime(*, plugin_id: str, config_path: Path) -> None:
+        validation_calls.append((plugin_id, config_path))
+        raise RuntimeError("entry class is missing")
+
+    monkeypatch.setattr(
+        market_bridge,
+        "_cli_service",
+        SimpleNamespace(upload_and_install=install_invalid_runtime),
+    )
+    monkeypatch.setattr(
+        lifecycle_service.plugin_registry_service,
+        "validate_plugin_runtime_source",
+        reject_invalid_runtime,
+    )
+
+    with pytest.raises(market_bridge._TaskError) as exc_info:
+        await market_bridge._do_upgrade({}, _payload("demo"), {})
+
+    assert exc_info.value.code == "upgrade_rollback_completed"
+    assert validation_calls == [("demo", plugin_dir / "plugin.toml")]
+    assert (plugin_dir / "plugin.toml").read_text(encoding="utf-8") == original_manifest
+    assert captured_override["market_detail"] == {
+        **authoritative_release,
+        "expected_plugin_toml_id": "demo",
+    }
 
 
 async def _async_none() -> None:

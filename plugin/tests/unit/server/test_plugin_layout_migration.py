@@ -135,6 +135,7 @@ async def test_migration_is_atomic_idempotent_and_does_not_resurrect(
 async def test_migration_excludes_state_directories_case_insensitively(
     tmp_path: Path,
     state_name: str,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     state_root = tmp_path / "plugins"
     source = _write_plugin(state_root, "study_companion")
@@ -142,6 +143,7 @@ async def test_migration_excludes_state_directories_case_insensitively(
     state_file.parent.mkdir()
     state_file.write_bytes(b"persistent-state")
     exec_root = tmp_path / "exec"
+    monkeypatch.setattr(migration_module.os.path, "samefile", lambda *_paths: True)
 
     result = await migrate_legacy_plugin_layout(
         state_root=state_root,
@@ -152,6 +154,50 @@ async def test_migration_excludes_state_directories_case_insensitively(
     assert result.migrated == ("study_companion",)
     assert state_file.read_bytes() == b"persistent-state"
     assert not (exec_root / "study_companion" / state_name).exists()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("asset_name", ["Config", "Data", "Cache"])
+async def test_migration_preserves_case_distinct_directories_on_sensitive_filesystems(
+    tmp_path: Path,
+    asset_name: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state_root = tmp_path / "plugins"
+    source = _write_plugin(state_root, "study_companion")
+    asset = source / asset_name / "asset.bin"
+    asset.parent.mkdir()
+    asset.write_bytes(b"package-asset")
+    monkeypatch.setattr(migration_module.os.path, "samefile", lambda *_paths: False)
+
+    result = await migrate_legacy_plugin_layout(
+        state_root=state_root,
+        exec_root=tmp_path / "exec",
+        builtin_root=tmp_path / "builtin",
+    )
+
+    assert result.migrated == ("study_companion",)
+    assert (tmp_path / "exec" / "study_companion" / asset_name / "asset.bin").read_bytes() == b"package-asset"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("asset_name", ["config", "data", "cache"])
+async def test_migration_preserves_same_named_regular_files(
+    tmp_path: Path,
+    asset_name: str,
+) -> None:
+    state_root = tmp_path / "plugins"
+    source = _write_plugin(state_root, "study_companion")
+    (source / asset_name).write_bytes(b"package-asset")
+
+    result = await migrate_legacy_plugin_layout(
+        state_root=state_root,
+        exec_root=tmp_path / "exec",
+        builtin_root=tmp_path / "builtin",
+    )
+
+    assert result.migrated == ("study_companion",)
+    assert (tmp_path / "exec" / "study_companion" / asset_name).read_bytes() == b"package-asset"
 
 
 @pytest.mark.asyncio

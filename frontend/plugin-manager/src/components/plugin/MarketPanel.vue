@@ -348,9 +348,11 @@ import { resolvePluginInstallErrorKey } from '@/utils/pluginInstallError'
 import { confirmBuiltinOverride } from '@/utils/confirmBuiltinOverride'
 import {
   extractRepoPluginId,
+  indexInstalledPluginIdentities,
   localPluginIdentityKeys,
   marketIdentityKeys,
   marketLocalIdentityKeys,
+  marketRecordIdentityKeys,
 } from '@/utils/marketPluginIdentity'
 
 interface Props {
@@ -582,15 +584,16 @@ function resolveApiErrorMessage(payload: unknown, fallbackKey = 'market.installF
 const sortBy = ref<'created_at' | 'download_count' | 'rating_average' | 'name'>('created_at')
 const sortOrder = ref<'asc' | 'desc'>('desc')
 
-// 已装插件 (plugin_id → installed version + latest_install_source) 索引，
-// 由 /market/installed 拉回。yank 检测和 upgrade 按钮判定都从这里读。
+// 已装插件按 runtime plugin_id 和 Market record id 分开索引，避免两个
+// 身份命名空间（尤其数字 ID）互相覆盖。
 interface InstalledMarketEntry extends MarketInstalledState {
   market_id?: string
   installed_version: string
   channel?: 'stable' | 'beta'
   package_url?: string
 }
-const installedByPid = ref<Map<string, InstalledMarketEntry>>(new Map())
+const installedByPluginId = ref<Map<string, InstalledMarketEntry>>(new Map())
+const installedByMarketId = ref<Map<string, InstalledMarketEntry>>(new Map())
 const installedProjectionLoaded = ref(false)
 // pluginId → 当前装的版本是否已被作者撤回（v2 yank 检测）
 const yankedMap = ref<Record<string, boolean>>({})
@@ -612,15 +615,17 @@ const localPluginKeys = computed(() => {
 })
 
 function isInstalled(plugin: MarketPlugin): boolean {
-  for (const key of marketIdentityKeys(plugin)) {
-    if (installedByPid.value.has(key)) return true
-  }
+  if (getInstalledState(plugin)) return true
   return marketLocalIdentityKeys(plugin).some((key) => localPluginKeys.value.has(key))
 }
 
 function getInstalledState(plugin: MarketPlugin): InstalledMarketEntry | undefined {
-  for (const key of marketIdentityKeys(plugin)) {
-    const entry = installedByPid.value.get(key)
+  for (const key of marketRecordIdentityKeys(plugin)) {
+    const entry = installedByMarketId.value.get(key)
+    if (entry) return entry
+  }
+  for (const key of marketLocalIdentityKeys(plugin)) {
+    const entry = installedByPluginId.value.get(key)
     if (entry) return entry
   }
   return undefined
@@ -829,7 +834,7 @@ async function fetchInstalledFromBridge(): Promise<MarketInstalledItem[] | null>
 }
 
 /**
- * 拉一遍 /market/installed，更新 installedByPid 与 yankedMap。
+ * 拉一遍 /market/installed，更新已安装身份索引与 yankedMap。
  *
  * yank 检测策略（R8.1 / R8.5 / R8.6）：
  *   - 同 (plugin_id, channel) 五分钟内复用缓存；
@@ -840,7 +845,7 @@ async function yankSweep() {
   if (!marketAvailable.value) return
   const installed = await fetchInstalledFromBridge()
   if (installed === null) return
-  const newIndex = new Map<string, InstalledMarketEntry>()
+  const entries: InstalledMarketEntry[] = []
   const uniqueEntries = new Map<string, InstalledMarketEntry>()
   for (const item of installed) {
     const entry: InstalledMarketEntry = {
@@ -854,15 +859,14 @@ async function yankSweep() {
       channel: item.latest_install_source?.channel,
       package_url: item.latest_install_source?.package_url,
     }
-    newIndex.set(item.plugin_id.toLowerCase(), entry)
-    if (entry.market_id) {
-      newIndex.set(String(entry.market_id).toLowerCase(), entry)
-    }
+    entries.push(entry)
     if (item.latest_install_source && entry.channel && entry.package_url) {
       uniqueEntries.set(item.plugin_id.toLowerCase(), entry)
     }
   }
-  installedByPid.value = newIndex
+  const indexes = indexInstalledPluginIdentities(entries)
+  installedByPluginId.value = indexes.byPluginId
+  installedByMarketId.value = indexes.byMarketId
   installedProjectionLoaded.value = true
   // Build the next yank map into a local, then atomic-swap below — so a
   // transient `fetchMarketPluginVersions` failure preserves the previous

@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest'
 
 import {
+  indexInstalledPluginIdentities,
   localPluginIdentityKeys,
   marketIdentityKeys,
   marketLocalIdentityKeys,
+  marketRecordIdentityKeys,
 } from './marketPluginIdentity'
 
 describe('market plugin identity matching', () => {
@@ -28,5 +30,18 @@ describe('market plugin identity matching', () => {
 
     expect(keys).toEqual(new Set(['actual_plugin_id']))
     expect(keys.has('study-companion')).toBe(false)
+  })
+
+  it('keeps runtime plugin ids separate from Market record ids', () => {
+    const manual = { plugin_id: '42', latest_install_source: null }
+    const market = {
+      plugin_id: 'study_companion',
+      latest_install_source: { plugin_market_id: '42' },
+    }
+    const indexes = indexInstalledPluginIdentities([manual, market])
+
+    expect(indexes.byPluginId.get('42')).toBe(manual)
+    expect(indexes.byMarketId.get('42')).toBe(market)
+    expect(marketRecordIdentityKeys({ id: 42, rawId: 42 })).toEqual(['42'])
   })
 })
