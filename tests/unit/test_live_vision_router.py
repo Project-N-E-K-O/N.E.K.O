@@ -105,11 +105,72 @@ def test_the_frame_comes_only_when_asked_for(monkeypatch):
         params={
             "include_frame": "true",
             "source_name": "demo_plugin",
+            "host_generation": HOST_GENERATION,
         },
     ).json()
 
     assert body["frame_b64"] == "shared-frame"
     assert body["frame_mime"] == "image/jpeg"
+
+
+def test_replaced_host_generation_cannot_reuse_the_current_frame_token(
+    monkeypatch,
+):
+    client = _client(
+        {"lanlan": _Manager("lanlan", _sharing())},
+        monkeypatch,
+        authenticated=True,
+    )
+    response = client.post(
+        PERMISSION_ENDPOINT,
+        json={
+            "source_name": "demo_plugin",
+            "host_generation": "generation-a",
+            "token": "shared-token",
+            "enabled": True,
+        },
+    )
+    assert response.json()["applied"] is True
+    response = client.post(
+        REVOKE_ENDPOINT,
+        json={
+            "source_name": "demo_plugin",
+            "host_generation": "generation-a",
+        },
+    )
+    assert response.json()["live_frame_revoked"] is True
+    response = client.post(
+        PERMISSION_ENDPOINT,
+        json={
+            "source_name": "demo_plugin",
+            "host_generation": "generation-b",
+            "token": "shared-token",
+            "enabled": True,
+        },
+    )
+    assert response.json()["applied"] is True
+
+    stale = client.get(
+        ENDPOINT,
+        headers={FRAME_TOKEN_HEADER: "shared-token"},
+        params={
+            "include_frame": "true",
+            "source_name": "demo_plugin",
+            "host_generation": "generation-a",
+        },
+    ).json()
+    current = client.get(
+        ENDPOINT,
+        headers={FRAME_TOKEN_HEADER: "shared-token"},
+        params={
+            "include_frame": "true",
+            "source_name": "demo_plugin",
+            "host_generation": "generation-b",
+        },
+    ).json()
+
+    assert "frame_b64" not in stale
+    assert current["frame_b64"] == "shared-frame"
 
 
 def test_the_frame_is_withheld_without_a_matching_plugin_generation(monkeypatch):

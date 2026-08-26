@@ -651,6 +651,7 @@ class StreamingMixin:
                 try:
                     if self._should_drop_magic_command_image(message.get("request_id")):
                         return
+                    target_session = self.session
                     image_arrival_time = (
                         self._user_input_ingress_time(message)
                         if input_type in {"avatar_drop_image", "user_image"}
@@ -676,10 +677,15 @@ class StreamingMixin:
                                 logger.warning("[%s] avatar annotation failed, sending original: %s",
                                                self.lanlan_name, ann_err)
 
+                        if not self.is_active or self.session is not target_session:
+                            return
+
                         # 如果是文本模式（OmniOfflineClient），只存储图片，不立即发送
-                        if isinstance(self.session, OmniOfflineClient):
+                        if isinstance(target_session, OmniOfflineClient):
                             # 只添加到待发送队列，等待与文本一起发送
-                            await self.session.stream_image(image_b64)
+                            await target_session.stream_image(image_b64)
+                            if not self.is_active or self.session is not target_session:
+                                return
                             image_accepted = True
                             image_data = (
                                 ""
@@ -703,14 +709,16 @@ class StreamingMixin:
                             })
 
                         # 如果是语音模式（OmniRealtimeClient），检查是否支持视觉并直接发送
-                        elif isinstance(self.session, OmniRealtimeClient):
+                        elif isinstance(target_session, OmniRealtimeClient):
                             # 检查WebSocket连接
-                            if not hasattr(self.session, 'ws') or not self.session.ws:
+                            if not hasattr(target_session, 'ws') or not target_session.ws:
                                 logger.error("💥 Stream: Session websocket not available")
                                 return
 
                             # 语音模式直接发送图片
-                            await self.session.stream_image(image_b64)
+                            await target_session.stream_image(image_b64)
+                            if not self.is_active or self.session is not target_session:
+                                return
                             image_accepted = True
                         if (
                             image_accepted

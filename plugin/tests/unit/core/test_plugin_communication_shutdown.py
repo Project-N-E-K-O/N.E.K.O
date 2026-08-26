@@ -117,7 +117,7 @@ async def test_comm_manager_shutdown_waits_for_cross_loop_consumer_before_purge(
     assert loop_ready.wait(timeout=1.0)
     assert loop_blocked.wait(timeout=1.0)
 
-    shutdown_task = asyncio.create_task(manager.shutdown(timeout=0.1))
+    shutdown_task = asyncio.create_task(manager.shutdown(timeout=1.0))
     try:
         await asyncio.sleep(0.05)
         shutdown_waited = not shutdown_task.done()

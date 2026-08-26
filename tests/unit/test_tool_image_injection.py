@@ -84,7 +84,10 @@ async def test_images_are_appended_as_a_multimodal_user_message():
     content = messages[-1]["content"]
     assert content[0]["type"] == "image_url"
     assert content[0]["image_url"]["url"] == "data:image/jpeg;base64,IMGDATA"
-    assert content[1] == {"type": "text", "text": "watch the minimap"}
+    assert content[1] == {
+        "type": "text",
+        "text": "Tool image from demo_tool (call_id=call_1): watch the minimap",
+    }
 
 
 @pytest.mark.asyncio
@@ -127,9 +130,48 @@ async def test_two_images_keep_their_own_prompts_in_one_message():
         "image_url", "text", "image_url", "text",
     ]
     assert content[0]["image_url"]["url"].endswith(",A")
-    assert content[1] == {"type": "text", "text": "first"}
+    assert content[1]["type"] == "text"
+    assert content[1]["text"].endswith("first")
     assert content[2]["image_url"]["url"].endswith(",B")
-    assert content[3] == {"type": "text", "text": "second"}
+    assert content[3]["type"] == "text"
+    assert content[3]["text"].endswith("second")
+
+
+@pytest.mark.asyncio
+async def test_parallel_tool_images_name_their_originating_call():
+    client = _Client({
+        "tool_a": ToolResult(
+            call_id="call_a",
+            name="tool_a",
+            output={"shot_id": "shot_a"},
+            images=[ToolImage(data_b64="AAA")],
+        ),
+        "tool_b": ToolResult(
+            call_id="call_b",
+            name="tool_b",
+            output={"shot_id": "shot_b"},
+            images=[ToolImage(data_b64="BBB")],
+        ),
+    })
+    messages: list = []
+
+    await client._execute_and_append_openai_tool_calls(
+        messages,
+        [_Call(name="tool_a", id="call_a"), _Call(name="tool_b", id="call_b")],
+    )
+
+    image_messages = _image_messages(messages)
+    assert len(image_messages) == 2
+    first_caption = image_messages[0]["content"][1]["text"]
+    second_caption = image_messages[1]["content"][1]["text"]
+    assert "tool_a" in first_caption
+    assert "call_a" in first_caption
+    assert "tool_b" not in first_caption
+    assert "call_b" not in first_caption
+    assert "tool_b" in second_caption
+    assert "call_b" in second_caption
+    assert "tool_a" not in second_caption
+    assert "call_a" not in second_caption
 
 
 @pytest.mark.asyncio

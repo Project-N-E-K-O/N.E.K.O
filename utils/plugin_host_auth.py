@@ -29,7 +29,7 @@ def require_plugin_host_access(request: Request) -> None:
     expected = os.environ.get(PLUGIN_HOST_TOKEN_ENV, "")
     supplied = request.headers.get(PLUGIN_HOST_TOKEN_HEADER, "")
     if (
-        not expected
+        not expected.strip()
         or not supplied
         or not secrets.compare_digest(
             supplied.encode("utf-8"),

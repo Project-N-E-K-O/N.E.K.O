@@ -102,6 +102,7 @@ async def get_live_vision_state(
     role: str = "",
     include_frame: bool = False,
     source_name: str = "",
+    host_generation: str = "",
 ):
     """Report whether a screen/camera share is feeding the conversation."""
     _set_no_store_headers(response)
@@ -122,7 +123,8 @@ async def get_live_vision_state(
     # frames for the same reason — report liveness/source but withhold pixels.
     if (
         include_frame
-        and allows_live_frame(source_name, token)
+        and host_generation.strip()
+        and allows_live_frame(source_name, token, host_generation)
         and payload["active"]
         and payload["source"] == "screen"
     ):

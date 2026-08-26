@@ -49,6 +49,7 @@ async def test_frame_query_forwards_plugin_identity_and_generation(
 
     result = await service_module.LiveVisionQueryService().get_live_vision(
         source_name="demo_plugin",
+        host_generation="host-generation",
         token="generation-one",
         include_frame=True,
     )
@@ -57,6 +58,7 @@ async def test_frame_query_forwards_plugin_identity_and_generation(
     assert seen["params"] == {
         "include_frame": "true",
         "source_name": "demo_plugin",
+        "host_generation": "host-generation",
     }
     assert seen["headers"] == {
         "X-NEKO-Live-Frame-Token": "generation-one",

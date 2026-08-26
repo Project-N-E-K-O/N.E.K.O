@@ -48,6 +48,7 @@ class LiveVisionQueryService:
         self,
         *,
         source_name: object = "",
+        host_generation: object = "",
         token: object = "",
         role: object = "",
         include_frame: object = False,
@@ -61,6 +62,7 @@ class LiveVisionQueryService:
         if include_frame:
             params["include_frame"] = "true"
             params["source_name"] = str(source_name or "").strip()
+            params["host_generation"] = str(host_generation or "").strip()
             headers[LIVE_FRAME_TOKEN_HEADER] = str(token or "").strip()
 
         url = f"{_main_server_base_url()}/api/system/live-vision"

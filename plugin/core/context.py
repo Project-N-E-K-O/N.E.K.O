@@ -1962,6 +1962,7 @@ class PluginContext:
             request_data={
                 "role": role,
                 "include_frame": bool(include_frame),
+                "host_generation": str(self.permission_generation or "").strip(),
                 "token": str(permission_token or ""),
             },
             timeout=timeout,
@@ -1984,6 +1985,7 @@ class PluginContext:
             request_data={
                 "role": role,
                 "include_frame": bool(include_frame),
+                "host_generation": str(self.permission_generation or "").strip(),
                 "token": str(permission_token or ""),
             },
             timeout=timeout,
@@ -2031,12 +2033,26 @@ class PluginContext:
             method_name="set_live_frame_permission",
             request_type="LIVE_FRAME_PERMISSION_SET",
             request_data={
+                "host_generation": str(self.permission_generation or "").strip(),
                 "token": token,
                 "enabled": enabled,
             },
             timeout=timeout,
             wrap_result=True,
             error_log_template=None,
+        )
+
+    async def set_live_frame_permission(
+        self,
+        *,
+        token: str,
+        enabled: bool,
+        timeout: float = 3.0,
+    ) -> Dict[str, Any]:
+        return await self.set_live_frame_permission_async(
+            token=token,
+            enabled=enabled,
+            timeout=timeout,
         )
 
     async def set_plugin_delivery_permission_async(
@@ -2052,12 +2068,26 @@ class PluginContext:
             method_name="set_plugin_delivery_permission",
             request_type="PLUGIN_DELIVERY_PERMISSION_SET",
             request_data={
+                "host_generation": str(self.permission_generation or "").strip(),
                 "token": token,
                 "enabled": enabled,
             },
             timeout=timeout,
             wrap_result=True,
             error_log_template=None,
+        )
+
+    async def set_plugin_delivery_permission(
+        self,
+        *,
+        token: str,
+        enabled: bool,
+        timeout: float = 3.0,
+    ) -> Dict[str, Any]:
+        return await self.set_plugin_delivery_permission_async(
+            token=token,
+            enabled=enabled,
+            timeout=timeout,
         )
 
     def query_memory_sync(self, lanlan_name: str, query: str, timeout: float = 5.0) -> Dict[str, Any]:

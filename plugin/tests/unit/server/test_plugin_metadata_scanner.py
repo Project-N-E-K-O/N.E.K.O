@@ -4,7 +4,9 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import time
 
+import psutil
 import pytest
 
 from plugin._types.events import EventHandler, EventMeta
@@ -228,3 +230,79 @@ def test_metadata_worker_rejects_oversized_protocol_results(
         )
 
     assert exc_info.value.error_type == "MetadataResultTooLarge"
+
+
+def _process_is_running(pid: int) -> bool:
+    try:
+        process = psutil.Process(pid)
+        return process.is_running() and process.status() != psutil.STATUS_ZOMBIE
+    except (psutil.NoSuchProcess, psutil.AccessDenied):
+        return False
+
+
+@pytest.mark.parametrize("worker_times_out", [False, True], ids=["success", "timeout"])
+def test_metadata_scan_reaps_plugin_spawned_helpers(
+    tmp_path: Path,
+    worker_times_out: bool,
+) -> None:
+    module_name = f"helper_spawning_plugin_{int(worker_times_out)}"
+    module_path = tmp_path / f"{module_name}.py"
+    child_pid_path = tmp_path / "child.pid"
+    blocking_import = "time.sleep(30)\n" if worker_times_out else ""
+    module_path.write_text(
+        "from pathlib import Path\n"
+        "import subprocess\n"
+        "import sys\n"
+        "import time\n"
+        f"child = subprocess.Popen([sys.executable, '-c', "
+        f"'import time; time.sleep(30)'])\n"
+        f"Path({str(child_pid_path)!r}).write_text(str(child.pid), encoding='utf-8')\n"
+        f"{blocking_import}"
+        "class Plugin:\n"
+        "    pass\n",
+        encoding="utf-8",
+    )
+    config_path = tmp_path / "plugin.toml"
+    config_path.write_text("[plugin]\nid='demo'\n", encoding="utf-8")
+
+    from plugin.server.application.plugins.metadata_scanner import (
+        scan_plugin_metadata_isolated,
+    )
+
+    child_pid = 0
+    try:
+        if worker_times_out:
+            with pytest.raises(PluginMetadataScanError) as exc_info:
+                scan_plugin_metadata_isolated(
+                    plugin_id="demo",
+                    module_path=module_name,
+                    class_name="Plugin",
+                    config_path=config_path,
+                    conf={},
+                    pdata={},
+                    python_requirement_paths=[tmp_path],
+                    timeout=2.0,
+                )
+            assert exc_info.value.error_type == "TimeoutExpired"
+        else:
+            scan_plugin_metadata_isolated(
+                plugin_id="demo",
+                module_path=module_name,
+                class_name="Plugin",
+                config_path=config_path,
+                conf={},
+                pdata={},
+                python_requirement_paths=[tmp_path],
+                timeout=10.0,
+            )
+
+        child_pid = int(child_pid_path.read_text(encoding="utf-8"))
+        deadline = time.monotonic() + 3.0
+        while _process_is_running(child_pid) and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert not _process_is_running(child_pid)
+    finally:
+        if child_pid and _process_is_running(child_pid):
+            process = psutil.Process(child_pid)
+            process.kill()
+            process.wait(timeout=3.0)

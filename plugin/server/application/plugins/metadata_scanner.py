@@ -9,6 +9,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
+import psutil
+
 from plugin._types.events import EventHandler, EventMeta
 from plugin.core import registry as registry_module
 from plugin.core.state import state
@@ -17,6 +19,7 @@ from plugin.core.state import state
 _HOST_API_TOKEN_ENV = "NEKO_PLUGIN_HOST_API_TOKEN"
 _RESULT_PREFIX = "NEKO_PLUGIN_METADATA_RESULT:"
 _MAX_METADATA_RESULT_BYTES = 1024 * 1024
+_PROCESS_CLEANUP_TIMEOUT = 0.5
 _WORKER_BOOTSTRAP = (
     "import os,sys;"
     "_stdout_fd=sys.stdout.fileno();"
@@ -38,6 +41,52 @@ def _metadata_worker_command() -> list[str]:
 
 def _handler_key_belongs_to_plugin(key: str, plugin_id: str) -> bool:
     return key.startswith(f"{plugin_id}.") or key.startswith(f"{plugin_id}:")
+
+
+def _terminate_processes(processes: list[psutil.Process]) -> None:
+    for process in processes:
+        try:
+            process.terminate()
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            pass
+
+    _, alive = psutil.wait_procs(processes, timeout=_PROCESS_CLEANUP_TIMEOUT)
+    for process in alive:
+        try:
+            process.kill()
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            pass
+    if alive:
+        psutil.wait_procs(alive, timeout=_PROCESS_CLEANUP_TIMEOUT)
+
+
+def _cleanup_worker_descendants() -> None:
+    try:
+        descendants = psutil.Process(os.getpid()).children(recursive=True)
+        _terminate_processes(descendants)
+    except (psutil.Error, OSError, RuntimeError, ValueError):
+        pass
+
+
+def _terminate_worker_tree(process: subprocess.Popen[str]) -> None:
+    try:
+        parent = psutil.Process(process.pid)
+        descendants = parent.children(recursive=True)
+    except (psutil.Error, OSError, RuntimeError, ValueError):
+        descendants = []
+        try:
+            parent = psutil.Process(process.pid)
+        except (psutil.Error, OSError, RuntimeError, ValueError):
+            parent = None
+
+    processes = [*descendants, parent] if parent is not None else descendants
+    _terminate_processes(processes)
+
+    if process.poll() is None:
+        try:
+            process.kill()
+        except OSError:
+            pass
 
 
 class PluginMetadataScanError(RuntimeError):
@@ -182,6 +231,7 @@ def _worker_main(protocol_fd: int | None = None) -> None:
             "error_type": type(exc).__name__,
             "message": str(exc),
         }
+    _cleanup_worker_descendants()
     encoded_result = (
         "\n"
         + result_prefix
@@ -240,29 +290,47 @@ def scan_plugin_metadata_isolated(
     child_env.pop(_HOST_API_TOKEN_ENV, None)
     project_root = Path(__file__).resolve().parents[4]
 
+    popen_kwargs: dict[str, object] = {}
+    if os.name == "nt":
+        popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+    else:
+        popen_kwargs["start_new_session"] = True
+
     try:
-        completed = subprocess.run(
+        process = subprocess.Popen(
             _metadata_worker_command(),
-            input=json.dumps(request, ensure_ascii=False),
-            capture_output=True,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
             encoding="utf-8",
             errors="replace",
             cwd=str(project_root),
             env=child_env,
+            **popen_kwargs,
+        )
+    except OSError as exc:
+        raise PluginMetadataScanError(type(exc).__name__, str(exc)) from exc
+
+    try:
+        stdout, stderr = process.communicate(
+            json.dumps(request, ensure_ascii=False),
             timeout=timeout,
-            check=False,
         )
     except subprocess.TimeoutExpired as exc:
+        _terminate_worker_tree(process)
+        try:
+            process.communicate(timeout=_PROCESS_CLEANUP_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.communicate()
         raise PluginMetadataScanError(
             "TimeoutExpired",
             f"Plugin metadata scan timed out after {timeout:g}s",
         ) from exc
-    except OSError as exc:
-        raise PluginMetadataScanError(type(exc).__name__, str(exc)) from exc
 
     payload: dict[str, object] | None = None
-    for line in reversed(completed.stdout.splitlines()):
+    for line in reversed(stdout.splitlines()):
         if not line.startswith(_RESULT_PREFIX):
             continue
         try:
@@ -274,8 +342,8 @@ def scan_plugin_metadata_isolated(
             break
 
     if payload is None:
-        stderr = completed.stderr.strip()
-        detail = stderr[-1000:] if stderr else f"worker exited with code {completed.returncode}"
+        stderr = stderr.strip()
+        detail = stderr[-1000:] if stderr else f"worker exited with code {process.returncode}"
         raise PluginMetadataScanError("MetadataWorkerFailed", detail)
     if payload.get("ok") is not True:
         raise PluginMetadataScanError(

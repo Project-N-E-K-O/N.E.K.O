@@ -298,7 +298,15 @@ class _ToolingMixin:
             })
             # Keep each instruction adjacent to the image it describes.
             # Always caption: several providers reject bare image parts.
-            caption = img.vision_prompt.strip() or self._TOOL_IMAGE_DEFAULT_CAPTION
+            instruction = (
+                img.vision_prompt.strip() or self._TOOL_IMAGE_DEFAULT_CAPTION
+            )
+            tool_name = str(result.name or "unknown")
+            call_id = str(result.call_id or "unknown")
+            caption = (
+                f"Tool image from {tool_name} (call_id={call_id}): "
+                f"{instruction}"
+            )
             content.append({"type": "text", "text": caption})
             used_count += 1
             used_b64_bytes += image_b64_bytes
