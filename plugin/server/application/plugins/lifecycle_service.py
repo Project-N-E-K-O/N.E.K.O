@@ -1499,13 +1499,18 @@ class PluginLifecycleService:
 
         try:
             _emit_lifecycle_event(event_type="plugin_stop_requested", plugin_id=plugin_id)
-            permissions_revoked = True
-            try:
-                await host_obj.shutdown(timeout=PLUGIN_SHUTDOWN_TIMEOUT)
-            finally:
-                permissions_revoked = (
-                    await _revoke_plugin_permissions(plugin_id)
-                ) is not False
+            permissions_revoked = (
+                await _revoke_plugin_permissions(plugin_id)
+            ) is not False
+            if not permissions_revoked:
+                raise _to_domain_error(
+                    code="PLUGIN_PERMISSION_REVOKE_FAILED",
+                    message=f"Failed to revoke permissions for plugin '{plugin_id}'",
+                    status_code=503,
+                    plugin_id=plugin_id,
+                    error_type="PermissionRevokeFailed",
+                )
+            await host_obj.shutdown(timeout=PLUGIN_SHUTDOWN_TIMEOUT)
             await asyncio.to_thread(_pop_plugin_host_sync, plugin_id)
             await asyncio.to_thread(_remove_event_handlers_sync, plugin_id)
             # Clear any LLM tools the plugin had registered with
@@ -1532,11 +1537,6 @@ class PluginLifecycleService:
                 "message": "Plugin stopped successfully",
                 "permissions_revoked": permissions_revoked,
             }
-            if not permissions_revoked:
-                response["partial_success"] = True
-                response["message"] = (
-                    "Plugin stopped, but host permission revocation failed"
-                )
             if persist_user_intent:
                 await _persist_changed_runtime_intent(
                     response,
@@ -1697,14 +1697,19 @@ class PluginLifecycleService:
 
         is_running = await asyncio.to_thread(_plugin_is_running_sync, plugin_id)
         if is_running:
-            stop_result = await self.stop_plugin(plugin_id)
-            permissions_revoked = bool(
-                stop_result.get("permissions_revoked", True)
-            )
+            await self.stop_plugin(plugin_id)
         else:
             permissions_revoked = (
                 await _revoke_plugin_permissions(plugin_id)
             ) is not False
+            if not permissions_revoked:
+                raise _to_domain_error(
+                    code="PLUGIN_PERMISSION_REVOKE_FAILED",
+                    message=f"Failed to revoke permissions for plugin '{plugin_id}'",
+                    status_code=503,
+                    plugin_id=plugin_id,
+                    error_type="PermissionRevokeFailed",
+                )
 
         staged_profile: _StagedPackageProfile | None = None
         try:
@@ -1792,13 +1797,8 @@ class PluginLifecycleService:
             "plugin_dir": str(plugin_dir),
             "deleted_from_disk": deleted_from_disk,
             "message": "Plugin deleted successfully",
-            "permissions_revoked": permissions_revoked,
+            "permissions_revoked": True,
         }
-        if not permissions_revoked:
-            response["partial_success"] = True
-            response["message"] = (
-                "Plugin deleted, but host permission revocation failed"
-            )
         return response
 
     async def retry_deferred_profile_cleanup(self) -> int:

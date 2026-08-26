@@ -43,6 +43,10 @@ class _FakeProcessHost:
         return True
 
 
+async def _successful_revoke(_plugin_id: str) -> bool:
+    return True
+
+
 class _FakeAdapterPlugin:
     @plugin_entry(id="list_servers", name="List Servers", description="List configured MCP servers")
     async def list_servers(self) -> dict[str, object]:
@@ -2847,6 +2851,7 @@ async def test_delete_plugin_stops_running_host_before_removing(
         monkeypatch.setattr(module, "PLUGIN_CONFIG_ROOTS", (tmp_path,))
         monkeypatch.setattr(module.PluginLifecycleService, "stop_plugin", _tracked_stop)
         monkeypatch.setattr(module.plugin_registry_service, "refresh_registry", _refresh_registry)
+        monkeypatch.setattr(module, "_revoke_plugin_permissions", _successful_revoke)
         monkeypatch.setattr(module, "emit_lifecycle_event", lambda event: None)
 
         service = module.PluginLifecycleService()
@@ -2914,6 +2919,7 @@ async def test_delete_plugin_clears_runtime_override(
 
         monkeypatch.setattr(module, "PLUGIN_CONFIG_ROOTS", (tmp_path,))
         monkeypatch.setattr(module.plugin_registry_service, "refresh_registry", _refresh_registry)
+        monkeypatch.setattr(module, "_revoke_plugin_permissions", _successful_revoke)
         monkeypatch.setattr(module, "emit_lifecycle_event", lambda event: None)
 
         service = module.PluginLifecycleService()
@@ -3026,7 +3032,7 @@ async def test_permission_revoke_retries_and_reports_failure(
 
 @pytest.mark.plugin_unit
 @pytest.mark.asyncio
-async def test_stop_plugin_marks_permission_revoke_failure_as_partial_success(
+async def test_stop_plugin_aborts_before_shutdown_when_permission_revoke_fails(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -3040,6 +3046,8 @@ async def test_stop_plugin_marks_permission_revoke_failure_as_partial_success(
     cache_backup = copy.deepcopy(module.state._snapshot_cache)
     try:
         _seed_running_plugin("demo_plugin", config_path)
+        with module.state.acquire_plugin_hosts_read_lock():
+            host = module.state.plugin_hosts["demo_plugin"]
         monkeypatch.setattr(module, "emit_lifecycle_event", lambda event: None)
 
         async def _failed_revoke(_plugin_id: str) -> bool:
@@ -3047,13 +3055,13 @@ async def test_stop_plugin_marks_permission_revoke_failure_as_partial_success(
 
         monkeypatch.setattr(module, "_revoke_plugin_permissions", _failed_revoke)
 
-        response = await module.PluginLifecycleService().stop_plugin("demo_plugin")
+        with pytest.raises(ServerDomainError) as exc_info:
+            await module.PluginLifecycleService().stop_plugin("demo_plugin")
 
-        assert response["success"] is True
-        assert response["partial_success"] is True
-        assert response["permissions_revoked"] is False
+        assert exc_info.value.code == "PLUGIN_PERMISSION_REVOKE_FAILED"
+        assert host.stopped is False
         with module.state.acquire_plugin_hosts_read_lock():
-            assert "demo_plugin" not in module.state.plugin_hosts
+            assert module.state.plugin_hosts["demo_plugin"] is host
     finally:
         with module.state.acquire_plugins_write_lock():
             module.state.plugins.clear()
@@ -3064,6 +3072,60 @@ async def test_stop_plugin_marks_permission_revoke_failure_as_partial_success(
         with module.state.acquire_event_handlers_write_lock():
             module.state.event_handlers.clear()
             module.state.event_handlers.update(handlers_backup)
+        with module.state._snapshot_cache_lock:
+            module.state._snapshot_cache = cache_backup
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_delete_plugin_aborts_before_removal_when_permission_revoke_fails(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    plugin_dir = tmp_path / "demo_plugin"
+    config_path = plugin_dir / "plugin.toml"
+    plugin_dir.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(
+        "[plugin]\nid='demo_plugin'\nentry='tests.fake:Plugin'\n",
+        encoding="utf-8",
+    )
+
+    plugins_backup = copy.deepcopy(module.state.plugins)
+    hosts_backup = dict(module.state.plugin_hosts)
+    cache_backup = copy.deepcopy(module.state._snapshot_cache)
+    try:
+        with module.state.acquire_plugins_write_lock():
+            module.state.plugins.clear()
+            module.state.plugins["demo_plugin"] = {
+                "id": "demo_plugin",
+                "name": "Demo Plugin",
+                "type": "plugin",
+                "config_path": str(config_path),
+                "entry_point": "tests.fake:Plugin",
+            }
+        with module.state.acquire_plugin_hosts_write_lock():
+            module.state.plugin_hosts.clear()
+
+        async def _failed_revoke(_plugin_id: str) -> bool:
+            return False
+
+        monkeypatch.setattr(module, "PLUGIN_CONFIG_ROOTS", (tmp_path,))
+        monkeypatch.setattr(module, "_revoke_plugin_permissions", _failed_revoke)
+
+        with pytest.raises(ServerDomainError) as exc_info:
+            await module.PluginLifecycleService().delete_plugin("demo_plugin")
+
+        assert exc_info.value.code == "PLUGIN_PERMISSION_REVOKE_FAILED"
+        assert plugin_dir.is_dir()
+        with module.state.acquire_plugins_read_lock():
+            assert "demo_plugin" in module.state.plugins
+    finally:
+        with module.state.acquire_plugins_write_lock():
+            module.state.plugins.clear()
+            module.state.plugins.update(plugins_backup)
+        with module.state.acquire_plugin_hosts_write_lock():
+            module.state.plugin_hosts.clear()
+            module.state.plugin_hosts.update(hosts_backup)
         with module.state._snapshot_cache_lock:
             module.state._snapshot_cache = cache_backup
 
@@ -3148,6 +3210,7 @@ async def test_stop_plugin_persist_user_intent_writes_runtime_override(
 
     try:
         _seed_running_plugin("demo_plugin", config_path)
+        monkeypatch.setattr(module, "_revoke_plugin_permissions", _successful_revoke)
         monkeypatch.setattr(module, "emit_lifecycle_event", lambda event: None)
 
         service = module.PluginLifecycleService()
@@ -3246,6 +3309,7 @@ async def test_stop_plugin_can_leave_auto_start_unchanged_when_sync_is_disabled(
             auto_start=True,
         )
         monkeypatch.setattr(module, "PLUGIN_SYNC_AUTO_START_ON_TOGGLE", False)
+        monkeypatch.setattr(module, "_revoke_plugin_permissions", _successful_revoke)
         monkeypatch.setattr(module, "emit_lifecycle_event", lambda event: None)
 
         await module.PluginLifecycleService().stop_plugin(
@@ -3287,6 +3351,7 @@ async def test_stop_plugin_returns_partial_success_on_preference_write_failure(
 
     try:
         _seed_running_plugin("demo_plugin", config_path)
+        monkeypatch.setattr(module, "_revoke_plugin_permissions", _successful_revoke)
         monkeypatch.setattr(module, "emit_lifecycle_event", lambda event: None)
         monkeypatch.setattr(
             module,
