@@ -2047,7 +2047,10 @@ class ProactiveMixin:
                 live_frame,
                 session,
                 si,
-                authorization_guard=self._live_frame_permission_guard(callbacks),
+                authorization_guard=self._live_frame_permission_guard(
+                    callbacks,
+                    live_frame,
+                ),
             )
         for cb in callbacks:
             if not isinstance(cb, dict):
@@ -2199,7 +2202,11 @@ class ProactiveMixin:
             frame = callback_frame
         return frame
 
-    def _live_frame_permission_guard(self, callbacks: list):
+    def _live_frame_permission_guard(
+        self,
+        callbacks: list,
+        expected_frame: str,
+    ):
         grants: list[tuple[str, str, str]] = []
         for cb in callbacks:
             if not isinstance(cb, dict):
@@ -2216,10 +2223,18 @@ class ProactiveMixin:
                 return lambda: False
             grants.append((source, token, host_generation))
 
-        return lambda: all(
-            allows_live_frame(source, token, host_generation)
-            for source, token, host_generation in grants
-        )
+        def _is_still_authorized() -> bool:
+            state = self.live_vision_snapshot()
+            if not state["active"] or state["source"] != "screen":
+                return False
+            if self.live_vision_frame_b64() != expected_frame:
+                return False
+            return all(
+                allows_live_frame(source, token, host_generation)
+                for source, token, host_generation in grants
+            )
+
+        return _is_still_authorized
 
     def _collect_text_proactive_images(self, callbacks: list) -> list:
         """Build the image list for offline ``prompt_ephemeral``.
@@ -2249,7 +2264,10 @@ class ProactiveMixin:
             )
             if can_vision:
                 images.append(live_frame)
-                authorization_guard = self._live_frame_permission_guard(callbacks)
+                authorization_guard = self._live_frame_permission_guard(
+                    callbacks,
+                    live_frame,
+                )
         for cb in callbacks:
             if not isinstance(cb, dict):
                 continue
@@ -2313,11 +2331,15 @@ class ProactiveMixin:
 
     async def _stream_cb_live_frame(self, cb: dict, session, si) -> bool:
         """Give one callback's turn the live screen-share frame it asked for."""
+        live_frame = self._resolve_cb_live_frame_b64(cb)
         return await self._stream_live_frame_b64(
-            self._resolve_cb_live_frame_b64(cb),
+            live_frame,
             session,
             si,
-            authorization_guard=self._live_frame_permission_guard([cb]),
+            authorization_guard=self._live_frame_permission_guard(
+                [cb],
+                live_frame,
+            ),
         )
 
     def on_voice_playback_signal(self, *, playing: bool, **meta) -> None:

@@ -56,7 +56,9 @@ def _mgr(session, *, snapshot, frame="cached-frame"):
         lanlan_name="lanlan",
         session=session,
         live_vision_snapshot=lambda: snapshot,
-        live_vision_frame_b64=lambda: frame if snapshot.get("active") else "",
+        live_vision_frame_b64=lambda: (
+            frame() if callable(frame) else frame
+        ) if snapshot.get("active") else "",
     )
     mgr._resolve_cb_live_frame_b64 = (
         lambda cb: ProactiveMixin._resolve_cb_live_frame_b64(mgr, cb)
@@ -71,7 +73,11 @@ def _mgr(session, *, snapshot, frame="cached-frame"):
         lambda cbs: ProactiveMixin._collect_text_proactive_images_guarded(mgr, cbs)
     )
     mgr._live_frame_permission_guard = (
-        lambda cbs: ProactiveMixin._live_frame_permission_guard(mgr, cbs)
+        lambda cbs, expected_frame: ProactiveMixin._live_frame_permission_guard(
+            mgr,
+            cbs,
+            expected_frame,
+        )
     )
     mgr._stream_live_frame_b64 = (
         lambda frame, sess, si, **kwargs: ProactiveMixin._stream_live_frame_b64(
@@ -451,6 +457,63 @@ def test_text_path_carries_a_recheck_guard_with_the_collected_live_frame():
     revoke_plugin_permissions("demo_plugin")
 
     assert images == ["shared-screen", "plugin-shot"]
+    assert authorization_guard is not None
+    assert authorization_guard() is False
+
+
+@pytest.mark.parametrize(
+    "replacement_state",
+    [
+        {"active": False, "source": ""},
+        {"active": True, "source": "camera"},
+    ],
+)
+def test_collected_live_frame_guard_rechecks_the_current_share_state(
+    replacement_state,
+):
+    _authorize()
+    session = SimpleNamespace(
+        _supports_native_image=False,
+        vision_model="vision-model",
+    )
+    snapshot = _sharing()
+    mgr = _mgr(session, snapshot=snapshot, frame="shared-screen")
+
+    images, authorization_guard = (
+        ProactiveMixin._collect_text_proactive_images_guarded(
+            mgr,
+            [_token_cb()],
+        )
+    )
+    snapshot.update(replacement_state)
+
+    assert images == ["shared-screen"]
+    assert authorization_guard is not None
+    assert authorization_guard() is False
+
+
+def test_collected_live_frame_guard_rejects_a_replaced_share_frame():
+    _authorize()
+    session = SimpleNamespace(
+        _supports_native_image=False,
+        vision_model="vision-model",
+    )
+    current_frame = ["captured-screen"]
+    mgr = _mgr(
+        session,
+        snapshot=_sharing(),
+        frame=lambda: current_frame[0],
+    )
+
+    images, authorization_guard = (
+        ProactiveMixin._collect_text_proactive_images_guarded(
+            mgr,
+            [_token_cb()],
+        )
+    )
+    current_frame[0] = "replacement-screen"
+
+    assert images == ["captured-screen"]
     assert authorization_guard is not None
     assert authorization_guard() is False
 

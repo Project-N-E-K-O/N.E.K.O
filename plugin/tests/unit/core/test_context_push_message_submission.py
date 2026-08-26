@@ -6,7 +6,6 @@ from typing import Any
 
 import pytest
 
-from plugin import settings
 from plugin.core import context as context_module
 from plugin.core.context import PluginContext
 
@@ -25,40 +24,21 @@ class _Logger:
         self.records.append((message, args))
 
 
-class _Socket:
-    def __init__(
-        self,
-        *,
-        connect_error: Exception | None = None,
-        send_error: Exception | None = None,
-    ) -> None:
-        self.connect_error = connect_error
-        self.send_error = send_error
-        self.sent: list[bytes] = []
-
-    def setsockopt(self, *_args: object) -> None:
-        return None
-
-    def connect(self, _endpoint: str) -> None:
-        if self.connect_error is not None:
-            raise self.connect_error
-
-    def send(self, payload: bytes, *, flags: int) -> None:
-        assert flags == 0
-        if self.send_error is not None:
-            raise self.send_error
-        self.sent.append(payload)
-
-
 class _Queue:
     def __init__(self, *, error: Exception | None = None) -> None:
         self.error = error
         self.items: list[dict[str, Any]] = []
+        self.fast_items: list[dict[str, Any]] = []
 
     def put_nowait(self, payload: dict[str, Any]) -> None:
         if self.error is not None:
             raise self.error
         self.items.append(payload)
+
+    def put_fast_nowait(self, payload: dict[str, Any]) -> None:
+        if self.error is not None:
+            raise self.error
+        self.fast_items.append(payload)
 
 
 class _Again(Exception):
@@ -90,97 +70,11 @@ def _context(
     )
 
 
-def _install_slow_message_plane(
-    monkeypatch: pytest.MonkeyPatch,
-    socket: _Socket,
-) -> None:
-    class _ZmqContext:
-        @staticmethod
-        def instance() -> object:
-            return SimpleNamespace(socket=lambda _kind: socket)
-
-    monkeypatch.setattr(
-        context_module,
-        "zmq",
-        SimpleNamespace(
-            Again=_Again,
-            Context=_ZmqContext,
-            PUSH=1,
-            LINGER=2,
-            SNDTIMEO=3,
-        ),
-    )
-    monkeypatch.setattr(
-        context_module,
-        "ormsgpack",
-        SimpleNamespace(packb=lambda _payload: b"packed-message"),
-    )
-    monkeypatch.setattr(
-        settings,
-        "MESSAGE_PLANE_ZMQ_INGEST_ENDPOINT",
-        "inproc://submission-test",
-    )
-
-
-@pytest.mark.plugin_unit
-def test_slow_message_plane_success_reports_local_submission(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    socket = _Socket()
-    _install_slow_message_plane(monkeypatch, socket)
-    ctx, _logger = _context(tmp_path)
-
-    result = ctx.push_message(
-        visibility=[],
-        ai_behavior="respond",
-        parts=[{"type": "text", "text": "synthetic payload"}],
-    )
-
-    assert result == {"submitted": True}
-    assert socket.sent == [b"packed-message"]
-
-
-@pytest.mark.plugin_unit
-def test_direct_message_plane_overwrites_plugin_host_generation(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    socket = _Socket()
-    packed: list[dict[str, object]] = []
-    _install_slow_message_plane(monkeypatch, socket)
-    monkeypatch.setattr(
-        context_module.ormsgpack,
-        "packb",
-        lambda payload: packed.append(payload) or b"packed-message",
-    )
-    ctx, _logger = _context(
-        tmp_path,
-        permission_generation="trusted-host-generation",
-    )
-
-    result = ctx.push_message(
-        visibility=[],
-        ai_behavior="respond",
-        parts=[{"type": "text", "text": "tokenless queued cue"}],
-        metadata={"plugin_host_generation": "plugin-forged-generation"},
-    )
-
-    assert result == {"submitted": True}
-    payload = packed[0]["items"][0]["payload"]  # type: ignore[index]
-    assert payload["metadata"]["plugin_host_generation"] == (
-        "trusted-host-generation"
-    )
-
-
 @pytest.mark.plugin_unit
 def test_plugin_messages_use_authenticated_host_uplink_instead_of_direct_ingest(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    direct_socket = _Socket()
     host_queue = _Queue()
-    _install_slow_message_plane(monkeypatch, direct_socket)
     ctx, _logger = _context(
         tmp_path,
         message_queue=host_queue,
@@ -195,7 +89,6 @@ def test_plugin_messages_use_authenticated_host_uplink_instead_of_direct_ingest(
     )
 
     assert result == {"submitted": True}
-    assert direct_socket.sent == []
     assert host_queue.items[0]["plugin_id"] == "demo"
     assert host_queue.items[0]["metadata"]["plugin_host_generation"] == (
         "trusted-host-generation"
@@ -203,13 +96,25 @@ def test_plugin_messages_use_authenticated_host_uplink_instead_of_direct_ingest(
 
 
 @pytest.mark.plugin_unit
+def test_fast_mode_uses_the_authenticated_batching_uplink(
+    tmp_path: Path,
+) -> None:
+    host_queue = _Queue()
+    ctx, _logger = _context(tmp_path, message_queue=host_queue)
+
+    with pytest.warns(DeprecationWarning, match="fast_mode.*v0.9"):
+        result = ctx.push_message(parts=[], fast_mode=True)
+
+    assert result == {"submitted": True}
+    assert host_queue.items == []
+    assert len(host_queue.fast_items) == 1
+
+
+@pytest.mark.plugin_unit
 def test_live_frame_token_bypasses_shared_message_plane(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    socket = _Socket()
     private_queue = _Queue()
-    _install_slow_message_plane(monkeypatch, socket)
     ctx, _logger = _context(tmp_path, message_queue=private_queue)
 
     result = ctx.push_message(
@@ -220,170 +125,7 @@ def test_live_frame_token_bypasses_shared_message_plane(
     )
 
     assert result == {"submitted": True}
-    assert socket.sent == []
     assert private_queue.items[0]["metadata"]["live_frame_permission_token"] == "generation-secret"
-
-
-@pytest.mark.plugin_unit
-def test_slow_message_plane_failure_uses_fallback_and_is_redacted(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    private_marker = "private-payload-must-not-enter-logs"
-    _install_slow_message_plane(
-        monkeypatch,
-        _Socket(send_error=RuntimeError(private_marker)),
-    )
-    fallback_queue = _Queue()
-    ctx, logger = _context(tmp_path, message_queue=fallback_queue)
-
-    result = ctx.push_message(
-        visibility=[],
-        ai_behavior="respond",
-        parts=[{"type": "text", "text": private_marker}],
-    )
-
-    assert result == {"submitted": True}
-    assert len(fallback_queue.items) == 1
-    assert private_marker not in repr(logger.records)
-
-
-@pytest.mark.plugin_unit
-def test_slow_message_plane_backpressure_fallback_reports_submission(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    private_marker = "private-backpressure-detail"
-    _install_slow_message_plane(
-        monkeypatch,
-        _Socket(send_error=_Again(private_marker)),
-    )
-    fallback_queue = _Queue()
-    ctx, logger = _context(tmp_path, message_queue=fallback_queue)
-
-    result = ctx.push_message(
-        visibility=[],
-        ai_behavior="respond",
-        parts=[{"type": "text", "text": private_marker}],
-    )
-
-    assert result == {"submitted": True}
-    assert len(fallback_queue.items) == 1
-    assert private_marker not in repr(logger.records)
-
-
-@pytest.mark.plugin_unit
-def test_slow_message_plane_backpressure_is_reported_when_fallback_fails(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    private_send_marker = "private-backpressure-detail"
-    private_queue_marker = "private-queue-detail"
-    _install_slow_message_plane(
-        monkeypatch,
-        _Socket(send_error=_Again(private_send_marker)),
-    )
-    fallback_queue = _Queue(error=_Again(private_queue_marker))
-    ctx, logger = _context(tmp_path, message_queue=fallback_queue)
-
-    result = ctx.push_message(
-        visibility=[],
-        ai_behavior="respond",
-        parts=[{"type": "text", "text": "synthetic payload"}],
-    )
-
-    assert result == {
-        "ok": False,
-        "submitted": False,
-        "reason": "backpressure",
-    }
-    assert fallback_queue.items == []
-    assert private_send_marker not in repr(logger.records)
-    assert private_queue_marker not in repr(logger.records)
-    assert "_Again" in repr(logger.records)
-
-
-@pytest.mark.plugin_unit
-def test_slow_message_plane_and_fallback_failures_are_distinguishable_and_redacted(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    private_send_marker = "private-send-error"
-    private_queue_marker = "private-queue-error"
-    _install_slow_message_plane(
-        monkeypatch,
-        _Socket(send_error=RuntimeError(private_send_marker)),
-    )
-    fallback_queue = _Queue(error=RuntimeError(private_queue_marker))
-    ctx, logger = _context(tmp_path, message_queue=fallback_queue)
-
-    result = ctx.push_message(
-        visibility=[],
-        ai_behavior="respond",
-        parts=[{"type": "text", "text": "synthetic payload"}],
-    )
-
-    assert result == {
-        "ok": False,
-        "submitted": False,
-        "reason": "transport_error",
-    }
-    assert fallback_queue.items == []
-    assert private_send_marker not in repr(logger.records)
-    assert private_queue_marker not in repr(logger.records)
-    assert "RuntimeError" in repr(logger.records)
-
-
-@pytest.mark.plugin_unit
-@pytest.mark.parametrize(
-    ("enqueue_error", "expected"),
-    [
-        (None, {"submitted": True}),
-        (
-            RuntimeError("queue full"),
-            {
-                "ok": False,
-                "submitted": False,
-                "reason": "backpressure",
-            },
-        ),
-    ],
-)
-def test_fast_batcher_reports_enqueue_outcome(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    enqueue_error: Exception | None,
-    expected: dict[str, object],
-) -> None:
-    class _Batcher:
-        def __init__(self, **_kwargs: object) -> None:
-            return None
-
-        def start(self) -> None:
-            return None
-
-        def stop(self, *, timeout: float) -> None:
-            assert timeout == 2.0
-
-        def enqueue(self, _item: dict[str, object]) -> None:
-            if enqueue_error is not None:
-                raise enqueue_error
-
-    from plugin.utils import zeromq_ipc
-
-    monkeypatch.setattr(context_module, "zmq", object())
-    monkeypatch.setattr(
-        settings,
-        "MESSAGE_PLANE_ZMQ_INGEST_ENDPOINT",
-        "inproc://submission-test",
-    )
-    monkeypatch.setattr(zeromq_ipc, "MessagePlaneIngestBatcher", _Batcher)
-    ctx, _logger = _context(tmp_path)
-
-    with pytest.warns(DeprecationWarning, match="fast_mode.*v0.9"):
-        result = ctx.push_message(parts=[], fast_mode=True)
-
-    assert result == expected
 
 
 @pytest.mark.plugin_unit
@@ -433,7 +175,6 @@ def test_fallback_queue_backpressure_is_classified_and_redacted(
     private_marker = "private-queue-backpressure"
     queue = _Queue(error=_Again(private_marker))
     monkeypatch.setattr(context_module, "zmq", SimpleNamespace(Again=_Again))
-    monkeypatch.setattr(settings, "MESSAGE_PLANE_ZMQ_INGEST_ENDPOINT", "")
     ctx, logger = _context(tmp_path, message_queue=queue)
 
     result = ctx.push_message(
@@ -464,27 +205,3 @@ def test_missing_transports_report_unavailable(
         "submitted": False,
         "reason": "transport_unavailable",
     }
-
-
-@pytest.mark.plugin_unit
-def test_primary_setup_failure_can_use_fallback_before_submission_attempt(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    private_marker = "private-connect-detail"
-    _install_slow_message_plane(
-        monkeypatch,
-        _Socket(connect_error=RuntimeError(private_marker)),
-    )
-    fallback_queue = _Queue()
-    ctx, logger = _context(tmp_path, message_queue=fallback_queue)
-
-    result = ctx.push_message(
-        visibility=[],
-        ai_behavior="respond",
-        parts=[{"type": "text", "text": private_marker}],
-    )
-
-    assert result == {"submitted": True}
-    assert len(fallback_queue.items) == 1
-    assert private_marker not in repr(logger.records)

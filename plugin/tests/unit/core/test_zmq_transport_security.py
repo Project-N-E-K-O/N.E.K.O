@@ -103,6 +103,105 @@ def test_host_and_child_share_a_non_secret_permission_generation() -> None:
 
 @pytest.mark.plugin_unit
 @pytest.mark.asyncio
+async def test_message_uplink_is_physically_isolated_from_control_results() -> None:
+    host = zmq_transport.HostTransport()
+    child = zmq_transport.ChildTransport(
+        host.downlink_endpoint,
+        host.uplink_endpoint,
+        host.uplink_token,
+        downlink_curve=host.downlink_curve_credentials,
+        message_uplink_endpoint=host.message_uplink_endpoint,
+    )
+    try:
+        child.channel_sender(zmq_transport.CH_MSG).put_nowait({"type": "MESSAGE_PUSH"})
+
+        assert await host.recv_message(timeout_ms=1000) == (
+            zmq_transport.CH_MSG,
+            {"type": "MESSAGE_PUSH"},
+        )
+        assert await host.recv(timeout_ms=100) is None
+    finally:
+        child.close()
+        host.close()
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_fast_message_sender_batches_on_the_authenticated_message_uplink() -> None:
+    host = zmq_transport.HostTransport()
+    child = zmq_transport.ChildTransport(
+        host.downlink_endpoint,
+        host.uplink_endpoint,
+        host.uplink_token,
+        downlink_curve=host.downlink_curve_credentials,
+        message_uplink_endpoint=host.message_uplink_endpoint,
+    )
+    try:
+        sender = child.channel_sender(zmq_transport.CH_MSG)
+        sender.put_fast_nowait({"message_id": "one"})
+        sender.put_fast_nowait({"message_id": "two"})
+
+        assert await host.recv_message(timeout_ms=1000) == (
+            zmq_transport.CH_MSG_BATCH,
+            {
+                "items": [
+                    {"message_id": "one"},
+                    {"message_id": "two"},
+                ],
+            },
+        )
+        assert await host.recv(timeout_ms=100) is None
+    finally:
+        child.close()
+        host.close()
+
+
+@pytest.mark.plugin_unit
+def test_fast_message_batcher_preserves_zero_as_an_unbounded_queue() -> None:
+    batcher = zmq_transport._AuthenticatedMessageBatcher(
+        object(),  # type: ignore[arg-type]
+        batch_size=256,
+        flush_interval_ms=5,
+        max_queue=0,
+        reject_ratio=0.9,
+        enqueue_timeout_s=0,
+    )
+
+    for index in range(3):
+        batcher.enqueue({"message_id": str(index)})
+
+    assert batcher._queue.qsize() == 3
+
+
+@pytest.mark.plugin_unit
+def test_fast_message_sender_rejects_after_transport_close() -> None:
+    host = zmq_transport.HostTransport()
+    child = zmq_transport.ChildTransport(
+        host.downlink_endpoint,
+        host.uplink_endpoint,
+        host.uplink_token,
+        downlink_curve=host.downlink_curve_credentials,
+        message_uplink_endpoint=host.message_uplink_endpoint,
+    )
+    sender = child.channel_sender(zmq_transport.CH_MSG)
+    child.close()
+    caught: Exception | None = None
+    try:
+        sender.put_fast_nowait({"message_id": "after-close"})
+    except Exception as exc:  # noqa: BLE001 - asserting the public failure below
+        caught = exc
+    finally:
+        batcher = child._message_batcher
+        if batcher is not None:
+            batcher.stop()
+        host.close()
+
+    assert isinstance(caught, RuntimeError)
+    assert str(caught) == "plugin transport is closed"
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
 async def test_downlink_curve_rejects_an_unauthenticated_competing_receiver() -> None:
     host = zmq_transport.HostTransport()
     child = zmq_transport.ChildTransport(

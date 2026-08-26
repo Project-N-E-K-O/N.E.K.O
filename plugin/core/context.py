@@ -15,20 +15,13 @@ try:
 except ImportError:
     import tomli as tomllib
 import uuid
-import threading
 import functools
-import itertools
 
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, Optional, cast
-
-try:
-    import ormsgpack
-except ImportError:  # pragma: no cover
-    ormsgpack = None  # type: ignore[assignment]
 
 try:
     import zmq
@@ -45,9 +38,6 @@ from plugin.settings import (
     PLUGIN_LOG_SYNC_CALL_WARNINGS,
     SYNC_CALL_IN_HANDLER_POLICY,
 )
-
-# 模块级初始化锁，用于 _push_lock 的双检初始化
-_PUSH_LOCK_INIT = threading.Lock()
 
 if TYPE_CHECKING:
     from plugin.core.bus.types import BusHubProtocol
@@ -163,9 +153,6 @@ class PluginContext:
     _entry_meta_map: Optional[Dict[str, Any]] = None  # entry_id -> EventMeta
     _instance: Optional[Any] = None  # 插件实例（用于处理命令）
     _bus_hub: Optional[Any] = None
-    _push_seq: int = 0
-    _push_lock: Optional[Any] = None
-    _push_batcher: Optional[Any] = None
     _restored_from_freeze: bool = False  # 标记是否从冻结状态恢复
     _effective_config: Optional[Dict[str, Any]] = None
     _effective_config_uncertain: bool = False
@@ -181,55 +168,10 @@ class PluginContext:
         return cast("BusHubProtocol", hub)
 
     def close(self) -> None:
-        """Release per-context resources such as the ZeroMQ push batcher.
+        """Release resources owned directly by this context.
 
         This is safe to call multiple times.
         """
-        batcher = getattr(self, "_push_batcher", None)
-        if batcher is not None:
-            try:
-                # Give the batcher a bounded window to flush and stop.
-                batcher.stop(timeout=2.0)
-            except Exception as e:
-                # Cleanup should be best-effort and never raise.
-                try:
-                    self.logger.debug(f"Batcher stop failed (best-effort): {e}")
-                except Exception:
-                    pass
-            try:
-                self._push_batcher = None
-            except Exception:
-                pass
-
-        mp_batcher = getattr(self, "_message_plane_push_batcher", None)
-        if mp_batcher is not None:
-            push_lock = getattr(self, "_push_lock", None)
-            acquired_push_lock = False
-            if push_lock is not None:
-                try:
-                    acquired_push_lock = bool(push_lock.acquire(timeout=3.0))
-                except TypeError:
-                    acquired_push_lock = bool(push_lock.acquire())
-                except Exception:
-                    acquired_push_lock = False
-            try:
-                mp_batcher.stop(timeout=2.0)
-            except Exception as e:
-                try:
-                    self.logger.debug(f"Message plane batcher stop failed (best-effort): {e}")
-                except Exception:
-                    pass
-            try:
-                self._message_plane_push_batcher = None
-            except Exception:
-                pass
-            finally:
-                if acquired_push_lock and push_lock is not None:
-                    try:
-                        push_lock.release()
-                    except Exception:
-                        pass
-
         zmq_client = getattr(self, "_zmq_ipc_client", None)
         if zmq_client is not None:
             try:
@@ -242,25 +184,6 @@ class PluginContext:
                 self._zmq_ipc_client = None
             except Exception:
                 pass
-
-        tls = getattr(self, "_message_plane_ingest_tls", None)
-        if tls is not None:
-            try:
-                sock = getattr(tls, "sock", None)
-                if sock is not None:
-                    try:
-                        sock.close(0)
-                    except Exception:
-                        pass
-            except Exception:
-                pass
-            try:
-                object.__setattr__(self, "_message_plane_ingest_tls", None)
-            except Exception:
-                try:
-                    self._message_plane_ingest_tls = None
-                except Exception:
-                    pass
 
     def __del__(self) -> None:  # pragma: no cover - best-effort safety net
         try:
@@ -1003,10 +926,10 @@ class PluginContext:
         legacy_reply = legacy_delivery != "silent"
 
         def _build_wire_payload(*, message_id: str, ts: Any) -> Dict[str, Any]:
-            """Construct the message_plane envelope (v2 + legacy compat fields).
+            """Construct the authenticated message envelope.
 
-            Used by both message-plane send paths and the legacy control-plane
-            cache.  Keeps the wire shape identical regardless of transport.
+            Legacy compatibility fields keep downstream readers stable while
+            the canonical v2 schema crosses the dedicated message uplink.
             """
             return {
                 "type": "MESSAGE_PUSH",
@@ -1044,11 +967,36 @@ class PluginContext:
         # identity by opening the public message-plane ingest socket directly.
         if self.message_queue is not None:
             try:
+                live_frame_token = canonical_metadata.get(
+                    "live_frame_permission_token"
+                )
+                use_fast_uplink = (
+                    bool(fast_mode)
+                    and not (
+                        isinstance(live_frame_token, str)
+                        and live_frame_token
+                    )
+                )
                 authenticated_payload = _build_wire_payload(
                     message_id=str(uuid.uuid4()),
-                    ts=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                    ts=(
+                        time.time()
+                        if use_fast_uplink
+                        else datetime.now(timezone.utc).isoformat().replace(
+                            "+00:00",
+                            "Z",
+                        )
+                    ),
                 )
-                self.message_queue.put_nowait(authenticated_payload)
+                fast_put = getattr(
+                    self.message_queue,
+                    "put_fast_nowait",
+                    None,
+                )
+                if use_fast_uplink and callable(fast_put):
+                    fast_put(authenticated_payload)
+                else:
+                    self.message_queue.put_nowait(authenticated_payload)
                 return {"submitted": True}
             except Exception as e:
                 try:
@@ -1068,347 +1016,17 @@ class PluginContext:
                     ),
                 }
 
-        # A live-frame permission token is a per-host capability. It must not
-        # enter message_plane, whose records are persisted and broadcast to
-        # bus subscribers. The plugin child sends this payload only over its
-        # authenticated CH_MSG uplink; the host strips the token before any
-        # shared-state write and privately hands the original to proactive
-        # delivery.
-        live_frame_token = canonical_metadata.get("live_frame_permission_token")
-        if isinstance(live_frame_token, str) and live_frame_token:
-            if self.message_queue is None:
-                return {
-                    "ok": False,
-                    "submitted": False,
-                    "reason": "transport_unavailable",
-                }
-            try:
-                private_payload = _build_wire_payload(
-                    message_id=str(uuid.uuid4()),
-                    ts=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-                )
-                self.message_queue.put_nowait(private_payload)
-                return {"submitted": True}
-            except Exception as e:
-                try:
-                    self.logger.warning(
-                        "[PluginContext] private message_queue push failed (%s)",
-                        type(e).__name__,
-                    )
-                except Exception:
-                    pass
-                return {
-                    "ok": False,
-                    "submitted": False,
-                    "reason": (
-                        "backpressure"
-                        if _is_submission_backpressure(e)
-                        else "transport_error"
-                    ),
-                }
-
-        # Prefer writing messages directly to message_plane ingest to isolate high-frequency writes
-        # from the control plane and rely on ZMQ backpressure.
-        primary_failure_reason: Optional[str] = None
-        if zmq is not None:
-            try:
-                from plugin.settings import MESSAGE_PLANE_ZMQ_INGEST_ENDPOINT
-                from plugin.settings import (
-                    PLUGIN_ZMQ_MESSAGE_PUSH_BATCH_SIZE,
-                    PLUGIN_ZMQ_MESSAGE_PUSH_FLUSH_INTERVAL_MS,
-                )
-
-                endpoint = str(MESSAGE_PLANE_ZMQ_INGEST_ENDPOINT)
-                if endpoint:
-                    if bool(fast_mode):
-                        lock = getattr(self, "_push_lock", None)
-                        if lock is None:
-                            with _PUSH_LOCK_INIT:
-                                lock = getattr(self, "_push_lock", None)
-                                if lock is None:
-                                    new_lock = threading.Lock()
-                                    try:
-                                        object.__setattr__(self, "_push_lock", new_lock)
-                                    except Exception:
-                                        self._push_lock = new_lock
-                                    lock = new_lock
-
-                        # 双重检查锁定模式：先检查是否需要创建 batcher
-                        batcher = getattr(self, "_message_plane_push_batcher", None)
-                        need_create_batcher = batcher is None
-                        
-                        if need_create_batcher:
-                            # 在锁外创建 batcher（避免在锁内做 I/O）
-                            from plugin.utils.zeromq_ipc import MessagePlaneIngestBatcher
-                            from plugin.settings import (
-                                MESSAGE_PLANE_PUSH_BATCHER_ENQUEUE_TIMEOUT_SECONDS,
-                                MESSAGE_PLANE_PUSH_BATCHER_MAX_QUEUE,
-                                MESSAGE_PLANE_PUSH_BATCHER_REJECT_RATIO,
-                            )
-                            
-                            new_batcher = MessagePlaneIngestBatcher(
-                                from_plugin=self.plugin_id,
-                                endpoint=endpoint,
-                                batch_size=int(PLUGIN_ZMQ_MESSAGE_PUSH_BATCH_SIZE),
-                                flush_interval_ms=int(PLUGIN_ZMQ_MESSAGE_PUSH_FLUSH_INTERVAL_MS),
-                                max_queue=int(MESSAGE_PLANE_PUSH_BATCHER_MAX_QUEUE),
-                                reject_ratio=float(MESSAGE_PLANE_PUSH_BATCHER_REJECT_RATIO),
-                                enqueue_timeout_s=float(MESSAGE_PLANE_PUSH_BATCHER_ENQUEUE_TIMEOUT_SECONDS),
-                            )
-                            # 在锁外启动（可能涉及 ZMQ 连接）
-                            new_batcher.start()
-                            
-                            # 获取锁后再次检查并设置
-                            with lock:
-                                batcher = getattr(self, "_message_plane_push_batcher", None)
-                                if batcher is None:
-                                    batcher = new_batcher
-                                    try:
-                                        object.__setattr__(self, "_message_plane_push_batcher", batcher)
-                                    except Exception:
-                                        self._message_plane_push_batcher = batcher
-                                else:
-                                    # 另一个线程已经创建了，关闭我们创建的
-                                    try:
-                                        new_batcher.stop(timeout=2.0)
-                                    except Exception:
-                                        pass
-                        
-                        # 在锁内只做快速的内存操作
-                        with lock:
-                            # Fast path: use counter instead of UUID, use float timestamp instead of ISO
-                            msg_counter = getattr(self, "_msg_counter", None)
-                            if msg_counter is None:
-                                msg_counter = itertools.count(1)
-                                try:
-                                    object.__setattr__(self, "_msg_counter", msg_counter)
-                                except Exception:
-                                    self._msg_counter = msg_counter
-                            
-                            payload = _build_wire_payload(
-                                message_id=f"{self.plugin_id}:{next(msg_counter)}",
-                                ts=time.time(),
-                            )
-                            item = {"store": "messages", "topic": "all", "payload": payload}
-                            try:
-                                batcher.enqueue(item)
-                            except Exception:
-                                # [ISSUE4-DIAG] An important proactive cue
-                                # (ai_behavior!="read": respond completion /
-                                # keep-going self-prompt / alert) must never
-                                # vanish silently — log every such drop loudly.
-                                # High-freq "read" (screenshots/logs) stay on the
-                                # rate-limited aggregate below.
-                                try:
-                                    if canonical.get("ai_behavior") != "read":
-                                        self.logger.error(
-                                            "[PluginContext] message_plane DROP (fast batcher): "
-                                            "plugin_id={} ai_behavior={} priority={} reason=backpressure",
-                                            self.plugin_id,
-                                            canonical.get("ai_behavior"),
-                                            canonical.get("priority"),
-                                        )
-                                except Exception:
-                                    # This is a best-effort diagnostic on the hot
-                                    # backpressure path; a logging failure (rotation
-                                    # race, bad arg) must never propagate and turn a
-                                    # dropped-cue observation into a real crash.
-                                    pass
-                                # Backpressure: do not fall back to control-plane (it will amplify overload).
-                                try:
-                                    last_ts = float(getattr(self, "_mp_backpressure_last_ts", 0.0) or 0.0)
-                                except Exception:
-                                    last_ts = 0.0
-                                try:
-                                    cnt = int(getattr(self, "_mp_backpressure_count", 0) or 0) + 1
-                                except Exception:
-                                    cnt = 1
-                                try:
-                                    object.__setattr__(self, "_mp_backpressure_count", cnt)
-                                except Exception:
-                                    try:
-                                        self._mp_backpressure_count = cnt
-                                    except Exception:
-                                        pass
-                                now_ts = time.time()
-                                if now_ts - last_ts >= 1.0:
-                                    try:
-                                        object.__setattr__(self, "_mp_backpressure_last_ts", float(now_ts))
-                                        object.__setattr__(self, "_mp_backpressure_count", 0)
-                                    except Exception:
-                                        try:
-                                            self._mp_backpressure_last_ts = float(now_ts)
-                                            self._mp_backpressure_count = 0
-                                        except Exception:
-                                            pass
-                                    try:
-                                        self.logger.warning(
-                                            "[PluginContext] message_plane backpressure: rejected push_message.fast (x{})",
-                                            int(cnt),
-                                        )
-                                    except Exception:
-                                        pass
-                                return {
-                                    "ok": False,
-                                    "submitted": False,
-                                    "reason": "backpressure",
-                                }
-                            if PLUGIN_LOG_CTX_MESSAGE_PUSH:
-                                try:
-                                    self.logger.debug(
-                                        "Plugin {} submitted message (message_plane.fast): "
-                                        "ai_behavior={} priority={}",
-                                        self.plugin_id,
-                                        canonical.get("ai_behavior"),
-                                        canonical.get("priority"),
-                                    )
-                                except Exception:
-                                    pass
-                            return {"submitted": True}
-
-                    tls = getattr(self, "_message_plane_ingest_tls", None)
-                    if tls is None:
-                        tls = threading.local()
-                        try:
-                            object.__setattr__(self, "_message_plane_ingest_tls", tls)
-                        except Exception:
-                            self._message_plane_ingest_tls = tls
-
-                    sock = getattr(tls, "sock", None)
-                    if sock is None:
-                        ctx = zmq.Context.instance()
-                        sock = ctx.socket(zmq.PUSH)
-                        try:
-                            sock.setsockopt(zmq.LINGER, 0)
-                            try:
-                                from plugin.settings import MESSAGE_PLANE_INGEST_SNDTIMEO_MS
-
-                                sock.setsockopt(zmq.SNDTIMEO, int(MESSAGE_PLANE_INGEST_SNDTIMEO_MS))
-                            except Exception:
-                                pass
-                        except Exception:
-                            pass
-                        sock.connect(endpoint)
-                        try:
-                            tls.sock = sock
-                        except Exception:
-                            pass
-
-                    payload = _build_wire_payload(
-                        message_id=str(uuid.uuid4()),
-                        ts=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-                    )
-                    msg = {
-                        "v": 1,
-                        "kind": "delta_batch",
-                        "from": str(self.plugin_id),
-                        "ts": time.time(),
-                        "batch_id": str(uuid.uuid4()),
-                        "items": [
-                            {
-                                "store": "messages",
-                                "topic": "all",
-                                "payload": payload,
-                            }
-                        ],
-                    }
-
-                    # Blocking send: rely on ZMQ HWM for backpressure.
-                    if ormsgpack is None:
-                        raise RuntimeError("ormsgpack is required for message_plane push")
-                    encoded = ormsgpack.packb(msg)
-                    sock.send(encoded, flags=0)
-                    if PLUGIN_LOG_CTX_MESSAGE_PUSH:
-                        try:
-                            self.logger.debug(
-                                "Plugin {} submitted message (message_plane): "
-                                "ai_behavior={} priority={}",
-                                self.plugin_id,
-                                canonical.get("ai_behavior"),
-                                canonical.get("priority"),
-                            )
-                        except Exception:
-                            pass
-                    return {"submitted": True}
-            except Exception as e:
-                again_type = getattr(zmq, "Again", None)
-                if isinstance(again_type, type) and isinstance(e, again_type):
-                    primary_failure_reason = "backpressure"
-                else:
-                    primary_failure_reason = "transport_error"
-                # Exceptions can only escape before or from the blocking send;
-                # logging after a successful send is isolated above.  The
-                # legacy host queue below remains a distinct local submission
-                # path and may drive bus-backed consumers.
-                try:
-                    self.logger.warning(
-                        "[PluginContext] message_plane submission failed; trying legacy host queue: "
-                        "plugin_id={} ai_behavior={} priority={} reason={} err_type={}",
-                        self.plugin_id,
-                        canonical.get("ai_behavior"),
-                        canonical.get("priority"),
-                        primary_failure_reason,
-                        type(e).__name__,
-                    )
-                except Exception:
-                    pass
-
-        # The legacy control-plane queue is still a valid local host submission
-        # path: host-side message records emit bus changes consumed by fallback
-        # watchers.  A successful enqueue therefore accepts responsibility even
-        # though it does not acknowledge later host consumption.
-        if self.message_queue is not None:
-            try:
-                payload = _build_wire_payload(
-                    message_id=str(uuid.uuid4()),
-                    ts=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-                )
-                self.message_queue.put_nowait(payload)
-                if PLUGIN_LOG_CTX_MESSAGE_PUSH:
-                    try:
-                        self.logger.debug(
-                            "Plugin {} submitted message (legacy host queue): "
-                            "ai_behavior={} priority={}",
-                            self.plugin_id,
-                            canonical.get("ai_behavior"),
-                            canonical.get("priority"),
-                        )
-                    except Exception:
-                        pass
-                return {"submitted": True}
-            except Exception as e:
-                try:
-                    self.logger.warning(
-                        "[PluginContext] fallback message_queue push failed (%s)",
-                        type(e).__name__,
-                    )
-                except Exception:
-                    pass
-                return {
-                    "ok": False,
-                    "submitted": False,
-                    "reason": (
-                        "backpressure"
-                        if _is_submission_backpressure(e)
-                        else primary_failure_reason or "transport_error"
-                    ),
-                }
-        
-        # 所有方式都不可用时，记录警告而非抛错（避免插件崩溃）
         try:
             self.logger.error(
-                "[PluginContext] push_message failed: message_plane unavailable "
-                "(zmq={}, endpoint={}). Check MESSAGE_PLANE_ZMQ_INGEST_ENDPOINT config.",
-                zmq is not None,
-                bool(getattr(self, "_mp_endpoint_cached", None)),
+                "[PluginContext] push_message failed: authenticated message "
+                "uplink unavailable"
             )
         except Exception:
             pass
-
         return {
             "ok": False,
             "submitted": False,
-            "reason": primary_failure_reason or "transport_unavailable",
+            "reason": "transport_unavailable",
         }
 
     async def push_message_async(self, *args: Any, **kwargs: Any) -> "PushMessageResult":

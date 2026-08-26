@@ -527,6 +527,7 @@ def _plugin_process_runner(
     stop_event: Any | None = None,
     startup_options: dict[str, object] | None = None,
     transport_curve_credentials: tuple[bytes, bytes, bytes] | None = None,
+    message_uplink_endpoint: str = "",
 ) -> None:
     """独立进程中的运行函数。通过 ZMQ 与宿主进程通信。"""
     # 保存进程级 stop event
@@ -556,6 +557,10 @@ def _plugin_process_runner(
     child_transport_kwargs: dict[str, object] = {}
     if transport_curve_credentials is not None:
         child_transport_kwargs["downlink_curve"] = transport_curve_credentials
+    if message_uplink_endpoint:
+        child_transport_kwargs["message_uplink_endpoint"] = (
+            message_uplink_endpoint
+        )
     child_transport = ChildTransport(
         downlink_endpoint,
         uplink_endpoint,
@@ -1579,7 +1584,7 @@ class PluginHost:
         self.config_path = config_path
         self.logger = logger.bind(plugin_id=plugin_id, host=True)
 
-        # ZMQ transport: 2 socket pairs replace 5 mp.Queues
+        # ZMQ transport: 3 authenticated socket channels replace 5 mp.Queues
         self.transport = HostTransport()
 
         process_context = multiprocessing.get_context("spawn")
@@ -1598,6 +1603,7 @@ class PluginHost:
                 self._process_stop_event,
                 self._startup_options,
                 getattr(self.transport, "downlink_curve_credentials", None),
+                getattr(self.transport, "message_uplink_endpoint", ""),
             ),
             # Plugin code may spawn subprocesses/Managers; daemon process would forbid that.
             daemon=False,

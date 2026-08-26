@@ -329,7 +329,7 @@ def _make_offline_for_ephemeral():
     c._notify_reasoning_done = AsyncMock()
 
     def _set_chunks(chunks):
-        async def _fake(messages):
+        async def _fake(messages, **_overrides):
             for ch in chunks:
                 yield ch
         c._astream_visible_with_tools = _fake
@@ -398,6 +398,30 @@ def test_prompt_ephemeral_rechecks_image_authorization_after_async_setup():
 
     assert committed is False
     assert provider_called is False
+
+
+def test_prompt_ephemeral_passes_image_authorization_into_the_tool_loop():
+    c, _set_chunks = _make_offline_for_ephemeral()
+    authorization_guard = lambda: True
+    received_guard = None
+
+    async def _provider(_messages, **overrides):
+        nonlocal received_guard
+        received_guard = overrides.get("_authorization_guard")
+        yield SimpleNamespace(content="visible reply")
+
+    c._astream_visible_with_tools = _provider
+
+    committed = asyncio.run(
+        c.prompt_ephemeral(
+            "describe the shared screen",
+            images=["private-live-frame"],
+            authorization_guard=authorization_guard,
+        )
+    )
+
+    assert committed is True
+    assert received_guard is authorization_guard
 
 
 def test_prompt_ephemeral_committed_text_callback_receives_sanitized_text_once():

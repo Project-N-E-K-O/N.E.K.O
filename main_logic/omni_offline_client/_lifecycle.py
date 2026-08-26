@@ -334,7 +334,10 @@ class _LifecycleMixin:
                             return False
                     # 主动搭话同样走 tool-aware streaming —— agent 注入的 stage
                     # direction 也可能让模型决定调用工具（比如 "讲一下今天天气"）。
-                    async for chunk in self._astream_visible_with_tools(messages_to_send):
+                    async for chunk in self._astream_visible_with_tools(
+                        messages_to_send,
+                        _authorization_guard=authorization_guard,
+                    ):
                         if hasattr(chunk, 'usage_metadata') and chunk.usage_metadata:
                             logger.debug(f"🔍 [Usage-Proactive] {chunk.usage_metadata}")
                         if hasattr(chunk, 'response_metadata') and chunk.response_metadata:

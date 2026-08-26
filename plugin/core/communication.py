@@ -25,7 +25,7 @@ from plugin.settings import (
 from plugin._types.exceptions import PluginExecutionError
 from plugin.logging_config import format_log_text as _format_log_text
 from plugin.core.zmq_transport import (
-    HostTransport, CH_RES, CH_STS, CH_MSG, CH_COMM,
+    HostTransport, CH_RES, CH_STS, CH_MSG, CH_MSG_BATCH, CH_COMM,
 )
 
 _T = TypeVar("_T")
@@ -44,8 +44,8 @@ async def _cancel_and_wait(task: asyncio.Task[Any]) -> None:
 class PluginCommunicationResourceManager:
     """Host-side communication manager backed by ZMQ transport.
 
-    Reads all uplink messages in a single consumer task and dispatches by
-    channel tag (``res`` / ``sts`` / ``msg`` / ``comm``).
+    Uses separate consumer tasks for control traffic (``res`` / ``sts`` /
+    ``comm``) and plugin messages (``msg`` / ``msg_batch``).
     """
 
     plugin_id: str
@@ -55,6 +55,7 @@ class PluginCommunicationResourceManager:
     # async internals
     _pending_futures: Dict[str, asyncio.Future] = field(default_factory=dict)
     _uplink_consumer_task: Optional[asyncio.Task] = None
+    _message_consumer_task: Optional[asyncio.Task] = None
     _shutdown_event: Optional[asyncio.Event] = None
     _message_target_queue: Optional[asyncio.Queue] = None
     _background_tasks: set[asyncio.Task] = field(default_factory=set)
@@ -96,6 +97,21 @@ class PluginCommunicationResourceManager:
         if self._uplink_consumer_task is None or self._uplink_consumer_task.done():
             self._uplink_consumer_task = asyncio.create_task(self._consume_uplink())
             self.logger.debug("Started uplink consumer for plugin {}", self.plugin_id)
+        recv_message = getattr(self.transport, "recv_message", None)
+        if (
+            callable(recv_message)
+            and (
+                self._message_consumer_task is None
+                or self._message_consumer_task.done()
+            )
+        ):
+            self._message_consumer_task = asyncio.create_task(
+                self._consume_message_uplink()
+            )
+            self.logger.debug(
+                "Started message uplink consumer for plugin {}",
+                self.plugin_id,
+            )
 
     async def start(self, message_target_queue: Optional[asyncio.Queue] = None) -> None:
         await self._run_on_owner_loop(self._start_local(message_target_queue=message_target_queue))
@@ -157,20 +173,26 @@ class PluginCommunicationResourceManager:
 
         # Let the consumer drain briefly, then cancel.
         graceful = min(0.5, float(timeout)) if timeout is not None else 0.5
-        if self._uplink_consumer_task and not self._uplink_consumer_task.done():
+        consumer_tasks = [
+            self._uplink_consumer_task,
+            self._message_consumer_task,
+        ]
+        for consumer_task in consumer_tasks:
+            if consumer_task is None or consumer_task.done():
+                continue
             current_loop = asyncio.get_running_loop()
-            task_loop = self._uplink_consumer_task.get_loop()
+            task_loop = consumer_task.get_loop()
             if task_loop is current_loop:
                 try:
-                    await asyncio.wait_for(self._uplink_consumer_task, timeout=graceful)
+                    await asyncio.wait_for(consumer_task, timeout=graceful)
                 except asyncio.TimeoutError:
-                    self._uplink_consumer_task.cancel()
+                    consumer_task.cancel()
                     try:
-                        await self._uplink_consumer_task
+                        await consumer_task
                     except asyncio.CancelledError:
                         pass
             else:
-                task = self._uplink_consumer_task
+                task = consumer_task
                 if task_loop.is_closed():
                     pass
                 elif task_loop.is_running():
@@ -222,6 +244,7 @@ class PluginCommunicationResourceManager:
             self._background_tasks.clear()
 
         self._uplink_consumer_task = None
+        self._message_consumer_task = None
         self._shutdown_event = None
         self.logger.debug("Communication for plugin {} shutdown complete", self.plugin_id)
 
@@ -449,7 +472,7 @@ class PluginCommunicationResourceManager:
     }
 
     async def _consume_uplink(self) -> None:
-        """Single consumer that reads **all** uplink messages and routes them."""
+        """Consume lifecycle, tool, status, and plugin-communication traffic."""
         self._ensure_shutdown_event()
         se = self._shutdown_event
         if se is None:
@@ -480,6 +503,9 @@ class PluginCommunicationResourceManager:
                         except asyncio.QueueFull:
                             pass
                 elif ch == CH_MSG:
+                    # Compatibility for transports created without a dedicated
+                    # message endpoint. Runtime plugin hosts use the isolated
+                    # consumer below.
                     await self._route_message(payload)
                 elif ch == CH_COMM:
                     await self._route_comm(payload)
@@ -491,6 +517,47 @@ class PluginCommunicationResourceManager:
             except Exception:
                 if not se.is_set():
                     self.logger.exception("Error in uplink consumer for plugin {}", self.plugin_id)
+                await asyncio.sleep(MESSAGE_CONSUMER_SLEEP_INTERVAL)
+
+    async def _consume_message_uplink(self) -> None:
+        """Consume authenticated plugin messages independently of control RPCs."""
+        self._ensure_shutdown_event()
+        se = self._shutdown_event
+        recv_message = getattr(self.transport, "recv_message", None)
+        if se is None or not callable(recv_message):
+            return
+
+        poll_ms = int(QUEUE_GET_TIMEOUT * 1000)
+        while not se.is_set():
+            try:
+                result = await recv_message(timeout_ms=poll_ms)
+                if result is None:
+                    continue
+                channel, payload = result
+                if channel == CH_MSG:
+                    await self._route_message(payload)
+                elif channel == CH_MSG_BATCH:
+                    items = payload.get("items")
+                    if not isinstance(items, list):
+                        raise ValueError("invalid authenticated message batch")
+                    for item in items:
+                        if not isinstance(item, dict):
+                            raise ValueError("invalid authenticated message item")
+                        await self._route_message(item)
+                else:
+                    self.logger.debug(
+                        "Unknown message uplink channel '{}' from plugin {}",
+                        channel,
+                        self.plugin_id,
+                    )
+            except asyncio.CancelledError:
+                break
+            except Exception:
+                if not se.is_set():
+                    self.logger.exception(
+                        "Error in message uplink consumer for plugin {}",
+                        self.plugin_id,
+                    )
                 await asyncio.sleep(MESSAGE_CONSUMER_SLEEP_INTERVAL)
 
     # ── result dispatch ──────────────────────────────────────────

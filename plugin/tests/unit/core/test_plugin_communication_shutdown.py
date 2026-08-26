@@ -7,6 +7,7 @@ import copy
 import pytest
 
 from plugin.core.communication import STARTUP_RESULT_REQ_ID, PluginCommunicationResourceManager
+from plugin.core.zmq_transport import CH_MSG, CH_RES
 from plugin.core.state import state
 
 
@@ -17,6 +18,72 @@ class _Transport:
 
     async def send_command(self, msg):
         return None
+
+
+@pytest.mark.asyncio
+async def test_message_routing_cannot_block_control_results() -> None:
+    class _DualTransport:
+        permission_generation = "generation-one"
+
+        def __init__(self) -> None:
+            self.control: asyncio.Queue = asyncio.Queue()
+            self.messages: asyncio.Queue = asyncio.Queue()
+
+        async def recv(self, timeout_ms=None):
+            try:
+                return await asyncio.wait_for(
+                    self.control.get(),
+                    timeout=(timeout_ms or 1000) / 1000,
+                )
+            except asyncio.TimeoutError:
+                return None
+
+        async def recv_message(self, timeout_ms=None):
+            try:
+                return await asyncio.wait_for(
+                    self.messages.get(),
+                    timeout=(timeout_ms or 1000) / 1000,
+                )
+            except asyncio.TimeoutError:
+                return None
+
+        async def send_command(self, msg):
+            return None
+
+    transport = _DualTransport()
+    manager = PluginCommunicationResourceManager(
+        plugin_id="demo",
+        transport=transport,  # type: ignore[arg-type]
+        logger=_Logger(),
+    )
+    route_started = asyncio.Event()
+    release_route = asyncio.Event()
+
+    async def _blocked_route(_payload):
+        route_started.set()
+        await release_route.wait()
+
+    manager._route_message = _blocked_route  # type: ignore[method-assign]
+    result_future = asyncio.get_running_loop().create_future()
+    manager._pending_futures["request-one"] = result_future
+    await manager.start()
+    try:
+        await transport.messages.put((CH_MSG, {"type": "MESSAGE_PUSH"}))
+        await asyncio.wait_for(route_started.wait(), timeout=0.5)
+        await transport.control.put((CH_RES, {
+            "req_id": "request-one",
+            "success": True,
+            "data": "ok",
+        }))
+
+        assert await asyncio.wait_for(result_future, timeout=0.5) == {
+            "req_id": "request-one",
+            "success": True,
+            "data": "ok",
+        }
+    finally:
+        release_route.set()
+        await manager.shutdown(timeout=0.2)
 
 
 class _Logger:

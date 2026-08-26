@@ -3506,6 +3506,99 @@ class _ToolAwareFakeLLM:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("cap", [1, 2])
+async def test_openai_tool_loop_reauthorizes_before_every_provider_call(cap):
+    from main_logic.tool_calling import ToolCall, ToolDefinition, ToolResult
+    from utils.llm_client import LLMStreamChunk
+
+    authorized = True
+    guard_calls = 0
+
+    async def handler(call: ToolCall) -> ToolResult:
+        nonlocal authorized
+        authorized = False
+        return ToolResult(call_id=call.call_id, name=call.name, output={})
+
+    tool = ToolDefinition(name="lookup", description="", handler=handler)
+    first_round = [
+        LLMStreamChunk(
+            content="",
+            tool_call_deltas=[{
+                "index": 0,
+                "id": "c1",
+                "type": "function",
+                "function": {"name": "lookup", "arguments": "{}"},
+            }],
+        ),
+        LLMStreamChunk(content="", finish_reason="tool_calls"),
+    ]
+    fake_llm = _FakeLLM([
+        first_round,
+        [LLMStreamChunk(content="must not be requested", finish_reason="stop")],
+    ])
+    client = _bare_tool_client(fake_llm, tool, handler, cap=cap)
+
+    def authorization_guard():
+        nonlocal guard_calls
+        guard_calls += 1
+        return authorized
+
+    async for _chunk in client._astream_with_tools(
+        [{"role": "user", "content": "inspect private frame"}],
+        _authorization_guard=authorization_guard,
+    ):
+        pass
+
+    assert len(fake_llm.calls) == 1
+    assert guard_calls == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cap", [1, 2])
+async def test_genai_tool_loop_reauthorizes_before_every_provider_call(
+    monkeypatch,
+    cap,
+):
+    from main_logic.tool_calling import ToolCall, ToolResult
+
+    monkeypatch.setattr(_ofc_genai, "_GENAI_AVAILABLE", True)
+    authorized = True
+    guard_calls = 0
+
+    async def handler(call: ToolCall) -> ToolResult:
+        nonlocal authorized
+        authorized = False
+        return ToolResult(call_id=call.call_id, name=call.name, output={})
+
+    client, provider_calls = _bare_genai_client(
+        [[
+            _GenaiPart(function_call=_GenaiFunctionCall(
+                "recall_memory",
+                {},
+                id_="c1",
+            )),
+        ]],
+        handler,
+        cap=cap,
+        finalize_parts=[_GenaiPart(text="must not be requested")],
+    )
+
+    def authorization_guard():
+        nonlocal guard_calls
+        guard_calls += 1
+        return authorized
+
+    async for _chunk in client._astream_genai_with_tools(
+        [{"role": "user", "content": "inspect private frame"}],
+        _authorization_guard=authorization_guard,
+    ):
+        pass
+
+    assert len(provider_calls) == 1
+    assert guard_calls == 2
+
+
+@pytest.mark.asyncio
 async def test_openai_round_start_fires_after_leak_filter_tail():
     """顺序不变量：leak filter 扣住的 pre-tool 文本必须在 round-start
     回调**之前**吐完。
