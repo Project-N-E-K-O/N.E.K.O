@@ -546,6 +546,9 @@ class PluginCliService:
         expected_plugin_id = str(detail.get("expected_plugin_toml_id") or "").strip()
         if not expected_plugin_id or expected_plugin_id != plan.plugin_id:
             raise ValueError("Market plugin identity does not match the builtin override plan")
+        expected_version = str(detail.get("version") or "").strip()
+        if not expected_version or expected_version != plan.target_version:
+            raise ValueError("Market plugin version does not match the builtin override package")
         detail.pop("expected_plugin_toml_id", None)
         detail["package_sha256"] = actual_sha256
 

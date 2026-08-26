@@ -345,6 +345,7 @@ import {
   type MarketPluginAction,
 } from '@/utils/marketPluginInstallState'
 import { resolvePluginInstallErrorKey } from '@/utils/pluginInstallError'
+import { confirmBuiltinOverride } from '@/utils/confirmBuiltinOverride'
 
 interface Props {
   embedded?: boolean
@@ -1233,6 +1234,16 @@ async function handleUpgrade(plugin: MarketWorkbenchItem) {
     const action = getMarketAction(plugin)
     if (action.kind !== 'upgrade' && action.kind !== 'override_builtin') {
       if (action.kind === 'blocked') ElMessage.error(t('market.autoUpgradeBlocked'))
+      return
+    }
+    if (
+      action.kind === 'override_builtin'
+      && !(await confirmBuiltinOverride(t, {
+        pluginName: plugin.name,
+        currentVersion: action.currentVersion,
+        targetVersion: action.targetVersion,
+      }))
+    ) {
       return
     }
     const payload = await resolveInstallPayload(plugin)

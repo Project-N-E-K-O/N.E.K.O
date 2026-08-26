@@ -190,6 +190,83 @@ async def test_switch_start_failure_rolls_back_code_profile_lock_and_builtin_run
 
 
 @pytest.mark.asyncio
+async def test_switch_registry_load_failure_rolls_back_disabled_builtin(
+    tmp_path: Path,
+) -> None:
+    plugin_id = "study_companion"
+    exec_root = tmp_path / "exec"
+    staging = exec_root / ".study_companion.staging-test"
+    target = exec_root / plugin_id
+    staging.mkdir(parents=True)
+    (staging / "plugin.toml").write_text("market", encoding="utf-8")
+    builtin_config = tmp_path / "builtin" / plugin_id / "plugin.toml"
+    builtin_config.parent.mkdir(parents=True)
+    builtin_config.write_text("builtin", encoding="utf-8")
+    plugins_backup = copy.deepcopy(state.plugins)
+    lock_value: object = {"source": "builtin"}
+    start_calls: list[str] = []
+
+    async def refresh() -> None:
+        with state.acquire_plugins_write_lock():
+            if target.exists():
+                state.plugins[plugin_id] = {
+                    "config_path": str(target / "plugin.toml"),
+                    "runtime_load_state": "failed",
+                    "runtime_load_error_type": "ModuleNotFoundError",
+                    "runtime_load_error_phase": "import_module",
+                }
+            else:
+                state.plugins[plugin_id] = {
+                    "config_path": str(builtin_config),
+                    "runtime_load_state": "ready",
+                }
+
+    async def commit_lock() -> None:
+        nonlocal lock_value
+        lock_value = {"source": "market"}
+
+    async def restore_lock(snapshot: object) -> None:
+        nonlocal lock_value
+        lock_value = snapshot
+
+    async def start(_plugin_id: str) -> None:
+        start_calls.append(_plugin_id)
+
+    try:
+        with pytest.raises(SourceSwitchError) as exc_info:
+            await switch_builtin_source(
+                SourceSwitchRequest(
+                    plugin_id=plugin_id,
+                    staged_plugin_dir=staging,
+                    target_plugin_dir=target,
+                    confirmation_token="token",
+                ),
+                rebuild_plan=lambda: _async_value(_plan("token")),
+                read_lock_snapshot=lambda: _async_value(lock_value),
+                commit_lock=commit_lock,
+                restore_lock=restore_lock,
+                clear_user_source=lambda: _async_value(None),
+                refresh_registry=refresh,
+                is_running=lambda _plugin_id: _async_value(False),
+                stop=lambda _plugin_id: _async_value(None),
+                start=start,
+            )
+
+        assert exc_info.value.stage == "refresh_registry"
+        assert exc_info.value.rollback_code == "override_rollback_completed"
+        assert "ModuleNotFoundError during import_module" in str(exc_info.value.cause)
+        assert target.exists() is False
+        assert lock_value == {"source": "builtin"}
+        assert start_calls == []
+        with state.acquire_plugins_read_lock():
+            assert state.plugins[plugin_id]["config_path"] == str(builtin_config)
+    finally:
+        with state.acquire_plugins_write_lock():
+            state.plugins.clear()
+            state.plugins.update(plugins_backup)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "cancel_stage",
     (

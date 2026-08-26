@@ -398,6 +398,63 @@ async def test_market_builtin_override_rejects_missing_or_invalid_expected_ident
 
 
 @pytest.mark.asyncio
+async def test_market_builtin_override_rejects_market_version_mismatch_before_staging(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plugin_id = "study_companion"
+    builtin_root = tmp_path / "builtin"
+    user_root = tmp_path / "installations" / "plugins"
+    packages_root = tmp_path / "packages"
+    profiles_root = tmp_path / "profiles"
+    _write_plugin(builtin_root, plugin_id, "0.1.5")
+    packages_root.mkdir(parents=True)
+    package = packages_root / f"{plugin_id}.neko-plugin"
+    build_plugin(_write_plugin(tmp_path / "source", plugin_id, "0.1.6"), package)
+    package_sha256 = hashlib.sha256(package.read_bytes()).hexdigest()
+
+    import plugin.settings as settings
+
+    monkeypatch.setattr(settings, "BUILTIN_PLUGIN_CONFIG_ROOT", builtin_root)
+    monkeypatch.setattr(settings, "USER_PLUGIN_CONFIG_ROOT", user_root)
+    monkeypatch.setattr(settings, "USER_PLUGIN_PACKAGES_ROOT", packages_root)
+    monkeypatch.setattr(settings, "USER_PACKAGE_PROFILES_ROOT", profiles_root)
+    monkeypatch.setattr(settings, "PLUGIN_STATE_ROOT", tmp_path / "state")
+
+    manager = InstallSourceManager(
+        lock_path=tmp_path / "plugins.lock.json",
+        builtin_root=builtin_root,
+        user_root=user_root,
+        scanner=PluginDirectoryScanner(builtin_root, user_root),
+    )
+    set_global_manager(manager)
+    service = PluginCliService()
+    staging_calls: list[str] = []
+
+    def stage_override(**_kwargs: object) -> None:
+        staging_calls.append("stage")
+
+    monkeypatch.setattr(service, "_stage_builtin_override_sync", stage_override)
+
+    try:
+        with pytest.raises(ValueError, match="Market plugin version"):
+            await service.install_builtin_override(
+                package=str(package),
+                market_override=_market_override(
+                    plugin_id=plugin_id,
+                    version="9.9.9",
+                    package_sha256=package_sha256,
+                ),
+            )
+
+        assert staging_calls == []
+        assert not user_root.exists()
+        assert manager.find_active_market_entry(plugin_id) is None
+    finally:
+        set_global_manager(None)
+
+
+@pytest.mark.asyncio
 async def test_market_builtin_override_rejects_read_only_lock_before_staging_or_stop(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

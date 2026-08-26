@@ -125,6 +125,16 @@ def _effective_config_path_sync(plugin_id: str) -> Path | None:
     return Path(config_path_obj).resolve(strict=False)
 
 
+def _runtime_load_failure_sync(plugin_id: str) -> tuple[str, str] | None:
+    with state.acquire_plugins_read_lock():
+        raw_meta = state.plugins.get(plugin_id)
+        if not isinstance(raw_meta, dict) or raw_meta.get("runtime_load_state") != "failed":
+            return None
+        error_type = str(raw_meta.get("runtime_load_error_type") or "unknown")
+        error_phase = str(raw_meta.get("runtime_load_error_phase") or "unknown")
+    return error_type, error_phase
+
+
 def _validate_rebuilt_plan(plan: Mapping[str, object], request: SourceSwitchRequest) -> None:
     if (
         plan.get("action") != "override_builtin"
@@ -287,6 +297,16 @@ async def switch_builtin_source(
         expected_path = (request.target_plugin_dir / "plugin.toml").resolve(strict=False)
         if effective_path != expected_path:
             raise RuntimeError("registry did not select the promoted user source")
+        load_failure = await asyncio.to_thread(
+            _runtime_load_failure_sync,
+            request.plugin_id,
+        )
+        if load_failure is not None:
+            error_type, error_phase = load_failure
+            raise RuntimeError(
+                "registry could not load the promoted user source "
+                f"({error_type} during {error_phase})"
+            )
 
         if was_running:
             stage = "start_market"

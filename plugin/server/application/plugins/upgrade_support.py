@@ -256,12 +256,21 @@ def _path_is_within(path: Path, root: Path) -> bool:
     return resolved_path == resolved_root or resolved_root in resolved_path.parents
 
 
-def _validate_replacement_targets(targets: tuple[Path, ...]) -> None:
-    state_root = get_plugin_state_root()
+def _validate_replacement_targets(
+    targets: tuple[Path, ...],
+    *,
+    state_root: Path | None = None,
+) -> None:
+    state_roots = {get_plugin_state_root().resolve(strict=False)}
+    if state_root is not None:
+        state_roots.add(state_root.resolve(strict=False))
     forbidden = [
         target
         for target in targets
-        if _path_is_within(target, state_root) or _path_is_within(state_root, target)
+        if any(
+            _path_is_within(target, root) or _path_is_within(root, target)
+            for root in state_roots
+        )
     ]
     if forbidden:
         raise ValueError(
@@ -294,7 +303,10 @@ async def replace_plugin(
     targets = (target_dir, *additional_targets)
     if any(target not in targets for target in preserve_targets):
         raise ValueError("preserve targets must also be replacement targets")
-    _validate_replacement_targets(targets)
+    _validate_replacement_targets(
+        targets,
+        state_root=layout.data_dir.parent.parent,
+    )
 
     if initialize_runtime_config:
         await asyncio.to_thread(
