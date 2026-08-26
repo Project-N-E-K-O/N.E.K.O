@@ -647,9 +647,7 @@ class PluginCommunicationResourceManager:
                     "PLUGIN_DELIVERY_PERMISSION_SET",
                 }:
                     trusted_msg["host_generation"] = str(
-                        getattr(self.transport, "permission_generation", "")
-                        or getattr(self.transport, "uplink_token", "")
-                        or ""
+                        getattr(self.transport, "permission_generation", "") or ""
                     )
                 await comm_queue.put(trusted_msg)
         except Exception as e:

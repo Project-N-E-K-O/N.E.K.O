@@ -166,9 +166,7 @@ async def _revoke_plugin_permissions(
 def _host_permission_generation(host_obj: object) -> str:
     transport = getattr(host_obj, "transport", None)
     return str(
-        getattr(transport, "permission_generation", "")
-        or getattr(transport, "uplink_token", "")
-        or ""
+        getattr(transport, "permission_generation", "") or ""
     ).strip()
 
 

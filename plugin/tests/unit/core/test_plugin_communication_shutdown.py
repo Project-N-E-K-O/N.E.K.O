@@ -298,6 +298,32 @@ async def test_route_comm_overwrites_the_plugin_supplied_identity(
 
 
 @pytest.mark.asyncio
+async def test_route_comm_does_not_expose_the_raw_uplink_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    transport = _Transport()
+    transport.uplink_token = "raw-uplink-secret"
+    manager = PluginCommunicationResourceManager(
+        plugin_id="authenticated-plugin",
+        transport=transport,
+        logger=_Logger(),
+    )
+    queue: asyncio.Queue[dict[str, object]] = asyncio.Queue()
+    monkeypatch.setattr(state, "_plugin_comm_queue", queue)
+
+    await manager._route_comm(
+        {
+            "type": "LIVE_FRAME_PERMISSION_SET",
+            "host_generation": "attacker-host-generation",
+        }
+    )
+
+    routed = queue.get_nowait()
+    assert routed["host_generation"] == ""
+    assert "raw-uplink-secret" not in repr(routed)
+
+
+@pytest.mark.asyncio
 async def test_message_route_overwrites_identity_and_generation_for_every_push(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

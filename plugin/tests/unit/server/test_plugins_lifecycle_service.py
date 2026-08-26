@@ -55,6 +55,14 @@ def test_host_permission_generation_prefers_non_secret_transport_value() -> None
     assert module._host_permission_generation(host) == "derived-generation"
 
 
+def test_host_permission_generation_does_not_expose_uplink_token() -> None:
+    host = SimpleNamespace(
+        transport=SimpleNamespace(uplink_token="raw-uplink-secret")
+    )
+
+    assert module._host_permission_generation(host) == ""
+
+
 async def _successful_revoke(
     _plugin_id: str,
     *,
@@ -298,7 +306,7 @@ async def test_start_plugin_revokes_permissions_from_a_crashed_stale_host(
         entry_point="tests.fake:Plugin",
         config_path=tmp_path / "demo_plugin" / "plugin.toml",
     )
-    host.transport = SimpleNamespace(uplink_token="stale-host-generation")
+    host.transport = SimpleNamespace(permission_generation="stale-host-generation")
     revoked: list[tuple[str, str]] = []
     hosts_backup = dict(module.state.plugin_hosts)
     try:
@@ -383,7 +391,7 @@ async def test_start_failure_cleanup_stops_and_keeps_host_when_permission_revoke
         entry_point="tests.fake:Plugin",
         config_path=tmp_path / "demo_plugin" / "plugin.toml",
     )
-    host.transport = SimpleNamespace(uplink_token="failed-start-generation")
+    host.transport = SimpleNamespace(permission_generation="failed-start-generation")
     hosts_backup = dict(module.state.plugin_hosts)
     try:
         with module.state.acquire_plugin_hosts_write_lock():
@@ -449,7 +457,7 @@ async def test_start_failure_cleanup_rechecks_permissions_after_shutdown(
         entry_point="tests.fake:Plugin",
         config_path=tmp_path / "demo_plugin" / "plugin.toml",
     )
-    host.transport = SimpleNamespace(uplink_token="failed-start-generation")
+    host.transport = SimpleNamespace(permission_generation="failed-start-generation")
     revoke_results = iter((True, False))
     revoke_calls: list[str] = []
     hosts_backup = dict(module.state.plugin_hosts)
@@ -535,7 +543,7 @@ async def test_start_retries_quarantined_failed_start_host(
         entry_point="tests.fake:Plugin",
         config_path=tmp_path / "demo_plugin" / "plugin.toml",
     )
-    host.transport = SimpleNamespace(uplink_token="failed-start-generation")
+    host.transport = SimpleNamespace(permission_generation="failed-start-generation")
     hosts_backup = dict(module.state.plugin_hosts)
     try:
         with module.state.acquire_plugin_hosts_write_lock():
@@ -3427,12 +3435,14 @@ async def test_stop_plugin_repeats_generation_revoke_after_shutdown(
     class _PublishingShutdownHost(_FakeProcessHost):
         def __init__(self, *args, **kwargs) -> None:
             super().__init__(*args, **kwargs)
-            self.transport = SimpleNamespace(uplink_token="host-generation-one")
+            self.transport = SimpleNamespace(
+                permission_generation="host-generation-one"
+            )
 
         async def shutdown(
             self, timeout: float = module.PLUGIN_SHUTDOWN_TIMEOUT
         ) -> None:
-            events.append(("shutdown", self.transport.uplink_token))
+            events.append(("shutdown", self.transport.permission_generation))
             self.stopped = True
 
     config_path = tmp_path / "demo_plugin" / "plugin.toml"
