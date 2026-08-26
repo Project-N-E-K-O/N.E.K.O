@@ -277,6 +277,92 @@ async def test_builtin_override_rejects_builtin_changed_after_confirmation(
 
 
 @pytest.mark.asyncio
+async def test_disabled_builtin_override_with_invalid_entry_rolls_back(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plugin_id = "study_companion"
+    builtin_root = tmp_path / "builtin"
+    user_root = tmp_path / "installations" / "plugins"
+    packages_root = tmp_path / "packages"
+    profiles_root = tmp_path / "profiles"
+    builtin = _write_plugin(builtin_root, plugin_id, "0.1.5")
+    source = _write_plugin(tmp_path / "source", plugin_id, "0.1.6")
+    with (source / "plugin.toml").open("a", encoding="utf-8") as manifest:
+        manifest.write("\n[plugin_runtime]\nenabled = false\n")
+    (source / "__init__.py").write_text(
+        "class DifferentPlugin: pass\n",
+        encoding="utf-8",
+    )
+    packages_root.mkdir(parents=True)
+    package = packages_root / f"{plugin_id}.neko-plugin"
+    build_plugin(source, package)
+    package_sha256 = hashlib.sha256(package.read_bytes()).hexdigest()
+
+    import plugin.settings as settings
+    from plugin.server.application.plugins import lifecycle_service
+
+    monkeypatch.setattr(settings, "BUILTIN_PLUGIN_CONFIG_ROOT", builtin_root)
+    monkeypatch.setattr(settings, "USER_PLUGIN_CONFIG_ROOT", user_root)
+    monkeypatch.setattr(settings, "USER_PLUGIN_PACKAGES_ROOT", packages_root)
+    monkeypatch.setattr(settings, "USER_PACKAGE_PROFILES_ROOT", profiles_root)
+    monkeypatch.setattr(settings, "PLUGIN_STATE_ROOT", tmp_path / "state")
+    manager = InstallSourceManager(
+        lock_path=tmp_path / "plugins.lock.json",
+        builtin_root=builtin_root,
+        user_root=user_root,
+        scanner=PluginDirectoryScanner(builtin_root, user_root),
+    )
+    set_global_manager(manager)
+
+    async def refresh_registry() -> dict[str, object]:
+        effective = user_root / plugin_id if (user_root / plugin_id).is_dir() else builtin
+        with state.acquire_plugins_write_lock():
+            state.plugins[plugin_id] = {
+                "config_path": str(effective / "plugin.toml"),
+                "runtime_enabled": not (user_root / plugin_id).is_dir(),
+            }
+        return {"ok": True}
+
+    async def is_running(_plugin_id: str) -> bool:
+        return False
+
+    async def no_op(_plugin_id: str, strict: bool | None = None) -> None:
+        _ = strict
+
+    monkeypatch.setattr(lifecycle_service.plugin_registry_service, "refresh_registry", refresh_registry)
+    monkeypatch.setattr(upgrade_support, "plugin_is_running", is_running)
+    monkeypatch.setattr(upgrade_support, "stop_plugin_for_replace", no_op)
+    monkeypatch.setattr(
+        upgrade_support,
+        "start_plugin_after_replace",
+        no_op,
+    )
+
+    try:
+        with pytest.raises(SourceSwitchError) as exc_info:
+            await PluginCliService().install_builtin_override(
+                package=str(package),
+                market_override=_market_override(
+                    plugin_id=plugin_id,
+                    version="0.1.6",
+                    package_sha256=package_sha256,
+                ),
+            )
+
+        assert exc_info.value.stage == "validate_promoted_source"
+        assert exc_info.value.rollback_code == "override_rollback_completed"
+        assert "AttributeError during import_class" in str(exc_info.value.cause)
+        assert not (user_root / plugin_id).exists()
+        assert (builtin / "plugin.toml").is_file()
+        assert manager.find_active_market_entry(plugin_id) is None
+    finally:
+        set_global_manager(None)
+        with state.acquire_plugins_write_lock():
+            state.plugins.pop(plugin_id, None)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("fail_market_start", "payload_metadata"),
     [

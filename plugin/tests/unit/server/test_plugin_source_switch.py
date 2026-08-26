@@ -78,6 +78,7 @@ async def test_switch_builtin_source_promotes_user_code_without_touching_state(
             restore_lock=lambda _snapshot: _async_value(None),
             clear_user_source=lambda: _async_value(None),
             refresh_registry=refresh,
+            validate_promoted_source=lambda: _async_value(None),
             is_running=is_running,
             stop=stop,
             start=start,
@@ -161,6 +162,7 @@ async def test_switch_start_failure_rolls_back_code_profile_lock_and_builtin_run
                 restore_lock=restore_lock,
                 clear_user_source=lambda: _async_value(None),
                 refresh_registry=refresh,
+                validate_promoted_source=lambda: _async_value(None),
                 is_running=is_running,
                 stop=stop,
                 start=start,
@@ -247,6 +249,7 @@ async def test_switch_registry_load_failure_rolls_back_disabled_builtin(
                 restore_lock=restore_lock,
                 clear_user_source=lambda: _async_value(None),
                 refresh_registry=refresh,
+                validate_promoted_source=lambda: _async_value(None),
                 is_running=lambda _plugin_id: _async_value(False),
                 stop=lambda _plugin_id: _async_value(None),
                 start=start,
@@ -275,6 +278,7 @@ async def test_switch_registry_load_failure_rolls_back_disabled_builtin(
         "promote_profile",
         "write_lock",
         "refresh_registry",
+        "validate_promoted_source",
         "start_market",
     ),
 )
@@ -329,6 +333,9 @@ async def test_switch_cancellation_completes_rollback_and_reraises_cancelled_err
             state.plugins[plugin_id] = {"config_path": str(source / "plugin.toml")}
         cancel_once("refresh_registry")
 
+    async def validate_promoted_source() -> None:
+        cancel_once("validate_promoted_source")
+
     async def is_running(_plugin_id: str) -> bool:
         return running
 
@@ -377,6 +384,7 @@ async def test_switch_cancellation_completes_rollback_and_reraises_cancelled_err
                 restore_lock=restore_lock,
                 clear_user_source=clear_user_source,
                 refresh_registry=refresh,
+                validate_promoted_source=validate_promoted_source,
                 is_running=is_running,
                 stop=stop,
                 start=start,
@@ -393,6 +401,7 @@ async def test_switch_cancellation_completes_rollback_and_reraises_cancelled_err
         lock_was_attempted = cancel_stage in {
             "write_lock",
             "refresh_registry",
+            "validate_promoted_source",
             "start_market",
         }
         assert restore_calls == ([{"source": "builtin"}] if lock_was_attempted else [])
@@ -426,6 +435,7 @@ async def test_switch_rejects_changed_source_before_mutating(tmp_path: Path) -> 
             restore_lock=lambda _snapshot: _async_value(None),
             clear_user_source=lambda: _async_value(None),
             refresh_registry=lambda: _async_value(None),
+            validate_promoted_source=lambda: _async_value(None),
             is_running=lambda _plugin_id: _async_value(False),
             stop=lambda _plugin_id: _async_value(None),
             start=lambda _plugin_id: _async_value(None),
@@ -469,6 +479,7 @@ async def test_switch_failure_before_lock_commit_does_not_restore_lock_metadata(
             restore_lock=lambda _snapshot: record("restore"),
             clear_user_source=lambda: record("clear"),
             refresh_registry=lambda: record("refresh"),
+            validate_promoted_source=lambda: record("validate"),
             is_running=lambda _plugin_id: _async_value(False),
             stop=lambda _plugin_id: _async_value(None),
             start=lambda _plugin_id: _async_value(None),

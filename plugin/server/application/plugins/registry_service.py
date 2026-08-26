@@ -6,7 +6,7 @@ try:
     import tomllib
 except ModuleNotFoundError:  # pragma: no cover - Python < 3.11
     import tomli as tomllib  # type: ignore[no-redef]
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -629,6 +629,28 @@ def _build_discovery_record_from_context(ctx: PluginContext) -> PluginDiscoveryR
     )
 
 
+def _validate_plugin_runtime_source_sync(plugin_id: str, config_path: Path) -> None:
+    """Validate one selected source even when its manifest disables runtime loading."""
+
+    resolved_config_path = _resolve_config_path(config_path)
+    ctx = _parse_single_plugin_config(resolved_config_path, set(), logger)
+    if ctx is None or ctx.pid != plugin_id:
+        raise RuntimeError("promoted plugin configuration could not be validated")
+
+    payload = _build_discovery_payload(
+        replace(ctx, enabled=True),
+        plugin_id=plugin_id,
+    )
+    if payload.get("runtime_load_state") != "failed":
+        return
+    error_type = str(payload.get("runtime_load_error_type") or "unknown")
+    error_phase = str(payload.get("runtime_load_error_phase") or "unknown")
+    raise RuntimeError(
+        "promoted plugin runtime validation failed "
+        f"({error_type} during {error_phase})"
+    )
+
+
 def _apply_discovery_record_sync(
     record: PluginDiscoveryRecord,
     *,
@@ -825,6 +847,18 @@ class PluginRegistryService:
 
     async def refresh_plugin(self, plugin_id: str) -> dict[str, object]:
         return await asyncio.to_thread(self._refresh_plugin_sync, plugin_id)
+
+    async def validate_plugin_runtime_source(
+        self,
+        *,
+        plugin_id: str,
+        config_path: Path,
+    ) -> None:
+        await asyncio.to_thread(
+            _validate_plugin_runtime_source_sync,
+            plugin_id,
+            config_path,
+        )
 
     async def list_autostart_plugin_ids(self) -> list[str]:
         return await asyncio.to_thread(_get_autostart_plugin_ids_sync)

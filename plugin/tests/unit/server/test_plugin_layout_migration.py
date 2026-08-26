@@ -187,6 +187,29 @@ async def test_invalid_entry_is_blocked(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("entry", ["main:Plugin", "broken:Plugin", "broken.main:Plugin"])
+async def test_package_local_entry_is_blocked_before_migration(
+    tmp_path: Path,
+    entry: str,
+) -> None:
+    state_root = tmp_path / "plugins"
+    source = _write_plugin(state_root, "broken")
+    (source / "plugin.toml").write_text(
+        f'[plugin]\nid = "broken"\nentry = "{entry}"\n',
+        encoding="utf-8",
+    )
+    (source / "main.py").write_text("class Plugin: pass\n", encoding="utf-8")
+    exec_root = tmp_path / "exec"
+
+    result = await migrate_legacy_plugin_layout(state_root=state_root, exec_root=exec_root)
+
+    assert result.migrated == ()
+    assert [issue.code for issue in result.blocked] == ["PLUGIN_LAYOUT_MIGRATION_ENTRY_INVALID"]
+    assert source.is_dir()
+    assert not (exec_root / "broken").exists()
+
+
+@pytest.mark.asyncio
 async def test_stale_staging_is_cleaned_on_next_start(tmp_path: Path) -> None:
     state_root = tmp_path / "plugins"
     exec_root = tmp_path / "exec"

@@ -636,6 +636,14 @@ class PluginCliService:
 
             return await plugin_registry_service.refresh_registry()
 
+        async def validate_promoted_source() -> None:
+            from plugin.server.application.plugins.lifecycle_service import plugin_registry_service
+
+            await plugin_registry_service.validate_plugin_runtime_source(
+                plugin_id=plan.plugin_id,
+                config_path=target_dir / "plugin.toml",
+            )
+
         async def start(plugin_id: str) -> None:
             await upgrade_support.start_plugin_after_replace(plugin_id, strict=True)
 
@@ -655,6 +663,7 @@ class PluginCliService:
                 restore_lock=restore_lock,
                 clear_user_source=clear_user_source,
                 refresh_registry=refresh_registry,
+                validate_promoted_source=validate_promoted_source,
                 is_running=upgrade_support.plugin_is_running,
                 stop=upgrade_support.stop_plugin_for_replace,
                 start=start,

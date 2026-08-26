@@ -236,6 +236,7 @@ async def switch_builtin_source(
     restore_lock: Callable[[object], Awaitable[Any]],
     clear_user_source: AsyncNoArg,
     refresh_registry: AsyncNoArg,
+    validate_promoted_source: AsyncNoArg,
     is_running: Callable[[str], Awaitable[bool]],
     stop: AsyncPluginAction,
     start: AsyncPluginAction,
@@ -307,6 +308,8 @@ async def switch_builtin_source(
                 "registry could not load the promoted user source "
                 f"({error_type} during {error_phase})"
             )
+        stage = "validate_promoted_source"
+        await validate_promoted_source()
 
         if was_running:
             stage = "start_market"

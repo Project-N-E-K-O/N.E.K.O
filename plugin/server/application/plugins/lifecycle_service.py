@@ -719,6 +719,19 @@ def _stage_orphaned_package_profile_sync(plugin_dir: Path) -> _StagedPackageProf
         )
         return None
 
+    builtin_root = Path(BUILTIN_PLUGIN_CONFIG_ROOT).expanduser().resolve(strict=False)
+    if (
+        current_profile_dir == builtin_root
+        or builtin_root in current_profile_dir.parents
+        or current_profile_dir in builtin_root.parents
+    ):
+        logger.warning(
+            "delete_plugin: refusing to remove package profile overlapping "
+            "the builtin plugin root: {}",
+            current_profile_dir,
+        )
+        return None
+
     if current_profile_dir.name != package_id or (
         not recorded_profile_dir
         and (

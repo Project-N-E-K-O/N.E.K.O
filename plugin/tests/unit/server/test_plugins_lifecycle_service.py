@@ -2780,6 +2780,34 @@ def test_delete_preserves_recorded_profile_under_plugin_state_root(
 
 
 @pytest.mark.plugin_unit
+def test_delete_preserves_recorded_profile_under_builtin_root(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    plugin_dir = tmp_path / "exec" / "legacy_plugin"
+    builtin_root = tmp_path / "builtin"
+    profile_dir = builtin_root / "legacy_package"
+    builtin_manifest = profile_dir / "plugin.toml"
+    builtin_manifest.parent.mkdir(parents=True)
+    builtin_manifest.write_bytes(b"immutable builtin")
+    install_source_manager = _FakeInstallSourceManager(
+        package_id="legacy_package",
+        profile_dir=str(profile_dir),
+        profile_installed=True,
+    )
+    monkeypatch.setattr(module, "get_install_source_manager", lambda: install_source_manager)
+    monkeypatch.setattr(module, "get_user_package_profiles_root", lambda: tmp_path / "profiles")
+    monkeypatch.setattr(module, "get_plugin_state_root", lambda: tmp_path / "state")
+    monkeypatch.setattr(module, "BUILTIN_PLUGIN_CONFIG_ROOT", builtin_root)
+
+    staged_profile = module._stage_orphaned_package_profile_sync(plugin_dir)
+
+    assert staged_profile is None
+    assert builtin_manifest.read_bytes() == b"immutable builtin"
+    assert not list(builtin_root.glob(".*.deleting-*"))
+
+
+@pytest.mark.plugin_unit
 def test_delete_refuses_symlinked_recorded_profile(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

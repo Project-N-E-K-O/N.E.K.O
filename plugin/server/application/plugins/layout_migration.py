@@ -154,14 +154,17 @@ def _entry_module_candidates(plugin_dir: Path, plugin_id: str, entry: str) -> tu
         )
 
     relative_parts: list[str]
-    for prefix in (("plugin", "plugins", plugin_id), ("plugins", plugin_id), (plugin_id,)):
+    for prefix in (("plugin", "plugins", plugin_id), ("plugins", plugin_id)):
         prefix_list = list(prefix)
         if parts[: len(prefix_list)] == prefix_list:
             relative_parts = parts[len(prefix_list) :]
             break
     else:
-        # User packages may use a local module such as ``main:Plugin``.
-        relative_parts = parts
+        raise _LayoutMigrationBlocked(
+            "PLUGIN_LAYOUT_MIGRATION_ENTRY_INVALID",
+            "legacy plugin entry is not supported by isolated loading: "
+            f"{entry!r}",
+        )
 
     if relative_parts:
         base = plugin_dir.joinpath(*relative_parts)
