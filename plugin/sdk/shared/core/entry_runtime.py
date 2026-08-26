@@ -184,7 +184,12 @@ def _accepts_host_ctx(handler: object) -> bool:
     for parameter in signature.parameters.values():
         if parameter.kind is inspect.Parameter.VAR_KEYWORD:
             return True
-        if parameter.name == _HOST_INJECTED_ARG:
+        # The host always passes it by keyword, so a positional-only `_ctx`
+        # cannot receive it — same kinds `_filter_supported_kwargs` allows.
+        if parameter.name == _HOST_INJECTED_ARG and parameter.kind in (
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            inspect.Parameter.KEYWORD_ONLY,
+        ):
             return True
     return False
 
