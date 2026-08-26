@@ -298,6 +298,47 @@ async def test_route_comm_overwrites_the_plugin_supplied_identity(
 
 
 @pytest.mark.asyncio
+async def test_message_route_overwrites_identity_and_generation_for_every_push(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    transport = _Transport()
+    transport.permission_generation = "trusted-host-generation"
+    manager = PluginCommunicationResourceManager(
+        plugin_id="authenticated-plugin",
+        transport=transport,
+        logger=_Logger(),
+    )
+    target_queue: asyncio.Queue[dict[str, object]] = asyncio.Queue()
+    manager._message_target_queue = target_queue
+    stored: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        state,
+        "append_message_record",
+        lambda record: stored.append(copy.deepcopy(record)),
+    )
+
+    await manager._route_message(
+        {
+            "type": "MESSAGE_PUSH",
+            "plugin_id": "victim-plugin",
+            "parts": [{"type": "text", "text": "forged cue"}],
+            "metadata": {
+                "plugin_host_generation": "attacker-host-generation",
+                "public_hint": "keep-me",
+            },
+        }
+    )
+
+    forwarded = target_queue.get_nowait()
+    for payload in (stored[0], forwarded):
+        assert payload["plugin_id"] == "authenticated-plugin"
+        assert payload["metadata"] == {
+            "plugin_host_generation": "trusted-host-generation",
+            "public_hint": "keep-me",
+        }
+
+
+@pytest.mark.asyncio
 async def test_token_bearing_message_uses_private_bridge_and_redacts_shared_state(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -341,11 +382,14 @@ async def test_token_bearing_message_uses_private_bridge_and_redacts_shared_stat
     assert private[0]["metadata"]["plugin_host_generation"] == "trusted-host-generation"
     assert "_proactive_bridge_suppressed" not in private[0]
     assert "generation-secret" not in repr(stored)
-    assert "trusted-host-generation" not in repr(stored)
+    assert stored[0]["metadata"]["plugin_host_generation"] == "trusted-host-generation"
     assert "raw-uplink-secret" not in repr(private)
     assert stored[0]["_proactive_bridge_suppressed"] is True
     forwarded = target_queue.get_nowait()
-    assert forwarded["metadata"] == {"public_hint": "keep-me"}
+    assert forwarded["metadata"] == {
+        "plugin_host_generation": "trusted-host-generation",
+        "public_hint": "keep-me",
+    }
     assert forwarded["_proactive_bridge_suppressed"] is True
 
 

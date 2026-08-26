@@ -414,6 +414,32 @@ async def test_start_failure_cleanup_stops_and_keeps_host_when_permission_revoke
 
 @pytest.mark.plugin_unit
 @pytest.mark.asyncio
+async def test_start_failure_cleanup_clears_registered_tools(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    host = _FakeProcessHost(
+        plugin_id="demo_plugin",
+        entry_point="tests.fake:Plugin",
+        config_path=tmp_path / "demo_plugin" / "plugin.toml",
+    )
+    cleared_tools: list[str] = []
+
+    async def _clear_tools(plugin_id: str) -> None:
+        cleared_tools.append(plugin_id)
+
+    monkeypatch.setattr(module, "_revoke_plugin_permissions", _successful_revoke)
+    monkeypatch.setattr(module, "clear_plugin_llm_tools", _clear_tools)
+
+    cleaned_up = await module._cleanup_started_host("demo_plugin", host)
+
+    assert cleaned_up is True
+    assert host.stopped is True
+    assert cleared_tools == ["demo_plugin"]
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
 async def test_start_failure_cleanup_rechecks_permissions_after_shutdown(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

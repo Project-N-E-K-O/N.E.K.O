@@ -910,6 +910,16 @@ async def _cleanup_started_host(plugin_id: str, host: PluginHostContract) -> boo
             type(exc).__name__,
             str(exc),
         )
+    try:
+        await clear_plugin_llm_tools(plugin_id)
+    except Exception as exc:
+        logger.debug(
+            "failed-start tool cleanup failed (best-effort): "
+            "plugin_id={}, err_type={}, err={}",
+            plugin_id,
+            type(exc).__name__,
+            str(exc),
+        )
     post_shutdown_revoked = (
         await _revoke_plugin_host_permissions(plugin_id, target_host)
     ) is not False

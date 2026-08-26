@@ -522,6 +522,16 @@ class PluginCommunicationResourceManager:
         # proactive delivery by forging it on the uplink.
         msg = dict(msg)
         msg.pop("_proactive_bridge_suppressed", None)
+        msg["plugin_id"] = self.plugin_id
+        metadata_obj = msg.get("metadata")
+        metadata = dict(metadata_obj) if isinstance(metadata_obj, dict) else {}
+        metadata.pop("plugin_host_generation", None)
+        host_generation = str(
+            getattr(self.transport, "permission_generation", "") or ""
+        ).strip()
+        if host_generation:
+            metadata["plugin_host_generation"] = host_generation
+        msg["metadata"] = metadata
         handler_name = self._MESSAGE_ROUTING.get(msg.get("type", ""))
         if handler_name:
             await getattr(self, handler_name)(msg)
@@ -530,26 +540,13 @@ class PluginCommunicationResourceManager:
         if se and se.is_set():
             return
 
-        metadata = msg.get("metadata") if isinstance(msg, dict) else None
-        live_frame_token = (
-            metadata.get("live_frame_permission_token")
-            if isinstance(metadata, dict)
-            else None
-        )
+        live_frame_token = metadata.get("live_frame_permission_token")
         if isinstance(live_frame_token, str) and live_frame_token:
             # CH_MSG is authenticated by this host's uplink transport. Bind
             # the source to that authenticated plugin and keep the capability
             # on a private path into proactive delivery.
             private_msg = dict(msg)
-            private_msg["plugin_id"] = self.plugin_id
             private_metadata = dict(metadata)
-            host_generation = str(
-                getattr(self.transport, "permission_generation", "")
-                or getattr(self.transport, "uplink_token", "")
-                or ""
-            ).strip()
-            if host_generation:
-                private_metadata["plugin_host_generation"] = host_generation
             private_msg["metadata"] = private_metadata
             private_enqueued = False
             try:
