@@ -116,6 +116,12 @@ def _remove_owned_directory_sync(path: Path) -> None:
     shutil.rmtree(path)
 
 
+def _evict_plugin_modules_sync(plugin_id: str) -> None:
+    from plugin.core.host import evict_cached_plugin_modules
+
+    evict_cached_plugin_modules(plugin_id)
+
+
 def _effective_config_path_sync(plugin_id: str) -> Path | None:
     with state.acquire_plugins_read_lock():
         raw_meta = state.plugins.get(plugin_id)
@@ -191,6 +197,20 @@ async def _rollback_switch(
                 "override rollback cleanup failed plugin_id={} target={} err_type={}",
                 request.plugin_id,
                 path,
+                type(exc).__name__,
+            )
+
+    if plugin_promoted:
+        try:
+            await asyncio.to_thread(
+                _evict_plugin_modules_sync,
+                request.plugin_id,
+            )
+        except Exception as exc:
+            complete = False
+            logger.error(
+                "override rollback cache invalidation failed plugin_id={} err_type={}",
+                request.plugin_id,
                 type(exc).__name__,
             )
 

@@ -2,11 +2,13 @@ from __future__ import annotations
 
 from pathlib import Path
 import hashlib
+import sys
 import zipfile
 
 import pytest
 
 from plugin.neko_plugin_cli.public import build_plugin
+from plugin.core.host import evict_cached_plugin_modules
 from plugin.server.application.plugin_cli.service import PluginCliService
 from plugin.server.application.install_source import (
     InstallSourceError,
@@ -21,6 +23,30 @@ from plugin.core.state import state
 
 
 pytestmark = pytest.mark.plugin_unit
+
+
+@pytest.fixture
+def _restore_study_companion_module_cache():
+    plugin_id = "study_companion"
+    module_names = (f"plugins.{plugin_id}", f"plugin.plugins.{plugin_id}")
+    saved_modules = {
+        name: module
+        for name, module in sys.modules.items()
+        if any(name == root or name.startswith(f"{root}.") for root in module_names)
+    }
+    saved_parent_children = {
+        parent_name: getattr(sys.modules.get(parent_name), plugin_id, None)
+        for parent_name in ("plugins", "plugin.plugins")
+    }
+    try:
+        yield
+    finally:
+        evict_cached_plugin_modules(plugin_id)
+        sys.modules.update(saved_modules)
+        for parent_name, child_module in saved_parent_children.items():
+            parent_module = sys.modules.get(parent_name)
+            if parent_module is not None and child_module is not None:
+                setattr(parent_module, plugin_id, child_module)
 
 
 def _write_plugin(root: Path, plugin_id: str, version: str) -> Path:
@@ -280,6 +306,7 @@ async def test_builtin_override_rejects_builtin_changed_after_confirmation(
 async def test_disabled_builtin_override_with_invalid_entry_rolls_back(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    _restore_study_companion_module_cache: None,
 ) -> None:
     plugin_id = "study_companion"
     builtin_root = tmp_path / "builtin"
@@ -356,6 +383,8 @@ async def test_disabled_builtin_override_with_invalid_entry_rolls_back(
         assert not (user_root / plugin_id).exists()
         assert (builtin / "plugin.toml").is_file()
         assert manager.find_active_market_entry(plugin_id) is None
+        assert f"plugins.{plugin_id}" not in sys.modules
+        assert f"plugin.plugins.{plugin_id}" not in sys.modules
     finally:
         set_global_manager(None)
         with state.acquire_plugins_write_lock():
@@ -375,6 +404,7 @@ async def test_disabled_builtin_override_with_invalid_entry_rolls_back(
 async def test_market_builtin_override_switches_or_restores_without_touching_state(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    _restore_study_companion_module_cache: None,
     fail_market_start: bool,
     payload_metadata: str,
 ) -> None:
