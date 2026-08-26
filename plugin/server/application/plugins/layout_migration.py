@@ -8,6 +8,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import tomllib
 import uuid
 from dataclasses import dataclass
@@ -83,10 +84,13 @@ def _is_same_or_within(path: Path, root: Path) -> bool:
 
 
 def _is_link_or_junction(path: Path) -> bool:
-    if path.is_symlink():
+    try:
+        metadata = path.lstat()
+    except OSError:
         return True
-    is_junction = getattr(path, "is_junction", None)
-    return bool(is_junction()) if callable(is_junction) else False
+    file_attributes = getattr(metadata, "st_file_attributes", 0)
+    reparse_attribute = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+    return stat.S_ISLNK(metadata.st_mode) or bool(file_attributes & reparse_attribute)
 
 
 def _ensure_tree_has_no_links(source: Path) -> None:
@@ -319,7 +323,11 @@ def _copy_legacy_plugin_tree(source: Path, staging: Path) -> None:
     def _ignore(current: str, names: list[str]) -> list[str]:
         if Path(current).resolve(strict=False) != resolved_source:
             return []
-        return [name for name in names if name in _STANDARD_STATE_DIRECTORY_NAMES]
+        return [
+            name
+            for name in names
+            if name.casefold() in _STANDARD_STATE_DIRECTORY_NAMES
+        ]
 
     shutil.copytree(source, staging, symlinks=False, ignore=_ignore)
 

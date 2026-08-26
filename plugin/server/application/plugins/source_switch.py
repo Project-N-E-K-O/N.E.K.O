@@ -269,6 +269,8 @@ async def switch_builtin_source(
     """
     if not request.plugin_id or not request.confirmation_token:
         raise ValueError("source switch requires plugin id and confirmation token")
+    if "." in request.plugin_id:
+        raise ValueError("source switch plugin id must not contain dots")
     await asyncio.to_thread(_validate_switch_paths_sync, request)
     rebuilt_plan = await rebuild_plan()
     _validate_rebuilt_plan(rebuilt_plan, request)

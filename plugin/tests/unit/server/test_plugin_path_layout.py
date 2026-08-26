@@ -5,10 +5,37 @@ from pathlib import Path
 import pytest
 
 import plugin.settings as settings
+from plugin.server.application.install_source import manager as manager_module
 from plugin.server.application.install_source.manager import resolve_lock_path
 from plugin.server.application.plugin_cli.paths import PluginCliPathPolicy
 
 pytestmark = pytest.mark.plugin_unit
+
+
+def test_execution_root_scope_folds_case_only_on_case_insensitive_filesystems(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    upper = "C:/Users/Neko/Plugins"
+    lower = "C:/Users/Neko/plugins"
+    monkeypatch.setattr(manager_module.os.path, "normcase", lambda value: value)
+
+    monkeypatch.setattr(
+        manager_module,
+        "_filesystem_is_case_insensitive",
+        lambda _path: True,
+    )
+    assert manager_module._execution_root_scope(upper) == manager_module._execution_root_scope(
+        lower
+    )
+
+    monkeypatch.setattr(
+        manager_module,
+        "_filesystem_is_case_insensitive",
+        lambda _path: False,
+    )
+    assert manager_module._execution_root_scope(upper) != manager_module._execution_root_scope(
+        lower
+    )
 
 
 def test_default_layout_separates_exec_from_state_and_keeps_metadata_roots(

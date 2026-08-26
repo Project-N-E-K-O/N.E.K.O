@@ -28,6 +28,34 @@ def _plan(token: str) -> dict[str, object]:
 
 
 @pytest.mark.asyncio
+async def test_switch_rejects_dotted_plugin_id_before_transaction_callbacks(
+    tmp_path: Path,
+) -> None:
+    async def unexpected(*_args: object) -> object:
+        raise AssertionError("transaction callback must not run")
+
+    with pytest.raises(ValueError, match="must not contain dots"):
+        await switch_builtin_source(
+            SourceSwitchRequest(
+                plugin_id="study.companion",
+                staged_plugin_dir=tmp_path / ".staging",
+                target_plugin_dir=tmp_path / "study.companion",
+                confirmation_token="token",
+            ),
+            rebuild_plan=unexpected,
+            read_lock_snapshot=unexpected,
+            commit_lock=unexpected,
+            restore_lock=unexpected,
+            clear_user_source=unexpected,
+            refresh_registry=unexpected,
+            validate_promoted_source=unexpected,
+            is_running=unexpected,
+            stop=unexpected,
+            start=unexpected,
+        )
+
+
+@pytest.mark.asyncio
 async def test_switch_builtin_source_promotes_user_code_without_touching_state(
     tmp_path: Path,
 ) -> None:

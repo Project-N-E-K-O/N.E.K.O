@@ -4,7 +4,9 @@ import hashlib
 import json
 import os
 import shutil
+import stat
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -36,6 +38,26 @@ def _write_plugin(root: Path, plugin_id: str, *, manifest_id: str | None = None)
     )
     (plugin_dir / "__init__.py").write_text("class Plugin:\n    pass\n", encoding="utf-8")
     return plugin_dir
+
+
+def test_reparse_point_is_detected_without_path_is_junction(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reparse_attribute = 0x400
+    monkeypatch.setattr(
+        migration_module.stat,
+        "FILE_ATTRIBUTE_REPARSE_POINT",
+        reparse_attribute,
+        raising=False,
+    )
+    path = SimpleNamespace(
+        lstat=lambda: SimpleNamespace(
+            st_mode=stat.S_IFDIR,
+            st_file_attributes=reparse_attribute,
+        )
+    )
+
+    assert migration_module._is_link_or_junction(path) is True
 
 
 @pytest.mark.asyncio
@@ -106,6 +128,30 @@ async def test_migration_is_atomic_idempotent_and_does_not_resurrect(
     assert third.migrated == ()
     assert third.skipped == ("study_companion",)
     assert not destination.exists()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("state_name", ["Config", "Data", "Cache"])
+async def test_migration_excludes_state_directories_case_insensitively(
+    tmp_path: Path,
+    state_name: str,
+) -> None:
+    state_root = tmp_path / "plugins"
+    source = _write_plugin(state_root, "study_companion")
+    state_file = source / state_name / "state.sqlite"
+    state_file.parent.mkdir()
+    state_file.write_bytes(b"persistent-state")
+    exec_root = tmp_path / "exec"
+
+    result = await migrate_legacy_plugin_layout(
+        state_root=state_root,
+        exec_root=exec_root,
+        builtin_root=tmp_path / "builtin",
+    )
+
+    assert result.migrated == ("study_companion",)
+    assert state_file.read_bytes() == b"persistent-state"
+    assert not (exec_root / "study_companion" / state_name).exists()
 
 
 @pytest.mark.asyncio

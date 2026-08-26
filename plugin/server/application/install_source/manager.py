@@ -106,11 +106,34 @@ def _shared_state_lock_path() -> Path:
     return (get_plugin_state_root().parent / "plugins.lock.json").resolve()
 
 
+def _filesystem_is_case_insensitive(path: Path) -> bool:
+    """Probe the nearest existing path without assuming platform defaults."""
+
+    probe = path
+    while not probe.exists() and probe.parent != probe:
+        probe = probe.parent
+    while probe.parent != probe:
+        name = probe.name
+        for index, character in enumerate(name):
+            swapped = character.swapcase()
+            if swapped == character:
+                continue
+            alternate = probe.with_name(f"{name[:index]}{swapped}{name[index + 1:]}")
+            try:
+                return os.path.samefile(probe, alternate)
+            except OSError:
+                return False
+        probe = probe.parent
+    return False
+
+
 def _execution_root_scope(config_root: str) -> str:
     """Return a stable, non-reversible identity for an execution root."""
 
     resolved = Path(config_root).expanduser().resolve(strict=False)
     comparable = os.path.normcase(unicodedata.normalize("NFC", str(resolved)))
+    if _filesystem_is_case_insensitive(resolved):
+        comparable = comparable.casefold()
     return hashlib.sha256(comparable.encode("utf-8")).hexdigest()[:16]
 
 
