@@ -118,3 +118,24 @@ def test_proactive_bridge_ignores_redacted_private_delivery_copy() -> None:
     )
 
     assert socket.events == []
+
+
+def test_private_bridge_discards_only_stopped_plugin_payloads() -> None:
+    bridge = ProactiveBridge()
+    for plugin_id in ("stopped", "still-running"):
+        assert bridge.enqueue_private_payload(
+            {
+                "plugin_id": plugin_id,
+                "schema": "push_message.v2",
+                "visibility": [],
+                "ai_behavior": "respond",
+                "parts": [{"type": "text", "text": plugin_id}],
+            }
+        ) is True
+
+    assert bridge.discard_private_payloads("stopped") == 1
+
+    socket = _PushSocket()
+    bridge._drain_private_payloads(socket)
+
+    assert [event["source_name"] for event in socket.events] == ["still-running"]

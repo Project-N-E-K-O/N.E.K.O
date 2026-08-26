@@ -8,6 +8,8 @@ later request while looking free to the truncator.
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from main_logic.omni_offline_client import _tools as tools_module
@@ -175,6 +177,31 @@ async def test_parallel_tool_results_share_an_aggregate_image_count_budget():
     assert "FIRST" in str(messages)
     assert "SECOND" in str(messages)
     assert "THIRD" not in str(messages)
+
+
+@pytest.mark.asyncio
+async def test_aggregate_image_budget_omission_is_visible_to_the_model():
+    client = _Client({
+        name: _image_result(name=name, images=[ToolImage(data_b64=name.upper())])
+        for name in ("first", "second", "third")
+    })
+    messages: list = []
+
+    await client._execute_and_append_openai_tool_calls(
+        messages,
+        [_Call(name=name, id=name) for name in ("first", "second", "third")],
+    )
+
+    third_result = next(
+        message
+        for message in messages
+        if message.get("role") == "tool" and message.get("name") == "third"
+    )
+    payload = json.loads(third_result["content"])
+    assert any(
+        "omitted" in warning and "turn image budget" in warning
+        for warning in payload["_image_warnings"]
+    )
 
 
 @pytest.mark.asyncio

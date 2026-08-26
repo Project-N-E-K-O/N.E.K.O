@@ -63,6 +63,29 @@ async def test_comm_manager_shutdown_tolerates_cross_loop_uplink_task() -> None:
 
 
 @pytest.mark.asyncio
+async def test_comm_manager_shutdown_purges_private_proactive_payloads(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from plugin.server.messaging import proactive_bridge
+
+    purged: list[str] = []
+    monkeypatch.setattr(
+        proactive_bridge,
+        "discard_private_payloads",
+        lambda plugin_id: purged.append(plugin_id),
+    )
+    manager = PluginCommunicationResourceManager(
+        plugin_id="stopped-plugin",
+        transport=_Transport(),
+        logger=_Logger(),
+    )
+
+    await manager.shutdown(timeout=0.1)
+
+    assert purged == ["stopped-plugin"]
+
+
+@pytest.mark.asyncio
 async def test_run_on_owner_loop_closes_coro_when_cross_loop_schedule_fails() -> None:
     manager = PluginCommunicationResourceManager(
         plugin_id="demo",

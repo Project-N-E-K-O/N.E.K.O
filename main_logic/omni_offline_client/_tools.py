@@ -195,7 +195,7 @@ class _ToolingMixin:
                         output={"error": f"{type(e).__name__}: {e}"},
                         is_error=True, error_message=str(e),
                     )
-            messages.append({
+            tool_result_message = {
                 "role": "tool",
                 "tool_call_id": tool_call.call_id,
                 # 写入 ``name`` 让 Gemini 路径能直接用（FunctionResponse.name
@@ -203,14 +203,16 @@ class _ToolingMixin:
                 # 这个字段也不会因此报错——它只用 tool_call_id 关联。
                 "name": tool_call.name,
                 "content": result.output_as_json_string(),
-            })
+            }
+            messages.append(tool_result_message)
             if getattr(result, "images", None):
-                image_results.append(result)
-        for result in image_results:
+                image_results.append((result, tool_result_message))
+        for result, tool_result_message in image_results:
             self._append_tool_result_images(
                 messages,
                 result,
                 slots=tool_image_slots,
+                tool_result_message=tool_result_message,
             )
         return len(calls)
 
@@ -237,7 +239,14 @@ class _ToolingMixin:
 
     _TOOL_IMAGE_DEFAULT_CAPTION = "（工具返回的画面）"
 
-    def _append_tool_result_images(self, messages, result, *, slots=None) -> None:
+    def _append_tool_result_images(
+        self,
+        messages,
+        result,
+        *,
+        slots=None,
+        tool_result_message=None,
+    ) -> None:
         """Append one multimodal user turn carrying every image in ``result``.
 
         No-op when the tool returned none, which is the overwhelmingly common
@@ -266,6 +275,7 @@ class _ToolingMixin:
                 used_b64_bytes += len(url.rsplit(",", 1)[-1])
 
         content = []
+        omitted_count = 0
         for img in images:
             image_b64_bytes = len(img.data_b64)
             if (
@@ -280,6 +290,7 @@ class _ToolingMixin:
                     used_count,
                     used_b64_bytes,
                 )
+                omitted_count += 1
                 continue
             content.append({
                 "type": "image_url",
@@ -291,6 +302,25 @@ class _ToolingMixin:
             content.append({"type": "text", "text": caption})
             used_count += 1
             used_b64_bytes += image_b64_bytes
+
+        if omitted_count:
+            output = result.output if isinstance(result.output, dict) else {}
+            existing_warnings = output.get("_image_warnings")
+            image_warnings = (
+                list(existing_warnings)
+                if isinstance(existing_warnings, list)
+                else []
+            )
+            image_warnings.append(
+                f"{omitted_count} tool image(s) omitted because the shared "
+                "turn image budget was exhausted"
+            )
+            result.merge_into_output(_image_warnings=image_warnings)
+            # Tool results are serialized before image turns so that all
+            # role=tool messages stay adjacent. Refresh the matching message
+            # after annotating the result to make the omission model-visible.
+            if isinstance(tool_result_message, dict):
+                tool_result_message["content"] = result.output_as_json_string()
 
         if not content:
             return

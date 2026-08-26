@@ -113,24 +113,49 @@ class ProactiveBridge:
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._private_payloads: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=1024)
+        self._private_payloads_lock = threading.Lock()
 
     def enqueue_private_payload(self, payload: dict[str, Any]) -> bool:
         try:
-            self._private_payloads.put_nowait(dict(payload))
+            with self._private_payloads_lock:
+                self._private_payloads.put_nowait(dict(payload))
             return True
         except queue.Full:
             return False
 
+    def discard_private_payloads(self, plugin_id: str) -> int:
+        """Remove queued private deliveries owned by one stopped plugin."""
+        target = str(plugin_id or "").strip()
+        if not target:
+            return 0
+
+        retained: list[dict[str, Any]] = []
+        dropped = 0
+        with self._private_payloads_lock:
+            for _ in range(self._private_payloads.qsize()):
+                payload = self._private_payloads.get_nowait()
+                self._private_payloads.task_done()
+                if str(payload.get("plugin_id") or "").strip() == target:
+                    dropped += 1
+                else:
+                    retained.append(payload)
+            for payload in retained:
+                self._private_payloads.put_nowait(payload)
+        return dropped
+
     def _drain_private_payloads(self, push_sock: Any) -> None:
         for _ in range(128):
             try:
-                payload = self._private_payloads.get_nowait()
+                with self._private_payloads_lock:
+                    payload = self._private_payloads.get_nowait()
             except queue.Empty:
                 return
             try:
                 self._dispatch(payload, push_sock)
             except Exception as exc:
                 logger.error("Error dispatching private push payload: {}", exc)
+            finally:
+                self._private_payloads.task_done()
 
     def start(self) -> None:
         if zmq is None:
@@ -396,6 +421,10 @@ _bridge = ProactiveBridge()
 
 def enqueue_private_payload(payload: dict[str, Any]) -> bool:
     return _bridge.enqueue_private_payload(payload)
+
+
+def discard_private_payloads(plugin_id: str) -> int:
+    return _bridge.discard_private_payloads(plugin_id)
 
 
 def start_proactive_bridge() -> None:

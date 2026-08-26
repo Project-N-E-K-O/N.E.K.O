@@ -171,6 +171,21 @@ class PluginCommunicationResourceManager:
                         exc_info=True,
                     )
 
+        # Private proactive payloads bypass the shared message plane. Purge
+        # this plugin's queued copies after its uplink consumer stops so none
+        # can be dispatched after the lifecycle permission sweeps complete.
+        from plugin.server.messaging.proactive_bridge import (
+            discard_private_payloads,
+        )
+
+        discarded_private_payloads = discard_private_payloads(self.plugin_id)
+        if discarded_private_payloads:
+            self.logger.debug(
+                "Discarded {} queued private proactive payload(s) for plugin {}",
+                discarded_private_payloads,
+                self.plugin_id,
+            )
+
         self._cleanup_pending_futures()
 
         if self._background_tasks:
