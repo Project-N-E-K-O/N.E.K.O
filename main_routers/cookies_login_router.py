@@ -46,7 +46,6 @@ from utils.cookies_login import (
     parse_cookie_string,
     COOKIE_FILES,
     credential_manager,
-    get_cookie_key_file,
 )
 from utils.logger_config import get_module_logger
 from utils.twitch_auth import TwitchAuthService
@@ -290,35 +289,25 @@ async def delete_platform_cookies(platform: str):
     if platform not in supported:
         raise HTTPException(status_code=400, detail="平台无效")
             
-    cookie_file = COOKIE_FILES.get(platform)
-    
-    # 安全检查文件对象是否存在
-    if not cookie_file or not cookie_file.exists():
-        credential_manager.mark_deleted(platform)
-        return {"success": True, "message": f"{platform} 凭证本就不存在"}
-            
-    # Step 1: 删除 cookie 文件（独立 try/except，失败才返回 500）
     try:
-        cookie_file.unlink()
+        existed, key_deleted = await asyncio.to_thread(
+            credential_manager.delete_stored_credentials,
+            platform,
+        )
     except Exception as e:
         logger.error(f"删除 cookie 文件失败: {type(e).__name__}")
         logger.debug(f"详细错误: {e}")
         raise HTTPException(status_code=500, detail="删除 cookie 文件失败，请检查系统权限")
 
-    credential_manager.mark_deleted(platform)
+    if not existed:
+        return {"success": True, "message": f"{platform} 凭证本就不存在"}
 
-    # Step 2: 删除关联密钥文件（独立 try/except，失败不影响 cookie 已删除的结果）
-    key_file = get_cookie_key_file(platform)
-    if key_file.exists():
-        try:
-            key_file.unlink()
-        except Exception as e:
-            logger.error(f"删除密钥文件失败: {type(e).__name__}")
-            logger.debug(f"详细错误: {e}")
-            return {
-                "success": True,
-                "message": f"⚠️ {platform.capitalize()} cookie 已删除，但密钥文件删除失败，请手动清理"
-            }
+    if not key_deleted:
+        logger.error("删除密钥文件失败")
+        return {
+            "success": True,
+            "message": f"⚠️ {platform.capitalize()} cookie 已删除，但密钥文件删除失败，请手动清理"
+        }
 
     return {"success": True, "message": f"✅ {platform.capitalize()} 凭证已物理粉碎"}
 

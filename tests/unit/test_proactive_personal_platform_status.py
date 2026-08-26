@@ -5,6 +5,7 @@ import pytest
 
 from main_routers.cookies_login_router import (
     PERSONAL_DYNAMIC_PLATFORMS,
+    delete_platform_cookies,
     get_all_cookies_status,
 )
 
@@ -55,3 +56,21 @@ def test_personal_dynamic_platform_contract_matches_scraper_sources():
     root = Path(__file__).resolve().parents[2]
     source = (root / "static/app/app-proactive.js").read_text(encoding="utf-8")
     assert "info.has_cookies && info.supports_personal_dynamic === true" in source
+
+
+@pytest.mark.asyncio
+async def test_delete_route_uses_manager_atomic_delete():
+    with (
+        patch(
+            "main_routers.cookies_login_router.login_manager.get_supported_platforms",
+            return_value={"weibo": {}},
+        ),
+        patch(
+            "main_routers.cookies_login_router.credential_manager.delete_stored_credentials",
+            return_value=(True, True),
+        ) as delete,
+    ):
+        response = await delete_platform_cookies("weibo")
+
+    delete.assert_called_once_with("weibo")
+    assert response["success"] is True

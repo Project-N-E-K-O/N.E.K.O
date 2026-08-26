@@ -101,12 +101,30 @@ class TwitchAuthService:
 
     async def status(self) -> dict[str, Any]:
         credential = await _load()
+        if not credential:
+            credential_status = await asyncio.to_thread(credential_manager.status, "twitch")
+            requires_reauthorization = credential_status["credential_state"] in {
+                credential_manager.AUTH_REJECTED,
+                credential_manager.INVALID,
+            }
+            return {
+                "success": True,
+                "platform": "twitch",
+                "logged_in": False,
+                **credential_status,
+                "requires_reauthorization": requires_reauthorization,
+            }
         if not _credential_present(credential) or not set(_SCOPES).issubset(_scopes(credential.get("scopes") if credential else "")):
             return {
                 "success": True, "platform": "twitch", "logged_in": False, "has_cookies": False,
+                "has_stored_credentials": True, "credential_state": credential_manager.READY,
                 "requires_reauthorization": bool(credential),
             }
-        return _public_status(credential, refreshed=False)
+        return {
+            **_public_status(credential, refreshed=False),
+            "has_stored_credentials": True,
+            "credential_state": credential_manager.READY,
+        }
 
     async def access_token(self, *, force_refresh: bool = False) -> tuple[str, str]:
         """Return a valid ``(client_id, access_token)`` pair, refreshing when needed."""
@@ -128,7 +146,7 @@ class TwitchAuthService:
         })
         if status != 200:
             if status in {400, 401}:
-                credential_manager.mark_auth_rejected("twitch")
+                credential_manager.mark_auth_rejected("twitch", credential)
             return "", ""
         refreshed = await _validated_credential(client_id, data)
         if refreshed is None or not await _save(refreshed):

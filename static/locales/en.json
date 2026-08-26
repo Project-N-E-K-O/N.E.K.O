@@ -4178,7 +4178,9 @@
         },
         "status": {
             "active": "● Ready",
-            "inactive": "○ Not configured"
+            "inactive": "○ Not configured",
+            "expired": "Expired",
+            "invalid": "Credential damaged"
         },
         "qrLogin": {
             "tryQR": "Or... try QR code login?",

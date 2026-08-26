@@ -65,14 +65,15 @@ async def _fetch_bilibili_personal_dynamic_uncached(limit: int = 10) -> Dict[str
 
         # per-call AsyncClient: 带用户鉴权 cookie —— 不能走共享 client，否则
         # 响应的 Set-Cookie 会自动提取进共享 jar，跨请求污染（httpx 默认行为）
+        request_cookies = credential.get_cookies()
         async with httpx.AsyncClient() as client:
-            response = await client.get(url, headers=headers, cookies=credential.get_cookies(), timeout=10.0)
+            response = await client.get(url, headers=headers, cookies=request_cookies, timeout=10.0)
             response.raise_for_status()
             data = response.json()
 
         if not isinstance(data, dict) or data.get("code") != 0:
             if isinstance(data, dict) and data.get("code") == -101:
-                credential_manager.mark_auth_rejected("bilibili")
+                credential_manager.mark_auth_rejected("bilibili", request_cookies)
             logger.error(f"获取B站动态失败，API返回: {data}")
             return {
                 'success': False,
@@ -528,7 +529,7 @@ async def fetch_weibo_personal_dynamic(limit: int = 10) -> Dict[str, Any]:
 
         # 移动端如果未登录，通常会返回 ok: 0 或者重定向
         if data.get('ok') != 1:
-            credential_manager.mark_auth_rejected("weibo")
+            credential_manager.mark_auth_rejected("weibo", req_cookies)
             logger.error("❌ 微博拦截：返回 ok=0，说明你的 SUB 凭证已过期！")
             return {'success': False, 'error': "微博凭证已过期，请去浏览器重新获取"}
 
@@ -644,7 +645,7 @@ async def _fetch_twitter_personal_web_scraping(limit: int = 10, cookies: Optiona
 
         # 如果被重定向到了登录页，说明 Cookie 彻底失效了
         if "login" in str(res.url) or "logout" in str(res.url):
-            credential_manager.mark_auth_rejected("twitter")
+            credential_manager.mark_auth_rejected("twitter", cookies or {})
             return {'success': False, 'error': 'Twitter Cookie 已过期，网页端拒绝访问'}
 
         tweets = []

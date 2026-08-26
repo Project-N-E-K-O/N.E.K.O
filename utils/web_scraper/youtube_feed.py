@@ -364,7 +364,7 @@ async def fetch_youtube_home_feed(limit: int = 30) -> dict[str, Any]:
             if not authorization or status_code not in {401, 403}:
                 raise
             if status_code == 401:
-                credential_manager.mark_auth_rejected("youtube")
+                credential_manager.mark_auth_rejected("youtube", cookies)
             logger.warning(
                 "YouTube 登录认证被拒绝(status=%d)，重试匿名首页 Feed",
                 status_code,

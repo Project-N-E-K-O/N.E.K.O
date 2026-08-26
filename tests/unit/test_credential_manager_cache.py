@@ -1,8 +1,13 @@
+import json
 import time
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+from threading import Event
 from unittest.mock import patch
 
+from utils import cookies_login
 from utils.cookies_login import CredentialManager
+from utils.web_scraper import platform_helpers
 
 
 def test_concurrent_load_decrypts_once_and_returns_defensive_copies():
@@ -68,10 +73,12 @@ def test_save_delete_and_auth_rejection_update_cache_without_reload():
 
     with patch("utils.cookies_login._load_cookies_from_file_uncached") as loader:
         assert manager.load("weibo") == {"SUB": "second"}
-        manager.mark_auth_rejected("weibo")
+        assert manager.mark_auth_rejected("weibo", {"SUB": "second"}) is True
         assert manager.load("weibo") == {}
-        assert manager.status("weibo")["credential_state"] == CredentialManager.AUTH_REJECTED
-        manager.mark_deleted("weibo")
+        rejected_status = manager.status("weibo")
+        assert rejected_status["credential_state"] == CredentialManager.AUTH_REJECTED
+        assert rejected_status["has_stored_credentials"] is True
+        assert manager.delete_stored_credentials("weibo") == (False, True)
         assert manager.load("weibo") == {}
         assert manager.status("weibo")["credential_state"] == CredentialManager.MISSING
 
@@ -112,3 +119,118 @@ def test_changing_credential_path_invalidates_cached_result(tmp_path):
             assert manager.load("weibo") == {"SUB": "second"}
 
     assert loader.call_count == 2
+
+
+def test_stale_auth_rejection_does_not_override_new_credentials():
+    manager = CredentialManager()
+
+    with patch("utils.cookies_login._save_cookies_to_file_uncached", return_value=True):
+        assert manager.save("weibo", {"SUB": "old"}) is True
+        old_credentials = manager.load("weibo")
+        assert manager.save("weibo", {"SUB": "new"}) is True
+
+    assert manager.mark_auth_rejected("weibo", old_credentials) is False
+    assert manager.load("weibo") == {"SUB": "new"}
+    assert manager.status("weibo")["credential_state"] == CredentialManager.READY
+
+
+def test_external_file_changes_invalidate_positive_and_negative_cache(tmp_path):
+    manager = CredentialManager()
+    cookie_file = tmp_path / "weibo.json"
+
+    with (
+        patch.dict("utils.cookies_login.COOKIE_FILES", {"weibo": cookie_file}),
+        patch.object(cookies_login, "CONFIG_DIR", tmp_path),
+        patch(
+            "utils.cookies_login._load_cookies_from_file_uncached",
+            wraps=cookies_login._load_cookies_from_file_uncached,
+        ) as loader,
+    ):
+        cookie_file.write_text('{"SUB":"first"}', encoding="utf-8")
+        assert manager.load("weibo") == {"SUB": "first"}
+        assert manager.load("weibo") == {"SUB": "first"}
+
+        cookie_file.write_text('{"SUB":"second-and-longer"}', encoding="utf-8")
+        assert manager.load("weibo") == {"SUB": "second-and-longer"}
+
+        cookie_file.unlink()
+        assert manager.load("weibo") == {}
+        assert manager.load("weibo") == {}
+
+        cookie_file.write_text('{"SUB":"restored"}', encoding="utf-8")
+        assert manager.load("weibo") == {"SUB": "restored"}
+
+    assert loader.call_count == 4
+
+
+def test_delete_and_save_share_the_same_platform_lock(tmp_path):
+    manager = CredentialManager()
+    cookie_file = tmp_path / "weibo.json"
+    cookie_file.write_text('{"SUB":"old"}', encoding="utf-8")
+    delete_unlinked = Event()
+    allow_delete_to_finish = Event()
+    save_started = Event()
+    original_unlink = Path.unlink
+
+    def slow_unlink(path, *args, **kwargs):
+        original_unlink(path, *args, **kwargs)
+        if path == cookie_file:
+            delete_unlinked.set()
+            assert allow_delete_to_finish.wait(timeout=2)
+
+    def save_new(_platform, credentials, *, encrypt=True):
+        assert encrypt is True
+        save_started.set()
+        cookie_file.write_text('{"SUB":"new"}', encoding="utf-8")
+        return credentials == {"SUB": "new"}
+
+    with (
+        patch.dict("utils.cookies_login.COOKIE_FILES", {"weibo": cookie_file}),
+        patch.object(cookies_login, "CONFIG_DIR", tmp_path),
+        patch.object(Path, "unlink", slow_unlink),
+        patch("utils.cookies_login._save_cookies_to_file_uncached", side_effect=save_new),
+        ThreadPoolExecutor(max_workers=2) as executor,
+    ):
+        assert manager.load("weibo") == {"SUB": "old"}
+        delete_future = executor.submit(manager.delete_stored_credentials, "weibo")
+        assert delete_unlinked.wait(timeout=2)
+        save_future = executor.submit(manager.save, "weibo", {"SUB": "new"})
+        time.sleep(0.02)
+        assert save_started.is_set() is False
+
+        allow_delete_to_finish.set()
+        assert delete_future.result(timeout=2) == (True, True)
+        assert save_future.result(timeout=2) is True
+        assert manager.load("weibo") == {"SUB": "new"}
+        assert cookie_file.exists()
+
+
+def test_auth_rejected_state_skips_legacy_plaintext_fallback():
+    with (
+        patch.object(cookies_login.credential_manager, "load", return_value={}),
+        patch.object(
+            cookies_login.credential_manager,
+            "state",
+            return_value=CredentialManager.AUTH_REJECTED,
+        ),
+        patch.object(Path, "exists") as exists,
+    ):
+        assert platform_helpers._get_platform_cookies("weibo") == {}
+
+    exists.assert_not_called()
+
+
+def test_credential_ui_keeps_rejected_entries_visible_and_removable():
+    source = Path("static/js/cookies_login.js").read_text(encoding="utf-8")
+    template = Path("templates/cookies_login.html").read_text(encoding="utf-8")
+
+    assert "const hasStoredCredentials" in source
+    assert "if (!stored) return;" in source
+    assert "credentialState === 'auth_rejected'" in source
+    assert "if (stored)" in source
+    assert ".del-btn {\n            display: inline-grid;\n            width: 44px;\n            height: 44px;" in template
+
+    for locale_path in Path("static/locales").glob("*.json"):
+        status = json.loads(locale_path.read_text(encoding="utf-8"))["cookiesLogin"]["status"]
+        assert status["expired"].strip(), locale_path
+        assert status["invalid"].strip(), locale_path

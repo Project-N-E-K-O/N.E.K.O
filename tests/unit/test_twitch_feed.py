@@ -164,6 +164,31 @@ async def test_twitch_status_reports_saved_follow_credential(monkeypatch):
     assert "access-secret" not in str(result)
 
 
+@pytest.mark.asyncio
+async def test_twitch_status_preserves_reauthorization_after_auth_rejection(monkeypatch):
+    async def _load():
+        return {}
+
+    monkeypatch.setattr(twitch_auth, "_load", _load)
+    monkeypatch.setattr(
+        cookies_login.credential_manager,
+        "status",
+        lambda _platform: {
+            "has_cookies": False,
+            "has_stored_credentials": True,
+            "cookies_count": 0,
+            "credential_state": cookies_login.CredentialManager.AUTH_REJECTED,
+        },
+    )
+
+    result = await twitch_auth.TwitchAuthService().status()
+
+    assert result["logged_in"] is False
+    assert result["has_cookies"] is False
+    assert result["has_stored_credentials"] is True
+    assert result["requires_reauthorization"] is True
+
+
 def test_twitch_oauth_response_validation_handles_expiry_and_strict_activation_url():
     assert twitch_auth._oauth_error({"message": "The device code has expired."}) == "expired_token"
     assert twitch_auth._verification_uri("https://www.twitch.tv/activate") == "https://www.twitch.tv/activate"

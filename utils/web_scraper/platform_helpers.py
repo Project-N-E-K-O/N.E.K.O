@@ -210,11 +210,13 @@ def _get_platform_cookies(platform_name: str) -> dict[str, str]:
     """
     try:
         # 优先调用系统底层的解密读取逻辑
-        from utils.cookies_login import load_cookies_from_file
-        cookies = load_cookies_from_file(platform_name)
+        from utils.cookies_login import CredentialManager, credential_manager
+        cookies = credential_manager.load(platform_name)
         if cookies:
             logger.debug(f"✅ 成功通过底层接口加载 {platform_name} 凭证")
             return cookies
+        if credential_manager.state(platform_name) == CredentialManager.AUTH_REJECTED:
+            return {}
     except Exception as e:
         logger.debug(f"底层接口加载 {platform_name} 凭证失败: {e}，尝试使用明文回退...")
 

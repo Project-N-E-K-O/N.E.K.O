@@ -4178,7 +4178,9 @@
         },
         "status": {
             "active": "● Listo",
-            "inactive": "○ No configurado"
+            "inactive": "○ No configurado",
+            "expired": "Caducada",
+            "invalid": "Credencial dañada"
         },
         "qrLogin": {
             "tryQR": "O... ¿intenta iniciar sesión con un código QR?",

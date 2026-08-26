@@ -97,7 +97,10 @@ async def fetch_twitch_live_streams(limit: int = 10) -> dict[str, Any]:
                 timeout=10.0,
             )
             if response.status_code == 401:
-                credential_manager.mark_auth_rejected("twitch")
+                credential_manager.mark_auth_rejected(
+                    "twitch",
+                    {"client_id": client_id, "access_token": access_token},
+                )
         response.raise_for_status()
         payload = response.json()
     except Exception as exc:

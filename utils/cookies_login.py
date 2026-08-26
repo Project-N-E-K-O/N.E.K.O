@@ -28,6 +28,7 @@ import json
 import os
 import sys
 import threading
+from dataclasses import dataclass
 from typing import Dict, Any, Optional
 from pathlib import Path
 import logging
@@ -303,6 +304,17 @@ def _load_cookies_from_file_uncached(platform: str) -> Dict[str, str]:
         return {}
 
 
+_FileStamp = tuple[int, int, int] | None
+_SourceSignature = tuple[str | None, _FileStamp, _FileStamp]
+
+
+@dataclass(frozen=True)
+class _CredentialEntry:
+    source_signature: _SourceSignature
+    state: str
+    credentials: dict[str, str]
+
+
 class CredentialManager:
     """Thread-safe in-memory cache for decrypted platform credentials."""
 
@@ -312,56 +324,81 @@ class CredentialManager:
     AUTH_REJECTED = "auth_rejected"
 
     def __init__(self) -> None:
-        self._cache: dict[str, tuple[str | None, str, dict[str, str]]] = {}
+        self._cache: dict[str, _CredentialEntry] = {}
         self._cache_lock = threading.RLock()
-        self._platform_locks: dict[str, threading.Lock] = {}
+        self._platform_locks: dict[str, threading.RLock] = {}
 
     @staticmethod
-    def _source_path(platform: str) -> str | None:
+    def _file_stamp(path: Path | None) -> _FileStamp:
+        if path is None:
+            return None
+        try:
+            stat = path.stat()
+        except OSError:
+            return None
+        return stat.st_mtime_ns, stat.st_ctime_ns, stat.st_size
+
+    @classmethod
+    def _source_signature(cls, platform: str) -> _SourceSignature:
         cookie_file = COOKIE_FILES.get(platform)
-        return str(cookie_file) if cookie_file is not None else None
+        source_path = str(cookie_file) if cookie_file is not None else None
+        key_file = get_cookie_key_file(platform) if cookie_file is not None else None
+        return source_path, cls._file_stamp(cookie_file), cls._file_stamp(key_file)
 
-    def _platform_lock(self, platform: str) -> threading.Lock:
+    def _platform_lock(self, platform: str) -> threading.RLock:
         with self._cache_lock:
-            return self._platform_locks.setdefault(platform, threading.Lock())
+            return self._platform_locks.setdefault(platform, threading.RLock())
 
-    def _cached(self, platform: str) -> tuple[str | None, str, dict[str, str]] | None:
+    def _cached(self, platform: str) -> _CredentialEntry | None:
+        source_signature = self._source_signature(platform)
         with self._cache_lock:
             entry = self._cache.get(platform)
-            if entry is not None and entry[0] != self._source_path(platform):
+            if entry is not None and entry.source_signature != source_signature:
                 self._cache.pop(platform, None)
                 return None
             return entry
 
-    def _store(self, platform: str, state: str, credentials: Dict[str, str] | None = None) -> None:
+    def _store(
+        self,
+        platform: str,
+        state: str,
+        credentials: Dict[str, str] | None = None,
+    ) -> _CredentialEntry:
+        entry = _CredentialEntry(
+            source_signature=self._source_signature(platform),
+            state=state,
+            credentials=dict(credentials or {}),
+        )
         with self._cache_lock:
-            self._cache[platform] = (self._source_path(platform), state, dict(credentials or {}))
+            self._cache[platform] = entry
+        return entry
 
     @staticmethod
-    def _copy(entry: tuple[str | None, str, dict[str, str]]) -> Dict[str, str]:
-        _, state, credentials = entry
-        return dict(credentials) if state == CredentialManager.READY else {}
+    def _copy(entry: _CredentialEntry) -> Dict[str, str]:
+        return dict(entry.credentials) if entry.state == CredentialManager.READY else {}
 
-    def load(self, platform: str) -> Dict[str, str]:
+    def _load_entry(self, platform: str) -> _CredentialEntry:
         cached = self._cached(platform)
         if cached is not None:
-            return self._copy(cached)
+            return cached
 
         with self._platform_lock(platform):
             cached = self._cached(platform)
             if cached is not None:
-                return self._copy(cached)
+                return cached
 
             credentials = _load_cookies_from_file_uncached(platform)
             cookie_file = COOKIE_FILES.get(platform)
             if credentials:
                 state = self.READY
-            elif cookie_file is not None and cookie_file.exists():
+            elif self._file_stamp(cookie_file) is not None:
                 state = self.INVALID
             else:
                 state = self.MISSING
-            self._store(platform, state, credentials)
-            return dict(credentials)
+            return self._store(platform, state, credentials)
+
+    def load(self, platform: str) -> Dict[str, str]:
+        return self._copy(self._load_entry(platform))
 
     def save(self, platform: str, cookies: Dict[str, Any], encrypt: bool = True) -> bool:
         normalized = _normalize_cookies(cookies, platform)
@@ -374,22 +411,58 @@ class CredentialManager:
             self._store(platform, self.READY, normalized)
             return True
 
-    def mark_deleted(self, platform: str) -> None:
+    def delete_stored_credentials(self, platform: str) -> tuple[bool, bool]:
+        """Delete credential and key files atomically with the cache transition."""
         with self._platform_lock(platform):
-            self._store(platform, self.MISSING)
+            cookie_file = COOKIE_FILES.get(platform)
+            if cookie_file is None or not cookie_file.exists():
+                self._store(platform, self.MISSING)
+                return False, True
 
-    def mark_auth_rejected(self, platform: str) -> None:
+            cookie_file.unlink()
+            key_deleted = True
+            key_file = get_cookie_key_file(platform)
+            if key_file.exists():
+                try:
+                    key_file.unlink()
+                except OSError:
+                    key_deleted = False
+            self._store(platform, self.MISSING)
+            return True, key_deleted
+
+    def mark_auth_rejected(
+        self,
+        platform: str,
+        expected_credentials: Dict[str, Any],
+    ) -> bool:
+        expected = {
+            key: value
+            for key, value in expected_credentials.items()
+            if isinstance(key, str) and isinstance(value, str) and value
+        }
+        if not expected:
+            return False
+
         with self._platform_lock(platform):
-            self._store(platform, self.AUTH_REJECTED)
+            entry = self._cached(platform)
+            if entry is None or entry.state != self.READY:
+                return False
+            if any(entry.credentials.get(key) != value for key, value in expected.items()):
+                return False
+            self._store(platform, self.AUTH_REJECTED, entry.credentials)
+            return True
+
+    def state(self, platform: str) -> str:
+        return self._load_entry(platform).state
 
     def status(self, platform: str) -> dict[str, Any]:
-        self.load(platform)
-        entry = self._cached(platform) or (self._source_path(platform), self.MISSING, {})
-        _, state, credentials = entry
+        entry = self._load_entry(platform)
+        stored = entry.state in {self.READY, self.INVALID, self.AUTH_REJECTED}
         return {
-            "has_cookies": state == self.READY and bool(credentials),
-            "cookies_count": len(credentials) if state == self.READY else 0,
-            "credential_state": state,
+            "has_cookies": entry.state == self.READY and bool(entry.credentials),
+            "has_stored_credentials": stored,
+            "cookies_count": len(entry.credentials) if entry.state == self.READY else 0,
+            "credential_state": entry.state,
         }
 
     def status_all(self, platforms) -> dict[str, dict[str, Any]]:
