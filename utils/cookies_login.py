@@ -359,6 +359,7 @@ class CredentialManager:
     def _cached(self, platform: str) -> _CredentialEntry | None:
         with self._cache_lock:
             entry = self._cache.get(platform)
+            legacy_sources = self._legacy_sources.get(platform, set()).copy()
         if entry is None:
             return None
 
@@ -366,15 +367,18 @@ class CredentialManager:
         source_path = entry.source_signature[0]
         if source_path == configured_signature[0]:
             source_signature = configured_signature
-        elif configured_signature[1] is not None:
-            source_signature = configured_signature
+        elif source_path is not None and Path(source_path) in legacy_sources:
+            if configured_signature[1] is not None:
+                source_signature = configured_signature
+            else:
+                legacy_path = Path(source_path)
+                source_signature = (
+                    source_path,
+                    self._file_stamp(legacy_path),
+                    None,
+                )
         else:
-            legacy_path = Path(source_path) if source_path is not None else None
-            source_signature = (
-                source_path,
-                self._file_stamp(legacy_path),
-                None,
-            )
+            source_signature = configured_signature
 
         with self._cache_lock:
             if self._cache.get(platform) is not entry:
