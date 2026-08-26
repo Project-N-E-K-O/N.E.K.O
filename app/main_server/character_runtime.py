@@ -771,8 +771,8 @@ async def _handle_agent_event(event: dict):
                     # rather than here: the pacing manager may hold this cue for
                     # seconds, and a plugin that wants to see the screen wants
                     # to see it as she speaks, not as the cue was queued.
-                    "attach_live_frame": bool(
-                        event_metadata.get("attach_live_frame")
+                    "attach_live_frame": (
+                        event_metadata.get("attach_live_frame") is True
                     ),
                     "timestamp": event.get("timestamp") or "",
                     "metadata": event_metadata,

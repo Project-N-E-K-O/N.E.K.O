@@ -71,31 +71,52 @@ def _terminate_processes(processes: list[psutil.Process]) -> None:
             pass
 
 
-def _terminate_worker_tree(process: subprocess.Popen[bytes]) -> None:
-    try:
-        parent = psutil.Process(process.pid)
-        descendants = parent.children(recursive=True)
-    except (psutil.Error, OSError, RuntimeError, ValueError):
-        descendants = []
+def _terminate_worker_tree(
+    process: subprocess.Popen[bytes],
+    cleanup_lock: threading.RLock | None = None,
+) -> None:
+    lock = cleanup_lock or threading.RLock()
+    with lock:
+        if process.returncode is not None:
+            return
         try:
             parent = psutil.Process(process.pid)
         except (psutil.Error, OSError, RuntimeError, ValueError):
             parent = None
+            descendants = []
+        else:
+            try:
+                descendants = parent.children(recursive=True)
+            except (psutil.Error, OSError, RuntimeError, ValueError):
+                descendants = []
 
-    if os.name != "nt":
+        if os.name != "nt":
+            try:
+                os.killpg(process.pid, signal.SIGTERM)
+            except OSError:
+                pass
+
+        processes = [*descendants, parent] if parent is not None else descendants
+        _terminate_processes(processes)
+
+        if process.poll() is None:
+            try:
+                process.kill()
+            except OSError:
+                pass
+
+
+def _terminate_and_reap_worker(
+    process: subprocess.Popen[bytes],
+    cleanup_lock: threading.RLock,
+) -> None:
+    with cleanup_lock:
+        _terminate_worker_tree(process, cleanup_lock)
         try:
-            os.killpg(process.pid, signal.SIGTERM)
-        except OSError:
-            pass
-
-    processes = [*descendants, parent] if parent is not None else descendants
-    _terminate_processes(processes)
-
-    if process.poll() is None:
-        try:
+            process.wait(timeout=_PROCESS_CLEANUP_TIMEOUT)
+        except subprocess.TimeoutExpired:
             process.kill()
-        except OSError:
-            pass
+            process.wait()
 
 
 def _read_protocol_output(stream: BinaryIO) -> tuple[bytes, bool]:
@@ -238,6 +259,9 @@ def _worker_main(protocol_fd: int | None = None) -> None:
     result_prefix = _RESULT_PREFIX
     max_result_bytes = _MAX_METADATA_RESULT_BYTES
     control_fd = raw_dup(sys.stdin.fileno())
+    main_module = sys.modules.get("__main__")
+    if main_module is not None:
+        vars(main_module).pop("_protocol_fd", None)
     if protocol_fd is None:
         stdout_fd = sys.stdout.fileno()
         stderr_fd = sys.stderr.fileno()
@@ -340,10 +364,11 @@ def scan_plugin_metadata_isolated(
         raise PluginMetadataScanError(type(exc).__name__, str(exc)) from exc
 
     timed_out = threading.Event()
+    cleanup_lock = threading.RLock()
 
     def _expire_worker() -> None:
         timed_out.set()
-        _terminate_worker_tree(process)
+        _terminate_worker_tree(process, cleanup_lock)
 
     timeout_timer = threading.Timer(timeout, _expire_worker)
     timeout_timer.daemon = True
@@ -357,15 +382,10 @@ def scan_plugin_metadata_isolated(
         process.stdin.flush()
         stdout_bytes, output_too_large = _read_protocol_output(process.stdout)
         timeout_timer.cancel()
-        _terminate_worker_tree(process)
-        try:
-            process.wait(timeout=_PROCESS_CLEANUP_TIMEOUT)
-        except subprocess.TimeoutExpired:
-            process.kill()
-            process.wait()
+        _terminate_and_reap_worker(process, cleanup_lock)
     except OSError as exc:
         timeout_timer.cancel()
-        _terminate_worker_tree(process)
+        _terminate_and_reap_worker(process, cleanup_lock)
         if timed_out.is_set():
             raise PluginMetadataScanError(
                 "TimeoutExpired",

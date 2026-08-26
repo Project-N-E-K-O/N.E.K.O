@@ -24,6 +24,9 @@ from utils.logger_config import get_module_logger
 
 _EMBEDDED_BY_AGENT = os.getenv("NEKO_PLUGIN_HOSTED_BY_AGENT", "").strip().lower() == "true"
 _SHUTDOWN_PERMISSION_REVOKE_TIMEOUT = 0.4
+_AUTOSTART_PERMISSION_REVOKE_ATTEMPTS = 16
+_AUTOSTART_PERMISSION_REVOKE_ATTEMPT_TIMEOUT = 1.0
+_AUTOSTART_PERMISSION_REVOKE_RETRY_SECONDS = 1.0
 
 if _EMBEDDED_BY_AGENT:
     logger = get_module_logger(__name__, "Agent")
@@ -129,6 +132,54 @@ class ServerLifecycleService:
         if not healthy:
             logger.warning("message_plane health check returned false; it may still be starting")
 
+    async def _revoke_permissions_before_autostart(
+        self,
+        plugin_ids: list[str],
+    ) -> set[str]:
+        pending_ids = list(plugin_ids)
+        last_results: dict[str, object] = {}
+        for attempt in range(_AUTOSTART_PERMISSION_REVOKE_ATTEMPTS):
+            results = await asyncio.gather(
+                *(
+                    asyncio.wait_for(
+                        self._plugin_lifecycle_service.revoke_plugin_permissions(
+                            plugin_id
+                        ),
+                        timeout=_AUTOSTART_PERMISSION_REVOKE_ATTEMPT_TIMEOUT,
+                    )
+                    for plugin_id in pending_ids
+                ),
+                return_exceptions=True,
+            )
+            retry_ids: list[str] = []
+            for plugin_id, result in zip(pending_ids, results, strict=True):
+                if result is False or isinstance(result, BaseException):
+                    retry_ids.append(plugin_id)
+                    last_results[plugin_id] = result
+            if not retry_ids:
+                return set()
+            pending_ids = retry_ids
+            if attempt + 1 < _AUTOSTART_PERMISSION_REVOKE_ATTEMPTS:
+                if attempt == 0:
+                    logger.warning(
+                        "main_server permission endpoint unavailable during startup; "
+                        "retrying plugin revocation before autostart: plugin_count={}",
+                        len(pending_ids),
+                    )
+                await asyncio.sleep(_AUTOSTART_PERMISSION_REVOKE_RETRY_SECONDS)
+
+        for plugin_id in pending_ids:
+            result = last_results.get(plugin_id)
+            if isinstance(result, BaseException):
+                logger.error(
+                    "plugin permission revocation raised at startup: "
+                    "plugin_id={}, err_type={}, err={}",
+                    plugin_id,
+                    type(result).__name__,
+                    str(result),
+                )
+        return set(pending_ids)
+
     async def _refresh_registry_and_start_autostart_plugins(self) -> None:
         try:
             refresh_result = await self._plugin_registry_service.refresh_registry()
@@ -145,27 +196,9 @@ class ServerLifecycleService:
                     for plugin_id in state.plugins
                     if isinstance(plugin_id, str) and plugin_id
                 )
-            revocation_results = await asyncio.gather(*(
-                self._plugin_lifecycle_service.revoke_plugin_permissions(plugin_id)
-                for plugin_id in registered_plugin_ids
-            ), return_exceptions=True)
-            failed_revocation_ids: set[str] = set()
-            for plugin_id, revoked in zip(
-                registered_plugin_ids,
-                revocation_results,
-                strict=True,
-            ):
-                if isinstance(revoked, BaseException):
-                    logger.error(
-                        "plugin permission revocation raised at startup: "
-                        "plugin_id={}, err_type={}, err={}",
-                        plugin_id,
-                        type(revoked).__name__,
-                        str(revoked),
-                    )
-                    failed_revocation_ids.add(plugin_id)
-                elif revoked is False:
-                    failed_revocation_ids.add(plugin_id)
+            failed_revocation_ids = await self._revoke_permissions_before_autostart(
+                registered_plugin_ids
+            )
             autostart_plugin_ids = await self._plugin_registry_service.list_autostart_plugin_ids()
         except Exception as exc:
             logger.error(

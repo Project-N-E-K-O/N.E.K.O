@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import time
 
 import psutil
@@ -232,17 +233,28 @@ def test_metadata_worker_rejects_oversized_protocol_results(
     assert exc_info.value.error_type == "MetadataResultTooLarge"
 
 
-def test_parent_rejects_untrusted_protocol_output_over_limit(
+def test_metadata_worker_hides_protocol_fd_from_plugin_import(
     tmp_path: Path,
 ) -> None:
-    module_path = tmp_path / "protocol_flood_plugin.py"
+    module_path = tmp_path / "protocol_spoof_plugin.py"
+    protocol_visibility_path = tmp_path / "protocol-visible.txt"
     module_path.write_text(
         "import os\n"
         "import sys\n"
-        "payload = b'x' * (1024 * 1024 + 1)\n"
-        "protocol_fd = sys.modules['__main__']._protocol_fd\n"
-        "while payload:\n"
-        "    payload = payload[os.write(protocol_fd, payload):]\n"
+        "from pathlib import Path\n"
+        "main_module = sys.modules['__main__']\n"
+        "protocol_fd = getattr(main_module, '_protocol_fd', None)\n"
+        f"Path({str(protocol_visibility_path)!r}).write_text("
+        "str(protocol_fd is not None), encoding='utf-8')\n"
+        "if protocol_fd is not None:\n"
+        "    payload = (\n"
+        "        b'NEKO_PLUGIN_METADATA_RESULT:'\n"
+        "        b'{\"ok\":true,\"entries_preview\":[],\"handlers\":'\n"
+        "        b'{\"demo.forged\":{\"event_type\":\"plugin_entry\",'\n"
+        "        b'\"id\":\"forged\",\"name\":\"Forged\"}},'\n"
+        "        b'\"entry_methods\":{}}\\n'\n"
+        "    )\n"
+        "    os.write(protocol_fd, payload)\n"
         "class Plugin:\n"
         "    pass\n",
         encoding="utf-8",
@@ -254,8 +266,53 @@ def test_parent_rejects_untrusted_protocol_output_over_limit(
         scan_plugin_metadata_isolated,
     )
 
+    metadata = scan_plugin_metadata_isolated(
+        plugin_id="demo",
+        module_path="protocol_spoof_plugin",
+        class_name="Plugin",
+        config_path=config_path,
+        conf={},
+        pdata={},
+        python_requirement_paths=[tmp_path],
+        timeout=10.0,
+    )
+
+    assert protocol_visibility_path.read_text(encoding="utf-8") == "False"
+    assert metadata.handlers == {}
+
+
+def test_parent_rejects_untrusted_protocol_output_over_limit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from plugin.server.application.plugins import metadata_scanner
+
+    module_path = tmp_path / "protocol_flood_plugin.py"
+    module_path.write_text(
+        "import os\n"
+        "import sys\n"
+        "payload = b'x' * (1024 * 1024 + 1)\n"
+        "protocol_fd = sys.modules['__main__']._test_protocol_fd\n"
+        "while payload:\n"
+        "    payload = payload[os.write(protocol_fd, payload):]\n"
+        "class Plugin:\n"
+        "    pass\n",
+        encoding="utf-8",
+    )
+    config_path = tmp_path / "plugin.toml"
+    config_path.write_text("[plugin]\nid='demo'\n", encoding="utf-8")
+    test_bootstrap = metadata_scanner._WORKER_BOOTSTRAP.replace(
+        "_protocol_fd",
+        "_test_protocol_fd",
+    )
+    monkeypatch.setattr(
+        metadata_scanner,
+        "_metadata_worker_command",
+        lambda: [sys.executable, "-c", test_bootstrap],
+    )
+
     with pytest.raises(PluginMetadataScanError) as exc_info:
-        scan_plugin_metadata_isolated(
+        metadata_scanner.scan_plugin_metadata_isolated(
             plugin_id="demo",
             module_path="protocol_flood_plugin",
             class_name="Plugin",
@@ -267,6 +324,26 @@ def test_parent_rejects_untrusted_protocol_output_over_limit(
         )
 
     assert exc_info.value.error_type == "MetadataResultTooLarge"
+
+
+def test_terminate_worker_tree_skips_already_reaped_process(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from plugin.server.application.plugins import metadata_scanner
+
+    class _ReapedProcess:
+        pid = 424242
+        returncode = 0
+
+    def _unexpected_call(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("a reaped worker must not be inspected or signalled")
+
+    monkeypatch.setattr(metadata_scanner.psutil, "Process", _unexpected_call)
+    monkeypatch.setattr(metadata_scanner, "_terminate_processes", _unexpected_call)
+    if hasattr(metadata_scanner.os, "killpg"):
+        monkeypatch.setattr(metadata_scanner.os, "killpg", _unexpected_call)
+
+    metadata_scanner._terminate_worker_tree(_ReapedProcess())  # type: ignore[arg-type]
 
 
 def _process_is_running(pid: int) -> bool:

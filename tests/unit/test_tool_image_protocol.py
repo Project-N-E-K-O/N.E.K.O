@@ -516,6 +516,29 @@ async def test_fallback_transcription_budget_is_shared_across_the_tool_turn(
 
 
 @pytest.mark.asyncio
+async def test_fallback_transcription_budget_isolated_without_a_turn_id(
+    spy_vision,
+):
+    manager = _Manager(
+        _result(output={"unused": True}),
+        _FakeOfflineSession("deepseek-chat"),
+    )
+    manager.current_speech_id = None
+    first_result = _result(
+        images=[ToolImage(data_b64="first"), ToolImage(data_b64="second")]
+    )
+    next_result = _result(images=[ToolImage(data_b64="next-call")])
+
+    await manager._route_tool_images(first_result)
+    await manager._route_tool_images(next_result)
+
+    assert len(spy_vision.calls) == 3
+    assert next_result.output["_image_descriptions"] == [
+        "a burning cruiser near the cap"
+    ]
+
+
+@pytest.mark.asyncio
 async def test_realtime_tool_chain_keeps_one_budget_across_speech_id_rotations(
     spy_vision,
 ):

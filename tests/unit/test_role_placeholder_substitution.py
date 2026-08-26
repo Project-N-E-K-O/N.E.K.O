@@ -216,6 +216,41 @@ def _patch_main_server(monkeypatch, fake_mgr):
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize(
+    ("raw_value", "expected"),
+    [(True, True), ("false", False), ("0", False)],
+)
+async def test_main_server_requires_a_boolean_true_to_attach_live_frame(
+    monkeypatch,
+    raw_value,
+    expected,
+):
+    from app import main_server
+
+    fake_mgr = _mgr_for_main_server()
+    _patch_main_server(monkeypatch, fake_mgr)
+
+    await main_server._handle_agent_event(
+        {
+            "event_type": "proactive_message",
+            "lanlan_name": "兰兰",
+            "text": "look now",
+            "channel": "plugin:demo",
+            "task_id": "live-frame-bool",
+            "ai_behavior": "read",
+            "delivery_mode": "passive",
+            "source_kind": "plugin",
+            "source_name": "demo",
+            "media_parts": [],
+            "metadata": {"attach_live_frame": raw_value},
+        }
+    )
+
+    callback = fake_mgr.enqueue_agent_callback.call_args.args[0]
+    assert callback["attach_live_frame"] is expected
+
+
+@pytest.mark.unit
 async def test_main_server_direct_reply_substitutes_master_name(monkeypatch, capsys):
     """task_result + direct_reply → text goes verbatim to send_lanlan_response
     (skipping the LLM). The placeholder must be expanded at this boundary or

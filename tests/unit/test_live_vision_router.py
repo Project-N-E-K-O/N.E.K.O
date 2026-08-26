@@ -181,6 +181,7 @@ def test_the_frame_is_withheld_without_a_matching_plugin_generation(monkeypatch)
         params={
             "include_frame": "true",
             "source_name": "demo_plugin",
+            "host_generation": HOST_GENERATION,
             "token": "not-authorized",
         },
     ).json()
@@ -211,6 +212,7 @@ def test_a_matching_query_token_is_not_accepted(monkeypatch):
         params={
             "include_frame": "true",
             "source_name": "demo_plugin",
+            "host_generation": HOST_GENERATION,
             "token": "generation-one",
         },
     ).json()

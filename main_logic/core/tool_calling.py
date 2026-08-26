@@ -21,6 +21,8 @@ Method-only mixin: every instance attribute is assigned in
 
 import asyncio
 import os
+from uuid import uuid4
+
 from main_logic.omni_realtime_client import OmniRealtimeClient
 from main_logic.tool_calling import (
     ToolCall,
@@ -193,6 +195,8 @@ class ToolCallingMixin:
                 turn_id = f"realtime:{id(session)}:{tool_chain_id}"
             else:
                 turn_id = str(getattr(self, "current_speech_id", "") or "")
+                if not turn_id:
+                    turn_id = f"anonymous:{uuid4().hex}"
             if getattr(self, "_tool_image_fallback_budget_turn_id", None) != turn_id:
                 self._tool_image_fallback_budget_turn_id = turn_id
                 self._tool_image_fallback_budget_count = 0
