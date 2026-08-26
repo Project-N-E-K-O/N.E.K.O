@@ -218,7 +218,7 @@ def _select_effective_records(
             record.meta_payload["effective_source"] = source
             if source == "builtin":
                 record.meta_payload["builtin_version"] = str(record.meta_payload.get("version", ""))
-            elif builtin_hidden is not None:
+            elif builtin_hidden is not None and record in canonical:
                 record.meta_payload["builtin_version"] = str(
                     builtin_hidden.meta_payload.get("version", "")
                 )

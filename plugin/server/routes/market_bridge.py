@@ -868,7 +868,10 @@ async def market_installed(
                 if not e.removed and e.root_id and e.directory_name
             }
 
-        discovered: dict[str, dict[str, tuple[Path, str, LockEntry | None]]] = {}
+        discovered: dict[
+            str,
+            dict[str, list[tuple[Path, str, LockEntry | None]]],
+        ] = {}
         path_policy = PluginCliPathPolicy.from_settings()
         for root in _plugin_config_roots():
             if not root.is_dir():
@@ -901,12 +904,26 @@ async def market_installed(
                     ):
                         entry = pid_entry
 
-                discovered.setdefault(plugin_id, {})[root_kind] = (plugin_dir, version, entry)
+                discovered.setdefault(plugin_id, {}).setdefault(root_kind, []).append(
+                    (plugin_dir, version, entry)
+                )
 
         installed_by_pid: dict[str, MarketInstalledPlugin] = {}
         for plugin_id, sources in discovered.items():
-            builtin = sources.get("builtin")
-            user = sources.get("user")
+            builtin_candidates = sources.get("builtin", [])
+            user_candidates = sources.get("user", [])
+            builtin = next(
+                (candidate for candidate in builtin_candidates if candidate[0].name == plugin_id),
+                builtin_candidates[0] if builtin_candidates else None,
+            )
+            canonical_user = next(
+                (candidate for candidate in user_candidates if candidate[0].name == plugin_id),
+                None,
+            )
+            # Only <user-root>/<id> may shadow a builtin. A renamed legacy
+            # directory remains a real ID conflict and the builtin stays
+            # effective, matching registry_service._select_effective_records.
+            user = canonical_user or (user_candidates[0] if builtin is None else None)
             effective = user or builtin
             if effective is None:  # pragma: no cover - discovered always contains one source
                 continue

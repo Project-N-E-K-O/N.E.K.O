@@ -59,22 +59,55 @@ class _StubLogger:
 
 @pytest.fixture
 def _isolate_plugins_namespace():
-    """隔离全局 sys.path / sys.modules['plugins*']，兜底会改这些全局状态。"""
+    """隔离兜底导入会修改的两个插件命名空间。"""
     saved_path = sys.path[:]
     saved_modules = {
         key: value
         for key, value in sys.modules.items()
-        if key == "plugins" or key.startswith("plugins.")
+        if key == "plugins"
+        or key.startswith("plugins.")
+        or key.startswith("plugin.plugins.")
+    }
+    legacy_parent = sys.modules.get("plugin.plugins")
+    saved_legacy_children = {
+        key.split(".", 2)[2]: getattr(legacy_parent, key.split(".", 2)[2], None)
+        for key in saved_modules
+        if legacy_parent is not None
+        and key.startswith("plugin.plugins.")
+        and key.count(".") == 2
     }
     for key in list(saved_modules):
         sys.modules.pop(key, None)
+    if legacy_parent is not None:
+        for child_name, child_module in saved_legacy_children.items():
+            if getattr(legacy_parent, child_name, None) is child_module:
+                delattr(legacy_parent, child_name)
     try:
         yield
     finally:
         sys.path[:] = saved_path
-        for key in [k for k in sys.modules if k == "plugins" or k.startswith("plugins.")]:
+        current_legacy_children = {
+            key.split(".", 2)[2]
+            for key in sys.modules
+            if key.startswith("plugin.plugins.") and key.count(".") == 2
+        }
+        for key in [
+            k
+            for k in sys.modules
+            if k == "plugins"
+            or k.startswith("plugins.")
+            or k.startswith("plugin.plugins.")
+        ]:
             sys.modules.pop(key, None)
+        legacy_parent = sys.modules.get("plugin.plugins")
+        if legacy_parent is not None:
+            for child_name in current_legacy_children:
+                if hasattr(legacy_parent, child_name):
+                    delattr(legacy_parent, child_name)
         sys.modules.update(saved_modules)
+        if legacy_parent is not None:
+            for child_name, child_module in saved_legacy_children.items():
+                setattr(legacy_parent, child_name, child_module)
 
 
 def _make_user_plugin(tmp_path: Path) -> Path:
@@ -356,3 +389,55 @@ def test_child_import_evicts_cached_same_id_from_previous_source(
     assert effective_module.SOURCE == effective_source
     assert Path(effective_module.__file__).resolve().is_relative_to(effective_root.resolve())
     assert f"plugins.{plugin_id}.marker" not in sys.modules
+
+
+@pytest.mark.plugin_unit
+def test_user_plugin_absolute_self_import_uses_selected_source_and_can_restore_builtin(
+    _isolate_plugins_namespace,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plugin_id = "absolute_self_import"
+    user_root = tmp_path / "user" / "plugins"
+    builtin_root = tmp_path / "builtin" / "plugins"
+    user_config = _make_importable_plugin(user_root, plugin_id, "user")
+    builtin_config = _make_importable_plugin(builtin_root, plugin_id, "builtin")
+    for root, source in ((user_root, "user"), (builtin_root, "builtin")):
+        (root / plugin_id / "helper.py").write_text(
+            f"SOURCE = {source!r}\n",
+            encoding="utf-8",
+        )
+    (user_root / plugin_id / "__init__.py").write_text(
+        f"from plugin.plugins.{plugin_id}.helper import SOURCE\n",
+        encoding="utf-8",
+    )
+
+    legacy_parent = importlib.import_module("plugin.plugins")
+    monkeypatch.setattr(legacy_parent, "__path__", [str(builtin_root)])
+    if legacy_parent.__spec__ is not None:
+        monkeypatch.setattr(
+            legacy_parent.__spec__,
+            "submodule_search_locations",
+            legacy_parent.__path__,
+        )
+
+    user_module = host_module._import_plugin_module(
+        f"plugins.{plugin_id}",
+        user_config,
+        _StubLogger(),
+    )
+
+    assert user_module.SOURCE == "user"
+    assert sys.modules[f"plugin.plugins.{plugin_id}"] is user_module
+    legacy_helper = sys.modules[f"plugin.plugins.{plugin_id}.helper"]
+    assert Path(legacy_helper.__file__).resolve().is_relative_to(user_root.resolve())
+
+    builtin_module = host_module._import_plugin_module(
+        f"plugin.plugins.{plugin_id}",
+        builtin_config,
+        _StubLogger(),
+    )
+
+    assert builtin_module.SOURCE == "builtin"
+    assert Path(builtin_module.__file__).resolve().is_relative_to(builtin_root.resolve())
+    assert getattr(legacy_parent, plugin_id) is builtin_module

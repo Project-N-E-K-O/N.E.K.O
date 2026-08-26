@@ -117,8 +117,19 @@ def build_install_plan(
     target_version = _plugin_text(packaged_manifest, "version") or inspected.version
     previous_ids = _previous_ids(packaged_manifest)
     installed = _installed_plugins(plugins_root)
+    builtin_installed = (
+        _installed_plugins(builtin_plugins_root.expanduser().resolve())
+        if builtin_plugins_root is not None
+        else {}
+    )
 
-    legacy_ids = tuple(sorted(previous_id for previous_id in previous_ids if previous_id in installed))
+    legacy_ids = tuple(
+        sorted(
+            previous_id
+            for previous_id in previous_ids
+            if previous_id in installed or previous_id in builtin_installed
+        )
+    )
     if legacy_ids:
         return PluginInstallPlan(
             action="blocked",

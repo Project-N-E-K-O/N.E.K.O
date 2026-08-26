@@ -100,6 +100,79 @@ async def test_installed_projects_builtin_when_no_user_override(
 
 
 @pytest.mark.asyncio
+async def test_installed_keeps_builtin_effective_for_noncanonical_user_conflict(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    builtin_root = tmp_path / "builtin"
+    user_root = tmp_path / "installations" / "plugins"
+    builtin = _write_plugin(builtin_root, "study_companion", "0.1.5")
+    _write_plugin(
+        user_root,
+        "study_companion",
+        "0.1.6",
+        directory_name="old_study_companion",
+    )
+    policy = SimpleNamespace(
+        builtin_plugins_root=builtin_root.resolve(),
+        user_plugins_root=user_root.resolve(),
+    )
+
+    monkeypatch.setattr(market_bridge, "_verify_token", lambda _token: None)
+    monkeypatch.setattr(
+        market_bridge.PluginCliPathPolicy,
+        "from_settings",
+        classmethod(lambda cls: policy),
+    )
+    monkeypatch.setattr(market_bridge, "get_install_source_manager", lambda: None)
+
+    response = await market_bridge.market_installed(token="test")
+
+    assert response.count == 1
+    [installed] = response.installed
+    assert installed.path == str(builtin)
+    assert installed.effective_source == "builtin"
+    assert installed.effective_version == "0.1.5"
+    assert installed.builtin_version == "0.1.5"
+
+
+@pytest.mark.asyncio
+async def test_installed_prefers_canonical_user_among_user_conflicts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    builtin_root = tmp_path / "builtin"
+    user_root = tmp_path / "installations" / "plugins"
+    _write_plugin(builtin_root, "study_companion", "0.1.5")
+    canonical_user = _write_plugin(user_root, "study_companion", "0.1.6")
+    _write_plugin(
+        user_root,
+        "study_companion",
+        "9.9.9",
+        directory_name="old_study_companion",
+    )
+    policy = SimpleNamespace(
+        builtin_plugins_root=builtin_root.resolve(),
+        user_plugins_root=user_root.resolve(),
+    )
+
+    monkeypatch.setattr(market_bridge, "_verify_token", lambda _token: None)
+    monkeypatch.setattr(
+        market_bridge.PluginCliPathPolicy,
+        "from_settings",
+        classmethod(lambda cls: policy),
+    )
+    monkeypatch.setattr(market_bridge, "get_install_source_manager", lambda: None)
+
+    response = await market_bridge.market_installed(token="test")
+
+    [installed] = response.installed
+    assert installed.path == str(canonical_user)
+    assert installed.effective_source == "manual"
+    assert installed.effective_version == "0.1.6"
+
+
+@pytest.mark.asyncio
 async def test_installed_ignores_hidden_override_staging(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

@@ -313,6 +313,29 @@ def test_plan_blocks_an_installed_declared_previous_id(tmp_path: Path) -> None:
     assert plan.legacy_plugin_ids == ("neko_roast",)
 
 
+def test_plan_blocks_a_builtin_declared_previous_id(tmp_path: Path) -> None:
+    source = _write_plugin(
+        tmp_path / "source",
+        "neko_live",
+        "1.0.0",
+        previous_ids=("neko_roast",),
+    )
+    package_path = tmp_path / "neko-live.neko-plugin"
+    build_plugin(source, package_path)
+    builtin_root = tmp_path / "builtin"
+    _write_plugin(builtin_root, "neko_roast", "0.1.0")
+
+    plan = build_install_plan(
+        package_path=package_path,
+        plugins_root=tmp_path / "user",
+        builtin_plugins_root=builtin_root,
+    )
+
+    assert plan.action == "blocked"
+    assert plan.reason == "legacy_plugin_present"
+    assert plan.legacy_plugin_ids == ("neko_roast",)
+
+
 def test_confirmation_token_streams_package_instead_of_reading_it_all_at_once(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

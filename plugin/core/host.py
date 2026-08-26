@@ -297,28 +297,32 @@ def _evict_cached_plugin_source(module_path: str, config_path: Path, logger: Any
     """Remove an inherited same-ID package before importing the effective source."""
 
     parts = module_path.split(".")
-    if len(parts) < 2 or parts[0] != "plugins":
+    if len(parts) >= 2 and parts[0] == "plugins":
+        plugin_id = parts[1]
+    elif len(parts) >= 3 and parts[:2] == ["plugin", "plugins"]:
+        plugin_id = parts[2]
+    else:
         return
     try:
         plugin_dir = config_path.resolve().parent
     except OSError as exc:
         logger.debug("[Plugin Process] Failed to resolve plugin directory for cache eviction: {}", exc)
         return
-    if parts[1] != plugin_dir.name:
+    if plugin_id != plugin_dir.name:
         return
 
-    package_prefix = ".".join(parts[:2])
+    package_prefixes = (f"plugins.{plugin_id}", f"plugin.plugins.{plugin_id}")
     evicted = [
         name
         for name in tuple(sys.modules)
-        if name == package_prefix or name.startswith(f"{package_prefix}.")
+        if any(name == prefix or name.startswith(f"{prefix}.") for prefix in package_prefixes)
     ]
     for name in evicted:
         sys.modules.pop(name, None)
     if evicted:
         logger.info(
             "[Plugin Process] Evicted cached plugin package before source import: {}",
-            package_prefix,
+            ", ".join(package_prefixes),
         )
 
 
@@ -391,11 +395,17 @@ def _import_current_plugin_from_config(module_path: str, config_path: Path, logg
         module = importlib.util.module_from_spec(spec)
         sys.modules[plugin_module_path] = module
         setattr(sys.modules["plugins"], parts[1], module)
+        legacy_parent = importlib.import_module("plugin.plugins")
+        legacy_module_path = f"plugin.{plugin_module_path}"
+        _evict_plugin_module_tree(legacy_module_path)
+        sys.modules[legacy_module_path] = module
+        setattr(legacy_parent, parts[1], module)
         try:
             if spec.loader is not None:
                 spec.loader.exec_module(module)
         except Exception:
             _evict_plugin_module_tree(plugin_module_path)
+            _evict_plugin_module_tree(legacy_module_path)
             raise
 
     if len(parts) > 2:
@@ -415,8 +425,11 @@ def _import_plugin_module(module_path: str, config_path: Path | None, logger: An
     退化为普通 ``import_module`` 行为。
     """
 
-    if config_path is not None and module_path.startswith("plugins."):
+    if config_path is not None and (
+        module_path.startswith("plugins.") or module_path.startswith("plugin.plugins.")
+    ):
         _evict_cached_plugin_source(module_path, config_path, logger)
+    if config_path is not None and module_path.startswith("plugins."):
         configured_module = _import_current_plugin_from_config(
             module_path,
             config_path,
