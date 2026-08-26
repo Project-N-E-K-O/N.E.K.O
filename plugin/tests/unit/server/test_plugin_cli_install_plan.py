@@ -72,6 +72,22 @@ def test_plan_marks_matching_existing_plugin_as_upgrade(tmp_path: Path) -> None:
     assert len(plan.confirmation_token) == 64
 
 
+def test_plan_blocks_direct_replacement_of_existing_builtin_override(tmp_path: Path) -> None:
+    package = _single_package(tmp_path, "demo", version="2.0.0")
+    _write_plugin(tmp_path / "plugins", plugin_id="demo", version="1.5.0")
+    _write_plugin(tmp_path / "builtin", plugin_id="demo", version="1.0.0")
+
+    plan = build_install_plan(
+        package_path=package,
+        plugins_root=tmp_path / "plugins",
+        builtin_plugins_root=tmp_path / "builtin",
+    )
+
+    assert plan.action == "blocked"
+    assert plan.reason == "plugin_builtin_override_market_required"
+    assert plan.confirmation_token == ""
+
+
 @pytest.mark.parametrize(
     ("current_version", "target_version", "expected_action"),
     [

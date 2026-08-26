@@ -147,7 +147,7 @@ def _entry_module_candidates(plugin_dir: Path, plugin_id: str, entry: str) -> tu
         )
 
     parts = module_name.split(".")
-    if not parts or any(not part or not part.isidentifier() for part in parts):
+    if not parts or any(not part for part in parts):
         raise _LayoutMigrationBlocked(
             "PLUGIN_LAYOUT_MIGRATION_ENTRY_INVALID",
             f"plugin entry has an invalid module path: {entry!r}",
@@ -164,6 +164,12 @@ def _entry_module_candidates(plugin_dir: Path, plugin_id: str, entry: str) -> tu
             "PLUGIN_LAYOUT_MIGRATION_ENTRY_INVALID",
             "legacy plugin entry is not supported by isolated loading: "
             f"{entry!r}",
+        )
+
+    if any(not part.isidentifier() for part in relative_parts):
+        raise _LayoutMigrationBlocked(
+            "PLUGIN_LAYOUT_MIGRATION_ENTRY_INVALID",
+            f"plugin entry has an invalid module path: {entry!r}",
         )
 
     if relative_parts:

@@ -187,6 +187,26 @@ async def test_invalid_entry_is_blocked(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("plugin_id", ["my-plugin", "123plugin"])
+async def test_migration_accepts_supported_non_identifier_plugin_ids(
+    tmp_path: Path,
+    plugin_id: str,
+) -> None:
+    state_root = tmp_path / "plugins"
+    _write_plugin(state_root, plugin_id)
+    exec_root = tmp_path / "exec"
+
+    result = await migrate_legacy_plugin_layout(
+        state_root=state_root,
+        exec_root=exec_root,
+    )
+
+    assert result.migrated == (plugin_id,)
+    assert result.blocked == ()
+    assert (exec_root / plugin_id / "__init__.py").is_file()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("entry", ["main:Plugin", "broken:Plugin", "broken.main:Plugin"])
 async def test_package_local_entry_is_blocked_before_migration(
     tmp_path: Path,

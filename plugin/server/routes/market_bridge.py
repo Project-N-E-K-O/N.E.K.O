@@ -1109,6 +1109,8 @@ async def market_installed(
     try:
         # 一次性拿全量 lock 索引
         mgr = get_install_source_manager()
+        if mgr is not None:
+            await asyncio.to_thread(mgr.load)
         snapshot = mgr.snapshot() if mgr is not None else None
         entries_by_pid: dict[str, LockEntry] = {}
         entries_by_dir: dict[tuple[str, str], LockEntry] = {}

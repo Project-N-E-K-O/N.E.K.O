@@ -168,19 +168,27 @@ def build_install_plan(
             reason="multiple_installations",
             directory_name=directory_name,
         )
-    if not target_dir.exists() or manifestless_state:
-        builtin_matches = _matching_builtins(
-            plugin_id=plugin_id,
-            builtin_plugins_root=builtin_plugins_root,
+    builtin_matches = _matching_builtins(
+        plugin_id=plugin_id,
+        builtin_plugins_root=builtin_plugins_root,
+    )
+    if len(builtin_matches) > 1:
+        return _blocked(
+            inspected.package_id,
+            plugin_id,
+            target_version,
+            reason="multiple_builtin_sources",
+            directory_name=directory_name,
         )
-        if len(builtin_matches) > 1:
-            return _blocked(
-                inspected.package_id,
-                plugin_id,
-                target_version,
-                reason="multiple_builtin_sources",
-                directory_name=directory_name,
-            )
+    if target_dir.exists() and not manifestless_state and builtin_matches:
+        return _blocked(
+            inspected.package_id,
+            plugin_id,
+            target_version,
+            reason="plugin_builtin_override_market_required",
+            directory_name=directory_name,
+        )
+    if not target_dir.exists() or manifestless_state:
         if builtin_matches:
             if manifestless_state:
                 return _blocked(

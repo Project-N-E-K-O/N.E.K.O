@@ -739,6 +739,12 @@ class PluginCliService:
             or directory_name != str(plan_dict.get("directory_name") or "")
         ):
             raise ValueError("Market replacement identity does not match the builtin override plan")
+        expected_version = str(market_detail.get("version") or "").strip()
+        if (
+            not expected_version
+            or expected_version != str(plan_dict.get("target_version") or "").strip()
+        ):
+            raise ValueError("Market replacement version does not match the builtin override package")
 
         manager = self._require_install_source_manager()
         entry = manager.find_active_market_entry(expected_plugin_id)

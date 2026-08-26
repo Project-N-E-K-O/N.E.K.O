@@ -84,6 +84,38 @@ def _rewrite_package_member(
 
 
 @pytest.mark.asyncio
+async def test_market_builtin_replacement_rejects_market_version_mismatch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = PluginCliService()
+
+    async def plan_install(**_kwargs: object) -> dict[str, object]:
+        return {
+            "action": "override_builtin",
+            "package_id": "study_companion",
+            "plugin_id": "study_companion",
+            "directory_name": "study_companion",
+            "target_version": "0.1.6",
+        }
+
+    monkeypatch.setattr(service, "plan_install", plan_install)
+
+    with pytest.raises(ValueError, match="Market replacement version"):
+        await service._install_market_builtin_replacement(
+            package="unused.neko-plugin",
+            profiles_root=None,
+            _allow_external_profiles_root=False,
+            forced_directory_name="study_companion",
+            market_detail={
+                "expected_plugin_toml_id": "study_companion",
+                "package_sha256": "a" * 64,
+                "version": "9.9.9",
+            },
+            actual_sha256="a" * 64,
+        )
+
+
+@pytest.mark.asyncio
 async def test_cli_rejects_unverified_direct_builtin_override(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
