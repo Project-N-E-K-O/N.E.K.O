@@ -6,9 +6,11 @@ from pathlib import Path
 import shutil
 import subprocess
 import time
+from types import SimpleNamespace
 
 import pytest
 
+from plugin.plugins.study_companion import tutor_llm_agent_document as document_agent
 from plugin.plugins.study_companion.document_analysis import validate_document
 from plugin.plugins.study_companion.document_analysis_jobs import (
     DOCUMENT_JOB_FINALIZE_RESERVED_SECONDS,
@@ -139,10 +141,19 @@ async def test_chunk_retry_does_not_start_after_chunk_window_closes(
         logger=_Logger(), config=type("C", (), {"llm_call_timeout_seconds": 3600})()
     )
     calls = 0
+    now = time.monotonic()
+    deadline = now + 0.01
+    clock = [now]
+    monkeypatch.setattr(
+        document_agent,
+        "time",
+        SimpleNamespace(monotonic=lambda: clock[0]),
+    )
 
     async def fake(*_args, **_kwargs):
         nonlocal calls
         calls += 1
+        clock[0] = deadline
         error = RuntimeError("limited")
         error.diagnostic = "rate_limited"
         raise error
@@ -154,7 +165,7 @@ async def test_chunk_retry_does_not_start_after_chunk_window_closes(
             document,
             chunk,
             1,
-            deadline_monotonic=time.monotonic() + 0.01,
+            deadline_monotonic=deadline,
         )
     assert raised.value.diagnostic == "document_chunk_window_exhausted"
     assert calls == 1
