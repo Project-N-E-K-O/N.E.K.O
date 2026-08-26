@@ -3173,9 +3173,10 @@ class LifecycleMixin:
                 session_update_ack = new_session.expect_session_update_ack(
                     new_session.instructions
                 )
-                self.message_handler_task = asyncio.create_task(
+                replacement_listener = asyncio.create_task(
                     new_session.handle_messages()
                 )
+                self.message_handler_task = replacement_listener
                 rejection_wait = asyncio.create_task(
                     _passive_media_outcome["rejection_observed"].wait()
                 )
@@ -3201,14 +3202,22 @@ class LifecycleMixin:
                     logger.warning(
                         "Final Swap Sequence: passive native media was rejected or its session-update barrier timed out; retiring promoted replacement before callback ACK"
                     )
-                    replacement_listener = self.message_handler_task
-                    if replacement_listener and not replacement_listener.done():
+                    # Retire only the listener/session this swap created.  A
+                    # concurrent start_session may have replaced both manager
+                    # slots while the Provider barrier above was pending; reading
+                    # self.message_handler_task here would capture and cancel that
+                    # winner instead of this replacement's listener.
+                    async with self.lock:
+                        owned_before_retire = bool(
+                            self.session is new_session
+                            and self.message_handler_task is replacement_listener
+                        )
+                    if not replacement_listener.done():
                         replacement_listener.cancel()
                         await asyncio.gather(
                             replacement_listener,
                             return_exceptions=True,
                         )
-                    self.message_handler_task = None
                     try:
                         await new_session.close()
                     except Exception as close_err:
@@ -3216,9 +3225,25 @@ class LifecycleMixin:
                             "Final Swap Sequence: rejected passive media replacement close failed: %s",
                             close_err,
                         )
-                    if self.session is new_session:
-                        self.session = None
-                    self.is_active = False
+                    # Cancellation and close both yield.  Revalidate the complete
+                    # ownership pair before touching shared lifecycle state: if a
+                    # winner arrived during either await, local retirement above
+                    # is the only cleanup this stale swap is allowed to perform.
+                    async with self.lock:
+                        still_owns_replacement = bool(
+                            owned_before_retire
+                            and self.session is new_session
+                            and self.message_handler_task is replacement_listener
+                        )
+                        if still_owns_replacement:
+                            self.session = None
+                            self.message_handler_task = None
+                            self.is_active = False
+                    if not still_owns_replacement:
+                        logger.info(
+                            "Final Swap Sequence: rejected passive media replacement lost ownership during retirement; preserving concurrent session"
+                        )
+                        return
                     await self._close_independent_asr(
                         next_route_mode="blocked",
                     )

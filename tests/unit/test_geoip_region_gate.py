@@ -2552,6 +2552,28 @@ def test_every_offline_client_constructor_in_lifecycle_applies_the_flip_failsafe
     source = pathlib.Path(__file__).resolve().parents[2] / 'main_logic' / 'core' / 'lifecycle.py'
     tree = ast.parse(source.read_text(encoding='utf-8'))
 
+    class _DirectCallVisitor(ast.NodeVisitor):
+        """Collect calls without merging a nested callable's lexical scope."""
+
+        def __init__(self):
+            self.calls = []
+
+        def visit_Call(self, node):
+            self.calls.append(node)
+            self.generic_visit(node)
+
+        def visit_FunctionDef(self, node):
+            return
+
+        def visit_AsyncFunctionDef(self, node):
+            return
+
+        def visit_Lambda(self, node):
+            return
+
+        def visit_ClassDef(self, node):
+            return
+
     checked = []
     problems = []
     for node in ast.walk(tree):
@@ -2560,9 +2582,10 @@ def test_every_offline_client_constructor_in_lifecycle_applies_the_flip_failsafe
         if node.name == '_create_offline_vlm_client':
             continue
         builds, drops = [], []
-        for c in ast.walk(node):
-            if not isinstance(c, ast.Call):
-                continue
+        visitor = _DirectCallVisitor()
+        for statement in node.body:
+            visitor.visit(statement)
+        for c in visitor.calls:
             name = getattr(c.func, 'attr', None) or getattr(c.func, 'id', None)
             if name in {'OmniOfflineClient', '_create_offline_vlm_client'}:
                 builds.append(c.lineno)

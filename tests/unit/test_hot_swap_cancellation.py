@@ -1610,6 +1610,118 @@ async def test_passive_native_rejection_retires_replacement_before_callback_ack(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("takeover_stage", ["barrier_wait", "listener_cancel"])
+async def test_passive_native_rejection_preserves_concurrent_session_takeover(
+    takeover_stage,
+):
+    """A stale media-rejection cleanup may retire only its own session pair."""
+    mgr = _make_swap_manager()
+    mgr._close_independent_asr = AsyncMock()
+    mgr.send_status = AsyncMock()
+    mgr.send_session_ended_by_server = AsyncMock()
+    mgr._reset_preparation_state = AsyncMock()
+
+    old_session = _FakeSession("old")
+    winner_session = _FakeSession("winner")
+    winner_listener = asyncio.create_task(asyncio.Event().wait())
+    new_session = OmniRealtimeClient.__new__(OmniRealtimeClient)
+    new_session.ws = object()
+    new_session._fatal_error_occurred = False
+    new_session._is_gemini = False
+    new_session._session_update_ack_waiters = []
+    new_session.get_multimodal_turn_delivery = MagicMock(
+        return_value=MultimodalTurnDelivery.DIRECT_ATOMIC
+    )
+    new_session.instructions = "initial instructions"
+    new_session.closed = False
+    rejection_handler = None
+    winner_installed = False
+
+    def install_winner():
+        nonlocal winner_installed
+        if winner_installed:
+            return
+        winner_installed = True
+        mgr.session = winner_session
+        mgr.message_handler_task = winner_listener
+        mgr.is_active = True
+
+    async def prime_context(text, *, skipped=False):
+        del skipped
+        new_session.instructions += "\n" + text
+
+    async def stream_image(_image_b64, *, on_rejected=None, **_kwargs):
+        nonlocal rejection_handler
+        rejection_handler = on_rejected
+        return ImageStageResult(accepted=True, mode="native")
+
+    async def handle_messages():
+        assert rejection_handler is not None
+        if takeover_stage == "barrier_wait":
+            install_winner()
+        rejection_handler("provider rejected passive image")
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            if takeover_stage == "listener_cancel":
+                install_winner()
+            raise
+
+    async def close():
+        new_session.closed = True
+        new_session.ws = None
+
+    new_session.prime_context = prime_context
+    new_session.stream_image = stream_image
+    new_session.handle_messages = handle_messages
+    new_session.close = close
+
+    callback_ack = asyncio.get_running_loop().create_future()
+    callback = {
+        "_callback_delivery_id": f"id-takeover-{takeover_stage}",
+        "status": "completed",
+        "summary": "inspect this native image",
+        "delivery_mode": "passive",
+        "origin": "event",
+        "media_images": ["callback-image"],
+        DELIVERY_ACK_FUTURE_KEY: callback_ack,
+    }
+    mgr.session = old_session
+    mgr.pending_session = new_session
+    mgr.pending_agent_callbacks = [callback]
+    mgr.pending_extra_replies = []
+    mgr.is_active = True
+    mgr.is_hot_swap_imminent = True
+    mgr._select_passive_callbacks_for_swap_prime = (
+        lambda **_kwargs: ([callback], "")
+    )
+    mgr._render_claimed_passive_callbacks_for_swap_prime = (
+        lambda selected: (selected, "passive callback text")
+    )
+    mgr._purge_undeliverable_callbacks = lambda: None
+
+    try:
+        await mgr._perform_final_swap_sequence()
+
+        assert old_session.closed is True
+        assert new_session.closed is True
+        assert winner_installed is True
+        assert mgr.session is winner_session
+        assert mgr.message_handler_task is winner_listener
+        assert winner_listener.done() is False
+        assert mgr.is_active is True
+        mgr._close_independent_asr.assert_not_awaited()
+        mgr.send_status.assert_not_awaited()
+        mgr.send_session_ended_by_server.assert_not_awaited()
+        mgr._reset_preparation_state.assert_not_awaited()
+        assert mgr.pending_agent_callbacks == [callback]
+        assert callback_ack.done() is False
+    finally:
+        winner_listener.cancel()
+        await asyncio.gather(winner_listener, return_exceptions=True)
+
+
+@pytest.mark.asyncio
 async def test_passive_native_session_update_ack_commits_callback():
     mgr = _make_swap_manager()
     old_session = _FakeSession("old")
