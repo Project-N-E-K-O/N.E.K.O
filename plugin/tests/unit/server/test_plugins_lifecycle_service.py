@@ -44,7 +44,12 @@ class _FakeProcessHost:
         return True
 
 
-async def _successful_revoke(_plugin_id: str) -> bool:
+async def _successful_revoke(
+    _plugin_id: str,
+    *,
+    host_generation: str = "",
+    timeout: float = 3.0,
+) -> bool:
     return True
 
 
@@ -294,6 +299,7 @@ async def test_start_plugin_revokes_permissions_from_a_crashed_stale_host(
             plugin_id: str,
             *,
             host_generation: str = "",
+            timeout: float = 3.0,
         ) -> None:
             revoked.append((plugin_id, host_generation))
 
@@ -332,7 +338,12 @@ async def test_start_plugin_keeps_crashed_stale_host_when_permission_revoke_fail
             module.state.plugin_hosts.clear()
             module.state.plugin_hosts["demo_plugin"] = host
 
-        async def _failed_revoke(_plugin_id: str) -> bool:
+        async def _failed_revoke(
+            _plugin_id: str,
+            *,
+            host_generation: str = "",
+            timeout: float = 3.0,
+        ) -> bool:
             return False
 
         monkeypatch.setattr(module, "_revoke_plugin_permissions", _failed_revoke)
@@ -371,16 +382,16 @@ async def test_start_failure_cleanup_keeps_host_when_permission_revoke_fails(
             _plugin_id: str,
             *,
             host_generation: str = "",
+            timeout: float = 3.0,
         ) -> bool:
             assert host_generation == "failed-start-generation"
             return False
 
         monkeypatch.setattr(module, "_revoke_plugin_permissions", _failed_revoke)
 
-        with pytest.raises(ServerDomainError) as exc_info:
-            await module._cleanup_started_host("demo_plugin", host)
+        cleaned_up = await module._cleanup_started_host("demo_plugin", host)
 
-        assert exc_info.value.code == "PLUGIN_PERMISSION_REVOKE_FAILED"
+        assert cleaned_up is False
         assert host.stopped is False
         with module.state.acquire_plugin_hosts_read_lock():
             assert module.state.plugin_hosts["demo_plugin"] is host
@@ -411,18 +422,19 @@ async def test_start_retries_quarantined_failed_start_host(
             _plugin_id: str,
             *,
             host_generation: str = "",
+            timeout: float = 3.0,
         ) -> bool:
             assert host_generation == "failed-start-generation"
             return False
 
         monkeypatch.setattr(module, "_revoke_plugin_permissions", _failed_revoke)
-        with pytest.raises(ServerDomainError):
-            await module._cleanup_started_host("demo_plugin", host)
+        assert await module._cleanup_started_host("demo_plugin", host) is False
 
         async def _successful_generation_revoke(
             _plugin_id: str,
             *,
             host_generation: str = "",
+            timeout: float = 3.0,
         ) -> bool:
             assert host_generation == "failed-start-generation"
             return True
@@ -1384,9 +1396,11 @@ async def test_start_plugin_defaults_startup_failure_to_warn_and_marks_degraded(
 
 @pytest.mark.plugin_unit
 @pytest.mark.asyncio
+@pytest.mark.parametrize("cleanup_revoke_succeeds", [True, False])
 async def test_start_plugin_startup_failure_fail_keeps_startup_error_fatal(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
+    cleanup_revoke_succeeds: bool,
 ) -> None:
     config_path = tmp_path / "fail_startup_adapter" / "plugin.toml"
     config_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1428,6 +1442,14 @@ async def test_start_plugin_startup_failure_fail_keeps_startup_error_fatal(
                 raise PluginLifecycleError(self.plugin_id, "startup", "lifecycle.startup failed")
             return {"status": "failed", "startup_error": "lifecycle.startup failed"}
 
+    async def _revoke(
+        _plugin_id: str,
+        *,
+        host_generation: str = "",
+        timeout: float = 3.0,
+    ) -> bool:
+        return cleanup_revoke_succeeds
+
     plugins_backup = copy.deepcopy(module.state.plugins)
     hosts_backup = dict(module.state.plugin_hosts)
     handlers_backup = dict(module.state.event_handlers)
@@ -1458,7 +1480,7 @@ async def test_start_plugin_startup_failure_fail_keeps_startup_error_fatal(
         )
         monkeypatch.setattr(module, "_resolve_plugin_id_conflict", lambda *args, **kwargs: args[0])
         monkeypatch.setattr(module, "PluginProcessHost", _StrictStartupHost)
-        monkeypatch.setattr(module, "_revoke_plugin_permissions", _successful_revoke)
+        monkeypatch.setattr(module, "_revoke_plugin_permissions", _revoke)
         monkeypatch.setattr(
             module,
             "scan_plugin_metadata_isolated",
@@ -1473,9 +1495,14 @@ async def test_start_plugin_startup_failure_fail_keeps_startup_error_fatal(
         assert _StrictStartupHost.instances
         host = _StrictStartupHost.instances[0]
         assert host.startup_failure == "fail"
-        assert host.stopped is True
         with module.state.acquire_plugin_hosts_read_lock():
-            assert "fail_startup_adapter" not in module.state.plugin_hosts
+            if cleanup_revoke_succeeds:
+                assert host.stopped is True
+                assert "fail_startup_adapter" not in module.state.plugin_hosts
+            else:
+                assert host.stopped is False
+                assert module.state.plugin_hosts["fail_startup_adapter"] is host
+                assert getattr(host, module._STARTUP_QUARANTINED_ATTR) is True
     finally:
         with module.state.acquire_plugins_write_lock():
             module.state.plugins.clear()
@@ -2439,7 +2466,12 @@ async def test_delete_plugin_removes_directory_and_metadata(
             refresh_calls.append("refresh")
             return {"success": True}
 
-        async def _revoke(plugin_id: str) -> None:
+        async def _revoke(
+            plugin_id: str,
+            *,
+            host_generation: str = "",
+            timeout: float = 3.0,
+        ) -> None:
             revoked.append(plugin_id)
 
         monkeypatch.setattr(module, "PLUGIN_CONFIG_ROOTS", (tmp_path,))
@@ -3275,6 +3307,7 @@ async def test_stop_plugin_repeats_generation_revoke_after_shutdown(
             plugin_id: str,
             *,
             host_generation: str = "",
+            timeout: float = 3.0,
         ) -> bool:
             assert plugin_id == "demo_plugin"
             events.append(("revoke", host_generation))
@@ -3295,6 +3328,88 @@ async def test_stop_plugin_repeats_generation_revoke_after_shutdown(
         with module.state.acquire_plugin_hosts_write_lock():
             module.state.plugin_hosts.clear()
             module.state.plugin_hosts.update(hosts_backup)
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_revoke_plugin_host_permissions_forwards_full_default_scope(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, str, float]] = []
+
+    async def _revoke(
+        plugin_id: str,
+        *,
+        host_generation: str,
+        timeout: float,
+    ) -> bool:
+        calls.append((plugin_id, host_generation, timeout))
+        return True
+
+    monkeypatch.setattr(module, "_revoke_plugin_permissions", _revoke)
+
+    assert await module._revoke_plugin_host_permissions("demo_plugin", object()) is True
+    assert calls == [("demo_plugin", "", 3.0)]
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_stop_plugin_finishes_cleanup_when_post_shutdown_revoke_fails(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "demo_plugin" / "plugin.toml"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text("[plugin]\nid='demo_plugin'\n", encoding="utf-8")
+    revoke_results = iter((True, False))
+    cleared_tools: list[str] = []
+
+    plugins_backup = copy.deepcopy(module.state.plugins)
+    hosts_backup = dict(module.state.plugin_hosts)
+    handlers_backup = dict(module.state.event_handlers)
+    cache_backup = copy.deepcopy(module.state._snapshot_cache)
+    try:
+        _seed_running_plugin("demo_plugin", config_path)
+        with module.state.acquire_event_handlers_write_lock():
+            module.state.event_handlers["demo_plugin.ping"] = object()
+
+        async def _revoke(
+            _plugin_id: str,
+            *,
+            host_generation: str = "",
+            timeout: float = 3.0,
+        ) -> bool:
+            return next(revoke_results)
+
+        async def _clear_tools(plugin_id: str) -> None:
+            cleared_tools.append(plugin_id)
+
+        monkeypatch.setattr(module, "_revoke_plugin_permissions", _revoke)
+        monkeypatch.setattr(module, "clear_plugin_llm_tools", _clear_tools)
+        monkeypatch.setattr(module, "emit_lifecycle_event", lambda event: None)
+
+        result = await module.PluginLifecycleService().stop_plugin("demo_plugin")
+
+        assert result["success"] is True
+        assert result["partial_success"] is True
+        assert result["permissions_revoked"] is False
+        assert cleared_tools == ["demo_plugin"]
+        with module.state.acquire_plugin_hosts_read_lock():
+            assert "demo_plugin" not in module.state.plugin_hosts
+        with module.state.acquire_event_handlers_read_lock():
+            assert "demo_plugin.ping" not in module.state.event_handlers
+    finally:
+        with module.state.acquire_plugins_write_lock():
+            module.state.plugins.clear()
+            module.state.plugins.update(plugins_backup)
+        with module.state.acquire_plugin_hosts_write_lock():
+            module.state.plugin_hosts.clear()
+            module.state.plugin_hosts.update(hosts_backup)
+        with module.state.acquire_event_handlers_write_lock():
+            module.state.event_handlers.clear()
+            module.state.event_handlers.update(handlers_backup)
+        with module.state._snapshot_cache_lock:
+            module.state._snapshot_cache = cache_backup
 
 
 @pytest.mark.plugin_unit
@@ -3323,7 +3438,12 @@ async def test_stop_plugin_revokes_permissions_even_when_shutdown_fails(
                 config_path=config_path,
             )
 
-        async def _revoke(plugin_id: str) -> None:
+        async def _revoke(
+            plugin_id: str,
+            *,
+            host_generation: str = "",
+            timeout: float = 3.0,
+        ) -> None:
             revoked.append(plugin_id)
 
         monkeypatch.setattr(module, "_revoke_plugin_permissions", _revoke)
@@ -3385,7 +3505,12 @@ async def test_stop_plugin_aborts_before_shutdown_when_permission_revoke_fails(
             host = module.state.plugin_hosts["demo_plugin"]
         monkeypatch.setattr(module, "emit_lifecycle_event", lambda event: None)
 
-        async def _failed_revoke(_plugin_id: str) -> bool:
+        async def _failed_revoke(
+            _plugin_id: str,
+            *,
+            host_generation: str = "",
+            timeout: float = 3.0,
+        ) -> bool:
             return False
 
         monkeypatch.setattr(module, "_revoke_plugin_permissions", _failed_revoke)
@@ -3441,7 +3566,12 @@ async def test_delete_plugin_aborts_before_removal_when_permission_revoke_fails(
         with module.state.acquire_plugin_hosts_write_lock():
             module.state.plugin_hosts.clear()
 
-        async def _failed_revoke(_plugin_id: str) -> bool:
+        async def _failed_revoke(
+            _plugin_id: str,
+            *,
+            host_generation: str = "",
+            timeout: float = 3.0,
+        ) -> bool:
             return False
 
         monkeypatch.setattr(module, "PLUGIN_CONFIG_ROOTS", (tmp_path,))
@@ -3499,7 +3629,12 @@ async def test_concurrent_stops_do_not_teardown_the_same_host_twice(
 
         monkeypatch.setattr(module, "emit_lifecycle_event", lambda event: None)
 
-        async def _revoke(_plugin_id: str) -> bool:
+        async def _revoke(
+            _plugin_id: str,
+            *,
+            host_generation: str = "",
+            timeout: float = 3.0,
+        ) -> bool:
             return True
 
         monkeypatch.setattr(module, "_revoke_plugin_permissions", _revoke)
@@ -3591,7 +3726,12 @@ async def test_stop_plugin_internal_call_does_not_touch_override(
         monkeypatch.setattr(module, "emit_lifecycle_event", lambda event: None)
         revoked: list[str] = []
 
-        async def _revoke(plugin_id: str) -> None:
+        async def _revoke(
+            plugin_id: str,
+            *,
+            host_generation: str = "",
+            timeout: float = 3.0,
+        ) -> None:
             revoked.append(plugin_id)
 
         monkeypatch.setattr(

@@ -175,20 +175,11 @@ async def _revoke_plugin_host_permissions(
     timeout: float = 3.0,
 ) -> bool:
     host_generation = _host_permission_generation(host_obj)
-    if host_generation:
-        if timeout == 3.0:
-            return await _revoke_plugin_permissions(
-                plugin_id,
-                host_generation=host_generation,
-            )
-        return await _revoke_plugin_permissions(
-            plugin_id,
-            host_generation=host_generation,
-            timeout=timeout,
-        )
-    if timeout == 3.0:
-        return await _revoke_plugin_permissions(plugin_id)
-    return await _revoke_plugin_permissions(plugin_id, timeout=timeout)
+    return await _revoke_plugin_permissions(
+        plugin_id,
+        host_generation=host_generation,
+        timeout=timeout,
+    )
 
 
 def _mark_preference_persistence_failure(
@@ -869,7 +860,7 @@ def _registered_load_failure_error(plugin_id: str, plugin_meta: dict[str, object
     )
 
 
-async def _cleanup_started_host(plugin_id: str, host: PluginHostContract) -> None:
+async def _cleanup_started_host(plugin_id: str, host: PluginHostContract) -> bool:
     registered = await asyncio.to_thread(_get_plugin_host_sync, plugin_id)
     target_host = registered if isinstance(registered, PluginHostContract) else host
     permissions_revoked = (
@@ -883,13 +874,11 @@ async def _cleanup_started_host(plugin_id: str, host: PluginHostContract) -> Non
                 plugin_id,
                 target_host,
             )
-        raise _to_domain_error(
-            code="PLUGIN_PERMISSION_REVOKE_FAILED",
-            message=f"Failed to revoke permissions for plugin '{plugin_id}'",
-            status_code=503,
-            plugin_id=plugin_id,
-            error_type="PermissionRevokeFailed",
+        logger.warning(
+            "startup cleanup quarantined host after permission revoke failed: plugin_id={}",
+            plugin_id,
         )
+        return False
 
     removed = await asyncio.to_thread(_pop_plugin_host_sync, plugin_id)
     if isinstance(removed, PluginHostContract):
@@ -911,6 +900,7 @@ async def _cleanup_started_host(plugin_id: str, host: PluginHostContract) -> Non
             type(exc).__name__,
             str(exc),
         )
+    return True
 
 
 def _emit_lifecycle_event(
@@ -1097,7 +1087,21 @@ class PluginLifecycleService:
         existing_host_obj = await asyncio.to_thread(_get_plugin_host_sync, current_plugin_id)
         if isinstance(existing_host_obj, PluginHostContract):
             if getattr(existing_host_obj, _STARTUP_QUARANTINED_ATTR, False) is True:
-                await _cleanup_started_host(current_plugin_id, existing_host_obj)
+                cleaned_up = await _cleanup_started_host(
+                    current_plugin_id,
+                    existing_host_obj,
+                )
+                if not cleaned_up:
+                    raise _to_domain_error(
+                        code="PLUGIN_PERMISSION_REVOKE_FAILED",
+                        message=(
+                            f"Failed to revoke permissions for plugin "
+                            f"'{current_plugin_id}'"
+                        ),
+                        status_code=503,
+                        plugin_id=current_plugin_id,
+                        error_type="PermissionRevokeFailed",
+                    )
                 logger.info(
                     "removed quarantined failed-start host for plugin_id={}",
                     current_plugin_id,
@@ -1586,13 +1590,11 @@ class PluginLifecycleService:
                 await _revoke_plugin_host_permissions(plugin_id, host_obj)
             ) is not False
             if not post_shutdown_revoked:
-                raise _to_domain_error(
-                    code="PLUGIN_PERMISSION_REVOKE_FAILED",
-                    message=f"Failed to sweep permissions after stopping plugin '{plugin_id}'",
-                    status_code=503,
-                    plugin_id=plugin_id,
-                    error_type="PermissionRevokeFailed",
+                logger.warning(
+                    "post-shutdown permission sweep failed; continuing plugin cleanup: plugin_id={}",
+                    plugin_id,
                 )
+            permissions_revoked = permissions_revoked and post_shutdown_revoked
             await asyncio.to_thread(_pop_plugin_host_sync, plugin_id)
             await asyncio.to_thread(_remove_event_handlers_sync, plugin_id)
             # Clear any LLM tools the plugin had registered with
@@ -1619,6 +1621,11 @@ class PluginLifecycleService:
                 "message": "Plugin stopped successfully",
                 "permissions_revoked": permissions_revoked,
             }
+            if not permissions_revoked:
+                response["partial_success"] = True
+                response["message"] = (
+                    "Plugin stopped with permission cleanup warning"
+                )
             if persist_user_intent:
                 await _persist_changed_runtime_intent(
                     response,

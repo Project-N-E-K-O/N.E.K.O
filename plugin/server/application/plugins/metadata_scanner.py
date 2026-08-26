@@ -148,7 +148,15 @@ def _worker_main() -> None:
             "error_type": type(exc).__name__,
             "message": str(exc),
         }
-    print(_RESULT_PREFIX + json.dumps(result, ensure_ascii=False, separators=(",", ":")))
+    # A plugin import may write stdout without terminating its line. Start the
+    # protocol record on a fresh line so the parent can still find the marker.
+    sys.stdout.write("\n")
+    sys.stdout.write(
+        _RESULT_PREFIX
+        + json.dumps(result, ensure_ascii=False, separators=(",", ":"))
+        + "\n"
+    )
+    sys.stdout.flush()
 
 
 def scan_plugin_metadata_isolated(
