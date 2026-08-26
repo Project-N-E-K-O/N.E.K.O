@@ -3403,7 +3403,7 @@ async def test_stop_plugin_finishes_cleanup_when_post_shutdown_revoke_fails(
     config_path = tmp_path / "demo_plugin" / "plugin.toml"
     config_path.parent.mkdir(parents=True, exist_ok=True)
     config_path.write_text("[plugin]\nid='demo_plugin'\n", encoding="utf-8")
-    revoke_results = iter((True, False))
+    revoke_results = iter((True, False, True, True))
     cleared_tools: list[str] = []
 
     plugins_backup = copy.deepcopy(module.state.plugins)
@@ -3437,9 +3437,26 @@ async def test_stop_plugin_finishes_cleanup_when_post_shutdown_revoke_fails(
         assert result["permissions_revoked"] is False
         assert cleared_tools == ["demo_plugin"]
         with module.state.acquire_plugin_hosts_read_lock():
-            assert "demo_plugin" not in module.state.plugin_hosts
+            assert "demo_plugin" in module.state.plugin_hosts
+            assert (
+                getattr(
+                    module.state.plugin_hosts["demo_plugin"],
+                    module._STARTUP_QUARANTINED_ATTR,
+                )
+                is True
+            )
         with module.state.acquire_event_handlers_read_lock():
             assert "demo_plugin.ping" not in module.state.event_handlers
+
+        retry_result = await module.PluginLifecycleService().stop_plugin(
+            "demo_plugin"
+        )
+
+        assert retry_result["success"] is True
+        assert retry_result["permissions_revoked"] is True
+        assert cleared_tools == ["demo_plugin", "demo_plugin"]
+        with module.state.acquire_plugin_hosts_read_lock():
+            assert "demo_plugin" not in module.state.plugin_hosts
     finally:
         with module.state.acquire_plugins_write_lock():
             module.state.plugins.clear()

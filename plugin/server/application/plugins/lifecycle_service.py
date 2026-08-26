@@ -1130,7 +1130,7 @@ class PluginLifecycleService:
                         error_type="PermissionRevokeFailed",
                     )
                 logger.info(
-                    "removed quarantined failed-start host for plugin_id={}",
+                    "removed quarantined host for plugin_id={}",
                     current_plugin_id,
                 )
             elif existing_host_obj.is_alive():
@@ -1617,12 +1617,15 @@ class PluginLifecycleService:
                 await _revoke_plugin_host_permissions(plugin_id, host_obj)
             ) is not False
             if not post_shutdown_revoked:
+                setattr(host_obj, _STARTUP_QUARANTINED_ATTR, True)
                 logger.warning(
-                    "post-shutdown permission sweep failed; continuing plugin cleanup: plugin_id={}",
+                    "post-shutdown permission sweep failed; retaining quarantined host "
+                    "for retry while continuing plugin cleanup: plugin_id={}",
                     plugin_id,
                 )
             permissions_revoked = permissions_revoked and post_shutdown_revoked
-            await asyncio.to_thread(_pop_plugin_host_sync, plugin_id)
+            if permissions_revoked:
+                await asyncio.to_thread(_pop_plugin_host_sync, plugin_id)
             await asyncio.to_thread(_remove_event_handlers_sync, plugin_id)
             # Clear any LLM tools the plugin had registered with
             # ``main_server``. Best-effort: a transient HTTP failure
