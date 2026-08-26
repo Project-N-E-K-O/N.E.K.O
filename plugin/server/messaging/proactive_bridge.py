@@ -266,8 +266,13 @@ class ProactiveBridge:
 
         plugin_id = payload.get("plugin_id", "")
         timestamp = payload.get("time", "")
-        metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
+        raw_metadata = payload.get("metadata")
+        metadata = dict(raw_metadata) if isinstance(raw_metadata, dict) else {}
         expires_in_s = _positive_finite_float(metadata.get("expires_in_s"))
+        if expires_in_s is None:
+            metadata.pop("expires_in_s", None)
+        else:
+            metadata["expires_in_s"] = expires_in_s
 
         # v2 fields are guaranteed by the SDK adapter's translate step,
         # but accept legacy shapes too for safety.

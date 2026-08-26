@@ -363,7 +363,7 @@ async def test_start_plugin_keeps_crashed_stale_host_when_permission_revoke_fail
 
 @pytest.mark.plugin_unit
 @pytest.mark.asyncio
-async def test_start_failure_cleanup_keeps_host_when_permission_revoke_fails(
+async def test_start_failure_cleanup_stops_and_keeps_host_when_permission_revoke_fails(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -392,7 +392,7 @@ async def test_start_failure_cleanup_keeps_host_when_permission_revoke_fails(
         cleaned_up = await module._cleanup_started_host("demo_plugin", host)
 
         assert cleaned_up is False
-        assert host.stopped is False
+        assert host.stopped is True
         with module.state.acquire_plugin_hosts_read_lock():
             assert module.state.plugin_hosts["demo_plugin"] is host
     finally:
@@ -1542,7 +1542,7 @@ async def test_start_plugin_startup_failure_fail_keeps_startup_error_fatal(
                 assert host.stopped is True
                 assert "fail_startup_adapter" not in module.state.plugin_hosts
             else:
-                assert host.stopped is False
+                assert host.stopped is True
                 assert module.state.plugin_hosts["fail_startup_adapter"] is host
                 assert getattr(host, module._STARTUP_QUARANTINED_ATTR) is True
     finally:

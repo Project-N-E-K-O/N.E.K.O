@@ -324,6 +324,9 @@ class _FakeRegistry:
     async def execute(self, call: ToolCall) -> ToolResult:
         return self._result
 
+    def all(self) -> list:
+        return []
+
 
 class _FakeOfflineSession:
     """Anything that is not an OmniRealtimeClient takes the offline path."""
@@ -385,6 +388,31 @@ async def test_vision_capable_offline_model_keeps_the_pixels(spy_vision):
     assert [i.data_b64 for i in out.images] == ["IMG"]
     assert spy_vision.calls == [], "no transcription needed when the model can see"
     assert "_image_descriptions" not in out.output
+
+
+@pytest.mark.asyncio
+async def test_synced_tool_handler_routes_images_by_invoking_session(spy_vision):
+    active = _FakeOfflineSession("gpt-4o")
+    active._supports_native_image = True
+    result = _result(
+        output={"ok": True},
+        images=[ToolImage(data_b64="IMG")],
+    )
+    manager = _Manager(result, active)
+    realtime = OmniRealtimeClient.__new__(OmniRealtimeClient)
+    realtime.ws = None
+    manager.pending_session = realtime
+    manager._tool_sync_lock = __import__("asyncio").Lock()
+
+    await manager._sync_tools_to_active_session()
+    out = await realtime.on_tool_call(
+        ToolCall(name="demo_tool", arguments={})
+    )
+
+    assert out.images == []
+    assert out.output["_image_descriptions"] == [
+        "a burning cruiser near the cap"
+    ]
 
 
 @pytest.mark.asyncio

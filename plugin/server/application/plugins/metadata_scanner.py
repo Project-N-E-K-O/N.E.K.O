@@ -141,12 +141,24 @@ def _scan_in_worker(request: Mapping[str, object]) -> dict[str, object]:
 
 
 def _worker_main() -> None:
-    # Capture the raw writer and descriptor before importing plugin code.
-    # os._exit below prevents plugin-registered atexit hooks from appending a
-    # second, forged protocol record after this trusted one.
+    # Reserve a private duplicate of the protocol pipe, then redirect the
+    # process-wide stdout/stderr descriptors before importing plugin code.
+    # This prevents untrusted import output from being buffered without bound
+    # by the parent and keeps it off the result channel. os._exit below also
+    # prevents plugin-registered atexit hooks from appending a forged record.
+    raw_close = os.close
+    raw_dup = os.dup
+    raw_dup2 = os.dup2
+    raw_open = os.open
     raw_write = os.write
     immediate_exit = os._exit
     stdout_fd = sys.stdout.fileno()
+    stderr_fd = sys.stderr.fileno()
+    protocol_fd = raw_dup(stdout_fd)
+    devnull_fd = raw_open(os.devnull, os.O_WRONLY)
+    raw_dup2(devnull_fd, stdout_fd)
+    raw_dup2(devnull_fd, stderr_fd)
+    raw_close(devnull_fd)
     try:
         request_obj = json.loads(sys.stdin.read())
         if not isinstance(request_obj, dict):
@@ -164,7 +176,16 @@ def _worker_main() -> None:
         + json.dumps(result, ensure_ascii=False, separators=(",", ":"))
         + "\n"
     ).encode("utf-8")
-    raw_write(stdout_fd, encoded_result)
+    remaining = memoryview(encoded_result)
+    while remaining:
+        try:
+            written = raw_write(protocol_fd, remaining)
+        except InterruptedError:
+            continue
+        if written <= 0:
+            raise OSError("metadata worker result pipe closed")
+        remaining = remaining[written:]
+    raw_close(protocol_fd)
     immediate_exit(0)
 
 

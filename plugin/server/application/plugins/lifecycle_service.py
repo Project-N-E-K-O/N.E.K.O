@@ -882,11 +882,10 @@ async def _cleanup_started_host(plugin_id: str, host: PluginHostContract) -> boo
             "startup cleanup quarantined host after permission revoke failed: plugin_id={}",
             plugin_id,
         )
-        return False
-
-    removed = await asyncio.to_thread(_pop_plugin_host_sync, plugin_id)
-    if isinstance(removed, PluginHostContract):
-        target_host = removed
+    else:
+        removed = await asyncio.to_thread(_pop_plugin_host_sync, plugin_id)
+        if isinstance(removed, PluginHostContract):
+            target_host = removed
 
     shutdown_failed = False
     try:
@@ -931,7 +930,7 @@ async def _cleanup_started_host(plugin_id: str, host: PluginHostContract) -> boo
                 plugin_id,
             )
             return False
-    return True
+    return permissions_revoked
 
 
 def _emit_lifecycle_event(

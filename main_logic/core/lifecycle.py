@@ -1543,7 +1543,7 @@ class LifecycleMixin:
                 # Live resolver so a mid-session language switch is
                 # reflected in slop reduction without re-creating the client.
                 user_language_provider=lambda: self.user_language,
-                on_tool_call=self._on_tool_call,
+                on_tool_call=None,
                 tool_definitions=_initial_tool_defs,
                 # 长回复 summary 必须有"真的会发声的 TTS"才有意义：summary
                 # 文本是 `tts_enabled=True, ui_enabled=False` 注入的，若 TTS
@@ -1592,7 +1592,7 @@ class LifecycleMixin:
                 on_status_message=self.send_status,
                 on_repetition_detected=self.handle_repetition_detected,
                 api_type=self.core_api_type,
-                on_tool_call=self._on_tool_call,
+                on_tool_call=None,
                 tool_definitions=_initial_tool_defs,
                 livestream_mode=self._is_livestream_active(),
                 noise_reduction_enabled=nr_enabled,
@@ -1601,6 +1601,8 @@ class LifecycleMixin:
             # Apply user's noise reduction preference to the AudioProcessor
             if hasattr(new_session, '_audio_processor') and new_session._audio_processor:
                 await new_session.set_audio_noise_reduction_enabled(nr_enabled)
+
+        new_session.on_tool_call = self._make_tool_call_handler(new_session)
 
         # Bind guarded callbacks BEFORE connect — connect() can invoke
         # on_connection_error during the handshake, and without the guard
@@ -1866,7 +1868,7 @@ class LifecycleMixin:
                     master_name=self.master_name,
                     # 与上方对偶：实时解析 user_language，热切换跨语言也能正确选规则集。
                     user_language_provider=lambda: self.user_language,
-                    on_tool_call=self._on_tool_call,
+                    on_tool_call=None,
                     tool_definitions=_pending_tool_defs,
                     # 与上方对偶：长回复 summary 必须有"真的会发声的 TTS"才有意义
                     # （理由见 main session 构造点的注释）。pending_use_tts 是热切换
@@ -1905,7 +1907,7 @@ class LifecycleMixin:
                     on_status_message=self.send_status,
                     on_repetition_detected=self.handle_repetition_detected,
                     api_type=self.core_api_type,
-                    on_tool_call=self._on_tool_call,
+                    on_tool_call=None,
                     tool_definitions=_pending_tool_defs,
                     livestream_mode=self._is_livestream_active(),
                     noise_reduction_enabled=nr_enabled,
@@ -1916,6 +1918,10 @@ class LifecycleMixin:
                     await self.pending_session.set_audio_noise_reduction_enabled(nr_enabled)
                 logger.info("🔄 热切换准备: 创建语音模式 OmniRealtimeClient")
             
+            self.pending_session.on_tool_call = self._make_tool_call_handler(
+                self.pending_session
+            )
+
             initial_prompt = await self._build_initial_prompt()
             next_session_context_messages = list(getattr(self, "next_session_context_messages", []) or [])
             self.initial_next_session_context_snapshot_len = len(next_session_context_messages)

@@ -3436,6 +3436,50 @@ def _bare_genai_client(rounds, handler, *, cap, finalize_parts=None):
     return client, calls
 
 
+@pytest.mark.asyncio
+async def test_genai_image_budget_omission_refreshes_tool_response(monkeypatch):
+    from main_logic.tool_calling import ToolCall, ToolImage, ToolResult
+
+    monkeypatch.setattr(_ofc_genai, "_GENAI_AVAILABLE", True)
+
+    async def handler(call: ToolCall) -> ToolResult:
+        return ToolResult(
+            call_id=call.call_id,
+            name=call.name,
+            output={"ok": True},
+            images=[ToolImage(data_b64=call.name.upper())],
+        )
+
+    client, _calls = _bare_genai_client(
+        [
+            [
+                _GenaiPart(
+                    function_call=_GenaiFunctionCall(name, {}, id_=name)
+                )
+                for name in ("first", "second", "third")
+            ],
+            [_GenaiPart(text="done")],
+        ],
+        handler,
+        cap=2,
+    )
+    messages = [{"role": "user", "content": "inspect the images"}]
+
+    async for _chunk in client._astream_genai_with_tools(messages):
+        pass
+
+    third_result = next(
+        message
+        for message in messages
+        if message.get("role") == "tool" and message.get("name") == "third"
+    )
+    payload = json.loads(third_result["content"])
+    assert any(
+        "omitted" in warning and "turn image budget" in warning
+        for warning in payload["_image_warnings"]
+    )
+
+
 class _ToolAwareFakeLLM:
     """OpenAI-path fake：按请求里有没有 tools 选脚本，而不是按调用序号。
 

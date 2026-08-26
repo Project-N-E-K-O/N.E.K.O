@@ -82,6 +82,7 @@ def test_proactive_bridge_ignores_an_oversized_expiry() -> None:
 
     assert len(socket.events) == 1
     assert "expires_in_s" not in socket.events[0]
+    assert "expires_in_s" not in socket.events[0]["metadata"]
 
 
 def test_private_bridge_preserves_live_frame_token_for_proactive_delivery() -> None:

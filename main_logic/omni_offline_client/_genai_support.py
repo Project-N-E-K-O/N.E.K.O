@@ -704,22 +704,24 @@ class _GenaiMixin:
                             output={"error": f"{type(e).__name__}: {e}"},
                             is_error=True, error_message=str(e),
                         )
-                    messages.append({
+                    tool_result_message = {
                         "role": "tool",
                         "tool_call_id": tool_call.call_id,
                         "name": tc_name,
                         "content": result.output_as_json_string(),
-                    })
+                    }
+                    messages.append(tool_result_message)
                     if getattr(result, "images", None):
-                        image_results.append(result)
+                        image_results.append((result, tool_result_message))
                 # Symmetric with the OpenAI-compat path: every tool reply
                 # first, then multimodal user turns. ``_genai_parts_from_content``
                 # maps ``image_url`` data URLs onto ``inline_data`` parts.
-                for result in image_results:
+                for result, tool_result_message in image_results:
                     self._append_tool_result_images(
                         messages,
                         result,
                         slots=tool_image_slots,
+                        tool_result_message=tool_result_message,
                     )
                 # Sentinel：与 OpenAI 路径对偶，告诉上游 stream_text 把
                 # final-segment buffer 清掉（pre-tool 文本已被持久化进

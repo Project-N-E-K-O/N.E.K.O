@@ -32,6 +32,14 @@ _T = TypeVar("_T")
 STARTUP_RESULT_REQ_ID = "__plugin_startup__"
 
 
+async def _cancel_and_wait(task: asyncio.Task[Any]) -> None:
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+
+
 @dataclass
 class PluginCommunicationResourceManager:
     """Host-side communication manager backed by ZMQ transport.
@@ -162,14 +170,22 @@ class PluginCommunicationResourceManager:
                     except asyncio.CancelledError:
                         pass
             else:
-                try:
-                    task_loop.call_soon_threadsafe(self._uplink_consumer_task.cancel)
-                except Exception:
-                    self.logger.debug(
-                        "Failed to cancel cross-loop uplink consumer for plugin {}",
-                        self.plugin_id,
-                        exc_info=True,
-                    )
+                task = self._uplink_consumer_task
+                if task_loop.is_closed():
+                    pass
+                elif task_loop.is_running():
+                    cancel_coro = _cancel_and_wait(task)
+                    try:
+                        cancel_future = asyncio.run_coroutine_threadsafe(
+                            cancel_coro,
+                            task_loop,
+                        )
+                    except Exception:
+                        cancel_coro.close()
+                        raise
+                    await asyncio.wrap_future(cancel_future)
+                else:
+                    task.cancel()
 
         # Private proactive payloads bypass the shared message plane. Purge
         # this plugin's queued copies after its uplink consumer stops so none

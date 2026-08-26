@@ -63,6 +63,76 @@ async def test_comm_manager_shutdown_tolerates_cross_loop_uplink_task() -> None:
 
 
 @pytest.mark.asyncio
+async def test_comm_manager_shutdown_waits_for_cross_loop_consumer_before_purge(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from plugin.server.messaging import proactive_bridge
+
+    manager = PluginCommunicationResourceManager(
+        plugin_id="demo",
+        transport=_Transport(),
+        logger=_Logger(),
+    )
+    loop_ready = threading.Event()
+    loop_blocked = threading.Event()
+    allow_loop = threading.Event()
+    order: list[str] = []
+    holder: dict[str, object] = {}
+
+    def _runner() -> None:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+
+        async def _consumer() -> None:
+            try:
+                await asyncio.sleep(10)
+            finally:
+                order.append("consumer_stopped")
+
+        def _block_loop() -> None:
+            loop_blocked.set()
+            allow_loop.wait(timeout=2.0)
+
+        task = loop.create_task(_consumer())
+        manager._uplink_consumer_task = task
+        holder["loop"] = loop
+        loop.call_soon(_block_loop)
+        loop_ready.set()
+        loop.run_forever()
+        if not task.done():
+            task.cancel()
+            loop.run_until_complete(asyncio.gather(task, return_exceptions=True))
+        loop.close()
+
+    def _discard(_plugin_id: str) -> int:
+        order.append("purged")
+        return 0
+
+    monkeypatch.setattr(proactive_bridge, "discard_private_payloads", _discard)
+    thread = threading.Thread(target=_runner, daemon=True)
+    thread.start()
+    assert loop_ready.wait(timeout=1.0)
+    assert loop_blocked.wait(timeout=1.0)
+
+    shutdown_task = asyncio.create_task(manager.shutdown(timeout=0.1))
+    try:
+        await asyncio.sleep(0.05)
+        shutdown_waited = not shutdown_task.done()
+        order_before_release = list(order)
+    finally:
+        allow_loop.set()
+        await asyncio.wait_for(shutdown_task, timeout=1.0)
+        loop = holder["loop"]
+        assert isinstance(loop, asyncio.AbstractEventLoop)
+        loop.call_soon_threadsafe(loop.stop)
+        thread.join(timeout=1.0)
+
+    assert shutdown_waited is True
+    assert order_before_release == []
+    assert order == ["consumer_stopped", "purged"]
+
+
+@pytest.mark.asyncio
 async def test_comm_manager_shutdown_purges_private_proactive_payloads(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

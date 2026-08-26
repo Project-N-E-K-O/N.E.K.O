@@ -113,17 +113,36 @@ class ToolCallingMixin:
             await self._sync_tools_to_active_session(raise_on_failure=True)
         return n
 
-    async def _on_tool_call(self, call: ToolCall) -> ToolResult:
+    def _make_tool_call_handler(self, session):
+        async def _handle(call: ToolCall) -> ToolResult:
+            return await self._on_tool_call(call, invoking_session=session)
+
+        return _handle
+
+    async def _on_tool_call(
+        self,
+        call: ToolCall,
+        *,
+        invoking_session=None,
+    ) -> ToolResult:
         """Bridge invoked by both clients when the model emits a tool
         call. Forwards to the registry (process-global, outliving any
         single session), then routes any images the tool returned.
         """
         result = await self.tool_registry.execute(call)
         if result.images:
-            await self._route_tool_images(result)
+            await self._route_tool_images(
+                result,
+                invoking_session=invoking_session,
+            )
         return result
 
-    async def _route_tool_images(self, result: ToolResult) -> None:
+    async def _route_tool_images(
+        self,
+        result: ToolResult,
+        *,
+        invoking_session=None,
+    ) -> None:
         """Decide how a tool's pictures reach the model, and degrade if needed.
 
         This is the single place that judgement lives, because it is the one
@@ -139,11 +158,12 @@ class ToolCallingMixin:
         Realtime always transcribes: its ``function_call_output`` item carries
         a string, so there is nowhere to put an image.
         """
-        if isinstance(self.session, OmniRealtimeClient):
+        session = invoking_session if invoking_session is not None else self.session
+        if isinstance(session, OmniRealtimeClient):
             reason = "realtime session"
         else:
-            model = str(getattr(self.session, "model", "") or "")
-            if getattr(self.session, "_supports_native_image", False) is True:
+            model = str(getattr(session, "model", "") or "")
+            if getattr(session, "_supports_native_image", False) is True:
                 return
             reason = f"model {model!r} has no vision"
 
@@ -470,7 +490,9 @@ class ToolCallingMixin:
                     if hasattr(sess, "set_tools"):
                         sess.set_tools(defs)
                     if hasattr(sess, "set_tool_call_handler"):
-                        sess.set_tool_call_handler(self._on_tool_call)
+                        sess.set_tool_call_handler(
+                            self._make_tool_call_handler(sess)
+                        )
                     if isinstance(sess, OmniRealtimeClient) and sess.ws is not None:
                         await sess.apply_tools_to_session()
                 except Exception as e:

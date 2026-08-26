@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
+import subprocess
 
 from plugin._types.events import EventHandler, EventMeta
 from plugin.core import registry as registry_module
@@ -124,3 +126,53 @@ def test_metadata_worker_does_not_accept_an_atexit_forged_result(
     )
 
     assert metadata.handlers == {}
+
+
+def test_metadata_worker_discards_untrusted_stdout_and_stderr(
+    tmp_path: Path,
+) -> None:
+    from plugin.server.application.plugins.metadata_scanner import (
+        _RESULT_PREFIX,
+        _metadata_worker_command,
+    )
+
+    module_path = tmp_path / "noisy_metadata_plugin.py"
+    module_path.write_text(
+        "import sys\n"
+        "sys.stdout.write('x' * 200_000)\n"
+        "sys.stderr.write('y' * 200_000)\n"
+        "class Plugin:\n"
+        "    pass\n",
+        encoding="utf-8",
+    )
+    config_path = tmp_path / "plugin.toml"
+    config_path.write_text("[plugin]\nid='demo'\n", encoding="utf-8")
+    request = {
+        "plugin_id": "demo",
+        "module_path": "noisy_metadata_plugin",
+        "class_name": "Plugin",
+        "config_path": str(config_path),
+        "conf": {},
+        "pdata": {},
+        "python_requirement_paths": [str(tmp_path)],
+    }
+
+    completed = subprocess.run(
+        _metadata_worker_command(),
+        input=json.dumps(request),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        cwd=Path(__file__).resolve().parents[4],
+        timeout=10.0,
+        check=False,
+    )
+
+    assert completed.returncode == 0
+    assert len(completed.stdout) < 4096
+    assert len(completed.stderr) < 4096
+    assert sum(
+        line.startswith(_RESULT_PREFIX)
+        for line in completed.stdout.splitlines()
+    ) == 1
