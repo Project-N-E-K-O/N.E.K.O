@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title data-i18n="voiceIdentity.pageTitle">声纹注册面板（开发中）</title>
+    <title data-i18n="voiceIdentity.pageTitle">Owner 声纹</title>
     <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
     <script src="/static/i18n-i18next.js?v={{ static_asset_version }}"></script>
     <script src="/static/theme-manager.js?v={{ static_asset_version }}"></script>
@@ -17,7 +17,7 @@
 <body class="voice-identity-page">
     <main class="voice-identity-shell container">
         <header class="voice-identity-header container-header page-title-bar">
-            <h2 data-i18n="voiceIdentity.pageTitle" data-text="声纹注册面板（开发中）">声纹注册面板（开发中）</h2>
+            <h2 data-i18n="voiceIdentity.pageTitle" data-text="Owner 声纹">Owner 声纹</h2>
             <div class="neko-window-controls">
                 <button type="button" class="neko-window-control-btn"
                     data-neko-window-control="pin"
@@ -63,64 +63,61 @@
                     <div class="status-copy">
                         <span class="status-dot" id="voice-identity-status-dot" aria-hidden="true"></span>
                         <div>
-                            <h2 id="profile-status-title" data-i18n="voiceIdentity.profileStatus">Profile 状态</h2>
-                            <p id="voice-identity-profile-status" aria-live="polite"
+                            <h2 id="profile-status-title" data-i18n="voiceIdentity.profileStatus">声纹状态</h2>
+                            <p id="voice-identity-profile-status" role="status"
+                                aria-live="polite" aria-atomic="true"
                                 data-i18n="voiceIdentity.profileMissing">尚未录入 Owner 声纹</p>
                         </div>
                     </div>
-                    <div class="status-actions">
+                </section>
+
+                <section class="enrollment-card" id="voice-identity-enrollment"
+                    aria-labelledby="voice-identity-enrollment-title">
+                    <div class="enrollment-copy">
+                        <p class="eyebrow" data-i18n="voiceIdentity.localOnly">仅在本机处理</p>
+                        <h2 id="voice-identity-enrollment-title" tabindex="-1"
+                            data-i18n="voiceIdentity.privacyTitle">说几句话，即可完成</h2>
+                        <p class="enrollment-help" data-i18n="voiceIdentity.privacyBody">
+                            点击后自然说话约 4 秒。声纹会加密保存在本机，不会发送给 ASR Provider，也不用于身份认证。
+                        </p>
+                    </div>
+                    <div class="capture-status" id="voice-identity-capture-status" hidden>
+                        <span class="record-icon" aria-hidden="true"></span>
+                        <span id="voice-identity-capture-label" data-i18n="voiceIdentity.recording">正在录音…</span>
+                        <span class="recording-timer" id="voice-identity-timer" aria-hidden="true"></span>
+                    </div>
+                    <div class="enrollment-actions">
+                        <button type="button" class="primary-button" id="voice-identity-start"
+                            data-i18n="voiceIdentity.enrollAndEnable">录入并启用声纹</button>
+                        <button type="button" class="secondary-button" id="voice-identity-cancel" hidden
+                            data-i18n="voiceIdentity.cancel">取消录入</button>
+                    </div>
+                    <p id="voice-identity-message" class="enrollment-message"
+                        role="status" aria-live="polite" aria-atomic="true"></p>
+                </section>
+
+                <section class="profile-card" id="voice-identity-profile-controls"
+                    aria-labelledby="voice-filter-title" hidden>
+                    <div class="filter-row">
+                        <div>
+                            <h2 id="voice-filter-title" data-i18n="voiceIdentity.filterLabel">Owner 声纹过滤</h2>
+                            <p id="voice-filter-help" data-i18n="voiceIdentity.filterHelp">
+                                仅作用于独立 ASR；短语音、不确定结果或检测异常都会正常放行。
+                            </p>
+                        </div>
+                        <label class="switch">
+                            <input type="checkbox" id="voice-identity-filter"
+                                aria-labelledby="voice-filter-title"
+                                aria-describedby="voice-filter-help">
+                            <span class="switch-track" aria-hidden="true"></span>
+                        </label>
+                    </div>
+                    <div class="profile-actions">
                         <button type="button" class="secondary-button" id="voice-identity-reenroll"
                             data-i18n="voiceIdentity.reenroll">重新录入</button>
                         <button type="button" class="danger-button" id="voice-identity-delete"
-                            data-i18n="voiceIdentity.delete">删除 Profile</button>
+                            data-i18n="voiceIdentity.delete">删除声纹</button>
                     </div>
-                </section>
-
-                <section class="wizard-card" aria-labelledby="voice-identity-step-title">
-                    <div class="step-progress" aria-hidden="true">
-                        <span class="active"></span><span></span><span></span>
-                        <span></span><span></span>
-                    </div>
-                    <div id="voice-identity-step" class="wizard-step">
-                        <div id="voice-identity-step-announcement" class="step-announcement"
-                            role="status" aria-live="polite" aria-atomic="true">
-                            <p class="step-kicker" id="voice-identity-step-count"></p>
-                            <h2 id="voice-identity-step-title" tabindex="-1"
-                                data-i18n="voiceIdentity.privacyTitle">开始前请了解</h2>
-                            <p id="voice-identity-step-body" class="step-body"
-                                data-i18n="voiceIdentity.privacyBody">
-                                声纹仅在本机处理和保存，不会发送给 ASR Provider。
-                            </p>
-                            <blockquote id="voice-identity-prompt" hidden></blockquote>
-                        </div>
-                        <p class="recording-timer" id="voice-identity-timer" aria-hidden="true"></p>
-                        <div class="wizard-actions">
-                            <button type="button" class="primary-button" id="voice-identity-start"
-                                data-i18n="voiceIdentity.start">开始录入</button>
-                            <button type="button" class="record-button" id="voice-identity-record" hidden>
-                                <span class="record-icon" aria-hidden="true"></span>
-                                <span data-i18n="voiceIdentity.record">开始录音</span>
-                            </button>
-                            <button type="button" class="secondary-button" id="voice-identity-cancel" hidden
-                                data-i18n="voiceIdentity.cancel">取消录入</button>
-                        </div>
-                        <p id="voice-identity-message" class="wizard-message" aria-live="polite"></p>
-                    </div>
-                </section>
-
-                <section class="filter-card" aria-labelledby="voice-filter-title">
-                    <div>
-                        <h2 id="voice-filter-title" data-i18n="voiceIdentity.filterLabel">声纹过滤（测试）</h2>
-                        <p id="voice-filter-help" data-i18n="voiceIdentity.filterHelp">
-                            用于减少部分非 Owner 语音产生的 ASR 消耗，不属于安全认证。短语音、不确定语音或检测异常时将正常放行。
-                        </p>
-                    </div>
-                    <label class="switch">
-                        <input type="checkbox" id="voice-identity-filter"
-                            aria-labelledby="voice-filter-title"
-                            aria-describedby="voice-filter-help">
-                        <span class="switch-track" aria-hidden="true"></span>
-                    </label>
                 </section>
             </div>
         </div>

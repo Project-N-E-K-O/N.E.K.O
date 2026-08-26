@@ -1400,6 +1400,18 @@
                 try {
                     S.globalAnalyser = S.audioPlayerContext.createAnalyser();
                     S.globalAnalyser.fftSize = 2048;
+                    // 频域平滑由这里统一定，不由某个消费者中途改写。
+                    //
+                    // 这个节点是共享的：Live2D 与 PNGTuber 的口型循环读时域
+                    // (getByteTimeDomainData)，五元音共振峰分析器与 MMD 的旧单通道
+                    // getLipSyncValue 读频域 (getByteFrequencyData)。按 WebAudio 规范
+                    // smoothingTimeConstant 只作用于频域读取，两个时域消费者不受影响。
+                    //
+                    // 默认值 0.8 对元音判别太钝：实测把它降到 0.5 能让元音切换的响应
+                    // 从 4-8 帧回到 2-3 帧（@60fps，约省 42ms），而日语音节本身才
+                    // 120-200ms。保留 0.5 而非更激进的值，是仍要压住相邻 bin 间的
+                    // 峰值抖动，避免嘴部颤动。
+                    S.globalAnalyser.smoothingTimeConstant = 0.5;
                     // Audio graph:
                     //   source -> analyser -> spatialPanner -> spatialDistanceGain -> speakerGain -> destination
                     // spatialPanner / spatialDistanceGain 始终存在；当空间音频关闭时

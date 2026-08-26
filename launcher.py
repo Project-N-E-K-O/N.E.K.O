@@ -36,8 +36,20 @@ try:
 except ImportError:
     pass
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     _ensure_utf8_filesystem_encoding()
+    if os.environ.get("NEKO_VOICE_IDENTITY_RELEASE_SMOKE") == "1":
+        # Frozen multiprocessing children re-enter this file.  Let Python
+        # consume its private child-process arguments before dispatching the
+        # release smoke, otherwise the CAM++ host would recursively run it.
+        from multiprocessing import freeze_support as _release_smoke_freeze_support
+
+        _release_smoke_freeze_support()
+        from main_logic.voice_identity_service.release_smoke import (
+            main as _run_voice_identity_release_smoke,
+        )
+
+        sys.exit(_run_voice_identity_release_smoke())
 
 from launcher_core.runtime import (  # noqa: F401
     APP_NAME,
@@ -148,5 +160,5 @@ from launcher_core.runtime import (  # noqa: F401
     wait_for_servers,
 )
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     sys.exit(start_launcher())

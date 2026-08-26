@@ -19,7 +19,7 @@ from memory.stop_names import collect_stop_names, strip_stop_names
 from utils.cloudsave_runtime import MaintenanceModeError, assert_cloudsave_writable
 from utils.config_manager import get_config_manager
 from utils.logger_config import get_module_logger
-from collections.abc import AsyncIterator, Generator, Iterator
+from collections.abc import AsyncIterator, Callable, Generator, Iterator
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 import asyncio
@@ -40,6 +40,10 @@ FACT_NEAR_DUP_ARBITRATE_OVERLAP = 0.25
 # （那边超时 60s），而投递发生在**已经提交完** fact 之后的请求路径上——为一
 # 次无关的后台仲裁把请求拖住一分钟不值得。等不到就放掉：这是尽力而为的旁路。
 FACT_NEAR_DUP_ENQUEUE_TIMEOUT_SECONDS = 5.0
+
+
+class CharacterEngineAdmissionError(RuntimeError):
+    """The character identity is fenced for delete/rename publication."""
 
 
 def _next_readonly_batch(
@@ -195,12 +199,22 @@ def token_overlap(left: list[str], right: list[str]) -> float:
 
 
 class TimeIndexedMemory:
-    def __init__(self, recent_history_manager):
+    def __init__(
+        self,
+        recent_history_manager,
+        *,
+        engine_admission_check: Callable[[str], bool] | None = None,
+    ):
         self.engines = {}  # 存储 {lanlan_name: engine}
         self.db_paths = {} # 存储 {lanlan_name: db_path}
         self._engine_readonly_flags = {}  # 存储 {lanlan_name: bool}
         self._writable_bootstrapped = set()  # 存储已完成可写初始化的角色
+        # {lanlan_name: {connection_string}}：dispose 失败、仍扣着文件句柄的 pool。
+        # 按连接串记账而不是靠 db_path 现推——路径漂移重建会覆盖 db_path，
+        # 那之后就再也推不出失败 pool 的键了。
+        self._undisposed_pools: dict[str, set[str]] = {}
         self.recent_history_manager = recent_history_manager
+        self._engine_admission_check = engine_admission_check
         # 懒加载：不在构造器里同步初始化每角色 engine，首次访问时按需创建
         # （MaintenanceModeError 在 _ensure_engine_exists 内部按需处理）
 
@@ -260,6 +274,17 @@ class TimeIndexedMemory:
         readonly: bool = False,
     ) -> bool:
         """Ensure the given character's database engine is initialized, meow~"""
+        if (
+            self._engine_admission_check is not None
+            and not self._engine_admission_check(lanlan_name)
+        ):
+            logger.debug(
+                "[TimeIndexedMemory] 角色 %s 正在删除或改名，拒绝数据库引擎初始化",
+                lanlan_name,
+            )
+            raise CharacterEngineAdmissionError(
+                f"character engine admission is fenced: {lanlan_name}"
+            )
         if not readonly:
             self._assert_timeindex_writable(lanlan_name)
         if lanlan_name in self.engines and lanlan_name in self.db_paths:
@@ -390,26 +415,83 @@ class TimeIndexedMemory:
         """
         return await asyncio.to_thread(self._ensure_engine_exists, lanlan_name, db_path)
 
-    def dispose_engine(self, lanlan_name: str):
-        """Dispose the given character's database engine resources, meow~"""
-        db_path = self.db_paths.pop(lanlan_name, None)
-        engine = self.engines.pop(lanlan_name, None)
-        self._engine_readonly_flags.pop(lanlan_name, None)
-        self._writable_bootstrapped.discard(lanlan_name)
-        if engine:
-            engine.dispose()
-            logger.info(f"[TimeIndexedMemory] 已释放角色 {lanlan_name} 的数据库引擎")
+    def dispose_engine(
+        self, lanlan_name: str, *, retain_on_failure: bool = False,
+    ) -> bool:
+        """Dispose one character's cached engines and report whether any were known.
+
+        ``retain_on_failure`` keeps the bookkeeping when a disposal raised, so a
+        caller that retries can still reach this generation instead of losing the
+        pool that holds the file. It is for the character-release path only.
+
+        The default clears the bookkeeping either way, which is what the in-place
+        repair branches of ``_ensure_engine_exists`` (db_path drift, readonly →
+        writable switch) rely on: they dispose and then fall through to the
+        rebuild branch, so a transient disposal failure must not pin this
+        character to the same failing branch forever.
+        """
+        db_path = self.db_paths.get(lanlan_name)
+        engine = self.engines.get(lanlan_name)
+        released = engine is not None
+        errors: list[Exception] = []
+        engine_disposed = engine is None
+        # 本次要处理的连接串 = 当前 db_path 推出来的两个 + 以前失败留账的那些。
+        connection_strings: set[str] = set(
+            self._undisposed_pools.get(lanlan_name, ())
+        )
         if db_path:
             normalized_db_path, readonly_connection_string = self._build_sqlite_connection_string(
                 str(db_path),
                 readonly=True,
             )
             uri_path = normalized_db_path.replace("\\", "/")
-            writable_connection_string = f"sqlite:///{uri_path}"
-            for connection_string in {readonly_connection_string, writable_connection_string}:
-                cached_engine = SQLChatMessageHistory._engine_cache.pop(connection_string, None)
-                if cached_engine and cached_engine is not engine:
+            connection_strings.add(readonly_connection_string)
+            connection_strings.add(f"sqlite:///{uri_path}")
+
+        def _remember_undisposed(keys: set[str]) -> None:
+            if keys:
+                self._undisposed_pools.setdefault(lanlan_name, set()).update(keys)
+
+        if engine:
+            try:
+                engine.dispose()
+                engine_disposed = True
+                logger.info(f"[TimeIndexedMemory] 已释放角色 {lanlan_name} 的数据库引擎")
+            except Exception as exc:
+                # 继续走下面的 _engine_cache 清理：真正扣着文件句柄的往往是
+                # 缓存里的那个 pool，不能因为这一步失败就整段跳过。
+                errors.append(exc)
+                _remember_undisposed(connection_strings)
+        for connection_string in sorted(connection_strings):
+            # 只在确认释放成功之后才摘缓存条目：先摘后放的话，dispose 一抛
+            # 这个 pool 就再也找不回来，重试摸不到它，句柄会一直扣到进程退出。
+            cached_engine = SQLChatMessageHistory._engine_cache.get(connection_string)
+            if cached_engine is None:
+                self._undisposed_pools.get(lanlan_name, set()).discard(connection_string)
+                continue
+            released = True
+            if cached_engine is engine:
+                if not engine_disposed:
+                    continue
+            else:
+                try:
                     cached_engine.dispose()
+                except Exception as exc:
+                    errors.append(exc)
+                    _remember_undisposed({connection_string})
+                    continue
+            SQLChatMessageHistory._engine_cache.pop(connection_string, None)
+            self._undisposed_pools.get(lanlan_name, set()).discard(connection_string)
+        if not self._undisposed_pools.get(lanlan_name):
+            self._undisposed_pools.pop(lanlan_name, None)
+        if not (errors and retain_on_failure):
+            self.db_paths.pop(lanlan_name, None)
+            self.engines.pop(lanlan_name, None)
+            self._engine_readonly_flags.pop(lanlan_name, None)
+            self._writable_bootstrapped.discard(lanlan_name)
+        if errors:
+            raise errors[0]
+        return released
 
     def cleanup(self):
         """Clean up all engine resources, meow~"""

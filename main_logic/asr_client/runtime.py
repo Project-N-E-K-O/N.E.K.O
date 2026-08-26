@@ -30,11 +30,13 @@ from main_logic.voice_turn.audio_input import ProcessedVoiceFrame
 
 from ._infra import logger, _READY_TIMEOUT_SECONDS
 from .audio import AsrAudioDispatcher
+from .candidate_control import CandidateRejectionOutcome, CandidateRejectionRequest
 from ._registry_meta import AsrProviderAvailability
 from .endpointing.detector import (
     AsrDetectorDispatcher,
     CoreDetectorEventEnvelope,
     DetectorActivityEvent,
+    DetectorCandidateKey,
     DetectorPrewarmEvent,
     DetectorRuntimeEvent,
     DetectorTransportPrewarmEvent,
@@ -42,7 +44,11 @@ from .endpointing.detector import (
     DetectorTurnEvent,
     ProviderCandidateFence,
 )
-from .endpointing.detector_runtime import DetectorRuntime, SmartTurnLease
+from .endpointing.detector_runtime import (
+    DetectorCandidateRejectionLease,
+    DetectorRuntime,
+    SmartTurnLease,
+)
 from .endpointing.throttle_policy import ThrottleAction
 from .lifecycle import (
     AudioDisposition,
@@ -55,7 +61,10 @@ from .lifecycle import (
     VoiceTransportToken,
 )
 from .provider_policy import resolve_provider_policy
-from .speaker_shadow.contracts import SpeakerShadowObserver
+from .speaker_shadow.contracts import (
+    SpeakerShadowCandidateKey,
+    SpeakerShadowObserver,
+)
 from .transcript import (
     TranscriptDispatcher,
     TranscriptEnvelope,
@@ -81,6 +90,9 @@ _CONNECT_TOTAL_BUDGET_SECONDS = 12.0
 # so it has to know this ceiling to tell whether its verdict can still land
 # before the client gives up.
 ASR_CONNECT_TOTAL_BUDGET_SECONDS = _CONNECT_TOTAL_BUDGET_SECONDS
+_CANDIDATE_REJECTION_WATCHDOG_SECONDS = 10.0
+_CANDIDATE_REJECTION_RECOVERY_STEP_TIMEOUT_SECONDS = 1.0
+_CANDIDATE_REJECTION_REINSTALL_ATTEMPTS = 2
 
 
 def _uses_smart_turn_endpointing(provider_policy: Any) -> bool:
@@ -135,6 +147,15 @@ class _AsrRuntimeIdentity:
     turn_token: VoiceTurnToken | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class _CandidateRejectionSuppression:
+    request: CandidateRejectionRequest
+    turn_token: VoiceTurnToken
+    final_key: FinalKey
+    lifecycle: VoiceInputLifecycleController
+    detector: DetectorRuntime
+
+
 class IndependentAsrRuntime:
     """Own one independent ASR session without reading Core manager state."""
 
@@ -151,6 +172,174 @@ class IndependentAsrRuntime:
         await self._close_independent_asr(
             operation_generation=operation_generation,
         )
+
+    async def set_speaker_verifier_factory(
+        self,
+        factory: SpeakerShadowFactory | None,
+        *,
+        activation_generation: str,
+    ) -> bool:
+        """Hot-replace Owner verification without restarting independent ASR."""
+
+        if factory is not None and not callable(factory):
+            raise TypeError("factory must be callable or None")
+        if (
+            type(activation_generation) is not str
+            or not activation_generation.strip()
+        ):
+            raise ValueError("activation_generation must be a non-empty string")
+        self._ensure_asr_runtime_state()
+        async with self._speaker_verifier_lock:
+            return await self._set_speaker_verifier_factory_locked(
+                factory,
+                activation_generation=activation_generation,
+            )
+
+    async def _set_speaker_verifier_factory_locked(
+        self,
+        factory: SpeakerShadowFactory | None,
+        *,
+        activation_generation: str,
+    ) -> bool:
+        old_factory = self._speaker_verifier_factory
+        if (
+            factory is old_factory
+            and activation_generation
+            == self._speaker_verifier_activation_generation
+            and not self._speaker_verifier_degraded
+        ):
+            return True
+
+        # Revocation is a logical authority barrier, not a cleanup result.
+        # Publish it before yielding so every callback from the old observer
+        # becomes stale even if physical detector replacement later fails.
+        revoking = factory is None
+        if revoking:
+            self._speaker_verifier_factory = None
+            self._speaker_verifier_activation_generation = activation_generation
+            if old_factory is not None:
+                self._close_speaker_verifier_factory(old_factory)
+
+        detector = self._asr_detector
+        if detector is not None:
+            new_shadow: SpeakerShadowObserver | None = None
+            if factory is not None:
+                try:
+                    new_shadow = factory()
+                except Exception:
+                    return False
+                if new_shadow is None:
+                    return False
+            try:
+                await detector.replace_speaker_verifier(new_shadow)
+            except asyncio.CancelledError:
+                await self._close_created_speaker_shadow(new_shadow)
+                raise
+            except Exception:
+                await self._close_created_speaker_shadow(new_shadow)
+                return False
+            if self._asr_detector is not detector:
+                # The detached detector owns and closes ``new_shadow``. Apply
+                # the same activation to the replacement, if one appeared.
+                replacement = self._asr_detector
+                if replacement is not None:
+                    replacement_shadow: SpeakerShadowObserver | None = None
+                    if factory is not None:
+                        try:
+                            replacement_shadow = factory()
+                        except Exception:
+                            return False
+                        if replacement_shadow is None:
+                            return False
+                    try:
+                        await replacement.replace_speaker_verifier(
+                            replacement_shadow
+                        )
+                    except asyncio.CancelledError:
+                        await self._close_created_speaker_shadow(
+                            replacement_shadow
+                        )
+                        raise
+                    except Exception:
+                        await self._close_created_speaker_shadow(
+                            replacement_shadow
+                        )
+                        return False
+                    if self._asr_detector is not replacement:
+                        return False
+
+        if not revoking:
+            self._speaker_verifier_factory = factory
+            self._speaker_verifier_activation_generation = activation_generation
+            if old_factory is not None and old_factory is not factory:
+                self._close_speaker_verifier_factory(old_factory)
+        self._speaker_verifier_degraded = False
+        return True
+
+    def request_speaker_candidate_rejection(
+        self,
+        candidate: SpeakerShadowCandidateKey,
+        *,
+        activation_generation: str,
+    ) -> bool:
+        """Schedule one advisory rejection while retaining task ownership."""
+
+        if (
+            type(candidate) is not SpeakerShadowCandidateKey
+            or type(activation_generation) is not str
+            or not activation_generation.strip()
+            or activation_generation
+            != self._speaker_verifier_activation_generation
+        ):
+            return False
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return False
+        task = loop.create_task(
+            self._reject_speaker_candidate(
+                candidate,
+                activation_generation=activation_generation,
+            ),
+            name="owner-voice-candidate-rejection",
+        )
+        self._asr_rejection_tasks.add(task)
+        task.add_done_callback(self._reap_rejection_task)
+        return True
+
+    def _mark_speaker_verifier_degraded(self) -> None:
+        """Expose Owner verifier health without changing ASR transport flow."""
+
+        self._ensure_asr_runtime_state()
+        self._speaker_verifier_degraded = True
+
+    def _mark_speaker_verifier_healthy(self) -> None:
+        """Clear transient Owner verifier health degradation after recovery."""
+
+        self._ensure_asr_runtime_state()
+        self._speaker_verifier_degraded = False
+
+    @staticmethod
+    def _close_speaker_verifier_factory(factory: SpeakerShadowFactory) -> None:
+        close = getattr(factory, "close", None)
+        if not callable(close):
+            return
+        try:
+            close()
+        except Exception:
+            return
+
+    def _reap_rejection_task(
+        self,
+        task: asyncio.Task[CandidateRejectionOutcome | None],
+    ) -> None:
+        self._asr_rejection_tasks.discard(task)
+        if task.cancelled():
+            return
+        try:
+            task.exception()
+        except Exception:
+            return
 
     def _begin_asr_start_operation(self) -> int:
         self._asr_start_generation += 1
@@ -358,6 +547,15 @@ class IndependentAsrRuntime:
         self._asr_partial_turn_token: VoiceTurnToken | None = None
         self._asr_accepted_final_keys: OrderedDict[FinalKey, None] = OrderedDict()
         self._asr_reserved_final_key: FinalKey | None = None
+        self._speaker_verifier_factory: SpeakerShadowFactory | None = None
+        self._speaker_verifier_activation_generation: str | None = None
+        self._speaker_verifier_degraded = False
+        self._speaker_verifier_lock = asyncio.Lock()
+        self._asr_candidate_rejection: _CandidateRejectionSuppression | None = None
+        self._asr_rejection_tasks: set[
+            asyncio.Task[CandidateRejectionOutcome | None]
+        ] = set()
+        self._asr_rejection_watchdog_task: asyncio.Task[None] | None = None
         self._asr_transcript_dispatcher = TranscriptDispatcher(
             self._dispatch_asr_transcript_envelope,
         )
@@ -409,6 +607,19 @@ class IndependentAsrRuntime:
             self._asr_start_generation = 0
         if not hasattr(self, "_asr_provider_candidate_fence"):
             self._asr_provider_candidate_fence = None
+        if not hasattr(self, "_speaker_verifier_factory"):
+            self._speaker_verifier_factory = None
+            self._speaker_verifier_activation_generation = None
+            self._speaker_verifier_degraded = False
+        elif not hasattr(self, "_speaker_verifier_degraded"):
+            self._speaker_verifier_degraded = False
+        if not hasattr(self, "_speaker_verifier_lock"):
+            self._speaker_verifier_lock = asyncio.Lock()
+        if not hasattr(self, "_asr_candidate_rejection"):
+            self._asr_candidate_rejection = None
+        if not hasattr(self, "_asr_rejection_tasks"):
+            self._asr_rejection_tasks = set()
+            self._asr_rejection_watchdog_task = None
 
     def _capture_turn_token(
         self,
@@ -1601,25 +1812,31 @@ class IndependentAsrRuntime:
                 if not accepted:
                     raise RuntimeError("ASR_DETECTOR_CONTROL_BACKPRESSURE")
 
-            speaker_shadow = self._create_speaker_shadow(speaker_shadow_factory)
-            try:
-                detector_ref = DetectorRuntime(
-                    resource_optimization_enabled=(
-                        self._voice_input_resource_optimization_enabled
-                    ),
-                    provider_policy=policy,
-                    on_endpointing_failure=(
-                        on_detector_endpointing_failure
-                        if _uses_smart_turn_endpointing(policy)
-                        else None
-                    ),
-                    on_event=on_detector_event,
-                    speaker_shadow=speaker_shadow,
+            async with self._speaker_verifier_lock:
+                current_factory = (
+                    speaker_shadow_factory
+                    if self._speaker_verifier_activation_generation is None
+                    else self._speaker_verifier_factory
                 )
-            except Exception:
-                await self._close_created_speaker_shadow(speaker_shadow)
-                raise
-            self._asr_detector = detector_ref
+                speaker_shadow = self._create_speaker_shadow(current_factory)
+                try:
+                    detector_ref = DetectorRuntime(
+                        resource_optimization_enabled=(
+                            self._voice_input_resource_optimization_enabled
+                        ),
+                        provider_policy=policy,
+                        on_endpointing_failure=(
+                            on_detector_endpointing_failure
+                            if _uses_smart_turn_endpointing(policy)
+                            else None
+                        ),
+                        on_event=on_detector_event,
+                        speaker_shadow=speaker_shadow,
+                    )
+                except Exception:
+                    await self._close_created_speaker_shadow(speaker_shadow)
+                    raise
+                self._asr_detector = detector_ref
             self._asr_session_factory = create_candidate
             self._asr_transport_selection = selection
             self._schedule_transport_warm_expiry(
@@ -1713,13 +1930,18 @@ class IndependentAsrRuntime:
         try:
             # Model/process creation remains lazy inside the observer's first
             # accepted submission.
-            return factory()
+            shadow = factory()
         except Exception:
+            self._speaker_verifier_degraded = True
             logger.warning(
                 "[%s] speaker shadow factory failed; continuing without observer",
                 self.display_name,
             )
             return None
+        if shadow is None:
+            self._speaker_verifier_degraded = True
+            return None
+        return shadow
 
     @staticmethod
     async def _close_created_speaker_shadow(
@@ -1731,6 +1953,307 @@ class IndependentAsrRuntime:
             await shadow.close()
         except Exception:
             return
+
+    async def _reject_speaker_candidate(
+        self,
+        shadow_candidate: SpeakerShadowCandidateKey,
+        *,
+        activation_generation: str,
+    ) -> CandidateRejectionOutcome:
+        """Prepare authority asynchronously, then commit without awaiting."""
+
+        detector = self._asr_detector
+        lifecycle = self._asr_lifecycle
+        if (
+            detector is None
+            or lifecycle is None
+            or activation_generation
+            != self._speaker_verifier_activation_generation
+        ):
+            return CandidateRejectionOutcome.STALE
+        initial_snapshot = lifecycle.snapshot
+        initial_session_epoch = self._asr_session_epoch
+        initial_audio_generation = self._asr_audio_generation
+        try:
+            lease = await detector.prepare_candidate_rejection(shadow_candidate)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            return CandidateRejectionOutcome.STALE
+        if lease is None:
+            return CandidateRejectionOutcome.STALE
+
+        request = CandidateRejectionRequest(
+            session_epoch=initial_session_epoch,
+            audio_generation=initial_audio_generation,
+            transport_generation=initial_snapshot.transport_generation,
+            turn_id=initial_snapshot.turn_id,
+            candidate=lease.candidate,
+            activation_generation=activation_generation,
+        )
+
+        asr_session: Any = None
+        smart_turn_lease: SmartTurnLease | None = None
+        suppression: _CandidateRejectionSuppression | None = None
+        async with self._asr_final_lock:
+            lifecycle = self._asr_lifecycle
+            detector = self._asr_detector
+            if (
+                request.session_epoch != self._asr_session_epoch
+                or request.audio_generation != self._asr_audio_generation
+                or request.activation_generation
+                != self._speaker_verifier_activation_generation
+                or lifecycle is None
+                or detector is None
+                or not lease.belongs_to(detector)
+                or self._asr_session is None
+                or self._asr_candidate_rejection is not None
+            ):
+                return CandidateRejectionOutcome.STALE
+            snapshot = lifecycle.snapshot
+            turn_token = lease.turn_token
+            final_key = FinalKey.from_turn(turn_token)
+            if (
+                request.transport_generation != snapshot.transport_generation
+                or request.turn_id != snapshot.turn_id
+                or snapshot.state is not VoiceLifecycleState.ACTIVE
+                or self._asr_sealed_turn_token is not None
+                or self._asr_provider_candidate_fence is not None
+                or self._asr_partial_turn_token != turn_token
+                or not self._ingress_token_matches(turn_token.ingress)
+                or not self._asr_turn_prepared
+                or self._asr_audio_dispatcher.active_turn != turn_token
+                or self._asr_reserved_final_key != final_key
+                or final_key in self._asr_accepted_final_keys
+            ):
+                return CandidateRejectionOutcome.STALE
+            smart_turn_lease = self._asr_smart_turn_lease
+            if (
+                smart_turn_lease is not None
+                and smart_turn_lease.token != turn_token
+            ):
+                return CandidateRejectionOutcome.STALE
+            if not lease.commit():
+                return CandidateRejectionOutcome.STALE
+
+            self._asr_transcript_dispatcher.release(final_key)
+            self._asr_reserved_final_key = None
+            lifecycle.invalidate_transport()
+            self._asr_audio_dispatcher.abort(turn_token)
+            asr_session, self._asr_session = self._asr_session, None
+            if smart_turn_lease is not None:
+                self._asr_smart_turn_lease = None
+            self._asr_turn_prepared = False
+            self._asr_received_audio = False
+            self._asr_audio_sequence = 0
+            self._asr_partial_turn_token = None
+            self._asr_sealed_turn_token = None
+            self._asr_provider_candidate_fence = None
+            self._asr_turn_endpointed_at = None
+            final_watchdog = self._asr_final_watchdog_task
+            self._asr_final_watchdog_task = None
+            if (
+                final_watchdog is not None
+                and final_watchdog is not asyncio.current_task()
+            ):
+                final_watchdog.cancel()
+            suppression = _CandidateRejectionSuppression(
+                request=request,
+                turn_token=turn_token,
+                final_key=final_key,
+                lifecycle=lifecycle,
+                detector=detector,
+            )
+            self._asr_candidate_rejection = suppression
+            self._schedule_candidate_rejection_watchdog(suppression)
+
+        cleanup_degraded = False
+        try:
+            if smart_turn_lease is not None:
+                try:
+                    await smart_turn_lease.release()
+                except Exception:
+                    cleanup_degraded = True
+            assert asr_session is not None
+            try:
+                await asr_session.close()
+            except Exception:
+                cleanup_degraded = True
+            async with self._asr_final_lock:
+                if self._asr_candidate_rejection is not suppression:
+                    return CandidateRejectionOutcome.APPLIED_CLEANUP_DEGRADED
+            try:
+                await detector.reset()
+            except Exception:
+                # Keep suppression until the bounded watchdog detaches the
+                # verifier and retries recovery. The rejected text remains
+                # dropped; only cleanup quality is degraded.
+                return CandidateRejectionOutcome.APPLIED_CLEANUP_DEGRADED
+            await self._complete_candidate_rejection(suppression)
+        except asyncio.CancelledError:
+            await asyncio.shield(self._complete_candidate_rejection(suppression))
+            raise
+        return (
+            CandidateRejectionOutcome.APPLIED_CLEANUP_DEGRADED
+            if cleanup_degraded
+            else CandidateRejectionOutcome.APPLIED
+        )
+
+    def _schedule_candidate_rejection_watchdog(
+        self,
+        suppression: _CandidateRejectionSuppression,
+    ) -> None:
+        old_watchdog = self._asr_rejection_watchdog_task
+        if old_watchdog is not None and old_watchdog is not asyncio.current_task():
+            old_watchdog.cancel()
+
+        async def recover() -> None:
+            current = asyncio.current_task()
+
+            async def close_shadow(shadow: SpeakerShadowObserver | None) -> None:
+                try:
+                    await asyncio.wait_for(
+                        self._close_created_speaker_shadow(shadow),
+                        timeout=_CANDIDATE_REJECTION_RECOVERY_STEP_TIMEOUT_SECONDS,
+                    )
+                except asyncio.CancelledError:
+                    if current is not None and current.cancelling():
+                        raise
+                except Exception:
+                    pass
+
+            try:
+                await asyncio.sleep(_CANDIDATE_REJECTION_WATCHDOG_SECONDS)
+                if self._asr_candidate_rejection is not suppression:
+                    return
+                async with self._speaker_verifier_lock:
+                    try:
+                        await asyncio.wait_for(
+                            suppression.detector.replace_speaker_verifier(None),
+                            timeout=(
+                                _CANDIDATE_REJECTION_RECOVERY_STEP_TIMEOUT_SECONDS
+                            ),
+                        )
+                    except asyncio.CancelledError:
+                        if current is not None and current.cancelling():
+                            raise
+                        logger.warning(
+                            "[%s] rejection watchdog verifier detach was "
+                            "cancelled by the detector",
+                            self.display_name,
+                        )
+                    except Exception as exc:
+                        logger.warning(
+                            "[%s] rejection watchdog verifier detach failed: %s",
+                            self.display_name,
+                            exc,
+                        )
+                    reset_succeeded = False
+                    try:
+                        await asyncio.wait_for(
+                            suppression.detector.reset(),
+                            timeout=(
+                                _CANDIDATE_REJECTION_RECOVERY_STEP_TIMEOUT_SECONDS
+                            ),
+                        )
+                        reset_succeeded = True
+                    except asyncio.CancelledError:
+                        if current is not None and current.cancelling():
+                            raise
+                        logger.warning(
+                            "[%s] rejection watchdog reset was cancelled by "
+                            "the detector; speaker verification stays detached",
+                            self.display_name,
+                        )
+                    except Exception as exc:
+                        logger.warning(
+                            "[%s] rejection watchdog reset failed; "
+                            "speaker verification stays detached: %s",
+                            self.display_name,
+                            exc,
+                        )
+                    factory = self._speaker_verifier_factory
+                    if (
+                        reset_succeeded
+                        and factory is not None
+                        and self._asr_detector is suppression.detector
+                    ):
+                        reinstalled = False
+                        for _attempt in range(
+                            _CANDIDATE_REJECTION_REINSTALL_ATTEMPTS
+                        ):
+                            shadow = self._create_speaker_shadow(factory)
+                            if shadow is None:
+                                break
+                            try:
+                                await asyncio.wait_for(
+                                    suppression.detector.replace_speaker_verifier(
+                                        shadow
+                                    ),
+                                    timeout=(
+                                        _CANDIDATE_REJECTION_RECOVERY_STEP_TIMEOUT_SECONDS
+                                    ),
+                                )
+                            except asyncio.CancelledError:
+                                if current is not None and current.cancelling():
+                                    raise
+                                await close_shadow(shadow)
+                            except Exception as exc:
+                                logger.warning(
+                                    "[%s] rejection watchdog verifier reinstall "
+                                    "failed: %s",
+                                    self.display_name,
+                                    exc,
+                                )
+                                await close_shadow(shadow)
+                            else:
+                                reinstalled = True
+                                break
+                            await asyncio.sleep(0)
+                        self._speaker_verifier_degraded = not reinstalled
+                    elif (
+                        factory is not None
+                        and self._asr_detector is suppression.detector
+                    ):
+                        self._speaker_verifier_degraded = True
+                await self._complete_candidate_rejection(suppression)
+            except asyncio.CancelledError:
+                return
+
+        task = asyncio.create_task(
+            recover(),
+            name="owner-voice-rejection-watchdog",
+        )
+        self._asr_rejection_watchdog_task = task
+        self._asr_rejection_tasks.add(task)
+        task.add_done_callback(self._reap_rejection_task)
+
+    async def _complete_candidate_rejection(
+        self,
+        suppression: _CandidateRejectionSuppression,
+    ) -> bool:
+        should_restart = False
+        async with self._asr_final_lock:
+            if self._asr_candidate_rejection is not suppression:
+                return False
+            self._asr_candidate_rejection = None
+            watchdog = self._asr_rejection_watchdog_task
+            self._asr_rejection_watchdog_task = None
+            if watchdog is not None and watchdog is not asyncio.current_task():
+                watchdog.cancel()
+            if (
+                suppression.request.session_epoch == self._asr_session_epoch
+                and suppression.request.audio_generation
+                == self._asr_audio_generation
+                and self._asr_lifecycle is suppression.lifecycle
+                and self._asr_detector is suppression.detector
+            ):
+                suppression.lifecycle.invalidate_audio()
+                should_restart = True
+        await self._notify_asr_turn_abandoned(suppression.turn_token)
+        if should_restart:
+            self._ensure_transport_restart_task()
+        return True
 
     def _reset_asr_turn_state(self) -> None:
         """Reset per-turn bookkeeping shared by close/abort/error teardown."""
@@ -1747,11 +2270,16 @@ class IndependentAsrRuntime:
         self._asr_partial_turn_token = None
         self._asr_accepted_final_keys.clear()
         self._asr_reserved_final_key = None
+        self._asr_candidate_rejection = None
         self._asr_sealed_turn_token = None
         self._asr_provider_candidate_fence = None
         self._asr_turn_endpointed_at = None
         self._asr_turn_audio_started_at = None
         self._asr_first_partial_recorded = False
+        watchdog = self._asr_rejection_watchdog_task
+        self._asr_rejection_watchdog_task = None
+        if watchdog is not None and watchdog is not asyncio.current_task():
+            watchdog.cancel()
 
     async def _notify_asr_turn_abandoned(
         self,
@@ -1816,6 +2344,14 @@ class IndependentAsrRuntime:
                 detached_tasks.append(task)
         close_tasks = tuple(self._asr_close_tasks)
         self._asr_close_tasks = set()
+        rejection_tasks = tuple(
+            task
+            for task in self._asr_rejection_tasks
+            if task is not asyncio.current_task()
+        )
+        self._asr_rejection_tasks = set()
+        for task in rejection_tasks:
+            task.cancel()
         self._asr_provider = None
         if lifecycle is not None:
             lifecycle.stop()
@@ -1837,7 +2373,7 @@ class IndependentAsrRuntime:
                 await asr_session.close()
             except Exception:
                 logger.warning("[%s] independent ASR close failed", self.display_name)
-        wait_tasks = (*detached_tasks, *close_tasks)
+        wait_tasks = (*detached_tasks, *close_tasks, *rejection_tasks)
         if wait_tasks:
             await asyncio.gather(*wait_tasks, return_exceptions=True)
         await detector_dispatcher.close()
@@ -2009,6 +2545,16 @@ class IndependentAsrRuntime:
                         return AsrSubmitResult(AsrSubmitStatus.UNAVAILABLE)
             if lifecycle is not None and not ingress_is_current():
                 return AsrSubmitResult(AsrSubmitStatus.STALE)
+            suppression = self._asr_candidate_rejection
+            if (
+                suppression is not None
+                and identity.session_epoch == suppression.request.session_epoch
+                and identity.audio_generation
+                == suppression.request.audio_generation
+                and identity.lifecycle is suppression.lifecycle
+                and identity.detector is suppression.detector
+            ):
+                return AsrSubmitResult(AsrSubmitStatus.ACCEPTED)
             decision = (
                 lifecycle.accept_audio(pcm16, sample_rate_hz=sample_rate_hz)
                 if lifecycle is not None
@@ -3041,6 +3587,8 @@ class IndependentAsrRuntime:
         successor_present = False
         async with self._asr_final_lock:
             if epoch != self._asr_session_epoch:
+                return
+            if self._asr_candidate_rejection is not None:
                 return
             asr_session = self._asr_session
             if asr_session is not None:

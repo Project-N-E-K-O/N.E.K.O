@@ -357,6 +357,175 @@ async def test_ordered_finish_scores_once_and_rejects_late_pcm() -> None:
     await runtime.close()
 
 
+async def test_explicit_checkpoints_emit_1500ms_and_3000ms_observations() -> None:
+    observations: list[SpeakerShadowObservation] = []
+
+    async def observe(observation: SpeakerShadowObservation) -> None:
+        observations.append(observation)
+
+    runtime = SpeakerShadowRuntime(
+        backend_factory=_BackendFactory(score_value=0.2),
+        config=_config(
+            minimum_audio_ms=1_500,
+            maximum_audio_ms=4_000,
+            observation_checkpoints_ms=(1_500, 3_000),
+        ),
+        on_observation=observe,
+    )
+    candidate = _candidate(47)
+
+    assert runtime.submit(
+        _pcm(3_000),
+        sample_rate_hz=SPEAKER_SHADOW_SAMPLE_RATE_HZ,
+        candidate=candidate,
+    )
+    await runtime.wait_idle()
+
+    assert [item.checkpoint_ms for item in observations] == [1_500, 3_000]
+    assert [item.audio_ms for item in observations] == [1_500, 3_000]
+    assert [item.candidate for item in observations] == [candidate, candidate]
+    metrics = runtime.snapshot()
+    assert metrics["scored_candidate_count"] == 1
+    assert metrics["evaluated_candidate_count"] == 1
+    assert metrics["would_block_at_0_4_count"] == 2
+    assert metrics["retained_pcm_bytes"] == 0
+    await runtime.close()
+
+
+async def test_short_candidate_emits_no_3000ms_confirmation() -> None:
+    observations: list[SpeakerShadowObservation] = []
+
+    async def observe(observation: SpeakerShadowObservation) -> None:
+        observations.append(observation)
+
+    runtime = SpeakerShadowRuntime(
+        backend_factory=_BackendFactory(score_value=0.2),
+        config=_config(
+            minimum_audio_ms=1_500,
+            maximum_audio_ms=4_000,
+            observation_checkpoints_ms=(1_500, 3_000),
+        ),
+        on_observation=observe,
+    )
+    candidate = _candidate(48)
+
+    assert runtime.submit(
+        _pcm(2_999),
+        sample_rate_hz=SPEAKER_SHADOW_SAMPLE_RATE_HZ,
+        candidate=candidate,
+    )
+    assert runtime.finish_candidate(candidate)
+    await runtime.wait_idle()
+
+    assert [item.checkpoint_ms for item in observations] == [1_500]
+    metrics = runtime.snapshot()
+    assert metrics["scored_candidate_count"] == 1
+    assert metrics["insufficient_candidate_count"] == 0
+    assert metrics["finished_candidate_count"] == 1
+    assert metrics["evaluated_candidate_count"] == 1
+    assert metrics["retained_pcm_bytes"] == 0
+    await runtime.close()
+
+
+async def test_checkpoint_callback_failure_does_not_block_confirmation() -> None:
+    seen_checkpoints: list[int | None] = []
+
+    async def observe(observation: SpeakerShadowObservation) -> None:
+        if observation.checkpoint_ms == 1_500:
+            raise RuntimeError("first checkpoint callback failed")
+        seen_checkpoints.append(observation.checkpoint_ms)
+
+    runtime = SpeakerShadowRuntime(
+        backend_factory=_BackendFactory(score_value=0.2),
+        config=_config(
+            minimum_audio_ms=1_500,
+            maximum_audio_ms=4_000,
+            observation_checkpoints_ms=(1_500, 3_000),
+        ),
+        on_observation=observe,
+    )
+
+    assert runtime.submit(
+        _pcm(3_000),
+        sample_rate_hz=SPEAKER_SHADOW_SAMPLE_RATE_HZ,
+        candidate=_candidate(49),
+    )
+    await runtime.wait_idle()
+
+    assert seen_checkpoints == [3_000]
+    assert runtime.snapshot()["callback_failure_count"] == 1
+    assert runtime.snapshot()["scored_candidate_count"] == 1
+    await runtime.close()
+
+
+async def test_checkpoint_accepts_pcm_while_intermediate_score_is_running() -> None:
+    score_started = _spawn_event()
+    score_release = _spawn_event()
+    observations: list[SpeakerShadowObservation] = []
+
+    async def observe(observation: SpeakerShadowObservation) -> None:
+        observations.append(observation)
+
+    runtime = SpeakerShadowRuntime(
+        backend_factory=_BackendFactory(
+            score_value=0.2,
+            block_stage="score",
+            stage_started=score_started,
+            stage_release=score_release,
+        ),
+        config=SpeakerShadowConfig(
+            enabled=True,
+            observation_checkpoints_ms=(1_500, 3_000),
+        ),
+        on_observation=observe,
+    )
+    candidate = _candidate(50)
+
+    assert runtime.submit(
+        _pcm(1_500),
+        sample_rate_hz=SPEAKER_SHADOW_SAMPLE_RATE_HZ,
+        candidate=candidate,
+    )
+    await _wait_until(score_started.is_set)
+    for _ in range(250):
+        assert runtime.submit(
+            _pcm(10),
+            sample_rate_hz=SPEAKER_SHADOW_SAMPLE_RATE_HZ,
+            candidate=candidate,
+        )
+    score_release.set()
+    await runtime.wait_idle()
+
+    assert [item.checkpoint_ms for item in observations] == [1_500, 3_000]
+    assert runtime.snapshot()["scored_candidate_count"] == 1
+    assert runtime.snapshot()["submitted_audio_ms"] == 4_000
+    await runtime.close()
+
+
+async def test_intermediate_score_failure_wipes_buffer_and_fails_open() -> None:
+    runtime = SpeakerShadowRuntime(
+        backend_factory=_BackendFactory(score_error=True),
+        config=_config(
+            minimum_audio_ms=1_500,
+            maximum_audio_ms=4_000,
+            observation_checkpoints_ms=(1_500, 3_000),
+        ),
+    )
+
+    assert runtime.submit(
+        _pcm(1_500),
+        sample_rate_hz=SPEAKER_SHADOW_SAMPLE_RATE_HZ,
+        candidate=_candidate(51),
+    )
+    await runtime.wait_idle()
+
+    metrics = runtime.snapshot()
+    assert metrics["failed_candidate_count"] == 1
+    assert metrics["retained_pcm_bytes"] == 0
+    assert metrics["buffered_candidate_count"] == 0
+    await runtime.close()
+
+
 async def test_finish_releases_short_buffer_without_starting_host() -> None:
     runtime = SpeakerShadowRuntime(
         backend_factory=_BackendFactory(),

@@ -11,6 +11,12 @@ class AudioProcessor extends AudioWorkletProcessor {
         // 计算重采样比率
         this.resampleRatio = this.targetSampleRate / this.originalSampleRate;
         this.needsResampling = this.resampleRatio !== 1.0;
+        this.needsLowPass = this.targetSampleRate < this.originalSampleRate;
+        this.lowPassTaps = this.needsLowPass ? this.createLowPassFilter() : null;
+        this.lowPassHistory = this.lowPassTaps
+            ? new Float32Array(this.lowPassTaps.length - 1)
+            : null;
+        this.lowPassHistoryFilled = 0;
 
         // 缓冲区大小根据目标采样率调整
         // 48kHz: 480 samples (10ms, RNNoise frame size)
@@ -19,8 +25,12 @@ class AudioProcessor extends AudioWorkletProcessor {
         this.buffer = new Float32Array(this.bufferSize);
         this.bufferIndex = 0;
 
-        // 用于重采样的临时缓冲区
-        this.tempBuffer = [];
+        this.resampleStep = this.needsResampling
+            ? this.originalSampleRate / this.targetSampleRate
+            : 1;
+        this.resamplePosition = 0;
+        this.resampleTailSample = 0;
+        this.hasResampleTail = false;
 
         console.log(`AudioProcessor初始化: 原始采样率=${this.originalSampleRate}Hz, 目标采样率=${this.targetSampleRate}Hz, 需要重采样=${this.needsResampling}`);
     }
@@ -35,32 +45,26 @@ class AudioProcessor extends AudioWorkletProcessor {
 
         if (this.needsResampling) {
             // 需要重采样的情况（如16kHz目标）
-            this.tempBuffer = this.tempBuffer.concat(Array.from(input));
-
-            const requiredSamples = Math.ceil(this.bufferSize / this.resampleRatio);
-            if (this.tempBuffer.length >= requiredSamples) {
-                const samplesNeeded = Math.min(requiredSamples, this.tempBuffer.length);
-                const samplesToProcess = this.tempBuffer.slice(0, samplesNeeded);
-                this.tempBuffer = this.tempBuffer.slice(samplesNeeded);
-
-                const resampledData = this.resampleAudio(samplesToProcess);
-                const pcmData = this.floatToPcm16(resampledData);
-                this.port.postMessage(pcmData);
-            }
+            const resampledData = this.resampleAudio(input);
+            this.appendToOutputBuffer(resampledData);
         } else {
             // 不需要重采样，直接处理（48kHz passthrough）
-            for (let i = 0; i < input.length; i++) {
-                this.buffer[this.bufferIndex++] = input[i];
-
-                if (this.bufferIndex >= this.bufferSize) {
-                    const pcmData = this.floatToPcm16(this.buffer);
-                    this.port.postMessage(pcmData);
-                    this.bufferIndex = 0;
-                }
-            }
+            this.appendToOutputBuffer(input);
         }
 
         return true;
+    }
+
+    appendToOutputBuffer(audioData) {
+        for (let i = 0; i < audioData.length; i++) {
+            this.buffer[this.bufferIndex++] = audioData[i];
+
+            if (this.bufferIndex >= this.bufferSize) {
+                const pcmData = this.floatToPcm16(this.buffer);
+                this.port.postMessage(pcmData);
+                this.bufferIndex = 0;
+            }
+        }
     }
 
     // Float32 转 Int16 PCM
@@ -72,28 +76,115 @@ class AudioProcessor extends AudioWorkletProcessor {
         return pcmData;
     }
 
-    // 简单的线性插值重采样
-    resampleAudio(audioData) {
-        const inputLength = audioData.length;
-        const outputLength = Math.floor(inputLength * this.resampleRatio);
-        const result = new Float32Array(outputLength);
+    createLowPassFilter() {
+        const tapCount = 31;
+        const half = Math.floor(tapCount / 2);
+        const cutoff = Math.min(0.5, this.targetSampleRate / this.originalSampleRate / 2);
+        const taps = new Float32Array(tapCount);
+        let total = 0;
 
-        for (let i = 0; i < outputLength; i++) {
-            const position = i / this.resampleRatio;
-            const index = Math.floor(position);
-            const fraction = position - index;
-
-            // 线性插值
-            if (index + 1 < inputLength) {
-                result[i] = audioData[index] * (1 - fraction) + audioData[index + 1] * fraction;
-            } else {
-                result[i] = audioData[index];
-            }
+        for (let i = 0; i < tapCount; i++) {
+            const offset = i - half;
+            const sinc = offset === 0
+                ? 2 * cutoff
+                : Math.sin(2 * Math.PI * cutoff * offset) / (Math.PI * offset);
+            const window = 0.54 - 0.46 * Math.cos((2 * Math.PI * i) / (tapCount - 1));
+            const value = sinc * window;
+            taps[i] = value;
+            total += value;
         }
 
+        for (let i = 0; i < taps.length; i++) {
+            taps[i] /= total;
+        }
+        return taps;
+    }
+
+    applyLowPassFilter(audioData) {
+        if (!this.lowPassTaps) {
+            return audioData;
+        }
+        const taps = this.lowPassTaps;
+        const history = this.lowPassHistory;
+        const historyLength = this.lowPassHistoryFilled;
+        const inputLength = audioData.length;
+        const result = new Float32Array(inputLength);
+
+        for (let i = 0; i < inputLength; i++) {
+            let sample = 0;
+            for (let tap = 0; tap < taps.length; tap++) {
+                sample += this.lowPassSampleAt(
+                    history,
+                    historyLength,
+                    audioData,
+                    i - tap
+                ) * taps[tap];
+            }
+            result[i] = sample;
+        }
+
+        this.updateLowPassHistory(history, historyLength, audioData);
+        return result;
+    }
+
+    lowPassSampleAt(history, historyLength, audioData, index) {
+        if (index >= 0) {
+            return audioData[index];
+        }
+        const historyIndex = historyLength + index;
+        return historyIndex >= 0 ? history[historyIndex] : 0;
+    }
+
+    updateLowPassHistory(history, historyLength, audioData) {
+        const historyLimit = history.length;
+        const combinedLength = historyLength + audioData.length;
+        const keep = Math.min(historyLimit, combinedLength);
+        const inputKeep = Math.min(audioData.length, keep);
+        const historyKeep = keep - inputKeep;
+
+        for (let i = 0; i < historyKeep; i++) {
+            history[i] = history[historyLength - historyKeep + i];
+        }
+        for (let i = 0; i < inputKeep; i++) {
+            history[historyKeep + i] = audioData[audioData.length - inputKeep + i];
+        }
+        this.lowPassHistoryFilled = keep;
+    }
+
+    // 低通抗混叠后再做线性插值重采样
+    resampleAudio(audioData) {
+        const sourceData = this.applyLowPassFilter(audioData);
+        const inputLength = sourceData.length;
+        if (inputLength === 0) {
+            return new Float32Array(0);
+        }
+
+        const limit = inputLength - 1;
+        let position = this.resamplePosition;
+        let outputLength = 0;
+        while (position < limit && (position >= 0 || this.hasResampleTail)) {
+            outputLength++;
+            position += this.resampleStep;
+        }
+
+        const result = new Float32Array(outputLength);
+        position = this.resamplePosition;
+
+        for (let i = 0; i < outputLength; i++) {
+            const index = Math.floor(position);
+            const fraction = position - index;
+            const currentSample = index >= 0
+                ? sourceData[index]
+                : this.resampleTailSample;
+            result[i] = currentSample * (1 - fraction) + sourceData[index + 1] * fraction;
+            position += this.resampleStep;
+        }
+
+        this.resamplePosition = position - inputLength;
+        this.resampleTailSample = sourceData[inputLength - 1];
+        this.hasResampleTail = true;
         return result;
     }
 }
 
 registerProcessor('audio-processor', AudioProcessor);
-

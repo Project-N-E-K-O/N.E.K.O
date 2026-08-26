@@ -13,6 +13,7 @@ from unittest.mock import AsyncMock, MagicMock, call
 
 import pytest
 
+from main_logic.asr_client import VoiceIdentityActivationResult
 from main_logic.core import LLMSessionManager
 from main_logic.core.asr_runtime import AsrRuntimeMixin, _HotSwapAudioFrame
 from main_logic.asr_client.runtime import (
@@ -116,6 +117,98 @@ class _Runtime(AsrRuntimeMixin):
                 component._asr_current_ingress_token = self._capture_ingress_token()
             return
         object.__setattr__(self, name, value)
+
+
+async def test_external_voice_suppression_aborts_once_and_restores_pcm_gate() -> None:
+    runtime = _Runtime()
+    runtime._invalidate_voice_pcm_sync = MagicMock()
+    runtime._abort_independent_asr = AsyncMock()
+    assert runtime._voice_input_accepts_pcm() is True
+
+    await runtime.set_voice_input_suppressed(
+        "voice_identity_enrollment",
+        suppressed=True,
+    )
+    await runtime.set_voice_input_suppressed(
+        "voice_identity_enrollment",
+        suppressed=True,
+    )
+
+    assert runtime._voice_input_accepts_pcm() is False
+    runtime._abort_independent_asr.assert_awaited_once_with(
+        "voice_identity_enrollment"
+    )
+    assert runtime._invalidate_voice_pcm_sync.call_count == 1
+
+    await runtime.set_voice_input_suppressed(
+        "voice_identity_enrollment",
+        suppressed=False,
+    )
+
+    assert runtime._voice_input_accepts_pcm() is True
+    assert runtime._invalidate_voice_pcm_sync.call_count == 2
+
+
+async def test_external_voice_suppression_reasons_are_independent() -> None:
+    runtime = _Runtime()
+    runtime._invalidate_voice_pcm_sync = MagicMock()
+    runtime._abort_independent_asr = AsyncMock()
+
+    await runtime.set_voice_input_suppressed("enrollment", suppressed=True)
+    await runtime.set_voice_input_suppressed("maintenance", suppressed=True)
+    await runtime.set_voice_input_suppressed("enrollment", suppressed=False)
+
+    assert runtime._voice_input_accepts_pcm() is False
+
+    await runtime.set_voice_input_suppressed("maintenance", suppressed=False)
+
+    assert runtime._voice_input_accepts_pcm() is True
+    assert runtime._abort_independent_asr.await_count == 2
+
+
+async def test_external_voice_suppression_resets_native_audio_turn() -> None:
+    runtime = _Runtime()
+    runtime._asr_route_mode = "native"
+    runtime._invalidate_voice_pcm_sync = MagicMock()
+    runtime._abort_independent_asr = AsyncMock()
+    runtime.session.clear_audio_buffer = AsyncMock()
+
+    await runtime.set_voice_input_suppressed(
+        "voice_identity_enrollment",
+        suppressed=True,
+    )
+
+    runtime.session.clear_audio_buffer.assert_awaited_once_with()
+    runtime._abort_independent_asr.assert_not_awaited()
+
+
+async def test_native_route_installs_future_verifier_but_reports_unsupported() -> None:
+    runtime = _Runtime()
+    runtime._asr_route_mode = "native"
+    runtime._asr_runtime.set_speaker_verifier_factory = AsyncMock(return_value=True)
+    factory = MagicMock()
+
+    result = await runtime.set_speaker_verifier_factory(
+        factory,
+        activation_generation="profile-generation",
+    )
+
+    assert result is VoiceIdentityActivationResult.UNSUPPORTED_ASR_ROUTE
+    assert runtime._speaker_shadow_factory is factory
+
+
+async def test_core_forgets_future_verifier_when_physical_detach_degrades() -> None:
+    runtime = _Runtime()
+    runtime._speaker_shadow_factory = MagicMock()
+    runtime._asr_runtime.set_speaker_verifier_factory = AsyncMock(return_value=False)
+
+    updated = await runtime.set_speaker_verifier_factory(
+        None,
+        activation_generation="revoked-profile",
+    )
+
+    assert updated is False
+    assert runtime._speaker_shadow_factory is None
 
 
 class _TestSmartTurnLease:
@@ -2043,15 +2136,18 @@ async def test_runtime_state_initializes_and_backfills_phase4a_fields() -> None:
     assert runtime._voice_input_resource_optimization_handshake_override is None
     assert runtime._voice_input_resource_optimization_session_value is None
     assert runtime._core_asr_preview_turn_token is None
+    assert runtime._voice_input_external_suppressions == set()
 
     del runtime._voice_input_resource_optimization_handshake_override
     del runtime._voice_input_resource_optimization_session_value
     del runtime._core_asr_preview_turn_token
+    del runtime._voice_input_external_suppressions
     runtime._ensure_asr_runtime_state()
 
     assert runtime._voice_input_resource_optimization_handshake_override is None
     assert runtime._voice_input_resource_optimization_session_value is None
     assert runtime._core_asr_preview_turn_token is None
+    assert runtime._voice_input_external_suppressions == set()
 
 
 async def test_provider_final_watchdog_blocks_only_independent_asr() -> None:
@@ -8006,6 +8102,63 @@ async def test_speaker_shadow_factory_is_lightweight_sync_and_fail_open(
     assert detector_factory.call_args.kwargs["speaker_shadow"] is (
         None if factory_fails else shadow
     )
+
+
+async def test_start_installs_latest_verifier_published_during_connect(
+    monkeypatch,
+) -> None:
+    import main_logic.asr_client.runtime as runtime_module
+
+    runtime = _Runtime()
+    selection = _selection("qwen", "provider")
+    connect_started = asyncio.Event()
+    connect_release = asyncio.Event()
+
+    async def connect() -> None:
+        connect_started.set()
+        await connect_release.wait()
+
+    session = SimpleNamespace(
+        is_ready=True,
+        connect=connect,
+        close=AsyncMock(),
+    )
+    monkeypatch.setattr(
+        runtime_module,
+        "_resolve_asr_selection",
+        lambda _core_type: selection,
+    )
+    monkeypatch.setattr(
+        runtime_module,
+        "_create_asr_session_from_selection",
+        lambda _core_type, **_kwargs: session,
+    )
+    detector_factory = MagicMock(return_value=_ReadyDetector())
+    monkeypatch.setattr(runtime_module, "DetectorRuntime", detector_factory)
+    stale_shadow = SimpleNamespace(close=AsyncMock())
+    current_shadow = SimpleNamespace(close=AsyncMock())
+    stale_factory = MagicMock(return_value=stale_shadow)
+    current_factory = MagicMock(return_value=current_shadow)
+
+    start_task = asyncio.create_task(
+        runtime._asr_runtime.start(
+            route_key="qwen",
+            resource_optimization_enabled=True,
+            speaker_shadow_factory=stale_factory,
+        )
+    )
+    await asyncio.wait_for(connect_started.wait(), 1.0)
+    assert await runtime._asr_runtime.set_speaker_verifier_factory(
+        current_factory,
+        activation_generation="current-profile",
+    )
+    connect_release.set()
+    result = await asyncio.wait_for(start_task, 1.0)
+
+    assert result.status is AsrStartStatus.READY
+    stale_factory.assert_not_called()
+    current_factory.assert_called_once_with()
+    assert detector_factory.call_args.kwargs["speaker_shadow"] is current_shadow
 
 
 async def test_failed_detector_construction_closes_created_speaker_shadow(
