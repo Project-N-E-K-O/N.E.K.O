@@ -392,6 +392,34 @@ def test_child_import_evicts_cached_same_id_from_previous_source(
 
 
 @pytest.mark.plugin_unit
+def test_import_plugin_module_reuses_cached_builtin_from_same_source(
+    _isolate_plugins_namespace,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plugin_id = "same_source"
+    builtin_root = tmp_path / "builtin" / "plugins"
+    builtin_config = _make_importable_plugin(builtin_root, plugin_id, "builtin")
+    legacy_parent = importlib.import_module("plugin.plugins")
+    monkeypatch.setattr(legacy_parent, "__path__", [str(builtin_root)])
+    if legacy_parent.__spec__ is not None:
+        monkeypatch.setattr(
+            legacy_parent.__spec__,
+            "submodule_search_locations",
+            legacy_parent.__path__,
+        )
+    cached = importlib.import_module(f"plugin.plugins.{plugin_id}")
+
+    imported = host_module._import_plugin_module(
+        f"plugin.plugins.{plugin_id}",
+        builtin_config,
+        _StubLogger(),
+    )
+
+    assert imported is cached
+
+
+@pytest.mark.plugin_unit
 def test_user_plugin_absolute_self_import_uses_selected_source_and_can_restore_builtin(
     _isolate_plugins_namespace,
     tmp_path: Path,

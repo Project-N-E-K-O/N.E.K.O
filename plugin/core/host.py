@@ -293,6 +293,25 @@ def _evict_plugin_module_tree(plugin_module_path: str) -> None:
         delattr(parent_module, child_name)
 
 
+def _module_is_loaded_from_plugin_dir(module: Any, plugin_dir: Path) -> bool:
+    """Return whether an imported package already represents the selected source."""
+
+    loaded_file = getattr(module, "__file__", None)
+    if isinstance(loaded_file, str) and loaded_file:
+        try:
+            Path(loaded_file).resolve().relative_to(plugin_dir)
+            return True
+        except (OSError, ValueError):
+            pass
+    for loaded_path in getattr(module, "__path__", ()):
+        try:
+            if Path(loaded_path).resolve() == plugin_dir:
+                return True
+        except (OSError, TypeError, ValueError):
+            continue
+    return False
+
+
 def _evict_cached_plugin_source(module_path: str, config_path: Path, logger: Any) -> None:
     """Remove an inherited same-ID package before importing the effective source."""
 
@@ -312,11 +331,17 @@ def _evict_cached_plugin_source(module_path: str, config_path: Path, logger: Any
         return
 
     package_prefixes = (f"plugins.{plugin_id}", f"plugin.plugins.{plugin_id}")
-    evicted = [
-        name
-        for name in tuple(sys.modules)
+    loaded_tree = [
+        (name, loaded)
+        for name, loaded in tuple(sys.modules.items())
         if any(name == prefix or name.startswith(f"{prefix}.") for prefix in package_prefixes)
     ]
+    if loaded_tree and all(
+        _module_is_loaded_from_plugin_dir(loaded, plugin_dir) for _name, loaded in loaded_tree
+    ):
+        return
+
+    evicted = [name for name, _loaded in loaded_tree]
     for name in evicted:
         sys.modules.pop(name, None)
     if evicted:
