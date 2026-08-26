@@ -200,12 +200,15 @@ def _select_effective_records(
             )
             hidden: list[PluginDiscoveryRecord] = []
         else:
-            winners = [
-                record
-                for record in group
-                if record not in canonical
-                or _source_for_config_path(record.config_path) == "user"
-            ]
+            winners = sorted(
+                (
+                    record
+                    for record in group
+                    if record not in canonical
+                    or _source_for_config_path(record.config_path) == "user"
+                ),
+                key=lambda record: record not in canonical,
+            )
             hidden = [record for record in canonical if record not in winners]
 
         builtin_hidden = next(

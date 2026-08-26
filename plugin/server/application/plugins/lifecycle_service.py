@@ -1733,6 +1733,7 @@ class PluginLifecycleService:
                 and restored_meta.get("effective_source") == "builtin"
             )
             restored_builtin_started = False
+            restored_builtin_restart_error: Exception | None = None
             if not restored_builtin:
                 await asyncio.to_thread(clear_runtime_override, plugin_id)
             if is_running and restored_builtin:
@@ -1740,6 +1741,7 @@ class PluginLifecycleService:
                     await self.start_plugin(plugin_id, refresh_registry=False)
                     restored_builtin_started = True
                 except Exception as restart_exc:
+                    restored_builtin_restart_error = restart_exc
                     logger.error(
                         "delete_plugin: builtin source restored but restart failed: "
                         "plugin_id={}, err_type={}, err={}",
@@ -1795,6 +1797,23 @@ class PluginLifecycleService:
                 "restored_builtin_started": restored_builtin_started,
             },
         )
+        if restored_builtin_restart_error is not None:
+            raise ServerDomainError(
+                code="PLUGIN_BUILTIN_RESTORE_START_FAILED",
+                message=(
+                    f"Plugin '{plugin_id}' was deleted and its builtin source was restored, "
+                    "but the builtin plugin failed to restart"
+                ),
+                status_code=500,
+                details={
+                    "plugin_id": plugin_id,
+                    "plugin_dir": str(plugin_dir),
+                    "deleted_from_disk": deleted_from_disk,
+                    "restored_builtin": True,
+                    "restored_builtin_started": False,
+                    "error_type": type(restored_builtin_restart_error).__name__,
+                },
+            ) from restored_builtin_restart_error
         response: dict[str, object] = {
             "success": True,
             "plugin_id": plugin_id,

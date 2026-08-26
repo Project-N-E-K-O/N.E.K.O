@@ -120,6 +120,29 @@ def test_plan_allows_exact_single_plugin_to_override_builtin(tmp_path: Path) -> 
     assert builtin.is_dir()
 
 
+def test_manifestless_user_state_cannot_bypass_builtin_override_plan(tmp_path: Path) -> None:
+    package = _single_package(tmp_path, "demo", version="2.0.0")
+    builtin = _write_plugin(tmp_path / "builtin", plugin_id="demo", version="1.0.0")
+    state_dir = tmp_path / "user" / "demo"
+    (state_dir / "data").mkdir(parents=True)
+    sentinel = state_dir / "data" / "database.sqlite"
+    sentinel.write_bytes(b"persistent-state")
+
+    plan = build_install_plan(
+        package_path=package,
+        plugins_root=tmp_path / "user",
+        builtin_plugins_root=tmp_path / "builtin",
+    )
+
+    assert plan.action == "override_builtin"
+    assert plan.current_source == "builtin"
+    assert plan.target_source == "market"
+    assert plan.current_version == "1.0.0"
+    assert plan.target_version == "2.0.0"
+    assert sentinel.read_bytes() == b"persistent-state"
+    assert builtin.is_dir()
+
+
 def test_plan_allows_runtime_user_entry_namespace_for_builtin_override(
     tmp_path: Path,
 ) -> None:

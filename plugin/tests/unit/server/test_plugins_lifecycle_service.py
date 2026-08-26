@@ -542,11 +542,19 @@ async def test_delete_user_override_restores_running_builtin_and_preserves_state
         monkeypatch.setattr(module, "_mark_install_source_removed_sync", lambda _path: None)
         monkeypatch.setattr(module, "emit_lifecycle_event", lambda _event: None)
 
-        response = await module.PluginLifecycleService().delete_plugin("study_companion")
-
-        assert response["success"] is True
-        assert response["restored_builtin"] is True
-        assert response["restored_builtin_started"] is not start_fails
+        if start_fails:
+            with pytest.raises(ServerDomainError) as caught:
+                await module.PluginLifecycleService().delete_plugin("study_companion")
+            assert caught.value.code == "PLUGIN_BUILTIN_RESTORE_START_FAILED"
+            assert caught.value.details["deleted_from_disk"] is True
+            assert caught.value.details["restored_builtin"] is True
+            assert caught.value.details["restored_builtin_started"] is False
+            assert caught.value.details["error_type"] == "ServerDomainError"
+        else:
+            response = await module.PluginLifecycleService().delete_plugin("study_companion")
+            assert response["success"] is True
+            assert response["restored_builtin"] is True
+            assert response["restored_builtin_started"] is True
         assert start_calls == ["study_companion"]
         assert user_dir.exists() is False
         assert builtin_config.is_file()

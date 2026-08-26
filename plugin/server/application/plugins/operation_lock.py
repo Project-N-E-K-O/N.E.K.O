@@ -287,6 +287,16 @@ async def _acquire_file_lock_cancellation_safe() -> Any:
     return handle
 
 
+def _reload_install_source_manager_sync() -> None:
+    """Refresh the shared lock snapshot after cross-process serialization."""
+
+    from plugin.server.application.install_source import get_install_source_manager
+
+    manager = get_install_source_manager()
+    if manager is not None:
+        manager.load()
+
+
 class _HeldPluginOperationLock:
     def __init__(self) -> None:
         self._depth_token: Token[int] | None = None
@@ -307,7 +317,11 @@ class _HeldPluginOperationLock:
         self._acquired = True
         try:
             self._file_lock_handle = await _acquire_file_lock_cancellation_safe()
+            await asyncio.to_thread(_reload_install_source_manager_sync)
         except BaseException:
+            if self._file_lock_handle is not None:
+                _release_file_lock_sync(self._file_lock_handle)
+                self._file_lock_handle = None
             self._acquired = False
             _PROCESS_LOCK.release()
             raise

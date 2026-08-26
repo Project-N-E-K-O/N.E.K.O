@@ -417,6 +417,41 @@ async def test_replace_plugin_rejects_invalid_preserve_target_before_side_effect
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("target_kind", ["duplicate", "nested"])
+async def test_replace_plugin_rejects_overlapping_targets_before_side_effects(
+    tmp_path: Path,
+    target_kind: str,
+) -> None:
+    target = tmp_path / "plugins" / "demo"
+    target.mkdir(parents=True)
+    (target / "plugin.toml").write_text(
+        '[plugin]\nid = "demo"\nversion = "1.0.0"\n',
+        encoding="utf-8",
+    )
+    additional_target = target if target_kind == "duplicate" else target / "profiles"
+    events: list[str] = []
+
+    async def is_running(plugin_id: str) -> bool:
+        events.append(f"running:{plugin_id}")
+        return False
+
+    with pytest.raises(ValueError, match="distinct and non-overlapping"):
+        await replace_plugin(
+            layout=resolve_plugin_layout("demo", target, storage_root=tmp_path / "state"),
+            install_new=lambda: _async_none(),  # type: ignore[arg-type]
+            validate_new=_async_none,
+            is_running=is_running,
+            stop=lambda _plugin_id: _async_none(),
+            start=lambda _plugin_id: _async_none(),
+            cleanup_backup=remove_directory,
+            additional_targets=(additional_target,),
+        )
+
+    assert events == []
+    assert (target / "plugin.toml").is_file()
+
+
+@pytest.mark.asyncio
 async def test_replace_plugin_rejects_persistent_state_target_before_side_effects(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

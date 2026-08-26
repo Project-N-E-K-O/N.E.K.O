@@ -168,7 +168,7 @@ def build_install_plan(
             reason="multiple_installations",
             directory_name=directory_name,
         )
-    if not target_dir.exists():
+    if not target_dir.exists() or manifestless_state:
         builtin_matches = _matching_builtins(
             plugin_id=plugin_id,
             builtin_plugins_root=builtin_plugins_root,
@@ -194,6 +194,7 @@ def build_install_plan(
                 packaged_manifest=packaged_manifest,
                 builtin_dir=builtin_matches[0],
             )
+    if not target_dir.exists():
         return PluginInstallPlan(
             action="install",
             package_type="plugin",

@@ -261,6 +261,18 @@ def _validate_replacement_targets(
     *,
     state_root: Path | None = None,
 ) -> None:
+    resolved_targets = tuple(target.resolve(strict=False) for target in targets)
+    overlapping: set[Path] = set()
+    for index, target in enumerate(resolved_targets):
+        for other in resolved_targets[index + 1 :]:
+            if target == other or target in other.parents or other in target.parents:
+                overlapping.update((target, other))
+    if overlapping:
+        raise ValueError(
+            "plugin replacement targets must be distinct and non-overlapping: "
+            + ", ".join(str(path) for path in sorted(overlapping, key=str))
+        )
+
     state_roots = {get_plugin_state_root().resolve(strict=False)}
     if state_root is not None:
         state_roots.add(state_root.resolve(strict=False))
