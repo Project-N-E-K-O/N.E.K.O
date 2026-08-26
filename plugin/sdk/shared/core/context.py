@@ -37,6 +37,8 @@ _SDK_CONTEXT_METHOD_NAMES = (
     "get_system_config",
     "query_memory",
     "get_live_vision",
+    "set_live_frame_permission",
+    "set_plugin_delivery_permission",
     "run_update",
     "export_push",
     "finish",
@@ -94,6 +96,22 @@ class _HostContextProtocol(Protocol):
         role: str = "",
         include_frame: bool = False,
         permission_token: str = "",
+        timeout: float = 3.0,
+    ) -> object: ...
+
+    async def set_live_frame_permission_async(
+        self,
+        *,
+        token: str,
+        enabled: bool,
+        timeout: float = 3.0,
+    ) -> object: ...
+
+    async def set_plugin_delivery_permission_async(
+        self,
+        *,
+        token: str,
+        enabled: bool,
         timeout: float = 3.0,
     ) -> object: ...
 
@@ -301,6 +319,32 @@ class SdkContext:
             role=role,
             include_frame=include_frame,
             permission_token=permission_token,
+            timeout=timeout,
+        )
+
+    async def set_live_frame_permission(
+        self,
+        *,
+        token: str,
+        enabled: bool,
+        timeout: float = 3.0,
+    ) -> object:
+        return await self._host_ctx.set_live_frame_permission_async(
+            token=token,
+            enabled=enabled,
+            timeout=timeout,
+        )
+
+    async def set_plugin_delivery_permission(
+        self,
+        *,
+        token: str,
+        enabled: bool,
+        timeout: float = 3.0,
+    ) -> object:
+        return await self._host_ctx.set_plugin_delivery_permission_async(
+            token=token,
+            enabled=enabled,
             timeout=timeout,
         )
 

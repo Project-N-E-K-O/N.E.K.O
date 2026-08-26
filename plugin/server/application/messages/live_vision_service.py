@@ -134,6 +134,7 @@ class LiveVisionQueryService:
             "source_name": str(payload.get("source_name") or source_name or ""),
             "token": str(payload.get("token") or token or ""),
             "enabled": bool(payload.get("enabled")),
+            "applied": bool(payload.get("applied")),
         }
 
     async def set_plugin_delivery_permission(
@@ -176,6 +177,7 @@ class LiveVisionQueryService:
             "source_name": str(payload.get("source_name") or source_name or ""),
             "token": str(payload.get("token") or token or ""),
             "enabled": bool(payload.get("enabled")),
+            "applied": bool(payload.get("applied")),
         }
 
     async def revoke_plugin_permissions(

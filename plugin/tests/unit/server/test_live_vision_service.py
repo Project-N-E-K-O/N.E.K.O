@@ -135,6 +135,7 @@ async def test_permission_updates_forward_the_plugin_host_credential(
                 "source_name": "demo_plugin",
                 "token": "generation-one",
                 "enabled": True,
+                "applied": False,
             }
 
     class _Client:
@@ -169,5 +170,6 @@ async def test_permission_updates_forward_the_plugin_host_credential(
     )
 
     assert result["ok"] is True
+    assert result["applied"] is False
     assert str(seen["url"]).endswith(path)
     assert seen["headers"] == {"X-NEKO-Plugin-Host-Token": "host-secret"}

@@ -228,7 +228,10 @@ class PluginRouter:
                 "error": "missing request_id",
             }
 
-        if request_type in _HOST_ONLY_REQUEST_TYPES:
+        if (
+            isinstance(request_type, str)
+            and request_type in _HOST_ONLY_REQUEST_TYPES
+        ):
             return {
                 "type": "PLUGIN_TO_PLUGIN_RESPONSE",
                 "to_plugin": from_plugin,

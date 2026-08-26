@@ -160,6 +160,31 @@ class PluginContextProtocol(Protocol):
 
     async def query_memory(self, bucket_id: str, query: str, timeout: float = 5.0) -> object: ...
 
+    async def get_live_vision(
+        self,
+        *,
+        role: str = "",
+        include_frame: bool = False,
+        permission_token: str = "",
+        timeout: float = 3.0,
+    ) -> object: ...
+
+    async def set_live_frame_permission(
+        self,
+        *,
+        token: str,
+        enabled: bool,
+        timeout: float = 3.0,
+    ) -> object: ...
+
+    async def set_plugin_delivery_permission(
+        self,
+        *,
+        token: str,
+        enabled: bool,
+        timeout: float = 3.0,
+    ) -> object: ...
+
     async def run_update(
         self,
         *,

@@ -310,20 +310,19 @@ def test_text_path_attaches_an_authorized_generation_before_plugin_media():
         "shared-screen", "plugin-shot"]
 
 
-def test_text_path_uses_an_offline_models_native_vision_capability():
+def test_text_path_does_not_trust_a_vision_like_model_alias():
     from main_logic.core.live_frame_permissions import set_live_frame_permission
 
     set_live_frame_permission("demo_plugin", "generation-one", enabled=True)
     session = SimpleNamespace(
         _supports_native_image=False,
         vision_model=None,
-        model="gpt-4o",
+        model="custom-gpt-5-text-only",
     )
     mgr = _mgr(session, snapshot=_sharing(), frame="shared-screen")
     cbs = [{**_token_cb(), "media_images": ["plugin-shot"]}]
 
-    assert mgr._collect_text_proactive_images(cbs) == [
-        "shared-screen", "plugin-shot"]
+    assert mgr._collect_text_proactive_images(cbs) == ["plugin-shot"]
 
 
 def test_text_path_drops_the_share_after_reuse_is_revoked():

@@ -5,6 +5,7 @@ bearing here: the frame is opt-in, and the route is not reachable from off the
 machine.
 """
 
+from collections import UserDict
 from types import SimpleNamespace
 
 import pytest
@@ -558,4 +559,27 @@ def test_source_revoke_clears_frame_and_delivery_permissions(monkeypatch):
     }
     assert allows_live_frame("demo_plugin", "frame-generation") is False
     assert allows_plugin_delivery("demo_plugin", "delivery-generation") is False
+    assert retracted == ["demo_plugin"]
+
+
+def test_source_revoke_retracts_callbacks_from_a_mapping_view(monkeypatch):
+    retracted = []
+
+    class _Session:
+        def retract_callbacks_from_source(self, source_name):
+            retracted.append(source_name)
+
+    client = _client({}, monkeypatch, authenticated=True)
+    monkeypatch.setattr(
+        live_vision_module,
+        "get_session_manager",
+        lambda: UserDict({"lanlan": _Session()}),
+    )
+
+    response = client.post(
+        REVOKE_ENDPOINT,
+        json={"source_name": "demo_plugin"},
+    )
+
+    assert response.status_code == 200
     assert retracted == ["demo_plugin"]

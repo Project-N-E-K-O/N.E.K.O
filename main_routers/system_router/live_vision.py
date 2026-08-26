@@ -25,6 +25,8 @@ The payload can contain a picture of the user's desktop, so the route is
 gated on ``verify_local_access`` and the frame itself is opt-in.
 """
 
+from collections.abc import Mapping
+
 from fastapi import Depends, Request
 from fastapi.responses import Response
 
@@ -168,7 +170,7 @@ def _retract_plugin_deliveries(source_name: str) -> None:
     except Exception as exc:
         logger.debug("plugin-delivery retract: session_manager unavailable: %s", exc)
         return
-    if not isinstance(managers, dict):
+    if not isinstance(managers, Mapping):
         return
     for mgr in managers.values():
         retract = getattr(mgr, "retract_callbacks_from_source", None)
