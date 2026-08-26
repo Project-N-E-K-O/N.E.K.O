@@ -1025,7 +1025,7 @@ async def market_installed(
             if not root.is_dir():
                 continue
             root_kind = "builtin" if root.resolve() == path_policy.builtin_plugins_root.resolve() else "user"
-            for manifest in root.glob("*/plugin.toml"):
+            for manifest in sorted(root.glob("*/plugin.toml")):
                 if not manifest.is_file():
                     continue
                 plugin_dir = manifest.parent
@@ -1072,7 +1072,7 @@ async def market_installed(
             # Any noncanonical builtin or user directory remains a real ID
             # conflict, matching registry_service._select_effective_records.
             if builtin is None:
-                user = canonical_user or (user_candidates[0] if user_candidates else None)
+                user = user_candidates[0] if user_candidates else None
             elif builtin[0].name == plugin_id:
                 user = canonical_user
             else:

@@ -9,6 +9,7 @@ from pathlib import Path
 import shutil
 import stat
 
+from plugin import settings
 from plugin.core.plugin_layout import PluginLayout
 from plugin.logging_config import get_logger
 from plugin.server.domain.errors import ServerDomainError
@@ -288,6 +289,18 @@ def _validate_replacement_targets(
         raise ValueError(
             "plugin persistent state paths cannot be replacement targets: "
             + ", ".join(str(path) for path in forbidden)
+        )
+
+    builtin_root = Path(settings.BUILTIN_PLUGIN_CONFIG_ROOT).resolve(strict=False)
+    immutable = [
+        target
+        for target in targets
+        if _path_is_within(target, builtin_root) or _path_is_within(builtin_root, target)
+    ]
+    if immutable:
+        raise ValueError(
+            "immutable builtin plugin paths cannot be replacement targets: "
+            + ", ".join(str(path) for path in immutable)
         )
 
 

@@ -227,6 +227,67 @@ async def test_installed_prefers_canonical_user_among_user_conflicts(
 
 
 @pytest.mark.asyncio
+async def test_installed_preserves_registry_order_for_user_only_conflict(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    builtin_root = tmp_path / "builtin"
+    user_root = tmp_path / "installations" / "plugins"
+    legacy_user = _write_plugin(
+        user_root,
+        "study_companion",
+        "0.1.5",
+        directory_name="aaa_old",
+    )
+    _write_plugin(user_root, "study_companion", "0.1.6")
+    policy = SimpleNamespace(
+        builtin_plugins_root=builtin_root.resolve(),
+        user_plugins_root=user_root.resolve(),
+    )
+    market_entry = market_bridge.LockEntry(
+        root_id="user",
+        directory_name="study_companion",
+        plugin_id="study_companion",
+        channel="market",
+        reason="user_requested",
+        installed_at="2026-08-26T00:00:00.000000Z",
+        updated_at="2026-08-26T00:00:00.000000Z",
+        last_seen_at="2026-08-26T00:00:00.000000Z",
+        source_detail=market_bridge.SourceDetailMarket(
+            plugin_market_id="study_companion",
+            version="0.1.6",
+            package_url="https://example.invalid/study-companion.neko-plugin",
+            package_sha256="a" * 64,
+            payload_hash=None,
+            channel="stable",
+            published_at="2026-08-26T00:00:00.000000Z",
+        ),
+    )
+    manager = SimpleNamespace(
+        builtin_root=builtin_root.resolve(),
+        user_root=user_root.resolve(),
+        snapshot=lambda: SimpleNamespace(entries=(market_entry,)),
+    )
+
+    monkeypatch.setattr(market_bridge, "_verify_token", lambda _token: None)
+    monkeypatch.setattr(
+        market_bridge.PluginCliPathPolicy,
+        "from_settings",
+        classmethod(lambda cls: policy),
+    )
+    monkeypatch.setattr(market_bridge, "get_install_source_manager", lambda: manager)
+
+    response = await market_bridge.market_installed(token="test")
+
+    [installed] = response.installed
+    assert installed.path == str(legacy_user)
+    assert installed.effective_source == "manual"
+    assert installed.effective_version == "0.1.5"
+    assert installed.market_installed is False
+    assert installed.latest_install_source is None
+
+
+@pytest.mark.asyncio
 async def test_installed_ignores_hidden_override_staging(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
