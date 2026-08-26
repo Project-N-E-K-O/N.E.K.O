@@ -1274,13 +1274,26 @@ async function handleBatchDelete() {
 
   batchBusy.value = true
   let ok = 0; let fail = 0
+  const restartWarnings: string[] = []
   for (const p of plugins) {
-    try { await deletePlugin(p.id); ok++ } catch { fail++ }
+    try {
+      const result = await deletePlugin(p.id)
+      ok++
+      if (result.restored_builtin_restart_error) {
+        restartWarnings.push(t('messages.pluginDeletedBuiltinRestartFailed', {
+          plugin: p.name,
+          error: result.restored_builtin_restart_error.message,
+        }))
+      }
+    } catch { fail++ }
   }
   batchBusy.value = false
   clearSelection()
-  if (fail === 0) ElMessage.success(t('plugins.batchDeleteSuccess', { count: ok }))
-  else ElMessage.warning(t('plugins.batchPartial', { success: ok, fail }))
+  if (restartWarnings.length > 0) ElMessage.warning(restartWarnings.join('; '))
+  if (fail > 0) ElMessage.warning(t('plugins.batchPartial', { success: ok, fail }))
+  else if (restartWarnings.length === 0) {
+    ElMessage.success(t('plugins.batchDeleteSuccess', { count: ok }))
+  }
   await refreshAfterPluginChange()
 }
 

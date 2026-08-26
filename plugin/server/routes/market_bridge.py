@@ -13,6 +13,7 @@ import asyncio
 import base64
 import dataclasses
 import hashlib
+import hmac
 import json
 import os
 import secrets
@@ -364,7 +365,11 @@ class MarketInstallRequest(BaseModel):
     # the legacy value so cached Market clients remain compatible, then
     # normalise it to the non-renaming behaviour.
     on_conflict: str = Field(default="fail", pattern=r"^(fail|rename)$")
-    require_confirm: bool = Field(default=True, description="是否需要用户确认（预留）")
+    require_confirm: bool = Field(default=True, description="是否需要用户确认")
+    confirmation_token: str | None = Field(
+        default=None,
+        description="override_builtin 预检返回、与当前覆盖计划绑定的确认令牌",
+    )
 
     @field_validator("package_sha256", mode="before")
     @classmethod
@@ -382,6 +387,13 @@ class MarketInstallResponse(BaseModel):
     task_id: str
     status: str  # "pending" | "downloading" | "installing" | "completed" | "failed"
     message: str = ""
+
+
+class MarketOverrideConfirmationResponse(BaseModel):
+    plugin_id: str
+    current_version: str
+    target_version: str
+    confirmation_token: str
 
 
 class MarketTaskStatus(BaseModel):
@@ -729,6 +741,119 @@ async def measure_github_proxy_sources() -> dict[str, object]:
     return {"sources": measured}
 
 
+def _build_market_override_confirmation(
+    payload: MarketInstallRequest,
+) -> MarketOverrideConfirmationResponse:
+    """Bind a client confirmation to the current builtin and Market artifact."""
+
+    if payload.mode != "override_builtin":
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "override_confirmation_not_applicable",
+                "message": "override confirmation requires mode=override_builtin",
+            },
+        )
+
+    plugin_id = (payload.expected_plugin_toml_id or "").strip()
+    if (
+        not plugin_id
+        or plugin_id in {".", ".."}
+        or len(Path(plugin_id).parts) != 1
+        or Path(plugin_id).name != plugin_id
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "override_source_changed",
+                "message": "builtin override requires one canonical plugin id",
+            },
+        )
+
+    policy = PluginCliPathPolicy.from_settings()
+    target_dir = policy.user_plugins_root / plugin_id
+    if target_dir.exists() or target_dir.is_symlink():
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "override_target_exists",
+                "message": "builtin override target is no longer empty",
+            },
+        )
+
+    builtin_manifest = policy.builtin_plugins_root / plugin_id / "plugin.toml"
+    try:
+        manifest_bytes = builtin_manifest.read_bytes()
+        manifest_data = tomllib.loads(manifest_bytes.decode("utf-8"))
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError):
+        manifest_data = {}
+        manifest_bytes = b""
+    plugin_table = manifest_data.get("plugin")
+    manifest_plugin_id = (
+        str(plugin_table.get("id") or "").strip()
+        if isinstance(plugin_table, dict)
+        else ""
+    )
+    current_version = (
+        str(plugin_table.get("version") or "").strip()
+        if isinstance(plugin_table, dict)
+        else ""
+    )
+    target_version = (payload.version or "").strip()
+    if manifest_plugin_id != plugin_id or not current_version or not target_version:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "override_source_changed",
+                "message": "builtin override source or version is no longer valid",
+            },
+        )
+
+    request_evidence = payload.model_dump(
+        mode="json",
+        exclude={"confirmation_token"},
+    )
+    evidence = {
+        "request": request_evidence,
+        "plugin_id": plugin_id,
+        "current_version": current_version,
+        "target_version": target_version,
+        "builtin_manifest_sha256": hashlib.sha256(manifest_bytes).hexdigest(),
+        "target_dir": str(target_dir.resolve(strict=False)),
+    }
+    encoded = json.dumps(
+        evidence,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    token = hmac.new(
+        _BRIDGE_TOKEN.encode("utf-8"),
+        encoded,
+        hashlib.sha256,
+    ).hexdigest()
+    return MarketOverrideConfirmationResponse(
+        plugin_id=plugin_id,
+        current_version=current_version,
+        target_version=target_version,
+        confirmation_token=token,
+    )
+
+
+@router.post(
+    "/override-confirmation",
+    response_model=MarketOverrideConfirmationResponse,
+)
+async def market_override_confirmation(
+    payload: MarketInstallRequest,
+    token: str = Query(..., description="Bridge token"),
+) -> MarketOverrideConfirmationResponse:
+    """Issue confirmation evidence before a builtin override is dispatched."""
+
+    _verify_token(token)
+    return _build_market_override_confirmation(payload)
+
+
 @router.post("/install", response_model=MarketInstallResponse)
 async def market_install(
     payload: MarketInstallRequest,
@@ -744,6 +869,29 @@ async def market_install(
     旧目录 → unpack → record → start，失败时按 rollback steps 逆序回滚。
     """
     _verify_token(token)
+
+    if payload.mode == "override_builtin":
+        rebuilt = _build_market_override_confirmation(payload)
+        supplied_token = (payload.confirmation_token or "").strip()
+        if not supplied_token:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "override_confirmation_required",
+                    "message": "confirm the current builtin override plan before install",
+                },
+            )
+        if not secrets.compare_digest(
+            supplied_token,
+            rebuilt.confirmation_token,
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "override_confirmation_changed",
+                    "message": "builtin or Market package changed after confirmation",
+                },
+            )
 
     # mode=upgrade 立即校验 lock entry 存在性（R5.5）；reinstall 同样需要
     # 已装才能"重装"，install 不要求。

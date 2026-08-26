@@ -1,6 +1,8 @@
 // @vitest-environment happy-dom
 
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { ElMessage } from 'element-plus'
+import { deletePlugin } from '@/api/plugins'
 import { usePluginListContextActions } from './usePluginListContextActions'
 import type { PluginListAction, PluginMeta } from '@/types/api'
 
@@ -92,5 +94,32 @@ describe('plugin list UI action navigation contract', () => {
 
     expect(open).toHaveBeenCalledWith('/plugin/generic/ui/', '_self')
     expect(mocks.openExternalUrl).not.toHaveBeenCalled()
+  })
+
+  it('warns when deletion restores a builtin that cannot restart', async () => {
+    vi.mocked(deletePlugin).mockResolvedValue({
+      success: true,
+      plugin_id: 'generic-plugin',
+      plugin_dir: '/plugins/generic-plugin',
+      deleted_from_disk: true,
+      restored_builtin: true,
+      restored_builtin_started: false,
+      restored_builtin_restart_error: {
+        code: 'PLUGIN_BUILTIN_RESTORE_START_FAILED',
+        message: 'startup failed',
+        error_type: 'RuntimeError',
+      },
+      message: 'Plugin deleted successfully',
+    })
+    const plugin = makePlugin({ id: 'open_detail', kind: 'builtin' })
+    const { buildActions, executeAction } = usePluginListContextActions()
+    const action = buildActions(plugin).find((candidate) => candidate.id === 'delete')
+
+    await executeAction(action!, plugin)
+
+    expect(ElMessage.warning).toHaveBeenCalledWith(
+      'messages.pluginDeletedBuiltinRestartFailed',
+    )
+    expect(ElMessage.success).not.toHaveBeenCalledWith('messages.pluginDeleted')
   })
 })

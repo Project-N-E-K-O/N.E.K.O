@@ -698,6 +698,7 @@ export default {
     pluginReloaded: 'プラグインをリロードしました',
     pluginBuilt: 'プラグインをパッケージ化しました: {packageName}',
     pluginDeleted: 'プラグインを削除しました',
+    pluginDeletedBuiltinRestartFailed: 'プラグイン {plugin} は削除されましたが、復元した内蔵版を起動できませんでした：{error}',
     startFailed: '起動に失敗しました',
     stopFailed: '停止に失敗しました',
     reloadFailed: 'リロードに失敗しました',

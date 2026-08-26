@@ -1236,16 +1236,6 @@ async function handleUpgrade(plugin: MarketWorkbenchItem) {
       if (action.kind === 'blocked') ElMessage.error(t('market.autoUpgradeBlocked'))
       return
     }
-    if (
-      action.kind === 'override_builtin'
-      && !(await confirmBuiltinOverride(t, {
-        pluginName: plugin.name,
-        currentVersion: action.currentVersion,
-        targetVersion: action.targetVersion,
-      }))
-    ) {
-      return
-    }
     const payload = await resolveInstallPayload(plugin)
     if (!payload) {
       ElMessage.warning(t('market.noDownloadUrl'))
@@ -1265,23 +1255,53 @@ async function handleUpgrade(plugin: MarketWorkbenchItem) {
       }
     }
     const packageUrl = resolveGithubDownloadUrl(payload.package_url)
+    const installRequest: Record<string, unknown> = {
+      package_url: packageUrl,
+      canonical_package_url: payload.package_url,
+      package_sha256: payload.package_sha256,
+      payload_hash: payload.payload_hash,
+      plugin_id: String(plugin.rawId),
+      version: payload.version,
+      channel: payload.channel,
+      published_at: payload.published_at,
+      // v2 (Option C): 升级路径同样透传 slug 做身份对账
+      expected_plugin_toml_id: resolveExpectedTomlId(plugin),
+      mode: action.kind,
+      on_conflict: 'fail',
+    }
+    if (action.kind === 'override_builtin') {
+      const confirmationResponse = await fetchBridge('/market/override-confirmation', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(installRequest),
+      })
+      if (!confirmationResponse) {
+        ElMessage.warning(t('market.pairRequired'))
+        return
+      }
+      if (!confirmationResponse.ok) {
+        const error = await confirmationResponse.json().catch(() => ({}))
+        ElMessage.error(resolveApiErrorMessage(error))
+        return
+      }
+      const confirmation = await confirmationResponse.json() as {
+        confirmation_token: string
+        current_version: string
+        target_version: string
+      }
+      if (!(await confirmBuiltinOverride(t, {
+        pluginName: plugin.name,
+        currentVersion: confirmation.current_version,
+        targetVersion: confirmation.target_version,
+      }))) {
+        return
+      }
+      installRequest.confirmation_token = confirmation.confirmation_token
+    }
     const res = await fetchBridge('/market/install', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        package_url: packageUrl,
-        canonical_package_url: payload.package_url,
-        package_sha256: payload.package_sha256,
-        payload_hash: payload.payload_hash,
-        plugin_id: String(plugin.rawId),
-        version: payload.version,
-        channel: payload.channel,
-        published_at: payload.published_at,
-        // v2 (Option C): 升级路径同样透传 slug 做身份对账
-        expected_plugin_toml_id: resolveExpectedTomlId(plugin),
-        mode: action.kind,
-        on_conflict: 'fail',
-      }),
+      body: JSON.stringify(installRequest),
     })
     if (!res) {
       ElMessage.warning(t('market.pairRequired'))

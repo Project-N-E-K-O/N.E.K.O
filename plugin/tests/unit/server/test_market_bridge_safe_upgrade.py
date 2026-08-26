@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from fastapi import HTTPException
 
 from plugin.server.routes import market_bridge
 from plugin.server.application.plugins.operation_lock import serialized_plugin_operation
@@ -71,6 +72,87 @@ def test_market_override_records_canonical_package_url() -> None:
     override = market_bridge._build_market_override(request, mode="install")
 
     assert override["market_detail"]["package_url"] == canonical_url
+
+
+@pytest.mark.asyncio
+async def test_market_builtin_override_requires_current_preflight_confirmation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    builtin_root = tmp_path / "builtin"
+    user_root = tmp_path / "user"
+    manifest = builtin_root / "demo" / "plugin.toml"
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text(
+        '[plugin]\nid = "demo"\nversion = "1.0.0"\n',
+        encoding="utf-8",
+    )
+    user_root.mkdir()
+    monkeypatch.setattr(
+        market_bridge.PluginCliPathPolicy,
+        "from_settings",
+        classmethod(
+            lambda cls: SimpleNamespace(
+                builtin_plugins_root=builtin_root,
+                user_plugins_root=user_root,
+            )
+        ),
+    )
+    payload = market_bridge.MarketInstallRequest(
+        plugin_id="market-demo",
+        expected_plugin_toml_id="demo",
+        version="2.0.0",
+        package_url="https://example.invalid/demo.neko-plugin",
+        package_sha256="a" * 64,
+        mode="override_builtin",
+    )
+    bridge_token = market_bridge.get_bridge_token()
+
+    with pytest.raises(HTTPException) as missing_info:
+        await market_bridge.market_install(payload, token=bridge_token)
+    assert missing_info.value.status_code == 409
+    assert missing_info.value.detail["code"] == "override_confirmation_required"
+
+    confirmation = await market_bridge.market_override_confirmation(
+        payload,
+        token=bridge_token,
+    )
+    assert confirmation.current_version == "1.0.0"
+    assert confirmation.target_version == "2.0.0"
+    assert len(confirmation.confirmation_token) == 64
+
+    manifest.write_text(
+        '[plugin]\nid = "demo"\nversion = "1.0.1"\n',
+        encoding="utf-8",
+    )
+    stale_payload = payload.model_copy(
+        update={"confirmation_token": confirmation.confirmation_token},
+    )
+    with pytest.raises(HTTPException) as stale_info:
+        await market_bridge.market_install(stale_payload, token=bridge_token)
+    assert stale_info.value.status_code == 409
+    assert stale_info.value.detail["code"] == "override_confirmation_changed"
+
+    fresh_confirmation = await market_bridge.market_override_confirmation(
+        payload,
+        token=bridge_token,
+    )
+
+    async def finish_task(_task_id: str, _payload: object) -> None:
+        return None
+
+    monkeypatch.setattr(market_bridge, "_execute_install", finish_task)
+    accepted = await market_bridge.market_install(
+        payload.model_copy(
+            update={"confirmation_token": fresh_confirmation.confirmation_token},
+        ),
+        token=bridge_token,
+    )
+    await market_bridge._task_workers[accepted.task_id]
+    market_bridge._task_workers.pop(accepted.task_id, None)
+    market_bridge._tasks.pop(accepted.task_id, None)
+
+    assert accepted.status == "pending"
 
 
 @pytest.mark.asyncio

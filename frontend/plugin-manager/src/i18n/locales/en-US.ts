@@ -698,6 +698,7 @@ export default {
     pluginReloaded: 'Plugin reloaded successfully',
     pluginBuilt: 'Plugin built: {packageName}',
     pluginDeleted: 'Plugin deleted',
+    pluginDeletedBuiltinRestartFailed: 'Plugin {plugin} was deleted, but the restored built-in version failed to start: {error}',
     startFailed: 'Failed to start',
     stopFailed: 'Failed to stop',
     reloadFailed: 'Failed to reload',

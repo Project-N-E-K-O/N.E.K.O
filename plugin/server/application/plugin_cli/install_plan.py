@@ -182,6 +182,14 @@ def build_install_plan(
                 directory_name=directory_name,
             )
         if builtin_matches:
+            if manifestless_state:
+                return _blocked(
+                    inspected.package_id,
+                    plugin_id,
+                    target_version,
+                    reason="override_manifestless_state_conflict",
+                    directory_name=directory_name,
+                )
             return _plan_builtin_override(
                 package_path=package_path,
                 archive_path=packaged_plugin.archive_path,

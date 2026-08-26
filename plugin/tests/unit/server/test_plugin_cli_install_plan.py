@@ -120,7 +120,7 @@ def test_plan_allows_exact_single_plugin_to_override_builtin(tmp_path: Path) -> 
     assert builtin.is_dir()
 
 
-def test_manifestless_user_state_cannot_bypass_builtin_override_plan(tmp_path: Path) -> None:
+def test_manifestless_user_state_blocks_builtin_override_before_install(tmp_path: Path) -> None:
     package = _single_package(tmp_path, "demo", version="2.0.0")
     builtin = _write_plugin(tmp_path / "builtin", plugin_id="demo", version="1.0.0")
     state_dir = tmp_path / "user" / "demo"
@@ -134,10 +134,9 @@ def test_manifestless_user_state_cannot_bypass_builtin_override_plan(tmp_path: P
         builtin_plugins_root=tmp_path / "builtin",
     )
 
-    assert plan.action == "override_builtin"
-    assert plan.current_source == "builtin"
-    assert plan.target_source == "market"
-    assert plan.current_version == "1.0.0"
+    assert plan.action == "blocked"
+    assert plan.reason == "override_manifestless_state_conflict"
+    assert plan.confirmation_token == ""
     assert plan.target_version == "2.0.0"
     assert sentinel.read_bytes() == b"persistent-state"
     assert builtin.is_dir()

@@ -698,6 +698,7 @@ export default {
     pluginReloaded: '插件重载成功',
     pluginBuilt: '插件已构建：{packageName}',
     pluginDeleted: '插件已删除',
+    pluginDeletedBuiltinRestartFailed: '插件 {plugin} 已删除，但恢复的内置版本启动失败：{error}',
     startFailed: '启动失败',
     stopFailed: '停止失败',
     reloadFailed: '重载失败',

@@ -698,6 +698,7 @@ export default {
     pluginReloaded: 'Plugin recargado correctamente',
     pluginBuilt: 'Plugin empaquetado: {packageName}',
     pluginDeleted: 'Plugin eliminado',
+    pluginDeletedBuiltinRestartFailed: 'Se eliminó el plugin {plugin}, pero no se pudo iniciar la versión integrada restaurada: {error}',
     startFailed: 'Error al iniciar',
     stopFailed: 'Error al detener',
     reloadFailed: 'Error al recargar',

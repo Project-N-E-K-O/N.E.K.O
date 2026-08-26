@@ -698,6 +698,7 @@ export default {
     pluginReloaded: 'Плагин перезагружен',
     pluginBuilt: 'Плагин упакован: {packageName}',
     pluginDeleted: 'Плагин удален',
+    pluginDeletedBuiltinRestartFailed: 'Плагин {plugin} удалён, но восстановленную встроенную версию не удалось запустить: {error}',
     startFailed: 'Ошибка запуска',
     stopFailed: 'Ошибка остановки',
     reloadFailed: 'Ошибка перезагрузки',

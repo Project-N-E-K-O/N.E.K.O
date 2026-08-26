@@ -698,6 +698,7 @@ export default {
     pluginReloaded: '플러그인을 리로드했습니다',
     pluginBuilt: '플러그인이 패키징되었습니다: {packageName}',
     pluginDeleted: '플러그인이 삭제되었습니다',
+    pluginDeletedBuiltinRestartFailed: '플러그인 {plugin}은(는) 삭제되었지만 복원된 내장 버전을 시작하지 못했습니다: {error}',
     startFailed: '시작에 실패했습니다',
     stopFailed: '정지에 실패했습니다',
     reloadFailed: '리로드에 실패했습니다',

@@ -698,6 +698,7 @@ export default {
     pluginReloaded: '外掛重新載入成功',
     pluginBuilt: '外掛已構建：{packageName}',
     pluginDeleted: '外掛已刪除',
+    pluginDeletedBuiltinRestartFailed: '外掛 {plugin} 已刪除，但還原的內建版本啟動失敗：{error}',
     startFailed: '啟動失敗',
     stopFailed: '停止失敗',
     reloadFailed: '重新載入失敗',
