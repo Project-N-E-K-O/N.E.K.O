@@ -25,6 +25,7 @@ root is runtime configuration and tests replace it with ``tmp_path``.
 from __future__ import annotations
 
 import dataclasses
+import hashlib
 import json
 import os
 import threading
@@ -97,6 +98,22 @@ class InstallSourceError(Exception):
 # ---------------------------------------------------------------------------
 
 
+def _shared_state_lock_path() -> Path:
+    """Return the pre-scoping install-source path in the shared state root."""
+
+    from plugin.settings import get_plugin_state_root
+
+    return (get_plugin_state_root().parent / "plugins.lock.json").resolve()
+
+
+def _execution_root_scope(config_root: str) -> str:
+    """Return a stable, non-reversible identity for an execution root."""
+
+    resolved = Path(config_root).expanduser().resolve(strict=False)
+    comparable = os.path.normcase(unicodedata.normalize("NFC", str(resolved)))
+    return hashlib.sha256(comparable.encode("utf-8")).hexdigest()[:16]
+
+
 def resolve_lock_path() -> Path:
     """Resolve the absolute path of ``plugins.lock.json``.
 
@@ -104,30 +121,37 @@ def resolve_lock_path() -> Path:
 
     1. If the environment variable ``NEKO_PLUGIN_INSTALL_LOCK_PATH`` is set to
        a non-empty value, expand ``~`` and return its resolved absolute path.
-    2. Otherwise return ``<N.E.K.O user root>/plugins.lock.json``.
+    2. With an explicit ``PLUGIN_CONFIG_ROOT``, return an execution-root-
+       scoped filename inside the shared state directory.
+    3. Otherwise return ``<N.E.K.O user root>/plugins.lock.json``.
 
     The state-root lookup is performed lazily (see module docstring) so runtime
     configuration and test overrides take effect without re-importing this
-    module. An execution-root override never moves the lock file.
+    module. Execution-root scoping keeps provenance from different plugin
+    server processes isolated while the files themselves remain persistent
+    application state.
     """
 
     env_val = os.environ.get("NEKO_PLUGIN_INSTALL_LOCK_PATH", "").strip()
     if env_val:
         return Path(env_val).expanduser().resolve()
 
-    # Imported lazily to avoid touching plugin.settings at module import time.
-    from plugin.settings import get_plugin_state_root
+    shared_path = _shared_state_lock_path()
+    execution_root = os.environ.get("PLUGIN_CONFIG_ROOT", "").strip()
+    if not execution_root:
+        return shared_path
 
-    return (get_plugin_state_root().parent / "plugins.lock.json").resolve()
+    scope = _execution_root_scope(execution_root)
+    return shared_path.with_name(f"plugins.{scope}.lock.json")
 
 
 def _resolve_legacy_lock_path(lock_path: Path) -> Path | None:
-    """Return the pre-state-root lock path for an explicit config root.
+    """Return a migration source for an explicit execution-root lock.
 
     Before executable plugin code and persistent state were separated, an
     explicit ``PLUGIN_CONFIG_ROOT`` also moved ``plugins.lock.json`` beside
-    that root.  The state-root location remains canonical now, but a missing
-    canonical file may be bootstrapped from the old location.
+    that root. PR #2943 then briefly used one unscoped state-root lock. A
+    missing scoped file may be bootstrapped from either predecessor.
 
     Compatibility lookup is deliberately disabled for an explicit
     ``NEKO_PLUGIN_INSTALL_LOCK_PATH`` and for managers using a caller-supplied
@@ -151,9 +175,17 @@ def _resolve_legacy_lock_path(lock_path: Path) -> Path | None:
         Path(legacy_config_root).expanduser().resolve(strict=False).parent
         / "plugins.lock.json"
     ).resolve(strict=False)
-    if legacy_path == canonical_path:
-        return None
-    return legacy_path
+    if legacy_path != canonical_path and legacy_path.exists():
+        return legacy_path
+
+    # PR #2943 briefly used one unscoped file in the shared state root.
+    # Treat it as a secondary migration source when no root-local legacy
+    # file survives. Once copied, subsequent writes stay in this root's
+    # scoped file and cannot collide with another explicit execution root.
+    shared_path = _shared_state_lock_path()
+    if shared_path != canonical_path:
+        return shared_path
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -1227,9 +1259,7 @@ class InstallSourceManager:
                 # First_Startup. Use int(time.time()) so the suffix is a
                 # plain epoch seconds value that's easy to grep for.
                 epoch = int(time.time())
-                bak_path = read_path.with_name(
-                    f"plugins.lock.json.bak-{epoch}"
-                )
+                bak_path = read_path.with_name(f"{read_path.name}.bak-{epoch}")
                 try:
                     read_path.rename(bak_path)
                     logger.warning(

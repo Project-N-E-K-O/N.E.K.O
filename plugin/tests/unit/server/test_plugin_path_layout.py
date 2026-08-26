@@ -55,7 +55,30 @@ def test_explicit_legacy_config_root_remains_the_execution_root(
         custom_exec.parent / ".neko-plugin-packages"
     ).resolve()
     assert settings.get_plugin_state_root() == state_root.resolve()
-    assert resolve_lock_path() == (state_root.parent / "plugins.lock.json").resolve()
+    lock_path = resolve_lock_path()
+    assert lock_path.parent == state_root.parent.resolve()
+    assert lock_path.name.startswith("plugins.")
+    assert lock_path.name.endswith(".lock.json")
+
+
+def test_explicit_execution_roots_get_distinct_install_source_locks(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state_root = tmp_path / "state" / "plugins"
+    monkeypatch.setattr(settings, "get_plugins_directory", lambda: state_root)
+    monkeypatch.delenv("NEKO_PLUGIN_INSTALL_LOCK_PATH", raising=False)
+
+    first_root = tmp_path / "exec-a" / "plugins"
+    second_root = tmp_path / "exec-b" / "plugins"
+    monkeypatch.setenv("PLUGIN_CONFIG_ROOT", str(first_root))
+    first_lock = resolve_lock_path()
+    monkeypatch.setenv("PLUGIN_CONFIG_ROOT", str(second_root))
+    second_lock = resolve_lock_path()
+
+    assert first_lock.parent == state_root.parent.resolve()
+    assert second_lock.parent == state_root.parent.resolve()
+    assert first_lock != second_lock
 
 
 def test_collision_has_stable_error_code(tmp_path: Path) -> None:

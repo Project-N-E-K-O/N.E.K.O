@@ -171,9 +171,9 @@ def _operation_file_lock_path() -> Path:
     if configured:
         return Path(configured).expanduser().resolve()
 
-    from plugin.server.application.install_source.manager import resolve_lock_path
+    from plugin.server.application.install_source.manager import _shared_state_lock_path
 
-    return resolve_lock_path().with_name(".plugin-operation.lock")
+    return _shared_state_lock_path().with_name(".plugin-operation.lock")
 
 
 def _is_file_lock_contention(exc: OSError) -> bool:

@@ -19,6 +19,7 @@ from plugin.server.application.install_source.manager import (
     InstallSourceError,
     InstallSourceManager,
     _parse_lock,
+    resolve_lock_path,
 )
 from plugin.server.application.install_source.models import (
     SourceDetailImported,
@@ -215,7 +216,7 @@ def test_explicit_config_root_migrates_legacy_lock_to_state_root(
         package_url="https://example.test/market-plugin.neko-plugin",
     )
 
-    canonical_lock_path = state_root.parent / "plugins.lock.json"
+    canonical_lock_path = resolve_lock_path()
     manager = InstallSourceManager(
         lock_path=canonical_lock_path,
         builtin_root=builtin_root,
@@ -229,6 +230,115 @@ def test_explicit_config_root_migrates_legacy_lock_to_state_root(
     assert isinstance(entry.source_detail, SourceDetailMarket)
     assert entry.source_detail.plugin_market_id == "market-id"
     assert canonical_lock_path.read_bytes() == legacy_lock_path.read_bytes()
+
+
+def test_shared_state_keeps_explicit_execution_root_provenance_isolated(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Same-named installs in distinct execution roots never share provenance."""
+    builtin_root = tmp_path / "builtin"
+    first_root = tmp_path / "exec-a" / "plugins"
+    second_root = tmp_path / "exec-b" / "plugins"
+    state_root = tmp_path / "state" / "plugins"
+    builtin_root.mkdir()
+    first_plugin = first_root / "same-name"
+    second_plugin = second_root / "same-name"
+    first_plugin.mkdir(parents=True)
+    second_plugin.mkdir(parents=True)
+
+    monkeypatch.delenv("NEKO_PLUGIN_INSTALL_LOCK_PATH", raising=False)
+    monkeypatch.setattr(settings, "get_plugins_directory", lambda: state_root)
+
+    monkeypatch.setenv("PLUGIN_CONFIG_ROOT", str(first_root))
+    first_lock = resolve_lock_path()
+    first_manager = InstallSourceManager(
+        lock_path=first_lock,
+        builtin_root=builtin_root,
+        user_root=first_root,
+        scanner=PluginDirectoryScanner(builtin_root, first_root),
+    )
+    first_manager.load()
+    first_manager.record_market(
+        directory_path=first_plugin,
+        plugin_market_id="market-a",
+        version="1.0.0",
+        package_url="https://example.test/a.neko-plugin",
+    )
+
+    monkeypatch.setenv("PLUGIN_CONFIG_ROOT", str(second_root))
+    second_lock = resolve_lock_path()
+    second_manager = InstallSourceManager(
+        lock_path=second_lock,
+        builtin_root=builtin_root,
+        user_root=second_root,
+        scanner=PluginDirectoryScanner(builtin_root, second_root),
+    )
+    second_manager.load()
+    second_manager.record_market(
+        directory_path=second_plugin,
+        plugin_market_id="market-b",
+        version="2.0.0",
+        package_url="https://example.test/b.neko-plugin",
+    )
+
+    first_manager.reconcile()
+    first_entry = first_manager.list_entries()[0]
+    second_entry = second_manager.list_entries()[0]
+
+    assert first_lock != second_lock
+    assert isinstance(first_entry.source_detail, SourceDetailMarket)
+    assert isinstance(second_entry.source_detail, SourceDetailMarket)
+    assert first_entry.source_detail.plugin_market_id == "market-a"
+    assert second_entry.source_detail.plugin_market_id == "market-b"
+    assert first_entry.removed is False
+    assert second_entry.removed is False
+
+
+def test_scoped_lock_migrates_the_intermediate_shared_state_lock(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The prior unscoped PR layout remains a fallback migration source."""
+    builtin_root = tmp_path / "builtin"
+    user_root = tmp_path / "exec" / "plugins"
+    state_root = tmp_path / "state" / "plugins"
+    plugin_dir = user_root / "market-plugin"
+    builtin_root.mkdir()
+    plugin_dir.mkdir(parents=True)
+
+    monkeypatch.setenv("PLUGIN_CONFIG_ROOT", str(user_root))
+    monkeypatch.delenv("NEKO_PLUGIN_INSTALL_LOCK_PATH", raising=False)
+    monkeypatch.setattr(settings, "get_plugins_directory", lambda: state_root)
+
+    shared_lock = state_root.parent / "plugins.lock.json"
+    old_manager = InstallSourceManager(
+        lock_path=shared_lock,
+        builtin_root=builtin_root,
+        user_root=user_root,
+        scanner=PluginDirectoryScanner(builtin_root, user_root),
+    )
+    old_manager.record_market(
+        directory_path=plugin_dir,
+        plugin_market_id="shared-market-id",
+        version="1.0.0",
+        package_url="https://example.test/shared.neko-plugin",
+    )
+
+    scoped_lock = resolve_lock_path()
+    manager = InstallSourceManager(
+        lock_path=scoped_lock,
+        builtin_root=builtin_root,
+        user_root=user_root,
+        scanner=PluginDirectoryScanner(builtin_root, user_root),
+    )
+    manager.load()
+
+    entry = manager.list_entries()[0]
+    assert scoped_lock != shared_lock
+    assert isinstance(entry.source_detail, SourceDetailMarket)
+    assert entry.source_detail.plugin_market_id == "shared-market-id"
+    assert scoped_lock.read_bytes() == shared_lock.read_bytes()
 
 
 # ──────────────────────────────────────────────────────────────────────
