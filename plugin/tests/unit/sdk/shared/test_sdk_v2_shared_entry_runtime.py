@@ -274,6 +274,26 @@ def test_prepare_entry_kwargs_keeps_host_ctx_for_handlers_that_opt_in(meta_facto
         handler(**kwargs).close()
 
 
+@pytest.mark.parametrize("meta_factory", [lambda: None, _no_params_meta], ids=["no_meta", "no_params_model"])
+def test_prepare_entry_kwargs_drops_host_ctx_for_positional_only_parameter(meta_factory) -> None:
+    """宿主永远按关键字传 `_ctx`，positional-only 的同名形参接不住。"""
+
+    async def positional_only(_ctx, /) -> object:
+        return _ctx
+
+    kwargs = prepare_entry_kwargs(
+        plugin_id="demo",
+        entry_id="run",
+        handler=positional_only,
+        meta=meta_factory(),
+        args={"_ctx": {"run_id": "r1"}},
+    )
+
+    # 与旁边既有的 _filter_supported_kwargs 判据保持一致：只认
+    # POSITIONAL_OR_KEYWORD / KEYWORD_ONLY，否则 method(**call_args) 照样 TypeError。
+    assert kwargs == {}
+
+
 def test_prepare_entry_kwargs_keeps_host_ctx_when_signature_is_unavailable() -> None:
     """拿不到签名时保持旧行为，不要凭猜测删参数。"""
 

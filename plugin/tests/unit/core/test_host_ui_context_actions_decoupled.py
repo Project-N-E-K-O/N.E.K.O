@@ -14,7 +14,7 @@ import pytest
 from plugin.core.host import PluginProcessHost
 
 
-async def _run_fixture(tmp_path, plugin_id: str, class_name: str) -> dict:
+async def _run_fixture(tmp_path, plugin_id: str, class_name: str, *, timeout: float = 10.0) -> dict:
     config_path = tmp_path / "plugin.toml"
     config_path.write_text("[plugin]\nname='ui_context_fixture'\n", encoding="utf-8")
 
@@ -25,7 +25,7 @@ async def _run_fixture(tmp_path, plugin_id: str, class_name: str) -> dict:
     )
     try:
         await host.start(message_target_queue=asyncio.Queue())
-        return await host.get_ui_context("main", timeout=10.0)
+        return await host.get_ui_context("main", timeout=timeout)
     finally:
         await host.shutdown(timeout=2.0)
 
@@ -59,3 +59,15 @@ async def test_healthy_provider_still_returns_state_without_error(tmp_path) -> N
     assert _action_ids(result) == ["ping"]
     assert result.get("state") == {"greeting": "hi"}
     assert result.get("context_error") is None
+
+
+@pytest.mark.asyncio
+async def test_actions_survive_a_hanging_context_provider(tmp_path) -> None:
+    """子进程必须赶在调用方超时之前收手，否则降级结果根本送不出去。"""
+    result = await _run_fixture(
+        tmp_path, "ui_ctx_hanging", "HangingUiContextFixturePlugin", timeout=2.0,
+    )
+
+    assert _action_ids(result) == ["ping"]
+    assert "timed out" in str(result.get("context_error"))
+    assert result.get("state") == {}

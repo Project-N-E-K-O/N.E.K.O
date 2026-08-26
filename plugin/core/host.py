@@ -141,6 +141,25 @@ def _setup_logging_interception(logger: Any, project_root: Path) -> None:
         sys.path.insert(0, str(project_root))
 
 
+# 父进程等 UI context 回复的默认预算，与 CommManager.get_ui_context 对齐。
+_UI_CONTEXT_DEFAULT_BUDGET = 5.0
+# 留给「收手 -> 序列化 -> IPC 回程」的余量：子进程必须赶在父进程超时之前把
+# 降级结果（actions + context_error）送到，否则父进程先炸，降级分支够不着。
+_UI_CONTEXT_REPLY_HEADROOM = 0.75
+_UI_CONTEXT_MIN_BUDGET = 0.5
+
+
+def _ui_context_provider_budget(requested: object) -> float:
+    """Provider budget that still leaves room to reply before the caller gives up."""
+    try:
+        budget = float(requested)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        budget = _UI_CONTEXT_DEFAULT_BUDGET
+    if budget <= 0:
+        budget = _UI_CONTEXT_DEFAULT_BUDGET
+    return max(_UI_CONTEXT_MIN_BUDGET, budget - _UI_CONTEXT_REPLY_HEADROOM)
+
+
 def _find_project_root(config_path: Path) -> Path:
     """
     从配置文件路径向上探测项目根目录。
@@ -1297,6 +1316,7 @@ def _plugin_process_runner(
                 actions = _collect_ui_actions()
                 context_payload: Dict[str, Any] = {"state": {}, "state_schema": None}
                 context_error: str | None = None
+                provider_budget = _ui_context_provider_budget(msg.get("timeout"))
 
                 provider = ui_context_map.get(context_id)
                 if provider is None:
@@ -1312,13 +1332,19 @@ def _plugin_process_runner(
                     try:
                         result = provider()
                         if inspect.isawaitable(result):
-                            result = await _run_with_watchdog(result, f"ui_context.{context_id}", 5.0)
+                            result = await _run_with_watchdog(
+                                result, f"ui_context.{context_id}", provider_budget,
+                            )
                         context_payload = _serialize_ui_context_result(result)
                     except asyncio.TimeoutError:
                         # str(asyncio.TimeoutError()) 是空串，直接透出会得到一条
                         # 没有内容的错误信息。
-                        logger.warning("UI context '{}' timed out after 5.0s", context_id)
-                        context_error = f"UI context '{context_id}' timed out after 5.0s"
+                        logger.warning(
+                            "UI context '{}' timed out after {}s", context_id, provider_budget,
+                        )
+                        context_error = (
+                            f"UI context '{context_id}' timed out after {provider_budget}s"
+                        )
                     except Exception as e:
                         logger.exception("Failed to execute UI context '{}'", context_id)
                         context_error = str(e) or type(e).__name__

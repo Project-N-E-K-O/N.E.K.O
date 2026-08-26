@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 from plugin.sdk.plugin import NekoPluginBase, plugin_entry, ui
 
 
@@ -34,3 +36,17 @@ class HealthyUiContextFixturePlugin(NekoPluginBase):
     @ui.context(id="main")
     async def main_context(self, **_: object) -> dict[str, object]:
         return {"greeting": "hi"}
+
+
+class HangingUiContextFixturePlugin(NekoPluginBase):
+    """Has a provider that never returns."""
+
+    @ui.action(id="ping", label="Ping")
+    @plugin_entry(id="ping", name="Ping")
+    async def ping(self, **_: object) -> dict[str, object]:
+        return {"ok": True}
+
+    @ui.context(id="main")
+    async def main_context(self, **_: object) -> dict[str, object]:
+        await asyncio.sleep(3600)
+        return {}

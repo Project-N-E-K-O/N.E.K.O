@@ -284,7 +284,14 @@ class PluginCommunicationResourceManager:
 
     async def get_ui_context(self, context_id: str = "main", timeout: float = 5.0) -> Any:
         req_id = str(uuid.uuid4())
-        msg = {"type": "UI_CONTEXT", "req_id": req_id, "context_id": str(context_id or "main")}
+        # 把本侧预算一起发过去：子进程要在它到期之前收手并回一个降级结果
+        # （actions + context_error），否则父进程先超时，降级分支等于白写。
+        msg = {
+            "type": "UI_CONTEXT",
+            "req_id": req_id,
+            "context_id": str(context_id or "main"),
+            "timeout": float(timeout),
+        }
         return await self._send_command_and_wait(req_id, msg, timeout, f"ui context {context_id}")
 
     async def _trigger_custom_event_local(
