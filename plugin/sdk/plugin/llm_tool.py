@@ -202,9 +202,10 @@ def llm_tool(
     single description of what matters in the frame.
 
     Limits enforced by ``main_server``: at most 2 images per call, 2 MB
-    of base64 each, ``image/jpeg`` or ``image/png`` only. Anything
-    rejected is reported to the model under ``_image_warnings`` rather
-    than silently dropped. Injected images are removed from conversation
+    of base64 each, ``image/jpeg`` or ``image/png`` only, and 2,000
+    characters per ``vision_prompt``. Anything rejected or truncated is
+    reported to the model under ``_image_warnings`` rather than silently
+    dropped. Injected images are removed from conversation
     history at the end of the turn, so do not rely on the model still
     seeing a frame on a later turn — give it a handle and a way to ask
     for the picture again.

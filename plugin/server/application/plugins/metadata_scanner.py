@@ -297,10 +297,27 @@ def install_isolated_plugin_metadata(
         )
 
     with state.acquire_event_handlers_write_lock():
+        runtime_handlers: dict[str, EventHandler] = {}
+        for key, handler in state.event_handlers.items():
+            if not (key.startswith(prefix_dot) or key.startswith(prefix_colon)):
+                continue
+            event_meta = getattr(handler, "meta", None)
+            handler_metadata = getattr(event_meta, "metadata", None)
+            if (
+                getattr(event_meta, "dynamic", False) is True
+                and isinstance(handler_metadata, dict)
+                and handler_metadata.get("_dynamic") is True
+                and handler_metadata.get("_registered_via_ipc") is True
+            ):
+                runtime_handlers[key] = handler
         for key in list(state.event_handlers):
             if key.startswith(prefix_dot) or key.startswith(prefix_colon):
                 del state.event_handlers[key]
         state.event_handlers.update(reconstructed)
+        # The host may have received ENTRY_UPDATE registrations while the
+        # isolated worker was scanning static metadata. Runtime state wins on
+        # collisions because it reflects the live plugin process.
+        state.event_handlers.update(runtime_handlers)
 
     for key in list(registry_module.plugin_entry_method_map):
         if key[0] == plugin_id:

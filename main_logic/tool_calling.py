@@ -58,6 +58,7 @@ ToolHandler = Callable[[Dict[str, Any]], Union[Awaitable[Any], Any]]
 _MAX_TOOL_IMAGE_B64_BYTES = 2 * 1024 * 1024
 _MAX_TOOL_IMAGES = 2
 _MAX_TOOL_IMAGE_PIXELS = 16 * 1024 * 1024
+_MAX_TOOL_IMAGE_VISION_PROMPT_CHARS = 2000
 _TOOL_IMAGE_TURN_MAX_COUNT = 2
 _TOOL_IMAGE_TURN_MAX_B64_BYTES = 4 * 1024 * 1024
 _ALLOWED_TOOL_IMAGE_MIMES = frozenset({"image/jpeg", "image/png"})
@@ -316,11 +317,19 @@ def parse_tool_images(body: Dict[str, Any]) -> Tuple[List[ToolImage], List[str]]
                 f"image #{index} mime does not match image bytes; dropped"
             )
             continue
-        vision_prompt = entry.get("vision_prompt")
+        raw_vision_prompt = entry.get("vision_prompt")
+        vision_prompt = raw_vision_prompt if isinstance(raw_vision_prompt, str) else ""
+        if len(vision_prompt) > _MAX_TOOL_IMAGE_VISION_PROMPT_CHARS:
+            warnings.append(
+                f"image #{index} vision_prompt is too long "
+                f"({len(vision_prompt)} > {_MAX_TOOL_IMAGE_VISION_PROMPT_CHARS} characters); "
+                "truncated"
+            )
+            vision_prompt = vision_prompt[:_MAX_TOOL_IMAGE_VISION_PROMPT_CHARS]
         images.append(ToolImage(
             data_b64=data_b64,
             mime=mime,
-            vision_prompt=vision_prompt if isinstance(vision_prompt, str) else "",
+            vision_prompt=vision_prompt,
         ))
     return images, warnings
 

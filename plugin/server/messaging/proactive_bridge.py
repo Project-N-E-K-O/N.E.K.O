@@ -236,6 +236,9 @@ class ProactiveBridge:
         Empty plumbing — no parts and no actionable signal — is dropped
         with a debug log so plugin authors notice on first run.
         """
+        if payload.get("_proactive_bridge_suppressed") is True:
+            return
+
         plugin_id = payload.get("plugin_id", "")
         timestamp = payload.get("time", "")
         metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}

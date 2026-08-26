@@ -165,6 +165,21 @@ def test_valid_entry_is_parsed():
     assert images[0].vision_prompt == "look"
 
 
+def test_oversized_vision_prompt_is_truncated_with_a_warning():
+    oversized_prompt = "x" * 2001
+
+    images, warnings = _parse_tool_images(
+        {"images": [_image_entry(vision_prompt=oversized_prompt)]}
+    )
+
+    assert len(images[0].vision_prompt) == 2000
+    assert images[0].vision_prompt == oversized_prompt[:2000]
+    assert any(
+        "vision_prompt" in warning and "truncated" in warning
+        for warning in warnings
+    )
+
+
 def test_jpeg_is_accepted():
     images, warnings = _parse_tool_images(
         {"images": [_image_entry(data_b64=_TINY_JPEG_B64, mime="image/jpeg")]}

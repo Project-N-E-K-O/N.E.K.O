@@ -483,6 +483,11 @@ class PluginCommunicationResourceManager:
     # ── message routing ──────────────────────────────────────────
 
     async def _route_message(self, msg: dict) -> None:
+        # This marker is trusted only when added below by the authenticated
+        # host. A plugin must not be able to suppress ordinary shared-plane
+        # proactive delivery by forging it on the uplink.
+        msg = dict(msg)
+        msg.pop("_proactive_bridge_suppressed", None)
         handler_name = self._MESSAGE_ROUTING.get(msg.get("type", ""))
         if handler_name:
             await getattr(self, handler_name)(msg)
@@ -523,6 +528,7 @@ class PluginCommunicationResourceManager:
             redacted_metadata.pop("live_frame_permission_token", None)
             msg = dict(private_msg)
             msg["metadata"] = redacted_metadata
+            msg["_proactive_bridge_suppressed"] = True
         await self._forward_message(msg)
 
     async def _forward_message(self, msg: Dict[str, Any]) -> None:

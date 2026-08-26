@@ -100,3 +100,21 @@ def test_private_bridge_preserves_live_frame_token_for_proactive_delivery() -> N
     bridge._drain_private_payloads(socket)
 
     assert socket.events[0]["metadata"]["live_frame_permission_token"] == "generation-secret"
+
+
+def test_proactive_bridge_ignores_redacted_private_delivery_copy() -> None:
+    socket = _PushSocket()
+
+    ProactiveBridge()._dispatch(
+        {
+            "plugin_id": "demo_plugin",
+            "schema": "push_message.v2",
+            "visibility": [],
+            "ai_behavior": "respond",
+            "parts": [{"type": "text", "text": "already delivered privately"}],
+            "_proactive_bridge_suppressed": True,
+        },
+        socket,
+    )
+
+    assert socket.events == []

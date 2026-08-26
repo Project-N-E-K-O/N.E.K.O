@@ -165,6 +165,7 @@ async def test_token_bearing_message_uses_private_bridge_and_redacts_shared_stat
             "type": "MESSAGE_PUSH",
             "message_id": "private-message",
             "plugin_id": "authenticated-plugin",
+            "_proactive_bridge_suppressed": "forged-by-plugin",
             "parts": [{"type": "text", "text": "private live-frame cue"}],
             "metadata": {
                 "live_frame_permission_token": "generation-secret",
@@ -174,9 +175,12 @@ async def test_token_bearing_message_uses_private_bridge_and_redacts_shared_stat
     )
 
     assert private[0]["metadata"]["live_frame_permission_token"] == "generation-secret"
+    assert "_proactive_bridge_suppressed" not in private[0]
     assert "generation-secret" not in repr(stored)
+    assert stored[0]["_proactive_bridge_suppressed"] is True
     forwarded = target_queue.get_nowait()
     assert forwarded["metadata"] == {"public_hint": "keep-me"}
+    assert forwarded["_proactive_bridge_suppressed"] is True
 
 
 @pytest.mark.asyncio
