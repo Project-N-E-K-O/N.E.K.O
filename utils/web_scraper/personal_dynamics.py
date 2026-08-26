@@ -45,12 +45,39 @@ _BILIBILI_DYNAMIC_STALE_SECONDS = 30 * 60
 _BILIBILI_DYNAMIC_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 _BILIBILI_DYNAMIC_LOCKS: dict[str, asyncio.Lock] = {}
 
+_WEIBO_AUTH_FAILURE_MARKERS = (
+    "未登录",
+    "请先登录",
+    "登录失效",
+    "登录已失效",
+    "登录过期",
+    "登录已过期",
+    "认证失败",
+    "身份验证失败",
+    "login required",
+    "not logged in",
+    "authentication required",
+    "invalid credential",
+    "credential expired",
+)
+
+
+def _is_weibo_auth_failure(payload: Any) -> bool:
+    if not isinstance(payload, dict) or payload.get("ok") == 1:
+        return False
+    message = " ".join(
+        str(payload.get(key) or "")
+        for key in ("msg", "errmsg", "message", "error")
+    ).lower()
+    return any(marker in message for marker in _WEIBO_AUTH_FAILURE_MARKERS)
+
 
 async def _fetch_bilibili_personal_dynamic_uncached(limit: int = 10) -> Dict[str, Any]:
     """
     Fetch Bilibili push feed updates
     """
     try:
+        stored_credentials = _get_platform_cookies("bilibili")
         credential = _get_bilibili_credential()
         if not credential: 
             return {
@@ -73,7 +100,7 @@ async def _fetch_bilibili_personal_dynamic_uncached(limit: int = 10) -> Dict[str
 
         if not isinstance(data, dict) or data.get("code") != 0:
             if isinstance(data, dict) and data.get("code") == -101:
-                credential_manager.mark_auth_rejected("bilibili", request_cookies)
+                credential_manager.mark_auth_rejected("bilibili", stored_credentials)
             logger.error(f"获取B站动态失败，API返回: {data}")
             return {
                 'success': False,
@@ -527,11 +554,14 @@ async def fetch_weibo_personal_dynamic(limit: int = 10) -> Dict[str, Any]:
 
             data = response.json()
 
-        # 移动端如果未登录，通常会返回 ok: 0 或者重定向
+        # 只有明确的鉴权错误才持久标记凭证失效；限流或服务异常仅影响本次请求。
         if data.get('ok') != 1:
-            credential_manager.mark_auth_rejected("weibo", req_cookies)
-            logger.error("❌ 微博拦截：返回 ok=0，说明你的 SUB 凭证已过期！")
-            return {'success': False, 'error': "微博凭证已过期，请去浏览器重新获取"}
+            if _is_weibo_auth_failure(data):
+                credential_manager.mark_auth_rejected("weibo", weibo_cookies)
+                logger.error("❌ 微博拦截：登录凭证已失效")
+                return {'success': False, 'error': "微博凭证已过期，请去浏览器重新获取"}
+            logger.warning("微博接口返回非鉴权错误: %s", data)
+            return {'success': False, 'error': "微博接口暂时不可用，请稍后重试"}
 
         cards = data.get('data', {}).get('cards', [])
         weibo_list = []

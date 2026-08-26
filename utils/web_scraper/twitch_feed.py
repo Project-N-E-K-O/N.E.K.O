@@ -90,6 +90,12 @@ async def fetch_twitch_live_streams(limit: int = 10) -> dict[str, Any]:
                     "videos": [],
                     "error": "Twitch followed-stream access requires reauthorization",
                 }
+            request_credential = credential_manager.load("twitch")
+            if (
+                request_credential.get("client_id") != client_id
+                or request_credential.get("access_token") != access_token
+            ):
+                request_credential = {}
             response = await get_external_http_client().get(
                 _FOLLOWED_STREAMS_URL,
                 params={"user_id": user_id, "first": bounded_limit},
@@ -99,7 +105,7 @@ async def fetch_twitch_live_streams(limit: int = 10) -> dict[str, Any]:
             if response.status_code == 401:
                 credential_manager.mark_auth_rejected(
                     "twitch",
-                    {"client_id": client_id, "access_token": access_token},
+                    request_credential,
                 )
         response.raise_for_status()
         payload = response.json()

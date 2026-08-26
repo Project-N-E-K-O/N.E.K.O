@@ -441,11 +441,7 @@ class CredentialManager:
         platform: str,
         expected_credentials: Dict[str, Any],
     ) -> bool:
-        expected = {
-            key: value
-            for key, value in expected_credentials.items()
-            if isinstance(key, str) and isinstance(value, str) and value
-        }
+        expected = _normalize_cookies(expected_credentials, platform)
         if not expected:
             return False
 
@@ -453,7 +449,7 @@ class CredentialManager:
             entry = self._cached(platform)
             if entry is None or entry.state != self.READY:
                 return False
-            if any(entry.credentials.get(key) != value for key, value in expected.items()):
+            if entry.credentials != expected:
                 return False
             self._store(
                 platform,

@@ -8,6 +8,7 @@ from unittest.mock import patch
 from utils import cookies_login
 from utils.cookies_login import CredentialManager
 from utils.web_scraper import platform_helpers
+from utils.web_scraper.personal_dynamics import _is_weibo_auth_failure
 
 
 def test_concurrent_load_decrypts_once_and_returns_defensive_copies():
@@ -132,6 +133,19 @@ def test_stale_auth_rejection_does_not_override_new_credentials():
     assert manager.mark_auth_rejected("weibo", old_credentials) is False
     assert manager.load("weibo") == {"SUB": "new"}
     assert manager.status("weibo")["credential_state"] == CredentialManager.READY
+
+
+def test_partial_auth_match_does_not_reject_replacement_credentials():
+    manager = CredentialManager()
+
+    with patch("utils.cookies_login._save_cookies_to_file_uncached", return_value=True):
+        assert manager.save("weibo", {"SUB": "shared", "token": "old"}) is True
+        old_credentials = manager.load("weibo")
+        assert manager.save("weibo", {"SUB": "shared", "token": "new"}) is True
+
+    assert manager.mark_auth_rejected("weibo", {"SUB": "shared"}) is False
+    assert manager.mark_auth_rejected("weibo", old_credentials) is False
+    assert manager.load("weibo") == {"SUB": "shared", "token": "new"}
 
 
 def test_external_file_changes_invalidate_positive_and_negative_cache(tmp_path):
@@ -286,6 +300,14 @@ def test_missing_state_keeps_legacy_plaintext_fallback(tmp_path, monkeypatch):
         ),
     ):
         assert platform_helpers._get_platform_cookies("weibo") == {"SUB": "legacy"}
+
+
+def test_weibo_auth_failure_detection_is_conservative():
+    assert _is_weibo_auth_failure({"ok": 0, "msg": "请先登录"}) is True
+    assert _is_weibo_auth_failure({"ok": 0, "msg": "登录已过期"}) is True
+    assert _is_weibo_auth_failure({"ok": 0, "msg": "访问频次过高"}) is False
+    assert _is_weibo_auth_failure({"ok": 0, "msg": "服务暂时不可用"}) is False
+    assert _is_weibo_auth_failure({"ok": 1, "msg": "请先登录"}) is False
 
 
 def test_credential_ui_keeps_rejected_entries_visible_and_removable():
