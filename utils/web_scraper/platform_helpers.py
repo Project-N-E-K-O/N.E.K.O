@@ -235,6 +235,7 @@ def _get_platform_cookies(platform_name: str) -> dict[str, str]:
             continue
             
         try:
+            source_signature = credential_manager.legacy_source_signature(cookie_file)
             with open(cookie_file, 'r', encoding='utf-8') as f:
                 cookie_data = json.load(f)
 
@@ -248,7 +249,15 @@ def _get_platform_cookies(platform_name: str) -> dict[str, str]:
                 cookies = cookie_data
             
             if cookies:
-                return cookies
+                if credential_manager.cache_legacy_credentials(
+                    platform_name,
+                    cookies,
+                    source_signature,
+                ):
+                    return dict(cookies)
+                managed_cookies = credential_manager.load(platform_name)
+                if managed_cookies:
+                    return managed_cookies
         except Exception:
             continue
 

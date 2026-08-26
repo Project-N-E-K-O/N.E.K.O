@@ -328,6 +328,7 @@ class CredentialManager:
         self._cache: dict[str, _CredentialEntry] = {}
         self._cache_lock = threading.RLock()
         self._platform_locks: dict[str, threading.RLock] = {}
+        self._legacy_sources: dict[str, set[Path]] = {}
 
     @staticmethod
     def _file_stamp(path: Path | None) -> _FileStamp:
@@ -346,15 +347,39 @@ class CredentialManager:
         key_file = get_cookie_key_file(platform) if cookie_file is not None else None
         return source_path, cls._file_stamp(cookie_file), cls._file_stamp(key_file)
 
+    @classmethod
+    def legacy_source_signature(cls, source_path: Path) -> _SourceSignature:
+        source_path = source_path.resolve()
+        return str(source_path), cls._file_stamp(source_path), None
+
     def _platform_lock(self, platform: str) -> threading.RLock:
         with self._cache_lock:
             return self._platform_locks.setdefault(platform, threading.RLock())
 
     def _cached(self, platform: str) -> _CredentialEntry | None:
-        source_signature = self._source_signature(platform)
         with self._cache_lock:
             entry = self._cache.get(platform)
-            if entry is not None and entry.source_signature != source_signature:
+        if entry is None:
+            return None
+
+        configured_signature = self._source_signature(platform)
+        source_path = entry.source_signature[0]
+        if source_path == configured_signature[0]:
+            source_signature = configured_signature
+        elif configured_signature[1] is not None:
+            source_signature = configured_signature
+        else:
+            legacy_path = Path(source_path) if source_path is not None else None
+            source_signature = (
+                source_path,
+                self._file_stamp(legacy_path),
+                None,
+            )
+
+        with self._cache_lock:
+            if self._cache.get(platform) is not entry:
+                return None
+            if entry.source_signature != source_signature:
                 self._cache.pop(platform, None)
                 return None
             return entry
@@ -423,6 +448,31 @@ class CredentialManager:
             self._store(platform, self._source_signature(platform), self.READY, normalized)
             return True
 
+    def cache_legacy_credentials(
+        self,
+        platform: str,
+        cookies: Dict[str, Any],
+        source_signature: _SourceSignature,
+    ) -> bool:
+        """Cache a validated credential loaded from a compatibility path."""
+        normalized = _normalize_cookies(cookies, platform)
+        if not normalized or not validate_cookies(platform, normalized):
+            return False
+
+        with self._platform_lock(platform):
+            if self._source_signature(platform)[1] is not None:
+                return False
+            source_path_value = source_signature[0]
+            if source_path_value is None or source_signature[1] is None:
+                return False
+            source_path = Path(source_path_value)
+            if self.legacy_source_signature(source_path) != source_signature:
+                return False
+            with self._cache_lock:
+                self._legacy_sources.setdefault(platform, set()).add(source_path)
+            self._store(platform, source_signature, self.READY, normalized)
+            return True
+
     def delete_stored_credentials(self, platform: str) -> tuple[bool, bool]:
         """Delete credential and key files atomically with the cache transition."""
         with self._platform_lock(platform):
@@ -431,18 +481,23 @@ class CredentialManager:
                 self._store(platform, self._source_signature(platform), self.MISSING)
                 return False, True
 
+            with self._cache_lock:
+                legacy_files = self._legacy_sources.get(platform, set()).copy()
+            cookie_files = list(dict.fromkeys([cookie_file, *legacy_files]))
+
             artifact_existed = False
             cookie_error: OSError | None = None
-            if cookie_file.exists():
-                artifact_existed = True
-                try:
-                    cookie_file.unlink()
-                except OSError as exc:
-                    cookie_error = exc
+            for stored_file in cookie_files:
+                if stored_file.exists():
+                    artifact_existed = True
+                    try:
+                        stored_file.unlink()
+                    except OSError as exc:
+                        cookie_error = cookie_error or exc
 
             key_deleted = True
             key_file = get_cookie_key_file(platform)
-            if key_file.exists():
+            if cookie_error is None and key_file.exists():
                 artifact_existed = True
                 try:
                     key_file.unlink()
@@ -454,6 +509,8 @@ class CredentialManager:
                     self._cache.pop(platform, None)
                 raise cookie_error
 
+            with self._cache_lock:
+                self._legacy_sources.pop(platform, None)
             self._store(platform, self._source_signature(platform), self.MISSING)
             return artifact_existed, key_deleted
 

@@ -5,6 +5,8 @@ from pathlib import Path
 from threading import Event
 from unittest.mock import patch
 
+import pytest
+
 from utils import cookies_login
 from utils.cookies_login import CredentialManager
 from utils.web_scraper import platform_helpers
@@ -292,6 +294,31 @@ def test_delete_removes_orphaned_key_when_cookie_file_is_missing(tmp_path):
     assert not key_file.exists()
 
 
+def test_failed_cookie_delete_preserves_encryption_key(tmp_path):
+    manager = CredentialManager()
+    cookie_file = tmp_path / "weibo.json"
+    key_file = tmp_path / "weibo_key.key"
+    cookie_file.write_text("encrypted", encoding="utf-8")
+    key_file.write_bytes(b"required-key")
+    original_unlink = Path.unlink
+
+    def fail_cookie_unlink(path, *args, **kwargs):
+        if path == cookie_file:
+            raise PermissionError("busy")
+        return original_unlink(path, *args, **kwargs)
+
+    with (
+        patch.dict("utils.cookies_login.COOKIE_FILES", {"weibo": cookie_file}),
+        patch.object(cookies_login, "CONFIG_DIR", tmp_path),
+        patch.object(Path, "unlink", fail_cookie_unlink),
+        pytest.raises(PermissionError, match="busy"),
+    ):
+        manager.delete_stored_credentials("weibo")
+
+    assert cookie_file.exists()
+    assert key_file.exists()
+
+
 def test_auth_rejected_state_skips_legacy_plaintext_fallback():
     with (
         patch.object(cookies_login.credential_manager, "load", return_value={}),
@@ -343,8 +370,65 @@ def test_missing_state_keeps_legacy_plaintext_fallback(tmp_path, monkeypatch):
             "expanduser",
             return_value=str(tmp_path / "home"),
         ),
+        patch.object(
+            cookies_login.credential_manager,
+            "cache_legacy_credentials",
+            return_value=True,
+        ),
     ):
         assert platform_helpers._get_platform_cookies("weibo") == {"SUB": "legacy"}
+
+
+def test_legacy_fallback_can_be_rejected_and_deleted(tmp_path, monkeypatch):
+    manager = CredentialManager()
+    configured_file = tmp_path / "config" / "weibo_cookies.json"
+    legacy_file = tmp_path / "weibo_cookies.json"
+    legacy_file.write_text('{"SUB":"legacy"}', encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+
+    with (
+        patch.dict(
+            "utils.cookies_login.COOKIE_FILES",
+            {"weibo": configured_file},
+        ),
+        patch.object(cookies_login, "CONFIG_DIR", tmp_path / "config"),
+        patch.object(cookies_login, "credential_manager", manager),
+        patch.object(
+            platform_helpers.os.path,
+            "expanduser",
+            return_value=str(tmp_path / "home"),
+        ),
+    ):
+        credentials = platform_helpers._get_platform_cookies("weibo")
+        assert credentials == {"SUB": "legacy"}
+        assert manager.mark_auth_rejected("weibo", credentials) is True
+        assert platform_helpers._get_platform_cookies("weibo") == {}
+        assert manager.delete_stored_credentials("weibo") == (True, True)
+
+    assert not legacy_file.exists()
+
+
+def test_changed_legacy_source_is_not_cached(tmp_path):
+    manager = CredentialManager()
+    configured_file = tmp_path / "config" / "weibo_cookies.json"
+    legacy_file = tmp_path / "weibo_cookies.json"
+    legacy_file.write_text('{"SUB":"first"}', encoding="utf-8")
+    source_signature = manager.legacy_source_signature(legacy_file)
+    legacy_file.write_text('{"SUB":"second-and-longer"}', encoding="utf-8")
+
+    with (
+        patch.dict(
+            "utils.cookies_login.COOKIE_FILES",
+            {"weibo": configured_file},
+        ),
+        patch.object(cookies_login, "CONFIG_DIR", tmp_path / "config"),
+    ):
+        assert manager.cache_legacy_credentials(
+            "weibo",
+            {"SUB": "first"},
+            source_signature,
+        ) is False
+        assert manager.state("weibo") == CredentialManager.MISSING
 
 
 def test_weibo_auth_failure_detection_is_conservative():
