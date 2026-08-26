@@ -359,12 +359,17 @@ async def test_release_targets_the_list_it_injected_into():
     result = _image_result(images=[ToolImage(data_b64="IMGDATA")])
     client = _Client({"demo_tool": result})
     scratch: list = []
-    history: list = [{"role": "user", "content": "untouched"}]
+    history: list = [
+        {"role": "user", "content": f"untouched-{index}"}
+        for index in range(3)
+    ]
+    baseline = list(history)
     await client._execute_and_append_openai_tool_calls(scratch, [_Call()])
+    assert len(scratch) == len(history)
 
     client._release_tool_image_slots()
 
-    assert history == [{"role": "user", "content": "untouched"}]
+    assert history == baseline
     assert _image_messages(scratch) == []
 
 

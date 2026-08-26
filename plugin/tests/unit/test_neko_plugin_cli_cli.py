@@ -791,7 +791,7 @@ def test_validate_accepts_nested_module_under_canonical_plugin_package(
     issues = validate_plugin_dir(plugin_dir, strict=True)
 
     assert not any(
-        "plugin.entry should usually start with" in message
+        "plugin.entry should usually target" in message
         for _level, message in issues
     )
     assert not any(

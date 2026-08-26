@@ -464,8 +464,8 @@ async def test_callback_route_passes_through_images():
 
 @pytest.mark.asyncio
 async def test_callback_route_accepts_images_without_is_error():
-    """``images`` alone is enough to mark the envelope shape — a handler
-    returning pixels has no reason to also spell out ``is_error: False``."""
+    """``output`` plus ``images`` marks the envelope shape without requiring
+    a handler returning pixels to spell out ``is_error: False``."""
     out = await _call_with_handler_result({
         "output": {"ok": True},
         "images": [{"data_b64": "QUJD"}],
@@ -519,7 +519,7 @@ async def test_callback_route_omits_images_key_when_there_are_none():
 @pytest.mark.asyncio
 async def test_callback_route_still_wraps_a_bare_dict():
     """A plain dict that merely happens to contain ``output`` is data, not
-    an envelope — it needs ``is_error`` or ``images`` to be recognized."""
+    an envelope — it needs ``is_error``, or both ``output`` and ``images``."""
     out = await _call_with_handler_result({"output": "just data"})
     assert out == {"output": {"output": "just data"}, "is_error": False}
 

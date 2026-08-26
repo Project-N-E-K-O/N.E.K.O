@@ -148,16 +148,24 @@ class ServerLifecycleService:
             revocation_results = await asyncio.gather(*(
                 self._plugin_lifecycle_service.revoke_plugin_permissions(plugin_id)
                 for plugin_id in registered_plugin_ids
-            ))
-            failed_revocation_ids = {
-                plugin_id
-                for plugin_id, revoked in zip(
-                    registered_plugin_ids,
-                    revocation_results,
-                    strict=True,
-                )
-                if revoked is False
-            }
+            ), return_exceptions=True)
+            failed_revocation_ids: set[str] = set()
+            for plugin_id, revoked in zip(
+                registered_plugin_ids,
+                revocation_results,
+                strict=True,
+            ):
+                if isinstance(revoked, BaseException):
+                    logger.error(
+                        "plugin permission revocation raised at startup: "
+                        "plugin_id={}, err_type={}, err={}",
+                        plugin_id,
+                        type(revoked).__name__,
+                        str(revoked),
+                    )
+                    failed_revocation_ids.add(plugin_id)
+                elif revoked is False:
+                    failed_revocation_ids.add(plugin_id)
             autostart_plugin_ids = await self._plugin_registry_service.list_autostart_plugin_ids()
         except Exception as exc:
             logger.error(
@@ -264,6 +272,7 @@ class ServerLifecycleService:
         per_host_timeout = PLUGIN_SHUTDOWN_TIMEOUT + 0.5
 
         async def _shutdown_one(plugin_id: str, host_obj: object) -> None:
+            revoke_failed = False
             try:
                 if not isinstance(host_obj, _PluginHostContract):
                     logger.warning(
@@ -293,10 +302,11 @@ class ServerLifecycleService:
                     plugin_id,
                     timeout=_SHUTDOWN_PERMISSION_REVOKE_TIMEOUT,
                 )
-                if revoked is False:
-                    raise RuntimeError(
-                        f"plugin permission revoke failed for {plugin_id}"
-                    )
+                revoke_failed = revoked is False
+            if revoke_failed:
+                raise RuntimeError(
+                    f"plugin permission revoke failed for {plugin_id}"
+                )
 
         tasks: list[asyncio.Task[None]] = []
         for plugin_id, host_obj in hosts_snapshot.items():

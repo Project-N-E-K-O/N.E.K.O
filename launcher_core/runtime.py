@@ -337,7 +337,7 @@ def _initialize_launcher_context() -> None:
         os.environ.setdefault("NEKO_INSTANCE_ID", INSTANCE_ID)
         _sync_runtime_config_globals()
 
-    if not os.environ.get("NEKO_PLUGIN_HOST_API_TOKEN"):
+    if not str(os.environ.get("NEKO_PLUGIN_HOST_API_TOKEN") or "").strip():
         os.environ["NEKO_PLUGIN_HOST_API_TOKEN"] = secrets.token_urlsafe(32)
 
     # 确保本地服务间通信不走系统代理（防止 Clash/Surge 等代理软件拦截 localhost 请求）

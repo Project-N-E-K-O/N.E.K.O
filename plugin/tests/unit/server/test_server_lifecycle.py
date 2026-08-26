@@ -243,6 +243,68 @@ async def test_startup_skips_autostart_when_permission_revoke_fails(
 
 
 @pytest.mark.asyncio
+async def test_startup_revoke_exception_skips_only_the_affected_plugin(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plugins_backup = copy.deepcopy(module.state.plugins)
+    started: list[str] = []
+    service = module.ServerLifecycleService()
+
+    async def _refresh_registry() -> dict[str, object]:
+        with module.state.acquire_plugins_write_lock():
+            module.state.plugins.clear()
+            module.state.plugins.update(
+                {
+                    "broken_plugin": {"id": "broken_plugin", "type": "plugin"},
+                    "ready_plugin": {"id": "ready_plugin", "type": "plugin"},
+                }
+            )
+        return {"added": [], "updated": [], "removed": [], "failed": []}
+
+    async def _revoke(plugin_id: str) -> bool:
+        if plugin_id == "broken_plugin":
+            raise RuntimeError("permission service unavailable")
+        return True
+
+    async def _list_autostart() -> list[str]:
+        return ["broken_plugin", "ready_plugin"]
+
+    async def _start(plugin_id: str, **_kwargs: object) -> dict[str, object]:
+        started.append(plugin_id)
+        return {"success": True, "plugin_id": plugin_id}
+
+    try:
+        monkeypatch.setattr(
+            service._plugin_registry_service,
+            "refresh_registry",
+            _refresh_registry,
+        )
+        monkeypatch.setattr(
+            service._plugin_registry_service,
+            "list_autostart_plugin_ids",
+            _list_autostart,
+        )
+        monkeypatch.setattr(
+            service._plugin_lifecycle_service,
+            "revoke_plugin_permissions",
+            _revoke,
+        )
+        monkeypatch.setattr(
+            service._plugin_lifecycle_service,
+            "start_plugin",
+            _start,
+        )
+
+        await service._refresh_registry_and_start_autostart_plugins()
+
+        assert started == ["ready_plugin"]
+    finally:
+        with module.state.acquire_plugins_write_lock():
+            module.state.plugins.clear()
+            module.state.plugins.update(plugins_backup)
+
+
+@pytest.mark.asyncio
 async def test_shutdown_hosts_revokes_permissions_even_when_shutdown_fails(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -279,6 +341,48 @@ async def test_shutdown_hosts_revokes_permissions_even_when_shutdown_fails(
 
     assert await service._shutdown_hosts() is True
     assert calls[-1] == ("revoke", "demo_plugin:0.4")
+
+
+@pytest.mark.asyncio
+async def test_shutdown_hosts_preserves_shutdown_error_when_revoke_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    logged: list[tuple[object, ...]] = []
+
+    class _Host:
+        async def start(self, _message_target_queue: object) -> None:
+            return None
+
+        async def shutdown(self, timeout: float) -> None:
+            raise RuntimeError("original shutdown failure")
+
+    class _Logger:
+        def warning(self, _message: str, *args: object) -> None:
+            logged.append(args)
+
+    service = module.ServerLifecycleService()
+    monkeypatch.setattr(module, "logger", _Logger())
+    monkeypatch.setattr(
+        service,
+        "_get_plugin_hosts_snapshot",
+        lambda: {"demo_plugin": _Host()},
+    )
+
+    async def _revoke_plugin_permissions(
+        _plugin_id: str,
+        *,
+        timeout: float = 3.0,
+    ) -> bool:
+        return False
+
+    monkeypatch.setattr(
+        service._plugin_lifecycle_service,
+        "revoke_plugin_permissions",
+        _revoke_plugin_permissions,
+    )
+
+    assert await service._shutdown_hosts() is True
+    assert ("RuntimeError", "original shutdown failure") in logged
 
 
 @pytest.mark.asyncio
