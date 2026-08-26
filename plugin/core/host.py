@@ -170,19 +170,33 @@ def _find_project_root(config_path: Path) -> Path:
             break
         cur = cur.parent
     
-    # Fallback: assume layout plugin/plugins/<id>/plugin.toml
     try:
         logger.debug(
-            "[Plugin Process] Could not find project root via exploration from %s; using fallback pattern",
+            "[Plugin Process] Could not find project root via exploration from %s; using host-relative root",
             config_path,
         )
     except Exception:
         pass
-    
+
+    # 走到这里说明 config_path 不在仓库树里。用户插件装在
+    # `我的文档/{APP_NAME}/plugins/<id>/plugin.toml`，按 plugin/plugins/<id>/
+    # 的老布局往上数四层会数到用户的「我的文档」本身，而这个返回值会被
+    # 插入子进程的 sys.path[0]——用户随手放在文档里的 types.py / utils/
+    # 就抢在 stdlib 和宿主模块前面被 import。宿主自己的位置才是可靠的：
+    # plugin/core/host.py -> plugin/core -> plugin -> 仓库根。
     try:
-        return config_path.parent.parent.parent.parent.resolve()
+        host_relative_root = Path(__file__).resolve().parents[2]
+        if (host_relative_root / "plugin").is_dir() and (host_relative_root / "utils").is_dir():
+            return host_relative_root
     except Exception:
+        pass
+
+    # 最后兜底：插件目录本身。宁可少一个导入根，也不要把一个无关目录
+    # 推到 sys.path 最前面。
+    try:
         return config_path.parent.resolve()
+    except Exception:
+        return config_path.parent
 
 
 def _prepare_child_plugin_import_roots(logger: Any) -> None:
