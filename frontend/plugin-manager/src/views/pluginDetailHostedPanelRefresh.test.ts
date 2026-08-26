@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 import { describe, expect, it, vi } from 'vitest'
 import {
-  HOSTED_PANEL_REFRESH_DELAYS_MS,
+  HOSTED_PANEL_REFRESH_GAPS_MS,
   refreshHostedPanelFrames,
 } from './pluginDetailHostedPanelRefresh'
 
@@ -15,7 +15,7 @@ describe('refreshHostedPanelFrames', () => {
     await vi.runAllTimersAsync()
     await pending
 
-    const expectedCalls = frames.length * HOSTED_PANEL_REFRESH_DELAYS_MS.length
+    const expectedCalls = frames.length * HOSTED_PANEL_REFRESH_GAPS_MS.length
     expect(refreshContext).toHaveBeenCalledTimes(expectedCalls)
 
     vi.useRealTimers()
@@ -25,7 +25,7 @@ describe('refreshHostedPanelFrames', () => {
     vi.useFakeTimers()
 
     // Awaiting directly, without advancing timers: a plugin with no hosted-tsx
-    // panel must not sit through HOSTED_PANEL_REFRESH_DELAYS_MS. If the
+    // panel must not sit through HOSTED_PANEL_REFRESH_GAPS_MS. If the
     // short-circuit is removed this await never settles and the test times out.
     await refreshHostedPanelFrames([])
 
@@ -62,7 +62,7 @@ describe('refreshHostedPanelFrames', () => {
     await vi.runAllTimersAsync()
     await pending
 
-    const expectedCalls = frames.size * HOSTED_PANEL_REFRESH_DELAYS_MS.length
+    const expectedCalls = frames.size * HOSTED_PANEL_REFRESH_GAPS_MS.length
     expect(refreshContext).toHaveBeenCalledTimes(expectedCalls)
 
     vi.useRealTimers()
