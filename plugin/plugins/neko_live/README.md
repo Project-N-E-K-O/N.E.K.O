@@ -53,7 +53,7 @@
 - 不发送 B 站弹幕、私信或动态。
 - 不抓主页资料、贡献值、进房累计。
 - 不执行浏览器或键鼠自动化。
-- 不整体复制 `bilibili_danmaku` / `bilibili_dm` 的大文件实现；复用旧能力时只拆成小模块软适配（如已吞并的 `DanmakuListener`）并补测试。
+- 不整体复制 `bilibili_danmaku` / `bilibili_integration` 的大文件实现；复用旧能力时只拆成小模块软适配（如已吞并的 `DanmakuListener`）并补测试。
 
 ## 输出链路提醒
 

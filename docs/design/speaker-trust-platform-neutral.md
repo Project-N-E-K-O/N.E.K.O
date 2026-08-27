@@ -809,7 +809,7 @@ def speaker_account_id(sender_id: object) -> str:
 
 **不需要**：任何存储、任何账本、任何幂等环、任何写者锁、任何事务锁、任何事件应用逻辑、任何回传处理、任何迁移。
 
-**现实提醒**：今天没有任何现成插件能真的零成本接入 —— `bilibili_danmaku` / `neko_live` 根本没走 scoped memory；`bilibili_dm` 最接近（权限词表与 QQ 同构、uid 强制纯数字）但今天只在 admin 私信时写记忆；`wechat_integration` 把任意 `from_user_id` 无条件写进主人主记忆且无权限模型。「接入成本接近零」指的是 **trust 这一层**，不包括「先给那个平台补上 scoped memory 和权限模型」。
+**现实提醒**：今天没有任何现成插件能真的零成本接入 —— `bilibili_danmaku` / `neko_live` 根本没走 scoped memory；独立的 `bilibili_integration` 最接近（权限词表与 QQ 同构、uid 强制纯数字）但今天只在 admin 私信时写记忆；`wechat_integration` 把任意 `from_user_id` 无条件写进主人主记忆且无权限模型。「接入成本接近零」指的是 **trust 这一层**，不包括「先给那个平台补上 scoped memory 和权限模型」。
 
 ---
 
@@ -971,6 +971,6 @@ def speaker_account_id(sender_id: object) -> str:
 
 6. **PR6 的执行时机**：legacy `speaker_trust` 字段在 PR5 之后第 N 个版本删除。N 定多少？删除时机也决定 `test_group_memory_scopes.py:3623-3627` 那条断言什么时候能改成只测新字段。
 
-7. **第二个平台选谁做「接入成本接近零」的验证**？`bilibili_dm` 最便宜（权限词表与 QQ 完全同构、uid 强制纯数字、已有 `bili_dm:` 前缀习惯），但接 trust 的前提是**先让它走 scoped memory**。要不要在 PR5 之后立刻做一个最小接入来验证这个论断？
+7. **第二个平台选谁做「接入成本接近零」的验证**？独立的 `bilibili_integration` 最便宜（权限词表与 QQ 完全同构、uid 强制纯数字、已有 `bili_dm:` 前缀习惯），但接 trust 的前提是**先让它走 scoped memory**。要不要在 PR5 之后立刻做一个最小接入来验证这个论断？
 
 8. **trust 上云是否列为紧随其后的独立工作项**？需要动 `utils/cloudsave_runtime/_shared.py` 的 `MANAGED_CLOUDSAVE_PREFIXES`（`overrides/` / `meta/` 前缀已声明但零实现）与 `operations.py` 的三段路径校验。鉴于 §1.3(c) 的核实结论（今天也不上云），这不是本 PR 的回归修复，而是新能力。

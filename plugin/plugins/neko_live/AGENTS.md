@@ -4,7 +4,7 @@ This file is for IDE agents and future contributors working inside `plugin/plugi
 
 ## Hard Rules
 
-- Do not bulk-copy the large `bilibili_danmaku` / `bilibili_dm` implementations into this plugin. Reusing an old capability is allowed only by extracting it into a small, tested module (e.g. the absorbed `DanmakuListener` now living in `modules/bili_live_ingest/danmaku_core.py` + `livedanmaku.py`) — never paste the big files wholesale.
+- Do not bulk-copy the large `bilibili_danmaku` / `bilibili_integration` implementations into this plugin. Reusing an old capability is allowed only by extracting it into a small, tested module (e.g. the absorbed `DanmakuListener` now living in `modules/bili_live_ingest/danmaku_core.py` + `livedanmaku.py`) — never paste the big files wholesale.
 - Add new capabilities as modules, not as large inline blocks in `__init__.py`.
 - New live-event handlers subscribe via `ctx.event_bus.subscribe(type, handler, owner=self.id)` in `setup` (and unsubscribe in `teardown`); the handler receives a `LiveEvent` and must route output through the pipeline / `neko_dispatcher`, never call `plugin.push_message` directly. `live_events` (subscribes `"danmaku"` / `"gift"` / `"super_chat"` / `"guard"` for window selection) is the reference subscriber. See docs/development.md「直播事件中枢（EventBus）」.
 - Live input and developer sandbox input must share `core/pipeline.py`.

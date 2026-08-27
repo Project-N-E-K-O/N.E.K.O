@@ -64,7 +64,7 @@ Draft 转 Ready 前必须填写：改动范围、测试结果、文档影响、�
 - 不记录原始对话、cookie、token、头像字节或其它敏感 payload。
 - 新增或修改用户可见 i18n key 时同步全部 8 个 locale。
 - 修改 `panel.tsx` 时同步完整功能的 `panel_compat.tsx`，不能把兼容入口退化成 fallback 壳。
-- 不整体复制旧 `bilibili_danmaku` / `bilibili_dm` 大文件；迁移能力必须拆成有边界、可测试的小模块。
+- 不整体复制旧 `bilibili_danmaku` / `bilibili_integration` 大文件；迁移能力必须拆成有边界、可测试的小模块。
 
 ## 6. 提交前验证
 

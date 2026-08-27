@@ -143,7 +143,7 @@ uv run python -m plugin.neko_plugin_cli.cli check plugin/plugins/neko_live
 
 - 四条不变量 + 凭据红线（见 §3）。
 - 新能力加成模块，不要在 `__init__.py` 堆大块内联；事件 handler 走 `subscribe` + pipeline，不碰 `push_message`。
-- 不整体拷贝旧插件 `bilibili_danmaku` / `bilibili_dm` 大文件；复用只拆小模块 + 补测试。
+- 不整体拷贝旧插件 `bilibili_danmaku` / `bilibili_integration` 大文件；复用只拆小模块 + 补测试。
 - **勿与 neko_live 同直播间双连**旧插件。
 - `developer_tools_enabled` 是开发者模式唯一总控；权限以后端检查为准，不只靠前端禁用。
 - 涉及内存 / CPU / token / 依赖 / IO / 核心逻辑复杂度的改动，先按 `development.md`「成本类改动先讨论」列 Decision Points，拍板后再实现。
