@@ -5219,6 +5219,13 @@
          }
     },
    "soccer": {
+        "settings": {
+            "button": "設定",
+            "title": "ゲーム設定",
+            "game": "ゲーム",
+            "audio": "音量",
+            "debug": "デバッグ"
+        },
         "exitGame": {
             "button": "ゲームを終了",
             "ending": "ラウンドを終了中…",
@@ -5249,7 +5256,21 @@
             "voiceButton": "デバッグ音声",
             "voicePlaceholder": "デバッグ：最終書き起こしを入力して Enter",
             "send": "送信",
-            "voiceStatusHidden": "デバッグ STT：非表示"
+            "voiceStatusHidden": "デバッグ STT：非表示",
+            "voiceVolumeHint": "クリックでミュートまたは元の音量に戻します。再生中の音声の音量は調整できません。"
+        },
+        "voiceChat": {
+            "label": "音声会話",
+            "connecting": "メイン音声入力に接続中…",
+            "unavailable": "メイン音声入力は一時的に利用できません",
+            "idle": "クリックして音声会話を開始",
+            "starting": "音声会話を開始中…",
+            "stopping": "音声会話を終了中…",
+            "active": "音声会話はオンです",
+            "muted": "音声会話はオン · マイクはミュート中",
+            "failed": "音声操作に失敗しました。メイン画面で再試行してください。",
+            "start": "音声会話を開始",
+            "stop": "音声会話を終了"
         },
         "surrenderReminder": {
             "label": "降参リマインド"

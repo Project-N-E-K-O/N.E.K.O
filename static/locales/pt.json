@@ -5219,6 +5219,13 @@
          }
     },
    "soccer": {
+        "settings": {
+            "button": "Configurações",
+            "title": "Configurações do jogo",
+            "game": "Jogo",
+            "audio": "Volume",
+            "debug": "Depuração"
+        },
         "exitGame": {
             "button": "Sair do jogo",
             "ending": "Encerrando a rodada…",
@@ -5249,7 +5256,21 @@
             "voiceButton": "Voz de depuração",
             "voicePlaceholder": "Depuração: digite a transcrição final e pressione Enter",
             "send": "Enviar",
-            "voiceStatusHidden": "STT de depuração: oculto"
+            "voiceStatusHidden": "STT de depuração: oculto",
+            "voiceVolumeHint": "Clique para silenciar ou restaurar. Não é possível ajustar o volume de uma fala que já está sendo reproduzida."
+        },
+        "voiceChat": {
+            "label": "Conversa por voz",
+            "connecting": "Conectando à entrada de voz principal…",
+            "unavailable": "A entrada de voz principal está temporariamente indisponível",
+            "idle": "Clique para iniciar a conversa por voz",
+            "starting": "Iniciando conversa por voz…",
+            "stopping": "Encerrando conversa por voz…",
+            "active": "A conversa por voz está ativa",
+            "muted": "Conversa por voz ativa · Microfone silenciado",
+            "failed": "Falha no controle de voz. Tente novamente na página principal.",
+            "start": "Iniciar conversa por voz",
+            "stop": "Encerrar conversa por voz"
         },
         "surrenderReminder": {
             "label": "Lembrete de rendição"

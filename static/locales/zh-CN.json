@@ -5219,6 +5219,13 @@
          }
     },
    "soccer": {
+        "settings": {
+            "button": "设置",
+            "title": "游戏设置",
+            "game": "游戏",
+            "audio": "音量",
+            "debug": "调试"
+        },
         "exitGame": {
             "button": "退出游戏",
             "ending": "正在退出本局…",
@@ -5249,7 +5256,21 @@
             "voiceButton": "调试语音",
             "voicePlaceholder": "调试：输入最终转写后回车",
             "send": "发送",
-            "voiceStatusHidden": "调试 STT：隐藏"
+            "voiceStatusHidden": "调试 STT：隐藏",
+            "voiceVolumeHint": "点击可静音或恢复。无法调整正在播放的语音音量。"
+        },
+        "voiceChat": {
+            "label": "语音对话",
+            "connecting": "正在连接主语音入口…",
+            "unavailable": "主语音入口暂不可用",
+            "idle": "点击开启语音对话",
+            "starting": "正在开启语音对话…",
+            "stopping": "正在关闭语音对话…",
+            "active": "语音对话已开启",
+            "muted": "语音对话已开启 · 麦克风静音",
+            "failed": "语音对话控制失败，请在主页面重试",
+            "start": "开启语音对话",
+            "stop": "关闭语音对话"
         },
         "surrenderReminder": {
             "label": "认输提醒"

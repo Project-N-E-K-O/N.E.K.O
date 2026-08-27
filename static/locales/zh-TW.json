@@ -5219,6 +5219,13 @@
          }
     },
    "soccer": {
+        "settings": {
+            "button": "設定",
+            "title": "遊戲設定",
+            "game": "遊戲",
+            "audio": "音量",
+            "debug": "偵錯"
+        },
         "exitGame": {
             "button": "退出遊戲",
             "ending": "正在退出本局…",
@@ -5249,7 +5256,21 @@
             "voiceButton": "除錯語音",
             "voicePlaceholder": "除錯：輸入最終轉寫後按 Enter",
             "send": "送出",
-            "voiceStatusHidden": "除錯 STT：隱藏"
+            "voiceStatusHidden": "除錯 STT：隱藏",
+            "voiceVolumeHint": "點擊可靜音或恢復。無法調整正在播放的語音音量。"
+        },
+        "voiceChat": {
+            "label": "語音對話",
+            "connecting": "正在連接主語音入口…",
+            "unavailable": "主語音入口暫不可用",
+            "idle": "點擊開啟語音對話",
+            "starting": "正在開啟語音對話…",
+            "stopping": "正在關閉語音對話…",
+            "active": "語音對話已開啟",
+            "muted": "語音對話已開啟 · 麥克風靜音",
+            "failed": "語音對話控制失敗，請在主頁面重試",
+            "start": "開啟語音對話",
+            "stop": "關閉語音對話"
         },
         "surrenderReminder": {
             "label": "認輸提醒"

@@ -5219,6 +5219,13 @@
          }
     },
    "soccer": {
+        "settings": {
+            "button": "Settings",
+            "title": "Game settings",
+            "game": "Game",
+            "audio": "Volume",
+            "debug": "Debug"
+        },
         "exitGame": {
             "button": "Exit Game",
             "ending": "Ending the round…",
@@ -5249,7 +5256,21 @@
             "voiceButton": "Debug voice",
             "voicePlaceholder": "Debug: type final transcript, press Enter",
             "send": "Send",
-            "voiceStatusHidden": "Debug STT: hidden"
+            "voiceStatusHidden": "Debug STT: hidden",
+            "voiceVolumeHint": "Click to mute or restore. This cannot adjust the volume of speech already playing."
+        },
+        "voiceChat": {
+            "label": "Voice chat",
+            "connecting": "Connecting to the main voice input…",
+            "unavailable": "Main voice input is temporarily unavailable",
+            "idle": "Click to start voice chat",
+            "starting": "Starting voice chat…",
+            "stopping": "Stopping voice chat…",
+            "active": "Voice chat is on",
+            "muted": "Voice chat is on · Microphone muted",
+            "failed": "Voice control failed. Try again on the main page.",
+            "start": "Start voice chat",
+            "stop": "Stop voice chat"
         },
         "surrenderReminder": {
             "label": "Surrender reminder"
