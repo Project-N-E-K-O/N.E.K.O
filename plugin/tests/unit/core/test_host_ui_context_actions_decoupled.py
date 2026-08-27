@@ -76,6 +76,31 @@ async def test_actions_survive_a_hanging_context_provider(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_actions_survive_a_provider_that_leaks_cancelled_error(tmp_path) -> None:
+    """CancelledError 继承 BaseException，会穿透 except Exception 把 success=False 送回去。"""
+    result = await _run_fixture(tmp_path, "ui_ctx_cancelling", "CancellingUiContextFixturePlugin")
+
+    assert _action_ids(result) == ["ping"]
+    assert str(result.get("context_error"))
+    assert result.get("state") == {}
+
+
+@pytest.mark.asyncio
+async def test_actions_survive_state_that_cannot_cross_the_process_boundary(tmp_path) -> None:
+    """回包要过 pickle 再进 HTTP：state 不可序列化时不能把 actions 一起赔进去。"""
+    result = await _run_fixture(
+        tmp_path, "ui_ctx_unserializable", "UnserializableUiContextFixturePlugin",
+    )
+
+    assert _action_ids(result) == ["ping"]
+    # 关键：state 必须是被压平后送达的，而不是靠 finally 里剥掉 state 的补发包
+    # 兜住的——后者会让 state 变成 {}，两条路径必须能分辨。
+    state = result.get("state") or {}
+    assert set(state) == {"lock", "tags"}
+    assert all(isinstance(value, str) for value in state.values())
+
+
+@pytest.mark.asyncio
 async def test_actions_survive_a_provider_that_swallows_cancellation(tmp_path) -> None:
     """吞掉取消信号的 provider 不能把超时拖成空转。
 

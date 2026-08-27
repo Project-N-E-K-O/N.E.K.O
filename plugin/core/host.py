@@ -6,6 +6,7 @@ import importlib
 import importlib.machinery
 import importlib.util
 import inspect
+import json
 import math
 import multiprocessing
 import os
@@ -202,7 +203,15 @@ async def _await_within_budget(awaitable: Any, budget: float) -> tuple[bool, Any
     task = asyncio.ensure_future(awaitable)
     done, _pending = await asyncio.wait({task}, timeout=budget)
     if task in done:
-        return True, task.result()
+        try:
+            return True, task.result()
+        except asyncio.CancelledError as exc:
+            # 这个 task 只在本函数局部存在，外面 cancel 不到它——走到这里只可能是
+            # awaitable 自己漏出了 CancelledError。它继承 BaseException，会穿透
+            # 调用方的 except Exception 把 success=False 送回去，所以换成普通异常。
+            # 只包 result() 这一行：外层协作式取消是从上面那个 await 抛出来的，
+            # 包进去会把真正的关停信号也吞掉。
+            raise RuntimeError("awaited task was cancelled") from exc
     task.cancel()
     task.add_done_callback(_discard_abandoned_task_result)
     return False, None
@@ -815,12 +824,18 @@ def _plugin_process_runner(
             data: Any
             model_dump = getattr(result, "model_dump", None)
             if callable(model_dump):
-                data = model_dump()
+                data = model_dump(mode="json")
                 schema = model_schema_from_type(type(result))
             elif isinstance(result, (dict, list)):
                 data = result
             else:
                 data = {"value": result}
+            # 在子进程就压成 JSON-safe：这个值要先过 pickle 送回父进程，再进
+            # FastAPI 的响应体。锁、socket、async generator 之类会让整条回复
+            # （连同 actions 白名单）发不出去，父进程只能干等到超时；父进程
+            # import 不到的自定义类同样会在 pickle.loads 侧炸。在这里失败则由
+            # 调用点降级成一次普通的 context_error，跟 provider 抛错同构。
+            data = json.loads(json.dumps(data, default=str, ensure_ascii=False))
             return {"state": data, "state_schema": schema}
 
         def _get_ui_action_meta(member: Any) -> dict[str, Any] | None:
@@ -844,26 +859,36 @@ def _plugin_process_runner(
         def _collect_ui_actions() -> list[dict[str, Any]]:
             actions: list[dict[str, Any]] = []
             for entry_id, handler in entry_map.items():
-                ui_meta = _get_ui_action_meta(handler)
-                if not ui_meta:
-                    continue
-                entry_meta = entry_meta_map.get(entry_id)
-                action_id = str(ui_meta.get("id") or entry_id)
-                actions.append({
-                    "id": action_id,
-                    "entry_id": entry_id,
-                    "label": ui_meta.get("label") or getattr(entry_meta, "name", entry_id),
-                    "description": getattr(entry_meta, "description", ""),
-                    "input_schema": dict(getattr(entry_meta, "input_schema", None) or {}),
-                    "icon": ui_meta.get("icon"),
-                    "tone": ui_meta.get("tone") or "default",
-                    "group": ui_meta.get("group"),
-                    "order": int(ui_meta.get("order") or 0),
-                    "confirm": ui_meta.get("confirm") or False,
-                    "refresh_context": bool(ui_meta.get("refresh_context", True)),
-                })
+                # 逐条容错：一个 entry 的元数据坏掉只该丢掉这一个 action，
+                # 不能让整张授权白名单空掉——空白名单会让面板上每个按钮变成 403。
+                try:
+                    ui_meta = _get_ui_action_meta(handler)
+                    if not ui_meta:
+                        continue
+                    entry_meta = entry_meta_map.get(entry_id)
+                    action_id = str(ui_meta.get("id") or entry_id)
+                    raw_schema = getattr(entry_meta, "input_schema", None)
+                    actions.append({
+                        "id": action_id,
+                        "entry_id": entry_id,
+                        "label": ui_meta.get("label") or getattr(entry_meta, "name", entry_id),
+                        "description": getattr(entry_meta, "description", ""),
+                        # input_schema 是插件写的，可能是字符串之类的非 mapping。
+                        "input_schema": dict(raw_schema) if isinstance(raw_schema, dict) else {},
+                        "icon": ui_meta.get("icon"),
+                        "tone": ui_meta.get("tone") or "default",
+                        "group": ui_meta.get("group"),
+                        "order": int(ui_meta.get("order") or 0),
+                        "confirm": ui_meta.get("confirm") or False,
+                        "refresh_context": bool(ui_meta.get("refresh_context", True)),
+                    })
+                except Exception:
+                    logger.exception("Skipping malformed UI action metadata for entry '{}'", entry_id)
             actions.sort(key=lambda item: (str(item.get("group") or ""), int(item.get("order") or 0), str(item.get("label") or item.get("id"))))
-            return actions
+            # label / confirm 等字段是插件写的，可能是任意对象。整条回复要先过
+            # pickle 送回父进程、再进 HTTP 响应体，这里压平就不会有「白名单本身
+            # 发不出去」的情况。
+            return json.loads(json.dumps(actions, default=str, ensure_ascii=False))
 
         def _rebuild_entry_map() -> None:
             """重建 entry_map 与 events_by_type。"""
@@ -1360,19 +1385,27 @@ def _plugin_process_runner(
             req_id = msg.get("req_id", "unknown")
             context_id = str(msg.get("context_id") or "main")
             ret = {"req_id": req_id, "success": False, "data": None, "error": None}
+            # 在 try 之外绑定：下面任何一步炸了，兜底分支和 finally 都还要用它。
+            actions: list[dict[str, Any]] = []
+            context_payload: Dict[str, Any] = {"state": {}, "state_schema": None}
+            context_error: str | None = None
             try:
-                # actions 只从 @ui.action 的装饰器元数据推导，不跑任何插件代码。
-                # 它必须独立于插件自己写的 @ui.context provider：provider 缺失、
-                # 抛错或超时时，宿主仍然要拿得到 api.call 的授权白名单，否则
-                # 面板上每个按钮都会返回一条与真实原因无关的 500。
+                # actions 只从 @ui.action 的装饰器元数据推导，不跑插件的 provider。
+                # 它必须独立于插件自己写的 @ui.context：provider 缺失、抛错或超时
+                # 时，宿主仍然要拿得到 api.call 的授权白名单，否则面板上每个按钮
+                # 都会返回一条与真实原因无关的 500。
                 actions = _collect_ui_actions()
-                context_payload: Dict[str, Any] = {"state": {}, "state_schema": None}
-                context_error: str | None = None
                 provider_budget = _ui_context_provider_budget(msg.get("timeout"))
 
                 provider = ui_context_map.get(context_id)
                 if provider is None:
-                    _rebuild_ui_context_map()
+                    # rebuild 会 inspect.getmembers 插件实例，可能触发插件自己的
+                    # __getattr__/property 抛错。失败等同于「找不到 provider」，
+                    # 不该把已经算好的白名单一起赔进去。
+                    try:
+                        _rebuild_ui_context_map()
+                    except Exception:
+                        logger.exception("Failed to rebuild UI context map for '{}'", context_id)
                     provider = ui_context_map.get(context_id)
 
                 if provider is None:
@@ -1407,7 +1440,20 @@ def _plugin_process_runner(
                 }
             except Exception as e:
                 logger.exception("Failed to build UI context '{}'", context_id)
-                ret["error"] = str(e) or type(e).__name__
+                reason = str(e) or type(e).__name__
+                if actions:
+                    # 白名单已经算出来了，就别让它陪葬——面板还能用，原因走 warning。
+                    ret["success"] = True
+                    ret["data"] = {
+                        "state": {},
+                        "state_schema": None,
+                        "actions": actions,
+                        "context_error": reason,
+                    }
+                else:
+                    # 一个 action 都没拿到时才判失败：发一张空白名单只会让每个
+                    # 按钮变成 403，比 500 更难查。
+                    ret["error"] = reason
             finally:
                 try:
                     res_sender.put(ret, timeout=10.0)
