@@ -11,6 +11,8 @@ from pathlib import Path
 import pytest
 from PIL import Image
 
+import utils.avatar_tool_store as avatar_tool_store
+
 from utils.avatar_tool_store import (
     AvatarToolStore,
     AvatarToolStoreError,
@@ -1625,3 +1627,51 @@ def test_detail_and_revision_are_from_one_snapshot_during_update(tmp_path, monke
     assert details[0]["changeItems"][0]["meaning"] == "before"
     assert details[0]["revision"] == before["revision"]
     assert store.get_detail(tool_id)["name"] == "After"
+
+
+@pytest.mark.unit
+def test_delete_cleanup_failure_registers_recovery_and_self_heals_without_restart(tmp_path, monkeypatch):
+    """A leaked .deleting directory still counts against the storage budget."""
+    monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
+    store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
+    deleted = _create_tool(
+        store,
+        name="Deleted",
+        change_mode="press-swap",
+        change_meanings=["deleted"],
+        default_image=_png(),
+        change_images=[_png()],
+    )
+    retained = _create_tool(
+        store,
+        name="Retained",
+        change_mode="press-swap",
+        change_meanings=["retained"],
+        default_image=_png(),
+        change_images=[_png()],
+    )
+    deleting = store.root / f".{deleted['id']}.deleting"
+    retained_bytes = store._directory_bytes(store.root / retained["id"])
+    real_rmtree = shutil.rmtree
+
+    def refuse_cleanup(path, *args, **kwargs):
+        if Path(path).resolve(strict=False) == deleting.resolve(strict=False):
+            raise OSError("cleanup refused")
+        return real_rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr("utils.avatar_tool_store.shutil.rmtree", refuse_cleanup)
+    try:
+        assert store.delete_tool(deleted["id"]) == deleted["id"]
+        assert deleting.is_dir()
+        # 残留仍占预算，所以必须登记恢复，否则本进程内这份字节数要不回来。
+        assert store._current_storage_bytes() > retained_bytes
+        assert store._root_key() in avatar_tool_store._RECOVERY_PENDING_ROOTS
+
+        # 不重启、不显式调 initialize()：下一次普通调用就该把残留清掉。
+        monkeypatch.setattr("utils.avatar_tool_store.shutil.rmtree", real_rmtree)
+        assert [item["id"] for item in store.list_items()] == [retained["id"]]
+        assert not deleting.exists()
+        assert store._current_storage_bytes() == retained_bytes
+        assert store._root_key() not in avatar_tool_store._RECOVERY_PENDING_ROOTS
+    finally:
+        avatar_tool_store._RECOVERY_PENDING_ROOTS.discard(store._root_key())

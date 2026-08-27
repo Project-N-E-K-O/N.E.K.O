@@ -847,6 +847,10 @@ class AvatarToolStore:
             try:
                 shutil.rmtree(deleting)
             except OSError:
+                # 与 _cleanup_failed_staging 对齐：残留的 .deleting 目录仍被
+                # _current_storage_bytes 计入，不登记恢复的话这份字节数在本
+                # 进程生命周期内再也要不回来，用户只会看到 storage_limit_reached。
+                _RECOVERY_PENDING_ROOTS.add(self._root_key())
                 logger.warning("Could not clean deleted avatar tool %s", deleting)
             return tool_id
 
