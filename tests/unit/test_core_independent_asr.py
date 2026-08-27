@@ -9985,7 +9985,9 @@ async def test_frame_validated_during_lifecycle_notification_joins_the_turn() ->
     runtime = _Runtime()
     runtime._asr_route_mode = "independent"
     onset = time.monotonic()
-    runtime._asr_turn_audio_started_at = onset
+    # 刻意只设 _asr_turn_onset_at：_asr_turn_audio_started_at 在两条生产路径上是
+    # 投递完成之后才打的，用它当起点正是被修掉的那个缺陷，所以这条用例不能靠它。
+    runtime._asr_turn_onset_at = onset
 
     # 语音已确认，Core 还卡在 _send_asr_lifecycle_state 的投递里；这一帧就是这段
     # 发声的开头（用户开口时指的东西），它先于 record 落地。
@@ -10019,10 +10021,97 @@ async def test_frame_captured_before_the_onset_is_still_a_prior_turn_frame() -> 
         request_id="screen-prior",
         captured_at=onset - 1.0,
     )
-    runtime._asr_turn_audio_started_at = onset
+    runtime._asr_turn_onset_at = onset
 
     token = VoiceTurnToken(ingress=runtime._capture_ingress_token(), turn_id=99)
     turn_id = f"asr-{token.ingress.session_epoch}-{token.turn_id}"
     runtime._begin_core_multimodal_turn(turn_id, token)
 
     assert runtime._snapshot_core_multimodal_turn(turn_id, "new question") is None
+
+
+@pytest.mark.unit
+async def test_prerecord_validation_task_is_attached_to_the_onset_record() -> None:
+    """A frame task created before the record exists must not be dropped."""
+    runtime = _Runtime()
+    runtime._asr_route_mode = "independent"
+    onset = time.monotonic()
+    runtime._asr_turn_onset_at = onset
+
+    gate = asyncio.Event()
+
+    async def pending_validation() -> None:
+        await gate.wait()
+
+    task = asyncio.create_task(pending_validation())
+    await asyncio.sleep(0)
+
+    # record 还没建出来：这一步在旧实现里等于永久丢弃这个任务。
+    assert runtime._track_independent_visual_validation_task(
+        task,
+        captured_at=onset + 0.01,
+    ) is False
+
+    token = VoiceTurnToken(ingress=runtime._capture_ingress_token(), turn_id=100)
+    turn_id = f"asr-{token.ingress.session_epoch}-{token.turn_id}"
+    runtime._begin_core_multimodal_turn(turn_id, token)
+    record = runtime._core_multimodal_turns[turn_id]
+
+    assert task in record.pending_visual_validations
+    assert runtime._prerecord_visual_validations == {}
+
+    gate.set()
+    await task
+
+
+@pytest.mark.unit
+async def test_prerecord_validation_stash_is_bounded() -> None:
+    runtime = _Runtime()
+    runtime._asr_route_mode = "independent"
+    onset = time.monotonic()
+    runtime._asr_turn_onset_at = onset
+    gate = asyncio.Event()
+
+    async def pending_validation() -> None:
+        await gate.wait()
+
+    tasks = [asyncio.create_task(pending_validation()) for _ in range(40)]
+    await asyncio.sleep(0)
+    for task in tasks:
+        runtime._track_independent_visual_validation_task(
+            task,
+            captured_at=onset + 0.01,
+        )
+
+    assert len(runtime._prerecord_visual_validations) <= 8
+
+    gate.set()
+    await asyncio.gather(*tasks)
+
+
+@pytest.mark.unit
+def test_speech_onset_is_stamped_at_the_transition_not_after_delivery() -> None:
+    """The onset stamp must not sit behind an awaited lifecycle notification.
+
+    Two production SPEECH_CONFIRMED paths stamp ``_asr_turn_audio_started_at``
+    only after awaiting ``_send_asr_lifecycle_state()``. Visual ownership uses
+    the onset as its lower bound, so a stamp taken after that await turns every
+    frame captured during delivery into a "not this utterance" frame. The
+    invariant is syntactic: the stamp follows the transition with no await in
+    between.
+    """
+    import inspect
+
+    from main_logic.asr_client import runtime as asr_runtime_module
+
+    source = inspect.getsource(asr_runtime_module).splitlines()
+    transition = "lifecycle.transition(VoiceLifecycleEvent.SPEECH_CONFIRMED)"
+    stamp = "self._asr_turn_onset_at = time.monotonic()"
+    sites = [i for i, line in enumerate(source) if transition in line]
+
+    assert sites, "no SPEECH_CONFIRMED transition found"
+    for index in sites:
+        assert stamp in source[index + 1], (
+            f"line {index + 1}: SPEECH_CONFIRMED must stamp the onset on the "
+            f"very next line, got: {source[index + 1].strip()!r}"
+        )

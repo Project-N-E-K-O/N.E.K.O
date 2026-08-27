@@ -575,6 +575,11 @@ class IndependentAsrRuntime:
         )
         self._asr_last_provider_wire_audio_ms = 0
         self._asr_turn_audio_started_at: float | None = None
+        # 语义上的「用户开口时刻」。与上面那个的区别是**打点位置**：这个钉在
+        # SPEECH_CONFIRMED 转换那一行，不跨 _send_asr_lifecycle_state() 的投递
+        # await；上面那个在两条路径上是投递完成之后才打的，喂延迟指标够用，但拿
+        # 来当视觉所有权的起点会把投递窗口里拍的帧判成"不属于这段发声"。
+        self._asr_turn_onset_at: float | None = None
         self._asr_turn_endpointed_at: float | None = None
         # 与上面那个一样在封口时刻打点，但**不在 PROVIDER_FINAL 时清掉**。Core 要
         # 到 transcript 派发之后才冻结多模态回合，那时上面那个已经是 None 了；
@@ -1015,6 +1020,7 @@ class IndependentAsrRuntime:
             self._asr_pending_speech_confirmed = True
             return
         lifecycle.transition(VoiceLifecycleEvent.SPEECH_CONFIRMED)
+        self._asr_turn_onset_at = time.monotonic()
         active_identity = self._capture_runtime_identity(
             ingress_token=event.ingress.ingress_token,
         )
@@ -1163,6 +1169,7 @@ class IndependentAsrRuntime:
             )
             return False
         lifecycle.transition(VoiceLifecycleEvent.SPEECH_CONFIRMED)
+        self._asr_turn_onset_at = time.monotonic()
         active_identity = self._capture_runtime_identity(
             ingress_token=ingress_token,
             turn_token=turn_token,
@@ -2284,6 +2291,7 @@ class IndependentAsrRuntime:
         self._asr_provider_candidate_fence = None
         self._asr_turn_endpointed_at = None
         self._asr_turn_audio_started_at = None
+        self._asr_turn_onset_at = None
         self._asr_first_partial_recorded = False
         watchdog = self._asr_rejection_watchdog_task
         self._asr_rejection_watchdog_task = None
@@ -2791,6 +2799,7 @@ class IndependentAsrRuntime:
                             )
                             return
                         lifecycle.transition(VoiceLifecycleEvent.SPEECH_CONFIRMED)
+                        self._asr_turn_onset_at = time.monotonic()
                         self._asr_pending_speech_confirmed = False
                         self._asr_turn_audio_started_at = time.monotonic()
                         self._asr_first_partial_recorded = False
@@ -3189,6 +3198,7 @@ class IndependentAsrRuntime:
                 asr_session = self._asr_session
                 if asr_session is not None and getattr(asr_session, "is_ready", True):
                     lifecycle.transition(VoiceLifecycleEvent.SPEECH_CONFIRMED)
+                    self._asr_turn_onset_at = time.monotonic()
                 else:
                     self._asr_pending_speech_confirmed = True
             if lifecycle.snapshot.state is not previous_state:

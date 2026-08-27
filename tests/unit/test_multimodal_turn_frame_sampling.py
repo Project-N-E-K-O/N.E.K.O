@@ -554,9 +554,11 @@ async def test_cancelled_after_history_commit_does_not_requeue_attachments():
     client._pending_images = ["attachment"]
     client._conversation_history = []
 
-    async def commit_then_cancel(*_args, **_kwargs):
-        # stream_text 已经把带图的 HumanMessage 追加进去，随后被下一句话打断。
+    async def commit_then_cancel(*_args, on_turn_committed=None, **_kwargs):
+        # stream_text 已经把带图的 HumanMessage 追加进去（并回调本次调用自己的
+        # 提交标记），随后被下一句话打断。
         client._conversation_history.append(object())
+        on_turn_committed()
         raise asyncio.CancelledError()
 
     client.stream_text = commit_then_cancel
@@ -587,4 +589,29 @@ async def test_cancelled_before_history_commit_still_requeues_attachments():
         turn_id="turn-1",
     ) is False
 
+    assert client._pending_images == ["attachment"]
+
+
+async def test_concurrent_history_growth_does_not_block_the_attachment_rollback():
+    """Another request appending is not evidence that THIS turn committed."""
+    client = OmniOfflineClient.__new__(OmniOfflineClient)
+    client._pending_images = ["attachment"]
+    client._conversation_history = []
+
+    async def unrelated_append_then_fail(*_args, on_turn_committed=None, **_kwargs):
+        # 并发的另一条文本请求 / 收尾中的响应把 history 撑长了，但**这一轮**在
+        # 追加自己的 HumanMessage 之前就失败了。
+        client._conversation_history.append(object())
+        raise RuntimeError("vlm down")
+
+    client.stream_text = unrelated_append_then_fail
+
+    with pytest.raises(RuntimeError, match="vlm down"):
+        await client.submit_multimodal_turn(
+            "look",
+            ("frame",),
+            turn_id="turn-1",
+        )
+
+    # 用户明确投递的图不能因为别人写了 history 就被吃掉。
     assert client._pending_images == ["attachment"]

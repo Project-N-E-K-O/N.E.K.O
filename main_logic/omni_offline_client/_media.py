@@ -41,6 +41,7 @@ class _MediaMixin:
         text: str,
         *,
         turn_images: tuple[str, ...] = (),
+        on_turn_committed=None,
     ) -> None:
         """Run one externally transcribed turn under cancellable task ownership."""
 
@@ -48,6 +49,7 @@ class _MediaMixin:
             self.stream_text(
                 text,
                 turn_images=turn_images,
+                on_turn_committed=on_turn_committed,
                 input_transcript_callback=(
                     self._ignore_already_recorded_external_transcript
                 ),
@@ -143,12 +145,17 @@ class _MediaMixin:
             # staging 之后、子任务真正消费之前挤进队列，然后被本轮整批吞掉——用户
             # 那张图既配错了发言，也不再能给它自己的追问用。顺带失败路径也不需要
             # 再回滚一段共享队列。
-            history = getattr(self, "_conversation_history", None)
-            history_len_before = len(history) if isinstance(history, list) else None
+            committed_to_history = False
+
+            def _mark_committed() -> None:
+                nonlocal committed_to_history
+                committed_to_history = True
+
             try:
                 await self._run_external_voice_stream(
                     text,
                     turn_images=staged_images,
+                    on_turn_committed=_mark_committed,
                 )
             except BaseException as exc:
                 # 本轮帧是 invocation-local 的，失败即消失；但取走的那段用户附件
@@ -158,11 +165,10 @@ class _MediaMixin:
                 # stream_text 可能已经把带图的 HumanMessage 追加进去了，那些附件
                 # 已经在上下文里；此时再放回队列，下一轮会把同一批图再发一遍，配
                 # 上一段无关的 transcript。history 回滚不了，就以它为准。
-                committed_to_history = (
-                    history_len_before is not None
-                    and isinstance(history, list)
-                    and len(history) > history_len_before
-                )
+                #
+                # 判据是本次调用自己的回调，不是全局 history 长度：并发的另一条
+                # 文本请求或收尾中的响应同样会追加，长度增长并不代表**这一轮**进
+                # 去了，那会把用户的附件白白吃掉。
                 if (
                     attachments
                     and isinstance(pending, list)

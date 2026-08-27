@@ -494,6 +494,7 @@ class _StreamingMixin:
         system_prefix: str | None = None,
         system_prefix_images: Optional[list[str]] = None,
         turn_images: Optional[Sequence[str]] = None,
+        on_turn_committed: Optional[Callable[[], None]] = None,
         thinking_on: bool = False,
         input_transcript_callback: Optional[Callable[[str], Awaitable[None]]] = None,
         history_replacement_text: str | None = None,
@@ -710,6 +711,10 @@ class _StreamingMixin:
             user_message = HumanMessage(content=_user_text_with_prefix)
 
         self._conversation_history.append(user_message)
+        # 本次调用自己的「已提交」标记。调用方不能用全局 history 长度判断：并发的
+        # 另一条文本请求或收尾中的响应同样会追加，长度增长并不代表**这一轮**进去了。
+        if callable(on_turn_committed):
+            on_turn_committed()
         history_replacement_index = len(self._conversation_history) - 1
         history_replacement_text = (
             str(history_replacement_text).strip()

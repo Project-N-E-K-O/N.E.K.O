@@ -58,6 +58,7 @@ from main_logic import core as _core_facade
 
 from ._shared import logger
 from .multimodal_turn import (
+    _MAX_PRERECORD_VISUAL_VALIDATIONS,
     MultimodalTurn,
     _CoreMultimodalTurnRecord,
     _IndependentVisualFrame,
@@ -276,6 +277,7 @@ class AsrRuntimeMixin:
         self._independent_visual_frame_ttl_s = 5.0
         self._latest_independent_visual_frame: _IndependentVisualFrame | None = None
         self._core_multimodal_turns: dict[str, _CoreMultimodalTurnRecord] = {}
+        self._prerecord_visual_validations: dict[asyncio.Task, float] = {}
         self._independent_asr_provider: str | None = None
         self._independent_asr_route_key: str | None = None
         self._independent_asr_handshake_override: bool | None = None
@@ -380,6 +382,8 @@ class AsrRuntimeMixin:
             self._latest_independent_visual_frame = None
         if not hasattr(self, "_core_multimodal_turns"):
             self._core_multimodal_turns = {}
+        if not hasattr(self, "_prerecord_visual_validations"):
+            self._prerecord_visual_validations = {}
         if not hasattr(self, "_voice_input_transition_generation"):
             self._voice_input_transition_generation = 0
         if not hasattr(self, "_voice_lease_resync_signal_state"):
@@ -527,24 +531,70 @@ class AsrRuntimeMixin:
             or not isinstance(captured_at, (int, float))
         ):
             return False
+        stable_captured_at = float(captured_at)
         record = next(iter(self._core_multimodal_turns.values()), None)
-        if record is None or record.invalidated.is_set():
+        if record is None:
+            # 语音确认到 _begin_core_multimodal_turn 之间还没有 record。直接丢掉
+            # 这个任务的话，短发声在 final 时看不到它、冻结成纯文本回合，而那一帧
+            # 校验完时 record 已经作废了。先暂存，等 record 建出来再挂上去。
+            self._stash_prerecord_visual_validation_task(task, stable_captured_at)
+            return False
+        if record.invalidated.is_set():
             return False
         ingress = self._capture_ingress_token()
-        stable_captured_at = float(captured_at)
         if (
             record.session_epoch != ingress.session_epoch
             or record.route_generation != self._voice_input_transition_generation
             or stable_captured_at < record.started_at
         ):
             return False
-        record.pending_visual_validations[task] = stable_captured_at
+        self._bind_visual_validation_task(record, task, stable_captured_at)
+        return True
+
+    @staticmethod
+    def _bind_visual_validation_task(
+        record: _CoreMultimodalTurnRecord,
+        task: asyncio.Task,
+        captured_at: float,
+    ) -> None:
+        record.pending_visual_validations[task] = captured_at
 
         def discard(completed: asyncio.Task) -> None:
             record.pending_visual_validations.pop(completed, None)
 
         task.add_done_callback(discard)
-        return True
+
+    def _stash_prerecord_visual_validation_task(
+        self,
+        task: asyncio.Task,
+        captured_at: float,
+    ) -> None:
+        """Hold one validation task until the onset-owned record exists."""
+
+        pending = self._prerecord_visual_validations
+        pending[task] = captured_at
+        # 有界：只可能积压「语音确认到 record 建立」这一小段窗口里的任务；仍然设
+        # 一个上限，免得 record 一直没建出来时无限增长。
+        while len(pending) > _MAX_PRERECORD_VISUAL_VALIDATIONS:
+            pending.pop(next(iter(pending)), None)
+
+        def discard(completed: asyncio.Task) -> None:
+            self._prerecord_visual_validations.pop(completed, None)
+
+        task.add_done_callback(discard)
+
+    def _attach_prerecord_visual_validation_tasks(
+        self,
+        record: _CoreMultimodalTurnRecord,
+    ) -> None:
+        """Move eligible pre-record validation tasks onto the new record."""
+
+        stashed = self._prerecord_visual_validations
+        self._prerecord_visual_validations = {}
+        for task, captured_at in stashed.items():
+            if task.done() or captured_at < record.started_at:
+                continue
+            self._bind_visual_validation_task(record, task, captured_at)
 
     async def _await_independent_visual_validation_tasks(
         self,
@@ -629,11 +679,13 @@ class AsrRuntimeMixin:
         # 信，免得残值把窗口往前拉到上一轮。
         registered_at = time.monotonic()
         started_at = registered_at
-        onset = getattr(
-            getattr(self, "_asr_runtime", None),
-            "_asr_turn_audio_started_at",
-            None,
-        )
+        runtime = getattr(self, "_asr_runtime", None)
+        # 读 _asr_turn_onset_at 而不是 _asr_turn_audio_started_at：后者在两条
+        # SPEECH_CONFIRMED 路径上是 _send_asr_lifecycle_state() 投递完成之后才打
+        # 的，用它当起点会把投递窗口里拍的帧误判成不属于这段发声。
+        onset = getattr(runtime, "_asr_turn_onset_at", None)
+        if not isinstance(onset, (int, float)):
+            onset = getattr(runtime, "_asr_turn_audio_started_at", None)
         onset_known = (
             isinstance(onset, (int, float))
             and 0.0 <= registered_at - float(onset)
@@ -649,6 +701,7 @@ class AsrRuntimeMixin:
             started_at=started_at,
         )
         self._core_multimodal_turns[turn_id] = record
+        self._attach_prerecord_visual_validation_tasks(record)
         # 缓存里那张如果就是在这个窗口里拍的，直接并进来。生成号基线同样要让开
         # 它，否则 accepts() 会以 generation 为由把它挡在外面；而单槽缓存只留最新
         # 一张，更早的本来就找不回来了。

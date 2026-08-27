@@ -24,6 +24,11 @@ from dataclasses import dataclass, field
 # （每个候选是一整张 base64 原图）。
 _MAX_MIDDLE_CANDIDATES = 5
 
+# 「语音确认到 record 建立」窗口内允许暂存的帧校验任务数上限。这段窗口只有一次
+# lifecycle 通知投递那么长，正常最多积压一两条；设上限只是防 record 一直没建出来
+# 时无限增长。
+_MAX_PRERECORD_VISUAL_VALIDATIONS = 8
+
 
 @dataclass(frozen=True, slots=True)
 class _IndependentVisualFrame:
