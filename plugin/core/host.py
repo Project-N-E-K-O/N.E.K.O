@@ -1455,10 +1455,26 @@ def _plugin_process_runner(
 
                 # ── CONFIG_UPDATE ──
                 if msg_type == "CONFIG_UPDATE":
-                    await _handle_config_update_command(
-                        msg=msg, ctx=ctx, events_by_type=events_by_type,
-                        plugin_id=plugin_id, res_sender=res_sender, logger=logger,
-                    )
+                    # The loop awaits this handler INLINE, so it cannot route
+                    # anyone else's IMAGE_UPLOAD_RESULT until it returns. A
+                    # timer or custom-event upload running concurrently would
+                    # otherwise send into a loop that is not reading and could
+                    # only time out (Codex P2) -- the same failure as the
+                    # startup window, from the same cause.
+                    #
+                    # So the flag means "responses are being routed right now",
+                    # not "the loop started once". Cleared for the duration and
+                    # restored in a finally, so a handler that raises cannot
+                    # leave uploads blocked for the rest of the process.
+                    ctx._downlink_ready.clear()
+                    try:
+                        await _handle_config_update_command(
+                            msg=msg, ctx=ctx, events_by_type=events_by_type,
+                            plugin_id=plugin_id, res_sender=res_sender,
+                            logger=logger,
+                        )
+                    finally:
+                        ctx._downlink_ready.set()
                     continue
 
                 # ── TRIGGER_CUSTOM ──

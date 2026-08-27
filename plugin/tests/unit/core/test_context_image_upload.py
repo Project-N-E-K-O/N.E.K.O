@@ -783,3 +783,38 @@ def test_an_upload_proceeds_once_the_loop_marks_the_downlink_ready(tmp_path):
 
     asyncio.run(_run())
     assert sent, "the upload never reached the transport after the loop came up"
+
+
+def test_the_ready_flag_falls_while_the_loop_awaits_a_config_handler():
+    """The flag means "routing right now", not "the loop started once".
+
+    CONFIG_UPDATE is awaited INLINE by the command loop, so while a slow
+    config_change handler runs the loop cannot route anyone else's
+    IMAGE_UPLOAD_RESULT. A timer upload started in that interval would send
+    into a loop that is not reading and could only time out -- the same
+    failure as the startup window, from the same cause (Codex P2).
+
+    Asserted on the source because the alternative is standing up the whole
+    plugin host process; what matters is the ordering of clear/await/set and
+    that the restore is in a finally, which a slow-handler test could pass
+    without.
+    """
+    import inspect
+    import re
+
+    from plugin.core import host as host_mod
+
+    src = inspect.getsource(host_mod)
+    block = src[src.index('if msg_type == "CONFIG_UPDATE":'):]
+    block = block[: block.index('if msg_type == "TRIGGER_CUSTOM":')]
+
+    clear_at = block.index("ctx._downlink_ready.clear()")
+    await_at = block.index("await _handle_config_update_command(")
+    set_at = block.index("ctx._downlink_ready.set()")
+
+    assert clear_at < await_at < set_at, "flag must fall before the await and rise after"
+    # Restored even if the handler raises: otherwise one bad config_change
+    # blocks every later upload for the life of the process.
+    assert re.search(r"finally:\s*\n\s*ctx\._downlink_ready\.set\(\)", block), (
+        "the restore must be in a finally"
+    )
