@@ -2345,10 +2345,16 @@
                 }
 
                 if (response.type === 'chat_blocks') {
-                    if (S.suppressAssistantStreamUntilNextSession) {
-                        console.log('[App] discard chat blocks after session ended by server');
-                        return;
-                    }
+                    // NOT gated on suppressAssistantStreamUntilNextSession.
+                    // That latch stops a finished session's ASSISTANT stream
+                    // from continuing to write into chat. A chat_blocks frame
+                    // is a system post that claims no assistant identity and
+                    // opens no turn, and `ai_behavior="blind"` is explicitly
+                    // allowed to render with no model session at all — so
+                    // gating it on model-session state discarded plugin
+                    // notifications that never depended on a session, and they
+                    // were gone for good if the user never started another
+                    // one (Codex).
                     if (typeof window.appendReactChatBlocks === 'function') {
                         window.appendReactChatBlocks(response);
                     }

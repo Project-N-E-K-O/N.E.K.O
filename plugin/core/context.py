@@ -203,8 +203,18 @@ class PluginContext:
         data: bytes,
         *,
         mime: str,
+        deadline: float | None = None,
         timeout: float,
     ) -> dict[str, object]:
+        """Upload one image within ``timeout`` TOTAL.
+
+        ``deadline`` is a monotonic instant established by the caller before it
+        began any work on this upload. Without it the legs each got a fresh
+        ``timeout`` — send, then wait — so an upload could take past twice its
+        advertised budget and overrun a timer or entry handler's own deadline.
+        The decode gate widened that further, since queueing for a slot happens
+        before the transport is even touched (Codex).
+        """
         self._ensure_image_upload_available()
         transport = self._image_transport
         if transport is None:
@@ -222,14 +232,25 @@ class PluginContext:
                 self._direct_response_waiters = waiters
             waiters[request_id] = (loop, future)
         try:
+            def _remaining() -> float:
+                if deadline is None:
+                    return timeout
+                return deadline - asyncio.get_running_loop().time()
+
+            send_budget = _remaining()
+            if send_budget <= 0:
+                raise TimeoutError(f"image upload timed out after {timeout}s")
             await transport.send_image(
                 request_id,
                 mime=mime,
                 data=data,
-                timeout=timeout,
+                timeout=send_budget,
             )
+            wait_budget = _remaining()
+            if wait_budget <= 0:
+                raise TimeoutError(f"image upload timed out after {timeout}s")
             try:
-                response = await asyncio.wait_for(future, timeout=timeout)
+                response = await asyncio.wait_for(future, timeout=wait_budget)
             except asyncio.TimeoutError:
                 raise TimeoutError(f"image upload timed out after {timeout}s") from None
             return self._unwrap_image_upload_response(response)

@@ -434,3 +434,47 @@ def test_an_abandoned_decode_still_holds_its_slot() -> None:
     asyncio.run(_run())
 
 
+
+
+def test_upload_total_time_is_bounded_by_the_requested_timeout(tmp_path: Path) -> None:
+    """The legs share one deadline instead of each restarting the clock.
+
+    A slow decode — queueing behind the process-wide gate counts — used to leave
+    the transport a fresh full timeout on each leg, so `timeout=T` could take
+    past 2T and overrun the caller's own deadline.
+    """
+    from plugin.sdk.shared.core import images as images_mod
+
+    seen_send_timeouts: list[float] = []
+
+    class _SlowTransport(_ImageTransport):
+        async def send_image(self, request_id, *, mime, data, timeout):  # type: ignore[override]
+            seen_send_timeouts.append(timeout)
+            return await super().send_image(request_id, mime=mime, data=data, timeout=timeout)
+
+    def _slow_normalize(payload: bytes) -> bytes:
+        time.sleep(0.25)
+        return b"jpeg"
+
+    async def _run() -> None:
+        responses: asyncio.Queue[dict[str, object]] = asyncio.Queue()
+        transport = _SlowTransport(responses)
+        ctx = PluginContext(
+            plugin_id="demo",
+            config_path=tmp_path / "plugin.toml",
+            logger=_Logger(),  # type: ignore[arg-type]
+            status_queue=None,
+            _response_queue=responses,
+            _image_transport=transport,
+        )
+        transport.on_response = ctx._dispatch_direct_response
+        with patch.object(images_mod, "normalize_image_to_jpeg", _slow_normalize):
+            await ctx.images.upload(_png_bytes(), mime="image/png", timeout=1.0)
+
+    asyncio.run(_run())
+
+    assert seen_send_timeouts, "the transport leg must have been reached"
+    # The decode already spent 0.25s of the 1.0s budget, so the send leg must
+    # receive strictly less than the full timeout rather than a fresh one.
+    assert seen_send_timeouts[0] < 1.0
+    assert seen_send_timeouts[0] > 0

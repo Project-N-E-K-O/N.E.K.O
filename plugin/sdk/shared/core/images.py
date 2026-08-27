@@ -109,10 +109,16 @@ class PluginImages:
         # Bounded: the size checks above cap ONE image, not how many decode
         # at once. Held only across the decode, not the upload, so a slow
         # transport cannot stall the queue behind it.
+        # One deadline for the whole operation, started BEFORE the decode. The
+        # decode can queue behind the process-wide gate, and the transport legs
+        # used to restart the clock, so `timeout=3` could take well past six
+        # seconds and overrun the caller's own deadline (Codex).
+        deadline = asyncio.get_running_loop().time() + timeout
         jpeg = await asyncio.to_thread(normalize_image_to_jpeg, bytes(data))
         result = await self._host_ctx._upload_image(
             jpeg,
             mime="image/jpeg",
+            deadline=deadline,
             timeout=timeout,
         )
         if not isinstance(result, dict):

@@ -19,10 +19,14 @@ def test_structured_passthrough_blocks_reach_the_react_chat_host() -> None:
         "// -------- gemini_response --------",
         1,
     )[0]
-    assert "if (S.suppressAssistantStreamUntilNextSession)" in chat_blocks_branch
-    assert chat_blocks_branch.index("if (S.suppressAssistantStreamUntilNextSession)") < chat_blocks_branch.index(
-        "window.appendReactChatBlocks(response)"
-    )
+    # Deliberately NOT suppressed: that latch belongs to the assistant stream.
+    # A plugin post claims no assistant identity and blind pushes render with no
+    # model session at all, so gating them on session state dropped
+    # notifications that never needed one.
+    # Assert the GUARD is gone, not the identifier: a bare-name assertion also
+    # matches the comment explaining why the guard was removed.
+    assert "if (S.suppressAssistantStreamUntilNextSession)" not in chat_blocks_branch
+    assert "window.appendReactChatBlocks(response)" in chat_blocks_branch
 
 
 def test_plugin_chat_blocks_render_as_system_not_assistant() -> None:
