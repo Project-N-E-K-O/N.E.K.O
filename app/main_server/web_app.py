@@ -74,11 +74,11 @@ def _avatar_tool_asset_digest_version(query_string: bytes) -> str | None:
     return query_params[0][1]
 
 
-def _read_verified_avatar_tool_asset(
+def _read_avatar_tool_asset(
     path: Path,
-    expected_digest: str,
     maximum_bytes: int,
-) -> tuple[bytes, os.stat_result] | None:
+) -> tuple[bytes, os.stat_result, str] | None:
+    """Read one bounded asset and report the digest of exactly those bytes."""
     with path.open("rb") as stream:
         content = stream.read(maximum_bytes + 1)
         stat_result = os.fstat(stream.fileno())
@@ -86,9 +86,7 @@ def _read_verified_avatar_tool_asset(
         return None
     if len(content) > maximum_bytes or stat_result.st_size != len(content):
         return None
-    if not secrets.compare_digest(hashlib.sha256(content).hexdigest(), expected_digest):
-        return None
-    return content, stat_result
+    return content, stat_result, hashlib.sha256(content).hexdigest()
 
 
 class _VerifiedAssetFileResponse(FileResponse):
@@ -200,9 +198,8 @@ class AvatarToolStaticFiles(CustomStaticFiles):
             if stat_result is None or not stat.S_ISREG(stat_result.st_mode):
                 raise StarletteHTTPException(status_code=404)
             verified = await asyncio.to_thread(
-                _read_verified_avatar_tool_asset,
+                _read_avatar_tool_asset,
                 Path(full_path),
-                requested_digest,
                 (
                     AVATAR_TOOL_LIMITS["maxAudioBytes"]
                     if normalized_path.endswith(".mp3")
@@ -212,22 +209,30 @@ class AvatarToolStaticFiles(CustomStaticFiles):
         except OSError as exc:
             raise StarletteHTTPException(status_code=404) from exc
         if verified is None:
-            # 这里对不上的是「URL 里的摘要」，而 URL 是客户端给的：道具更新之后，
-            # 还没刷新的旧页面照样会拿旧 ?v= 来取资源，那是正常 404，绝不能据此
-            # 隔离一个健康的道具。要不要隔离只能由权威记录说了算 —— 交给
-            # read_record(verify_resources=True)，它只在实际内容与 record 摘要
-            # 不符时才隔离，OSError 这类瞬时失败不算。
+            raise StarletteHTTPException(status_code=404)
+        content, opened_stat, actual_digest = verified
+        if not secrets.compare_digest(actual_digest, requested_digest):
+            # URL 里的摘要是客户端给的：道具更新后，还没刷新的旧页面照样会拿旧
+            # ?v= 来取资源，那是正常 404。要区分「陈旧 URL」和「文件真坏了」，
+            # 只需拿刚算出的这一份实际摘要去比权威 record —— 读 record.json 是
+            # 轻量的，不重算任何 digest；否则旧页面每个资源请求都会触发一次整个
+            # 道具的全量重哈希。
+            tool_id, _, filename = normalized_path.partition("/")
             store = get_avatar_tool_store(_config_manager)
             try:
-                await asyncio.to_thread(
-                    store.read_record,
-                    normalized_path.split("/", 1)[0],
-                    verify_resources=True,
+                record = await asyncio.to_thread(
+                    store.read_record, tool_id, verify_resources=False
                 )
+                if record["resourceDigests"].get(filename) != actual_digest:
+                    logger.warning(
+                        "Quarantining local avatar tool %s: %s diverged from its record",
+                        tool_id,
+                        filename,
+                    )
+                    store.quarantine(tool_id)
             except (AvatarToolStoreError, OSError):
                 pass
             raise StarletteHTTPException(status_code=404)
-        content, opened_stat = verified
         response = _VerifiedAssetFileResponse(
             full_path,
             content,

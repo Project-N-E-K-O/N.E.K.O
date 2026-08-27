@@ -378,3 +378,45 @@ async def test_asset_whose_bytes_diverge_from_the_record_quarantines_the_tool(tm
         assert tool_id in avatar_tool_store._QUARANTINED_TOOL_IDS[root_key]
     finally:
         avatar_tool_store._QUARANTINED_TOOL_IDS.pop(root_key, None)
+
+
+@pytest.mark.asyncio
+async def test_stale_asset_url_does_not_rehash_the_whole_tool(tmp_path, monkeypatch):
+    """One stale tab must not cost a full-tool rehash per asset request."""
+    import utils.avatar_tool_store as avatar_tool_store
+
+    tool_id = "local-12345678-1234-4123-8123-123456789abc"
+    _publish_avatar_tool(tmp_path, tool_id, default_bytes=b"the-current-bytes")
+    monkeypatch.setattr(
+        "app.main_server.web_app._config_manager", _AvatarToolConfigManager(tmp_path)
+    )
+    static_files = AvatarToolStaticFiles(directory=tmp_path, check_dir=False)
+    root_key = avatar_tool_store.AvatarToolStore(
+        _AvatarToolConfigManager(tmp_path)
+    )._root_key()
+
+    digests = []
+    real_digest = avatar_tool_store.AvatarToolStore._file_digest
+
+    def counting_digest(path):
+        digests.append(str(path))
+        return real_digest(path)
+
+    monkeypatch.setattr(
+        avatar_tool_store.AvatarToolStore, "_file_digest", staticmethod(counting_digest)
+    )
+    scope = {
+        "type": "http",
+        "method": "GET",
+        "path": f"/{tool_id}/default.png",
+        "root_path": "",
+        "query_string": f"v={hashlib.sha256(b'stale').hexdigest()}".encode("ascii"),
+        "headers": [],
+    }
+    try:
+        with pytest.raises(StarletteHTTPException):
+            await static_files.get_response(f"{tool_id}/default.png", scope)
+        # 判据只用已经算好的那一份实际摘要去比 record，不重算道具里的其它资源。
+        assert digests == [], f"stale URL rehashed the tool: {digests}"
+    finally:
+        avatar_tool_store._QUARANTINED_TOOL_IDS.pop(root_key, None)
