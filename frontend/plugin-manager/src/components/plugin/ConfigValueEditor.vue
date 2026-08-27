@@ -8,7 +8,7 @@
           </div>
           <div class="v">
             <ConfigValueEditor
-              :model-value="isKeyDeleted(k) ? baselineChild(k) : (modelValue as any)[k]"
+              :model-value="overlayChild(k)"
               @update:model-value="(val) => updateObjectKey(k, val)"
               :baseline-value="baselineChild(k)"
               :path="childPath(k)"
@@ -16,22 +16,22 @@
           </div>
           <div class="ops">
             <el-button
-              v-if="!isProtectedKey(k) && !isKeyDeleted(k)"
+              v-if="!isProtectedKey(k) && isOverriddenKey(k)"
+              size="small"
+              type="primary"
+              text
+              @click="removeObjectKey(k)"
+            >
+              {{ t('common.reset') }}
+            </el-button>
+            <el-button
+              v-else-if="!isProtectedKey(k) && isCustomKey(k)"
               size="small"
               type="danger"
               text
               @click="removeObjectKey(k)"
             >
               {{ t('common.delete') }}
-            </el-button>
-            <el-button
-              v-else-if="!isProtectedKey(k) && isKeyDeleted(k)"
-              size="small"
-              type="primary"
-              text
-              @click="restoreObjectKey(k)"
-            >
-              {{ t('common.reset') }}
             </el-button>
           </div>
         </div>
@@ -81,7 +81,7 @@
           </div>
           <div class="ops">
             <el-button
-              v-if="Array.isArray(modelValue) && idx < modelValue.length"
+              v-if="arrayHasIndex(idx)"
               size="small"
               type="danger"
               text
@@ -145,8 +145,26 @@ function isValidKeySegment(key: string) {
   return true
 }
 
+// `modelValue` 只承载 profile overlay：某个键未被覆盖时它是 undefined。
+// 渲染继承值要回落到 baseline，但写回时绝不能把 baseline 拷进 overlay，
+// 否则用户只改一个字段就会把整段清单默认值固化进 profile。
+function asPlainObject(v: unknown): Record<string, any> | null {
+  return v !== null && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, any>) : null
+}
+
+const overlayObject = computed<Record<string, any>>(() => asPlainObject(props.modelValue) ?? {})
+
+const displayValue = computed<any>(() =>
+  props.modelValue !== undefined ? props.modelValue : props.baselineValue
+)
+
+function overlayChild(k: string) {
+  const a = asPlainObject(props.modelValue)
+  return a ? a[k] : undefined
+}
+
 const kind = computed<'object' | 'array' | 'string' | 'number' | 'boolean'>(() => {
-  const v = props.modelValue
+  const v = displayValue.value
   if (Array.isArray(v)) return 'array'
   if (v !== null && typeof v === 'object') return 'object'
   if (typeof v === 'boolean') return 'boolean'
@@ -156,9 +174,9 @@ const kind = computed<'object' | 'array' | 'string' | 'number' | 'boolean'>(() =
 
 const objectKeys = computed(() => {
   if (kind.value !== 'object') return []
-  const a = props.modelValue && typeof props.modelValue === 'object' ? props.modelValue : {}
+  const a = overlayObject.value
   const b = props.baselineValue && typeof props.baselineValue === 'object' ? props.baselineValue : {}
-  const keys = new Set<string>([...Object.keys(a || {}), ...Object.keys(b || {})])
+  const keys = new Set<string>([...Object.keys(a), ...Object.keys(b)])
 
   // 在根节点编辑 profile 覆盖配置时，隐藏顶层的 plugin 段，避免在 diff 视图中被标记为“已删除”
   // plugin 段仍通过上方 JSON 预览完整展示，并且 profile 不能修改 plugin
@@ -171,7 +189,7 @@ const objectKeys = computed(() => {
 
 const arrayItems = computed(() => {
   if (kind.value !== 'array') return []
-  const a = Array.isArray(props.modelValue) ? props.modelValue : []
+  const a = Array.isArray(displayValue.value) ? displayValue.value : []
   const b = Array.isArray(props.baselineValue) ? props.baselineValue : []
   const len = Math.max(a.length, b.length)
   const items: any[] = []
@@ -187,7 +205,7 @@ const numVal = ref<number | undefined>(undefined)
 const boolVal = ref(false)
 
 watch(
-  () => props.modelValue,
+  displayValue,
   (v) => {
     if (kind.value === 'string') strVal.value = v == null ? '' : String(v)
     if (kind.value === 'number') numVal.value = typeof v === 'number' ? v : undefined
@@ -206,13 +224,25 @@ function baselineChild(k: string) {
   return undefined
 }
 
-function isKeyDeleted(k: string) {
-  if (kind.value !== 'object') return false
-  const a = props.modelValue && typeof props.modelValue === 'object' ? props.modelValue : {}
+function hasOverlayKey(k: string) {
+  return Object.prototype.hasOwnProperty.call(overlayObject.value, k)
+}
+
+function hasBaselineKey(k: string) {
   const b = props.baselineValue && typeof props.baselineValue === 'object' ? props.baselineValue : {}
-  const inA = Object.prototype.hasOwnProperty.call(a, k)
-  const inB = Object.prototype.hasOwnProperty.call(b, k)
-  return !inA && inB
+  return Object.prototype.hasOwnProperty.call(b, k)
+}
+
+// 该键被 profile 覆盖了清单/运行时的默认值 —— 可以「重置」回继承
+function isOverriddenKey(k: string) {
+  if (kind.value !== 'object') return false
+  return hasOverlayKey(k) && hasBaselineKey(k)
+}
+
+// 该键是 profile 自己新增的，基线里没有 —— 只能「删除」
+function isCustomKey(k: string) {
+  if (kind.value !== 'object') return false
+  return hasOverlayKey(k) && !hasBaselineKey(k)
 }
 
 function deepEqual(a: any, b: any, seen?: WeakMap<object, object>): boolean {
@@ -258,7 +288,7 @@ function deepEqual(a: any, b: any, seen?: WeakMap<object, object>): boolean {
 
 function rowClassForKey(k: string) {
   if (kind.value !== 'object') return ''
-  const a = props.modelValue && typeof props.modelValue === 'object' ? props.modelValue : {}
+  const a = overlayObject.value
   const b = props.baselineValue && typeof props.baselineValue === 'object' ? props.baselineValue : {}
 
   const inA = Object.prototype.hasOwnProperty.call(a, k)
@@ -299,27 +329,30 @@ const indentStyle = computed(() => {
 
 function updateObjectKey(k: string, v: any) {
   if (!isValidKeySegment(k)) return
-  const next = { ...(props.modelValue || {}) }
+  const next = { ...overlayObject.value }
   next[k] = v
   emitUpdate(next)
 }
 
+// 「重置」与「删除」落到同一个动作：把键移出 overlay。
+// 基线里有该键就退回继承，没有就是彻底移除自定义键。
 function removeObjectKey(k: string) {
   if (!isValidKeySegment(k)) return
-  const next = { ...(props.modelValue || {}) }
+  const next = { ...overlayObject.value }
   delete next[k]
   emitUpdate(next)
 }
 
-function restoreObjectKey(k: string) {
-  if (!isValidKeySegment(k)) return
-  const next = { ...(props.modelValue || {}) }
-  next[k] = baselineChild(k)
-  emitUpdate(next)
+function currentArray(): any[] {
+  return Array.isArray(displayValue.value) ? [...displayValue.value] : []
+}
+
+function arrayHasIndex(idx: number) {
+  return Array.isArray(displayValue.value) && idx < displayValue.value.length
 }
 
 function updateArrayIndex(idx: number, v: any) {
-  const a = Array.isArray(props.modelValue) ? [...props.modelValue] : []
+  const a = currentArray()
   while (a.length < idx) a.push(undefined)
   if (a.length === idx) a.push(v)
   else a[idx] = v
@@ -327,7 +360,7 @@ function updateArrayIndex(idx: number, v: any) {
 }
 
 function removeArrayIndex(idx: number) {
-  const next = Array.isArray(props.modelValue) ? [...props.modelValue] : []
+  const next = currentArray()
   next.splice(idx, 1)
   emitUpdate(next)
 }
@@ -339,7 +372,7 @@ function baselineArrayItem(idx: number) {
 
 function rowClassForArrayIndex(idx: number) {
   if (kind.value !== 'array') return ''
-  const a = Array.isArray(props.modelValue) ? props.modelValue : []
+  const a = Array.isArray(displayValue.value) ? displayValue.value : []
   const b = Array.isArray(props.baselineValue) ? props.baselineValue : []
   if (idx < a.length && idx >= b.length) return 'diff-added'
   if (idx >= a.length && idx < b.length) return 'diff-deleted'
@@ -350,7 +383,7 @@ function rowClassForArrayIndex(idx: number) {
 }
 
 function restoreArrayIndex(idx: number) {
-  const a = Array.isArray(props.modelValue) ? [...props.modelValue] : []
+  const a = currentArray()
   const b = Array.isArray(props.baselineValue) ? props.baselineValue : []
   if (idx >= 0 && idx < b.length) {
     while (a.length < idx) a.push(b[a.length])
@@ -361,7 +394,7 @@ function restoreArrayIndex(idx: number) {
 }
 
 function addArrayItem() {
-  const next = Array.isArray(props.modelValue) ? [...props.modelValue] : []
+  const next = currentArray()
   next.push('')
   emitUpdate(next)
 }
@@ -396,8 +429,8 @@ function confirmAddKey() {
     return
   }
 
-  const next = { ...(props.modelValue || {}) }
-  if (Object.prototype.hasOwnProperty.call(next, key)) {
+  const next = { ...overlayObject.value }
+  if (hasOverlayKey(key) || hasBaselineKey(key)) {
     ElMessage.warning(t('plugins.duplicateFieldKey'))
     return
   }
