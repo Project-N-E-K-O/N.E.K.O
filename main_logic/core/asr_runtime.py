@@ -278,6 +278,10 @@ class AsrRuntimeMixin:
         self._latest_independent_visual_frame: _IndependentVisualFrame | None = None
         self._core_multimodal_turns: dict[str, _CoreMultimodalTurnRecord] = {}
         self._prerecord_visual_validations: dict[asyncio.Task, float] = {}
+        # record 建立之前**已经校验完**的帧。单槽 _latest_independent_visual_frame
+        # 只留最新一张，所以光靠它救不回这段窗口里的开头/中间帧；任务栈也不行，
+        # 任务一完成就从栈里摘掉了。
+        self._prerecord_visual_frames: list[_IndependentVisualFrame] = []
         self._independent_asr_provider: str | None = None
         self._independent_asr_route_key: str | None = None
         self._independent_asr_handshake_override: bool | None = None
@@ -384,6 +388,8 @@ class AsrRuntimeMixin:
             self._core_multimodal_turns = {}
         if not hasattr(self, "_prerecord_visual_validations"):
             self._prerecord_visual_validations = {}
+        if not hasattr(self, "_prerecord_visual_frames"):
+            self._prerecord_visual_frames = []
         if not hasattr(self, "_voice_input_transition_generation"):
             self._voice_input_transition_generation = 0
         if not hasattr(self, "_voice_lease_resync_signal_state"):
@@ -476,7 +482,24 @@ class AsrRuntimeMixin:
             if record.accepts(frame):
                 record.observe(frame)
                 observed = True
+        if not observed and not self._core_multimodal_turns:
+            # 语音确认到 _begin_core_multimodal_turn 之间还没有 record。这一帧已经
+            # 校验完了，任务栈救不了它（任务一完成就被摘掉），单槽缓存也只留最新
+            # 一张 —— 不留下来的话这段窗口里的开头/中间帧就永久丢了。
+            self._retain_prerecord_visual_frame(frame)
         return supersedes_latest_cache or observed
+
+    def _retain_prerecord_visual_frame(
+        self,
+        frame: _IndependentVisualFrame,
+    ) -> None:
+        """Keep one already-validated frame until the onset-owned record exists."""
+
+        frames = self._prerecord_visual_frames
+        frames.append(frame)
+        # 有界：这段窗口只有一次 lifecycle 通知投递那么长，正常最多积压一两帧。
+        while len(frames) > _MAX_PRERECORD_VISUAL_VALIDATIONS:
+            del frames[0]
 
     def _mark_independent_asr_endpoint_if_sealed(self) -> None:
         """Stamp the endpoint cutoff on the active turn once ASR seals it.
@@ -710,19 +733,29 @@ class AsrRuntimeMixin:
         # 和「本轮开头的帧」——monotonic 在 Windows 上是 ~15ms 粒度，注册时刻和刚
         # 才那帧的拍摄时刻完全可能相等——此时必须退回生成号基线这条硬判据，
         # 保住"绝不复用上一轮的帧"。
+        retained = self._prerecord_visual_frames
+        self._prerecord_visual_frames = []
         latest = self._latest_independent_visual_frame
-        if (
-            onset_known
-            and latest is not None
-            and latest.session_epoch == record.session_epoch
-            and latest.route_generation == record.route_generation
-            and latest.captured_at >= record.started_at
+        candidates = list(retained)
+        if latest is not None and all(
+            item.generation != latest.generation for item in candidates
         ):
-            record.start_image_generation = min(
-                record.start_image_generation,
-                latest.generation - 1,
-            )
-            record.observe(latest)
+            candidates.append(latest)
+        if onset_known:
+            eligible = [
+                item
+                for item in candidates
+                if item.session_epoch == record.session_epoch
+                and item.route_generation == record.route_generation
+                and item.captured_at >= record.started_at
+            ]
+            eligible.sort(key=lambda item: (item.captured_at, item.generation))
+            for item in eligible:
+                record.start_image_generation = min(
+                    record.start_image_generation,
+                    item.generation - 1,
+                )
+                record.observe(item)
 
     def _snapshot_core_multimodal_turn(
         self,

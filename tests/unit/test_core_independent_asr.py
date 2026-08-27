@@ -10157,16 +10157,32 @@ def test_speech_onset_is_stamped_at_the_transition_not_after_delivery() -> None:
     # 延迟确认路径必须用重连**之前**暂存的时刻，不能用重连完成的时钟。
     # 识别方式：它是唯一一个外层**条件**判断 _asr_pending_speech_confirmed 的迁移点。
     # （不能用"转换后清掉 pending 标志"来认——每条路径现在都会清，那个判据不再区分。）
-    deferred = [
-        index
-        for index in sites
-        if any(
-            "self._asr_pending_speech_confirmed" in source[index - offset]
-            and "=" not in source[index - offset]
-            for offset in range(1, 31)
-            if index - offset >= 0
-        )
-    ]
+    def _is_deferred_site(index: int) -> bool:
+        """Only count a pending-speech condition inside this same function.
+
+        An earlier version scanned 30 raw lines upward without checking they
+        belonged to the same function, so a condition in a neighbouring branch
+        or in the previous function could mislabel another transition site and
+        the assertion would then verify the wrong onset. The ``def`` boundary
+        below is what stops that.
+        """
+        for back in range(index - 1, -1, -1):
+            line = source[back]
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            if stripped.startswith(("async def ", "def ")):
+                return False
+            # 不按缩进筛：外层条件写成多行 `if (` 时，条件行与迁移点同缩进。
+            # 函数边界（上面的 def 判断）才是防止误标的那道闸。
+            if (
+                "self._asr_pending_speech_confirmed" in stripped
+                and "=" not in stripped
+            ):
+                return True
+        return False
+
+    deferred = [index for index in sites if _is_deferred_site(index)]
     assert deferred, "deferred SPEECH_CONFIRMED path not found"
     for index in deferred:
         # 只看 onset **赋值语句本身**：按括号配平截断，而不是"扫到某个关键字为止"。
@@ -10188,9 +10204,27 @@ def test_speech_onset_is_stamped_at_the_transition_not_after_delivery() -> None:
     for index, line in enumerate(source):
         if "self._asr_pending_speech_confirmed = True" in line:
             window = chr(10).join(source[index : index + 4])
-            assert "self._asr_pending_speech_onset_at = time.monotonic()" in window, (
-                f"line {index + 1}: pending speech must record its onset immediately, "
-                f"got: {window!r}"
+            # 必须绑到进函数时捕获的 detected_at，**不能**是就地的 time.monotonic()
+            # —— 这些赋值点都在 prewarm / 生命周期投递 / Smart Turn 的 await 之后，
+            # 就地取时钟等于把整段等待算成"用户开口之后"。
+            assert "self._asr_pending_speech_onset_at = detected_at" in window, (
+                f"line {index + 1}: pending speech must record the onset captured "
+                f"at handler entry, got: {window!r}"
+            )
+
+    # detected_at 本身必须在函数里任何 await 之前捕获。
+    for index, line in enumerate(source):
+        if line.strip() != "detected_at = time.monotonic()":
+            continue
+        for back in range(index, -1, -1):
+            stripped = source[back].strip()
+            if stripped.startswith(("async def ", "def ")):
+                break
+            if stripped.startswith("#"):
+                continue
+            assert not stripped.startswith("await ") and " await " not in stripped, (
+                f"line {index + 1}: detected_at must be captured before any await; "
+                f"line {back + 1} is {stripped!r}"
             )
 
 
@@ -10205,6 +10239,8 @@ async def test_reconnect_listener_join_is_bounded() -> None:
     manager.is_active = True
     manager._core_voice_listener_cancel_timeout_s = 0.05
     manager.session_ready = True
+    manager._close_independent_asr = AsyncMock()
+    manager.send_session_ended_by_server = AsyncMock()
     session = SimpleNamespace(handle_messages=AsyncMock(), close=AsyncMock())
     manager.session = session
 
@@ -10237,6 +10273,11 @@ async def test_reconnect_listener_join_is_bounded() -> None:
     assert manager.message_handler_task is None
     assert manager.is_active is False
     assert manager.session_ready is False
+
+    # 会话没了，麦克风也必须收掉：否则独立 ASR 继续往一个不存在的回答会话投
+    # transcript，用户说什么都石沉大海。
+    manager._close_independent_asr.assert_awaited_once_with(next_route_mode="blocked")
+    manager.send_session_ended_by_server.assert_awaited_once_with()
 
     stuck_release.set()
     await asyncio.gather(listener, return_exceptions=True)
@@ -10316,4 +10357,87 @@ async def test_stale_onset_from_a_previous_turn_would_bind_the_old_seal() -> Non
     )
     # 这就是 bug 的形状：截止点被钉在一个已经过去的时刻，本轮的帧全被拒。
     assert record.endpoint_at == previous_seal
+    assert runtime._snapshot_core_multimodal_turn(turn_id, "lost") is None
+
+
+@pytest.mark.unit
+async def test_all_prerecord_frames_join_the_turn_not_just_the_newest() -> None:
+    """Frames validated before the record exists must survive as a span.
+
+    The single-slot cache keeps only the newest frame, and the pending-task
+    stash drops a task the moment it completes. If lifecycle delivery is slow
+    enough for several validations to land first, keeping only the newest one
+    silently loses the actual first/middle frames of the utterance.
+    """
+    runtime = _Runtime()
+    runtime._asr_route_mode = "independent"
+    onset = time.monotonic()
+    runtime._asr_turn_onset_at = onset
+
+    for index in range(3):
+        assert runtime._stage_independent_visual_frame(
+            f"prerecord-{index}",
+            source="screen",
+            request_id=f"screen-{index}",
+            captured_at=onset + 0.01 * (index + 1),
+        )
+    assert len(runtime._prerecord_visual_frames) == 3
+
+    token = VoiceTurnToken(ingress=runtime._capture_ingress_token(), turn_id=103)
+    turn_id = f"asr-{token.ingress.session_epoch}-{token.turn_id}"
+    runtime._begin_core_multimodal_turn(turn_id, token)
+
+    turn = runtime._snapshot_core_multimodal_turn(turn_id, "what is that")
+
+    assert turn is not None
+    # 开头 / 中间 / 结尾都在，而不是只剩最新那张。
+    assert turn.images == ("prerecord-0", "prerecord-1", "prerecord-2")
+    # 消费即清空，不会漏进下一轮。
+    assert runtime._prerecord_visual_frames == []
+
+
+@pytest.mark.unit
+async def test_prerecord_frame_buffer_is_bounded() -> None:
+    runtime = _Runtime()
+    runtime._asr_route_mode = "independent"
+    onset = time.monotonic()
+    runtime._asr_turn_onset_at = onset
+
+    for index in range(40):
+        runtime._stage_independent_visual_frame(
+            f"prerecord-{index}",
+            source="screen",
+            request_id=f"screen-{index}",
+            captured_at=onset + 0.001 * (index + 1),
+        )
+
+    assert len(runtime._prerecord_visual_frames) <= 8
+
+
+@pytest.mark.unit
+async def test_prerecord_frames_from_a_previous_route_are_not_adopted() -> None:
+    runtime = _Runtime()
+    runtime._asr_route_mode = "independent"
+    onset = time.monotonic()
+    runtime._asr_turn_onset_at = onset
+
+    assert runtime._stage_independent_visual_frame(
+        "prerecord-frame",
+        source="screen",
+        request_id="screen-0",
+        captured_at=onset + 0.01,
+    )
+    # 路由换代之后，那一帧不再属于这条链路。
+    runtime._voice_input_transition_generation += 1
+
+    token = VoiceTurnToken(ingress=runtime._capture_ingress_token(), turn_id=104)
+    turn_id = f"asr-{token.ingress.session_epoch}-{token.turn_id}"
+    runtime._begin_core_multimodal_turn(turn_id, token)
+    record = runtime._core_multimodal_turns[turn_id]
+
+    # 关键断言打在"有没有被并进 record"上。只断言 snapshot 为 None 是不够的 ——
+    # accepts() 在冻结时还会按 route_generation 再过滤一次，采纳环节即使漏判也照样
+    # 返回 None，那样这条用例就是假绿（实测：去掉采纳侧的 route 过滤仍然通过）。
+    assert record.last_frame is None
+    assert record.first_frame is None
     assert runtime._snapshot_core_multimodal_turn(turn_id, "lost") is None

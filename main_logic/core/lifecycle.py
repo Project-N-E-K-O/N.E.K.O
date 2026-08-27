@@ -449,6 +449,12 @@ class LifecycleMixin:
                     )
                     _ORPHAN_SESSION_REAPER_TASKS.add(reaper)
                     reaper.add_done_callback(_ORPHAN_SESSION_REAPER_TASKS.discard)
+                    # 会话没了，麦克风不能还开着收 PCM —— 独立 ASR 会继续往一个
+                    # 已经不存在的回答会话里投 transcript。与 handoff 那条
+                    # listener_timeout_fail_closed 路径同款收口（只在 CAS 赢了、
+                    # 确实是我们清掉这条会话时才做）。
+                    await self._close_independent_asr(next_route_mode="blocked")
+                    await self.send_session_ended_by_server()
                 return False
             # 取一次结果，免得旧 listener 的异常变成 "never retrieved" 警告。
             if not previous_task.cancelled():

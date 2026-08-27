@@ -944,6 +944,11 @@ class IndependentAsrRuntime:
     ) -> None:
         """Prepare segmented endpointing and transport without final authority."""
 
+        # 用户开口的时刻是**进这个处理函数**的时刻，不是底下 prewarm / transport
+        # gather 跑完的时刻。视觉所有权拿 onset 当下界，晚打点会把整段 prewarm+
+        # 重连等待算成「用户开口之后」，期间拍的帧全被判成不属于这段发声。
+        detected_at = time.monotonic()
+
         def event_is_current() -> bool:
             return bool(
                 epoch == self._asr_session_epoch
@@ -1031,7 +1036,7 @@ class IndependentAsrRuntime:
         if session_ref is None or not getattr(session_ref, "is_ready", True):
             self._asr_pending_speech_confirmed = True
             if self._asr_pending_speech_onset_at is None:
-                self._asr_pending_speech_onset_at = time.monotonic()
+                self._asr_pending_speech_onset_at = detected_at
             return
         lifecycle.transition(VoiceLifecycleEvent.SPEECH_CONFIRMED)
         self._asr_turn_onset_at = time.monotonic()
@@ -1124,6 +1129,9 @@ class IndependentAsrRuntime:
     ) -> bool:
         """Open a provider-owned streaming turn without fabricating VAD activity."""
 
+        # 同 _handle_detector_prewarm_event：onset 取进函数的时刻，不取底下各段
+        # await 跑完的时刻。
+        detected_at = time.monotonic()
         detector = self._asr_detector
         ingress_token = self._asr_current_ingress_token
 
@@ -1175,7 +1183,7 @@ class IndependentAsrRuntime:
         if session_ref is None or not getattr(session_ref, "is_ready", True):
             self._asr_pending_speech_confirmed = True
             if self._asr_pending_speech_onset_at is None:
-                self._asr_pending_speech_onset_at = time.monotonic()
+                self._asr_pending_speech_onset_at = detected_at
             self._ensure_transport_restart_task()
             return wake_is_current()
         turn_token = self._capture_turn_token(lifecycle)
@@ -3169,6 +3177,8 @@ class IndependentAsrRuntime:
         event: SpeechActivityEvent,
         epoch: int,
     ) -> None:
+        # 同上：onset 是收到这个语音活动事件的时刻。
+        detected_at = time.monotonic()
         if epoch != self._asr_session_epoch:
             return
         provider = self._asr_provider or "unknown"
@@ -3243,7 +3253,7 @@ class IndependentAsrRuntime:
                 else:
                     self._asr_pending_speech_confirmed = True
                     if self._asr_pending_speech_onset_at is None:
-                        self._asr_pending_speech_onset_at = time.monotonic()
+                        self._asr_pending_speech_onset_at = detected_at
             if lifecycle.snapshot.state is not previous_state:
                 identity = self._capture_runtime_identity(
                     ingress_token=self._asr_current_ingress_token,
