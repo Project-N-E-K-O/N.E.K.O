@@ -993,13 +993,19 @@
         // from, it does not rewrite the words.
         var meta = payload && payload.metadata ? payload.metadata : {};
         var sourceName = typeof meta.source_name === 'string' ? meta.source_name.trim() : '';
+        var sourceKind = typeof meta.source === 'string' && meta.source ? meta.source : 'plugin';
         var messageIdPrefix = payload.request_id
             ? 'plugin-blocks-' + String(payload.request_id)
             : 'plugin-blocks';
         var message = {
             id: nextReactMessageId(messageIdPrefix),
             role: 'system',
-            author: sourceName || undefined,
+            // The schema requires a NON-EMPTY author, so neither undefined nor
+            // "" renders at all — the push would be dropped in validation.
+            // Fall back to the source kind (plugin / cu / browser / system),
+            // which the host always resolves, so every bubble carries a label
+            // rather than some carrying none.
+            author: sourceName || sourceKind,
             time: getCurrentTimeString(),
             createdAt: Date.now(),
             blocks: blocks,
