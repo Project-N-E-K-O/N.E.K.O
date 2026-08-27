@@ -201,6 +201,9 @@ import {
   refreshHostedPanelFrames,
 } from '@/views/pluginDetailHostedPanelRefresh'
 
+/** One immediate pass, no retries. */
+const SINGLE_REFRESH_PASS = [0] as const
+
 const route = useRoute()
 const router = useRouter()
 const pluginStore = usePluginStore()
@@ -443,16 +446,18 @@ function setGuideSurfaceFrameRef(surfaceId: string, instance: unknown) {
   }
 }
 
-async function refreshHostedPanelContextsAfterRuntimeChange(): Promise<void> {
+async function refreshHostedSurfaceContexts(gapsMs?: readonly number[]): Promise<void> {
   // Guides can be hosted-tsx too, and they get a context id just like panels
   // do, so a runtime change leaves them just as stale.
   await refreshHostedPanelFrames([
     ...panelSurfaceFrameRefs.values(),
     ...guideSurfaceFrameRefs.values(),
-  ])
+  ], gapsMs)
 }
 
-provide(PLUGIN_DETAIL_REFRESH_HOSTED_PANELS_KEY, refreshHostedPanelContextsAfterRuntimeChange)
+// Start/stop/reload keeps the retry chain: the plugin process may still be
+// booting its UI context provider when the mutation resolves.
+provide(PLUGIN_DETAIL_REFRESH_HOSTED_PANELS_KEY, () => refreshHostedSurfaceContexts())
 
 function relayHostedSurfaceMessageToStaticUi(data: unknown) {
   if (isLegacyOpenSurfaceMessage(data)) {
@@ -460,7 +465,10 @@ function relayHostedSurfaceMessageToStaticUi(data: unknown) {
     return
   }
   if (data && typeof data === 'object' && (data as { type?: unknown }).type === 'neko-plugin-context-invalidated') {
-    void refreshHostedPanelContextsAfterRuntimeChange()
+    // A plugin that emits this is demonstrably alive and has already finished
+    // the mutation it is reporting, so one pass is enough — retrying would
+    // just triple the IPC round trips into its process.
+    void refreshHostedSurfaceContexts(SINGLE_REFRESH_PASS)
     return
   }
   // Hosted surface messages have already been source/origin checked by the

@@ -223,9 +223,13 @@ def _find_project_root(config_path: Path) -> Path:
     # 插入子进程的 sys.path[0]——用户随手放在文档里的 types.py / utils/
     # 就抢在 stdlib 和宿主模块前面被 import。宿主自己的位置才是可靠的：
     # plugin/core/host.py -> plugin/core -> plugin -> 仓库根。
+    # 判据只能看 plugin/：打包版用 --include-package=utils 把 utils/ 编进
+    # 可执行文件，dist 里根本没有这个目录，跟着 utils/ 一起校验会让每个出货包
+    # 的每个插件子进程都掉到下面那条逃生口去。plugin/ 两种布局下都真实存在
+    # （dist 里是 plugin/plugins/）。
     try:
         host_relative_root = Path(__file__).resolve().parents[2]
-        if (host_relative_root / "plugin").is_dir() and (host_relative_root / "utils").is_dir():
+        if (host_relative_root / "plugin").is_dir():
             return host_relative_root
     except Exception:
         pass

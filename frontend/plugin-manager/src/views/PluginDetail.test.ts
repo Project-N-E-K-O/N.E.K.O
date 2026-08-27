@@ -254,6 +254,26 @@ describe('PluginDetail surface selection', () => {
     mounted.unmount()
   })
 
+  it('refreshes each frame exactly once on invalidation, with no retry chain', async () => {
+    const mounted = await mountDetail([
+      surface({ id: 'legacy-main', mode: 'static' }),
+      surface({ id: 'note-exporter' }),
+    ])
+    hostedFrameMocks.refreshContext.mockClear()
+
+    // The plugin that emitted this is alive and already done with its
+    // mutation; the boot-latency retry chain would only triple the IPC.
+    vi.useFakeTimers()
+    mounted.container.querySelector<HTMLButtonElement>('[data-surface-id="legacy-main"]')
+      ?.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true }))
+    await nextTick()
+    await vi.runAllTimersAsync()
+    vi.useRealTimers()
+
+    expect(hostedFrameMocks.refreshContext).toHaveBeenCalledTimes(2)
+    mounted.unmount()
+  })
+
   it.each([
     ['single guide', [{ id: 'quickstart', kind: 'guide' as const }]],
     ['tabbed guides', [{ id: 'quickstart', kind: 'guide' as const }, { id: 'faq', kind: 'guide' as const }]],
