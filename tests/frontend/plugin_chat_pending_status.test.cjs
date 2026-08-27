@@ -141,3 +141,32 @@ test('blocks are copied, not aliased into the caller payload', () => {
     })()`, ctx);
     assert.equal(same, false, 'mutating a rendered block must not reach the sender');
 });
+
+test('a queued plugin post does not credit the dialogue achievement', () => {
+    const credited = [];
+    const host = { appendMessage() {}, updateMessage() {} };
+    const context = vm.createContext({ host, console: { warn() {}, log() {} } });
+    vm.runInContext([
+        'var _pendingHostMessages = [];',
+        'var _pendingFlushTimer = null;',
+        'var _PENDING_HOST_MESSAGES_MAX = 50;',
+        'var credited = [];',
+        'function getHost() { return host; }',
+        'function clearInterval() {}',
+        'function appendHostMessageSafely(h, m) { return true; }',
+        'function markAssistantVisibleResponseForAchievement() { credited.push(1); }',
+        sourceBetween('function _queuePendingHostMessage(', 'function _tryFlushPendingHostMessages('),
+        sourceBetween('function _tryFlushPendingHostMessages(', '// 供 response_discarded'),
+    ].join('\n'), context);
+
+    vm.runInContext(
+        "_queuePendingHostMessage({ id: 'a', role: 'system' });"
+        + "_queuePendingHostMessage({ id: 'b', role: 'assistant' });"
+        + "_tryFlushPendingHostMessages();",
+        context,
+    );
+
+    // Only the assistant message counts. The direct path already declines to
+    // credit plugin posts; the queued path used to credit everything it flushed.
+    assert.equal(vm.runInContext('credited.length', context), 1);
+});

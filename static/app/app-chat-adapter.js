@@ -422,7 +422,13 @@
         var batch = _pendingHostMessages.splice(0);
         for (var i = 0; i < batch.length; i++) {
             if (appendHostMessageSafely(host, batch[i], 'flush_pending_host_message')) {
-                markAssistantVisibleResponseForAchievement();
+                // Only the assistant actually speaking counts toward the
+                // dialogue achievement. A plugin post queued before the host
+                // mounted would otherwise unlock it here, which the direct
+                // path already declines to do (Codex).
+                if (batch[i] && batch[i].role !== 'system') {
+                    markAssistantVisibleResponseForAchievement();
+                }
             }
         }
     }

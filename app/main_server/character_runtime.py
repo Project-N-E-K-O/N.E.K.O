@@ -77,6 +77,11 @@ _PLUGIN_CHAT_INLINE_TOTAL_MAX_BYTES = 8 * 1024 * 1024
 # and JPEG headers; formats Pillow cannot parse from a truncated stream fall
 # back to a full decode.
 _PLUGIN_CHAT_HEADER_PREFIX_B64_CHARS = 64 * 1024
+# Frames are also bounded on COUNT, not only on cumulative pixels: thousands of
+# 1x1 frames multiply to almost nothing yet still cost a decode and a timer tick
+# each, so a pixel budget alone does not see them (Codex). Well above any real
+# sticker, which is tens of frames.
+_PLUGIN_CHAT_MAX_ANIMATION_FRAMES = 300
 
 _approx_decoded_bytes = approx_base64_decoded_bytes
 
@@ -195,6 +200,8 @@ def _inline_image_data_url_mime(encoded: str) -> Optional[str]:
         # second number -- one animation may cost what one full-size still
         # costs. Deliberately tight: the SDK upload path flattens to JPEG, so
         # animation only reaches here through un-normalized inline bytes.
+        if frames > _PLUGIN_CHAT_MAX_ANIMATION_FRAMES:
+            return None
         if frames * width * height > MAX_SOURCE_IMAGE_PIXELS:
             return None
         return _PILLOW_FORMAT_TO_MIME.get(detected)

@@ -78,7 +78,10 @@ def test_display_only_plugin_image_reaches_react_without_opening_an_assistant_tu
         "bubbleRefs": 0,
     }
     assert message["id"].startswith("plugin-blocks-plugin-image-display-only-")
-    assert message["role"] == "assistant"
+    # System, not assistant: plugin content is neither the character
+    # speaking nor the user, and blind pushes never reach the model at
+    # all, so an assistant bubble claims something she has no memory of.
+    assert message["role"] == "system"
     assert message["status"] == "sent"
     assert message["blocks"] == [{"type": "image", "url": _ONE_PIXEL_PNG}]
     assert page_errors == []

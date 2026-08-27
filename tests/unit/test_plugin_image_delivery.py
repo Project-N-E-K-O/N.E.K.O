@@ -1203,8 +1203,16 @@ def test_push_byte_pool_refuses_an_overdraw() -> None:
 
 
 def _animated_gif_base64(frames: int, size: int = 600) -> str:
+    """A GIF with genuinely distinct frames.
+
+    Each frame gets its own colour: identical frames are deduped by the encoder,
+    which silently produced a ONE-frame file and made the bound look unreachable.
+    """
     source = BytesIO()
-    imgs = [Image.new("P", (size, size), i % 256) for i in range(frames)]
+    imgs = [
+        Image.new("RGB", (size, size), (i % 256, (i * 7) % 256, (i * 13) % 256))
+        for i in range(frames)
+    ]
     imgs[0].save(source, format="GIF", save_all=True, append_images=imgs[1:])
     return base64.b64encode(source.getvalue()).decode("ascii")
 
@@ -1225,6 +1233,23 @@ def test_animated_inline_images_are_bounded_by_cumulative_frames() -> None:
     assert 60 * 600 * 600 > MAX_SOURCE_IMAGE_PIXELS  # the sum does not
 
     assert character_runtime._inline_image_data_url_mime(many) is None
+
+
+def test_animation_frame_count_is_bounded_independently_of_pixels() -> None:
+    """Thousands of 1x1 frames multiply to nothing but still cost per frame.
+
+    The cumulative-pixel bound cannot see them: 400 frames of one pixel is 400
+    pixels. Each frame is still a decode and an animation tick.
+    """
+    from app.main_server import character_runtime
+
+    tiny_but_many = _animated_gif_base64(frames=400, size=2)
+    # 400 frames of 2x2 is 1600 pixels total and ~15 KiB on the wire: neither
+    # the cumulative-pixel bound nor the byte budget can see it.
+    assert 400 * 2 * 2 < MAX_SOURCE_IMAGE_PIXELS, "pixels alone must not catch it"
+    assert 400 > character_runtime._PLUGIN_CHAT_MAX_ANIMATION_FRAMES
+
+    assert character_runtime._inline_image_data_url_mime(tiny_but_many) is None
 
 
 def test_short_animations_still_render() -> None:
