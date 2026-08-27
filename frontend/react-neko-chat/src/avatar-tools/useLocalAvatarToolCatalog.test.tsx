@@ -761,7 +761,7 @@ describe('useLocalAvatarToolCatalog failure handling', () => {
     expect(result.current.registry.has(localItem.id)).toBe(true);
   });
 
-  it('treats an uncertain delete as successful when the authoritative refresh shows it absent', async () => {
+  it('confirms an uncertain delete only when the detail endpoint proves the tool is gone', async () => {
     const localItem = {
       id: 'local-12345678-1234-4123-8123-123456789abc',
       revision: '2-100',
@@ -782,6 +782,11 @@ describe('useLocalAvatarToolCatalog failure handling', () => {
       .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true, items: [], limits: LIMITS }), {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
+      }))
+      // 列表缺席还不够：要一个明确的 tool_not_found 才算删掉了。
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ok: false, error_code: 'tool_not_found' }), {
+        status: 404,
+        headers: { 'Content-Type': 'application/json' },
       }));
     vi.stubGlobal('fetch', fetchMock);
     const { result } = renderHook(() => useLocalAvatarToolCatalog());
@@ -792,6 +797,42 @@ describe('useLocalAvatarToolCatalog failure handling', () => {
     });
 
     expect(result.current.registry.has(localItem.id)).toBe(false);
+  });
+
+  it('rejects an uncertain delete when the tool is merely quarantined out of the list', async () => {
+    const localItem = {
+      id: 'local-12345678-1234-4123-8123-123456789abc',
+      revision: '2-100',
+      name: 'Feather',
+      changeMode: 'press-swap',
+      defaultUrl: '/default.png?v=1',
+      changeUrls: ['/change-000.png?v=1'],
+    };
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true, items: [localItem], limits: LIMITS }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ error_code: 'avatar_tool_delete_failed' }), {
+        status: 500,
+        headers: { 'Content-Type': 'application/json' },
+      }))
+      // 被隔离的道具同样不在列表里，但它还在磁盘上 —— 不能当成删除成功。
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true, items: [], limits: LIMITS }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ok: false, error_code: 'record_invalid' }), {
+        status: 404,
+        headers: { 'Content-Type': 'application/json' },
+      }));
+    vi.stubGlobal('fetch', fetchMock);
+    const { result } = renderHook(() => useLocalAvatarToolCatalog());
+    await waitFor(() => expect(result.current.registry.has(localItem.id)).toBe(true));
+
+    await act(async () => {
+      await expect(result.current.remove(localItem.id as `local-${string}`)).rejects.toThrow();
+    });
   });
 
   it('refreshes while hidden when the desktop bridge requests local invalidation', async () => {

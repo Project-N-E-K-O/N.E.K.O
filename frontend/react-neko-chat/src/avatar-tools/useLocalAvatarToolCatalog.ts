@@ -6,6 +6,7 @@ import {
   fetchLocalAvatarToolDetail,
   fetchLocalAvatarTools,
   LocalAvatarToolCreateError,
+  LocalAvatarToolDetailError,
   LocalAvatarToolRevisionConflictError,
   updateLocalAvatarTool,
   type CreateLocalAvatarToolInput,
@@ -296,7 +297,19 @@ export function useLocalAvatarToolCatalog(): LocalAvatarToolCatalog {
         await refresh();
         refreshed = true;
       } catch {}
-      if (refreshed && authoritativeRegistryRef.current?.has(toolId) === false) return;
+      // 列表缺席不等于删掉了：list_items 会跳过校验失败的道具，被隔离的道具
+      // 同样不在列表里，但它还在磁盘上。要确认删除得拿一个明确的 tool_not_found，
+      // 否则用户会看到「删除成功」而道具下次刷新又冒出来。
+      if (refreshed && authoritativeRegistryRef.current?.has(toolId) === false) {
+        try {
+          await fetchLocalAvatarToolDetail(toolId, limits?.maxChangeImages ?? 16);
+        } catch (confirmation) {
+          if (
+            confirmation instanceof LocalAvatarToolDetailError
+            && confirmation.message === 'tool_not_found'
+          ) return;
+        }
+      }
       throw error;
     }
     const staleRefresh = refreshInFlightRef.current;
@@ -306,7 +319,7 @@ export function useLocalAvatarToolCatalog(): LocalAvatarToolCatalog {
     ));
     await staleRefresh?.catch(() => undefined);
     await refresh().catch(() => undefined);
-  }, [refresh]);
+  }, [limits?.maxChangeImages, refresh]);
 
   return { registry, limits, authoritativeLoaded, refreshFailed, refresh, create, detail, update, remove };
 }
