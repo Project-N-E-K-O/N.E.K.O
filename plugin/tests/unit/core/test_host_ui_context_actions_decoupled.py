@@ -75,6 +75,22 @@ async def test_actions_survive_a_hanging_context_provider(tmp_path) -> None:
     assert result.get("state") == {}
 
 
+@pytest.mark.asyncio
+async def test_actions_survive_a_provider_that_swallows_cancellation(tmp_path) -> None:
+    """吞掉取消信号的 provider 不能把超时拖成空转。
+
+    asyncio.wait_for 超时后会 cancel 再 **等** 那个协程结束，provider 只要吞掉
+    CancelledError，设定的预算就形同虚设，父进程照样先超时、降级结果送不出去。
+    """
+    result = await _run_fixture(
+        tmp_path, "ui_ctx_uncancellable", "UncancellableUiContextFixturePlugin", timeout=3.0,
+    )
+
+    assert _action_ids(result) == ["ping"]
+    assert "timed out" in str(result.get("context_error"))
+    assert result.get("state") == {}
+
+
 @pytest.mark.parametrize(
     "budget",
     [0.05, 0.1, 0.2, 0.5, 1.0, 1.25, 1.5, 2.0, 5.0, 30.0, 1e16, 1e300],

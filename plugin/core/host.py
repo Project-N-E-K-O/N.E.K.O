@@ -180,6 +180,34 @@ def _ui_context_provider_budget(requested: object) -> float:
     return resolved
 
 
+def _discard_abandoned_task_result(task: asyncio.Future) -> None:
+    """Retrieve an abandoned task's outcome so asyncio stops complaining about it."""
+    if task.cancelled():
+        return
+    try:
+        task.exception()
+    except asyncio.CancelledError:
+        pass
+
+
+async def _await_within_budget(awaitable: Any, budget: float) -> tuple[bool, Any]:
+    """Wait at most *budget* seconds. Returns ``(completed, result)``.
+
+    Deliberately not ``asyncio.wait_for``: that cancels the inner task and then
+    *awaits* it, so a coroutine which swallows ``CancelledError`` (or blocks in
+    a ``finally``) delays — or never triggers — the timeout. The whole point of
+    this budget is to answer before the caller's own deadline, so abandon the
+    task rather than wait on it.
+    """
+    task = asyncio.ensure_future(awaitable)
+    done, _pending = await asyncio.wait({task}, timeout=budget)
+    if task in done:
+        return True, task.result()
+    task.cancel()
+    task.add_done_callback(_discard_abandoned_task_result)
+    return False, None
+
+
 def _find_project_root(config_path: Path) -> Path:
     """
     从配置文件路径向上探测项目根目录。
@@ -1355,20 +1383,18 @@ def _plugin_process_runner(
                 else:
                     try:
                         result = provider()
+                        completed = True
                         if inspect.isawaitable(result):
-                            result = await _run_with_watchdog(
-                                result, f"ui_context.{context_id}", provider_budget,
+                            completed, result = await _await_within_budget(result, provider_budget)
+                        if completed:
+                            context_payload = _serialize_ui_context_result(result)
+                        else:
+                            logger.warning(
+                                "UI context '{}' timed out after {}s", context_id, provider_budget,
                             )
-                        context_payload = _serialize_ui_context_result(result)
-                    except asyncio.TimeoutError:
-                        # str(asyncio.TimeoutError()) 是空串，直接透出会得到一条
-                        # 没有内容的错误信息。
-                        logger.warning(
-                            "UI context '{}' timed out after {}s", context_id, provider_budget,
-                        )
-                        context_error = (
-                            f"UI context '{context_id}' timed out after {provider_budget}s"
-                        )
+                            context_error = (
+                                f"UI context '{context_id}' timed out after {provider_budget}s"
+                            )
                     except Exception as e:
                         logger.exception("Failed to execute UI context '{}'", context_id)
                         context_error = str(e) or type(e).__name__
