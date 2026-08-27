@@ -27,10 +27,12 @@ function createAdapter(host) {
     const script = [
         'var _pendingHostMessages = [];',
         'var _pendingFlushTimer = null;',
-        'var _PENDING_HOST_MESSAGES_MAX = 50;',
+        'var _PENDING_HOST_ASSISTANT_MAX = 50;',
+        'var _PENDING_HOST_PLUGIN_MAX = 20;',
+        'var _PENDING_HOST_MESSAGES_MAX = 70;',
         'function getHost() { return host; }',
         'function clearInterval() {}',
-        sourceBetween('function _queuePendingHostMessage(', 'function _tryFlushPendingHostMessages('),
+        sourceBetween('function _isPluginPendingMessage(', 'function _tryFlushPendingHostMessages('),
         sourceBetween('function _patchPendingHostMessage(', 'function _resetReactChatSwitchState('),
         sourceBetween('function setReactMessageStatus(', '// ======================== appendReactUserMessage'),
         'function virtualRef(id) { return { dataset: { reactChatMessageId: id } }; }',
@@ -149,13 +151,15 @@ test('a queued plugin post does not credit the dialogue achievement', () => {
     vm.runInContext([
         'var _pendingHostMessages = [];',
         'var _pendingFlushTimer = null;',
-        'var _PENDING_HOST_MESSAGES_MAX = 50;',
+        'var _PENDING_HOST_ASSISTANT_MAX = 50;',
+        'var _PENDING_HOST_PLUGIN_MAX = 20;',
+        'var _PENDING_HOST_MESSAGES_MAX = 70;',
         'var credited = [];',
         'function getHost() { return host; }',
         'function clearInterval() {}',
         'function appendHostMessageSafely(h, m) { return true; }',
         'function markAssistantVisibleResponseForAchievement() { credited.push(1); }',
-        sourceBetween('function _queuePendingHostMessage(', 'function _tryFlushPendingHostMessages('),
+        sourceBetween('function _isPluginPendingMessage(', 'function _tryFlushPendingHostMessages('),
         sourceBetween('function _tryFlushPendingHostMessages(', '// 供 response_discarded'),
     ].join('\n'), context);
 
@@ -169,4 +173,67 @@ test('a queued plugin post does not credit the dialogue achievement', () => {
     // Only the assistant message counts. The direct path already declines to
     // credit plugin posts; the queued path used to credit everything it flushed.
     assert.equal(vm.runInContext('credited.length', context), 1);
+});
+
+
+test('a burst of plugin posts never evicts a waiting assistant message', () => {
+    // The React host has not mounted, so everything queues. Under one shared
+    // cap, evicting the oldest let plugin pushes delete assistant output the
+    // user would then never see.
+    const ctx = createAdapter(null);
+
+    ctx.assistant = { id: 'assistant-1', role: 'assistant', text: 'important' };
+    vm.runInContext('_queuePendingHostMessage(assistant);', ctx);
+
+    ctx.burst = Array.from({ length: 500 }, (_, i) => ({
+        id: 'plugin-' + i, role: 'system', author: 'plugin', text: 'noise',
+    }));
+    vm.runInContext('burst.forEach(function (m) { _queuePendingHostMessage(m); });', ctx);
+
+    const queued = vm.runInContext('_pendingHostMessages', ctx);
+    assert.equal(
+        queued.filter((m) => m.id === 'assistant-1').length, 1,
+        'the assistant message was evicted by plugin posts',
+    );
+
+    // The plugin side stayed inside its own budget and trimmed its OWN oldest.
+    const plugins = queued.filter((m) => m.role === 'system');
+    assert.equal(plugins.length, 20);
+    assert.equal(plugins[plugins.length - 1].id, 'plugin-499');
+});
+
+test('a burst of assistant messages never evicts waiting plugin posts', () => {
+    // The dual. A quota protecting only one direction is not isolation.
+    const ctx = createAdapter(null);
+
+    ctx.pluginPost = { id: 'plugin-keep', role: 'system', author: 'plugin' };
+    vm.runInContext('_queuePendingHostMessage(pluginPost);', ctx);
+
+    ctx.burst = Array.from({ length: 500 }, (_, i) => ({
+        id: 'assistant-' + i, role: 'assistant',
+    }));
+    vm.runInContext('burst.forEach(function (m) { _queuePendingHostMessage(m); });', ctx);
+
+    const queued = vm.runInContext('_pendingHostMessages', ctx);
+    assert.equal(queued.filter((m) => m.id === 'plugin-keep').length, 1);
+    assert.equal(queued.filter((m) => m.role === 'assistant').length, 50);
+});
+
+test('arrival order survives the per-source trimming', () => {
+    const ctx = createAdapter(null);
+    ctx.mixed = [
+        { id: 'a1', role: 'assistant' },
+        { id: 'p1', role: 'system', author: 'plugin' },
+        { id: 'a2', role: 'assistant' },
+        { id: 'p2', role: 'system', author: 'plugin' },
+    ];
+    vm.runInContext('mixed.forEach(function (m) { _queuePendingHostMessage(m); });', ctx);
+
+    // Joined rather than deepEqual: the array comes from the vm realm, so it
+    // is structurally identical but not reference-equal to a host-realm Array
+    // and assert/strict rejects it.
+    assert.equal(
+        vm.runInContext('_pendingHostMessages', ctx).map((m) => m.id).join('|'),
+        'a1|p1|a2|p2',
+    );
 });

@@ -384,13 +384,47 @@
     // ======================== createGeminiBubble（覆盖） ========================
 
     // ---- host 未就绪时的待重发队列 ----
-    var _PENDING_HOST_MESSAGES_MAX = 50;
+    // Per-source caps, not one shared 50.
+    //
+    // Assistant output and plugin/system posts queue here together while the
+    // React host mounts. Under a single cap, evicting the oldest let a burst
+    // of plugin pushes silently delete an assistant message that had been
+    // waiting -- output the user would simply never see (Codex P2).
+    //
+    // This is the same shape, and the same answer, as the staged-image quotas
+    // on the Python side: a shared budget has no correct eviction policy when
+    // the entries have different owners, so each source gets its own and can
+    // only ever drop its own oldest.
+    var _PENDING_HOST_ASSISTANT_MAX = 50;
+    var _PENDING_HOST_PLUGIN_MAX = 20;
+    var _PENDING_HOST_MESSAGES_MAX = _PENDING_HOST_ASSISTANT_MAX + _PENDING_HOST_PLUGIN_MAX;
     var _pendingHostMessages = [];
     var _pendingFlushTimer = null;
 
+    function _isPluginPendingMessage(message) {
+        return !!message && message.role === 'system';
+    }
+
     function _queuePendingHostMessage(message) {
-        if (_pendingHostMessages.length >= _PENDING_HOST_MESSAGES_MAX) {
-            _pendingHostMessages.shift();
+        var isPlugin = _isPluginPendingMessage(message);
+        var cap = isPlugin ? _PENDING_HOST_PLUGIN_MAX : _PENDING_HOST_ASSISTANT_MAX;
+        var sameKind = 0;
+        for (var i = 0; i < _pendingHostMessages.length; i++) {
+            if (_isPluginPendingMessage(_pendingHostMessages[i]) === isPlugin) {
+                sameKind++;
+            }
+        }
+        // Trim this source's OWN oldest, never the other's. Order across the
+        // whole queue is preserved, so the flush still replays what survived
+        // in arrival order.
+        while (sameKind >= cap) {
+            for (var j = 0; j < _pendingHostMessages.length; j++) {
+                if (_isPluginPendingMessage(_pendingHostMessages[j]) === isPlugin) {
+                    _pendingHostMessages.splice(j, 1);
+                    break;
+                }
+            }
+            sameKind--;
         }
         _pendingHostMessages.push(message);
     }
