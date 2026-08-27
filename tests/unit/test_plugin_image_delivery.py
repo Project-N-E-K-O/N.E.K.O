@@ -2427,3 +2427,50 @@ async def test_media_proxy_follows_the_port_that_minted_the_url(monkeypatch):
 
     assert requested == ["http://127.0.0.1:49999/media/abc123"]
     assert response.body == b"jpegbytes"
+
+@pytest.mark.asyncio
+async def test_model_fetch_bounds_a_trickling_media_endpoint(monkeypatch):
+    """The dual of the same bound on the browser-facing /media route.
+
+    httpx's timeout bounds one read, not the transfer, so an endpoint sending
+    a few bytes just inside each interval holds a connection and a slot in the
+    bounded fetch pool indefinitely. Both paths read from the same store; a
+    defect fixed on one side belongs on the other.
+    """
+    import asyncio as _asyncio
+    import time as _time
+
+    from app.main_server import character_runtime as cr
+
+    monkeypatch.setattr(cr, "_PLUGIN_IMAGE_FETCH_TOTAL_DEADLINE_S", 0.3)
+
+    class _Trickle:
+        headers = {"content-type": "image/jpeg"}
+
+        def raise_for_status(self):
+            return None
+
+        async def aiter_bytes(self):
+            while True:
+                await _asyncio.sleep(0.05)
+                yield b"x"
+
+    class _Stream:
+        async def __aenter__(self):
+            return _Trickle()
+
+        async def __aexit__(self, *exc):
+            return False
+
+    monkeypatch.setattr(
+        cr, "get_internal_http_client",
+        lambda: type("C", (), {"stream": lambda self, *a, **k: _Stream()})(),
+    )
+
+    started = _time.monotonic()
+    with pytest.raises((TimeoutError, _asyncio.TimeoutError)):
+        # Outer bound so a regression fails instead of hanging the run.
+        await _asyncio.wait_for(cr._fetch_plugin_image_base64(_IMAGE_URL), timeout=3.0)
+    elapsed = _time.monotonic() - started
+
+    assert elapsed < 2.0, f"a trickling endpoint held the fetch for {elapsed:.1f}s"

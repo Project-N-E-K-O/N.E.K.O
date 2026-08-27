@@ -83,6 +83,15 @@ _PLUGIN_CHAT_HEADER_PREFIX_B64_CHARS = 64 * 1024
 # sticker, which is tens of frames.
 _PLUGIN_CHAT_MAX_ANIMATION_FRAMES = 300
 
+# Idle read timeout, and a TOTAL deadline over the whole fetch.
+#
+# httpx's timeout bounds ONE read, not the transfer: an endpoint sending a few
+# bytes just inside each interval satisfies it forever while holding a
+# connection and a slot in the bounded fetch pool (Codex). The dual of the same
+# bound on the browser-facing /media route -- both fetch from the same store,
+# and a defect fixed on one side belongs on the other.
+_PLUGIN_IMAGE_FETCH_TOTAL_DEADLINE_S = 8.0
+
 _approx_decoded_bytes = approx_base64_decoded_bytes
 
 
@@ -453,7 +462,7 @@ async def _fetch_plugin_image_base64(url: str) -> str:
     if not _is_local_plugin_media_url(url):
         raise ValueError("image URL is not served by the local plugin media store")
     client = get_internal_http_client()
-    async with client.stream(
+    async with asyncio.timeout(_PLUGIN_IMAGE_FETCH_TOTAL_DEADLINE_S), client.stream(
         "GET",
         url,
         timeout=2.0,
