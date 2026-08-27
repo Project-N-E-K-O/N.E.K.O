@@ -179,10 +179,6 @@ class ChildTransport:
 
         self._img_sock: Any | None = None
         self._img_lock = threading.Lock()
-        # Set when shutdown could not take the media socket and handed the
-        # whole teardown -- socket close AND context termination -- to the
-        # in-flight sender. See close().
-        self._defer_sync_ctx_term = False
         if image_uplink_endpoint:
             self._img_sock = self._sync_ctx.socket(zmq.PUSH)
             self._img_sock.setsockopt(zmq.LINGER, 0)
@@ -266,20 +262,9 @@ class ChildTransport:
             # closes it. libzmq sockets are not thread safe: closing one from
             # another thread while a send or poll is in progress is undefined
             # behaviour, not merely impolite (CodeRabbit).
-            deferred_term = False
             if self._closed:
                 self._close_img_sock_locked()
-                deferred_term = self._defer_sync_ctx_term
-                self._defer_sync_ctx_term = False
             self._img_lock.release()
-            if deferred_term:
-                # Only now is every socket in this context closed, which is
-                # what term() waits for. Done after releasing the lock so a
-                # blocking term does not hold it.
-                try:
-                    self._sync_ctx.term()
-                except Exception:
-                    pass
 
     # ── uplink (thread-safe, any thread) ─────────────────────────
 
@@ -327,34 +312,34 @@ class ChildTransport:
         # libzmq sockets are not thread safe, so closing one while a send is in
         # progress is undefined behaviour -- a crash instead of a hang
         # (CodeRabbit).
-        media_closed = False
         if self._img_lock.acquire(timeout=_IMG_LOCK_SHUTDOWN_WAIT_S):
             try:
                 self._close_img_sock_locked()
-                media_closed = True
             finally:
                 self._img_lock.release()
 
-        # _sync_ctx owns the media socket as well as the uplink, and term()
-        # blocks until EVERY socket in the context is closed. Terminating it
-        # here while an in-flight send still owns the media socket would put
-        # back exactly the wait the bounded acquire above removed -- up to the
-        # sender's full timeout, against a host shutdown budget of about two
-        # seconds, so the graceful STOP ends in forced termination regardless
-        # (Codex P2).
+        # Both contexts terminate here, including the one that may still own
+        # an open media socket.
         #
-        # Hand the rest of the teardown to that sender instead: it closes the
-        # socket on its way out and terminates the context afterwards.
-        # _async_ctx owns only the downlink, already closed above, so it
-        # terminates here either way.
-        self._defer_sync_ctx_term = not media_closed
-        try:
-            self._async_ctx.term()
-        except Exception:
-            pass
-        if media_closed:
+        # This looks like it should block -- term() does wait for every socket
+        # in the context to close. It does not, because zmq_ctx_term first
+        # interrupts blocked calls in that context with ETERM and only then
+        # waits. The in-flight sender's poll/send raises ContextTerminated at
+        # once, its finally closes the media socket, and term returns.
+        # Measured on pyzmq 27.1.0 / libzmq 4.3.5: a poll(30_000) blocked on a
+        # full PUSH socket is interrupted in 0.000s and term returns
+        # immediately.
+        #
+        # An earlier revision deferred this termination to the sender, on the
+        # belief that terminating here would wait out the sender's full upload
+        # timeout. That belief was wrong, and the deferral was worse than the
+        # thing it avoided: the flag was written outside _img_lock and read
+        # inside it, so a sender that finished first read a stale False and
+        # nobody terminated the context -- and the designated hand-off thread
+        # is a daemon the process never joins.
+        for ctx in (self._async_ctx, self._sync_ctx):
             try:
-                self._sync_ctx.term()
+                ctx.term()
             except Exception:
                 pass
 

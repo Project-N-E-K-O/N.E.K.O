@@ -35,18 +35,14 @@ STARTUP_RESULT_REQ_ID = "__plugin_startup__"
 
 
 def _resolve_plugin_server_base_url() -> str:
-    """Return the plugin server's actual loopback origin for media URLs."""
-    from config import USER_PLUGIN_BASE
+    """Return the plugin server's actual loopback origin for media URLs.
 
-    raw_port = os.getenv("NEKO_USER_PLUGIN_SERVER_PORT", "").strip()
-    if raw_port:
-        try:
-            port = int(raw_port)
-            if 0 < port <= 65535:
-                return f"http://127.0.0.1:{port}"
-        except ValueError:
-            pass
-    return USER_PLUGIN_BASE.rstrip("/")
+    Delegates so the consumer that proxies these URLs to the browser cannot
+    resolve them differently from the process that minted them.
+    """
+    from config.network import resolve_user_plugin_base
+
+    return resolve_user_plugin_base()
 
 
 @dataclass

@@ -141,18 +141,26 @@ importlib.import_module(
 
 
 def _resolve_user_plugin_base() -> str:
+    """Delegates to config so this cannot drift from the process that mints
+    plugin media URLs, or from the router that proxies them to the browser."""
+    from config.network import resolve_user_plugin_base
+
+    # Judge the raw value directly. Inferring "it was rejected" from the
+    # resolved origin is wrong: USER_PLUGIN_BASE is itself derived from the
+    # same variable, so a VALID port makes the two match and the warning fires
+    # on correct input.
     raw_port = os.getenv("NEKO_USER_PLUGIN_SERVER_PORT", "").strip()
     if raw_port:
         try:
             port = int(raw_port)
-            if 0 < port <= 65535:
-                return f"http://127.0.0.1:{port}"
         except ValueError:
+            port = 0
+        if not 0 < port <= 65535:
             logger.warning(
                 "Invalid NEKO_USER_PLUGIN_SERVER_PORT value {!r}; using configured plugin base",
                 raw_port,
             )
-    return USER_PLUGIN_BASE.rstrip("/")
+    return resolve_user_plugin_base()
 
 
 if _IS_MAIN_PROCESS:

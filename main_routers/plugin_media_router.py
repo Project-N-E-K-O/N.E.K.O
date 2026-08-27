@@ -31,7 +31,7 @@ import httpx
 from fastapi import APIRouter, HTTPException
 from starlette.responses import Response
 
-from app.main_server._shared import runtime
+from config.network import resolve_user_plugin_base
 from utils.http.internal_client import get_internal_http_client
 
 
@@ -70,10 +70,7 @@ async def get_plugin_media(image_id: str) -> Response:
     #
     # The main server's own resolver implements that rule, so this defers to it
     # rather than adding a fourth spelling that can drift from the minter.
-    resolve = runtime.resolve_user_plugin_base
-    if resolve is None:
-        raise HTTPException(status_code=503, detail="plugin server not resolved yet")
-    base = str(resolve()).rstrip("/")
+    base = resolve_user_plugin_base().rstrip("/")
     client = get_internal_http_client()
     try:
         async with asyncio.timeout(_TOTAL_DEADLINE_S), client.stream(

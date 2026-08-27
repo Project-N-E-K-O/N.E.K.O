@@ -2355,7 +2355,7 @@ async def test_media_route_bounds_a_trickling_upstream(monkeypatch):
         pmr, "get_internal_http_client",
         lambda: type("C", (), {"stream": lambda self, *a, **k: _Stream()})(),
     )
-    monkeypatch.setattr(pmr.runtime, "resolve_user_plugin_base", lambda: "http://127.0.0.1:1")
+    monkeypatch.setattr(pmr, "resolve_user_plugin_base", lambda: "http://127.0.0.1:1")
 
     started = _time.monotonic()
     with pytest.raises(Exception) as raised:
@@ -2419,9 +2419,8 @@ async def test_media_proxy_follows_the_port_that_minted_the_url(monkeypatch):
     monkeypatch.setattr(pmr, "get_internal_http_client", lambda: _Client())
     monkeypatch.setenv("NEKO_USER_PLUGIN_SERVER_PORT", "49999")
 
-    from app.main_server import _resolve_user_plugin_base
-
-    monkeypatch.setattr(pmr.runtime, "resolve_user_plugin_base", _resolve_user_plugin_base)
+    # Deliberately NOT stubbed: the point is that the router reads the same
+    # rule the minter does, so this exercises the real resolver.
 
     response = await pmr.get_plugin_media("abc123")
 
@@ -2501,7 +2500,7 @@ async def test_httpx_timeouts_are_reported_as_timeouts(monkeypatch):
         pmr, "get_internal_http_client",
         lambda: type("C", (), {"stream": lambda self, *a, **k: _Stream()})(),
     )
-    monkeypatch.setattr(pmr.runtime, "resolve_user_plugin_base", lambda: "http://127.0.0.1:1")
+    monkeypatch.setattr(pmr, "resolve_user_plugin_base", lambda: "http://127.0.0.1:1")
 
     with pytest.raises(Exception) as raised:
         await pmr.get_plugin_media("abc123")

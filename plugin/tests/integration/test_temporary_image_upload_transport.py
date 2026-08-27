@@ -210,3 +210,62 @@ def test_image_transport_rejects_oversized_payload_before_sending() -> None:
 
     asyncio.run(_run())
 
+
+
+def test_shutdown_completes_promptly_with_a_real_send_in_flight() -> None:
+    """Real sockets, because the property is a libzmq property.
+
+    An earlier revision of this guard stubbed both contexts so term() became a
+    list append. That made the assertion vacuous AND let a false premise stand:
+    the code was restructured to defer termination on the belief that term()
+    would wait out the sender's timeout. It does not -- zmq_ctx_term first
+    interrupts blocked calls with ETERM and only then waits -- and stubbing it
+    is precisely why the belief survived review.
+
+    So this drives a genuinely blocked send on a real full socket and measures.
+    """
+    import threading
+    import time
+
+    import zmq
+
+    host = HostTransport()
+    child = ChildTransport(
+        host.downlink_endpoint,
+        host.uplink_endpoint,
+        host.image_uplink_endpoint,
+    )
+    # No consumer, tiny outbound queue: the send below genuinely blocks.
+    child._img_sock.setsockopt(zmq.SNDHWM, 1)
+
+    entered = threading.Event()
+    outcome: list[object] = []
+
+    def _blocked_send() -> None:
+        entered.set()
+        try:
+            # A long budget on purpose: if shutdown waited for the sender
+            # rather than interrupting it, this is what it would wait for.
+            for _ in range(200):
+                child._send_image_sync(b"meta", b"x" * 65536, timeout=60.0)
+        except BaseException as exc:  # noqa: BLE001 - recording the outcome
+            outcome.append(type(exc).__name__)
+
+    sender = threading.Thread(target=_blocked_send, daemon=True)
+    sender.start()
+    assert entered.wait(5), "sender never started"
+    time.sleep(0.4)  # let it reach the blocking poll
+
+    started = time.monotonic()
+    child.close()
+    elapsed = time.monotonic() - started
+
+    sender.join(10)
+    try:
+        host.close()
+    except Exception:
+        pass
+
+    # Far below the 60s budget the sender asked for: term interrupted it.
+    assert elapsed < 5.0, f"shutdown waited {elapsed:.1f}s on an in-flight send"
+    assert outcome, "the blocked sender was never unblocked"
