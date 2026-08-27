@@ -179,6 +179,10 @@ class ChildTransport:
 
         self._img_sock: Any | None = None
         self._img_lock = threading.Lock()
+        # Set when shutdown could not take the media socket and handed the
+        # whole teardown -- socket close AND context termination -- to the
+        # in-flight sender. See close().
+        self._defer_sync_ctx_term = False
         if image_uplink_endpoint:
             self._img_sock = self._sync_ctx.socket(zmq.PUSH)
             self._img_sock.setsockopt(zmq.LINGER, 0)
@@ -262,9 +266,20 @@ class ChildTransport:
             # closes it. libzmq sockets are not thread safe: closing one from
             # another thread while a send or poll is in progress is undefined
             # behaviour, not merely impolite (CodeRabbit).
+            deferred_term = False
             if self._closed:
                 self._close_img_sock_locked()
+                deferred_term = self._defer_sync_ctx_term
+                self._defer_sync_ctx_term = False
             self._img_lock.release()
+            if deferred_term:
+                # Only now is every socket in this context closed, which is
+                # what term() waits for. Done after releasing the lock so a
+                # blocking term does not hold it.
+                try:
+                    self._sync_ctx.term()
+                except Exception:
+                    pass
 
     # ── uplink (thread-safe, any thread) ─────────────────────────
 
@@ -305,26 +320,41 @@ class ChildTransport:
                 sock.close(linger=0)
             except Exception:
                 pass
-        # Bounded. A handler inside _send_image_sync holds this lock for its
-        # whole upload timeout, so an unconditional acquire here makes plugin
-        # shutdown wait on an in-flight upload -- and a backpressured media
-        # socket whose host consumer has gone away holds it for the full
-        # interval (Codex P2). Closing the socket without the lock is the
-        # lesser evil: the sender is already failing, and ZeroMQ close is what
-        # unblocks it. Never leave a STOP wedged behind a doomed send.
+        # Bounded, and deliberately not unconditional. A handler inside
+        # _send_image_sync holds this lock for its whole upload, so an
+        # unconditional acquire made shutdown wait on an in-flight upload
+        # (Codex P2). Closing the socket anyway is not the answer either:
+        # libzmq sockets are not thread safe, so closing one while a send is in
+        # progress is undefined behaviour -- a crash instead of a hang
+        # (CodeRabbit).
+        media_closed = False
         if self._img_lock.acquire(timeout=_IMG_LOCK_SHUTDOWN_WAIT_S):
             try:
                 self._close_img_sock_locked()
+                media_closed = True
             finally:
                 self._img_lock.release()
-        # Else: an in-flight send holds the lock, and closing the socket from
-        # here would race it -- undefined behaviour in libzmq, which trades a
-        # hang for a crash. _closed is already set above, so that sender closes
-        # the socket itself on its way out. The wait that remains is bounded by
-        # the sender's own timeout, which the SDK clamps.
-        for ctx in (self._async_ctx, self._sync_ctx):
+
+        # _sync_ctx owns the media socket as well as the uplink, and term()
+        # blocks until EVERY socket in the context is closed. Terminating it
+        # here while an in-flight send still owns the media socket would put
+        # back exactly the wait the bounded acquire above removed -- up to the
+        # sender's full timeout, against a host shutdown budget of about two
+        # seconds, so the graceful STOP ends in forced termination regardless
+        # (Codex P2).
+        #
+        # Hand the rest of the teardown to that sender instead: it closes the
+        # socket on its way out and terminates the context afterwards.
+        # _async_ctx owns only the downlink, already closed above, so it
+        # terminates here either way.
+        self._defer_sync_ctx_term = not media_closed
+        try:
+            self._async_ctx.term()
+        except Exception:
+            pass
+        if media_closed:
             try:
-                ctx.term()
+                self._sync_ctx.term()
             except Exception:
                 pass
 

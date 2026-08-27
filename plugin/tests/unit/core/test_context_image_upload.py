@@ -599,8 +599,10 @@ def _stub_child_transport():
     )
     child._dl_sock = SimpleNamespace(close=lambda **_kw: None)
     child._ul_sock = SimpleNamespace(close=lambda **_kw: None)
-    child._async_ctx = SimpleNamespace(term=lambda: None)
-    child._sync_ctx = SimpleNamespace(term=lambda: None)
+    child._defer_sync_ctx_term = False
+    child._termed = []
+    child._async_ctx = SimpleNamespace(term=lambda: child._termed.append("async"))
+    child._sync_ctx = SimpleNamespace(term=lambda: child._termed.append("sync"))
     return child
 
 
@@ -803,3 +805,78 @@ def test_the_host_marks_the_downlink_ready_only_after_the_start_hook():
     hook = src.index("lifecycle.command_loop_start")
     marked = src.index("ctx._downlink_ready.set()")
     assert marked > hook, "the ready flag is set before the start hook completes"
+
+def test_shutdown_does_not_terminate_a_context_whose_socket_is_still_in_use():
+    """term() blocks until EVERY socket in the context is closed.
+
+    The media socket shares _sync_ctx with the uplink, so terminating it while
+    an in-flight send still owns the media socket puts back exactly the wait
+    the bounded lock acquisition removed -- and the host's shutdown budget is
+    far shorter than an upload's, so the graceful STOP would end in a forced
+    kill anyway.
+    """
+    import threading
+    import time
+
+    from plugin.core import zmq_transport as zt
+
+    child = _stub_child_transport()
+    holder_ready = threading.Event()
+    release = threading.Event()
+
+    def _hold():
+        with child._img_lock:
+            holder_ready.set()
+            release.wait(60)
+
+    holder = threading.Thread(target=_hold, daemon=True)
+    holder.start()
+    assert holder_ready.wait(5)
+    try:
+        started = time.monotonic()
+        child.close()
+        elapsed = time.monotonic() - started
+    finally:
+        release.set()
+        holder.join(5)
+
+    assert elapsed < zt._IMG_LOCK_SHUTDOWN_WAIT_S + 2
+    # The downlink's context has nothing outstanding, so it goes now.
+    assert child._termed == ["async"]
+    # The media socket was neither closed nor raced.
+    assert child._img_closed == []
+    # And the rest of the teardown was handed to the sender.
+    assert child._defer_sync_ctx_term is True
+
+
+def test_the_in_flight_sender_finishes_the_teardown_it_was_handed():
+    """Socket close first, THEN the context -- term waits on the close."""
+    child = _stub_child_transport()
+    child._closed = True
+    child._defer_sync_ctx_term = True
+
+    # A send entering after shutdown is refused inside the critical section --
+    # but its finally still runs, so it performs the handed-off teardown. That
+    # is the same code path an already-in-flight send takes on its way out.
+    with pytest.raises(RuntimeError, match="closed"):
+        child._send_image_sync(b"meta", b"payload", timeout=1.0)
+
+    assert child._img_closed == [True]
+    assert child._termed == ["sync"]
+
+    # One-shot: a second send must not terminate an already-terminated context.
+    child._termed.clear()
+    child._img_closed.clear()
+    with pytest.raises(RuntimeError, match="closed"):
+        child._send_image_sync(b"meta", b"payload", timeout=1.0)
+    assert child._termed == []
+
+
+def test_an_uncontended_shutdown_still_tears_everything_down_itself():
+    """Nothing is deferred when there is nothing in flight."""
+    child = _stub_child_transport()
+    child.close()
+
+    assert child._img_closed == [True]
+    assert child._termed == ["async", "sync"]
+    assert child._defer_sync_ctx_term is False
