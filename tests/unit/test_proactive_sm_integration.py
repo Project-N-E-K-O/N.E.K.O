@@ -3622,3 +3622,54 @@ async def test_async_rejection_after_a_committed_image_retires_the_session():
     assert sess._fatal_error_occurred is True
     sess.close.assert_awaited_once_with()
     assert mgr.pending_agent_callbacks == [cb]
+
+
+async def test_expiry_after_native_media_retires_the_session():
+    """A retracted callback cannot leave its committed image behind.
+
+    The retract re-filter runs after `_stream_cb_media` may already have
+    persisted a native image. Returning here without retiring leaves an
+    unlabelled image in the live session while the callback is gone from the
+    queue entirely — so no retry ever comes back to finish it.
+    """
+    sess = _make_voice_sess()
+    sess._is_gemini = False
+    sess._supports_native_image = True
+    sess._visual_delivery_mode = "native"
+    sess._fatal_error_occurred = False
+    sess._inject_rejection_handlers = {}
+    sess.close = AsyncMock()
+    mgr = _make_mgr(session=sess)
+    mgr.end_session = AsyncMock()
+    mgr._schedule_proactive_retry = MagicMock()
+    retirement_tasks = []
+
+    def _fire_retirement(coro):
+        task = asyncio.create_task(coro)
+        retirement_tasks.append(task)
+        return task
+
+    mgr._fire_task = _fire_retirement
+
+    cb = {
+        "_callback_delivery_id": "id-expired-after-native-media",
+        "status": "completed",
+        "summary": "native image then expiry",
+        "media_images": ["callback-image"],
+    }
+
+    async def _stream_image(_image_b64, **_kwargs):
+        # 图落进会话之后，这条 callback 才过期被撤回。
+        cb[CALLBACK_EXPIRES_AT_KEY] = time.monotonic() - 1.0
+        return SimpleNamespace(accepted=True, mode="native")
+
+    sess.stream_image = _stream_image
+    mgr.pending_agent_callbacks = [cb]
+
+    delivered = await core_module.LLMSessionManager.trigger_agent_callbacks(mgr)
+    await asyncio.gather(*retirement_tasks)
+
+    assert delivered is False
+    assert sess.inject_calls == 0
+    assert sess._fatal_error_occurred is True
+    sess.close.assert_awaited_once_with()

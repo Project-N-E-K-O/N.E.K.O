@@ -393,12 +393,62 @@ class LifecycleMixin:
             )
             if not done:
                 # 停不下来的 listener 仍绑在退休会话上。不能在它之上装替换
-                # listener（两个 receive 循环同时跑同一个 client），fail-closed
-                # 交给调用方 —— 它们都把 False 当成"放弃这次重连"。
+                # listener（两个 receive 循环同时跑同一个 client）。
+                #
+                # 但**光返回 False 不够**：调用方只会放弃本次投递，
+                # self.session / is_active / message_handler_task 仍然指着一个看
+                # 起来还活着、实际没有 receive 循环的 client —— 之后每一轮都撞上
+                # 同一个卡死的 task、再超时一次，语音从此永远收不到回复。所以这里
+                # 必须把这条会话退休掉，与 handoff 那条超时路径同一判据。
                 logger.error(
-                    '[%s] session reconnect: previous listener cancellation timed out; refusing to install a replacement',
+                    '[%s] session reconnect: previous listener cancellation timed out; retiring the unusable session',
                     self.lanlan_name,
                 )
+                orphan_session = session_ref
+                stuck_listener = previous_task
+                async with self.lock:
+                    # 双身份 CAS：并发的赢家（新 session 或新 listener）绝不能被
+                    # 这条失败路径清掉。
+                    if (
+                        self.session is session_ref
+                        and self.message_handler_task is previous_task
+                    ):
+                        self.session = None
+                        self.message_handler_task = None
+                        self.is_active = False
+                        self.session_ready = False
+                    else:
+                        orphan_session = None
+
+                if orphan_session is not None:
+                    async def _reap_reconnect_session_after_listener_exit():
+                        # 先关（close() 会同步摘掉 socket），再有界 join —— 反过来
+                        # 就是在等一个已经证明停不下来的 task。
+                        try:
+                            await orphan_session.close()
+                        except Exception as reap_err:
+                            logger.debug(
+                                '[%s] session reconnect: orphan close failed: %s',
+                                self.lanlan_name,
+                                reap_err,
+                            )
+                        try:
+                            await asyncio.wait(
+                                {stuck_listener},
+                                timeout=getattr(
+                                    self,
+                                    "_core_voice_listener_cancel_timeout_s",
+                                    2.0,
+                                ),
+                            )
+                        except (asyncio.CancelledError, Exception):
+                            pass
+
+                    reaper = asyncio.create_task(
+                        _reap_reconnect_session_after_listener_exit()
+                    )
+                    _ORPHAN_SESSION_REAPER_TASKS.add(reaper)
+                    reaper.add_done_callback(_ORPHAN_SESSION_REAPER_TASKS.discard)
                 return False
             # 取一次结果，免得旧 listener 的异常变成 "never retrieved" 警告。
             if not previous_task.cancelled():

@@ -320,6 +320,12 @@ class StreamingMixin:
                 # 就在用户毫无察觉的情况下没了。重建完成后由
                 # _flush_pending_input_data 正常放出去。
                 await self.end_session(
+                    # by_server=True：这是内部的 Realtime → Offline 就地替换，不是
+                    # 用户会话结束。默认值会在收尾时向前端推 CHARACTER_LEFT，用户
+                    # 只是发了条文本/拖了张图，却先看到「角色离开」再看到新会话启动
+                    # ——前端可能据此清理对话界面。既有的 idle_session_reset 内部路径
+                    # 就是用 by_server=True 抑制这条推送的，判据一致。
+                    by_server=True,
                     reset_starting_count=False,
                     preserve_pending_input=True,
                 )
@@ -437,6 +443,18 @@ class StreamingMixin:
                         + 1
                     )
                     defer_pending_flush = True
+
+            if input_type == "text" and not isinstance(self.session, OmniOfflineClient):
+                # 纯文本同样是这次 handoff 的发起者，要拿同一把 owner-before-flush
+                # 的锁。end_session 现在会保留拆 session 期间缓存进来的输入
+                # （preserve_pending_input），而 start_session 结束前就会 flush 它们
+                # —— 这条**发起**本次 handoff 的消息却要等本函数往下走才提交。不挡
+                # 一下的话，后到的那条先进历史、先生成，随后这条更早的消息再把它打
+                # 断，用户的两句话顺序就反了。
+                self._deferred_pending_input_flush_count = (
+                    getattr(self, "_deferred_pending_input_flush_count", 0) + 1
+                )
+                defer_pending_flush = True
 
             if input_type in _TEXT_SESSION_INPUT_TYPES:
                 if not await self._ensure_offline_session_for_text_input(input_type):

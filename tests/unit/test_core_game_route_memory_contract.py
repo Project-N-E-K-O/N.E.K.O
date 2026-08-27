@@ -836,11 +836,13 @@ async def test_voice_session_hands_one_shot_user_images_to_offline_vision(
     mgr.session_ready = True
     mgr._emit_cooldown_turn_end_if_needed = Mock(return_value=False)
 
-    async def _end_session(*, reset_starting_count=True, preserve_pending_input=False):
+    async def _end_session(*, by_server=False, reset_starting_count=True, preserve_pending_input=False):
         assert reset_starting_count is False
         # 就地换 offline 会话时必须保留 pending_input_data：拆 session 的
         # await 窗口里并发缓存进来的用户输入不能被 teardown 顺手清掉。
         assert preserve_pending_input is True
+        # 内部就地替换不能给前端推 CHARACTER_LEFT。
+        assert by_server is True
         mgr.session = None
         mgr.is_active = False
 
@@ -868,7 +870,11 @@ async def test_voice_session_hands_one_shot_user_images_to_offline_vision(
     realtime_session.stream_image.assert_not_awaited()
     validate.assert_awaited_once_with("raw-image")
     offline_session.stream_image.assert_awaited_once_with("img-b64")
-    mgr.end_session.assert_awaited_once_with(reset_starting_count=False, preserve_pending_input=True)
+    mgr.end_session.assert_awaited_once_with(
+        by_server=True,
+        reset_starting_count=False,
+        preserve_pending_input=True,
+    )
     mgr.start_session.assert_awaited_once_with(
         mgr.websocket,
         new=False,
@@ -969,11 +975,13 @@ async def test_attachment_stages_before_inputs_cached_during_offline_handoff(
     mgr.pending_agent_callbacks = []
     mgr._fire_task = Mock()
 
-    async def _end_session(*, reset_starting_count=True, preserve_pending_input=False):
+    async def _end_session(*, by_server=False, reset_starting_count=True, preserve_pending_input=False):
         assert reset_starting_count is False
         # 就地换 offline 会话时必须保留 pending_input_data：拆 session 的
         # await 窗口里并发缓存进来的用户输入不能被 teardown 顺手清掉。
         assert preserve_pending_input is True
+        # 内部就地替换不能给前端推 CHARACTER_LEFT。
+        assert by_server is True
         mgr.session = None
         mgr.is_active = False
 
@@ -1011,6 +1019,82 @@ async def test_attachment_stages_before_inputs_cached_during_offline_handoff(
         ("image", "img-b64"),
         ("text", "describe this image"),
     ]
+    assert mgr.pending_input_data == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_initiating_text_submits_before_inputs_cached_during_handoff(
+    monkeypatch,
+):
+    """The message that triggered the handoff must speak first.
+
+    end_session now preserves inputs cached during teardown, and start_session
+    flushes that queue before returning. Without the same owner-before-flush
+    deferral the one-shot attachments use, a text that arrived DURING teardown
+    would enter history and generate first, and the older initiating message
+    would then interrupt it — the user's two turns come out reversed.
+    """
+    mgr = _make_transcript_manager()
+    realtime_session = object.__new__(core_module.OmniRealtimeClient)
+    offline_session = object.__new__(core_module.OmniOfflineClient)
+    offline_session._pending_images = []
+    offline_session.update_max_response_length = Mock()
+    delivery_order = []
+
+    async def _stream_text(text, **_kwargs):
+        assert mgr.session is offline_session
+        delivery_order.append(text)
+
+    offline_session.stream_text = AsyncMock(side_effect=_stream_text)
+    mgr.session = realtime_session
+    mgr.is_active = True
+    mgr.session_ready = True
+    mgr.input_cache_lock = asyncio.Lock()
+    mgr.pending_input_data = []
+    mgr._starting_session_count = 0
+    mgr._session_start_circuit_open = False
+    mgr.session_start_failure_count = 0
+    mgr.session_start_max_failures = 3
+    mgr._emit_cooldown_turn_end_if_needed = Mock(return_value=False)
+    mgr._is_agent_enabled = Mock(return_value=False)
+    mgr.agent_flags = {}
+    mgr.pending_agent_callbacks = []
+    mgr._fire_task = Mock()
+
+    async def _end_session(*, by_server=False, reset_starting_count=True, preserve_pending_input=False):
+        assert preserve_pending_input is True
+        assert by_server is True
+        mgr.session = None
+        mgr.is_active = False
+
+    async def _start_session(_websocket, *, new=False, input_mode=None):
+        assert input_mode == "text"
+        mgr.session = offline_session
+        mgr.is_active = True
+        mgr.session_ready = True
+        # 拆 session 期间到达的第二条消息被保留了下来。
+        mgr.pending_input_data.append(
+            {"input_type": "text", "data": "second message"}
+        )
+        await core_module.LLMSessionManager._flush_pending_input_data(mgr)
+        # 发起本次 handoff 的那条还没提交，缓存的这条必须被挡住。
+        assert delivery_order == []
+
+    mgr.end_session = AsyncMock(side_effect=_end_session)
+    mgr.start_session = AsyncMock(side_effect=_start_session)
+    monkeypatch.setattr(
+        core_module,
+        "dispatch_text_user_message",
+        lambda _name, _text: None,
+    )
+
+    await core_module.LLMSessionManager._process_stream_data_internal(
+        mgr,
+        {"input_type": "text", "data": "first message"},
+    )
+
+    assert delivery_order == ["first message", "second message"]
     assert mgr.pending_input_data == []
 
 
@@ -1368,11 +1452,13 @@ async def test_cached_user_image_hands_ready_voice_session_to_offline_vision(
     ]
     mgr.last_user_engagement_time = None
 
-    async def _end_session(*, reset_starting_count=True, preserve_pending_input=False):
+    async def _end_session(*, by_server=False, reset_starting_count=True, preserve_pending_input=False):
         assert reset_starting_count is False
         # 就地换 offline 会话时必须保留 pending_input_data：拆 session 的
         # await 窗口里并发缓存进来的用户输入不能被 teardown 顺手清掉。
         assert preserve_pending_input is True
+        # 内部就地替换不能给前端推 CHARACTER_LEFT。
+        assert by_server is True
         mgr.session = None
         mgr.is_active = False
 
@@ -1411,7 +1497,11 @@ async def test_cached_user_image_hands_ready_voice_session_to_offline_vision(
             "_user_input_ingress_time": FIXED_TS + 1,
         }
     )
-    mgr.end_session.assert_awaited_once_with(reset_starting_count=False, preserve_pending_input=True)
+    mgr.end_session.assert_awaited_once_with(
+        by_server=True,
+        reset_starting_count=False,
+        preserve_pending_input=True,
+    )
     mgr.start_session.assert_awaited_once_with(
         mgr.websocket,
         new=False,

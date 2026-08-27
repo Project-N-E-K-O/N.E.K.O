@@ -1035,6 +1035,11 @@ class IndependentAsrRuntime:
             return
         lifecycle.transition(VoiceLifecycleEvent.SPEECH_CONFIRMED)
         self._asr_turn_onset_at = time.monotonic()
+        # 直接确认这一路同样要把待确认状态清干净：session 在标记 pending 之后
+        # 才 ready 时，直接路径可能先完成确认，旧 flag / 旧 onset 会留到下一轮
+        # 被复用（CodeRabbit Major）。
+        self._asr_pending_speech_confirmed = False
+        self._asr_pending_speech_onset_at = None
         active_identity = self._capture_runtime_identity(
             ingress_token=event.ingress.ingress_token,
         )
@@ -1188,6 +1193,8 @@ class IndependentAsrRuntime:
             return False
         lifecycle.transition(VoiceLifecycleEvent.SPEECH_CONFIRMED)
         self._asr_turn_onset_at = time.monotonic()
+        self._asr_pending_speech_confirmed = False
+        self._asr_pending_speech_onset_at = None
         active_identity = self._capture_runtime_identity(
             ingress_token=ingress_token,
             turn_token=turn_token,
@@ -2828,7 +2835,6 @@ class IndependentAsrRuntime:
                             if self._asr_pending_speech_onset_at is not None
                             else time.monotonic()
                         )
-                        self._asr_pending_speech_onset_at = None
                         self._asr_pending_speech_confirmed = False
                         self._asr_pending_speech_onset_at = None
                         self._asr_turn_audio_started_at = time.monotonic()
@@ -3232,6 +3238,8 @@ class IndependentAsrRuntime:
                 if asr_session is not None and getattr(asr_session, "is_ready", True):
                     lifecycle.transition(VoiceLifecycleEvent.SPEECH_CONFIRMED)
                     self._asr_turn_onset_at = time.monotonic()
+                    self._asr_pending_speech_confirmed = False
+                    self._asr_pending_speech_onset_at = None
                 else:
                     self._asr_pending_speech_confirmed = True
                     if self._asr_pending_speech_onset_at is None:
@@ -3500,6 +3508,10 @@ class IndependentAsrRuntime:
             return
         lifecycle = self._asr_lifecycle
         if lifecycle is None or not lifecycle.has_pending_turn:
+            # has_pending_turn 还要求 pending buffer 里真有音频：speech 先到、或者
+            # 对应 PCM 被丢弃时会走到这里。不清的话这个 onset 会被**下一个**真实
+            # pending turn 复用，把那一轮的起点提前到上一轮，视觉帧绑错回合。
+            self._asr_pending_turn_onset_at = None
             if lifecycle is not None:
                 lifecycle.discard_unconfirmed_pending_audio()
             return

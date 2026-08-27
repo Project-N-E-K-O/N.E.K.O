@@ -1212,9 +1212,18 @@ class ProactiveMixin:
                         self._clear_voice_delivery_committed(
                             voice_commit_snapshot
                         )
+                        if native_media_prefix_committed:
+                            # 原生图已经不可逆地写进这条会话，而这些 callback 刚被
+                            # 撤回 —— 配对文本永远不会送出去，callback 也已经离开
+                            # 队列（没有重试会来收拾）。留下的就是一张没有说明的
+                            # 图，会被后面某个不相关的用户回合消费。与其他几条
+                            # 「媒体已提交、文本未落地」的路同一判据：退休会话。
+                            _mark_media_session_unsafe()
+                            await _retire_unsafe_media_session()
                         logger.info(
-                            "[%s] trigger_agent_callbacks: voice proactive callbacks retracted before inject",
+                            "[%s] trigger_agent_callbacks: voice proactive callbacks retracted before inject (native prefix committed=%s)",
                             self.lanlan_name,
+                            native_media_prefix_committed,
                         )
                         self.proactive_manager.release_inflight_noop()
                         return False

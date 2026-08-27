@@ -10155,26 +10155,31 @@ def test_speech_onset_is_stamped_at_the_transition_not_after_delivery() -> None:
         )
 
     # 延迟确认路径必须用重连**之前**暂存的时刻，不能用重连完成的时钟。
-    # 这条路由「转换后数行内清掉 pending 标志」唯一识别。
+    # 识别方式：它是唯一一个外层**条件**判断 _asr_pending_speech_confirmed 的迁移点。
+    # （不能用"转换后清掉 pending 标志"来认——每条路径现在都会清，那个判据不再区分。）
     deferred = [
         index
         for index in sites
         if any(
-            "self._asr_pending_speech_confirmed = False" in source[index + offset]
-            for offset in range(1, 9)
-            if index + offset < len(source)
+            "self._asr_pending_speech_confirmed" in source[index - offset]
+            and "=" not in source[index - offset]
+            for offset in range(1, 31)
+            if index - offset >= 0
         )
     ]
     assert deferred, "deferred SPEECH_CONFIRMED path not found"
     for index in deferred:
-        # 只看 onset **赋值语句本身**（可能跨多行），不要把后面那句清除也算进来 ——
-        # 清除同样含这个名字，会让断言恒真。
+        # 只看 onset **赋值语句本身**：按括号配平截断，而不是"扫到某个关键字为止"。
+        # 前一版按关键字截断时把紧随其后的**清除**语句也圈了进来，那句同样含这个
+        # 名字，于是断言恒真 —— 把赋值换成 time.monotonic() 照样跑绿（第三次假绿）。
         statement = []
+        depth = 0
         for offset in range(1, 9):
             line = source[index + offset]
-            if offset > 1 and line.strip().startswith("self._asr_pending_speech_confirmed"):
-                break
             statement.append(line)
+            depth += line.count("(") - line.count(")")
+            if depth <= 0:
+                break
         window = chr(10).join(statement)
         assert "self._asr_pending_speech_onset_at" in window, (
             f"line {index + 1}: the deferred path must reuse the onset captured "
@@ -10199,7 +10204,8 @@ async def test_reconnect_listener_join_is_bounded() -> None:
     manager.lock = asyncio.Lock()
     manager.is_active = True
     manager._core_voice_listener_cancel_timeout_s = 0.05
-    session = SimpleNamespace(handle_messages=AsyncMock())
+    manager.session_ready = True
+    session = SimpleNamespace(handle_messages=AsyncMock(), close=AsyncMock())
     manager.session = session
 
     stuck_release = asyncio.Event()
@@ -10222,11 +10228,23 @@ async def test_reconnect_listener_join_is_bounded() -> None:
     # fail-closed：停不下来的 listener 还绑在退休会话上，不能在它之上再装一个
     # receive 循环；调用方都把 False 当成"放弃这次重连"。
     assert installed is False
-    assert manager.message_handler_task is listener
     session.handle_messages.assert_not_called()
+
+    # 而且必须把这条会话**退休**掉：只返回 False 会留下一个看起来还活着、实际没有
+    # receive 循环的 client，之后每一轮都撞上同一个卡死的 task 再超时一次，语音从此
+    # 永远收不到回复。
+    assert manager.session is None
+    assert manager.message_handler_task is None
+    assert manager.is_active is False
+    assert manager.session_ready is False
 
     stuck_release.set()
     await asyncio.gather(listener, return_exceptions=True)
+    for _ in range(50):
+        if session.close.await_count:
+            break
+        await asyncio.sleep(0.01)
+    session.close.assert_awaited_once_with()
 
 
 @pytest.mark.unit
