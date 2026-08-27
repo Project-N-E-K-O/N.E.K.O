@@ -10761,3 +10761,57 @@ async def test_prerecord_stash_still_arms_while_older_records_are_retained() -> 
     assert [f.image_b64 for f in runtime._prerecord_visual_frames] == [
         "between-turns-frame"
     ]
+
+
+@pytest.mark.unit
+def test_direct_overlap_replay_drops_stale_completed_credits() -> None:
+    """A credit left queued would later be redeemed for a different successor.
+
+    When a completed onset/pause credit coexists with a newer single-slot onset
+    as the preceding delayed final arrives, this direct replay serves the newer
+    onset. Leaving the older credit queued swaps the two turns' visual ownership
+    boundaries later on.
+    """
+    import inspect
+
+    from main_logic.asr_client import runtime as asr_runtime_module
+
+    source = inspect.getsource(asr_runtime_module).splitlines()
+    sites = [
+        index
+        for index, line in enumerate(source)
+        if "self._asr_overlap_onset_at = None" in line
+        and "overlap_onset_at = self._asr_overlap_onset_at"
+        in source[index - 2]
+    ]
+    assert sites, "direct overlap replay consumption site not found"
+    for index in sites:
+        window = chr(10).join(source[index : index + 12])
+        assert "self._asr_overlap_completed_onsets.clear()" in window, (
+            f"line {index + 1}: the direct replay must invalidate stale credits, "
+            f"got: {window!r}"
+        )
+        assert "self._asr_overlap_completed_turns = 0" in window
+
+
+@pytest.mark.unit
+async def test_endpoint_marking_skips_invalidated_records() -> None:
+    """A successor's seal has no business landing on a superseded record."""
+    runtime = _Runtime()
+    runtime._asr_route_mode = "independent"
+
+    first = VoiceTurnToken(ingress=runtime._capture_ingress_token(), turn_id=401)
+    first_id = f"asr-{first.ingress.session_epoch}-{first.turn_id}"
+    runtime._begin_core_multimodal_turn(first_id, first)
+    retained = runtime._core_multimodal_turns[first_id]
+
+    second = VoiceTurnToken(ingress=runtime._capture_ingress_token(), turn_id=402)
+    second_id = f"asr-{second.ingress.session_epoch}-{second.turn_id}"
+    runtime._begin_core_multimodal_turn(second_id, second)
+    active = runtime._core_multimodal_turns[second_id]
+
+    runtime._asr_turn_endpointed_at = time.monotonic()
+    runtime._mark_independent_asr_endpoint_if_sealed()
+
+    assert active.endpoint_at is not None
+    assert retained.endpoint_at is None

@@ -563,7 +563,9 @@ class AsrRuntimeMixin:
             endpointed_at = time.monotonic()
         sealed_at = float(endpointed_at)
         for record in self._core_multimodal_turns.values():
-            if record.endpoint_at is not None:
+            # 已作废的记录留着只是为了保住正在派发的那条 final 的话，它不会再交出
+            # 图；把后继回合的封口盖到它头上没有意义，也让状态更难读。
+            if record.invalidated.is_set() or record.endpoint_at is not None:
                 continue
             # ⚠️ 判据不能用 started_at：overlap 的后继发声其起点**早于**上一轮封口
             # （onset 是在上一轮还 ACTIVE 时记下的），拿 started_at 比会把上一轮的

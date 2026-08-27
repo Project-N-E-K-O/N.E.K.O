@@ -3920,6 +3920,14 @@ class IndependentAsrRuntime:
         overlap_onset_at = self._asr_overlap_onset_at
         self._asr_overlap_onset_token = None
         self._asr_overlap_onset_at = None
+        if overlap_token is not None:
+            # 单槽 onset 和已兑换成 credit 的旧周期同时存在时，这条**直接**重放服务
+            # 的是新的那个 onset。留着旧 credit 会让它稍后被另一个后继兑走，两轮的
+            # 视觉所有权边界互换 —— 有效帧被丢、上一轮的帧又去喂错回合。这条路径
+            # 已经接管了后继回合，旧 credit 到此作废。
+            self._asr_overlap_completed_token = None
+            self._asr_overlap_completed_onsets.clear()
+            self._asr_overlap_completed_turns = 0
         if (
             detector_ref is not None
             and self._asr_lifecycle is lifecycle_ref
