@@ -140,6 +140,58 @@ describe('ConfigValueEditor — profile overlay 保持稀疏', () => {
     expect(lastEmit(emitted)).toEqual({})
   })
 
+  it('重置某段最后一个覆盖项时，摘掉空掉的父表而不是存空表', async () => {
+    // 后端 deep_merge 把空 mapping 当「替换」处理，存下 { llm: {} } 会把整段
+    // 基线抹掉，而预览的合并不实现这条语义，界面上还显示着继承内容。
+    const baseline = { llm: { model: 'gpt-a', temperature: 1 } }
+    const { host, emitted } = mountEditor({ llm: { model: 'mine' } }, baseline)
+    await nextTick()
+
+    const row = rowFor(host, 'model')
+    expect(opsButtons(row)).toEqual(['common.reset'])
+    ;(row.querySelector(':scope > .ops button') as HTMLButtonElement).click()
+    await nextTick()
+
+    expect(lastEmit(emitted)).toEqual({})
+  })
+
+  it('多层嵌套时剪枝一路向上冒泡', async () => {
+    const baseline = { a: { b: { c: 0, d: 2 } } }
+    const { host, emitted } = mountEditor({ a: { b: { c: 1 } } }, baseline)
+    await nextTick()
+
+    const row = rowFor(host, 'c')
+    ;(row.querySelector(':scope > .ops button') as HTMLButtonElement).click()
+    await nextTick()
+
+    expect(lastEmit(emitted)).toEqual({})
+  })
+
+  it('基线里没有的自定义空表是显式意图，不被剪掉', async () => {
+    const baseline = { alpha: 'a' }
+    const { host, emitted } = mountEditor({ custom: { x: 1 } }, baseline)
+    await nextTick()
+
+    const row = rowFor(host, 'x')
+    ;(row.querySelector(':scope > .ops button') as HTMLButtonElement).click()
+    await nextTick()
+
+    expect(lastEmit(emitted)).toEqual({ custom: {} })
+  })
+
+  it('overlay 数组比基线短时，补齐中间位置取基线值而不是留空洞', async () => {
+    const baseline = { hosts: ['a', 'b', 'c'] }
+    const { host, emitted } = mountEditor({ hosts: ['a'] }, baseline)
+    await nextTick()
+
+    const inputs = Array.from(host.querySelectorAll('input')) as HTMLInputElement[]
+    expect(inputs).toHaveLength(3)
+    typeInto(inputs[2]!, 'c2')
+    await nextTick()
+
+    expect(lastEmit(emitted)).toEqual({ hosts: ['a', 'b', 'c2'] })
+  })
+
   it('根节点隐藏 plugin 段（profile 不允许覆盖）', async () => {
     const baseline = { plugin: { id: 'demo', name: 'Demo' }, alpha: 'a' }
     const { host } = mountEditor({}, baseline)

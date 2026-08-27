@@ -152,6 +152,11 @@ function asPlainObject(v: unknown): Record<string, any> | null {
   return v !== null && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, any>) : null
 }
 
+function isEmptyPlainObject(v: unknown): boolean {
+  const o = asPlainObject(v)
+  return o !== null && Object.keys(o).length === 0
+}
+
 const overlayObject = computed<Record<string, any>>(() => asPlainObject(props.modelValue) ?? {})
 
 const displayValue = computed<any>(() =>
@@ -330,7 +335,17 @@ const indentStyle = computed(() => {
 function updateObjectKey(k: string, v: any) {
   if (!isValidKeySegment(k)) return
   const next = { ...overlayObject.value }
-  next[k] = v
+  // 子层把最后一个覆盖项重置掉后会回传空对象。基线里该键是张表时，空表不是
+  // 「什么都不覆盖」而是「清空这张表」—— 后端 deep_merge 把空 mapping 当替换
+  // 处理（config_merge.py），存下去会把整段基线抹掉，而前端预览的合并不实现
+  // 这条语义，界面上还显示着继承内容。所以把键本身摘掉让它退回继承；摘完自己
+  // 也空了就继续向上冒泡。基线里没有的键是 profile 自己建的空表，属显式意图，
+  // 保留。
+  if (isEmptyPlainObject(v) && asPlainObject(baselineChild(k)) !== null) {
+    delete next[k]
+  } else {
+    next[k] = v
+  }
   emitUpdate(next)
 }
 
@@ -353,7 +368,11 @@ function arrayHasIndex(idx: number) {
 
 function updateArrayIndex(idx: number, v: any) {
   const a = currentArray()
-  while (a.length < idx) a.push(undefined)
+  // overlay 数组比 baseline 短时，界面照样显示后面的继承项。补齐中间位置必须
+  // 取 baseline 的对应元素 —— 填 undefined 会在整体替换语义下变成 null 空洞，
+  // 后端 tomli_w 也序列化不了。
+  const b = Array.isArray(props.baselineValue) ? props.baselineValue : []
+  while (a.length < idx) a.push(b[a.length])
   if (a.length === idx) a.push(v)
   else a[idx] = v
   emitUpdate(a)
