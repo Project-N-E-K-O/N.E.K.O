@@ -465,10 +465,21 @@ def test_list_isolates_a_tool_when_a_persisted_resource_fails_integrity(tmp_path
     assert {item["id"] for item in store.list_items()} == {valid["id"], damaged["id"]}
     (store.root / damaged["id"] / "default.png").write_bytes(b"truncated")
 
-    assert [item["id"] for item in store.list_items()] == [valid["id"]]
+    # 列表这一层不再逐字节重算 digest（太贵，前端每次 focus 都会拉列表），
+    # 所以内容被篡改的道具会先继续出现在列表里……
+    assert {item["id"] for item in store.list_items()} == {valid["id"], damaged["id"]}
+    # ……但真正消费它的地方立刻拒绝：详情页 / 编辑页走全量校验。
     with pytest.raises(AvatarToolStoreError) as raised:
         store.get_detail(damaged["id"])
     assert raised.value.code == "record_invalid"
+
+    # 硬重载（重启会调 initialize）重新逐字节扫一遍，把它隔离出列表。
+    try:
+        store.initialize()
+        assert [item["id"] for item in store.list_items()] == [valid["id"]]
+        assert damaged["id"] in avatar_tool_store._QUARANTINED_TOOL_IDS[store._root_key()]
+    finally:
+        avatar_tool_store._QUARANTINED_TOOL_IDS.pop(store._root_key(), None)
 
 
 def test_initialize_and_list_wrap_unreadable_store_errors(tmp_path, monkeypatch):
@@ -1675,3 +1686,83 @@ def test_delete_cleanup_failure_registers_recovery_and_self_heals_without_restar
         assert store._root_key() not in avatar_tool_store._RECOVERY_PENDING_ROOTS
     finally:
         avatar_tool_store._RECOVERY_PENDING_ROOTS.discard(store._root_key())
+
+
+@pytest.mark.unit
+def test_list_never_rehashes_while_hard_reload_does(tmp_path, monkeypatch):
+    """The focus-path list must stay O(tools), not O(bytes on disk)."""
+    monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
+    store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
+    for index in range(3):
+        _create_tool(
+            store,
+            name=f"Tool {index}",
+            change_mode="press-swap",
+            change_meanings=["meaning"],
+            default_image=_png(),
+            change_images=[_png()],
+        )
+
+    digests = []
+    real_digest = AvatarToolStore._file_digest
+
+    def counting_digest(path):
+        digests.append(str(path))
+        return real_digest(path)
+
+    monkeypatch.setattr(AvatarToolStore, "_file_digest", staticmethod(counting_digest))
+    try:
+        assert len(store.list_items()) == 3
+        assert digests == [], "list_items must not recompute resource digests"
+
+        store.initialize()
+        assert digests, "the hard reload must recompute resource digests"
+        assert avatar_tool_store._QUARANTINED_TOOL_IDS[store._root_key()] == set()
+    finally:
+        avatar_tool_store._QUARANTINED_TOOL_IDS.pop(store._root_key(), None)
+
+
+@pytest.mark.unit
+def test_a_transient_read_failure_quarantines_but_an_update_releases_it(tmp_path, monkeypatch):
+    """Quarantine is a snapshot, not a life sentence: a repair must clear it."""
+    monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
+    store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
+    tool = _create_tool(
+        store,
+        name="Locked",
+        change_mode="press-swap",
+        change_meanings=["meaning"],
+        default_image=_png(),
+        change_images=[_png()],
+    )
+
+    def locked_digest(path):
+        raise OSError("file locked by another process")
+
+    monkeypatch.setattr(AvatarToolStore, "_file_digest", staticmethod(locked_digest))
+    try:
+        # 文件本身没坏，只是这一轮读不到 —— 硬重载仍然把它隔离掉。
+        store.initialize()
+        assert store.list_items() == []
+        assert avatar_tool_store._QUARANTINED_TOOL_IDS[store._root_key()] == {tool["id"]}
+
+        monkeypatch.undo()
+        monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
+        # 锁一放开，列表仍然沿用上一次硬重载的判定 —— 这是刻意的快照语义。
+        assert store.list_items() == []
+
+        store.update_tool(
+            tool["id"],
+            base_revision=tool["revision"],
+            name="Repaired",
+            change_mode="press-swap",
+            change_meanings=["meaning"],
+            default_resource="default.png",
+            default_image=None,
+            change_resources=["change-000.png"],
+            change_images=[],
+        )
+        assert [item["name"] for item in store.list_items()] == ["Repaired"]
+        assert avatar_tool_store._QUARANTINED_TOOL_IDS[store._root_key()] == set()
+    finally:
+        avatar_tool_store._QUARANTINED_TOOL_IDS.pop(store._root_key(), None)

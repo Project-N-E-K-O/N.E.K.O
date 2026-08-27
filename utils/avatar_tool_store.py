@@ -79,6 +79,10 @@ _REVISION_PATTERN = re.compile(r"^[0-9]+-[0-9]+$")
 _RESOURCE_DIGEST_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 _STORE_LOCK = threading.RLock()
 _RECOVERY_PENDING_ROOTS: set[str] = set()
+# 上一次硬重载（initialize / recovery）判定为损坏的道具，按 store root 分组。
+# 只在 _rescan_integrity 里整体重建，成功的 create/update/delete 会解除单个
+# 道具的隔离；进程内状态，重启即重新评估。
+_QUARANTINED_TOOL_IDS: dict[str, set[str]] = {}
 logger = logging.getLogger(__name__)
 
 
@@ -334,6 +338,7 @@ class AvatarToolStore:
                 return
             try:
                 self._recover_interrupted_mutations()
+                self._rescan_integrity()
             except OSError as exc:
                 raise AvatarToolStoreError(
                     "avatar_tools_directory_unavailable",
@@ -358,6 +363,7 @@ class AvatarToolStore:
             try:
                 self._ensure_directory()
                 self._recover_interrupted_mutations()
+                self._rescan_integrity()
             except AvatarToolStoreError:
                 _RECOVERY_PENDING_ROOTS.add(root_key)
                 raise
@@ -369,6 +375,40 @@ class AvatarToolStore:
                     status_code=503,
                 ) from exc
             _RECOVERY_PENDING_ROOTS.discard(root_key)
+
+    def _rescan_integrity(self) -> None:
+        # list_items 每次列表都逐字节重算 digest 太贵（前端在 window focus /
+        # visibilitychange / 每次增删改后都会拉列表），所以那一层只做轻量校验。
+        # 逐字节校验收口到三个点：这里（启动 / 恢复时的硬重载）、取静态资源时、
+        # 以及互动锁内那次 read_record(verify_resources=True)。本次扫描认定损坏
+        # 的道具进隔离集，列表跳过它们，重启应用就会重新评估。
+        quarantined: set[str] = set()
+        for candidate in self.root.iterdir():
+            if (
+                candidate.is_symlink()
+                or not candidate.is_dir()
+                or not is_local_avatar_tool_id(candidate.name)
+            ):
+                continue
+            try:
+                self._read_record_from_directory(
+                    candidate.name,
+                    candidate,
+                    verify_resources=True,
+                )
+            except (AvatarToolStoreError, OSError) as exc:
+                logger.warning(
+                    "Quarantining local avatar tool %s after integrity rescan: %s",
+                    candidate.name,
+                    exc,
+                )
+                quarantined.add(candidate.name)
+        _QUARANTINED_TOOL_IDS[self._root_key()] = quarantined
+
+    def _release_quarantine(self, tool_id: str) -> None:
+        quarantined = _QUARANTINED_TOOL_IDS.get(self._root_key())
+        if quarantined is not None:
+            quarantined.discard(tool_id)
 
     def _recover_interrupted_mutations(self) -> None:
         def remove_owned_directory(directory: Path) -> None:
@@ -738,13 +778,21 @@ class AvatarToolStore:
                     "Avatar tool storage is unavailable",
                     status_code=503,
                 ) from exc
+            quarantined = _QUARANTINED_TOOL_IDS.get(self._root_key(), frozenset())
             for candidate in candidates:
                 if candidate.is_symlink() or not candidate.is_dir() or not is_local_avatar_tool_id(candidate.name):
                     continue
+                if candidate.name in quarantined:
+                    logger.warning(
+                        "Skipping quarantined local avatar tool %s", candidate.name
+                    )
+                    continue
                 try:
+                    # 见 _rescan_integrity：这里只做轻量校验（记录形状、资源存在、
+                    # 闭包一致），不重算 digest。
                     record = self.read_record(
                         candidate.name,
-                        verify_resources=True,
+                        verify_resources=False,
                     )
                     items.append(self._public_item(record))
                 except (AvatarToolStoreError, OSError) as exc:
@@ -852,6 +900,7 @@ class AvatarToolStore:
                 # 进程生命周期内再也要不回来，用户只会看到 storage_limit_reached。
                 _RECOVERY_PENDING_ROOTS.add(self._root_key())
                 logger.warning("Could not clean deleted avatar tool %s", deleting)
+            self._release_quarantine(tool_id)
             return tool_id
 
     def _prepare_tool_contents(
@@ -1061,6 +1110,7 @@ class AvatarToolStore:
                         "Local avatar tool ID already belongs to a different creation",
                         status_code=409,
                     )
+                self._release_quarantine(tool_id)
                 return self._public_item(current)
             if len(self.list_items()) >= self.limits["maxTools"]:
                 raise AvatarToolStoreError("tool_limit_reached", "Avatar tool limit reached", status_code=409)
@@ -1078,6 +1128,7 @@ class AvatarToolStore:
             except BaseException:
                 self._cleanup_failed_staging(temporary)
                 raise
+            self._release_quarantine(tool_id)
             return self._public_item(record)
 
     def update_tool(
@@ -1283,6 +1334,9 @@ class AvatarToolStore:
                 shutil.rmtree(backup)
             except OSError:
                 logger.warning("Could not remove avatar tool update backup %s", backup)
+            # 整个目录已被 _write_staged_tool 逐字节校验过的新内容替换，
+            # 所以上一次硬重载的隔离判定对它已经失效。
+            self._release_quarantine(tool_id)
             return self._public_item(record)
 
 
