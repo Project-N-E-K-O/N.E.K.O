@@ -13,6 +13,39 @@ MAX_UPLOADED_IMAGE_BYTES = 8 * 1024 * 1024
 MAX_SOURCE_IMAGE_BYTES = 32 * 1024 * 1024
 MAX_SOURCE_IMAGE_PIXELS = 16 * 1024 * 1024
 
+# Concurrent decodes, per plugin process.
+#
+# Every other limit here is per IMAGE: 32 MiB in, 16 MP, 8 MiB out. None of
+# them bounds how many decodes run at once, and the transport's queue depth
+# does not either, because the decode happens BEFORE anything is submitted. A
+# plugin that fires many uploads together therefore schedules that many Pillow
+# decodes into the default executor, each holding a full uncompressed bitmap --
+# a 16 MP source is ~64 MB as RGBA, so a burst measured in dozens is measured
+# in gigabytes (Codex P2).
+#
+# The realistic case is not a hostile plugin, which has easier ways to spend
+# memory, but an ordinary one uploading in a loop without thinking about
+# concurrency. Two lets a slow transport overlap with the next decode while
+# keeping the ceiling to roughly one image's working set either side of it.
+MAX_CONCURRENT_NORMALIZATIONS = 2
+_normalize_slots: "asyncio.Semaphore | None" = None
+_normalize_slots_loop: "asyncio.AbstractEventLoop | None" = None
+
+
+def _acquire_normalize_slot() -> "asyncio.Semaphore":
+    """Return this loop's decode semaphore, creating it on first use.
+
+    Bound lazily and re-created when the running loop changes: a plugin process
+    may restart its loop, and a semaphore bound to a dead loop would deadlock
+    every later upload rather than merely bounding it.
+    """
+    global _normalize_slots, _normalize_slots_loop
+    loop = asyncio.get_running_loop()
+    if _normalize_slots is None or _normalize_slots_loop is not loop:
+        _normalize_slots = asyncio.Semaphore(MAX_CONCURRENT_NORMALIZATIONS)
+        _normalize_slots_loop = loop
+    return _normalize_slots
+
 
 def normalize_image_to_jpeg(data: bytes) -> bytes:
     """Decode one supported image payload and return bounded JPEG bytes."""
@@ -79,7 +112,11 @@ class PluginImages:
             raise ValueError("image data must not be empty")
         if len(data) > MAX_SOURCE_IMAGE_BYTES:
             raise ValueError("source image exceeds the 32 MiB decode limit")
-        jpeg = await asyncio.to_thread(normalize_image_to_jpeg, bytes(data))
+        # Bounded: the size checks above cap ONE image, not how many decode
+        # at once. Held only across the decode, not the upload, so a slow
+        # transport cannot stall the queue behind it.
+        async with _acquire_normalize_slot():
+            jpeg = await asyncio.to_thread(normalize_image_to_jpeg, bytes(data))
         result = await self._host_ctx._upload_image(
             jpeg,
             mime="image/jpeg",

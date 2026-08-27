@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+from unittest.mock import patch
+import time
 from io import BytesIO
 from pathlib import Path
 
@@ -345,3 +347,66 @@ def test_images_upload_fails_fast_while_plugin_is_freezing(tmp_path: Path) -> No
         asyncio.run(ctx.images.upload(_png_bytes(), timeout=10.0))
 
     assert transport.uploaded == []
+
+
+def test_concurrent_uploads_bound_how_many_decodes_run_at_once(tmp_path: Path) -> None:
+    """Per-image limits do not bound a burst.
+
+    32 MiB in / 16 MP / 8 MiB out each cap ONE image, and the transport queue
+    cannot help because the decode happens before anything is submitted. Without
+    a slot limit a plugin uploading in a loop schedules every decode at once,
+    each holding a full uncompressed bitmap.
+    """
+    from plugin.sdk.shared.core import images as images_mod
+
+    live = 0
+    peak = 0
+    real_normalize = images_mod.normalize_image_to_jpeg
+
+    def _counting_normalize(data: bytes) -> bytes:
+        nonlocal live, peak
+        live += 1
+        peak = max(peak, live)
+        try:
+            time.sleep(0.02)  # hold the slot long enough for others to pile up
+            return real_normalize(data)
+        finally:
+            live -= 1
+
+    async def _run() -> None:
+        responses: asyncio.Queue[dict[str, object]] = asyncio.Queue()
+        transport = _ImageTransport(responses)
+        ctx = PluginContext(
+            plugin_id="demo",
+            config_path=tmp_path / "plugin.toml",
+            logger=_Logger(),  # type: ignore[arg-type]
+            status_queue=None,
+            _response_queue=responses,
+            _image_transport=transport,
+        )
+        transport.on_response = ctx._dispatch_direct_response
+        await asyncio.gather(*(
+            ctx.images.upload(_png_bytes(), mime="image/png") for _ in range(8)
+        ))
+
+    with patch.object(images_mod, "normalize_image_to_jpeg", _counting_normalize):
+        asyncio.run(_run())
+
+    assert peak >= 2, "the test must actually overlap, or it proves nothing"
+    assert peak <= images_mod.MAX_CONCURRENT_NORMALIZATIONS
+
+
+def test_normalize_slot_is_rebound_when_the_loop_changes(tmp_path: Path) -> None:
+    """A semaphore bound to a dead loop would deadlock, not bound.
+
+    Plugin processes can restart their loop; the second run must not hang.
+    """
+    from plugin.sdk.shared.core import images as images_mod
+
+    async def _one() -> object:
+        return images_mod._acquire_normalize_slot()
+
+    first = asyncio.run(_one())
+    second = asyncio.run(_one())
+
+    assert first is not second
