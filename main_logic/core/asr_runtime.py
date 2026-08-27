@@ -471,21 +471,30 @@ class AsrRuntimeMixin:
     def _mark_independent_asr_endpoint_if_sealed(self) -> None:
         """Stamp the endpoint cutoff on the active turn once ASR seals it.
 
-        Reads the ASR lifecycle rather than keeping a second Core-side source
-        of truth. Sampled at every frame staging and again at the final freeze,
-        so the cutoff lands within about one frame interval of the real
-        endpoint. A runtime that exposes no lifecycle leaves the cutoff unset
-        and keeps the previous admit-everything behaviour.
+        Prefers the runtime's recorded seal instant (``_asr_turn_endpointed_at``)
+        over the moment Core happens to look. Sampling the lifecycle state can
+        only ever place the cutoff at an observation point, which drifts later
+        than the real endpoint and lets a frame captured in that gap pass as if
+        it belonged to the utterance. The recorded instant has no such drift.
+
+        Falls back to the observation time for a runtime that exposes the
+        lifecycle but not the timestamp, and leaves the cutoff unset when
+        neither is available (previous admit-everything behaviour).
         """
 
         runtime = getattr(self, "_asr_runtime", None)
-        lifecycle = getattr(runtime, "_asr_lifecycle", None)
-        state = getattr(getattr(lifecycle, "snapshot", None), "state", None)
-        if state is not VoiceLifecycleState.DRAINING:
-            return
-        sealed_at = time.monotonic()
+        endpointed_at = getattr(runtime, "_asr_turn_endpointed_at", None)
+        if not isinstance(endpointed_at, (int, float)):
+            lifecycle = getattr(runtime, "_asr_lifecycle", None)
+            state = getattr(getattr(lifecycle, "snapshot", None), "state", None)
+            if state is not VoiceLifecycleState.DRAINING:
+                return
+            endpointed_at = time.monotonic()
+        sealed_at = float(endpointed_at)
         for record in self._core_multimodal_turns.values():
-            if record.endpoint_at is None:
+            # 上一轮遗留的时间戳一定早于本轮的 started_at（record 在语音确认时
+            # 建立，晚于上一轮端点），所以这个比较同时充当「这个封口属于本轮吗」。
+            if record.endpoint_at is None and sealed_at >= record.started_at:
                 record.endpoint_at = sealed_at
 
     def _track_independent_visual_validation_task(

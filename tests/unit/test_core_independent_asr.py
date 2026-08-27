@@ -9874,3 +9874,65 @@ async def test_post_endpoint_cache_frame_cannot_seed_an_empty_turn() -> None:
     assert record.last_frame is None
 
     assert runtime._snapshot_core_multimodal_turn(turn_id, "what is that") is None
+
+
+@pytest.mark.unit
+async def test_endpoint_cutoff_uses_the_recorded_seal_instant() -> None:
+    """A frame captured in the gap before Core looks must still be excluded."""
+    runtime = _Runtime()
+    runtime._asr_route_mode = "independent"
+    token = VoiceTurnToken(ingress=runtime._capture_ingress_token(), turn_id=95)
+    turn_id = f"asr-{token.ingress.session_epoch}-{token.turn_id}"
+    runtime._begin_core_multimodal_turn(turn_id, token)
+    record = runtime._core_multimodal_turns[turn_id]
+
+    assert runtime._stage_independent_visual_frame(
+        "spoken-frame",
+        source="screen",
+        request_id="screen-spoken",
+        captured_at=record.started_at,
+    )
+
+    # ASR 在这一刻封口，但 Core 要到下一帧 staging 才会去看。
+    sealed_at = record.started_at + 1.0
+    runtime._asr_turn_endpointed_at = sealed_at
+    _seal_utterance(runtime)
+
+    # 这帧拍摄于封口之后、Core 观察之前——按观察时刻当截止值它会被放行。
+    runtime._stage_independent_visual_frame(
+        "gap-frame",
+        source="screen",
+        request_id="screen-gap",
+        captured_at=sealed_at + 0.5,
+    )
+
+    assert record.endpoint_at == sealed_at
+    turn = runtime._snapshot_core_multimodal_turn(turn_id, "what is that")
+
+    assert turn is not None
+    assert turn.images == ("spoken-frame",)
+
+
+@pytest.mark.unit
+async def test_stale_seal_instant_from_a_previous_turn_is_not_this_turn_cutoff() -> None:
+    """A leftover timestamp predates this record and must not seal it early."""
+    runtime = _Runtime()
+    runtime._asr_route_mode = "independent"
+    runtime._asr_turn_endpointed_at = time.monotonic() - 30.0
+    token = VoiceTurnToken(ingress=runtime._capture_ingress_token(), turn_id=96)
+    turn_id = f"asr-{token.ingress.session_epoch}-{token.turn_id}"
+    runtime._begin_core_multimodal_turn(turn_id, token)
+    record = runtime._core_multimodal_turns[turn_id]
+
+    assert runtime._stage_independent_visual_frame(
+        "spoken-frame",
+        source="screen",
+        request_id="screen-spoken",
+        captured_at=record.started_at,
+    )
+
+    assert record.endpoint_at is None
+    turn = runtime._snapshot_core_multimodal_turn(turn_id, "what is that")
+
+    assert turn is not None
+    assert turn.images == ("spoken-frame",)

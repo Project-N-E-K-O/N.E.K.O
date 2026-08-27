@@ -557,7 +557,14 @@ class _StreamingMixin:
         # 的「下一个消费者拿走」：本轮 await（switch_model / provider 请求）期间到达
         # 的附件会被顺手清掉，既配错了发言，也不再能给它自己的追问用。附件在
         # submit 入口已经按快照取走过一次，这里只负责不再碰活的队列。
-        attachment_images = [] if own_images else list(self._pending_images)
+        # 取走必须和拷贝在同一个同步步骤里完成，中间不能有 await：下面
+        # switch_model() 一让出，另一条并发的普通文本请求就会拷到同一批附件，两轮
+        # 各发一次同样的图，随后的按前缀删除还会切到别人的队列。
+        if own_images:
+            attachment_images = []
+        else:
+            attachment_images = list(self._pending_images)
+            del self._pending_images[:len(attachment_images)]
         if not text or not text.strip():
             # If only images without text, use a default prompt
             if attachment_images or prefix_images or own_images:
@@ -684,9 +691,8 @@ class _StreamingMixin:
             # Clear pending images after using them (content already holds the
             # data urls). The proactive screenshot is one-shot: consumed by this
             # reply, then cleared so it never re-injects into later turns.
-            if attachment_images:
-                # 只删掉本次真正拼进消息的那一段，await 期间新到的附件留给下一轮。
-                del self._pending_images[:len(attachment_images)]
+            # 附件在上面取快照时就已经出队了（那一步是原子的），这里只需要清掉
+            # 一次性的主动搭话截图。
             self._proactive_image_to_inject = None
             self._proactive_image_staged_at = 0.0
             self._proactive_image_history_len = 0

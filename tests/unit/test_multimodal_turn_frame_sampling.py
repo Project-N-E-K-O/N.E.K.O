@@ -13,6 +13,7 @@ These tests lock the sampling contract:
 * the middle sample tracks the centre of the span, not its head;
 * both provider submit paths hold the same cap independently of Core.
 """
+import asyncio
 import os
 import sys
 from unittest.mock import AsyncMock
@@ -396,3 +397,35 @@ async def test_stream_text_without_turn_images_still_consumes_attachments():
     ]
     assert urls == ["attachment"]
     assert client._pending_images == []
+
+
+async def test_concurrent_text_turns_do_not_send_the_same_attachment_twice():
+    """The attachment snapshot must be taken and removed without an await between."""
+    client = _stream_text_client()
+    client._pending_images = ["attachment"]
+    switching = asyncio.Event()
+    release = asyncio.Event()
+    client.vision_model = "vision-model"
+    client.model = "text-model"
+
+    async def block_model_switch(*_args, **_kwargs):
+        switching.set()
+        await release.wait()
+
+    client.switch_model = block_model_switch
+
+    first = asyncio.create_task(_assemble_user_message(client, "first"))
+    await asyncio.wait_for(switching.wait(), 1.0)
+
+    # 第一轮还卡在 switch_model 里，队列此刻必须已经空了。
+    assert client._pending_images == []
+
+    release.set()
+    message = await first
+
+    urls = [
+        part["image_url"]["url"].rsplit(",", 1)[-1]
+        for part in message.content
+        if isinstance(part, dict) and part.get("type") == "image_url"
+    ]
+    assert urls == ["attachment"]

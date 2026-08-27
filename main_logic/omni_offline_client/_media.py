@@ -126,6 +126,11 @@ class _MediaMixin:
             # 用户在这一轮之前已经投递的一次性附件（拖图 / 聊天贴图）确实属于这次
             # 发言，按快照一次取走并随本轮一起送；快照之后新到的附件留给下一轮，
             # 不会被本轮的 await 窗口顺手吞掉。
+            #
+            # 注意 MAX_MULTIMODAL_TURN_IMAGES 只闸上面那段环境帧，不闸这里的附件：
+            # 那个数是「一次发声抽样成开头/中间/结尾」的含义，而附件是用户自己决定
+            # 带几张的明确投递，按张数砍会静默丢掉他刚选中的图（普通文本轮同样不
+            # 闸，两条路保持一致）。
             pending = getattr(self, "_pending_images", None)
             attachments: tuple[str, ...] = ()
             if isinstance(pending, list) and pending:
