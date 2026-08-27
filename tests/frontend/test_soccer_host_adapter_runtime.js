@@ -25,6 +25,7 @@ async function main() {
   const clearedIntervals = [];
   const clearedTimeouts = [];
   const pendingFetches = [];
+  const storage = new Map();
   let nextTimerId = 1;
   let realtimeAttempts = 0;
   let refreshCount = 0;
@@ -82,6 +83,13 @@ async function main() {
     location: { origin: 'http://127.0.0.1:48911' },
     lanlan_config: { lanlan_name: 'runtime-neko' },
     nekoLocalMutationSecurity: security,
+    localStorage: {
+      get length() { return storage.size; },
+      key(index) { return Array.from(storage.keys())[index] ?? null; },
+      getItem(key) { return storage.has(key) ? storage.get(key) : null; },
+      setItem(key, value) { storage.set(key, String(value)); },
+      removeItem(key) { storage.delete(key); },
+    },
     BroadcastChannel: BroadcastChannelMock,
     SpeechRecognition: SpeechRecognitionMock,
     addEventListener,
@@ -136,6 +144,15 @@ async function main() {
           ? response(403, { error_code: 'csrf_validation_failed' })
           : response(200, { ok: true });
       }
+      if (url.endsWith('/speak')) {
+        return response(200, { ok: true, speech_id: 'adapter-speech-1', audio_sent: true });
+      }
+      if (url.includes('/api/config/page_config')) {
+        return response(200, { ok: true, autostart_csrf_token: 'page-config-token' });
+      }
+      if (url.includes('/api/game/soccer/character')) {
+        return response(200, { ok: true, lanlan_name: 'resolved-runtime-neko' });
+      }
       if (url.endsWith('/route/heartbeat')) return response(200, { ok: true, active: true });
       return response(200, { ok: true });
     },
@@ -153,14 +170,122 @@ async function main() {
     };
   }
 
+  const hostPath = path.resolve(__dirname, '../../static/game/sdk/neko-minigame-same-origin-host.js');
+  vm.runInThisContext(fs.readFileSync(hostPath, 'utf8'), { filename: hostPath });
   const adapterPath = path.resolve(__dirname, '../../static/game/games/soccer/soccer-neko-adapter.js');
   vm.runInThisContext(fs.readFileSync(adapterPath, 'utf8'), { filename: adapterPath });
+
+  const badmintonAdapter = window.createNekoMiniGameSameOriginHost({
+    gameType: 'badminton',
+    source: 'badminton_demo',
+    displayName: 'Badminton',
+    sessionId: 'badminton-test-session',
+  });
+  const badmintonHandshake = badmintonAdapter.connectGame({
+    protocolVersions: ['1'],
+    manifest: {
+      id: 'badminton',
+      version: '1.0.0',
+      requiredCapabilities: ['runtime', 'logging'],
+      optionalCapabilities: ['dialogue', 'leaderboard-local'],
+    },
+  });
+  assert(badmintonHandshake.accepted, 'generic host rejected the badminton identity');
+  assert(badmintonHandshake.registration.gameId === 'badminton',
+    'generic host did not preserve the configured game identity');
+  assert(badmintonAdapter.sessionId === 'badminton-test-session',
+    'generic host did not preserve the launch session');
+  assert(badmintonHandshake.grantedCapabilities.includes('leaderboard-local'),
+    'generic host did not grant bounded local leaderboard storage');
+  badmintonAdapter.requestGameStorage('set', { key: 'leaderboards/main', value: { score: 3 } });
+  const storedLeaderboard = badmintonAdapter.requestGameStorage('get', { key: 'leaderboards/main' });
+  assert(storedLeaderboard.found && storedLeaderboard.value.score === 3,
+    'generic host local game storage did not round-trip JSON');
+  let storageQuotaError = null;
+  try {
+    badmintonAdapter.requestGameStorage('set', {
+      key: 'leaderboards/oversized',
+      value: { text: 'x'.repeat(70 * 1024) },
+    });
+  } catch (error) { storageQuotaError = error; }
+  assert(storageQuotaError?.code === 'quota_exceeded',
+    'generic host local game storage did not enforce its value limit');
+  badmintonAdapter.dispose();
+
+  let avatarHostDisposed = 0;
+  let avatarMountConfig = null;
+  const avatarAdapter = window.createSoccerNekoAdapter({
+    avatarHost: {
+      async mount(config) {
+        avatarMountConfig = config;
+        return { dispose() {} };
+      },
+      dispose() { avatarHostDisposed += 1; },
+    },
+  });
+  const avatarController = await avatarAdapter.mountAvatar({
+    slot: 'ai',
+    viewport: { mode: 'fixed', width: 200, height: 300 },
+  });
+  assert(typeof avatarController.dispose === 'function', 'avatar controller was not forwarded');
+  assert(avatarMountConfig?.viewport?.mode === 'fixed', 'avatar config was not forwarded');
+  avatarAdapter.dispose();
+  assert(avatarHostDisposed === 1, 'avatar host was not released by adapter disposal');
+
+  let audioHostDisposed = 0;
+  let audioMountConfig = null;
+  const audioAdapter = window.createSoccerNekoAdapter({
+    audioHost: {
+      mount(config) {
+        audioMountConfig = config;
+        return { dispose() {} };
+      },
+      dispose() { audioHostDisposed += 1; },
+    },
+  });
+  const audioController = audioAdapter.mountAudio({ slot: 'main', resources: { sfx: {} } });
+  assert(typeof audioController.dispose === 'function', 'audio controller was not forwarded');
+  assert(audioMountConfig?.slot === 'main', 'audio config was not forwarded');
+  audioAdapter.dispose();
+  assert(audioHostDisposed === 1, 'audio host was not released by adapter disposal');
 
   const adapter = window.createSoccerNekoAdapter({
     logQueueLimit: 8,
     logConcurrency: 2,
     logPumpIntervalMs: 1,
   });
+  const handshake = adapter.connectGame({
+    sdkVersion: '0.1.0',
+    protocolVersions: ['1'],
+    manifest: {
+      id: 'soccer',
+      version: '1.0.0',
+      requiredCapabilities: ['runtime', 'logging', 'speech-output'],
+      optionalCapabilities: ['avatar-renderer'],
+    },
+  });
+  assert(handshake.accepted === true, 'registered soccer handshake was rejected');
+  assert(handshake.registration?.mode === 'registered', 'soccer registration mode was not returned');
+  assert(handshake.registration?.gameId === 'soccer', 'soccer registration identity was not returned');
+  assert(handshake.grantedCapabilities.includes('runtime'), 'runtime was not granted by soccer host');
+  assert(!handshake.grantedCapabilities.includes('avatar-renderer'),
+    'unavailable avatar host was granted by soccer handshake');
+  const unknownHandshake = adapter.connectGame({
+    protocolVersions: ['1'],
+    manifest: { id: 'unknown-game', version: '1.0.0' },
+  });
+  assert(unknownHandshake.code === 'game_unregistered',
+    'unknown game identity was not rejected by the trusted host');
+  const characterResponse = await adapter.getCharacter();
+  assert(characterResponse.ok, 'character bootstrap request failed');
+  assert(adapter.getRuntimeState().characterName === 'resolved-runtime-neko',
+    'resolved character identity was not synchronized into the SDK runtime state');
+  const originalGetMutationHeaders = security.getMutationHeaders;
+  security.getMutationHeaders = async () => ({});
+  const fallbackMutationHeaders = await adapter.getMutationHeaders();
+  assert(fallbackMutationHeaders['X-CSRF-Token'] === 'page-config-token',
+    'empty shared mutation headers did not fall back to page config credentials');
+  security.getMutationHeaders = originalGetMutationHeaders;
   adapter.resetSession({ newSession: true });
   adapter.applyRouteState({ lanlan_name: 'runtime-neko' });
   adapter.configureLogger({
@@ -216,7 +341,14 @@ async function main() {
   assert(refreshCount === 1, `expected one CSRF refresh, got ${refreshCount}`);
 
   const playbackStates = [];
-  adapter.startSpeechPlaybackBridge({
+  storage.set('playback-state', JSON.stringify({
+    type: 'speech_playback_state',
+    active: true,
+    speech_id: 'stored-speech',
+    remaining_seconds: 1,
+    updated_at: Date.now(),
+  }));
+  adapter.startSpeechOutputBridge({
     storageKey: 'playback-state',
     channelName: 'playback-channel',
     eventName: 'playback-event',
@@ -230,9 +362,29 @@ async function main() {
   listeners.get('playback-event').values().next().value({
     detail: { type: 'speech_playback_state', active: true },
   });
-  assert(playbackStates.length === 3, 'speech playback bridge did not forward all supported sources');
-  assert(playbackStates.map((item) => item.source).join(',') === 'broadcast_channel,local_storage,window_event',
+  assert(playbackStates.length === 4, 'speech output bridge did not forward all supported sources');
+  assert(playbackStates.map((item) => item.source).join(',') === (
+    'local_storage_initial,broadcast_channel,local_storage,window_event'
+  ),
     'speech playback bridge source labels changed');
+  const speechResponse = await adapter.requestSpeechOutput({
+    line: 'adapter speech output',
+    session_id: adapter.sessionId,
+  });
+  assert(speechResponse.ok, 'official speech output request did not use the soccer adapter');
+  const speechCall = calls.find((call) => call.url.endsWith('/speak'));
+  assert(speechCall, 'speech output endpoint was not requested');
+  assert(JSON.parse(speechCall.options.body).line === 'adapter speech output',
+    'speech output payload changed before reaching the trusted host endpoint');
+  const preloadResponse = await adapter.preloadSpeechOutput({
+    lines: ['adapter preload line'],
+    session_id: adapter.sessionId,
+  });
+  assert(preloadResponse.ok, 'speech preload did not use the soccer adapter');
+  const preloadCall = calls.find((call) => call.url.endsWith('/speech/preload'));
+  assert(preloadCall, 'speech preload endpoint was not requested');
+  assert(JSON.parse(preloadCall.options.body).lines[0] === 'adapter preload line',
+    'speech preload payload changed before reaching the trusted host endpoint');
 
   const voiceControlStates = [];
   const hostVoiceTranscripts = [];
@@ -311,7 +463,8 @@ async function main() {
   assert(typeof requestTimeout === 'function', 'request timeout was not registered');
   requestTimeout();
   const timeoutError = await timeoutRequest;
-  assert(timeoutError?.name === 'SoccerHostError', 'timeout did not use the host error type');
+  assert(timeoutError?.name === 'NekoMiniGameHostError', 'timeout did not use the host error type');
+  assert(timeoutError instanceof window.SoccerNekoHostError, 'soccer error alias was not preserved');
   assert(timeoutError?.code === 'timeout', `expected timeout error, got ${timeoutError?.code}`);
 
   const externalController = new AbortController();
@@ -323,6 +476,22 @@ async function main() {
   externalController.abort();
   const cancelledError = await cancelledRequest;
   assert(cancelledError?.code === 'cancelled', `expected cancelled error, got ${cancelledError?.code}`);
+
+  const endController = new AbortController();
+  const cancelledEnd = adapter.end(
+    { runtime_test_mode: 'pending', reason: 'cancel-test' },
+    { signal: endController.signal },
+  ).then(() => null, (error) => error);
+  await new Promise((resolve) => setImmediate(resolve));
+  const pendingCancelledEnd = pendingFetches
+    .filter((item) => item.url.endsWith('/end') && !item.aborted)
+    .at(-1);
+  assert(pendingCancelledEnd, 'route-end cancellation request was not captured');
+  endController.abort();
+  const cancelledEndError = await cancelledEnd;
+  assert(cancelledEndError?.code === 'cancelled',
+    `expected cancelled route-end error, got ${cancelledEndError?.code}`);
+  assert(pendingCancelledEnd.aborted, 'route-end AbortSignal was not forwarded to the request');
 
   const limitedAdapter = window.createSoccerNekoAdapter({ pendingRequestLimit: 1 });
   const limitedPending = limitedAdapter.requestDialogue({ runtime_test_mode: 'pending' })
@@ -396,13 +565,13 @@ async function main() {
   assert(disposedLogResult?.reason === 'disposed', 'disposed log request did not resolve as disposed');
   assert(pendingDisposedLog.aborted, 'disposed log request was not aborted');
 
-  let heartbeatFailure = null;
   const heartbeatAdapter = window.createSoccerNekoAdapter();
-  heartbeatAdapter.startHeartbeat({
-    payload: () => ({ runtime_test_mode: 'pending' }),
-    timeoutMs: 7,
-    onError: (failure) => { heartbeatFailure = failure; },
-  });
+  const heartbeatFailurePromise = heartbeatAdapter.heartbeat(
+    { runtime_test_mode: 'pending' },
+    {
+      timeoutMs: 7,
+    },
+  ).then(() => null, (error) => error);
   await new Promise((resolve) => setImmediate(resolve));
   const heartbeatTimeout = Array.from(timeouts.entries())
     .filter(([id]) => timeoutDelays.get(id) === 7)
@@ -410,7 +579,8 @@ async function main() {
   assert(typeof heartbeatTimeout === 'function', 'heartbeat request timeout was not registered');
   heartbeatTimeout();
   await new Promise((resolve) => setImmediate(resolve));
-  assert(heartbeatFailure?.reason === 'timeout', 'heartbeat timeout was misclassified');
+  const heartbeatFailure = await heartbeatFailurePromise;
+  assert(heartbeatFailure?.code === 'timeout', 'heartbeat timeout was misclassified');
   heartbeatAdapter.dispose();
 
   const unloadAdapter = window.createSoccerNekoAdapter();
@@ -430,11 +600,6 @@ async function main() {
   const unloadEndResult = await unloadEnd;
   assert(unloadEndResult.ok, 'preserved unload route-end fallback did not complete');
 
-  adapter.startHeartbeat({ payload: () => ({ session_id: adapter.sessionId }) });
-  adapter.startDrain({ poll: () => {} });
-  await new Promise((resolve) => setImmediate(resolve));
-  assert(listeners.get('visibilitychange')?.size === 1, 'visibility listener was not installed');
-
   const disposedRequest = adapter.requestDialogue({ runtime_test_mode: 'pending' })
     .then(() => null, (error) => error);
   await new Promise((resolve) => setImmediate(resolve));
@@ -443,7 +608,6 @@ async function main() {
   assert(disposedError?.code === 'disposed', `expected disposed error, got ${disposedError?.code}`);
   assert(!listeners.get('error')?.size, 'window error listener was not removed');
   assert(!listeners.get('unhandledrejection')?.size, 'rejection listener was not removed');
-  assert(!listeners.get('visibilitychange')?.size, 'visibility listener was not removed');
   assert(!listeners.get('storage')?.size, 'storage listener was not removed');
   assert(!listeners.get('playback-event')?.size, 'speech playback window listener was not removed');
   assert(playbackChannelClosed, 'speech playback BroadcastChannel was not closed');
@@ -452,7 +616,6 @@ async function main() {
   assert(voiceControlChannel.onmessage === null, 'voice control channel handler was not released');
   assert(routeRecognition.abortCount >= 1, 'managed recognition was not aborted during dispose');
   assert(routeRecognition.onresult === null, 'managed recognition handlers were not released');
-  assert(clearedIntervals.length >= 2, 'heartbeat and drain intervals were not cleared');
   assert(clearedTimeouts.length >= 2, 'logger and heartbeat timeouts were not cleared');
   assert(consoleMock.warn === originalWarn, 'console.warn was not restored');
   assert(consoleMock.error === originalError, 'console.error was not restored');
