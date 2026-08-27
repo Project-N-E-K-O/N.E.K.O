@@ -429,3 +429,38 @@ async def test_concurrent_text_turns_do_not_send_the_same_attachment_twice():
         if isinstance(part, dict) and part.get("type") == "image_url"
     ]
     assert urls == ["attachment"]
+
+
+def _feed_out_of_order(record, capture_times):
+    for generation, captured_at in enumerate(capture_times):
+        record.observe(
+            _IndependentVisualFrame(
+                image_b64=f"t{captured_at}",
+                session_epoch=1,
+                route_generation=1,
+                generation=generation,
+                captured_at=float(captured_at),
+                source="screen",
+                request_id=None,
+            )
+        )
+    return [frame.image_b64 for frame in record.sampled_frames()]
+
+
+def test_candidate_thinning_runs_in_capture_order():
+    # 落地顺序把两端交替喂进来：按落地顺序抽稀会先丢掉时间上真正居中的那几张，
+    # 事后再排序也捞不回来。
+    sampled = _feed_out_of_order(_record(), [0, 9, 1, 8, 2, 7, 3, 6, 4, 5])
+
+    assert sampled[0] == "t0"
+    assert sampled[-1] == "t9"
+    middle_index = int(sampled[1][1:])
+    # 真实中点是 4.5；按落地顺序抽稀会退化到 2 附近。
+    assert middle_index >= 3
+
+
+def test_out_of_order_thinning_keeps_a_bounded_candidate_set():
+    record = _record()
+    _feed_out_of_order(record, [i if i % 2 == 0 else 999 - i for i in range(200)])
+
+    assert len(record.middle_candidates) <= _MAX_MIDDLE_CANDIDATES

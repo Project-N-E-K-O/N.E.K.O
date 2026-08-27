@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import asyncio
+import bisect
 from dataclasses import dataclass, field
 
 
@@ -89,8 +90,16 @@ class _CoreMultimodalTurnRecord:
         # 前移时想提拔的那张已经被丢了，middle 会永远卡在开头附近。改成等距抽样
         # ——候选满了就隔一个丢一个、步长翻倍，候选集始终 <= _MAX_MIDDLE_CANDIDATES
         # 且大致均匀铺满整段，最后取正中间那个。
+        #
+        # 候选集必须**按拍摄时间**维护再抽稀：并发校验下落地顺序和拍摄顺序不是一
+        # 回事，按落地顺序隔一个丢一个会把时间上真正居中的那几张先丢掉，事后再排
+        # 序也捞不回来（落地序 0,9,1,8,2,7,... 会只剩下 0..4）。
         if self.observed_frames % self.candidate_stride == 0:
-            self.middle_candidates.append(frame)
+            bisect.insort(
+                self.middle_candidates,
+                frame,
+                key=lambda item: (item.captured_at, item.generation),
+            )
             if len(self.middle_candidates) > _MAX_MIDDLE_CANDIDATES:
                 del self.middle_candidates[1::2]
                 self.candidate_stride *= 2
@@ -101,13 +110,8 @@ class _CoreMultimodalTurnRecord:
 
         middle = None
         if self.middle_candidates:
-            # 候选是按落地顺序 append 的，并发校验下这和拍摄顺序不是一回事；
-            # 取"时间上的中间那张"必须先按 captured_at 排。
-            by_capture = sorted(
-                self.middle_candidates,
-                key=lambda item: (item.captured_at, item.generation),
-            )
-            middle = by_capture[len(by_capture) // 2]
+            # 候选集已经按拍摄时间维护（见 observe），正中间那个就是时间上的中间。
+            middle = self.middle_candidates[len(self.middle_candidates) // 2]
         ordered: list[_IndependentVisualFrame] = []
         seen: set[int] = set()
         for frame in (self.first_frame, middle, self.last_frame):
