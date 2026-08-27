@@ -39,8 +39,15 @@ MAX_CONCURRENT_NORMALIZATIONS = 2
 _normalize_gate = threading.Semaphore(MAX_CONCURRENT_NORMALIZATIONS)
 
 
-def normalize_image_to_jpeg(data: bytes) -> bytes:
-    """Decode one supported image payload and return bounded JPEG bytes."""
+def normalize_image_to_jpeg(
+    data: bytes, *, slot_timeout: float | None = None
+) -> bytes:
+    """Decode one supported image payload and return bounded JPEG bytes.
+
+    ``slot_timeout`` bounds only the wait for a decode slot, never the decode
+    itself. ``None`` waits indefinitely, which is what the host-side caller in
+    ``character_runtime`` wants.
+    """
     if not isinstance(data, (bytes, bytearray)):
         raise TypeError("image data must be bytes or bytearray")
     if not data:
@@ -50,23 +57,36 @@ def normalize_image_to_jpeg(data: bytes) -> bytes:
 
     # Held across the decode only; the size checks above are cheap and must not
     # queue behind other images.
-    with _normalize_gate, Image.open(BytesIO(bytes(data))) as source:
-        source.seek(0)
-        width, height = source.size
-        if width * height > MAX_SOURCE_IMAGE_PIXELS:
-            raise ValueError("source image exceeds the 16 megapixel decode limit")
-        image = ImageOps.exif_transpose(source)
-        image.thumbnail((MAX_IMAGE_EDGE, MAX_IMAGE_EDGE), Image.Resampling.LANCZOS)
-        if image.mode in ("RGBA", "LA") or "transparency" in image.info:
-            rgba = image.convert("RGBA")
-            normalized = Image.new("RGB", rgba.size, "white")
-            normalized.paste(rgba, mask=rgba.getchannel("A"))
-        else:
-            normalized = image.convert("RGB")
+    #
+    # Only the QUEUEING is bounded. A caller that exhausts its budget waiting for
+    # a slot has started nothing, so giving up strands no thread and leaves no
+    # slot half-held. Bounding the DECODE was requested by both reviewers and is
+    # declined: asyncio.to_thread cannot cancel a running thread, so a deadline
+    # around it returns the caller while the worker keeps both the bitmap and the
+    # slot -- removing the only backpressure here while leaving the work in place.
+    if not _normalize_gate.acquire(timeout=slot_timeout):
+        raise TimeoutError("timed out waiting for an image decode slot")
+    try:
+        with Image.open(BytesIO(bytes(data))) as source:
+            source.seek(0)
+            width, height = source.size
+            if width * height > MAX_SOURCE_IMAGE_PIXELS:
+                raise ValueError("source image exceeds the 16 megapixel decode limit")
+            image = ImageOps.exif_transpose(source)
+            image.thumbnail((MAX_IMAGE_EDGE, MAX_IMAGE_EDGE), Image.Resampling.LANCZOS)
+            if image.mode in ("RGBA", "LA") or "transparency" in image.info:
+                rgba = image.convert("RGBA")
+                normalized = Image.new("RGB", rgba.size, "white")
+                normalized.paste(rgba, mask=rgba.getchannel("A"))
+            else:
+                normalized = image.convert("RGB")
 
-        output = BytesIO()
-        normalized.save(output, format="JPEG", quality=88)
-        payload = output.getvalue()
+            output = BytesIO()
+            normalized.save(output, format="JPEG", quality=88)
+            payload = output.getvalue()
+
+    finally:
+        _normalize_gate.release()
 
     if len(payload) > MAX_UPLOADED_IMAGE_BYTES:
         raise ValueError("normalized image exceeds the 8 MiB upload limit")
@@ -113,8 +133,16 @@ class PluginImages:
         # decode can queue behind the process-wide gate, and the transport legs
         # used to restart the clock, so `timeout=3` could take well past six
         # seconds and overrun the caller's own deadline (Codex).
-        deadline = asyncio.get_running_loop().time() + timeout
-        jpeg = await asyncio.to_thread(normalize_image_to_jpeg, bytes(data))
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        # The decode can QUEUE behind the process-wide gate, and that wait used
+        # to sit outside every budget, so a saturated gate blew the advertised
+        # total before the transport was even reached (Codex, CodeRabbit).
+        jpeg = await asyncio.to_thread(
+            normalize_image_to_jpeg,
+            bytes(data),
+            slot_timeout=max(0.0, deadline - loop.time()),
+        )
         result = await self._host_ctx._upload_image(
             jpeg,
             mime="image/jpeg",

@@ -452,7 +452,7 @@ def test_upload_total_time_is_bounded_by_the_requested_timeout(tmp_path: Path) -
             seen_send_timeouts.append(timeout)
             return await super().send_image(request_id, mime=mime, data=data, timeout=timeout)
 
-    def _slow_normalize(payload: bytes) -> bytes:
+    def _slow_normalize(payload: bytes, **_kwargs: object) -> bytes:
         time.sleep(0.25)
         return b"jpeg"
 
@@ -478,3 +478,98 @@ def test_upload_total_time_is_bounded_by_the_requested_timeout(tmp_path: Path) -
     # receive strictly less than the full timeout rather than a fresh one.
     assert seen_send_timeouts[0] < 1.0
     assert seen_send_timeouts[0] > 0
+
+
+def test_upload_bounds_the_wait_for_a_decode_slot(tmp_path: Path) -> None:
+    """A saturated decode gate must not blow the caller's advertised timeout.
+
+    The gate is process-wide and deliberately held by the WORKER THREAD, because
+    asyncio.to_thread cannot cancel a running thread. That makes the queueing --
+    not the decode -- the part that can honestly be bounded: a caller that gives
+    up while still waiting for a slot has started nothing, so it strands no
+    thread and leaves no slot half-held.
+
+    The slots are freed by a watchdog rather than held for the whole test, so an
+    unbounded wait fails on the elapsed assertion instead of hanging CI forever.
+    """
+    from plugin.sdk.shared.core import images as images_mod
+
+    opened: list[object] = []
+    real_open = images_mod.Image.open
+
+    def _tracking_open(*args: object, **kwargs: object) -> object:
+        opened.append(args)
+        return real_open(*args, **kwargs)
+
+    async def _run() -> float:
+        responses: asyncio.Queue[dict[str, object]] = asyncio.Queue()
+        transport = _ImageTransport(responses)
+        ctx = PluginContext(
+            plugin_id="demo",
+            config_path=tmp_path / "plugin.toml",
+            logger=_Logger(),  # type: ignore[arg-type]
+            status_queue=None,
+            _response_queue=responses,
+            _image_transport=transport,
+        )
+        transport.on_response = ctx._dispatch_direct_response
+        started = time.monotonic()
+        with pytest.raises(TimeoutError):
+            await ctx.images.upload(_png_bytes(), mime="image/png", timeout=0.3)
+        return time.monotonic() - started
+
+    slots = images_mod.MAX_CONCURRENT_NORMALIZATIONS
+    guard = threading.Lock()
+    freed = False
+
+    def _free_slots() -> None:
+        nonlocal freed
+        with guard:
+            if freed:
+                return
+            freed = True
+            for _ in range(slots):
+                images_mod._normalize_gate.release()
+
+    for _ in range(slots):
+        images_mod._normalize_gate.acquire()
+    watchdog = threading.Timer(2.0, _free_slots)
+    watchdog.start()
+    try:
+        with patch.object(images_mod.Image, "open", _tracking_open):
+            elapsed = asyncio.run(_run())
+    finally:
+        watchdog.cancel()
+        _free_slots()
+
+    # Returned on its own budget rather than riding the watchdog's release.
+    assert elapsed < 1.0, f"caller overran its 0.3s budget: {elapsed:.2f}s"
+    # Gave up while still queueing, so no decode was ever started.
+    assert opened == [], "the decode must not start once the budget is gone"
+    # The gate is intact afterwards: a normal decode still finds its slots.
+    assert images_mod.normalize_image_to_jpeg(_png_bytes())
+
+
+def test_host_side_normalize_waits_indefinitely_for_a_slot() -> None:
+    """`slot_timeout=None` is the host default and must never time out.
+
+    character_runtime calls this synchronously with no deadline of its own, so
+    adding the bound must not turn host-side normalization into a flaky failure.
+    """
+    from plugin.sdk.shared.core import images as images_mod
+
+    released = threading.Event()
+    images_mod._normalize_gate.acquire()
+    images_mod._normalize_gate.acquire()
+
+    def _release_later() -> None:
+        time.sleep(0.4)
+        images_mod._normalize_gate.release()
+        images_mod._normalize_gate.release()
+        released.set()
+
+    threading.Thread(target=_release_later, daemon=True).start()
+    # Blocks ~0.4s rather than raising; far longer than any default timeout.
+    payload = images_mod.normalize_image_to_jpeg(_png_bytes())
+    assert released.is_set()
+    assert payload
