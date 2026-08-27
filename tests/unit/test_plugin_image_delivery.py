@@ -19,6 +19,18 @@ pytestmark = pytest.mark.unit
 _IMAGE_URL = "http://127.0.0.1:48916/media/matrix-image"
 
 
+def _browser_url(url: str) -> str:
+    """What a chat block should carry for a given minted media URL.
+
+    Chat blocks are same-origin paths so the picture loads when the browser is
+    not on the host (Docker, another device). The absolute loopback form stays
+    on the part itself, because the main server fetches THAT in-process.
+    """
+    from urllib.parse import urlsplit
+
+    return urlsplit(url).path
+
+
 def _inline_png_base64() -> str:
     source = BytesIO()
     Image.new("RGB", (2, 2), "blue").save(source, format="PNG")
@@ -531,7 +543,7 @@ async def test_chat_blind_plugin_image_is_forwarded_as_structured_blocks(monkeyp
         {"type": "text", "text": "look at this"},
         {
             "type": "image",
-            "url": "http://127.0.0.1:48916/media/example",
+            "url": "/media/example",
         },
     ]
 
@@ -575,10 +587,12 @@ async def test_plugin_chat_blocks_preserve_canonical_part_order(
         "parts": parts,
     })
 
+    # Chat blocks carry the same-origin path; the parts fed in above keep the
+    # absolute loopback form, which is what the model fetch uses.
     expected = [
-        {"type": "image", "url": "http://127.0.0.1:48916/media/first"},
+        {"type": "image", "url": "/media/first"},
         {"type": "text", "text": "between"},
-        {"type": "image", "url": "http://127.0.0.1:48916/media/last"},
+        {"type": "image", "url": "/media/last"},
     ]
     if ai_behavior == "blind":
         assert manager.render_chat_blocks.await_args.args[0] == expected
@@ -595,7 +609,7 @@ def test_external_image_urls_are_not_exposed_to_chat_or_model() -> None:
         {"type": "image", "url": "http://127.0.0.1:48916/media/valid"},
     ]) == [{
         "type": "image",
-        "url": "http://127.0.0.1:48916/media/valid",
+        "url": "/media/valid",
     }]
 
 
@@ -692,7 +706,7 @@ async def test_image_only_chat_blind_message_still_opens_a_structured_bubble(mon
     manager.render_chat_blocks.assert_awaited_once_with(
         [{
             "type": "image",
-            "url": "http://127.0.0.1:48916/media/image-only",
+            "url": "/media/image-only",
         }],
         request_id="image-only-chat",
         source="plugin",
@@ -737,7 +751,7 @@ async def test_chat_visible_respond_image_is_rendered_and_sent_to_model(monkeypa
             {"type": "text", "text": "describe it"},
             {
                 "type": "image",
-                "url": "http://127.0.0.1:48916/media/both",
+                "url": "/media/both",
             },
         ],
         request_id="image-both",
@@ -889,7 +903,7 @@ async def test_image_delivery_obeys_visibility_and_ai_behavior(
             expected_blocks.append({"type": "text", "text": "describe this"})
         expected_blocks.append({
             "type": "image",
-            "url": _IMAGE_URL,
+            "url": _browser_url(_IMAGE_URL),
         })
         assert manager.render_chat_blocks.await_args.args[0] == expected_blocks
 
@@ -2249,3 +2263,55 @@ async def test_the_legacy_media_parts_path_drops_dual_source_too(
     })
 
     manager.session.stream_image.assert_not_awaited()
+
+
+def test_chat_gets_a_same_origin_path_while_the_model_keeps_the_absolute_url():
+    """The two URLs are deliberately different, and that is the whole fix.
+
+    127.0.0.1 is correct for the main server, which fetches in-process on the
+    same host. It is wrong for the browser whenever the browser is elsewhere --
+    Docker, or another device -- because it then means the viewer's own
+    machine. Rewriting BOTH would break the model fetch; rewriting neither is
+    the bug.
+    """
+    from app.main_server import character_runtime as cr
+
+    part = {"type": "image", "url": _IMAGE_URL, "mime": "image/jpeg"}
+    blocks = cr._build_plugin_image_chat_blocks([part])
+
+    assert blocks == [{"type": "image", "url": "/media/matrix-image"}]
+    # The part itself is untouched: _fetch_plugin_image_base64 still receives
+    # the absolute address, and _is_local_plugin_media_url still accepts it.
+    assert part["url"] == _IMAGE_URL
+    assert cr._is_local_plugin_media_url(part["url"])
+
+
+def test_the_rewritten_chat_url_is_a_path_not_a_host():
+    """A same-origin URL must carry no scheme and no authority.
+
+    If any of those survive, the browser goes back to contacting 127.0.0.1 and
+    the Docker case is broken again while every equality assertion still reads
+    plausibly.
+    """
+    from urllib.parse import urlsplit
+
+    from app.main_server import character_runtime as cr
+
+    rewritten = cr._browser_media_url(_IMAGE_URL)
+    parsed = urlsplit(rewritten)
+    assert parsed.scheme == ""
+    assert parsed.netloc == ""
+    assert rewritten.startswith("/media/")
+
+
+def test_the_main_server_serves_the_media_path_it_now_hands_out():
+    """The rewrite is only safe because this server answers that path.
+
+    Emitting /media/<id> without the route would 404 in the desktop build,
+    which has no proxy in front of it -- turning a Docker-only defect into an
+    everywhere defect.
+    """
+    from app.main_server.web_app import app
+
+    paths = {getattr(route, "path", None) for route in app.routes}
+    assert "/media/{image_id}" in paths

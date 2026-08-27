@@ -282,6 +282,27 @@ async def _resolve_plugin_model_image(part: dict[str, Any]) -> str:
     return await _fetch_plugin_image_base64(url)
 
 
+def _browser_media_url(url: str) -> str:
+    """Map a validated plugin media URL to the path the BROWSER should load.
+
+    The absolute form is minted for this process: the main server fetches it
+    in-process on the same host, so 127.0.0.1 is correct there. It is wrong for
+    the browser whenever the browser is elsewhere -- Docker, or another device
+    on the network -- because 127.0.0.1 then means the viewer's own machine,
+    and under HTTPS it is blocked as mixed content besides (Codex P2).
+
+    The failure is asymmetric, which is what makes it expensive: the model
+    fetch succeeds while the picture does not render, so the character
+    describes an image the user cannot see.
+
+    The caller has already run _is_local_plugin_media_url, which pins the path
+    to a single /media/<id> segment, so the path is safe to hand over as-is.
+    Internal and browser-facing URLs stay separate: only chat blocks are
+    rewritten, and the model path keeps the absolute address it fetches.
+    """
+    return urlsplit(url).path
+
+
 def _image_part_payloads_conflict(part: Any) -> bool:
     """True when one image part carries BOTH a url and inline bytes.
 
@@ -359,7 +380,7 @@ def _build_plugin_chat_blocks(
             continue
         url = part.get("url")
         if isinstance(url, str) and _is_local_plugin_media_url(url):
-            blocks.append({"type": "image", "url": url})
+            blocks.append({"type": "image", "url": _browser_media_url(url)})
             image_count += 1
             continue
         encoded = part.get("binary_base64")
