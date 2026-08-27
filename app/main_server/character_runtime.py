@@ -190,7 +190,21 @@ def _inline_image_data_url_mime(encoded: str) -> Optional[str]:
             # animation through as a single frame.
             try:
                 with Image.open(BytesIO(base64.b64decode(encoded))) as full:
-                    frames = max(1, int(getattr(full, "n_frames", 1)))
+                    # NOT n_frames: reading it walks the entire animation
+                    # before the ceiling below can reject it, so thousands of
+                    # 1x1 frames -- which stay well inside the wire budget --
+                    # cost a full walk on the event loop just to be refused
+                    # (Codex P2). Stop one frame past the ceiling; that is
+                    # already enough to know the image is over it, and it is
+                    # all the ceiling needs to decide.
+                    frames = 0
+                    try:
+                        while frames <= _PLUGIN_CHAT_MAX_ANIMATION_FRAMES:
+                            full.seek(frames)
+                            frames += 1
+                    except EOFError:
+                        pass
+                    frames = max(1, frames)
             except Exception:
                 return None
         # Animation multiplies the decode work the single-frame check bounds:

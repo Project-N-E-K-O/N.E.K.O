@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import io
 import warnings
 from io import BytesIO
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -1854,3 +1855,102 @@ async def test_plugin_queue_is_created_on_instances_built_without_init():
 
     await client.stream_image("late", source="plugin")
     assert client._pending_plugin_images == ["late"]
+
+
+def _animated_gif_bytes(frame_count: int, size=(2, 2)) -> bytes:
+    """A GIF whose frames genuinely differ.
+
+    Identical frames get merged by the encoder, which silently produces a
+    1-frame file and makes an "animation" test test nothing. Every caller here
+    asserts the realised frame count before using the fixture.
+    """
+    from PIL import Image as _Image
+
+    frames = []
+    for i in range(frame_count):
+        frame = _Image.new("P", size)
+        frame.putpalette([(i * 7) % 256, (i * 11) % 256, (i * 13) % 256] * 256)
+        frame.putpixel((0, 0), i % 256)
+        frames.append(frame)
+    buf = io.BytesIO()
+    frames[0].save(
+        buf, format="GIF", save_all=True, append_images=frames[1:],
+        duration=1, disposal=2,
+    )
+    return buf.getvalue()
+
+
+def test_over_ceiling_animation_is_refused_without_walking_it():
+    """The ceiling must bound VALIDATION work, not just renderer work.
+
+    Reading ``n_frames`` on the FULL payload decodes the whole animation before
+    the ceiling can reject it, so a GIF with thousands of 2x2 frames -- which
+    stays well inside the wire budget -- costs a full walk on the event loop
+    just to be refused.
+
+    The bounded header prefix is exempt: it is 64 KiB by construction and
+    cannot walk an animation, and the function deliberately reads n_frames
+    there to avoid promoting an animation to a still.
+    """
+    from PIL import Image as _Image
+
+    from app.main_server import character_runtime as cr
+
+    ceiling = cr._PLUGIN_CHAT_MAX_ANIMATION_FRAMES
+    raw = _animated_gif_bytes(ceiling * 8)
+    with _Image.open(io.BytesIO(raw)) as probe:
+        assert getattr(probe, "n_frames", 1) == ceiling * 8, "fixture collapsed"
+
+    full_payload_len = len(raw)
+    seeks = []
+    walked_full_payload = []
+    real_open = cr.Image.open
+
+    class _CountingImage:
+        def __init__(self, inner, payload_len):
+            self._inner = inner
+            self._payload_len = payload_len
+
+        def __enter__(self):
+            self._inner.__enter__()
+            return self
+
+        def __exit__(self, *exc):
+            return self._inner.__exit__(*exc)
+
+        def seek(self, frame):
+            if self._payload_len == full_payload_len:
+                seeks.append(frame)
+            return self._inner.seek(frame)
+
+        def __getattr__(self, name):
+            # RECORD, never raise: the caller wraps this in
+            # `except Exception: return None`, so a probe that raises is
+            # swallowed and the test passes for the wrong reason.
+            if name == "n_frames" and self._payload_len == full_payload_len:
+                walked_full_payload.append(name)
+            return getattr(self._inner, name)
+
+    def _tracking_open(stream, *a, **k):
+        payload_len = len(stream.getvalue()) if hasattr(stream, "getvalue") else -1
+        return _CountingImage(real_open(stream, *a, **k), payload_len)
+
+    with patch.object(cr.Image, "open", _tracking_open):
+        assert cr._inline_image_data_url_mime(base64.b64encode(raw).decode()) is None
+
+    assert not walked_full_payload, (
+        "n_frames on the full payload decodes the whole animation to count it"
+    )
+    # Bounded by the ceiling, not by the animation's own length.
+    assert seeks, "the full payload was never counted at all"
+    assert len(seeks) <= ceiling + 2, (
+        f"walked {len(seeks)} frames for a {ceiling} ceiling"
+    )
+
+
+def test_animation_within_the_ceiling_is_still_accepted():
+    """The bound must reject too-long animations, not animation itself."""
+    from app.main_server import character_runtime as cr
+
+    raw = _animated_gif_bytes(5)
+    assert cr._inline_image_data_url_mime(base64.b64encode(raw).decode()) == "image/gif"
