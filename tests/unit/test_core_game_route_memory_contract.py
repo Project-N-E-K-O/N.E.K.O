@@ -3023,3 +3023,118 @@ async def test_recovery_losing_ownership_mid_tts_leaves_no_tracker_text_for_b():
     assert mgr._current_ai_turn_text == ""
     mgr._emit_turn_end.assert_not_awaited()
 
+
+
+def _media_callback(summary, images):
+    return {
+        "event": "agent_task_callback",
+        "origin": "event",
+        "summary": summary,
+        "detail": summary,
+        "status": "completed",
+        "delivery_mode": "passive",
+        "coalesce_key": "",
+        "media_images": list(images),
+    }
+
+
+def _make_callback_media_manager(offline_session):
+    mgr = _make_transcript_manager()
+    mgr.session = offline_session
+    mgr.is_active = True
+    mgr.session_ready = True
+    mgr.input_cache_lock = asyncio.Lock()
+    mgr.pending_input_data = []
+    mgr._starting_session_count = 0
+    mgr._session_start_circuit_open = False
+    mgr.session_start_failure_count = 0
+    mgr.session_start_max_failures = 3
+    mgr._emit_cooldown_turn_end_if_needed = Mock(return_value=False)
+    mgr._is_agent_enabled = Mock(return_value=False)
+    mgr.agent_flags = {}
+    mgr._fire_task = Mock()
+    mgr.pending_agent_callbacks = []
+    mgr.pending_extra_replies = []
+    mgr.user_language = "zh-CN"
+    return mgr
+
+
+def _make_offline_session_for_callback_media():
+    session = object.__new__(core_module.OmniOfflineClient)
+    session._pending_images = []
+    session.update_max_response_length = Mock()
+    session.stream_image = AsyncMock()
+    return session
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_callback_media_returns_to_the_queue_when_its_turn_never_commits(
+    monkeypatch,
+):
+    """A passive callback carrying images must survive a pre-history failure.
+
+    The drain removes the callback and reports it delivered as soon as its text
+    renders -- the deliberate best-effort contract for a plain notice. Media
+    adds a boundary that contract never covered: the Offline turn still has to
+    switch to its vision model, and a failure there raises before anything is
+    appended to history, so text AND images vanish with no retry left.
+    """
+    session = _make_offline_session_for_callback_media()
+    mgr = _make_callback_media_manager(session)
+    callback = _media_callback("agent finished", ["cb-image-b64"])
+    mgr.pending_agent_callbacks = [callback]
+
+    seen_kwargs = {}
+
+    async def _stream_text(_text, **kwargs):
+        seen_kwargs.update(kwargs)
+        raise RuntimeError("switch_model failed: bad credential")
+
+    session.stream_text = AsyncMock(side_effect=_stream_text)
+    monkeypatch.setattr(
+        core_module, "dispatch_text_user_message", lambda _n, _t: None
+    )
+
+    # 外层 handler 会把 provider 异常吞成日志，这里不该期待它冒出来。
+    await core_module.LLMSessionManager._process_stream_data_internal(
+        mgr,
+        {"input_type": "text", "data": "什么情况"},
+    )
+
+    # 这一轮确实是带图的（否则本用例根本没测到回滚路径）。
+    assert seen_kwargs.get("system_prefix_images") == ["cb-image-b64"]
+    assert mgr.pending_agent_callbacks == [callback]
+    assert callback["media_images"] == ["cb-image-b64"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_callback_media_is_not_requeued_once_its_turn_reached_history(
+    monkeypatch,
+):
+    """After the turn commits, the content is in front of the model.
+
+    Rolling back on a later failure would deliver the same callback twice.
+    """
+    session = _make_offline_session_for_callback_media()
+    mgr = _make_callback_media_manager(session)
+    callback = _media_callback("agent finished", ["cb-image-b64"])
+    mgr.pending_agent_callbacks = [callback]
+
+    async def _stream_text(_text, **kwargs):
+        kwargs["on_turn_committed"]()
+        raise RuntimeError("provider dropped mid-stream")
+
+    session.stream_text = AsyncMock(side_effect=_stream_text)
+    monkeypatch.setattr(
+        core_module, "dispatch_text_user_message", lambda _n, _t: None
+    )
+
+    # 外层 handler 会把 provider 异常吞成日志，这里不该期待它冒出来。
+    await core_module.LLMSessionManager._process_stream_data_internal(
+        mgr,
+        {"input_type": "text", "data": "什么情况"},
+    )
+
+    assert mgr.pending_agent_callbacks == []

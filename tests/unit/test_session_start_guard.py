@@ -7,6 +7,8 @@ import pytest
 
 from main_logic.core import LLMSessionManager
 from main_logic.core import lifecycle as lifecycle_module
+from main_logic.core import streaming as streaming_module
+from main_logic.omni_offline_client import OmniOfflineClient
 
 from tests.fake_clock import patch_module_clock
 
@@ -663,3 +665,113 @@ async def test_active_end_session_still_clears_pending_input_by_default():
     await LLMSessionManager.end_session(mgr, by_server=True)
 
     assert mgr.pending_input_data == []
+
+
+def _make_handoff_manager():
+    """A manager parked on a non-offline session, ready for the text handoff."""
+    mgr = LLMSessionManager.__new__(LLMSessionManager)
+    mgr.input_cache_lock = asyncio.Lock()
+    mgr._multimodal_handoff_lock = asyncio.Lock()
+    mgr.session = MagicMock()  # deliberately NOT an OmniOfflineClient
+    mgr.session_ready = True
+    mgr.is_active = True
+    mgr.websocket = MagicMock()
+    mgr._starting_session_count = 0
+    mgr._starting_input_mode = None
+    mgr.session_start_failure_count = 0
+    mgr.session_start_max_failures = 3
+    return mgr
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_concurrent_text_handoffs_rebuild_the_offline_session_once():
+    """Two text/attachment inputs racing the handoff must not fight each other.
+
+    Each handoff is an end_session + start_session pair with a long await
+    window. Unserialized, the second teardown destroys the offline session the
+    first just built, and the first then submits into a retired client. The
+    loser has to observe the winner's result instead of redoing the swap.
+    """
+    mgr = _make_handoff_manager()
+    gate = asyncio.Event()
+    end_calls = []
+
+    async def gated_end_session(**kwargs):
+        end_calls.append(kwargs)
+        await gate.wait()
+        mgr.session = None
+        mgr.is_active = False
+
+    async def start_session(*args, **kwargs):
+        mgr.session = MagicMock(spec=OmniOfflineClient)
+        mgr.is_active = True
+
+    mgr.end_session = gated_end_session
+    mgr.start_session = start_session
+
+    first = asyncio.create_task(
+        LLMSessionManager._ensure_offline_session_for_text_input(mgr, "text")
+    )
+    await asyncio.sleep(0)
+    second = asyncio.create_task(
+        LLMSessionManager._ensure_offline_session_for_text_input(mgr, "image")
+    )
+    for _ in range(10):
+        await asyncio.sleep(0)
+
+    # 第一条还卡在 end_session 里，第二条绝不能已经开始拆同一个会话。
+    assert len(end_calls) == 1
+
+    gate.set()
+    assert await first is True
+    assert await second is True
+    # 第二条看到的是第一条的成果，没有再拆一次。
+    assert len(end_calls) == 1
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_text_handoff_gives_up_instead_of_swapping_without_the_barrier(
+    monkeypatch,
+):
+    """Waiting out the barrier and rebuilding anyway is the race, not a fallback."""
+    monkeypatch.setattr(
+        streaming_module, "FRONTEND_START_SESSION_TIMEOUT_SECONDS", 0.01
+    )
+    mgr = _make_handoff_manager()
+    mgr.end_session = AsyncMock()
+    mgr.start_session = AsyncMock()
+    await mgr._multimodal_handoff_lock.acquire()
+    try:
+        assert await LLMSessionManager._ensure_offline_session_for_text_input(
+            mgr, "text"
+        ) is False
+    finally:
+        mgr._multimodal_handoff_lock.release()
+    mgr.end_session.assert_not_awaited()
+    mgr.start_session.assert_not_awaited()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_text_handoff_accepts_a_barrier_timeout_once_the_swap_already_landed(
+    monkeypatch,
+):
+    """Timing out is only fatal if nobody did the job; the winner may have."""
+    monkeypatch.setattr(
+        streaming_module, "FRONTEND_START_SESSION_TIMEOUT_SECONDS", 0.01
+    )
+    mgr = _make_handoff_manager()
+    mgr.end_session = AsyncMock()
+    mgr.start_session = AsyncMock()
+    await mgr._multimodal_handoff_lock.acquire()
+    try:
+        # 闸的持有者已经把会话换成 offline 了，只是还没释放。
+        mgr.session = MagicMock(spec=OmniOfflineClient)
+        assert await LLMSessionManager._ensure_offline_session_for_text_input(
+            mgr, "text"
+        ) is True
+    finally:
+        mgr._multimodal_handoff_lock.release()
+    mgr.end_session.assert_not_awaited()

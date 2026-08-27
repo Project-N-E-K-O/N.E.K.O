@@ -60,7 +60,7 @@ from main_logic import core as _core_facade
 from ._shared import logger
 from .multimodal_turn import (
     _MAX_PRERECORD_VISUAL_VALIDATIONS,
-    _MAX_RETAINED_TURN_RECORDS,
+    _MAX_LIVE_TURN_RECORDS,
     MultimodalTurn,
     _CoreMultimodalTurnRecord,
     _IndependentVisualFrame,
@@ -767,8 +767,11 @@ class AsrRuntimeMixin:
         # 正卡在有界的视觉校验 join 上）。记录一没，它回来做身份自检时会认为世界已经
         # 变了而直接 return —— 那句话既不落库也不提交，重叠发声等于抹掉用户完整的上
         # 一轮。invalidated 已经置上，足以让它放弃**图**；话必须留住。
-        # 只按注册时间淘汰最旧的，保留少量最近记录。
-        while len(self._core_multimodal_turns) >= _MAX_RETAINED_TURN_RECORDS:
+        # 每条记录都在自己 dispatch 的 finally 里被 _abandon_core_voice_turn 按
+        # turn_id 移除，所以留在这个 dict 里的都是**还在飞**的回合。淘汰最旧的等于
+        # 挤掉一条还挂在 handle_input_transcript 上的 final —— 正是这个保留机制要防
+        # 的事。上限只当内存兜底，取一个真实场景摸不到的数。
+        while len(self._core_multimodal_turns) >= _MAX_LIVE_TURN_RECORDS:
             oldest = min(
                 self._core_multimodal_turns.items(),
                 key=lambda item: item[1].registered_at,
@@ -3339,6 +3342,22 @@ class AsrRuntimeMixin:
                     # the preview bubble and the clear must not remove it.
                     await self._send_core_asr_preview_clear(external_turn_id)
                 return
+            if (
+                multimodal_turn is not None
+                and turn_record is not None
+                and turn_record.invalidated.is_set()
+            ):
+                # 冻结之后到真正提交之间还有一串 await（handle_input_transcript、
+                # 会话准备……）。这期间后继发声可能已经 prepare 过，视觉所有权随之
+                # 交出去了 —— 那些帧属于新那一轮，不能再随这条 transcript 提交。
+                # 降级成纯文本（正常的无图路径），话仍然要送出去。
+                logger.info(
+                    "[%s] independent ASR turn %s superseded after freeze; "
+                    "submitting transcript without its frames",
+                    self.lanlan_name,
+                    external_turn_id,
+                )
+                multimodal_turn = None
             if getattr(self, "response_backend", "realtime") == "offline_vlm":
                 # handle_input_transcript historically keys voice display off
                 # the session class. After a main-session VLM promotion the

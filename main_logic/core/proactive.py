@@ -32,6 +32,7 @@ from utils.llm_client import AIMessage
 from main_logic.session_state import SessionEvent, ProactivePhase
 from main_logic.proactive_delivery import (
     CALLBACK_EXPIRES_AT_KEY,
+    DELIVERY_ACK_FUTURE_KEY,
     DELIVERY_RETRACTED_KEY,
     SWAP_PRIME_DELIVERY_CLAIM_KEY,
     VOICE_DELIVERY_COMMITTED_KEY,
@@ -3310,6 +3311,40 @@ class ProactiveMixin:
         for callback in callbacks or []:
             if isinstance(callback, dict):
                 callback.pop(SWAP_PRIME_DELIVERY_CLAIM_KEY, None)
+
+    def _requeue_undelivered_callback_media(self, callbacks: list) -> None:
+        """Put media-carrying callbacks back when their turn never reached history.
+
+        The drain removes a callback the moment its text renders, which is the
+        deliberate best-effort contract for a plain passive notice. Media adds a
+        failure boundary that contract never covered: the Offline turn still has
+        to switch to its vision model, and a network/credential failure there
+        raises before anything is appended, so the callback's text AND its images
+        vanish without ever reaching the model. Restore exactly those callbacks,
+        in their original relative order, at the head of the queue.
+
+        The delivery ack cannot be taken back once resolved, so drop the spent
+        future instead: this retry is about getting the content in front of the
+        model, not about re-acknowledging it to the producer.
+        """
+        queued_obj_ids = {id(callback) for callback in self.pending_agent_callbacks}
+        restored = [
+            callback
+            for callback in callbacks
+            if isinstance(callback, dict)
+            and id(callback) not in queued_obj_ids
+            and not callback.get(DELIVERY_RETRACTED_KEY)
+        ]
+        if not restored:
+            return
+        for callback in restored:
+            callback.pop(DELIVERY_ACK_FUTURE_KEY, None)
+        self.pending_agent_callbacks[0:0] = restored
+        logger.info(
+            "[%s] re-queued %d callback(s) whose image turn never committed",
+            getattr(self, "lanlan_name", ""),
+            len(restored),
+        )
 
     def drain_agent_callbacks_for_llm(
         self,

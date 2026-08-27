@@ -33,6 +33,7 @@ from ._shared import (
     _TEXT_SESSION_INPUT_TYPES,
     _IMAGE_INPUT_TYPES,
     _LIVE_VISION_STREAM_INPUT_TYPES,
+    FRONTEND_START_SESSION_TIMEOUT_SECONDS,
     logger,
 )
 
@@ -290,6 +291,46 @@ class StreamingMixin:
         input_type: str,
     ) -> bool:
         """Move text/attachment input onto its offline-session contract."""
+        if isinstance(self.session, OmniOfflineClient):
+            return True
+        # 与 _handoff_to_offline_vlm_and_submit 共用同一把闸。两边做的是同一件事
+        # ——把当前会话就地换成 offline 客户端——各自却都有一段 end_session +
+        # start_session 的 await 窗口。不共闸的话，两条并发 handoff 会互相拆掉对方
+        # 刚建好的 offline 会话：后进的那条 teardown 掉先进的成果，先进的那条随后
+        # 往已经退役的客户端提交。同名同序（handoff 闸在外、swap 闸在里）也保证不会
+        # 反向加锁。
+        lock = getattr(self, '_multimodal_handoff_lock', None)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._multimodal_handoff_lock = lock
+        try:
+            await asyncio.wait_for(
+                lock.acquire(),
+                # 闸的持有者正在做一次会话重建，等它的预算就用会话启动的预算。
+                timeout=FRONTEND_START_SESSION_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            # 超时不能"绕过闸自己重建" —— 那正好是这把闸要防的并发。只在对方已经
+            # 把会话换成 offline 时算成功（它替我们做完了这件事）。
+            if isinstance(self.session, OmniOfflineClient):
+                return True
+            logger.error(
+                "💥 %s 等待 offline handoff 闸超时，放弃本次数据流",
+                input_type,
+            )
+            return False
+        try:
+            return await self._rebuild_offline_session_for_text_input(input_type)
+        finally:
+            lock.release()
+
+    async def _rebuild_offline_session_for_text_input(
+        self,
+        input_type: str,
+    ) -> bool:
+        """The handoff body itself; runs holding ``_multimodal_handoff_lock``."""
+        # 拿到闸之后重读：排在前面的那条 handoff 可能已经把会话换成 offline 了，
+        # 这时候再拆一次就是白白打断一个刚建好的会话。
         if isinstance(self.session, OmniOfflineClient):
             return True
         if self.session_start_failure_count >= self.session_start_max_failures:
@@ -602,6 +643,7 @@ class StreamingMixin:
                     # snapshot 回滚。
                     _agent_cb_ctx = ""
                     _agent_cb_images = []
+                    _agent_cb_media_drained = []
                     if self.pending_agent_callbacks:
                         callbacks_snapshot = self._claim_agent_callbacks_for_llm()
                         try:
@@ -622,6 +664,21 @@ class StreamingMixin:
                                         [],
                                     )
                                 )
+                                # 记下**真正被 drain 掉的、带图的**那些 callback。
+                                # 下面这轮如果在 user message 落 history 之前就抛
+                                # 了（offline 切 vision model 会新建 LLM 客户端，
+                                # 网络抖 / key 失效都会抛），文本和图一起消失且已
+                                # 报告投递成功，再也不会重试。
+                                _still_queued = {
+                                    id(cb) for cb in self.pending_agent_callbacks
+                                }
+                                _agent_cb_media_drained = [
+                                    cb
+                                    for cb in callbacks_snapshot
+                                    if isinstance(cb, dict)
+                                    and cb.get("media_images")
+                                    and id(cb) not in _still_queued
+                                ]
                         except Exception as _cb_err:
                             logger.warning(f"⚠️ Agent callback drain failed: {_cb_err}")
                             _agent_cb_ctx = ""
@@ -683,8 +740,19 @@ class StreamingMixin:
                         "thinking_on": _focus_thinking,
                         "response_discarded_callback": response_discarded_callback,
                     }
+                    _cb_turn_committed = False
+
+                    def _mark_cb_turn_committed() -> None:
+                        nonlocal _cb_turn_committed
+                        _cb_turn_committed = True
+
                     if _agent_cb_images:
                         stream_text_kwargs["system_prefix_images"] = _agent_cb_images
+                        # 本次调用自己的「已进 history」标记。不能拿全局 history 长
+                        # 度判断：并发的另一条文本请求同样会追加。
+                        stream_text_kwargs["on_turn_committed"] = (
+                            _mark_cb_turn_committed
+                        )
                     if input_transcript_callback:
                         stream_text_kwargs["input_transcript_callback"] = input_transcript_callback
                     if memory_text:
@@ -701,6 +769,15 @@ class StreamingMixin:
                         await self._push_focus_thinking(True)
                     try:
                         await self.session.stream_text(data, **stream_text_kwargs)
+                    except BaseException:
+                        # 只在**这一轮**没进 history 时回滚。已提交之后的失败属于
+                        # 既有的 best-effort 契约（内容已经在模型眼前了），回滚反
+                        # 而会重复投递。
+                        if _agent_cb_media_drained and not _cb_turn_committed:
+                            self._requeue_undelivered_callback_media(
+                                _agent_cb_media_drained
+                            )
+                        raise
                     finally:
                         # Clear unconditionally: a non-Focus turn may have pulsed the
                         # bubble True via the reasoning callback, so gating the clear

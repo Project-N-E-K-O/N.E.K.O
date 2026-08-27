@@ -9550,6 +9550,66 @@ async def test_direct_multimodal_final_submits_raw_image_once() -> None:
 
 
 @pytest.mark.unit
+async def test_final_superseded_after_freeze_submits_text_without_frames() -> None:
+    """Freezing the frames is not the last word; the submit is.
+
+    The record is retained past a successor prepare so this final keeps its
+    transcript, which means the route self-check still finds the same record
+    object and passes. But the successor now owns the visuals, so the frozen
+    frames belong to the newer utterance. The sentence still has to be
+    submitted -- as plain text, the ordinary no-image path.
+    """
+    runtime = _Runtime()
+    _install_ready_lifecycle(runtime, "openai")
+    runtime._asr_route_mode = "independent"
+    runtime.session.get_multimodal_turn_delivery = MagicMock(
+        return_value="direct_atomic"
+    )
+    runtime.session.submit_multimodal_turn = AsyncMock()
+    runtime.session.submit_external_voice_turn = AsyncMock()
+    token = runtime._asr_runtime._capture_turn_token(runtime._asr_lifecycle)
+    turn_id = f"asr-{token.ingress.session_epoch}-{token.turn_id}"
+    runtime._begin_core_multimodal_turn(turn_id, token)
+    record = runtime._core_multimodal_turns[turn_id]
+    assert runtime._stage_independent_visual_frame(
+        "frame-of-the-old-turn",
+        source="screen",
+        request_id="screen-1",
+        captured_at=record.started_at,
+    )
+
+    accepted = runtime.handle_input_transcript
+
+    async def accept_then_let_a_successor_start(*args, **kwargs):
+        result = await accepted(*args, **kwargs)
+        # 冻结之后、提交之前：后继发声 prepare，视觉所有权交出去。
+        successor = VoiceTurnToken(
+            ingress=runtime._capture_ingress_token(),
+            turn_id=token.turn_id + 1,
+        )
+        runtime._begin_core_multimodal_turn(
+            f"asr-{successor.ingress.session_epoch}-{successor.turn_id}",
+            successor,
+        )
+        return result
+
+    runtime.handle_input_transcript = accept_then_let_a_successor_start
+
+    await runtime._dispatch_core_asr_transcript(
+        VoiceTranscriptEvent(
+            turn_token=token,
+            provider="openai",
+            text="look here",
+        )
+    )
+
+    assert record.invalidated.is_set()
+    runtime.session.submit_multimodal_turn.assert_not_awaited()
+    runtime.session.submit_external_voice_turn.assert_awaited_once()
+    assert "look here" in runtime.session.submit_external_voice_turn.await_args.args
+
+
+@pytest.mark.unit
 async def test_visual_validation_wait_timeout_does_not_cancel_image_task() -> None:
     runtime = _Runtime()
     runtime._asr_route_mode = "independent"
@@ -10663,10 +10723,44 @@ async def test_retained_turn_records_are_bounded() -> None:
             f"asr-{token.ingress.session_epoch}-{token.turn_id}", token
         )
 
-    assert len(runtime._core_multimodal_turns) <= 3
-    # 留下的是最近的那些。
+    # 记录本该由各自 dispatch 的 finally 移除；这个上限只是内存兜底。
+    assert len(runtime._core_multimodal_turns) <= 8
+    # 留下的是最近的那些 —— 淘汰绝不能挑到最新那条（它才是当前在跑的）。
     kept = sorted(runtime._core_multimodal_turns)
     assert kept[-1].endswith("-229")
+
+
+@pytest.mark.unit
+async def test_successor_prepares_do_not_evict_a_still_running_final() -> None:
+    """A record is removed by its own dispatch, never by a successor's prepare.
+
+    An accepted final can sit inside handle_input_transcript for a while (bounded
+    visual-validation join, provider submit). Meanwhile provider VAD can prepare
+    several successor utterances. Evicting the oldest record to make room drops
+    the identity that in-flight final needs, so the user's whole sentence is
+    neither stored nor submitted.
+    """
+    runtime = _Runtime()
+    runtime._asr_route_mode = "independent"
+
+    running = VoiceTurnToken(ingress=runtime._capture_ingress_token(), turn_id=401)
+    running_id = f"asr-{running.ingress.session_epoch}-{running.turn_id}"
+    runtime._begin_core_multimodal_turn(running_id, running)
+    running_record = runtime._core_multimodal_turns[running_id]
+
+    for turn_id in (402, 403, 404):
+        token = VoiceTurnToken(
+            ingress=runtime._capture_ingress_token(), turn_id=turn_id
+        )
+        runtime._begin_core_multimodal_turn(
+            f"asr-{token.ingress.session_epoch}-{token.turn_id}", token
+        )
+
+    assert runtime._core_multimodal_turns.get(running_id) is running_record
+
+    # 它自己的 dispatch 收尾时才该消失。
+    runtime._abandon_core_voice_turn(running_id, session_ref=None)
+    assert running_id not in runtime._core_multimodal_turns
 
 
 @pytest.mark.unit
