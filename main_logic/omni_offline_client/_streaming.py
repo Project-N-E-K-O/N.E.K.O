@@ -13,6 +13,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from typing import Sequence
+
 from ._shared import (
     AIMessage,
     Any,
@@ -491,6 +493,7 @@ class _StreamingMixin:
         *,
         system_prefix: str | None = None,
         system_prefix_images: Optional[list[str]] = None,
+        turn_images: Optional[Sequence[str]] = None,
         thinking_on: bool = False,
         input_transcript_callback: Optional[Callable[[str], Awaitable[None]]] = None,
         history_replacement_text: str | None = None,
@@ -545,9 +548,14 @@ class _StreamingMixin:
         awaits its Focus decision.
         """  # noqa: DOCSTRING_CJK
         prefix_images = list(system_prefix_images or [])
+        # 本轮自带的用户帧（独立 ASR 抽样出的开头/中间/结尾）。刻意不走
+        # _pending_images：那条队列是 session 级的"下一个消费者拿走"，一次性附件
+        # （拖图 / 聊天贴图）随时可能在 staging 与本次消费之间挤进来，被这一轮
+        # 连带吞掉，用户那张图就配错了发言。invocation-local 才没有这个窗口。
+        own_images = [image for image in (turn_images or []) if image]
         if not text or not text.strip():
             # If only images without text, use a default prompt
-            if self._pending_images or prefix_images:
+            if self._pending_images or prefix_images or own_images:
                 text = "请分析这些图片。"
             else:
                 return
@@ -593,6 +601,7 @@ class _StreamingMixin:
         has_images = bool(
             proactive_image
             or prefix_images
+            or own_images
             or self._pending_images
         )
         # 就地植入 system_prefix：拼到 user content 的 text 段前缀（watermark
@@ -616,14 +625,22 @@ class _StreamingMixin:
             content = []
 
             # Add images first. Temporal order: the proactive screenshot (the
-            # screen she commented on, BEFORE the user spoke) leads, then the
-            # user's own pending frame(s) — so the model doesn't mistake the
-            # earlier screen for what the user just captured.
+            # screen she commented on, BEFORE the user spoke) leads, then this
+            # turn's own sampled frames, then the user's pending attachments —
+            # so the model doesn't mistake the earlier screen for what the user
+            # just captured.
             if proactive_image:
                 content.append({
                     "type": "image_url",
                     "image_url": {
                         "url": f"data:image/jpeg;base64,{proactive_image}"
+                    }
+                })
+            for img_b64 in own_images:
+                content.append({
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:image/jpeg;base64,{img_b64}"
                     }
                 })
             for img_b64 in self._pending_images:
@@ -651,6 +668,7 @@ class _StreamingMixin:
             _img_count = (
                 len(self._pending_images)
                 + len(prefix_images)
+                + len(own_images)
                 + (1 if proactive_image else 0)
             )
             logger.info(

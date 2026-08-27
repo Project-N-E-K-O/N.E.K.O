@@ -9751,3 +9751,68 @@ async def test_native_visual_sync_failure_keeps_raw_images_blocked() -> None:
 
     assert runtime._asr_route_mode == "native"
     assert call_order == ["sync", "block"]
+
+
+@pytest.mark.unit
+async def test_out_of_order_frame_still_joins_the_turn_sample() -> None:
+    """A frame that validates late must not be dropped by the latest-frame guard."""
+    runtime = _Runtime()
+    runtime._asr_route_mode = "independent"
+    token = VoiceTurnToken(ingress=runtime._capture_ingress_token(), turn_id=91)
+    turn_id = f"asr-{token.ingress.session_epoch}-{token.turn_id}"
+    runtime._begin_core_multimodal_turn(turn_id, token)
+    record = runtime._core_multimodal_turns[turn_id]
+    base = record.started_at
+
+    assert runtime._stage_independent_visual_frame(
+        "later-frame",
+        source="screen",
+        request_id="screen-later",
+        captured_at=base + 1.0,
+    )
+    # 更早拍摄、更晚校验完：不能顶掉最新帧缓存，但必须进本回合抽样。
+    assert runtime._stage_independent_visual_frame(
+        "earlier-frame",
+        source="camera",
+        request_id="camera-earlier",
+        captured_at=base + 0.1,
+    )
+    assert runtime._latest_independent_visual_frame.image_b64 == "later-frame"
+
+    turn = runtime._snapshot_core_multimodal_turn(turn_id, "what is that")
+
+    assert turn is not None
+    assert turn.images == ("earlier-frame", "later-frame")
+
+
+@pytest.mark.unit
+async def test_frames_after_the_utterance_is_sealed_are_not_folded_in() -> None:
+    """DRAINING means the user stopped talking; later screen state is not this turn."""
+    runtime = _Runtime()
+    runtime._asr_route_mode = "independent"
+    token = VoiceTurnToken(ingress=runtime._capture_ingress_token(), turn_id=92)
+    turn_id = f"asr-{token.ingress.session_epoch}-{token.turn_id}"
+    runtime._begin_core_multimodal_turn(turn_id, token)
+    record = runtime._core_multimodal_turns[turn_id]
+
+    assert runtime._stage_independent_visual_frame(
+        "spoken-frame",
+        source="screen",
+        request_id="screen-spoken",
+        captured_at=record.started_at + 0.1,
+    )
+
+    runtime._asr_lifecycle = SimpleNamespace(
+        snapshot=SimpleNamespace(state=VoiceLifecycleState.DRAINING)
+    )
+    runtime._stage_independent_visual_frame(
+        "post-endpoint-frame",
+        source="screen",
+        request_id="screen-post",
+        captured_at=record.started_at + 0.2,
+    )
+
+    turn = runtime._snapshot_core_multimodal_turn(turn_id, "what is that")
+
+    assert turn is not None
+    assert turn.images == ("spoken-frame",)

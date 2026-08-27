@@ -37,8 +37,10 @@ async def test_offline_multimodal_submit_suppresses_duplicate_transcript() -> No
         turn_id="turn-1",
     ) is True
 
-    assert client._pending_images == ["raw-image"]
     kwargs = client.stream_text.await_args.kwargs
+    # 本轮的帧是 invocation-local 的，绝不进 session 级的一次性附件队列。
+    assert kwargs["turn_images"] == ("raw-image",)
+    assert client._pending_images == []
     callback = kwargs["input_transcript_callback"]
     assert await callback("look") is None
 
@@ -53,7 +55,8 @@ async def test_offline_multimodal_submit_suppresses_duplicate_transcript() -> No
     assert await followup.kwargs["input_transcript_callback"]("followup") is None
 
 
-async def test_offline_multimodal_failure_removes_only_this_turn_image() -> None:
+async def test_offline_multimodal_failure_leaves_the_attachment_queue_alone() -> None:
+    """A failed ASR turn cannot disturb an unrelated user attachment."""
     client = OmniOfflineClient.__new__(OmniOfflineClient)
     prior_equal_image = "".join(["raw", "-image"])
     turn_image = "".join(["raw-", "image"])
@@ -69,6 +72,8 @@ async def test_offline_multimodal_failure_removes_only_this_turn_image() -> None
             turn_id="turn-1",
         )
 
+    # 本轮帧从没进过共享队列，所以既不需要回滚，也不可能误删一张字节相同的
+    # 用户附件。
     assert client._pending_images == [prior_equal_image]
 
 

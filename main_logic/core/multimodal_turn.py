@@ -70,9 +70,17 @@ class _CoreMultimodalTurnRecord:
     def observe(self, frame: _IndependentVisualFrame) -> None:
         """Fold one newly staged frame into the first/middle/last sample."""
 
-        if self.first_frame is None:
+        if (
+            self.first_frame is None
+            or frame.captured_at < self.first_frame.captured_at
+        ):
+            # 乱序到达：先拍的那帧后落地时仍然是这段发声的开头。
             self.first_frame = frame
-        self.last_frame = frame
+        if (
+            self.last_frame is None
+            or frame.captured_at >= self.last_frame.captured_at
+        ):
+            self.last_frame = frame
         # 中间那张不能靠"边收边猜"选：发声多长事先不知道，只保一个候选的话中点
         # 前移时想提拔的那张已经被丢了，middle 会永远卡在开头附近。改成等距抽样
         # ——候选满了就隔一个丢一个、步长翻倍，候选集始终 <= _MAX_MIDDLE_CANDIDATES
@@ -97,7 +105,9 @@ class _CoreMultimodalTurnRecord:
                 continue
             seen.add(frame.generation)
             ordered.append(frame)
-        ordered.sort(key=lambda item: item.generation)
+        # 按拍摄时间排序，不按 staging 顺序：校验任务并发跑，generation 反映的是
+        # 谁先落地，乱序到达时它和真实时间顺序不是一回事。
+        ordered.sort(key=lambda item: (item.captured_at, item.generation))
         return tuple(ordered)
 
     def adopt_single_frame(self, frame: _IndependentVisualFrame) -> None:

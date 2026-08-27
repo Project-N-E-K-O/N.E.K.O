@@ -36,12 +36,18 @@ class _MediaMixin:
     async def stream_audio(self, audio_chunk: bytes) -> None:
         """Compatibility method - not used in text mode"""
 
-    async def _run_external_voice_stream(self, text: str) -> None:
+    async def _run_external_voice_stream(
+        self,
+        text: str,
+        *,
+        turn_images: tuple[str, ...] = (),
+    ) -> None:
         """Run one externally transcribed turn under cancellable task ownership."""
 
         task = asyncio.create_task(
             self.stream_text(
                 text,
+                turn_images=turn_images,
                 input_transcript_callback=(
                     self._ignore_already_recorded_external_transcript
                 ),
@@ -117,28 +123,19 @@ class _MediaMixin:
             self._multimodal_submit_lock = lock
 
         async with lock:
-            pending = getattr(self, "_pending_images", None)
-            staged_index = len(pending) if isinstance(pending, list) else None
-            for image_b64 in staged_images:
-                await self.stream_image(image_b64, bypass_rate_limit=True)
+            # 这一轮的帧作为 invocation-local 数据直接交给 stream_text，不进
+            # _pending_images。那条队列是 session 级的"下一个消费者拿走"：一次性
+            # 附件（拖图 / 聊天贴图）不拿 _multimodal_submit_lock，完全可能在这里
+            # staging 之后、子任务真正消费之前挤进队列，然后被本轮整批吞掉——用户
+            # 那张图既配错了发言，也不再能给它自己的追问用。顺带失败路径也不需要
+            # 再回滚一段共享队列。
             try:
-                await self._run_external_voice_stream(text)
-            except BaseException as exc:
-                # stream_text consumes pending images as soon as it constructs
-                # the HumanMessage. If it failed before that point, remove only
-                # this turn's staged frames so they cannot leak into a later
-                # turn. The whole run is one contiguous slice appended under the
-                # submit lock, so identity on the slice is enough.
-                current_pending = getattr(self, "_pending_images", None)
-                if (
-                    staged_index is not None
-                    and current_pending is pending
-                    and list(pending[staged_index:]) == list(staged_images)
-                ):
-                    del pending[staged_index:]
-                if isinstance(exc, self._ExternalVoiceSubmitCancelled):
-                    return False
-                raise
+                await self._run_external_voice_stream(
+                    text,
+                    turn_images=staged_images,
+                )
+            except self._ExternalVoiceSubmitCancelled:
+                return False
             return True
 
     async def submit_external_voice_turn(

@@ -3513,3 +3513,56 @@ async def test_cat_greeting_episode_scene_is_request_local_and_keeps_existing_gu
         assert get_cat_greeting_episode_scene(episode, "en") in name_session.called_with[0]
         if master_name:
             assert master_name in name_session.called_with[0]
+
+
+async def test_inject_failure_after_native_media_retires_the_session():
+    """A committed image with no paired text is an incomplete transaction.
+
+    ``media_ok=False`` and the activity-lost-the-race path both retire the
+    session when a native prefix was already persisted. A ``inject_text_and_
+    request_response`` exception leaves the same unlabelled image in the same
+    live session, so it must retire it too — otherwise an unrelated user turn
+    consumes the image while the retry sends it again.
+    """
+    sess = _make_voice_sess()
+    sess._inject_rejection_handlers = {}
+    sess._fatal_error_occurred = False
+    sess.close = AsyncMock()
+    mgr = _make_mgr(session=sess)
+    mgr.end_session = AsyncMock()
+    mgr._schedule_proactive_retry = MagicMock()
+    retirement_tasks = []
+
+    def _fire_retirement(coro):
+        task = asyncio.create_task(coro)
+        retirement_tasks.append(task)
+        return task
+
+    mgr._fire_task = _fire_retirement
+
+    async def _stream_image(_image_b64, **_kwargs):
+        return SimpleNamespace(accepted=True, mode="native")
+
+    sess.stream_image = _stream_image
+
+    async def _inject_boom(*_args, **_kwargs):
+        raise RuntimeError("ws write failed")
+
+    sess.inject_text_and_request_response = _inject_boom
+    cb = {
+        "_callback_delivery_id": "id-inject-fail-after-native-media",
+        "status": "completed",
+        "summary": "native media then inject failure",
+        "media_images": ["callback-image"],
+    }
+    mgr.pending_agent_callbacks = [cb]
+
+    delivered = await core_module.LLMSessionManager.trigger_agent_callbacks(mgr)
+    await asyncio.gather(*retirement_tasks)
+
+    assert delivered is False
+    assert sess._fatal_error_occurred is True
+    sess.close.assert_awaited_once_with()
+    mgr.end_session.assert_awaited_once_with(by_server=True, expected_session=sess)
+    # 回调留在队列里等重试，但重试会落在一条新会话上。
+    assert mgr.pending_agent_callbacks == [cb]

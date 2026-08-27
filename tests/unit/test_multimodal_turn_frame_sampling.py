@@ -126,9 +126,9 @@ async def test_offline_submit_holds_the_per_turn_cap():
         turn_id="turn-1",
     ) is True
 
-    assert client._pending_images == [
+    assert client.stream_text.await_args.kwargs["turn_images"] == tuple(
         f"frame{i}" for i in range(MAX_MULTIMODAL_TURN_IMAGES)
-    ]
+    )
 
 
 async def test_offline_submit_still_accepts_a_bare_string():
@@ -142,23 +142,29 @@ async def test_offline_submit_still_accepts_a_bare_string():
         turn_id="turn-1",
     ) is True
 
-    assert client._pending_images == ["single-frame"]
+    assert client.stream_text.await_args.kwargs["turn_images"] == ("single-frame",)
 
 
-async def test_offline_submit_rolls_back_every_staged_frame_on_failure():
+async def test_asr_frames_never_enter_the_shared_attachment_queue():
+    """An attachment can land between staging and consumption, so keep them apart."""
     client = OmniOfflineClient.__new__(OmniOfflineClient)
     client._pending_images = ["earlier-attachment"]
-    client.stream_text = AsyncMock(side_effect=RuntimeError("vlm down"))
 
-    with pytest.raises(RuntimeError, match="vlm down"):
-        await client.submit_multimodal_turn(
-            "look",
-            ("a", "b", "c"),
-            turn_id="turn-1",
-        )
+    async def attach_while_streaming(*_args, **_kwargs):
+        # 模拟用户在本轮 stream_text 真正消费之前又拖了一张图进来。
+        await OmniOfflineClient.stream_image(client, "late-attachment")
 
-    # 整段回滚：留下半段会让下一轮凭空多出这一轮的帧。
-    assert client._pending_images == ["earlier-attachment"]
+    client.stream_text = AsyncMock(side_effect=attach_while_streaming)
+
+    assert await client.submit_multimodal_turn(
+        "look",
+        ("a", "b", "c"),
+        turn_id="turn-1",
+    ) is True
+
+    assert client.stream_text.await_args.kwargs["turn_images"] == ("a", "b", "c")
+    # 队列里只有附件，一张本轮帧都没有。
+    assert client._pending_images == ["earlier-attachment", "late-attachment"]
 
 
 def test_realtime_submit_holds_the_per_turn_cap():
@@ -177,3 +183,33 @@ def test_realtime_submit_rejects_an_empty_sample():
 
     with pytest.raises(ValueError, match="at least one image"):
         OmniRealtimeClient._normalize_multimodal_turn_images(())
+
+
+def test_out_of_order_arrival_keeps_the_earliest_capture_as_first():
+    record = _record()
+    later = _IndependentVisualFrame(
+        image_b64="later",
+        session_epoch=1,
+        route_generation=1,
+        generation=1,
+        captured_at=5.0,
+        source="screen",
+        request_id=None,
+    )
+    earlier = _IndependentVisualFrame(
+        image_b64="earlier",
+        session_epoch=1,
+        route_generation=1,
+        generation=2,
+        captured_at=1.0,
+        source="screen",
+        request_id=None,
+    )
+
+    # 校验任务并发跑：先拍的那帧可以后落地。
+    record.observe(later)
+    record.observe(earlier)
+
+    sampled = [frame.image_b64 for frame in record.sampled_frames()]
+    assert sampled[0] == "earlier"
+    assert sampled[-1] == "later"

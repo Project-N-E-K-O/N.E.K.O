@@ -1273,9 +1273,17 @@ class ProactiveMixin:
                 except Exception as exc:
                     # WS error / fatal / response_already_active race — keep cbs
                     # in the queue so the next phase-idle hook retries them.
+                    if native_media_prefix_committed:
+                        # 图已经不可逆地写进了这条会话，配对的 callback 文本却没
+                        # 送出去：会话里留着一张没有说明的图，会被后面某个不相关
+                        # 的用户回合消费掉，而重试又会再发一遍。与上面
+                        # media_ok=False / 活动抢跑两条路同一判据——媒体已提交但
+                        # 文本未落地，就是一笔不完整的事务，退休这条会话。
+                        _mark_media_session_unsafe()
+                        await _retire_unsafe_media_session()
                     logger.warning(
-                        "[%s] trigger_agent_callbacks: voice proactive inject failed: %s; keeping cbs for retry",
-                        self.lanlan_name, exc,
+                        "[%s] trigger_agent_callbacks: voice proactive inject failed: %s; keeping cbs for retry (native prefix committed=%s)",
+                        self.lanlan_name, exc, native_media_prefix_committed,
                     )
                     return False
                 finally:

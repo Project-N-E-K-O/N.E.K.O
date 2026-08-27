@@ -432,13 +432,17 @@ class AsrRuntimeMixin:
         ingress = self._capture_ingress_token()
         previous = self._latest_independent_visual_frame
         stable_captured_at = float(captured_at)
-        if (
+        # screen/camera 各自跑独立的 fire-and-forget 校验任务，先捕获的那帧完全
+        # 可能后 staging。这两件事必须分开判：
+        #   - 「最新帧缓存」必须真的是最新的，乱序到达的旧帧不能顶掉它；
+        #   - 但那张旧帧仍然是本回合发声区间里的合法成员，抽样要收下它，
+        #     否则开头那张（正是用户开口时指的东西）会被后到的邻居顶掉。
+        supersedes_latest_cache = not (
             previous is not None
             and previous.session_epoch == ingress.session_epoch
             and previous.route_generation == self._voice_input_transition_generation
             and stable_captured_at <= previous.captured_at
-        ):
-            return False
+        )
 
         self._independent_visual_generation += 1
         frame = _IndependentVisualFrame(
@@ -450,16 +454,38 @@ class AsrRuntimeMixin:
             source=str(source or "unknown"),
             request_id=(str(request_id) if request_id is not None else None),
         )
-        self._latest_independent_visual_frame = frame
+        if supersedes_latest_cache:
+            self._latest_independent_visual_frame = frame
+        # 语义端点之后（lifecycle 进 DRAINING）到 provider final 派发之间，周期性
+        # 的截图任务还会继续落地。那些画面已经不是这段发声了，收进来会让 final
+        # transcript 配上「用户说完之后」的屏幕状态。
+        sealed = self._independent_asr_utterance_sealed()
+        observed = False
         for record in tuple(self._core_multimodal_turns.values()):
             if (
-                record.session_epoch == frame.session_epoch
+                not sealed
+                and record.session_epoch == frame.session_epoch
                 and record.route_generation == frame.route_generation
                 and frame.generation > record.start_image_generation
                 and frame.captured_at >= record.started_at
             ):
                 record.observe(frame)
-        return True
+                observed = True
+        return supersedes_latest_cache or observed
+
+    def _independent_asr_utterance_sealed(self) -> bool:
+        """Report whether the active utterance already reached its endpoint.
+
+        Reads the ASR lifecycle rather than a Core-side flag so a provider that
+        seals the turn early is respected without a second source of truth.
+        A runtime that exposes no lifecycle keeps the previous behaviour: the
+        frame is still admitted rather than silently dropped.
+        """
+
+        runtime = getattr(self, "_asr_runtime", None)
+        lifecycle = getattr(runtime, "_asr_lifecycle", None)
+        state = getattr(getattr(lifecycle, "snapshot", None), "state", None)
+        return state is VoiceLifecycleState.DRAINING
 
     def _track_independent_visual_validation_task(
         self,
