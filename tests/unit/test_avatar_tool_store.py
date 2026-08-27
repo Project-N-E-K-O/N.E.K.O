@@ -1810,3 +1810,50 @@ def test_update_rejects_retained_bytes_swapped_after_the_record_was_verified(tmp
         )
     assert raised.value.code == "resource_reference_invalid"
     assert raised.value.field == "default_image"
+
+
+@pytest.mark.unit
+def test_update_maps_a_retained_read_failure_to_a_controlled_error(tmp_path, monkeypatch):
+    """A locked retained file must not escape as a bare OSError."""
+    monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
+    store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
+    tool = _create_tool(
+        store,
+        name="Feather",
+        change_mode="press-swap",
+        change_meanings=["meaning"],
+        default_image=_png(),
+        change_images=[_png(size=(9, 9))],
+    )
+
+    real_read_bytes = Path.read_bytes
+
+    def locked_read_bytes(self):
+        if self.name == "default.png":
+            raise OSError("file locked by another process")
+        return real_read_bytes(self)
+
+    monkeypatch.setattr(Path, "read_bytes", locked_read_bytes)
+    root_key = store._root_key()
+    try:
+        with pytest.raises(AvatarToolStoreError) as raised:
+            store.update_tool(
+                tool["id"],
+                base_revision=tool["revision"],
+                name="Feather",
+                change_mode="press-swap",
+                change_meanings=["meaning"],
+                default_resource="default.png",
+                default_image=None,
+                change_resources=["change-000.png"],
+                change_images=[],
+            )
+        # 路由只接 AvatarToolStoreError / MaintenanceModeError；裸 OSError 会变 500。
+        assert raised.value.code == "resource_read_failed"
+        assert raised.value.status_code == 503
+        assert raised.value.field == "default_image"
+        # 读不到不等于损坏，不能隔离。
+        assert raised.value.integrity_mismatch is False
+        assert tool["id"] not in avatar_tool_store._QUARANTINED_TOOL_IDS.get(root_key, set())
+    finally:
+        avatar_tool_store._QUARANTINED_TOOL_IDS.pop(root_key, None)

@@ -1181,7 +1181,18 @@ class AvatarToolStore:
                 # 是两次独立的打开：同步盘 / 网络盘上的外部写者可能在中间把文件
                 # 换掉，于是「保留原图」的 PUT 会静默发布用户没提交过的内容。
                 # 读完立刻对齐 record 里的摘要，把这个窗口关掉。
-                data = candidate.read_bytes()
+                try:
+                    data = candidate.read_bytes()
+                except OSError as exc:
+                    # 文件锁、同步盘出错、外部删除都会走到这里。update_avatar_tool
+                    # 只接 AvatarToolStoreError / MaintenanceModeError，裸 OSError
+                    # 会绕过受控错误响应变成 500。这是瞬时失败不是损坏，用 503。
+                    raise AvatarToolStoreError(
+                        "resource_read_failed",
+                        "Retained resource could not be read",
+                        status_code=503,
+                        field=field,
+                    ) from exc
                 expected_digest = current["resourceDigests"].get(resource)
                 if (
                     not expected_digest

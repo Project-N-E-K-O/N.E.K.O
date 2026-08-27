@@ -168,6 +168,7 @@ class AvatarToolStaticFiles(CustomStaticFiles):
         from starlette.exceptions import HTTPException as StarletteHTTPException
         from utils.avatar_tool_store import (
             AVATAR_TOOL_LIMITS,
+            AvatarToolStoreError,
             get_avatar_tool_store,
             is_public_avatar_tool_resource_path,
         )
@@ -211,12 +212,20 @@ class AvatarToolStaticFiles(CustomStaticFiles):
         except OSError as exc:
             raise StarletteHTTPException(status_code=404) from exc
         if verified is None:
-            # 读到了字节但和 URL 里的摘要对不上：这是确定性损坏，就地把该道具
-            # 从公开目录摘掉，不用等重启。上面的 OSError 分支不走这里，瞬时
-            # 读失败不该隔离。
-            get_avatar_tool_store(_config_manager).quarantine(
-                normalized_path.split("/", 1)[0]
-            )
+            # 这里对不上的是「URL 里的摘要」，而 URL 是客户端给的：道具更新之后，
+            # 还没刷新的旧页面照样会拿旧 ?v= 来取资源，那是正常 404，绝不能据此
+            # 隔离一个健康的道具。要不要隔离只能由权威记录说了算 —— 交给
+            # read_record(verify_resources=True)，它只在实际内容与 record 摘要
+            # 不符时才隔离，OSError 这类瞬时失败不算。
+            store = get_avatar_tool_store(_config_manager)
+            try:
+                await asyncio.to_thread(
+                    store.read_record,
+                    normalized_path.split("/", 1)[0],
+                    verify_resources=True,
+                )
+            except (AvatarToolStoreError, OSError):
+                pass
             raise StarletteHTTPException(status_code=404)
         content, opened_stat = verified
         response = _VerifiedAssetFileResponse(

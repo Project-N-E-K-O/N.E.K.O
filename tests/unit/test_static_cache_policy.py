@@ -275,3 +275,106 @@ async def test_avatar_tool_unversioned_response_rejects_excessive_range_specs(tm
 
     assert messages[0]["status"] == 416
     assert dict(messages[0]["headers"])[b"content-range"] == b"bytes */64"
+
+
+def _publish_avatar_tool(root, tool_id, *, default_bytes, recorded_default_bytes=None):
+    """Lay down a store directory whose record may or may not match the bytes."""
+    import json
+
+    directory = root / tool_id
+    directory.mkdir(parents=True)
+    change_bytes = b"change-payload"
+    (directory / "default.png").write_bytes(default_bytes)
+    (directory / "change-000.png").write_bytes(change_bytes)
+    (directory / "record.json").write_text(json.dumps({
+        "recordVersion": 2,
+        "id": tool_id,
+        "name": "T",
+        "defaultImage": "default.png",
+        "imageChange": {"mode": "press-swap", "items": [{"image": "change-000.png", "meaning": "m"}]},
+        "interaction": {},
+        "resourceDigests": {
+            "default.png": hashlib.sha256(
+                default_bytes if recorded_default_bytes is None else recorded_default_bytes
+            ).hexdigest(),
+            "change-000.png": hashlib.sha256(change_bytes).hexdigest(),
+        },
+    }), encoding="utf-8")
+
+
+class _AvatarToolConfigManager:
+    def __init__(self, root):
+        self.avatar_tools_dir = root
+
+    def ensure_avatar_tools_directory(self):
+        self.avatar_tools_dir.mkdir(parents=True, exist_ok=True)
+        return True
+
+
+@pytest.mark.asyncio
+async def test_stale_asset_url_returns_404_without_quarantining_a_healthy_tool(tmp_path, monkeypatch):
+    """The ?v= digest is client input; a stale tab must not hide a valid tool."""
+    import utils.avatar_tool_store as avatar_tool_store
+
+    tool_id = "local-12345678-1234-4123-8123-123456789abc"
+    content = b"the-current-bytes"
+    _publish_avatar_tool(tmp_path, tool_id, default_bytes=content)
+    monkeypatch.setattr(
+        "app.main_server.web_app._config_manager", _AvatarToolConfigManager(tmp_path)
+    )
+    static_files = AvatarToolStaticFiles(directory=tmp_path, check_dir=False)
+    root_key = avatar_tool_store.AvatarToolStore(
+        _AvatarToolConfigManager(tmp_path)
+    )._root_key()
+
+    stale = hashlib.sha256(b"what the old page still remembers").hexdigest()
+    scope = {
+        "type": "http",
+        "method": "GET",
+        "path": f"/{tool_id}/default.png",
+        "root_path": "",
+        "query_string": f"v={stale}".encode("ascii"),
+        "headers": [],
+    }
+    try:
+        with pytest.raises(StarletteHTTPException) as raised:
+            await static_files.get_response(f"{tool_id}/default.png", scope)
+        assert raised.value.status_code == 404
+        assert tool_id not in avatar_tool_store._QUARANTINED_TOOL_IDS.get(root_key, set())
+    finally:
+        avatar_tool_store._QUARANTINED_TOOL_IDS.pop(root_key, None)
+
+
+@pytest.mark.asyncio
+async def test_asset_whose_bytes_diverge_from_the_record_quarantines_the_tool(tmp_path, monkeypatch):
+    import utils.avatar_tool_store as avatar_tool_store
+
+    tool_id = "local-12345678-1234-4123-8123-123456789abc"
+    recorded = b"what the record was written against"
+    _publish_avatar_tool(
+        tmp_path, tool_id, default_bytes=b"tampered", recorded_default_bytes=recorded
+    )
+    monkeypatch.setattr(
+        "app.main_server.web_app._config_manager", _AvatarToolConfigManager(tmp_path)
+    )
+    static_files = AvatarToolStaticFiles(directory=tmp_path, check_dir=False)
+    root_key = avatar_tool_store.AvatarToolStore(
+        _AvatarToolConfigManager(tmp_path)
+    )._root_key()
+
+    # 客户端拿的是权威 record 里的摘要，也就是「正确」的 URL。
+    scope = {
+        "type": "http",
+        "method": "GET",
+        "path": f"/{tool_id}/default.png",
+        "root_path": "",
+        "query_string": f"v={hashlib.sha256(recorded).hexdigest()}".encode("ascii"),
+        "headers": [],
+    }
+    try:
+        with pytest.raises(StarletteHTTPException) as raised:
+            await static_files.get_response(f"{tool_id}/default.png", scope)
+        assert raised.value.status_code == 404
+        assert tool_id in avatar_tool_store._QUARANTINED_TOOL_IDS[root_key]
+    finally:
+        avatar_tool_store._QUARANTINED_TOOL_IDS.pop(root_key, None)
