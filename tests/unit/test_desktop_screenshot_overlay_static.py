@@ -9,13 +9,14 @@ CHAT_TEMPLATE = (ROOT / "templates" / "chat.html").read_text(encoding="utf-8")
 
 def test_desktop_overlay_precedes_backend_interactive_fallback():
     capture_block = APP_BUTTONS.split(
-        "mod.captureScreenshotDataUrl = async function captureScreenshotDataUrl()",
+        "mod.captureScreenshotDataUrl = async function captureScreenshotDataUrl(token)",
         1,
     )[1].split("window.captureScreenshotDataUrl = mod.captureScreenshotDataUrl", 1)[0]
 
     assert capture_block.index("captureDesktopRegionDirectly()") < capture_block.index(
         "fetchBackendInteractiveScreenshot()"
     )
+    assert "SCREENSHOT_AUTH_REQUIRED" in APP_BUTTONS
     assert "translations: getCropOverlayTranslations()" in APP_BUTTONS
 
 
@@ -51,7 +52,7 @@ def test_desktop_pin_is_opt_in_and_does_not_enter_chat_attachments():
 
 def test_successful_desktop_pin_is_not_reported_as_cancelled():
     capture_block = APP_BUTTONS.split(
-        "mod.captureScreenshotDataUrl = async function captureScreenshotDataUrl()",
+        "mod.captureScreenshotDataUrl = async function captureScreenshotDataUrl(token)",
         1,
     )[1].split("window.captureScreenshotDataUrl = mod.captureScreenshotDataUrl", 1)[0]
     pending_block = APP_BUTTONS.split(

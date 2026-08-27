@@ -483,6 +483,7 @@ const S = {
 const U = { isMobile: () => false };
 const window = {
   t: () => 'ok',
+  navigator: { userActivation: { isActive: true } },
   appCrop: null,
   fetchBackendInteractiveScreenshot: async () => null,
   prepareRememberedWindowCapture: async () => __PREPARE__,
@@ -571,6 +572,7 @@ const U = { isMobile: () => false };
 const window = {
   t: (key) => key,
   showStatusToast: (message) => results.toasts.push(message),
+  navigator: { userActivation: { isActive: true } },
   appCrop: null,
   prepareRememberedWindowCapture: async () => ({
     required: true,

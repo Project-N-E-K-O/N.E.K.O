@@ -24,6 +24,83 @@
     // 手动截图入列前压缩用的质量阶梯：主质量 0.8（与屏幕分享、后端 vision 分析一致），
     // 720p 下若仍超出运输预算再逐步降质兜底。
     const SCREENSHOT_JPEG_QUALITIES = [0.8, 0.72, 0.64, 0.56, 0.48];
+    const SCREENSHOT_PROXY_GUARD_MARKER = '__nekoScreenshotProxyGuarded__';
+    let trustedScreenshotCaptureToken = '';
+
+    function mintTrustedScreenshotCaptureToken() {
+        trustedScreenshotCaptureToken = [
+            Date.now().toString(36),
+            Math.random().toString(36).slice(2),
+            Math.random().toString(36).slice(2),
+        ].join('');
+        return trustedScreenshotCaptureToken;
+    }
+
+    function hasTrustedScreenshotCaptureToken(token) {
+        return typeof token === 'string'
+            && token.length > 0
+            && token === trustedScreenshotCaptureToken;
+    }
+
+    function consumeTrustedScreenshotCaptureToken(token) {
+        if (!hasTrustedScreenshotCaptureToken(token)) {
+            return false;
+        }
+        trustedScreenshotCaptureToken = '';
+        return true;
+    }
+
+    function wrapScreenshotProxy(proxy) {
+        if (!proxy || typeof proxy !== 'object' || proxy[SCREENSHOT_PROXY_GUARD_MARKER] === true) {
+            return proxy;
+        }
+        var guardedProxy = Object.create(proxy);
+        Object.defineProperty(guardedProxy, SCREENSHOT_PROXY_GUARD_MARKER, {
+            configurable: false,
+            enumerable: false,
+            value: true,
+            writable: false,
+        });
+        guardedProxy.request = function requestTrustedScreenshotProxy(token) {
+            if (!hasTrustedScreenshotCaptureToken(token)) {
+                console.warn('[截图] 未授权的多窗口截图代理请求已忽略');
+                return false;
+            }
+            return typeof proxy.request === 'function' ? proxy.request(token) : false;
+        };
+        return guardedProxy;
+    }
+
+    function installScreenshotProxyGuard() {
+        if (window.__NEKO_SCREENSHOT_PROXY_GUARD_INSTALLED__ === true) {
+            return;
+        }
+        var proxyValue = null;
+        try {
+            proxyValue = window.nekoScreenshotProxy || null;
+        } catch (_) {}
+        try {
+            Object.defineProperty(window, 'nekoScreenshotProxy', {
+                configurable: true,
+                enumerable: true,
+                get: function () {
+                    return proxyValue;
+                },
+                set: function (nextProxy) {
+                    proxyValue = wrapScreenshotProxy(nextProxy);
+                },
+            });
+            proxyValue = wrapScreenshotProxy(proxyValue);
+        } catch (_) {
+            proxyValue = wrapScreenshotProxy(proxyValue);
+            try {
+                window.nekoScreenshotProxy = proxyValue;
+            } catch (_) {}
+        }
+        window.__NEKO_SCREENSHOT_PROXY_GUARD_INSTALLED__ = true;
+    }
+
+    installScreenshotProxyGuard();
 
     function getDesktopProvider() {
         return typeof window.getDesktopCaptureProvider === 'function'
@@ -1847,11 +1924,12 @@
                 showHomeTutorialLockedToast();
                 return false;
             }
+            var screenshotCaptureToken = mintTrustedScreenshotCaptureToken();
             if (window.__NEKO_MULTI_WINDOW__ && window.nekoScreenshotProxy) {
-                window.nekoScreenshotProxy.request();
+                window.nekoScreenshotProxy.request(screenshotCaptureToken);
                 return true;
             } else {
-                return mod.captureScreenshotToPendingList();
+                return mod.captureScreenshotToPendingList(screenshotCaptureToken);
             }
         });
         host.setOnComposerRemoveAttachment(function (attachmentId) {
@@ -3794,7 +3872,19 @@
             } catch (e) { }
         }
 
-        mod.captureScreenshotDataUrl = async function captureScreenshotDataUrl() {
+        mod.captureScreenshotDataUrl = async function captureScreenshotDataUrl(token) {
+            var hasTrustedUserActivation = !!(window.navigator
+                && window.navigator.userActivation
+                && window.navigator.userActivation.isActive);
+            if (typeof token === 'string' && token.length > 0) {
+                if (!consumeTrustedScreenshotCaptureToken(token)) {
+                    console.warn('[截图] 未授权的截图请求已忽略');
+                    throw new Error('SCREENSHOT_AUTH_REQUIRED');
+                }
+            } else if (!hasTrustedUserActivation) {
+                console.warn('[截图] 未授权的截图请求已忽略');
+                throw new Error('SCREENSHOT_AUTH_REQUIRED');
+            }
             if (_captureScreenshotDataUrlBusy) {
                 console.warn('[截图] 截图流程进行中，忽略重复请求');
                 throw new Error('SCREENSHOT_BUSY');
@@ -4067,7 +4157,7 @@
         };
         window.captureScreenshotDataUrl = mod.captureScreenshotDataUrl;
 
-        mod.captureScreenshotToPendingList = async function captureScreenshotToPendingList() {
+        mod.captureScreenshotToPendingList = async function captureScreenshotToPendingList(token) {
             if (isHomeTutorialInteractionLocked()) {
                 showHomeTutorialLockedToast();
                 return false;
@@ -4076,7 +4166,7 @@
                 screenshotButton.disabled = true;
                 window.showStatusToast(window.t ? window.t('app.capturing') : '\u6B63\u5728\u622A\u56FE...', 2000);
 
-                var result = await mod.captureScreenshotDataUrl();
+                var result = await mod.captureScreenshotDataUrl(token);
                 if (result && result.rememberedWindowUnavailable) {
                     window.showStatusToast(
                         window.t
@@ -4136,7 +4226,9 @@
         // ----------------------------------------------------------------
         // Screenshot button click
         // ----------------------------------------------------------------
-        screenshotButton.addEventListener('click', mod.captureScreenshotToPendingList);
+        screenshotButton.addEventListener('click', function () {
+            return mod.captureScreenshotToPendingList(mintTrustedScreenshotCaptureToken());
+        });
         // F4 由 PC 主进程直接触发 React Chat 的截图入口。页面 URL 已加载并不代表
         // app-buttons 已完成初始化；显式标记能力就绪，避免首轮 F4 误回退到旧的 Pet 路径。
         window.__NEKO_SCREENSHOT_CAPTURE_READY__ = true;
