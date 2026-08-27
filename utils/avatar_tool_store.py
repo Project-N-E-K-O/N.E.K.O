@@ -79,9 +79,9 @@ _REVISION_PATTERN = re.compile(r"^[0-9]+-[0-9]+$")
 _RESOURCE_DIGEST_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 _STORE_LOCK = threading.RLock()
 _RECOVERY_PENDING_ROOTS: set[str] = set()
-# 上一次硬重载（initialize / recovery）判定为损坏的道具，按 store root 分组。
-# 只在 _rescan_integrity 里整体重建，成功的 create/update/delete 会解除单个
-# 道具的隔离；进程内状态，重启即重新评估。
+# 消费点逐字节校验时发现内容与 record 摘要不符的道具，按 store root 分组。
+# 由 quarantine() 写入，成功的 create/update/delete 解除单个道具的隔离；
+# 进程内状态，重启即重新评估。
 _QUARANTINED_TOOL_IDS: dict[str, set[str]] = {}
 logger = logging.getLogger(__name__)
 
@@ -95,12 +95,16 @@ class AvatarToolStoreError(ValueError):
         status_code: int = 400,
         field: str | None = None,
         index: int | None = None,
+        integrity_mismatch: bool = False,
     ):
         super().__init__(message)
         self.code = code
         self.status_code = status_code
         self.field = field
         self.index = index
+        # 只有「读到了字节、但和 record 里的摘要对不上」才置位。OSError 这类
+        # 瞬时失败不算，否则一次文件占用就会把好道具永久隔离。
+        self.integrity_mismatch = integrity_mismatch
 
 
 def is_local_avatar_tool_id(value: object) -> bool:
@@ -338,7 +342,6 @@ class AvatarToolStore:
                 return
             try:
                 self._recover_interrupted_mutations()
-                self._rescan_integrity()
             except OSError as exc:
                 raise AvatarToolStoreError(
                     "avatar_tools_directory_unavailable",
@@ -363,7 +366,6 @@ class AvatarToolStore:
             try:
                 self._ensure_directory()
                 self._recover_interrupted_mutations()
-                self._rescan_integrity()
             except AvatarToolStoreError:
                 _RECOVERY_PENDING_ROOTS.add(root_key)
                 raise
@@ -376,34 +378,13 @@ class AvatarToolStore:
                 ) from exc
             _RECOVERY_PENDING_ROOTS.discard(root_key)
 
-    def _rescan_integrity(self) -> None:
-        # list_items 每次列表都逐字节重算 digest 太贵（前端在 window focus /
-        # visibilitychange / 每次增删改后都会拉列表），所以那一层只做轻量校验。
-        # 逐字节校验收口到三个点：这里（启动 / 恢复时的硬重载）、取静态资源时、
-        # 以及互动锁内那次 read_record(verify_resources=True)。本次扫描认定损坏
-        # 的道具进隔离集，列表跳过它们，重启应用就会重新评估。
-        quarantined: set[str] = set()
-        for candidate in self.root.iterdir():
-            if (
-                candidate.is_symlink()
-                or not candidate.is_dir()
-                or not is_local_avatar_tool_id(candidate.name)
-            ):
-                continue
-            try:
-                self._read_record_from_directory(
-                    candidate.name,
-                    candidate,
-                    verify_resources=True,
-                )
-            except (AvatarToolStoreError, OSError) as exc:
-                logger.warning(
-                    "Quarantining local avatar tool %s after integrity rescan: %s",
-                    candidate.name,
-                    exc,
-                )
-                quarantined.add(candidate.name)
-        _QUARANTINED_TOOL_IDS[self._root_key()] = quarantined
+    def quarantine(self, tool_id: str) -> None:
+        # 消费点（详情页、静态资源、互动）逐字节校验时发现内容和 record 里的
+        # 摘要对不上，就地把这个道具从公开目录摘掉，不必等重启。启动不做全量
+        # 复核：那会给每次冷启动加上 O(总字节数) 的开销，而作者原来的启动路径
+        # 一个文件都不 hash。
+        if is_local_avatar_tool_id(tool_id):
+            _QUARANTINED_TOOL_IDS.setdefault(self._root_key(), set()).add(tool_id)
 
     def _release_quarantine(self, tool_id: str) -> None:
         quarantined = _QUARANTINED_TOOL_IDS.get(self._root_key())
@@ -481,11 +462,19 @@ class AvatarToolStore:
         with _STORE_LOCK:
             if self._root_key() in _RECOVERY_PENDING_ROOTS:
                 self.ensure()
-            return self._read_record_from_directory(
-                tool_id,
-                self.root / tool_id,
-                verify_resources=verify_resources,
-            )
+            try:
+                return self._read_record_from_directory(
+                    tool_id,
+                    self.root / tool_id,
+                    verify_resources=verify_resources,
+                )
+            except AvatarToolStoreError as exc:
+                if exc.integrity_mismatch:
+                    logger.warning(
+                        "Quarantining local avatar tool %s: %s", tool_id, exc
+                    )
+                    self.quarantine(tool_id)
+                raise
 
     def _read_record_from_directory(
         self,
@@ -634,6 +623,7 @@ class AvatarToolStore:
                         "record_invalid",
                         "Avatar tool resource integrity is invalid",
                         status_code=404,
+                        integrity_mismatch=True,
                     )
         expected_entries = {"record.json", *resource_names}
         try:
@@ -788,8 +778,9 @@ class AvatarToolStore:
                     )
                     continue
                 try:
-                    # 见 _rescan_integrity：这里只做轻量校验（记录形状、资源存在、
-                    # 闭包一致），不重算 digest。
+                    # 这里只做轻量校验（记录形状、资源存在、闭包一致），不重算
+                    # digest —— 前端每次 window focus 都会拉列表，逐字节核验放在
+                    # 真正消费资源的地方，发现不符再由 quarantine() 摘掉。
                     record = self.read_record(
                         candidate.name,
                         verify_resources=False,
@@ -1186,7 +1177,22 @@ class AvatarToolStore:
                         "Retained resource is invalid",
                         field=field,
                     )
-                return candidate.read_bytes()
+                # 这次 read_bytes 和上面那次 read_record(verify_resources=True)
+                # 是两次独立的打开：同步盘 / 网络盘上的外部写者可能在中间把文件
+                # 换掉，于是「保留原图」的 PUT 会静默发布用户没提交过的内容。
+                # 读完立刻对齐 record 里的摘要，把这个窗口关掉。
+                data = candidate.read_bytes()
+                expected_digest = current["resourceDigests"].get(resource)
+                if (
+                    not expected_digest
+                    or hashlib.sha256(data).hexdigest() != expected_digest
+                ):
+                    raise AvatarToolStoreError(
+                        "resource_reference_invalid",
+                        "Retained resource is invalid",
+                        field=field,
+                    )
+                return data
 
             current_change_resources = {
                 item["image"] for item in current["imageChange"]["items"]
