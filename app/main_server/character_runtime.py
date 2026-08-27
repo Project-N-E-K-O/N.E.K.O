@@ -282,6 +282,51 @@ async def _resolve_plugin_model_image(part: dict[str, Any]) -> str:
     return await _fetch_plugin_image_base64(url)
 
 
+def _image_part_payloads_conflict(part: Any) -> bool:
+    """True when one image part carries BOTH a url and inline bytes.
+
+    The two consumers resolve such a part in OPPOSITE directions: the model
+    path prefers ``binary_base64`` and falls back to ``url``, while the chat
+    path prefers ``url`` and falls back to the bytes. A part carrying both can
+    therefore show the user one image while the character is reasoning about a
+    different one, and the reply reads as confidently wrong about what is on
+    screen (Codex P2).
+
+    Neither precedence is more correct, and the host cannot tell whether the
+    two sources agree without fetching and comparing both. So the ambiguity is
+    refused rather than silently resolved -- the same stance the inline MIME
+    probe takes: input this host cannot pin down is input it should not act on.
+    """
+    if not isinstance(part, dict) or part.get("type") != "image":
+        return False
+    url = part.get("url")
+    encoded = part.get("binary_base64")
+    return bool(
+        isinstance(url, str) and url.strip()
+        and isinstance(encoded, str) and encoded.strip()
+    )
+
+
+def _drop_conflicting_image_parts(parts: list[Any]) -> list[Any]:
+    """Remove dual-source image parts before EITHER consumer sees them.
+
+    Applied once where the canonical list enters the host, because the model
+    path and the chat path read from the same list and a per-consumer check
+    would have to be repeated in both -- and stay repeated as entry points are
+    added.
+    """
+    kept = [part for part in parts if not _image_part_payloads_conflict(part)]
+    dropped = len(parts) - len(kept)
+    if dropped:
+        logger.warning(
+            "[plugin-image] dropped %d image part(s) carrying both url and "
+            "inline bytes; the model and the chat bubble would have resolved "
+            "them to different images",
+            dropped,
+        )
+    return kept
+
+
 def _build_plugin_chat_blocks(
     parts: list[Any],
     *,
@@ -970,6 +1015,11 @@ async def _handle_agent_event(event: dict):
             ordered_parts = (
                 event.get("parts") if isinstance(event.get("parts"), list) else None
             )
+            # Sanitized ONCE here, before either consumer: the chat path reads
+            # ordered_parts directly and media_parts is derived from it, so a
+            # check placed in either alone would leave the other reachable.
+            if ordered_parts is not None:
+                ordered_parts = _drop_conflicting_image_parts(ordered_parts)
             media_parts = (
                 [
                     part
@@ -978,7 +1028,7 @@ async def _handle_agent_event(event: dict):
                     and part.get("type") in ("image", "audio", "video")
                 ]
                 if ordered_parts is not None
-                else (
+                else _drop_conflicting_image_parts(
                     event.get("media_parts")
                     if isinstance(event.get("media_parts"), list)
                     else []

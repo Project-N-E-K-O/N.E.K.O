@@ -2038,3 +2038,168 @@ async def test_upload_timeout_is_clamped():
         await uploader.upload(buf.getvalue(), timeout=3600.0)
 
     assert seen == [images_mod.MAX_UPLOAD_TIMEOUT_SECONDS]
+
+
+def test_the_two_consumers_resolve_a_dual_source_part_differently():
+    """Documents WHY dual-source parts are refused rather than ordered.
+
+    If this ever stops being true the rejection could be replaced by a shared
+    precedence -- but while it holds, a part carrying both sources shows the
+    user one image and gives the character another.
+    """
+    from app.main_server import character_runtime as cr
+    import inspect
+
+    model_src = inspect.getsource(cr._resolve_plugin_model_image)
+    chat_src = inspect.getsource(cr._build_plugin_chat_blocks)
+    # Model path reads the inline bytes first; chat path reads the url first.
+    assert model_src.index("binary_base64") < model_src.index('part.get("url")')
+    assert chat_src.index('part.get("url")') < chat_src.index("binary_base64")
+
+
+def test_dual_source_image_parts_are_dropped_for_both_consumers():
+    from app.main_server import character_runtime as cr
+
+    url_only = {"type": "image", "url": "http://127.0.0.1:9/media/a"}
+    inline_only = {"type": "image", "binary_base64": "AAAA", "mime": "image/png"}
+    conflicting = {
+        "type": "image",
+        "url": "http://127.0.0.1:9/media/b",
+        "binary_base64": "BBBB",
+        "mime": "image/png",
+    }
+    text = {"type": "text", "text": "hello"}
+
+    kept = cr._drop_conflicting_image_parts([text, url_only, conflicting, inline_only])
+
+    assert conflicting not in kept
+    # Everything unambiguous survives, in order.
+    assert kept == [text, url_only, inline_only]
+
+
+def test_a_url_or_inline_part_alone_is_never_treated_as_conflicting():
+    """The rejection must not fire on the ordinary single-source shapes."""
+    from app.main_server import character_runtime as cr
+
+    assert not cr._image_part_payloads_conflict(
+        {"type": "image", "url": "http://127.0.0.1:9/media/a"}
+    )
+    assert not cr._image_part_payloads_conflict(
+        {"type": "image", "binary_base64": "AAAA"}
+    )
+    # Empty / whitespace counts as absent, not as a second source.
+    assert not cr._image_part_payloads_conflict(
+        {"type": "image", "url": "http://127.0.0.1:9/media/a", "binary_base64": "  "}
+    )
+    # Non-image parts are never affected.
+    assert not cr._image_part_payloads_conflict(
+        {"type": "audio", "url": "u", "binary_base64": "b"}
+    )
+    assert cr._image_part_payloads_conflict(
+        {"type": "image", "url": "u", "binary_base64": "b"}
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_dual_source_part_reaches_neither_the_model_nor_the_chat(
+    monkeypatch,
+) -> None:
+    """Pins the CALL SITE, not just the predicate.
+
+    The unit tests above prove _drop_conflicting_image_parts works. They stay
+    green if the call at the event boundary is deleted, which is the failure
+    that would actually ship -- so this drives the real handler and asserts
+    both consumers came away empty.
+    """
+    from app import main_server
+
+    manager = _manager()
+    # A REAL png: with fake bytes the inline branch fails to decode anyway, so
+    # the assertion below would pass even with the sanitization removed.
+    from PIL import Image as _Image
+    _buf = io.BytesIO()
+    _Image.new("RGB", (4, 4), "green").save(_buf, format="PNG")
+    encoded = base64.b64encode(_buf.getvalue()).decode("ascii")
+    monkeypatch.setattr(
+        "app.main_server.character_runtime._get_session_manager",
+        lambda _name: manager,
+    )
+    monkeypatch.setattr(
+        "app.main_server.character_runtime._fetch_plugin_image_base64",
+        AsyncMock(return_value=encoded),
+    )
+
+    await main_server._handle_agent_event({
+        "event_type": "proactive_message",
+        "lanlan_name": "Test",
+        "text": "which image is this",
+        "channel": "plugin:demo",
+        "delivery_mode": "passive",
+        "ai_behavior": "read",
+        "visibility": ["chat"],
+        "parts": [
+            {"type": "text", "text": "which image is this"},
+            {
+                "type": "image",
+                "url": _IMAGE_URL,
+                "binary_base64": encoded,
+                "mime": "image/jpeg",
+            },
+        ],
+    })
+
+    # The model was given no image at all, rather than one of the two.
+    manager.session.stream_image.assert_not_awaited()
+    # And the chat bubble rendered no image either -- the point is that the
+    # two never disagree, so dropping it from one side only would be worse.
+    for call in manager.render_chat_blocks.await_args_list:
+        for block in call.args[0]:
+            assert block.get("type") != "image", "chat kept a part the model lost"
+
+
+@pytest.mark.asyncio
+async def test_the_legacy_media_parts_path_drops_dual_source_too(
+    monkeypatch,
+) -> None:
+    """Legacy pushes carry `media_parts` instead of `parts`.
+
+    That branch bypasses the ordered list entirely, so sanitizing only the v2
+    path would leave the older shape as an open door to the same divergence.
+    """
+    from app import main_server
+
+    manager = _manager()
+    # A REAL png: with fake bytes the inline branch fails to decode anyway, so
+    # the assertion below would pass even with the sanitization removed.
+    from PIL import Image as _Image
+    _buf = io.BytesIO()
+    _Image.new("RGB", (4, 4), "green").save(_buf, format="PNG")
+    encoded = base64.b64encode(_buf.getvalue()).decode("ascii")
+    monkeypatch.setattr(
+        "app.main_server.character_runtime._get_session_manager",
+        lambda _name: manager,
+    )
+    monkeypatch.setattr(
+        "app.main_server.character_runtime._fetch_plugin_image_base64",
+        AsyncMock(return_value=encoded),
+    )
+
+    await main_server._handle_agent_event({
+        "event_type": "proactive_message",
+        "lanlan_name": "Test",
+        "text": "legacy shape",
+        "channel": "plugin:demo",
+        "delivery_mode": "passive",
+        "ai_behavior": "read",
+        "visibility": [],
+        "media_parts": [
+            {
+                "type": "image",
+                "url": _IMAGE_URL,
+                "binary_base64": encoded,
+                "mime": "image/jpeg",
+            }
+        ],
+    })
+
+    manager.session.stream_image.assert_not_awaited()
