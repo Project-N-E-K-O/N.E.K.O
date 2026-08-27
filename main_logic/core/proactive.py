@@ -873,6 +873,10 @@ class ProactiveMixin:
                     # （那时执行早已越过那个分支，只能由本回调补）。两条路共用这个
                     # 标志，免得重复退休。
                     "retired": False,
+                    # _stream_cb_media 是否已经返回。媒体退休判据要 count>1，而这个
+                    # 计数只有在媒体阶段跑完之后才是终态；迟到的媒体拒绝（返回之后
+                    # 才落）此时可以安全地在回调里判。
+                    "media_done": False,
                 }
 
                 def _on_voice_inject_rejected(
@@ -907,11 +911,19 @@ class ProactiveMixin:
                     # 被拒的是 callback item / response.create 时才在这里退休：配对
                     # 文本没落地，任何已提交的图都成了孤儿；而且这个拒绝可能落在
                     # inject 返回**之后**，那时执行早已越过下面那条分支。
-                    if (
-                        not media
-                        and native_media_prefix_committed
-                        and not _state["retired"]
-                    ):
+                    if media:
+                        # 媒体被拒：只有当被拒那张之外另有图已经落进会话时才是孤儿
+                        # 前缀。计数在媒体阶段跑完之前还没走完，所以只有"迟到的"
+                        # 媒体拒绝（_stream_cb_media 已返回）能在这里判 —— 早到的那
+                        # 些由下面 _stream_cb_media 返回后的分支处理。
+                        orphaned = (
+                            _state["media_done"]
+                            and native_media_prefix_count > 1
+                        )
+                    else:
+                        # 文本被拒：配对文本没落地，任何已提交的图都成了孤儿。
+                        orphaned = native_media_prefix_committed
+                    if orphaned and not _state["retired"]:
                         _state["retired"] = True
                         _mark_media_session_unsafe()
                         self._fire_task(_retire_unsafe_media_session())
@@ -1140,6 +1152,7 @@ class ProactiveMixin:
                 except BaseException:
                     self._clear_voice_delivery_committed(voice_commit_snapshot)
                     raise
+                _reject_state["media_done"] = True
                 if not media_ok:
                     self._clear_voice_delivery_committed(voice_commit_snapshot)
                     if media_session_unsafe:

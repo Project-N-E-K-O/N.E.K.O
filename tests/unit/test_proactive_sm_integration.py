@@ -3795,3 +3795,56 @@ async def test_inject_rejection_arriving_after_return_still_retires():
     mgr._schedule_proactive_retry.assert_called_once_with(
         mgr.proactive_manager.min_gap_s
     )
+
+
+async def test_late_media_rejection_after_stream_returns_still_retires():
+    """A second native image can be rejected after `_stream_cb_media()` returned.
+
+    The count>1 predicate lives in the post-media branch because the counter is
+    only final there — but by the time a LATE media rejection arrives, execution
+    has already passed that branch. The callback must cover that ordering, which
+    it can safely do once the media phase is marked done.
+    """
+    sess = _make_voice_sess()
+    sess._is_gemini = False
+    sess._supports_native_image = True
+    sess._visual_delivery_mode = "native"
+    sess._fatal_error_occurred = False
+    sess._inject_rejection_handlers = {}
+    sess.close = AsyncMock()
+    mgr = _make_mgr(session=sess)
+    mgr.end_session = AsyncMock()
+    mgr._schedule_proactive_retry = MagicMock()
+    fired = []
+
+    def _fire(coro):
+        task = asyncio.create_task(coro)
+        fired.append(task)
+        return task
+
+    mgr._fire_task = _fire
+    captured = {}
+
+    async def _stream_image(image_b64, *, on_rejected=None, **_kwargs):
+        captured.setdefault("on_rejected", on_rejected)
+        return SimpleNamespace(accepted=True, mode="native")
+
+    sess.stream_image = _stream_image
+    cb = {
+        "_callback_delivery_id": "id-late-media-reject",
+        "status": "completed",
+        "summary": "two native images, second rejected late",
+        "media_images": ["callback-image-1", "callback-image-2"],
+    }
+    mgr.pending_agent_callbacks = [cb]
+
+    delivered = await core_module.LLMSessionManager.trigger_agent_callbacks(mgr)
+    assert delivered is True
+    assert sess._fatal_error_occurred is False
+
+    # 媒体阶段早已返回，分支也早已越过；第二张图此刻才被拒。
+    captured["on_rejected"]("late media rejection")
+    await asyncio.gather(*fired)
+
+    assert sess._fatal_error_occurred is True
+    sess.close.assert_awaited_once_with()

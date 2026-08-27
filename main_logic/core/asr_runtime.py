@@ -481,10 +481,17 @@ class AsrRuntimeMixin:
         self._mark_independent_asr_endpoint_if_sealed()
         observed = False
         for record in tuple(self._core_multimodal_turns.values()):
+            # 跳过已作废的记录：它们留着只是为了别把正在派发的那条 final 的**话**
+            # 弄丢，视觉所有权早已交给后继回合。喂给它们等于让新帧被一条不会再用图
+            # 的记录"吃掉"，当前这一轮反而收不到（而且 prerecord 暂存也不会武装）。
+            if record.invalidated.is_set():
+                continue
             if record.accepts(frame):
                 record.observe(frame)
                 observed = True
-        if not observed and not self._core_multimodal_turns:
+        # 判据是"当前这一轮还没建起来"，不是"一条记录都没有"：为了保住正在派发的
+        # 上一条 final，旧记录会被保留下来，dict 因此不再会空。
+        if not observed and self._active_multimodal_turn_record() is None:
             # 语音确认到 _begin_core_multimodal_turn 之间还没有 record。这一帧已经
             # 校验完了，任务栈救不了它（任务一完成就被摘掉），单槽缓存也只留最新
             # 一张 —— 不留下来的话这段窗口里的开头/中间帧就永久丢了。
@@ -585,7 +592,7 @@ class AsrRuntimeMixin:
         ):
             return False
         stable_captured_at = float(captured_at)
-        record = next(iter(self._core_multimodal_turns.values()), None)
+        record = self._active_multimodal_turn_record()
         if record is None:
             # 语音确认到 _begin_core_multimodal_turn 之间还没有 record。直接丢掉
             # 这个任务的话，短发声在 final 时看不到它、冻结成纯文本回合，而那一帧
@@ -616,6 +623,23 @@ class AsrRuntimeMixin:
             record.pending_visual_validations.pop(completed, None)
 
         task.add_done_callback(discard)
+
+    def _active_multimodal_turn_record(self):
+        """Return the newest record that has not been superseded.
+
+        Once older records are retained (so an in-flight final keeps its
+        transcript), "whichever record comes first" no longer means "the
+        current turn" — the retained ones are still there, just invalidated.
+        """
+
+        active = [
+            record
+            for record in self._core_multimodal_turns.values()
+            if not record.invalidated.is_set()
+        ]
+        if not active:
+            return None
+        return max(active, key=lambda record: record.registered_at)
 
     def _stash_prerecord_visual_validation_task(
         self,
@@ -821,6 +845,11 @@ class AsrRuntimeMixin:
         self._ensure_asr_runtime_state()
         record = self._core_multimodal_turns.get(turn_id)
         if record is None:
+            return None
+        if record.invalidated.is_set():
+            # 记录留着只是为了别把这条 final 的**话**弄丢；后继 prepare 已经接管了
+            # 视觉所有权，这些帧属于新那一轮。返回 None = 走纯文本提交（这是正常的
+            # 无图路径，不是失败路径）。
             return None
         # 冻结前再采一次端点：staging 只在有帧落地时跑，最后一帧之后到 final 之间
         # 的封口要在这里补上，否则截止值会漏。

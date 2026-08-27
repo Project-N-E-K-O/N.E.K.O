@@ -10667,3 +10667,97 @@ async def test_retained_turn_records_are_bounded() -> None:
     # 留下的是最近的那些。
     kept = sorted(runtime._core_multimodal_turns)
     assert kept[-1].endswith("-229")
+
+
+@pytest.mark.unit
+async def test_validation_tracking_picks_the_active_record_not_a_retained_one() -> None:
+    """Retained records exist only so an in-flight final keeps its transcript.
+
+    They are invalidated; the active turn is the newest live one. Selecting
+    "whichever record happens to be first" binds new frame validations to a
+    superseded turn.
+    """
+    runtime = _Runtime()
+    runtime._asr_route_mode = "independent"
+
+    first = VoiceTurnToken(ingress=runtime._capture_ingress_token(), turn_id=301)
+    first_id = f"asr-{first.ingress.session_epoch}-{first.turn_id}"
+    runtime._begin_core_multimodal_turn(first_id, first)
+    first_record = runtime._core_multimodal_turns[first_id]
+
+    second = VoiceTurnToken(ingress=runtime._capture_ingress_token(), turn_id=302)
+    second_id = f"asr-{second.ingress.session_epoch}-{second.turn_id}"
+    runtime._begin_core_multimodal_turn(second_id, second)
+    second_record = runtime._core_multimodal_turns[second_id]
+
+    gate = asyncio.Event()
+
+    async def pending_validation() -> None:
+        await gate.wait()
+
+    task = asyncio.create_task(pending_validation())
+    await asyncio.sleep(0)
+    assert runtime._track_independent_visual_validation_task(
+        task,
+        captured_at=second_record.started_at,
+    ) is True
+
+    assert task in second_record.pending_visual_validations
+    assert task not in first_record.pending_visual_validations
+
+    gate.set()
+    await task
+
+
+@pytest.mark.unit
+async def test_invalidated_record_does_not_hand_over_its_frames() -> None:
+    """A superseded turn keeps its words but not the successor's frames."""
+    runtime = _Runtime()
+    runtime._asr_route_mode = "independent"
+
+    first = VoiceTurnToken(ingress=runtime._capture_ingress_token(), turn_id=303)
+    first_id = f"asr-{first.ingress.session_epoch}-{first.turn_id}"
+    runtime._begin_core_multimodal_turn(first_id, first)
+    record = runtime._core_multimodal_turns[first_id]
+    assert runtime._stage_independent_visual_frame(
+        "first-turn-frame",
+        source="screen",
+        request_id="screen-first",
+        captured_at=record.started_at,
+    )
+    assert runtime._snapshot_core_multimodal_turn(first_id, "first") is not None
+
+    second = VoiceTurnToken(ingress=runtime._capture_ingress_token(), turn_id=304)
+    runtime._begin_core_multimodal_turn(
+        f"asr-{second.ingress.session_epoch}-{second.turn_id}", second
+    )
+
+    # 记录还在（话要留住），但视觉所有权已经交给后继回合 —— 走纯文本提交。
+    assert runtime._core_multimodal_turns.get(first_id) is record
+    assert runtime._snapshot_core_multimodal_turn(first_id, "first") is None
+
+
+@pytest.mark.unit
+async def test_prerecord_stash_still_arms_while_older_records_are_retained() -> None:
+    """The dict is no longer empty between turns, so 'no records' is the wrong test."""
+    runtime = _Runtime()
+    runtime._asr_route_mode = "independent"
+
+    first = VoiceTurnToken(ingress=runtime._capture_ingress_token(), turn_id=305)
+    first_id = f"asr-{first.ingress.session_epoch}-{first.turn_id}"
+    runtime._begin_core_multimodal_turn(first_id, first)
+    runtime._core_multimodal_turns[first_id].invalidated.set()
+
+    onset = time.monotonic()
+    runtime._asr_turn_onset_at = onset
+    assert runtime._stage_independent_visual_frame(
+        "between-turns-frame",
+        source="screen",
+        request_id="screen-between",
+        captured_at=onset,
+    )
+
+    # 当前这一轮还没建起来，这帧必须被暂存下来等它。
+    assert [f.image_b64 for f in runtime._prerecord_visual_frames] == [
+        "between-turns-frame"
+    ]
