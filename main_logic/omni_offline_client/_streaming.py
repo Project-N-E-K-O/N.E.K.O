@@ -631,7 +631,16 @@ class _StreamingMixin:
             # (cannot switch back because image data remains in conversation history)
             if self.vision_model and self.vision_model != self.model:
                 logger.info(f"🖼️ Temporarily switching to vision model: {self.vision_model} (from {self.model})")
-                await self.switch_model(self.vision_model, use_vision_config=True)
+                try:
+                    await self.switch_model(self.vision_model, use_vision_config=True)
+                except BaseException:
+                    # 附件在上面已经原子出队了。这里是出队之后、真正拼进消息之前
+                    # 唯一的 await：切 vision model 要新建 LLM 客户端，网络抖动 /
+                    # key 失效都会抛。不放回去的话用户刚选的图既没发出去也不在队列
+                    # 里了。与 submit_multimodal_turn 的失败回滚同一判据。
+                    if attachment_images:
+                        self._pending_images[0:0] = attachment_images
+                    raise
 
             # Multi-modal message: images + text
             content = []

@@ -455,8 +455,9 @@ def test_candidate_thinning_runs_in_capture_order():
     assert sampled[0] == "t0"
     assert sampled[-1] == "t9"
     middle_index = int(sampled[1][1:])
-    # 真实中点是 4.5；按落地顺序抽稀会退化到 2 附近。
-    assert middle_index >= 3
+    # 真实中点是 4.5；任何一步按落地顺序做都会把它拉向某一端（早先按落地顺序
+    # 抽稀退化到 2，按落地位置决定收谁则可能落到另一端）。
+    assert 3 <= middle_index <= 6
 
 
 def test_out_of_order_thinning_keeps_a_bounded_candidate_set():
@@ -464,3 +465,53 @@ def test_out_of_order_thinning_keeps_a_bounded_candidate_set():
     _feed_out_of_order(record, [i if i % 2 == 0 else 999 - i for i in range(200)])
 
     assert len(record.middle_candidates) <= _MAX_MIDDLE_CANDIDATES
+
+
+def test_heavily_shuffled_arrival_still_lands_the_middle_near_the_centre():
+    # 两端交替喂满一整段：落地位置与拍摄位置几乎正交。
+    capture_times = [i if i % 2 == 0 else 199 - i for i in range(200)]
+    sampled = _feed_out_of_order(_record(), capture_times)
+
+    low, high = min(capture_times), max(capture_times)
+    middle_index = int(sampled[1][1:])
+    centre = (low + high) / 2
+    assert abs(middle_index - centre) <= (high - low) * 0.25
+
+
+async def test_failed_vision_switch_returns_attachments_to_the_queue():
+    """The dequeue is atomic, so the only await before commit must roll back."""
+    client = _stream_text_client()
+    client._pending_images = ["attachment-a", "attachment-b"]
+    client.vision_model = "vision-model"
+    client.model = "text-model"
+
+    async def failing_switch(*_args, **_kwargs):
+        raise RuntimeError("vision endpoint down")
+
+    client.switch_model = failing_switch
+
+    with pytest.raises(RuntimeError, match="vision endpoint down"):
+        await OmniOfflineClient.stream_text(client, "look at this")
+
+    # 用户刚选的图既没发出去、也不能凭空消失。
+    assert client._pending_images == ["attachment-a", "attachment-b"]
+
+
+async def test_failed_vision_switch_also_rolls_back_an_image_free_asr_turn():
+    """submit_external_voice_turn goes through the same unprotected dequeue."""
+    client = _stream_text_client()
+    client._pending_images = ["attachment"]
+    client.vision_model = "vision-model"
+    client.model = "text-model"
+    client._multimodal_submit_lock = asyncio.Lock()
+    client._external_voice_submit_task = None
+
+    async def failing_switch(*_args, **_kwargs):
+        raise RuntimeError("vision endpoint down")
+
+    client.switch_model = failing_switch
+
+    with pytest.raises(RuntimeError, match="vision endpoint down"):
+        await client.submit_external_voice_turn("说点什么", turn_id="turn-1")
+
+    assert client._pending_images == ["attachment"]

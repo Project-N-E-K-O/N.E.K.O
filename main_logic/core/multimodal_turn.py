@@ -47,9 +47,10 @@ class _CoreMultimodalTurnRecord:
     the span down to at most three: first, middle, last.
 
     The sampler retains a bounded candidate set (never a growing buffer): once
-    it is full, every other candidate is dropped and the sampling stride
-    doubles, so the survivors stay spread evenly over however long the user
-    talks. ``sampled_frames`` then picks the centre candidate as the middle.
+    it is full, each new frame evicts the most redundant interior candidate, so
+    the survivors stay spread over however long the user talks. Every decision
+    is made in capture order, because concurrent validation means arrival order
+    is not capture order. ``sampled_frames`` then picks the centre candidate.
     """
 
     turn_id: str
@@ -64,8 +65,6 @@ class _CoreMultimodalTurnRecord:
     # 拍到、端点之后才校验完的帧会被误杀。
     endpoint_at: float | None = None
     middle_candidates: list[_IndependentVisualFrame] = field(default_factory=list)
-    candidate_stride: int = 1
-    observed_frames: int = 0
     pending_visual_validations: dict[asyncio.Task, float] = field(
         default_factory=dict,
         repr=False,
@@ -87,23 +86,29 @@ class _CoreMultimodalTurnRecord:
         ):
             self.last_frame = frame
         # 中间那张不能靠"边收边猜"选：发声多长事先不知道，只保一个候选的话中点
-        # 前移时想提拔的那张已经被丢了，middle 会永远卡在开头附近。改成等距抽样
-        # ——候选满了就隔一个丢一个、步长翻倍，候选集始终 <= _MAX_MIDDLE_CANDIDATES
-        # 且大致均匀铺满整段，最后取正中间那个。
+        # 前移时想提拔的那张已经被丢了，middle 会永远卡在开头附近。
         #
-        # 候选集必须**按拍摄时间**维护再抽稀：并发校验下落地顺序和拍摄顺序不是一
-        # 回事，按落地顺序隔一个丢一个会把时间上真正居中的那几张先丢掉，事后再排
-        # 序也捞不回来（落地序 0,9,1,8,2,7,... 会只剩下 0..4）。
-        if self.observed_frames % self.candidate_stride == 0:
-            bisect.insort(
-                self.middle_candidates,
-                frame,
-                key=lambda item: (item.captured_at, item.generation),
+        # 每一帧都按拍摄时间插进候选集，超过上限时丢掉"最冗余"的那个内点——它左
+        # 右邻居之间跨度最小，删掉它对整段覆盖的损失最小；两端永远不动。整个决定
+        # （收谁、丢谁）因此全部跑在拍摄顺序上：并发校验下落地顺序和拍摄顺序不是
+        # 一回事，任何一步按落地顺序做，都会把时间上真正居中的那几张先丢掉，而事
+        # 后再排序捞不回来。
+        candidates = self.middle_candidates
+        bisect.insort(
+            candidates,
+            frame,
+            key=lambda item: (item.captured_at, item.generation),
+        )
+        if len(candidates) > _MAX_MIDDLE_CANDIDATES:
+            victim = min(
+                range(1, len(candidates) - 1),
+                key=lambda index: (
+                    candidates[index + 1].captured_at
+                    - candidates[index - 1].captured_at,
+                    index,
+                ),
             )
-            if len(self.middle_candidates) > _MAX_MIDDLE_CANDIDATES:
-                del self.middle_candidates[1::2]
-                self.candidate_stride *= 2
-        self.observed_frames += 1
+            del candidates[victim]
 
     def sampled_frames(self) -> tuple[_IndependentVisualFrame, ...]:
         """Return the retained frames in capture order, without duplicates."""
@@ -141,8 +146,6 @@ class _CoreMultimodalTurnRecord:
         self.first_frame = frame
         self.last_frame = frame
         self.middle_candidates = [frame]
-        self.candidate_stride = 1
-        self.observed_frames = 1
 
 
 @dataclass(frozen=True, slots=True)
