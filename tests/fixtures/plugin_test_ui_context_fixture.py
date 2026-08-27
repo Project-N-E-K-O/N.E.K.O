@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import threading
+from collections.abc import Mapping
 
 from plugin.sdk.plugin import NekoPluginBase, plugin_entry, ui
 
@@ -97,3 +98,48 @@ class UnserializableUiContextFixturePlugin(NekoPluginBase):
     @ui.context(id="main")
     async def main_context(self, **_: object) -> dict[str, object]:
         return {"lock": threading.Lock(), "tags": {"a", "b"}}
+
+
+class _BareDumpState:
+    """A hand-rolled model_dump that does not accept a mode keyword."""
+
+    def model_dump(self) -> dict[str, object]:
+        return {"greeting": "hi"}
+
+
+class BareModelDumpUiContextFixturePlugin(NekoPluginBase):
+    @ui.action(id="ping", label="Ping")
+    @plugin_entry(id="ping", name="Ping")
+    async def ping(self, **_: object) -> dict[str, object]:
+        return {"ok": True}
+
+    @ui.context(id="main")
+    async def main_context(self, **_: object) -> object:
+        return _BareDumpState()
+
+
+class _ConfirmMapping(Mapping):
+    """The SDK declares confirm as Mapping; a plugin may pass a non-dict one."""
+
+    def __init__(self, data: dict) -> None:
+        self._data = data
+
+    def __getitem__(self, key):
+        return self._data[key]
+
+    def __iter__(self):
+        return iter(self._data)
+
+    def __len__(self) -> int:
+        return len(self._data)
+
+
+class MappingConfirmUiContextFixturePlugin(NekoPluginBase):
+    @ui.action(id="ping", label="Ping", confirm=_ConfirmMapping({"title": "sure?"}))
+    @plugin_entry(id="ping", name="Ping")
+    async def ping(self, **_: object) -> dict[str, object]:
+        return {"ok": True}
+
+    @ui.context(id="main")
+    async def main_context(self, **_: object) -> dict[str, object]:
+        return {}

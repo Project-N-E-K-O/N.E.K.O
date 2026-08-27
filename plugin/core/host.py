@@ -41,6 +41,7 @@ from plugin.settings import (
     PROCESS_TERMINATE_TIMEOUT,
 )
 from plugin.sdk.shared.core.entry_runtime import prepare_entry_kwargs, resolve_entry_timeout
+from plugin.sdk.shared.core.finish import normalize_structured_data
 from plugin.sdk.shared.core.result_contract import model_schema_from_type
 from plugin.sdk.shared.core.router import PluginRouter
 from plugin.sdk.plugin.ui import UI_ACTION_META_ATTR, UI_CONTEXT_META_ATTR
@@ -824,12 +825,15 @@ def _plugin_process_runner(
             data: Any
             model_dump = getattr(result, "model_dump", None)
             if callable(model_dump):
-                data = model_dump(mode="json")
+                # normalize_structured_data 自己带 model_dump 的 mode 回退（手写的
+                # 实现未必收 mode 关键字），并递归把 Mapping / dataclass / tuple
+                # 摊成基础结构。别再手搓一份。
+                data = normalize_structured_data(result)
                 schema = model_schema_from_type(type(result))
             elif isinstance(result, (dict, list)):
-                data = result
+                data = normalize_structured_data(result)
             else:
-                data = {"value": result}
+                data = {"value": normalize_structured_data(result)}
             # 在子进程就压成 JSON-safe：这个值要先过 pickle 送回父进程，再进
             # FastAPI 的响应体。锁、socket、async generator 之类会让整条回复
             # （连同 actions 白名单）发不出去，父进程只能干等到超时；父进程
@@ -887,8 +891,12 @@ def _plugin_process_runner(
             actions.sort(key=lambda item: (str(item.get("group") or ""), int(item.get("order") or 0), str(item.get("label") or item.get("id"))))
             # label / confirm 等字段是插件写的，可能是任意对象。整条回复要先过
             # pickle 送回父进程、再进 HTTP 响应体，这里压平就不会有「白名单本身
-            # 发不出去」的情况。
-            return json.loads(json.dumps(actions, default=str, ensure_ascii=False))
+            # 发不出去」的情况。先过 normalize_structured_data：confirm 的声明
+            # 类型是 Mapping，非 dict 的 Mapping 直接交给 json.dumps 会被
+            # default=str 拍成一句没用的字符串。
+            return json.loads(
+                json.dumps(normalize_structured_data(actions), default=str, ensure_ascii=False)
+            )
 
         def _rebuild_entry_map() -> None:
             """重建 entry_map 与 events_by_type。"""

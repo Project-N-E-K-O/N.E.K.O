@@ -76,6 +76,29 @@ async def test_actions_survive_a_hanging_context_provider(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_mapping_valued_action_metadata_survives_serialization(tmp_path) -> None:
+    """confirm 的声明类型是 Mapping，非 dict 的 Mapping 不能被拍成字符串。"""
+    result = await _run_fixture(
+        tmp_path, "ui_ctx_mapping_confirm", "MappingConfirmUiContextFixturePlugin",
+    )
+
+    actions = result.get("actions") or []
+    assert len(actions) == 1
+    assert actions[0].get("confirm") == {"title": "sure?"}
+
+
+@pytest.mark.asyncio
+async def test_state_survives_a_model_dump_without_a_mode_keyword(tmp_path) -> None:
+    """model_dump 是鸭子类型认出来的，手写实现未必收 mode 关键字。"""
+    result = await _run_fixture(
+        tmp_path, "ui_ctx_bare_dump", "BareModelDumpUiContextFixturePlugin",
+    )
+
+    assert result.get("state") == {"greeting": "hi"}
+    assert result.get("context_error") is None
+
+
+@pytest.mark.asyncio
 async def test_actions_survive_a_provider_that_leaks_cancelled_error(tmp_path) -> None:
     """CancelledError 继承 BaseException，会穿透 except Exception 把 success=False 送回去。"""
     result = await _run_fixture(tmp_path, "ui_ctx_cancelling", "CancellingUiContextFixturePlugin")
