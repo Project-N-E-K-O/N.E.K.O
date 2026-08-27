@@ -6,6 +6,7 @@ import importlib
 import importlib.machinery
 import importlib.util
 import inspect
+import math
 import multiprocessing
 import os
 import sys
@@ -153,17 +154,24 @@ _UI_CONTEXT_MIN_REPLY_SHARE = 0.5
 def _ui_context_provider_budget(requested: object) -> float:
     """Provider budget that always leaves the caller room to receive the reply.
 
-    Invariant: the result is strictly less than the caller's budget, for every
-    budget. Subtracting a fixed headroom alone breaks that for short budgets,
-    so fall back to yielding a share of it.
+    Invariant, for every input: the result is finite, positive, and strictly
+    less than the budget it resolved to. Subtracting a fixed headroom alone
+    does not get there — short budgets would be floored above the caller's,
+    and budgets large enough to round the subtraction away come back
+    unchanged — so both cases fall back to yielding a share of the budget.
     """
     try:
         budget = float(requested)  # type: ignore[arg-type]
     except (TypeError, ValueError):
         budget = _UI_CONTEXT_DEFAULT_BUDGET
-    if budget <= 0:
+    # nan slips past every comparison and inf survives the subtraction, so
+    # neither may reach asyncio.wait_for as a deadline.
+    if not math.isfinite(budget) or budget <= 0:
         budget = _UI_CONTEXT_DEFAULT_BUDGET
-    return max(budget - _UI_CONTEXT_REPLY_HEADROOM, budget * _UI_CONTEXT_MIN_REPLY_SHARE)
+    resolved = max(budget - _UI_CONTEXT_REPLY_HEADROOM, budget * _UI_CONTEXT_MIN_REPLY_SHARE)
+    if not resolved < budget:
+        resolved = budget * _UI_CONTEXT_MIN_REPLY_SHARE
+    return resolved
 
 
 def _find_project_root(config_path: Path) -> Path:

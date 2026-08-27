@@ -8,6 +8,7 @@ actions 完全由 @ui.action 的装饰器元数据推导，不跑插件代码。
 from __future__ import annotations
 
 import asyncio
+import math
 
 import pytest
 
@@ -76,7 +77,7 @@ async def test_actions_survive_a_hanging_context_provider(tmp_path) -> None:
 
 @pytest.mark.parametrize(
     "budget",
-    [0.05, 0.1, 0.2, 0.5, 1.0, 1.25, 1.5, 2.0, 5.0, 30.0],
+    [0.05, 0.1, 0.2, 0.5, 1.0, 1.25, 1.5, 2.0, 5.0, 30.0, 1e16, 1e300],
 )
 def test_provider_budget_is_always_shorter_than_the_caller_budget(budget: float) -> None:
     """不变量：子进程的 provider 预算永远严格短于调用方，短预算也不例外。
@@ -86,12 +87,19 @@ def test_provider_budget_is_always_shorter_than_the_caller_budget(budget: float)
     """
     resolved = host_module._ui_context_provider_budget(budget)
 
+    # 大到让减法被舍入吃掉的预算也要满足，否则「严格更短」只是句空话。
     assert 0 < resolved < budget
 
 
-@pytest.mark.parametrize("requested", [None, "not-a-number", 0, -1.0])
+@pytest.mark.parametrize(
+    "requested",
+    [None, "not-a-number", 0, -1.0, float("nan"), float("inf"), float("-inf")],
+)
 def test_provider_budget_falls_back_below_the_default(requested: object) -> None:
     """拿不到调用方预算时回落到默认值，且同样要留出回程余量。"""
     resolved = host_module._ui_context_provider_budget(requested)
 
+    # nan 能溜过所有比较、inf 减掉余量还是 inf，两者都不能当 deadline 交给
+    # asyncio.wait_for，必须一起落到默认预算上。
+    assert math.isfinite(resolved)
     assert 0 < resolved < host_module._UI_CONTEXT_DEFAULT_BUDGET
