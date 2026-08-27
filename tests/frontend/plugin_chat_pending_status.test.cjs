@@ -95,3 +95,49 @@ test('a status update for an unknown id is a no-op, not a throw', () => {
     vm.runInContext("setReactMessageStatus(virtualRef('missing'), 'assistant', 'sent');", ctx);
     assert.equal(vm.runInContext('_pendingHostMessages.length', ctx), 0);
 });
+
+// --- structured block validation -----------------------------------------
+
+function loadValidator() {
+    const context = vm.createContext({});
+    vm.runInContext(sourceBetween('var STRUCTURED_BLOCK_TYPES', 'function createVirtualBubbleRef'), context);
+    return context;
+}
+
+test('unknown and malformed block types never reach the structured branch', () => {
+    const ctx = loadValidator();
+    const kept = vm.runInContext(`structuredBlocksFrom([
+        { type: 'text', text: 'ok' },
+        { type: '' },
+        { type: 'bogus' },
+        { type: 'image' },
+        { type: 'image', url: '   ' },
+        { type: 'image', url: 'data:image/png;base64,AAA' },
+        null,
+        'not-an-object'
+    ]).map(function (b) { return b.type + ':' + (b.url || b.text || ''); }).join('|')`, ctx);
+
+    // Joined inside the vm: an array built in that realm has a different
+    // prototype, so deepEqual compares as non-equal even when the contents match.
+    //
+    // Only the two well-formed blocks survive. An empty or unknown type used to
+    // pass, routing the message down the structured branch to render nothing.
+    assert.equal(kept, 'text:ok|image:data:image/png;base64,AAA');
+});
+
+test('a text block with a non-string body is rejected', () => {
+    const ctx = loadValidator();
+    const kept = vm.runInContext(
+        "structuredBlocksFrom([{ type: 'text', text: 42 }]).length", ctx);
+    assert.equal(kept, 0);
+});
+
+test('blocks are copied, not aliased into the caller payload', () => {
+    const ctx = loadValidator();
+    const same = vm.runInContext(`(function () {
+        var src = [{ type: 'text', text: 'x' }];
+        var out = structuredBlocksFrom(src);
+        return out[0] === src[0];
+    })()`, ctx);
+    assert.equal(same, false, 'mutating a rendered block must not reach the sender');
+});

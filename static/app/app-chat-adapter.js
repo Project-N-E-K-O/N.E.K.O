@@ -119,6 +119,31 @@
 
     // ======================== 虚拟引用（兼容 response_discarded 清理逻辑） ========================
 
+    // The renderer understands exactly these, and the React message schema
+    // validates against the same set — a block outside it is dropped by
+    // validation and takes its whole message with it.
+    var STRUCTURED_BLOCK_TYPES = ['text', 'image', 'link', 'status', 'buttons'];
+
+    function structuredBlocksFrom(list) {
+        // Shared by both structured entry points. Checking only that `type` is
+        // a string let '' and unknown values through, which routes the message
+        // down the structured branch — skipping ordinary text handling — to
+        // render nothing (CodeRabbit). Required fields are checked too, since a
+        // block that survives here but fails the schema costs the message.
+        if (!Array.isArray(list)) return [];
+        return list.filter(function (block) {
+            if (!block || typeof block !== 'object') return false;
+            if (STRUCTURED_BLOCK_TYPES.indexOf(block.type) === -1) return false;
+            if (block.type === 'image') {
+                return typeof block.url === 'string' && block.url.trim() !== '';
+            }
+            if (block.type === 'text') {
+                return typeof block.text === 'string';
+            }
+            return true;
+        }).map(function (block) { return Object.assign({}, block); });
+    }
+
     function createVirtualBubbleRef(messageId) {
         return {
             dataset: { reactChatMessageId: messageId },
@@ -649,11 +674,7 @@
     function appendMessage(text, sender, isNewMessage, options) {
         if (typeof isNewMessage === 'undefined') isNewMessage = true;
         options = options || {};
-        var structuredResponseBlocks = Array.isArray(options.blocks)
-            ? options.blocks.filter(function (block) {
-                return block && typeof block === 'object' && typeof block.type === 'string';
-            }).map(function (block) { return Object.assign({}, block); })
-            : [];
+        var structuredResponseBlocks = structuredBlocksFrom(options.blocks);
 
         var host = getHost();
         var bubbleCountBefore = window.currentTurnGeminiBubbles ? window.currentTurnGeminiBubbles.length : 0;
@@ -977,11 +998,7 @@
 
     function appendReactChatBlocks(payload) {
         var host = getHost();
-        var blocks = payload && Array.isArray(payload.blocks)
-            ? payload.blocks.filter(function (block) {
-                return block && typeof block === 'object' && typeof block.type === 'string';
-            }).map(function (block) { return Object.assign({}, block); })
-            : [];
+        var blocks = structuredBlocksFrom(payload && payload.blocks);
         if (blocks.length === 0) {
             return false;
         }
