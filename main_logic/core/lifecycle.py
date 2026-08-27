@@ -1651,7 +1651,7 @@ class LifecycleMixin:
                         return False
                     delivered = await submit(
                         turn.transcript,
-                        turn.image_b64,
+                        turn.images,
                         turn_id=turn.turn_id,
                     )
                     return delivered is not False
@@ -1917,7 +1917,7 @@ class LifecycleMixin:
                     raise RuntimeError('OFFLINE_MULTIMODAL_SUBMIT_UNAVAILABLE')
                 delivered = await submit(
                     turn.transcript,
-                    turn.image_b64,
+                    turn.images,
                     turn_id=turn.turn_id,
                 )
                 return delivered is not False

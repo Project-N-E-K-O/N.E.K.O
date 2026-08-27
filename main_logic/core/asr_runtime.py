@@ -458,7 +458,7 @@ class AsrRuntimeMixin:
                 and frame.generation > record.start_image_generation
                 and frame.captured_at >= record.started_at
             ):
-                record.frame = frame
+                record.observe(frame)
         return True
 
     def _track_independent_visual_validation_task(
@@ -591,8 +591,7 @@ class AsrRuntimeMixin:
         if record is None:
             return None
         snapshot_at = time.monotonic()
-        frame = record.frame
-        if frame is None:
+        if record.last_frame is None:
             latest = self._latest_independent_visual_frame
             if (
                 latest is not None
@@ -602,28 +601,41 @@ class AsrRuntimeMixin:
                 and snapshot_at - latest.captured_at
                 <= self._independent_visual_frame_ttl_s
             ):
-                frame = latest
-                record.frame = latest
+                record.adopt_single_frame(latest)
+        newest = record.last_frame
         if (
-            frame is None
+            newest is None
             or record.route_generation != self._voice_input_transition_generation
-            or frame.session_epoch != record.session_epoch
-            or frame.route_generation != record.route_generation
-            or frame.captured_at < record.started_at
-            or snapshot_at - frame.captured_at > self._independent_visual_frame_ttl_s
+            or newest.session_epoch != record.session_epoch
+            or newest.route_generation != record.route_generation
+            or newest.captured_at < record.started_at
+            # 只有最新那张要过 TTL：它回答的是"画面流还活着吗"。开头/中间那两张
+            # 本来就比 TTL 老（一次发声可以说很久），它们的有效性由"落在本回合
+            # 窗口内"保证，不该按新鲜度否掉。
+            or snapshot_at - newest.captured_at
+            > self._independent_visual_frame_ttl_s
         ):
+            return None
+        frames = tuple(
+            frame
+            for frame in record.sampled_frames()
+            if frame.session_epoch == record.session_epoch
+            and frame.route_generation == record.route_generation
+            and frame.captured_at >= record.started_at
+        )
+        if not frames:
             return None
         return MultimodalTurn(
             turn_id=turn_id,
             session_epoch=record.session_epoch,
             route_generation=record.route_generation,
             start_image_generation=record.start_image_generation,
-            image_generation=frame.generation,
-            captured_at=frame.captured_at,
-            image_b64=frame.image_b64,
+            image_generation=newest.generation,
+            captured_at=newest.captured_at,
+            images=tuple(frame.image_b64 for frame in frames),
             transcript=transcript,
-            source=frame.source,
-            request_id=frame.request_id,
+            source=newest.source,
+            request_id=newest.request_id,
         )
     def _begin_asr_route_operation(self) -> int:
         self._asr_route_operation_generation += 1
@@ -3174,7 +3186,7 @@ class AsrRuntimeMixin:
                             )
                         await submit_multimodal(
                             multimodal_turn.transcript,
-                            multimodal_turn.image_b64,
+                            multimodal_turn.images,
                             turn_id=multimodal_turn.turn_id,
                         )
                     else:

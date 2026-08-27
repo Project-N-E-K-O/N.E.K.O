@@ -340,7 +340,7 @@ async def test_two_phase_handoff_keeps_audio_input_and_asr_state_alive(
     prior_cache = [{"role": "Test", "text": "earlier reply"}]
     turn = SimpleNamespace(
         transcript="what is this",
-        image_b64="raw-image",
+        images=("raw-image",),
         turn_id="turn-1",
     )
 
@@ -378,7 +378,7 @@ async def test_two_phase_handoff_keeps_audio_input_and_asr_state_alive(
     manager.ensure_tts_pipeline_alive.assert_awaited_once_with()
     candidate.submit_multimodal_turn.assert_awaited_once_with(
         "what is this",
-        "raw-image",
+        ("raw-image",),
         turn_id="turn-1",
     )
     candidate.close.assert_not_awaited()
@@ -400,7 +400,7 @@ async def test_handoff_candidate_failure_preserves_realtime_session() -> None:
     )
     turn = SimpleNamespace(
         transcript="what is this",
-        image_b64="raw-image",
+        images=("raw-image",),
         turn_id="turn-1",
     )
 
@@ -472,7 +472,7 @@ async def test_handoff_listener_cancel_timeout_fail_closes_active_session(
     )
     turn = SimpleNamespace(
         transcript="what is this",
-        image_b64="raw-image",
+        images=("raw-image",),
         turn_id="turn-1",
     )
     real_wait_for = asyncio.wait_for
@@ -543,7 +543,7 @@ async def test_new_user_turn_during_candidate_connect_cancels_old_handoff() -> N
     turn_owned = True
     turn = SimpleNamespace(
         transcript="old turn",
-        image_b64="old-frame",
+        images=("old-frame",),
         turn_id="turn-old",
     )
     task = asyncio.create_task(
@@ -616,7 +616,7 @@ async def test_new_user_turn_during_listener_cancel_restores_realtime_listener()
     )
     turn = SimpleNamespace(
         transcript="old turn",
-        image_b64="old-frame",
+        images=("old-frame",),
         turn_id="turn-old",
     )
 
@@ -686,7 +686,7 @@ async def test_new_user_turn_during_old_close_fail_closes_handoff() -> None:
     )
     turn = SimpleNamespace(
         transcript="old turn",
-        image_b64="old-frame",
+        images=("old-frame",),
         turn_id="turn-old",
     )
 
@@ -755,7 +755,7 @@ async def test_new_user_turn_after_promotion_skips_multimodal_submit() -> None:
     )
     turn = SimpleNamespace(
         transcript="old turn",
-        image_b64="old-frame",
+        images=("old-frame",),
         turn_id="turn-old",
     )
 
@@ -817,7 +817,7 @@ async def test_tts_failure_after_promotion_keeps_offline_listener_coherent() -> 
     )
     turn = SimpleNamespace(
         transcript="what is this",
-        image_b64="raw-frame",
+        images=("raw-frame",),
         turn_id="turn-1",
     )
 
@@ -867,7 +867,7 @@ async def test_existing_offline_fast_path_does_not_repeat_turn_preparation() -> 
     manager.session = session
     turn = SimpleNamespace(
         transcript="what is this",
-        image_b64="raw-frame",
+        images=("raw-frame",),
         turn_id="turn-1",
     )
 
@@ -885,7 +885,7 @@ async def test_existing_offline_fast_path_does_not_repeat_turn_preparation() -> 
     manager.ensure_tts_pipeline_alive.assert_awaited_once_with()
     session.submit_multimodal_turn.assert_awaited_once_with(
         "what is this",
-        "raw-frame",
+        ("raw-frame",),
         turn_id="turn-1",
     )
 
@@ -908,7 +908,7 @@ async def test_offline_replacement_wins_and_receives_multimodal_turn() -> None:
     manager.session = expected
     turn = SimpleNamespace(
         transcript="what is this",
-        image_b64="raw-frame",
+        images=("raw-frame",),
         turn_id="turn-1",
     )
 
@@ -932,7 +932,7 @@ async def test_offline_replacement_wins_and_receives_multimodal_turn() -> None:
     replacement.handle_interruption.assert_awaited_once_with()
     replacement.submit_multimodal_turn.assert_awaited_once_with(
         "what is this",
-        "raw-frame",
+        ("raw-frame",),
         turn_id="turn-1",
     )
     manager.handle_new_message.assert_awaited_once_with()
@@ -979,7 +979,7 @@ async def test_realtime_replacement_wins_and_continues_handoff() -> None:
     )
     turn = SimpleNamespace(
         transcript="what is this",
-        image_b64="raw-frame",
+        images=("raw-frame",),
         turn_id="turn-1",
     )
 
@@ -1000,7 +1000,7 @@ async def test_realtime_replacement_wins_and_continues_handoff() -> None:
     assert manager.session is candidate
     candidate.submit_multimodal_turn.assert_awaited_once_with(
         "what is this",
-        "raw-frame",
+        ("raw-frame",),
         turn_id="turn-1",
     )
     candidate.close.assert_not_awaited()
@@ -1019,7 +1019,7 @@ async def test_handoff_entry_session_close_fails_without_candidate() -> None:
     prepared = SimpleNamespace(close=AsyncMock())
     turn = SimpleNamespace(
         transcript="what is this",
-        image_b64="raw-frame",
+        images=("raw-frame",),
         turn_id="turn-1",
     )
 
@@ -1054,7 +1054,7 @@ async def test_existing_offline_multimodal_submit_retries_tts_each_turn() -> Non
     manager.session = session
     turn = SimpleNamespace(
         transcript="what is this",
-        image_b64="raw-frame",
+        images=("raw-frame",),
         turn_id="turn-1",
     )
 
@@ -1078,6 +1078,6 @@ async def test_existing_offline_multimodal_submit_retries_tts_each_turn() -> Non
     assert manager.ensure_tts_pipeline_alive.await_count == 2
     session.submit_multimodal_turn.assert_awaited_once_with(
         "what is this",
-        "raw-frame",
+        ("raw-frame",),
         turn_id="turn-1",
     )

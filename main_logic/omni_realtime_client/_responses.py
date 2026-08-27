@@ -28,6 +28,9 @@ from ._shared import (
     uuid,
 )
 
+from typing import Sequence
+
+from config import MAX_MULTIMODAL_TURN_IMAGES
 from config.prompts.prompts_proactive import (
     REALTIME_PROACTIVE_GENERAL_TRIGGER_PROMPTS,
     REALTIME_PROACTIVE_VISION_TRIGGER_PROMPTS,
@@ -338,10 +341,40 @@ class _ResponseMixin:
         except (ValueError, TypeError) as exc:
             raise ValueError("multimodal turn image is not valid base64") from exc
 
+    @classmethod
+    def _normalize_multimodal_turn_images(
+        cls,
+        images: str | Sequence[str],
+    ) -> tuple[tuple[str, ...], tuple[bytes, ...]]:
+        """Validate the turn's frames and hold them to the per-turn cap.
+
+        Core samples one utterance down to first/middle/last before it gets
+        here. This is the provider-side floor for that contract: whatever the
+        caller passes, at most ``MAX_MULTIMODAL_TURN_IMAGES`` frames may enter
+        provider history, and provider history cannot be edited afterwards.
+        """
+
+        if isinstance(images, str):
+            images = (images,)
+        staged = tuple(images or ())
+        if not staged:
+            raise ValueError("multimodal turn requires at least one image")
+        if len(staged) > MAX_MULTIMODAL_TURN_IMAGES:
+            logger.warning(
+                "external_multimodal_turn over the per-turn image cap: "
+                "%d supplied, keeping the first %d",
+                len(staged),
+                MAX_MULTIMODAL_TURN_IMAGES,
+            )
+            staged = staged[:MAX_MULTIMODAL_TURN_IMAGES]
+        return staged, tuple(
+            cls._decode_multimodal_turn_image(image) for image in staged
+        )
+
     async def submit_multimodal_turn(
         self,
         text: str,
-        image_b64: str,
+        images: str | Sequence[str],
         *,
         turn_id: str,
     ):
@@ -364,12 +397,14 @@ class _ResponseMixin:
         stable_turn_id = str(turn_id or "").strip()
         if not stable_turn_id:
             raise ValueError("external voice turn_id must not be empty")
-        image_bytes = self._decode_multimodal_turn_image(image_b64)
+        staged_images, images_bytes = self._normalize_multimodal_turn_images(
+            images
+        )
 
         if self._is_gemini:
             await self._submit_external_gemini_turn(
                 clean,
-                image_bytes=image_bytes,
+                images_bytes=images_bytes,
             )
             return None
         if self.ws is None or self._fatal_error_occurred:
@@ -386,11 +421,17 @@ class _ResponseMixin:
                 "id": item_id,
                 "type": "message",
                 "role": "user",
+                # 开头/中间/结尾同属一个 user item：一次发声是一段时间，三张按
+                # 时间顺序排在 transcript 前面，模型才知道这段话对着的是哪段画面。
+                # 仍然只触发一次回复。
                 "content": [
-                    {
-                        "type": "input_image",
-                        "image_url": "data:image/jpeg;base64," + image_b64,
-                    },
+                    *(
+                        {
+                            "type": "input_image",
+                            "image_url": "data:image/jpeg;base64," + image,
+                        }
+                        for image in staged_images
+                    ),
                     {"type": "input_text", "text": clean},
                 ],
             },
@@ -401,9 +442,10 @@ class _ResponseMixin:
         }
         text_hash = hashlib.sha256(clean.encode("utf-8")).hexdigest()[:8]
         logger.info(
-            "external_multimodal_turn queued turn=%s chars=%d hash=%s",
+            "external_multimodal_turn queued turn=%s chars=%d images=%d hash=%s",
             stable_turn_id,
             len(clean),
+            len(staged_images),
             text_hash,
         )
         arbiter = self._ensure_response_arbiter()
@@ -678,7 +720,7 @@ class _ResponseMixin:
         self,
         text: str,
         *,
-        image_bytes: bytes | None = None,
+        images_bytes: tuple[bytes, ...] = (),
     ) -> None:
         """Submit one external-ASR turn through the owned Gemini lifecycle."""
 
@@ -688,13 +730,10 @@ class _ResponseMixin:
         self._gemini_external_outcome_token = outcome_token
         accepted = False
         try:
-            if image_bytes is None:
-                await self._gemini_send_user_turn(text)
-            else:
-                await self._gemini_send_user_turn(
-                    text,
-                    image_bytes=image_bytes,
-                )
+            await self._gemini_send_user_turn(
+                text,
+                images_bytes=images_bytes,
+            )
             accepted = True
         finally:
             if getattr(self, "_gemini_external_submit_task", None) is submit_task:

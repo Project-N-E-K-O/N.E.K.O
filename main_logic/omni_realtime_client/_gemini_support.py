@@ -320,7 +320,7 @@ class _GeminiMixin:
         self,
         text: str,
         *,
-        image_bytes: bytes | None = None,
+        images_bytes: tuple[bytes, ...] = (),
         image_mime_type: str = "image/jpeg",
     ) -> None:
         """Inject one Gemini user turn and trigger a response via
@@ -336,7 +336,7 @@ class _GeminiMixin:
         from google.genai import types as genai_types
 
         parts = []
-        if image_bytes is not None:
+        for image_bytes in images_bytes:
             parts.append(
                 genai_types.Part.from_bytes(
                     data=image_bytes,

@@ -13,6 +13,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from typing import Sequence
+
+from config import MAX_MULTIMODAL_TURN_IMAGES
+
 from ._shared import (
     asyncio,
     HumanMessage,
@@ -79,19 +83,34 @@ class _MediaMixin:
     async def submit_multimodal_turn(
         self,
         text: str,
-        image_b64: str,
+        images: str | Sequence[str],
         *,
         turn_id: str,
     ) -> bool:
-        """Submit exactly one raw image with one transcript as a user turn.
+        """Submit one utterance's sampled raw frames with its transcript.
+
+        Core samples the utterance down to first/middle/last before it gets
+        here; this holds the same per-turn cap so provider-side history can
+        never receive more than one utterance's worth of frames.
 
         Independent ASR already recorded and displayed the transcript before a
         possible session promotion. Suppress the regular Offline input callback
         here so the same user turn is not counted or persisted twice.
         """
 
-        if not image_b64 or not str(text or "").strip():
+        if isinstance(images, str):
+            images = (images,)
+        staged_images = tuple(image for image in (images or ()) if image)
+        if not staged_images or not str(text or "").strip():
             raise ValueError("MULTIMODAL_TURN_REQUIRES_IMAGE_AND_TEXT")
+        if len(staged_images) > MAX_MULTIMODAL_TURN_IMAGES:
+            logger.warning(
+                "multimodal turn over the per-turn image cap: %d supplied, "
+                "keeping the first %d",
+                len(staged_images),
+                MAX_MULTIMODAL_TURN_IMAGES,
+            )
+            staged_images = staged_images[:MAX_MULTIMODAL_TURN_IMAGES]
         lock = getattr(self, "_multimodal_submit_lock", None)
         if lock is None:
             lock = asyncio.Lock()
@@ -100,21 +119,23 @@ class _MediaMixin:
         async with lock:
             pending = getattr(self, "_pending_images", None)
             staged_index = len(pending) if isinstance(pending, list) else None
-            await self.stream_image(image_b64, bypass_rate_limit=True)
+            for image_b64 in staged_images:
+                await self.stream_image(image_b64, bypass_rate_limit=True)
             try:
                 await self._run_external_voice_stream(text)
             except BaseException as exc:
                 # stream_text consumes pending images as soon as it constructs
                 # the HumanMessage. If it failed before that point, remove only
-                # this turn's staged frame so it cannot leak into a later turn.
+                # this turn's staged frames so they cannot leak into a later
+                # turn. The whole run is one contiguous slice appended under the
+                # submit lock, so identity on the slice is enough.
                 current_pending = getattr(self, "_pending_images", None)
                 if (
                     staged_index is not None
                     and current_pending is pending
-                    and len(pending) > staged_index
-                    and pending[staged_index] is image_b64
+                    and list(pending[staged_index:]) == list(staged_images)
                 ):
-                    del pending[staged_index]
+                    del pending[staged_index:]
                 if isinstance(exc, self._ExternalVoiceSubmitCancelled):
                     return False
                 raise

@@ -19,6 +19,11 @@ import asyncio
 from dataclasses import dataclass, field
 
 
+# 中间帧候选集上限。抽样只需要"大致铺满整段"，候选越多越准但也越占内存
+# （每个候选是一整张 base64 原图）。
+_MAX_MIDDLE_CANDIDATES = 5
+
+
 @dataclass(frozen=True, slots=True)
 class _IndependentVisualFrame:
     image_b64: str
@@ -32,22 +37,82 @@ class _IndependentVisualFrame:
 
 @dataclass(slots=True)
 class _CoreMultimodalTurnRecord:
+    """One independent-ASR utterance and the frames sampled across it.
+
+    Screen/camera frames arrive at roughly 1 fps for as long as the user keeps
+    talking, so an utterance is a span, not an instant. Keeping every frame
+    would hand the answering model an unbounded image list; keeping only the
+    newest loses what the user was pointing at when they started. This samples
+    the span down to at most three: first, middle, last.
+
+    The sampler retains a bounded candidate set (never a growing buffer): once
+    it is full, every other candidate is dropped and the sampling stride
+    doubles, so the survivors stay spread evenly over however long the user
+    talks. ``sampled_frames`` then picks the centre candidate as the middle.
+    """
+
     turn_id: str
     session_epoch: int
     route_generation: int
     start_image_generation: int
     started_at: float
-    frame: _IndependentVisualFrame | None = None
+    first_frame: _IndependentVisualFrame | None = None
+    last_frame: _IndependentVisualFrame | None = None
+    middle_candidates: list[_IndependentVisualFrame] = field(default_factory=list)
+    candidate_stride: int = 1
+    observed_frames: int = 0
     pending_visual_validations: dict[asyncio.Task, float] = field(
         default_factory=dict,
         repr=False,
     )
     invalidated: asyncio.Event = field(default_factory=asyncio.Event, repr=False)
 
+    def observe(self, frame: _IndependentVisualFrame) -> None:
+        """Fold one newly staged frame into the first/middle/last sample."""
+
+        if self.first_frame is None:
+            self.first_frame = frame
+        self.last_frame = frame
+        # 中间那张不能靠"边收边猜"选：发声多长事先不知道，只保一个候选的话中点
+        # 前移时想提拔的那张已经被丢了，middle 会永远卡在开头附近。改成等距抽样
+        # ——候选满了就隔一个丢一个、步长翻倍，候选集始终 <= _MAX_MIDDLE_CANDIDATES
+        # 且大致均匀铺满整段，最后取正中间那个。
+        if self.observed_frames % self.candidate_stride == 0:
+            self.middle_candidates.append(frame)
+            if len(self.middle_candidates) > _MAX_MIDDLE_CANDIDATES:
+                del self.middle_candidates[1::2]
+                self.candidate_stride *= 2
+        self.observed_frames += 1
+
+    def sampled_frames(self) -> tuple[_IndependentVisualFrame, ...]:
+        """Return the retained frames in capture order, without duplicates."""
+
+        middle = None
+        if self.middle_candidates:
+            middle = self.middle_candidates[len(self.middle_candidates) // 2]
+        ordered: list[_IndependentVisualFrame] = []
+        seen: set[int] = set()
+        for frame in (self.first_frame, middle, self.last_frame):
+            if frame is None or frame.generation in seen:
+                continue
+            seen.add(frame.generation)
+            ordered.append(frame)
+        ordered.sort(key=lambda item: item.generation)
+        return tuple(ordered)
+
+    def adopt_single_frame(self, frame: _IndependentVisualFrame) -> None:
+        """Seed the sample with one late-discovered frame."""
+
+        self.first_frame = frame
+        self.last_frame = frame
+        self.middle_candidates = [frame]
+        self.candidate_stride = 1
+        self.observed_frames = 1
+
 
 @dataclass(frozen=True, slots=True)
 class MultimodalTurn:
-    """One immutable independent-ASR user turn with its frozen raw frame."""
+    """One immutable independent-ASR user turn with its frozen raw frames."""
 
     turn_id: str
     session_epoch: int
@@ -55,7 +120,7 @@ class MultimodalTurn:
     start_image_generation: int
     image_generation: int
     captured_at: float
-    image_b64: str
+    images: tuple[str, ...]
     transcript: str
     source: str
     request_id: str | None

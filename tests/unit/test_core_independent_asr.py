@@ -9382,7 +9382,8 @@ async def test_independent_visual_sync_failure_blocks_raw_images_without_stoppin
 
 
 @pytest.mark.unit
-async def test_independent_multimodal_turn_freezes_latest_valid_frame() -> None:
+async def test_independent_multimodal_turn_samples_the_utterance_span() -> None:
+    """One utterance carries first/middle/last; identity fields name the last."""
     runtime = _Runtime()
     runtime._asr_route_mode = "independent"
     token = VoiceTurnToken(ingress=runtime._capture_ingress_token(), turn_id=77)
@@ -9412,7 +9413,9 @@ async def test_independent_multimodal_turn_freezes_latest_valid_frame() -> None:
     turn = runtime._snapshot_core_multimodal_turn(turn_id, "what is that")
 
     assert turn is not None
-    assert turn.image_b64 == "latest-frame"
+    # 两帧都在本回合窗口内：开头那张不能因为"不是最新"被丢掉——用户开口时指的
+    # 东西就在那张上。source / request_id 仍然描述最新那张（回合的收尾身份）。
+    assert turn.images == ("first-frame", "latest-frame")
     assert turn.source == "camera"
     assert turn.request_id == "frame-2"
     assert turn.image_generation > turn.start_image_generation
@@ -9456,7 +9459,7 @@ async def test_independent_multimodal_turn_rejects_delayed_prior_capture() -> No
         request_id="screen-delayed",
         captured_at=captured_before_turn,
     )
-    assert record.frame is None
+    assert record.last_frame is None
     assert runtime._snapshot_core_multimodal_turn(turn_id, "new question") is None
 
     assert runtime._stage_independent_visual_frame(
@@ -9468,7 +9471,7 @@ async def test_independent_multimodal_turn_rejects_delayed_prior_capture() -> No
     turn = runtime._snapshot_core_multimodal_turn(turn_id, "new question")
 
     assert turn is not None
-    assert turn.image_b64 == "current-turn-frame"
+    assert turn.images == ("current-turn-frame",)
     assert turn.captured_at == record.started_at
 
 
@@ -9539,7 +9542,7 @@ async def test_direct_multimodal_final_submits_raw_image_once() -> None:
 
     runtime.session.submit_multimodal_turn.assert_awaited_once_with(
         "look here",
-        "raw-frame",
+        ("raw-frame",),
         turn_id=turn_id,
     )
     runtime.session.submit_external_voice_turn.assert_not_awaited()

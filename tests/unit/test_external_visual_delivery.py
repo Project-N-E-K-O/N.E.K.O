@@ -122,6 +122,56 @@ async def test_gpt_multimodal_turn_is_one_atomic_user_item():
 
 
 @pytest.mark.asyncio
+async def test_gpt_multimodal_turn_carries_the_sampled_span_in_one_item():
+    """The sampled span shares one user item and still triggers one reply."""
+    client = _make_client("openai", "gpt-4o-realtime")
+    client.ws = AsyncMock()
+    sent = _wire_completed_response_transport(client)
+
+    await client.prepare_external_voice_turn(turn_id="turn-span")
+    await client.submit_multimodal_turn(
+        "这是什么？",
+        (DUMMY_IMAGE_B64, DUMMY_IMAGE_B64, DUMMY_IMAGE_B64),
+        turn_id="turn-span",
+    )
+
+    assert [event["type"] for event in sent] == [
+        "conversation.item.create",
+        "response.create",
+    ]
+    content = sent[0]["item"]["content"]
+    assert [part["type"] for part in content] == [
+        "input_image",
+        "input_image",
+        "input_image",
+        "input_text",
+    ]
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_gpt_multimodal_turn_caps_frames_at_the_per_turn_budget():
+    """Provider-side floor: an item written into the conversation is final."""
+    from config import MAX_MULTIMODAL_TURN_IMAGES
+
+    client = _make_client("openai", "gpt-4o-realtime")
+    client.ws = AsyncMock()
+    sent = _wire_completed_response_transport(client)
+
+    await client.prepare_external_voice_turn(turn_id="turn-flood")
+    await client.submit_multimodal_turn(
+        "这是什么？",
+        tuple(DUMMY_IMAGE_B64 for _ in range(12)),
+        turn_id="turn-flood",
+    )
+
+    content = sent[0]["item"]["content"]
+    images = [part for part in content if part["type"] == "input_image"]
+    assert len(images) == MAX_MULTIMODAL_TURN_IMAGES
+    await client.close()
+
+
+@pytest.mark.asyncio
 async def test_new_external_turn_rejects_superseded_multimodal_ticket():
     client = _make_client("openai", "gpt-4o-realtime")
     client.ws = AsyncMock()
@@ -186,6 +236,35 @@ async def test_gemini_multimodal_turn_is_one_content_with_image_and_text():
     assert content.parts[0].inline_data.mime_type == "image/jpeg"
     assert content.parts[1].text == "看一下这张图"
     client._analyze_image_with_vision_model.assert_not_awaited()
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_gemini_multimodal_turn_carries_the_sampled_span_in_one_content():
+    """The sampled span shares one Content and still triggers one reply."""
+    from config import MAX_MULTIMODAL_TURN_IMAGES
+
+    client = _make_client("gemini", "gemini-2.5-flash-native-audio")
+    session = AsyncMock()
+    client._gemini_session = session
+    client.ws = session
+    client.handle_interruption = AsyncMock()
+
+    await client.prepare_external_voice_turn(turn_id="turn-gemini-span")
+    await client.submit_multimodal_turn(
+        "看一下这张图",
+        tuple(DUMMY_IMAGE_B64 for _ in range(9)),
+        turn_id="turn-gemini-span",
+    )
+
+    session.send_client_content.assert_awaited_once()
+    kwargs = session.send_client_content.await_args.kwargs
+    assert len(kwargs["turns"]) == 1
+    parts = kwargs["turns"][0].parts
+    # Provider 侧独立兜底，多余的丢弃。
+    assert len(parts) == MAX_MULTIMODAL_TURN_IMAGES + 1
+    assert all(part.inline_data is not None for part in parts[:-1])
+    assert parts[-1].text == "看一下这张图"
     await client.close()
 
 
