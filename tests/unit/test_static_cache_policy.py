@@ -346,7 +346,8 @@ async def test_stale_asset_url_returns_404_without_quarantining_a_healthy_tool(t
 
 
 @pytest.mark.asyncio
-async def test_asset_whose_bytes_diverge_from_the_record_quarantines_the_tool(tmp_path, monkeypatch):
+async def test_static_layer_never_quarantines_even_when_bytes_diverge(tmp_path, monkeypatch):
+    """Integrity is the store's call; this layer only serves or 404s."""
     import utils.avatar_tool_store as avatar_tool_store
 
     tool_id = "local-12345678-1234-4123-8123-123456789abc"
@@ -354,13 +355,11 @@ async def test_asset_whose_bytes_diverge_from_the_record_quarantines_the_tool(tm
     _publish_avatar_tool(
         tmp_path, tool_id, default_bytes=b"tampered", recorded_default_bytes=recorded
     )
-    monkeypatch.setattr(
-        "app.main_server.web_app._config_manager", _AvatarToolConfigManager(tmp_path)
-    )
+    config_manager = _AvatarToolConfigManager(tmp_path)
+    monkeypatch.setattr("app.main_server.web_app._config_manager", config_manager)
     static_files = AvatarToolStaticFiles(directory=tmp_path, check_dir=False)
-    root_key = avatar_tool_store.AvatarToolStore(
-        _AvatarToolConfigManager(tmp_path)
-    )._root_key()
+    store = avatar_tool_store.AvatarToolStore(config_manager)
+    root_key = store._root_key()
 
     # 客户端拿的是权威 record 里的摘要，也就是「正确」的 URL。
     scope = {
@@ -375,6 +374,13 @@ async def test_asset_whose_bytes_diverge_from_the_record_quarantines_the_tool(tm
         with pytest.raises(StarletteHTTPException) as raised:
             await static_files.get_response(f"{tool_id}/default.png", scope)
         assert raised.value.status_code == 404
+        # 这一层的字节和 record 来自两次独立读取，中间可能夹着一次原子 PUT，
+        # 所以它不做判定；隔离交给锁内一次性核验的消费点。
+        assert tool_id not in avatar_tool_store._QUARANTINED_TOOL_IDS.get(root_key, set())
+
+        with pytest.raises(avatar_tool_store.AvatarToolStoreError) as store_error:
+            store.get_detail(tool_id)
+        assert store_error.value.integrity_mismatch is True
         assert tool_id in avatar_tool_store._QUARANTINED_TOOL_IDS[root_key]
     finally:
         avatar_tool_store._QUARANTINED_TOOL_IDS.pop(root_key, None)
@@ -416,7 +422,7 @@ async def test_stale_asset_url_does_not_rehash_the_whole_tool(tmp_path, monkeypa
     try:
         with pytest.raises(StarletteHTTPException):
             await static_files.get_response(f"{tool_id}/default.png", scope)
-        # 判据只用已经算好的那一份实际摘要去比 record，不重算道具里的其它资源。
+        # 这一层不判定完整性，所以既不重算道具里的其它资源，也不读 record。
         assert digests == [], f"stale URL rehashed the tool: {digests}"
     finally:
         avatar_tool_store._QUARANTINED_TOOL_IDS.pop(root_key, None)

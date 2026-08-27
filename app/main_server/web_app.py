@@ -166,8 +166,6 @@ class AvatarToolStaticFiles(CustomStaticFiles):
         from starlette.exceptions import HTTPException as StarletteHTTPException
         from utils.avatar_tool_store import (
             AVATAR_TOOL_LIMITS,
-            AvatarToolStoreError,
-            get_avatar_tool_store,
             is_public_avatar_tool_resource_path,
         )
 
@@ -212,26 +210,12 @@ class AvatarToolStaticFiles(CustomStaticFiles):
             raise StarletteHTTPException(status_code=404)
         content, opened_stat, actual_digest = verified
         if not secrets.compare_digest(actual_digest, requested_digest):
-            # URL 里的摘要是客户端给的：道具更新后，还没刷新的旧页面照样会拿旧
-            # ?v= 来取资源，那是正常 404。要区分「陈旧 URL」和「文件真坏了」，
-            # 只需拿刚算出的这一份实际摘要去比权威 record —— 读 record.json 是
-            # 轻量的，不重算任何 digest；否则旧页面每个资源请求都会触发一次整个
-            # 道具的全量重哈希。
-            tool_id, _, filename = normalized_path.partition("/")
-            store = get_avatar_tool_store(_config_manager)
-            try:
-                record = await asyncio.to_thread(
-                    store.read_record, tool_id, verify_resources=False
-                )
-                if record["resourceDigests"].get(filename) != actual_digest:
-                    logger.warning(
-                        "Quarantining local avatar tool %s: %s diverged from its record",
-                        tool_id,
-                        filename,
-                    )
-                    store.quarantine(tool_id)
-            except (AvatarToolStoreError, OSError):
-                pass
+            # 这一层不判定完整性，只回 404。原因是这里拿到的字节和任何 record
+            # 都来自两次独立读取：陈旧请求读到 revision N 的文件时，一个原子
+            # PUT 可能刚发布 revision N+1，拿旧快照去比新 record 就会把一个刚
+            # 更新好的健康道具隔离掉。完整性归 store 的消费点——get_detail 和
+            # 互动前的权威读取都在 _STORE_LOCK 内一次性读 record 并核验，没有
+            # 这个窗口。用户看到图裂之后点进详情，就会在那里被隔离。
             raise StarletteHTTPException(status_code=404)
         response = _VerifiedAssetFileResponse(
             full_path,
