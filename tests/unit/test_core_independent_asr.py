@@ -10147,50 +10147,35 @@ def test_speech_onset_is_stamped_at_the_transition_not_after_delivery() -> None:
 
     assert sites, "no SPEECH_CONFIRMED transition found"
     for index in sites:
-        # 赋值必须**紧接**转换那一行开始。值本身可以是多行表达式（延迟确认那条路
-        # 用的是重连前暂存的 onset），但中间不许插入任何东西 —— 尤其是 await。
-        assert source[index + 1].strip().startswith(stamp), (
-            f"line {index + 1}: SPEECH_CONFIRMED must start stamping the onset on "
-            f"the very next line, got: {source[index + 1].strip()!r}"
+        # 赋值必须**紧接**转换那一行开始（注释和空行不算，它们引入不了 await）。
+        # 值本身可以是多行表达式：几条路径都要在"暂存的 onset"和"进函数时刻"之间选。
+        first = next(
+            offset
+            for offset in range(1, 12)
+            if source[index + offset].strip()
+            and not source[index + offset].strip().startswith("#")
+        )
+        assert source[index + first].strip().startswith(stamp), (
+            f"line {index + 1}: SPEECH_CONFIRMED must start stamping the onset "
+            f"before anything else, got: {source[index + first].strip()!r}"
         )
 
-    # 延迟确认路径必须用重连**之前**暂存的时刻，不能用重连完成的时钟。
-    # 识别方式：它是唯一一个外层**条件**判断 _asr_pending_speech_confirmed 的迁移点。
-    # （不能用"转换后清掉 pending 标志"来认——每条路径现在都会清，那个判据不再区分。）
-    def _is_deferred_site(index: int) -> bool:
-        """Only count a pending-speech condition inside this same function.
-
-        An earlier version scanned 30 raw lines upward without checking they
-        belonged to the same function, so a condition in a neighbouring branch
-        or in the previous function could mislabel another transition site and
-        the assertion would then verify the wrong onset. The ``def`` boundary
-        below is what stops that.
-        """
-        for back in range(index - 1, -1, -1):
-            line = source[back]
-            stripped = line.strip()
-            if not stripped or stripped.startswith("#"):
-                continue
-            if stripped.startswith(("async def ", "def ")):
-                return False
-            # 不按缩进筛：外层条件写成多行 `if (` 时，条件行与迁移点同缩进。
-            # 函数边界（上面的 def 判断）才是防止误标的那道闸。
-            if (
-                "self._asr_pending_speech_confirmed" in stripped
-                and "=" not in stripped
-            ):
-                return True
-        return False
-
-    deferred = [index for index in sites if _is_deferred_site(index)]
-    assert deferred, "deferred SPEECH_CONFIRMED path not found"
-    for index in deferred:
-        # 只看 onset **赋值语句本身**：按括号配平截断，而不是"扫到某个关键字为止"。
-        # 前一版按关键字截断时把紧随其后的**清除**语句也圈了进来，那句同样含这个
-        # 名字，于是断言恒真 —— 把赋值换成 time.monotonic() 照样跑绿（第三次假绿）。
+    # 每一条路径的 onset 赋值都必须**优先取暂存的 pending onset**，只有它为空时才
+    # 用进函数时刻。session 先未就绪、随后又 ready 时，真实开口时刻就是当初记下的
+    # 那个值；就地取时钟会把整段重连等待算成「开口之后」，期间拍的帧全被排除。
+    #
+    # 规则对所有迁移点一视同仁，因此不再需要"哪条是延迟路径"这种启发式识别 ——
+    # 之前那版靠往上扫若干行找条件语句，既会跨函数误标，也挡不住直接分支退化。
+    for index in sites:
+        begin = next(
+            offset
+            for offset in range(1, 12)
+            if source[index + offset].strip()
+            and not source[index + offset].strip().startswith("#")
+        )
         statement = []
         depth = 0
-        for offset in range(1, 9):
+        for offset in range(begin, begin + 9):
             line = source[index + offset]
             statement.append(line)
             depth += line.count("(") - line.count(")")
@@ -10198,19 +10183,9 @@ def test_speech_onset_is_stamped_at_the_transition_not_after_delivery() -> None:
                 break
         window = chr(10).join(statement)
         assert "self._asr_pending_speech_onset_at" in window, (
-            f"line {index + 1}: the deferred path must reuse the onset captured "
-            f"before the reconnect, got: {window!r}"
+            f"line {index + 1}: the onset assignment must prefer the pending "
+            f"onset captured before the reconnect, got: {window!r}"
         )
-    for index, line in enumerate(source):
-        if "self._asr_pending_speech_confirmed = True" in line:
-            window = chr(10).join(source[index : index + 4])
-            # 必须绑到进函数时捕获的 detected_at，**不能**是就地的 time.monotonic()
-            # —— 这些赋值点都在 prewarm / 生命周期投递 / Smart Turn 的 await 之后，
-            # 就地取时钟等于把整段等待算成"用户开口之后"。
-            assert "self._asr_pending_speech_onset_at = detected_at" in window, (
-                f"line {index + 1}: pending speech must record the onset captured "
-                f"at handler entry, got: {window!r}"
-            )
 
     # detected_at 本身必须在函数里任何 await 之前捕获。
     for index, line in enumerate(source):
@@ -10412,6 +10387,10 @@ async def test_prerecord_frame_buffer_is_bounded() -> None:
         )
 
     assert len(runtime._prerecord_visual_frames) <= 8
+    # 超限时丢的是"最冗余"的内点，**不是队头** —— 队头正是这段发声的开头。
+    kept = [frame.image_b64 for frame in runtime._prerecord_visual_frames]
+    assert kept[0] == "prerecord-0"
+    assert kept[-1] == "prerecord-39"
 
 
 @pytest.mark.unit
@@ -10441,3 +10420,57 @@ async def test_prerecord_frames_from_a_previous_route_are_not_adopted() -> None:
     assert record.last_frame is None
     assert record.first_frame is None
     assert runtime._snapshot_core_multimodal_turn(turn_id, "lost") is None
+
+
+@pytest.mark.unit
+def test_overlap_replay_carries_the_real_onset_not_the_replay_instant() -> None:
+    """The overlap replay happens long after the user actually resumed speaking.
+
+    A provider-VAD successor utterance can reach Core while the previous turn
+    is still ACTIVE; its onset is remembered and replayed only once the delayed
+    final arrives. Stamping the replay instant as the onset would classify
+    everything captured in between as "after the user spoke", so the successor
+    utterance loses the frames it was actually about.
+    """
+    import inspect
+
+    from main_logic.asr_client import runtime as asr_runtime_module
+
+    source = inspect.getsource(asr_runtime_module).splitlines()
+
+    record = [
+        index
+        for index, line in enumerate(source)
+        if "self._asr_overlap_onset_token = self._asr_current_ingress_token" in line
+    ]
+    assert record, "overlap onset token is never recorded"
+    for index in record:
+        window = chr(10).join(source[index : index + 3])
+        assert "self._asr_overlap_onset_at = detected_at" in window, (
+            f"line {index + 1}: the overlap onset instant must be recorded "
+            f"alongside its token, got: {window!r}"
+        )
+
+    # 只认「把 SPEECH_RESUMED 重放给 _handle_independent_asr_activity」那一处，
+    # 不要把无关的集合字面量里出现的同名枚举也算进来。
+    # 只认 overlap **重放**那一处：它由「兑付一次 completed-overlap credit」的那段
+    # 代码驱动。同名枚举在别处也会被正常派发（那些是真实发生的时刻，用进函数时钟
+    # 是对的），不能一并要求它们交接 onset。
+    replay = [
+        index
+        for index, line in enumerate(source)
+        if "await self._handle_independent_asr_activity(" in line
+        and "SpeechActivityEvent.SPEECH_RESUMED," in source[index + 1]
+        and any(
+            "self._asr_overlap_completed_turns -= 1" in source[index - offset]
+            for offset in range(1, 21)
+            if index - offset >= 0
+        )
+    ]
+    assert replay, "overlap replay not found"
+    for index in replay:
+        window = chr(10).join(source[max(0, index - 30) : index])
+        assert "self._asr_pending_speech_onset_at = replay_onset_at" in window, (
+            f"line {index + 1}: the replay must hand the recorded onset to the "
+            f"confirmation path, got: {window!r}"
+        )

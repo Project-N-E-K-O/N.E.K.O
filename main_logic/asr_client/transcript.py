@@ -253,7 +253,14 @@ class TranscriptDispatcher:
                 break
         worker, self._worker = self._worker, None
         if worker is not None and not worker.done():
-            worker.cancel()
+            # 不要取消调用者自己。收口路径（例如独立 ASR final 里发现会话不可用后
+            # 调 _close_independent_asr）本身就跑在这个 worker 上：取消它会让紧接着
+            # 的那个 await 抛 CancelledError，剩下的 detector/provider 清理和
+            # send_session_ended_by_server() 全部被跳过，前端也就收不到结束通知。
+            # 队列已经清空、_worker 也已置 None，所以不取消它也不会再接新活，
+            # 当前这一条 envelope 跑完就自然结束。
+            if worker is not asyncio.current_task():
+                worker.cancel()
         self._active = None
         self._idle.set()
 

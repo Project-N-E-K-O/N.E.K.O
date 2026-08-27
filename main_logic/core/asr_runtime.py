@@ -497,9 +497,19 @@ class AsrRuntimeMixin:
 
         frames = self._prerecord_visual_frames
         frames.append(frame)
-        # 有界：这段窗口只有一次 lifecycle 通知投递那么长，正常最多积压一两帧。
+        # 有界。超限时**不能丢队头** —— 队头正是这段发声的开头（用户开口时指的东
+        # 西），丢掉它就等于把 record 建立前那段窗口的起点抹掉。改成丢掉"最冗余"
+        # 的内点（左右邻居跨度最小），两端保留；与 middle_candidates 的抽稀同一
+        # 判据，留下的仍然大致铺满整段。
         while len(frames) > _MAX_PRERECORD_VISUAL_VALIDATIONS:
-            del frames[0]
+            victim = min(
+                range(1, len(frames) - 1),
+                key=lambda index: (
+                    frames[index + 1].captured_at - frames[index - 1].captured_at,
+                    index,
+                ),
+            )
+            del frames[victim]
 
     def _mark_independent_asr_endpoint_if_sealed(self) -> None:
         """Stamp the endpoint cutoff on the active turn once ASR seals it.

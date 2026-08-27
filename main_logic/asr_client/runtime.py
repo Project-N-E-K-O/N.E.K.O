@@ -543,7 +543,12 @@ class IndependentAsrRuntime:
         self._asr_pending_speech_onset_at = None
         self._asr_pending_detector_candidate = None
         self._asr_overlap_onset_token: VoiceIngressToken | None = None
+        # 重叠发声的真实开口时刻。重放发生在「上一轮延迟 final 到达」之后，比用户
+        # 实际开口晚得多；不把这一刻带过去，重放时取到的 onset 会把中间那段全算成
+        # 「开口之后」，后继发声在重放前拍的帧就全被排除了。
+        self._asr_overlap_onset_at: float | None = None
         self._asr_overlap_completed_token: VoiceIngressToken | None = None
+        self._asr_overlap_completed_at: float | None = None
         self._asr_overlap_completed_turns = 0
         self._asr_sealed_turn_token: VoiceTransportToken | None = None
         self._asr_provider_candidate_fence: ProviderCandidateFence | None = None
@@ -622,6 +627,10 @@ class IndependentAsrRuntime:
             self._asr_pending_detector_candidate = None
         if not hasattr(self, "_asr_overlap_onset_token"):
             self._asr_overlap_onset_token = None
+        if not hasattr(self, "_asr_overlap_onset_at"):
+            self._asr_overlap_onset_at = None
+        if not hasattr(self, "_asr_overlap_completed_at"):
+            self._asr_overlap_completed_at = None
         if not hasattr(self, "_asr_partial_turn_token"):
             self._asr_partial_turn_token = None
         if not hasattr(self, "_asr_overlap_completed_token"):
@@ -1039,7 +1048,14 @@ class IndependentAsrRuntime:
                 self._asr_pending_speech_onset_at = detected_at
             return
         lifecycle.transition(VoiceLifecycleEvent.SPEECH_CONFIRMED)
-        self._asr_turn_onset_at = time.monotonic()
+        # session 先未就绪、随后又 ready 时，真实开口时刻是当初记下的那个
+        # pending onset —— 直接用当前时钟会把整段重连等待算成「开口之后」，
+        # 期间拍的帧全被排除在本回合外（CodeRabbit Major）。
+        self._asr_turn_onset_at = (
+            self._asr_pending_speech_onset_at
+            if self._asr_pending_speech_onset_at is not None
+            else detected_at
+        )
         # 直接确认这一路同样要把待确认状态清干净：session 在标记 pending 之后
         # 才 ready 时，直接路径可能先完成确认，旧 flag / 旧 onset 会留到下一轮
         # 被复用（CodeRabbit Major）。
@@ -1200,7 +1216,14 @@ class IndependentAsrRuntime:
             )
             return False
         lifecycle.transition(VoiceLifecycleEvent.SPEECH_CONFIRMED)
-        self._asr_turn_onset_at = time.monotonic()
+        # session 先未就绪、随后又 ready 时，真实开口时刻是当初记下的那个
+        # pending onset —— 直接用当前时钟会把整段重连等待算成「开口之后」，
+        # 期间拍的帧全被排除在本回合外（CodeRabbit Major）。
+        self._asr_turn_onset_at = (
+            self._asr_pending_speech_onset_at
+            if self._asr_pending_speech_onset_at is not None
+            else detected_at
+        )
         self._asr_pending_speech_confirmed = False
         self._asr_pending_speech_onset_at = None
         active_identity = self._capture_runtime_identity(
@@ -2317,7 +2340,9 @@ class IndependentAsrRuntime:
         self._asr_pending_speech_onset_at = None
         self._asr_pending_detector_candidate = None
         self._asr_overlap_onset_token = None
+        self._asr_overlap_onset_at = None
         self._asr_overlap_completed_token = None
+        self._asr_overlap_completed_at = None
         self._asr_overlap_completed_turns = 0
         self._asr_audio_sequence = 0
         self._asr_current_ingress_token = None
@@ -3247,7 +3272,14 @@ class IndependentAsrRuntime:
                 asr_session = self._asr_session
                 if asr_session is not None and getattr(asr_session, "is_ready", True):
                     lifecycle.transition(VoiceLifecycleEvent.SPEECH_CONFIRMED)
-                    self._asr_turn_onset_at = time.monotonic()
+                    # session 先未就绪、随后又 ready 时，真实开口时刻是当初记下的那个
+                    # pending onset —— 直接用当前时钟会把整段重连等待算成「开口之后」，
+                    # 期间拍的帧全被排除在本回合外（CodeRabbit Major）。
+                    self._asr_turn_onset_at = (
+                        self._asr_pending_speech_onset_at
+                        if self._asr_pending_speech_onset_at is not None
+                        else detected_at
+                    )
                     self._asr_pending_speech_confirmed = False
                     self._asr_pending_speech_onset_at = None
                 else:
@@ -3287,8 +3319,12 @@ class IndependentAsrRuntime:
                 # completed-overlap credit; only a provider endpoint arriving
                 # in WARM_IDLE proves a queued turn exists and redeems it.
                 onset_token = self._asr_overlap_onset_token
+                onset_at = self._asr_overlap_onset_at
                 self._asr_overlap_onset_token = None
+                self._asr_overlap_onset_at = None
                 if onset_token is not None:
+                    if onset_at is not None:
+                        self._asr_overlap_completed_at = onset_at
                     if onset_token == self._asr_overlap_completed_token:
                         # Each additional onset+pause cycle observed while the
                         # first turn stays ACTIVE queues one more provider
@@ -3310,6 +3346,7 @@ class IndependentAsrRuntime:
                 # prepared. Remember the onset (ingress-fenced) so the delayed
                 # final can replay it instead of dropping the next turn.
                 self._asr_overlap_onset_token = self._asr_current_ingress_token
+                self._asr_overlap_onset_at = detected_at
             return
         if (
             lifecycle is not None
@@ -3409,8 +3446,17 @@ class IndependentAsrRuntime:
             # then fall through to seal immediately, letting the queued final
             # right behind this endpoint find a DRAINING turn.
             self._asr_overlap_completed_turns -= 1
+            replay_onset_at = self._asr_overlap_completed_at
             if self._asr_overlap_completed_turns == 0:
                 self._asr_overlap_completed_token = None
+                self._asr_overlap_completed_at = None
+            # 把真实开口时刻交给重放：直接确认分支会优先取 pending onset，于是
+            # SPEECH_CONFIRMED 打上的是用户当初开口的时刻，而不是这次重放的时刻。
+            if (
+                replay_onset_at is not None
+                and self._asr_pending_speech_onset_at is None
+            ):
+                self._asr_pending_speech_onset_at = replay_onset_at
             await self._handle_independent_asr_activity(
                 SpeechActivityEvent.SPEECH_RESUMED,
                 epoch,
