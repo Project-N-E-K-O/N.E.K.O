@@ -1326,9 +1326,20 @@ class ProactiveMixin:
                 # handler scheduled). The active response that caused the
                 # rejection will fire response.done and trigger the retry.
                 if _reject_state["rejected"]:
+                    if native_media_prefix_committed:
+                        # 原生图已经不可逆地写进这条会话。这次异步拒绝既可能打在
+                        # callback item 上（配对文本压根没落地 → 孤儿前缀），也可能
+                        # 打在 response.create 上（乐观持久化的 item 会在重试时重复
+                        # 投递）。两种都得退休：cb 本来就留队重试，重试落在新会话上
+                        # 才不会把同一组图文再发一遍。与本函数其余几条「媒体已提交、
+                        # 文本未落地」的路同一判据。
+                        _mark_media_session_unsafe()
+                        await _retire_unsafe_media_session()
                     logger.info(
-                        "[%s] trigger_agent_callbacks: voice proactive inject rejected during await; keeping %d cb(s) queued for retry",
-                        self.lanlan_name, len(voice_snapshot),
+                        "[%s] trigger_agent_callbacks: voice proactive inject rejected during await; keeping %d cb(s) queued for retry (native prefix committed=%s)",
+                        self.lanlan_name,
+                        len(voice_snapshot),
+                        native_media_prefix_committed,
                     )
                     return False
 

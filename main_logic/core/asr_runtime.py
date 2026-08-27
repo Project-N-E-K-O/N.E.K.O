@@ -627,8 +627,21 @@ class AsrRuntimeMixin:
         pending[task] = captured_at
         # 有界：只可能积压「语音确认到 record 建立」这一小段窗口里的任务；仍然设
         # 一个上限，免得 record 一直没建出来时无限增长。
+        #
+        # ⚠️ 淘汰方向与 _prerecord_visual_frames 一致：**不能丢最早的那个**。
+        # router 按拍摄顺序注册任务，最早那个就是这段发声的开头；丢了它之后，短发声
+        # 在 final 时等不到它，record 在那一帧落地前就作废了，抽样里正好缺掉"用户开
+        # 口时看到的东西"。改成丢「最冗余」的内点（左右邻居跨度最小），两端保留。
         while len(pending) > _MAX_PRERECORD_VISUAL_VALIDATIONS:
-            pending.pop(next(iter(pending)), None)
+            ordered = sorted(pending.items(), key=lambda item: item[1])
+            victim = min(
+                range(1, len(ordered) - 1),
+                key=lambda index: (
+                    ordered[index + 1][1] - ordered[index - 1][1],
+                    index,
+                ),
+            )
+            pending.pop(ordered[victim][0], None)
 
         def discard(completed: asyncio.Task) -> None:
             self._prerecord_visual_validations.pop(completed, None)

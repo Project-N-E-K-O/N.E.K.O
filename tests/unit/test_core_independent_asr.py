@@ -10586,3 +10586,40 @@ async def test_prerecord_buffer_trims_in_capture_order_not_arrival_order() -> No
     assert kept[-1] == f"f{max(capture_order)}"
     captured = [frame.captured_at for frame in runtime._prerecord_visual_frames]
     assert captured == sorted(captured)
+
+
+@pytest.mark.unit
+async def test_prerecord_task_stash_keeps_the_earliest_validation() -> None:
+    """Evicting the oldest task drops the opening frame of the utterance.
+
+    The router registers validation tasks in capture order, so the oldest entry
+    is the earliest capture. If a short utterance reaches final before that
+    evicted task completes, the final freeze cannot wait for it and the record
+    is abandoned before the opening frame lands.
+    """
+    runtime = _Runtime()
+    runtime._asr_route_mode = "independent"
+    onset = time.monotonic()
+    runtime._asr_turn_onset_at = onset
+    gate = asyncio.Event()
+
+    async def pending_validation() -> None:
+        await gate.wait()
+
+    tasks = [asyncio.create_task(pending_validation()) for _ in range(30)]
+    await asyncio.sleep(0)
+    for index, task in enumerate(tasks):
+        runtime._track_independent_visual_validation_task(
+            task,
+            captured_at=onset + 0.001 * index,
+        )
+
+    stash = runtime._prerecord_visual_validations
+    assert len(stash) <= 8
+    kept = sorted(stash.values())
+    # 时间上的首尾都必须活着 —— 淘汰只能发生在中间。
+    assert kept[0] == onset
+    assert kept[-1] == onset + 0.001 * 29
+
+    gate.set()
+    await asyncio.gather(*tasks)

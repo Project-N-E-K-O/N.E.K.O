@@ -3673,3 +3673,60 @@ async def test_expiry_after_native_media_retires_the_session():
     assert sess.inject_calls == 0
     assert sess._fatal_error_occurred is True
     sess.close.assert_awaited_once_with()
+
+
+async def test_async_inject_rejection_after_native_media_retires_the_session():
+    """A post-inject rejection can orphan an already-committed image.
+
+    The rejection may target the callback item itself (its paired text never
+    landed) or `response.create` (the optimistically persisted item would be
+    duplicated by the retry). Either way the callback stays queued, so the
+    retry must land on a fresh session.
+    """
+    sess = _make_voice_sess()
+    sess._is_gemini = False
+    sess._supports_native_image = True
+    sess._visual_delivery_mode = "native"
+    sess._fatal_error_occurred = False
+    sess._inject_rejection_handlers = {}
+    sess.close = AsyncMock()
+    mgr = _make_mgr(session=sess)
+    mgr.end_session = AsyncMock()
+    mgr._schedule_proactive_retry = MagicMock()
+    retirement_tasks = []
+
+    def _fire_retirement(coro):
+        task = asyncio.create_task(coro)
+        retirement_tasks.append(task)
+        return task
+
+    mgr._fire_task = _fire_retirement
+
+    async def _stream_image(_image_b64, **_kwargs):
+        return SimpleNamespace(accepted=True, mode="native")
+
+    sess.stream_image = _stream_image
+
+    async def _inject_then_reject(_text, *, on_rejected=None, **_kwargs):
+        # 写出去了，但服务端随后异步拒绝这一项。
+        sess.inject_calls += 1
+        if on_rejected is not None:
+            on_rejected("callback item rejected")
+
+    sess.inject_text_and_request_response = _inject_then_reject
+    cb = {
+        "_callback_delivery_id": "id-async-inject-reject",
+        "status": "completed",
+        "summary": "native image then async inject rejection",
+        "media_images": ["callback-image"],
+    }
+    mgr.pending_agent_callbacks = [cb]
+
+    delivered = await core_module.LLMSessionManager.trigger_agent_callbacks(mgr)
+    await asyncio.gather(*retirement_tasks)
+
+    assert delivered is False
+    assert sess._fatal_error_occurred is True
+    sess.close.assert_awaited_once_with()
+    # cb 留队重试，但重试会落在新会话上。
+    assert mgr.pending_agent_callbacks == [cb]
