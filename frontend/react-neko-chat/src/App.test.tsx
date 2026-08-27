@@ -595,9 +595,9 @@ describe('App', () => {
     }
   });
 
-  it('does not clean Full local slots until the catalog has loaded successfully', async () => {
+  it('never rewrites Full local slots from the best-effort catalog list', async () => {
     const localToolId = 'local-12345678-1234-4123-8123-123456789abc';
-    const stored = JSON.stringify([localToolId]);
+    const stored = JSON.stringify([localToolId, 'fist']);
     window.localStorage.setItem(ACTIVE_AVATAR_TOOLS_STORAGE_KEY, stored);
     const fetchMock = vi.fn()
       .mockRejectedValueOnce(new Error('offline'))
@@ -625,7 +625,21 @@ describe('App', () => {
 
       act(() => window.dispatchEvent(new Event('focus')));
       await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
-      await waitFor(() => expect(window.localStorage.getItem(ACTIVE_AVATAR_TOOLS_STORAGE_KEY)).toBe('[]'));
+
+      // 加载成功后内存里不再渲染这个槽位……
+      fireEvent.click(screen.getByRole('button', { name: 'Emoji' }));
+      const toolGroup = await screen.findByRole('group', { name: 'Tool icons' });
+      await waitFor(() => expect(
+        toolGroup.querySelector(`[data-avatar-tool-id="${localToolId}"]`),
+      ).toBeNull());
+      // ……对照：内置道具照常渲染，否则上面那条只是「工具栏根本没画」的假绿。
+      expect(Array.from(toolGroup.querySelectorAll<HTMLElement>('[data-avatar-tool-id]'))
+        .map(button => button.dataset.avatarToolId)).toEqual(['fist']);
+
+      // localStorage 不回写：list_items 会跳过校验失败的道具，「不在列表里」
+      // ≠「道具不存在」，一次瞬时读失败不该永久抹掉用户的槽位。持久化只发生
+      // 在用户显式 Save 和删除时。
+      expect(window.localStorage.getItem(ACTIVE_AVATAR_TOOLS_STORAGE_KEY)).toBe(stored);
     } finally {
       vi.unstubAllGlobals();
     }
@@ -6028,6 +6042,55 @@ describe('App', () => {
       active: false,
       toolId: null,
     })));
+  });
+
+  it('never rewrites Compact local slots from the best-effort catalog list', async () => {
+    const localToolId = 'local-12345678-1234-4123-8123-123456789abc';
+    const stored = JSON.stringify([localToolId, 'fist']);
+    window.localStorage.setItem(ACTIVE_AVATAR_TOOLS_STORAGE_KEY, stored);
+    const fetchMock = vi.fn()
+      .mockRejectedValueOnce(new Error('offline'))
+      .mockResolvedValue(new Response(JSON.stringify({
+        ok: true,
+        items: [],
+        limits: {
+          maxTools: 64,
+          maxNameChars: 20,
+          maxMeaningChars: 100,
+          maxChangeImages: 16,
+          maxImageBytes: 8_388_608,
+          maxImagePixels: 16_000_000,
+          maxAudioBytes: 5_242_880,
+          maxAudioDurationMs: 10_000,
+          maxTotalBytes: 268_435_456,
+        },
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    try {
+      const { container } = render(<App chatSurfaceMode="compact" compactChatState="input" />);
+      await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+      expect(window.localStorage.getItem(ACTIVE_AVATAR_TOOLS_STORAGE_KEY)).toBe(stored);
+
+      act(() => window.dispatchEvent(new Event('focus')));
+      await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+
+      // 加载成功后内存里不再渲染这个槽位……
+      await openCompactInputTools();
+      fireEvent.click(screen.getByRole('button', { name: 'Avatar tools' }));
+      await waitFor(() => expect(
+        container.querySelector(`[data-avatar-tool-id="${localToolId}"]`),
+      ).toBeNull());
+      // ……对照：内置道具照常渲染，否则上面那条只是「快捷栏根本没画」的假绿。
+      expect(Array.from(container.querySelectorAll<HTMLElement>('[data-avatar-tool-id]'))
+        .map(button => button.dataset.avatarToolId)).toEqual(['fist']);
+
+      // localStorage 不回写：list_items 会跳过校验失败的道具，「不在列表里」
+      // ≠「道具不存在」，一次瞬时读失败不该永久抹掉用户的槽位。
+      expect(window.localStorage.getItem(ACTIVE_AVATAR_TOOLS_STORAGE_KEY)).toBe(stored);
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it('deletes an equipped local tool from Compact and clears its saved slot', async () => {

@@ -62,6 +62,7 @@ import {
 } from './message-schema';
 import {
   DEFAULT_ACTIVE_AVATAR_TOOL_IDS,
+  forgetPersistedAvatarToolId,
   getAvatarToolItemLabel,
   persistActiveAvatarToolIds,
   readPersistedActiveAvatarToolIds,
@@ -1146,13 +1147,19 @@ function CompactChatApp({
   const handleLocalAvatarToolDelete = useCallback(async (toolId: `local-${string}`) => {
     await localAvatarToolCatalog.remove(toolId);
     if (activeAvatarToolId === toolId) clearActiveAvatarToolSelection();
+    setActiveAvatarToolIds(current => current.filter(candidate => candidate !== toolId));
+    forgetPersistedAvatarToolId(toolId);
   }, [activeAvatarToolId, clearActiveAvatarToolSelection, localAvatarToolCatalog.remove]);
 
+  // 只做内存 sanitize，不回写 localStorage：list_items 对校验失败的道具是
+  // warning + continue（有意的坏记录隔离），所以「不在列表里」≠「道具不存在」。
+  // 一次瞬时读失败若回写就会永久抹掉槽位，而持久化只该发生在用户显式 Save
+  // 和删除时。readPersistedActiveAvatarToolIds 只做格式校验，天然能承受
+  // 暂时不可用的 id。
   useEffect(() => {
     if (!localAvatarToolCatalog.authoritativeLoaded) return;
     setActiveAvatarToolIds((current) => {
       const next = sanitizeAvatarToolIds(current, localAvatarToolCatalog.registry.validIds);
-      persistActiveAvatarToolIds(next, localAvatarToolCatalog.registry);
       return next.length === current.length && next.every((toolId, index) => toolId === current[index])
         ? current
         : next;

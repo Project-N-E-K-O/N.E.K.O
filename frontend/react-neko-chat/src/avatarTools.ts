@@ -89,6 +89,24 @@ export function readPersistedActiveAvatarToolIds(): AvatarToolId[] {
   }
 }
 
+// 删除是确定性的「这个道具不存在了」，和 list_items 那种尽力而为的缺席不同，
+// 所以要落盘。但只摘掉这一个 id：其余槽位可能只是本轮列表没带上，不能顺手
+// 一起 sanitize 掉。
+export function forgetPersistedAvatarToolId(toolId: AvatarToolId) {
+  if (typeof window === 'undefined') return;
+  try {
+    const rawValue = window.localStorage?.getItem(ACTIVE_AVATAR_TOOLS_STORAGE_KEY);
+    if (!rawValue) return;
+    const parsed = JSON.parse(rawValue);
+    if (!Array.isArray(parsed)) return;
+    const next = parsed.filter(candidate => candidate !== toolId);
+    if (next.length === parsed.length) return;
+    window.localStorage?.setItem(ACTIVE_AVATAR_TOOLS_STORAGE_KEY, JSON.stringify(next));
+  } catch {
+    // Keep in-memory state when localStorage is unavailable.
+  }
+}
+
 export function persistActiveAvatarToolIds(
   ids: AvatarToolId[],
   registry: AvatarToolRegistrySnapshot,
