@@ -36,7 +36,13 @@ const elementPlusMocks = vi.hoisted(() => ({
   ElMessage: { success: vi.fn(), error: vi.fn(), warning: vi.fn(), info: vi.fn() },
   ElMessageBox: { confirm: vi.fn(() => Promise.resolve('confirm')) },
 }))
-vi.mock('element-plus', () => elementPlusMocks)
+// 部分 mock：只替换全局反馈组件。`unplugin-vue-components` 的 ElementPlusResolver
+// 会把模板里的 <el-button> 编译成显式 `import { ElButton } from 'element-plus'`，
+// 整模块 mock 会让这些自动导入变成 undefined 并让渲染直接抛错。
+vi.mock('element-plus', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  ...elementPlusMocks,
+}))
 
 function stubButtons(app: ReturnType<typeof createApp>) {
   app.component('el-button', defineComponent({
