@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 from io import BytesIO
 from typing import Any
 
@@ -13,38 +14,29 @@ MAX_UPLOADED_IMAGE_BYTES = 8 * 1024 * 1024
 MAX_SOURCE_IMAGE_BYTES = 32 * 1024 * 1024
 MAX_SOURCE_IMAGE_PIXELS = 16 * 1024 * 1024
 
-# Concurrent decodes, per plugin process.
+# Concurrent decodes, PROCESS-wide.
 #
-# Every other limit here is per IMAGE: 32 MiB in, 16 MP, 8 MiB out. None of
-# them bounds how many decodes run at once, and the transport's queue depth
-# does not either, because the decode happens BEFORE anything is submitted. A
-# plugin that fires many uploads together therefore schedules that many Pillow
-# decodes into the default executor, each holding a full uncompressed bitmap --
-# a 16 MP source is ~64 MB as RGBA, so a burst measured in dozens is measured
-# in gigabytes (Codex P2).
+# Every other limit here is per IMAGE: 32 MiB in, 16 MP, 8 MiB out. None bounds
+# how many decode at once, and the transport queue does not either, because the
+# decode happens before anything is submitted. A 16 MP source is ~64 MB as
+# RGBA, so a burst is measured in gigabytes (Codex).
 #
-# The realistic case is not a hostile plugin, which has easier ways to spend
-# memory, but an ordinary one uploading in a loop without thinking about
-# concurrency. Two lets a slow transport overlap with the next decode while
-# keeping the ceiling to roughly one image's working set either side of it.
+# A threading gate rather than an asyncio one, for two reasons a per-loop
+# semaphore got wrong:
+#
+#   * The plugin host calls asyncio.run() per handler (host.py startup, timers,
+#     custom events, the command loop), so a loop-bound semaphore hands each
+#     handler its own pair of slots and bounds nothing process-wide (Codex).
+#   * asyncio.to_thread cannot cancel a running thread. With the gate held by
+#     the awaiting coroutine, a cancelled caller released it while its thread
+#     still held the bitmap; held by the THREAD, cancellation cannot free it
+#     early (CodeRabbit).
+#
+# Known cost: waiters occupy default-executor threads while blocked. A burst of
+# eight parks six of them, which is survivable against a pool of ~16-36 and
+# strictly better than letting all eight decode at once.
 MAX_CONCURRENT_NORMALIZATIONS = 2
-_normalize_slots: "asyncio.Semaphore | None" = None
-_normalize_slots_loop: "asyncio.AbstractEventLoop | None" = None
-
-
-def _acquire_normalize_slot() -> "asyncio.Semaphore":
-    """Return this loop's decode semaphore, creating it on first use.
-
-    Bound lazily and re-created when the running loop changes: a plugin process
-    may restart its loop, and a semaphore bound to a dead loop would deadlock
-    every later upload rather than merely bounding it.
-    """
-    global _normalize_slots, _normalize_slots_loop
-    loop = asyncio.get_running_loop()
-    if _normalize_slots is None or _normalize_slots_loop is not loop:
-        _normalize_slots = asyncio.Semaphore(MAX_CONCURRENT_NORMALIZATIONS)
-        _normalize_slots_loop = loop
-    return _normalize_slots
+_normalize_gate = threading.Semaphore(MAX_CONCURRENT_NORMALIZATIONS)
 
 
 def normalize_image_to_jpeg(data: bytes) -> bytes:
@@ -56,7 +48,9 @@ def normalize_image_to_jpeg(data: bytes) -> bytes:
     if len(data) > MAX_SOURCE_IMAGE_BYTES:
         raise ValueError("source image exceeds the 32 MiB decode limit")
 
-    with Image.open(BytesIO(bytes(data))) as source:
+    # Held across the decode only; the size checks above are cheap and must not
+    # queue behind other images.
+    with _normalize_gate, Image.open(BytesIO(bytes(data))) as source:
         source.seek(0)
         width, height = source.size
         if width * height > MAX_SOURCE_IMAGE_PIXELS:
@@ -115,8 +109,7 @@ class PluginImages:
         # Bounded: the size checks above cap ONE image, not how many decode
         # at once. Held only across the decode, not the upload, so a slow
         # transport cannot stall the queue behind it.
-        async with _acquire_normalize_slot():
-            jpeg = await asyncio.to_thread(normalize_image_to_jpeg, bytes(data))
+        jpeg = await asyncio.to_thread(normalize_image_to_jpeg, bytes(data))
         result = await self._host_ctx._upload_image(
             jpeg,
             mime="image/jpeg",

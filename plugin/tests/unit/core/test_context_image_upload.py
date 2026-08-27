@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 from unittest.mock import patch
 import time
 from io import BytesIO
@@ -349,64 +350,87 @@ def test_images_upload_fails_fast_while_plugin_is_freezing(tmp_path: Path) -> No
     assert transport.uploaded == []
 
 
-def test_concurrent_uploads_bound_how_many_decodes_run_at_once(tmp_path: Path) -> None:
-    """Per-image limits do not bound a burst.
+def test_normalization_is_bounded_process_wide() -> None:
+    """The gate lives inside the decode, so it holds across loops and threads.
 
-    32 MiB in / 16 MP / 8 MiB out each cap ONE image, and the transport queue
-    cannot help because the decode happens before anything is submitted. Without
-    a slot limit a plugin uploading in a loop schedules every decode at once,
-    each holding a full uncompressed bitmap.
+    A per-loop semaphore bounded nothing here: the plugin host calls
+    asyncio.run() per handler, so each got its own slots. Instrumented at
+    Image.open rather than at normalize_image_to_jpeg, because patching the
+    latter would bypass the gate this test exists to check.
     """
+    from PIL import Image as PILImage
+
     from plugin.sdk.shared.core import images as images_mod
 
     live = 0
     peak = 0
-    real_normalize = images_mod.normalize_image_to_jpeg
+    lock = threading.Lock()
+    real_open = PILImage.open
 
-    def _counting_normalize(data: bytes) -> bytes:
+    def _slow_open(*args, **kwargs):
         nonlocal live, peak
-        live += 1
-        peak = max(peak, live)
+        with lock:
+            live += 1
+            peak = max(peak, live)
         try:
-            time.sleep(0.02)  # hold the slot long enough for others to pile up
-            return real_normalize(data)
+            time.sleep(0.03)
+            return real_open(*args, **kwargs)
         finally:
-            live -= 1
+            with lock:
+                live -= 1
 
-    async def _run() -> None:
-        responses: asyncio.Queue[dict[str, object]] = asyncio.Queue()
-        transport = _ImageTransport(responses)
-        ctx = PluginContext(
-            plugin_id="demo",
-            config_path=tmp_path / "plugin.toml",
-            logger=_Logger(),  # type: ignore[arg-type]
-            status_queue=None,
-            _response_queue=responses,
-            _image_transport=transport,
-        )
-        transport.on_response = ctx._dispatch_direct_response
-        await asyncio.gather(*(
-            ctx.images.upload(_png_bytes(), mime="image/png") for _ in range(8)
-        ))
+    payload = _png_bytes()
+    errors: list[BaseException] = []
 
-    with patch.object(images_mod, "normalize_image_to_jpeg", _counting_normalize):
-        asyncio.run(_run())
+    def _worker() -> None:
+        try:
+            images_mod.normalize_image_to_jpeg(payload)
+        except BaseException as exc:  # pragma: no cover - surfaced below
+            errors.append(exc)
 
+    with patch.object(PILImage, "open", _slow_open):
+        threads = [threading.Thread(target=_worker) for _ in range(8)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(10)
+
+    assert not errors, errors
     assert peak >= 2, "the test must actually overlap, or it proves nothing"
     assert peak <= images_mod.MAX_CONCURRENT_NORMALIZATIONS
 
 
-def test_normalize_slot_is_rebound_when_the_loop_changes(tmp_path: Path) -> None:
-    """A semaphore bound to a dead loop would deadlock, not bound.
+def test_an_abandoned_decode_still_holds_its_slot() -> None:
+    """asyncio.to_thread cannot cancel a running thread.
 
-    Plugin processes can restart their loop; the second run must not hang.
+    The gate is held by the thread, so a cancelled caller cannot hand the slot
+    to the next upload while the abandoned bitmap is still in memory.
     """
     from plugin.sdk.shared.core import images as images_mod
 
-    async def _one() -> object:
-        return images_mod._acquire_normalize_slot()
+    started = threading.Event()
+    may_finish = threading.Event()
 
-    first = asyncio.run(_one())
-    second = asyncio.run(_one())
+    async def _run() -> None:
+        def _blocking(_data: bytes) -> bytes:
+            with images_mod._normalize_gate:
+                started.set()
+                may_finish.wait(5)
+                return b"jpeg"
 
-    assert first is not second
+        abandoned = asyncio.ensure_future(asyncio.to_thread(_blocking, b"a"))
+        await asyncio.to_thread(started.wait, 5)
+        abandoned.cancel()
+        await asyncio.gather(abandoned, return_exceptions=True)
+
+        # One slot is still held by the abandoned thread, so only one more may
+        # enter — proven by a non-blocking acquire of the remaining slot.
+        assert images_mod._normalize_gate.acquire(blocking=False) is True
+        assert images_mod._normalize_gate.acquire(blocking=False) is False
+        images_mod._normalize_gate.release()
+
+        may_finish.set()
+
+    asyncio.run(_run())
+
+
