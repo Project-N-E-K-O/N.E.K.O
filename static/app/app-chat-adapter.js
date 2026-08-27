@@ -985,18 +985,23 @@
         if (blocks.length === 0) {
             return false;
         }
-        var author = getCurrentAssistantName();
+        // SYSTEM, not assistant. Plugin content is neither the character
+        // speaking nor the user typing, and either identity is a claim the
+        // reader cannot check: an assistant bubble she has no memory of (blind
+        // never reaches the model), or a user bubble nobody wrote. A plugin may
+        // still phrase its text in her voice — the label says where it came
+        // from, it does not rewrite the words.
+        var meta = payload && payload.metadata ? payload.metadata : {};
+        var sourceName = typeof meta.source_name === 'string' ? meta.source_name.trim() : '';
         var messageIdPrefix = payload.request_id
             ? 'plugin-blocks-' + String(payload.request_id)
             : 'plugin-blocks';
         var message = {
             id: nextReactMessageId(messageIdPrefix),
-            role: 'assistant',
-            author: author,
+            role: 'system',
+            author: sourceName || undefined,
             time: getCurrentTimeString(),
             createdAt: Date.now(),
-            avatarLabel: author ? String(author).trim().slice(0, 1).toUpperCase() : undefined,
-            avatarUrl: getAssistantAvatarUrl() || undefined,
             blocks: blocks,
             status: 'sent'
         };
@@ -1005,7 +1010,8 @@
             if (!appendHostMessageSafely(host, message, 'plugin_chat_blocks')) {
                 return false;
             }
-            markAssistantVisibleResponseForAchievement();
+            // Deliberately NOT markAssistantVisibleResponseForAchievement:
+            // the assistant did not respond, a plugin posted.
         } else {
             console.warn('[ChatAdapter] host not ready, queuing plugin chat blocks', message.id);
             _queuePendingHostMessage(message);

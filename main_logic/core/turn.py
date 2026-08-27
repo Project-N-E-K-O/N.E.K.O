@@ -1694,8 +1694,21 @@ class TurnMixin:
         *,
         request_id: str | None = None,
         source: str = "plugin",
+        source_name: str | None = None,
     ) -> bool:
-        """Render structured blocks without opening an assistant/model turn."""
+        """Render structured blocks as a SYSTEM message.
+
+        Not the assistant and not the user. Content pushed by a plugin is
+        neither, and rendering it as either is a claim the reader has no way to
+        check: an assistant bubble the assistant has no memory of producing, or
+        a user bubble the user never wrote.
+
+        Opens no assistant turn, so callers must NOT emit a turn-end for it.
+
+        ``source_name`` is the plugin's own display name when it supplied one;
+        the frontend labels the bubble with it so the origin is visible rather
+        than inferred.
+        """
         structured_blocks = [dict(block) for block in blocks if isinstance(block, dict)]
         if not structured_blocks:
             return False
@@ -1710,7 +1723,11 @@ class TurnMixin:
                 "type": "chat_blocks",
                 "blocks": structured_blocks,
                 "request_id": request_id,
-                "metadata": {"source": source, "passthrough": True},
+                "metadata": {
+                    "source": source,
+                    "source_name": source_name or "",
+                    "passthrough": True,
+                },
             })
         except Exception as e:
             logger.warning(

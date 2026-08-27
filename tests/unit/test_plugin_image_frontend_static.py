@@ -25,6 +25,47 @@ def test_structured_passthrough_blocks_reach_the_react_chat_host() -> None:
     )
 
 
+def test_plugin_chat_blocks_render_as_system_not_assistant() -> None:
+    """Plugin content must not wear either participant's identity.
+
+    Blind pushes never reach the model, so an assistant bubble would be
+    something the character has no memory of producing; read/respond images DO
+    reach it, but on a user-role message, so an assistant bubble also
+    contradicts what the model was told. A system bubble claims neither.
+    """
+    adapter = (ROOT / "static/app/app-chat-adapter.js").read_text(encoding="utf-8")
+
+    # Bounded by the next top-level function: splitting on "function " alone
+    # would stop at the inline filter callback and read almost nothing.
+    body = adapter.split("function appendReactChatBlocks(", 1)[1]
+    fn = body.split("function topicHintMessageId(", 1)[0]
+    assert "role: 'system'" in fn
+    assert "role: 'assistant'" not in fn
+    # No avatar or display name may be attached: those are what made it read
+    # as the character speaking.
+    assert "getAssistantAvatarUrl" not in fn
+    assert "getCurrentAssistantName" not in fn
+    # The origin is labelled instead.
+    assert "source_name" in fn
+
+
+def test_system_chip_renders_its_source_label() -> None:
+    """The label is the whole point: a plugin may write in her voice."""
+    bubble = (ROOT / "frontend/react-neko-chat/src/MessageBubble.tsx").read_text(
+        encoding="utf-8"
+    )
+    styles = (ROOT / "frontend/react-neko-chat/src/styles.css").read_text(
+        encoding="utf-8"
+    )
+
+    system_branch = bubble.split("if (message.role === 'system')", 1)[1].split(
+        "const streaming", 1
+    )[0]
+    assert "system-chip-source" in system_branch
+    assert "message.author" in system_branch
+    assert ".system-chip-source" in styles
+
+
 def test_chat_adapter_loads_before_the_chat_page_opens_its_websocket() -> None:
     template = (ROOT / "templates/chat.html").read_text(encoding="utf-8")
 

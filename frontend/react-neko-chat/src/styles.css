@@ -1523,6 +1523,18 @@ body.neko-electron-runtime .app-shell:not(.chat-surface-mode-compact)[data-focus
   justify-content: center;
 }
 
+.system-chip-source {
+  flex: none;
+  font-size: 11px;
+  letter-spacing: .02em;
+  padding: 1px 6px;
+  border-radius: 999px;
+  border: 1px solid currentColor;
+  opacity: .7;
+  align-self: flex-start;
+  margin-top: 1px;
+}
+
 .system-chip {
   max-width: min(82%, 640px);
   display: inline-flex;

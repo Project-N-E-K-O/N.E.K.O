@@ -520,9 +520,9 @@ async def test_chat_blind_plugin_image_is_forwarded_as_structured_blocks(monkeyp
         }],
     })
 
-    manager.passthrough_to_chat_bubble.assert_awaited_once()
-    call = manager.passthrough_to_chat_bubble.await_args
-    assert call.kwargs["blocks"] == [
+    manager.render_chat_blocks.assert_awaited_once()
+    call = manager.render_chat_blocks.await_args
+    assert call.args[0] == [
         {"type": "text", "text": "look at this"},
         {
             "type": "image",
@@ -576,7 +576,7 @@ async def test_plugin_chat_blocks_preserve_canonical_part_order(
         {"type": "image", "url": "http://127.0.0.1:48916/media/last"},
     ]
     if ai_behavior == "blind":
-        assert manager.passthrough_to_chat_bubble.await_args.kwargs["blocks"] == expected
+        assert manager.render_chat_blocks.await_args.args[0] == expected
     else:
         assert manager.render_chat_blocks.await_args.args[0] == expected
 
@@ -640,14 +640,17 @@ async def test_inline_image_only_chat_blind_message_is_rendered(monkeypatch) -> 
         }],
     })
 
-    manager.passthrough_to_chat_bubble.assert_awaited_once_with(
-        "",
-        request_id="inline-image-chat",
-        source="plugin",
-        blocks=[{
+    # System message, not an assistant bubble: blind content never reaches the
+    # model, so an assistant-looking bubble would be something she has no
+    # memory of having produced.
+    manager.render_chat_blocks.assert_awaited_once_with(
+        [{
             "type": "image",
             "url": f"data:image/png;base64,{encoded}",
         }],
+        request_id="inline-image-chat",
+        source="plugin",
+        source_name="inline",
     )
 
 
@@ -681,14 +684,15 @@ async def test_image_only_chat_blind_message_still_opens_a_structured_bubble(mon
         }],
     })
 
-    manager.passthrough_to_chat_bubble.assert_awaited_once_with(
-        "",
-        request_id="image-only-chat",
-        source="plugin",
-        blocks=[{
+    manager.render_chat_blocks.assert_awaited_once_with(
+        [{
             "type": "image",
             "url": "http://127.0.0.1:48916/media/image-only",
         }],
+        request_id="image-only-chat",
+        source="plugin",
+        # Derived from the channel (plugin:demo) so the bubble names its origin.
+        source_name="demo",
     )
 
 
@@ -733,6 +737,7 @@ async def test_chat_visible_respond_image_is_rendered_and_sent_to_model(monkeypa
         ],
         request_id="image-both",
         source="plugin",
+        source_name="demo",
     )
     callback = manager.submit_proactive_callback.call_args.args[0]
     assert callback["media_images"] == [encoded]
@@ -869,13 +874,11 @@ async def test_image_delivery_obeys_visibility_and_ai_behavior(
         "media_parts": [{"type": "image", "url": _IMAGE_URL, "mime": "image/jpeg"}],
     })
 
-    assert manager.render_chat_blocks.await_count == int(
-        shows_original and ai_behavior != "blind"
-    )
-    assert manager.passthrough_to_chat_bubble.await_count == int(
-        shows_original and ai_behavior == "blind"
-    )
-    if shows_original and ai_behavior != "blind":
+    # One path for every ai_behavior: chat visibility decides, identity does
+    # not. Nothing renders as the assistant any more.
+    assert manager.render_chat_blocks.await_count == int(shows_original)
+    manager.passthrough_to_chat_bubble.assert_not_awaited()
+    if shows_original:
         expected_blocks = []
         if with_text:
             expected_blocks.append({"type": "text", "text": "describe this"})
@@ -910,9 +913,11 @@ async def test_image_delivery_obeys_visibility_and_ai_behavior(
         ("blind", "silent", [], False, False, False),
         ("blind", "silent", ["chat"], False, False, True),
         ("read", "passive", [], False, True, False),
-        ("read", "passive", ["chat"], False, True, False),
+        # read/respond + chat now render too — as a system message, alongside
+        # the model injection, not instead of it.
+        ("read", "passive", ["chat"], False, True, True),
         ("respond", "proactive", [], True, False, False),
-        ("respond", "proactive", ["chat"], True, False, False),
+        ("respond", "proactive", ["chat"], True, False, True),
     ],
 )
 @pytest.mark.asyncio
@@ -925,7 +930,12 @@ async def test_text_only_delivery_obeys_visibility_and_ai_behavior(
     expects_enqueue: bool,
     expects_chat: bool,
 ) -> None:
-    """The image feature leaves the existing text-only delivery path unchanged."""
+    """Text-only pushes render as a system message whenever chat is visible.
+
+    Previously only ``blind`` reached chat, wearing the assistant's identity.
+    Every ai_behavior now renders through the same system path, so the matrix
+    checks ``visibility`` alone rather than ``visibility and blind``.
+    """
     from app import main_server
 
     manager = _manager()
@@ -952,12 +962,12 @@ async def test_text_only_delivery_obeys_visibility_and_ai_behavior(
 
     fetch_image.assert_not_awaited()
     manager.session.stream_image.assert_not_awaited()
-    manager.render_chat_blocks.assert_not_awaited()
     assert manager.submit_proactive_callback.call_count == int(expects_submit)
     assert manager.enqueue_agent_callback.call_count == int(expects_enqueue)
-    assert manager.passthrough_to_chat_bubble.await_count == int(
-        expects_chat and ai_behavior == "blind"
-    )
+    # Chat visibility alone decides rendering now, and it never wears the
+    # assistant's identity.
+    assert manager.render_chat_blocks.await_count == int(expects_chat)
+    manager.passthrough_to_chat_bubble.assert_not_awaited()
 
 
 @pytest.mark.asyncio

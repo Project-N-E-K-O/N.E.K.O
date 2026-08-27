@@ -398,6 +398,32 @@ async def _fetch_plugin_image_base64(url: str) -> str:
     return encoded.decode("ascii")
 
 
+def _resolve_event_source(event: dict) -> tuple[str, str]:
+    """Return (source_kind, source_name) for one agent event.
+
+    Extracted so the chat render and the callback build cannot disagree about
+    what a push is called: the render happens first and used to derive only
+    plugin/system, which quietly relabelled computer-use and browser events.
+    """
+    channel = str(event.get("channel") or "unknown")
+    kind = str(event.get("source_kind") or "").strip()
+    name = str(event.get("source_name") or "").strip()
+    if not kind:
+        if channel == "user_plugin":
+            kind = "plugin"
+        elif channel in ("computer_use", "cu"):
+            kind = "cu"
+        elif channel in ("browser_use", "browser"):
+            kind = "browser"
+        elif channel.startswith("plugin:"):
+            kind = "plugin"
+            if not name:
+                name = channel.split(":", 1)[1]
+        else:
+            kind = "system"
+    return kind, name
+
+
 def _resolve_callback_origin(event_type: str, event: dict, channel: str) -> str:
     """Resolve task-report vs neutral-event wording at the host boundary."""
     if event_type != "task_result":
@@ -1079,14 +1105,27 @@ async def _handle_agent_event(event: dict):
                             e,
                         )
 
-            # ``visibility`` and ``ai_behavior`` are orthogonal. For read/respond,
-            # render URL-backed images through a display-only frame while model
-            # injection continues independently below. Blind uses the existing
-            # passthrough branch so text and image stay in one bubble.
+            # ONE chat-render path for every plugin push, regardless of
+            # ai_behavior. Plugin content is rendered as a SYSTEM message: it
+            # is neither the assistant speaking nor the user, and presenting it
+            # as either is a lie the reader cannot detect.
+            #
+            # Before this, `blind` rendered through passthrough_to_chat_bubble
+            # and therefore wore the assistant's avatar and name, while
+            # `read`/`respond` rendered image-bearing pushes through
+            # render_chat_blocks -- also as the assistant. The second was worse
+            # than cosmetic: those images DO reach the model, and they reach it
+            # on a user-role message, so the same content appeared to the
+            # reader as the assistant's and to the model as the user's.
+            #
+            # `blind` content is not in the model's context at all, so an
+            # assistant-looking bubble also created something the assistant has
+            # no memory of saying. A source-labelled system bubble keeps the
+            # plugin's own wording -- a plugin may still write in the
+            # character's voice -- while making its origin visible.
             visibility = event.get("visibility")
             if (
-                ai_behavior_v2 in ("respond", "read")
-                and isinstance(visibility, list)
+                isinstance(visibility, list)
                 and "chat" in visibility
                 and hasattr(mgr, "render_chat_blocks")
             ):
@@ -1103,24 +1142,18 @@ async def _handle_agent_event(event: dict):
                         )
                         visible_blocks.append({"type": "text", "text": visible_text})
                     visible_blocks.extend(visible_images)
-                # This PR adds structured rendering only for image-bearing
-                # pushes. Keep the pre-existing text-only read/respond path
-                # unchanged; its visibility semantics need a separate change.
-                if any(block["type"] == "image" for block in visible_blocks):
-                    channel = str(event.get("channel") or "")
-                    visible_source = str(event.get("source_kind") or "").strip()
-                    if not visible_source:
-                        visible_source = "plugin" if channel.startswith("plugin:") else "system"
+                if visible_blocks:
+                    visible_source, visible_source_name = _resolve_event_source(event)
                     # Display must not be able to cancel delivery. This runs
                     # BEFORE the callback is built, so an exception here would
                     # skip the model path entirely and lose both the deferred
-                    # images and the text (CodeRabbit). The passthrough branch
-                    # below is already guarded this way; this one was not.
+                    # images and the text (CodeRabbit).
                     try:
                         await mgr.render_chat_blocks(
                             visible_blocks,
                             request_id=event.get("task_id") or None,
                             source=visible_source,
+                            source_name=visible_source_name or None,
                         )
                     except Exception as e:
                         logger.warning(
@@ -1192,21 +1225,7 @@ async def _handle_agent_event(event: dict):
                 # Default source_kind from channel when caller didn't specify one.
                 # Plugin emit sites already pass explicit source_kind/source_name.
                 _channel = event.get("channel") or "unknown"
-                source_kind = (event.get("source_kind") or "").strip()
-                source_name = (event.get("source_name") or "").strip()
-                if not source_kind:
-                    if _channel == "user_plugin":
-                        source_kind = "plugin"
-                    elif _channel in ("computer_use", "cu"):
-                        source_kind = "cu"
-                    elif _channel in ("browser_use", "browser"):
-                        source_kind = "browser"
-                    elif _channel.startswith("plugin:"):
-                        source_kind = "plugin"
-                        if not source_name:
-                            source_name = _channel.split(":", 1)[1]
-                    else:
-                        source_kind = "system"
+                source_kind, source_name = _resolve_event_source(event)
                 event_metadata = (
                     event.get("metadata")
                     if isinstance(event.get("metadata"), dict)
@@ -1310,94 +1329,13 @@ async def _handle_agent_event(event: dict):
                 _vis_present = isinstance(_vis_raw, list)
                 _vis = _vis_raw if _vis_present else []
                 _ai_behavior = (event.get("ai_behavior") or "").strip()
-                if (
-                    "chat" in _vis
-                    and _ai_behavior == "blind"
-                    and hasattr(mgr, "passthrough_to_chat_bubble")
-                ):
-                    passthrough_dispatched = False
-                    try:
-                        # Reuse the already-resolved source_kind local (computed
-                        # above from channel: computer_use→cu, browser_use→browser,
-                        # plugin:*→plugin, else system). Falling back to event
-                        # raw + "plugin" default would mislabel non-plugin sources.
-                        passthrough_source = source_kind or "plugin"
-                        # Why: passthrough_to_chat_bubble swallows send_json
-                        # failures and is a no-op when WS is missing/disconnected,
-                        # so absence-of-exception is NOT proof a frame was sent.
-                        # We must gate handle_proactive_complete on the bool
-                        # return — otherwise we emit turn-end without a matching
-                        # turn-start (frontend never opened the assistant
-                        # lifecycle), corrupting proactive rescheduling.
-                        # Same role-placeholder contract as the direct_reply
-                        # path: blind-passthrough text reaches the chat bubble
-                        # verbatim without going through the LLM, so the
-                        # placeholder has to be expanded here or the literal
-                        # ``{MASTER_NAME}`` token would render in the bubble.
-                        passthrough_text = core.apply_role_placeholders(
-                            raw_text,
-                            lanlan_name=getattr(mgr, "lanlan_name", "") or "",
-                            master_name=getattr(mgr, "master_name", "") or "",
-                        )
-                        ordered_chat_blocks = (
-                            _ordered_plugin_chat_blocks(ordered_parts, mgr)
-                            if ordered_parts is not None
-                            else None
-                        )
-                        chat_image_blocks = (
-                            []
-                            if ordered_chat_blocks is not None
-                            else _build_plugin_image_chat_blocks(media_parts)
-                        )
-                        passthrough_kwargs: dict[str, Any] = {
-                            "request_id": event.get("task_id") or None,
-                            "source": passthrough_source,
-                        }
-                        if ordered_chat_blocks is not None and any(
-                            block["type"] == "image" for block in ordered_chat_blocks
-                        ):
-                            passthrough_kwargs["blocks"] = ordered_chat_blocks
-                        elif chat_image_blocks:
-                            passthrough_kwargs["blocks"] = [
-                                {"type": "text", "text": passthrough_text},
-                                *chat_image_blocks,
-                            ]
-                        passthrough_dispatched = bool(
-                            await mgr.passthrough_to_chat_bubble(
-                                passthrough_text,
-                                **passthrough_kwargs,
-                            )
-                        )
-                        logger.info(
-                            "[EventBus] passthrough_to_chat_bubble dispatched=%s (text_len=%d, source=%s)",
-                            passthrough_dispatched,
-                            len(text),
-                            passthrough_source,
-                        )
-                    except Exception as e:
-                        logger.warning(
-                            "[EventBus] passthrough_to_chat_bubble failed: %s",
-                            e,
-                        )
-                    # Why: gemini_response opens an assistant turn lifecycle on
-                    # the frontend (ensureAssistantTurnStarted in app-websocket.js);
-                    # without a matching turn-end event the assistant bubble
-                    # stays "in-progress" and proactive rescheduling / lifecycle
-                    # finalization never fire. handle_proactive_complete is the
-                    # canonical turn-end emitter shared with the direct task_result
-                    # reply path above. The HUD agent_notification branch below
-                    # does NOT open an assistant turn, so single-emit here is
-                    # sufficient even when visibility=["chat","hud"].
-                    if passthrough_dispatched and hasattr(
-                        mgr, "handle_proactive_complete"
-                    ):
-                        try:
-                            await mgr.handle_proactive_complete()
-                        except Exception as e:
-                            logger.warning(
-                                "[EventBus] passthrough turn_end emit failed: %s",
-                                e,
-                            )
+                # Plugin chat output is rendered above, as a system message,
+                # for every ai_behavior. It used to go through
+                # passthrough_to_chat_bubble here, which wore the assistant's
+                # identity AND opened an assistant turn -- hence the turn-end
+                # that used to follow. A system bubble opens no turn, so there
+                # is none to close.
+
                 # v2 visibility contract: HUD agent_notification fires only
                 # when "hud" is in visibility. Why: visibility=["chat"] must
                 # not double-render as both chat bubble AND HUD toast.
@@ -1450,31 +1388,6 @@ async def _handle_agent_event(event: dict):
                         "[EventBus] agent_notification: WebSocket not connected for lanlan=%s",
                         lanlan,
                     )
-            elif (
-                ai_behavior_v2 == "blind"
-                and "chat" in (event.get("visibility") or [])
-                and hasattr(mgr, "passthrough_to_chat_bubble")
-            ):
-                image_blocks = (
-                    _ordered_plugin_chat_blocks(ordered_parts, mgr)
-                    if ordered_parts is not None
-                    else _build_plugin_image_chat_blocks(media_parts)
-                )
-                if image_blocks:
-                    channel = str(event.get("channel") or "")
-                    source_kind = str(event.get("source_kind") or "").strip()
-                    if not source_kind:
-                        source_kind = "plugin" if channel.startswith("plugin:") else "system"
-                    dispatched = bool(
-                        await mgr.passthrough_to_chat_bubble(
-                            "",
-                            request_id=event.get("task_id") or None,
-                            source=source_kind,
-                            blocks=image_blocks,
-                        )
-                    )
-                    if dispatched and hasattr(mgr, "handle_proactive_complete"):
-                        await mgr.handle_proactive_complete()
         elif event_type == "agent_notification":
             ws = getattr(mgr, "websocket", None)
             if _is_websocket_connected(ws):
