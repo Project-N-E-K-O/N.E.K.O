@@ -1637,6 +1637,7 @@ class LifecycleMixin:
         prepared_session,
         operation_is_current,
         cached_turns_before_final: list[dict],
+        visual_still_owned=None,
     ) -> bool:
         """Two-phase Realtime -> Offline VLM promotion for one raw-image turn.
 
@@ -2023,6 +2024,32 @@ class LifecycleMixin:
                     or self.session is not candidate
                 ):
                     return False
+                if visual_still_owned is not None and not visual_still_owned():
+                    # 所有权是在候选会话连接 / promotion / TTS 起管线 / 工具同步这
+                    # 一长串 await 里丢的 —— 这是整条链上最长的窗口，
+                    # operation_is_current 只覆盖路由身份，不覆盖它。
+                    #
+                    # 但丢的是**图**，不是话：会话照常 promote（路由本来就需要
+                    # offline），这一轮降级成纯文本送出去。返回 False 会让调用方
+                    # 报 ASR_MULTIMODAL_TURN_FAILED 并且用户整句话消失。
+                    logger.info(
+                        '[%s] Offline VLM handoff lost frame ownership mid-flight; '
+                        'submitting turn %s without its frames',
+                        self.lanlan_name,
+                        turn.turn_id,
+                    )
+                    submit_text = getattr(
+                        candidate,
+                        'submit_external_voice_turn',
+                        None,
+                    )
+                    if not callable(submit_text):
+                        raise RuntimeError('OFFLINE_EXTERNAL_SUBMIT_UNAVAILABLE')
+                    delivered = await submit_text(
+                        turn.transcript,
+                        turn_id=turn.turn_id,
+                    )
+                    return delivered is not False
                 submit = getattr(candidate, 'submit_multimodal_turn', None)
                 if not callable(submit):
                     raise RuntimeError('OFFLINE_MULTIMODAL_SUBMIT_UNAVAILABLE')

@@ -1088,3 +1088,145 @@ async def test_existing_offline_multimodal_submit_retries_tts_each_turn() -> Non
         ("raw-frame",),
         turn_id="turn-1",
     )
+
+
+async def test_handoff_losing_frame_ownership_midflight_still_delivers_the_text():
+    """The handoff owns the longest await window on the whole path.
+
+    Connecting the candidate, promoting it, starting TTS and syncing tools all
+    happen after the caller's last ownership check, and ``operation_is_current``
+    only covers route identity. A successor prepared inside that window takes
+    the frames -- but not the sentence: the session must still be promoted and
+    the transcript must still be answered, as text.
+    """
+    manager = LLMSessionManager.__new__(LLMSessionManager)
+    manager.lanlan_name = "Test"
+    manager.input_mode = "audio"
+    manager.response_backend = "realtime"
+    manager._asr_route_mode = "independent"
+    manager._independent_asr_provider = "qwen"
+    manager._multimodal_handoff_lock = asyncio.Lock()
+    manager._core_voice_session_swap_lock = asyncio.Lock()
+    manager._core_voice_session_swap_barrier_timeout_s = 1.0
+    manager.lock = asyncio.Lock()
+    manager.message_cache_for_new_session = []
+    manager.is_preparing_new_session = True
+    manager.summary_triggered_time = object()
+    manager._reset_preparation_state = AsyncMock()
+    manager._cleanup_pending_session_resources = AsyncMock()
+    manager._sync_tools_to_active_session = AsyncMock()
+    manager._consume_next_session_context_messages = MagicMock()
+
+    owned = {"frames": True}
+
+    async def lose_ownership_during_tts_startup() -> None:
+        # 后继发声正好在这段 await 里 prepare，帧的所有权交了出去。
+        owned["frames"] = False
+
+    manager.ensure_tts_pipeline_alive = AsyncMock(
+        side_effect=lose_ownership_during_tts_startup
+    )
+
+    old_session = SimpleNamespace(
+        base_url="wss://www.lanlan.tech/core",
+        close=AsyncMock(),
+    )
+    manager.session = old_session
+    manager.message_handler_task = None
+
+    candidate = SimpleNamespace(
+        handle_messages=AsyncMock(),
+        submit_multimodal_turn=AsyncMock(),
+        submit_external_voice_turn=AsyncMock(return_value=True),
+        close=AsyncMock(),
+    )
+    manager._create_offline_vlm_handoff_candidate = AsyncMock(
+        return_value=(candidate, 0)
+    )
+    turn = SimpleNamespace(
+        transcript="what is this",
+        images=("raw-image",),
+        turn_id="turn-1",
+    )
+
+    delivered = await manager._handoff_to_offline_vlm_and_submit(
+        turn,
+        expected_session=old_session,
+        prepared_session=old_session,
+        operation_is_current=lambda: True,
+        cached_turns_before_final=[],
+        visual_still_owned=lambda: owned["frames"],
+    )
+
+    assert delivered is True
+    # 会话照常 promote —— 路由本来就需要 offline。
+    assert manager.session is candidate
+    assert manager.response_backend == "offline_vlm"
+    # 帧没跟着走，话跟着走了。
+    candidate.submit_multimodal_turn.assert_not_awaited()
+    candidate.submit_external_voice_turn.assert_awaited_once_with(
+        "what is this",
+        turn_id="turn-1",
+    )
+    candidate.close.assert_not_awaited()
+
+
+async def test_handoff_keeping_ownership_still_submits_the_frames():
+    """The downgrade must be conditional, not the new default."""
+    manager = LLMSessionManager.__new__(LLMSessionManager)
+    manager.lanlan_name = "Test"
+    manager.input_mode = "audio"
+    manager.response_backend = "realtime"
+    manager._asr_route_mode = "independent"
+    manager._independent_asr_provider = "qwen"
+    manager._multimodal_handoff_lock = asyncio.Lock()
+    manager._core_voice_session_swap_lock = asyncio.Lock()
+    manager._core_voice_session_swap_barrier_timeout_s = 1.0
+    manager.lock = asyncio.Lock()
+    manager.message_cache_for_new_session = []
+    manager.is_preparing_new_session = True
+    manager.summary_triggered_time = object()
+    manager._reset_preparation_state = AsyncMock()
+    manager._cleanup_pending_session_resources = AsyncMock()
+    manager.ensure_tts_pipeline_alive = AsyncMock()
+    manager._sync_tools_to_active_session = AsyncMock()
+    manager._consume_next_session_context_messages = MagicMock()
+
+    old_session = SimpleNamespace(
+        base_url="wss://www.lanlan.tech/core",
+        close=AsyncMock(),
+    )
+    manager.session = old_session
+    manager.message_handler_task = None
+
+    candidate = SimpleNamespace(
+        handle_messages=AsyncMock(),
+        submit_multimodal_turn=AsyncMock(),
+        submit_external_voice_turn=AsyncMock(),
+        close=AsyncMock(),
+    )
+    manager._create_offline_vlm_handoff_candidate = AsyncMock(
+        return_value=(candidate, 0)
+    )
+    turn = SimpleNamespace(
+        transcript="what is this",
+        images=("raw-image",),
+        turn_id="turn-1",
+    )
+
+    delivered = await manager._handoff_to_offline_vlm_and_submit(
+        turn,
+        expected_session=old_session,
+        prepared_session=old_session,
+        operation_is_current=lambda: True,
+        cached_turns_before_final=[],
+        visual_still_owned=lambda: True,
+    )
+
+    assert delivered is True
+    candidate.submit_multimodal_turn.assert_awaited_once_with(
+        "what is this",
+        ("raw-image",),
+        turn_id="turn-1",
+    )
+    candidate.submit_external_voice_turn.assert_not_awaited()

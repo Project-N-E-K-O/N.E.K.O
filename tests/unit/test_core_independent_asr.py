@@ -9672,6 +9672,64 @@ async def test_ownership_lost_between_the_freeze_check_and_the_provider_call(
 
 
 @pytest.mark.unit
+async def test_dispatch_hands_the_ownership_predicate_to_the_handoff() -> None:
+    """Checking before the handoff is not enough; it must check inside too.
+
+    Connecting and promoting the Offline candidate, starting TTS and syncing
+    tools are the longest awaits on the path, and the handoff's own
+    ``operation_is_current`` covers route identity only. A guard that merely
+    exercises the predicate in isolation still passes when the dispatch stops
+    handing it over, so assert the call site itself.
+    """
+    runtime = _Runtime()
+    _install_ready_lifecycle(runtime, "openai")
+    runtime._asr_route_mode = "independent"
+    runtime.session.get_multimodal_turn_delivery = MagicMock(
+        return_value="handoff_required"
+    )
+    runtime.session.submit_external_voice_turn = AsyncMock()
+    seen: dict = {}
+
+    async def observe_predicate_inside_the_handoff(_turn, **kwargs):
+        still_owned = kwargs["visual_still_owned"]
+        seen["before"] = still_owned()
+        # 后继发声在交接进行中 prepare —— 谓词必须立刻反映出来，而不是停在
+        # 进入交接那一刻的快照。
+        seen["record"].invalidated.set()
+        seen["after"] = still_owned()
+        return True
+
+    runtime._handoff_to_offline_vlm_and_submit = AsyncMock(
+        side_effect=observe_predicate_inside_the_handoff
+    )
+    handoff_token = runtime._asr_runtime._capture_turn_token(runtime._asr_lifecycle)
+    handoff_turn_id = (
+        f"asr-{handoff_token.ingress.session_epoch}-{handoff_token.turn_id}"
+    )
+    runtime._begin_core_multimodal_turn(handoff_turn_id, handoff_token)
+    handoff_record = runtime._core_multimodal_turns[handoff_turn_id]
+    seen["record"] = handoff_record
+    assert runtime._stage_independent_visual_frame(
+        "frame-of-this-turn",
+        source="screen",
+        request_id="screen-1",
+        captured_at=handoff_record.started_at,
+    )
+
+    await runtime._dispatch_core_asr_transcript(
+        VoiceTranscriptEvent(
+            turn_token=handoff_token,
+            provider="openai",
+            text="look here",
+        )
+    )
+
+    runtime._handoff_to_offline_vlm_and_submit.assert_awaited_once()
+    assert seen["before"] is True
+    assert seen["after"] is False
+
+
+@pytest.mark.unit
 async def test_visual_validation_wait_timeout_does_not_cancel_image_task() -> None:
     runtime = _Runtime()
     runtime._asr_route_mode = "independent"

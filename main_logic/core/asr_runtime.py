@@ -3535,6 +3535,11 @@ class AsrRuntimeMixin:
                     prepared_session=prepared_session_ref,
                     operation_is_current=route_still_core,
                     cached_turns_before_final=cached_turns_before_final,
+                    # 交接内部还有连候选会话、promote、起 TTS、同步工具一长串
+                    # await。所有权判据必须跟着进去，而且**不能**并进
+                    # operation_is_current —— 那个谓词为假会整轮放弃，丢帧只该
+                    # 降级成纯文本。
+                    visual_still_owned=lambda: not visual_ownership_lost(),
                 )
                 if not delivered and route_still_core():
                     await self.send_status(json.dumps({
