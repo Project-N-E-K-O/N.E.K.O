@@ -94,6 +94,21 @@ CALLBACK_IMAGE_MAX_TOTAL_BYTES = 8 * 1024 * 1024
 USER_PENDING_IMAGE_MAX_COUNT = 5
 PLUGIN_PENDING_IMAGE_MAX_COUNT = 3
 
+# Bytes, also per source. Count and size are independent axes: three images
+# inside the plugin's count quota can still be three near-8-MiB images, which
+# is ~24 MiB attached to one turn and past what the provider will take.
+#
+# The plugin ceiling is the per-turn figure the plugin guide already
+# advertises, so the staged path cannot quietly exceed the documented
+# contract. The user gets the larger share for the same reason they get more
+# slots -- deliberate frames, staged one at a time.
+#
+# These bound ACCUMULATION, not a single image: a lone frame is kept even if
+# it is over, because it already passed its own per-image limit upstream and
+# silently dropping the only image is worse than letting the provider judge.
+PLUGIN_PENDING_IMAGE_MAX_BYTES = CALLBACK_IMAGE_MAX_TOTAL_BYTES
+USER_PENDING_IMAGE_MAX_BYTES = 2 * CALLBACK_IMAGE_MAX_TOTAL_BYTES
+
 # What the manager queue may HOLD, as opposed to what one release may send.
 #
 # CALLBACK_IMAGE_MAX_* above bound a single model turn. The queue itself had

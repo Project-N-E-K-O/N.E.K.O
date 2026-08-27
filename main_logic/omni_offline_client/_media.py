@@ -14,8 +14,11 @@
 # limitations under the License.
 
 from main_logic.proactive_delivery import (
+    PLUGIN_PENDING_IMAGE_MAX_BYTES,
     PLUGIN_PENDING_IMAGE_MAX_COUNT,
+    USER_PENDING_IMAGE_MAX_BYTES,
     USER_PENDING_IMAGE_MAX_COUNT,
+    approx_base64_decoded_bytes,
 )
 
 from ._shared import (
@@ -68,13 +71,25 @@ class _MediaMixin:
                 queue = []
                 self._pending_plugin_images = queue
             cap = PLUGIN_PENDING_IMAGE_MAX_COUNT
+            byte_cap = PLUGIN_PENDING_IMAGE_MAX_BYTES
         else:
             queue = self._pending_images
             cap = USER_PENDING_IMAGE_MAX_COUNT
+            byte_cap = USER_PENDING_IMAGE_MAX_BYTES
 
         queue.append(image_b64)
         dropped = 0
-        while len(queue) > cap:
+        # Count and bytes both, because they fail independently: three images
+        # inside the count quota can still be ~24 MiB. The byte arm keeps the
+        # LAST image unconditionally -- it bounds accumulation, and a lone
+        # frame that is over already passed its own per-image limit upstream.
+        while (
+            len(queue) > cap
+            or (
+                len(queue) > 1
+                and sum(approx_base64_decoded_bytes(i) for i in queue) > byte_cap
+            )
+        ):
             # pop(0), not a rebind: turn.py holds a reference to this exact
             # list object and clears it in place, so the identity is load-bearing.
             queue.pop(0)

@@ -48,6 +48,9 @@ _IMAGE_MAX_BYTES = 8 * 1024 * 1024
 # Host-side transport (runs in the user_plugin_server process)
 # ═══════════════════════════════════════════════════════════════════
 
+_IMG_LOCK_SHUTDOWN_WAIT_S = 2.0
+
+
 class HostTransport:
     """Async ZMQ transport for the host (main-process) side.
 
@@ -278,6 +281,14 @@ class ChildTransport:
 
     # ── lifecycle ────────────────────────────────────────────────
 
+    def _close_img_sock_locked(self) -> None:
+        """Close the media socket. Callers decide whether they hold _img_lock."""
+        if self._img_sock is not None:
+            try:
+                self._img_sock.close(linger=0)
+            except Exception:
+                pass
+
     def close(self) -> None:
         if self._closed:
             return
@@ -287,12 +298,21 @@ class ChildTransport:
                 sock.close(linger=0)
             except Exception:
                 pass
-        with self._img_lock:
-            if self._img_sock is not None:
-                try:
-                    self._img_sock.close(linger=0)
-                except Exception:
-                    pass
+        # Bounded. A handler inside _send_image_sync holds this lock for its
+        # whole upload timeout, so an unconditional acquire here makes plugin
+        # shutdown wait on an in-flight upload -- and a backpressured media
+        # socket whose host consumer has gone away holds it for the full
+        # interval (Codex P2). Closing the socket without the lock is the
+        # lesser evil: the sender is already failing, and ZeroMQ close is what
+        # unblocks it. Never leave a STOP wedged behind a doomed send.
+        if self._img_lock.acquire(timeout=_IMG_LOCK_SHUTDOWN_WAIT_S):
+            try:
+                self._close_img_sock_locked()
+            finally:
+                self._img_lock.release()
+        else:
+            # Timed out: close anyway. This module carries no logger by design.
+            self._close_img_sock_locked()
         for ctx in (self._async_ctx, self._sync_ctx):
             try:
                 ctx.term()

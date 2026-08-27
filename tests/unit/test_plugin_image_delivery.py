@@ -1954,3 +1954,87 @@ def test_animation_within_the_ceiling_is_still_accepted():
 
     raw = _animated_gif_bytes(5)
     assert cr._inline_image_data_url_mime(base64.b64encode(raw).decode()) == "image/gif"
+
+
+def _b64_of_decoded_size(decoded_bytes: int) -> str:
+    """A base64 string whose approx decoded size is decoded_bytes."""
+    return "A" * ((decoded_bytes + 2) // 3 * 4)
+
+
+def test_byte_ceilings_are_the_agreed_ones():
+    from main_logic import proactive_delivery as pd
+
+    assert pd.PLUGIN_PENDING_IMAGE_MAX_BYTES == pd.CALLBACK_IMAGE_MAX_TOTAL_BYTES
+    assert pd.USER_PENDING_IMAGE_MAX_BYTES == 2 * pd.CALLBACK_IMAGE_MAX_TOTAL_BYTES
+
+
+@pytest.mark.asyncio
+async def test_plugin_byte_ceiling_trims_inside_its_own_quota():
+    """Three images can sit inside the COUNT quota and still be ~24 MiB.
+
+    The trim must come out of the plugin's own lane -- this is why bytes could
+    be bounded at all without reopening the cross-source eviction problem.
+    """
+    from main_logic import proactive_delivery as pd
+
+    client = _fresh_offline_client()
+    await client.stream_image("user-frame")
+
+    near_budget = pd.PLUGIN_PENDING_IMAGE_MAX_BYTES * 3 // 4
+    for i in range(pd.PLUGIN_PENDING_IMAGE_MAX_COUNT):
+        await client.stream_image(_b64_of_decoded_size(near_budget), source="plugin")
+
+    staged = sum(
+        pd.approx_base64_decoded_bytes(i) for i in client._pending_plugin_images
+    )
+    assert staged <= pd.PLUGIN_PENDING_IMAGE_MAX_BYTES
+    assert len(client._pending_plugin_images) < pd.PLUGIN_PENDING_IMAGE_MAX_COUNT
+    # The user's frame is untouched: the byte trim stayed in the plugin's lane.
+    assert client._pending_images == ["user-frame"]
+
+
+@pytest.mark.asyncio
+async def test_a_lone_oversized_image_is_kept():
+    """The byte ceiling bounds ACCUMULATION, not a single image.
+
+    One frame that is over already passed its own per-image limit upstream;
+    dropping the only image would be a silent loss with nothing to show for it.
+    """
+    from main_logic import proactive_delivery as pd
+
+    client = _fresh_offline_client()
+    huge = _b64_of_decoded_size(pd.PLUGIN_PENDING_IMAGE_MAX_BYTES * 2)
+    await client.stream_image(huge, source="plugin")
+
+    assert client._pending_plugin_images == [huge]
+
+
+@pytest.mark.asyncio
+async def test_upload_timeout_is_clamped():
+    """An unbounded upload timeout is an unbounded shutdown delay.
+
+    The child transport holds its image lock for the whole upload and shutdown
+    waits on that lock, so `timeout=3600` could wedge a STOP for an hour.
+    """
+    from plugin.sdk.shared.core import images as images_mod
+
+    seen = []
+
+    class _Ctx:
+        handler_ctx = "timer.x"
+
+        def _ensure_image_upload_available(self):
+            return None
+
+        async def _upload_image(self, data, *, mime, deadline=None, timeout):
+            seen.append(timeout)
+            return {"type": "image", "url": "http://127.0.0.1:1/media/x"}
+
+    uploader = images_mod.PluginImages(_Ctx())
+    with patch.object(images_mod, "normalize_image_to_jpeg", lambda *a, **k: b"jpeg"):
+        from PIL import Image as _Image
+        buf = io.BytesIO()
+        _Image.new("RGB", (4, 4), "red").save(buf, format="PNG")
+        await uploader.upload(buf.getvalue(), timeout=3600.0)
+
+    assert seen == [images_mod.MAX_UPLOAD_TIMEOUT_SECONDS]

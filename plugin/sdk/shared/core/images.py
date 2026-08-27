@@ -35,6 +35,15 @@ MAX_SOURCE_IMAGE_PIXELS = 16 * 1024 * 1024
 # Known cost: waiters occupy default-executor threads while blocked. A burst of
 # eight parks six of them, which is survivable against a pool of ~16-36 and
 # strictly better than letting all eight decode at once.
+# Upper bound on the caller-selected upload timeout.
+#
+# The child transport holds its image lock for the whole upload, and plugin
+# shutdown waits on that lock, so an unbounded timeout is an unbounded
+# shutdown delay -- `upload(timeout=3600)` could wedge a STOP for an hour
+# (Codex P2). The transport now bounds its own shutdown wait as well; this is
+# the other half, so a plugin cannot park its own handler that long either.
+MAX_UPLOAD_TIMEOUT_SECONDS = 30.0
+
 MAX_CONCURRENT_NORMALIZATIONS = 2
 _normalize_gate = threading.Semaphore(MAX_CONCURRENT_NORMALIZATIONS)
 
@@ -120,6 +129,7 @@ class PluginImages:
                 "use a plugin entry, timer, message, or custom event handler"
             )
         _ = mime  # Input format is detected by Pillow; output is always JPEG.
+        timeout = min(max(0.0, float(timeout)), MAX_UPLOAD_TIMEOUT_SECONDS)
         if not isinstance(data, (bytes, bytearray)):
             raise TypeError("image data must be bytes or bytearray")
         if not data:

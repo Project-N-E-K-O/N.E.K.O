@@ -573,3 +573,57 @@ def test_host_side_normalize_waits_indefinitely_for_a_slot() -> None:
     payload = images_mod.normalize_image_to_jpeg(_png_bytes())
     assert released.is_set()
     assert payload
+
+
+def test_close_does_not_wait_forever_on_a_held_image_lock():
+    """A STOP must not inherit an in-flight upload's timeout.
+
+    _send_image_sync holds _img_lock for the whole upload, and the public
+    upload timeout has no natural upper bound, so an unconditional acquire in
+    close() let a backpressured media socket wedge shutdown indefinitely.
+
+    The ZMQ contexts are stubbed out deliberately: term() has its own teardown
+    semantics that are not what this pins, and a guard that can hang is worse
+    than no guard.
+    """
+    import threading
+    import time
+    from types import SimpleNamespace
+
+    from plugin.core import zmq_transport as zt
+
+    child = zt.ChildTransport.__new__(zt.ChildTransport)
+    child._closed = False
+    child._img_lock = threading.Lock()
+    closed = []
+    child._img_sock = SimpleNamespace(close=lambda **_kw: closed.append(True))
+    child._dl_sock = SimpleNamespace(close=lambda **_kw: None)
+    child._ul_sock = SimpleNamespace(close=lambda **_kw: None)
+    child._async_ctx = SimpleNamespace(term=lambda: None)
+    child._sync_ctx = SimpleNamespace(term=lambda: None)
+
+    holder_ready = threading.Event()
+    release = threading.Event()
+
+    def _hold() -> None:
+        with child._img_lock:
+            holder_ready.set()
+            release.wait(60)
+
+    holder = threading.Thread(target=_hold, daemon=True)
+    holder.start()
+    assert holder_ready.wait(5), "helper never took the lock"
+    try:
+        started = time.monotonic()
+        child.close()
+        elapsed = time.monotonic() - started
+    finally:
+        release.set()
+        holder.join(5)
+
+    assert elapsed < zt._IMG_LOCK_SHUTDOWN_WAIT_S + 2, (
+        f"close() waited {elapsed:.1f}s on a held image lock"
+    )
+    # The socket is closed regardless: the sender is already failing, and the
+    # close is what unblocks it.
+    assert closed == [True]
