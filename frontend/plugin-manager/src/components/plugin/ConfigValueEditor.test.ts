@@ -179,21 +179,22 @@ describe('ConfigValueEditor — profile overlay 保持稀疏', () => {
     expect(lastEmit(emitted)).toEqual({ custom: {} })
   })
 
-  it('overlay 数组比基线短时，编辑靠前的项不会丢掉后面的继承项', async () => {
+  it('数组尚未被覆盖时，编辑其中一项落成完整数组', async () => {
     const baseline = { hosts: ['a', 'b', 'c'] }
-    const { host, emitted } = mountEditor({ hosts: ['a'] }, baseline)
+    const { host, emitted } = mountEditor({}, baseline)
     await nextTick()
 
     const inputs = Array.from(host.querySelectorAll('input')) as HTMLInputElement[]
+    expect(inputs).toHaveLength(3)
     typeInto(inputs[1]!, 'b2')
     await nextTick()
 
     expect(lastEmit(emitted)).toEqual({ hosts: ['a', 'b2', 'c'] })
   })
 
-  it('往「比基线短」的 overlay 数组里添加项，追加在完整视图末尾', async () => {
+  it('数组尚未被覆盖时，添加项追加在基线全量之后', async () => {
     const baseline = { hosts: ['a', 'b', 'c'] }
-    const { host, emitted } = mountEditor({ hosts: ['a'] }, baseline)
+    const { host, emitted } = mountEditor({}, baseline)
     await nextTick()
 
     const addBtn = Array.from(host.querySelectorAll('.arr > .add button')).pop() as HTMLButtonElement
@@ -203,9 +204,9 @@ describe('ConfigValueEditor — profile overlay 保持稀疏', () => {
     expect(lastEmit(emitted)).toEqual({ hosts: ['a', 'b', 'c', ''] })
   })
 
-  it('删除数组项按完整视图删，不会连带冲掉继承项', async () => {
+  it('数组尚未被覆盖时，删除一项落成剩余的完整数组', async () => {
     const baseline = { hosts: ['a', 'b', 'c'] }
-    const { host, emitted } = mountEditor({ hosts: ['a'] }, baseline)
+    const { host, emitted } = mountEditor({}, baseline)
     await nextTick()
 
     const row = rowFor(host, '0')
@@ -213,6 +214,69 @@ describe('ConfigValueEditor — profile overlay 保持稀疏', () => {
     await nextTick()
 
     expect(lastEmit(emitted)).toEqual({ hosts: ['b', 'c'] })
+  })
+
+  it('overlay 数组按自身长度渲染，不拿基线补尾巴', async () => {
+    // 整体替换语义下尾部不会被继承，补出来就是删不掉的幻影项。
+    const baseline = { hosts: ['a', 'b', 'c'] }
+    const { host } = mountEditor({ hosts: ['a'] }, baseline)
+    await nextTick()
+
+    const inputs = Array.from(host.querySelectorAll('input')) as HTMLInputElement[]
+    expect(inputs).toHaveLength(1)
+    expect(inputs[0]!.value).toBe('a')
+  })
+
+  it('删掉末项后它不会被基线填回来', async () => {
+    const baseline = { hosts: ['a', 'b', 'c'] }
+    const { host, emitted } = mountEditor({ hosts: ['a', 'b', 'c'] }, baseline)
+    await nextTick()
+
+    const row = rowFor(host, '2')
+    ;(row.querySelector(':scope > .ops button') as HTMLButtonElement).click()
+    await nextTick()
+    expect(lastEmit(emitted)).toEqual({ hosts: ['a', 'b'] })
+
+    // 用写回后的 overlay 重新渲染：末项不该复活
+    const again = mountEditor({ hosts: ['a', 'b'] }, baseline)
+    await nextTick()
+    expect(Array.from(again.host.querySelectorAll('input'))).toHaveLength(2)
+  })
+
+  it('数组项 overlay 存在时，不显示基线独有的字段', async () => {
+    const baseline = { servers: [{ host: 'h1', port: 80 }] }
+    const { host } = mountEditor({ servers: [{ host: 'mine' }] }, baseline)
+    await nextTick()
+
+    const keys = Array.from(host.querySelectorAll('.row > .k')).map((n) =>
+      (n.textContent || '').trim()
+    )
+    expect(keys).toContain('host')
+    expect(keys).not.toContain('port')
+  })
+
+  it('数组项里能显式补回基线独有的字段（不被当成重名拒绝）', async () => {
+    const baseline = { servers: [{ host: 'h1', port: 80 }] }
+    const { host, emitted } = mountEditor({ servers: [{ host: 'mine' }] }, baseline)
+    await nextTick()
+
+    // 数组项那一层的「添加字段」按钮（文档序里最靠前的那个 .add 属于它）
+    const addBtn = host.querySelector('.add button') as HTMLButtonElement
+    addBtn.click()
+    await nextTick()
+
+    const dialogInput = document.querySelector('.el-dialog input') as HTMLInputElement
+    dialogInput.value = 'port'
+    dialogInput.dispatchEvent(new Event('input'))
+    await nextTick()
+
+    const confirm = Array.from(document.querySelectorAll('.el-dialog button')).find(
+      (b) => (b.textContent || '').trim() === 'common.confirm'
+    ) as HTMLButtonElement
+    confirm.click()
+    await nextTick()
+
+    expect(emitted.length).toBeGreaterThan(0)
   })
 
   it('数组项内的字段「重置」写回基线值，而不是把字段删掉', async () => {
@@ -227,19 +291,6 @@ describe('ConfigValueEditor — profile overlay 保持稀疏', () => {
     await nextTick()
 
     expect(lastEmit(emitted)).toEqual({ servers: [{ host: 'h1', port: 80 }] })
-  })
-
-  it('overlay 数组比基线短时，补齐中间位置取基线值而不是留空洞', async () => {
-    const baseline = { hosts: ['a', 'b', 'c'] }
-    const { host, emitted } = mountEditor({ hosts: ['a'] }, baseline)
-    await nextTick()
-
-    const inputs = Array.from(host.querySelectorAll('input')) as HTMLInputElement[]
-    expect(inputs).toHaveLength(3)
-    typeInto(inputs[2]!, 'c2')
-    await nextTick()
-
-    expect(lastEmit(emitted)).toEqual({ hosts: ['a', 'b', 'c2'] })
   })
 
   it('根节点隐藏 plugin 段（profile 不允许覆盖）', async () => {

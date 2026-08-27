@@ -174,10 +174,19 @@ const kind = computed<'object' | 'array' | 'string' | 'number' | 'boolean'>(() =
   return 'string'
 })
 
+// 数组项内的对象同理：overlay 项存在时它就是生效值的全部，基线独有的字段
+// 不会被继承，列出来只会让人以为它还在。此时基线只用于「重置」已覆盖的字段。
+const isReplacedObject = computed(
+  () => props.replaceSemantics === true && asPlainObject(props.modelValue) !== null
+)
+
 const objectKeys = computed(() => {
   if (kind.value !== 'object') return []
   const a = overlayObject.value
-  const b = props.baselineValue && typeof props.baselineValue === 'object' ? props.baselineValue : {}
+  const b =
+    isReplacedObject.value || !props.baselineValue || typeof props.baselineValue !== 'object'
+      ? {}
+      : props.baselineValue
   const keys = new Set<string>([...Object.keys(a), ...Object.keys(b)])
 
   // 在根节点编辑 profile 覆盖配置时，隐藏顶层的 plugin 段，避免在 diff 视图中被标记为“已删除”
@@ -189,17 +198,14 @@ const objectKeys = computed(() => {
   return Array.from(keys).sort()
 })
 
+// 数组是整体替换：overlay 一旦存在，它就是生效值的全部，基线不再逐位继承。
+// 拿基线补尾会造出删不掉的幻影项 —— 用户删掉末项，界面立刻又把它填回来，
+// 下一次编辑再随 currentArray() 写回去。overlay 不存在时整份继承基线，
+// 此时首次写回要落成完整数组。
 const arrayItems = computed(() => {
   if (kind.value !== 'array') return []
-  const a = Array.isArray(displayValue.value) ? displayValue.value : []
-  const b = Array.isArray(props.baselineValue) ? props.baselineValue : []
-  const len = Math.max(a.length, b.length)
-  const items: any[] = []
-  for (let i = 0; i < len; i++) {
-    if (i < a.length) items.push(a[i])
-    else items.push(b[i])
-  }
-  return items
+  if (Array.isArray(props.modelValue)) return [...props.modelValue]
+  return Array.isArray(props.baselineValue) ? [...props.baselineValue] : []
 })
 
 const strVal = ref('')
@@ -441,7 +447,7 @@ function confirmAddKey() {
   }
 
   const next = { ...overlayObject.value }
-  if (hasOverlayKey(key) || hasBaselineKey(key)) {
+  if (hasOverlayKey(key) || (!isReplacedObject.value && hasBaselineKey(key))) {
     ElMessage.warning(t('plugins.duplicateFieldKey'))
     return
   }
