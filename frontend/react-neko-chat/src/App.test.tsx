@@ -6044,6 +6044,46 @@ describe('App', () => {
     })));
   });
 
+  it('keeps a temporarily unavailable local slot when the user saves without touching it', async () => {
+    const localToolId = 'local-12345678-1234-4123-8123-123456789abc';
+    const stored = JSON.stringify([localToolId, 'fist']);
+    window.localStorage.setItem(ACTIVE_AVATAR_TOOLS_STORAGE_KEY, stored);
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      ok: true,
+      items: [],
+      limits: {
+        maxTools: 64,
+        maxNameChars: 20,
+        maxMeaningChars: 100,
+        maxChangeImages: 16,
+        maxImageBytes: 8_388_608,
+        maxImagePixels: 16_000_000,
+        maxAudioBytes: 5_242_880,
+        maxAudioDurationMs: 10_000,
+        maxTotalBytes: 268_435_456,
+      },
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    try {
+      render(<App chatSurfaceMode="full" />);
+      await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+
+      fireEvent.click(screen.getByRole('button', { name: 'Emoji' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Edit quick tools' }));
+      const dialog = await screen.findByRole('dialog', { name: 'Manage tools' });
+      // 用户没碰这个槽位，只是保存了一次。旧实现会把草稿按当前可用性 sanitize
+      // 一遍，于是一个只是本轮没出现在列表里的道具被永久冲掉。
+      fireEvent.click(dialog.querySelector('.avatar-tool-manager-action.primary') as HTMLButtonElement);
+      await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Manage tools' })).toBeNull());
+
+      expect(JSON.parse(window.localStorage.getItem(ACTIVE_AVATAR_TOOLS_STORAGE_KEY) || '[]'))
+        .toEqual([localToolId, 'fist']);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it('never rewrites Compact local slots from the best-effort catalog list', async () => {
     const localToolId = 'local-12345678-1234-4123-8123-123456789abc';
     const stored = JSON.stringify([localToolId, 'fist']);

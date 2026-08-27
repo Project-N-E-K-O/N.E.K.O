@@ -25,7 +25,7 @@ import {
   isLocalAvatarToolId,
   type AvatarToolId,
   type AvatarToolItem,
-  sanitizeAvatarToolIds,
+  sanitizeAvatarToolSlots,
   withAvatarToolAssetVersion,
 } from './avatarTools';
 
@@ -149,13 +149,11 @@ function createSlots(toolIds: AvatarToolId[]): AvatarToolSlotValue[] {
   return Array.from({ length: MAX_ACTIVE_AVATAR_TOOLS }, (_, index) => retained[index] ?? null);
 }
 
-function compactSlots(
-  slots: AvatarToolSlotValue[],
-  validIds: ReadonlySet<AvatarToolId>,
-): AvatarToolId[] {
-  return sanitizeAvatarToolIds(
+// 草稿保留暂时不可用的 id（manager 会把它们画成 Empty slot），否则用户改一下
+// 别的槽位再保存，就把一个只是本轮没出现在列表里的道具永久冲掉了。
+function compactSlots(slots: AvatarToolSlotValue[]): AvatarToolId[] {
+  return sanitizeAvatarToolSlots(
     slots.filter((toolId): toolId is AvatarToolId => !!toolId),
-    validIds,
   );
 }
 
@@ -203,7 +201,6 @@ function moveSlotTool(
   slots: AvatarToolSlotValue[],
   sourceIndex: number,
   targetIndex: number,
-  validIds: ReadonlySet<AvatarToolId>,
 ): AvatarToolSlotValue[] {
   if (sourceIndex === targetIndex) return slots;
   const movingToolId = slots[sourceIndex];
@@ -576,9 +573,12 @@ export default function AvatarToolItemManager({
   const availableById = useMemo(() => (
     new Map(availableTools.map(tool => [tool.id, tool]))
   ), [availableTools]);
-  const equippedIds = compactSlots(draftSlots, validToolIds);
-  const equippedIdSet = new Set(equippedIds);
-  const draftFull = equippedIds.length >= MAX_ACTIVE_AVATAR_TOOLS;
+  // 保存用的清单含暂时不可用的 id；UI 的「已装备 / 已满」只看此刻真能画出来
+  // 的那些，否则一个 latent 槽位会把库里的道具全锁死，用户也没法复用它。
+  const equippedIds = compactSlots(draftSlots);
+  const availableEquippedIds = equippedIds.filter(toolId => validToolIds.has(toolId));
+  const equippedIdSet = new Set(availableEquippedIds);
+  const draftFull = availableEquippedIds.length >= MAX_ACTIVE_AVATAR_TOOLS;
   const catalogSaveBlocked = !catalogAuthoritativeLoaded && activeToolIds.some(isLocalAvatarToolId);
   const dialogTitleId = 'avatar-tool-manager-title';
   const noticeId = notice && view !== 'create' ? 'avatar-tool-manager-notice' : undefined;
@@ -633,7 +633,7 @@ export default function AvatarToolItemManager({
       if (targetSlotIndex !== null) {
         setDraftSlots((slots) => {
           if (session.kind === 'slot' && typeof session.slotIndex === 'number') {
-            return moveSlotTool(slots, session.slotIndex, targetSlotIndex, validToolIds);
+            return moveSlotTool(slots, session.slotIndex, targetSlotIndex);
           }
           return placeLibraryToolInSlot(slots, session.toolId, targetSlotIndex);
         });
@@ -717,7 +717,7 @@ export default function AvatarToolItemManager({
   };
 
   const handleSave = () => {
-    onSave(compactSlots(draftSlots, validToolIds));
+    onSave(compactSlots(draftSlots));
   };
 
   const startDialogDrag = (event: ReactPointerEvent<HTMLElement>) => {
