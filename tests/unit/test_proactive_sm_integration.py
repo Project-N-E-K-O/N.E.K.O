@@ -3734,3 +3734,64 @@ async def test_async_inject_rejection_after_native_media_retires_the_session():
     mgr._schedule_proactive_retry.assert_called_once_with(
         mgr.proactive_manager.min_gap_s
     )
+
+
+async def test_inject_rejection_arriving_after_return_still_retires():
+    """The rejection can land after inject returns, inside the ack grace window.
+
+    Codex point: the earlier regression fired `on_rejected` inline during the
+    inject await, so execution was still before the post-inject branch. The
+    supported ordering is the other one — the callback runs after inject has
+    already returned, when that branch has long been passed.
+    """
+    sess = _make_voice_sess()
+    sess._is_gemini = False
+    sess._supports_native_image = True
+    sess._visual_delivery_mode = "native"
+    sess._fatal_error_occurred = False
+    sess._inject_rejection_handlers = {}
+    sess.close = AsyncMock()
+    mgr = _make_mgr(session=sess)
+    mgr.end_session = AsyncMock()
+    mgr._schedule_proactive_retry = MagicMock()
+    fired = []
+
+    def _fire(coro):
+        task = asyncio.create_task(coro)
+        fired.append(task)
+        return task
+
+    mgr._fire_task = _fire
+
+    async def _stream_image(_image_b64, **_kwargs):
+        return SimpleNamespace(accepted=True, mode="native")
+
+    sess.stream_image = _stream_image
+    captured = {}
+
+    async def _inject_and_return(_text, *, on_rejected=None, **_kwargs):
+        sess.inject_calls += 1
+        captured["on_rejected"] = on_rejected
+
+    sess.inject_text_and_request_response = _inject_and_return
+    cb = {
+        "_callback_delivery_id": "id-late-inject-reject",
+        "status": "completed",
+        "summary": "native image, rejection lands after inject returned",
+        "media_images": ["callback-image"],
+    }
+    mgr.pending_agent_callbacks = [cb]
+
+    delivered = await core_module.LLMSessionManager.trigger_agent_callbacks(mgr)
+    assert delivered is True
+    assert sess._fatal_error_occurred is False
+
+    # inject 已经返回、分支早已越过；拒绝此刻才到。
+    captured["on_rejected"]("late callback item rejection")
+    await asyncio.gather(*fired)
+
+    assert sess._fatal_error_occurred is True
+    sess.close.assert_awaited_once_with()
+    mgr._schedule_proactive_retry.assert_called_once_with(
+        mgr.proactive_manager.min_gap_s
+    )

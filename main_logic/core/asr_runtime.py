@@ -60,6 +60,7 @@ from main_logic import core as _core_facade
 from ._shared import logger
 from .multimodal_turn import (
     _MAX_PRERECORD_VISUAL_VALIDATIONS,
+    _MAX_RETAINED_TURN_RECORDS,
     MultimodalTurn,
     _CoreMultimodalTurnRecord,
     _IndependentVisualFrame,
@@ -736,7 +737,17 @@ class AsrRuntimeMixin:
         # synchronously, before candidate creation or provider awaits.
         for previous in self._core_multimodal_turns.values():
             previous.invalidated.set()
-        self._core_multimodal_turns.clear()
+        # ⚠️ 不能 clear()：上一条**已被接受**的 final 可能还在 dispatcher 里跑（比如
+        # 正卡在有界的视觉校验 join 上）。记录一没，它回来做身份自检时会认为世界已经
+        # 变了而直接 return —— 那句话既不落库也不提交，重叠发声等于抹掉用户完整的上
+        # 一轮。invalidated 已经置上，足以让它放弃**图**；话必须留住。
+        # 只按注册时间淘汰最旧的，保留少量最近记录。
+        while len(self._core_multimodal_turns) >= _MAX_RETAINED_TURN_RECORDS:
+            oldest = min(
+                self._core_multimodal_turns.items(),
+                key=lambda item: item[1].registered_at,
+            )[0]
+            del self._core_multimodal_turns[oldest]
         # 所有权的起点是**语音确认那一刻**，不是这行代码执行的时刻：两者之间隔着
         # _send_asr_lifecycle_state() 的投递 await，期间落地的帧是这段发声真正的
         # 开头（用户开口时指的东西）。runtime 已经在每个 SPEECH_CONFIRMED 点记了

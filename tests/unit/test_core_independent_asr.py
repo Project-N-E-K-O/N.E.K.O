@@ -10467,29 +10467,25 @@ def test_overlap_replay_carries_the_real_onset_not_the_replay_instant() -> None:
     # 只认 overlap **重放**那一处：它由「兑付一次 completed-overlap credit」的那段
     # 代码驱动。同名枚举在别处也会被正常派发（那些是真实发生的时刻，用进函数时钟
     # 是对的），不能一并要求它们交接 onset。
+    # overlap 有**两条**重放路径：credit 兑付那条，和 provider final 到达时的直接
+    # 重放。两条都必须把真实开口时刻交给确认分支 —— 只修其中一条正是上一轮的漏。
     replay = [
         index
         for index, line in enumerate(source)
         if "await self._handle_independent_asr_activity(" in line
         and "SpeechActivityEvent.SPEECH_RESUMED," in source[index + 1]
-        and any(
-            "self._asr_overlap_completed_turns -= 1" in source[index - offset]
-            for offset in range(1, 21)
-            if index - offset >= 0
-        )
     ]
-    assert replay, "overlap replay not found"
+    assert len(replay) >= 2, f"expected both overlap replay paths, got {len(replay)}"
     for index in replay:
         window = chr(10).join(source[max(0, index - 30) : index])
-        # 每张 credit 配一个时刻，按兑付顺序出队 —— 单槽会让排在同一条延迟 final
-        # 后面的多个重放共用最后那个时刻。
-        assert "self._asr_overlap_completed_onsets.popleft()" in window, (
-            f"line {index + 1}: the replay must dequeue its own onset, "
-            f"got: {window!r}"
-        )
-        assert "self._asr_pending_speech_onset_at = replay_onset_at" in window, (
-            f"line {index + 1}: the replay must hand the recorded onset to the "
-            f"confirmation path, got: {window!r}"
+        # credit 兑付那条按队列 popleft（每张 credit 一个时刻），直接重放那条用它
+        # 自己捕获的 overlap_onset_at。两条都必须交接。
+        assert (
+            "self._asr_pending_speech_onset_at = replay_onset_at" in window
+            or "self._asr_pending_speech_onset_at = overlap_onset_at" in window
+        ), (
+            f"line {index + 1}: every overlap replay must hand the recorded "
+            f"onset to the confirmation path, got: {window!r}"
         )
 
 
@@ -10623,3 +10619,51 @@ async def test_prerecord_task_stash_keeps_the_earliest_validation() -> None:
 
     gate.set()
     await asyncio.gather(*tasks)
+
+
+@pytest.mark.unit
+async def test_new_prepare_does_not_erase_a_preceding_turn_record() -> None:
+    """An in-flight accepted final must still find its own record.
+
+    The preceding final can still be running in TranscriptDispatcher (for
+    example awaiting the bounded visual-validation join) when the successor is
+    prepared. Clearing every record there makes that dispatch fail its identity
+    self-check and return without recording OR submitting the transcript — the
+    overlapping utterance erases a complete user turn.
+    """
+    runtime = _Runtime()
+    runtime._asr_route_mode = "independent"
+
+    first = VoiceTurnToken(ingress=runtime._capture_ingress_token(), turn_id=201)
+    first_id = f"asr-{first.ingress.session_epoch}-{first.turn_id}"
+    runtime._begin_core_multimodal_turn(first_id, first)
+    first_record = runtime._core_multimodal_turns[first_id]
+
+    second = VoiceTurnToken(ingress=runtime._capture_ingress_token(), turn_id=202)
+    second_id = f"asr-{second.ingress.session_epoch}-{second.turn_id}"
+    runtime._begin_core_multimodal_turn(second_id, second)
+
+    # 前一条的记录仍在，且仍是同一个对象 —— 身份自检因此不会误判。
+    assert runtime._core_multimodal_turns.get(first_id) is first_record
+    # 但它已被标记作废：图归新回合，旧 final 只是别被整句丢掉。
+    assert first_record.invalidated.is_set()
+    assert runtime._core_multimodal_turns.get(second_id) is not None
+
+
+@pytest.mark.unit
+async def test_retained_turn_records_are_bounded() -> None:
+    runtime = _Runtime()
+    runtime._asr_route_mode = "independent"
+
+    for turn_id in range(210, 230):
+        token = VoiceTurnToken(
+            ingress=runtime._capture_ingress_token(), turn_id=turn_id
+        )
+        runtime._begin_core_multimodal_turn(
+            f"asr-{token.ingress.session_epoch}-{token.turn_id}", token
+        )
+
+    assert len(runtime._core_multimodal_turns) <= 3
+    # 留下的是最近的那些。
+    kept = sorted(runtime._core_multimodal_turns)
+    assert kept[-1].endswith("-229")

@@ -3917,7 +3917,9 @@ class IndependentAsrRuntime:
 
         await self._activate_pending_independent_turn(epoch)
         overlap_token = self._asr_overlap_onset_token
+        overlap_onset_at = self._asr_overlap_onset_at
         self._asr_overlap_onset_token = None
+        self._asr_overlap_onset_at = None
         if (
             detector_ref is not None
             and self._asr_lifecycle is lifecycle_ref
@@ -3953,6 +3955,15 @@ class IndependentAsrRuntime:
         # delayed behind this final. Replay the onset now that the lifecycle
         # reached WARM_IDLE so the next turn's ordered endpoint and final find
         # an ACTIVE, prepared turn instead of discarding the utterance.
+        #
+        # 把真实开口时刻交给重放 —— 和 credit 兑付那条路一样。少了这一步，这条
+        # **直接**重放会用当前时钟当后继发声的起点，把「上一轮排空 + 延迟 final」
+        # 整段算进「开口之后」，用户重新开口以来拍的帧全被排除。
+        if (
+            overlap_onset_at is not None
+            and self._asr_pending_speech_onset_at is None
+        ):
+            self._asr_pending_speech_onset_at = overlap_onset_at
         await self._handle_independent_asr_activity(
             SpeechActivityEvent.SPEECH_RESUMED,
             epoch,

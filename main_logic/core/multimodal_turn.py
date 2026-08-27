@@ -29,6 +29,12 @@ _MAX_MIDDLE_CANDIDATES = 5
 # 时无限增长。
 _MAX_PRERECORD_VISUAL_VALIDATIONS = 8
 
+# 同时保留的回合记录数上限。新的 prepare 不能直接把旧记录全清掉：上一条已被接受的
+# final 可能还在 TranscriptDispatcher 里跑（例如正卡在有界的视觉校验 join 上），
+# 记录一没它的身份自检就失败、整句话既不落库也不提交 —— 重叠发声会抹掉用户完整的
+# 上一轮。保留少量最近的记录，按注册时间淘汰最旧的。
+_MAX_RETAINED_TURN_RECORDS = 3
+
 
 @dataclass(frozen=True, slots=True)
 class _IndependentVisualFrame:

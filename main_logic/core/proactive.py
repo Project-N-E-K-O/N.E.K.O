@@ -868,10 +868,17 @@ class ProactiveMixin:
                 _reject_state = {
                     "rejected": False,
                     "acknowledged": False,
+                    # 已经为这次拒绝退休过会话没有？拒绝可能在 inject 返回**之前**
+                    # 落（分支里同步退休），也可能在返回之后、ack grace 到期之前落
+                    # （那时执行早已越过那个分支，只能由本回调补）。两条路共用这个
+                    # 标志，免得重复退休。
+                    "retired": False,
                 }
 
                 def _on_voice_inject_rejected(
                     error_msg: str,
+                    *,
+                    media: bool = False,
                     _snapshot=voice_snapshot,
                     _extra_snapshot=voice_extra_snapshot,
                     _lanlan=lanlan_name_snapshot,
@@ -889,8 +896,34 @@ class ProactiveMixin:
                         _snapshot
                     )
                     _state["rejected"] = True
+                    # 迟到的拒绝：inject 已经返回、执行越过了那条同步退休的分支。
+                    # 已提交的原生图仍留在这条活着的会话里，而 cb 正在被复原重试 ——
+                    # 不退休就会重复投递，或者让那张图配上一个不相关的回合。
+                    # 被拒的是**图**时不在这里退休：这个回调是在 stream_image 过程
+                    # 中触发的，native_media_prefix_count 还没走完（后面的图尚未
+                    # 记账），拿它判 >1 会漏。媒体那条留在 _stream_cb_media 返回后的
+                    # 分支里判 —— 那时计数才是终态。
+                    #
+                    # 被拒的是 callback item / response.create 时才在这里退休：配对
+                    # 文本没落地，任何已提交的图都成了孤儿；而且这个拒绝可能落在
+                    # inject 返回**之后**，那时执行早已越过下面那条分支。
+                    if (
+                        not media
+                        and native_media_prefix_committed
+                        and not _state["retired"]
+                    ):
+                        _state["retired"] = True
+                        _mark_media_session_unsafe()
+                        self._fire_task(_retire_unsafe_media_session())
                     if not retry_snapshot:
                         return False
+                    # 有东西可重试就排一次：被拒的请求不保证产生 response.done，
+                    # 退休过会话之后更不会有。媒体拒绝那条是**委托**进来的
+                    # （_on_voice_media_rejected 调用本函数），所以重试统一收在这里
+                    # 一处，那边不再各排一次 —— 否则同一次拒绝会排两遍。
+                    self._schedule_proactive_retry(
+                        self.proactive_manager.min_gap_s
+                    )
                     logger.warning(
                         "[%s] voice proactive inject rejected by server: %s; re-enqueuing %d cb(s) for retry",
                         _lanlan, error_msg, len(retry_snapshot),
@@ -956,17 +989,11 @@ class ProactiveMixin:
                     return True
 
                 def _on_voice_media_rejected(error_msg: str) -> None:
-                    if not _on_voice_inject_rejected(error_msg):
-                        return
-                    # Unlike response_already_active, a rejected image may
-                    # arrive after the following text response has already
-                    # completed. Its response.done hook may also run before
-                    # the arbiter releases the ticket, so it cannot reliably
-                    # re-drive the restored callback. Use the delayed retry
-                    # path for media-event rejection specifically.
-                    self._schedule_proactive_retry(
-                        self.proactive_manager.min_gap_s
-                    )
+                    # 委托：退休判定与延迟重试都在 _on_voice_inject_rejected 里做。
+                    # 原来这里另排一次重试（理由是媒体拒绝可能等不到能用的
+                    # response.done）—— 那个理由现在由内层的无条件重试覆盖，两处都
+                    # 排会让同一次拒绝重试两遍。
+                    _on_voice_inject_rejected(error_msg, media=True)
 
                 # Stream any images carried by these cues into the (guaranteed)
                 # voice session right before inject, so the proactive response
@@ -1183,21 +1210,21 @@ class ProactiveMixin:
                     return False
                 if _reject_state["rejected"]:
                     self._clear_voice_delivery_committed(voice_commit_snapshot)
-                    if native_media_prefix_count > 1:
-                        # 多张原生图时，前面几张可能已经落进会话、后面某张才被异步
-                        # 拒绝。配对文本不会送出去，留下的图会被不相关的用户回合
-                        # 消费，而重试又会把整组图再发一遍 —— 与另外几条「媒体已
-                        # 提交、文本未落地」的路同一判据，退休这条会话。
-                        #
-                        # 只提交过一张时不退休：那张就是被拒的那张，明确的拒绝事件
-                        # 证明它没有落进会话，没有孤儿前缀可言。
+                    if (
+                        native_media_prefix_count > 1
+                        and not _reject_state["retired"]
+                    ):
+                        # 只有当被拒那张之外另有图已经落进会话时才是孤儿前缀。
+                        # 明确的拒绝证明被拒那张没落进去，count==1 时不退休。
+                        _reject_state["retired"] = True
                         _mark_media_session_unsafe()
                         await _retire_unsafe_media_session()
                     logger.info(
-                        "[%s] trigger_agent_callbacks: proactive media rejected before text inject; keeping %d cb(s) queued for retry (native prefix count=%d)",
+                        "[%s] trigger_agent_callbacks: proactive media rejected before text inject; keeping %d cb(s) queued for retry (native prefix count=%d, retired=%s)",
                         self.lanlan_name,
                         len(voice_snapshot),
                         native_media_prefix_count,
+                        _reject_state["retired"],
                     )
                     return False
                 # Re-filter explicit retractions. Same-key callbacks submitted
@@ -1326,28 +1353,16 @@ class ProactiveMixin:
                 # handler scheduled). The active response that caused the
                 # rejection will fire response.done and trigger the retry.
                 if _reject_state["rejected"]:
-                    if native_media_prefix_committed:
-                        # 原生图已经不可逆地写进这条会话。这次异步拒绝既可能打在
-                        # callback item 上（配对文本压根没落地 → 孤儿前缀），也可能
-                        # 打在 response.create 上（乐观持久化的 item 会在重试时重复
-                        # 投递）。两种都得退休：cb 本来就留队重试，重试落在新会话上
-                        # 才不会把同一组图文再发一遍。与本函数其余几条「媒体已提交、
-                        # 文本未落地」的路同一判据。
-                        _mark_media_session_unsafe()
-                        await _retire_unsafe_media_session()
+                    # 退休与重试都由 _on_voice_inject_rejected 负责 —— 任何拒绝都先
+                    # 经过它，无论落在 inject 返回之前还是之后。这里只记录并退出，
+                    # 免得两处各做一次（会重复排重试、也可能重复退休）。
                     logger.info(
-                        "[%s] trigger_agent_callbacks: voice proactive inject rejected during await; keeping %d cb(s) queued for retry (native prefix committed=%s)",
+                        "[%s] trigger_agent_callbacks: voice proactive inject rejected; keeping %d cb(s) queued for retry (native prefix committed=%s, retired=%s)",
                         self.lanlan_name,
                         len(voice_snapshot),
                         native_media_prefix_committed,
+                        _reject_state["retired"],
                     )
-                    # 上面注释里那条「被拒的响应会 fire response.done 来驱动重试」
-                    # 已经不成立了：本分支现在可能刚把会话退休掉，也就不会再有
-                    # response.done。而且被拒的请求本来也不保证产生它。
-                    # _on_voice_inject_rejected 只负责把两条队列复原，不排重试。
-                    # 自己补一次 —— trigger_agent_callbacks 有 SM 闸和空队列早退，
-                    # 与真实的 response.done 撞车也只是个 no-op。
-                    self._schedule_proactive_retry(self.proactive_manager.min_gap_s)
                     return False
 
                 # Inject succeeded. Drop the cbs we delivered from BOTH queues:
