@@ -1341,6 +1341,13 @@ class ProactiveMixin:
                         len(voice_snapshot),
                         native_media_prefix_committed,
                     )
+                    # 上面注释里那条「被拒的响应会 fire response.done 来驱动重试」
+                    # 已经不成立了：本分支现在可能刚把会话退休掉，也就不会再有
+                    # response.done。而且被拒的请求本来也不保证产生它。
+                    # _on_voice_inject_rejected 只负责把两条队列复原，不排重试。
+                    # 自己补一次 —— trigger_agent_callbacks 有 SM 闸和空队列早退，
+                    # 与真实的 response.done 撞车也只是个 no-op。
+                    self._schedule_proactive_retry(self.proactive_manager.min_gap_s)
                     return False
 
                 # Inject succeeded. Drop the cbs we delivered from BOTH queues:

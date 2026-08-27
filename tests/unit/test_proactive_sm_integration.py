@@ -3728,5 +3728,9 @@ async def test_async_inject_rejection_after_native_media_retires_the_session():
     assert delivered is False
     assert sess._fatal_error_occurred is True
     sess.close.assert_awaited_once_with()
-    # cb 留队重试，但重试会落在新会话上。
+    # cb 留队重试，但重试会落在新会话上 —— 而且必须自己排：会话已经退休，不会再有
+    # response.done 来驱动它。
     assert mgr.pending_agent_callbacks == [cb]
+    mgr._schedule_proactive_retry.assert_called_once_with(
+        mgr.proactive_manager.min_gap_s
+    )
