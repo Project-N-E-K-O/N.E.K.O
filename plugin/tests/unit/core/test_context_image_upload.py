@@ -672,3 +672,128 @@ def test_an_in_flight_send_closes_the_socket_when_shutdown_beat_it():
     assert child._img_closed == [True], (
         "a send that outlived the shutdown must close the socket itself"
     )
+
+def _ctx_with_downlink(tmp_path, transport, *, ready: bool):
+    import threading as _threading
+
+    ctx = PluginContext(
+        plugin_id="demo",
+        config_path=tmp_path / "plugin.toml",
+        logger=_Logger(),  # type: ignore[arg-type]
+        status_queue=None,
+        _response_queue=None,
+        _image_transport=transport,
+    )
+    ctx._downlink_ready = _threading.Event()
+    if ready:
+        ctx._downlink_ready.set()
+    return ctx
+
+
+def test_upload_waits_for_the_downlink_instead_of_sending_into_a_void(tmp_path):
+    """Timer / custom-event threads start before the downlink loop reads.
+
+    An upload launched in that window has no reader for its reply, so it could
+    only time out. Waiting is the honest answer rather than refusing: those
+    handlers are legitimate uploaders the moment the loop is up, so a refusal
+    keyed on handler NAME would go on rejecting them afterwards.
+    """
+    sent: list[str] = []
+
+    class _RecordingTransport:
+        async def send_image(self, request_id, *, mime, data, timeout):
+            sent.append(request_id)
+
+    async def _run() -> None:
+        ctx = _ctx_with_downlink(tmp_path, _RecordingTransport(), ready=False)
+        loop = asyncio.get_running_loop()
+        with pytest.raises(TimeoutError) as raised:
+            await ctx._upload_image(
+                b"jpeg", mime="image/jpeg",
+                deadline=loop.time() + 0.3, timeout=0.3,
+            )
+        assert "downlink not ready" in str(raised.value)
+
+    asyncio.run(_run())
+    # Never reached the transport: nothing was sent to a loop that was not
+    # listening, so no request id is left dangling on the host side.
+    assert sent == []
+
+
+def test_the_downlink_wait_is_charged_to_the_callers_deadline(tmp_path):
+    """The wait must not become a SECOND budget stacked on the caller's.
+
+    A plugin that asks for T seconds must still get an answer within T, even
+    when most of T was spent waiting for the loop to come up.
+    """
+    class _NeverTransport:
+        async def send_image(self, request_id, *, mime, data, timeout):
+            return None
+
+    async def _run() -> float:
+        ctx = _ctx_with_downlink(tmp_path, _NeverTransport(), ready=False)
+        loop = asyncio.get_running_loop()
+        started = loop.time()
+        with pytest.raises((TimeoutError, asyncio.TimeoutError)):
+            # Outer bound: if the wait ever gets its own budget instead of
+            # drawing on the caller's, the inner loop never expires and this
+            # test would hang rather than fail. A guard that can hang is a CI
+            # hazard, not a guard -- third time in this PR.
+            await asyncio.wait_for(
+                ctx._upload_image(
+                    b"jpeg", mime="image/jpeg",
+                    deadline=loop.time() + 0.3, timeout=0.3,
+                ),
+                timeout=2.0,
+            )
+        return loop.time() - started
+
+    elapsed = asyncio.run(_run())
+    assert elapsed < 0.8, f"the wait added a second budget: {elapsed:.2f}s"
+
+
+def test_an_upload_proceeds_once_the_loop_marks_the_downlink_ready(tmp_path):
+    """The gate releases; it does not permanently reject."""
+    import threading as _threading
+
+    sent: list[str] = []
+
+    class _RecordingTransport:
+        async def send_image(self, request_id, *, mime, data, timeout):
+            sent.append(request_id)
+
+    async def _run() -> None:
+        ctx = _ctx_with_downlink(tmp_path, _RecordingTransport(), ready=False)
+        loop = asyncio.get_running_loop()
+
+        # The downlink loop comes up part-way through the wait.
+        _threading.Timer(0.1, ctx._downlink_ready.set).start()
+
+        with pytest.raises(TimeoutError):
+            # Still times out waiting for a RESPONSE, which is a different
+            # failure -- the point is that it got past the gate and sent.
+            await ctx._upload_image(
+                b"jpeg", mime="image/jpeg",
+                deadline=loop.time() + 0.6, timeout=0.6,
+            )
+
+    asyncio.run(_run())
+    assert sent, "the upload never reached the transport after the loop came up"
+
+
+def test_the_host_marks_the_downlink_ready_only_after_the_start_hook():
+    """Order matters more than presence here.
+
+    _on_command_loop_start may await for as long as it likes, and uploads
+    launched during it still have no reader. Setting the flag before that hook
+    would satisfy every behavioural test above while leaving the real window
+    open.
+    """
+    import inspect
+
+    from plugin.core import host as host_mod
+
+    src = inspect.getsource(host_mod)
+    hook = src.index("lifecycle.command_loop_start")
+    marked = src.index("ctx._downlink_ready.set()")
+    assert marked > hook, "the ready flag is set before the start hook completes"

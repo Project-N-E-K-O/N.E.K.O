@@ -237,6 +237,28 @@ class PluginContext:
                     return timeout
                 return deadline - asyncio.get_running_loop().time()
 
+            # The host starts timer and custom-event handler threads BEFORE the
+            # downlink loop begins reading, and _on_command_loop_start can await
+            # for as long as it likes in between. An upload launched in that
+            # window is sent to nobody: the reply has no reader, so it can only
+            # time out (Codex).
+            #
+            # Waiting is the honest answer rather than refusing, because those
+            # handlers are legitimate uploaders the moment the loop is up -- a
+            # refusal keyed on handler NAME would also reject them afterwards.
+            # The wait is charged to the SAME deadline, so it is never a second
+            # budget stacked on the caller's: a plugin that asked for three
+            # seconds still gets an answer within three seconds.
+            ready = getattr(self, "_downlink_ready", None)
+            while ready is not None and not ready.is_set():
+                remaining = _remaining()
+                if remaining <= 0:
+                    raise TimeoutError(
+                        f"image upload timed out after {timeout}s "
+                        "(plugin downlink not ready)"
+                    )
+                await asyncio.sleep(min(0.02, remaining))
+
             send_budget = _remaining()
             if send_budget <= 0:
                 raise TimeoutError(f"image upload timed out after {timeout}s")

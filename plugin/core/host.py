@@ -599,6 +599,10 @@ def _plugin_process_runner(
             _entry_map=None,
             _instance=None,
         )
+        # Cleared until the downlink loop starts reading. Uploads launched by
+        # timer / custom-event handlers before that point would have no reader
+        # for their reply, so they wait here instead of timing out (Codex).
+        ctx._downlink_ready = threading.Event()
 
         try:
             from plugin.settings import PLUGIN_ZMQ_IPC_ENABLED, PLUGIN_ZMQ_IPC_ENDPOINT
@@ -1358,6 +1362,16 @@ def _plugin_process_runner(
                             await result
                 except Exception:
                     logger.exception("[Plugin Process] _on_command_loop_start failed")
+
+            # Downlink is live from here: everything below reads replies. Set
+            # AFTER _on_command_loop_start, because that hook can await for an
+            # arbitrary time and uploads launched during it would still have no
+            # reader. Timer and custom-event threads started earlier block on
+            # this instead of sending into a void (Codex).
+            try:
+                ctx._downlink_ready.set()
+            except Exception:
+                logger.exception("[Plugin Process] failed to mark downlink ready")
 
             while True:
                 try:
