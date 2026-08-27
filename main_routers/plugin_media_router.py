@@ -24,12 +24,13 @@ deployment-specific URL and no new proxy rule are needed.
 """
 from __future__ import annotations
 
+import asyncio
 import re
 
 from fastapi import APIRouter, HTTPException
 from starlette.responses import Response
 
-from main_routers.agent_router import _resolve_user_plugin_base
+from app.main_server._shared import runtime
 from utils.http.internal_client import get_internal_http_client
 
 
@@ -43,7 +44,15 @@ _IMAGE_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 # One temporary image. The plugin SDK normalizes uploads to at most 8 MiB, so
 # anything past this did not come from the upload path.
 _MAX_MEDIA_BYTES = 8 * 1024 * 1024
+
+# Per-read idle timeout, and a TOTAL deadline over the whole exchange.
+#
+# httpx's timeout bounds one read, not the transfer: an upstream trickling a
+# few bytes every 2.9s satisfies it forever and holds the connection and the
+# task with it (CodeRabbit). Both are needed -- the idle timeout catches a
+# stalled peer quickly, the deadline catches a slow one at all.
 _FETCH_TIMEOUT_S = 3.0
+_TOTAL_DEADLINE_S = 10.0
 
 
 @router.get("/media/{image_id}")
@@ -52,10 +61,21 @@ async def get_plugin_media(image_id: str) -> Response:
     if not _IMAGE_ID_PATTERN.match(image_id):
         raise HTTPException(status_code=404, detail="temporary image not found")
 
-    base = (await _resolve_user_plugin_base()).rstrip("/")
+    # Resolved the SAME way the URL was minted. plugin/core/communication.py
+    # reads NEKO_USER_PLUGIN_SERVER_PORT before falling back to the configured
+    # base, because the plugin server rewrites that variable when its preferred
+    # port is busy. Resolving any other way sends the proxy to the port that
+    # did NOT mint the id -- which is exactly where the image is not (Codex).
+    #
+    # The main server's own resolver implements that rule, so this defers to it
+    # rather than adding a fourth spelling that can drift from the minter.
+    resolve = runtime.resolve_user_plugin_base
+    if resolve is None:
+        raise HTTPException(status_code=503, detail="plugin server not resolved yet")
+    base = str(resolve()).rstrip("/")
     client = get_internal_http_client()
     try:
-        async with client.stream(
+        async with asyncio.timeout(_TOTAL_DEADLINE_S), client.stream(
             "GET",
             f"{base}/media/{image_id}",
             timeout=_FETCH_TIMEOUT_S,
@@ -78,6 +98,8 @@ async def get_plugin_media(image_id: str) -> Response:
                     raise HTTPException(status_code=502, detail="media too large")
     except HTTPException:
         raise
+    except TimeoutError:
+        raise HTTPException(status_code=504, detail="plugin media timed out") from None
     except Exception:
         raise HTTPException(status_code=502, detail="plugin media unavailable") from None
 

@@ -2315,3 +2315,115 @@ def test_the_main_server_serves_the_media_path_it_now_hands_out():
 
     paths = {getattr(route, "path", None) for route in app.routes}
     assert "/media/{image_id}" in paths
+
+@pytest.mark.asyncio
+async def test_media_route_bounds_a_trickling_upstream(monkeypatch):
+    """httpx's timeout bounds one read, not the transfer.
+
+    An upstream sending a few bytes just inside the idle timeout satisfies it
+    forever, holding the connection and the task. The idle timeout is kept --
+    it catches a stalled peer fast -- but a total deadline is what catches a
+    slow one at all.
+    """
+    import asyncio as _asyncio
+    import time as _time
+
+    from main_routers import plugin_media_router as pmr
+
+    monkeypatch.setattr(pmr, "_TOTAL_DEADLINE_S", 0.3)
+
+    class _Trickle:
+        status_code = 200
+        headers = {"content-type": "image/jpeg"}
+
+        def raise_for_status(self):
+            return None
+
+        async def aiter_bytes(self):
+            while True:
+                await _asyncio.sleep(0.05)
+                yield b"x"
+
+    class _Stream:
+        async def __aenter__(self):
+            return _Trickle()
+
+        async def __aexit__(self, *exc):
+            return False
+
+    monkeypatch.setattr(
+        pmr, "get_internal_http_client",
+        lambda: type("C", (), {"stream": lambda self, *a, **k: _Stream()})(),
+    )
+    monkeypatch.setattr(pmr.runtime, "resolve_user_plugin_base", lambda: "http://127.0.0.1:1")
+
+    started = _time.monotonic()
+    with pytest.raises(Exception) as raised:
+        # Outer guard: without the route's own deadline the trickle never ends,
+        # and a guard test that hangs forever is a CI hazard rather than a
+        # guard. This makes that regression FAIL instead of stalling.
+        await _asyncio.wait_for(pmr.get_plugin_media("abc123"), timeout=3.0)
+    elapsed = _time.monotonic() - started
+
+    assert elapsed < 3.0, f"a trickling upstream held the request for {elapsed:.1f}s"
+    assert getattr(raised.value, "status_code", None) == 504
+
+
+def test_media_route_refuses_ids_it_did_not_mint():
+    """The route must not become a general proxy for any spellable path."""
+    from main_routers import plugin_media_router as pmr
+
+    assert pmr._IMAGE_ID_PATTERN.match("a1B2-c3_d4")
+    for bad in ("../secret", "a/b", "", "x" * 200, "a b", "a.png"):
+        assert not pmr._IMAGE_ID_PATTERN.match(bad), bad
+
+
+@pytest.mark.asyncio
+async def test_media_proxy_follows_the_port_that_minted_the_url(monkeypatch):
+    """The proxy must resolve the plugin origin the way the MINTER does.
+
+    plugin/core/communication.py reads NEKO_USER_PLUGIN_SERVER_PORT before
+    falling back to the configured base, because the plugin server rewrites
+    that variable when its preferred port is busy. A proxy resolving any other
+    way sends the request to the port that did not mint the id -- so the image
+    is missing precisely in the fallback case the variable exists to handle.
+    """
+    from main_routers import plugin_media_router as pmr
+
+    requested: list[str] = []
+
+    class _Resp:
+        status_code = 200
+        headers = {"content-type": "image/jpeg"}
+
+        def raise_for_status(self):
+            return None
+
+        async def aiter_bytes(self):
+            yield b"jpegbytes"
+
+    class _Stream:
+        def __init__(self, url):
+            requested.append(url)
+
+        async def __aenter__(self):
+            return _Resp()
+
+        async def __aexit__(self, *exc):
+            return False
+
+    class _Client:
+        def stream(self, _method, url, **_kw):
+            return _Stream(url)
+
+    monkeypatch.setattr(pmr, "get_internal_http_client", lambda: _Client())
+    monkeypatch.setenv("NEKO_USER_PLUGIN_SERVER_PORT", "49999")
+
+    from app.main_server import _resolve_user_plugin_base
+
+    monkeypatch.setattr(pmr.runtime, "resolve_user_plugin_base", _resolve_user_plugin_base)
+
+    response = await pmr.get_plugin_media("abc123")
+
+    assert requested == ["http://127.0.0.1:49999/media/abc123"]
+    assert response.body == b"jpegbytes"
