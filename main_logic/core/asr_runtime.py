@@ -268,6 +268,10 @@ class AsrRuntimeMixin:
         # has atomically exposed the replacement.
         self._core_voice_session_swap_lock = asyncio.Lock()
         self._core_voice_session_swap_barrier_timeout_s = 5.0
+        # 取消旧 listener 的等待上限。见 lifecycle.py：这里必须是"只等到期、不等
+        # 取消完成"的语义，否则一个吞掉 CancelledError 的 listener 会连带卡死
+        # swap lock。
+        self._core_voice_listener_cancel_timeout_s = 2.0
         self._independent_visual_generation = 0
         self._independent_visual_frame_ttl_s = 5.0
         self._latest_independent_visual_frame: _IndependentVisualFrame | None = None
@@ -366,6 +370,8 @@ class AsrRuntimeMixin:
             self._core_voice_session_swap_lock = asyncio.Lock()
         if not hasattr(self, "_core_voice_session_swap_barrier_timeout_s"):
             self._core_voice_session_swap_barrier_timeout_s = 5.0
+        if not hasattr(self, "_core_voice_listener_cancel_timeout_s"):
+            self._core_voice_listener_cancel_timeout_s = 2.0
         if not hasattr(self, "_independent_visual_generation"):
             self._independent_visual_generation = 0
         if not hasattr(self, "_independent_visual_frame_ttl_s"):
@@ -484,6 +490,15 @@ class AsrRuntimeMixin:
 
         runtime = getattr(self, "_asr_runtime", None)
         endpointed_at = getattr(runtime, "_asr_turn_endpointed_at", None)
+        if not isinstance(endpointed_at, (int, float)):
+            # PROVIDER_FINAL 会把上面那个清掉，而 Core 要到 transcript 派发之后
+            # 才冻结这一轮 —— 冻结时读到的必然是 None。所以再读一个不随 final
+            # 清除的副本；上一轮的残值由下面 started_at 的比较排掉。
+            endpointed_at = getattr(
+                runtime,
+                "_asr_last_turn_endpointed_at",
+                None,
+            )
         if not isinstance(endpointed_at, (int, float)):
             lifecycle = getattr(runtime, "_asr_lifecycle", None)
             state = getattr(getattr(lifecycle, "snapshot", None), "state", None)

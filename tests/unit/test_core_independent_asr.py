@@ -9936,3 +9936,44 @@ async def test_stale_seal_instant_from_a_previous_turn_is_not_this_turn_cutoff()
 
     assert turn is not None
     assert turn.images == ("spoken-frame",)
+
+
+@pytest.mark.unit
+async def test_endpoint_cutoff_survives_provider_final_clearing_the_live_field() -> None:
+    """PROVIDER_FINAL clears the live timestamp before Core freezes the turn."""
+    runtime = _Runtime()
+    runtime._asr_route_mode = "independent"
+    token = VoiceTurnToken(ingress=runtime._capture_ingress_token(), turn_id=97)
+    turn_id = f"asr-{token.ingress.session_epoch}-{token.turn_id}"
+    runtime._begin_core_multimodal_turn(turn_id, token)
+    record = runtime._core_multimodal_turns[turn_id]
+
+    assert runtime._stage_independent_visual_frame(
+        "spoken-frame",
+        source="screen",
+        request_id="screen-spoken",
+        captured_at=record.started_at,
+    )
+
+    # 封口 -> provider final：runtime 清掉了 live 字段，lifecycle 也已经离开
+    # DRAINING，只剩下不随 final 清除的那个副本。
+    sealed_at = record.started_at + 1.0
+    runtime._asr_turn_endpointed_at = None
+    runtime._asr_last_turn_endpointed_at = sealed_at
+    runtime._asr_lifecycle = SimpleNamespace(
+        snapshot=SimpleNamespace(state=VoiceLifecycleState.WARM_IDLE)
+    )
+
+    # 端点之后拍的帧在 final 派发期间才校验完。
+    runtime._stage_independent_visual_frame(
+        "post-endpoint-frame",
+        source="screen",
+        request_id="screen-post",
+        captured_at=sealed_at + 0.5,
+    )
+
+    turn = runtime._snapshot_core_multimodal_turn(turn_id, "what is that")
+
+    assert record.endpoint_at == sealed_at
+    assert turn is not None
+    assert turn.images == ("spoken-frame",)

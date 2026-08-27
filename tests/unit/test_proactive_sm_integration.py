@@ -3570,3 +3570,55 @@ async def test_inject_failure_after_native_media_retires_the_session():
     mgr._schedule_proactive_retry.assert_called_once_with(
         mgr.proactive_manager.min_gap_s
     )
+
+
+async def test_async_rejection_after_a_committed_image_retires_the_session():
+    """An earlier persisted image orphaned by a later async rejection is unsafe.
+
+    Distinct from the single-image case: there the explicit rejection proves the
+    one image never landed, so the session stays. Here image 1 is already in the
+    provider's conversation when image 2 is rejected asynchronously, and its
+    paired callback text will never be sent.
+    """
+    sess = _make_voice_sess()
+    sess._is_gemini = False
+    sess._supports_native_image = True
+    sess._visual_delivery_mode = "native"
+    sess._fatal_error_occurred = False
+    sess._inject_rejection_handlers = {}
+    sess.close = AsyncMock()
+    mgr = _make_mgr(session=sess)
+    mgr.end_session = AsyncMock()
+    mgr._schedule_proactive_retry = MagicMock()
+    retirement_tasks = []
+
+    def _fire_retirement(coro):
+        task = asyncio.create_task(coro)
+        retirement_tasks.append(task)
+        return task
+
+    mgr._fire_task = _fire_retirement
+
+    async def _stream_image(image_b64, *, on_rejected=None, **_kwargs):
+        if image_b64 == "callback-image-2" and on_rejected is not None:
+            # provider 先接了这一帧，随后才异步拒绝。
+            on_rejected("second callback image rejected")
+        return SimpleNamespace(accepted=True, mode="native")
+
+    sess.stream_image = _stream_image
+    cb = {
+        "_callback_delivery_id": "id-async-reject-after-commit",
+        "status": "completed",
+        "summary": "two native callback images",
+        "media_images": ["callback-image-1", "callback-image-2"],
+    }
+    mgr.pending_agent_callbacks = [cb]
+
+    delivered = await core_module.LLMSessionManager.trigger_agent_callbacks(mgr)
+    await asyncio.gather(*retirement_tasks)
+
+    assert delivered is False
+    assert sess.inject_calls == 0
+    assert sess._fatal_error_occurred is True
+    sess.close.assert_awaited_once_with()
+    assert mgr.pending_agent_callbacks == [cb]

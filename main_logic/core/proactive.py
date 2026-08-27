@@ -1057,6 +1057,7 @@ class ProactiveMixin:
                 voice_media_events: list[tuple[dict, dict]] = []
                 media_session_unsafe = False
                 native_media_prefix_committed = False
+                native_media_prefix_count = 0
 
                 def _mark_media_session_unsafe() -> None:
                     nonlocal media_session_unsafe
@@ -1064,7 +1065,9 @@ class ProactiveMixin:
 
                 def _mark_native_media_prefix_committed() -> None:
                     nonlocal native_media_prefix_committed
+                    nonlocal native_media_prefix_count
                     native_media_prefix_committed = True
+                    native_media_prefix_count += 1
 
                 async def _retire_unsafe_media_session() -> None:
                     # A native callback image is already persistent provider
@@ -1180,9 +1183,21 @@ class ProactiveMixin:
                     return False
                 if _reject_state["rejected"]:
                     self._clear_voice_delivery_committed(voice_commit_snapshot)
+                    if native_media_prefix_count > 1:
+                        # 多张原生图时，前面几张可能已经落进会话、后面某张才被异步
+                        # 拒绝。配对文本不会送出去，留下的图会被不相关的用户回合
+                        # 消费，而重试又会把整组图再发一遍 —— 与另外几条「媒体已
+                        # 提交、文本未落地」的路同一判据，退休这条会话。
+                        #
+                        # 只提交过一张时不退休：那张就是被拒的那张，明确的拒绝事件
+                        # 证明它没有落进会话，没有孤儿前缀可言。
+                        _mark_media_session_unsafe()
+                        await _retire_unsafe_media_session()
                     logger.info(
-                        "[%s] trigger_agent_callbacks: proactive media rejected before text inject; keeping %d cb(s) queued for retry",
-                        self.lanlan_name, len(voice_snapshot),
+                        "[%s] trigger_agent_callbacks: proactive media rejected before text inject; keeping %d cb(s) queued for retry (native prefix count=%d)",
+                        self.lanlan_name,
+                        len(voice_snapshot),
+                        native_media_prefix_count,
                     )
                     return False
                 # Re-filter explicit retractions. Same-key callbacks submitted

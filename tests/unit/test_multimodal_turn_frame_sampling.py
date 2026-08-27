@@ -29,6 +29,7 @@ from main_logic.core.multimodal_turn import (
     _IndependentVisualFrame,
 )
 from main_logic.omni_offline_client import OmniOfflineClient
+from main_logic.omni_realtime_client import MultimodalTurnDelivery
 
 
 def _record():
@@ -515,3 +516,33 @@ async def test_failed_vision_switch_also_rolls_back_an_image_free_asr_turn():
         await client.submit_external_voice_turn("说点什么", turn_id="turn-1")
 
     assert client._pending_images == ["attachment"]
+
+
+async def test_unshrinkable_multimodal_item_fails_the_turn_instead_of_the_item():
+    """Dropping the item would lose the transcript while a response still fires."""
+    from main_logic.omni_realtime_client import (
+        OmniRealtimeClient,
+        RealtimeImagePayloadTooLargeError,
+    )
+
+    client = OmniRealtimeClient.__new__(OmniRealtimeClient)
+
+    def _unshrinkable(_event, _payload):
+        return None
+
+    client._try_shrink_image_payload = _unshrinkable
+    client._is_gemini = False
+    client._fatal_error_occurred = False
+    client.ws = object()
+    client.get_multimodal_turn_delivery = lambda: MultimodalTurnDelivery.DIRECT_ATOMIC
+    client._decode_multimodal_turn_image = (
+        OmniRealtimeClient._decode_multimodal_turn_image
+    )
+
+    with pytest.raises(RealtimeImagePayloadTooLargeError):
+        await OmniRealtimeClient.submit_multimodal_turn(
+            client,
+            "这是什么？",
+            (_jpeg_b64(900, 900),),
+            turn_id="turn-oversized",
+        )

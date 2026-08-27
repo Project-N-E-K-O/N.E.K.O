@@ -18,10 +18,12 @@ from ._shared import (
     Any,
     Callable,
     Dict,
+    OMNI_WS_FRAME_LIMIT_BYTES,
     Optional,
     VisualDeliveryMode,
     asyncio,
     base64,
+    json,
     logger,
     response_arbiter_fail_open_enabled,
     time,
@@ -440,6 +442,28 @@ class _ResponseMixin:
             "type": "response.create",
             "event_id": f"event_asr_multimodal_response_{event_suffix}",
         }
+        # 传输上限在这里先判一次，而不是等 send_event 里再判。原因是那条路失败
+        # 只会 return False，而 arbiter 的 _worker_send 不看这个布尔值：整条
+        # conversation.item.create（连同 transcript）被丢掉之后，它照样会发
+        # response.create，用户拿到一个和自己这句话无关的回复。
+        #
+        # 这里把重压/摘帧提前做掉（helper 会就地改写 item_event，所以 send_event
+        # 之后不会重复做）；连一张都压不进上限时抛错，让 Core 走既有的整轮
+        # fail-closed（ASR_MULTIMODAL_TURN_FAILED）。不静默降级成纯文本 —— 那是
+        # 本 PR 明确禁止的行为。
+        item_payload = json.dumps(item_event)
+        if len(item_payload) > OMNI_WS_FRAME_LIMIT_BYTES:
+            shrunk = await asyncio.to_thread(
+                self._try_shrink_image_payload,
+                item_event,
+                item_payload,
+            )
+            if shrunk is None:
+                from ._transport import RealtimeImagePayloadTooLargeError
+
+                raise RealtimeImagePayloadTooLargeError(
+                    "multimodal turn item exceeds the realtime frame limit"
+                )
         text_hash = hashlib.sha256(clean.encode("utf-8")).hexdigest()[:8]
         logger.info(
             "external_multimodal_turn queued turn=%s chars=%d images=%d hash=%s",

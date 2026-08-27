@@ -576,6 +576,10 @@ class IndependentAsrRuntime:
         self._asr_last_provider_wire_audio_ms = 0
         self._asr_turn_audio_started_at: float | None = None
         self._asr_turn_endpointed_at: float | None = None
+        # 与上面那个一样在封口时刻打点，但**不在 PROVIDER_FINAL 时清掉**。Core 要
+        # 到 transcript 派发之后才冻结多模态回合，那时上面那个已经是 None 了；
+        # 消费方靠"这个时刻是否晚于本回合起点"排除上一轮的残值。
+        self._asr_last_turn_endpointed_at: float | None = None
         self._asr_first_partial_recorded = False
         self._voice_input_resource_optimization_enabled = True
 
@@ -3427,6 +3431,7 @@ class IndependentAsrRuntime:
             lifecycle.transition(VoiceLifecycleEvent.TURN_SEALED)
             self._asr_sealed_turn_token = self._capture_transport_token(lifecycle)
             self._asr_turn_endpointed_at = time.monotonic()
+            self._asr_last_turn_endpointed_at = self._asr_turn_endpointed_at
             self._schedule_provider_final_watchdog(
                 epoch,
                 lifecycle,

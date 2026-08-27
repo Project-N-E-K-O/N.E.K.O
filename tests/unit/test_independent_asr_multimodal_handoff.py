@@ -423,9 +423,8 @@ async def test_handoff_candidate_failure_preserves_realtime_session() -> None:
     manager._close_independent_asr.assert_not_awaited()
 
 
-async def test_handoff_listener_cancel_timeout_fail_closes_active_session(
-    monkeypatch,
-) -> None:
+async def test_handoff_listener_cancel_timeout_fail_closes_active_session() -> None:
+    """A listener that swallows CancelledError must not wedge the swap lock."""
     manager = LLMSessionManager.__new__(LLMSessionManager)
     manager.lanlan_name = "Test"
     manager._multimodal_handoff_lock = asyncio.Lock()
@@ -481,20 +480,20 @@ async def test_handoff_listener_cancel_timeout_fail_closes_active_session(
         turn_id="turn-1",
     )
     real_wait_for = asyncio.wait_for
+    # 不再 monkeypatch wait_for：这个 listener 真的会吞掉 CancelledError 并挂住，
+    # 所以超时必须由被测代码自己达成。伪造 TimeoutError 恰好会掩盖「wait_for 会
+    # 等取消完成、因而永远不抛」这个真实行为（Codex P1）。
+    manager._core_voice_listener_cancel_timeout_s = 0.05
 
-    async def timeout_old_listener(awaitable, timeout):
-        if awaitable is old_listener:
-            raise asyncio.TimeoutError
-        return await real_wait_for(awaitable, timeout)
-
-    monkeypatch.setattr(asyncio, "wait_for", timeout_old_listener)
-
-    delivered = await manager._handoff_to_offline_vlm_and_submit(
-        turn,
-        expected_session=old_session,
-        prepared_session=old_session,
-        operation_is_current=lambda: True,
-        cached_turns_before_final=[],
+    delivered = await real_wait_for(
+        manager._handoff_to_offline_vlm_and_submit(
+            turn,
+            expected_session=old_session,
+            prepared_session=old_session,
+            operation_is_current=lambda: True,
+            cached_turns_before_final=[],
+        ),
+        5.0,
     )
 
     assert delivered is False

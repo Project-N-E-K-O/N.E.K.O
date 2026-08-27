@@ -1752,7 +1752,25 @@ class LifecycleMixin:
                         old_listener.cancel()
                         listener_cancelled_for_handoff = True
                         try:
-                            await asyncio.wait_for(old_listener, timeout=2.0)
+                            # 刻意不用 wait_for：它在超时后会取消目标并**继续等**
+                            # 取消完成，而 handle_messages 若卡在 recv() 里延迟或
+                            # 吞掉 CancelledError，这里就永远不会抛 TimeoutError。
+                            # 此刻还握着 _core_voice_session_swap_lock，一旦挂住
+                            # 后续所有语音回合和热切换都会跟着卡死；fail-closed
+                            # 分支也永远轮不到。asyncio.wait 只等到期，不等取消完成。
+                            done, _pending = await asyncio.wait(
+                                {old_listener},
+                                timeout=getattr(
+                                    self,
+                                    "_core_voice_listener_cancel_timeout_s",
+                                    2.0,
+                                ),
+                            )
+                            if not done:
+                                raise asyncio.TimeoutError
+                            # 目标已经结束：把它的异常取出来，保持与 wait_for 相同
+                            # 的传播行为（取消回声仍按下面那条分支处理）。
+                            old_listener.result()
                         except asyncio.CancelledError:
                             current_task = asyncio.current_task()
                             if current_task is not None and current_task.cancelling():
