@@ -149,6 +149,9 @@ _UI_CONTEXT_DEFAULT_BUDGET = 5.0
 _UI_CONTEXT_REPLY_HEADROOM = 0.75
 # 预算小到扣不出上面那个余量时改按比例让，绝不能用一个固定下限反超调用方。
 _UI_CONTEXT_MIN_REPLY_SHARE = 0.5
+# 一次 IPC 往返都不够的预算是荒谬输入，跟 nan / inf 一样退回默认值。这同时
+# 挡掉了浮点下溢：让份额乘法有意义的最小预算远在非规格化数之上。
+_UI_CONTEXT_MIN_SENSIBLE_BUDGET = 0.001
 
 
 def _ui_context_provider_budget(requested: object) -> float:
@@ -159,6 +162,8 @@ def _ui_context_provider_budget(requested: object) -> float:
     does not get there — short budgets would be floored above the caller's,
     and budgets large enough to round the subtraction away come back
     unchanged — so both cases fall back to yielding a share of the budget.
+    Budgets too small to survive that share (or to fit an IPC round trip at
+    all) are nonsense input and resolve to the default instead.
     """
     try:
         budget = float(requested)  # type: ignore[arg-type]
@@ -167,7 +172,7 @@ def _ui_context_provider_budget(requested: object) -> float:
         budget = _UI_CONTEXT_DEFAULT_BUDGET
     # nan slips past every comparison and inf survives the subtraction, so
     # neither may reach asyncio.wait_for as a deadline.
-    if not math.isfinite(budget) or budget <= 0:
+    if not math.isfinite(budget) or budget < _UI_CONTEXT_MIN_SENSIBLE_BUDGET:
         budget = _UI_CONTEXT_DEFAULT_BUDGET
     resolved = max(budget - _UI_CONTEXT_REPLY_HEADROOM, budget * _UI_CONTEXT_MIN_REPLY_SHARE)
     if not resolved < budget:
