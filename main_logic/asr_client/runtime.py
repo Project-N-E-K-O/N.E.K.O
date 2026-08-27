@@ -540,6 +540,7 @@ class IndependentAsrRuntime:
         self._asr_warm_expiry_task: asyncio.Task[None] | None = None
         self._asr_final_watchdog_task: asyncio.Task[None] | None = None
         self._asr_pending_speech_confirmed = False
+        self._asr_pending_speech_onset_at = None
         self._asr_pending_detector_candidate = None
         self._asr_overlap_onset_token: VoiceIngressToken | None = None
         self._asr_overlap_completed_token: VoiceIngressToken | None = None
@@ -580,6 +581,11 @@ class IndependentAsrRuntime:
         # await；上面那个在两条路径上是投递完成之后才打的，喂延迟指标够用，但拿
         # 来当视觉所有权的起点会把投递窗口里拍的帧判成"不属于这段发声"。
         self._asr_turn_onset_at: float | None = None
+        # 语音已经检测到、但 ASR session 还没就绪（要等重连）时先把这一刻记下来。
+        # 真正 SPEECH_CONFIRMED 要等 connect() 成功之后才发得出去，用那时的时钟
+        # 当"用户开口时刻"会把整段重连等待算进去，重连期间拍的帧全被判成不属于
+        # 这段发声。
+        self._asr_pending_speech_onset_at: float | None = None
         self._asr_turn_endpointed_at: float | None = None
         # 与上面那个一样在封口时刻打点，但**不在 PROVIDER_FINAL 时清掉**。Core 要
         # 到 transcript 派发之后才冻结多模态回合，那时上面那个已经是 None 了；
@@ -1018,6 +1024,8 @@ class IndependentAsrRuntime:
         session_ref = self._asr_session
         if session_ref is None or not getattr(session_ref, "is_ready", True):
             self._asr_pending_speech_confirmed = True
+            if self._asr_pending_speech_onset_at is None:
+                self._asr_pending_speech_onset_at = time.monotonic()
             return
         lifecycle.transition(VoiceLifecycleEvent.SPEECH_CONFIRMED)
         self._asr_turn_onset_at = time.monotonic()
@@ -1153,6 +1161,8 @@ class IndependentAsrRuntime:
         session_ref = self._asr_session
         if session_ref is None or not getattr(session_ref, "is_ready", True):
             self._asr_pending_speech_confirmed = True
+            if self._asr_pending_speech_onset_at is None:
+                self._asr_pending_speech_onset_at = time.monotonic()
             self._ensure_transport_restart_task()
             return wake_is_current()
         turn_token = self._capture_turn_token(lifecycle)
@@ -1339,6 +1349,7 @@ class IndependentAsrRuntime:
                 state = lifecycle.snapshot.state
                 lifecycle.discard_pending_turn()
                 self._asr_pending_speech_confirmed = False
+                self._asr_pending_speech_onset_at = None
                 self._asr_pending_detector_candidate = None
                 if state is VoiceLifecycleState.DRAINING:
                     sealed_token = self._asr_sealed_turn_token
@@ -1410,6 +1421,7 @@ class IndependentAsrRuntime:
         if state is VoiceLifecycleState.DRAINING:
             lifecycle.discard_pending_turn()
             self._asr_pending_speech_confirmed = False
+            self._asr_pending_speech_onset_at = None
             self._asr_pending_detector_candidate = None
             if detector is not None:
                 identity = self._capture_runtime_identity(ingress_token=token)
@@ -2277,6 +2289,7 @@ class IndependentAsrRuntime:
         self._asr_turn_prepared = False
         self._asr_received_audio = False
         self._asr_pending_speech_confirmed = False
+        self._asr_pending_speech_onset_at = None
         self._asr_pending_detector_candidate = None
         self._asr_overlap_onset_token = None
         self._asr_overlap_completed_token = None
@@ -2799,8 +2812,14 @@ class IndependentAsrRuntime:
                             )
                             return
                         lifecycle.transition(VoiceLifecycleEvent.SPEECH_CONFIRMED)
-                        self._asr_turn_onset_at = time.monotonic()
+                        self._asr_turn_onset_at = (
+                            self._asr_pending_speech_onset_at
+                            if self._asr_pending_speech_onset_at is not None
+                            else time.monotonic()
+                        )
+                        self._asr_pending_speech_onset_at = None
                         self._asr_pending_speech_confirmed = False
+                        self._asr_pending_speech_onset_at = None
                         self._asr_turn_audio_started_at = time.monotonic()
                         self._asr_first_partial_recorded = False
                         await self._send_asr_lifecycle_state(
@@ -3035,6 +3054,7 @@ class IndependentAsrRuntime:
                         return
                     lifecycle.transition(VoiceLifecycleEvent.PREWARM_EXPIRED)
                     self._asr_pending_speech_confirmed = False
+                    self._asr_pending_speech_onset_at = None
                     self._asr_pending_detector_candidate = None
                     identity = self._capture_runtime_identity()
                     delivered = await self._send_asr_lifecycle_state(
@@ -3201,6 +3221,8 @@ class IndependentAsrRuntime:
                     self._asr_turn_onset_at = time.monotonic()
                 else:
                     self._asr_pending_speech_confirmed = True
+                    if self._asr_pending_speech_onset_at is None:
+                        self._asr_pending_speech_onset_at = time.monotonic()
             if lifecycle.snapshot.state is not previous_state:
                 identity = self._capture_runtime_identity(
                     ingress_token=self._asr_current_ingress_token,

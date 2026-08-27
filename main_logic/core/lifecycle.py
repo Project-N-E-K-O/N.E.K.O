@@ -378,7 +378,31 @@ class LifecycleMixin:
         if previous_task is not None and previous_task is not asyncio.current_task():
             if not previous_task.done():
                 previous_task.cancel()
-            await asyncio.gather(previous_task, return_exceptions=True)
+            # 有界地等：绑在退休 SDK 会话上的 receive task 可能延迟或吞掉
+            # CancelledError，而这个 helper 的多个调用方是**持着**
+            # _core_voice_session_swap_lock 进来的（例如 asr_runtime.py 的
+            # final-submit 路径），无界 gather 会把后续所有语音 final 和热切换一起
+            # 卡死。与 handoff 那条 listener 超时同一判据：只等到期，不等取消完成。
+            done, _pending = await asyncio.wait(
+                {previous_task},
+                timeout=getattr(
+                    self,
+                    "_core_voice_listener_cancel_timeout_s",
+                    2.0,
+                ),
+            )
+            if not done:
+                # 停不下来的 listener 仍绑在退休会话上。不能在它之上装替换
+                # listener（两个 receive 循环同时跑同一个 client），fail-closed
+                # 交给调用方 —— 它们都把 False 当成"放弃这次重连"。
+                logger.error(
+                    '[%s] session reconnect: previous listener cancellation timed out; refusing to install a replacement',
+                    self.lanlan_name,
+                )
+                return False
+            # 取一次结果，免得旧 listener 的异常变成 "never retrieved" 警告。
+            if not previous_task.cancelled():
+                previous_task.exception()
 
         async with self.lock:
             if session_ref is not self.session or not self.is_active:

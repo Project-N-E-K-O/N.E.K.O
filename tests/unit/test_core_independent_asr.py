@@ -10106,12 +10106,88 @@ def test_speech_onset_is_stamped_at_the_transition_not_after_delivery() -> None:
 
     source = inspect.getsource(asr_runtime_module).splitlines()
     transition = "lifecycle.transition(VoiceLifecycleEvent.SPEECH_CONFIRMED)"
-    stamp = "self._asr_turn_onset_at = time.monotonic()"
+    stamp = "self._asr_turn_onset_at ="
     sites = [i for i, line in enumerate(source) if transition in line]
 
     assert sites, "no SPEECH_CONFIRMED transition found"
     for index in sites:
-        assert stamp in source[index + 1], (
-            f"line {index + 1}: SPEECH_CONFIRMED must stamp the onset on the "
-            f"very next line, got: {source[index + 1].strip()!r}"
+        # 赋值必须**紧接**转换那一行开始。值本身可以是多行表达式（延迟确认那条路
+        # 用的是重连前暂存的 onset），但中间不许插入任何东西 —— 尤其是 await。
+        assert source[index + 1].strip().startswith(stamp), (
+            f"line {index + 1}: SPEECH_CONFIRMED must start stamping the onset on "
+            f"the very next line, got: {source[index + 1].strip()!r}"
         )
+
+    # 延迟确认路径必须用重连**之前**暂存的时刻，不能用重连完成的时钟。
+    # 这条路由「转换后数行内清掉 pending 标志」唯一识别。
+    deferred = [
+        index
+        for index in sites
+        if any(
+            "self._asr_pending_speech_confirmed = False" in source[index + offset]
+            for offset in range(1, 9)
+            if index + offset < len(source)
+        )
+    ]
+    assert deferred, "deferred SPEECH_CONFIRMED path not found"
+    for index in deferred:
+        # 只看 onset **赋值语句本身**（可能跨多行），不要把后面那句清除也算进来 ——
+        # 清除同样含这个名字，会让断言恒真。
+        statement = []
+        for offset in range(1, 9):
+            line = source[index + offset]
+            if offset > 1 and line.strip().startswith("self._asr_pending_speech_confirmed"):
+                break
+            statement.append(line)
+        window = chr(10).join(statement)
+        assert "self._asr_pending_speech_onset_at" in window, (
+            f"line {index + 1}: the deferred path must reuse the onset captured "
+            f"before the reconnect, got: {window!r}"
+        )
+    for index, line in enumerate(source):
+        if "self._asr_pending_speech_confirmed = True" in line:
+            window = chr(10).join(source[index : index + 4])
+            assert "self._asr_pending_speech_onset_at = time.monotonic()" in window, (
+                f"line {index + 1}: pending speech must record its onset immediately, "
+                f"got: {window!r}"
+            )
+
+
+@pytest.mark.unit
+async def test_reconnect_listener_join_is_bounded() -> None:
+    """A receive task that swallows cancellation must not wedge the swap lock."""
+    from main_logic.core import LLMSessionManager
+
+    manager = LLMSessionManager.__new__(LLMSessionManager)
+    manager.lanlan_name = "Test"
+    manager.lock = asyncio.Lock()
+    manager.is_active = True
+    manager._core_voice_listener_cancel_timeout_s = 0.05
+    session = SimpleNamespace(handle_messages=AsyncMock())
+    manager.session = session
+
+    stuck_release = asyncio.Event()
+
+    async def stuck_listener() -> None:
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            await stuck_release.wait()
+
+    listener = asyncio.create_task(stuck_listener())
+    manager.message_handler_task = listener
+    await asyncio.sleep(0)
+
+    installed = await asyncio.wait_for(
+        manager._restart_message_handler_after_session_reconnect(session),
+        5.0,
+    )
+
+    # fail-closed：停不下来的 listener 还绑在退休会话上，不能在它之上再装一个
+    # receive 循环；调用方都把 False 当成"放弃这次重连"。
+    assert installed is False
+    assert manager.message_handler_task is listener
+    session.handle_messages.assert_not_called()
+
+    stuck_release.set()
+    await asyncio.gather(listener, return_exceptions=True)
