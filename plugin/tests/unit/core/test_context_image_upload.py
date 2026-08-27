@@ -575,19 +575,15 @@ def test_host_side_normalize_waits_indefinitely_for_a_slot() -> None:
     assert payload
 
 
-def test_close_does_not_wait_forever_on_a_held_image_lock():
-    """A STOP must not inherit an in-flight upload's timeout.
+def _stub_child_transport():
+    """A ChildTransport with every ZMQ object stubbed.
 
-    _send_image_sync holds _img_lock for the whole upload, and the public
-    upload timeout has no natural upper bound, so an unconditional acquire in
-    close() let a backpressured media socket wedge shutdown indefinitely.
-
-    The ZMQ contexts are stubbed out deliberately: term() has its own teardown
-    semantics that are not what this pins, and a guard that can hang is worse
-    than no guard.
+    The contexts are stubbed deliberately: term() has its own teardown
+    semantics that are not what these pin, and driving real sockets here hung
+    for ten minutes on the first attempt. A guard that can hang is worse than
+    no guard.
     """
     import threading
-    import time
     from types import SimpleNamespace
 
     from plugin.core import zmq_transport as zt
@@ -595,13 +591,37 @@ def test_close_does_not_wait_forever_on_a_held_image_lock():
     child = zt.ChildTransport.__new__(zt.ChildTransport)
     child._closed = False
     child._img_lock = threading.Lock()
-    closed = []
-    child._img_sock = SimpleNamespace(close=lambda **_kw: closed.append(True))
+    child._img_closed = []
+    child._img_sock = SimpleNamespace(
+        close=lambda **_kw: child._img_closed.append(True),
+        poll=lambda **_kw: True,
+        send_multipart=lambda *a, **k: None,
+    )
     child._dl_sock = SimpleNamespace(close=lambda **_kw: None)
     child._ul_sock = SimpleNamespace(close=lambda **_kw: None)
     child._async_ctx = SimpleNamespace(term=lambda: None)
     child._sync_ctx = SimpleNamespace(term=lambda: None)
+    return child
 
+
+def test_close_neither_waits_forever_nor_races_an_in_flight_send():
+    """Shutdown must not inherit an upload's timeout, and must not race it.
+
+    _send_image_sync holds _img_lock for the whole upload, and the public
+    upload timeout has no natural upper bound, so an unconditional acquire let
+    a backpressured media socket wedge shutdown indefinitely.
+
+    Closing the socket anyway is NOT the fix: libzmq sockets are not thread
+    safe, so closing one while another thread is inside poll/send is undefined
+    behaviour -- trading a hang for a crash. Shutdown gives up the socket and
+    the holder closes it on its way out.
+    """
+    import threading
+    import time
+
+    from plugin.core import zmq_transport as zt
+
+    child = _stub_child_transport()
     holder_ready = threading.Event()
     release = threading.Event()
 
@@ -624,6 +644,31 @@ def test_close_does_not_wait_forever_on_a_held_image_lock():
     assert elapsed < zt._IMG_LOCK_SHUTDOWN_WAIT_S + 2, (
         f"close() waited {elapsed:.1f}s on a held image lock"
     )
-    # The socket is closed regardless: the sender is already failing, and the
-    # close is what unblocks it.
-    assert closed == [True]
+    assert child._img_closed == [], (
+        "closed the socket out from under a thread holding the lock"
+    )
+    # Shutdown is still recorded, which is what lets the holder finish the job.
+    assert child._closed is True
+
+
+def test_an_in_flight_send_closes_the_socket_when_shutdown_beat_it():
+    """The other half: whoever holds the lock last performs the close."""
+    child = _stub_child_transport()
+    child.close()
+    assert child._img_closed == [True], "uncontended close should have closed it"
+
+    # Simulate the race: shutdown already flagged, socket handed back.
+    child._img_closed.clear()
+    child._closed = False
+    child._send_image_sync(b"meta", b"payload", timeout=1.0)
+    assert child._img_closed == [], "no shutdown in progress, nothing to close"
+
+    def _flag_shutdown_midway(**_kw):
+        child._closed = True
+        return True
+
+    child._img_sock.poll = _flag_shutdown_midway
+    child._send_image_sync(b"meta", b"payload", timeout=1.0)
+    assert child._img_closed == [True], (
+        "a send that outlived the shutdown must close the socket itself"
+    )

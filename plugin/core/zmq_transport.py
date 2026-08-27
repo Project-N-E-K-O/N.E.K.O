@@ -257,6 +257,13 @@ class ChildTransport:
                     f"image transport send timed out after {timeout}s"
                 ) from None
         finally:
+            # If a shutdown started while this send held the lock, the sender
+            # is the last thread that will touch the socket, so the sender
+            # closes it. libzmq sockets are not thread safe: closing one from
+            # another thread while a send or poll is in progress is undefined
+            # behaviour, not merely impolite (CodeRabbit).
+            if self._closed:
+                self._close_img_sock_locked()
             self._img_lock.release()
 
     # ── uplink (thread-safe, any thread) ─────────────────────────
@@ -310,9 +317,11 @@ class ChildTransport:
                 self._close_img_sock_locked()
             finally:
                 self._img_lock.release()
-        else:
-            # Timed out: close anyway. This module carries no logger by design.
-            self._close_img_sock_locked()
+        # Else: an in-flight send holds the lock, and closing the socket from
+        # here would race it -- undefined behaviour in libzmq, which trades a
+        # hang for a crash. _closed is already set above, so that sender closes
+        # the socket itself on its way out. The wait that remains is bounded by
+        # the sender's own timeout, which the SDK clamps.
         for ctx in (self._async_ctx, self._sync_ctx):
             try:
                 ctx.term()
